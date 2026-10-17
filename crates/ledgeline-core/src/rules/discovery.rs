@@ -109,8 +109,9 @@ use crate::parse;
 use crate::rules::{
     Item, ItemKind, OpaqueReason, RulesDoc, Separator, SourceSetting, Warning, sanitize_display,
 };
-use std::io::Read;
+use crate::vault::{Entry, EntryKind, FileIdentity, LocalVault, Vault, VaultError, VaultPath};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Budgets
@@ -215,20 +216,70 @@ const UNREAD_REVISION: &str = "unread";
 // Types
 // ---------------------------------------------------------------------------
 
-/// An absolute path that a [`Discovery`] produced.
+/// A file in the journal's vault that a [`Discovery`] produced.
 ///
-/// The field is private and there is **no public constructor**, so "you may only
-/// write to a file discovery returned" is enforced by the type system rather
-/// than by code review. A later write path takes a `&RulesPath`, and the only
-/// way to hold one is to have scanned.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RulesPath(PathBuf);
+/// The fields are private and there is **no public constructor**, so "you may
+/// only write to a file discovery returned" is enforced by the type system
+/// rather than by code review. A later write path takes a `&RulesPath`, and the
+/// only way to hold one is to have scanned.
+#[derive(Debug, Clone)]
+pub struct RulesPath {
+    vault: Arc<dyn Vault>,
+    path: VaultPath,
+    /// [`Vault::key`] of `path`, computed once.
+    key: PathBuf,
+}
+
+impl PartialEq for RulesPath {
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path
+            && std::ptr::addr_eq(Arc::as_ptr(&self.vault), Arc::as_ptr(&other.vault))
+    }
+}
+
+impl Eq for RulesPath {}
 
 impl RulesPath {
-    /// The path, for the one caller that has to open the file.
+    fn new(vault: &Arc<dyn Vault>, path: VaultPath) -> Self {
+        Self {
+            key: vault.key(&path),
+            vault: Arc::clone(vault),
+            path,
+        }
+    }
+
+    /// The file's key ([`Vault::key`]): on the desktop its real, absolute path,
+    /// and for any other vault an identifier that must never be opened. It is
+    /// what the parsed journal records for the file, so this is what to compare
+    /// against `Journal::source_files`.
     #[must_use]
     pub fn as_path(&self) -> &Path {
-        &self.0
+        &self.key
+    }
+
+    /// The vault the file is in, for the one caller that has to open it.
+    #[must_use]
+    pub fn vault(&self) -> &Arc<dyn Vault> {
+        &self.vault
+    }
+
+    /// Where the file is in [`Self::vault`].
+    #[must_use]
+    pub fn vault_path(&self) -> &VaultPath {
+        &self.path
+    }
+
+    /// A real filesystem path for the file, when the vault has one — what
+    /// `hledger --rules-file` is handed.
+    #[must_use]
+    pub fn local_path(&self) -> Option<PathBuf> {
+        self.vault.local_path(&self.path)
+    }
+
+    /// The file's text under the scan's own size cap — see [`read_text`].
+    #[must_use]
+    pub fn read_text(&self) -> Option<String> {
+        read_text(&*self.vault, &self.path)
     }
 }
 
@@ -298,9 +349,10 @@ pub struct DiscoveredRules {
     pub warnings: Vec<Warning>,
     /// The absolute path, unforgeable and inaccessible outside this module.
     path: RulesPath,
-    /// `(st_dev, st_ino)` as of the scan, or `None` on a platform that has no
-    /// such identity. See [`DiscoveredRules::identity_unchanged`].
-    identity: Option<(u64, u64)>,
+    /// The file's identity (`(st_dev, st_ino)` on disk) as of the scan, or
+    /// `None` on a backend that has no such identity. See
+    /// [`DiscoveredRules::identity_unchanged`].
+    identity: Option<FileIdentity>,
     /// What [`Discovery::preview`] needs the rules file to have *said*. Captured
     /// during the scan's parse rather than re-read on demand, so a preview opens
     /// exactly one file — the data file — and can never disagree with the
@@ -368,10 +420,13 @@ impl From<parse::NewPathRefusal> for CreateRefusal {
 /// The result of one scan: what was found, and whether it is all of it.
 #[derive(Debug, Clone)]
 pub struct Discovery {
-    /// The canonical scan root. **Private and never leaves this module** — see
-    /// the module docs on path disclosure, and [`Discovery::root_label`] for the
-    /// one thing a GUI is given instead.
-    root: PathBuf,
+    /// The vault the scan walked; every later read and resolution goes through
+    /// it.
+    vault: Arc<dyn Vault>,
+    /// The scan root. **Private and never leaves this module** — see the module
+    /// docs on path disclosure, and [`Discovery::root_label`] for the one thing
+    /// a GUI is given instead.
+    root: VaultPath,
     /// The files found, sorted by [`DiscoveredRules::id`], so two scans of an
     /// unchanged tree produce byte-identical output.
     pub files: Vec<DiscoveredRules>,
@@ -496,7 +551,22 @@ pub enum PreviewUnavailable {
 /// neighbouring directory.
 #[must_use]
 pub fn discover(main_journal_file: &Path) -> Discovery {
-    let root = parse::include_root_for(&main_journal_file.to_string_lossy());
+    match LocalVault::for_journal(main_journal_file) {
+        Ok((vault, main)) => discover_in(Arc::new(vault), &main),
+        // A main file with no usable name: there is no directory to scan, so
+        // the scan fails closed on an empty vault (one warning, no files).
+        Err(_) => discover_in(
+            Arc::new(crate::vault::MemVault::with_root("")),
+            &VaultPath::new("missing/journal").unwrap_or_default(),
+        ),
+    }
+}
+
+/// [`discover`] through a vault: every `*.rules` file below `main`'s own
+/// directory in `vault`.
+#[must_use]
+pub fn discover_in(vault: Arc<dyn Vault>, main: &VaultPath) -> Discovery {
+    let root = main.parent().unwrap_or_default();
     let spec = ScanSpec {
         name_ok: is_rules_name,
         skip_dirs: SKIP_DIRS,
@@ -507,14 +577,15 @@ pub fn discover(main_journal_file: &Path) -> Discovery {
     };
     // The entry's own name is not wanted here — a rules summary is derived from
     // the id — so the shared walk's second argument is dropped.
-    let scanned = dirscan::scan(root, &spec, |id, _name, path, meta| {
-        describe(id, path, meta)
+    let scanned = dirscan::scan(&*vault, root, &spec, |id, _name, entry| {
+        describe(&vault, id, entry)
     });
     let mut files = scanned.files;
     // Sorted by id, so two scans of an unchanged tree produce byte-identical
     // output.
     files.sort_by(|a, b| a.id.cmp(&b.id));
     Discovery {
+        vault,
         root: scanned.root,
         files,
         truncated: scanned.truncated,
@@ -547,10 +618,15 @@ impl Discovery {
     /// or a relative `.`) gets a neutral word instead.
     #[must_use]
     pub fn root_label(&self) -> String {
-        self.root.file_name().map_or_else(
-            || "journal".to_string(),
-            |name| name.to_string_lossy().into_owned(),
-        )
+        self.root
+            .file_name()
+            .or_else(|| {
+                self.vault
+                    .root()
+                    .file_name()
+                    .and_then(std::ffi::OsStr::to_str)
+            })
+            .map_or_else(|| "journal".to_string(), str::to_string)
     }
 
     /// Where a **new** rules file called `id` would go.
@@ -586,9 +662,16 @@ impl Discovery {
     /// # Errors
     /// [`CreateRefusal`], one variant per guard.
     pub fn resolve_new(&self, id: &str) -> Result<RulesPath, CreateRefusal> {
-        parse::resolve_new_in(&self.root, id, MAX_RULES_DEPTH, SKIP_DIRS, is_rules_name)
-            .map(RulesPath)
-            .map_err(CreateRefusal::from)
+        parse::resolve_new_in(
+            &*self.vault,
+            &self.root,
+            id,
+            MAX_RULES_DEPTH,
+            SKIP_DIRS,
+            is_rules_name,
+        )
+        .map(|path| RulesPath::new(&self.vault, path))
+        .map_err(CreateRefusal::from)
     }
 
     /// Peek at the data file `id`'s rules describe, for column labels in the
@@ -622,7 +705,7 @@ impl Discovery {
                 refusal.label,
                 delimiter_for(hints.separator.as_ref(), None),
             ),
-            Ok(path) => read_preview(&path, hints),
+            Ok(path) => read_preview(&*self.vault, &path, hints),
         })
     }
 
@@ -636,20 +719,23 @@ impl Discovery {
     /// for whether `/etc/anything` is there. The symlink test then runs on the
     /// path **as constructed**, never on `confine`'s output: `confine`
     /// canonicalizes, and a canonical path has no symlinks left in it to refuse.
-    fn locate(&self, file: &DiscoveredRules) -> Result<PathBuf, Refusal> {
-        let Some(dir) = file.path.0.parent() else {
+    fn locate(&self, file: &DiscoveredRules) -> Result<VaultPath, Refusal> {
+        let Some(dir) = file.path.path.parent() else {
             // A rules file with no parent directory cannot be produced by a scan
             // (every id has at least one component below the root), so this is
             // unreachable rather than a case with a better answer.
             return Err(Refusal::bare(PreviewUnavailable::NoDataFile));
         };
         match &file.hints.source {
-            Some(source) => self.locate_source(dir, source),
+            Some(source) => self.locate_source(&dir, source),
             None => {
                 let Some(name) = sibling_data_name(&file.id) else {
                     return Err(Refusal::bare(PreviewUnavailable::NoDataFile));
                 };
-                self.admit(&dir.join(&name))
+                let Ok(sibling) = dir.child(&name) else {
+                    return Err(Refusal::named(PreviewUnavailable::NoDataFile, name));
+                };
+                self.admit(&sibling)
                     .map_err(|reason| Refusal::named(reason, name))
             }
         }
@@ -657,7 +743,7 @@ impl Discovery {
 
     /// Interpret a `source` directive far enough to name one file, refusing
     /// every shape that would reach outside the journal's own directory.
-    fn locate_source(&self, dir: &Path, source: &SourceSetting) -> Result<PathBuf, Refusal> {
+    fn locate_source(&self, dir: &VaultPath, source: &SourceSetting) -> Result<VaultPath, Refusal> {
         if source.has_command {
             return Err(Refusal::bare(PreviewUnavailable::SourceIsCommand));
         }
@@ -681,7 +767,7 @@ impl Discovery {
         let value = Path::new(raw);
         let (Some(name), Some(parent)) = (
             value.file_name().and_then(std::ffi::OsStr::to_str),
-            value.parent(),
+            value.parent().and_then(Path::to_str),
         ) else {
             // A value that ends in `/` or `..`, or whose final component is not
             // UTF-8: it names a directory or nothing, never a data file.
@@ -692,56 +778,58 @@ impl Discovery {
         // find the directory to look in, and a walk driven by a pattern out of a
         // file's contents is the thing this module exists not to do. Refused
         // outright — hledger allows it; we deliberately do not.
-        if parent.to_string_lossy().contains(GLOB_CHARS) {
+        if parent.contains(GLOB_CHARS) {
             return Err(Refusal::bare(PreviewUnavailable::SourceOutsideRoot));
         }
 
-        // `join` on an absolute value yields the value, so an absolute `source`
-        // is used as written and then refused by containment, not by shape.
+        // Placed in the vault relative to the rules file's own directory, the
+        // way `include` is: an absolute value, or one that climbs out, lands
+        // nowhere and is refused by containment, not by shape.
+        let outside = || Refusal::bare(PreviewUnavailable::SourceOutsideRoot);
         if name.contains(GLOB_CHARS) {
-            self.newest_glob_match(&dir.join(parent), name)
+            let directory = parse::place_written(&*self.vault, dir, parent).ok_or_else(outside)?;
+            self.newest_glob_match(&directory, name)
         } else {
-            self.admit(&dir.join(value))
+            let target = parse::place_written(&*self.vault, dir, raw).ok_or_else(outside)?;
+            self.admit(&target)
                 .map_err(|reason| Refusal::named(reason, name.to_string()))
         }
     }
 
     /// hledger reads the **newest** match of a `source` glob, so this does too.
     ///
-    /// Matched with one `read_dir` of one directory — no descent, and no glob
+    /// Matched with one listing of one directory — no descent, and no glob
     /// library — because the only patterns supported are `*` and `?` in the
     /// final component (see [`glob_matches`]). A candidate that fails a guard is
     /// skipped rather than refused, so the answer is the newest *eligible* file;
     /// the winner then goes through exactly the same [`Discovery::admit`] as a
     /// non-glob target.
-    fn newest_glob_match(&self, dir: &Path, pattern: &str) -> Result<PathBuf, Refusal> {
-        // Confine the DIRECTORY before listing it: a `read_dir` of somewhere
+    fn newest_glob_match(&self, dir: &VaultPath, pattern: &str) -> Result<VaultPath, Refusal> {
+        // Confine the DIRECTORY before listing it: a listing of somewhere
         // outside the root is already a disclosure, whatever is done with it.
-        let Some(dir) = parse::confine(dir, &self.root) else {
+        let Some(dir) = parse::confine(&*self.vault, &self.root, dir) else {
             return Err(Refusal::bare(PreviewUnavailable::SourceOutsideRoot));
         };
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+        let Ok(entries) = self.vault.list_dir(&dir, Some(MAX_GLOB_CANDIDATES)) else {
             return Err(Refusal::bare(PreviewUnavailable::NoDataFile));
         };
         let pattern: Vec<char> = pattern.chars().collect();
 
         let best = entries
-            .take(MAX_GLOB_CANDIDATES)
-            .filter_map(Result::ok)
+            .iter()
             .filter_map(|entry| {
-                let name = entry.file_name().into_string().ok()?;
+                let name = entry.name();
                 // A leading `.` is not matched by `*`, which is both hledger's
                 // glob default and this module's own policy on dot entries. It
                 // keeps a `.DS_Store` — very often the newest thing in a
                 // download directory — from winning on mtime.
-                if name.starts_with('.') || !glob_matches(&pattern, &name) {
+                if name.starts_with('.') || !glob_matches(&pattern, name) {
                     return None;
                 }
-                let meta = std::fs::symlink_metadata(entry.path()).ok()?;
-                if !meta.file_type().is_file() {
+                if entry.kind != EntryKind::File {
                     return None;
                 }
-                Some((meta.modified().ok()?, name))
+                Some((entry.modified_time()?, name.to_string()))
             })
             // Newest wins; the name breaks a tie, so two files written in the
             // same clock tick still resolve the same way on every run.
@@ -750,29 +838,27 @@ impl Discovery {
         let Some((_, name)) = best else {
             return Err(Refusal::bare(PreviewUnavailable::NoDataFile));
         };
-        self.admit(&dir.join(&name))
+        let Ok(winner) = dir.child(&name) else {
+            return Err(Refusal::bare(PreviewUnavailable::NoDataFile));
+        };
+        self.admit(&winner)
             .map_err(|reason| Refusal::named(reason, name))
     }
 
     /// The guards every candidate data file passes, in the order argued for in
     /// [`Discovery::locate`].
-    fn admit(&self, path: &Path) -> Result<PathBuf, PreviewUnavailable> {
-        let Some(canonical) = parse::confine(path, &self.root) else {
+    fn admit(&self, path: &VaultPath) -> Result<VaultPath, PreviewUnavailable> {
+        let Some(canonical) = parse::confine(&*self.vault, &self.root, path) else {
             return Err(PreviewUnavailable::SourceOutsideRoot);
         };
-        // `symlink_metadata`, and on the pre-canonical path: the point is to see
-        // the link rather than what it points at.
-        let meta = std::fs::symlink_metadata(path).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                PreviewUnavailable::NoDataFile
-            } else {
-                PreviewUnavailable::Unreadable
-            }
-        })?;
-        if !meta.file_type().is_file() {
-            return Err(PreviewUnavailable::NotRegularFile);
+        // A `stat` that never follows a link, and on the pre-canonical path: the
+        // point is to see the link rather than what it points at.
+        match self.vault.stat(path) {
+            Ok(Some(entry)) if entry.kind == EntryKind::File => Ok(canonical),
+            Ok(Some(_)) => Err(PreviewUnavailable::NotRegularFile),
+            Ok(None) => Err(PreviewUnavailable::NoDataFile),
+            Err(_) => Err(PreviewUnavailable::Unreadable),
         }
-        Ok(canonical)
     }
 }
 
@@ -847,15 +933,15 @@ impl DiscoveredRules {
     /// name that became a different regular file.
     #[must_use]
     pub fn identity_unchanged(&self) -> bool {
-        dirscan::still_the_same_file(&self.path.0, self.identity)
+        dirscan::still_the_same_file(&*self.path.vault, &self.path.path, self.identity)
     }
 
     /// The `(dev, ino)` the scan admitted, for a [`crate::pinned::Pin`]: the
     /// write then checks it through the descriptor it replaces, right up to the
     /// rename, rather than in a separate `stat` before it.
     #[must_use]
-    pub fn identity(&self) -> Option<crate::pinned::FileIdentity> {
-        self.identity.map(crate::pinned::FileIdentity::from_raw)
+    pub fn identity(&self) -> Option<FileIdentity> {
+        self.identity
     }
 }
 
@@ -865,15 +951,15 @@ impl DiscoveredRules {
 
 /// Read, fingerprint, parse and summarize one admitted file.
 ///
-/// `meta` is the scan's `symlink_metadata`, so `size_bytes` and the recorded
-/// identity describe the same `stat` that admitted the file.
-fn describe(id: String, path: PathBuf, meta: &std::fs::Metadata) -> DiscoveredRules {
+/// `entry` is the scan's listing of it, so `size_bytes` and the recorded
+/// identity describe the same listing that admitted the file.
+fn describe(vault: &Arc<dyn Vault>, id: String, entry: &Entry) -> DiscoveredRules {
     let mut warnings = Vec::new();
     let mut file = DiscoveredRules {
         label: label_for(&id),
-        size_bytes: meta.len(),
+        size_bytes: entry.size,
         // Ranking only. See the field.
-        modified: meta.modified().ok(),
+        modified: entry.modified_time(),
         revision: UNREAD_REVISION.to_string(),
         parsed: false,
         account1: None,
@@ -882,13 +968,13 @@ fn describe(id: String, path: PathBuf, meta: &std::fs::Metadata) -> DiscoveredRu
         editable_block_count: 0,
         opaque_item_count: 0,
         warnings: Vec::new(),
-        path: RulesPath(path),
-        identity: dirscan::file_identity(meta),
+        path: RulesPath::new(vault, entry.path.clone()),
+        identity: entry.identity,
         hints: DataHints::default(),
         id,
     };
 
-    match read_capped(&file.path.0) {
+    match read_capped(&**vault, &entry.path) {
         Err(ReadStop::TooLarge) => warnings.push(file_warning(format!(
             "{} is larger than {} KiB, so it is listed but not read",
             file.id,
@@ -925,7 +1011,7 @@ enum ReadStop {
     /// Past [`MAX_RULES_BYTES`], or it grew past it mid-read.
     TooLarge,
     /// Open or read failed, or the name stopped being a regular file between the
-    /// scan's `stat` and the open.
+    /// scan's listing and the open.
     Unreadable,
 }
 
@@ -936,35 +1022,25 @@ enum ReadStop {
 /// cap is a statement about the file *then*, and a file can grow — or be
 /// swapped for an enormous one — between the scan and a second read.
 #[must_use]
-pub fn read_text(path: &Path) -> Option<String> {
-    read_capped(path)
+pub fn read_text(vault: &dyn Vault, path: &VaultPath) -> Option<String> {
+    read_capped(vault, path)
         .ok()
         .and_then(|bytes| String::from_utf8(bytes).ok())
 }
 
 /// Read a file, refusing anything past [`MAX_RULES_BYTES`].
 ///
-/// The size is re-checked against the **open handle's** metadata rather than the
-/// scan's, so the decision to read cannot be made about one file and carried out
-/// on another. The `take` then bounds the read itself, because a file that grows
-/// between the two would otherwise be read in full.
-fn read_capped(path: &Path) -> Result<Vec<u8>, ReadStop> {
-    let file = std::fs::File::open(path).map_err(|_| ReadStop::Unreadable)?;
-    let meta = file.metadata().map_err(|_| ReadStop::Unreadable)?;
-    if !meta.file_type().is_file() {
-        return Err(ReadStop::Unreadable);
+/// The vault's capped read opens the final component without following a link,
+/// insists on a regular file through the open handle, and never reads more than
+/// one byte past the cap — so the decision to read cannot be made about one
+/// file and carried out on another, and a file that grows mid-read is refused
+/// rather than read in full.
+fn read_capped(vault: &dyn Vault, path: &VaultPath) -> Result<Vec<u8>, ReadStop> {
+    match vault.read_pinned(path, Some(MAX_RULES_BYTES)) {
+        Ok((bytes, _)) => Ok(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => Err(ReadStop::TooLarge),
+        Err(_) => Err(ReadStop::Unreadable),
     }
-    if meta.len() > MAX_RULES_BYTES {
-        return Err(ReadStop::TooLarge);
-    }
-    let mut bytes = Vec::new();
-    file.take(MAX_RULES_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| ReadStop::Unreadable)?;
-    if bytes.len() as u64 > MAX_RULES_BYTES {
-        return Err(ReadStop::TooLarge);
-    }
-    Ok(bytes)
 }
 
 /// Fill in the summary a list view renders without opening the file.
@@ -1048,14 +1124,13 @@ impl Preview {
 /// Called only on a path [`Discovery::admit`] already cleared, so this is the
 /// bounded read and nothing else: the containment, symlink and file-type
 /// arguments are all made before control gets here.
-fn read_preview(path: &Path, hints: &DataHints) -> Preview {
+fn read_preview(vault: &dyn Vault, path: &VaultPath, hints: &DataHints) -> Preview {
     let label = path
         .file_name()
-        .and_then(std::ffi::OsStr::to_str)
         .map(|name| sanitize_display(name, MAX_CELL_CHARS));
-    let separator = delimiter_for(hints.separator.as_ref(), Some(path));
+    let separator = delimiter_for(hints.separator.as_ref(), Some(Path::new(path.as_str())));
 
-    let (text, truncated) = match read_preview_bytes(path) {
+    let (text, truncated) = match read_preview_bytes(vault, path) {
         Ok(read) => read,
         Err(reason) => return Preview::unavailable(reason, label, separator),
     };
@@ -1118,7 +1193,7 @@ fn read_preview(path: &Path, hints: &DataHints) -> Preview {
 ///
 /// Two details are the whole function:
 ///
-/// - The cap is applied by [`Read::take`], so a 40 GB CSV is never in memory —
+/// - The cap is applied by the read itself, so a 40 GB CSV is never in memory —
 ///   reading and then truncating would be a cap on the *answer*, not on the work.
 /// - When the cap is hit, the trailing **partial line is dropped**, at the last
 ///   `\n` in the bytes. That is what stops a multi-byte character sliced in half
@@ -1126,23 +1201,21 @@ fn read_preview(path: &Path, hints: &DataHints) -> Preview {
 ///   [`PreviewUnavailable::NotUtf8`], and it is independently the right thing:
 ///   the record that line belongs to is truncated, and half a record shown
 ///   beside a column number is worse than no record.
-fn read_preview_bytes(path: &Path) -> Result<(String, bool), PreviewUnavailable> {
-    let file = std::fs::File::open(path).map_err(|_| PreviewUnavailable::Unreadable)?;
-    // Re-asked of the OPEN HANDLE, so the decision to read cannot be made about
-    // one file and carried out on another — the same discipline as
-    // [`read_capped`], and here it is also what refuses a name that became a
-    // FIFO between `admit` and this open.
-    let meta = file
-        .metadata()
-        .map_err(|_| PreviewUnavailable::Unreadable)?;
-    if !meta.file_type().is_file() {
-        return Err(PreviewUnavailable::NotRegularFile);
-    }
-
-    let mut bytes = Vec::new();
-    file.take(MAX_PREVIEW_BYTES)
-        .read_to_end(&mut bytes)
-        .map_err(|_| PreviewUnavailable::Unreadable)?;
+fn read_preview_bytes(
+    vault: &dyn Vault,
+    path: &VaultPath,
+) -> Result<(String, bool), PreviewUnavailable> {
+    // The vault opens the final component without following a link and insists
+    // on a regular file through the open handle, so the decision to read cannot
+    // be made about one file and carried out on another — and a name that
+    // became a FIFO between `admit` and this open is refused, not hung on.
+    let mut bytes = vault
+        .read_prefix(path, MAX_PREVIEW_BYTES)
+        .map_err(|error| match error {
+            error if error.is_not_regular_file() => PreviewUnavailable::NotRegularFile,
+            VaultError::NotFound { .. } => PreviewUnavailable::NoDataFile,
+            _ => PreviewUnavailable::Unreadable,
+        })?;
 
     let truncated = u64::try_from(bytes.len()).unwrap_or(u64::MAX) >= MAX_PREVIEW_BYTES;
     if truncated {
@@ -1358,13 +1431,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ledgeline-read-text-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("big.csv.rules");
+        let vault = LocalVault::new(&dir);
+        let rules = VaultPath::new("big.csv.rules").unwrap();
         let cap = usize::try_from(MAX_RULES_BYTES).unwrap();
         std::fs::write(&path, "x".repeat(cap)).unwrap();
-        assert_eq!(read_text(&path).map(|text| text.len()), Some(cap));
+        assert_eq!(read_text(&vault, &rules).map(|text| text.len()), Some(cap));
         std::fs::write(&path, "x".repeat(cap + 1)).unwrap();
-        assert_eq!(read_text(&path), None);
+        assert_eq!(read_text(&vault, &rules), None);
         std::fs::write(&path, [0xff]).unwrap();
-        assert_eq!(read_text(&path), None, "not UTF-8");
+        assert_eq!(read_text(&vault, &rules), None, "not UTF-8");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

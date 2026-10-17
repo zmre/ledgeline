@@ -72,7 +72,7 @@
 //! or refuses; it never writes a mapping that does not match. See that function
 //! for the two deliberate widenings and the four refusals.
 
-use std::io::Read;
+use crate::vault::{EntryKind, LocalVault, Vault, VaultPath};
 use std::path::{Path, PathBuf};
 
 /// The file name hledger looks for in a directory.
@@ -296,64 +296,86 @@ pub fn forwarded(mut arguments: Vec<String>) -> (Vec<String>, usize) {
     (arguments, unforwarded)
 }
 
-/// The nearest `hledger.conf` at or above `directory`, if there is one.
+/// The nearest `hledger.conf` at or above `directory` **within the vault**, if
+/// there is one.
 ///
-/// # Two deliberate differences from what hledger itself does
+/// # Three deliberate differences from what hledger itself does
 ///
 /// 1. **The walk starts at the JOURNAL's directory**, not at this process's
 ///    working directory. hledger searches from wherever it was launched, and
 ///    where a user launches hledger for these books is beside these books. A
 ///    server process's working directory is an accident of how it was started and
 ///    describes nothing about the user's ledger.
-/// 2. **`$HOME/.hledger.conf` and the XDG config dir are NOT consulted**, though
-///    hledger falls back to both. Ledgeline reads inside the tree the user pointed
-///    it at and nowhere else — the same posture the `include` guard takes — and a
-///    desktop app quietly picking up a home-directory dotfile to decide what
-///    account names to write into a ledger is not a thing to do without being
-///    asked. The cost is stated where it is felt: the divergence notice says which
-///    directories were searched, so a user whose config lives in `$HOME` can see
-///    why it was not counted.
+/// 2. **The walk stops at the vault root.** Ledgeline reads inside the tree the
+///    user pointed it at and nowhere else — the same posture the `include` guard
+///    takes — and on a platform where the journal is a sandboxed folder there is
+///    no "above" to read. On the desktop the vault root is the journal's own
+///    directory, so a config file in a parent directory is not counted.
+/// 3. **`$HOME/.hledger.conf` and the XDG config dir are NOT consulted**, though
+///    hledger falls back to both, for the same reason.
 ///
 /// Only a regular file counts. A `hledger.conf` that is a directory or a FIFO is
-/// skipped rather than opened, because opening the second one never returns.
+/// skipped rather than opened, because opening the second one never returns. A
+/// symlink counts only when it resolves to a regular file inside the vault, and
+/// then its resolved path is what is returned (and later read).
 #[must_use]
-pub fn locate(directory: &Path) -> Option<PathBuf> {
-    directory
-        .ancestors()
-        .take(MAX_ANCESTORS)
-        .map(|dir| dir.join(CONF_NAME))
-        .find(|candidate| {
-            std::fs::metadata(candidate)
-                .is_ok_and(|meta| meta.is_file() && meta.len() <= MAX_CONF_BYTES)
-        })
+pub fn locate_in(vault: &dyn Vault, directory: &VaultPath) -> Option<VaultPath> {
+    directory.ancestors().take(MAX_ANCESTORS).find_map(|dir| {
+        let candidate = dir.child(CONF_NAME).ok()?;
+        let entry = vault.stat(&candidate).ok()??;
+        let resolved = match entry.kind {
+            EntryKind::File => candidate,
+            EntryKind::Symlink => {
+                let target = vault.canonicalize(&candidate).ok()?;
+                vault.is_file(&target).then_some(target)?
+            }
+            EntryKind::Dir | EntryKind::Other => return None,
+        };
+        let size = vault.stat(&resolved).ok()??.size;
+        (size <= MAX_CONF_BYTES).then_some(resolved)
+    })
 }
 
-/// Read a config file located by [`locate`].
+/// [`locate_in`] for a directory named by path: the vault is `directory`
+/// itself, so only `directory/hledger.conf` is considered.
+#[must_use]
+pub fn locate(directory: &Path) -> Option<PathBuf> {
+    let vault = LocalVault::new(directory);
+    locate_in(&vault, &VaultPath::root()).map(|path| vault.native(&path))
+}
+
+/// Read a config file located by [`locate_in`].
 ///
 /// Lossy rather than strict UTF-8: a config file is read to find `--alias`
 /// values, and refusing the whole file — and with it the account mapping an
 /// import depends on — over one stray byte in a comment would be the wrong trade.
 ///
-/// Bounded by [`MAX_CONF_BYTES`] here, at the read, and not only in [`locate`]:
-/// the write path finds its file by name rather than through `locate`, and a
-/// file that grows between a `stat` and the read would get past a size check
-/// made beforehand anyway.
+/// Bounded by [`MAX_CONF_BYTES`] here, at the read, and not only in
+/// [`locate_in`]: the write path finds its file by name rather than through
+/// `locate_in`, and a file that grows between a `stat` and the read would get
+/// past a size check made beforehand anyway.
 ///
 /// # Errors
-/// Whatever opening or reading the file reports, or [`std::io::ErrorKind::InvalidData`]
-/// when it is larger than [`MAX_CONF_BYTES`].
-pub fn read(path: &Path) -> std::io::Result<String> {
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)?
-        .take(MAX_CONF_BYTES + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_CONF_BYTES {
-        return Err(std::io::Error::new(
+/// Whatever the vault reports, or [`std::io::ErrorKind::InvalidData`] when the
+/// file is larger than [`MAX_CONF_BYTES`].
+pub fn read_in(vault: &dyn Vault, path: &VaultPath) -> std::io::Result<String> {
+    match vault.read_pinned(path, Some(MAX_CONF_BYTES)) {
+        Ok((bytes, _)) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+        Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "the config file is larger than Ledgeline reads",
-        ));
+        )),
+        Err(error) => Err(std::io::Error::from(error)),
     }
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// [`read_in`] for a file named by path.
+///
+/// # Errors
+/// As [`read_in`].
+pub fn read(path: &Path) -> std::io::Result<String> {
+    let (vault, name) = LocalVault::for_journal(path).map_err(std::io::Error::from)?;
+    read_in(&vault, &name)
 }
 
 // ---------------------------------------------------------------------------

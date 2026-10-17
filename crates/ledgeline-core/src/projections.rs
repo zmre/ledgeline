@@ -106,8 +106,8 @@ mod discovery;
 pub mod serialize;
 
 pub use discovery::{
-    CreateRefusal, DiscoveredProjection, Discovery, ProjectionPath, discover, is_journal_name,
-    label_for, slug_filename,
+    CreateRefusal, DiscoveredProjection, Discovery, ProjectionPath, discover, discover_in,
+    is_journal_name, label_for, slug_filename,
 };
 
 use std::collections::{BTreeMap, BTreeSet};

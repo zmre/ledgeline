@@ -1354,7 +1354,9 @@ fn resolve_rules(discovery: &Discovery, id: &str) -> Result<PathBuf, AppError> {
 /// with hledger's message rather than a guess of ours. So does one past the
 /// discovery scan's size cap, which [`rules::read_text`] re-applies here.
 fn rules_skip(path: &Path) -> u32 {
-    rules::read_text(path)
+    ledgeline_core::vault::LocalVault::for_journal(path)
+        .ok()
+        .and_then(|(vault, name)| rules::read_text(&vault, &name))
         .and_then(|text| RulesDoc::parse(&text).settings().skip)
         .map_or(0, |setting| setting.value)
 }
@@ -1490,7 +1492,11 @@ fn resolve_conf(root: &Path) -> ConfTarget {
     // Guard 2. The parent is the root itself, so this is cheap — and it is here
     // because "cheap and obviously true today" is how a containment check stops
     // being performed at all.
-    let Some(directory) = ledgeline_core::parse::confine(root, root) else {
+    let vault = ledgeline_core::vault::LocalVault::new(root);
+    let here = ledgeline_core::vault::VaultPath::root();
+    let Some(directory) =
+        ledgeline_core::parse::confine(&vault, &here, &here).map(|dir| vault.native(&dir))
+    else {
         return absent(false);
     };
     let path = directory.join(hledger_conf::CONF_NAME);
@@ -2602,7 +2608,7 @@ fn rank_candidates(
         .enumerate()
         .filter(|(_, found)| found.parsed)
         .filter_map(|(at, found)| {
-            let text = rules::read_text(found.path().as_path())?;
+            let text = found.path().read_text()?;
             let doc = RulesDoc::parse(&text);
             let skip = doc.settings().skip.map_or(0, |setting| setting.value);
             let pass = matching::prefilter(&doc, data)?;
