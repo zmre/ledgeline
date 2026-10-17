@@ -1298,10 +1298,13 @@ fn create_scenario(
     // returns, so a create that leant on it would have a window in which
     // another process could put a file there and have it silently truncated.
     // Deliberately **not** `write_atomic`, whose temp-file-and-rename would
-    // happily replace an existing file. Durable (`fsync`ed) before it returns,
-    // and owner-only (`0600`).
+    // happily replace an existing file. Durable (`fsync`ed) before it returns.
+    // The mode is the process umask's (`create_new_shared`), unlike a save,
+    // which carries an existing file's mode forward: there is no previous mode
+    // to carry, and a stricter one than the user's own editor would give them
+    // is a surprise rather than a protection.
     path.vault()
-        .create_new(path.vault_path(), text.as_bytes())
+        .create_new_shared(path.vault_path(), text.as_bytes())
         .map(|_| ())
         .map_err(path_free)
         .map_err(|error| {

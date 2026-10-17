@@ -258,7 +258,33 @@ pub fn create_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// # Errors
 /// As [`create_new`].
 pub fn create_new_pinned(path: &Path, bytes: &[u8]) -> std::io::Result<Pin> {
-    let identity = imp::create_new(path, bytes)?;
+    create_with(path, bytes, CreateMode::Private)
+}
+
+/// [`create_new_pinned`] with the mode an ordinary file gets — `0666` less the
+/// process umask — instead of owner-only. For new files a user authors through
+/// Ledgeline (a rules file, a projection) that sit beside files their own
+/// editor created: a stricter mode than that editor would give them is a
+/// surprise rather than a protection. Same `O_CREAT | O_EXCL | O_NOFOLLOW`
+/// refusal; only the mode differs.
+///
+/// # Errors
+/// As [`create_new`].
+pub fn create_new_shared_pinned(path: &Path, bytes: &[u8]) -> std::io::Result<Pin> {
+    create_with(path, bytes, CreateMode::Shared)
+}
+
+/// The mode a created file gets.
+#[derive(Debug, Clone, Copy)]
+enum CreateMode {
+    /// [`NEW_FILE_MODE`]: owner-only, umask notwithstanding.
+    Private,
+    /// `0666`, narrowed by the process umask as any `open(O_CREAT)` is.
+    Shared,
+}
+
+fn create_with(path: &Path, bytes: &[u8], mode: CreateMode) -> std::io::Result<Pin> {
+    let identity = imp::create_new(path, bytes, mode)?;
     Ok(Pin {
         identity,
         fingerprint: Some(Fingerprint::of_bytes(bytes)),
@@ -311,8 +337,8 @@ fn fingerprint_of(file: &mut std::fs::File) -> std::io::Result<Fingerprint> {
 #[cfg(unix)]
 mod imp {
     use super::{
-        FileIdentity, NEW_FILE_MODE, Pin, TEMP_NAME_ATTEMPTS, WriteError, fingerprint_of, split,
-        temp_name,
+        CreateMode, FileIdentity, NEW_FILE_MODE, Pin, TEMP_NAME_ATTEMPTS, WriteError,
+        fingerprint_of, split, temp_name,
     };
     use crate::edit::Fingerprint;
     use rustix::fs::{AtFlags, Mode, OFlags};
@@ -372,14 +398,24 @@ mod imp {
         open_target(&open_dir(dir)?, name)
     }
 
-    pub(super) fn create_new(path: &Path, bytes: &[u8]) -> std::io::Result<Option<FileIdentity>> {
+    pub(super) fn create_new(
+        path: &Path,
+        bytes: &[u8],
+        mode: CreateMode,
+    ) -> std::io::Result<Option<FileIdentity>> {
         let (dir, name) = split(path)?;
         let dir = open_dir(dir)?;
+        let mode = match mode {
+            CreateMode::Private => new_file_mode(),
+            // The kernel applies the umask to an `O_CREAT` mode, exactly as
+            // `std::fs::OpenOptions` (whose default is `0o666`) relies on.
+            CreateMode::Shared => Mode::from_bits_truncate(0o666),
+        };
         let mut file = File::from(rustix::fs::openat(
             &dir,
             name,
             OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            new_file_mode(),
+            mode,
         )?);
         let written = file.write_all(bytes).and_then(|()| file.sync_all());
         if let Err(error) = written {
@@ -543,7 +579,8 @@ mod imp {
 #[cfg(not(unix))]
 mod imp {
     use super::{
-        FileIdentity, Pin, TEMP_NAME_ATTEMPTS, WriteError, fingerprint_of, split, temp_name,
+        CreateMode, FileIdentity, Pin, TEMP_NAME_ATTEMPTS, WriteError, fingerprint_of, split,
+        temp_name,
     };
     use crate::edit::Fingerprint;
     use std::fs::{File, Metadata};
@@ -562,7 +599,11 @@ mod imp {
         }
     }
 
-    pub(super) fn create_new(path: &Path, bytes: &[u8]) -> std::io::Result<Option<FileIdentity>> {
+    pub(super) fn create_new(
+        path: &Path,
+        bytes: &[u8],
+        _mode: CreateMode,
+    ) -> std::io::Result<Option<FileIdentity>> {
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)

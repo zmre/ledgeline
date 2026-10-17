@@ -184,6 +184,12 @@ impl Vault for LocalVault {
         Ok(Self::revision(&created, bytes))
     }
 
+    fn create_new_shared(&self, path: &VaultPath, bytes: &[u8]) -> Result<Revision, VaultError> {
+        let created = pinned::create_new_shared_pinned(&self.native(path), bytes)
+            .map_err(|e| VaultError::from_io(path, e))?;
+        Ok(Self::revision(&created, bytes))
+    }
+
     fn create_dir_all(&self, path: &VaultPath) -> Result<(), VaultError> {
         fs::create_dir_all(self.native(path)).map_err(|e| VaultError::from_io(path, e))
     }
@@ -362,6 +368,30 @@ mod tests {
         vault.write_atomic(&vp("deep/er/f"), b"f").unwrap();
         vault.remove_file(&vp("deep/er/f")).unwrap();
         assert_eq!(vault.stat(&vp("deep/er/f")).unwrap(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_new_is_owner_only_and_create_new_shared_follows_the_umask() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, vault) = fixture("modes");
+        let mode = |name: &str| {
+            fs::metadata(dir.path().join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        vault.create_new(&vp("private.rules"), b"x").unwrap();
+        assert_eq!(mode("private.rules"), 0o600);
+        vault.create_new_shared(&vp("shared.rules"), b"x").unwrap();
+        // Whatever the umask is, the same as any ordinary new file gets.
+        fs::write(dir.path().join("ordinary"), b"x").unwrap();
+        assert_eq!(mode("shared.rules"), mode("ordinary"));
+        let again = vault
+            .create_new_shared(&vp("shared.rules"), b"y")
+            .unwrap_err();
+        assert_eq!(again.kind(), io::ErrorKind::AlreadyExists);
     }
 
     #[test]

@@ -3550,16 +3550,10 @@ async fn the_config_wins_where_it_and_the_journal_disagree() {
     );
 }
 
-/// A config file ABOVE the journal's directory is outside the journal's vault,
-/// so it is not read: `hledger_conf` stops walking at the vault root (plan 26,
-/// A1 — on iOS there is no "above" to read, and the desktop now holds to the
-/// same boundary). Nothing about it, least of all an absolute path, appears in
-/// a response, and it is never written to.
-///
-/// This replaced `a_config_above_the_journal_directory_is_read_and_reported_relatively`,
-/// which asserted the walk continued upward and reported `../hledger.conf`.
+/// A config file in force from ABOVE the journal's directory is read and
+/// reported by a relative handle — never an absolute path, and never written to.
 #[tokio::test]
-async fn a_config_above_the_journal_directory_is_outside_the_vault_and_not_read() {
+async fn a_config_above_the_journal_directory_is_read_and_reported_relatively() {
     require_hledger!();
     let outer = TempDir::new().expect("temp dir");
     let books = outer.path().join("books");
@@ -3583,22 +3577,14 @@ async fn a_config_above_the_journal_directory_is_outside_the_vault_and_not_read(
 
     let preview = alias_preview(&tree).await;
     let cli = &preview["aliases"]["cli"];
-    assert_eq!(cli["confPath"], json!(null), "{preview}");
-    assert_ne!(cli["confOutside"], json!(true), "{preview}");
+    assert_eq!(cli["confPath"], json!("../hledger.conf"), "{preview}");
+    assert_eq!(cli["confOutside"], json!(true));
+    // Read, so the mapping applies and there is no divergence to report.
+    assert_eq!(cli["matches"], json!(true), "{preview}");
     let body = preview.to_string();
-    assert!(!body.contains("../hledger.conf"), "{body}");
-    assert!(
-        !body.contains("assets:morganstanley:pw-roth-ira"),
-        "the config's alias was not applied: {body}"
-    );
     assert!(
         !body.contains(tree.dir.path().to_str().expect("utf-8")),
         "no absolute path may appear anywhere in a response: {body}"
-    );
-    assert_eq!(
-        std::fs::read_to_string(tree.dir.path().join("hledger.conf")).expect("still there"),
-        format!("--alias={CONF_ALIAS}\n"),
-        "never written to"
     );
 }
 

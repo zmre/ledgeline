@@ -89,8 +89,8 @@ pub const IMPORT_COMMAND: &str = "import";
 /// the same spirit as the rules scan's own budgets.
 pub const MAX_CONF_BYTES: u64 = 256 * 1024;
 
-/// How many directories above the starting one [`locate_in`] will look — never
-/// past the vault root, whichever comes first.
+/// How many directories, starting with the journal's own, [`locate_conf`] (and
+/// [`locate_in`], which never passes the vault root) will look at.
 ///
 /// Deep enough for any real layout, finite so a pathological symlinked tree
 /// cannot make the walk unbounded.
@@ -307,11 +307,10 @@ pub fn forwarded(mut arguments: Vec<String>) -> (Vec<String>, usize) {
 ///    where a user launches hledger for these books is beside these books. A
 ///    server process's working directory is an accident of how it was started and
 ///    describes nothing about the user's ledger.
-/// 2. **The walk stops at the vault root.** Ledgeline reads inside the tree the
-///    user pointed it at and nowhere else — the same posture the `include` guard
-///    takes — and on a platform where the journal is a sandboxed folder there is
-///    no "above" to read. On the desktop the vault root is the journal's own
-///    directory, so a config file in a parent directory is not counted.
+/// 2. **This walk stops at the vault root.** On a platform where the journal is
+///    a sandboxed folder there is no "above" to read. [`locate_conf`] continues
+///    above the root on a vault with a real directory behind it (the desktop),
+///    which is where a terminal `hledger` would also find one.
 /// 3. **`$HOME/.hledger.conf` and the XDG config dir are NOT consulted**, though
 ///    hledger falls back to both, for the same reason.
 ///
@@ -337,12 +336,16 @@ pub fn locate_in(vault: &dyn Vault, directory: &VaultPath) -> Option<VaultPath> 
     })
 }
 
-/// [`locate_in`] for a directory named by path: the vault is `directory`
-/// itself, so only `directory/hledger.conf` is considered.
+/// The nearest `hledger.conf` at or above the real directory `directory`: the
+/// path form of [`locate_conf`] over a vault rooted at `directory`, so the walk
+/// continues above it exactly as it always did.
 #[must_use]
 pub fn locate(directory: &Path) -> Option<PathBuf> {
     let vault = LocalVault::new(directory);
-    locate_in(&vault, &VaultPath::root()).map(|path| vault.native(&path))
+    locate_conf(&vault, &VaultPath::root()).map(|found| match found {
+        ConfFile::InVault(path) => vault.native(&path),
+        ConfFile::AboveVault { path, .. } => path,
+    })
 }
 
 /// Read a config file located by [`locate_in`].
@@ -370,13 +373,68 @@ pub fn read_in(vault: &dyn Vault, path: &VaultPath) -> std::io::Result<String> {
     }
 }
 
-/// [`read_in`] for a file named by path.
+/// Read a config file named by a real path — one [`locate_conf`] found ABOVE a
+/// local vault's root. Plain filesystem I/O, exactly as before the vault seam:
+/// such a file is outside the vault by definition. Same lossy decode and the
+/// same [`MAX_CONF_BYTES`] bound at the read as [`read_in`].
 ///
 /// # Errors
-/// As [`read_in`].
+/// Whatever opening or reading the file reports, or
+/// [`std::io::ErrorKind::InvalidData`] when it is larger than [`MAX_CONF_BYTES`].
 pub fn read(path: &Path) -> std::io::Result<String> {
-    let (vault, name) = LocalVault::for_journal(path).map_err(std::io::Error::from)?;
-    read_in(&vault, &name)
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(MAX_CONF_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_CONF_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "the config file is larger than Ledgeline reads",
+        ));
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Where [`locate_conf`] found the config file in force.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfFile {
+    /// Inside the vault: read it with [`read_in`].
+    InVault(VaultPath),
+    /// Above the vault root, on a vault with a real directory behind it: read it
+    /// with [`read`]. `levels` is how many directories above the starting
+    /// directory it sits — what a relative `../hledger.conf` handle needs.
+    AboveVault { path: PathBuf, levels: usize },
+}
+
+/// The config file in force for `directory`, the way a terminal `hledger` run
+/// beside the journal finds it: [`locate_in`] inside the vault, then — only
+/// when the vault has a real directory behind it ([`Vault::local_path`] of its
+/// root, i.e. the desktop) — the real directories ABOVE the vault root, nearest
+/// first, by plain filesystem `metadata` as before the vault seam. A vault with
+/// no local path (in-memory, a sandboxed iOS folder) has no "above" and stops
+/// at its root.
+///
+/// Above the root only a regular file of at most [`MAX_CONF_BYTES`] counts, and
+/// the whole walk is bounded by [`MAX_ANCESTORS`].
+#[must_use]
+pub fn locate_conf(vault: &dyn Vault, directory: &VaultPath) -> Option<ConfFile> {
+    if let Some(found) = locate_in(vault, directory) {
+        return Some(ConfFile::InVault(found));
+    }
+    let native_root = vault.local_path(&VaultPath::root())?;
+    let depth = directory.segments().count();
+    native_root
+        .ancestors()
+        .skip(1)
+        .take(MAX_ANCESTORS.saturating_sub(depth + 1))
+        .enumerate()
+        .map(|(above, dir)| (depth + above + 1, dir.join(CONF_NAME)))
+        .find(|(_, candidate)| {
+            std::fs::metadata(candidate)
+                .is_ok_and(|meta| meta.is_file() && meta.len() <= MAX_CONF_BYTES)
+        })
+        .map(|(levels, path)| ConfFile::AboveVault { path, levels })
 }
 
 // ---------------------------------------------------------------------------
@@ -719,6 +777,58 @@ mod tests {
         let (forwarded, unforwarded) = forwarded(all);
         assert_eq!(forwarded.len(), MAX_CONF_ALIASES);
         assert_eq!(unforwarded, 1);
+    }
+
+    /// On the desktop the search continues ABOVE the vault root, as a terminal
+    /// `hledger` would, and reports how far up the file sits.
+    #[test]
+    fn a_local_vault_finds_a_config_above_its_root() {
+        let outer = std::env::temp_dir().join(format!(
+            "ledgeline-conf-above-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        let books = outer.join("books");
+        std::fs::create_dir_all(&books).unwrap();
+        std::fs::write(outer.join(CONF_NAME), "--alias=a=b\n").unwrap();
+        let vault = LocalVault::new(&books);
+        match locate_conf(&vault, &VaultPath::root()) {
+            Some(ConfFile::AboveVault { path, levels }) => {
+                assert_eq!(levels, 1);
+                assert_eq!(read(&path).unwrap(), "--alias=a=b\n");
+            }
+            other => panic!("expected the parent's config, got {other:?}"),
+        }
+        assert_eq!(
+            locate_in(&vault, &VaultPath::root()),
+            None,
+            "not in the vault"
+        );
+        // One beside the journal wins over the one above.
+        std::fs::write(books.join(CONF_NAME), "").unwrap();
+        assert_eq!(
+            locate_conf(&vault, &VaultPath::root()),
+            Some(ConfFile::InVault(VaultPath::new(CONF_NAME).unwrap()))
+        );
+        std::fs::remove_dir_all(&outer).unwrap();
+    }
+
+    /// A vault with no local path (in-memory here; a sandboxed iOS folder later)
+    /// has no "above": the search stops at its root.
+    #[test]
+    fn a_vault_without_a_local_path_stops_at_its_root() {
+        let vault = crate::vault::MemVault::new()
+            .with_file("hledger.conf", "--alias=x=y\n")
+            .with_file("books/main.journal", "");
+        let books = VaultPath::new("books").unwrap();
+        assert_eq!(
+            locate_conf(&vault, &books),
+            Some(ConfFile::InVault(VaultPath::new(CONF_NAME).unwrap()))
+        );
+        let inner = crate::vault::MemVault::new().with_file("books/main.journal", "");
+        assert_eq!(locate_conf(&inner, &books), None);
     }
 
     #[test]

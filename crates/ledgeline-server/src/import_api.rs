@@ -1405,23 +1405,35 @@ struct ConfInForce {
 /// Find and read the config file in force, if any. Never an error: a config file
 /// that cannot be read is a config file we do not have.
 ///
-/// The search stops at the vault root ([`hledger_conf::locate_in`]), which on
-/// the desktop is the journal's own directory, so the file in force is always
-/// `hledger.conf` beside the main journal and is never outside it.
+/// The search ([`hledger_conf::locate_conf`]) looks inside the vault, then —
+/// on the desktop, where the vault has a real directory — upward from the
+/// journal's directory as a terminal `hledger` would. A vault with no local
+/// path stops at its root.
 fn conf_in_force(location: &JournalLocation) -> Option<ConfInForce> {
     let vault = location.vault();
     let root = location.root_dir();
-    let path = hledger_conf::locate_in(&**vault, &root)?;
-    let text = hledger_conf::read_in(&**vault, &path).ok()?;
-    let directory = path.parent()?;
-    let outside = !directory.starts_with(&root);
+    // Inside the vault first; above its root only on a vault with a real
+    // directory behind it (the desktop), read there with plain fs as before.
+    let (text, levels) = match hledger_conf::locate_conf(&**vault, &root)? {
+        hledger_conf::ConfFile::InVault(path) => {
+            let text = hledger_conf::read_in(&**vault, &path).ok()?;
+            let levels = root
+                .segments()
+                .count()
+                .saturating_sub(path.parent()?.segments().count());
+            (text, levels)
+        }
+        hledger_conf::ConfFile::AboveVault { path, levels } => {
+            (hledger_conf::read(&path).ok()?, levels)
+        }
+    };
     let (aliases, unforwarded) = hledger_conf::forwarded(hledger_conf::alias_arguments(
         &text,
         hledger_conf::IMPORT_COMMAND,
     ));
     Some(ConfInForce {
-        id: conf_id(&root, &directory),
-        outside,
+        id: conf_id(levels),
+        outside: levels > 0,
         aliases,
         unforwarded,
         hijacked_by: hledger_conf::hijacks_command(&text),
@@ -1430,16 +1442,11 @@ fn conf_in_force(location: &JournalLocation) -> Option<ConfInForce> {
 
 /// A relative handle for a config file's location, from the journal's directory.
 ///
-/// Security layer 5: the client is told `hledger.conf`, never
-/// `/Users/someone/hledger.conf`. The walk stops at the vault root, so in
-/// practice the file sits in the journal's directory (or, for a vault whose
-/// root is above it, `../` per level up to that root) — and a relative handle
-/// discloses nothing a relative rules id does not.
-fn conf_id(root: &VaultPath, directory: &VaultPath) -> String {
-    let levels = root
-        .segments()
-        .count()
-        .saturating_sub(directory.segments().count());
+/// Security layer 5: the client is told `../hledger.conf`, never
+/// `/Users/someone/hledger.conf`. The number of `../` levels is real
+/// information — it is how the user finds the file — and it discloses nothing
+/// a relative rules id does not.
+fn conf_id(levels: usize) -> String {
     format!("{}{}", "../".repeat(levels), hledger_conf::CONF_NAME)
 }
 

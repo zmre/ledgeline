@@ -369,6 +369,15 @@ pub trait Vault: Send + Sync + fmt::Debug {
     /// refusal is decided at the create, not by a check made before it.
     fn create_new(&self, path: &VaultPath, bytes: &[u8]) -> Result<Revision, VaultError>;
 
+    /// [`Vault::create_new`] for a file the user authors through Ledgeline (a
+    /// rules file, a projection) rather than one the app owns: same exclusive
+    /// create, but with the permissions an ordinary new file gets on this
+    /// backend (on disk, `0666` less the umask) instead of owner-only. The
+    /// default is [`Vault::create_new`], for backends with no permission bits.
+    fn create_new_shared(&self, path: &VaultPath, bytes: &[u8]) -> Result<Revision, VaultError> {
+        self.create_new(path, bytes)
+    }
+
     /// Creates `path` and any missing ancestors as directories.
     fn create_dir_all(&self, path: &VaultPath) -> Result<(), VaultError>;
 

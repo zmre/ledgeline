@@ -1667,11 +1667,13 @@ fn create_document(
     // Exclusive (`O_CREAT | O_EXCL | O_NOFOLLOW` under a `LocalVault`), and
     // deliberately not `write_atomic`, whose temp-file-and-rename would happily
     // replace an existing file — the property that makes it right for a save is
-    // exactly what makes it wrong here. The new file is owner-only (`0600`), as
-    // every file Ledgeline creates beside the books is, and durable before this
-    // returns.
+    // exactly what makes it wrong here. Durable before this returns. The mode is
+    // the process umask's (`create_new_shared`), unlike a save, which carries
+    // an existing file's mode forward: there is no previous mode to carry, and
+    // a stricter one than the user's own editor would give them is a surprise
+    // rather than a protection.
     path.vault()
-        .create_new(path.vault_path(), new_text.as_bytes())
+        .create_new_shared(path.vault_path(), new_text.as_bytes())
         .map(|_| ())
         .map_err(path_free)
         .map_err(|error| {
