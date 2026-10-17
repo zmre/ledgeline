@@ -156,6 +156,21 @@ pub fn read_pinned(path: &Path) -> std::io::Result<(Vec<u8>, Pin)> {
 /// # Errors
 /// As [`read_pinned`], plus [`std::io::ErrorKind::FileTooLarge`] past `cap`.
 pub fn read_pinned_capped(path: &Path, cap: u64) -> std::io::Result<(Vec<u8>, Pin)> {
+    let (bytes, identity) = read_capped(path, cap)?;
+    let pin = Pin {
+        identity,
+        fingerprint: Some(Fingerprint::of_bytes(&bytes)),
+    };
+    Ok((bytes, pin))
+}
+
+/// [`read_pinned_capped`] without the fingerprint: the same refusals
+/// (`O_NOFOLLOW` at the final component, regular files only, `O_NONBLOCK`) and
+/// the same cap, for a reader that only wants the bytes and the identity.
+///
+/// # Errors
+/// As [`read_pinned_capped`].
+pub fn read_capped(path: &Path, cap: u64) -> std::io::Result<(Vec<u8>, Option<FileIdentity>)> {
     let (file, meta) = imp::open_existing(path)?.ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "the file does not exist")
     })?;
@@ -167,11 +182,21 @@ pub fn read_pinned_capped(path: &Path, cap: u64) -> std::io::Result<(Vec<u8>, Pi
             "the file is larger than this read allows",
         ));
     }
-    let pin = Pin {
-        identity: FileIdentity::of(&meta),
-        fingerprint: Some(Fingerprint::of_bytes(&bytes)),
-    };
-    Ok((bytes, pin))
+    Ok((bytes, FileIdentity::of(&meta)))
+}
+
+/// At most the first `max_len` bytes of `path`, opened as [`read_pinned`] opens
+/// it (never through a symlink at its final component, regular files only).
+///
+/// # Errors
+/// As [`read_pinned`].
+pub fn read_prefix(path: &Path, max_len: u64) -> std::io::Result<Vec<u8>> {
+    let (file, _) = imp::open_existing(path)?.ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "the file does not exist")
+    })?;
+    let mut bytes = Vec::new();
+    file.take(max_len).read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 /// [`read_pinned`], decoded as UTF-8. Non-UTF-8 content is
@@ -223,7 +248,21 @@ pub fn replace(path: &Path, bytes: &[u8], expected: &Pin) -> Result<Pin, WriteEr
 /// # Errors
 /// [`std::io::ErrorKind::AlreadyExists`] if the name is taken, or any I/O error.
 pub fn create_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    imp::create_new(path, bytes)
+    create_new_pinned(path, bytes).map(|_| ())
+}
+
+/// [`create_new`], returning the [`Pin`] of the file it created — identity from
+/// the `fstat` of the descriptor it wrote through, fingerprint of `bytes` — so a
+/// caller that goes on to edit the new file can pin that edit to it.
+///
+/// # Errors
+/// As [`create_new`].
+pub fn create_new_pinned(path: &Path, bytes: &[u8]) -> std::io::Result<Pin> {
+    let identity = imp::create_new(path, bytes)?;
+    Ok(Pin {
+        identity,
+        fingerprint: Some(Fingerprint::of_bytes(bytes)),
+    })
 }
 
 /// `path`'s parent directory (`.` for a bare name) and final component.
@@ -333,7 +372,7 @@ mod imp {
         open_target(&open_dir(dir)?, name)
     }
 
-    pub(super) fn create_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    pub(super) fn create_new(path: &Path, bytes: &[u8]) -> std::io::Result<Option<FileIdentity>> {
         let (dir, name) = split(path)?;
         let dir = open_dir(dir)?;
         let mut file = File::from(rustix::fs::openat(
@@ -350,7 +389,12 @@ mod imp {
             return Err(error);
         }
         let _ = rustix::fs::fsync(&dir);
-        Ok(())
+        // The descriptor we wrote through, so the identity is the created
+        // file's whatever the name holds by now.
+        Ok(file
+            .metadata()
+            .ok()
+            .and_then(|meta| FileIdentity::of(&meta)))
     }
 
     /// Create a fresh temp file in `dir`, retrying on a name collision.
@@ -518,13 +562,17 @@ mod imp {
         }
     }
 
-    pub(super) fn create_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    pub(super) fn create_new(path: &Path, bytes: &[u8]) -> std::io::Result<Option<FileIdentity>> {
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(path)?;
         file.write_all(bytes)?;
-        file.sync_all()
+        file.sync_all()?;
+        Ok(file
+            .metadata()
+            .ok()
+            .and_then(|meta| FileIdentity::of(&meta)))
     }
 
     pub(super) fn replace(path: &Path, bytes: &[u8], expected: &Pin) -> Result<Pin, WriteError> {

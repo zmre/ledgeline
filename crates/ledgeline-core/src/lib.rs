@@ -62,6 +62,7 @@ pub mod reports;
 pub mod rules;
 pub mod sort;
 pub mod title;
+pub mod vault;
 pub mod wire;
 
 pub use decimal::{Dec, DecError};

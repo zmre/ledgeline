@@ -186,7 +186,7 @@ pub enum InsertPosition {
 /// rather than left lying around as a tempting shortcut. A mtime-only touch that
 /// leaves the bytes identical is likewise not an external change. See
 /// [`file_changed_externally`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Fingerprint {
     hash: u64,
     len: u64,
