@@ -1,5 +1,6 @@
-//! Declared/inferred account types — port of
-//! `web/src/lib/domain/accountTypes.ts`.
+//! Declared/inferred account types — the ONE resolver. The SPA reads its
+//! answers off `/api/journal` (`account_class.rs`) rather than re-deriving
+//! them (plan 26 B1).
 //!
 //! An account's EFFECTIVE type is its own declared `type:`, else the nearest
 //! declared ancestor's, else inferred from the name. `Cash` is the subtype
@@ -33,6 +34,24 @@ pub enum AccountType {
     /// `G` — a subtype of Revenue (hledger `type:G` accounts also match
     /// `type:R`).
     Gain,
+}
+
+impl AccountType {
+    /// The wire spelling (`"asset"`, `"cash"`, …) — the SPA's `AccountType`
+    /// union, word for word.
+    #[must_use]
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Asset => "asset",
+            Self::Liability => "liability",
+            Self::Equity => "equity",
+            Self::Revenue => "revenue",
+            Self::Expense => "expense",
+            Self::Cash => "cash",
+            Self::Conversion => "conversion",
+            Self::Gain => "gain",
+        }
+    }
 }
 
 /// Fold two types into the one that describes both, or `None` when they

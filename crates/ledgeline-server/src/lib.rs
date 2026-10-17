@@ -152,12 +152,13 @@ pub(crate) struct Snapshot {
     /// Problems drawer and the Holdings page cannot disagree about the same
     /// journal.
     pub(crate) diagnostics: Bytes,
-    /// The `{"title": …, "file": …}` payload: which journal the user is looking
-    /// at (see `ledgeline_core::title`). Precomputed with the rest so it swaps
-    /// atomically with them — opening a different journal must never leave a
-    /// stale name sitting over fresh numbers — but built INLINE rather than on a
-    /// thread of its own: it is two `Option<String>`s read off data the parse
-    /// already captured, next to no work beside the whole-journal passes above.
+    /// The `/api/journal` payload: which journal the user is looking at (see
+    /// `ledgeline_core::title`), plus the whole-journal display metadata and this
+    /// snapshot's `generation` ([`JournalInfoBody`]). Precomputed with the rest
+    /// so it swaps atomically with them — opening a different journal must never
+    /// leave a stale name sitting over fresh numbers — and built INLINE rather
+    /// than on a thread of its own: two cheap passes over the postings and one
+    /// over the account names, small beside `/transactions`.
     pub(crate) journal_info: Bytes,
 }
 
@@ -167,6 +168,23 @@ pub(crate) struct Snapshot {
 #[derive(Serialize)]
 struct DiagnosticsBody<'a> {
     diagnostics: &'a [wire::WireDiagnostic],
+}
+
+/// The `/api/journal` body: the engine-side metadata plus this snapshot's
+/// `generation` — the ETag's opaque value without its quotes. A client compares
+/// it for EQUALITY only (it is unique per snapshot and across restarts; it is
+/// not ordered): a changed generation means every journal payload changed with
+/// it, which is what lets a poller watch this one small route.
+#[derive(Serialize)]
+struct JournalInfoBody<'a> {
+    #[serde(flatten)]
+    info: wire::WireJournalInfo,
+    generation: &'a str,
+}
+
+/// The opaque text of a strong `ETag` (`"x-1"` → `x-1`).
+fn generation_of(etag: &HeaderValue) -> &str {
+    etag.to_str().unwrap_or_default().trim_matches('"')
 }
 
 impl Snapshot {
@@ -194,6 +212,8 @@ impl Snapshot {
     /// and become the critical path. On its own thread the three groups are
     /// 563 / 346 / 270 ms and the build still costs what its largest payload does.
     fn from_journal(journal: Arc<Journal>) -> Self {
+        // Minted FIRST, because `/api/journal` carries it as `generation`.
+        let etag = next_etag();
         let (transactions, diagnostics, rest) = std::thread::scope(|scope| {
             let transactions = scope.spawn(|| json_bytes(&wire::journal_to_transactions(&journal)));
             let diagnostics = scope.spawn(|| {
@@ -207,7 +227,10 @@ impl Snapshot {
                 json_bytes(&wire::journal_to_prices(&journal)),
                 json_bytes(&wire::journal_to_commodities(&journal)),
                 json_bytes(&wire::journal_to_accounts(&journal)),
-                json_bytes(&wire::journal_to_info(&journal)),
+                json_bytes(&JournalInfoBody {
+                    info: wire::journal_to_info(&journal),
+                    generation: generation_of(&etag),
+                }),
             );
             // The only way a join fails is a panic in the serializer, which would
             // have aborted the request anyway; resume it on this thread so
@@ -222,7 +245,7 @@ impl Snapshot {
         });
         let (version, accountnames, prices, commodities, accounts, journal_info) = rest;
         Self {
-            etag: next_etag(),
+            etag,
             version,
             accountnames,
             transactions,
@@ -803,6 +826,10 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         // may fetch from Yahoo Finance and write the benchmark cache beside the
         // journal, so it belongs above the token guard with everything else.
         .route("/api/holdings/benchmarks", get(benchmarks_api::benchmarks))
+        .route(
+            "/api/holdings/benchmarks/catalog",
+            get(benchmarks_api::catalog),
+        )
         // Write path (Phase 5.2+): add / delete / replace (PUT) / partial-edit
         // (PATCH) a transaction through the editor.
         .route("/api/transactions", post(edit_api::add_transaction))

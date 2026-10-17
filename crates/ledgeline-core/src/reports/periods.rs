@@ -231,6 +231,43 @@ pub fn bucket_label(key: &str) -> String {
     }
 }
 
+/// A report column's display facts, served beside its key so no client has to
+/// re-derive them from the key's grammar (plan 26 B1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeriodInfo {
+    /// The bucket key, exactly as the report's `buckets` lists it.
+    pub key: String,
+    /// [`bucket_label`] of the key: `"Jul 2026"`, `"Q3 2026"`, …
+    pub label: String,
+    /// The bucket's own first day — NOT clamped to the report's range.
+    pub start: String,
+    /// The bucket's own last day — NOT clamped to the report's range.
+    pub end: String,
+}
+
+/// [`PeriodInfo`] for one bucket key. A Total report's `"{from}..{to}"` key
+/// spans exactly that range. A key with no recognized grammar (unreachable for
+/// keys the engine itself produced) labels and bounds itself rather than
+/// failing the whole report over a header.
+#[must_use]
+pub fn period_info(key: &str) -> PeriodInfo {
+    let (start, end) = key.split_once("..").map_or_else(
+        || {
+            (
+                bucket_start(key).unwrap_or_else(|_| key.to_string()),
+                bucket_end(key).unwrap_or_else(|_| key.to_string()),
+            )
+        },
+        |(from, to)| (from.to_string(), to.to_string()),
+    );
+    PeriodInfo {
+        key: key.to_string(),
+        label: bucket_label(key),
+        start,
+        end,
+    }
+}
+
 /// First date in a bucket (companion to [`bucket_end`]).
 ///
 /// # Errors
@@ -552,6 +589,47 @@ pub fn compare_iso(a: &str, b: &str) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn period_info_labels_and_bounds_every_key_grammar() {
+        let info = |key: &str| {
+            let p = period_info(key);
+            (p.label, p.start, p.end)
+        };
+        assert_eq!(
+            info("2026-02"),
+            ("Feb 2026".into(), "2026-02-01".into(), "2026-02-28".into())
+        );
+        assert_eq!(
+            info("2026-Q3"),
+            ("Q3 2026".into(), "2026-07-01".into(), "2026-09-30".into())
+        );
+        assert_eq!(
+            info("2026-W01"),
+            ("W01 2026".into(), "2025-12-29".into(), "2026-01-04".into())
+        );
+        assert_eq!(
+            info("2026"),
+            ("2026".into(), "2026-01-01".into(), "2026-12-31".into())
+        );
+        assert_eq!(
+            info("2026-07-08"),
+            (
+                "2026-07-08".into(),
+                "2026-07-08".into(),
+                "2026-07-08".into()
+            )
+        );
+        assert_eq!(
+            info("2025-08-01..2026-07-08"),
+            (
+                "2025-08-01..2026-07-08".into(),
+                "2025-08-01".into(),
+                "2026-07-08".into()
+            )
+        );
+        assert_eq!(info("junk"), ("junk".into(), "junk".into(), "junk".into()));
+    }
 
     #[test]
     fn bucket_key_daily_monthly_quarterly_yearly() {

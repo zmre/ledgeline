@@ -49,6 +49,7 @@ pub(crate) mod dirscan;
 pub mod edit;
 pub mod hledger_conf;
 pub mod holdings;
+pub mod journal_meta;
 pub mod journals;
 pub mod model;
 pub mod parse;

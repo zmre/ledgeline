@@ -374,12 +374,45 @@ impl From<&Columns> for WireAmounts {
     }
 }
 
+/// One report column's display facts (`periods` on every period report): its
+/// key, its human label and its natural (unclamped) bounds — see
+/// [`periods::period_info`]. Served so clients need not re-derive them from
+/// the key's grammar (plan 26 B1).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WirePeriodInfo {
+    key: String,
+    label: String,
+    start: String,
+    end: String,
+}
+
+impl WirePeriodInfo {
+    /// One entry per bucket key, in the report's order.
+    pub(crate) fn all(buckets: &[String]) -> Vec<Self> {
+        buckets
+            .iter()
+            .map(|key| {
+                let info = periods::period_info(key);
+                Self {
+                    key: info.key,
+                    label: info.label,
+                    start: info.start,
+                    end: info.end,
+                }
+            })
+            .collect()
+    }
+}
+
 /// One interval-mode column: its bucket key (for the header label) and the
 /// inclusive dates it covers, clamped to the report's range.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WireBucketSpan {
     key: String,
+    /// The key rendered for a person (`bucket_label`), e.g. `Jan 2026`.
+    label: String,
     from: String,
     to: String,
 }
@@ -388,6 +421,7 @@ impl From<&BucketSpan> for WireBucketSpan {
     fn from(span: &BucketSpan) -> Self {
         Self {
             key: span.key.clone(),
+            label: periods::bucket_label(&span.key),
             from: span.from.clone(),
             to: span.to.clone(),
         }
@@ -754,6 +788,8 @@ impl From<&ReportMeta> for WireReportMeta {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WirePeriodReport {
     buckets: Vec<String>,
+    /// One entry per `buckets` key: its label and bounds.
+    periods: Vec<WirePeriodInfo>,
     rows: Vec<WirePeriodRow>,
     totals: Vec<WireMixed>,
     /// Cash flow only: the sum of `totals`, the Net row's Total column. Its
@@ -769,6 +805,7 @@ impl From<&PeriodReport> for WirePeriodReport {
     fn from(report: &PeriodReport) -> Self {
         Self {
             buckets: report.buckets.clone(),
+            periods: WirePeriodInfo::all(&report.buckets),
             rows: report.rows.iter().map(WirePeriodRow::from).collect(),
             totals: report.totals.iter().map(wire_mixed).collect(),
             grand_total: report.grand_total.as_ref().map(wire_mixed),
@@ -820,6 +857,8 @@ impl From<&BudgetRow> for WireBudgetRow {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WireBudgetReport {
     buckets: Vec<String>,
+    /// One entry per `buckets` key: its label and bounds.
+    periods: Vec<WirePeriodInfo>,
     rows: Vec<WireBudgetRow>,
     totals: Vec<WireBudgetCell>,
 }
@@ -828,6 +867,7 @@ impl From<&BudgetReport> for WireBudgetReport {
     fn from(report: &BudgetReport) -> Self {
         Self {
             buckets: report.buckets.clone(),
+            periods: WirePeriodInfo::all(&report.buckets),
             rows: report.rows.iter().map(WireBudgetRow::from).collect(),
             totals: report.totals.iter().map(WireBudgetCell::from).collect(),
         }

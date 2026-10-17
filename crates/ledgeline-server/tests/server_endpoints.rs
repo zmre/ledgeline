@@ -225,6 +225,91 @@ async fn journal_info_for(folder: &str, file: &str, text: &str) -> Value {
     serde_json::from_slice(&bytes).expect("body is JSON")
 }
 
+/// The three identity fields of an `/api/journal` body, for the tests about
+/// WHICH journal this is; the display metadata beside them has its own test.
+fn identity(body: &Value) -> Value {
+    json!({"title": body["title"], "file": body["file"], "commodityStyles": body["commodityStyles"]})
+}
+
+/// Plan 26 B1: the whole-journal display metadata rides the same route, so no
+/// client has to walk every transaction for it. Exact shape, so a rename is a
+/// failing test here and in the SPA's decoder test at once.
+#[tokio::test]
+async fn journal_serves_the_display_metadata() {
+    let body = journal_info_for(
+        "acme",
+        "main.journal",
+        "account assets:bank  ; type: C\n\n2026-03-01 t\n    expenses:x   10 AAPL\n    assets:bank\n\n\
+         2026-01-05 u\n    expenses:x   $1.25\n    assets:bank\n\n2026-02-01 v\n    expenses:x   $2\n    liabilities:mortgage\n",
+    )
+    .await;
+    assert_eq!(body["txnCount"], 3);
+    assert_eq!(body["firstDate"], "2026-01-05");
+    assert_eq!(body["lastDate"], "2026-03-01");
+    assert_eq!(body["dominantCommodity"], "$");
+    assert_eq!(body["reportStyles"]["$"]["asprecision"], 2);
+    assert_eq!(body["reportStyles"]["AAPL"]["asprecision"], 0);
+    assert_eq!(
+        body["accounts"]["assets:bank"],
+        json!({"type": "cash", "typeDeclared": true, "term": null, "termGuessed": false})
+    );
+    assert_eq!(
+        body["accounts"]["liabilities:mortgage"],
+        json!({"type": "liability", "typeDeclared": false, "term": "noncurrent", "termGuessed": true})
+    );
+    assert_eq!(
+        body["accounts"]["expenses"],
+        json!({"type": "expense", "typeDeclared": false, "term": null, "termGuessed": false})
+    );
+    let generation = body["generation"].as_str().expect("generation is a string");
+    assert!(!generation.is_empty() && !generation.contains('"'));
+}
+
+/// `generation` IS the snapshot's ETag (unquoted), so a client polling the small
+/// `/api/journal` route learns exactly what an `If-None-Match` on the big ones
+/// would have.
+#[tokio::test]
+async fn journal_generation_is_the_snapshot_etag() {
+    let journal = ledgeline_core::parse_journal("2026-01-01 t\n    a  $1\n    b\n", "j.journal")
+        .expect("journal parses");
+    let router = app(&journal);
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/journal")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("router responds");
+    let etag = response.headers()[header::ETAG]
+        .to_str()
+        .expect("ascii etag")
+        .to_string();
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).expect("JSON");
+    assert_eq!(
+        format!("\"{}\"", body["generation"].as_str().expect("string")),
+        etag
+    );
+
+    let txns = router
+        .oneshot(
+            Request::builder()
+                .uri("/transactions")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("router responds");
+    assert_eq!(txns.headers()[header::ETAG], etag.as_str());
+}
 /// The whole point of the route: a journal that names itself in its first line
 /// is called what it says it is called.
 #[tokio::test]
@@ -236,7 +321,7 @@ async fn journal_serves_the_leading_comment_as_the_title() {
     )
     .await;
     assert_eq!(
-        body,
+        identity(&body),
         json!({"title": "Acme Books", "file": "2026.journal", "commodityStyles": {}})
     );
 }
@@ -252,7 +337,7 @@ async fn journal_falls_back_to_the_containing_folders_name() {
     )
     .await;
     assert_eq!(
-        body,
+        identity(&body),
         json!({"title": "household-books", "file": "main.journal", "commodityStyles": {}})
     );
 }
@@ -316,7 +401,7 @@ async fn journal_rejects_an_editor_modeline_as_the_title() {
     )
     .await;
     assert_eq!(
-        body,
+        identity(&body),
         json!({"title": "household-books", "file": "main.journal", "commodityStyles": {}}),
         "an Emacs file-variables line must not become the journal's title"
     );

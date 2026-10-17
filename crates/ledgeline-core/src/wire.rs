@@ -9,13 +9,14 @@ use crate::holdings::{
     HOLDINGS_TAG, HoldingsScope, ScopeMode, VALUATION_TAG, WarningKind, compute_holdings,
     parse_holdings_tag, parse_valuation_tag,
 };
+use crate::journal_meta;
 use crate::model::{
     AccountDeclaration, AccountName, Amount, AmountStyle, CommoditySide, CostKind, Journal,
     Posting, PostingType, PriceDirective, SourcePos, Status, Transaction,
 };
 use crate::reports::{
-    ACCOUNT_TYPE_TAG, BS_TERM_TAG, IS_SECTION_TAG, parse_account_type_tag, parse_bs_term_tag,
-    parse_is_section_tag,
+    ACCOUNT_TYPE_TAG, AccountClass, AccountType, BS_TERM_TAG, BsTerm, IS_SECTION_TAG,
+    account_classes, parse_account_type_tag, parse_bs_term_tag, parse_is_section_tag,
 };
 use crate::title::{journal_title, main_file_name};
 use serde::Serialize;
@@ -816,16 +817,19 @@ pub fn version_value() -> serde_json::Value {
 // /api/journal
 // ===========================================================================
 
-/// The `/api/journal` payload: which journal the user is looking at.
+/// The `/api/journal` payload: which journal the user is looking at, and the
+/// whole-journal display metadata every screen needs without walking every
+/// transaction (plan 26 B1).
 ///
 /// A NATIVE route, so the field names are camelCase like the rest of the
-/// `/api/*` wire (both happen to be single words, and the rename is declared
-/// anyway so adding a second-word field cannot silently break the convention).
+/// `/api/*` wire.
 ///
-/// Both fields are nullable and independently so: a journal can be titled with
-/// no file behind it (an in-memory journal that opens with a comment) and a file
-/// can be there with nothing to call it. `null` is served explicitly rather than
-/// the key being omitted, so the SPA never has to tell "absent" from "unknown".
+/// `title` and `file` are nullable and independently so: a journal can be
+/// titled with no file behind it (an in-memory journal that opens with a
+/// comment) and a file can be there with nothing to call it. `null` is served
+/// explicitly rather than the key being omitted, so the SPA never has to tell
+/// "absent" from "unknown". The same holds for `firstDate`/`lastDate`, which
+/// are `null` exactly when `txnCount` is 0.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WireJournalInfo {
@@ -840,15 +844,61 @@ pub struct WireJournalInfo {
     /// amount's as-written precision on that wire and applies the declared
     /// style only when it renders a report, so the SPA does the same.
     commodity_styles: BTreeMap<String, WireStyle>,
+    /// The style reports format totals with, per posted commodity — see
+    /// [`journal_meta::report_styles`] for the one rule. Same `astyle` shape
+    /// as `commodityStyles`.
+    report_styles: BTreeMap<String, WireStyle>,
+    /// The journal's most-used commodity — see
+    /// [`journal_meta::dominant_commodity`]. Never empty; `$` for an empty
+    /// journal.
+    dominant_commodity: String,
+    /// How many transactions the journal holds (periodic `~` rules excluded).
+    txn_count: usize,
+    /// Earliest primary transaction date, `null` for an empty journal.
+    first_date: Option<String>,
+    /// Latest primary transaction date, `null` for an empty journal.
+    last_date: Option<String>,
+    /// Every account `/accountnames` lists, with its resolved type and
+    /// balance-sheet term — see [`account_classes`].
+    accounts: BTreeMap<String, WireAccountClass>,
 }
 
-/// The open journal's derived title, the bare name of its main file, and its
-/// declared commodity styles.
+/// One account's classification on `/api/journal`'s `accounts`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireAccountClass {
+    /// `"asset" | "liability" | "equity" | "revenue" | "expense" | "cash" |
+    /// "conversion" | "gain"`, or `null` when untyped.
+    #[serde(rename = "type")]
+    account_type: Option<&'static str>,
+    /// The type came from a `type:` declaration on the account or an ancestor.
+    type_declared: bool,
+    /// `"current" | "noncurrent"`, or `null` when undeclared and not guessed.
+    term: Option<&'static str>,
+    /// `term` is a name-heuristic guess, not a tag.
+    term_guessed: bool,
+}
+
+impl From<&AccountClass> for WireAccountClass {
+    fn from(class: &AccountClass) -> Self {
+        Self {
+            account_type: class.account_type.map(AccountType::code),
+            type_declared: class.type_declared,
+            term: class.term.map(BsTerm::code),
+            term_guessed: class.term_guessed,
+        }
+    }
+}
+
+/// The open journal's derived title, the bare name of its main file, its
+/// declared commodity styles, and its whole-journal display metadata.
 ///
-/// Cheap: every field reads data the parse already captured. No filesystem
-/// access, no pass over the transactions.
+/// No filesystem access. Two passes over the postings (styles, dominant
+/// commodity) and one over the account names — cheap beside the snapshot's
+/// other payloads, and paid once per snapshot rather than per request.
 #[must_use]
 pub fn journal_to_info(journal: &Journal) -> WireJournalInfo {
+    let span = journal_meta::date_span(journal);
     WireJournalInfo {
         title: journal_title(journal),
         file: main_file_name(journal),
@@ -856,6 +906,18 @@ pub fn journal_to_info(journal: &Journal) -> WireJournalInfo {
             .commodity_styles
             .iter()
             .map(|(commodity, style)| (commodity.0.clone(), style_to_wire(style)))
+            .collect(),
+        report_styles: journal_meta::report_styles(journal)
+            .iter()
+            .map(|(commodity, style)| (commodity.0.clone(), style_to_wire(style)))
+            .collect(),
+        dominant_commodity: journal_meta::dominant_commodity(journal),
+        txn_count: journal.transactions.len(),
+        first_date: span.map(|(first, _)| first.to_string()),
+        last_date: span.map(|(_, last)| last.to_string()),
+        accounts: account_classes(journal)
+            .iter()
+            .map(|(name, class)| (name.clone(), WireAccountClass::from(class)))
             .collect(),
     }
 }

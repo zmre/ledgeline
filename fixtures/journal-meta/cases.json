@@ -1,0 +1,3564 @@
+{
+  "_comment": [
+    "GOLDEN, captured from the TypeScript implementation before it was deleted (plan 26 B1):",
+    "reportStyles = web/src/lib/reports/ui/styles.ts reportStyles(normalizeTransactions(/transactions, /api/journal commodityStyles));",
+    "dominantCommodity = web/src/lib/api/editMapping.ts dominantCommodity (posting-count rule);",
+    "accounts = domain/accountTypes.ts resolveAccountType + domain/accountTerms.ts resolveBsTerm/inferBsTerm over /accountnames.",
+    "crates/ledgeline-core/tests/journal_meta.rs asserts the Rust ports reproduce every field. Do not regenerate from Rust."
+  ],
+  "cases": [
+    {
+      "journal": "sample.journal",
+      "txnCount": 189,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": [
+            ",",
+            [
+              3
+            ]
+          ]
+        },
+        "HOME": {
+          "side": "R",
+          "spaced": true,
+          "precision": 1,
+          "decimalPoint": ".",
+          "digitGroups": null
+        },
+        "AAPL": {
+          "side": "R",
+          "spaced": true,
+          "precision": 4,
+          "decimalPoint": ".",
+          "digitGroups": null
+        },
+        "VTI": {
+          "side": "R",
+          "spaced": true,
+          "precision": 1,
+          "decimalPoint": ".",
+          "digitGroups": null
+        },
+        "EUR": {
+          "side": "R",
+          "spaced": true,
+          "precision": 2,
+          "decimalPoint": ",",
+          "digitGroups": [
+            ".",
+            [
+              3
+            ]
+          ]
+        },
+        "GLD": {
+          "side": "R",
+          "spaced": true,
+          "precision": 1,
+          "decimalPoint": ".",
+          "digitGroups": null
+        },
+        "NVDA": {
+          "side": "R",
+          "spaced": true,
+          "precision": 1,
+          "decimalPoint": ".",
+          "digitGroups": null
+        },
+        "TSLA": {
+          "side": "R",
+          "spaced": true,
+          "precision": 1,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "assets": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:bank": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:bank:checking": {
+          "type": "cash",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:bank:savings": {
+          "type": "cash",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:bank:wise": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:bank:wise:eur": {
+          "type": "cash",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:broker": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:broker:taxable": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:broker:taxable:aapl": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:broker:taxable:cash": {
+          "type": "cash",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:broker:taxable:gld": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:broker:taxable:nvda": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:broker:taxable:tsla": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:broker:taxable:vti": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:property": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:property:home": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": "noncurrent",
+          "termGuessed": false
+        },
+        "assets:vehicles": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:vehicles:car": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": "noncurrent",
+          "termGuessed": false
+        },
+        "assets:vehicles:car:cost": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": "noncurrent",
+          "termGuessed": false
+        },
+        "assets:vehicles:car:depreciation": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": "noncurrent",
+          "termGuessed": false
+        },
+        "equity": {
+          "type": "equity",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "equity:opening": {
+          "type": "equity",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "equity:transfers": {
+          "type": "equity",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:depreciation": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:food": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:food:groceries": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:food:restaurants": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:housing": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:housing:rent": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:shopping": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:taxes": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:taxes:federal": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:taxes:state": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:transport": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:transport:fuel": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:travel": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:travel:activities": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:travel:flights": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:travel:lodging": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:unknown": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:utilities": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:utilities:electric": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "income": {
+          "type": "revenue",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "income:dividends": {
+          "type": "revenue",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "income:salary": {
+          "type": "revenue",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "liabilities": {
+          "type": "liability",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "liabilities:cc": {
+          "type": "liability",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "liabilities:cc:visa": {
+          "type": "liability",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "liabilities:mortgage": {
+          "type": "liability",
+          "typeDeclared": true,
+          "term": "noncurrent",
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "asset-growth-scenario.journal",
+      "txnCount": 0,
+      "dominantCommodity": "$",
+      "reportStyles": {},
+      "accounts": {}
+    },
+    {
+      "journal": "parity/holdings.journal",
+      "txnCount": 12,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "OPEN": {
+          "side": "R",
+          "spaced": true,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        },
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": null
+        },
+        "VEST": {
+          "side": "R",
+          "spaced": true,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        },
+        "GRANT": {
+          "side": "R",
+          "spaced": true,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        },
+        "BUY": {
+          "side": "R",
+          "spaced": true,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        },
+        "XFER": {
+          "side": "R",
+          "spaced": true,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        },
+        "ROUND": {
+          "side": "R",
+          "spaced": true,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        },
+        "SPLIT": {
+          "side": "R",
+          "spaced": true,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "assets": {
+          "type": "asset",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:brokerage": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:cash": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "equity": {
+          "type": "equity",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "equity:opening": {
+          "type": "equity",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "equity:splits": {
+          "type": "equity",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "holdings": {
+          "type": "asset",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "holdings:sep": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "income": {
+          "type": "revenue",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "income:rsu": {
+          "type": "revenue",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "vesting": {
+          "type": "revenue",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "vesting:grants": {
+          "type": "revenue",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "subscriptions/basic.journal",
+      "txnCount": 121,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "assets": {
+          "type": "asset",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:bank": {
+          "type": "cash",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:bank:checking": {
+          "type": "cash",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:oldbank": {
+          "type": "asset",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:oldbank:checking": {
+          "type": "cash",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:housing": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:shopping": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:subscriptions": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:taxes": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:taxes:federal": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:taxes:state": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:utilities": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "income": {
+          "type": "revenue",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "income:salary": {
+          "type": "revenue",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "liabilities": {
+          "type": "liability",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "liabilities:creditcard": {
+          "type": "liability",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "account-types/non-english.journal",
+      "txnCount": 4,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": [
+            ",",
+            [
+              3
+            ]
+          ]
+        }
+      },
+      "accounts": {
+        "activo": {
+          "type": "asset",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "activo:banco": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "cogs": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "cogs:infraestructura": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "cuenta": {
+          "type": "cash",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "cuenta:efectivo": {
+          "type": "cash",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "gastos": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "gastos:oficina": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "ingresos": {
+          "type": "revenue",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "ingresos:consultoria": {
+          "type": "revenue",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "pasivo": {
+          "type": "liability",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "pasivo:tarjeta": {
+          "type": "liability",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "patrimonio": {
+          "type": "equity",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "patrimonio:inicio": {
+          "type": "equity",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/account-directive.journal",
+      "txnCount": 1,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "asset": {
+          "type": "liability",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "asset:a": {
+          "type": "liability",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": "liability",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "b:bb": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/account-types.journal",
+      "txnCount": 1,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "assets": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:cash": {
+          "type": "cash",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "equity": {
+          "type": "equity",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "liabilities": {
+          "type": "liability",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "revenues": {
+          "type": "revenue",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/amounts-commodities.journal",
+      "txnCount": 1,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": null
+        },
+        "EUR": {
+          "side": "R",
+          "spaced": true,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "Equity": {
+          "type": "equity",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "Equity:Unbalanced": {
+          "type": "equity",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "saving-card": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "snacks": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/assertion-only-posting.journal",
+      "txnCount": 2,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/assertion-with-cost.journal",
+      "txnCount": 1,
+      "dominantCommodity": "AAA",
+      "reportStyles": {
+        "AAA": {
+          "side": "R",
+          "spaced": true,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/assertions-total.journal",
+      "txnCount": 1,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/assertions.journal",
+      "txnCount": 1,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/balanced-virtual-postings.journal",
+      "txnCount": 1,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "balanced virtual": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "budget/basic.journal",
+      "txnCount": 4,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "assets": {
+          "type": "asset",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:checking": {
+          "type": "cash",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:bus": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:food": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:food:dining": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/blank-description.journal",
+      "txnCount": 2,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/bom.journal",
+      "txnCount": 1,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "assets": {
+          "type": "asset",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:bank": {
+          "type": "cash",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:x": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "reports/bs-cent-floor.journal",
+      "txnCount": 3,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 4,
+          "decimalPoint": ".",
+          "digitGroups": [
+            ",",
+            [
+              3
+            ]
+          ]
+        },
+        "VTI": {
+          "side": "R",
+          "spaced": true,
+          "precision": 4,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "assets": {
+          "type": "asset",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:bank": {
+          "type": "cash",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:bank:checking": {
+          "type": "cash",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:broker": {
+          "type": "asset",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:broker:cash": {
+          "type": "cash",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:broker:vti": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "equity": {
+          "type": "equity",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "equity:opening": {
+          "type": "equity",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "income": {
+          "type": "revenue",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "income:interest": {
+          "type": "revenue",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "reports/bs-cost-dust.journal",
+      "txnCount": 2,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": [
+            ",",
+            [
+              3
+            ]
+          ]
+        },
+        "VTI": {
+          "side": "R",
+          "spaced": true,
+          "precision": 4,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "assets": {
+          "type": "asset",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:bank": {
+          "type": "cash",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:bank:checking": {
+          "type": "cash",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:broker": {
+          "type": "asset",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:broker:vti": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "equity": {
+          "type": "equity",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "equity:opening": {
+          "type": "equity",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "reports/bs-groups.journal",
+      "txnCount": 6,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": [
+            ",",
+            [
+              3
+            ]
+          ]
+        },
+        "ACC": {
+          "side": "R",
+          "spaced": true,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "activo": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "activo:banco": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "activo:banco:corriente": {
+          "type": "cash",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "activo:cartera": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "activo:cartera:acciones": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "activo:inmueble": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "activo:inmueble:casa": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "activo:vehiculo": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "activo:vehiculo:furgoneta": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "gastos": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "gastos:oficina": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "ingresos": {
+          "type": "revenue",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "ingresos:consultoria": {
+          "type": "revenue",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "pasivo": {
+          "type": "liability",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "pasivo:cc": {
+          "type": "liability",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "pasivo:cc:oro": {
+          "type": "liability",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "pasivo:hipoteca": {
+          "type": "liability",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "pasivo:hipoteca:casa": {
+          "type": "liability",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "patrimonio": {
+          "type": "equity",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "patrimonio:inicio": {
+          "type": "equity",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/comment-lines.journal",
+      "txnCount": 1,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/comments.journal",
+      "txnCount": 1,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/commodity-directive.journal",
+      "txnCount": 1,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": [
+            ",",
+            [
+              3
+            ]
+          ]
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/commodity-quoted.journal",
+      "txnCount": 2,
+      "dominantCommodity": "green apples",
+      "reportStyles": {
+        "green apples": {
+          "side": "R",
+          "spaced": true,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        },
+        "red pears": {
+          "side": "L",
+          "spaced": true,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/commodity-tags.journal",
+      "txnCount": 1,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "assets": {
+          "type": "asset",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:bank": {
+          "type": "cash",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "income": {
+          "type": "revenue",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/commodityless-amounts.journal",
+      "txnCount": 1,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "": {
+          "side": "L",
+          "spaced": false,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/costs-total.journal",
+      "txnCount": 1,
+      "dominantCommodity": "€",
+      "reportStyles": {
+        "€": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": null
+        },
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/costs-unit.journal",
+      "txnCount": 1,
+      "dominantCommodity": "€",
+      "reportStyles": {
+        "€": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": null
+        },
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "assets": {
+          "type": "asset",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:foreign currency": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/dates.journal",
+      "txnCount": 3,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/decimal-mark.journal",
+      "txnCount": 1,
+      "dominantCommodity": "RUB",
+      "reportStyles": {
+        "RUB": {
+          "side": "R",
+          "spaced": true,
+          "precision": 2,
+          "decimalPoint": ",",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "Assets": {
+          "type": "asset",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "Assets:Yandex": {
+          "type": "asset",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "Expenses": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "Expenses:Unknown": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "Expenses:Unknown:RUB": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/default-commodity.journal",
+      "txnCount": 1,
+      "dominantCommodity": "EUR",
+      "reportStyles": {
+        "EUR": {
+          "side": "R",
+          "spaced": true,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": [
+            ",",
+            [
+              3
+            ]
+          ]
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "budget/descpat.journal",
+      "txnCount": 3,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "assets": {
+          "type": "asset",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:checking": {
+          "type": "cash",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:bus": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:food": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:rent": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "reports/fx-cross-rates-declared.journal",
+      "txnCount": 2,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": [
+            ",",
+            [
+              3
+            ]
+          ]
+        },
+        "VTI": {
+          "side": "R",
+          "spaced": true,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "assets": {
+          "type": "asset",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:broker": {
+          "type": "asset",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:broker:cash": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:broker:vti": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "equity": {
+          "type": "equity",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "equity:opening": {
+          "type": "equity",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "reports/fx-cross-rates.journal",
+      "txnCount": 2,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": [
+            ",",
+            [
+              3
+            ]
+          ]
+        },
+        "VTI": {
+          "side": "R",
+          "spaced": true,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "assets": {
+          "type": "asset",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:broker": {
+          "type": "asset",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:broker:cash": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:broker:vti": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "equity": {
+          "type": "equity",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "equity:opening": {
+          "type": "equity",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/inferred-commodity-style.journal",
+      "txnCount": 1,
+      "dominantCommodity": "EUR",
+      "reportStyles": {
+        "EUR": {
+          "side": "R",
+          "spaced": true,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": [
+            ",",
+            [
+              3
+            ]
+          ]
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/inferred-zero-commodity.journal",
+      "txnCount": 1,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": null
+        },
+        "AAPL": {
+          "side": "R",
+          "spaced": true,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "c": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "reports/invariants-basic.journal",
+      "txnCount": 10,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": [
+            ",",
+            [
+              3
+            ]
+          ]
+        }
+      },
+      "accounts": {
+        "assets": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:bank": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:bank:checking": {
+          "type": "cash",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:bank:savings": {
+          "type": "cash",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "equity": {
+          "type": "equity",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "equity:opening": {
+          "type": "equity",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:food": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:food:groceries": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:rent": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "income": {
+          "type": "revenue",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "income:salary": {
+          "type": "revenue",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "liabilities": {
+          "type": "liability",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "liabilities:cc": {
+          "type": "liability",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "liabilities:cc:visa": {
+          "type": "liability",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "reports/is-sections.journal",
+      "txnCount": 29,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": [
+            ",",
+            [
+              3
+            ]
+          ]
+        }
+      },
+      "accounts": {
+        "assets": {
+          "type": "asset",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:bank": {
+          "type": "cash",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "cogs": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "cogs:hosting": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "cogs:payments": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "equity": {
+          "type": "equity",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "equity:opening": {
+          "type": "equity",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:depreciation": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:interest": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:lawsuit": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:marketing": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:marketing:ads": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:marketing:events": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:rent": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:salaries": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:salaries:eng": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:salaries:sales": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:taxes": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:taxes:federal": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:taxes:state": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "income": {
+          "type": "revenue",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "income:grants": {
+          "type": "revenue",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "revenue": {
+          "type": "revenue",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "revenue:services": {
+          "type": "revenue",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "revenue:subscriptions": {
+          "type": "revenue",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "reports/mixed-subtree.journal",
+      "txnCount": 2,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "assets": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:bank": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:receivable": {
+          "type": "liability",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "equity": {
+          "type": "equity",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "equity:opening": {
+          "type": "equity",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "income": {
+          "type": "revenue",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "income:sales": {
+          "type": "revenue",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "reports/nested-types.journal",
+      "txnCount": 2,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "Personal": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "Personal:Card": {
+          "type": "liability",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "Personal:Checking": {
+          "type": "cash",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "Personal:Food": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "Personal:Salary": {
+          "type": "revenue",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/numbers-inferred-mark.journal",
+      "txnCount": 3,
+      "dominantCommodity": "CHF",
+      "reportStyles": {
+        "CHF": {
+          "side": "R",
+          "spaced": true,
+          "precision": 2,
+          "decimalPoint": ",",
+          "digitGroups": null
+        },
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 3,
+          "decimalPoint": ",",
+          "digitGroups": null
+        },
+        "SEK": {
+          "side": "R",
+          "spaced": true,
+          "precision": 2,
+          "decimalPoint": ",",
+          "digitGroups": [
+            ".",
+            [
+              3
+            ]
+          ]
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/numbers-leading-decimal.journal",
+      "txnCount": 1,
+      "dominantCommodity": "EUR",
+      "reportStyles": {
+        "EUR": {
+          "side": "R",
+          "spaced": true,
+          "precision": 1,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/numbers-nbsp-groups.journal",
+      "txnCount": 1,
+      "dominantCommodity": "EUR",
+      "reportStyles": {
+        "EUR": {
+          "side": "R",
+          "spaced": true,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": [
+            " ",
+            [
+              3
+            ]
+          ]
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/numbers-no-integer-part.journal",
+      "txnCount": 1,
+      "dominantCommodity": "EUR",
+      "reportStyles": {
+        "EUR": {
+          "side": "R",
+          "spaced": true,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/numbers-omitted-decimals.journal",
+      "txnCount": 1,
+      "dominantCommodity": "EUR",
+      "reportStyles": {
+        "EUR": {
+          "side": "R",
+          "spaced": true,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": [
+            ",",
+            [
+              3
+            ]
+          ]
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/numbers-repeated-separator.journal",
+      "txnCount": 2,
+      "dominantCommodity": "XX",
+      "reportStyles": {
+        "XX": {
+          "side": "R",
+          "spaced": true,
+          "precision": 0,
+          "decimalPoint": ",",
+          "digitGroups": [
+            ".",
+            [
+              1,
+              1,
+              1
+            ]
+          ]
+        },
+        "YY": {
+          "side": "R",
+          "spaced": true,
+          "precision": 0,
+          "decimalPoint": ",",
+          "digitGroups": [
+            ".",
+            [
+              3,
+              3
+            ]
+          ]
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/numbers-space-groups-amount.journal",
+      "txnCount": 2,
+      "dominantCommodity": "EUR",
+      "reportStyles": {
+        "EUR": {
+          "side": "R",
+          "spaced": true,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": [
+            " ",
+            [
+              3
+            ]
+          ]
+        },
+        "SEK": {
+          "side": "R",
+          "spaced": true,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": [
+            " ",
+            [
+              3,
+              3
+            ]
+          ]
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/numbers-space-groups.journal",
+      "txnCount": 1,
+      "dominantCommodity": "EUR",
+      "reportStyles": {
+        "EUR": {
+          "side": "R",
+          "spaced": true,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": [
+            " ",
+            [
+              3
+            ]
+          ]
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/numbers-trailing-decimal.journal",
+      "txnCount": 1,
+      "dominantCommodity": "EUR",
+      "reportStyles": {
+        "EUR": {
+          "side": "R",
+          "spaced": true,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/numbers.journal",
+      "txnCount": 1,
+      "dominantCommodity": "EUR",
+      "reportStyles": {
+        "EUR": {
+          "side": "R",
+          "spaced": true,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": [
+            ",",
+            [
+              3
+            ]
+          ]
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "reports/other-holdings.journal",
+      "txnCount": 11,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": [
+            ",",
+            [
+              3
+            ]
+          ]
+        },
+        "HOUSE": {
+          "side": "R",
+          "spaced": true,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        },
+        "VTI": {
+          "side": "R",
+          "spaced": true,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "assets": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:bank": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:bank:checking": {
+          "type": "cash",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:broker": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:broker:taxable": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:partners": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:partners:acme": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:property": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:property:house": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:receivable": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:receivable:petty": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:vehicles": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:vehicles:van": {
+          "type": "asset",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "equity": {
+          "type": "equity",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "equity:opening": {
+          "type": "equity",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:depreciation": {
+          "type": "expense",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "income": {
+          "type": "revenue",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "income:consulting": {
+          "type": "revenue",
+          "typeDeclared": true,
+          "term": null,
+          "termGuessed": false
+        },
+        "liabilities": {
+          "type": "liability",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "liabilities:mortgage": {
+          "type": "liability",
+          "typeDeclared": true,
+          "term": "noncurrent",
+          "termGuessed": true
+        }
+      }
+    },
+    {
+      "journal": "corpus/parens-in-account-name.journal",
+      "txnCount": 1,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b (b) b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "c": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "budget/parents.journal",
+      "txnCount": 4,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "assets": {
+          "type": "asset",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:checking": {
+          "type": "cash",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:food": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:food:dining": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:food:groceries": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:food:snacks": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:transport": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:transport:bus": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/payee-directive.journal",
+      "txnCount": 1,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "budget/period-forms.journal",
+      "txnCount": 3,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "assets": {
+          "type": "asset",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:checking": {
+          "type": "cash",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:groceries": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:parking": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:therapy": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/posting-dates-bracket.journal",
+      "txnCount": 2,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "c": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "d": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/posting-dates.journal",
+      "txnCount": 1,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/precision.journal",
+      "txnCount": 1,
+      "dominantCommodity": "C",
+      "reportStyles": {
+        "C": {
+          "side": "R",
+          "spaced": true,
+          "precision": 4,
+          "decimalPoint": ".",
+          "digitGroups": null
+        },
+        "D": {
+          "side": "R",
+          "spaced": true,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "A": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/scientific-commodity.journal",
+      "txnCount": 1,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 8,
+          "decimalPoint": ".",
+          "digitGroups": [
+            ",",
+            [
+              3
+            ]
+          ]
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "c": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "d": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/scientific.journal",
+      "txnCount": 1,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "": {
+          "side": "L",
+          "spaced": false,
+          "precision": 7,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "c": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "d": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/status.journal",
+      "txnCount": 3,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/total-cost-trailing-zeros.journal",
+      "txnCount": 1,
+      "dominantCommodity": "€",
+      "reportStyles": {
+        "€": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": null
+        },
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 2,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "budget/unbudgeted.journal",
+      "txnCount": 3,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "assets": {
+          "type": "asset",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:checking": {
+          "type": "cash",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "budget": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "budget:food": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:rent": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "income": {
+          "type": "revenue",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "income:salary": {
+          "type": "revenue",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "corpus/virtual-postings.journal",
+      "txnCount": 1,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "a": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "b": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "virtual": {
+          "type": null,
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    },
+    {
+      "journal": "budget/weekly.journal",
+      "txnCount": 2,
+      "dominantCommodity": "$",
+      "reportStyles": {
+        "$": {
+          "side": "L",
+          "spaced": false,
+          "precision": 0,
+          "decimalPoint": ".",
+          "digitGroups": null
+        }
+      },
+      "accounts": {
+        "assets": {
+          "type": "asset",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "assets:cash": {
+          "type": "cash",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        },
+        "expenses:coffee": {
+          "type": "expense",
+          "typeDeclared": false,
+          "term": null,
+          "termGuessed": false
+        }
+      }
+    }
+  ]
+}

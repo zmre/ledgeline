@@ -64,12 +64,62 @@ use crate::sidecar::{FETCH_CONCURRENCY, Sidecar, parse_symbol_list};
 use crate::yahoo::{FetchedPrice, YahooError};
 use crate::yahoo_history::{HistoryFeed, one_per_date};
 
+/// One benchmark: a dividend-adjusted ETF proxy for a standard measure.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub(crate) struct Benchmark {
+    symbol: &'static str,
+    /// The measure, then the proxy: "S&P 500 (SPY)".
+    label: &'static str,
+}
+
 /// Every benchmark the overlay can draw, in display order: total-return ETF
-/// proxies for standard measures. The SPA keeps the same list, with each
-/// symbol's label (`web/src/lib/holdings/benchmarks.ts`), because its order
-/// fixes each line's colour; a symbol outside this list is a `400`, which also
+/// proxies for standard measures. The ONE copy of the catalog: the SPA reads it
+/// from `GET /api/holdings/benchmarks/catalog` (plan 26 B1). Its order is the
+/// colour contract — benchmark k always draws in palette slot k, which each
+/// line carries as `slot` — and a symbol outside it is a `400`, which also
 /// keeps the server from being asked to fetch arbitrary tickers.
-pub(crate) const BENCHMARKS: &[&str] = &["SPY", "DIA", "QQQ", "VTI", "BND", "VXUS", "IWM", "GLD"];
+pub(crate) const BENCHMARKS: &[Benchmark] = &[
+    Benchmark {
+        symbol: "SPY",
+        label: "S&P 500 (SPY)",
+    },
+    Benchmark {
+        symbol: "DIA",
+        label: "Dow Jones (DIA)",
+    },
+    Benchmark {
+        symbol: "QQQ",
+        label: "Nasdaq-100 (QQQ)",
+    },
+    Benchmark {
+        symbol: "VTI",
+        label: "US total market (VTI)",
+    },
+    Benchmark {
+        symbol: "BND",
+        label: "US bonds (BND)",
+    },
+    Benchmark {
+        symbol: "VXUS",
+        label: "International (VXUS)",
+    },
+    Benchmark {
+        symbol: "IWM",
+        label: "Small cap (IWM)",
+    },
+    Benchmark {
+        symbol: "GLD",
+        label: "Gold (GLD)",
+    },
+];
+
+/// A catalog symbol's palette slot (its catalog position) and entry.
+fn catalog_entry(symbol: &str) -> Option<(usize, &'static Benchmark)> {
+    BENCHMARKS
+        .iter()
+        .enumerate()
+        .find(|(_, benchmark)| benchmark.symbol == symbol)
+}
 
 /// The commodity every cached close is quoted in.
 const QUOTE: &str = "USD";
@@ -106,6 +156,12 @@ pub(crate) struct BenchmarksQuery {
     symbols: Option<String>,
 }
 
+/// `GET /api/holdings/benchmarks/catalog`: every benchmark, in catalog order.
+#[derive(Debug, Serialize)]
+pub(crate) struct WireCatalog {
+    benchmarks: &'static [Benchmark],
+}
+
 /// The response: one line per requested benchmark, in catalog order.
 #[derive(Debug, Serialize)]
 pub(crate) struct WireBenchmarks {
@@ -115,6 +171,11 @@ pub(crate) struct WireBenchmarks {
 #[derive(Debug, Serialize)]
 pub(crate) struct WireBenchmark {
     symbol: String,
+    /// The catalog label, e.g. "S&P 500 (SPY)".
+    label: &'static str,
+    /// The palette slot to draw the line in: its catalog position, so it never
+    /// depends on which other benchmarks are shown.
+    slot: usize,
     /// Index-aligned to the series' points; `value` is `null` where the
     /// benchmark has no price yet (a gap, not a zero).
     points: Vec<WireBenchmarkPoint>,
@@ -290,15 +351,22 @@ fn parse_benchmarks(raw: Option<&str>) -> Result<Vec<&'static str>, AppError> {
             "symbols is required (a comma-separated list of benchmarks)".to_string(),
         ));
     }
-    if let Some(unknown) = requested.iter().find(|symbol| !BENCHMARKS.contains(symbol)) {
+    if let Some(unknown) = requested
+        .iter()
+        .find(|symbol| catalog_entry(symbol).is_none())
+    {
+        let known: Vec<&str> = BENCHMARKS
+            .iter()
+            .map(|benchmark| benchmark.symbol)
+            .collect();
         return Err(AppError::BadRequest(format!(
             "unknown benchmark '{unknown}' (expected one of {})",
-            BENCHMARKS.join(", ")
+            known.join(", ")
         )));
     }
     Ok(BENCHMARKS
         .iter()
-        .copied()
+        .map(|benchmark| benchmark.symbol)
         .filter(|symbol| requested.contains(symbol))
         .collect())
 }
@@ -443,9 +511,28 @@ async fn fetch_history(
     (symbol, answer)
 }
 
+/// `GET /api/holdings/benchmarks/catalog` — the benchmarks the overlay can draw,
+/// in catalog (= palette slot) order. Static, but served so the SPA keeps no
+/// copy of its own.
+pub(crate) async fn catalog() -> Response {
+    no_store_json(WireCatalog {
+        benchmarks: BENCHMARKS,
+    })
+}
+
+/// The label and palette slot a line carries. Every symbol that reaches here
+/// passed [`parse_benchmarks`], so the fallback (an empty label, slot 0) is
+/// unreachable rather than a guess.
+fn label_and_slot(symbol: &str) -> (&'static str, usize) {
+    catalog_entry(symbol).map_or(("", 0), |(slot, benchmark)| (benchmark.label, slot))
+}
+
 fn failed(symbol: &str, points: &[HoldingsPoint], error: String) -> WireBenchmark {
+    let (label, slot) = label_and_slot(symbol);
     WireBenchmark {
         symbol: symbol.to_string(),
+        label,
+        slot,
         points: points
             .iter()
             .map(|point| WireBenchmarkPoint {
@@ -476,8 +563,11 @@ fn line(
         return failed(symbol, &prepared.points, error);
     };
     let simulated = simulate_benchmark(&prepared.points, &prepared.flows, &history.closes());
+    let (label, slot) = label_and_slot(symbol);
     WireBenchmark {
         symbol: symbol.to_string(),
+        label,
+        slot,
         points: prepared
             .points
             .iter()

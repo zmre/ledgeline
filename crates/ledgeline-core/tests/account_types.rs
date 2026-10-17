@@ -16,7 +16,7 @@ use ledgeline_core::model::Commodity;
 use ledgeline_core::reports::{
     AccountType, BudgetOpts, GapRow, InsightsOpts, Interval, MixedAmount, NetWorthOpts,
     accepted_type_tags, account_decls, balance_sheet, budget_gaps, declared_types,
-    income_statement, insights, is_account_type, net_worth, parse_account_type_tag,
+    income_statement, infer_bs_term, insights, is_account_type, net_worth, parse_account_type_tag,
     resolve_account_type,
 };
 use ledgeline_core::{Dec, Journal, parse_journal};
@@ -217,8 +217,9 @@ fn budget_gaps_classify_by_declared_type() {
 // ===========================================================================
 //
 // The engine and the browser are two implementations of ONE specification, and
-// both are checked against the same file — see its `_comment`, and
-// `web/src/lib/domain/accountTypes.test.ts` for the other half.
+// both are checked against the same file — see its `_comment`. Since plan 26 B1
+// the browser reads the engine's resolved classes instead of resolving them,
+// and `web/src/lib/domain/accountClass.test.ts` runs the inference-only rows.
 //
 // The 2026-09 Projections sign bug is what this exists to stop. The browser's
 // `type:` vocabulary was a subset of the engine's, so a declaration it could not
@@ -237,22 +238,9 @@ fn classification_cases() -> serde_json::Value {
     serde_json::from_str(&text).expect("classification-cases.json is JSON")
 }
 
-fn type_name(ty: AccountType) -> &'static str {
-    match ty {
-        AccountType::Asset => "asset",
-        AccountType::Liability => "liability",
-        AccountType::Equity => "equity",
-        AccountType::Revenue => "revenue",
-        AccountType::Expense => "expense",
-        AccountType::Cash => "cash",
-        AccountType::Conversion => "conversion",
-        AccountType::Gain => "gain",
-    }
-}
-
 fn type_or_null(ty: Option<AccountType>) -> serde_json::Value {
     ty.map_or(serde_json::Value::Null, |ty| {
-        serde_json::Value::String(type_name(ty).to_string())
+        serde_json::Value::String(ty.code().to_string())
     })
 }
 
@@ -361,5 +349,35 @@ fn every_account_resolves_as_the_shared_table_says() {
                 row["declared"]
             );
         }
+    }
+}
+
+/// The bsterm name heuristic reproduces the TypeScript `inferBsTerm` it was
+/// ported from, row for row. `fixtures/account-types/bs-term-cases.json` was
+/// CAPTURED from that implementation before it was deleted (plan 26 B1), so a
+/// failure here is the port drifting, not the fixture being stale.
+#[test]
+fn infer_bs_term_matches_the_captured_typescript_outputs() {
+    let path = fixtures_dir()
+        .join("account-types")
+        .join("bs-term-cases.json");
+    let text = std::fs::read_to_string(&path).expect("bs-term-cases.json readable");
+    let golden: serde_json::Value =
+        serde_json::from_str(&text).expect("bs-term-cases.json is JSON");
+    let rows = golden["cases"].as_array().expect("cases is an array");
+    assert!(rows.len() >= 100, "the bs-term golden lost its rows");
+    for row in rows {
+        let account = row["account"].as_str().expect("an account");
+        let kind = match row["kind"].as_str().expect("a kind") {
+            "cash" => AccountType::Cash,
+            "liability" => AccountType::Liability,
+            other => panic!("unexpected kind {other:?}"),
+        };
+        let term = infer_bs_term(account, kind).map(|term| term.code());
+        assert_eq!(
+            term,
+            row["term"].as_str(),
+            "infer_bs_term({account:?}, {kind:?})"
+        );
     }
 }

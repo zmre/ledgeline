@@ -1485,11 +1485,11 @@ async fn incomestatement_grouped_interval_mode_reports_columns_and_their_total()
     assert_eq!(buckets.len(), 7);
     assert_eq!(
         buckets[0],
-        serde_json::json!({"key": "2026-01", "from": "2026-01-15", "to": "2026-01-31"})
+        serde_json::json!({"key": "2026-01", "label": "Jan 2026", "from": "2026-01-15", "to": "2026-01-31"})
     );
     assert_eq!(
         buckets[6],
-        serde_json::json!({"key": "2026-07", "from": "2026-07-01", "to": "2026-07-08"})
+        serde_json::json!({"key": "2026-07", "label": "Jul 2026", "from": "2026-07-01", "to": "2026-07-08"})
     );
     assert!(body["prior"].is_null(), "interval mode never compares");
 
