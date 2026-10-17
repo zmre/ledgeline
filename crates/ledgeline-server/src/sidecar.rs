@@ -24,15 +24,14 @@
 //! stages paths an import names), and sits outside the journal's include tree,
 //! so the live-reload watcher ignores it.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use ledgeline_core::edit::atomic_write;
-use ledgeline_core::model::Journal;
+use ledgeline_core::vault::VaultPath;
 
-use crate::AppState;
 use crate::error::AppError;
 use crate::reports_api::compute;
+use crate::{AppState, JournalLocation};
 
 /// Simultaneous Yahoo requests one sidecar endpoint makes: a cold cache is a
 /// one-off, and Yahoo rate-limits a burst.
@@ -85,8 +84,8 @@ pub(crate) trait Sidecar: Default + Clone + Send + Sync + 'static {
 /// The loaded cache and the file it mirrors.
 #[derive(Default)]
 struct Slot<T> {
-    /// `None` until first loaded; then the path `value` was read from, itself
-    /// `None` for a journal with no file behind it.
+    /// `None` until first loaded; then the key of the file `value` was read
+    /// from, itself `None` for a journal with no file behind it.
     loaded_from: Option<Option<PathBuf>>,
     value: Arc<T>,
 }
@@ -106,13 +105,26 @@ impl<T: Sidecar> Default for SidecarCache<T> {
     }
 }
 
-/// `<journal dir>/<name>`, or `None` for a journal with no file behind it.
-fn sidecar_path(journal: &Journal, name: &str) -> Option<PathBuf> {
-    journal
-        .source_files
-        .first()
-        .and_then(|main| main.parent())
-        .map(|dir| dir.join(name))
+/// A sidecar file: `<journal dir>/<name>` in the journal's vault.
+#[derive(Clone)]
+struct SidecarFile {
+    location: Arc<JournalLocation>,
+    path: VaultPath,
+    /// [`ledgeline_core::vault::Vault::key`] of `path` — what identifies the
+    /// file across a File→Open, the way its absolute path used to.
+    key: PathBuf,
+}
+
+/// `<journal dir>/<name>` in the vault of `state`'s current journal, or `None`
+/// for a journal with no storage behind it.
+fn sidecar_file(state: &AppState, name: &str) -> Option<SidecarFile> {
+    let location = state.snapshot().storage()?;
+    let path = location.root_dir().child(name).ok()?;
+    Some(SidecarFile {
+        key: location.key(&path),
+        location,
+        path,
+    })
 }
 
 impl<T: Sidecar> SidecarCache<T> {
@@ -121,9 +133,9 @@ impl<T: Sidecar> SidecarCache<T> {
     /// # Errors
     /// Only if the blocking pool is shutting down.
     pub(crate) async fn snapshot(&self, state: &AppState) -> Result<Arc<T>, AppError> {
-        let path = sidecar_path(&state.snapshot().journal, T::FILE);
+        let file = sidecar_file(state, T::FILE);
         let mut slot = self.slot.lock().await;
-        Self::current(&mut slot, path).await?;
+        Self::current(&mut slot, file).await?;
         Ok(Arc::clone(&slot.value))
     }
 
@@ -141,17 +153,17 @@ impl<T: Sidecar> SidecarCache<T> {
         state: &AppState,
         merge: impl FnOnce(&mut T),
     ) -> Result<Arc<T>, AppError> {
-        let path = sidecar_path(&state.snapshot().journal, T::FILE);
+        let file = sidecar_file(state, T::FILE);
         let mut slot = self.slot.lock().await;
-        Self::current(&mut slot, path.clone()).await?;
+        Self::current(&mut slot, file.clone()).await?;
         merge(Arc::make_mut(&mut slot.value));
         let merged = Arc::clone(&slot.value);
         if state.editing_enabled()
-            && let Some(path) = path
+            && let Some(file) = file
         {
             let value = Arc::clone(&merged);
             let axum::Json(()) = compute(move || {
-                store(&path, value.as_ref());
+                store(&file, value.as_ref());
                 Ok(())
             })
             .await?;
@@ -159,31 +171,45 @@ impl<T: Sidecar> SidecarCache<T> {
         Ok(merged)
     }
 
-    /// Make `slot` mirror `path`, loading it if it does not already.
-    async fn current(slot: &mut Slot<T>, path: Option<PathBuf>) -> Result<(), AppError> {
-        if slot.loaded_from.as_ref() == Some(&path) {
+    /// Make `slot` mirror `file`, loading it if it does not already.
+    async fn current(slot: &mut Slot<T>, file: Option<SidecarFile>) -> Result<(), AppError> {
+        let key = file.as_ref().map(|file| file.key.clone());
+        if slot.loaded_from.as_ref() == Some(&key) {
             return Ok(());
         }
-        let value = match path.clone() {
+        let value = match file {
             Some(file) => compute(move || Ok(load::<T>(&file))).await?.0,
             None => T::default(),
         };
         slot.value = Arc::new(value);
-        slot.loaded_from = Some(path);
+        slot.loaded_from = Some(key);
         Ok(())
     }
 }
 
-/// The file at `path` as a cache; empty when there is none.
-fn load<T: Sidecar>(path: &Path) -> T {
-    std::fs::read(path).map_or_else(|_| T::default(), |bytes| T::decode(&bytes))
+/// The file as a cache, read through the journal's vault; empty when there is
+/// none (or it cannot be read — a symlink there included).
+fn load<T: Sidecar>(file: &SidecarFile) -> T {
+    file.location
+        .vault()
+        .read(&file.path)
+        .map_or_else(|_| T::default(), |bytes| T::decode(&bytes))
 }
 
-/// Write `value` to `path` atomically. A failure is logged, not raised: the
+/// Write `value` to the file atomically through the journal's vault
+/// (`Vault::write_atomic`: an app-owned file, temp-and-rename, a symlink at the
+/// name refused rather than followed). A failure is logged, not raised: the
 /// answer is served from memory all the same, and a later request rewrites it.
 /// The file name is fixed and ours, so the log names no path.
-fn store<T: Sidecar>(path: &Path, value: &T) {
-    if let Err(error) = value.encode().and_then(|bytes| atomic_write(path, &bytes)) {
+fn store<T: Sidecar>(file: &SidecarFile, value: &T) {
+    let written = value.encode().and_then(|bytes| {
+        file.location
+            .vault()
+            .write_atomic(&file.path, &bytes)
+            .map(|_| ())
+            .map_err(std::io::Error::from)
+    });
+    if let Err(error) = written {
         eprintln!("ledgeline: could not write {}: {}", T::FILE, error.kind());
     }
 }
@@ -229,12 +255,39 @@ mod tests {
         }
     }
 
+    /// The sidecar beside `main.journal` in `vault`.
+    fn file_in(vault: Arc<dyn ledgeline_core::vault::Vault>) -> SidecarFile {
+        let location = Arc::new(JournalLocation::new(
+            vault,
+            VaultPath::new("main.journal").unwrap(),
+        ));
+        let path = location.root_dir().child(Text::FILE).unwrap();
+        SidecarFile {
+            key: location.key(&path),
+            location,
+            path,
+        }
+    }
+
     #[test]
     fn a_missing_file_loads_empty_and_a_stored_one_loads_back() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(Text::FILE);
-        assert_eq!(load::<Text>(&path), Text::default());
-        store(&path, &Text("hello".to_string()));
-        assert_eq!(load::<Text>(&path), Text("hello".to_string()));
+        let file = file_in(Arc::new(ledgeline_core::vault::LocalVault::new(dir.path())));
+        assert_eq!(load::<Text>(&file), Text::default());
+        store(&file, &Text("hello".to_string()));
+        assert_eq!(load::<Text>(&file), Text("hello".to_string()));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(Text::FILE)).unwrap(),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn the_sidecar_goes_through_the_vault_and_needs_no_local_path() {
+        let vault = Arc::new(ledgeline_core::vault::MemVault::new());
+        let file = file_in(Arc::clone(&vault) as Arc<dyn ledgeline_core::vault::Vault>);
+        store(&file, &Text("cached".to_string()));
+        assert_eq!(vault.text(Text::FILE).as_deref(), Some("cached"));
+        assert_eq!(load::<Text>(&file), Text("cached".to_string()));
     }
 }
