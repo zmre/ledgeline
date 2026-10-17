@@ -264,7 +264,7 @@ impl AccountDoc {
     ///
     /// What is deliberately *not* here: whether the file still parses as part
     /// of its journal. Only the caller knows which journal this file belongs
-    /// to, so that check is the caller's ([`crate::parse::parse_journal_with_overrides`]),
+    /// to, so that check is the caller's ([`crate::parse::parse_journal_in`]),
     /// exactly as [`crate::aliases::AliasDoc::verify`] leaves it to the server.
     ///
     /// # Errors

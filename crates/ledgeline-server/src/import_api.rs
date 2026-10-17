@@ -116,15 +116,16 @@ use ledgeline_core::edit::Fingerprint;
 use ledgeline_core::hledger_conf;
 use ledgeline_core::journals::{self, JournalTarget};
 use ledgeline_core::model::Status;
-use ledgeline_core::pinned::{self, Pin, WriteError};
 use ledgeline_core::reimport::{self, RowClassification};
 use ledgeline_core::rules::matching::{self, Candidate, Ranking, Score, Signals};
-use ledgeline_core::rules::{self, Discovery, RulesDoc};
+use ledgeline_core::rules::{self, Discovery, RulesDoc, RulesPath};
 use ledgeline_core::sort;
+use ledgeline_core::vault::{Revision, Vault, VaultError, VaultPath};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::AppState;
@@ -133,6 +134,7 @@ use crate::edit_api::json_body;
 use crate::error::AppError;
 use crate::git::{GitStatus, Repo};
 use crate::hledger::{Hledger, HledgerError, Invocation, Output};
+use crate::location::JournalLocation;
 use crate::prefs::{self, Prefs};
 use crate::redact::Redactor;
 use crate::reports_api::compute;
@@ -304,6 +306,9 @@ const fn hledger_reason(error: &HledgerError) -> &'static str {
         HledgerError::TooOld { .. } => "tooOld",
         HledgerError::Unrunnable => "unrunnable",
         HledgerError::TimedOut { .. } => "timedOut",
+        // A build without `external-tools`: the SPA's existing "could not run
+        // hledger" advice is the closest it has, and the message says why.
+        HledgerError::Disabled => "unrunnable",
     }
 }
 
@@ -1217,36 +1222,34 @@ fn unresolved(what: &str, id: &str) -> AppError {
     ))
 }
 
-/// The main journal file this server has open, or the `404` that says there is
-/// none.
+/// The open journal's storage — its vault and main file — or the `404` that says
+/// there is none.
 ///
 /// Answering the ordinary resolution failure — rather than a distinct "no
 /// journal open" — keeps every route from distinguishing the two, the same rule
-/// `rules_api::document` follows.
-fn main_journal(state: &AppState, what: &str, id: &str) -> Result<PathBuf, AppError> {
+/// `rules_api::document` follows. Taken from ONE snapshot, so the journal a
+/// route reasons about and the storage it writes are the same open journal.
+fn books(state: &AppState, what: &str, id: &str) -> Result<Arc<JournalLocation>, AppError> {
     state
-        .source_files()
-        .into_iter()
-        .next()
+        .snapshot()
+        .storage()
         .ok_or_else(|| unresolved(what, id))
 }
 
-/// The directory `include` (and therefore everything in this feature) is
-/// confined to: the main journal file's own directory, canonicalized.
-pub(crate) fn include_root(main: &Path) -> Result<PathBuf, AppError> {
-    let dir = main.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::canonicalize(dir).map_err(|_| {
-        AppError::Internal("this journal's own directory could not be resolved".to_string())
-    })
+/// A real filesystem path for `path`, for handing to `hledger` or `git` — the
+/// only reason this module ever asks for one. Every read and write of the
+/// journal tree itself goes through the vault.
+fn native(location: &JournalLocation, path: &VaultPath) -> Result<PathBuf, AppError> {
+    location.local_path(path, "importing a statement")
 }
 
 /// Resolve a `journalId` to the file it names.
 ///
 /// Layer 2, exactly as `Discovery::resolve` is for a rules id: the handle is
 /// matched by **string equality against [`journals::targets`]**, which is a
-/// projection of the files *this parse actually read*. The path handed back is
-/// the one the parser recorded, not one built by joining the handle onto a root
-/// — so a handle can only ever name a file the include guard already admitted.
+/// projection of the files *this parse actually read*, and then required to be
+/// one of the parse's own source files ([`JournalLocation::source_path`]) — so a
+/// handle can only ever name a file the include guard already admitted.
 ///
 /// A target the engine flagged as not writable (a symlink, a directory, a file
 /// outside the include root) is refused with a `400` rather than a `404`: the
@@ -1254,12 +1257,13 @@ pub(crate) fn include_root(main: &Path) -> Result<PathBuf, AppError> {
 /// information they need.
 fn resolve_journal(
     state: &AppState,
-    root: &Path,
+    location: &JournalLocation,
     id: &str,
-) -> Result<(PathBuf, JournalTarget), AppError> {
+) -> Result<(VaultPath, JournalTarget), AppError> {
     validate_relative_id(id, "journal id", None)?;
     let snapshot = state.snapshot();
-    let target = journals::targets(&snapshot.journal)
+    let target = location
+        .targets(&snapshot.journal)
         .into_iter()
         .find(|target| target.id == id)
         .ok_or_else(|| unresolved("journal", id))?;
@@ -1271,15 +1275,11 @@ fn resolve_journal(
         )));
     }
     // The handle came out of `targets`, which derived it from this path; the
-    // membership test below is what makes that round trip a checked fact rather
-    // than an assumption.
-    let path = root.join(id);
-    snapshot
-        .journal
-        .source_files
-        .iter()
-        .any(|source| source == &path)
-        .then_some((path, target))
+    // membership test is what makes that round trip a checked fact rather than
+    // an assumption.
+    location
+        .source_path(&snapshot.journal, id)
+        .map(|path| (path, target))
         .ok_or_else(|| unresolved("journal", id))
 }
 
@@ -1290,39 +1290,39 @@ fn resolve_journal(
 ///
 /// 1. the handle is already known to have only plain components (layer 1), so
 ///    joining it onto the root cannot escape lexically;
-/// 2. its **parent directory** is canonicalized — which resolves every symlink in
-///    the chain — and required to sit inside the canonical include root, so a
-///    directory symlink pointing out of the tree is refused;
-/// 3. an existing target must be a **regular file**: [`std::fs::symlink_metadata`]
-///    does not follow links, so a symlink answers `false` on its own file type,
-///    and a directory or a FIFO is refused for the same reason `rules::discover`
+/// 2. its **parent directory** is canonicalized through the vault — which
+///    resolves every symlink in the chain — and required to sit inside the
+///    include root, so a directory symlink pointing out of the tree is refused;
+/// 3. an existing target must be a **regular file**: [`Vault::stat`] never
+///    follows a link, so a symlink answers on its own file type, and a
+///    directory or a FIFO is refused for the same reason `rules::discover`
 ///    refuses one.
-///
-/// **Deviation from the WP-11 note, recorded deliberately.** The plan says to
-/// confine with the shared `parse::confine`. That function is `pub(crate)` in
-/// `ledgeline-core` and this crate cannot see it, and widening it is a change to
-/// a crate this lane may not touch. What is here is `confine`'s own algorithm —
-/// canonicalize, then test the prefix — applied to the parent, because
-/// `confine`'s caller always holds a path that exists and this one deliberately
-/// does not. If core ever exports it, this function should become a call to it.
-fn resolve_destination(root: &Path, csv_path: &str) -> Result<PathBuf, AppError> {
+fn resolve_destination(location: &JournalLocation, csv_path: &str) -> Result<VaultPath, AppError> {
     validate_relative_id(csv_path, "CSV destination", Some(".csv"))?;
-    let candidate = root.join(csv_path);
+    let root = location.root_dir();
+    let candidate = root
+        .join(csv_path)
+        .map_err(|_| unresolved("CSV destination", csv_path))?;
     let (dir, name) = candidate
         .parent()
-        .zip(candidate.file_name())
+        .zip(candidate.file_name().map(str::to_string))
         .ok_or_else(|| unresolved("CSV destination", csv_path))?;
 
-    let dir = std::fs::canonicalize(dir).map_err(|_| unresolved("CSV destination", csv_path))?;
-    if !dir.starts_with(root) {
+    let dir = location
+        .vault()
+        .canonicalize(&dir)
+        .map_err(|_| unresolved("CSV destination", csv_path))?;
+    if !dir.starts_with(&root) {
         return Err(unresolved("CSV destination", csv_path));
     }
-    let destination = dir.join(name);
-    match std::fs::symlink_metadata(&destination) {
+    let destination = dir
+        .child(&name)
+        .map_err(|_| unresolved("CSV destination", csv_path))?;
+    match location.vault().stat(&destination) {
         // Nothing there yet: exactly the common case for a fresh statement.
-        Err(_) => Ok(destination),
-        Ok(meta) if meta.file_type().is_file() => Ok(destination),
-        Ok(_) => Err(AppError::BadRequest(format!(
+        Err(_) | Ok(None) => Ok(destination),
+        Ok(Some(entry)) if entry.is_file() => Ok(destination),
+        Ok(Some(_)) => Err(AppError::BadRequest(format!(
             "{} cannot be written: a CSV destination must be a regular file, not a symlink, a \
              directory or a device",
             quoted(csv_path)
@@ -1333,11 +1333,11 @@ fn resolve_destination(root: &Path, csv_path: &str) -> Result<PathBuf, AppError>
 /// Resolve a `rulesId` through the discovery scan — the only id → rules-file
 /// resolution in this codebase, by exact string equality against a set scanned
 /// in this request.
-fn resolve_rules(discovery: &Discovery, id: &str) -> Result<PathBuf, AppError> {
+fn resolve_rules(discovery: &Discovery, id: &str) -> Result<RulesPath, AppError> {
     validate_relative_id(id, "rules file id", Some(".rules"))?;
     discovery
         .resolve(id)
-        .map(|found| found.path().as_path().to_path_buf())
+        .map(|found| found.path().clone())
         .ok_or_else(|| unresolved("rules file", id))
 }
 
@@ -1352,9 +1352,10 @@ fn resolve_rules(discovery: &Discovery, id: &str) -> Result<PathBuf, AppError> {
 /// An unreadable file answers `0`, which means no padding, which is exactly
 /// today's behaviour — and the import is about to fail on its own terms anyway,
 /// with hledger's message rather than a guess of ours. So does one past the
-/// discovery scan's size cap, which [`rules::read_text`] re-applies here.
-fn rules_skip(path: &Path) -> u32 {
-    rules::read_text(path)
+/// discovery scan's size cap, which [`RulesPath::read_text`] re-applies here.
+fn rules_skip(rules: &RulesPath) -> u32 {
+    rules
+        .read_text()
         .and_then(|text| RulesDoc::parse(&text).settings().skip)
         .map_or(0, |setting| setting.value)
 }
@@ -1403,18 +1404,36 @@ struct ConfInForce {
 
 /// Find and read the config file in force, if any. Never an error: a config file
 /// that cannot be read is a config file we do not have.
-fn conf_in_force(root: &Path) -> Option<ConfInForce> {
-    let path = hledger_conf::locate(root)?;
-    let text = hledger_conf::read(&path).ok()?;
-    let directory = path.parent()?;
-    let outside = directory != root;
+///
+/// The search ([`hledger_conf::locate_conf`]) looks inside the vault, then —
+/// on the desktop, where the vault has a real directory — upward from the
+/// journal's directory as a terminal `hledger` would. A vault with no local
+/// path stops at its root.
+fn conf_in_force(location: &JournalLocation) -> Option<ConfInForce> {
+    let vault = location.vault();
+    let root = location.root_dir();
+    // Inside the vault first; above its root only on a vault with a real
+    // directory behind it (the desktop), read there with plain fs as before.
+    let (text, levels) = match hledger_conf::locate_conf(&**vault, &root)? {
+        hledger_conf::ConfFile::InVault(path) => {
+            let text = hledger_conf::read_in(&**vault, &path).ok()?;
+            let levels = root
+                .segments()
+                .count()
+                .saturating_sub(path.parent()?.segments().count());
+            (text, levels)
+        }
+        hledger_conf::ConfFile::AboveVault { path, levels } => {
+            (hledger_conf::read(&path).ok()?, levels)
+        }
+    };
     let (aliases, unforwarded) = hledger_conf::forwarded(hledger_conf::alias_arguments(
         &text,
         hledger_conf::IMPORT_COMMAND,
     ));
     Some(ConfInForce {
-        id: conf_id(root, directory),
-        outside,
+        id: conf_id(levels),
+        outside: levels > 0,
         aliases,
         unforwarded,
         hijacked_by: hledger_conf::hijacks_command(&text),
@@ -1424,13 +1443,10 @@ fn conf_in_force(root: &Path) -> Option<ConfInForce> {
 /// A relative handle for a config file's location, from the journal's directory.
 ///
 /// Security layer 5: the client is told `../hledger.conf`, never
-/// `/Users/someone/hledger.conf`. The number of `../` levels is real information
-/// — it is how the user finds the file — and it discloses nothing a relative
-/// rules id does not.
-fn conf_id(root: &Path, directory: &Path) -> String {
-    let levels = root
-        .strip_prefix(directory)
-        .map_or(1, |rest| rest.components().count());
+/// `/Users/someone/hledger.conf`. The number of `../` levels is real
+/// information — it is how the user finds the file — and it discloses nothing
+/// a relative rules id does not.
+fn conf_id(levels: usize) -> String {
     format!("{}{}", "../".repeat(levels), hledger_conf::CONF_NAME)
 }
 
@@ -1454,16 +1470,19 @@ fn conf_id(root: &Path, directory: &Path) -> String {
 /// 1. The path is built from the include root and one fixed file name — there is
 ///    no client-supplied component anywhere in it, so layers 1 and 2 have nothing
 ///    to check.
-/// 2. [`parse::confine`], the same containment `include` and the rules scan use,
-///    applied to the parent. It canonicalizes first, so a journal directory that
-///    is itself reached through a symlink is resolved before the comparison.
-/// 3. [`pinned::read_pinned`], which does not follow links: the target must be
-///    absent or a **regular file**. A symlinked `hledger.conf` pointing at
-///    `~/.bashrc` is refused, and so is a FIFO (opened non-blocking and refused
-///    on its `fstat`), which would otherwise hang the request forever on `read`.
-///    The [`Pin`] it returns is what the write later insists on finding.
+/// 2. `parse::confine`, the same containment `include` and the rules scan use,
+///    applied to the parent. It resolves links first, so a journal directory
+///    that is itself reached through a symlink is resolved before the
+///    comparison.
+/// 3. [`Vault::read_pinned`], which does not follow links (`pinned.rs` under a
+///    `LocalVault`): the target must be absent or a **regular file**. A
+///    symlinked `hledger.conf` pointing at `~/.bashrc` is refused, and so is a
+///    FIFO (opened non-blocking and refused on its `fstat`), which would
+///    otherwise hang the request forever on `read`. The [`Revision`] it returns
+///    is what the write later insists on finding.
 struct ConfTarget {
-    path: PathBuf,
+    /// Where it is in the journal's vault.
+    path: VaultPath,
     /// The wire handle. Always `hledger.conf`.
     id: String,
     text: String,
@@ -1473,31 +1492,39 @@ struct ConfTarget {
     /// that echoes it is refused if a file has appeared since.
     revision: String,
     writable: bool,
-    /// The inode and raw bytes read, for the write. Empty when nothing was read.
-    pin: Pin,
+    /// What was read — identity and raw bytes' fingerprint — for the write.
+    /// `None` when nothing was read.
+    read: Option<Revision>,
 }
 
-fn resolve_conf(root: &Path) -> ConfTarget {
-    let absent = |writable: bool| ConfTarget {
-        path: root.join(hledger_conf::CONF_NAME),
+fn resolve_conf(location: &JournalLocation) -> ConfTarget {
+    let root = location.root_dir();
+    let absent = |path: VaultPath, writable: bool| ConfTarget {
+        path,
         id: hledger_conf::CONF_NAME.to_string(),
         text: String::new(),
         exists: false,
         revision: String::new(),
         writable,
-        pin: Pin::none(),
+        read: None,
     };
     // Guard 2. The parent is the root itself, so this is cheap — and it is here
     // because "cheap and obviously true today" is how a containment check stops
     // being performed at all.
-    let Some(directory) = ledgeline_core::parse::confine(root, root) else {
-        return absent(false);
+    let Some(directory) = ledgeline_core::parse::confine(&**location.vault(), &root, &root) else {
+        return absent(root, false);
     };
-    let path = directory.join(hledger_conf::CONF_NAME);
-    // Guard 3. Lossy, as `hledger_conf::read` is: the revision stays a hash of
-    // the text, and the pin holds the raw bytes' fingerprint for the write.
-    match pinned::read_pinned_capped(&path, hledger_conf::MAX_CONF_BYTES) {
-        Ok((bytes, pin)) => {
+    let Ok(path) = directory.child(hledger_conf::CONF_NAME) else {
+        return absent(root, false);
+    };
+    // Guard 3. Lossy, as `hledger_conf::read_in` is: the revision stays a hash
+    // of the text, and the read revision holds the raw bytes' fingerprint for
+    // the write.
+    match location
+        .vault()
+        .read_pinned(&path, Some(hledger_conf::MAX_CONF_BYTES))
+    {
+        Ok((bytes, read)) => {
             let text = String::from_utf8_lossy(&bytes).into_owned();
             ConfTarget {
                 revision: Fingerprint::of_bytes(text.as_bytes()).token(),
@@ -1506,24 +1533,24 @@ fn resolve_conf(root: &Path) -> ConfTarget {
                 writable: true,
                 text,
                 path,
-                pin,
+                read: Some(read),
             }
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => absent(true),
+        Err(error) if error.is_not_found() => absent(path, true),
         // Past `hledger_conf::MAX_CONF_BYTES`: there is a file here, so a write
         // must not treat it as absent and replace it.
         Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => ConfTarget {
             writable: false,
             exists: true,
-            ..absent(false)
+            ..absent(path, false)
         },
         // A symlink, a directory, a FIFO: present, and not something to write.
-        Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => ConfTarget {
+        Err(error) if error.is_not_regular_file() => ConfTarget {
             writable: false,
             exists: true,
-            ..absent(false)
+            ..absent(path, false)
         },
-        Err(_) => absent(false),
+        Err(_) => absent(path, false),
     }
 }
 
@@ -1622,8 +1649,8 @@ fn run(invocation: Invocation, what: &str) -> Result<Output, AppError> {
 ///
 /// **There is no variant that writes**, and that is the point of the type.
 /// hledger never appends to a user's journal: it proposes (`--dry-run`),
-/// Ledgeline appends that exact text through
-/// [`edit::atomic_write`](ledgeline_core::edit::atomic_write), and then hledger
+/// Ledgeline appends that exact text through the journal's vault
+/// ([`Vault::replace`], pinned to the bytes it read), and then hledger
 /// is asked to record its own dedup state (`--catchup`). A third variant
 /// spelling "and now actually write it" would put back the split between what
 /// the preview showed and what landed — see [`run_commit`].
@@ -2358,7 +2385,7 @@ pub(crate) async fn capabilities(State(state): State<AppState>) -> Result<Respon
         Ok(WireCapabilities {
             hledger: WireHledger::from(&resolved),
             formats: convert_formats(),
-            journals: journals::targets(&snapshot.journal)
+            journals: targets_of(&snapshot)
                 .iter()
                 .map(WireJournal::from)
                 .collect(),
@@ -2431,26 +2458,28 @@ fn stage_upload(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireStage,
     // Candidate scoring needs the journal's own directory to scan for rules
     // files. Without a journal there is nothing to score against — which is not
     // an error, just an empty list and a default derived from the upload's name.
-    let main = state.source_files().into_iter().next();
+    let snapshot = state.snapshot();
+    let location = snapshot.storage();
     // The same merged set the dry-run will use — both homes, config first — so a
     // candidate card's sample accounts are the accounts the import proposes. Two
     // different alias sets between the card and the preview would make the card
     // a lie about the very thing this feature exists to make visible.
-    let aliases = main
+    let aliases = location
         .as_deref()
-        .and_then(|main| include_root(main).ok())
-        .map(|root| {
+        .map(|location| {
             AliasArguments::merge(
-                aliases::arguments(&state.snapshot().journal),
-                conf_in_force(&root)
+                aliases::arguments(&snapshot.journal),
+                conf_in_force(location)
                     .map(|conf| conf.aliases)
                     .unwrap_or_default(),
             )
             .merged
         })
         .unwrap_or_default();
-    let candidates = match (&main, resolve_hledger()) {
-        (Some(main), Ok(hledger)) => rank_candidates(&hledger, main, &staged, &tabular, &aliases),
+    let candidates = match (&location, resolve_hledger()) {
+        (Some(location), Ok(hledger)) => {
+            rank_candidates(&hledger, location, &staged, &tabular, &aliases)
+        }
         _ => Vec::new(),
     };
 
@@ -2469,11 +2498,11 @@ fn stage_upload(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireStage,
     // slot to hledger (`run_dry_run`, `preflight_assertion`) re-materialises it
     // first with the plan's own `skip`. The `.latest` copy beside it is the
     // whole point of running this early; the CSV is a placeholder.
-    if let Some(root) = main.as_deref().map(include_root).transpose()?
-        && let Ok(destination) = resolve_destination(&root, &defaults.csv_path)
-        && let Some((dir, file)) = destination.parent().zip(file_name(&destination))
+    if let Some(location) = location.as_deref()
+        && let Ok(destination) = resolve_destination(location, &defaults.csv_path)
+        && let Some((dir, file)) = destination.parent().zip(destination.file_name())
     {
-        let _ = staged.materialize(RUN_WITH_LATEST, &file, Some(dir), 0);
+        let _ = staged.materialize(RUN_WITH_LATEST, file, Some((&**location.vault(), &dir)), 0);
     }
 
     Ok(WireStage {
@@ -2539,12 +2568,6 @@ fn convert_error(error: ConvertError) -> AppError {
     AppError::BadRequest(error.to_string())
 }
 
-/// A path's final component as a `String`.
-fn file_name(path: &Path) -> Option<String> {
-    path.file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-}
-
 /// The preview a stage response carries: bounded in rows, columns and cell size.
 fn preview_of(tabular: &Tabular) -> WirePreview {
     WirePreview {
@@ -2583,12 +2606,12 @@ fn clip_row(row: &[String]) -> Vec<String> {
 /// importing into the one they touched most recently.
 fn rank_candidates(
     hledger: &Hledger,
-    main: &Path,
+    location: &JournalLocation,
     staged: &Stage,
     data: &Tabular,
     aliases: &[String],
 ) -> Vec<WireCandidate> {
-    let discovery = rules::discover(main);
+    let discovery = rules::discover_in(Arc::clone(location.vault()), location.main());
     // Each candidate's own `skip` is carried alongside its prefilter result,
     // because the file it is scored against has to be padded into ITS frame.
     // Scored against a header-on-line-1 CSV, a genuine `skip 3` file reads the
@@ -2602,7 +2625,7 @@ fn rank_candidates(
         .enumerate()
         .filter(|(_, found)| found.parsed)
         .filter_map(|(at, found)| {
-            let text = rules::read_text(found.path().as_path())?;
+            let text = found.path().read_text()?;
             let doc = RulesDoc::parse(&text);
             let skip = doc.settings().skip.map_or(0, |setting| setting.value);
             let pass = matching::prefilter(&doc, data)?;
@@ -2626,7 +2649,9 @@ fn rank_candidates(
         .filter_map(|(at, pass, skip)| {
             let found = &discovery.files[at];
             let data = staged.aligned(skip).ok()?;
-            let json = print_json(hledger, &data, found.path().as_path(), aliases)?;
+            // hledger reads the rules file by its real path; a vault with
+            // none has no candidates to score.
+            let json = print_json(hledger, &data, &found.path().local_path()?, aliases)?;
             let expected = pass
                 .expected_commodity
                 .clone()
@@ -2776,6 +2801,15 @@ fn field(node: &Value, name: &str) -> String {
         .to_string()
 }
 
+/// [`journals::targets`] for a snapshot, judged in the journal's own vault —
+/// or, for a journal with no backing storage at all, on the parsed paths alone.
+fn targets_of(snapshot: &crate::Snapshot) -> Vec<JournalTarget> {
+    snapshot.storage().map_or_else(
+        || journals::targets(&snapshot.journal),
+        |location| location.targets(&snapshot.journal),
+    )
+}
+
 /// What the destination form starts out filled in with.
 ///
 /// The CSV path follows the chosen rules file: `import/2026/bank.csv.rules`
@@ -2788,8 +2822,7 @@ fn field(node: &Value, name: &str) -> String {
 /// [`journals::targets`] has already ordered by newest transaction date. No
 /// filename is ever inspected; see that module.
 fn defaults_for(state: &AppState, upload: &str, rules_id: Option<&str>) -> WireDefaults {
-    let snapshot = state.snapshot();
-    let targets = journals::targets(&snapshot.journal);
+    let targets = targets_of(&state.snapshot());
     WireDefaults {
         csv_path: default_csv_path(upload, rules_id),
         journal_id: targets
@@ -2847,9 +2880,27 @@ pub(crate) async fn dry_run(
 /// A field named `journal` would be a question ("which one?") answered by
 /// whoever typed the next line fastest. There is no such field on purpose;
 /// resist adding one back.
+///
+/// # Two spellings of every file
+///
+/// Each file this plan touches is held twice: as a [`VaultPath`] in
+/// [`location`](Self::location)'s vault, which is how it is **read and written**,
+/// and as the real path `hledger` and `git` are handed (`target`, `rules`,
+/// `destination`, `root_journal`, `root_dir`). The real paths exist only because
+/// the subprocesses need them; a vault with no local path cannot import at all
+/// ([`native`]), and says so.
 struct Plan {
     hledger: Hledger,
     staged: std::sync::Arc<Stage>,
+    /// The open journal's storage, from the same snapshot every handle was
+    /// resolved against.
+    location: Arc<JournalLocation>,
+    /// [`target`](Self::target) in the vault: what the journal append and its
+    /// roll-back, the assertion and the status flips read and write.
+    target_path: VaultPath,
+    /// [`destination`](Self::destination) in the vault: where the CSV is
+    /// written, and the directory whose `.latest.NAME` is consulted.
+    destination_path: VaultPath,
     /// The file this import appends to — the WRITE destination, and nothing
     /// else. It is a fragment of a larger journal in every layout but the
     /// single-file one, so it is never the thing to compute a balance over.
@@ -2883,11 +2934,8 @@ struct Plan {
     /// writing a config line needs the pattern and replacement apart, which an
     /// assembled `OLD=NEW` argument has already joined.
     declared: Vec<aliases::Forwarded>,
-    /// The journal's own DIRECTORY — the include root every handle is confined
-    /// to. Named for the thing it is, because a `root` beside a `root_journal`
-    /// is the ambiguity this type's docs are about.
-    root_dir: PathBuf,
-    /// The `hledger.conf` in force at or above [`root_dir`](Self::root_dir).
+    /// The `hledger.conf` in force at or above the journal's own directory,
+    /// up to the vault root.
     conf: Option<ConfInForce>,
     redactor: Redactor,
 }
@@ -2901,22 +2949,33 @@ impl Plan {
         // `include` tree — `journals::targets` flags it `is_root` — so it is
         // both the directory anchor and, as a file, the thing every balance is
         // reckoned against. Two different uses, two named fields below.
-        let root_journal = main_journal(state, "rules file", &request.rules_id)?;
-        let root_dir = include_root(&root_journal)?;
-        let (target, _) = resolve_journal(state, &root_dir, &request.journal_id)?;
-        let rules = resolve_rules(&rules::discover(&root_journal), &request.rules_id)?;
-        let skip = rules_skip(&rules);
-        let destination = resolve_destination(&root_dir, &request.csv_path)?;
-        let csv_name = file_name(&destination)
+        let location = books(state, "rules file", &request.rules_id)?;
+        let root_journal = native(&location, location.main())?;
+        let root_dir = native(&location, &location.root_dir())?;
+        let (target_path, _) = resolve_journal(state, &location, &request.journal_id)?;
+        let target = native(&location, &target_path)?;
+        let rules_file = resolve_rules(
+            &rules::discover_in(Arc::clone(location.vault()), location.main()),
+            &request.rules_id,
+        )?;
+        let rules = rules_file
+            .local_path()
+            .ok_or_else(|| crate::location::no_local_path("importing a statement"))?;
+        let skip = rules_skip(&rules_file);
+        let destination_path = resolve_destination(&location, &request.csv_path)?;
+        let destination = native(&location, &destination_path)?;
+        let csv_name = destination_path
+            .file_name()
+            .map(str::to_string)
             .ok_or_else(|| unresolved("CSV destination", &request.csv_path))?;
         // Sequencing rule 1, second half. Resolved here for the reason `skip`
         // and `aliases` are: the dry-run and the commit must not be able to
         // disagree about whether the dedup state applies.
-        refuse_unusable_dedup_state(&destination, &csv_name, &request.csv_path)?;
+        refuse_unusable_dedup_state(&location, &destination_path, &csv_name, &request.csv_path)?;
         let hledger = resolve_hledger()?;
         // Both homes an account alias can live in — see `AliasArguments::merge`
         // for why the config's come first.
-        let conf = conf_in_force(&root_dir);
+        let conf = conf_in_force(&location);
         let declared = aliases::forward(&state.snapshot().journal);
         let aliases = AliasArguments::merge(
             declared
@@ -2943,6 +3002,9 @@ impl Plan {
         Ok(Self {
             hledger,
             staged,
+            location,
+            target_path,
+            destination_path,
             target,
             root_journal,
             rules,
@@ -2951,18 +3013,28 @@ impl Plan {
             csv_name,
             aliases,
             declared,
-            root_dir,
             conf,
             redactor,
         })
     }
 
-    /// The destination's directory — where `.latest.NAME` lives.
-    fn destination_dir(&self) -> &Path {
-        self.destination.parent().unwrap_or_else(|| Path::new("."))
+    /// The destination's directory in the vault — where `.latest.NAME` lives —
+    /// with the vault to read it through.
+    fn latest_dir(&self) -> (&dyn Vault, VaultPath) {
+        (
+            &**self.location.vault(),
+            self.destination_path.parent().unwrap_or_default(),
+        )
     }
 
-    /// The root journal's own handle, relative to [`root_dir`](Self::root_dir).
+    /// The key the parsed journal records the target under
+    /// (`Transaction::source_file`) — what a transaction is matched against to
+    /// ask "is it in the file this import writes?".
+    fn target_key(&self) -> PathBuf {
+        self.location.key(&self.target_path)
+    }
+
+    /// The root journal's own handle, relative to the journal's own directory.
     ///
     /// It is by construction a file IN that directory (the directory is defined
     /// as its parent), so the handle is its file name — the same string
@@ -2982,14 +3054,19 @@ impl Plan {
     /// CSV down with it.
     fn marker_target(&self, csv_path: &str) -> Option<(PathBuf, String)> {
         let name = stage::latest_name(&self.csv_name);
-        let path = self.destination_dir().join(&name);
-        path.is_file().then(|| {
-            let handle = match csv_path.rsplit_once('/') {
-                Some((parent, _)) => format!("{parent}/{name}"),
-                None => name.clone(),
-            };
-            (path, handle)
-        })
+        let (vault, dir) = self.latest_dir();
+        let marker = dir.child(&name).ok()?;
+        if !vault.is_file(&marker) {
+            return None;
+        }
+        // `git add` needs the real path; the existence check above is the
+        // vault's, and never follows a link.
+        let path = vault.local_path(&marker)?;
+        let handle = match csv_path.rsplit_once('/') {
+            Some((parent, _)) => format!("{parent}/{name}"),
+            None => name.clone(),
+        };
+        Some((path, handle))
     }
 
     /// The two targets an import **writes**, each with the handle to report it
@@ -3016,12 +3093,13 @@ fn run_dry_run(
     git: GitPolicy,
 ) -> Result<WireDryRun, AppError> {
     let plan = Plan::resolve(state, request)?;
+    let (latest_vault, latest_dir) = plan.latest_dir();
     let staged = plan
         .staged
         .materialize(
             RUN_WITH_LATEST,
             &plan.csv_name,
-            Some(plan.destination_dir()),
+            Some((latest_vault, &latest_dir)),
             plan.skip,
         )
         .map_err(stage_failed)?;
@@ -3148,7 +3226,8 @@ fn run_dry_run(
 /// Also `None` when hledger refused the second run, which is the same
 /// "say nothing rather than guess" answer this function has always given.
 fn bare_proposal(plan: &Plan) -> Result<Option<BareProposal>, AppError> {
-    let Some(marker) = stage::latest_marker(plan.destination_dir(), &plan.csv_name) else {
+    let (vault, dir) = plan.latest_dir();
+    let Some(marker) = stage::latest_marker(vault, &dir, &plan.csv_name) else {
         return Ok(None);
     };
     let bare = plan
@@ -3351,7 +3430,7 @@ fn reconcile_ids(
                 // definition not in this list.
                 in_target: index
                     .get(&row.id)
-                    .is_some_and(|(txn, _)| txn.source_file == plan.target),
+                    .is_some_and(|(txn, _)| txn.source_file == plan.target_key()),
             }),
             // Raw and whole; `IdReconciliation::wire` does the redacting and the
             // clipping, in one place, for both lists.
@@ -3422,7 +3501,7 @@ fn apply_status_flips(
             plan.redactor.apply(&error.to_string())
         )));
     }
-    let target = plan.target.clone();
+    let target = plan.target_key();
     crate::edit_api::set_statuses(state, &move |journal| {
         let index = reimport::build_index(journal, reimport::ID_TAG);
         wanted
@@ -3580,7 +3659,7 @@ fn alias_effect(
 /// with its reason rather than dropped.
 fn cli_parity(plan: &Plan, differences: Vec<WireRename>) -> WireCliParity {
     let matches = differences.is_empty();
-    let target = resolve_conf(&plan.root_dir);
+    let target = resolve_conf(&plan.location);
     let outside = plan.conf.as_ref().is_some_and(|conf| conf.outside);
     let (additions, refusals) = if matches {
         (Vec::new(), Vec::new())
@@ -3691,12 +3770,13 @@ fn renames_between(before: &str, after: &str) -> Vec<(String, String)> {
 /// user's disk in a state this import will not proceed against, and the sentence
 /// names it.
 fn refuse_unusable_dedup_state(
-    destination: &Path,
+    location: &JournalLocation,
+    destination: &VaultPath,
     csv_name: &str,
     handle: &str,
 ) -> Result<(), AppError> {
-    let dir = destination.parent().unwrap_or_else(|| Path::new("."));
-    match stage::latest_state(dir, csv_name) {
+    let dir = destination.parent().unwrap_or_default();
+    match stage::latest_state(&**location.vault(), &dir, csv_name) {
         stage::Latest::Absent | stage::Latest::Present(_) => Ok(()),
         stage::Latest::Unusable(reason) => Err(AppError::Conflict(format!(
             "{} records which rows of {} hledger has already imported, and it {reason}. Going \
@@ -3749,8 +3829,8 @@ pub(crate) async fn commit(
 ///
 /// 1. `import --dry-run` → the deduped proposal, on stdout, which is **exactly
 ///    what the dry-run route returned** to the screen;
-/// 2. append it with [`edit::atomic_write`](ledgeline_core::edit::atomic_write),
-///    byte-compatibly with hledger's own append ([`appended_text`]);
+/// 2. append it with [`Vault::replace`], pinned to the journal as this commit
+///    read it, byte-compatibly with hledger's own append ([`appended_text`]);
 /// 3. `import --catchup` → hledger records `.latest.NAME` itself, so the dedup
 ///    state stays the thing hledger maintains rather than something Ledgeline
 ///    now has an opinion about.
@@ -3820,20 +3900,25 @@ fn run_commit(
     // `convert::align_to_skip` argues the frame mismatch in full.
     let csv = std::fs::read_to_string(plan.staged.data()).map_err(stage_failed)?;
     let csv = convert::align_to_skip(&csv, plan.skip);
-    ledgeline_core::edit::atomic_write(&plan.destination, csv.as_bytes()).map_err(|error| {
-        AppError::Internal(format!(
-            "{} could not be written: {}. Nothing else was changed.",
-            quoted(&request.plan.csv_path),
-            error.kind()
-        ))
-    })?;
+    let vault = plan.location.vault();
+    vault
+        .write_atomic(&plan.destination_path, csv.as_bytes())
+        .map_err(|error| {
+            AppError::Internal(format!(
+                "{} could not be written: {}. Nothing else was changed.",
+                quoted(&request.plan.csv_path),
+                error.kind()
+            ))
+        })?;
 
-    // The journal as this commit found it, PINNED: its inode and bytes. Every
+    // The journal as this commit found it, PINNED: its identity and bytes. Every
     // journal write below insists on finding the file exactly as this commit
     // last left it, so a symlink swapped in during the hledger runs is refused
     // rather than followed, and an edit the user saved in that window is
     // reported as a conflict rather than overwritten with `before + appended`.
-    let (before, pin) = pinned::read_pinned(&plan.target).map_err(journal_unreadable)?;
+    let (before, pin) = vault
+        .read_pinned(&plan.target_path, None)
+        .map_err(|error| journal_unreadable(error.into()))?;
     let output = run(
         import_invocation(
             &plan.hledger,
@@ -3878,18 +3963,21 @@ fn run_commit(
         pin
     } else {
         let combined = [before.as_slice(), appended.as_bytes()].concat();
-        pinned::replace(&plan.target, &combined, &pin).map_err(|error| match error {
-            WriteError::Changed => AppError::Conflict(format!(
-                "{} changed on disk while the import was being prepared, so nothing was added \
-                 to it. The CSV was saved; reload and import again.",
-                quoted(&request.plan.journal_id),
-            )),
-            WriteError::Io(error) => AppError::Internal(format!(
-                "{} could not be written: {}. The CSV was saved and the journal is unchanged.",
-                quoted(&request.plan.journal_id),
-                error.kind()
-            )),
-        })?
+        vault
+            .replace(&plan.target_path, &combined, &pin)
+            .map_err(|error| match error {
+                VaultError::Changed { .. } => AppError::Conflict(format!(
+                    "{} changed on disk while the import was being prepared, so nothing was \
+                     added to it. The CSV was saved; reload and import again.",
+                    quoted(&request.plan.journal_id),
+                )),
+                other => AppError::Internal(format!(
+                    "{} could not be written: {}. The CSV was saved and the journal is \
+                     unchanged.",
+                    quoted(&request.plan.journal_id),
+                    other.kind()
+                )),
+            })?
     };
 
     // hledger's own dedup state, recorded by hledger. Verified byte-identical to
@@ -3937,7 +4025,7 @@ fn run_commit(
     // entirely). It also cannot fail for an assertion reason, because it never
     // runs hledger — `sort::plan` is our own pure pass over the file's text, so
     // there is no third journal-reading invocation hiding here.
-    let text = std::fs::read_to_string(&plan.target).map_err(journal_unreadable)?;
+    let text = read_text(&**vault, &plan.target_path).map_err(journal_unreadable)?;
     let ordering = match sort::plan(&text) {
         Ok(plan) => WireOrdering {
             in_order: plan.unchanged,
@@ -4062,9 +4150,11 @@ pub(crate) async fn save_csv(
 /// does not block.
 fn run_save_csv(state: &AppState, request: &WireSaveCsvRequest) -> Result<WireSavedCsv, AppError> {
     let staged = resolve_stage(state, &request.stage_id)?;
-    let main = main_journal(state, "CSV destination", &request.csv_path)?;
-    let root = include_root(&main)?;
-    let destination = resolve_destination(&root, &request.csv_path)?;
+    let location = books(state, "CSV destination", &request.csv_path)?;
+    let destination_path = resolve_destination(&location, &request.csv_path)?;
+    // Real paths only for git, below; the write itself goes through the vault.
+    let root = native(&location, &location.root_dir())?;
+    let destination = native(&location, &destination_path)?;
     let redactor = Redactor::default()
         .hide(&destination, &request.csv_path)
         .hide_prefix(&root)
@@ -4085,13 +4175,16 @@ fn run_save_csv(state: &AppState, request: &WireSaveCsvRequest) -> Result<WireSa
     }
 
     let csv = std::fs::read_to_string(staged.data()).map_err(stage_failed)?;
-    ledgeline_core::edit::atomic_write(&destination, csv.as_bytes()).map_err(|error| {
-        AppError::Internal(format!(
-            "{} could not be written: {}. Nothing else was changed.",
-            quoted(&request.csv_path),
-            error.kind()
-        ))
-    })?;
+    location
+        .vault()
+        .write_atomic(&destination_path, csv.as_bytes())
+        .map_err(|error| {
+            AppError::Internal(format!(
+                "{} could not be written: {}. Nothing else was changed.",
+                quoted(&request.csv_path),
+                error.kind()
+            ))
+        })?;
 
     let git = autocommit_enabled(&prefs)
         .then(|| commit_targets(&targets, &save_message(&request.csv_path), &redactor))
@@ -4126,10 +4219,14 @@ fn catchup_failed(
     plan: &Plan,
     request: &WireDryRunRequest,
     before: &[u8],
-    current: &Pin,
+    current: &Revision,
     complaint: &str,
 ) -> AppError {
-    match pinned::replace(&plan.target, before, current) {
+    match plan
+        .location
+        .vault()
+        .replace(&plan.target_path, before, current)
+    {
         Ok(_) => AppError::Internal(format!(
             "the import was undone because hledger could not record which rows it had already \
              taken. {} is exactly as it was; {} was saved. hledger said:\n{complaint}",
@@ -4143,12 +4240,27 @@ fn catchup_failed(
              journal before you do. hledger said:\n{complaint}",
             quoted(&request.journal_id),
             match error {
-                WriteError::Changed => "it changed on disk after the import".to_string(),
-                WriteError::Io(error) => error.kind().to_string(),
+                VaultError::Changed { .. } => "it changed on disk after the import".to_string(),
+                other => other.kind().to_string(),
             },
             quoted(&request.csv_path),
         )),
     }
+}
+
+/// A journal-tree file as UTF-8 with the revision of exactly those bytes. A
+/// symlink at it is refused (kind `InvalidInput`), and non-UTF-8 content is
+/// `InvalidData`, never a lossy decode.
+fn read_text_pinned(vault: &dyn Vault, path: &VaultPath) -> std::io::Result<(String, Revision)> {
+    let (bytes, revision) = vault.read_pinned(path, None)?;
+    let text = String::from_utf8(bytes)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    Ok((text, revision))
+}
+
+/// [`read_text_pinned`] without the revision.
+fn read_text(vault: &dyn Vault, path: &VaultPath) -> std::io::Result<String> {
+    read_text_pinned(vault, path).map(|(text, _)| text)
 }
 
 /// A `500` for a journal we could not read back. Only the kind, never the path.
@@ -4282,7 +4394,8 @@ fn plan_assertion(
     let Some((statement, account)) = assertion_fields(request)? else {
         return Ok(None);
     };
-    let text = std::fs::read_to_string(&plan.target).map_err(journal_unreadable)?;
+    let text =
+        read_text(&**plan.location.vault(), &plan.target_path).map_err(journal_unreadable)?;
     let date = newest_date(&format!("{text}\n{proposed}")).ok_or_else(|| {
         AppError::BadRequest(
             "a balance assertion needs at least one transaction to be dated after".to_string(),
@@ -4350,12 +4463,13 @@ fn preflight_assertion(plan: &Plan, request: &WireDryRunRequest) -> Result<(), A
     if assertion_fields(request)?.is_none() {
         return Ok(());
     }
+    let (latest_vault, latest_dir) = plan.latest_dir();
     let staged = plan
         .staged
         .materialize(
             RUN_WITH_LATEST,
             &plan.csv_name,
-            Some(plan.destination_dir()),
+            Some((latest_vault, &latest_dir)),
             plan.skip,
         )
         .map_err(stage_failed)?;
@@ -4404,7 +4518,7 @@ fn preflight_assertion(plan: &Plan, request: &WireDryRunRequest) -> Result<(), A
 fn write_assertion(
     plan: &Plan,
     request: &WireDryRunRequest,
-    current: &Pin,
+    current: &Revision,
 ) -> Result<(), AppError> {
     let Some(assertion) = plan_assertion(plan, request, "")? else {
         return Ok(());
@@ -4416,25 +4530,27 @@ fn write_assertion(
         )));
     }
 
-    let (text, _) = pinned::read_pinned_string(&plan.target).map_err(journal_unreadable)?;
+    let vault = plan.location.vault();
+    let text = read_text(&**vault, &plan.target_path).map_err(journal_unreadable)?;
     let separator = if text.ends_with('\n') { "\n" } else { "\n\n" };
-    pinned::replace(
-        &plan.target,
-        format!("{text}{separator}{assertion}").as_bytes(),
-        current,
-    )
-    .map(|_| ())
-    .map_err(|error| match error {
-        WriteError::Changed => AppError::Conflict(
-            "the journal changed on disk after the import landed, so the balance assertion was \
-             not written. The import itself was applied."
-                .to_string(),
-        ),
-        WriteError::Io(error) => AppError::Internal(format!(
-            "the balance assertion could not be written: {}. The import itself was applied.",
-            error.kind()
-        )),
-    })
+    vault
+        .replace(
+            &plan.target_path,
+            format!("{text}{separator}{assertion}").as_bytes(),
+            current,
+        )
+        .map(|_| ())
+        .map_err(|error| match error {
+            VaultError::Changed { .. } => AppError::Conflict(
+                "the journal changed on disk after the import landed, so the balance assertion \
+                 was not written. The import itself was applied."
+                    .to_string(),
+            ),
+            other => AppError::Internal(format!(
+                "the balance assertion could not be written: {}. The import itself was applied.",
+                other.kind()
+            )),
+        })
 }
 
 /// `POST /api/import/sort` — the confirmed format-preserving re-sort.
@@ -4482,11 +4598,11 @@ fn run_sort(
     request: &WireSortRequest,
     git: GitPolicy,
 ) -> Result<WireSorted, AppError> {
-    let main = main_journal(state, "journal", &request.journal_id)?;
-    let root = include_root(&main)?;
-    let (journal, _) = resolve_journal(state, &root, &request.journal_id)?;
+    let location = books(state, "journal", &request.journal_id)?;
+    let (journal_path, _) = resolve_journal(state, &location, &request.journal_id)?;
+    let vault = location.vault();
 
-    let (text, pin) = pinned::read_pinned_string(&journal).map_err(journal_unreadable)?;
+    let (text, pin) = read_text_pinned(&**vault, &journal_path).map_err(journal_unreadable)?;
     let plan = sort::plan(&text).map_err(|error| AppError::BadRequest(error.to_string()))?;
     if plan.unchanged {
         return Ok(WireSorted {
@@ -4496,29 +4612,41 @@ fn run_sort(
     }
     let sorted =
         sort::apply(&text, &plan).map_err(|error| AppError::BadRequest(error.to_string()))?;
-    // Pinned to the inode and bytes just planned from: never through a link
+    // Pinned to the identity and bytes just planned from: never through a link
     // swapped in since, never over an edit saved since.
-    pinned::replace(&journal, sorted.as_bytes(), &pin).map_err(|error| match error {
-        WriteError::Changed => AppError::Conflict(format!(
-            "{} changed on disk while it was being re-sorted, so nothing was changed. Reload and \
-             try again.",
-            quoted(&request.journal_id),
-        )),
-        WriteError::Io(error) => AppError::Internal(format!(
-            "{} could not be re-sorted: {}. Nothing was changed.",
-            quoted(&request.journal_id),
-            error.kind()
-        )),
-    })?;
+    vault
+        .replace(&journal_path, sorted.as_bytes(), &pin)
+        .map_err(|error| match error {
+            VaultError::Changed { .. } => AppError::Conflict(format!(
+                "{} changed on disk while it was being re-sorted, so nothing was changed. Reload \
+                 and try again.",
+                quoted(&request.journal_id),
+            )),
+            other => AppError::Internal(format!(
+                "{} could not be re-sorted: {}. Nothing was changed.",
+                quoted(&request.journal_id),
+                other.kind()
+            )),
+        })?;
     if let Some(Err(error)) = state.reopen_editor() {
         eprintln!("ledgeline: the journal could not be re-read after a sort: {error}");
     }
 
-    let redactor = Redactor::default()
-        .hide(&journal, &request.journal_id)
-        .hide_prefix(&root)
-        .hide_prefix(&std::env::temp_dir());
-    let targets = vec![(journal.as_path(), request.journal_id.as_str())];
+    // git is handed real paths. A vault with none has no repository to commit
+    // into, so the sort stands uncommitted rather than failing after it landed.
+    let journal = location.vault().local_path(&journal_path);
+    let root = location.vault().local_path(&location.root_dir());
+    let redactor = match (&journal, &root) {
+        (Some(journal), Some(root)) => Redactor::default()
+            .hide(journal, &request.journal_id)
+            .hide_prefix(root),
+        _ => Redactor::default(),
+    }
+    .hide_prefix(&std::env::temp_dir());
+    let targets: Vec<(&Path, &str)> = journal
+        .iter()
+        .map(|journal| (journal.as_path(), request.journal_id.as_str()))
+        .collect();
     let git = git
         .enabled(&prefs::load())
         .then(|| {
@@ -4951,18 +5079,19 @@ fn cli_import(state: &AppState, args: &CliImport) -> Result<CliRunReport, AppErr
     // wording is for a caller that supplied a handle, and this state was built
     // from a parsed journal file, so an empty source list is impossible rather
     // than merely unlikely.
-    let root_journal = state
-        .source_files()
-        .into_iter()
-        .next()
+    let location = state
+        .snapshot()
+        .storage()
         .ok_or_else(|| AppError::Internal("this process has no journal open".to_string()))?;
-    let root_dir = include_root(&root_journal)?;
+    // A command line names files by path, so this is a desktop-only door: the
+    // root journal's real path is what `--root-journal` defaults to.
+    let root_journal = native(&location, location.main())?;
 
     // Layer 2/3 resolution, through the SAME scan the routes use: a path that
     // does not name a file the engine already knows about cannot be imported to,
     // whichever door it arrives at, and whichever branch below handles it.
-    let journal_id = cli_journal_id(state, &root_dir, &args.journal)?;
-    let root_id = cli_journal_id(state, &root_dir, &root_journal)?;
+    let journal_id = cli_journal_id(state, &location, &args.journal)?;
+    let root_id = cli_journal_id(state, &location, &root_journal)?;
 
     // The upload, read the way the browser's drop reads it — before either
     // branch is chosen, because which one applies is a question about these
@@ -4996,17 +5125,8 @@ fn cli_import(state: &AppState, args: &CliImport) -> Result<CliRunReport, AppErr
         return cli_import_qb_journal(state, args, &bytes, &name, &journal_id, &root_id)
             .map(CliRunReport::QbJournal);
     }
-    cli_import_csv(
-        state,
-        args,
-        &root_journal,
-        &root_dir,
-        &journal_id,
-        &root_id,
-        &name,
-        &bytes,
-    )
-    .map(CliRunReport::Csv)
+    cli_import_csv(state, args, &location, &journal_id, &root_id, &name, &bytes)
+        .map(CliRunReport::Csv)
 }
 
 /// The CSV/OFX/spreadsheet branch of [`cli_import`] — everything
@@ -5017,8 +5137,7 @@ fn cli_import(state: &AppState, args: &CliImport) -> Result<CliRunReport, AppErr
 fn cli_import_csv(
     state: &AppState,
     args: &CliImport,
-    root_journal: &Path,
-    root_dir: &Path,
+    location: &Arc<JournalLocation>,
     journal_id: &str,
     root_id: &str,
     name: &str,
@@ -5045,8 +5164,9 @@ fn cli_import_csv(
     let output = args.output.as_deref().expect("checked above");
     let rules = args.rules.as_deref().expect("checked above");
 
-    let rules_id = cli_rules_id(&rules::discover(root_journal), rules)?;
-    let csv_path = cli_csv_path(root_dir, output)?;
+    let discovery = rules::discover_in(Arc::clone(location.vault()), location.main());
+    let rules_id = cli_rules_id(&discovery, location, rules)?;
+    let csv_path = cli_csv_path(location, output)?;
 
     let staged = stage_upload(state, name, bytes)?;
 
@@ -5396,7 +5516,11 @@ fn cli_upload_name(input: &Path) -> Result<String, AppError> {
 /// files this parse actually read, so a path that is not one of them is not a
 /// file this journal includes — and saying which ones it *does* include is the
 /// useful half of that refusal.
-fn cli_journal_id(state: &AppState, root_dir: &Path, path: &Path) -> Result<String, AppError> {
+fn cli_journal_id(
+    state: &AppState,
+    location: &JournalLocation,
+    path: &Path,
+) -> Result<String, AppError> {
     let wanted = std::fs::canonicalize(path).map_err(|error| {
         AppError::BadRequest(format!(
             "{} could not be resolved: {}",
@@ -5404,13 +5528,14 @@ fn cli_journal_id(state: &AppState, root_dir: &Path, path: &Path) -> Result<Stri
             error.kind()
         ))
     })?;
-    let snapshot = state.snapshot();
-    let targets = journals::targets(&snapshot.journal);
+    // The argument is a path the user typed, so it is resolved on disk; what it
+    // is compared against is the journal's own handles, placed in its vault.
+    let wanted = location.path_of(&wanted);
+    let targets = targets_of(&state.snapshot());
+    let root = location.root_dir();
     targets
         .iter()
-        .find(|target| {
-            std::fs::canonicalize(root_dir.join(&target.id)).is_ok_and(|known| known == wanted)
-        })
+        .find(|target| wanted.is_some() && root.join(&target.id).ok() == wanted)
         .map(|target| target.id.clone())
         .ok_or_else(|| {
             AppError::BadRequest(format!(
@@ -5427,7 +5552,11 @@ fn cli_journal_id(state: &AppState, root_dir: &Path, path: &Path) -> Result<Stri
 
 /// Which rules-file handle `path` names, by matching it against the discovery
 /// scan — the only id → rules-file resolution this codebase has.
-fn cli_rules_id(discovery: &Discovery, path: &Path) -> Result<String, AppError> {
+fn cli_rules_id(
+    discovery: &Discovery,
+    location: &JournalLocation,
+    path: &Path,
+) -> Result<String, AppError> {
     let wanted = std::fs::canonicalize(path).map_err(|error| {
         AppError::BadRequest(format!(
             "{} could not be resolved: {}",
@@ -5435,14 +5564,15 @@ fn cli_rules_id(discovery: &Discovery, path: &Path) -> Result<String, AppError> 
             error.kind()
         ))
     })?;
+    let wanted = location.path_of(&wanted);
     discovery
         .files
         .iter()
         .find(|found| {
-            discovery
-                .resolve(&found.id)
-                .and_then(|found| std::fs::canonicalize(found.path().as_path()).ok())
-                .is_some_and(|known| known == wanted)
+            wanted.is_some()
+                && discovery
+                    .resolve(&found.id)
+                    .is_some_and(|found| Some(found.path().vault_path()) == wanted.as_ref())
         })
         .map(|found| found.id.clone())
         .ok_or_else(|| {
@@ -5471,7 +5601,7 @@ fn cli_rules_id(discovery: &Discovery, path: &Path) -> Result<String, AppError> 
 /// canonicalized and required to be inside the root, and the file name is joined
 /// on afterwards. `resolve_destination` then re-checks all of it when the plan
 /// resolves; this only has to produce a handle, not to trust one.
-fn cli_csv_path(root_dir: &Path, path: &Path) -> Result<String, AppError> {
+fn cli_csv_path(location: &JournalLocation, path: &Path) -> Result<String, AppError> {
     let outside = || {
         AppError::BadRequest(format!(
             "{} is not inside this journal's own directory, so an import cannot write there",
@@ -5487,13 +5617,16 @@ fn cli_csv_path(root_dir: &Path, path: &Path) -> Result<String, AppError> {
     } else {
         parent
     };
+    // The user typed a path, so its parent is resolved on disk, then placed in
+    // the journal's vault and held to the include root there.
     let parent = std::fs::canonicalize(parent).map_err(|_| outside())?;
-    let relative = parent.strip_prefix(root_dir).map_err(|_| outside())?;
-    let mut components: Vec<String> = relative
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy().into_owned())
-        .collect();
-    components.push(name.to_string());
+    let parent = location.path_of(&parent).ok_or_else(outside)?;
+    let root = location.root_dir();
+    if !parent.starts_with(&root) {
+        return Err(outside());
+    }
+    let mut components: Vec<&str> = parent.segments().skip(root.segments().count()).collect();
+    components.push(name);
     Ok(components.join("/"))
 }
 
@@ -5541,9 +5674,8 @@ fn run_write_conf(
     state: &AppState,
     request: &WireConfRequest,
 ) -> Result<WireConfWritten, AppError> {
-    let main = main_journal(state, "journal", hledger_conf::CONF_NAME)?;
-    let root = include_root(&main)?;
-    let target = resolve_conf(&root);
+    let location = books(state, "journal", hledger_conf::CONF_NAME)?;
+    let target = resolve_conf(&location);
     if !target.writable {
         return Err(AppError::BadRequest(format!(
             "{} cannot be written: a config file must be a readable regular file in your \
@@ -5584,31 +5716,43 @@ fn run_write_conf(
     let new_text = hledger_conf::with_aliases(&base, &additions);
 
     // Pinned. An existing file is replaced only if it is still the inode and
-    // bytes read above, checked through the descriptor being replaced right up
-    // to the rename; a new one is created `O_EXCL | O_NOFOLLOW`, so a file or a
-    // link planted since the read is refused rather than written through.
-    let written = if target.exists {
-        pinned::replace(&target.path, new_text.as_bytes(), &target.pin).map(|_| ())
-    } else {
-        pinned::create_new(&target.path, new_text.as_bytes()).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::AlreadyExists {
-                WriteError::Changed
-            } else {
-                WriteError::Io(error)
-            }
-        })
+    // bytes read above (`Vault::replace`, checked through the descriptor being
+    // replaced right up to the rename on the desktop); a new one is created
+    // exclusively (`Vault::create_new`, `O_EXCL | O_NOFOLLOW` on disk), so a
+    // file or a link planted since the read is refused rather than written
+    // through.
+    let vault = location.vault();
+    let written = match (&target.read, target.exists) {
+        (Some(read), true) => vault
+            .replace(&target.path, new_text.as_bytes(), read)
+            .map(|_| ()),
+        (_, true) => Err(VaultError::Changed {
+            path: target.path.to_string(),
+        }),
+        (_, false) => vault
+            .create_new(&target.path, new_text.as_bytes())
+            .map(|_| ())
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    VaultError::Changed {
+                        path: target.path.to_string(),
+                    }
+                } else {
+                    error
+                }
+            }),
     };
     written.map_err(|error| match error {
-        WriteError::Changed => AppError::Conflict(format!(
+        VaultError::Changed { .. } => AppError::Conflict(format!(
             "{} changed on disk since this page read it, so nothing was written. Reload and try \
              again.",
             quoted(&target.id)
         )),
         // Only the `ErrorKind`: a write error can carry the temp path.
-        WriteError::Io(error) => AppError::Internal(format!(
+        other => AppError::Internal(format!(
             "{} could not be written: {}. Nothing else was changed.",
             quoted(&target.id),
-            error.kind()
+            other.kind()
         )),
     })?;
 

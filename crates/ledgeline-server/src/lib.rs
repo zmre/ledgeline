@@ -46,6 +46,7 @@ mod error;
 mod git;
 mod hledger;
 mod import_api;
+mod location;
 mod prefs;
 mod prices_api;
 mod profiles_api;
@@ -73,6 +74,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{delete, get, post},
 };
+use ledgeline_core::vault::{Vault, VaultPath};
 use ledgeline_core::{EditError, Journal, JournalEditor, wire};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -83,6 +85,7 @@ use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::compression::CompressionLayer;
 use tower_http::set_header::SetResponseHeaderLayer;
 
+pub use location::JournalLocation;
 pub use security::{
     AccessToken, ProcessToken, Security, SecurityError, TOKEN_ENV, token_from_env_or_random,
 };
@@ -130,6 +133,11 @@ pub use yahoo_history::HistoryFeed;
 pub(crate) struct Snapshot {
     /// The parsed journal, shared with the per-request report handlers.
     pub(crate) journal: Arc<Journal>,
+    /// Where `journal` was read from: the vault every journal-tree read and
+    /// write goes through. `None` for a state built from a journal with no
+    /// backing storage ([`AppState::from_journal`]). Carried in the snapshot so
+    /// a handler always pairs a journal with the storage it came from.
+    pub(crate) location: Option<Arc<JournalLocation>>,
     /// This snapshot's `ETag`, identical across every endpoint it serves: all of
     /// them are derived from the same journal and change together. See
     /// [`next_etag`] for why it is a counter and not a content hash.
@@ -160,6 +168,21 @@ pub(crate) struct Snapshot {
     /// than on a thread of its own: two cheap passes over the postings and one
     /// over the account names, small beside `/transactions`.
     pub(crate) journal_info: Bytes,
+}
+
+impl Snapshot {
+    /// Where this snapshot's journal lives: the editor's vault when one is
+    /// bound, else — for a state built from an already-parsed journal — the
+    /// directory of its main source file on disk ([`JournalLocation::of_parsed`]).
+    /// `None` only for a journal with no backing file at all.
+    ///
+    /// Every journal-tree read and write in a handler starts here, from the
+    /// SAME snapshot as the journal it is about.
+    pub(crate) fn storage(&self) -> Option<Arc<JournalLocation>> {
+        self.location
+            .clone()
+            .or_else(|| JournalLocation::of_parsed(&self.journal).map(Arc::new))
+    }
 }
 
 /// The `{"diagnostics": [...]}` envelope. `wire` exposes the array and the
@@ -211,7 +234,7 @@ impl Snapshot {
     /// is enough to make the remainder — about 485 ms — overtake `/transactions`
     /// and become the critical path. On its own thread the three groups are
     /// 563 / 346 / 270 ms and the build still costs what its largest payload does.
-    fn from_journal(journal: Arc<Journal>) -> Self {
+    fn from_journal(journal: Arc<Journal>, location: Option<Arc<JournalLocation>>) -> Self {
         // Minted FIRST, because `/api/journal` carries it as `generation`.
         let etag = next_etag();
         let (transactions, diagnostics, rest) = std::thread::scope(|scope| {
@@ -255,6 +278,7 @@ impl Snapshot {
             diagnostics,
             journal_info,
             journal,
+            location,
         }
     }
 }
@@ -411,9 +435,10 @@ impl AppState {
     pub fn from_journal(journal: &Journal) -> Self {
         let yahoo = YahooFeeds::new();
         Self {
-            inner: Arc::new(ArcSwap::from_pointee(Snapshot::from_journal(Arc::new(
-                journal.clone(),
-            )))),
+            inner: Arc::new(ArcSwap::from_pointee(Snapshot::from_journal(
+                Arc::new(journal.clone()),
+                None,
+            ))),
             editor: Arc::new(Mutex::new(None)),
             rules_writes: Arc::new(tokio::sync::Mutex::new(())),
             stages: Arc::new(stage::StageArea::default()),
@@ -431,14 +456,35 @@ impl AppState {
     /// journal. The edit endpoints (`POST`/`DELETE /api/transactions`) are then
     /// live and mutate this file through the editor's validation + atomic write.
     ///
+    /// The desktop form of [`Self::from_vault`]: the path is resolved once to
+    /// its real location and the state is bound to a
+    /// [`ledgeline_core::vault::LocalVault`] rooted at its directory
+    /// ([`JournalEditor::open`]).
+    ///
     /// # Errors
     /// [`EditError::Io`] if the file cannot be read, or [`EditError::Parse`] if it
     /// does not parse.
     pub fn from_journal_path(path: impl AsRef<Path>) -> Result<Self, EditError> {
-        let editor = JournalEditor::open(path.as_ref())?;
-        let snapshot = Snapshot::from_journal(Arc::clone(editor.journal()));
+        Ok(Self::from_editor(JournalEditor::open(path.as_ref())?))
+    }
+
+    /// Build editing-enabled state over the journal whose main file is `main`
+    /// in `vault`. Every journal-tree read and write this state makes — the
+    /// editor, the rules, budget, account, alias, price and projection files,
+    /// import bookkeeping, sidecar caches — goes through `vault`.
+    ///
+    /// # Errors
+    /// [`EditError::Parse`] if the journal cannot be read (a not-downloaded file
+    /// included) or does not parse.
+    pub fn from_vault(vault: Arc<dyn Vault>, main: VaultPath) -> Result<Self, EditError> {
+        Ok(Self::from_editor(JournalEditor::open_in(vault, main)?))
+    }
+
+    fn from_editor(editor: JournalEditor) -> Self {
+        let snapshot =
+            Snapshot::from_journal(Arc::clone(editor.journal()), Some(location_of(&editor)));
         let yahoo = YahooFeeds::new();
-        Ok(Self {
+        Self {
             inner: Arc::new(ArcSwap::from_pointee(snapshot)),
             editor: Arc::new(Mutex::new(Some(editor))),
             rules_writes: Arc::new(tokio::sync::Mutex::new(())),
@@ -449,7 +495,7 @@ impl AppState {
             profiles: yahoo.profiles,
             history_source: yahoo.history,
             benchmark_cache: Arc::default(),
-        })
+        }
     }
 
     /// Atomically replace the served journal (and its precomputed payloads).
@@ -459,8 +505,11 @@ impl AppState {
     /// so republishing after an edit shares the editor's journal rather than
     /// deep-cloning it (PERF-1b).
     pub fn replace_journal(&self, journal: &Arc<Journal>) {
-        self.inner
-            .store(Arc::new(Snapshot::from_journal(Arc::clone(journal))));
+        let location = self.location();
+        self.inner.store(Arc::new(Snapshot::from_journal(
+            Arc::clone(journal),
+            location,
+        )));
     }
 
     /// Re-open the bound editor from disk after an *external* change, republishing
@@ -478,9 +527,10 @@ impl AppState {
         // in since load is refused rather than followed.
         match editor.reopen() {
             Ok(reopened) => {
-                self.inner.store(Arc::new(Snapshot::from_journal(Arc::clone(
-                    reopened.journal(),
-                ))));
+                self.inner.store(Arc::new(Snapshot::from_journal(
+                    Arc::clone(reopened.journal()),
+                    Some(location_of(&reopened)),
+                )));
                 *editor = reopened;
                 // The editor we just replaced may have been half-mutated by a
                 // panic mid-edit (SEC-11). Now that it is gone, the poison flag
@@ -512,15 +562,71 @@ impl AppState {
     pub fn rebind_editor(&self, path: impl AsRef<Path>) -> Result<(), EditError> {
         // Open first so a failure leaves the current editor + snapshot untouched.
         let editor = JournalEditor::open(path.as_ref())?;
-        self.inner.store(Arc::new(Snapshot::from_journal(Arc::clone(
-            editor.journal(),
-        ))));
+        self.inner.store(Arc::new(Snapshot::from_journal(
+            Arc::clone(editor.journal()),
+            Some(location_of(&editor)),
+        )));
         let mut guard = self.editor.lock().unwrap_or_else(PoisonError::into_inner);
         *guard = Some(editor);
         // The previously-bound editor is discarded wholesale, so any poison flag
         // from a panic during its lifetime no longer describes live state.
         self.editor.clear_poison();
         Ok(())
+    }
+
+    /// Re-read the journal from its vault and republish it: re-open the bound
+    /// editor, or — when none is bound — reparse through the vault the snapshot
+    /// came from. The one reload path, used by the file watcher on a settled
+    /// change and by [`Self::refresh`].
+    ///
+    /// # Errors
+    /// [`EditError::Parse`] (or `Io`) if the journal could not be re-read; the
+    /// previous snapshot is then kept.
+    pub fn reload(&self) -> Result<Refreshed, EditError> {
+        match self.reopen_editor() {
+            Some(Ok(())) => Ok(Refreshed::Reloaded),
+            Some(Err(error)) => Err(error),
+            None => {
+                let Some(location) = self.location() else {
+                    return Ok(Refreshed::NoStorage);
+                };
+                let journal = location
+                    .reparse(&std::collections::HashMap::new())
+                    .map_err(EditError::Parse)?;
+                self.replace_journal(&Arc::new(journal));
+                Ok(Refreshed::Reloaded)
+            }
+        }
+    }
+
+    /// Check the journal's sources in its vault and [`reload`](Self::reload)
+    /// only when one of them changed — the entry point for a host with no file
+    /// watcher (iOS foregrounding, a pull-to-refresh). Content only: a file
+    /// rewritten with identical bytes, or merely touched, is not a change.
+    ///
+    /// Without a bound editor there is no record of what was read, so the
+    /// journal is reparsed unconditionally.
+    ///
+    /// # Errors
+    /// As [`Self::reload`].
+    pub fn refresh(&self) -> Result<Refreshed, EditError> {
+        let unchanged = {
+            let guard = self.editor.lock().unwrap_or_else(PoisonError::into_inner);
+            guard
+                .as_ref()
+                .map(|editor| editor.changed_sources().is_empty())
+        };
+        match unchanged {
+            Some(true) => Ok(Refreshed::Unchanged),
+            _ => self.reload(),
+        }
+    }
+
+    /// Where the served journal lives — its vault and main file — or `None` for
+    /// a state with no backing storage.
+    #[must_use]
+    pub fn location(&self) -> Option<Arc<JournalLocation>> {
+        self.snapshot().location.clone()
     }
 
     /// The current snapshot (a cheap atomic load; the returned `Arc` is a stable
@@ -634,6 +740,25 @@ impl AppState {
         self.history_source = source;
         self
     }
+}
+
+/// What [`AppState::refresh`] / [`AppState::reload`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refreshed {
+    /// Every source still holds the bytes last read; nothing was reparsed.
+    Unchanged,
+    /// The journal was re-read and the snapshot republished.
+    Reloaded,
+    /// The state has no backing storage to re-read.
+    NoStorage,
+}
+
+/// The location an editor reads and writes.
+fn location_of(editor: &JournalEditor) -> Arc<JournalLocation> {
+    Arc::new(JournalLocation::new(
+        Arc::clone(editor.vault()),
+        editor.main().clone(),
+    ))
 }
 
 /// Build an UNAUTHENTICATED router for a parsed `journal`.

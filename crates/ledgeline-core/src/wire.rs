@@ -343,7 +343,12 @@ impl<'a> SourceNames<'a> {
     fn new(journal: &'a Journal) -> Self {
         Self {
             main_name: &journal.source_name,
-            main_file: crate::parse::resolve_source_file(&journal.source_name),
+            // The parser records the main file first, under the key every one
+            // of its positions carries — no filesystem lookup needed (or
+            // possible, for a journal that does not live on one). A journal
+            // built in memory has no source files; its positions carry the
+            // empty path, which `of` already treats as the main file.
+            main_file: journal.source_files.first().cloned().unwrap_or_default(),
         }
     }
 

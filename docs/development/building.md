@@ -10,8 +10,12 @@ tags: [development]
 Ledgeline is a single-binary app: `ledgeline` = an axum HTTP server + a
 wry/tao desktop webview (default-on `gui` cargo feature), with the built
 SvelteKit SPA embedded into the binary via `rust-embed`. Build
-`--no-default-features` for a headless, server-only binary (the shape Linux
-servers and CI build).
+`--no-default-features --features watcher,external-tools` for a headless,
+server-only binary (the shape Linux servers build): `watcher` is live reload
+from a file watcher, `external-tools` is running `hledger`/`git` subprocesses
+(imports). Bare `--no-default-features` drops both — the shape a sandboxed host
+such as the planned iOS app needs, where external edits are picked up by
+calling `AppState::refresh()` and imports are unavailable.
 
 You build the SPA into `web/build`; `crates/ledgeline-server/build.rs` mirrors
 that into `crates/ledgeline-server/spa/`, and *that* is what `rust-embed`

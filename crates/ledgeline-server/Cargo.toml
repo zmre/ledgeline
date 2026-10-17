@@ -38,11 +38,25 @@ name = "ledgeline"
 path = "src/main.rs"
 
 [features]
-# The desktop GUI (wry/tao/muda/rfd) is on by default. `--no-default-features`
-# builds a headless, server-only binary with no windowing/native-UI stack — the
-# shape CI and Linux servers build.
-default = ["gui"]
+# The desktop GUI (wry/tao/muda/rfd) is on by default, with the two host
+# capabilities a desktop has and a sandboxed host (iOS) does not:
+#
+# - `watcher` — live reload from a `notify` file watcher over the journal's
+#   real directories. Without it, a host calls `AppState::refresh()` (a
+#   vault-based content check) when it wants to pick up external edits.
+# - `external-tools` — running `hledger` (imports, rules previews) and `git`
+#   (the import safety net) as subprocesses. They need a real path for the
+#   journal (`Vault::local_path`); without the feature they report that this
+#   build cannot run them.
+#
+# `--no-default-features` builds the bare engine + HTTP server with none of
+# them. The headless server CI and Linux hosts run is
+# `--no-default-features --features watcher,external-tools`.
+default = ["gui", "watcher", "external-tools"]
+watcher = ["dep:notify"]
+external-tools = []
 gui = [
+    "watcher",
     "dep:wry",
     "dep:tao",
     "dep:muda",
@@ -95,13 +109,15 @@ tower-http = { version = "0.7", features = [
 getrandom = { version = "0.4", features = ["std"] }
 sha2 = "0.11"
 base64 = "0.23"
-# CLI, embedded SPA, live-reload, and hot-swappable journal state — needed in
-# both the GUI and headless builds, so none of these are feature-gated.
+# CLI, embedded SPA, and hot-swappable journal state — needed in both the GUI
+# and headless builds, so none of these are feature-gated.
 clap = { version = "4", features = ["derive"] }
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }
 mime_guess = "2"
-notify = "8"
 arc-swap = "1"
+# Live reload (the `watcher` feature): a file watcher over the journal's real
+# directories. A host without one polls `AppState::refresh()` instead.
+notify = { version = "8", optional = true }
 # Locate the per-user config directory for the "recently opened journals" store
 # (used in both the GUI and headless builds).
 dirs = "7"

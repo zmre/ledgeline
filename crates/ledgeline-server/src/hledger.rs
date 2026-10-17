@@ -2,6 +2,13 @@
 //!
 //! # This module and `git.rs` are the ONLY places `Command::new` may appear
 //!
+//! And both are switched off together by building without the
+//! `external-tools` feature (a sandboxed host, where there is no `hledger` to
+//! run and no real path to hand it): [`Hledger::resolve`] and
+//! [`Invocation::run`] then answer [`HledgerError::Disabled`] without spawning
+//! anything. The rest of the module still compiles, so nothing that merely
+//! *mentions* an invocation needs a `cfg` of its own.
+//!
 //! Ledgeline has, until now, run no subprocesses at all. WP-11 introduces
 //! exactly two: `hledger` (here) and `git` (`git.rs`). Every other module that
 //! needs a subprocess goes through one of them. The rule is worth stating as a
@@ -288,6 +295,13 @@ pub(crate) struct Hledger {
 pub(crate) enum HledgerError {
     #[error("hledger was not found")]
     NotFound,
+    /// This build runs no external programs (it was built without the
+    /// `external-tools` feature). Nothing was spawned.
+    #[error(
+        "this build of Ledgeline cannot run hledger (it was built without the `external-tools` \
+         feature)"
+    )]
+    Disabled,
     #[error("hledger {found} is older than {min}")]
     TooOld { found: Version, min: Version },
     #[error("could not run hledger")]
@@ -295,6 +309,11 @@ pub(crate) enum HledgerError {
     #[error("hledger did not finish within {}s", .after.as_secs())]
     TimedOut { after: Duration },
 }
+
+/// Whether this build may spawn subprocesses at all — the `external-tools`
+/// feature. A `const` rather than a `cfg` on each body, so the gated functions
+/// keep one implementation and the compiler checks it in every build.
+const EXTERNAL_TOOLS: bool = cfg!(feature = "external-tools");
 
 /// The outcome of probing one candidate path.
 enum Probe {
@@ -322,6 +341,9 @@ impl Hledger {
     /// found a newer one elsewhere, is how "I set the path and it still used the
     /// wrong one" happens. A too-old answer is a real answer, so we report it.
     pub(crate) fn resolve(prefs: &Prefs) -> Result<Self, HledgerError> {
+        if !EXTERNAL_TOOLS {
+            return Err(HledgerError::Disabled);
+        }
         // Lazy: `find` stops at the first candidate that answers, so the common
         // case spawns exactly one process.
         let answered = Self::candidates(prefs)
@@ -562,6 +584,9 @@ impl Invocation {
     /// one buffer and exits as soon as the last writer to that pipe does; the
     /// caller is not made to wait for it.
     pub(crate) fn run(self) -> Result<Output, HledgerError> {
+        if !EXTERNAL_TOOLS {
+            return Err(HledgerError::Disabled);
+        }
         // Fixed before the spawn, so the process's own start-up cost counts
         // against the caller's budget rather than extending it.
         let deadline = Instant::now() + self.timeout;
@@ -843,9 +868,35 @@ fn ask_version(program: &Path, read_config: bool) -> Probe {
 /// [`prefs::check_storable`](crate::prefs::check_storable) would otherwise leak
 /// into an `/api/prefs` body — saying which way the probe failed.
 pub(crate) fn probe_answers_like_hledger(program: &Path) -> Result<(), &'static str> {
+    if !EXTERNAL_TOOLS {
+        return Err("cannot be run by this build (it has no external-tools support)");
+    }
     match ask_version(program, false) {
         Probe::Reported(_) => Ok(()),
         Probe::Absent => Err("could not be run"),
         Probe::Unrecognised => Err("did not report an hledger version (1.40+ required)"),
+    }
+}
+
+/// A build without `external-tools` spawns nothing: run with
+/// `cargo test -p ledgeline --no-default-features --features watcher --lib`.
+#[cfg(all(test, not(feature = "external-tools")))]
+mod without_external_tools {
+    use super::*;
+
+    #[test]
+    fn nothing_is_spawned_and_the_error_says_why() {
+        let resolved = Hledger::resolve(&Prefs::default());
+        assert!(matches!(resolved, Err(HledgerError::Disabled)));
+        let ran = Hledger::for_tests(Path::new("/bin/sh"))
+            .invoke(["--version"])
+            .run();
+        assert!(matches!(ran, Err(HledgerError::Disabled)));
+        assert!(
+            HledgerError::Disabled
+                .to_string()
+                .contains("external-tools")
+        );
+        assert!(probe_answers_like_hledger(Path::new("/bin/sh")).is_err());
     }
 }

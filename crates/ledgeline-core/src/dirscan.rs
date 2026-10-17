@@ -4,7 +4,7 @@
 //! Both surfaces answer the same question about the same tree — *which files
 //! below the journal's own directory may this feature read, and in one case
 //! write* — and until now each had its own copy of the answer. The copies were
-//! line for line the same, down to the `take` that stops one enormous directory
+//! line for line the same, down to the cap that stops one enormous directory
 //! defeating the entry budget by allocating, the reversed sub-directory stack,
 //! and the order the checks run in; each carried a comment asking the next
 //! reader to keep it in step with the other by hand.
@@ -15,6 +15,13 @@
 //! guard whose only defect-detector is "write it again" costs exactly as much
 //! to check as it costs to share, so it is shared here, once.
 //!
+//! # Through the vault
+//!
+//! The walk lists directories with [`Vault::list_dir`], which describes each
+//! entry itself and never a symlink's target — so a link is seen as a link,
+//! here as before, and refused. Every path is a [`VaultPath`], which cannot
+//! name anything outside the vault.
+//!
 //! # What the two callers still own
 //!
 //! Which names they list, how many, how deep, what a symlink warning says, and
@@ -24,23 +31,19 @@
 //! are fixed here rather than passed in.
 //!
 //! Each caller also keeps its own path newtype (`RulesPath`,
-//! `ProjectionPath`). This module hands back a plain [`PathBuf`], because "you
+//! `ProjectionPath`). This module hands back a plain [`Entry`], because "you
 //! may only write to a file discovery returned" is a property of *those* types
 //! — they have no public constructor, and there is deliberately one per feature
 //! so a scan of one surface can never mint a write token for the other.
 //!
 //! # What lives in `parse.rs` instead
 //!
-//! The scan root ([`crate::parse::include_root_for`]) and the containment test
-//! ([`crate::parse::confine`]) were already shared, and stay beside the
-//! `include` guard they were extracted from — as does
-//! [`crate::parse::resolve_new_in`], the create-path guard chain. One file
-//! holds every hand-rolled traversal check in the crate; that is the whole
-//! reason `confine` is not a method here.
+//! The containment test ([`crate::parse::confine`]) stays beside the `include`
+//! guard it was extracted from — as does [`crate::parse::resolve_new_in`], the
+//! create-path guard chain. One file holds every hand-rolled traversal check in
+//! the crate; that is the whole reason `confine` is not a method here.
 
-use crate::parse;
-use std::fs::{DirEntry, Metadata};
-use std::path::{Component, Path, PathBuf};
+use crate::vault::{Entry, EntryKind, FileIdentity, Vault, VaultPath};
 
 // ---------------------------------------------------------------------------
 // Budgets that are not a caller's business
@@ -73,8 +76,8 @@ pub(crate) const MAX_SCAN_WARNINGS: usize = 100;
 /// What one scan does differently from the other.
 pub(crate) struct ScanSpec<'a> {
     /// Whether a file NAME is one this scan lists. Applied to the entry's own
-    /// name and never to a path: every name it sees came out of `read_dir`
-    /// moments earlier.
+    /// name and never to a path: every name it sees came out of a directory
+    /// listing moments earlier.
     pub(crate) name_ok: fn(&str) -> bool,
     /// Directory names never descended into.
     ///
@@ -100,9 +103,9 @@ pub(crate) struct ScanSpec<'a> {
 
 /// What one walk produced, before the caller sorts it and names it.
 pub(crate) struct Scanned<T> {
-    /// The canonical scan root, handed straight back so the caller can keep it
-    /// private — no absolute path leaves either discovery module.
-    pub(crate) root: PathBuf,
+    /// The scan root, handed straight back so the caller can keep it private —
+    /// no absolute path leaves either discovery module.
+    pub(crate) root: VaultPath,
     /// One per admitted entry, in walk order. **Unsorted**: the two callers
     /// group their listings differently, and sorting here as well would be the
     /// slower way to reach the same answer.
@@ -115,23 +118,28 @@ pub(crate) struct Scanned<T> {
     pub(crate) truncated: bool,
 }
 
-/// Walk `root`, admitting every entry `spec` allows and calling `describe` on
-/// each one.
+/// Walk `root` in `vault`, admitting every entry `spec` allows and calling
+/// `describe` on each one.
 ///
-/// `describe` is handed the entry's relative id, its file name, its **confined**
-/// canonical path and the `symlink_metadata` that admitted it — so a caller's
-/// `size_bytes` and recorded `(dev, ino)` always describe the same `stat` the
-/// walk decided on.
+/// `describe` is handed the entry's relative id, its file name and the [`Entry`]
+/// the listing produced — so a caller's `size_bytes` and recorded identity
+/// always describe the same listing the walk decided on.
 ///
 /// Infallible, like the parser: an unreadable directory, a symlink and a
 /// non-regular file each become a warning naming a relative path. Showing the
 /// user what is there is the whole point of the screen, and one unreadable
 /// directory is not a reason to show nothing.
-pub(crate) fn scan<T, D>(root: PathBuf, spec: &ScanSpec<'_>, describe: D) -> Scanned<T>
+pub(crate) fn scan<T, D>(
+    vault: &dyn Vault,
+    root: VaultPath,
+    spec: &ScanSpec<'_>,
+    describe: D,
+) -> Scanned<T>
 where
-    D: FnMut(String, &str, PathBuf, &Metadata) -> T,
+    D: FnMut(String, &str, &Entry) -> T,
 {
     Scan {
+        vault,
         root,
         spec,
         describe,
@@ -155,7 +163,8 @@ where
 /// is the failure mode SEC-4 fixed on the include path, and it is not worth
 /// reintroducing for the sake of four fewer lines.
 struct Scan<'a, T, D> {
-    root: PathBuf,
+    vault: &'a dyn Vault,
+    root: VaultPath,
     spec: &'a ScanSpec<'a>,
     describe: D,
     files: Vec<T>,
@@ -166,14 +175,14 @@ struct Scan<'a, T, D> {
 
 impl<T, D> Scan<'_, T, D>
 where
-    D: FnMut(String, &str, PathBuf, &Metadata) -> T,
+    D: FnMut(String, &str, &Entry) -> T,
 {
     /// Walk the tree, depth-first, visiting each directory's entries in name
     /// order.
     ///
     /// The order matters for more than tidiness: when a cap trips, *which*
-    /// entries were examined decides which files survive, and `read_dir` order
-    /// is filesystem- and even run-dependent. Sorting each directory makes a
+    /// entries were examined decides which files survive, and listing order is
+    /// filesystem- and even run-dependent. Sorting each directory makes a
     /// truncated result reproducible instead of arbitrary.
     fn run(mut self) -> Scanned<T> {
         let mut stack = vec![(self.root.clone(), 0usize)];
@@ -182,7 +191,7 @@ where
                 continue;
             };
             let mut subdirs = Vec::new();
-            for (path, entry) in children {
+            for entry in children {
                 // Both budgets are checked in exactly one place, before any
                 // work is done for the entry.
                 if self.examined >= MAX_SCAN_ENTRIES || self.files.len() >= self.spec.max_files {
@@ -190,7 +199,7 @@ where
                     return self.finish();
                 }
                 self.examined += 1;
-                self.visit(&path, &entry, depth, &mut subdirs);
+                self.visit(entry, depth, &mut subdirs);
             }
             // Reversed, so the stack pops them back in name order.
             stack.extend(subdirs.into_iter().rev().map(|dir| (dir, depth + 1)));
@@ -210,35 +219,23 @@ where
     /// This directory's entries, sorted by path, and never more than the
     /// remaining entry budget.
     ///
-    /// The `take` is not decoration: collecting a directory of a million names
-    /// before checking the budget would let a single directory defeat
+    /// The cap is not decoration: listing a directory of a million names before
+    /// checking the budget would let a single directory defeat
     /// [`MAX_SCAN_ENTRIES`] by allocating instead of by walking. One entry past
     /// the budget is taken so the caller's check still trips and sets
     /// `truncated`.
-    ///
-    /// The [`DirEntry`] is kept beside its path, not dropped for it: its
-    /// `file_type` is the `d_type` `read_dir` already returned, which is what
-    /// lets [`Self::visit`] classify an entry without a `stat`.
-    ///
-    /// A per-entry `read_dir` error (a name that vanished mid-walk) drops that
-    /// entry silently; there is nothing to say about it that is both true and
-    /// useful.
-    fn read_dir(&mut self, dir: &Path) -> Option<Vec<(PathBuf, DirEntry)>> {
-        match std::fs::read_dir(dir) {
-            Ok(entries) => {
-                let mut children: Vec<(PathBuf, DirEntry)> = entries
-                    .filter_map(Result::ok)
-                    .map(|entry| (entry.path(), entry))
-                    .take(MAX_SCAN_ENTRIES.saturating_sub(self.examined) + 1)
-                    .collect();
-                children.sort_by(|(a, _), (b, _)| a.cmp(b));
+    fn read_dir(&mut self, dir: &VaultPath) -> Option<Vec<Entry>> {
+        let cap = MAX_SCAN_ENTRIES.saturating_sub(self.examined) + 1;
+        match self.vault.list_dir(dir, Some(cap)) {
+            Ok(mut children) => {
+                children.sort_by(|a, b| a.path.cmp(&b.path));
                 Some(children)
             }
             Err(_) => {
-                // The `io::Error` is deliberately not quoted. It is very
-                // probably path-free, but "very probably" is not a property this
-                // module can assert about every platform's error text, and this
-                // string reaches a dialog.
+                // The vault error is deliberately not quoted. It is very
+                // probably path-free, but "very probably" is not a property
+                // this module can assert about every backend's error text, and
+                // this string reaches a dialog.
                 let message = match relative_id(&self.root, dir) {
                     Some(id) => {
                         format!(
@@ -257,36 +254,17 @@ where
     /// guarantees, and it is **not** the order they could be run in most
     /// cheaply: a symlink is refused before a hidden name is skipped, so a
     /// `.hidden` link still says so.
-    fn visit(&mut self, path: &Path, entry: &DirEntry, depth: usize, subdirs: &mut Vec<PathBuf>) {
-        let (Some(id), Some(name)) = (
-            relative_id(&self.root, path),
-            path.file_name().and_then(std::ffi::OsStr::to_str),
-        ) else {
-            // A name that is not valid UTF-8, or a component that is not a plain
-            // name. Skipped rather than lossily converted: two different names
-            // can lossily convert to the SAME id, and an id that resolves to the
-            // wrong file is a write to the wrong file.
-            self.warn(format!(
-                "{} has a name that is not valid UTF-8 and was skipped",
-                lossy_relative(&self.root, path)
-            ));
+    fn visit(&mut self, entry: Entry, depth: usize, subdirs: &mut Vec<VaultPath>) {
+        let Some(id) = relative_id(&self.root, &entry.path) else {
+            // Not below the root: a listing cannot produce one, so there is
+            // nothing true to say about it.
             return;
         };
+        let name = entry.name().to_string();
 
-        // `DirEntry::file_type`, never `metadata`: the whole point is to see the
-        // link rather than what it points at — and on Linux and macOS this is
-        // the `d_type` the directory read already returned, so classifying an
-        // entry costs no syscall at all. Only an entry that survives every check
-        // below goes on to pay for a `stat`, which is what keeps a tree full of
-        // `.git`, `node_modules` and non-journal files cheap to walk. A
-        // filesystem that answers `DT_UNKNOWN` makes `std` fall back to the
-        // `lstat` this used to do unconditionally, so the floor is unchanged.
-        let Ok(kind) = entry.file_type() else {
-            self.warn(format!("{id} could not be read and was skipped"));
-            return;
-        };
-
-        if kind.is_symlink() {
+        // The listing describes the entry itself, never what a link points at:
+        // the whole point is to see the link.
+        if entry.kind == EntryKind::Symlink {
             self.warn(format!(
                 "{id} is a symbolic link and was skipped; {}",
                 self.spec.symlink_note
@@ -304,20 +282,20 @@ where
             return;
         }
 
-        if kind.is_dir() {
-            if self.spec.skip_dirs.contains(&name) {
+        if entry.kind == EntryKind::Dir {
+            if self.spec.skip_dirs.contains(&name.as_str()) {
                 return;
             }
             if depth + 1 > self.spec.max_depth {
                 self.truncated = true;
                 return;
             }
-            subdirs.push(path.to_path_buf());
+            subdirs.push(entry.path);
             return;
         }
 
-        let named = (self.spec.name_ok)(name);
-        if !kind.is_file() {
+        let named = (self.spec.name_ok)(&name);
+        if entry.kind != EntryKind::File {
             // FIFOs, devices, sockets. A FIFO is the one that actually bites: a
             // `read` on one with no writer blocks forever, which would hang the
             // request that asked for the list, not merely fail it.
@@ -330,29 +308,7 @@ where
             return;
         }
 
-        // Belt and braces after the symlink refusal above. A `..` cannot appear
-        // in a `read_dir` name and a non-symlink cannot leave the tree, so this
-        // should be unreachable — and it costs one `starts_with` to keep the
-        // containment claim resting on the shared guard rather than on that
-        // argument being right.
-        let Some(resolved) = parse::confine(path, &self.root) else {
-            self.warn(format!(
-                "{id} resolves outside the journal's own directory and was skipped"
-            ));
-            return;
-        };
-
-        // THE `stat`, and the only one: an entry that reached here is one the
-        // caller is about to be told about, so `size_bytes` and the recorded
-        // `(dev, ino)` describe the same call that admitted it. `DirEntry`'s
-        // own, which does not traverse a link, for the same reason the
-        // classification above used `file_type`.
-        let Ok(meta) = entry.metadata() else {
-            self.warn(format!("{id} could not be read and was skipped"));
-            return;
-        };
-
-        let file = (self.describe)(id, name, resolved, &meta);
+        let file = (self.describe)(id, &name, &entry);
         self.files.push(file);
     }
 
@@ -375,53 +331,20 @@ where
 // ---------------------------------------------------------------------------
 
 /// `path` relative to `root`, forward-slash separated, or `None` if it is not
-/// below `root` or has any component that is not a plain UTF-8 name.
+/// strictly below `root`.
 ///
-/// Requiring every component to be [`Component::Normal`] is a guard, not
-/// tidiness: it is what makes it impossible for a `.`, a `..`, a root or a
-/// Windows prefix to ever appear inside an id, and therefore impossible for a
-/// well-formed id to mean anything other than "this file, below the root".
-pub(crate) fn relative_id(root: &Path, path: &Path) -> Option<String> {
-    let rest = path.strip_prefix(root).ok()?;
-    let parts = rest
-        .components()
-        .map(|component| match component {
-            Component::Normal(name) => name.to_str(),
-            _ => None,
-        })
-        .collect::<Option<Vec<_>>>()?;
-    (!parts.is_empty()).then(|| parts.join("/"))
+/// A [`VaultPath`] already holds no `.`, `..`, root or prefix component, so a
+/// well-formed id cannot mean anything other than "this file, below the root".
+pub(crate) fn relative_id(root: &VaultPath, path: &VaultPath) -> Option<String> {
+    if path == root || !path.starts_with(root) {
+        return None;
+    }
+    let depth = root.segments().count();
+    Some(path.segments().skip(depth).collect::<Vec<_>>().join("/"))
 }
 
-/// A best-effort relative label for an entry that has no id — used only in the
-/// warning that says so. Falls back to a fixed word rather than to the absolute
-/// path, which is the whole point.
-fn lossy_relative(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root).map_or_else(
-        |_| "an entry".to_string(),
-        |rest| rest.to_string_lossy().into_owned(),
-    )
-}
-
-/// `(st_dev, st_ino)` — the pair that says "the same file", not "a file with the
-/// same name". See [`still_the_same_file`].
-#[cfg(unix)]
-pub(crate) fn file_identity(meta: &Metadata) -> Option<(u64, u64)> {
-    use std::os::unix::fs::MetadataExt;
-    Some((meta.dev(), meta.ino()))
-}
-
-/// No portable inode identity outside Unix. Recorded as `None`, which
-/// [`still_the_same_file`] treats as "check what can be checked" — the
-/// regular-file test alone — rather than as a failure that would make the
-/// feature unusable there.
-#[cfg(not(unix))]
-pub(crate) fn file_identity(_meta: &Metadata) -> Option<(u64, u64)> {
-    None
-}
-
-/// Re-`symlink_metadata` `path` and require it is still a regular file with the
-/// `(dev, ino)` recorded at scan time.
+/// Re-`stat` `path` (never following a link) and require it is still a regular
+/// file with the identity recorded at scan time.
 ///
 /// **Called immediately before a write**, and one half of a pair — the caller
 /// re-reads and re-fingerprints the bytes too, because a freed inode number can
@@ -429,36 +352,102 @@ pub(crate) fn file_identity(_meta: &Metadata) -> Option<(u64, u64)> {
 /// this to the regular-file check alone, which is weaker, and honestly so: it
 /// can still refuse a name that became a link or a device, but not one that
 /// became a different regular file.
-pub(crate) fn still_the_same_file(path: &Path, identity: Option<(u64, u64)>) -> bool {
-    let Ok(meta) = std::fs::symlink_metadata(path) else {
-        return false;
-    };
-    meta.file_type().is_file() && identity == file_identity(&meta)
+pub(crate) fn still_the_same_file(
+    vault: &dyn Vault,
+    path: &VaultPath,
+    identity: Option<FileIdentity>,
+) -> bool {
+    matches!(
+        vault.stat(path),
+        Ok(Some(entry)) if entry.is_file() && entry.identity == identity
+    )
 }
 
 // ---------------------------------------------------------------------------
-// Tests — the pure helper. The guards need a real filesystem and are exercised
-// against one in `tests/rules_security.rs` and `tests/projection_files.rs`,
-// which is where they can actually be reached.
+// Tests — the pure helper, and the walk over an in-memory vault. The guards
+// are also exercised against a real filesystem in `tests/rules_security.rs` and
+// `tests/projection_files.rs`.
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vault::MemVault;
+
+    fn vp(s: &str) -> VaultPath {
+        VaultPath::new(s).unwrap()
+    }
 
     #[test]
     fn ids_are_relative_forward_slash_paths_of_plain_components() {
-        let root = Path::new("/j");
+        let root = VaultPath::root();
         assert_eq!(
-            relative_id(root, Path::new("/j/plans/p.journal")).as_deref(),
+            relative_id(&root, &vp("plans/p.journal")).as_deref(),
             Some("plans/p.journal")
         );
         assert_eq!(
-            relative_id(root, Path::new("/j/import/2026/b.rules")).as_deref(),
+            relative_id(&vp("books"), &vp("books/import/2026/b.rules")).as_deref(),
             Some("import/2026/b.rules")
         );
-        assert_eq!(relative_id(root, Path::new("/j")), None, "the root itself");
-        assert_eq!(relative_id(root, Path::new("/other/p.journal")), None);
-        assert_eq!(relative_id(root, Path::new("/other/b.rules")), None);
+        assert_eq!(relative_id(&root, &root), None, "the root itself");
+        assert_eq!(relative_id(&vp("books"), &vp("other/b.rules")), None);
+        assert_eq!(relative_id(&vp("books"), &vp("booksy/b.rules")), None);
+    }
+
+    fn spec() -> ScanSpec<'static> {
+        ScanSpec {
+            name_ok: |name| name.ends_with(".rules"),
+            skip_dirs: &["node_modules"],
+            max_depth: 2,
+            max_files: 10,
+            symlink_note: "only real files are read",
+        }
+    }
+
+    #[test]
+    fn the_walk_refuses_links_skips_hidden_and_skipped_dirs_and_caps_depth() {
+        let vault = MemVault::new()
+            .with_file("books/a.rules", "")
+            .with_file("books/import/b.rules", "")
+            .with_file("books/import/deep/deeper/c.rules", "")
+            .with_file("books/.git/hidden.rules", "")
+            .with_file("books/node_modules/x.rules", "")
+            .with_file("books/notes.txt", "")
+            .with_file("outside.rules", "");
+        vault.insert_symlink("books/linked.rules", "a.rules");
+        let scanned = scan(&vault, vp("books"), &spec(), |id, name, entry| {
+            (id, name.to_string(), entry.path.clone())
+        });
+        let mut ids: Vec<String> = scanned.files.iter().map(|(id, ..)| id.clone()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["a.rules", "import/b.rules"]);
+        assert!(scanned.truncated, "the depth cap tripped");
+        assert_eq!(
+            scanned.warnings,
+            vec!["linked.rules is a symbolic link and was skipped; only real files are read"]
+        );
+        assert_eq!(scanned.root, vp("books"));
+    }
+
+    #[test]
+    fn an_unreadable_root_is_one_path_free_warning() {
+        let vault = MemVault::new();
+        let scanned = scan(&vault, vp("missing"), &spec(), |id, _, _| id);
+        assert!(scanned.files.is_empty());
+        assert_eq!(
+            scanned.warnings,
+            vec!["the journal's own directory could not be read"]
+        );
+    }
+
+    #[test]
+    fn the_same_file_check_compares_identity_and_refuses_links() {
+        let vault = MemVault::new().with_file("a.rules", "x");
+        let entry = vault.stat(&vp("a.rules")).unwrap().unwrap();
+        assert!(still_the_same_file(&vault, &vp("a.rules"), entry.identity));
+        vault.modify_externally("a.rules", "x");
+        assert!(!still_the_same_file(&vault, &vp("a.rules"), entry.identity));
+        vault.insert_symlink("a.rules", "b.rules");
+        assert!(!still_the_same_file(&vault, &vp("a.rules"), None));
     }
 }

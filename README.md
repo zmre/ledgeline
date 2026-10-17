@@ -71,8 +71,8 @@ There are three ways in. The [install section of the manual](https://zmre.github
 **Cargo (anywhere Rust builds).** Install from [crates.io](https://crates.io/crates/ledgeline):
 
 ```sh
-cargo install ledgeline                        # desktop window; on Linux needs webkitgtk-4.1, gtk3, libsoup-3 and libxdo
-cargo install ledgeline --no-default-features  # no window; serves the UI to your browser
+cargo install ledgeline                                                       # desktop window; on Linux needs webkitgtk-4.1, gtk3, libsoup-3 and libxdo
+cargo install ledgeline --no-default-features --features watcher,external-tools  # no window; serves the UI to your browser
 ```
 
 The headless build prints a `http://127.0.0.1:PORT/#token=…` address to open in your browser. Imports need hledger 1.40 or newer on your `PATH` (or point Ledgeline at one in settings).

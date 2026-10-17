@@ -115,22 +115,22 @@
 //! `keep`-only save of an untouched document is still byte-identical and still
 //! writes nothing.
 
+use crate::JournalLocation;
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::response::Response;
 use ledgeline_core::Fingerprint;
 use ledgeline_core::convert::{self, SourceFormat, Tabular};
-use ledgeline_core::pinned::{self, Pin, WriteError};
 use ledgeline_core::rules::{
     self, ControlField, CreateRefusal, DirectiveValue, DiscoveredRules, Discovery, EditPlan,
     HledgerField, IfLayout, Item, ItemBody, ItemId, ItemKind, MatchScope, MatcherGroupSpec,
     MatcherSpec, Newline, OpaqueReason, Preview, PreviewUnavailable, RulesDoc, RulesPath, Setting,
     Settings, Slot, Warning, generate,
 };
+use ledgeline_core::vault::{Revision, VaultError};
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
-use std::path::{Path as FsPath, PathBuf};
+use std::sync::Arc;
 
 use crate::AppState;
 use crate::edit_api::json_body;
@@ -1273,23 +1273,26 @@ fn write_failed(id: &str, error: &std::io::Error) -> AppError {
 /// The [`Fingerprint`] is over the **raw bytes**, before the UTF-8 decode, which
 /// is the only hash a save may gate on — see the module docs.
 fn read_document(found: &DiscoveredRules, id: &str) -> Result<(String, Fingerprint), AppError> {
-    let file =
-        std::fs::File::open(found.path().as_path()).map_err(|error| read_failed(id, &error))?;
-    // `take` bounds the READ itself rather than trimming afterwards, so an
-    // enormous file is never held in memory even briefly. One byte over the cap
-    // is enough to detect it.
+    // The cap bounds the READ itself rather than trimming afterwards, so an
+    // enormous file is never held in memory even briefly: the vault reads at
+    // most one byte past it and refuses the file. The open never follows a
+    // symlink and insists on a regular file (`pinned.rs` under a `LocalVault`).
     let cap = u64::try_from(MAX_DOCUMENT_BYTES).unwrap_or(u64::MAX);
-    let mut raw = Vec::new();
-    file.take(cap.saturating_add(1))
-        .read_to_end(&mut raw)
-        .map_err(|error| read_failed(id, &error))?;
-    if raw.len() > MAX_DOCUMENT_BYTES {
-        return Err(AppError::BadRequest(format!(
-            "{} is larger than {MAX_DOCUMENT_BYTES} bytes, so it is listed but cannot be opened \
-             for editing",
-            quoted(id)
-        )));
-    }
+    let raw = match found
+        .path()
+        .vault()
+        .read_pinned(found.path().vault_path(), Some(cap))
+    {
+        Ok((raw, _)) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
+            return Err(AppError::BadRequest(format!(
+                "{} is larger than {MAX_DOCUMENT_BYTES} bytes, so it is listed but cannot be \
+                 opened for editing",
+                quoted(id)
+            )));
+        }
+        Err(error) => return Err(read_failed(id, &path_free(error))),
+    };
     let fingerprint = Fingerprint::of_bytes(&raw);
     let text = String::from_utf8(raw).map_err(|_| {
         AppError::BadRequest(format!(
@@ -1328,10 +1331,28 @@ fn parse_document(text: &str, id: &str) -> Result<RulesDoc, AppError> {
     Ok(doc)
 }
 
-/// The journal's main file — the scan root's parent, and the only thing that
-/// makes a discovery set exist at all.
-fn main_journal_file(state: &AppState) -> Option<PathBuf> {
-    state.source_files().into_iter().next()
+/// Where the journal lives — the vault the scan walks and the main file whose
+/// directory is its root, and the only thing that makes a discovery set exist
+/// at all. From the current snapshot, so it is the storage of the journal being
+/// served.
+fn main_journal_file(state: &AppState) -> Option<Arc<JournalLocation>> {
+    state.snapshot().storage()
+}
+
+/// A rules scan of the journal's own directory tree, through its vault.
+fn discover(location: &JournalLocation) -> Discovery {
+    rules::discover_in(Arc::clone(location.vault()), location.main())
+}
+
+/// A storage failure as an [`std::io::Error`] that carries no path: the
+/// underlying OS error when there is one, else just its kind. The vault's own
+/// errors name a (relative) path, and [`read_failed`]/[`write_failed`] put
+/// only the caller's id in a sentence.
+fn path_free(error: VaultError) -> std::io::Error {
+    match error {
+        VaultError::Io { source, .. } => source,
+        other => std::io::Error::from(other.kind()),
+    }
 }
 
 // ===========================================================================
@@ -1350,7 +1371,7 @@ pub(crate) async fn index(State(state): State<AppState>) -> Result<Response, App
     // exist for, and running it on a tokio worker would stall the runtime the
     // desktop GUI is hosted in.
     let Json(body) = compute(move || {
-        let discovery = rules::discover(&main);
+        let discovery = discover(&main);
         Ok(build_index(&discovery, editable))
     })
     .await?;
@@ -1386,7 +1407,7 @@ pub(crate) async fn document(
         return Err(unresolved(&id));
     };
     let Json(body) = compute(move || {
-        let discovery = rules::discover(&main);
+        let discovery = discover(&main);
         let found = discovery.resolve(&id).ok_or_else(|| unresolved(&id))?;
         let (text, fingerprint) = read_document(found, &id)?;
         let doc = parse_document(&text, &id)?;
@@ -1411,7 +1432,7 @@ pub(crate) async fn preview(
         return Err(unresolved(&id));
     };
     let Json(body) = compute(move || {
-        let discovery = rules::discover(&main);
+        let discovery = discover(&main);
         let preview = discovery.preview(&id).ok_or_else(|| unresolved(&id))?;
         Ok(WirePreview::from(&preview))
     })
@@ -1424,7 +1445,7 @@ pub(crate) async fn preview(
 /// The order below is the contract, and it is ordered so that **every check that
 /// can fail precedes the single write**. Nothing partial can be left behind: the
 /// engine renders the whole document into a `String`, verifies it, and only then
-/// is one `atomic_write` performed.
+/// is one atomic, conditional `Vault::replace` performed.
 pub(crate) async fn save(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1507,7 +1528,7 @@ fn staged_upload(state: &AppState, raw: &str) -> Result<std::sync::Arc<Stage>, A
 
 /// The whole draft, synchronously, on the blocking pool.
 fn draft_document(
-    main: &FsPath,
+    main: &JournalLocation,
     request: &WireCreateRequest,
     stage: &Stage,
 ) -> Result<WireRulesDraft, AppError> {
@@ -1515,7 +1536,7 @@ fn draft_document(
     // running the generator: the user is about to fill in a form, and finding
     // out at the end that the name was never available is the worst moment to
     // be told.
-    let discovery = rules::discover(main);
+    let discovery = discover(main);
     discovery
         .resolve_new(&request.id)
         .map_err(|refusal| create_refused(&request.id, refusal))?;
@@ -1578,35 +1599,6 @@ fn create_refused(id: &str, refusal: CreateRefusal) -> AppError {
     }
 }
 
-/// Write a brand-new file, refusing to touch one that is already there.
-///
-/// `create_new` is `O_EXCL`, so the refusal is the **kernel's**, decided
-/// atomically at the moment of the open. That matters more than it looks:
-/// [`Discovery::resolve_new`]'s own existence check expires the instant it
-/// returns, so a create that leant on it would have a window in which another
-/// process could put a file there and have it silently truncated. Here the
-/// window does not exist.
-///
-/// Deliberately **not** [`ledgeline_core::edit::atomic_write`], whose
-/// temp-file-and-rename would happily replace an existing file — the property
-/// that makes it right for a save is exactly what makes it wrong here.
-///
-/// The mode is the process umask's, unlike a save, which carries an existing
-/// file's mode forward. There is no previous mode to carry, and inventing a
-/// stricter one than the user's own editor would give them is a surprise rather
-/// than a protection.
-fn create_exclusive(path: &FsPath, bytes: &[u8]) -> std::io::Result<()> {
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)?;
-    file.write_all(bytes)?;
-    // Before the handle drops, so "the write returned" means the bytes are on
-    // the disk rather than in a cache — the same durability `atomic_write`
-    // gives a save.
-    file.sync_all()
-}
-
 /// Refuse to write a document [`read_document`] would refuse to open.
 ///
 /// [`MAX_ITEMS`] bounds how many items a save names, not how many bytes they
@@ -1637,11 +1629,11 @@ fn check_rendered_size(id: &str, new_text: &str) -> Result<(), AppError> {
 /// 2. every slot must be an insert, because there are no bytes to keep;
 /// 3. the write is exclusive, so creating can never become overwriting.
 fn create_document(
-    main: &FsPath,
+    main: &JournalLocation,
     id: &str,
     request: &WireSaveRequest,
 ) -> Result<WireRulesDoc, AppError> {
-    let discovery = rules::discover(main);
+    let discovery = discover(main);
     let path: RulesPath = discovery
         .resolve_new(id)
         .map_err(|refusal| create_refused(id, refusal))?;
@@ -1672,15 +1664,27 @@ fn create_document(
     empty.verify(&plan, &new_text)?;
     check_rendered_size(id, &new_text)?;
 
-    create_exclusive(path.as_path(), new_text.as_bytes()).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::AlreadyExists {
-            // Lost the race with another writer between `resolve_new` and the
-            // open. The kernel refused it; this is only how that is reported.
-            create_refused(id, CreateRefusal::Exists)
-        } else {
-            write_failed(id, &error)
-        }
-    })?;
+    // Exclusive (`O_CREAT | O_EXCL | O_NOFOLLOW` under a `LocalVault`), and
+    // deliberately not `write_atomic`, whose temp-file-and-rename would happily
+    // replace an existing file — the property that makes it right for a save is
+    // exactly what makes it wrong here. Durable before this returns. The mode is
+    // the process umask's (`create_new_shared`), unlike a save, which carries
+    // an existing file's mode forward: there is no previous mode to carry, and
+    // a stricter one than the user's own editor would give them is a surprise
+    // rather than a protection.
+    path.vault()
+        .create_new_shared(path.vault_path(), new_text.as_bytes())
+        .map(|_| ())
+        .map_err(path_free)
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                // Lost the race with another writer between `resolve_new` and the
+                // open. The kernel refused it; this is only how that is reported.
+                create_refused(id, CreateRefusal::Exists)
+            } else {
+                write_failed(id, &error)
+            }
+        })?;
 
     // From what we WROTE, never from a re-read — same reason the save path
     // gives: a re-read could pick up somebody else's write and hand this client
@@ -1697,13 +1701,13 @@ fn create_document(
 
 /// The whole save, synchronously, on the blocking pool.
 ///
-/// Every `?` here is a decision not to write. The single [`atomic_write`] is the
-/// last statement that can have an effect, and everything above it is either a
-/// read or a pure computation.
+/// Every `?` here is a decision not to write. The single conditional
+/// [`Vault::replace`] is the last statement that can have an effect, and
+/// everything above it is either a read or a pure computation.
 ///
-/// [`atomic_write`]: ledgeline_core::edit::atomic_write
+/// [`Vault::replace`]: ledgeline_core::vault::Vault::replace
 fn save_document(
-    main: &FsPath,
+    main: &JournalLocation,
     id: &str,
     request: &WireSaveRequest,
 ) -> Result<WireRulesDoc, AppError> {
@@ -1720,7 +1724,7 @@ fn save_document(
     // equality. `root.join(id)` appears in this codebase exactly once, in
     // `Discovery::resolve_new`, which is the create path above and cannot be
     // reached from here.
-    let discovery = rules::discover(main);
+    let discovery = discover(main);
     let found = discovery.resolve(id).ok_or_else(|| unresolved(id))?;
     let (text, fingerprint) = read_document(found, id)?;
 
@@ -1751,24 +1755,27 @@ fn save_document(
         return Ok(wire_doc(found, &doc, fingerprint.token(), true));
     }
 
-    // Pinned to the scan's `(dev, ino)` and to the revision the client edited.
+    // Pinned to the scan's identity and to the revision the client edited.
     // The scan proved this name was a regular file inside the root; that proof
     // expired the moment the scan ended, and a name can become a symlink, a FIFO
-    // or a different file entirely in between. `pinned::replace` re-checks both
-    // through the descriptor it replaces, right up to the rename, never follows
-    // a link, and carries the mode forward (a rules file's matchers carry
-    // account numbers and payee names, so `0600` staying `0600` is not
-    // hypothetical). The scan already skips symlinks, so nothing here is one.
-    let pin = Pin {
+    // or a different file entirely in between. `Vault::replace` (`pinned::replace`
+    // under a `LocalVault`) re-checks both through the descriptor it replaces,
+    // right up to the rename, never follows a link, and carries the mode forward
+    // (a rules file's matchers carry account numbers and payee names, so `0600`
+    // staying `0600` is not hypothetical). The scan already skips symlinks, so
+    // nothing here is one.
+    let expected = Revision {
+        fingerprint,
         identity: found.identity(),
-        fingerprint: Some(fingerprint),
     };
-    pinned::replace(found.path().as_path(), new_text.as_bytes(), &pin).map_err(
-        |error| match error {
-            WriteError::Changed => stale(id),
-            WriteError::Io(error) => write_failed(id, &error),
-        },
-    )?;
+    found
+        .path()
+        .vault()
+        .replace(found.path().vault_path(), new_text.as_bytes(), &expected)
+        .map_err(|error| match error {
+            VaultError::Changed { .. } => stale(id),
+            other => write_failed(id, &path_free(other)),
+        })?;
 
     // The new revision comes from what we WROTE, never from a re-read: a re-read
     // could pick up somebody else's write and hand this client a token for bytes
