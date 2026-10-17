@@ -457,8 +457,12 @@ fn is_bare_name(name: &str) -> bool {
 
 /// The per-session staging area. One per [`AppState`](crate::AppState), shared by
 /// every clone of it.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct StageArea {
+    /// The directory the session root is created under — the injected
+    /// [`AppDirs::temp_dir`](crate::app_dirs::AppDirs::temp_dir), so a sandboxed
+    /// host stages into its own container rather than a shared `/tmp`.
+    temp_dir: PathBuf,
     inner: Mutex<Area>,
 }
 
@@ -475,6 +479,15 @@ struct Area {
 }
 
 impl StageArea {
+    /// An empty area whose session root will be created under `temp_dir` on
+    /// the first upload. Nothing touches the filesystem until then.
+    pub(crate) fn new(temp_dir: PathBuf) -> Self {
+        Self {
+            temp_dir,
+            inner: Mutex::default(),
+        }
+    }
+
     /// Stage `csv` and hand back its handle.
     ///
     /// `upload_name` is the name the file arrived under — already validated as a
@@ -494,7 +507,7 @@ impl StageArea {
         let root = match &area.root {
             Some(root) => root.clone(),
             None => {
-                let root = session_root()?;
+                let root = session_root(&self.temp_dir)?;
                 create_private_dir(&root)?;
                 area.root = Some(root.clone());
                 root
@@ -549,16 +562,17 @@ impl Drop for StageArea {
     }
 }
 
-/// A fresh, unguessable session root under the OS temp directory.
+/// A fresh, unguessable session root under `temp_dir` (on the desktop, the OS
+/// temp directory).
 ///
 /// The random component is what makes two servers in one process — which is
 /// exactly what the integration tests build — unable to see each other's stages
 /// even before the map lookup gets a chance to refuse.
-fn session_root() -> std::io::Result<PathBuf> {
+fn session_root(temp_dir: &Path) -> std::io::Result<PathBuf> {
     let id = StageId::mint().ok_or_else(|| {
         std::io::Error::other("the operating system's random source is unavailable")
     })?;
-    Ok(std::env::temp_dir().join(format!("ledgeline-stage-{}", id.as_str())))
+    Ok(temp_dir.join(format!("ledgeline-stage-{}", id.as_str())))
 }
 
 /// Create a directory only this user can enter.
@@ -584,6 +598,14 @@ fn create_private_dir(path: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use ledgeline_core::vault::LocalVault;
+
+    /// An area under the OS temp dir — the desktop's [`AppDirs::from_env`]
+    /// choice.
+    ///
+    /// [`AppDirs::from_env`]: crate::app_dirs::AppDirs::from_env
+    fn area() -> StageArea {
+        StageArea::new(std::env::temp_dir())
+    }
 
     /// The shape gate in full. Anything that is not 32 lowercase hex characters
     /// must be refused before it can be looked up — including the spellings
@@ -629,7 +651,7 @@ mod tests {
     /// A staged file lands in a private directory and reads back byte for byte.
     #[test]
     fn a_stage_holds_the_csv_it_was_given() {
-        let area = StageArea::default();
+        let area = area();
         let (id, stage) = area
             .put("a,b\n1,2\n", SourceFormat::Csv, "statement.xlsx")
             .expect("stage");
@@ -656,7 +678,7 @@ mod tests {
     /// dropped, and `import_api::cli_argv` renders it as `--input`.
     #[test]
     fn a_stage_remembers_the_name_the_upload_arrived_under() {
-        let area = StageArea::default();
+        let area = area();
         let (_, stage) = area
             .put("a\n1\n", SourceFormat::Xlsx, "Statement Feb 2026.xlsx")
             .expect("stage");
@@ -669,8 +691,8 @@ mod tests {
     /// stranger, even though it is perfectly well-formed.
     #[test]
     fn one_areas_id_never_resolves_in_another() {
-        let mine = StageArea::default();
-        let theirs = StageArea::default();
+        let mine = area();
+        let theirs = area();
         let (id, _) = theirs
             .put("a\n1\n", SourceFormat::Csv, "bank.csv")
             .expect("stage");
@@ -682,7 +704,7 @@ mod tests {
     /// exists.
     #[test]
     fn materializing_carries_the_destinations_latest_marker() {
-        let area = StageArea::default();
+        let area = area();
         let (_, stage) = area
             .put("a\n1\n", SourceFormat::Csv, "bank.csv")
             .expect("stage");
@@ -752,7 +774,7 @@ mod tests {
     /// and an editor between them can produce.
     #[test]
     fn a_multi_line_latest_marker_is_copied_verbatim() {
-        let area = StageArea::default();
+        let area = area();
         let (_, stage) = area
             .put("a\n1\n", SourceFormat::Csv, "bank.csv")
             .expect("stage");
@@ -795,7 +817,7 @@ mod tests {
     /// account reaches, and dropped the whole file without a word.
     #[test]
     fn a_state_file_for_thousands_of_same_day_records_is_still_carried() {
-        let area = StageArea::default();
+        let area = area();
         let (_, stage) = area
             .put("a\n1\n", SourceFormat::Csv, "bank.csv")
             .expect("stage");
@@ -876,7 +898,7 @@ mod tests {
     /// forget.
     #[test]
     fn materializing_refuses_to_drop_unusable_dedup_state() {
-        let area = StageArea::default();
+        let area = area();
         let (_, stage) = area
             .put("a\n1\n", SourceFormat::Csv, "bank.csv")
             .expect("stage");
@@ -907,7 +929,7 @@ mod tests {
     /// the caller believed it had already checked.
     #[test]
     fn materializing_refuses_anything_but_a_bare_name() {
-        let area = StageArea::default();
+        let area = area();
         let (_, stage) = area
             .put("a\n1\n", SourceFormat::Csv, "bank.csv")
             .expect("stage");
@@ -930,7 +952,7 @@ mod tests {
     /// is that both routes out of a stage go through it.
     #[test]
     fn every_copy_hledger_reads_is_aligned_and_the_canonical_one_is_not() {
-        let area = StageArea::default();
+        let area = area();
         let csv = "Date,Description,Amount\n2026-01-05,A,-1.00\n";
         let (_, stage) = area.put(csv, SourceFormat::Csv, "bank.csv").expect("stage");
 
@@ -968,7 +990,7 @@ mod tests {
     /// The cap bounds what one session can hold, and evicts the oldest.
     #[test]
     fn the_oldest_stage_is_evicted_past_the_cap() {
-        let area = StageArea::default();
+        let area = area();
         let ids: Vec<StageId> = (0..=MAX_LIVE_STAGES)
             .map(|n| {
                 area.put(&format!("a\n{n}\n"), SourceFormat::Csv, "bank.csv")
@@ -986,7 +1008,7 @@ mod tests {
     /// Dropping the area takes the whole session root with it.
     #[test]
     fn dropping_the_area_removes_every_stage() {
-        let area = StageArea::default();
+        let area = area();
         let (_, stage) = area
             .put("a\n1\n", SourceFormat::Csv, "bank.csv")
             .expect("stage");

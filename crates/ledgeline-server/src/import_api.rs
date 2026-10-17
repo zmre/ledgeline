@@ -130,6 +130,7 @@ use std::time::Duration;
 
 use crate::AppState;
 use crate::alias_api::WireAlias;
+use crate::app_dirs::AppDirs;
 use crate::edit_api::json_body;
 use crate::error::AppError;
 use crate::git::{GitStatus, Repo};
@@ -1630,8 +1631,8 @@ fn hledger_unavailable(error: &HledgerError) -> AppError {
 }
 
 /// A resolved hledger, or the `501`.
-fn resolve_hledger() -> Result<Hledger, AppError> {
-    Hledger::resolve(&prefs::load()).map_err(|error| hledger_unavailable(&error))
+fn resolve_hledger(dirs: &AppDirs) -> Result<Hledger, AppError> {
+    Hledger::resolve(&prefs::load(dirs), dirs).map_err(|error| hledger_unavailable(&error))
 }
 
 /// Run an invocation, mapping a transport failure (spawn, timeout) to a `500`.
@@ -2210,7 +2211,7 @@ pub(crate) fn autocommit_enabled(prefs: &Prefs) -> bool {
 ///
 /// Every HTTP caller passes [`FromPrefs`](Self::FromPrefs), which is exactly the
 /// behaviour that existed before this type: the stored preference decides. It is
-/// a parameter rather than another read of `prefs::load()` because
+/// a parameter rather than another read of `prefs::load` because
 /// `ledgeline import --no-git` has to turn the net off for **one invocation**
 /// without writing anything into a store that outlives it — a CLI flag that
 /// silently edited the desktop app's preferences would be a considerably worse
@@ -2380,8 +2381,8 @@ pub(crate) async fn capabilities(State(state): State<AppState>) -> Result<Respon
     // blocking pool exist for.
     let aliases = state.clone();
     let Json(body) = compute(move || {
-        let prefs = prefs::load();
-        let resolved = Hledger::resolve(&prefs);
+        let prefs = prefs::load(state.app_dirs());
+        let resolved = Hledger::resolve(&prefs, state.app_dirs());
         Ok(WireCapabilities {
             hledger: WireHledger::from(&resolved),
             formats: convert_formats(),
@@ -2476,7 +2477,7 @@ fn stage_upload(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireStage,
             .merged
         })
         .unwrap_or_default();
-    let candidates = match (&location, resolve_hledger()) {
+    let candidates = match (&location, resolve_hledger(state.app_dirs())) {
         (Some(location), Ok(hledger)) => {
             rank_candidates(&hledger, location, &staged, &tabular, &aliases)
         }
@@ -2972,7 +2973,7 @@ impl Plan {
         // and `aliases` are: the dry-run and the commit must not be able to
         // disagree about whether the dedup state applies.
         refuse_unusable_dedup_state(&location, &destination_path, &csv_name, &request.csv_path)?;
-        let hledger = resolve_hledger()?;
+        let hledger = resolve_hledger(state.app_dirs())?;
         // Both homes an account alias can live in — see `AliasArguments::merge`
         // for why the config's come first.
         let conf = conf_in_force(&location);
@@ -2998,7 +2999,7 @@ impl Plan {
             // balance verifications put its absolute path into hledger's stdin,
             // so hledger's own diagnostics quote it back.
             .hide_prefix(&root_dir)
-            .hide_prefix(&std::env::temp_dir());
+            .hide_prefix(&state.app_dirs().temp_dir);
         Ok(Self {
             hledger,
             staged,
@@ -3183,7 +3184,7 @@ fn run_dry_run(
         // renames would silently vanish. What an alias rewrites is a property of
         // the rules file, not of which rows are new.
         aliases: alias_effect(&plan, &staged, &proposal)?,
-        blocked_by_git: if git.enabled(&prefs::load()) {
+        blocked_by_git: if git.enabled(&prefs::load(state.app_dirs())) {
             blocked_by_git(&plan.targets(request))
         } else {
             Vec::new()
@@ -3862,7 +3863,7 @@ fn run_commit(
 ) -> Result<WireCommit, AppError> {
     let plan = Plan::resolve(state, &request.plan)?;
     let targets = plan.targets(&request.plan);
-    let prefs = prefs::load();
+    let prefs = prefs::load(state.app_dirs());
 
     // Sequencing rule 3: re-checked HERE. The dry-run's answer is a report, not
     // an authorization, and the UI is not a security boundary.
@@ -4158,9 +4159,9 @@ fn run_save_csv(state: &AppState, request: &WireSaveCsvRequest) -> Result<WireSa
     let redactor = Redactor::default()
         .hide(&destination, &request.csv_path)
         .hide_prefix(&root)
-        .hide_prefix(&std::env::temp_dir());
+        .hide_prefix(&state.app_dirs().temp_dir);
 
-    let prefs = prefs::load();
+    let prefs = prefs::load(state.app_dirs());
     let targets = vec![(destination.as_path(), request.csv_path.as_str())];
     if autocommit_enabled(&prefs) {
         let blocked = blocked_by_git(&targets);
@@ -4642,13 +4643,13 @@ fn run_sort(
             .hide_prefix(root),
         _ => Redactor::default(),
     }
-    .hide_prefix(&std::env::temp_dir());
+    .hide_prefix(&state.app_dirs().temp_dir);
     let targets: Vec<(&Path, &str)> = journal
         .iter()
         .map(|journal| (journal.as_path(), request.journal_id.as_str()))
         .collect();
     let git = git
-        .enabled(&prefs::load())
+        .enabled(&prefs::load(state.app_dirs()))
         .then(|| {
             commit_targets(
                 &targets,
@@ -5768,8 +5769,8 @@ fn run_write_conf(
 }
 
 /// `GET /api/prefs` — the stored preferences.
-pub(crate) async fn prefs_get() -> Result<Response, AppError> {
-    let Json(body) = compute(|| Ok(WirePrefs::from(&prefs::load()))).await?;
+pub(crate) async fn prefs_get(State(state): State<AppState>) -> Result<Response, AppError> {
+    let Json(body) = compute(move || Ok(WirePrefs::from(&prefs::load(state.app_dirs())))).await?;
     Ok(no_store(body))
 }
 
@@ -5780,6 +5781,7 @@ pub(crate) async fn prefs_get() -> Result<Response, AppError> {
 /// screens later, as "could not run hledger" is the mysterious-failure shape the
 /// preferences module exists to prevent.
 pub(crate) async fn prefs_put(
+    State(state): State<AppState>,
     payload: Result<Json<WirePrefs>, JsonRejection>,
 ) -> Result<Response, AppError> {
     let request = json_body(payload)?;
@@ -5788,7 +5790,8 @@ pub(crate) async fn prefs_put(
             hledger_path: request.hledger_path.as_deref().map(PathBuf::from),
             git_autocommit: request.git_autocommit,
         };
-        prefs::store(&prefs).map_err(|error| AppError::BadRequest(error.to_string()))?;
+        prefs::store(state.app_dirs(), &prefs)
+            .map_err(|error| AppError::BadRequest(error.to_string()))?;
         Ok(WirePrefs::from(&prefs))
     })
     .await?;

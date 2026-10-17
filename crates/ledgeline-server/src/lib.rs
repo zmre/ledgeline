@@ -38,6 +38,7 @@
 
 mod account_api;
 mod alias_api;
+mod app_dirs;
 mod benchmarks_api;
 mod budget_api;
 mod commodity_profile;
@@ -52,6 +53,7 @@ mod prices_api;
 mod profiles_api;
 mod projections_api;
 mod qb_journal_api;
+pub mod recents;
 mod redact;
 mod reports_api;
 mod rules_api;
@@ -85,6 +87,7 @@ use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::compression::CompressionLayer;
 use tower_http::set_header::SetResponseHeaderLayer;
 
+pub use app_dirs::{AppDirs, CONFIG_DIR_ENV, HLEDGER_ENV};
 pub use location::JournalLocation;
 pub use security::{
     AccessToken, ProcessToken, Security, SecurityError, TOKEN_ENV, token_from_env_or_random,
@@ -390,6 +393,11 @@ pub struct AppState {
     /// [`Self::import_writes`]: the cache is not the journal, and a chart
     /// overlay must never hold up an import or a price update.
     benchmark_cache: Arc<sidecar::SidecarCache<benchmarks_api::BenchmarkCache>>,
+    /// Where the app keeps its OWN state — preferences, the staging area's
+    /// parent, the `hledger` override. Not journal content, so not the vault.
+    /// Defaults to [`AppDirs::from_env`] (the desktop's lookups); a sandboxed
+    /// host replaces it with [`AppState::with_app_dirs`].
+    app_dirs: Arc<AppDirs>,
 }
 
 /// The real Yahoo feeds, over ONE `reqwest::Client` ([`yahoo::http_client`])
@@ -434,6 +442,7 @@ impl AppState {
     #[must_use]
     pub fn from_journal(journal: &Journal) -> Self {
         let yahoo = YahooFeeds::new();
+        let app_dirs = Arc::new(AppDirs::from_env());
         Self {
             inner: Arc::new(ArcSwap::from_pointee(Snapshot::from_journal(
                 Arc::new(journal.clone()),
@@ -441,13 +450,14 @@ impl AppState {
             ))),
             editor: Arc::new(Mutex::new(None)),
             rules_writes: Arc::new(tokio::sync::Mutex::new(())),
-            stages: Arc::new(stage::StageArea::default()),
+            stages: Arc::new(stage::StageArea::new(app_dirs.temp_dir.clone())),
             qb_stages: Arc::new(qb_journal_api::QbStageArea::default()),
             import_writes: Arc::new(tokio::sync::Mutex::new(())),
             price_source: yahoo.prices,
             profiles: yahoo.profiles,
             history_source: yahoo.history,
             benchmark_cache: Arc::default(),
+            app_dirs,
         }
     }
 
@@ -484,17 +494,19 @@ impl AppState {
         let snapshot =
             Snapshot::from_journal(Arc::clone(editor.journal()), Some(location_of(&editor)));
         let yahoo = YahooFeeds::new();
+        let app_dirs = Arc::new(AppDirs::from_env());
         Self {
             inner: Arc::new(ArcSwap::from_pointee(snapshot)),
             editor: Arc::new(Mutex::new(Some(editor))),
             rules_writes: Arc::new(tokio::sync::Mutex::new(())),
-            stages: Arc::new(stage::StageArea::default()),
+            stages: Arc::new(stage::StageArea::new(app_dirs.temp_dir.clone())),
             qb_stages: Arc::new(qb_journal_api::QbStageArea::default()),
             import_writes: Arc::new(tokio::sync::Mutex::new(())),
             price_source: yahoo.prices,
             profiles: yahoo.profiles,
             history_source: yahoo.history,
             benchmark_cache: Arc::default(),
+            app_dirs,
         }
     }
 
@@ -669,6 +681,27 @@ impl AppState {
     /// docs for why the journal editor's mutex does not cover these writes.
     pub(crate) fn rules_writes(&self) -> &tokio::sync::Mutex<()> {
         &self.rules_writes
+    }
+
+    /// Where the app keeps its own state. See the field's docs.
+    #[must_use]
+    pub fn app_dirs(&self) -> &AppDirs {
+        &self.app_dirs
+    }
+
+    /// Use `dirs` for the app's own state instead of [`AppDirs::from_env`]. A
+    /// sandboxed host (iOS) calls this right after construction, before the
+    /// state serves anything; the desktop calls it with the `from_env` value it
+    /// already built, so the binary and the library agree on one set.
+    ///
+    /// The staging area is replaced with an empty one under the new
+    /// [`AppDirs::temp_dir`]. Call it before any upload — a stage made earlier
+    /// would be dropped (and its directory removed) with the old area.
+    #[must_use]
+    pub fn with_app_dirs(mut self, dirs: AppDirs) -> Self {
+        self.stages = Arc::new(stage::StageArea::new(dirs.temp_dir.clone()));
+        self.app_dirs = Arc::new(dirs);
+        self
     }
 
     /// This session's staging area, shared by all clones. See the field's docs.

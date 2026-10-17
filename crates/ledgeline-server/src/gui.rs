@@ -23,7 +23,7 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
-use ledgeline::{AccessToken, AppState, router_with_security};
+use ledgeline::{AccessToken, AppDirs, AppState, recents, router_with_security};
 use muda::{
     Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
     accelerator::{Accelerator, Code, Modifiers},
@@ -57,26 +57,27 @@ enum UserEvent {
 }
 
 /// GUI entry point: stand up the in-process server, then run the window.
-pub(crate) fn run(cli: &Cli) -> Result<(), AppError> {
+pub(crate) fn run(cli: &Cli, app_dirs: AppDirs) -> Result<(), AppError> {
     // Same posture the headless server takes (token + Host guard, non-loopback
     // binds refused), decided before the journal is opened. The token is NOT
     // printed here, and it is not in the served shell either: the WebView gets
     // it out of band, from `token_init_script`.
     let (process_token, security_plan) = crate::plan_security(cli)?;
-    let journal_path = crate::resolve_journal(cli);
+    let journal_path = crate::resolve_journal(cli, &app_dirs);
     // Bind an editor to the file so the GUI's edit endpoints are live (this is the
     // primary mode). Canonicalize first — like `run_server_blocking` — so the
     // editor's save target and source name match the watcher's canonical path.
     let editor_path = journal_path
         .canonicalize()
         .unwrap_or_else(|_| journal_path.clone());
-    let state =
-        AppState::from_journal_path(&editor_path).map_err(|source| AppError::OpenEditor {
+    let state = AppState::from_journal_path(&editor_path)
+        .map_err(|source| AppError::OpenEditor {
             path: journal_path.display().to_string(),
             source,
-        })?;
+        })?
+        .with_app_dirs(app_dirs);
     // Remember this journal as the most-recently-opened (canonical path).
-    crate::recents::record(&editor_path);
+    recents::record(state.app_dirs(), &editor_path);
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -494,6 +495,7 @@ fn build_menu() -> AppMenu {
 /// dispatch a click. Called at startup and after every successful open so the
 /// list always reflects the latest history.
 fn rebuild_recent(
+    dirs: &AppDirs,
     submenu: &Submenu,
     map: &RefCell<Vec<(MenuId, PathBuf)>>,
     current: Option<&Path>,
@@ -501,7 +503,7 @@ fn rebuild_recent(
     // Clear existing entries (remove index 0 until the submenu is empty) first.
     while submenu.remove_at(0).is_some() {}
 
-    let recents: Vec<PathBuf> = crate::recents::list()
+    let recents: Vec<PathBuf> = recents::list(dirs)
         .into_iter()
         .filter(|path| Some(path.as_path()) != current)
         .take(RECENT_MENU_LIMIT)
@@ -521,7 +523,7 @@ fn rebuild_recent(
     for (index, path) in recents.iter().enumerate() {
         let item = MenuItem::with_id(
             format!("recent-{index}"),
-            crate::recents::display_label(path),
+            recents::display_label(path),
             true,
             None,
         );
@@ -844,7 +846,12 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
     let recent_map: RefCell<Vec<(MenuId, PathBuf)>> = RefCell::new(Vec::new());
     {
         let current_ref = current.borrow();
-        rebuild_recent(&recent_submenu, &recent_map, Some(current_ref.as_path()));
+        rebuild_recent(
+            state.app_dirs(),
+            &recent_submenu,
+            &recent_map,
+            Some(current_ref.as_path()),
+        );
     }
 
     event_loop.run(move |event, _target, control_flow| {
@@ -860,9 +867,14 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
             match state.rebind_editor(&editor_path) {
                 Ok(()) => {
                     watcher.replace(crate::spawn_watcher(&editor_path, state.clone()).ok());
-                    crate::recents::record(&editor_path);
+                    recents::record(state.app_dirs(), &editor_path);
                     current.replace(editor_path.clone());
-                    rebuild_recent(&recent_submenu, &recent_map, Some(editor_path.as_path()));
+                    rebuild_recent(
+                        state.app_dirs(),
+                        &recent_submenu,
+                        &recent_map,
+                        Some(editor_path.as_path()),
+                    );
                     let _ = webview.load_url(&url);
                     eprintln!("ledgeline: opened {}", editor_path.display());
                 }

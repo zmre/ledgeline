@@ -85,7 +85,8 @@
 //! Fixed, and chosen so the most specific answer wins:
 //!
 //! 1. `prefs.hledger_path` — the user pointed at one in the settings form.
-//! 2. `$LEDGELINE_HLEDGER` — a per-launch override, and what the tests drive.
+//! 2. [`AppDirs::hledger_bin`] — on the desktop `$LEDGELINE_HLEDGER`
+//!    ([`AppDirs::from_env`]), a per-launch override, and what the tests drive.
 //! 3. A path baked in at COMPILE time via `option_env!("LEDGELINE_HLEDGER_PATH")`,
 //!    so the Nix flake can pin the exact store path it built against. Note that
 //!    without a `build.rs` emitting `cargo:rerun-if-env-changed`, changing this
@@ -136,6 +137,7 @@
 //! dump, so the version is checked once, up front, and reported as
 //! [`HledgerError::TooOld`] with a number the user can act on.
 
+use crate::app_dirs::AppDirs;
 use crate::prefs::{self, Prefs};
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
@@ -151,9 +153,6 @@ pub(crate) const MIN_HLEDGER: Version = Version {
     major: 1,
     minor: 40,
 };
-
-/// Env override naming an `hledger` binary (resolution step 2).
-const HLEDGER_ENV: &str = "LEDGELINE_HLEDGER";
 
 /// An `hledger` path baked in at build time (resolution step 3), for the Nix
 /// flake to pin its own store path. `None` in an ordinary `cargo build`.
@@ -340,13 +339,13 @@ impl Hledger {
     /// Silently ignoring the binary a user explicitly configured, because we
     /// found a newer one elsewhere, is how "I set the path and it still used the
     /// wrong one" happens. A too-old answer is a real answer, so we report it.
-    pub(crate) fn resolve(prefs: &Prefs) -> Result<Self, HledgerError> {
+    pub(crate) fn resolve(prefs: &Prefs, dirs: &AppDirs) -> Result<Self, HledgerError> {
         if !EXTERNAL_TOOLS {
             return Err(HledgerError::Disabled);
         }
         // Lazy: `find` stops at the first candidate that answers, so the common
         // case spawns exactly one process.
-        let answered = Self::candidates(prefs)
+        let answered = Self::candidates(prefs, dirs)
             .map(|path| {
                 let probe = probe_version(&path);
                 (path, probe)
@@ -374,10 +373,10 @@ impl Hledger {
     /// `$PATH` fallback is a bare name by definition and cannot be checked
     /// without reimplementing the loader's search, so it is always offered and
     /// allowed to fail at spawn.
-    fn candidates(prefs: &Prefs) -> impl Iterator<Item = PathBuf> {
+    fn candidates(prefs: &Prefs, dirs: &AppDirs) -> impl Iterator<Item = PathBuf> {
         let explicit = [
             prefs.hledger_path.clone(),
-            std::env::var_os(HLEDGER_ENV).map(PathBuf::from),
+            dirs.hledger_bin.clone(),
             BAKED_HLEDGER.map(PathBuf::from),
             sibling_hledger(),
         ];
@@ -886,7 +885,7 @@ mod without_external_tools {
 
     #[test]
     fn nothing_is_spawned_and_the_error_says_why() {
-        let resolved = Hledger::resolve(&Prefs::default());
+        let resolved = Hledger::resolve(&Prefs::default(), &AppDirs::from_env());
         assert!(matches!(resolved, Err(HledgerError::Disabled)));
         let ran = Hledger::for_tests(Path::new("/bin/sh"))
             .invoke(["--version"])

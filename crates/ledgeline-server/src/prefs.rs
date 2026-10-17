@@ -8,8 +8,10 @@
 //! with a file they cannot parse, is exactly the drift worth spending a doc
 //! comment to prevent.
 //!
-//! The store is a single JSON object at
-//! `dirs::config_dir()/ledgeline/prefs.json`, holding two settings:
+//! The store is a single JSON object at `prefs.json` in the injected
+//! [`AppDirs::config_dir`] (on the desktop, `$LEDGELINE_CONFIG_DIR` or
+//! `dirs::config_dir()/ledgeline` — see [`AppDirs::from_env`]), holding two
+//! settings:
 //!
 //! * `hledgerPath` — an explicit `hledger` binary, for the (common) case where
 //!   the desktop app is launched from Finder and inherits a `$PATH` that has
@@ -74,15 +76,11 @@
 //! WP-11 contract does not specify — and it is tolerable only because this store
 //! is written solely in response to an explicit user action.
 
+use crate::app_dirs::AppDirs;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-/// Env override for the directory that holds `prefs.json`. Identical to the one
-/// `recents.rs` honours, and on purpose: one env var moves the whole config.
-const CONFIG_DIR_ENV: &str = "LEDGELINE_CONFIG_DIR";
-/// Application subdirectory under the OS config dir.
-const APP_DIR: &str = "ledgeline";
 /// File name of the preferences store within the config directory.
 const PREFS_FILE: &str = "prefs.json";
 
@@ -134,8 +132,9 @@ pub(crate) enum PrefsError {
 /// Infallible by design — see the module docs. A store that is present but
 /// unparseable is moved aside first, so this never returns defaults *and* leaves
 /// a file behind that the next [`store`] would silently clobber.
-pub(crate) fn load() -> Prefs {
-    prefs_file().map_or_else(Prefs::default, |file| load_from(&file))
+pub(crate) fn load(dirs: &AppDirs) -> Prefs {
+    dirs.config_file(PREFS_FILE)
+        .map_or_else(Prefs::default, |file| load_from(&file))
 }
 
 /// Persist `prefs`, replacing whatever was there.
@@ -146,28 +145,15 @@ pub(crate) fn load() -> Prefs {
 /// [`PrefsError::NoConfigDir`] if there is nowhere to write;
 /// [`PrefsError::Io`] / [`PrefsError::Serialize`] if the write itself fails.
 /// On any error nothing is written, so the previous settings survive intact.
-pub(crate) fn store(prefs: &Prefs) -> Result<(), PrefsError> {
-    let file = prefs_file().ok_or(PrefsError::NoConfigDir)?;
-    store_in(&file, prefs)
-}
-
-/// Directory holding `prefs.json`: `$LEDGELINE_CONFIG_DIR` when set and
-/// non-empty, else `dirs::config_dir()/ledgeline`. `None` only if the platform
-/// exposes no config dir and no override is set.
 ///
-/// Byte-for-byte the same rule as `recents::config_dir`. The two stores are
-/// siblings in one directory, so a user who redirects one and not the other has
-/// a bug, not a feature.
-fn config_dir() -> Option<PathBuf> {
-    match std::env::var_os(CONFIG_DIR_ENV) {
-        Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
-        _ => dirs::config_dir().map(|base| base.join(APP_DIR)),
-    }
-}
-
-/// Full path to the preferences store, if a config directory is available.
-fn prefs_file() -> Option<PathBuf> {
-    config_dir().map(|dir| dir.join(PREFS_FILE))
+/// The store lives in [`AppDirs::config_dir`], the same directory as the
+/// recents store: the two are siblings, so a host that redirects one redirects
+/// both.
+pub(crate) fn store(dirs: &AppDirs, prefs: &Prefs) -> Result<(), PrefsError> {
+    let file = dirs
+        .config_file(PREFS_FILE)
+        .ok_or(PrefsError::NoConfigDir)?;
+    store_in(&file, prefs)
 }
 
 /// What the store at a given path currently holds. Mirrors `recents::Stored`,
@@ -202,7 +188,7 @@ pub(crate) fn load_from(file: &Path) -> Prefs {
 /// created, so a rejected value leaves the filesystem exactly as it found it.
 ///
 /// # Errors
-/// See [`store`], which is this with the path resolved from the environment.
+/// See [`store`], which is this with the path resolved from [`AppDirs`].
 pub(crate) fn store_in(file: &Path, prefs: &Prefs) -> Result<(), PrefsError> {
     if let Some(path) = prefs.hledger_path.as_deref() {
         check_storable(path).map_err(|reason| PrefsError::InvalidHledgerPath { reason })?;
