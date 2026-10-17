@@ -33,12 +33,12 @@
 //! 3. **The rewrite is a span splice** ([`AliasDoc::apply`]) that touches only
 //!    the pattern and replacement of the line being changed.
 //! 4. **[`AliasDoc::verify`] must agree**, and then the *whole journal* is
-//!    re-parsed with the edited text in memory
-//!    ([`parse_journal_with_overrides`]). Only a file that still reads as part
+//!    re-parsed with the edited text in memory, through the journal's vault
+//!    (`JournalLocation::reparse`). Only a file that still reads as part
 //!    of its journal is written. That last check is here rather than in the
 //!    engine because only the server knows which journal a file belongs to.
-//! 5. **One [`pinned::replace`]**, and it is the last statement that can have an
-//!    effect. Every `?` above it is a decision to write nothing.
+//! 5. **One `Vault::replace`** (on the desktop `pinned::replace`), and it is the
+//!    last statement that can have an effect. Every `?` above it is a decision to write nothing.
 //!
 //! # No absolute path is ever echoed
 //!
@@ -51,14 +51,14 @@ use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::response::Response;
+use ledgeline_core::aliases;
 use ledgeline_core::aliases::{
     AliasDoc, AliasEdit, AliasError, AliasLine, AliasLock, AliasPlan, AliasRefusal, Forwarded,
 };
 use ledgeline_core::edit::Fingerprint;
 use ledgeline_core::journals;
 use ledgeline_core::model::Journal;
-use ledgeline_core::pinned::{self, Pin, WriteError};
-use ledgeline_core::{aliases, parse};
+use ledgeline_core::vault::{Revision, VaultError, VaultPath};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path as FsPath, PathBuf};
@@ -66,6 +66,7 @@ use std::path::{Path as FsPath, PathBuf};
 use crate::AppState;
 use crate::edit_api::json_body;
 use crate::error::{AppError, editing_disabled};
+use crate::location::JournalLocation;
 use crate::reports_api::compute;
 use crate::security::no_store_json as no_store;
 
@@ -267,7 +268,11 @@ pub(crate) async fn save(
 fn alias_files(state: &AppState) -> Result<Vec<WireAliasFile>, AppError> {
     let snapshot = state.snapshot();
     let journal = &snapshot.journal;
-    let targets = journals::targets(journal);
+    // A journal with no backing file has no files to list.
+    let Some(location) = snapshot.storage() else {
+        return Ok(Vec::new());
+    };
+    let targets = location.targets(journal);
     let forwarded = aliases::forward(journal);
 
     // Which files to open: every one that declares an alias, plus the root, in
@@ -287,10 +292,11 @@ fn alias_files(state: &AppState) -> Result<Vec<WireAliasFile>, AppError> {
     Ok(declaring
         .into_iter()
         .filter_map(|path| {
-            let target = targets
-                .iter()
-                .find(|target| journal_path(journal, &target.id).as_ref() == Some(path))?;
-            let text = std::fs::read_to_string(path).ok()?;
+            let vault_path = location.path_of(path)?;
+            let target = targets.iter().find(|target| {
+                journal_path(&location, journal, &target.id).as_ref() == Some(&vault_path)
+            })?;
+            let text = location.vault().read_to_string(&vault_path).ok()?;
             let doc = AliasDoc::parse(&text);
             Some(WireAliasFile {
                 aliases: doc
@@ -404,7 +410,9 @@ fn save_aliases(
 ) -> Result<WireAliasFile, AppError> {
     let snapshot = state.snapshot();
     let journal = &snapshot.journal;
-    let target = journals::targets(journal)
+    let location = snapshot.storage().ok_or_else(|| unresolved(id))?;
+    let target = location
+        .targets(journal)
         .into_iter()
         .find(|target| target.id == id)
         .ok_or_else(|| unresolved(id))?;
@@ -415,9 +423,12 @@ fn save_aliases(
             quoted(id)
         )));
     }
-    let path = journal_path(journal, id).ok_or_else(|| unresolved(id))?;
+    let vault_path = journal_path(&location, journal, id).ok_or_else(|| unresolved(id))?;
+    // The key the parse records for this file, which is what the forwarding
+    // verdicts below match aliases against.
+    let path = location.key(&vault_path);
 
-    let (text, pin) = read_journal(&path, id)?;
+    let (text, revision) = read_journal(&location, &vault_path, id)?;
     let fingerprint = Fingerprint::of_bytes(text.as_bytes());
     // Checked BEFORE any index is resolved, so a client editing an older parse
     // is told the file moved rather than "there is no alias number 3" — which
@@ -437,11 +448,10 @@ fn save_aliases(
     // else moved. This proves the result is still a journal — the check `edit.rs`
     // makes for every transaction edit, and the reason it is here rather than in
     // the engine is that only this crate knows which journal this file is part
-    // of. Overrides key on the resolved path, which is what `source_files`
-    // already holds.
+    // of. Overrides key on the file's place in the vault.
     if new_text != text {
-        let overrides = HashMap::from([(path.clone(), new_text.clone())]);
-        if parse::parse_journal_with_overrides(&journal.source_name, &overrides).is_err() {
+        let overrides = HashMap::from([(vault_path.clone(), new_text.clone())]);
+        if location.reparse(&overrides).is_err() {
             // Deliberately no detail: `ParseError::Located` names the file it was
             // reading, and that name is not the caller's to have.
             return Err(AppError::BadRequest(format!(
@@ -465,19 +475,22 @@ fn save_aliases(
         ));
     }
 
-    // Pinned to the inode and the bytes read above: `pinned::replace` re-checks
-    // both through the descriptor it replaces, right up to the rename, and never
-    // follows a link — a symlink swapped in since the read is a `409`, not a
-    // write to wherever it points.
-    pinned::replace(&path, new_text.as_bytes(), &pin).map_err(|error| match error {
-        WriteError::Changed => stale(id),
-        // Only the `ErrorKind`: a write error can carry the temp path.
-        WriteError::Io(error) => AppError::Internal(format!(
-            "{} could not be written: {}. Nothing else was changed.",
-            quoted(id),
-            error.kind()
-        )),
-    })?;
+    // Pinned to the identity and the bytes read above: `Vault::replace` (on the
+    // desktop, `pinned::replace`) re-checks both through the descriptor it
+    // replaces, right up to the rename, and never follows a link — a symlink
+    // swapped in since the read is a `409`, not a write to wherever it points.
+    location
+        .vault()
+        .replace(&vault_path, new_text.as_bytes(), &revision)
+        .map_err(|error| match error {
+            VaultError::Changed { .. } => stale(id),
+            // Only the `ErrorKind`: a write error can carry the temp path.
+            error => AppError::Internal(format!(
+                "{} could not be written: {}. Nothing else was changed.",
+                quoted(id),
+                error.kind()
+            )),
+        })?;
 
     // The journal changed underneath the editor, so re-open it — otherwise the
     // next transaction edit sees a stale fingerprint and reports a conflict the
@@ -573,19 +586,13 @@ fn edit_from_wire(edit: &WireAliasEdit) -> AliasEdit {
 
 /// The path a `journalId` names, taken from the files the parse actually read.
 ///
-/// Security layer 2. `root.join(id)` appears here, and the very next thing that
-/// happens to the result is a membership test against
-/// [`Journal::source_files`] — the set of files the include guard already
+/// Security layer 2. The id is joined to the include root (in the vault, so it
+/// cannot leave it lexically), and the very next thing that happens to the
+/// result is a membership test against [`Journal::source_files`] — the set of files the include guard already
 /// admitted. A handle that does not name one of them resolves to nothing, so no
 /// path this function returns was invented by string arithmetic.
-fn journal_path(journal: &Journal, id: &str) -> Option<PathBuf> {
-    let root = journal.source_files.first()?.parent()?;
-    let candidate = root.join(id);
-    journal
-        .source_files
-        .iter()
-        .find(|source| *source == &candidate)
-        .cloned()
+fn journal_path(location: &JournalLocation, journal: &Journal, id: &str) -> Option<VaultPath> {
+    location.source_path(journal, id)
 }
 
 /// Layer 1: shape, before any filesystem call.
@@ -627,13 +634,26 @@ fn validate_journal_id(id: &str) -> Result<(), AppError> {
 }
 
 /// Read one journal file, reporting only what the caller already knows, with
-/// the [`Pin`] a later write of it must still match — identity and fingerprint
-/// from one open descriptor.
+/// the [`Revision`] a later write of it must still match — identity and
+/// fingerprint from one read.
 ///
 /// Never follows a symlink: the path is the real one the snapshot resolved, so
 /// a link there now was swapped in since, and that is a stale revision.
-fn read_journal(path: &FsPath, id: &str) -> Result<(String, Pin), AppError> {
-    pinned::read_pinned_string(path).map_err(|error| {
+fn read_journal(
+    location: &JournalLocation,
+    path: &VaultPath,
+    id: &str,
+) -> Result<(String, Revision), AppError> {
+    let read = location
+        .vault()
+        .read_pinned(path, None)
+        .map_err(std::io::Error::from)
+        .and_then(|(bytes, revision)| {
+            String::from_utf8(bytes)
+                .map(|text| (text, revision))
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        });
+    read.map_err(|error| {
         if error.kind() == std::io::ErrorKind::InvalidInput {
             return stale(id);
         }
