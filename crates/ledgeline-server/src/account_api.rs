@@ -21,8 +21,9 @@
 //! and again immediately before the write; the rewrite is
 //! [`AccountDoc::apply`], a span splice; [`AccountDoc::verify`] must agree,
 //! and then the whole journal is re-parsed with the edited text in memory
-//! ([`parse::parse_journal_with_overrides`]); one [`pinned::replace`], pinned
-//! to the inode and bytes read, the last statement that can have an effect.
+//! through the journal's vault (`JournalLocation::reparse`); one
+//! `Vault::replace` (on the desktop `pinned::replace`), pinned to the identity
+//! and bytes read, the last statement that can have an effect.
 //!
 //! # Creating `accounts.journal`
 //!
@@ -48,15 +49,15 @@ use ledgeline_core::accounts::{AccountDoc, AccountEdit, AccountError, AccountLin
 use ledgeline_core::edit::Fingerprint;
 use ledgeline_core::journals;
 use ledgeline_core::model::Journal;
-use ledgeline_core::parse;
-use ledgeline_core::pinned::{self, Pin, WriteError};
+use ledgeline_core::vault::{Revision, VaultError, VaultPath};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path as FsPath, PathBuf};
+use std::path::PathBuf;
 
 use crate::AppState;
 use crate::edit_api::json_body;
 use crate::error::{AppError, editing_disabled};
+use crate::location::JournalLocation;
 use crate::reports_api::compute;
 use crate::security::no_store_json as no_store;
 
@@ -272,10 +273,14 @@ pub(crate) async fn create_file(State(state): State<AppState>) -> Result<Respons
 
 /// The whole of `GET`.
 fn account_lines(state: &AppState, editable: bool) -> Result<WireAccounts, AppError> {
-    let journal = state.snapshot().journal.clone();
+    let snapshot = state.snapshot();
+    let can_create_file = editable
+        && snapshot
+            .storage()
+            .is_some_and(|location| can_create(&location, &snapshot.journal).is_ok());
     Ok(WireAccounts {
         editable,
-        can_create_file: editable && can_create(&journal).is_ok(),
+        can_create_file,
         create_file_name: ACCOUNTS_FILE,
         files: account_files(state)?,
     })
@@ -301,13 +306,17 @@ fn account_lines(state: &AppState, editable: bool) -> Result<WireAccounts, AppEr
 fn account_files(state: &AppState) -> Result<Vec<WireAccountFile>, AppError> {
     let snapshot = state.snapshot();
     let journal = &snapshot.journal;
-    let targets = journals::targets(journal);
+    // A journal with no backing file has no files to list.
+    let Some(location) = snapshot.storage() else {
+        return Ok(Vec::new());
+    };
+    let targets = location.targets(journal);
 
     let listed: Vec<&PathBuf> = if journal.accounts.is_empty() {
         let empty: Vec<&PathBuf> = journal
             .source_files
             .iter()
-            .filter(|path| holds_no_transactions(&targets, journal, path))
+            .filter(|path| holds_no_transactions(&location, &targets, journal, path))
             .collect();
         if empty.is_empty() {
             journal.source_files.first().into_iter().collect()
@@ -329,11 +338,12 @@ fn account_files(state: &AppState) -> Result<Vec<WireAccountFile>, AppError> {
 
     Ok(listed
         .into_iter()
-        .filter_map(|path| {
-            let target = targets
-                .iter()
-                .find(|target| journal_path(journal, &target.id).as_ref() == Some(path))?;
-            let text = std::fs::read_to_string(path).ok()?;
+        .filter_map(|key| {
+            let path = location.path_of(key)?;
+            let target = targets.iter().find(|target| {
+                journal_path(&location, journal, &target.id).as_ref() == Some(&path)
+            })?;
+            let text = location.vault().read_to_string(&path).ok()?;
             let doc = AccountDoc::parse(&text);
             Some(WireAccountFile {
                 accounts: doc
@@ -355,14 +365,17 @@ fn account_files(state: &AppState) -> Result<Vec<WireAccountFile>, AppError> {
 /// content, so this is a lookup rather than a second scan. Identical to
 /// `budget_api::holds_no_transactions`.
 fn holds_no_transactions(
+    location: &JournalLocation,
     targets: &[journals::JournalTarget],
     journal: &Journal,
-    path: &PathBuf,
+    key: &PathBuf,
 ) -> bool {
+    let path = location.path_of(key);
     targets.iter().any(|target| {
         target.txn_count == 0
             && target.writable
-            && journal_path(journal, &target.id).as_ref() == Some(path)
+            && path.is_some()
+            && journal_path(location, journal, &target.id) == path
     })
 }
 
@@ -397,7 +410,9 @@ fn save_accounts(
 ) -> Result<WireAccountFile, AppError> {
     let snapshot = state.snapshot();
     let journal = &snapshot.journal;
-    let target = journals::targets(journal)
+    let location = snapshot.storage().ok_or_else(|| unresolved(id))?;
+    let target = location
+        .targets(journal)
         .into_iter()
         .find(|target| target.id == id)
         .ok_or_else(|| unresolved(id))?;
@@ -408,9 +423,9 @@ fn save_accounts(
             quoted(id)
         )));
     }
-    let path = journal_path(journal, id).ok_or_else(|| unresolved(id))?;
+    let path = journal_path(&location, journal, id).ok_or_else(|| unresolved(id))?;
 
-    let (text, pin) = read_journal(&path, id)?;
+    let (text, revision) = read_journal(&location, &path, id)?;
     let fingerprint = Fingerprint::of_bytes(text.as_bytes());
     // Checked BEFORE any index is resolved, so a client editing an older parse
     // is told the file moved rather than "there is no account number 3".
@@ -430,7 +445,7 @@ fn save_accounts(
     // this crate knows which journal a file belongs to.
     if new_text != text {
         let overrides = HashMap::from([(path.clone(), new_text.clone())]);
-        if parse::parse_journal_with_overrides(&journal.source_name, &overrides).is_err() {
+        if location.reparse(&overrides).is_err() {
             // Deliberately no detail: `ParseError::Located` names the file it
             // was reading, and that name is not the caller's to have.
             return Err(AppError::BadRequest(format!(
@@ -447,19 +462,22 @@ fn save_accounts(
         return Ok(file_response(&target, &doc, fingerprint.token()));
     }
 
-    // Pinned to the inode and the bytes read above: `pinned::replace` re-checks
-    // both through the descriptor it replaces, right up to the rename, and never
-    // follows a link — a symlink swapped in since the read is a `409`, not a
-    // write to wherever it points.
-    pinned::replace(&path, new_text.as_bytes(), &pin).map_err(|error| match error {
-        WriteError::Changed => stale(id),
-        // Only the `ErrorKind`: a write error can carry the temp path.
-        WriteError::Io(error) => AppError::Internal(format!(
-            "{} could not be written: {}. Nothing else was changed.",
-            quoted(id),
-            error.kind()
-        )),
-    })?;
+    // Pinned to the identity and the bytes read above: `Vault::replace` (on
+    // the desktop, `pinned::replace`) re-checks both through the descriptor it
+    // replaces, right up to the rename, and never follows a link — a symlink
+    // swapped in since the read is a `409`, not a write to wherever it points.
+    location
+        .vault()
+        .replace(&path, new_text.as_bytes(), &revision)
+        .map_err(|error| match error {
+            VaultError::Changed { .. } => stale(id),
+            // Only the `ErrorKind`: a write error can carry the temp path.
+            error => AppError::Internal(format!(
+                "{} could not be written: {}. Nothing else was changed.",
+                quoted(id),
+                error.kind()
+            )),
+        })?;
 
     // The journal changed underneath the editor, so re-open it — otherwise
     // the next edit sees a stale fingerprint and reports a conflict the user
@@ -537,10 +555,14 @@ fn edit_from_wire(edit: &WireAccountEdit) -> AccountEdit {
 ///   for no reason the user asked for.
 /// - **Something already sits at `accounts.journal`.** Never overwritten,
 ///   never appended to, not even when it is empty.
-fn can_create(journal: &Journal) -> Result<(PathBuf, PathBuf), AppError> {
+fn can_create(
+    location: &JournalLocation,
+    journal: &Journal,
+) -> Result<(VaultPath, VaultPath), AppError> {
     let main = journal
         .source_files
         .first()
+        .and_then(|key| location.path_of(key))
         .ok_or_else(|| AppError::BadRequest("no journal is open".to_string()))?;
     let root = main.parent().ok_or_else(|| {
         AppError::Internal("the open journal has no containing directory".to_string())
@@ -552,11 +574,14 @@ fn can_create(journal: &Journal) -> Result<(PathBuf, PathBuf), AppError> {
                 .to_string(),
         ));
     }
-    let accounts = root.join(ACCOUNTS_FILE);
-    if accounts.symlink_metadata().is_ok() {
+    let accounts = root
+        .child(ACCOUNTS_FILE)
+        .map_err(|_| AppError::Internal(format!("{ACCOUNTS_FILE} is not a valid file name")))?;
+    // `stat` never follows a link: a dangling symlink at the name is taken.
+    if !matches!(location.vault().stat(&accounts), Ok(None)) {
         return Err(already_exists());
     }
-    Ok((main.clone(), accounts))
+    Ok((main, accounts))
 }
 
 /// The `409` for a name that is already taken — by the early check above, or by
@@ -576,12 +601,15 @@ fn already_exists() -> AppError {
 fn create_accounts_file(state: &AppState) -> Result<WireCreatedFile, AppError> {
     let snapshot = state.snapshot();
     let journal = &snapshot.journal;
-    let (main, accounts) = can_create(journal)?;
+    let location = snapshot
+        .storage()
+        .ok_or_else(|| AppError::BadRequest("no journal is open".to_string()))?;
+    let (main, accounts) = can_create(&location, journal)?;
 
     // Pinned, so the `include` below lands only on the main journal as read
     // here — never through a link swapped in since, never over an edit made in
     // between.
-    let (main_text, main_pin) = pinned::read_pinned_string(&main).map_err(|error| {
+    let (main_text, main_revision) = read_pinned_text(&location, &main).map_err(|error| {
         AppError::Internal(format!("your journal could not be read: {}", error.kind()))
     })?;
     let newline = if main_text.contains("\r\n") {
@@ -602,7 +630,7 @@ fn create_accounts_file(state: &AppState) -> Result<WireCreatedFile, AppError> {
         (main.clone(), new_main.clone()),
         (accounts.clone(), ACCOUNTS_FILE_HEADER.to_string()),
     ]);
-    if parse::parse_journal_with_overrides(&journal.source_name, &overrides).is_err() {
+    if location.reparse(&overrides).is_err() {
         return Err(AppError::BadRequest(
             "including an accounts file would make your journal unreadable, so nothing was \
              written"
@@ -610,29 +638,38 @@ fn create_accounts_file(state: &AppState) -> Result<WireCreatedFile, AppError> {
         ));
     }
 
-    // `O_CREAT | O_EXCL | O_NOFOLLOW`: the "never overwritten" promise
-    // `can_create` checked is the kernel's, decided at the open, so a file or a
-    // symlink planted since that check is refused rather than written through.
-    pinned::create_new(&accounts, ACCOUNTS_FILE_HEADER.as_bytes()).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::AlreadyExists {
-            return already_exists();
-        }
-        AppError::Internal(format!(
-            "{ACCOUNTS_FILE} could not be created: {}. Nothing else was changed.",
-            error.kind()
-        ))
-    })?;
-    pinned::replace(&main, new_main.as_bytes(), &main_pin).map_err(|error| {
-        let reason = match error {
-            WriteError::Changed => "it changed on disk while this was being done".to_string(),
-            WriteError::Io(error) => error.kind().to_string(),
-        };
-        AppError::Internal(format!(
-            "{ACCOUNTS_FILE} was created, but your main journal could not be updated to include \
-             it: {}. Add `{include_line}` to it yourself, or delete {ACCOUNTS_FILE}.",
-            reason
-        ))
-    })?;
+    // `Vault::create_new` (on the desktop `O_CREAT | O_EXCL | O_NOFOLLOW`): the
+    // "never overwritten" promise `can_create` checked is decided at the create
+    // itself, so a file or a symlink planted since that check is refused rather
+    // than written through.
+    location
+        .vault()
+        .create_new(&accounts, ACCOUNTS_FILE_HEADER.as_bytes())
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                return already_exists();
+            }
+            AppError::Internal(format!(
+                "{ACCOUNTS_FILE} could not be created: {}. Nothing else was changed.",
+                error.kind()
+            ))
+        })?;
+    location
+        .vault()
+        .replace(&main, new_main.as_bytes(), &main_revision)
+        .map_err(|error| {
+            let reason = match error {
+                VaultError::Changed { .. } => {
+                    "it changed on disk while this was being done".to_string()
+                }
+                error => error.kind().to_string(),
+            };
+            AppError::Internal(format!(
+                "{ACCOUNTS_FILE} was created, but your main journal could not be updated to \
+                 include it: {}. Add `{include_line}` to it yourself, or delete {ACCOUNTS_FILE}.",
+                reason
+            ))
+        })?;
 
     if let Some(Err(error)) = state.reopen_editor() {
         eprintln!(
@@ -640,8 +677,11 @@ fn create_accounts_file(state: &AppState) -> Result<WireCreatedFile, AppError> {
         );
     }
 
-    let journal = state.snapshot().journal.clone();
-    let targets = journals::targets(&journal);
+    let after = state.snapshot();
+    let targets = after
+        .storage()
+        .map(|location| location.targets(&after.journal))
+        .unwrap_or_default();
     let main_journal_id = targets
         .iter()
         .find(|target| target.is_root)
@@ -660,14 +700,8 @@ fn create_accounts_file(state: &AppState) -> Result<WireCreatedFile, AppError> {
 
 /// The path a `journalId` names, taken from the files the parse actually
 /// read. Security layer 2, identical to `alias_api::journal_path`.
-fn journal_path(journal: &Journal, id: &str) -> Option<PathBuf> {
-    let root = journal.source_files.first()?.parent()?;
-    let candidate = root.join(id);
-    journal
-        .source_files
-        .iter()
-        .find(|source| *source == &candidate)
-        .cloned()
+fn journal_path(location: &JournalLocation, journal: &Journal, id: &str) -> Option<VaultPath> {
+    location.source_path(journal, id)
 }
 
 /// Layer 1: shape, before any filesystem call. Identical to
@@ -705,13 +739,17 @@ fn validate_journal_id(id: &str) -> Result<(), AppError> {
 }
 
 /// Read one journal file, reporting only what the caller already knows, with
-/// the [`Pin`] a later write of it must still match — identity and fingerprint
-/// from one open descriptor.
+/// the [`Revision`] a later write of it must still match — identity and
+/// fingerprint from one read.
 ///
 /// Never follows a symlink: the path is the real one the snapshot resolved, so
 /// a link there now was swapped in since, and that is a stale revision.
-fn read_journal(path: &FsPath, id: &str) -> Result<(String, Pin), AppError> {
-    pinned::read_pinned_string(path).map_err(|error| {
+fn read_journal(
+    location: &JournalLocation,
+    path: &VaultPath,
+    id: &str,
+) -> Result<(String, Revision), AppError> {
+    read_pinned_text(location, path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::InvalidInput {
             return stale(id);
         }
@@ -721,6 +759,23 @@ fn read_journal(path: &FsPath, id: &str) -> Result<(String, Pin), AppError> {
             error.kind()
         ))
     })
+}
+
+/// A journal file's text and the [`Revision`] a later write of it must still
+/// match — identity and fingerprint from one read, never through a link at the
+/// final component. As an `io::Error` so callers branch on its kind: a symlink
+/// or non-regular file is `InvalidInput`, non-UTF-8 is `InvalidData`.
+fn read_pinned_text(
+    location: &JournalLocation,
+    path: &VaultPath,
+) -> std::io::Result<(String, Revision)> {
+    let (bytes, revision) = location
+        .vault()
+        .read_pinned(path, None)
+        .map_err(std::io::Error::from)?;
+    let text = String::from_utf8(bytes)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    Ok((text, revision))
 }
 
 /// A `404` that quotes only the caller's own handle.
