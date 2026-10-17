@@ -89,7 +89,8 @@ pub const IMPORT_COMMAND: &str = "import";
 /// the same spirit as the rules scan's own budgets.
 pub const MAX_CONF_BYTES: u64 = 256 * 1024;
 
-/// How many directories above the journal's own [`locate`] will look.
+/// How many directories above the starting one [`locate_in`] will look — never
+/// past the vault root, whichever comes first.
 ///
 /// Deep enough for any real layout, finite so a pathological symlinked tree
 /// cannot make the walk unbounded.

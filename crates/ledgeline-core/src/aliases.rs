@@ -49,7 +49,7 @@
 //! to read back as exactly what was asked for. A caller writes only if `verify`
 //! agreed. The whole-journal re-parse — the check that the file still means
 //! something — is the server's, because only the server knows which journal this
-//! file belongs to (`parse_journal_with_overrides`).
+//! file belongs to (`parse::parse_journal_in`).
 //!
 //! # What is deliberately NOT modeled
 //!
@@ -496,7 +496,7 @@ impl AliasDoc {
     ///
     /// What is deliberately *not* here: whether the file still parses as part of
     /// its journal. Only the caller knows which journal this file belongs to, so
-    /// that check is the caller's (`parse_journal_with_overrides`), and the
+    /// that check is the caller's (`parse::parse_journal_in`), and the
     /// server does it before writing.
     ///
     /// # Errors

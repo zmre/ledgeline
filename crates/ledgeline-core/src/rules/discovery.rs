@@ -11,9 +11,8 @@
 //!
 //! # The root is the journal's own directory, and it is not a new decision
 //!
-//! The scan root is [`crate::parse::include_root_for`] — the main journal file's
-//! own directory, canonicalized — which is the *same* root `include` is confined
-//! to. Containment is tested with the *same* function, [`crate::parse::confine`].
+//! The scan root is the main journal file's own directory in its vault
+//! ([`crate::vault`]) — the *same* root `include` is confined to. Containment is tested with the *same* function, [`crate::parse::confine`].
 //! That is deliberate: it means the rules surface can never reach a file the
 //! journal itself could not have included, and there is no second, hand-rolled
 //! traversal check to get fixed in one place and not the other.
@@ -538,8 +537,9 @@ pub enum PreviewUnavailable {
 ///
 /// `main_journal_file` is the journal's main source file — `Journal::source_files[0]`
 /// (`model.rs`), which is canonicalized and always first. Its *directory* is the
-/// scan root, via [`crate::parse::include_root_for`], so the rules surface and the
-/// `include` guard confine to exactly the same place.
+/// scan root — the desktop vault from [`crate::vault::LocalVault::for_journal`] —
+/// so the rules surface and the `include` guard confine to exactly the same place.
+/// [`discover_in`] is the same scan over any vault.
 ///
 /// Infallible: an unreadable directory, a symlink, a too-large file and a
 /// non-UTF-8 file each become a warning naming a RELATIVE path — never an error,

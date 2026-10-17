@@ -3,7 +3,7 @@
 //! ever allowed to touch.
 //!
 //! The walk itself is [`crate::dirscan`], which [`crate::rules::discovery`]
-//! also drives: same root ([`crate::parse::include_root_for`]), same
+//! also drives: same root (the main journal file's directory in the vault), same
 //! containment test ([`crate::parse::confine`]), same refusal of every symlink,
 //! same entry and warning budgets, same hidden-entry skip, same "never echo an
 //! absolute path" rule — not because two modules agree about them but because
