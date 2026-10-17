@@ -572,7 +572,7 @@ jobs:
 
           ```sh
           # Headless: serves the UI over HTTP, open it in your own browser.
-          cargo install ledgeline --no-default-features
+          cargo install ledgeline --no-default-features --features watcher,external-tools
 
           # With the desktop window (needs webkitgtk-4.1, gtk3, libsoup-3, libxdo).
           cargo install ledgeline

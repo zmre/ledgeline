@@ -28,8 +28,8 @@ nix run --accept-flake-config github:zmre/ledgeline -- ~/finance/2026.journal
 **Cargo.** Without Nix, install from crates.io:
 
 ```sh
-cargo install ledgeline                        # desktop window; on Linux needs webkitgtk-4.1, gtk3, libsoup-3 and libxdo
-cargo install ledgeline --no-default-features  # no window; serves the UI to your browser
+cargo install ledgeline                                                       # desktop window; on Linux needs webkitgtk-4.1, gtk3, libsoup-3 and libxdo
+cargo install ledgeline --no-default-features --features watcher,external-tools  # no window; serves the UI to your browser
 ```
 
 The headless build prints a `http://127.0.0.1:PORT/#token=…` address. Open it in your browser.

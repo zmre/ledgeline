@@ -284,10 +284,11 @@ fn ignored_suffix(ignored: &[String]) -> String {
 /// several, and caching it would mean a user who installs git mid-session is
 /// told for the rest of that session that they have not.
 pub fn git_available() -> bool {
-    matches!(
-        run(None, "--version", &version_args(), PROBE_TIMEOUT),
-        Ok(outcome) if outcome.succeeded()
-    )
+    EXTERNAL_TOOLS
+        && matches!(
+            run(None, "--version", &version_args(), PROBE_TIMEOUT),
+            Ok(outcome) if outcome.succeeded()
+        )
 }
 
 impl Repo {
@@ -572,6 +573,12 @@ pub(crate) fn run(
     args: &[OsString],
     timeout: Duration,
 ) -> Result<Run, GitError> {
+    // Without the `external-tools` feature nothing is spawned. `NotFound` is
+    // the answer every caller already degrades on — "no version control" —
+    // which is exactly what a build that runs no programs has.
+    if !EXTERNAL_TOOLS {
+        return Err(GitError::NotFound);
+    }
     let mut command = Command::new(GIT);
     command
         .args(args)
@@ -621,6 +628,10 @@ pub(crate) fn run(
         }),
     }
 }
+
+/// Whether this build may spawn subprocesses at all — the `external-tools`
+/// feature (see `hledger.rs`, which is gated the same way).
+const EXTERNAL_TOOLS: bool = cfg!(feature = "external-tools");
 
 /// Outcome of waiting on a child within a budget.
 enum Wait {

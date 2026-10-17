@@ -304,6 +304,9 @@ const fn hledger_reason(error: &HledgerError) -> &'static str {
         HledgerError::TooOld { .. } => "tooOld",
         HledgerError::Unrunnable => "unrunnable",
         HledgerError::TimedOut { .. } => "timedOut",
+        // A build without `external-tools`: the SPA's existing "could not run
+        // hledger" advice is the closest it has, and the message says why.
+        HledgerError::Disabled => "unrunnable",
     }
 }
 
