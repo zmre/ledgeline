@@ -38,15 +38,15 @@
 //! 4. **The rewrite is a span splice** ([`PeriodicDoc::apply`]) that touches only
 //!    the amount extents of the lines the plan names.
 //! 5. **[`PeriodicDoc::verify`] must agree**, and then the *whole journal* is
-//!    re-parsed with the edited text in memory
-//!    ([`parse::parse_journal_with_overrides`]) — which is also what proves the
+//!    re-parsed with the edited text in memory, through the journal's vault
+//!    (`JournalLocation::reparse`) — which is also what proves the
 //!    rules still balance, since the parser refuses a rule that does not.
 //! 6. **The goal must read back as the number that was asked for.** `verify` is
 //!    a text-shape check and deliberately does not parse amounts; this step does,
 //!    against the real parse. It is the check that would catch a decimal mark
 //!    rendered wrong for a `1.234,56 EUR` journal.
-//! 7. **One pinned [`pinned::replace`]**, and it is the last statement that can have an
-//!    effect. Every `?` above it is a decision to write nothing.
+//! 7. **One pinned `Vault::replace`** (on the desktop `pinned::replace`), and it
+//!    is the last statement that can have an effect. Every `?` above it is a decision to write nothing.
 //!
 //! # Signs, and why they are flipped here and nowhere else
 //!
@@ -77,15 +77,17 @@ use ledgeline_core::model::{
 use ledgeline_core::periodic::{
     BlockLock, GoalRequest, PeriodicBlock, PeriodicDoc, PeriodicError, period_word,
 };
-use ledgeline_core::pinned::{self, Pin, WriteError};
 use ledgeline_core::reports::{
     AccountType, Interval, MixedAmount, ReferenceOpts, account_decls, account_reference,
     declared_types, is_account_type,
 };
-use ledgeline_core::{Dec, journals, parse, periodic};
+use ledgeline_core::vault::{Revision, VaultError, VaultPath};
+use ledgeline_core::{Dec, journals, periodic};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path as FsPath, PathBuf};
+
+use crate::location::JournalLocation;
 
 use crate::AppState;
 use crate::edit_api::{WireDecIn, dec_from_wire, infer_style, json_body};
@@ -549,14 +551,22 @@ pub(crate) async fn reference(
 fn budget_lines(state: &AppState, editable: bool) -> Result<WireBudgetLines, AppError> {
     let snapshot = state.snapshot();
     let journal = &snapshot.journal;
-    let targets = journals::targets(journal);
+    let location = snapshot.storage();
+    let targets = location
+        .as_ref()
+        .map(|location| location.targets(journal))
+        .unwrap_or_default();
     let declared = declared_types(&account_decls(journal));
 
     let listed: Vec<&PathBuf> = if journal.periodic_transactions.is_empty() {
         let empty: Vec<&PathBuf> = journal
             .source_files
             .iter()
-            .filter(|path| holds_no_transactions(&targets, journal, path))
+            .filter(|path| {
+                location.as_ref().is_some_and(|location| {
+                    holds_no_transactions(location, &targets, journal, path)
+                })
+            })
             .collect();
         if empty.is_empty() {
             journal.source_files.first().into_iter().collect()
@@ -579,10 +589,13 @@ fn budget_lines(state: &AppState, editable: bool) -> Result<WireBudgetLines, App
     let files: Vec<WireBudgetFile> = listed
         .into_iter()
         .filter_map(|path| {
-            let target = targets
-                .iter()
-                .find(|target| journal_path(journal, &target.id).as_ref() == Some(path))?;
-            let text = std::fs::read_to_string(path).ok()?;
+            // A journal with no backing file has no files to list.
+            let location = location.as_ref()?;
+            let vault_path = location.path_of(path)?;
+            let target = targets.iter().find(|target| {
+                journal_path(location, journal, &target.id).as_ref() == Some(&vault_path)
+            })?;
+            let text = location.vault().read_to_string(&vault_path).ok()?;
             let doc = PeriodicDoc::parse(&text);
             let rules = rules_in(journal, path);
             Some(WireBudgetFile {
@@ -616,7 +629,10 @@ fn budget_lines(state: &AppState, editable: bool) -> Result<WireBudgetLines, App
 
     Ok(WireBudgetLines {
         editable,
-        can_create_file: editable && can_create(journal).is_ok(),
+        can_create_file: editable
+            && location
+                .as_ref()
+                .is_some_and(|location| can_create(location, journal).is_ok()),
         create_file_name: BUDGET_FILE,
         default_target,
         files,
@@ -628,14 +644,17 @@ fn budget_lines(state: &AppState, editable: bool) -> Result<WireBudgetLines, App
 /// `journals::targets` already tallies both facts from content, so this is a
 /// lookup rather than a second scan.
 fn holds_no_transactions(
+    location: &JournalLocation,
     targets: &[journals::JournalTarget],
     journal: &Journal,
-    path: &PathBuf,
+    key: &std::path::Path,
 ) -> bool {
+    let path = location.path_of(key);
     targets.iter().any(|target| {
         target.txn_count == 0
             && target.writable
-            && journal_path(journal, &target.id).as_ref() == Some(path)
+            && path.is_some()
+            && journal_path(location, journal, &target.id) == path
     })
 }
 
@@ -786,7 +805,9 @@ fn save_budget(
 ) -> Result<WireBudgetFile, AppError> {
     let snapshot = state.snapshot();
     let journal = &snapshot.journal;
-    let target = journals::targets(journal)
+    let location = snapshot.storage().ok_or_else(|| unresolved(id))?;
+    let target = location
+        .targets(journal)
         .into_iter()
         .find(|target| target.id == id)
         .ok_or_else(|| unresolved(id))?;
@@ -797,9 +818,11 @@ fn save_budget(
             quoted(id)
         )));
     }
-    let path = journal_path(journal, id).ok_or_else(|| unresolved(id))?;
+    let vault_path = journal_path(&location, journal, id).ok_or_else(|| unresolved(id))?;
+    // The key the parse records for this file, which is what its `~` rules carry.
+    let path = location.key(&vault_path);
 
-    let (text, pin) = read_journal(&path, id)?;
+    let (text, revision) = read_journal(&location, &vault_path, id)?;
     let fingerprint = Fingerprint::of_bytes(text.as_bytes());
     // Checked BEFORE any index is resolved, so a client editing an older parse is
     // told the file moved rather than "there is no budget line 3" — which
@@ -825,17 +848,16 @@ fn save_budget(
     // still balances. Only this crate knows which journal this file is part of,
     // which is why the check is here.
     if new_text != text {
-        let overrides = HashMap::from([(path.clone(), new_text.clone())]);
-        let reparsed = parse::parse_journal_with_overrides(&journal.source_name, &overrides)
-            .map_err(|_| {
-                // Deliberately no detail: `ParseError::Located` names the file it
-                // was reading, and that name is not the caller's to have.
-                AppError::BadRequest(format!(
-                    "this change would make {} unreadable as part of your journal, so nothing was \
+        let overrides = HashMap::from([(vault_path.clone(), new_text.clone())]);
+        let reparsed = location.reparse(&overrides).map_err(|_| {
+            // Deliberately no detail: `ParseError::Located` names the file it
+            // was reading, and that name is not the caller's to have.
+            AppError::BadRequest(format!(
+                "this change would make {} unreadable as part of your journal, so nothing was \
                      written",
-                    quoted(id)
-                ))
-            })?;
+                quoted(id)
+            ))
+        })?;
         confirm_written_goal(&reparsed, &path, &goal, &new_text, id)?;
     }
 
@@ -843,22 +865,31 @@ fn save_budget(
         // A no-op writes NOTHING. Writing byte-identical content still bumps
         // mtime, and a user's own watch loop would see a spurious change — the
         // same lesson `rules_api` records.
-        return Ok(file_response(&target, &doc, fingerprint.token(), journal));
+        return Ok(file_response(
+            &location,
+            &target,
+            &doc,
+            fingerprint.token(),
+            journal,
+        ));
     }
 
-    // Pinned to the inode and the bytes read above: `pinned::replace` re-checks
-    // both through the descriptor it replaces, right up to the rename, and never
-    // follows a link — a symlink swapped in since the read is a `409`, not a
-    // write to wherever it points.
-    pinned::replace(&path, new_text.as_bytes(), &pin).map_err(|error| match error {
-        WriteError::Changed => stale(id),
-        // Only the `ErrorKind`: a write error can carry the temp path.
-        WriteError::Io(error) => AppError::Internal(format!(
-            "{} could not be written: {}. Nothing else was changed.",
-            quoted(id),
-            error.kind()
-        )),
-    })?;
+    // Pinned to the identity and the bytes read above: `Vault::replace` (on the
+    // desktop, `pinned::replace`) re-checks both through the descriptor it
+    // replaces, right up to the rename, and never follows a link — a symlink
+    // swapped in since the read is a `409`, not a write to wherever it points.
+    location
+        .vault()
+        .replace(&vault_path, new_text.as_bytes(), &revision)
+        .map_err(|error| match error {
+            VaultError::Changed { .. } => stale(id),
+            // Only the `ErrorKind`: a write error can carry the temp path.
+            error => AppError::Internal(format!(
+                "{} could not be written: {}. Nothing else was changed.",
+                quoted(id),
+                error.kind()
+            )),
+        })?;
 
     // The journal changed underneath the editor, so re-open it — otherwise the
     // next transaction edit sees a stale fingerprint and reports a conflict the
@@ -874,6 +905,7 @@ fn save_budget(
     // silently.
     let revision = Fingerprint::of_bytes(new_text.as_bytes()).token();
     Ok(file_response(
+        &location,
         &target,
         &PeriodicDoc::parse(&new_text),
         revision,
@@ -940,13 +972,16 @@ fn confirm_written_goal(
 /// revision is its fingerprint, so the client's next save is against bytes this
 /// response describes exactly.
 fn file_response(
+    location: &JournalLocation,
     target: &journals::JournalTarget,
     doc: &PeriodicDoc,
     revision: String,
     journal: &Journal,
 ) -> WireBudgetFile {
     let declared = declared_types(&account_decls(journal));
-    let path = journal_path(journal, &target.id).unwrap_or_default();
+    let path = journal_path(location, journal, &target.id)
+        .map(|path| location.key(&path))
+        .unwrap_or_default();
     let rules = rules_in(journal, &path);
     WireBudgetFile {
         rules: wire_rules(doc, &rules, &declared),
@@ -1150,10 +1185,14 @@ const BUDGET_FILE_HEADER: &str = "\
 ///   appended to, not even when it is empty. A file we did not create is a file
 ///   whose contents are somebody's, and the failure mode of guessing wrong here
 ///   is destroying them.
-fn can_create(journal: &Journal) -> Result<(PathBuf, PathBuf), AppError> {
+fn can_create(
+    location: &JournalLocation,
+    journal: &Journal,
+) -> Result<(VaultPath, VaultPath), AppError> {
     let main = journal
         .source_files
         .first()
+        .and_then(|key| location.path_of(key))
         .ok_or_else(|| AppError::BadRequest("no journal is open".to_string()))?;
     let root = main.parent().ok_or_else(|| {
         AppError::Internal("the open journal has no containing directory".to_string())
@@ -1165,11 +1204,14 @@ fn can_create(journal: &Journal) -> Result<(PathBuf, PathBuf), AppError> {
                 .to_string(),
         ));
     }
-    let budget = root.join(BUDGET_FILE);
-    if budget.symlink_metadata().is_ok() {
+    let budget = root
+        .child(BUDGET_FILE)
+        .map_err(|_| AppError::Internal(format!("{BUDGET_FILE} is not a valid file name")))?;
+    // `stat` never follows a link: a dangling symlink at the name is taken.
+    if !matches!(location.vault().stat(&budget), Ok(None)) {
         return Err(already_exists());
     }
-    Ok((main.clone(), budget))
+    Ok((main, budget))
 }
 
 /// The `409` for a name that is already taken — by the early check above, or by
@@ -1197,12 +1239,15 @@ fn already_exists() -> AppError {
 fn create_budget_file(state: &AppState) -> Result<WireCreatedFile, AppError> {
     let snapshot = state.snapshot();
     let journal = &snapshot.journal;
-    let (main, budget) = can_create(journal)?;
+    let location = snapshot
+        .storage()
+        .ok_or_else(|| AppError::BadRequest("no journal is open".to_string()))?;
+    let (main, budget) = can_create(&location, journal)?;
 
     // Pinned, so the `include` below lands only on the main journal as read
     // here — never through a link swapped in since, never over an edit made in
     // between.
-    let (main_text, main_pin) = pinned::read_pinned_string(&main).map_err(|error| {
+    let (main_text, main_revision) = read_pinned_text(&location, &main).map_err(|error| {
         AppError::Internal(format!("your journal could not be read: {}", error.kind()))
     })?;
     let newline = if main_text.contains("\r\n") {
@@ -1228,36 +1273,45 @@ fn create_budget_file(state: &AppState) -> Result<WireCreatedFile, AppError> {
         (main.clone(), new_main.clone()),
         (budget.clone(), BUDGET_FILE_HEADER.to_string()),
     ]);
-    if parse::parse_journal_with_overrides(&journal.source_name, &overrides).is_err() {
+    if location.reparse(&overrides).is_err() {
         return Err(AppError::BadRequest(
             "including a budget file would make your journal unreadable, so nothing was written"
                 .to_string(),
         ));
     }
 
-    // `O_CREAT | O_EXCL | O_NOFOLLOW`: the "never overwritten" promise
-    // `can_create` checked is the kernel's, decided at the open, so a file or a
-    // symlink planted since that check is refused rather than written through.
-    pinned::create_new(&budget, BUDGET_FILE_HEADER.as_bytes()).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::AlreadyExists {
-            return already_exists();
-        }
-        AppError::Internal(format!(
-            "{BUDGET_FILE} could not be created: {}. Nothing else was changed.",
-            error.kind()
-        ))
-    })?;
-    pinned::replace(&main, new_main.as_bytes(), &main_pin).map_err(|error| {
-        let reason = match error {
-            WriteError::Changed => "it changed on disk while this was being done".to_string(),
-            WriteError::Io(error) => error.kind().to_string(),
-        };
-        AppError::Internal(format!(
-            "{BUDGET_FILE} was created, but your main journal could not be updated to include it: \
-             {}. Add `{include_line}` to it yourself, or delete {BUDGET_FILE}.",
-            reason
-        ))
-    })?;
+    // `Vault::create_new` (on the desktop `O_CREAT | O_EXCL | O_NOFOLLOW`): the
+    // "never overwritten" promise `can_create` checked is decided at the create
+    // itself, so a file or a symlink planted since that check is refused rather
+    // than written through.
+    location
+        .vault()
+        .create_new(&budget, BUDGET_FILE_HEADER.as_bytes())
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                return already_exists();
+            }
+            AppError::Internal(format!(
+                "{BUDGET_FILE} could not be created: {}. Nothing else was changed.",
+                error.kind()
+            ))
+        })?;
+    location
+        .vault()
+        .replace(&main, new_main.as_bytes(), &main_revision)
+        .map_err(|error| {
+            let reason = match error {
+                VaultError::Changed { .. } => {
+                    "it changed on disk while this was being done".to_string()
+                }
+                error => error.kind().to_string(),
+            };
+            AppError::Internal(format!(
+                "{BUDGET_FILE} was created, but your main journal could not be updated to \
+                 include it: {}. Add `{include_line}` to it yourself, or delete {BUDGET_FILE}.",
+                reason
+            ))
+        })?;
 
     if let Some(Err(error)) = state.reopen_editor() {
         eprintln!(
@@ -1265,8 +1319,11 @@ fn create_budget_file(state: &AppState) -> Result<WireCreatedFile, AppError> {
         );
     }
 
-    let journal = state.snapshot().journal.clone();
-    let targets = journals::targets(&journal);
+    let after = state.snapshot();
+    let targets = after
+        .storage()
+        .map(|location| location.targets(&after.journal))
+        .unwrap_or_default();
     let main_journal_id = targets
         .iter()
         .find(|target| target.is_root)
@@ -1286,19 +1343,13 @@ fn create_budget_file(state: &AppState) -> Result<WireCreatedFile, AppError> {
 /// The path a `journalId` names, taken from the files the parse actually read.
 ///
 /// Security layer 2, and the same one `alias_api::journal_path` implements:
-/// `root.join(id)` appears here, and the very next thing that happens to the
-/// result is a membership test against [`Journal::source_files`] — the set of
+/// the id is joined to the include root in the vault, and the very next thing
+/// that happens to the result is a membership test against [`Journal::source_files`] — the set of
 /// files the include guard already admitted. A handle that does not name one of
 /// them resolves to nothing, so no path this function returns was invented by
 /// string arithmetic.
-fn journal_path(journal: &Journal, id: &str) -> Option<PathBuf> {
-    let root = journal.source_files.first()?.parent()?;
-    let candidate = root.join(id);
-    journal
-        .source_files
-        .iter()
-        .find(|source| *source == &candidate)
-        .cloned()
+fn journal_path(location: &JournalLocation, journal: &Journal, id: &str) -> Option<VaultPath> {
+    location.source_path(journal, id)
 }
 
 /// Layer 1: shape, before any filesystem call.
@@ -1387,13 +1438,17 @@ fn checked_date(raw: &str) -> Result<String, AppError> {
 }
 
 /// Read one journal file, reporting only what the caller already knows, with
-/// the [`Pin`] a later write of it must still match — identity and fingerprint
-/// from one open descriptor.
+/// the [`Revision`] a later write of it must still match — identity and
+/// fingerprint from one read.
 ///
 /// Never follows a symlink: the path is the real one the snapshot resolved, so
 /// a link there now was swapped in since, and that is a stale revision.
-fn read_journal(path: &FsPath, id: &str) -> Result<(String, Pin), AppError> {
-    pinned::read_pinned_string(path).map_err(|error| {
+fn read_journal(
+    location: &JournalLocation,
+    path: &VaultPath,
+    id: &str,
+) -> Result<(String, Revision), AppError> {
+    read_pinned_text(location, path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::InvalidInput {
             return stale(id);
         }
@@ -1403,6 +1458,23 @@ fn read_journal(path: &FsPath, id: &str) -> Result<(String, Pin), AppError> {
             error.kind()
         ))
     })
+}
+
+/// A journal file's text and the [`Revision`] a later write of it must still
+/// match — identity and fingerprint from one read, never through a link at the
+/// final component. As an `io::Error` so callers branch on its kind: a symlink
+/// or non-regular file is `InvalidInput`, non-UTF-8 is `InvalidData`.
+fn read_pinned_text(
+    location: &JournalLocation,
+    path: &VaultPath,
+) -> std::io::Result<(String, Revision)> {
+    let (bytes, revision) = location
+        .vault()
+        .read_pinned(path, None)
+        .map_err(std::io::Error::from)?;
+    let text = String::from_utf8(bytes)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    Ok((text, revision))
 }
 
 /// A `404` that quotes only the caller's own handle. Every resolution failure
