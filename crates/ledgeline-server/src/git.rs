@@ -908,6 +908,23 @@ fn names(entries: Vec<Classified>) -> Vec<String> {
     entries.into_iter().map(|(name, _)| name).collect()
 }
 
+/// A build without `external-tools` spawns no `git`: every caller sees "not
+/// installed" and degrades to no version control.
+#[cfg(all(test, not(feature = "external-tools")))]
+mod without_external_tools {
+    use super::*;
+
+    #[test]
+    fn git_is_reported_absent_and_nothing_is_spawned() {
+        assert!(!git_available());
+        assert!(matches!(
+            run(None, "--version", &version_args(), PROBE_TIMEOUT),
+            Err(GitError::NotFound)
+        ));
+        assert!(Repo::discover(Path::new(".")).is_none());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

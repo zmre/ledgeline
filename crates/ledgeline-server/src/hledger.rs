@@ -898,6 +898,5 @@ mod without_external_tools {
                 .contains("external-tools")
         );
         assert!(probe_answers_like_hledger(Path::new("/bin/sh")).is_err());
-        assert!(!crate::git::git_available());
     }
 }
