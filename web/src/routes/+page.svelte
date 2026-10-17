@@ -6,12 +6,10 @@
     import ErrorToast from "#lib/components/ErrorToast.svelte";
     import {styleOf} from "#lib/format/amounts.js";
     import ExportButton from "#lib/reports/ui/ExportButton.svelte";
-    import {reportStyles} from "#lib/reports/ui/styles.js";
     import FilterBar from "#lib/filters/FilterBar.svelte";
     import {startUrlSync} from "#lib/filters/urlSync.js";
     import InsightsPanel from "#lib/insights/InsightsPanel.svelte";
     import {visibleNet} from "#lib/insights/series.js";
-    import {declaredTypes} from "#lib/domain/accountTypes.js";
     import TotalsFooter from "#lib/journal/TotalsFooter.svelte";
     import TransactionTable from "#lib/journal/TransactionTable.svelte";
     import TransactionModal from "#lib/journal/edit/TransactionModal.svelte";
@@ -24,7 +22,7 @@
 
     const txns = $derived(getFilteredTxns());
     const period = $derived(periodLabel(filters.value.from, filters.value.to));
-    const declared = $derived(declaredTypes(journal.accountDecls));
+    const declared = $derived(journal.accountClasses);
     const total = $derived(visibleNet(txns, filters.value.accounts, journal.txns, declared));
 
     /**
@@ -48,7 +46,7 @@
      */
     async function exportJournal(): Promise<void> {
         const {exportJournalXlsx} = await import("#lib/export/journalXlsx.js");
-        const styles = reportStyles(journal.txns);
+        const styles = journal.reportStyles;
         const {from, to} = filters.value;
         const filename = from === null && to === null ? "journal-all-dates.xlsx" : `journal-${from ?? "start"}-to-${to ?? "end"}.xlsx`;
         // Oldest first, as a journal is read; the table shows newest first.
@@ -104,7 +102,7 @@
          computed from nothing are indistinguishable from zeroes computed from a
          journal that really nets to zero. -->
     {#if !loadFailed}
-        <InsightsPanel {txns} accounts={filters.value.accounts} allTxns={journal.txns} {declared} decls={journal.accountDecls} />
+        <InsightsPanel {txns} accounts={filters.value.accounts} allTxns={journal.txns} {declared} />
     {/if}
 
     {#if loadFailed}

@@ -30,8 +30,12 @@ describe("UNIT holdings trendView", () => {
 
     describe("benchmarkOverlays", () => {
         const trend = series([point("2026-08", "2026-08-31"), point("2026-09", "2026-09-28")]);
+        // Label and slot as the engine serves them on each line.
+        const CATALOG: Record<string, [string, number]> = {SPY: ["S&P 500 (SPY)", 0], QQQ: ["Nasdaq-100 (QQQ)", 2], GLD: ["Gold (GLD)", 7]};
         const line = (symbol: string, dates: string[], values: (number | null)[]): BenchmarkLine => ({
             symbol,
+            label: CATALOG[symbol][0],
+            slot: CATALOG[symbol][1],
             points: dates.map((date, i) => ({date, value: values[i] ?? null})),
             stale: false,
             error: null,

@@ -29,7 +29,6 @@
     import type {AmountStyle} from "#lib/domain/types.js";
     import {styleOf} from "#lib/format/amounts.js";
     import {formatChartValue, formatCompactChartValue} from "#lib/insights/series.js";
-    import {bucketLabel} from "#lib/reports/periods.js";
     import ReportTable from "#lib/reports/ui/ReportTable.svelte";
     import type {PeriodInterval} from "#lib/reports/ui/params.js";
     import {PROJECTION_TABS, PROJECTION_TAB_LABELS, type ProjectionTab} from "../params";
@@ -57,7 +56,7 @@
     const format = $derived((n: number) => formatChartValue(n, commodity, style));
     const formatAxis = $derived((n: number) => formatCompactChartValue(n, commodity, style));
 
-    const labels = $derived(projection.buckets.map(bucketLabel));
+    const labels = $derived(projection.netIncome.periods.map((p) => p.label));
     const flows = $derived(flowSeries(projection.netIncome, commodity));
     const cash = $derived(balanceNumbers(projection.cash, commodity));
     const worth = $derived(balanceNumbers(projection.netWorth, commodity));

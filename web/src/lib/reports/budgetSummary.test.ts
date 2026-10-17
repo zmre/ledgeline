@@ -1,4 +1,5 @@
 import {describe, expect, it} from "vitest";
+import {periodsOf} from "./test-helpers";
 import {dec, toNumber, type MixedAmount} from "../domain/money";
 import type {BudgetReport} from "./types";
 import {
@@ -21,6 +22,7 @@ const usd = (n: number): MixedAmount => new Map([["$", dec(n, 0)]]);
 const REPORT: BudgetReport = {
     kind: "budget",
     buckets: ["2026-01", "2026-02"],
+    periods: periodsOf(["2026-01", "2026-02"]),
     rows: [
         {
             account: UNBUDGETED,

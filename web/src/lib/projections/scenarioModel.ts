@@ -24,7 +24,7 @@ import {encodeDec} from "#lib/api/editMapping.js";
 import type {RunProjectionBody, WireScenarioIn} from "#lib/api/native.js";
 import {absDec} from "#lib/format/amounts.js";
 import {neg, type Dec} from "#lib/domain/money.js";
-import {isAccountType, type AccountType} from "#lib/domain/accountTypes.js";
+import {isAccountType, type AccountClasses, type AccountType} from "#lib/domain/accountClass.js";
 import type {ISODate} from "#lib/domain/types.js";
 import {isIsoDate as isIsoDateExact} from "#lib/url/params.js";
 import type {
@@ -64,12 +64,12 @@ export function isIsoDate(value: string): boolean {
 /**
  * Whether postings to this account are written negative — i.e. it is revenue.
  *
- * `isAccountType`, not `resolveAccountType(...) === "revenue"`: a declared
+ * `isAccountType`, not `accountTypeOf(...) === "revenue"`: a declared
  * `type: G` gain is revenue to the engine (hledger's `type:R` query matches
  * one), and a row the engine books as revenue while this says otherwise is a row
  * whose amount reaches the engine with the wrong sign.
  */
-export function isRevenueAccount(account: string, declared: ReadonlyMap<string, AccountType>): boolean {
+export function isRevenueAccount(account: string, declared: AccountClasses): boolean {
     return isAccountType(account, declared, "revenue");
 }
 
@@ -79,7 +79,7 @@ export function isRevenueAccount(account: string, declared: ReadonlyMap<string, 
  * THE ONE SIGN FLIP. Everything that writes an amount into a scenario goes
  * through here; nothing else may negate.
  */
-export function signedQuantity(magnitude: Dec, account: string, declared: ReadonlyMap<string, AccountType>): Dec {
+export function signedQuantity(magnitude: Dec, account: string, declared: AccountClasses): Dec {
     const mag = absDec(magnitude);
     return isRevenueAccount(account, declared) ? neg(mag) : mag;
 }
@@ -99,13 +99,13 @@ export function magnitudeOf(amount: ScenarioAmount): Dec {
  * line's growth onto whole dollars, which is a modelling change made by a
  * cosmetic edit.
  */
-export function amountFor(amount: ScenarioAmount, magnitude: Dec, account: string, declared: ReadonlyMap<string, AccountType>): ScenarioAmount {
+export function amountFor(amount: ScenarioAmount, magnitude: Dec, account: string, declared: AccountClasses): ScenarioAmount {
     const quantity = signedQuantity(magnitude, account, declared);
     return {...amount, quantity, precision: Math.max(amount.precision, quantity.p)};
 }
 
 /** A line with a new account, its amount RE-SIGNED for the account's type. */
-export function withAccount(line: ScenarioLine, account: string, declared: ReadonlyMap<string, AccountType>): ScenarioLine {
+export function withAccount(line: ScenarioLine, account: string, declared: AccountClasses): ScenarioLine {
     return {...line, account, amount: amountFor(line.amount, magnitudeOf(line.amount), account, declared)};
 }
 
@@ -135,7 +135,7 @@ export function withAccount(line: ScenarioLine, account: string, declared: Reado
  *    recurring transfer to an asset account. That is a two-way split, like the
  *    budget editor's, and it is why the heading says "and other outflows".
  */
-export function resolvedSection(line: ScenarioLine, declared: ReadonlyMap<string, AccountType>): LineSection {
+export function resolvedSection(line: ScenarioLine, declared: AccountClasses): LineSection {
     if (line.role === "asset") return "asset";
     if (line.period.simple === null && isIsoDate(line.period.raw)) return "oneoff";
     return isRevenueAccount(line.account, declared) ? "income" : "expense";
@@ -158,7 +158,7 @@ export function resolvedSection(line: ScenarioLine, declared: ReadonlyMap<string
  * hold left on a row that became one must not drag it back into the flow
  * tables.
  */
-export function sectionOfLine(line: ScenarioLine, declared: ReadonlyMap<string, AccountType>): LineSection {
+export function sectionOfLine(line: ScenarioLine, declared: AccountClasses): LineSection {
     const resolved = resolvedSection(line, declared);
     if (resolved === "oneoff" || resolved === "asset") return resolved;
     return line.section ?? resolved;
@@ -183,7 +183,7 @@ export type SectionRows = Record<LineSection, LogicalRow[]>;
  *
  * All four sections at once because the table wants all four, and asking one at
  * a time walked the scenario once per section — each walk resolving
- * `sectionOfLine` → `resolveAccountType` → `isRevenueAccount` for every line in
+ * `sectionOfLine` → `isRevenueAccount` → `accountTypeOf` for every line in
  * it, including the ones it was about to discard. That cost is per KEYSTROKE:
  * the scenario is deep `$state` and every one of those reads touches
  * `line.account`, so a single character invalidated all four derivations.
@@ -192,7 +192,7 @@ export type SectionRows = Record<LineSection, LogicalRow[]>;
  * RULE exactly where it was: a row's identity is still `line.id`, and its
  * section is still whatever `sectionOfLine` says — hold and all.
  */
-export function groupLines(lines: readonly ScenarioLine[], declared: ReadonlyMap<string, AccountType>): SectionRows {
+export function groupLines(lines: readonly ScenarioLine[], declared: AccountClasses): SectionRows {
     const sections: SectionRows = {income: [], expense: [], asset: [], oneoff: []};
     // Keyed by section AND id, not by id alone. Grouping WITHIN a section is
     // the behaviour a single pass has to keep: two segments of one row can
@@ -218,7 +218,7 @@ export function groupLines(lines: readonly ScenarioLine[], declared: ReadonlyMap
 }
 
 /** One section's logical rows. The table itself reads [`groupLines`], once for all four. */
-export function logicalRows(lines: readonly ScenarioLine[], declared: ReadonlyMap<string, AccountType>, section: LineSection): LogicalRow[] {
+export function logicalRows(lines: readonly ScenarioLine[], declared: AccountClasses, section: LineSection): LogicalRow[] {
     return groupLines(lines, declared)[section];
 }
 
@@ -347,7 +347,7 @@ const HLEDGER_DEFAULT_TOP: Record<AddSection, string> = {income: "income", expen
  * defaults when nothing in the journal has the type yet — which is the
  * first-run case, where there is nothing to learn from.
  */
-export function sectionPrefix(section: AddSection, accountNames: readonly string[], declared: ReadonlyMap<string, AccountType>): string {
+export function sectionPrefix(section: AddSection, accountNames: readonly string[], declared: AccountClasses): string {
     const want: AccountType = SECTION_TYPE[section];
     const counts = new Map<string, number>();
     for (const name of accountNames) {

@@ -20,6 +20,7 @@
 import {beforeEach, afterEach, describe, expect, it, vi} from "vitest";
 import {connectFakeEngine, FAKE_ENGINE} from "#lib/testing/fakeEngine.js";
 import {scenarioStore, sameProjectionQuery, type ProjectionWindow} from "./scenarioStore.svelte";
+import {periodsOf} from "#lib/reports/test-helpers.js";
 
 const SEED_ROUTE = "/api/projections/seed?count=12&depth=2";
 const RUN_ROUTE = "/api/projections/run";
@@ -50,7 +51,7 @@ const SEED_BODY = {
 const RUN_BODY = {
     buckets: ["2026-08"],
     start: "2026-08-01",
-    netIncome: {buckets: ["2026-08"], rows: [], totals: [{$: {mantissa: "0", places: 2}}]},
+    netIncome: {buckets: ["2026-08"], periods: periodsOf(["2026-08"]), rows: [], totals: [{$: {mantissa: "0", places: 2}}]},
     cash: {opening: {$: {mantissa: "500000", places: 2}}, values: [{$: {mantissa: "500000", places: 2}}]},
     netWorth: {opening: {$: {mantissa: "900000", places: 2}}, values: [{$: {mantissa: "900000", places: 2}}]},
     runway: null,

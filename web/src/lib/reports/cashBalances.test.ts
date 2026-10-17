@@ -1,5 +1,6 @@
 import {describe, expect, it} from "vitest";
-import type {AccountDecl} from "../domain/accountTypes";
+import {NO_ACCOUNT_CLASSES} from "../domain/accountClass";
+import {classesOf} from "../domain/accountClassFixtures";
 import {formatAmount} from "../domain/money";
 import type {AmountStyle, Transaction} from "../domain/types";
 import {accountBalances, balanceCommodities, cashViewClassifier, guessedLongTerm, summarize, visibleRows} from "./cashBalances";
@@ -8,59 +9,63 @@ import {amt, txn, usd} from "./test-helpers";
 const STYLE: AmountStyle = {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]};
 const show = (qty: {m: bigint; p: number}, commodity = "$"): string => formatAmount({commodity, qty, style: STYLE});
 
-/** A chart of accounts with no English in it, so a name-matching regression reads zero instead of passing by luck. */
-const SPANISH: AccountDecl[] = [
-    {name: "activo:banco:corriente", type: "cash"},
-    {name: "activo:cartera", type: "asset"},
-    {name: "pasivo:tarjeta", type: "liability"},
-    {name: "pasivo:hipoteca", type: "liability", bsterm: "noncurrent"},
-    {name: "gastos:oficina", type: "expense"},
-];
+/**
+ * A chart of accounts with no English in it, so a name-matching regression
+ * reads zero instead of passing by luck — written down as the ENGINE classifies
+ * it (`/api/journal` accounts): every account the journal posts to, resolved.
+ */
+const SPANISH = classesOf(
+    ["activo:banco:corriente", "cash"],
+    ["activo:cartera", "asset"],
+    ["pasivo:tarjeta", "liability"],
+    {name: "pasivo:hipoteca", type: "liability", term: "noncurrent"},
+    ["gastos:oficina", "expense"],
+    {name: "patrimonio:inicio", type: null, typeDeclared: false}
+);
 
 describe("UNIT reports/cashBalances", () => {
+    // The classifier only READS the engine's answer: type and term resolution
+    // (inheritance, the `bsterm:` vocabulary, the name guess) are the engine's
+    // and are tested there (crates/ledgeline-core: account_class.rs and the
+    // captured-TypeScript golden in tests/journal_meta.rs).
     describe("cashViewClassifier", () => {
-        it("admits cash and liabilities by DECLARED type, never by name", () => {
+        it("admits cash and liabilities by the engine's type, never by name", () => {
             const classify = cashViewClassifier(SPANISH);
             expect(classify("activo:banco:corriente")).toBe("cash");
             expect(classify("pasivo:tarjeta")).toBe("liability");
-            // Declared a plain asset: a brokerage or a house is not cash.
+            // A plain asset: a brokerage or a house is not cash.
             expect(classify("activo:cartera")).toBeNull();
             expect(classify("gastos:oficina")).toBeNull();
+            expect(classify("patrimonio:inicio")).toBeNull();
         });
 
-        it("inherits both tags to sub-accounts", () => {
-            const classify = cashViewClassifier(SPANISH);
-            expect(classify("activo:banco:corriente:eur")).toBe("cash");
-            expect(classify("pasivo:hipoteca:principal")).toBeNull(); // non-current, inherited
-        });
-
-        it("drops non-current accounts and keeps everything untagged", () => {
-            const classify = cashViewClassifier(SPANISH);
+        it("drops a non-current account and keeps a current or undeclared one", () => {
+            const classify = cashViewClassifier(
+                classesOf({name: "pasivo:hipoteca", type: "liability", term: "noncurrent"}, ["pasivo:tarjeta", "liability"], {
+                    name: "pasivo:linea",
+                    type: "liability",
+                    term: "current",
+                })
+            );
             expect(classify("pasivo:hipoteca")).toBeNull();
-            expect(classify("pasivo:tarjeta")).toBe("liability"); // untagged ⇒ current
-        });
-
-        it("guesses long-term from the name only when no tag in the ancestry said otherwise", () => {
-            const classify = cashViewClassifier([
-                {name: "liabilities:mortgage", type: "liability"}, // untagged: the guess gets a vote
-                {name: "liabilities:heloc", type: "liability", bsterm: "current"}, // tagged: it does not
-                {name: "liabilities:cc", type: "liability"},
-            ]);
-            expect(classify("liabilities:mortgage")).toBe("guessed-long-term");
-            expect(classify("liabilities:mortgage:escrow")).toBe("guessed-long-term");
-            // A tag always beats a guess, in EITHER direction.
-            expect(classify("liabilities:heloc")).toBe("liability");
-            expect(classify("liabilities:cc")).toBe("liability");
+            expect(classify("pasivo:tarjeta")).toBe("liability"); // undeclared ⇒ current
+            expect(classify("pasivo:linea")).toBe("liability");
         });
 
         it("distinguishes a guess from a declaration, because only one needs explaining", () => {
-            const classify = cashViewClassifier([{name: "liabilities:car", type: "liability", bsterm: "noncurrent"}]);
+            const classify = cashViewClassifier(
+                classesOf(
+                    {name: "liabilities:mortgage", type: "liability", typeDeclared: false, term: "noncurrent", termGuessed: true},
+                    {name: "liabilities:car", type: "liability", term: "noncurrent"}
+                )
+            );
+            expect(classify("liabilities:mortgage")).toBe("guessed-long-term");
             // Declared out: plain null, the owner wrote the tag and knows.
             expect(classify("liabilities:car")).toBeNull();
         });
 
-        it("falls back to hledger's name heuristic only when NOTHING is declared", () => {
-            const classify = cashViewClassifier([]);
+        it("infers by name only for an account the engine never classified", () => {
+            const classify = cashViewClassifier(NO_ACCOUNT_CLASSES);
             expect(classify("assets:bank:checking")).toBe("cash");
             expect(classify("liabilities:cc:visa")).toBe("liability");
             expect(classify("assets:broker:taxable:aapl")).toBeNull();
@@ -146,11 +151,14 @@ describe("UNIT reports/cashBalances", () => {
             // Nothing here declares a term, so the name heuristic is the only
             // thing standing between a 30-year mortgage and the "short-term
             // liabilities" figure.
-            const untagged: AccountDecl[] = [
-                {name: "activo:banco:corriente", type: "cash"},
-                {name: "pasivo:tarjeta", type: "liability"},
-                {name: "liabilities:mortgage", type: "liability"},
-            ];
+            // The engine guessed this one (`infer_bs_term`): untagged, and named like a mortgage.
+            const untagged = classesOf(["activo:banco:corriente", "cash"], ["pasivo:tarjeta", "liability"], {
+                name: "liabilities:mortgage",
+                type: "liability",
+                typeDeclared: false,
+                term: "noncurrent",
+                termGuessed: true,
+            });
             const withMortgage = [
                 ...txns,
                 txn("2026-04-01", [
@@ -179,10 +187,7 @@ describe("UNIT reports/cashBalances", () => {
     });
 
     describe("multi-commodity", () => {
-        const decls: AccountDecl[] = [
-            {name: "assets:bank:usd", type: "cash"},
-            {name: "assets:bank:eur", type: "cash"},
-        ];
+        const decls = classesOf(["assets:bank:usd", "cash"], ["assets:bank:eur", "cash"]);
         const txns: Transaction[] = [
             txn("2026-02-01", [
                 ["assets:bank:usd", usd(100_000)],
@@ -208,11 +213,7 @@ describe("UNIT reports/cashBalances", () => {
     });
 
     describe("ordering and zero rows", () => {
-        const decls: AccountDecl[] = [
-            {name: "assets:a", type: "cash"},
-            {name: "assets:b", type: "cash"},
-            {name: "assets:c", type: "cash"},
-        ];
+        const decls = classesOf(["assets:a", "cash"], ["assets:b", "cash"], ["assets:c", "cash"]);
         const txns: Transaction[] = [
             txn("2026-01-01", [
                 ["assets:a", usd(10_000)],

@@ -13,7 +13,7 @@
 import {render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {beforeEach, describe, expect, it} from "vitest";
-import type {AccountDecl} from "#lib/domain/accountTypes.js";
+import {classesOf} from "#lib/domain/accountClassFixtures.js";
 import {dec} from "#lib/domain/money.js";
 import type {Amount, AmountStyle, Posting, Transaction} from "#lib/domain/types.js";
 import {settings} from "#lib/stores/settings.svelte.js";
@@ -29,10 +29,7 @@ function txn(date: string, postings: [string, Amount][]): Transaction {
     return {index: nextIndex, date, status: "cleared", description: "t", code: "", comment: "", tags: [], postings: built, haystack: "t"};
 }
 
-const DECLS: AccountDecl[] = [
-    {name: "assets:bank:checking", type: "cash"},
-    {name: "liabilities:card", type: "liability"},
-];
+const DECLS = classesOf(["assets:bank:checking", "cash"], ["liabilities:card", "liability"]);
 
 const TXNS: Transaction[] = [
     txn("2026-01-02", [
@@ -49,7 +46,7 @@ const TXNS: Transaction[] = [
     ]),
 ];
 
-const mount = () => render(InsightsPanel, {txns: TXNS, allTxns: TXNS, decls: DECLS});
+const mount = () => render(InsightsPanel, {txns: TXNS, allTxns: TXNS, declared: DECLS});
 const tab = (name: string): HTMLElement => screen.getByRole("tab", {name});
 
 beforeEach(() => {

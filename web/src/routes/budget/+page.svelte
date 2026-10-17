@@ -36,13 +36,11 @@
     import AsyncSection from "#lib/components/AsyncSection.svelte";
     import ErrorToast from "#lib/components/ErrorToast.svelte";
     import DepthSlider from "#lib/insights/DepthSlider.svelte";
-    import {declaredTypes} from "#lib/domain/accountTypes.js";
     import {decToInput} from "#lib/api/editMapping.js";
     import {exportBudgetXlsx} from "#lib/export/xlsx.js";
     import BudgetSummary from "#lib/reports/ui/BudgetSummary.svelte";
     import ExportButton from "#lib/reports/ui/ExportButton.svelte";
     import {today} from "#lib/reports/periods.js";
-    import {reportStyles} from "#lib/reports/ui/styles.js";
     import {dataView} from "#lib/stores/loadState.js";
     import {journal} from "#lib/stores/journal.svelte.js";
     import {loadJournalWhenReady, onServerReady} from "#lib/stores/serverWatch.svelte.js";
@@ -71,8 +69,8 @@
     // Styles + account names come from the journal wire feed; the report and the
     // goals are native. Never a gate — `formatTotals` falls back per commodity.
     loadJournalWhenReady();
-    const styles = $derived(reportStyles(journal.txns));
-    const declared = $derived(declaredTypes(journal.accountDecls));
+    const styles = $derived(journal.reportStyles);
+    const declared = $derived(journal.accountClasses);
     const maxDepth = $derived(journal.accountNames.reduce((max, name) => Math.max(max, name.split(":").length), 1));
 
     // --- The bars ------------------------------------------------------------

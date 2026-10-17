@@ -1050,6 +1050,11 @@ export class LedgelineApi {
      * instead (decode with `decodeBenchmarks`). May reach Yahoo Finance on the
      * server, so it is fetched only after the base chart has drawn.
      */
+    /** The benchmarks the overlay can draw, in slot order (decode with `decodeBenchmarkCatalog`). */
+    benchmarkCatalog(): Promise<unknown> {
+        return this.getJson("/api/holdings/benchmarks/catalog");
+    }
+
     holdingsBenchmarks(query: HoldingsBenchmarksQuery): Promise<unknown> {
         return this.getJson(
             `/api/holdings/benchmarks${queryString({symbols: query.symbols, asOf: query.asOf, accounts: query.accounts, mode: query.mode, interval: query.interval, count: query.count, since: query.since})}`

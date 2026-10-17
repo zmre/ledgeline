@@ -3,7 +3,7 @@
 
 import {describe, expect, it} from "vitest";
 import {ApiShapeError} from "./client";
-import {decodeBenchmarks} from "./nativeDecode";
+import {decodeBenchmarkCatalog, decodeBenchmarks} from "./nativeDecode";
 
 // The literal shape `WireBenchmarks` serializes to (benchmarks_api.rs), as the
 // server's own integration test (`the_line_is_the_same_money_into_the_benchmark`)
@@ -12,6 +12,8 @@ const WIRE = {
     benchmarks: [
         {
             symbol: "SPY",
+            label: "S&P 500 (SPY)",
+            slot: 0,
             points: [
                 {date: "2025-01-31", value: 1100},
                 {date: "2025-02-28", value: 1210},
@@ -22,6 +24,8 @@ const WIRE = {
         },
         {
             symbol: "GLD",
+            label: "Gold (GLD)",
+            slot: 7,
             points: [
                 {date: "2025-01-31", value: null},
                 {date: "2025-02-28", value: null},
@@ -73,5 +77,26 @@ describe("UNIT decodeBenchmarks", () => {
         const line: Record<string, unknown> = {...WIRE.benchmarks[0]};
         delete line[key];
         expect(() => decodeBenchmarks({benchmarks: [line]})).toThrow(ApiShapeError);
+    });
+});
+
+describe("UNIT decodeBenchmarkCatalog", () => {
+    it("decodes the engine's catalog in slot order, frozen", () => {
+        const catalog = decodeBenchmarkCatalog({
+            benchmarks: [
+                {symbol: "SPY", label: "S&P 500 (SPY)"},
+                {symbol: "GLD", label: "Gold (GLD)"},
+            ],
+        });
+        expect(catalog).toEqual([
+            {symbol: "SPY", label: "S&P 500 (SPY)"},
+            {symbol: "GLD", label: "Gold (GLD)"},
+        ]);
+        expect(Object.isFrozen(catalog)).toBe(true);
+    });
+
+    it("throws rather than offering a box with no label", () => {
+        expect(() => decodeBenchmarkCatalog({benchmarks: [{symbol: "SPY"}]})).toThrow(ApiShapeError);
+        expect(() => decodeBenchmarkCatalog([])).toThrow(ApiShapeError);
     });
 });

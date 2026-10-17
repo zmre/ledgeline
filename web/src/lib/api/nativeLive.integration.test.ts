@@ -4,8 +4,8 @@
 //   LEDGELINE_API_URL=http://127.0.0.1:5000 vitest run nativeLive
 //
 // Drives the SAME fetch → decode → format pipeline the /reports and /holdings
-// pages use (LedgelineApi + nativeDecode + the display helpers reportStyles/
-// formatTotals/styleFor/formatAmount), asserting the golden display strings —
+// pages use (LedgelineApi + nativeDecode + the engine's reportStyles and the display helpers /
+// formatTotals/styleOf/formatAmount), asserting the golden display strings —
 // so a green run here is proof the pages render the correct numbers against the
 // real engine, short of a DOM (the UI components are unchanged and already
 // tested over these exact domain types).
@@ -14,10 +14,8 @@ import {describe, expect, it} from "vitest";
 import {formatAmount} from "#lib/domain/money.js";
 import type {MixedAmount} from "#lib/domain/money.js";
 import {partitionShortPositions, shortPositionNote} from "#lib/holdings/ui/view.js";
-import {styleFor} from "#lib/insights/series.js";
+import {styleOf} from "#lib/format/amounts.js";
 import {formatTotals} from "#lib/journal/rowModel.js";
-import {reportStyles} from "#lib/reports/ui/styles.js";
-import {HledgerApi} from "./client";
 import {LedgelineApi} from "./native";
 import {
     decodeBalanceSheetReport,
@@ -28,7 +26,6 @@ import {
     decodePeriodReport,
     decodeSectionedReport,
 } from "./nativeDecode";
-import {normalizeTransactions} from "./normalize";
 
 const apiUrl = process.env.LEDGELINE_API_URL;
 const AS_OF = "2026-07-08"; // pinned like the e2e clock; the journal ends 2026-07-04 so this == "today"
@@ -49,7 +46,7 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
     // dollars while the home it bought does not. Figures $20,500.00 lighter are
     // the stale pre-WP-14 ones — do not "correct" the assertions back to them.
     it("balance sheet renders Total Assets $68,902.56 and Net $-267,628.59", async () => {
-        const styles = reportStyles(normalizeTransactions(await new HledgerApi(url).transactions()));
+        const styles = decodeJournalInfo(await new LedgelineApi(url).journalInfo()).reportStyles;
         const report = decodeSectionedReport(await new LedgelineApi(url).balanceSheet({asOf: AS_OF, depth: 2}));
         expect(report.asOf).toBe(AS_OF);
 
@@ -60,7 +57,7 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
     });
 
     it("income statement totals revenues $34,010.00 over the year to date", async () => {
-        const styles = reportStyles(normalizeTransactions(await new HledgerApi(url).transactions()));
+        const styles = decodeJournalInfo(await new LedgelineApi(url).journalInfo()).reportStyles;
         const report = decodeSectionedReport(await new LedgelineApi(url).incomeStatement({from: "2026-01-01", to: AS_OF, depth: 2}));
         const revenues = report.sections.find((s) => s.title === "Revenues");
         expect(revenues).toBeDefined();
@@ -82,7 +79,7 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
     });
 
     it("grouped P&L groups by segment, valued, against the prior equal-length window", async () => {
-        const styles = reportStyles(normalizeTransactions(await new HledgerApi(url).transactions()));
+        const styles = decodeJournalInfo(await new LedgelineApi(url).journalInfo()).reportStyles;
         const report = decodeIncomeStatementReport(await new LedgelineApi(url).incomeStatementGrouped({from: "2026-01-01", to: AS_OF}));
 
         // Untagged journal ⇒ the simple two-box shape, no GAAP ladder.
@@ -137,10 +134,10 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
     });
 
     it("holdings render AAPL/VTI values, GLD tainted, NVDA absent, TSLA short-and-hidden, partial totals", async () => {
-        const txns = normalizeTransactions(await new HledgerApi(url).transactions());
+        const styles = decodeJournalInfo(await new LedgelineApi(url).journalInfo()).reportStyles;
         const report = decodeHoldingsReport(await new LedgelineApi(url).holdings({asOf: AS_OF, accounts: "", mode: "include"}));
         expect(report.base).toBe("$");
-        const style = styleFor(txns, report.base);
+        const style = styleOf(styles, report.base);
         const fmt = (h: {marketValue: import("#lib/domain/money.js").Dec | null}) =>
             h.marketValue === null ? "—" : formatAmount({commodity: "$", qty: h.marketValue, style});
 
@@ -223,5 +220,17 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
     it("journal info carries the declared commodity styles", async () => {
         const info = decodeJournalInfo(await new LedgelineApi(url).journalInfo());
         expect(info.commodityStyles.get("$")).toEqual({side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]});
+    });
+
+    // Plan 26 B1: the whole-journal metadata, against the real engine and the
+    // real decoder. sample.journal has 189 transactions (the e2e footer count).
+    it("journal info carries the engine's display metadata and account classes", async () => {
+        const info = decodeJournalInfo(await new LedgelineApi(url).journalInfo());
+        expect(info.txnCount).toBe(189);
+        expect(info.dominantCommodity).toBe("$");
+        expect(info.reportStyles.get("$")?.precision).toBe(2);
+        expect(info.firstDate !== null && info.lastDate !== null && info.firstDate <= info.lastDate).toBe(true);
+        expect(info.accounts.get("assets:bank:checking")?.type).toBe("cash");
+        expect(info.generation.length).toBeGreaterThan(0);
     });
 });

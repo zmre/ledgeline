@@ -7,15 +7,18 @@
      how many are ticked, so a closed dropdown still says the chart has more on
      it than the portfolio; the legend under the chart names them. -->
 <script lang="ts">
-    import {BENCHMARKS} from "#lib/holdings/benchmarks.js";
+    import type {BenchmarkCatalog} from "#lib/holdings/benchmarks.js";
     import type {BenchmarkState} from "#lib/stores/benchmarks.svelte.js";
 
     let {
+        catalog,
         picked,
         states,
         onToggle,
         onRetry,
     }: {
+        /** The engine's catalog, in slot order (empty until it loads). */
+        catalog: BenchmarkCatalog;
         /** Ticked symbols. */
         picked: readonly string[];
         /** Each requested benchmark's load state for the current window. */
@@ -36,7 +39,7 @@
     <div class="dropdown-content z-10 mt-1 w-72 rounded-box bg-base-200 p-2 shadow-lg">
         <p class="mb-1 px-1 text-xs text-base-content/60">Your contributions and withdrawals, on the same dates, into a fund instead. Dividends reinvested.</p>
         <ul class="flex flex-col">
-            {#each BENCHMARKS as benchmark (benchmark.symbol)}
+            {#each catalog as benchmark (benchmark.symbol)}
                 {@const checked = picked.includes(benchmark.symbol)}
                 {@const state = checked ? states.get(benchmark.symbol) : undefined}
                 <li class="flex flex-col rounded px-1 py-0.5 hover:bg-base-300/50">

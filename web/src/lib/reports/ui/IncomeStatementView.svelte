@@ -37,7 +37,6 @@
     import {openJournal} from "#lib/journal/openJournal.js";
     import {registerKeys} from "#lib/keys/keymap.svelte.js";
     import {PRIORITY} from "#lib/keys/types.js";
-    import {bucketLabel} from "#lib/reports/periods.js";
     import type {Amounts, IncomeStatementReport, IsSectionKind} from "#lib/reports/types.js";
     import {settings} from "#lib/stores/settings.svelte.js";
     import {listCursor} from "#lib/ui/listCursor.svelte.js";
@@ -183,7 +182,7 @@
 {#snippet figureHeads()}
     {#if buckets !== null}
         {#each buckets as bucket (bucket.key)}
-            <th class="w-28 min-w-28 text-right font-normal" title="{bucket.from} to {bucket.to}">{bucketLabel(bucket.key)}</th>
+            <th class="w-28 min-w-28 text-right font-normal" title="{bucket.from} to {bucket.to}">{bucket.label}</th>
         {/each}
         <th class="w-32 min-w-32 text-right font-normal">Total</th>
     {:else}

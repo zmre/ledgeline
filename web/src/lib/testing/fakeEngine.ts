@@ -18,8 +18,28 @@ import {vi} from "vitest";
 /** The address the fake engine answers on. Nothing listens there; `fetch` is stubbed. */
 export const FAKE_ENGINE = "http://engine.test";
 
-/** A minimal `/api/journal` body: an untitled journal with nothing declared. */
-export const FAKE_JOURNAL_INFO = {title: null, file: null};
+/**
+ * A minimal `/api/journal` body: an untitled journal with nothing declared,
+ * no classified accounts and a fixed generation. Spread `overrides` over it for
+ * the fields a test is about.
+ */
+export function journalInfoBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+        title: null,
+        file: null,
+        commodityStyles: {},
+        reportStyles: {},
+        dominantCommodity: "$",
+        txnCount: 0,
+        firstDate: null,
+        lastDate: null,
+        accounts: {},
+        generation: "fake-1",
+        ...overrides,
+    };
+}
+
+export const FAKE_JOURNAL_INFO = journalInfoBody();
 
 const json = (body: unknown): Response => new Response(JSON.stringify(body), {status: 200, headers: {"Content-Type": "application/json"}});
 

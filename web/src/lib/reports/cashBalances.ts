@@ -18,8 +18,9 @@
 //   * `type:` — an account is cash when its effective type is hledger's Cash
 //     subtype (`type: C`, or the name heuristic when nothing in the ancestry is
 //     declared), and a liability when its effective type is Liability. This is
-//     the same `resolveAccountType` the cash-flow report and the balance
-//     sheet's "Cash and cash equivalents" line use.
+//     the type the ENGINE resolved (`/api/journal` accounts) — the same
+//     resolution the cash-flow report and the balance sheet's "Cash and cash
+//     equivalents" line use.
 //   * `bsterm:` — non-current accounts are excluded, so a mortgage tagged
 //     `bsterm: noncurrent` stays out of "short-term liabilities" while the card
 //     balance beside it counts. This is ADAPTIVE for free: a journal that
@@ -44,8 +45,7 @@
 // normalizing away — see the `negative-cash` rule in lib/checks/rules.ts, which
 // reads these same balances.
 
-import {declaredTerms, inferBsTerm, resolveBsTerm} from "../domain/accountTerms";
-import {declaredTypes, resolveAccountType, type AccountDecl} from "../domain/accountTypes";
+import {accountTermOf, accountTypeOf, type AccountClasses} from "../domain/accountClass";
 import {add, cmp, dec, isZero, neg, rankCommodities, type Dec, type MixedAmount} from "../domain/money";
 import type {ISODate, Transaction} from "../domain/types";
 
@@ -115,22 +115,22 @@ export type Membership = BalanceKind | "guessed-long-term" | null;
  * Order is the point. The declared `type:` decides whether the account is even
  * eligible; then a declared `bsterm:` on the account or any ancestor decides
  * the term; ONLY when nothing in the ancestry declared one does the name
- * heuristic get a vote (see `inferBsTerm`, which documents why the list is as
- * short as it is). A tag always beats a guess, so `bsterm: current` on a
+ * heuristic get a vote (the engine's `infer_bs_term`, which documents why the
+ * list is as short as it is). All three are resolved by the engine. A tag always beats a guess, so `bsterm: current` on a
  * home-equity line brings it back into the view.
  */
-export function cashViewClassifier(decls: readonly AccountDecl[]): (account: string) => Membership {
-    const types = declaredTypes(decls);
-    const terms = declaredTerms(decls);
+export function cashViewClassifier(classes: AccountClasses): (account: string) => Membership {
     return (account) => {
-        const type = resolveAccountType(account, types);
+        const type = accountTypeOf(account, classes);
         if (type !== "cash" && type !== "liability") return null;
-        const declared = resolveBsTerm(account, terms);
-        // Undeclared reads as current, which is the engine's default for every
-        // group except Investments — and an Investments account is never Cash
-        // (the type rule outranks the commodity rule) nor a liability.
-        if (declared !== null) return declared === "noncurrent" ? null : type;
-        return inferBsTerm(account, type) === "noncurrent" ? "guessed-long-term" : type;
+        // The engine resolved the term: a declared/inherited `bsterm:`, else a
+        // name guess (`infer_bs_term`) flagged as one. Undeclared reads as
+        // current, which is the engine's default for every group except
+        // Investments — and an Investments account is never Cash (the type rule
+        // outranks the commodity rule) nor a liability.
+        const {term, guessed} = accountTermOf(account, classes);
+        if (term !== "noncurrent") return type;
+        return guessed ? "guessed-long-term" : null;
     };
 }
 
@@ -159,20 +159,20 @@ interface CashBalanceSet {
 }
 
 /** Memoized front door for the whole pass; see [`cache`]. */
-function cashBalanceSet(txns: Transaction[], decls: readonly AccountDecl[], asOf: ISODate): CashBalanceSet {
-    let byDecls = cache.get(txns);
-    if (byDecls === undefined) {
-        byDecls = new WeakMap();
-        cache.set(txns, byDecls);
+function cashBalanceSet(txns: Transaction[], classes: AccountClasses, asOf: ISODate): CashBalanceSet {
+    let byClasses = cache.get(txns);
+    if (byClasses === undefined) {
+        byClasses = new WeakMap();
+        cache.set(txns, byClasses);
     }
-    let byDate = byDecls.get(decls);
+    let byDate = byClasses.get(classes);
     if (byDate === undefined) {
         byDate = new Map();
-        byDecls.set(decls, byDate);
+        byClasses.set(classes, byDate);
     }
     const hit = byDate.get(asOf);
     if (hit !== undefined) return hit;
-    const computed = computeAccountBalances(txns, decls, asOf);
+    const computed = computeAccountBalances(txns, classes, asOf);
     byDate.set(asOf, computed);
     return computed;
 }
@@ -191,8 +191,8 @@ function cashBalanceSet(txns: Transaction[], decls: readonly AccountDecl[], asOf
  *
  * Memoized on argument identity; see [`cache`].
  */
-export function accountBalances(txns: Transaction[], decls: readonly AccountDecl[], asOf: ISODate): AccountBalance[] {
-    return cashBalanceSet(txns, decls, asOf).balances;
+export function accountBalances(txns: Transaction[], classes: AccountClasses, asOf: ISODate): AccountBalance[] {
+    return cashBalanceSet(txns, classes, asOf).balances;
 }
 
 /**
@@ -203,13 +203,13 @@ export function accountBalances(txns: Transaction[], decls: readonly AccountDecl
  * This exists so the guess is never silent: the view names them, and one
  * `bsterm: current` tag brings any of them back.
  */
-export function guessedLongTerm(txns: Transaction[], decls: readonly AccountDecl[], asOf: ISODate): string[] {
-    return cashBalanceSet(txns, decls, asOf).guessedLongTerm;
+export function guessedLongTerm(txns: Transaction[], classes: AccountClasses, asOf: ISODate): string[] {
+    return cashBalanceSet(txns, classes, asOf).guessedLongTerm;
 }
 
 /** The actual pass; [`cashBalanceSet`] is the memoized front door. */
-function computeAccountBalances(txns: Transaction[], decls: readonly AccountDecl[], asOf: ISODate): CashBalanceSet {
-    const classify = cashViewClassifier(decls);
+function computeAccountBalances(txns: Transaction[], classes: AccountClasses, asOf: ISODate): CashBalanceSet {
+    const classify = cashViewClassifier(classes);
     // Account name → whether it is in the view, so the ancestor walks inside
     // `classify` run once per distinct account rather than once per posting.
     const kinds = new Map<string, Membership>();

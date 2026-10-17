@@ -10,7 +10,7 @@
 // 1005/1e3 is stored as 1.00499999999999989…, which Excel prints as 1.00 while
 // the screen prints 1.01.
 
-import {isAccountType, type AccountType} from "#lib/domain/accountTypes.js";
+import {isAccountType, type AccountClasses, type AccountType} from "#lib/domain/accountClass.js";
 import {
     dec,
     displayPlaces,
@@ -27,7 +27,6 @@ import {
 import type {AmountStyle} from "#lib/domain/types.js";
 import type {HoldingsReport} from "#lib/holdings/types.js";
 import {budgetLeaves, budgetTotals, magnitudeAmount, primaryValue, summarizeBudget, type BudgetLine} from "#lib/reports/budgetSummary.js";
-import {bucketLabel} from "#lib/reports/periods.js";
 import type {
     Amounts,
     BalanceSheetReport,
@@ -621,7 +620,7 @@ function addBudgetRow(ws: Worksheet, rowIx: number, label: string, actual: Mixed
  * Section totals come from `budgetTotals` and take their magnitude AFTER
  * summing, matching the page's overall bar rather than re-deriving it.
  */
-function addBudget(ws: Worksheet, report: BudgetReport, declared: ReadonlyMap<string, AccountType>): void {
+function addBudget(ws: Worksheet, report: BudgetReport, declared: AccountClasses): void {
     const leaves = budgetLeaves(summarizeBudget(report));
     // `isAccountType`, so a declared subtype folds into its parent section.
     // These two sections are the whole partition, so a `type: G` goal matching
@@ -711,7 +710,7 @@ export async function buildIncomeStatementWorkbook(report: IncomeStatementReport
     const priorExtrasHeader = report.prior === null ? [] : [`Other commodities (${report.prior.from} … ${report.prior.to})`];
     const headers =
         report.buckets !== null
-            ? ["Account", ...report.buckets.map((bucket) => bucketLabel(bucket.key)), `Total${inBase}`, "Other commodities"]
+            ? ["Account", ...report.buckets.map((bucket) => bucket.label), `Total${inBase}`, "Other commodities"]
             : report.prior !== null
               ? ["Account", `Amount${inBase}`, ...priorHeader, "% change", "Other commodities", ...priorExtrasHeader]
               : ["Account", `Amount${inBase}`, "Other commodities"];
@@ -769,11 +768,7 @@ export async function buildHoldingsWorkbook(report: HoldingsReport, meta: {title
 }
 
 /** Budget workbook: one row per revenue/expense leaf (Spent/Budget/Remaining/% of budget) and a bold total. */
-export async function buildBudgetWorkbook(
-    report: BudgetReport,
-    meta: {title: string; params: string},
-    declared: ReadonlyMap<string, AccountType>
-): Promise<Workbook> {
+export async function buildBudgetWorkbook(report: BudgetReport, meta: {title: string; params: string}, declared: AccountClasses): Promise<Workbook> {
     const {Workbook: ExcelWorkbook} = await import("exceljs");
     const workbook = new ExcelWorkbook();
     const ws = workbook.addWorksheet(meta.title);
@@ -820,11 +815,6 @@ export async function exportHoldingsXlsx(report: HoldingsReport, meta: {title: s
 }
 
 /** Build the budget .xlsx and trigger a browser download. */
-export async function exportBudgetXlsx(
-    report: BudgetReport,
-    meta: {title: string; params: string},
-    filename: string,
-    declared: ReadonlyMap<string, AccountType>
-): Promise<void> {
+export async function exportBudgetXlsx(report: BudgetReport, meta: {title: string; params: string}, filename: string, declared: AccountClasses): Promise<void> {
     await downloadWorkbook(await buildBudgetWorkbook(report, meta, declared), filename);
 }

@@ -7,10 +7,10 @@
 import {HledgerApi, isNotModified, resetConditionalCache} from "#lib/api/client.js";
 import {LedgelineApi} from "#lib/api/native.js";
 import {decodeJournalInfo} from "#lib/api/nativeDecode.js";
-import {normalizeAccounts, normalizeDiagnostics, normalizePrices, normalizeTransactions} from "#lib/api/normalize.js";
+import {type CommodityStyles, normalizeDiagnostics, normalizePrices, normalizeTransactions} from "#lib/api/normalize.js";
 import type {Problem} from "#lib/checks/engine.js";
 import type {Dec} from "#lib/domain/money.js";
-import type {AccountDecl} from "#lib/domain/accountTypes.js";
+import {NO_ACCOUNT_CLASSES, type AccountClasses} from "#lib/domain/accountClass.js";
 import type {PriceDirective, Transaction} from "#lib/domain/types.js";
 import {filterTxns, sortTxnsDesc} from "#lib/journal/rowModel.js";
 import {filters} from "#lib/stores/filters.svelte.js";
@@ -42,7 +42,10 @@ type JournalStatus = "idle" | "loading" | "ready" | "error";
  */
 let txns = $state.raw<Transaction[]>([]);
 let accountNames = $state.raw<string[]>([]);
-let accountDecls = $state.raw<AccountDecl[]>([]);
+/** The engine-computed whole-journal metadata (`/api/journal`), swapped with the payloads above. */
+let reportStyles = $state.raw<CommodityStyles>(new Map());
+let accountClasses = $state.raw<AccountClasses>(NO_ACCOUNT_CLASSES);
+let dominantCommodity = $state<string>("$");
 let prices = $state.raw<PriceDirective[]>([]);
 let diagnostics = $state.raw<Problem[]>([]);
 /** The engine's name for the journal on screen, and its main file — the app bar's label. */
@@ -67,6 +70,8 @@ let inFlightAbort: AbortController | null = null;
  */
 let roundToken = 0;
 let lastFingerprint = 0;
+/** The snapshot generation the swapped-in state came from (`/api/journal`). */
+let lastGeneration: string | null = null;
 
 /**
  * Content-aware change fingerprint so polling refreshes don't churn every
@@ -74,8 +79,9 @@ let lastFingerprint = 0;
  * in-place edit to any transaction (recategorize, amount fix) must swap state,
  * not just appends. djb2 over each txn's index/dates/status/haystack plus its
  * postings' account, status, date, type, balance assertion and EXACT amounts,
- * then account names, price directives, and declared account types (a `type:`
- * edit must recompute the cash-flow report). Exported for unit tests.
+ * then account names, price directives, and the engine's journal metadata —
+ * account classes and report styles (a `type:` edit must recompute the
+ * cash-flow report). Exported for unit tests.
  *
  * The haystack alone is NOT enough, even though it mentions amounts: it is
  * built for searching, so its amounts run through `formatAmount`, which rounds
@@ -86,11 +92,20 @@ let lastFingerprint = 0;
  * in the badge. Hashing `qty` exactly (mantissa AND scale, plus any cost
  * annotation) is what makes those edits visible.
  */
+/** The `/api/journal` metadata that swaps with the journal payloads. */
+export interface JournalMeta {
+    reportStyles: CommodityStyles;
+    accountClasses: AccountClasses;
+    dominantCommodity: string;
+}
+
+const NO_META: JournalMeta = {reportStyles: new Map(), accountClasses: NO_ACCOUNT_CLASSES, dominantCommodity: "$"};
+
 export function contentFingerprint(
     list: readonly Transaction[],
     names: readonly string[],
     priceList: readonly PriceDirective[],
-    decls: readonly AccountDecl[] = [],
+    meta: JournalMeta = NO_META,
     diags: readonly Problem[] = []
 ): number {
     let h = 5381;
@@ -151,10 +166,15 @@ export function contentFingerprint(
         // on screen for good rather than for one poll.
         mixDec(p.price.qty);
     }
-    for (const d of decls) {
-        mixStr(d.name);
-        mixStr(d.type ?? "");
+    for (const [name, c] of meta.accountClasses) {
+        mixStr(name);
+        mixStr(`${c.type ?? ""}|${c.typeDeclared}|${c.term ?? ""}|${c.termGuessed}`);
     }
+    for (const [commodity, style] of meta.reportStyles) {
+        mixStr(commodity);
+        mixStr(JSON.stringify(style));
+    }
+    mixStr(meta.dominantCommodity);
     // Engine diagnostics are hashed too: they are computed from state this
     // function only hashes APPROXIMATELY (a fixed balance assertion need not
     // change any amount we mix), so leaving them out would let a refresh fetch
@@ -218,11 +238,11 @@ async function doRefresh(token: number, unconditional: boolean, signal: AbortSig
         // running several sets of books reading the wrong one confidently. The
         // journal round is the thing that already reruns whenever the journal
         // might have changed, so the name travels with the data it names.
-        const [rawTxns, nextNames, rawPrices, rawAccounts, rawDiagnostics, nextInfo] = await Promise.all([
+        // No `/accounts`: account types and terms arrive resolved, on `/api/journal`.
+        const [rawTxns, nextNames, rawPrices, rawDiagnostics, nextInfo] = await Promise.all([
             api.transactions(),
             api.accountNames(),
             api.prices(),
-            api.accounts(),
             native.diagnostics(),
             native.journalInfo().then(decodeJournalInfo),
         ]);
@@ -251,14 +271,19 @@ async function doRefresh(token: number, unconditional: boolean, signal: AbortSig
         file = nextInfo.file;
 
         // Every journal payload comes from one server-side snapshot carrying one
-        // ETag, so an unchanged journal answers 304 on all three of the big
+        // ETag, so an unchanged journal answers 304 on both of the big
         // conditional routes and there is nothing to normalize, hash or swap —
         // the point of PERF-2. (`/accountnames` is small and unconditional; it
-        // derives from the same snapshot, so these three vouch for it.)
-        if (isNotModified(rawTxns) && isNotModified(rawPrices) && isNotModified(rawAccounts)) {
+        // derives from the same snapshot, so these vouch for it.)
+        if (isNotModified(rawTxns) && isNotModified(rawPrices)) {
             // `fetchedAt === null` means we have ETags but no state to keep — a
             // round that recorded them and then failed to normalize. Refetch.
-            if (fetchedAt === null) {
+            // A generation other than the one on screen means `/api/journal`
+            // answered from a NEWER snapshot than the 304s vouched for (a swap
+            // landed mid-round), so its metadata cannot be paired with what is
+            // held: same remedy, one clean unconditional round.
+            if (fetchedAt === null || nextInfo.generation !== lastGeneration) {
+                if (unconditional) throw new Error("the server answered 304 to an unconditional request");
                 await doRefresh(token, true, signal);
                 return;
             }
@@ -268,7 +293,7 @@ async function doRefresh(token: number, unconditional: boolean, signal: AbortSig
             if (import.meta.env.DEV) console.debug("[journal] 304 — nothing refetched");
             return;
         }
-        if (isNotModified(rawTxns) || isNotModified(rawPrices) || isNotModified(rawAccounts)) {
+        if (isNotModified(rawTxns) || isNotModified(rawPrices)) {
             // A journal swap landed mid-round, so some routes answered 304 against
             // the OLD snapshot while others returned the NEW one. The halves cannot
             // be combined; drop the tags and take one clean unconditional round.
@@ -284,22 +309,25 @@ async function doRefresh(token: number, unconditional: boolean, signal: AbortSig
         // reach the fingerprint, through each transaction's formatted haystack.
         const nextTxns = normalizeTransactions(rawTxns, nextInfo.commodityStyles);
         const nextPrices = normalizePrices(rawPrices);
-        const nextDecls = normalizeAccounts(rawAccounts);
         // Wire positions resolve against exactly the array the engine indexed, so
         // this must be the transactions from THIS same fetch round. Never throws.
         const nextDiagnostics = normalizeDiagnostics(rawDiagnostics, nextTxns);
-        const nextFingerprint = contentFingerprint(nextTxns, nextNames, nextPrices, nextDecls, nextDiagnostics);
+        const nextMeta: JournalMeta = {reportStyles: nextInfo.reportStyles, accountClasses: nextInfo.accounts, dominantCommodity: nextInfo.dominantCommodity};
+        const nextFingerprint = contentFingerprint(nextTxns, nextNames, nextPrices, nextMeta, nextDiagnostics);
         if (fetchedAt === null || nextFingerprint !== lastFingerprint) {
             txns = nextTxns;
             accountNames = nextNames;
             prices = nextPrices;
-            accountDecls = nextDecls;
+            reportStyles = nextMeta.reportStyles;
+            accountClasses = nextMeta.accountClasses;
+            dominantCommodity = nextMeta.dominantCommodity;
             diagnostics = nextDiagnostics;
             if (import.meta.env.DEV) console.debug(`[journal] state swapped (${nextTxns.length} txns)`);
         } else if (import.meta.env.DEV) {
             console.debug("[journal] poll unchanged — state swap skipped");
         }
         lastFingerprint = nextFingerprint;
+        lastGeneration = nextInfo.generation;
         fetchedAt = Date.now();
         status = "ready";
         error = null;
@@ -344,9 +372,17 @@ export const journal = {
     get accountNames(): string[] {
         return accountNames;
     },
-    /** Declared account types from /accounts (name + `type:` tag); [] until the first successful refresh. */
-    get accountDecls(): AccountDecl[] {
-        return accountDecls;
+    /** Every account the journal knows, as the ENGINE classified it (type + term); empty until the first successful refresh. */
+    get accountClasses(): AccountClasses {
+        return accountClasses;
+    },
+    /** The style report totals format with, per posted commodity (engine-computed; see `JournalInfo.reportStyles`). */
+    get reportStyles(): CommodityStyles {
+        return reportStyles;
+    },
+    /** The journal's most-posted commodity — the ONE "which commodity" rule; "$" until loaded. */
+    get dominantCommodity(): string {
+        return dominantCommodity;
     },
     get prices(): PriceDirective[] {
         return prices;
@@ -377,7 +413,7 @@ export const journal = {
         return fetchedAt;
     },
     /**
-     * Full refetch of /transactions, /accountnames, /prices, /accounts.
+     * Full refetch of /transactions, /accountnames, /prices, /api/diagnostics, /api/journal.
      *
      * Concurrent calls share one in-flight round — but only when that round is
      * answering the same question. Two cases must never join one:

@@ -12,7 +12,7 @@
      settings.insightsTab; the header row stays visible with the active view's
      headline figure even when collapsed. -->
 <script lang="ts">
-    import type {AccountDecl} from "#lib/domain/accountTypes.js";
+    import {NO_ACCOUNT_CLASSES} from "#lib/domain/accountClass.js";
     import {formatAmount, toNumber} from "#lib/domain/money.js";
     import type {Transaction} from "#lib/domain/types.js";
     import {signClass} from "#lib/format/sign.js";
@@ -28,15 +28,9 @@
     // txns: the filtered view to summarize/chart. allTxns: the whole journal —
     // used to detect the journal's sign conventions so they stay stable across
     // filter changes (see series.signConventions), and as the only correct input
-    // to the cumulative balances. decls: the raw declarations, which carry the
-    // `bsterm:` tag `declared` (a type map) cannot.
-    let {
-        txns,
-        accounts,
-        allTxns,
-        declared,
-        decls = [],
-    }: {txns: Transaction[]; accounts?: AccountSelection; allTxns?: Transaction[]; declared?: DeclaredTypes; decls?: readonly AccountDecl[]} = $props();
+    // to the cumulative balances. declared: the engine's account classes (type
+    // and balance-sheet term per account).
+    let {txns, accounts, allTxns, declared}: {txns: Transaction[]; accounts?: AccountSelection; allTxns?: Transaction[]; declared?: DeclaredTypes} = $props();
 
     const TABS: {id: InsightsTab; label: string}[] = [
         {id: "activity", label: "Activity"},
@@ -57,7 +51,7 @@
         if (settings.insightsTab === "activity") {
             return {label: "Net", qty: net, text: formatAmount({commodity: primary, qty: net, style: styleFor(txns, primary)})};
         }
-        const balances = accountBalances(journalTxns, decls, today());
+        const balances = accountBalances(journalTxns, declared ?? NO_ACCOUNT_CLASSES, today());
         const commodity = balanceCommodities(balances)[0] ?? primary;
         const {net: netCash} = summarize(balances, commodity);
         return {label: "Net cash", qty: netCash, text: formatAmount({commodity, qty: netCash, style: styleFor(journalTxns, commodity)})};
@@ -116,7 +110,7 @@
                 {/each}
             </div>
             {#if settings.insightsTab === "balances"}
-                <BalancesView allTxns={journalTxns} {decls} />
+                <BalancesView allTxns={journalTxns} classes={declared ?? NO_ACCOUNT_CLASSES} />
             {:else}
                 <BigNumbers {txns} {accounts} {allTxns} {declared} />
                 <ChartWidget {txns} {accounts} {allTxns} {depth} {declared} />

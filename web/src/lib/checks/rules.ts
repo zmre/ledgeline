@@ -2,7 +2,7 @@
 // imports only (same convention as lib/reports/). `today()` comes from
 // lib/reports/periods.ts, the codebase's single sanctioned local-Date read.
 
-import {declaredTypes, isAccountType, type AccountType} from "../domain/accountTypes";
+import {isAccountType, NO_ACCOUNT_CLASSES, type AccountClasses} from "../domain/accountClass";
 import type {Dec} from "../domain/money";
 import type {Transaction} from "../domain/types";
 import {accountBalances} from "../reports/cashBalances";
@@ -37,24 +37,24 @@ const UNCATEGORIZED_SEGMENTS = new Set(["unknown", "uncategorized"]);
  * never got a category, and a chart of accounts rooted at `cogs:` or `gastos:`
  * has exactly the same mistake to catch.
  */
-function isUncategorized(account: string, declared: ReadonlyMap<string, AccountType>): boolean {
+function isUncategorized(account: string, classes: AccountClasses): boolean {
     const segments = account.toLowerCase().split(":");
     if (UNCATEGORIZED_SEGMENTS.has(segments[segments.length - 1])) return true;
     if (segments.length !== 1) return false;
     // `isAccountType`: a bare root declared `type: G` is a revenue root with no
     // category under it, which is exactly the mistake this rule catches.
-    return isAccountType(account, declared, "expense") || isAccountType(account, declared, "revenue");
+    return isAccountType(account, classes, "expense") || isAccountType(account, classes, "revenue");
 }
 
 const uncategorized: CheckRule = {
     id: "uncategorized",
     run(txns: Transaction[], ctx: CheckContext): Problem[] {
         const problems: Problem[] = [];
-        const declared = declaredTypes(ctx.decls ?? []);
+        const classes = ctx.classes ?? NO_ACCOUNT_CLASSES;
         for (const txn of txns) {
             const seen = new Set<string>();
             for (const posting of txn.postings) {
-                if (!isUncategorized(posting.account, declared) || seen.has(posting.account)) continue;
+                if (!isUncategorized(posting.account, classes) || seen.has(posting.account)) continue;
                 seen.add(posting.account);
                 problems.push({
                     txnIndex: txn.index,
@@ -90,7 +90,7 @@ const negativeCash: CheckRule = {
     id: "negative-cash",
     run(txns: Transaction[], ctx: CheckContext): Problem[] {
         const asOf = today();
-        return accountBalances(txns, ctx.decls ?? [], asOf)
+        return accountBalances(txns, ctx.classes ?? NO_ACCOUNT_CLASSES, asOf)
             .filter((balance) => balance.kind === "cash")
             .flatMap((balance) =>
                 [...balance.amounts.entries()]

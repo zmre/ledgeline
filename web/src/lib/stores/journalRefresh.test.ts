@@ -8,6 +8,7 @@
 
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {REQUEST_TIMEOUT_MS} from "#lib/api/client.js";
+import {journalInfoBody} from "#lib/testing/fakeEngine.js";
 import {journal} from "./journal.svelte";
 import {settings} from "./settings.svelte";
 
@@ -36,7 +37,7 @@ const payloadFor = (url: string, count: number): unknown => {
     if (url.endsWith("/version")) return "1.52";
     if (url.endsWith("/transactions")) return Array.from({length: count}, (_, i) => wireTxn(i + 1));
     if (url.endsWith("/accountnames")) return ["expenses:food"];
-    if (url.endsWith("/api/journal")) return {title: null, file: null};
+    if (url.endsWith("/api/journal")) return journalInfoBody();
     if (url.endsWith("/api/diagnostics")) return {diagnostics: []};
     return [];
 };

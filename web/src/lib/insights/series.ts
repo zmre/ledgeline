@@ -13,7 +13,7 @@
 // agreeing with the Rust engine's `reports::periods`.
 
 import {accountMatches, categorize, clampAccount, type RootCategory} from "#lib/domain/accounts.js";
-import {resolveAccountType, type AccountType} from "#lib/domain/accountTypes.js";
+import {accountTypeOf, type AccountClasses, type AccountType} from "#lib/domain/accountClass.js";
 import {add, cmp, dec, formatAmount, neg, sub, toNumber, type Dec} from "#lib/domain/money.js";
 import type {Amount, AmountStyle, Transaction} from "#lib/domain/types.js";
 import {absDec, DEFAULT_AMOUNT_STYLE, ZERO} from "#lib/format/amounts.js";
@@ -64,8 +64,8 @@ const DEFAULT_STYLE = DEFAULT_AMOUNT_STYLE;
  */
 export type AccountSelection = ReadonlySet<string> | undefined;
 
-/** Declared account types; absent/empty means "classify by name" (the old behaviour). */
-export type DeclaredTypes = ReadonlyMap<string, AccountType> | undefined;
+/** The engine's account classes (`/api/journal`); absent/empty means "classify by name". */
+export type DeclaredTypes = AccountClasses | undefined;
 
 /** `AccountType` → the coarser `RootCategory` these charts group by. */
 const TYPE_TO_CATEGORY: Record<AccountType, RootCategory> = {
@@ -80,7 +80,7 @@ const TYPE_TO_CATEGORY: Record<AccountType, RootCategory> = {
 };
 
 /**
- * An account's category, preferring its DECLARED type over its name.
+ * An account's category, from the type the ENGINE resolved for it.
  *
  * Names are only a fallback: a chart of accounts that books costs under `cogs:`
  * — or in a language other than English — is `other` to the name heuristic, so
@@ -88,7 +88,7 @@ const TYPE_TO_CATEGORY: Record<AccountType, RootCategory> = {
  */
 export function categoryOf(account: string, declared: DeclaredTypes): RootCategory {
     if (declared !== undefined && declared.size > 0) {
-        const type = resolveAccountType(account, declared);
+        const type = accountTypeOf(account, declared);
         if (type !== null) return TYPE_TO_CATEGORY[type];
     }
     return categorize(account);

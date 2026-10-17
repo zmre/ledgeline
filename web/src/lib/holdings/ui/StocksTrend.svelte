@@ -17,7 +17,7 @@
 <script lang="ts">
     import {untrack} from "svelte";
     import type {HoldingsScope, HoldingsSeries} from "#lib/holdings/types.js";
-    import {benchmarkLines} from "#lib/stores/benchmarks.svelte.js";
+    import {benchmarkCatalog, benchmarkLines, catalogOrder} from "#lib/stores/benchmarks.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
     import BenchmarkPicker from "./BenchmarkPicker.svelte";
     import HoldingsTrend from "./HoldingsTrend.svelte";
@@ -38,7 +38,14 @@
         formatAxis?: (n: number) => string;
     } = $props();
 
-    const picked = $derived(settings.benchmarks);
+    // The engine owns the catalog; until it arrives nothing is requested, and a
+    // persisted symbol it no longer lists is simply not asked for (the server
+    // would refuse the whole batch over one unknown symbol).
+    $effect(() => {
+        if (serverUrl !== null) benchmarkCatalog.ensure(serverUrl);
+    });
+    const catalog = $derived(benchmarkCatalog.value ?? []);
+    const picked = $derived(catalogOrder(benchmarkCatalog.value, settings.benchmarks));
 
     // Re-sync when the chart, its window or the ticked set changes. `trend` is
     // the cache key: a new window's requests wait for that window's base line,
@@ -63,6 +70,7 @@
 <HoldingsTrend {trend} period={scope.gainPeriod} {formatValue} {formatAxis} {overlays}>
     {#snippet controls()}
         <BenchmarkPicker
+            {catalog}
             {picked}
             states={benchmarkLines.entries}
             onToggle={(symbol, on) => settings.toggleBenchmark(symbol, on)}

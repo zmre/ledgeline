@@ -7,15 +7,11 @@
 // with a Number.isSafeInteger guard (never a silent float fallback).
 
 import type {Problem, Severity} from "#lib/checks/engine.js";
-import {parseBsTermTag} from "#lib/domain/accountTerms.js";
-import type {AccountDecl} from "#lib/domain/accountTypes.js";
-import {parseAccountTypeTag} from "#lib/domain/accountTypes.js";
 import type {Dec} from "#lib/domain/money.js";
 import {formatAmount} from "#lib/domain/money.js";
 import type {Amount, AmountStyle, BalanceAssertion, Posting, PostingType, PriceDirective, Transaction, TxnStatus} from "#lib/domain/types.js";
 import {ApiShapeError} from "./client";
 import type {
-    RawAccount,
     RawAmount,
     RawAmountStyle,
     RawBalanceAssertion,
@@ -385,61 +381,4 @@ function toPriceDirective(raw: unknown): PriceDirective {
 export function normalizePrices(raw: unknown): PriceDirective[] {
     if (!Array.isArray(raw)) throw new ApiShapeError("GET /prices: expected a JSON array");
     return raw.map(toPriceDirective);
-}
-
-/** How many entries the last `normalizeAccounts` call dropped as unusable. Exported for tests. */
-let skippedAccounts = 0;
-
-/** Entries dropped by the most recent `normalizeAccounts` call (no usable `aname`). */
-export function lastSkippedAccountCount(): number {
-    return skippedAccounts;
-}
-
-/**
- * /accounts → the declared `type:` per account (the only field we read).
- * Accounts inherited into the tree but never declared carry `type: null`; the
- * `type:` tag lives in adeclarationinfo.aditags as ["type", "C"|"Cash"|…].
- *
- * A MALFORMED entry (no string `aname`) is still skipped rather than thrown on
- * — one junk record must not cost the whole journal load — but it is now
- * COUNTED and reported. Silence was the wrong default here specifically: every
- * report classifies accounts by their DECLARED type, so a dropped declaration
- * doesn't degrade gracefully, it re-buckets a whole subtree and makes its
- * totals read zero, which is indistinguishable from a correct answer.
- *
- * `aname: ""` is NOT malformed — it is hledger's tree root, present in every
- * healthy payload — so it is skipped in silence. Counting it would make the
- * warning fire on every successful load and mean nothing.
- */
-export function normalizeAccounts(raw: unknown): AccountDecl[] {
-    if (!Array.isArray(raw)) throw new ApiShapeError("GET /accounts: expected a JSON array");
-    const decls: AccountDecl[] = [];
-    let skipped = 0;
-    for (const item of raw) {
-        const account = item as RawAccount;
-        if (typeof account.aname !== "string") {
-            skipped += 1;
-            continue;
-        }
-        if (account.aname === "") continue;
-        const tags = toTags(account.adeclarationinfo?.aditags);
-        const tagValue = (key: string): string | undefined => tags.find(([name]) => name === key)?.[1];
-        const type = tagValue("type");
-        const term = tagValue("bsterm");
-        decls.push(
-            Object.freeze({
-                name: account.aname,
-                type: type !== undefined ? parseAccountTypeTag(type) : null,
-                bsterm: term !== undefined ? parseBsTermTag(term) : null,
-            })
-        );
-    }
-    skippedAccounts = skipped;
-    if (skipped > 0) {
-        console.warn(
-            `GET /accounts: skipped ${skipped} malformed ${skipped === 1 ? "entry" : "entries"} (no usable "aname"). ` +
-                `Any account type they declared is lost, so those subtrees will be classified by name instead and may total zero.`
-        );
-    }
-    return frozen(decls);
 }

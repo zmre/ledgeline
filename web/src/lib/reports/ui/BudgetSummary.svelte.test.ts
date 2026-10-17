@@ -18,18 +18,16 @@
 
 import {render, screen, within} from "@testing-library/svelte";
 import {describe, expect, it} from "vitest";
-import type {AccountType} from "#lib/domain/accountTypes.js";
+import {classesOf} from "#lib/domain/accountClassFixtures.js";
 import {dec} from "#lib/domain/money.js";
 import type {AmountStyle} from "#lib/domain/types.js";
 import type {BudgetReport} from "#lib/reports/types.js";
 import BudgetSummary from "./BudgetSummary.svelte";
+import {periodsOf} from "#lib/reports/test-helpers.js";
 
 const STYLE: AmountStyle = {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]};
 const STYLES = new Map([["$", STYLE]]);
-const DECLARED: ReadonlyMap<string, AccountType> = new Map([
-    ["income", "revenue"],
-    ["expenses", "expense"],
-]);
+const DECLARED = classesOf(["income", "revenue"], ["expenses", "expense"]);
 
 const usd = (n: number) => new Map([["$", dec(n, 0)]]);
 
@@ -38,6 +36,7 @@ function report(incomeActual: number, incomeGoal: number, expenseActual: number,
     return {
         kind: "budget",
         buckets: ["2026-01"],
+        periods: periodsOf(["2026-01"]),
         rows: [
             // Income goals are written NEGATIVE, per hledger's credit convention.
             {account: "income:consulting", depth: 2, cells: [{actual: usd(-incomeActual), goal: usd(-incomeGoal)}]},
@@ -130,6 +129,7 @@ describe("COMPONENT BudgetSummary — sorting", () => {
     const many: BudgetReport = {
         kind: "budget",
         buckets: ["2026-01"],
+        periods: periodsOf(["2026-01"]),
         rows: [
             {account: "expenses:zoo", depth: 2, cells: [{actual: usd(10), goal: usd(50)}]},
             {account: "expenses:art", depth: 2, cells: [{actual: usd(10), goal: usd(900)}]},

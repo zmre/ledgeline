@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest";
-import type {AccountDecl} from "../domain/accountTypes";
+import {classesOf} from "../domain/accountClassFixtures";
 import {dec} from "../domain/money";
 import type {Amount, AmountStyle, ISODate, Posting, PostingType, Transaction, TxnStatus} from "../domain/types";
 import {today} from "../reports/periods";
@@ -82,13 +82,12 @@ describe("UNIT checks/rules uncategorized", () => {
 });
 
 describe("UNIT checks/rules negative-cash", () => {
-    const decls: AccountDecl[] = [
-        {name: "assets:bank:checking", type: "cash"},
-        {name: "assets:broker:taxable", type: "asset"},
-        {name: "liabilities:card", type: "liability"},
-        {name: "liabilities:mortgage", type: "liability", bsterm: "noncurrent"},
-    ];
-    const ctx = {prices: [], decls};
+    const classes = classesOf(["assets:bank:checking", "cash"], ["assets:broker:taxable", "asset"], ["liabilities:card", "liability"], {
+        name: "liabilities:mortgage",
+        type: "liability",
+        term: "noncurrent",
+    });
+    const ctx = {prices: [], classes};
     /** Money out of `account` and into an expense, dated in the past so `asOf` (today) includes it. */
     const spend = (index: number, account: string, cents: number): Transaction =>
         txn(

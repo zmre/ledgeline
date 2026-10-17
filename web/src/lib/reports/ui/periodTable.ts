@@ -7,7 +7,6 @@
 // and summing them would mean nothing, so its table is exactly what it was.
 
 import type {MixedAmount} from "#lib/domain/money.js";
-import {bucketLabel} from "#lib/reports/periods.js";
 import type {PeriodReport, PeriodRow} from "#lib/reports/types.js";
 
 export interface PeriodTable {
@@ -29,13 +28,13 @@ export function periodTable(report: PeriodReport): PeriodTable {
     const grand = report.grandTotal;
     const total = (row: PeriodRow): MixedAmount => row.total ?? new Map();
     if (grand === undefined) {
-        return {headers: report.buckets.map(bucketLabel), cells: (row) => row.values, net: report.totals};
+        return {headers: report.periods.map((p) => p.label), cells: (row) => row.values, net: report.totals};
     }
     if (report.buckets.length === 1) {
         return {headers: ["Total"], cells: (row) => [total(row)], net: [grand]};
     }
     return {
-        headers: [...report.buckets.map(bucketLabel), "Total"],
+        headers: [...report.periods.map((p) => p.label), "Total"],
         cells: (row) => [...row.values, total(row)],
         net: [...report.totals, grand],
     };

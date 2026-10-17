@@ -9,7 +9,7 @@ import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {dec} from "#lib/domain/money.js";
 import {chartColors} from "#lib/format/chartColors.svelte.js";
 import type {HoldingsScope, HoldingsSeries} from "#lib/holdings/types.js";
-import {benchmarkLines} from "#lib/stores/benchmarks.svelte.js";
+import {benchmarkCatalog, benchmarkLines} from "#lib/stores/benchmarks.svelte.js";
 import {settings} from "#lib/stores/settings.svelte.js";
 import {connectFakeEngine, FAKE_ENGINE} from "#lib/testing/fakeEngine.js";
 import StocksTrend from "./StocksTrend.svelte";
@@ -30,16 +30,34 @@ const TREND: HoldingsSeries = {
 
 const SCOPE: HoldingsScope = {accounts: new Set(), mode: "include", asOf: "2026-09-28", gainPeriod: "12mo"};
 
+/** The engine's catalog (`GET /api/holdings/benchmarks/catalog`), as benchmarks_api.rs serves it. */
+const CATALOG = [
+    {symbol: "SPY", label: "S&P 500 (SPY)"},
+    {symbol: "DIA", label: "Dow Jones (DIA)"},
+    {symbol: "QQQ", label: "Nasdaq-100 (QQQ)"},
+    {symbol: "VTI", label: "US total market (VTI)"},
+    {symbol: "BND", label: "US bonds (BND)"},
+    {symbol: "VXUS", label: "International (VXUS)"},
+    {symbol: "IWM", label: "Small cap (IWM)"},
+    {symbol: "GLD", label: "Gold (GLD)"},
+];
+const slotOf = (symbol: string): number => CATALOG.findIndex((b) => b.symbol === symbol);
+const labelOf = (symbol: string): string => CATALOG[slotOf(symbol)]?.label ?? symbol;
+
 const lineOf = (symbol: string): unknown =>
     symbol === "GLD"
         ? {
               symbol,
+              label: labelOf(symbol),
+              slot: slotOf(symbol),
               points: DATES.map((date) => ({date, value: null})),
               stale: false,
               error: "Could not fetch GLD history from Yahoo Finance (offline).",
           }
         : {
               symbol,
+              label: labelOf(symbol),
+              slot: slotOf(symbol),
               points: DATES.map((date, i) => ({date, value: 1000 + i * 100})),
               stale: false,
               error: null,
@@ -56,6 +74,9 @@ beforeEach(async () => {
     vi.stubGlobal("fetch", (input: unknown) => {
         const url = new URL(String(input));
         if (url.pathname === "/version") return Promise.resolve(new Response(JSON.stringify("1.52"), {status: 200}));
+        if (url.pathname === "/api/holdings/benchmarks/catalog") {
+            return Promise.resolve(new Response(JSON.stringify({benchmarks: CATALOG}), {status: 200, headers: {"Content-Type": "application/json"}}));
+        }
         if (url.pathname === "/api/holdings/benchmarks") {
             benchmarkRequests.push(url);
             return Promise.resolve(
@@ -69,6 +90,7 @@ beforeEach(async () => {
 afterEach(() => {
     for (const symbol of [...settings.benchmarks]) settings.toggleBenchmark(symbol, false);
     benchmarkLines.reset();
+    benchmarkCatalog.reset();
     vi.unstubAllGlobals();
 });
 
@@ -95,7 +117,7 @@ describe("COMPONENT StocksTrend benchmark overlay", () => {
 
     it("ticking a benchmark fetches it for this chart's window and adds its dashed line", async () => {
         mount();
-        await fireEvent.click(screen.getByTestId("benchmark-SPY"));
+        await fireEvent.click(await screen.findByTestId("benchmark-SPY"));
 
         await waitFor(() => expect(lines()).toHaveLength(2));
         expect(benchmarkRequests).toHaveLength(1);
@@ -118,12 +140,12 @@ describe("COMPONENT StocksTrend benchmark overlay", () => {
 
     it("unticking removes the line without refetching, and re-ticking reuses it", async () => {
         mount();
-        await fireEvent.click(screen.getByTestId("benchmark-SPY"));
+        await fireEvent.click(await screen.findByTestId("benchmark-SPY"));
         await waitFor(() => expect(lines()).toHaveLength(2));
 
-        await fireEvent.click(screen.getByTestId("benchmark-SPY"));
+        await fireEvent.click(await screen.findByTestId("benchmark-SPY"));
         await waitFor(() => expect(lines()).toHaveLength(1));
-        await fireEvent.click(screen.getByTestId("benchmark-SPY"));
+        await fireEvent.click(await screen.findByTestId("benchmark-SPY"));
         await waitFor(() => expect(lines()).toHaveLength(2));
 
         expect(benchmarkRequests).toHaveLength(1);
@@ -156,7 +178,7 @@ describe("COMPONENT StocksTrend benchmark overlay", () => {
 
     it("a benchmark that cannot be fetched shows its hint and leaves the chart as it was", async () => {
         mount();
-        await fireEvent.click(screen.getByTestId("benchmark-GLD"));
+        await fireEvent.click(await screen.findByTestId("benchmark-GLD"));
 
         await waitFor(() => expect(screen.getByTestId("benchmark-GLD-error").textContent).toContain("Could not fetch GLD"));
         expect(lines()).toHaveLength(1);

@@ -7,12 +7,13 @@ import {describe, expect, it} from "vitest";
 import {Workbook, type Worksheet} from "exceljs";
 import {decodeBalanceSheetReport, decodeIncomeStatementReport} from "#lib/api/nativeDecode.js";
 import {dec, type MixedAmount} from "#lib/domain/money.js";
-import type {AccountType} from "#lib/domain/accountTypes.js";
+import {NO_ACCOUNT_CLASSES} from "#lib/domain/accountClass.js";
 import type {Holding, HoldingsReport} from "#lib/holdings/types.js";
 import type {BudgetCell, BudgetReport, PeriodReport, SectionedReport} from "#lib/reports/types.js";
 import {CLASSIFIED_BALANCE_SHEET, GROUPED_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "#lib/testing/balanceSheetFixture.js";
 import {GROUPED_INCOME_STATEMENT, MULTI_STEP_INCOME_STATEMENT, UNCOMPARED_INCOME_STATEMENT} from "#lib/testing/incomeStatementFixture.js";
 import {buildBalanceSheetWorkbook, buildBudgetWorkbook, buildHoldingsWorkbook, buildIncomeStatementWorkbook, buildWorkbook, numberFormat} from "./xlsx";
+import {periodsOf} from "#lib/reports/test-helpers.js";
 
 const usd = (cents: number): MixedAmount => new Map([["$", dec(cents, 2)]]);
 const amt = (m: number, p: number): MixedAmount => new Map([["$", dec(m, p)]]);
@@ -152,6 +153,7 @@ describe("UNIT export/xlsx", () => {
     it("period report: bucket header labels, per-bucket values, Net totals row", async () => {
         const report: PeriodReport = {
             buckets: ["2026-06", "2026-07"],
+            periods: periodsOf(["2026-06", "2026-07"]),
             rows: [
                 {account: "assets", depth: 1, values: [usd(-5000), usd(10050)]},
                 {account: "assets:bank", depth: 2, values: [usd(-5000), usd(10050)]},
@@ -184,6 +186,7 @@ describe("UNIT export/xlsx", () => {
         ])("writes %i/1e3 as %f, matching the screen's %s", async (mantissa, expected) => {
             const report: PeriodReport = {
                 buckets: ["2026-07"],
+                periods: periodsOf(["2026-07"]),
                 rows: [{account: "assets", depth: 1, values: [amt(mantissa, 3)]}],
                 totals: [amt(mantissa, 3)],
             };
@@ -198,13 +201,23 @@ describe("UNIT export/xlsx", () => {
                 ["$", dec(1005, 3)],
                 ["EUR", dec(-1005, 3)],
             ]);
-            const report: PeriodReport = {buckets: ["2026"], rows: [{account: "assets", depth: 1, values: [mixed]}], totals: [new Map()]};
+            const report: PeriodReport = {
+                buckets: ["2026"],
+                periods: periodsOf(["2026"]),
+                rows: [{account: "assets", depth: 1, values: [mixed]}],
+                totals: [new Map()],
+            };
             const ws = await roundTrip(report, {title: "Net Worth", params: "p"});
             expect(ws.getCell("B5").value).toBe("1.01 $, -1.01 EUR"); // was "1.00 $, -1.00 EUR"
         });
 
         it("does not silently drop a sub-cent value to zero", async () => {
-            const report: PeriodReport = {buckets: ["2026"], rows: [{account: "assets", depth: 1, values: [amt(12345, 8)]}], totals: [amt(12345, 8)]};
+            const report: PeriodReport = {
+                buckets: ["2026"],
+                periods: periodsOf(["2026"]),
+                rows: [{account: "assets", depth: 1, values: [amt(12345, 8)]}],
+                totals: [amt(12345, 8)],
+            };
             const ws = await roundTrip(report, {title: "Net Worth", params: "p"});
             expect(ws.getCell("B5").value).toBe(0.00012345); // was 0.00012345 shown through a 2-place format, i.e. "0.00"
             expect(ws.getCell("B5").numFmt).toBe('"$"#,##0.00000000');
@@ -218,6 +231,7 @@ describe("UNIT export/xlsx", () => {
         ]);
         const report: PeriodReport = {
             buckets: ["2026"],
+            periods: periodsOf(["2026"]),
             rows: [{account: "assets", depth: 1, values: [mixed]}],
             totals: [new Map()],
         };
@@ -790,6 +804,7 @@ describe("UNIT export/xlsx", () => {
     describe("cash-flow workbook Total column", () => {
         const report: PeriodReport = {
             buckets: ["2026-06", "2026-07"],
+            periods: periodsOf(["2026-06", "2026-07"]),
             rows: [
                 {account: "assets", depth: 1, values: [usd(-5000), usd(10050)], total: usd(5050)},
                 {account: "assets:bank", depth: 2, values: [usd(-5000), usd(10050)], total: usd(5050)},
@@ -810,6 +825,7 @@ describe("UNIT export/xlsx", () => {
         it("writes ONE column headed Total for the single-bucket Interval = Total report", async () => {
             const single: PeriodReport = {
                 buckets: ["2026-06-01..2026-07-08"],
+                periods: periodsOf(["2026-06-01..2026-07-08"]),
                 rows: [{account: "assets", depth: 1, values: [usd(5050)], total: usd(5050)}],
                 totals: [usd(5050)],
                 grandTotal: usd(5050),
@@ -934,12 +950,13 @@ describe("UNIT export/xlsx", () => {
     // sections with two totals; so does the export now.
     describe("budget workbook mirrors the two on-screen sections", () => {
         const cell = (actual: MixedAmount, goal: MixedAmount | null): BudgetCell => ({actual, goal});
-        const declared: ReadonlyMap<string, AccountType> = new Map();
+        const declared = NO_ACCOUNT_CLASSES;
 
         // Income is credit-normal (negative on the wire); expenses positive.
         const report: BudgetReport = {
             kind: "budget",
             buckets: ["2026-06", "2026-07"],
+            periods: periodsOf(["2026-06", "2026-07"]),
             rows: [
                 {account: "income:salary", depth: 2, cells: [cell(usd(-300000), usd(-250000)), cell(usd(-300000), usd(-250000))]},
                 {account: "expenses:rent", depth: 2, cells: [cell(usd(200000), usd(200000)), cell(usd(200000), usd(200000))]},

@@ -4,7 +4,7 @@ import {describe, expect, it} from "vitest";
 import {normalizeTransactions} from "#lib/api/normalize.js";
 import {dec, formatDec, toNumber, type Dec} from "#lib/domain/money.js";
 import type {Amount, AmountStyle, ISODate, Posting, Transaction} from "#lib/domain/types.js";
-import type {AccountType} from "#lib/domain/accountTypes.js";
+import {classesOf} from "#lib/domain/accountClassFixtures.js";
 import {
     OTHER,
     bigNumbers,
@@ -553,11 +553,7 @@ describe("INTEGRATION fixture big numbers vs hledger is", () => {
 });
 
 describe("UNIT series categoryOf (declared types beat names)", () => {
-    const declared = new Map<string, AccountType>([
-        ["cogs:infraestructura", "expense"],
-        ["ingresos:consultoria", "revenue"],
-        ["cuenta:efectivo", "cash"],
-    ]);
+    const declared = classesOf(["cogs:infraestructura", "expense"], ["ingresos:consultoria", "revenue"], ["cuenta:efectivo", "cash"]);
 
     it("classifies non-English accounts by their declared type", () => {
         expect(categoryOf("cogs:infraestructura", declared)).toBe("expense");
@@ -651,7 +647,7 @@ describe("UNIT signConventions memoization", () => {
         // `cogs:` is `other` to the name heuristic and `expense` once declared,
         // so the two calls must not share an entry.
         const cogs = [txn("2026-01-05", posting("cogs:parts", usd(-100_00)), posting("assets:bank", usd(100_00)))];
-        const declared = new Map<string, AccountType>([["cogs", "expense"]]);
+        const declared = classesOf(["cogs", "expense"]);
         expect(signConventions(cogs, "$").expense).toBe(1); // nothing classified as an expense at all
         expect(signConventions(cogs, "$", declared).expense).toBe(-1); // now it is, and it is negative-dominant
     });

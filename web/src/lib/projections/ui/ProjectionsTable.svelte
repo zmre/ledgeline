@@ -97,7 +97,7 @@
     import {onDestroy} from "svelte";
     import AccountInput from "#lib/journal/edit/AccountInput.svelte";
     import {decToInput, parseAmountInput} from "#lib/api/editMapping.js";
-    import type {AccountType} from "#lib/domain/accountTypes.js";
+    import type {AccountClasses} from "#lib/domain/accountClass.js";
     import type {Dec} from "#lib/domain/money.js";
     import type {AmountStyle, ISODate} from "#lib/domain/types.js";
     import {EM_DASH, fmt} from "#lib/format/amounts.js";
@@ -156,7 +156,7 @@
         /** The live scenario. Mutated in place; `onChange` is what tells the store. */
         scenario: Scenario;
         accountNames: string[];
-        declared: ReadonlyMap<string, AccountType>;
+        declared: AccountClasses;
         /** The commodity a brand-new row opens in — the journal's dominant one. */
         commodity: string;
         /** The date "Add a step" splits at, and a new event opens on. The page picks it from the projected window. */

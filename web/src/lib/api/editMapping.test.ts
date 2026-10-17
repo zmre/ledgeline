@@ -5,7 +5,6 @@ import {
     blankForm,
     decToInput,
     descriptionPatch,
-    dominantCommodity,
     emptyPosting,
     encodeDec,
     formToBody,
@@ -392,16 +391,5 @@ describe("UNIT editMapping — PATCH builders", () => {
     it("yields no posting edits when the old account is absent (caller skips the request)", () => {
         const t = txn(1, "x", [posting("assets:cash", [])]);
         expect(accountPatch(t, "expenses:missing", "expenses:new")).toEqual({postings: []});
-    });
-});
-
-describe("UNIT editMapping — dominantCommodity", () => {
-    it("picks the most frequent commodity, defaulting to $ for an empty journal", () => {
-        expect(dominantCommodity([])).toBe("$");
-        const txns = [
-            txn(1, "a", [posting("x", [amount("EUR", 1n, 0)]), posting("y", [amount("EUR", -1n, 0)])]),
-            txn(2, "b", [posting("x", [amount("$", 1n, 0)])]),
-        ];
-        expect(dominantCommodity(txns)).toBe("EUR");
     });
 });

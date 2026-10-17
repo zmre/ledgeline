@@ -22,13 +22,12 @@
      render as a red overspend on an income line. The goal marker stays as the
      high-contrast line; the pace mark is a second, quieter tick. -->
 <script lang="ts">
-    import {isAccountType, type AccountType} from "#lib/domain/accountTypes.js";
+    import {isAccountType, type AccountClasses, type AccountType} from "#lib/domain/accountClass.js";
     import {openJournal} from "#lib/journal/openJournal.js";
     import {maAdd, maNeg, type MixedAmount} from "#lib/domain/money.js";
     import type {AmountStyle, ISODate} from "#lib/domain/types.js";
     import {sortBudgetLines, type BudgetSortKey, type SortDir} from "#lib/budget/sort.js";
     import {formatTotals} from "#lib/journal/rowModel.js";
-    import {bucketLabel} from "#lib/reports/periods.js";
     import {
         barGeometry,
         budgetHealth,
@@ -57,8 +56,8 @@
     }: {
         report: BudgetReport;
         styles: ReadonlyMap<string, AmountStyle>;
-        /** Declared account types (from journal.accountDecls) → effective-type resolution. */
-        declared: ReadonlyMap<string, AccountType>;
+        /** The engine's account classes (journal.accountClasses). */
+        declared: AccountClasses;
         /** The budget period (inclusive), forwarded to the journal on a category click. */
         from: ISODate;
         to: ISODate;
@@ -193,8 +192,8 @@
         report.buckets.length === 0
             ? ""
             : report.buckets.length === 1
-              ? `${bucketLabel(report.buckets[0])} (${from} – ${to})`
-              : `${bucketLabel(report.buckets[0])} – ${bucketLabel(report.buckets[report.buckets.length - 1])} (${from} – ${to})`
+              ? `${report.periods[0].label} (${from} – ${to})`
+              : `${report.periods[0].label} – ${report.periods[report.periods.length - 1].label} (${from} – ${to})`
     );
 
     /** Green when the line is on the right side of pace, red otherwise; neutral when there is no comparison. */

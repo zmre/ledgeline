@@ -11,7 +11,7 @@
 
 import {render, screen, within} from "@testing-library/svelte";
 import {beforeEach, describe, expect, it, vi} from "vitest";
-import type {AccountDecl} from "#lib/domain/accountTypes.js";
+import {classesOf} from "#lib/domain/accountClassFixtures.js";
 import {dec} from "#lib/domain/money.js";
 import type {Amount, AmountStyle, Posting, Transaction} from "#lib/domain/types.js";
 import BalancesView from "./BalancesView.svelte";
@@ -41,14 +41,14 @@ function txn(date: string, postings: [string, Amount][]): Transaction {
     return {index: nextIndex, date, status: "cleared", description: "t", code: "", comment: "", tags: [], postings: built, haystack: "t"};
 }
 
-const DECLS: AccountDecl[] = [
-    {name: "assets:bank:checking", type: "cash"},
-    {name: "assets:bank:savings", type: "cash"},
-    {name: "assets:wallet:eur", type: "cash"},
-    {name: "assets:broker:taxable", type: "asset"},
-    {name: "liabilities:card", type: "liability"},
-    {name: "liabilities:mortgage", type: "liability", bsterm: "noncurrent"},
-];
+const DECLS = classesOf(
+    ["assets:bank:checking", "cash"],
+    ["assets:bank:savings", "cash"],
+    ["assets:wallet:eur", "cash"],
+    ["assets:broker:taxable", "asset"],
+    ["liabilities:card", "liability"],
+    {name: "liabilities:mortgage", type: "liability", term: "noncurrent"}
+);
 
 const TXNS: Transaction[] = [
     txn("2026-01-02", [
@@ -77,7 +77,7 @@ const TXNS: Transaction[] = [
     ]),
 ];
 
-const mount = (allTxns = TXNS, decls = DECLS) => render(BalancesView, {allTxns, decls});
+const mount = (allTxns = TXNS, classes = DECLS) => render(BalancesView, {allTxns, classes});
 
 const tile = (testid: string): string => within(screen.getByTestId(testid)).getByText(/[$€0-9]/).textContent ?? "";
 /** The list row whose account label is `account`, as a list item. */
@@ -171,11 +171,12 @@ describe("COMPONENT BalancesView", () => {
     });
 
     describe("the long-term name guess", () => {
-        const untagged: AccountDecl[] = [
-            {name: "assets:bank:checking", type: "cash"},
-            {name: "liabilities:mortgage", type: "liability"},
-            {name: "liabilities:card", type: "liability"},
-        ];
+        // As the engine classifies an untagged mortgage: its term is a name GUESS.
+        const untagged = classesOf(
+            ["assets:bank:checking", "cash"],
+            {name: "liabilities:mortgage", type: "liability", typeDeclared: false, term: "noncurrent", termGuessed: true},
+            ["liabilities:card", "liability"]
+        );
         const borrowed = txn("2026-04-01", [
             ["liabilities:mortgage", usd(-40_000_000)],
             ["assets:bank:checking", usd(40_000_000)],
@@ -213,7 +214,7 @@ describe("COMPONENT BalancesView", () => {
                 [account, usd(100_000)],
                 ["equity:opening", usd(-100_000)],
             ]);
-            return () => mount([t], [{name: account, type: "cash"}]);
+            return () => mount([t], classesOf([account, "cash"]));
         };
 
         it("does not abbreviate a name the journal table's 30-character budget would have cut", () => {
@@ -238,10 +239,7 @@ describe("COMPONENT BalancesView", () => {
     });
 
     it("says what to do instead of showing an empty box when nothing is declared cash", () => {
-        mount(TXNS, [
-            {name: "assets", type: "asset"},
-            {name: "liabilities", type: "equity"},
-        ]);
+        mount(TXNS, classesOf(["assets", "asset"], ["liabilities", "equity"]));
         expect(screen.queryByText(/No cash or short-term liability accounts/)).not.toBeNull();
     });
 });

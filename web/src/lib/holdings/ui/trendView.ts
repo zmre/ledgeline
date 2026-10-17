@@ -3,7 +3,7 @@
 // No Svelte runtime — node-testable.
 
 import type {PeriodSeries} from "#lib/components/periodSeries.js";
-import {benchmarkLabel, benchmarkSlot, type BenchmarkLine} from "#lib/holdings/benchmarks.js";
+import type {BenchmarkLine} from "#lib/holdings/benchmarks.js";
 import type {HoldingsPoint, HoldingsSeries} from "#lib/holdings/types.js";
 import {MONTH_NAMES} from "#lib/reports/periods.js";
 
@@ -33,7 +33,8 @@ export function trendLabels(points: readonly HoldingsPoint[]): string[] {
 
 /**
  * The overlay series for the ticked benchmarks that have a line for THIS
- * chart: dashed, in each benchmark's fixed palette slot, with `null` gaps where
+ * chart: dashed, labelled and slotted as the engine says (each benchmark's fixed
+ * catalog position), with `null` gaps where
  * the benchmark has no price.
  *
  * A line whose dates do not match the chart's point for point is left out
@@ -46,6 +47,6 @@ export function benchmarkOverlays(trend: HoldingsSeries, picked: readonly string
     return picked.flatMap((symbol) => {
         const line = lineOf(symbol);
         if (line === null || line.points.length !== dates.length || line.points.some((p, i) => p.date !== dates[i])) return [];
-        return [{name: benchmarkLabel(symbol), values: line.points.map((p) => p.value), dashed: true, slot: benchmarkSlot(symbol)}];
+        return [{name: line.label, values: line.points.map((p) => p.value), dashed: true, slot: line.slot}];
     });
 }

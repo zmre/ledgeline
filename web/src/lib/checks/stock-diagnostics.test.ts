@@ -34,7 +34,7 @@
 
 import {readFileSync} from "node:fs";
 import {describe, expect, it} from "vitest";
-import {normalizeAccounts, normalizeDiagnostics, normalizePrices, normalizeTransactions} from "../api/normalize";
+import {normalizeDiagnostics, normalizePrices, normalizeTransactions} from "../api/normalize";
 import type {Transaction} from "../domain/types";
 import {groupByTxn, maxSeverity, runChecks, type Problem} from "./engine";
 
@@ -50,7 +50,6 @@ function pipeline(dir: string, prefix = "api/v1.52"): {txns: Transaction[]; prob
     const txns = normalizeTransactions(load(`fixtures/${prefix}/transactions.json`));
     const problems = runChecks(txns, {
         prices: normalizePrices(load(`fixtures/${prefix}/prices.json`)),
-        decls: normalizeAccounts(load(`fixtures/${prefix}/accounts.json`)),
         diagnostics: normalizeDiagnostics(load(`fixtures/${dir}/diagnostics.json`), txns),
     });
     return {txns, problems};

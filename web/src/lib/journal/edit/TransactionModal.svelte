@@ -7,7 +7,7 @@
     // real balancing and its 400 message is shown inline. A 409 closes the popup
     // and lets the page's "changed on disk" banner take over.
     import {tick} from "svelte";
-    import {decToInput, dominantCommodity, formToBody, txnToForm, validateForm, blankForm, emptyPosting, type TxnForm} from "#lib/api/editMapping.js";
+    import {decToInput, formToBody, txnToForm, validateForm, blankForm, emptyPosting, type TxnForm} from "#lib/api/editMapping.js";
     import type {WireBalanceAssertion, WirePostingType} from "#lib/api/native.js";
     import {dismissible} from "#lib/keys/dismissible.js";
     import {localToday} from "#lib/stores/filters.svelte.js";
@@ -30,7 +30,7 @@
         const open = txnModal.open;
         if (open && !wasOpen) {
             const target = txnModal.target;
-            form = txnModal.mode === "edit" && target !== null ? txnToForm(target) : blankForm(localToday(), dominantCommodity(journal.txns));
+            form = txnModal.mode === "edit" && target !== null ? txnToForm(target) : blankForm(localToday(), journal.dominantCommodity);
             clientErrors = [];
             serverError = null;
             confirmingDelete = false;
@@ -51,7 +51,7 @@
     const submitLabel = $derived(txnModal.mode === "edit" ? "Save changes" : "Add transaction");
 
     function addRow(): void {
-        form.postings = [...form.postings, emptyPosting(dominantCommodity(journal.txns))];
+        form.postings = [...form.postings, emptyPosting(journal.dominantCommodity)];
     }
     function removeRow(index: number): void {
         form.postings = form.postings.filter((_, i) => i !== index);
@@ -62,7 +62,7 @@
         if (clientErrors.length > 0) return;
         serverError = null;
         submitting = true;
-        const body = formToBody(form, dominantCommodity(journal.txns));
+        const body = formToBody(form, journal.dominantCommodity);
         const target = txnModal.target;
         const result = txnModal.mode === "edit" && target !== null ? await editing.replace(target.index, body) : await editing.add(body);
         submitting = false;

@@ -12,6 +12,7 @@ import type {PeriodReport, PeriodRow, PeriodRowKind} from "../types";
 import CashFlowChart from "./CashFlowChart.svelte";
 import {compressPeriodRows} from "./displayRows";
 import NetWorthChart from "./NetWorthChart.svelte";
+import {periodsOf} from "#lib/reports/test-helpers.js";
 
 const usd = (n: number): MixedAmount => (n === 0 ? new Map() : new Map([["$", dec(Math.round(n * 100), 2)]]));
 const eur = (n: number): MixedAmount => new Map([["EUR", dec(Math.round(n * 100), 2)]]);
@@ -27,6 +28,7 @@ const STYLES = new Map();
 
 const NET_WORTH: PeriodReport = {
     buckets: BUCKETS,
+    periods: periodsOf(BUCKETS),
     rows: [
         row("assets", [600, 610, 650, 700, 720], "asset"),
         row("assets:bank", [100, 90, 120, 150, 160], "asset"),
@@ -43,6 +45,7 @@ const NET_WORTH: PeriodReport = {
  */
 const CASH_FLOW: PeriodReport = {
     buckets: ["2026-01", "2026-02", "2026-03"],
+    periods: periodsOf(["2026-01", "2026-02", "2026-03"]),
     rows: [
         row("assets", [50, -30, 20]),
         row("assets:bank", [60, -20, 20]),
@@ -114,14 +117,14 @@ describe("COMPONENT NetWorthChart", () => {
     });
 
     it("says so, rather than drawing, when there is nothing to stack", () => {
-        const empty: PeriodReport = {buckets: BUCKETS, rows: [], totals: BUCKETS.map(() => new Map())};
+        const empty: PeriodReport = {buckets: BUCKETS, periods: periodsOf(BUCKETS), rows: [], totals: BUCKETS.map(() => new Map())};
         render(NetWorthChart, {report: empty, styles: STYLES});
 
         expect(document.querySelector('[data-testid="networth-chart-empty"]')?.textContent).toContain("No assets or liabilities");
     });
 
     it("refuses a single bucket", () => {
-        const one: PeriodReport = {buckets: ["2026"], rows: [row("assets:bank", [5], "asset")], totals: [usd(5)]};
+        const one: PeriodReport = {buckets: ["2026"], periods: periodsOf(["2026"]), rows: [row("assets:bank", [5], "asset")], totals: [usd(5)]};
         render(NetWorthChart, {report: one, styles: STYLES});
 
         expect(document.querySelector('[data-testid="networth-chart-empty"]')?.textContent).toContain("Only one period");
@@ -130,6 +133,7 @@ describe("COMPONENT NetWorthChart", () => {
     it("names the commodities it could not chart", () => {
         const mixed: PeriodReport = {
             buckets: ["2025", "2026"],
+            periods: periodsOf(["2025", "2026"]),
             rows: [row("assets:bank", [5, 6], "asset"), {account: "assets:wise", depth: 2, values: [eur(1), eur(2)], kind: "asset"}],
             totals: [new Map([...usd(5), ...eur(1)]), new Map([...usd(6), ...eur(2)])],
         };
@@ -168,6 +172,7 @@ describe("COMPONENT CashFlowChart", () => {
     it("names the commodities it could not chart", () => {
         const mixed: PeriodReport = {
             buckets: ["2026-01", "2026-02"],
+            periods: periodsOf(["2026-01", "2026-02"]),
             rows: [row("assets:bank", [5, 6]), {account: "assets:wise", depth: 2, values: [eur(1), eur(2)]}],
             totals: [new Map([...usd(5), ...eur(1)]), new Map([...usd(6), ...eur(2)])],
         };
@@ -186,7 +191,12 @@ describe("COMPONENT CashFlowChart", () => {
     });
 
     it("says so when no cash moved", () => {
-        const still: PeriodReport = {buckets: CASH_FLOW.buckets, rows: [], totals: CASH_FLOW.buckets.map(() => new Map())};
+        const still: PeriodReport = {
+            buckets: CASH_FLOW.buckets,
+            periods: periodsOf(CASH_FLOW.buckets),
+            rows: [],
+            totals: CASH_FLOW.buckets.map(() => new Map()),
+        };
         render(CashFlowChart, {report: still, styles: STYLES});
 
         expect(document.querySelector('[data-testid="cashflow-chart-empty"]')?.textContent).toContain("No cash moved");
@@ -196,6 +206,7 @@ describe("COMPONENT CashFlowChart", () => {
         // plans/24: the Total grain is ONE bucket spanning the whole range.
         const total: PeriodReport = {
             buckets: ["2025-08-01..2026-07-08"],
+            periods: periodsOf(["2025-08-01..2026-07-08"]),
             rows: [{...row("assets:bank", [40]), total: usd(40)}],
             totals: [usd(40)],
             grandTotal: usd(40),

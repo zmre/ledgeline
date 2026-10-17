@@ -1,6 +1,7 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import type {Dec} from "#lib/domain/money.js";
 import type {Amount, AmountStyle, ISODate, Posting, Transaction} from "#lib/domain/types.js";
+import {journalInfoBody} from "#lib/testing/fakeEngine.js";
 import {contentFingerprint, journal} from "./journal.svelte";
 import {settings} from "./settings.svelte";
 
@@ -136,12 +137,17 @@ describe("UNIT journal contentFingerprint", () => {
         expect(contentFingerprint([{...t, date2: "2026-01-09"}], [], [])).not.toBe(contentFingerprint([t], [], []));
     });
 
-    it("changes when a declared account type changes (cash-flow must recompute)", () => {
-        const asAsset = [{name: "assets:bank:checking", type: "asset" as const}];
-        const asCash = [{name: "assets:bank:checking", type: "cash" as const}];
-        expect(contentFingerprint(base, ["expenses"], [], asCash)).not.toBe(contentFingerprint(base, ["expenses"], [], asAsset));
-        // The default (no decls) stays backward-compatible with the 3-arg call.
-        expect(contentFingerprint(base, ["expenses"], [])).toBe(contentFingerprint(base, ["expenses"], [], []));
+    it("changes when the engine reclassifies an account, restyles a commodity or changes its dominant one", () => {
+        const meta = (type: "asset" | "cash", precision = 2, dominant = "$") => ({
+            accountClasses: new Map([["assets:bank:checking", {type, typeDeclared: true, term: null, termGuessed: false}]]),
+            reportStyles: new Map([["$", {side: "L" as const, spaced: false, precision, decimalPoint: ".", digitGroups: null}]]),
+            dominantCommodity: dominant,
+        });
+        const fp = (m: ReturnType<typeof meta>) => contentFingerprint(base, ["expenses"], [], m);
+        expect(fp(meta("cash"))).not.toBe(fp(meta("asset")));
+        expect(fp(meta("cash", 3))).not.toBe(fp(meta("cash", 2)));
+        expect(fp(meta("cash", 2, "EUR"))).not.toBe(fp(meta("cash", 2, "$")));
+        expect(fp(meta("cash"))).toBe(fp(meta("cash")));
     });
 });
 
@@ -204,7 +210,7 @@ describe("INTEGRATION journal title (which ledger is on screen)", () => {
                 journalHits += 1;
                 // A 404 is what a server WITHOUT the route says; the client maps
                 // it to NativeApiUnavailableError.
-                return Promise.resolve(title === null ? new Response("no such route", {status: 404}) : json({title, file: "2026.journal"}));
+                return Promise.resolve(title === null ? new Response("no such route", {status: 404}) : json(journalInfoBody({title, file: "2026.journal"})));
             }
             if (url.endsWith("/api/diagnostics")) return Promise.resolve(json({diagnostics: []}));
             if (url.endsWith("/version")) return Promise.resolve(json("1.52"));

@@ -1,6 +1,6 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import type {HoldingsScope} from "#lib/holdings/types.js";
-import {benchmarkLines} from "./benchmarks.svelte";
+import {benchmarkLines, catalogOrder} from "./benchmarks.svelte";
 import {settings} from "./settings.svelte";
 
 const URL_BASE = "http://engine.test";
@@ -8,6 +8,8 @@ const scope = (gainPeriod: HoldingsScope["gainPeriod"]): HoldingsScope => ({acco
 
 const line = (symbol: string, error: string | null = null) => ({
     symbol,
+    label: symbol,
+    slot: 0,
     points: [{date: "2026-09-28", value: error === null ? 1 : null}],
     stale: false,
     error,
@@ -132,14 +134,25 @@ describe("UNIT settings benchmark selection", () => {
         for (const symbol of [...settings.benchmarks]) settings.toggleBenchmark(symbol, false);
     });
 
-    it("keeps ticked benchmarks in catalog order, once each, and ignores unknown symbols", () => {
+    it("keeps ticked benchmarks once each, in ticking order, and drops what is not ticker-shaped", () => {
         settings.toggleBenchmark("GLD", true);
         settings.toggleBenchmark("SPY", true);
         settings.toggleBenchmark("SPY", true);
-        settings.toggleBenchmark("AAPL", true);
+        settings.toggleBenchmark("not a ticker", true);
 
-        expect(settings.benchmarks).toEqual(["SPY", "GLD"]);
+        expect(settings.benchmarks).toEqual(["GLD", "SPY"]);
         settings.toggleBenchmark("SPY", false);
         expect(settings.benchmarks).toEqual(["GLD"]);
+        settings.toggleBenchmark("GLD", false);
+    });
+
+    it("the catalog (the engine's) decides what is asked for, and in which order", () => {
+        const catalog = [
+            {symbol: "SPY", label: "S&P 500 (SPY)"},
+            {symbol: "QQQ", label: "Nasdaq-100 (QQQ)"},
+            {symbol: "GLD", label: "Gold (GLD)"},
+        ];
+        expect(catalogOrder(catalog, ["GLD", "AAPL", "SPY"])).toEqual(["SPY", "GLD"]);
+        expect(catalogOrder(null, ["SPY"])).toEqual([]);
     });
 });

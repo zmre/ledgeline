@@ -31,7 +31,7 @@ import {fireEvent, render, screen, within} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {beforeEach, describe, expect, it} from "vitest";
 import {decodeScenario} from "#lib/api/nativeDecode.js";
-import type {AccountType} from "#lib/domain/accountTypes.js";
+import {classesOf} from "#lib/domain/accountClassFixtures.js";
 import {scenarioStore} from "../scenarioStore.svelte";
 import type {AssetRow, Scenario} from "../types";
 import ProjectionsTable from "./ProjectionsTable.svelte";
@@ -87,11 +87,7 @@ const assetLine = (account: string, group: string, contribution = "0") => ({
 });
 
 const ACCOUNT_NAMES = ["income:salary", "income:dividends", "expenses:housing", "expenses:taxes", "assets:checking", "assets:brokerage", "assets:house"];
-const DECLARED: ReadonlyMap<string, AccountType> = new Map<string, AccountType>([
-    ["income", "revenue"],
-    ["expenses", "expense"],
-    ["assets", "asset"],
-]);
+const DECLARED = classesOf(["income", "revenue"], ["expenses", "expense"], ["assets", "asset"]);
 
 const STYLES = new Map([["$", {side: "L" as const, spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]] as [string, number[]]}]]);
 

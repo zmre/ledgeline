@@ -20,7 +20,7 @@
      later); this file is display only. -->
 <script lang="ts">
     import {PieChart, Tooltip} from "layerchart";
-    import type {AccountDecl} from "#lib/domain/accountTypes.js";
+    import type {AccountClasses} from "#lib/domain/accountClass.js";
     import {formatAmount, toNumber, type Dec} from "#lib/domain/money.js";
     import type {Transaction} from "#lib/domain/types.js";
     import {chartColors} from "#lib/format/chartColors.svelte.js";
@@ -35,14 +35,14 @@
     // allTxns: the UNFILTERED journal. Named for what it must be, because
     // passing the filtered array would silently produce wrong balances rather
     // than an error.
-    let {allTxns, decls}: {allTxns: Transaction[]; decls: readonly AccountDecl[]} = $props();
+    let {allTxns, classes}: {allTxns: Transaction[]; classes: AccountClasses} = $props();
 
     const asOf = today();
-    // Memoized in cashBalances on (txns, decls, asOf) identity, so the
+    // Memoized in cashBalances on (txns, classes, asOf) identity, so the
     // `negative-cash` check rule and this view share one whole-journal pass.
-    const balances = $derived(accountBalances(allTxns, decls, asOf));
+    const balances = $derived(accountBalances(allTxns, classes, asOf));
     // Same memoized pass as `balances`, so naming the guesses costs nothing.
-    const guessed = $derived(guessedLongTerm(allTxns, decls, asOf));
+    const guessed = $derived(guessedLongTerm(allTxns, classes, asOf));
     const commodities = $derived(balanceCommodities(balances));
 
     let chosenCommodity = $state<string | null>(null);

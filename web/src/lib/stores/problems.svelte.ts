@@ -21,7 +21,7 @@ import {journal} from "#lib/stores/journal.svelte.js";
 const all = $derived.by(() =>
     runChecks(journal.txns, {
         prices: journal.prices,
-        decls: journal.accountDecls,
+        classes: journal.accountClasses,
         diagnostics: journal.diagnostics,
     })
 );

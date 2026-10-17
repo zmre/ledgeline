@@ -9,6 +9,7 @@
 //   income statement:  grandTotal = revenues(displayed) − expenses
 // PeriodReport values (cash flow, net worth) keep natural signs.
 
+import type {BsTerm} from "../domain/accountClass";
 import type {Dec, MixedAmount} from "../domain/money";
 import type {ISODate} from "../domain/types";
 
@@ -86,9 +87,10 @@ export type BsValuation = "market" | "cost" | "none";
  * the `bsterm:` tag, and a classification that decides which subtotal a balance
  * lands under must never be a match against English words
  * ([[account-type-not-name]]). The prose a reader sees — "Current", "Total
- * non-current assets" — is `BsSubsection`'s, supplied by the engine.
+ * non-current assets" — is `BsSubsection`'s, supplied by the engine. Defined
+ * once, beside the per-account classification that carries it too.
  */
-export type BsTerm = "current" | "noncurrent";
+export type {BsTerm};
 
 /**
  * One current/non-current band inside a section: what to head it with, what to
@@ -222,13 +224,26 @@ export interface DateRange {
 }
 
 /**
- * One interval-mode column (plans/24): its bucket key, for the header label
- * (`bucketLabel`), and the inclusive dates it covers — the first clamped to the
- * report's `from` and the last to its `to`, so a mid-month range does not
- * quietly include the rest of its first month.
+ * One interval-mode column (plans/24): its bucket key, its header label (the
+ * engine's `bucket_label`), and the inclusive dates it covers — the first
+ * clamped to the report's `from` and the last to its `to`, so a mid-month range
+ * does not quietly include the rest of its first month.
  */
 export interface IsBucket extends DateRange {
     key: string;
+    label: string;
+}
+
+/**
+ * One period-report column's display facts, served beside its key (plan 26 B1):
+ * the engine's label ("Jul 2026", "Q3 2026") and the bucket's own, UNCLAMPED
+ * bounds. A Total report's `{from}..{to}` key spans exactly that range.
+ */
+export interface PeriodInfo {
+    key: string;
+    label: string;
+    start: ISODate;
+    end: ISODate;
 }
 
 /**
@@ -454,6 +469,8 @@ export interface PeriodRow {
 /** Cash flow / net worth: one column per bucket, oldest → newest. */
 export interface PeriodReport {
     buckets: string[];
+    /** One per `buckets` key, same order. */
+    periods: PeriodInfo[];
     rows: PeriodRow[];
     totals: MixedAmount[];
     /**
@@ -491,6 +508,8 @@ export interface BudgetRow {
 export interface BudgetReport {
     kind: "budget";
     buckets: string[];
+    /** One per `buckets` key, same order. */
+    periods: PeriodInfo[];
     rows: BudgetRow[];
     totals: BudgetCell[];
 }
