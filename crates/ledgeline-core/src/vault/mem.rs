@@ -76,6 +76,9 @@ pub struct MemVault {
     root: PathBuf,
     state: RwLock<MemState>,
     next_ino: AtomicU64,
+    /// How many file reads (`read`, `read_prefix`, `read_pinned`) have been
+    /// served, for tests that prove a file is read once.
+    reads: AtomicU64,
 }
 
 impl Default for MemVault {
@@ -119,6 +122,7 @@ impl MemVault {
             root: root.into(),
             state: RwLock::new(state),
             next_ino: AtomicU64::new(1),
+            reads: AtomicU64::new(0),
         }
     }
 
@@ -260,6 +264,12 @@ impl MemVault {
     pub fn text(&self, path: &str) -> Option<String> {
         self.contents(path)
             .and_then(|bytes| String::from_utf8(bytes).ok())
+    }
+
+    /// How many reads of file content this vault has served so far.
+    #[must_use]
+    pub fn read_count(&self) -> u64 {
+        self.reads.load(Ordering::Relaxed)
     }
 
     /// Every path passed to [`Vault::request_download`] so far, in order.
@@ -430,6 +440,7 @@ impl Vault for MemVault {
     }
 
     fn read_prefix(&self, path: &VaultPath, max_len: u64) -> Result<Vec<u8>, VaultError> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
         let state = self.read_state();
         let bytes = &Self::readable(&state, path)?.bytes;
         let end = usize::try_from(max_len)
@@ -443,6 +454,7 @@ impl Vault for MemVault {
         path: &VaultPath,
         cap: Option<u64>,
     ) -> Result<(Vec<u8>, Revision), VaultError> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
         let state = self.read_state();
         let file = Self::readable(&state, path)?;
         if cap.is_some_and(|cap| file.bytes.len() as u64 > cap) {

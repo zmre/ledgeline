@@ -338,6 +338,19 @@ pub fn parse_journal_in(
 ) -> Result<ParsedJournal, ParseError> {
     let main_key = vault.key(main);
     let source_name = main_key.to_string_lossy().into_owned();
+    parse_in(vault, main, main_key, &source_name, overrides)
+}
+
+/// [`parse_journal_in`] with the main file's recorded key and `source_name`
+/// chosen by the caller — the editor keeps whatever spelling the journal was
+/// opened with, exactly as [`parse_journal`] does.
+pub(crate) fn parse_in(
+    vault: &dyn Vault,
+    main: &VaultPath,
+    main_key: PathBuf,
+    source_name: &str,
+    overrides: &HashMap<VaultPath, String>,
+) -> Result<ParsedJournal, ParseError> {
     let (text, revision) = match overrides.get(main) {
         Some(text) => (std::borrow::Cow::Borrowed(text.as_str()), None),
         None => {
@@ -347,7 +360,7 @@ pub fn parse_journal_in(
         }
     };
     let mut ctx = Ctx::new(vault, main, main_key, Some(overrides));
-    parse_source(&text, &source_name, main, &mut ctx)?;
+    parse_source(&text, source_name, main, &mut ctx)?;
     let main_read = match (text, revision) {
         (std::borrow::Cow::Owned(text), Some(revision)) => Some((text, revision)),
         _ => None,
@@ -359,19 +372,27 @@ pub fn parse_journal_in(
     .chain(std::mem::take(&mut ctx.sources))
     .collect();
     Ok(ParsedJournal {
-        journal: ctx.into_journal(&source_name),
+        journal: ctx.into_journal(source_name),
         sources,
     })
 }
 
-/// Read one source file as UTF-8 with its revision. Non-UTF-8 content is an
-/// error, never a lossy decode — a lossy decode would later write mojibake back.
+/// Read one source file as UTF-8 with its revision.
+///
+/// Non-UTF-8 content is an error, never a lossy decode — the editor reads
+/// through here, and a lossy decode would later write mojibake back over the
+/// original. A bare "stream did not contain valid UTF-8" reads as an
+/// unexplained failure to open the user's books (a `£` or a `ñ` in a Latin-1
+/// payee is enough), so the message says what to do about it.
 fn read_source(vault: &dyn Vault, path: &VaultPath) -> Result<(String, Revision), String> {
     let (bytes, revision) = vault
         .read_pinned(path, None)
         .map_err(|error| read_failure(&error))?;
-    let text =
-        String::from_utf8(bytes).map_err(|_| "stream did not contain valid UTF-8".to_string())?;
+    let text = String::from_utf8(bytes).map_err(|_| {
+        "the file is not valid UTF-8. Ledgeline reads and writes UTF-8 journals only; convert \
+         it first (e.g. `iconv -f latin1 -t utf-8`) so no character is silently rewritten"
+            .to_string()
+    })?;
     Ok((text, revision))
 }
 
@@ -396,7 +417,7 @@ fn read_failure(error: &VaultError) -> String {
 /// opens it with. A name with no real directory (an in-memory placeholder such
 /// as `"test.journal"`) gets an EMPTY vault: its `include`s resolve nowhere,
 /// rather than against whatever the process's working directory happens to be.
-fn vault_for_source_name(source_name: &str) -> (Box<dyn Vault>, VaultPath) {
+pub(crate) fn vault_for_source_name(source_name: &str) -> (Box<dyn Vault>, VaultPath) {
     let path = Path::new(source_name);
     if let Ok((vault, main)) = LocalVault::for_journal(path)
         && vault.root().is_absolute()
@@ -447,15 +468,8 @@ pub fn parse_journal_with_overrides(
             path.map(|path| (path, text.clone()))
         })
         .collect();
-    let main_text = match by_vault_path.get(&main) {
-        Some(text) => text.clone(),
-        None => read_source(&*vault, &main)
-            .map(|(text, _)| text)
-            .map_err(|e| ParseError::Include(format!("could not read {main_source_name}: {e}")))?,
-    };
-    let mut ctx = Ctx::new(&*vault, &main, main_key, Some(&by_vault_path));
-    parse_source(&main_text, main_source_name, &main, &mut ctx)?;
-    Ok(ctx.into_journal(main_source_name))
+    parse_in(&*vault, &main, main_key, main_source_name, &by_vault_path)
+        .map(|parsed| parsed.journal)
 }
 
 /// Parse one journal source (the top file or an included one, at `source` in
