@@ -647,7 +647,7 @@ fn holds_no_transactions(
     location: &JournalLocation,
     targets: &[journals::JournalTarget],
     journal: &Journal,
-    key: &PathBuf,
+    key: &std::path::Path,
 ) -> bool {
     let path = location.path_of(key);
     targets.iter().any(|target| {
