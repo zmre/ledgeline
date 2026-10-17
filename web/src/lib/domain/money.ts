@@ -228,7 +228,13 @@ export function displayPlaces(d: Dec, precision: number, maxDecimals: number = M
     return relaxed > places && roundTo(d, relaxed).m !== 0n ? relaxed : places;
 }
 
-/** Format a Dec per style. Rounding (see `displayPlaces`) happens HERE only. */
+/**
+ * Format a Dec per style. Rounding (see `displayPlaces`) happens HERE only.
+ *
+ * The engine carries a port (crates/ledgeline-core/src/display.rs); both are
+ * held to fixtures/display-format/cases.json (displayFormat.golden.test.ts), so
+ * a change here must be regenerated into that golden and matched in Rust.
+ */
 export function formatDec(d: Dec, style: AmountStyle, maxDecimals: number = MAX_DISPLAY_DECIMALS): string {
     const rounded = roundTo(d, displayPlaces(d, style.precision, maxDecimals));
     const negative = rounded.m < 0n;

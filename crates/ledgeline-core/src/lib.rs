@@ -41,6 +41,7 @@ pub mod aliases;
 pub mod assertions;
 pub mod convert;
 pub mod decimal;
+pub mod display;
 // Internal: the directory walk `rules::discovery` and `projections::discovery`
 // share. Deliberately not `pub` — the feature-specific path newtypes are the
 // public surface, and a caller that could run the raw scan could get a path out
