@@ -9,12 +9,11 @@
   tag, so an inline `<script data-src=…>` goes unhashed (and is refused). SvelteKit emits no such
   tag today, and `tests/spa_shell_csp.rs` (whose scanner parses attribute names) fails if it ever
   does; still worth matching the attribute name in the production scanner.
-- security: **some READS still follow a swapped-in symlink.** Writes are closed (`pinned`:
-  resolve once, `O_NOFOLLOW`, `(dev, ino)` + fingerprint checked through the fd up to `renameat`),
-  but `rules_api::read_document`, `projections_api::read_file` and every `hledger` invocation
-  (`-f <journal>`) still open by path. A link swapped in mid-request can make a preview or a
-  revision describe the link's target — a disclosure into the UI, never a write. Wants
-  `pinned::read_pinned` at those reads and, for hledger, a check of the pin after each run.
+- security: **`hledger` invocations still read the journal by path.** Writes and the rules /
+  projections reads are closed (the vault's `read_pinned`: resolve once, `O_NOFOLLOW`, `(dev, ino)`
+  + fingerprint checked through the fd), but every `hledger` run (`-f <journal>`) still opens by
+  path, so a link swapped in mid-request can make a preview describe the link's target — a
+  disclosure into the UI, never a write. Wants a check of the pin after each run.
 - chore: **cap-sweep residue.** The import preview's `additions` (`import_api::cli_parity`) are
   still diffed against the config's *forwarded* aliases, capped at `MAX_CONF_ALIASES`, so past 200
   it can list a line the write then (correctly) does not add; the write path uses the full list.
@@ -43,12 +42,6 @@
   graph to a caller-owned parameter or memoize it on `PriceDb` keyed by `as_of` — a signature change
   across ~8 call sites, hence not a quick one. This is the difference between "fine" and "unusable"
   on any journal that is not single-currency.
-- perf: **no windowing on `/transactions`.** ETag and compression are in place (so an unchanged poll
-  is free) but the first load is still all-or-nothing — no offset/limit/date-range param exists on
-  either end. ~347 MB at 200k. This is the structural blocker for a large journal in the UI and it
-  needs both the route and the SPA. It is also what keeps ~390 MB of SPA peak memory in place, since
-  the raw wire payload, the normalized journal and the previous normalized journal are all held at
-  once.
 - perf: a single `/api/insights` request performs **7 `PriceDb::build`s**, each deep-cloning every
   directive — ~500k clones per request on the v2 corpus.
 - perf: `choose_base` → `coverage` is where the entire cost of a mesh price graph lands (+39% on
@@ -73,8 +66,6 @@
 ### Never examined — so "not on the findings list" does not mean "measured and fine"
 - **XLSX export.** The balance-sheet / income-statement / holdings exports run through `exceljs` in
   the browser and have never been profiled. A large report on a big journal is the obvious risk.
-- **Real app startup**, window-open to first paint. `snapshot_from_journal` is measured (458 ms at
-  200k) but the end-to-end desktop launch — wry/WebKit init, SPA boot, first fetch — is not.
 - **The import/convert path at scale.** `MAX_INPUT_BYTES` is 16 MiB; the converter and the rules
   matcher have never been benched against a file near that, and `import` shells out to hledger
   several times per dry-run with a 120 s timeout each.
