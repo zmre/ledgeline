@@ -19,6 +19,7 @@
 //! a separate, deliberate commit.
 
 pub mod cash;
+pub mod checks;
 pub mod wire;
 
 use crate::model::Journal;

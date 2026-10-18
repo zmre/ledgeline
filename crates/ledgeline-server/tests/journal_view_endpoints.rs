@@ -62,7 +62,11 @@ fn edge_state() -> AppState {
 #[tokio::test]
 async fn journal_view_routes_revalidate_against_the_snapshot_etag() {
     let state = AppState::from_journal(&fixture_journal());
-    for uri in ["/api/balances/cash?asOf=2026-01-01"] {
+    for uri in [
+        "/api/balances/cash?asOf=2026-01-01",
+        "/api/diagnostics?today=2026-01-01",
+        "/api/diagnostics?today=2026-01-01&limit=0",
+    ] {
         let (status, headers, _) = get_with(&state, uri, &[]).await;
         assert_eq!(status, StatusCode::OK, "GET {uri}");
         let etag = headers
@@ -102,4 +106,68 @@ async fn cash_balances_refuse_a_malformed_date() {
     let state = edge_state();
     let (status, _, _) = get_with(&state, "/api/balances/cash?asOf=yesterday", &[]).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// The problem list is per client date: `today` moves the future-date rule,
+/// every transaction finding names its transaction, and `limit` truncates the
+/// entries without changing what the badge reads.
+#[tokio::test]
+async fn diagnostics_follow_the_clients_today() {
+    let state = edge_state();
+    let early = json(&state, "/api/diagnostics?today=2025-01-15").await;
+    let late = json(&state, "/api/diagnostics?today=2031-01-01").await;
+    let future = |body: &Value| {
+        body["diagnostics"]
+            .as_array()
+            .expect("entries")
+            .iter()
+            .filter(|d| d["rule"] == "future-date")
+            .count()
+    };
+    assert_eq!(future(&early), 5);
+    assert_eq!(future(&late), 0);
+    assert_eq!(early["maxSeverity"], "warning");
+
+    let pending = early["diagnostics"]
+        .as_array()
+        .expect("entries")
+        .iter()
+        .find(|d| d["rule"] == "pending")
+        .expect("a pending finding");
+    assert_eq!(pending["tindex"], 3);
+    assert_eq!(pending["txnIndex"], 2);
+    assert_eq!(pending["date"], "2025-01-05");
+    assert_eq!(pending["description"], "Grocery Mart | weekly shop");
+
+    let badge = json(&state, "/api/diagnostics?today=2025-01-15&limit=0").await;
+    assert_eq!(badge["count"], early["count"]);
+    assert_eq!(badge["maxSeverity"], "warning");
+    assert_eq!(badge["diagnostics"], serde_json::json!([]));
+}
+
+/// Two dates are two answers, so they must not share a validator.
+#[tokio::test]
+async fn diagnostics_etag_carries_the_date() {
+    let state = edge_state();
+    let tag = |headers: &axum::http::HeaderMap| {
+        headers
+            .get(header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .expect("an ETag")
+            .to_string()
+    };
+    let (_, a, _) = get_with(&state, "/api/diagnostics?today=2025-01-15", &[]).await;
+    let (_, b, _) = get_with(&state, "/api/diagnostics?today=2025-01-16", &[]).await;
+    assert_ne!(tag(&a), tag(&b));
+    let (status, _, _) = get_with(
+        &state,
+        "/api/diagnostics?today=2025-01-16",
+        &[(header::IF_NONE_MATCH, &tag(&a))],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "another day's tag must not revalidate"
+    );
 }

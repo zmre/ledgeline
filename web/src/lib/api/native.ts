@@ -872,15 +872,14 @@ export class LedgelineApi {
     }
 
     /**
-     * Engine-computed journal diagnostics: `{"diagnostics": [...]}`, every
-     * unbalanced transaction and failed balance assertion.
-     *
-     * Its own route rather than a field on `/transactions` because that endpoint
-     * is a byte-for-byte hledger-web emulation whose parity comparator rejects
-     * any unexpected key.
+     * Every problem the badge counts and the drawer lists (decode with
+     * `decodeDiagnostics`): the engine diagnostics plus the local check rules,
+     * as of `today` — the browser's LOCAL date, so the server's zone never
+     * decides what counts as "in the future". `limit` caps the entries without
+     * changing `count`/`maxSeverity`; the badge asks for none.
      */
-    diagnostics(): Promise<unknown> {
-        return this.getJson("/api/diagnostics");
+    diagnostics(today: string, limit?: number): Promise<unknown> {
+        return this.getJson(`/api/diagnostics${queryString({today, limit})}`);
     }
 
     /**

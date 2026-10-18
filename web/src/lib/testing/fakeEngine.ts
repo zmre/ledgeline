@@ -73,7 +73,10 @@ export function routes(table: Record<string, unknown>): (url: string) => Promise
  * native API.
  */
 export async function connectFakeEngine(table: Record<string, unknown> = {}): Promise<void> {
-    vi.stubGlobal("fetch", routes({"/version": "1.52", "/api/journal": FAKE_JOURNAL_INFO, "/api/diagnostics": {diagnostics: []}, ...table}));
+    vi.stubGlobal(
+        "fetch",
+        routes({"/version": "1.52", "/api/journal": FAKE_JOURNAL_INFO, "/api/diagnostics": {count: 0, maxSeverity: null, diagnostics: []}, ...table})
+    );
     // `settings` is a module singleton shared by every test in the file. Calling
     // `setServerUrl` twice would bump the reconnect nonce, which is the exact
     // signal every `onServerReady` latch keys on — so a second call silently

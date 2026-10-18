@@ -148,6 +148,17 @@ pub fn default_style() -> AmountStyle {
     }
 }
 
+/// JavaScript's `String.prototype.trim` whitespace: Unicode `White_Space` plus
+/// the BOM, which Rust's `trim` does not strip.
+pub(crate) fn is_js_space(c: char) -> bool {
+    c.is_whitespace() || c == '\u{feff}'
+}
+
+/// `s.trim()` as JavaScript computes it.
+pub(crate) fn js_trim(s: &str) -> &str {
+    s.trim_matches(is_js_space)
+}
+
 /// A decimal as plain text — sign, digits, point, no grouping and no symbol —
 /// for diagnostic messages (`checks/rules.ts` `decToString`).
 #[must_use]
@@ -186,6 +197,11 @@ mod tests {
         assert_eq!(plain_decimal(Dec::new(5, 3)), "0.005");
         assert_eq!(plain_decimal(Dec::new(-5, 0)), "-5");
         assert_eq!(plain_decimal(Dec::new(0, 2)), "0.00");
+    }
+
+    #[test]
+    fn js_trim_strips_the_bom() {
+        assert_eq!(js_trim("\u{feff} x \t"), "x");
     }
 
     #[test]

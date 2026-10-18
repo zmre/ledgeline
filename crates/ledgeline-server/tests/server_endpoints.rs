@@ -88,23 +88,29 @@ async fn accounts_contract_matches_snapshot() {
     );
 }
 
-/// `GET /api/diagnostics` serves the `{"diagnostics": [...]}` contract: one
-/// `Problem`-shaped element per unbalanced transaction (PARSE-1), per failed
-/// balance assertion (PARSE-2), and per stock finding (DRY-1).
+/// `GET /api/diagnostics` serves the `{count, maxSeverity, diagnostics}`
+/// contract: one `Problem`-shaped element per unbalanced transaction
+/// (PARSE-1), per failed balance assertion (PARSE-2), per stock finding
+/// (DRY-1), and — since plan 26 B4 — per local check-rule finding.
 ///
-/// `fixtures/sample.journal` balances and asserts cleanly, so its payload is
-/// exactly the three stock warnings it plants on purpose — the ones the SPA used
-/// to recompute in TypeScript. The array is always present; a journal with none
-/// of the three serves `[]`, never null and never absent (see
-/// `diagnostics_is_empty_for_a_journal_with_nothing_to_report`).
+/// `fixtures/sample.journal` balances and asserts cleanly, so its ENGINE half
+/// is exactly the three stock warnings it plants on purpose. The array is
+/// always present; a journal with nothing to report serves `[]`, never null and
+/// never absent (see `diagnostics_is_empty_for_a_journal_with_nothing_to_report`).
 #[tokio::test]
 async fn diagnostics_serves_the_sample_journals_stock_findings() {
-    let body = body_of("/api/diagnostics").await;
+    let body = body_of("/api/diagnostics?today=2026-10-17").await;
     let found = body["diagnostics"]
         .as_array()
         .expect("diagnostics is an array");
+    assert_eq!(body["count"], found.len(), "{body}");
     let anchors: Vec<(&Value, &Value)> = found
         .iter()
+        .filter(|diagnostic| {
+            diagnostic["rule"]
+                .as_str()
+                .is_some_and(|rule| rule.starts_with("stock-"))
+        })
         .map(|diagnostic| (&diagnostic["txnIndex"], &diagnostic["rule"]))
         .collect();
     assert_eq!(
@@ -116,15 +122,18 @@ async fn diagnostics_serves_the_sample_journals_stock_findings() {
         ],
         "{body}"
     );
-    // Warnings, never errors: this journal is one hledger accepts.
-    assert!(found.iter().all(|d| d["severity"] == "warning"), "{body}");
+    // Warnings at worst, never errors: this journal is one hledger accepts.
+    assert!(found.iter().all(|d| d["severity"] != "error"), "{body}");
+    assert_eq!(body["maxSeverity"], "warning");
 }
 
 /// The empty case the contract still guarantees: present, `[]`, never null.
 #[tokio::test]
 async fn diagnostics_is_empty_for_a_journal_with_nothing_to_report() {
     let journal = ledgeline_core::parse_journal(
-        "2024-01-01 t\n    expenses:x   $1.00\n    assets:bank\n",
+        // Paid by card, not from the bank: a bank account left at $-1.00 is
+        // itself a finding now (the `negative-cash` rule, plan 26 B4).
+        "2024-01-01 t\n    expenses:x   $1.00\n    liabilities:card\n",
         "/tmp/diagnostics-clean.journal",
     )
     .expect("journal parses");
@@ -145,7 +154,10 @@ async fn diagnostics_is_empty_for_a_journal_with_nothing_to_report() {
         .expect("body collects")
         .to_bytes();
     let body: Value = serde_json::from_slice(&bytes).expect("body is JSON");
-    assert_eq!(body, serde_json::json!({"diagnostics": []}));
+    assert_eq!(
+        body,
+        serde_json::json!({"count": 0, "maxSeverity": null, "diagnostics": []})
+    );
 }
 
 /// The same route over a journal that IS broken, proving the payload carries the

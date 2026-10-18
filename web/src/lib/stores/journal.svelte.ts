@@ -7,8 +7,7 @@
 import {HledgerApi, isNotModified, resetConditionalCache} from "#lib/api/client.js";
 import {LedgelineApi} from "#lib/api/native.js";
 import {decodeJournalInfo} from "#lib/api/nativeDecode.js";
-import {type CommodityStyles, normalizeDiagnostics, normalizePrices, normalizeTransactions} from "#lib/api/normalize.js";
-import type {Problem} from "#lib/checks/engine.js";
+import {type CommodityStyles, normalizePrices, normalizeTransactions} from "#lib/api/normalize.js";
 import type {Dec} from "#lib/domain/money.js";
 import {NO_ACCOUNT_CLASSES, type AccountClasses} from "#lib/domain/accountClass.js";
 import type {PriceDirective, Transaction} from "#lib/domain/types.js";
@@ -47,7 +46,6 @@ let reportStyles = $state.raw<CommodityStyles>(new Map());
 let accountClasses = $state.raw<AccountClasses>(NO_ACCOUNT_CLASSES);
 let dominantCommodity = $state<string>("$");
 let prices = $state.raw<PriceDirective[]>([]);
-let diagnostics = $state.raw<Problem[]>([]);
 /** The engine's name for the journal on screen, and its main file — the app bar's label. */
 let title = $state<string | null>(null);
 let file = $state<string | null>(null);
@@ -105,8 +103,7 @@ export function contentFingerprint(
     list: readonly Transaction[],
     names: readonly string[],
     priceList: readonly PriceDirective[],
-    meta: JournalMeta = NO_META,
-    diags: readonly Problem[] = []
+    meta: JournalMeta = NO_META
 ): number {
     let h = 5381;
     const mixStr = (s: string): void => {
@@ -175,22 +172,6 @@ export function contentFingerprint(
         mixStr(JSON.stringify(style));
     }
     mixStr(meta.dominantCommodity);
-    // Engine diagnostics are hashed too: they are computed from state this
-    // function only hashes APPROXIMATELY (a fixed balance assertion need not
-    // change any amount we mix), so leaving them out would let a refresh fetch
-    // resolved diagnostics and then discard them, stranding a red badge.
-    for (const d of diags) {
-        // `-1` for an unanchored finding rather than the `+ null` → `+ 0` JS
-        // would have done, so an account-anchored diagnostic cannot hash as if
-        // it were anchored to the first transaction. The account is mixed for
-        // the same reason the index is: it is an anchor, and two findings that
-        // differ only in what they point at must not collide.
-        h = (Math.imul(h, 33) + (d.txnIndex ?? -1)) >>> 0;
-        mixStr(d.account ?? "");
-        mixStr(d.rule);
-        mixStr(d.severity);
-        mixStr(d.message);
-    }
     return h;
 }
 
@@ -222,13 +203,13 @@ async function doRefresh(token: number, unconditional: boolean, signal: AbortSig
         // `conditional`: this is the one caller that repeats these requests
         // forever (a 30-second poll) and can act on a 304 by keeping what it has.
         const api = new HledgerApi(baseUrl, undefined, {conditional: true, signal});
-        // One native client for both native calls: same base URL, same abort
-        // signal, same round.
+        // The native client for the journal metadata: same base URL, same
+        // abort signal, same round.
         const native = new LedgelineApi(baseUrl, {signal});
-        // The SPA requires the Ledgeline engine (plan 26): diagnostics and the
-        // journal metadata are native routes, and a failure on either fails the
-        // round like any other — there is no plain-hledger-web fallback to keep
-        // alive. The journal metadata (title, styles) rides this round, and
+        // The SPA requires the Ledgeline engine (plan 26): the journal metadata
+        // is a native route, and a failure on it fails the round like any
+        // other — there is no plain-hledger-web fallback to keep alive. (The
+        // problem list is fetched by the problems store, per generation.) The journal metadata (title, styles) rides this round, and
         // WHY PER ROUND, and not once per connection. The desktop File→Open
         // action rebinds the engine to a DIFFERENT journal at the SAME URL, and
         // nothing about the connection changes when it does — no new address, no
@@ -239,11 +220,10 @@ async function doRefresh(token: number, unconditional: boolean, signal: AbortSig
         // journal round is the thing that already reruns whenever the journal
         // might have changed, so the name travels with the data it names.
         // No `/accounts`: account types and terms arrive resolved, on `/api/journal`.
-        const [rawTxns, nextNames, rawPrices, rawDiagnostics, nextInfo] = await Promise.all([
+        const [rawTxns, nextNames, rawPrices, nextInfo] = await Promise.all([
             api.transactions(),
             api.accountNames(),
             api.prices(),
-            native.diagnostics(),
             native.journalInfo().then(decodeJournalInfo),
         ]);
 
@@ -309,11 +289,8 @@ async function doRefresh(token: number, unconditional: boolean, signal: AbortSig
         // reach the fingerprint, through each transaction's formatted haystack.
         const nextTxns = normalizeTransactions(rawTxns, nextInfo.commodityStyles);
         const nextPrices = normalizePrices(rawPrices);
-        // Wire positions resolve against exactly the array the engine indexed, so
-        // this must be the transactions from THIS same fetch round. Never throws.
-        const nextDiagnostics = normalizeDiagnostics(rawDiagnostics, nextTxns);
         const nextMeta: JournalMeta = {reportStyles: nextInfo.reportStyles, accountClasses: nextInfo.accounts, dominantCommodity: nextInfo.dominantCommodity};
-        const nextFingerprint = contentFingerprint(nextTxns, nextNames, nextPrices, nextMeta, nextDiagnostics);
+        const nextFingerprint = contentFingerprint(nextTxns, nextNames, nextPrices, nextMeta);
         if (fetchedAt === null || nextFingerprint !== lastFingerprint) {
             txns = nextTxns;
             accountNames = nextNames;
@@ -321,7 +298,6 @@ async function doRefresh(token: number, unconditional: boolean, signal: AbortSig
             reportStyles = nextMeta.reportStyles;
             accountClasses = nextMeta.accountClasses;
             dominantCommodity = nextMeta.dominantCommodity;
-            diagnostics = nextDiagnostics;
             if (import.meta.env.DEV) console.debug(`[journal] state swapped (${nextTxns.length} txns)`);
         } else if (import.meta.env.DEV) {
             console.debug("[journal] poll unchanged — state swap skipped");
@@ -387,10 +363,6 @@ export const journal = {
     get prices(): PriceDirective[] {
         return prices;
     },
-    /** Engine-computed diagnostics for the current journal; [] when the engine sends none (or is an older build). */
-    get diagnostics(): Problem[] {
-        return diagnostics;
-    },
     /**
      * What the engine calls the journal on screen (its first-line comment, else
      * its folder), for the app bar. Null when the journal has neither, and
@@ -417,7 +389,7 @@ export const journal = {
         return lastGeneration;
     },
     /**
-     * Full refetch of /transactions, /accountnames, /prices, /api/diagnostics, /api/journal.
+     * Full refetch of /transactions, /accountnames, /prices, /api/journal.
      *
      * Concurrent calls share one in-flight round — but only when that round is
      * answering the same question. Two cases must never join one:

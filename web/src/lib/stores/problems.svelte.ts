@@ -1,32 +1,30 @@
-// Problems store (WP-08): $derived checks over the journal, plus the UI
-// plumbing the badge/drawer/table share (drawer visibility and "scroll to this
-// txn" focus requests). Re-running checks is O(txns) and the journal store
-// only swaps state on real changes (fingerprint skip), so a plain $derived is
-// cheap here — no requestIdleCallback scheduling needed.
+// Problems store (WP-08): the engine's problem list, plus the UI plumbing the
+// badge/drawer/table share (drawer visibility and "scroll to this txn" focus
+// requests).
 //
-// That claim used to be hedged with "at MVP journal sizes"; it has now been
-// measured past them. At 150k transactions `runChecks` is 30-46 ms and yields
-// 21,429 findings, and — the part worth stating, because it is easy to assume
-// otherwise — `all` is a MEMOIZED $derived, so that cost is paid once per
-// journal swap and NOT once per navigation. ProblemsBadge is mounted by the
-// layout and never unmounts, and reading `problems.count` five times over five
-// tab visits recomputes nothing (`lib/checks/problemsMemo.svelte.test.ts`).
+// The checks run in the ENGINE (plan 26 B4): `/api/diagnostics?today=` answers
+// the engine diagnostics and the five local rules together, as of the
+// browser's local date. This used to be a `$derived` over the whole downloaded
+// journal (30–46 ms and 21k findings at 150k transactions); now it is one
+// request per journal generation, made by the layout, which is always mounted.
 //
-// What is NOT cheap is rendering these 21k findings, which is why
-// ProblemsDrawer only builds its rows when the drawer is actually open.
+// Keyed on (generation, today): the answer is a pure function of the two, and
+// a stale answer is never dropped until its replacement arrives, so the badge
+// does not flicker through every refresh.
 
-import {groupByTxn, maxSeverity, runChecks, type Problem, type Severity} from "#lib/checks/engine.js";
-import {journal} from "#lib/stores/journal.svelte.js";
+import {LedgelineApi} from "#lib/api/native.js";
+import {decodeDiagnostics} from "#lib/api/journalViewDecode.js";
+import {groupByTxn, type Problem, type Severity} from "#lib/checks/engine.js";
 
-const all = $derived.by(() =>
-    runChecks(journal.txns, {
-        prices: journal.prices,
-        classes: journal.accountClasses,
-        diagnostics: journal.diagnostics,
-    })
-);
+let all = $state.raw<Problem[]>([]);
+let count = $state(0);
+let worst = $state<Severity | null>(null);
 const byTxn = $derived.by(() => groupByTxn(all));
-const worst = $derived.by(() => maxSeverity(all));
+
+/** The (server, generation, today) the held list answers, and the newest one asked for. */
+let loadedKey: string | null = null;
+let requestedKey: string | null = null;
+let seq = 0;
 
 let drawerOpen = $state(false);
 
@@ -40,7 +38,7 @@ let focusRequest = $state<FocusRequest | null>(null);
 let nonce = 0;
 
 export const problems = {
-    /** Engine diagnostics first, then all problems from ALL_RULES over the current journal in rule order. */
+    /** Engine diagnostics first, then the local rules, in the engine's order. */
     get all(): Problem[] {
         return all;
     },
@@ -49,11 +47,34 @@ export const problems = {
         return byTxn;
     },
     get count(): number {
-        return all.length;
+        return count;
     },
     /** Worst severity present (badge color), or null when clean. */
     get maxSeverity(): Severity | null {
         return worst;
+    },
+    /**
+     * Fetch the list for `generation` as of `today`, unless that is already
+     * held or in flight. A failure keeps the previous list (stale beats
+     * blank for an advisory badge) and is retried by the next call.
+     */
+    async load(serverUrl: string, generation: string, today: string): Promise<void> {
+        const key = `${serverUrl}\u0000${generation}\u0000${today}`;
+        if (key === loadedKey || key === requestedKey) return;
+        requestedKey = key;
+        const token = ++seq;
+        try {
+            const payload = decodeDiagnostics(await new LedgelineApi(serverUrl).diagnostics(today));
+            if (token !== seq) return;
+            all = payload.problems;
+            count = payload.count;
+            worst = payload.maxSeverity;
+            loadedKey = key;
+        } catch (error) {
+            if (token === seq && import.meta.env.DEV) console.debug("[problems] load failed", error);
+        } finally {
+            if (token === seq) requestedKey = null;
+        }
     },
     get drawerOpen(): boolean {
         return drawerOpen;

@@ -5,6 +5,7 @@
 // and decoded objects are frozen. Exact decimals travel as `{m: "<mantissa>",
 // p: places}` — the mantissa a STRING, so no digit is lost past 2^53.
 
+import type {Problem, Severity} from "#lib/checks/engine.js";
 import type {Dec} from "#lib/domain/money.js";
 import type {AmountStyle} from "#lib/domain/types.js";
 import type {BalanceRow, BalanceSummary, CashBalancesView} from "#lib/journalView/types.js";
@@ -108,4 +109,74 @@ export function decodeCashBalances(raw: unknown): CashBalancesView {
         summaries: Object.freeze(summaries) as BalanceSummary[],
         guessedLongTerm: strings(view.guessedLongTerm, "cash balances guessedLongTerm"),
     });
+}
+
+// ---------------------------------------------------------------------------
+// `/api/diagnostics` — every problem the badge counts and the drawer lists
+// ---------------------------------------------------------------------------
+
+/** What `/api/diagnostics` answers: the whole list's size and worst severity, plus (up to `limit`) the entries. */
+export interface DiagnosticsPayload {
+    /** Every finding, even when `problems` was truncated by a `limit`. */
+    count: number;
+    maxSeverity: Severity | null;
+    problems: Problem[];
+}
+
+const SEVERITIES: ReadonlySet<string> = new Set<Severity>(["error", "warning", "info"]);
+
+/**
+ * One wire finding → a `Problem`, or null when the entry is unusable.
+ *
+ * Deliberately does NOT throw, unlike the decoders above: these are advisory
+ * findings about a journal the engine opened, so a junk entry must cost that
+ * ONE finding, never the badge. An entry needs a known severity, a non-blank
+ * message, and exactly one usable anchor — a positive integer `tindex`, or a
+ * non-blank `account`. A junk `tindex` is refused outright rather than quietly
+ * demoted to an account anchor.
+ *
+ * There is no RULE allow-list any more: the engine is the only producer of
+ * every rule (plan 26 B4), and the drawer labels an unknown one by its id.
+ */
+function decodeProblem(raw: unknown): Problem | null {
+    if (typeof raw !== "object" || raw === null) return null;
+    const entry = raw as Raw;
+    if (typeof entry.rule !== "string" || entry.rule.trim() === "") return null;
+    if (typeof entry.severity !== "string" || !SEVERITIES.has(entry.severity)) return null;
+    if (typeof entry.message !== "string" || entry.message.trim() === "") return null;
+    const severity = entry.severity as Severity;
+    if (entry.tindex !== undefined) {
+        if (!Number.isSafeInteger(entry.tindex) || (entry.tindex as number) < 1) return null;
+        const problem: Problem = {txnIndex: entry.tindex as number, rule: entry.rule, severity, message: entry.message};
+        if (typeof entry.date === "string") problem.date = entry.date;
+        if (typeof entry.description === "string") problem.description = entry.description;
+        return Object.freeze(problem);
+    }
+    if (typeof entry.account !== "string" || entry.account.trim() === "") return null;
+    return Object.freeze({txnIndex: null, account: entry.account, rule: entry.rule, severity, message: entry.message});
+}
+
+/**
+ * `GET /api/diagnostics` → the problem list. The envelope is checked strictly
+ * (a missing `count` means this is not the engine answering); entries are
+ * decoded leniently (see `decodeProblem`), and exact duplicates — same anchor,
+ * rule and message — collapse, because the drawer keys its rows on them.
+ */
+export function decodeDiagnostics(raw: unknown): DiagnosticsPayload {
+    const body = obj(raw, "diagnostics");
+    const count = num(body.count, "diagnostics count");
+    const worst = body.maxSeverity;
+    if (worst !== null && (typeof worst !== "string" || !SEVERITIES.has(worst)))
+        throw new ApiShapeError("diagnostics maxSeverity: expected a severity or null");
+    const problems: Problem[] = [];
+    const seen = new Set<string>();
+    for (const item of arr(body.diagnostics, "diagnostics entries")) {
+        const problem = decodeProblem(item);
+        if (problem === null) continue;
+        const key = `${problem.txnIndex ?? problem.account}\u0000${problem.rule}\u0000${problem.message}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        problems.push(problem);
+    }
+    return Object.freeze({count, maxSeverity: worst as Severity | null, problems: Object.freeze(problems) as Problem[]});
 }

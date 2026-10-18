@@ -296,7 +296,7 @@ pub(crate) fn inherited_account_tags(
 /// tags from the `commodity` directives of the posting's amounts are appended,
 /// but only for names not already present (a posting or account tag of the same
 /// name takes precedence, matching hledger).
-fn posting_tags(
+pub(crate) fn posting_tags(
     posting: &Posting,
     account_tags: &HashMap<&str, &[(String, String)]>,
     commodity_tags: &HashMap<&str, &[(String, String)]>,
@@ -415,19 +415,17 @@ pub struct WireDiagnostic {
     /// so the UI can flag the row. Absent for a finding about an `account`
     /// directive, which has no transaction to point at.
     #[serde(rename = "txnIndex", skip_serializing_if = "Option::is_none")]
-    txn_index: Option<usize>,
+    pub(crate) txn_index: Option<usize>,
     /// The declaring account, for a finding about an `account` directive.
     /// Absent for every transaction-anchored rule.
     #[serde(skip_serializing_if = "Option::is_none")]
-    account: Option<String>,
-    /// One of [`DIAGNOSTIC_RULES`]. The SPA allow-lists exactly this set
-    /// (`normalizeDiagnostics` in `web/src/lib/api/normalize.ts`) and drops
-    /// anything else, so the two lists must be grown together.
-    rule: &'static str,
+    pub(crate) account: Option<String>,
+    /// One of [`DIAGNOSTIC_RULES`].
+    pub(crate) rule: &'static str,
     /// `"error"` or `"warning"`; the SPA's `Severity` is `info|warning|error`.
-    severity: &'static str,
+    pub(crate) severity: &'static str,
     /// Human-readable, hledger-style.
-    message: String,
+    pub(crate) message: String,
 }
 
 /// Diagnostic severity for the two hledger-level rules: both are errors.
@@ -440,18 +438,13 @@ const DIAGNOSTIC_ERROR: &str = "error";
 /// are warnings, and never promoted to errors.
 const DIAGNOSTIC_WARNING: &str = "warning";
 
-/// Every `rule` value `/api/diagnostics` can emit, in the order the SPA's
-/// drawer groups them. The first two are hledger-level errors; `account-tag` is
-/// the journal's own `account` directives; the last three are the stock findings
-/// from the holdings engine.
+/// Every ENGINE `rule` value, in the order the drawer groups them. The first
+/// two are hledger-level errors; `account-tag` is the journal's own `account`
+/// directives; the last three are the stock findings from the holdings engine.
 ///
-/// This is the wire contract the SPA's `DIAGNOSTIC_RULES` allow-list mirrors.
-/// The SPA drops an unrecognized rule SILENTLY, so the two are pinned together
-/// by `web/src/lib/checks/stock-diagnostics.test.ts`, which reads both files —
-/// it lives on that side because `nix build .#tests` builds from
-/// `cleanCargoSource`, which does not contain `web/`. That test parses this
-/// declaration with `/\[&str; \d+\]/`, so the array form and the bumped length
-/// are load-bearing.
+/// `/api/diagnostics` follows these with the five local check rules
+/// (`crate::view::checks`). The SPA no longer allow-lists rule ids (plan 26
+/// B4): the engine is the only producer of every rule.
 pub const DIAGNOSTIC_RULES: [&str; 6] = [
     "unbalanced",
     "assertion",

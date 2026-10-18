@@ -1,10 +1,11 @@
-// Background-check engine (WP-08): LSP-style attention flags over the
-// normalized journal. Pure TS — no Svelte/DOM imports; rules live in
-// ./rules.ts and adding one is a single entry in ALL_RULES.
-
-import type {AccountClasses} from "../domain/accountClass";
-import type {PriceDirective, Transaction} from "../domain/types";
-import {ALL_RULES} from "./rules";
+// Problem types and the two groupings every consumer shares (WP-08). Pure TS —
+// no Svelte/DOM imports.
+//
+// The checks themselves run in the engine now (plan 26 B4): `/api/diagnostics`
+// serves the engine diagnostics AND the five rules that used to live in
+// `./rules.ts` (pending, uncategorized, negative-cash, missing-description,
+// future-date), as of the browser's local date. See
+// crates/ledgeline-core/src/view/checks.rs.
 
 export type Severity = "error" | "warning" | "info";
 
@@ -12,59 +13,22 @@ export type Severity = "error" | "warning" | "info";
  * One finding, anchored to EITHER a transaction or an account — never both, and
  * never neither.
  *
- * `txnIndex` is hledger's 1-based `Transaction.index` (not the wire's 0-based
- * position; normalizeDiagnostics translates). It is null for a finding about an
- * `account` DIRECTIVE, which has no transaction to point at — the `account-tag`
- * rule is the only such finding today. Consumers that jump to or flag a row must
- * treat null as "nothing to jump to" rather than as index 0.
+ * `txnIndex` is hledger's 1-based `Transaction.index` (the engine's `tindex`).
+ * It is null for a finding about an ACCOUNT — an `account` directive
+ * (`account-tag`) or a running balance (`negative-cash`) — which has no one
+ * transaction to point at. Consumers that jump to or flag a row must treat null
+ * as "nothing to jump to" rather than as index 0.
  */
 export interface Problem {
     txnIndex: number | null;
-    /** The declaring account, for a directive-anchored finding. */
+    /** The account, for an account-anchored finding. */
     account?: string;
+    /** The anchored transaction's date and description, so a list needs no journal to draw it. */
+    date?: string;
+    description?: string;
     rule: string;
     severity: Severity;
     message: string;
-}
-
-/** Journal-wide inputs beyond the transactions themselves (WP-10 contract change: stock rules need P directives). */
-export interface CheckContext {
-    prices: PriceDirective[];
-    /** The engine's account classes (`/api/journal`), so rules classify by type rather than by name. */
-    classes?: AccountClasses;
-    /**
-     * Engine-computed findings (unbalanced transactions, failed balance
-     * assertions) already decoded off the wire by normalizeDiagnostics.
-     *
-     * They live here rather than behind a CheckRule because they are
-     * PRECOMPUTED: there is nothing to run, and the engine — which owns the
-     * parsed journal — is the only thing that can compute them. Entering the
-     * pipeline through the context means every existing consumer
-     * (maxSeverity/groupByTxn, the badge, the drawer, row flags) picks them up
-     * with no further plumbing.
-     */
-    diagnostics?: readonly Problem[];
-}
-
-export interface CheckRule {
-    id: string;
-    run(txns: Transaction[], ctx: CheckContext): Problem[];
-}
-
-export {ALL_RULES} from "./rules";
-
-/**
- * Run `rules` (default: ALL_RULES) over the journal, concatenating their
- * findings in rule order.
- *
- * `ctx.diagnostics` (engine-computed, precomputed — see CheckContext) lead the
- * list, ahead of every rule finding. Two reasons: they are authoritative errors
- * from the component that parsed the journal, and the drawer groups by rule in
- * FIRST-APPEARANCE order, so leading with them puts the engine's hard errors at
- * the top. Order is otherwise unchanged, so it stays stable across refreshes.
- */
-export function runChecks(txns: Transaction[], ctx: CheckContext, rules: CheckRule[] = ALL_RULES): Problem[] {
-    return [...(ctx.diagnostics ?? []), ...rules.flatMap((rule) => rule.run(txns, ctx))];
 }
 
 const SEVERITY_RANK: Record<Severity, number> = {info: 0, warning: 1, error: 2};
@@ -84,8 +48,8 @@ export function maxSeverity(problems: readonly Problem[]): Severity | null {
  *
  * Unanchored problems are SKIPPED rather than collected under a placeholder key:
  * this map exists to decide which rows get a flag dot, and a finding about an
- * `account` directive belongs to no row. It is still in `problems.all`, so the
- * drawer and the badge count it.
+ * account belongs to no row. It is still in the full list, so the drawer and
+ * the badge count it.
  */
 export function groupByTxn(problems: readonly Problem[]): Map<number, Problem[]> {
     const byTxn = new Map<number, Problem[]>();

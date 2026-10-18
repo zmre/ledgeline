@@ -149,18 +149,6 @@ pub(crate) struct Snapshot {
     pub(crate) prices: Bytes,
     pub(crate) commodities: Bytes,
     pub(crate) accounts: Bytes,
-    /// The `{"diagnostics": [...]}` payload: every unbalanced transaction and
-    /// failed balance assertion in the journal, plus the three stock findings
-    /// (unknown cost basis, net-negative shares, unpriced position), each shaped
-    /// like the SPA's `Problem`. Precomputed with the rest because all of them
-    /// are whole-journal passes, and republished on every hot-swap so it never
-    /// goes stale.
-    ///
-    /// The stock half used to be recomputed in the browser from a second, drifted
-    /// copy of the holdings engine (DRY-1); it is served from here so the
-    /// Problems drawer and the Holdings page cannot disagree about the same
-    /// journal.
-    pub(crate) diagnostics: Bytes,
     /// The `/api/journal` payload: which journal the user is looking at (see
     /// `ledgeline_core::title`), plus the whole-journal display metadata and this
     /// snapshot's `generation` ([`JournalInfoBody`]). Precomputed with the rest
@@ -187,14 +175,6 @@ impl Snapshot {
             .clone()
             .or_else(|| JournalLocation::of_parsed(&self.journal).map(Arc::new))
     }
-}
-
-/// The `{"diagnostics": [...]}` envelope. `wire` exposes the array and the
-/// wrapped `Value` but not a wrapped *serializable*, and building the `Value`
-/// only to re-serialize it is exactly what PERF-1 is about.
-#[derive(Serialize)]
-struct DiagnosticsBody<'a> {
-    diagnostics: &'a [wire::WireDiagnostic],
 }
 
 /// The `/api/journal` body: the engine-side metadata plus this snapshot's
@@ -232,22 +212,15 @@ impl Snapshot {
     /// app startup, of every live-reload, and of every edit's republish — near
     /// the cost of its single most expensive payload.
     ///
-    /// `/api/diagnostics` takes a thread of its own for the same reason. It grew
-    /// a holdings pass when the stock findings moved out of the browser (DRY-1):
-    /// 131 ms at 200k on top of the balance and assertion checks' 139 ms, which
-    /// is enough to make the remainder — about 485 ms — overtake `/transactions`
-    /// and become the critical path. On its own thread the three groups are
-    /// 563 / 346 / 270 ms and the build still costs what its largest payload does.
+    /// `/api/diagnostics` is NOT built here any more (plan 26 B4): it depends
+    /// on the client's date, so it is computed per request and memoized in the
+    /// snapshot's [`journal_api::ViewCache`] — which also takes its 270 ms of
+    /// whole-journal passes off every startup and republish.
     fn from_journal(journal: Arc<Journal>, location: Option<Arc<JournalLocation>>) -> Self {
         // Minted FIRST, because `/api/journal` carries it as `generation`.
         let etag = next_etag();
-        let (transactions, diagnostics, rest) = std::thread::scope(|scope| {
+        let (transactions, rest) = std::thread::scope(|scope| {
             let transactions = scope.spawn(|| json_bytes(&wire::journal_to_transactions(&journal)));
-            let diagnostics = scope.spawn(|| {
-                json_bytes(&DiagnosticsBody {
-                    diagnostics: &wire::journal_to_all_diagnostics(&journal),
-                })
-            });
             let rest = (
                 json_bytes(&wire::version_value()),
                 json_bytes(&wire::journal_to_accountnames(&journal)),
@@ -268,7 +241,7 @@ impl Snapshot {
                     .join()
                     .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
             };
-            (joined(transactions), joined(diagnostics), rest)
+            (joined(transactions), rest)
         });
         let (version, accountnames, prices, commodities, accounts, journal_info) = rest;
         Self {
@@ -279,7 +252,6 @@ impl Snapshot {
             prices,
             commodities,
             accounts,
-            diagnostics,
             journal_info,
             journal,
             location,
@@ -837,11 +809,11 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         .route("/prices", get(prices))
         .route("/commodities", get(commodities))
         .route("/accounts", get(accounts))
-        // Journal-wide diagnostics (unbalanced transactions, failed balance
-        // assertions). A NATIVE route, not a wire one: `/transactions` is a
-        // byte-parity emulation of hledger-web's endpoint and is a bare JSON
-        // array, so it has nowhere to carry a sibling field.
-        .route("/api/diagnostics", get(diagnostics))
+        // Journal-wide problems: the engine diagnostics plus the local check
+        // rules, as of the client's `?today=` (see `journal_api`). A NATIVE
+        // route, not a wire one: `/transactions` is a byte-parity emulation of
+        // hledger-web's endpoint and has nowhere to carry a sibling field.
+        .route("/api/diagnostics", get(journal_api::diagnostics))
         // Which journal is open: its derived title and its main file's bare
         // name. A NATIVE route for the same reason as `/api/diagnostics` — the
         // wire routes are byte-parity emulations of hledger-web's and have
@@ -1252,11 +1224,6 @@ async fn commodities(State(state): State<AppState>, headers: HeaderMap) -> Respo
 async fn accounts(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let snapshot = state.snapshot();
     serve(&snapshot, &headers, &snapshot.accounts)
-}
-
-async fn diagnostics(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let snapshot = state.snapshot();
-    serve(&snapshot, &headers, &snapshot.diagnostics)
 }
 
 async fn journal_info(State(state): State<AppState>, headers: HeaderMap) -> Response {
