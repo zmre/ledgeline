@@ -25,15 +25,6 @@
   else, but `tests/git_commit.rs` compiles `git.rs` standalone via `#[path]`, so it cannot use
   `crate::redact` as-is; lift the boundary check into a dependency-free helper both can share.
 
-## Misc
-- chore: Add screenshots and better descriptions to the readme
-- ledgeline looks great, but it inherits the complexity and issues of web apps due to our architecture choices
-  - these were the right choices for mbr (cuz markdown) but maybe not here
-  - what if we used <https://iced.rs> or [GPUI](https://github.com/longbridge/gpui-component) or something? libcosmic? [freya?](https://github.com/marc2332/freya)
-  - for forms and displays of numbers and such, it would probably be a great improvement
-  - for charts, i expect we'd be in trouble; egui has some libraries that might do
-- chore: publish docs to website using mbr
-
 ## Performance
 - perf: **`/api/insights` misses its gate by 2.4×** — 968 ms at 200k against a 400 ms target, and it
   is the dashboard's landing view, so it is the first number anyone feels. Insights' own dedup work
