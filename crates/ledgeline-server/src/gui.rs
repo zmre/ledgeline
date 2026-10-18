@@ -58,6 +58,7 @@ enum UserEvent {
 
 /// GUI entry point: stand up the in-process server, then run the window.
 pub(crate) fn run(cli: &Cli) -> Result<(), AppError> {
+    perf::start();
     // Same posture the headless server takes (token + Host guard, non-loopback
     // binds refused), decided before the journal is opened. The token is NOT
     // printed here, and it is not in the served shell either: the WebView gets
@@ -75,6 +76,7 @@ pub(crate) fn run(cli: &Cli) -> Result<(), AppError> {
             path: journal_path.display().to_string(),
             source,
         })?;
+    perf::stamp("journal_loaded");
     // Remember this journal as the most-recently-opened (canonical path).
     crate::recents::record(&editor_path);
 
@@ -622,6 +624,13 @@ fn build_webview(
                 show_download_error(path.as_deref());
             }
         });
+    // Dev-only: the launch/scroll probe, when `LEDGELINE_PERF` names one.
+    let builder = match perf::script() {
+        Some(script) => builder
+            .with_initialization_script(script)
+            .with_ipc_handler(|request| perf::on_message(request.body())),
+        None => builder,
+    };
 
     #[cfg(not(target_os = "linux"))]
     let webview = builder
@@ -788,7 +797,9 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
             .init_for_gtk_window(window.gtk_window(), window.default_vbox());
     }
 
+    perf::stamp("window_built");
     let webview = build_webview(&window, &ctx.url, &ctx.token)?;
+    perf::stamp("webview_built");
 
     let open_id = menu.open.id().clone();
     let reload_id = menu.reload.id().clone();
@@ -1153,6 +1164,67 @@ mod linux_keyboard_tests {
             linux_shortcut_for(&Key::Escape, ModifiersState::empty()),
             None
         );
+    }
+}
+
+/// Dev-only launch and scroll probe (`docs/development/perf-baseline.md`).
+///
+/// Inert unless `LEDGELINE_PERF` names a probe script (`scripts/perf/probe.js`).
+/// When it does, the script is injected into every page the WebView loads and
+/// may report back over `window.ipc.postMessage`; each message is printed to
+/// stderr as `PERF js <ms since launch> <json>`, the Rust-side milestones as
+/// `PERF rust <label> <ms since launch>`, and a `{"ev":"scroll_done",…}`
+/// message ends the process — so a measurement is one command, start to exit.
+mod perf {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+
+    /// The environment variable naming the probe script.
+    const ENV: &str = "LEDGELINE_PERF";
+
+    static START: OnceLock<Instant> = OnceLock::new();
+
+    fn enabled() -> bool {
+        std::env::var_os(ENV).is_some()
+    }
+
+    fn elapsed_ms() -> f64 {
+        START.get_or_init(Instant::now).elapsed().as_secs_f64() * 1000.0
+    }
+
+    /// Fix the launch instant every other stamp is measured from.
+    pub(super) fn start() {
+        START.get_or_init(Instant::now);
+    }
+
+    /// Print a Rust-side milestone, when probing.
+    pub(super) fn stamp(label: &str) {
+        if enabled() {
+            eprintln!("PERF rust {label} {:.1}", elapsed_ms());
+        }
+    }
+
+    /// The probe script to inject, when `LEDGELINE_PERF` names a readable file.
+    pub(super) fn script() -> Option<String> {
+        let path = std::env::var_os(ENV)?;
+        match std::fs::read_to_string(&path) {
+            Ok(script) => Some(script),
+            Err(error) => {
+                eprintln!(
+                    "ledgeline: {ENV}: cannot read {}: {error}",
+                    path.to_string_lossy()
+                );
+                None
+            }
+        }
+    }
+
+    /// One message from the probe: printed, and the end of the run on `scroll_done`.
+    pub(super) fn on_message(body: &str) {
+        eprintln!("PERF js {:.1} {body}", elapsed_ms());
+        if body.contains("\"ev\":\"scroll_done\"") {
+            std::process::exit(0);
+        }
     }
 }
 

@@ -339,6 +339,18 @@ perf-rss size="200000":
         awk -v s="$stage" -v p="$peak" 'BEGIN{printf "%-10s peak RSS %9.1f MB\n", s, p/1048576}'
     done
 
+# Opens a window; keep it frontmost. Runs with HOME in a scratch dir, so your
+# prefs and recents are untouched. See docs/development/perf-baseline.md §8.
+# Desktop launch + scroll probe (macOS): first rows, scroll frames, memory
+perf-probe size="200000":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    journal=target/perf/synthetic-v1-{{size}}.journal
+    [[ -f $journal ]] || cargo run --release -p ledgeline-core --example gen_journal -- {{size}}
+    (cd web && bun run build)
+    cargo build --release -p ledgeline
+    ./scripts/perf/run-probe.sh "$journal"
+
 # The user manual in docs/ is an mbr site (see docs/development/docs-site.md and
 # .github/workflows/docs.yml). Same pinned mbr as CI, run through nix so nothing
 # is installed. `--accept-flake-config` lets nix use mbr's binary cache instead
