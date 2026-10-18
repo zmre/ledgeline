@@ -1,0 +1,59 @@
+[package]
+name = "ledgeline-ffi"
+description = "UniFFI surface of Ledgeline for its Apple shells (the iOS app, with the `mobile` feature). Internal crate, versioned in lockstep with the workspace; no API stability guarantees."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+# Never published: it exists to be linked into an Xcode project as a
+# staticlib, and its API follows whatever the Swift shell needs. `cargo package
+# --workspace` and `cargo publish --workspace` skip it.
+publish = false
+
+[lib]
+# `staticlib` is `libledgeline_ffi.a`, what the iOS app links; `lib` keeps it an
+# ordinary Rust dependency for the tests (and anything that re-exports it).
+crate-type = ["lib", "staticlib"]
+name = "ledgeline_ffi"
+bench = false
+
+[features]
+# The iOS app's surface: the in-process HTTP server behind the app's custom
+# scheme handler (`LedgelineApp`). Pulls in the server WITHOUT its default
+# features — no `gui` (wry/tao), no `watcher` (a sandboxed app gets no change
+# events; the host calls `refresh()`), no `external-tools` (no hledger or git
+# to spawn). Off by default, so the workspace build compiles only the storage
+# half (`CoordinatedVault` and friends), which needs nothing but core.
+mobile = [
+    "dep:ledgeline",
+    "dep:axum",
+    "dep:futures",
+    "dep:tower",
+    "dep:tokio",
+]
+
+[dependencies]
+ledgeline-core = { workspace = true }
+thiserror = { workspace = true }
+
+# mobile
+ledgeline = { path = "../ledgeline-server", default-features = false, optional = true }
+axum = { version = "0.8", optional = true }
+futures = { version = "0.3", optional = true }
+tower = { version = "0.5", features = ["util"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros"], optional = true }
+
+# UniFFI is only used by the Apple Swift shell. Target-gated so Linux builds
+# (CI, the headless server) never compile it, even transitively. `target_vendor`,
+# not `target_os`, so the iOS staticlib (aarch64-apple-ios[-sim]) gets it too —
+# and so does macOS, where the tests exercise the exported surface. Runtime
+# support only: proc-macros, no UDL, no build script. Pinned to the line mbr's
+# iOS shell generates bindings with, so one `uniffi-bindgen` serves both.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+uniffi = "0.31"
+
+[dev-dependencies]
+tempfile = "3"
+serde_json = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

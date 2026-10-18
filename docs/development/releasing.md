@@ -377,7 +377,7 @@ Rehearse the whole thing locally without publishing anything:
 
 ```sh
 cd web && bun run build && cd ..     # populate web/build so build.rs mirrors it
-cargo package --workspace --allow-dirty
+cargo package --workspace --exclude ledgeline-ffi --allow-dirty   # the iOS crate is publish = false
 tar tzf target/package/ledgeline-[0-9]*.crate | grep -c '/spa/'   # expect ~76
 ```
 

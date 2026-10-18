@@ -72,6 +72,19 @@
 
       # Rust toolchain for the journal engine (crates/); pinned in rust-toolchain.toml.
       rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+      # The dev shell's toolchain: the same one plus the iOS std targets, for
+      # the hand-run `cargo check`/`build -p ledgeline-ffi --features mobile
+      # --target aarch64-apple-ios[-sim]` (see crates/ledgeline-ffi/README.md).
+      # Kept OUT of `rustToolchain` on purpose, as mbr's flake does: that one is
+      # a runtime reference of every crane derivation (and so of the binary
+      # cache), and each std is ~100 MB per system that no cached build uses.
+      # Darwin only — elsewhere they would be fetched for nothing.
+      rustToolchainDev = rustToolchain.override {
+        targets = lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
+          "aarch64-apple-ios"
+          "aarch64-apple-ios-sim"
+        ];
+      };
       # Crane, driven by our pinned toolchain. This is what gives us the cached
       # dependency layer (`cargoArtifacts`) reused across every check + the build.
       craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
@@ -203,6 +216,10 @@
         LEDGELINE_HLEDGER_PATH = hledgerPath;
       };
 
+      # crane's default `cargoExtraArgs` plus `-p ledgeline`: build the
+      # binary's package, not the whole workspace (see `ledgeline` below).
+      ledgelineOnly = "--locked -p ledgeline";
+
       # THE CACHING WIN: build only the workspace's third-party dependencies
       # (incl. the whole wry/tao GUI stack) from a dummy source. Source-only
       # changes reuse this layer verbatim, so rebuilds/retests skip recompiling
@@ -218,6 +235,11 @@
         // hledgerEnv
         // {
           inherit cargoArtifacts;
+          # The binary's package only. The workspace also holds
+          # `ledgeline-ffi`, a `staticlib` for the iOS app, and crane installs
+          # every staticlib a build produces into `$out/lib` — which would ship
+          # it inside the desktop package for nothing.
+          cargoExtraArgs = ledgelineOnly;
           doCheck = false;
           meta = {
             description = "Ledgeline — local hledger GUI (axum server + wry/tao webview) with embedded SPA";
@@ -228,15 +250,20 @@
           };
         });
 
+      # `ledgeline-ffi/mobile` so the iOS crate's in-process app (the server
+      # router behind `LedgelineApp::handle`) is linted and tested on every
+      # host too; without it only the crate's storage half compiles. It adds
+      # no third-party crate the server does not already pull in.
       clippy = craneLib.cargoClippy (commonArgs
         // {
           inherit cargoArtifacts;
-          cargoClippyExtraArgs = "--all-targets -- -D warnings";
+          cargoClippyExtraArgs = "--all-targets --features ledgeline-ffi/mobile -- -D warnings";
         });
 
       tests = craneLib.cargoTest (commonArgs
         // {
           inherit cargoArtifacts;
+          cargoTestExtraArgs = "--features ledgeline-ffi/mobile";
         });
 
       fmt = craneLib.cargoFmt {
@@ -373,6 +400,7 @@
         // hledgerEnv
         // {
           inherit cargoArtifacts;
+          cargoExtraArgs = ledgelineOnly;
           doCheck = false;
           preBuild = embedRealSpa;
           meta = ledgeline.meta;
@@ -946,7 +974,7 @@
       devShells.default = pkgs.mkShell {
         nativeBuildInputs =
           (with pkgs; [
-            rustToolchain # Rust engine: crates/ledgeline-{core,server}
+            rustToolchainDev # Rust engine: crates/ledgeline-{core,server,ffi} (+ iOS std on Darwin)
             cargo-audit # RUSTSEC advisory scan of Cargo.lock (SEC-14; see the `audit` CI job)
             pkg-config # locates the Linux GUI libs below (no-op on macOS)
             nodejs_22 # runtime for vite/svelte tooling

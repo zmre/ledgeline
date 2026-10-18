@@ -2,7 +2,7 @@
 # journals directly and serves a wire-compatible + native local API.
 # See plans/00-overview.md and the approved engine plan.
 [workspace]
-members = ["crates/ledgeline-core", "crates/ledgeline-server"]
+members = ["crates/ledgeline-core", "crates/ledgeline-server", "crates/ledgeline-ffi"]
 resolver = "3"
 
 [workspace.package]
