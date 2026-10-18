@@ -1,0 +1,148 @@
+; Budget summary fixture (plan 26 B6). Exercises the span summary the Budget
+; tab draws: income goals written negative, nested budgets, a declared revenue
+; root with a non-standard name, a declared gain subtype, a goal in another
+; commodity, a multi-commodity goal, yearly and weekly rules, a positive goal on
+; a revenue account, and an unbudgeted remainder.
+
+account revenues          ; type: R
+account gains             ; type: G
+account outgoings         ; type: X
+account assets:checking   ; type: C
+
+~ monthly  household
+    (outgoings:food)            $400
+    (outgoings:rent)          $1500.00
+    (outgoings:fun)             $200
+    (outgoings:fun:movies)       $50
+    (revenues:salary)         $-5000
+    (gains:realized)           $-100
+    (revenues:refunds)           $25
+    (outgoings:travel)       100 EUR
+    (outgoings:mixed)            $10
+
+~ monthly  second rule
+    (outgoings:mixed)          5 EUR
+
+~ yearly  annual
+    (outgoings:insurance)     $1200
+
+~ weekly  coffee
+    (outgoings:coffee)       $20.50
+
+2026-01-02 rent
+    outgoings:rent           $1500.00
+    assets:checking
+
+2026-01-05 salary
+    revenues:salary          $-5000
+    assets:checking
+
+2026-01-08 groceries
+    outgoings:food            $431.17
+    assets:checking
+
+2026-01-10 insurance
+    outgoings:insurance      $1200
+    assets:checking
+
+2026-01-12 movies
+    outgoings:fun:movies       $64
+    assets:checking
+
+2026-01-15 coffee
+    outgoings:coffee           $37.25
+    assets:checking
+
+2026-01-20 trip
+    outgoings:travel          80 EUR
+    assets:checking          -80 EUR
+
+2026-02-02 rent
+    outgoings:rent           $1500.00
+    assets:checking
+
+2026-02-05 salary
+    revenues:salary          $-5150
+    assets:checking
+
+2026-02-09 groceries
+    outgoings:food            $377.03
+    assets:checking
+
+2026-02-11 dividends
+    gains:realized            $-41.10
+    assets:checking
+
+2026-02-14 board games
+    outgoings:fun:games        $90
+    assets:checking
+
+2026-02-18 mixed
+    outgoings:mixed            $12
+    outgoings:mixed            3 EUR
+    assets:checking           $-12
+    assets:checking           -3 EUR
+
+2026-03-02 rent
+    outgoings:rent           $1500.00
+    assets:checking
+
+2026-03-05 salary
+    revenues:salary          $-4900
+    assets:checking
+
+2026-03-07 groceries
+    outgoings:food            $402.40
+    assets:checking
+
+2026-03-10 refund
+    revenues:refunds          $-30
+    assets:checking
+
+2026-03-21 gifts
+    outgoings:gifts           $150
+    assets:checking
+
+2026-03-28 coffee
+    outgoings:coffee           $81
+    assets:checking
+
+2026-04-02 rent
+    outgoings:rent           $1500.00
+    assets:checking
+
+2026-04-05 salary
+    revenues:salary          $-5000
+    assets:checking
+
+2026-04-12 groceries
+    outgoings:food            $250
+    assets:checking
+
+2026-04-20 trip
+    outgoings:travel         240 EUR
+    assets:checking         -240 EUR
+
+2026-05-02 rent
+    outgoings:rent           $1500.00
+    assets:checking
+
+2026-05-05 salary
+    revenues:salary          $-5000
+    assets:checking
+
+2026-05-15 side gig
+    income:consulting         $-700
+    assets:checking
+
+2026-06-02 rent
+    outgoings:rent           $1500.00
+    assets:checking
+
+2026-06-08 groceries
+    outgoings:food            $388.88
+    assets:checking
+
+2026-06-19 movies
+    outgoings:fun:movies       $33.33
+    assets:checking

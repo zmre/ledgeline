@@ -26,7 +26,7 @@ cashflow-range	/api/reports/cashflow?from=2026-04-15&to=2026-07-08&interval=mont
 # Interval = Total: one column spanning the whole range.
 cashflow-total	/api/reports/cashflow?from=2025-08-01&to=2026-07-08&interval=total&depth=2
 networth	/api/reports/networth?end=2026-07-08&interval=monthly&count=3&depth=2
-budget	/api/budget?end=2026-07-08&interval=monthly&count=3&depth=2
+budget	/api/budget?end=2026-07-08&interval=monthly&count=3&depth=2&asOf=2026-07-08
 budget-gaps	/api/budget/gaps?end=2026-07-08&interval=monthly&count=3&depth=2
 # The projection SEED only. `POST /api/projections/run` cannot join this
 # manifest — it replays URIs, and a run carries its scenario in a request body —

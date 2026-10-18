@@ -25,7 +25,7 @@
         type BudgetParams,
         type BudgetPreset,
     } from "#lib/budget/params.js";
-    import {budgetStore, REFERENCE_PERIODS, type BudgetReportQuery} from "#lib/budget/budgetStore.svelte.js";
+    import {budgetStore, REFERENCE_PERIODS, sameBudgetQuery, type BudgetReportQuery} from "#lib/budget/budgetStore.svelte.js";
     import {BUDGET_SORT_KEYS, SORT_DIRS, type BudgetSortKey, type SortDir} from "#lib/budget/sort.js";
     import {alreadyBudgeted, goalChange} from "#lib/budget/target.js";
     import type {BudgetChange} from "#lib/api/native.js";
@@ -70,7 +70,6 @@
     // goals are native. Never a gate — `formatTotals` falls back per commodity.
     loadJournalWhenReady();
     const styles = $derived(journal.reportStyles);
-    const declared = $derived(journal.accountClasses);
     const maxDepth = $derived(journal.accountNames.reduce((max, name) => Math.max(max, name.split(":").length), 1));
 
     // --- The bars ------------------------------------------------------------
@@ -81,12 +80,13 @@
     const span = $derived(budgetSpan(params.from, params.to));
 
     /**
-     * "Today", for the bars' pace mark. Read ONCE, here: `lib/reports/` is
-     * purity-guarded and may not read a clock, and re-reading it per render would
-     * let a bar move at midnight under a user who is looking at it.
+     * "Today", for the bars' pace mark — sent to the engine, which measures pace
+     * at it, so the server's time zone cannot move a bar. Read ONCE, here:
+     * re-reading it per render would let a bar move at midnight under a user who
+     * is looking at it.
      */
     const asOf = today();
-    const reportQuery = $derived<BudgetReportQuery>({from: params.from, end: span.to, count: span.count, depth: params.depth});
+    const reportQuery = $derived<BudgetReportQuery>({from: params.from, end: span.to, count: span.count, depth: params.depth, asOf});
     // The nonce is in the key because a reconnect usually leaves the URL
     // identical (the engine restarted on the same port), and keying on the URL
     // alone meant a page never retried after one (FE-5d).
@@ -148,7 +148,7 @@
         const q = held.query;
         const shown = held.value;
         if (shown === null || q === null) return null;
-        return q.from === reportQuery.from && q.end === reportQuery.end && q.count === reportQuery.count && q.depth === reportQuery.depth ? shown : null;
+        return sameBudgetQuery(q, reportQuery) ? shown : null;
     });
 
     // --- The goals -----------------------------------------------------------
@@ -269,8 +269,7 @@
                     exportBudgetXlsx(
                         current,
                         {title: "Budget", params: `${params.from} to ${params.to}, depth ${params.depth}`},
-                        `budget-${params.from}-to-${params.to}.xlsx`,
-                        declared
+                        `budget-${params.from}-to-${params.to}.xlsx`
                     )}
             />
         {/if}
@@ -353,7 +352,7 @@
         onRetry={() => void budgetStore.report.load(settings.serverUrl ?? "", reportQuery)}
     >
         {#snippet children(current)}
-            <BudgetSummary report={current} {styles} {declared} from={span.from} to={span.to} {asOf} sort={params.sort} dir={params.dir} />
+            <BudgetSummary report={current} {styles} from={span.from} to={span.to} {asOf} sort={params.sort} dir={params.dir} />
         {/snippet}
     </AsyncSection>
 

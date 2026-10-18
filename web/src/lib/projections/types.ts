@@ -151,6 +151,24 @@ export interface ScenarioLine {
      * rule this field enforces, and plan 22, amendment 37.
      */
     section?: HeldSection;
+    /**
+     * The MAGNITUDE the user typed, once this line has been edited (plan 26 B6).
+     *
+     * Absent on a line as the engine sent it, whose `amount.quantity` carries
+     * the journal's sign. Present after an amount or account edit: it is what the
+     * table shows, and it is sent as the wire's `entry`, which the ENGINE signs by
+     * the account's type — so nothing on this side knows that revenue is written
+     * negative.
+     */
+    entry?: Dec;
+    /**
+     * The section the ENGINE placed this line in, and the role, account and
+     * period it placed it for (`projections::line_section`, plan 26 B6). It is
+     * the authority while those three are unchanged; once the user edits one,
+     * `resolvedSection` previews the answer from the engine's account table
+     * until the line round-trips again. Absent from a body that predates it.
+     */
+    resolved?: Readonly<{role: LineRole; account: string; raw: string; section: LineSection}>;
 }
 
 /** One account/amount pair of a dated event. Always one account and one amount. */

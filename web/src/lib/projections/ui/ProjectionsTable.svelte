@@ -62,16 +62,17 @@
          so by name. A row that relocates in silence is indistinguishable from
          one that was lost.
 
-     `signedQuantity` keys off the account's resolved TYPE and not off the
-     section, so none of this touches the sign convention.
+     The sign is the ENGINE's (it signs an edited line's `entry` by the
+     account's resolved TYPE, not by the section), so none of this touches the
+     sign convention.
 
      # Two amount conventions, and why they differ
 
      A RECURRING line takes a MAGNITUDE, exactly as a budget goal does: an
-     income line is what you earn, not the negation of it, and
-     `scenarioModel.signedQuantity` puts the journal's sign back on in one
-     place. Changing a row's account re-signs its amount, which is why nothing
-     here writes `line.account` without going through `withAccount`.
+     income line is what you earn, not the negation of it. The typed figure is
+     the line's `entry`, and the ENGINE puts the journal's sign back on (plan 26
+     B6). Changing a row's account re-enters its magnitude so the engine
+     re-signs it, which is why an account commit goes through `withAccount`.
 
      An EVENT POSTING takes a SIGNED amount, and deliberately. An event is where
      a balance-sheet movement is written — the raise that puts $2M into
@@ -103,7 +104,6 @@
     import {EM_DASH, fmt} from "#lib/format/amounts.js";
     import {journalBalanceFor} from "../projectionView";
     import {
-        amountFor,
         blankAssetLine,
         blankEvent,
         blankLine,
@@ -127,6 +127,7 @@
         withAccount,
         withBounds,
         withInterval,
+        withMagnitude,
         type LogicalRow,
     } from "../scenarioModel";
     import {
@@ -306,14 +307,18 @@
         // is the half a direct binding cannot do. It deliberately does NOT
         // reconcile the section: a commit is also what Enter does, and Enter
         // leaves the caret in the field.
-        line.amount = withAccount(line, line.account, declared).amount;
+        const next = withAccount(line, line.account);
+        line.entry = next.entry;
+        line.amount = next.amount;
         onChange();
     }
 
     function setMagnitude(line: ScenarioLine, raw: string): void {
         const parsed = parseAmountInput(raw);
         if (parsed === null) return;
-        line.amount = amountFor(line.amount, parsed, line.account, declared);
+        const next = withMagnitude(line, parsed);
+        line.entry = next.entry;
+        line.amount = next.amount;
         onChange();
     }
 
@@ -563,7 +568,7 @@
                 type="text"
                 inputmode="decimal"
                 class="w-full grow"
-                value={decToInput(magnitudeOf(line.amount))}
+                value={decToInput(magnitudeOf(line))}
                 aria-label={label}
                 onchange={(e) => setMagnitude(line, e.currentTarget.value)}
             />

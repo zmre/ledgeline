@@ -504,7 +504,7 @@ export interface BudgetRow {
     cells: BudgetCell[];
 }
 
-/** Budget report: bucket keys (oldest → newest), rows, and a grand-total cell per bucket. */
+/** Budget report: bucket keys (oldest → newest), rows, a grand-total cell per bucket, and the span summary. */
 export interface BudgetReport {
     kind: "budget";
     buckets: string[];
@@ -512,6 +512,58 @@ export interface BudgetReport {
     periods: PeriodInfo[];
     rows: BudgetRow[];
     totals: BudgetCell[];
+    /** The Budget tab's reading: one bar per leaf budget over the whole span (plan 26 B6). */
+    summary: BudgetSummary;
+}
+
+/** How a bar is doing. `behind` is the unhealthy side of pace in either column; `over` is an expense past its whole goal. */
+export type BudgetHealth = "healthy" | "behind" | "over";
+
+/** Which sentence goes under a bar; the amount it quotes travels beside it. */
+export type BudgetLabelKind = "onPlan" | "behindPace" | "aboveTarget" | "toGo" | "over" | "aheadOfPace" | "left";
+
+/**
+ * One bullet bar, computed by the engine (`reports/budget_summary.rs`). Every
+ * amount is a MAGNITUDE — `income` says the goal was written credit-normal —
+ * so nothing on this side negates or prorates.
+ */
+export interface BudgetBar {
+    /** The account, or "" for a section's overall bar. */
+    account: string;
+    /** The goal was written negative: word it as earnings. */
+    income: boolean;
+    actual: MixedAmount;
+    /** The span total. */
+    goal: MixedAmount;
+    /** Where `actual` should be by `asOf`. */
+    pace: MixedAmount;
+    /** `goal − actual`. */
+    remaining: MixedAmount;
+    /** null for a multi-commodity line: no single bar to draw, no verdict to give. */
+    health: BudgetHealth | null;
+    label: {kind: BudgetLabelKind; amount: MixedAmount | null};
+}
+
+/** One half of the Budget tab. */
+export interface BudgetSummarySection {
+    /** By the accounts' resolved type, never their names. */
+    kind: "revenue" | "expense";
+    /** The section's "spent of budgeted" bar. */
+    overall: BudgetBar;
+    /** One per leaf budget, in account order. */
+    bars: BudgetBar[];
+}
+
+/** The span summary: Income then Expenses, each present only when it has a budget. */
+export interface BudgetSummary {
+    from: ISODate;
+    to: ISODate;
+    /** The day pace was measured at. */
+    asOf: ISODate;
+    /** Pace is exactly `goal × elapsedDays ÷ spanDays`. */
+    elapsedDays: number;
+    spanDays: number;
+    sections: BudgetSummarySection[];
 }
 
 // Budget gaps (`GET /api/budget/gaps`) — what the `~` rules do NOT measure, over
@@ -526,6 +578,8 @@ export interface GapRow {
     depth: number;
     /** The span total, in the journal's own signs — revenue is credit-normal (negative). */
     total: MixedAmount;
+    /** `|total|`, the figure the section shows. */
+    magnitude: MixedAmount;
 }
 
 /** The unbudgeted categories, split by resolved account type and ordered largest first. */
@@ -536,4 +590,10 @@ export interface BudgetGaps {
     from: ISODate;
     /** Inclusive span end. */
     to: ISODate;
+    /** `|Σ revenue|`. */
+    revenueTotal: MixedAmount;
+    /** `|Σ expense|`. */
+    expenseTotal: MixedAmount;
+    /** `|Σ revenue| + |Σ expense|` — summed separately, never netted against each other. */
+    headline: MixedAmount;
 }

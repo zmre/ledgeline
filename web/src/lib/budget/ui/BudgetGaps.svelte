@@ -20,11 +20,10 @@
      opening. Each row links into the journal for the same span a bar does. -->
 <script lang="ts">
     import AsyncSection from "#lib/components/AsyncSection.svelte";
-    import {maAdd, type MixedAmount} from "#lib/domain/money.js";
+    import type {MixedAmount} from "#lib/domain/money.js";
     import type {AmountStyle, ISODate} from "#lib/domain/types.js";
     import {openJournal} from "#lib/journal/openJournal.js";
     import {formatTotals} from "#lib/journal/rowModel.js";
-    import {magnitudeAmount} from "#lib/reports/budgetSummary.js";
     import type {BudgetGaps, GapRow} from "#lib/reports/types.js";
     import type {DataView} from "#lib/stores/loadState.js";
 
@@ -58,22 +57,15 @@
         return parts.length > 0 ? parts.join(", ") : "0";
     }
 
-    /** Sum a section's rows. They are disjoint subtrees at one depth, so this does not double count. */
-    function sectionTotal(rows: readonly GapRow[]): MixedAmount {
-        let total: MixedAmount = new Map();
-        for (const row of rows) total = maAdd(total, row.total);
-        return total;
-    }
-
     /**
      * The two lists, in reading order — income first, because "what am I not
      * counting" is a smaller question about earnings than about spending and
      * makes a shorter list to get past.
      */
-    function sectionsOf(current: BudgetGaps): {title: string; rows: GapRow[]}[] {
+    function sectionsOf(current: BudgetGaps): {title: string; rows: GapRow[]; total: MixedAmount}[] {
         return [
-            {title: "Unbudgeted income", rows: current.revenue},
-            {title: "Unbudgeted expenses", rows: current.expense},
+            {title: "Unbudgeted income", rows: current.revenue, total: current.revenueTotal},
+            {title: "Unbudgeted expenses", rows: current.expense, total: current.expenseTotal},
         ];
     }
 
@@ -82,17 +74,11 @@
 
     /**
      * The headline while shut: how many categories, and how much they come to in
-     * MAGNITUDE.
-     *
-     * The two sections are summed separately and their magnitudes added, never
-     * the raw figures: revenue is credit-normal, so a straight sum would net
-     * unbudgeted income against unbudgeted spending and report the difference as
-     * "not budgeted" — a smaller, friendlier number that answers nothing.
+     * MAGNITUDE — the engine's `headline`, which sums the two sections
+     * separately and adds their magnitudes rather than netting unbudgeted income
+     * against unbudgeted spending.
      */
-    const headlineTotal = $derived.by(() => {
-        if (shown === null) return null;
-        return maAdd(magnitudeAmount(sectionTotal(shown.revenue)), magnitudeAmount(sectionTotal(shown.expense)));
-    });
+    const headlineTotal = $derived(shown === null ? null : shown.headline);
 
     /** Open the journal filtered to `account` (and its subaccounts) for the budget's period. */
     function openInJournal(account: string): void {
@@ -138,7 +124,7 @@
                             <div class="flex flex-col gap-1">
                                 <div class="flex flex-wrap items-baseline justify-between gap-x-3">
                                     <h3 class="text-sm font-semibold">{section.title}</h3>
-                                    <span class="font-mono text-sm font-medium tabular-nums">{fmt(magnitudeAmount(sectionTotal(section.rows)))}</span>
+                                    <span class="font-mono text-sm font-medium tabular-nums">{fmt(section.total)}</span>
                                 </div>
                                 <ul class="flex flex-col">
                                     {#each section.rows as row (row.account)}
@@ -150,7 +136,7 @@
                                                 onclick={() => openInJournal(row.account)}
                                             >
                                                 <span class="min-w-0 truncate font-medium">{row.account}</span>
-                                                <span class="font-mono text-sm tabular-nums">{fmt(magnitudeAmount(row.total))}</span>
+                                                <span class="font-mono text-sm tabular-nums">{fmt(row.magnitude)}</span>
                                             </button>
                                         </li>
                                     {/each}

@@ -39,7 +39,6 @@ use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::response::Response;
-use ledgeline_core::Fingerprint;
 use ledgeline_core::decimal::MAX_PARSE_PLACES;
 use ledgeline_core::model::{
     AccountName, Amount, AmountStyle, Commodity, CommoditySide, PeriodSpec, Posting,
@@ -50,15 +49,16 @@ use ledgeline_core::projections::serialize::{
 };
 use ledgeline_core::projections::{
     AssetRow, BalanceSeries, CreateRefusal, DiscoveredProjection, Discovery, Growth, GrowthUnit,
-    LineRole, LineSource, Projection, ProjectionOpts, ProjectionPath, Runway, Scenario,
-    ScenarioEvent, ScenarioLine, SeedOpts, discover_in, is_journal_name, label_for, project,
-    seed_scenario, virtual_posting,
+    LineRole, LineSection, LineSource, Projection, ProjectionOpts, ProjectionPath, Runway,
+    Scenario, ScenarioEvent, ScenarioLine, SeedOpts, discover_in, is_journal_name, label_for,
+    line_section, project, seed_scenario, virtual_posting,
 };
 use ledgeline_core::reports::account_types::AccountType;
 use ledgeline_core::reports::{
-    BudgetOpts, Interval, account_decls, declared_types, periods::bucket_label,
+    BudgetOpts, Interval, account_decls, declared_types, periods::bucket_label, signed_entry,
 };
 use ledgeline_core::vault::{Revision, VaultError};
+use ledgeline_core::{Dec, Fingerprint};
 use serde::{Deserialize, Serialize};
 
 use crate::edit_api::{WireDecIn, dec_from_wire, json_body};
@@ -207,11 +207,18 @@ struct WireScenarioLine {
     note: String,
     /// `journal` (authored) | `unbudgeted` (estimated from history).
     source: &'static str,
+    /// `income` | `expense` | `asset` | `oneoff` — the table section the
+    /// line's role, period and account TYPE put it in
+    /// ([`ledgeline_core::projections::line_section`]). A client shows a line
+    /// here without carrying the rule; it only needs its own answer for an
+    /// account the user is still typing.
+    section: LineSection,
 }
 
-impl From<&ScenarioLine> for WireScenarioLine {
-    fn from(line: &ScenarioLine) -> Self {
+impl WireScenarioLine {
+    fn new(line: &ScenarioLine, declared: &BTreeMap<String, AccountType>) -> Self {
         Self {
+            section: line_section(line.role, &line.period.raw, &line.account.0, declared),
             id: line.id.clone(),
             group: line.group.clone(),
             role: line.role.as_str(),
@@ -283,13 +290,17 @@ pub(crate) struct WireScenario {
     events: Vec<WireScenarioEvent>,
 }
 
-impl From<&Scenario> for WireScenario {
-    fn from(scenario: &Scenario) -> Self {
+impl WireScenario {
+    fn new(scenario: &Scenario, declared: &BTreeMap<String, AccountType>) -> Self {
         Self {
             name: scenario.name.clone(),
             created: scenario.created.clone(),
             updated: scenario.updated.clone(),
-            lines: scenario.lines.iter().map(WireScenarioLine::from).collect(),
+            lines: scenario
+                .lines
+                .iter()
+                .map(|line| WireScenarioLine::new(line, declared))
+                .collect(),
             events: scenario
                 .events
                 .iter()
@@ -482,6 +493,20 @@ struct ScenarioLineIn {
     role: Option<String>,
     account: String,
     amount: AmountIn,
+    /// The MAGNITUDE the user typed, when this line was edited (plan 26 B6).
+    ///
+    /// Present: the server signs it by the account's TYPE — negative for
+    /// revenue, as hledger writes income ([`signed_entry`]) — and it replaces
+    /// `amount.quantity`; the commodity and precision still come from
+    /// `amount`. A client therefore never carries the sign rule, and moving a
+    /// line from `expenses:rent` to `income:rent` re-signs it here.
+    ///
+    /// Absent: `amount.quantity` is taken as already signed, exactly as every
+    /// body written before this field existed meant — which is also how an
+    /// unedited line keeps a deliberate sign the type rule would not give it
+    /// (a refund written negative under an expense account).
+    #[serde(default)]
+    entry: Option<WireDecIn>,
     period: PeriodIn,
     #[serde(default)]
     growth: Option<GrowthIn>,
@@ -496,6 +521,12 @@ struct ScenarioLineIn {
     /// value is a `400` rather than a silent fallback.
     #[serde(default)]
     source: Option<String>,
+    /// The outbound line's derived `section`, accepted and DROPPED so a client
+    /// can hand a line straight back — the same courtesy [`PeriodIn`] extends
+    /// to `simple`/`from`/`to`. The server re-derives it; a section is never
+    /// an instruction.
+    #[serde(default, rename = "section")]
+    _section: Option<serde::de::IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -646,13 +677,48 @@ fn source_from_wire(source: Option<&str>) -> Result<LineSource, AppError> {
     }
 }
 
+/// A decoded scenario body whose edited lines still await their sign.
+///
+/// The sign of an `entry` depends on the journal's declared account types,
+/// which are read inside a `compute` slot, while decoding (and bounding) a body
+/// happens before one is claimed. So decoding keeps the magnitudes aside and
+/// [`DecodedScenario::signed`] applies them once the types are at hand.
+struct DecodedScenario {
+    scenario: Scenario,
+    /// One per line, in order: the typed magnitude, or `None` for a line whose
+    /// `amount.quantity` is already signed.
+    entries: Vec<Option<Dec>>,
+}
+
+impl DecodedScenario {
+    /// The scenario, each `entry` signed by its account's type.
+    fn signed(self, declared: &BTreeMap<String, AccountType>) -> Result<Scenario, AppError> {
+        let Self {
+            mut scenario,
+            entries,
+        } = self;
+        for (line, entry) in scenario.lines.iter_mut().zip(entries) {
+            if let Some(entry) = entry {
+                line.amount.quantity =
+                    signed_entry(&line.account.0, entry, declared).map_err(|error| {
+                        AppError::BadRequest(format!(
+                            "line '{}' has an amount out of range: {error}",
+                            line.id
+                        ))
+                    })?;
+            }
+        }
+        Ok(scenario)
+    }
+}
+
 /// Validate a scenario body and turn it into the engine's model.
 ///
 /// The counts are checked FIRST, before a single line is decoded: the point of
 /// the limits is to refuse an oversized scenario cheaply, and decoding ten
 /// thousand lines in order to discover there are ten thousand of them is not
 /// that.
-fn scenario_from_wire(scenario: &ScenarioIn) -> Result<Scenario, AppError> {
+fn scenario_from_wire(scenario: &ScenarioIn) -> Result<DecodedScenario, AppError> {
     if scenario.lines.len() > MAX_LINES {
         return Err(AppError::BadRequest(format!(
             "a scenario may have at most {MAX_LINES} lines (received {})",
@@ -727,12 +793,21 @@ fn scenario_from_wire(scenario: &ScenarioIn) -> Result<Scenario, AppError> {
         })
         .collect::<Result<Vec<_>, AppError>>()?;
 
-    Ok(Scenario {
-        name: scenario.name.clone(),
-        created: scenario.created.clone(),
-        updated: scenario.updated.clone(),
-        lines,
-        events,
+    let entries = scenario
+        .lines
+        .iter()
+        .map(|line| line.entry.as_ref().map(dec_from_wire).transpose())
+        .collect::<Result<Vec<_>, AppError>>()?;
+
+    Ok(DecodedScenario {
+        scenario: Scenario {
+            name: scenario.name.clone(),
+            created: scenario.created.clone(),
+            updated: scenario.updated.clone(),
+            lines,
+            events,
+        },
+        entries,
     })
 }
 
@@ -773,11 +848,12 @@ pub(crate) async fn run(
         .map(Commodity);
     // Decoded (and bounded) BEFORE a `compute` slot is claimed: a scenario we
     // are going to refuse must not first wait for a core.
-    let scenario = scenario_from_wire(&request.scenario)?;
+    let decoded = scenario_from_wire(&request.scenario)?;
 
     compute(move || {
         let journal = &snapshot.journal;
         let declared = declared_types(&account_decls(journal));
+        let scenario = decoded.signed(&declared)?;
         let projection = project(
             &scenario,
             &journal.transactions,
@@ -837,7 +913,7 @@ pub(crate) async fn seed(
                 styles: &journal.commodity_styles,
             },
         )?;
-        Ok(WireScenario::from(&scenario))
+        Ok(WireScenario::new(&scenario, &declared))
     })
     .await
 }
@@ -1254,7 +1330,7 @@ fn open_file(
         label: found.label.clone(),
         revision: fingerprint.token(),
         writable,
-        scenario: WireScenario::from(&scenario),
+        scenario: WireScenario::new(&scenario, declared),
     })
 }
 
@@ -1334,7 +1410,7 @@ fn create_scenario(
         id: id.to_string(),
         revision: Fingerprint::of_bytes(text.as_bytes()).token(),
         writable: true,
-        scenario: WireScenario::from(&written),
+        scenario: WireScenario::new(&written, declared),
         label,
     })
 }
@@ -1402,7 +1478,7 @@ fn update_scenario(
             label: found.label.clone(),
             revision: fingerprint.token(),
             writable: true,
-            scenario: WireScenario::from(&unchanged),
+            scenario: WireScenario::new(&unchanged, declared),
         });
     }
 
@@ -1437,7 +1513,7 @@ fn update_scenario(
         label: found.label.clone(),
         revision: Fingerprint::of_bytes(new_text.as_bytes()).token(),
         writable: true,
-        scenario: WireScenario::from(&written),
+        scenario: WireScenario::new(&written, declared),
     })
 }
 
@@ -1537,10 +1613,16 @@ pub(crate) async fn save(
     // Decoded (and bounded) BEFORE the lock is taken and before a `compute`
     // slot is claimed: a scenario we are going to refuse must not first wait
     // for a core, and must not hold the write lock while it is refused.
-    let mut scenario = scenario_from_wire(&request.scenario)?;
+    let mut decoded = scenario_from_wire(&request.scenario)?;
     let today = today_utc();
-    scenario.created = Some(scenario.created.unwrap_or_else(|| today.clone()));
-    scenario.updated = Some(today);
+    decoded.scenario.created = Some(
+        decoded
+            .scenario
+            .created
+            .take()
+            .unwrap_or_else(|| today.clone()),
+    );
+    decoded.scenario.updated = Some(today);
     let revision = request.revision;
 
     // `import_writes`, not a mutex of this route's own — see the section header.
@@ -1558,6 +1640,7 @@ pub(crate) async fn save(
         // serializes writers to one journal directory, the runtime serializes
         // the whole application.
         let declared = declared_types(&account_decls(&snapshot.journal));
+        let scenario = decoded.signed(&declared)?;
         // Scanned in THIS request, never cached. That is the whole of security
         // layer 2: an id resolves against a set built from `read_dir` names
         // moments ago, so a cached set would be one that no longer describes

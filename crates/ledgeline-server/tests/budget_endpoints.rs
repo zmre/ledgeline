@@ -1092,3 +1092,152 @@ async fn no_response_body_contains_an_absolute_path() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Annualised amounts and the joinable rule (plan 26 B6)
+// ---------------------------------------------------------------------------
+
+/// `{mantissa, places}` (wire) or `{m, p}` (golden) → a value-comparable pair.
+fn canonical_dec(value: &Value) -> (i128, u32) {
+    let (mantissa, places) = match (value.get("mantissa"), value.get("m")) {
+        (Some(m), _) => (m, &value["places"]),
+        (_, Some(m)) => (m, &value["p"]),
+        _ => panic!("not a decimal: {value}"),
+    };
+    let mut mantissa: i128 = mantissa
+        .as_str()
+        .expect("string mantissa")
+        .parse()
+        .expect("mantissa");
+    let mut places = u32::try_from(places.as_u64().expect("places")).expect("places");
+    while places > 0 && mantissa % 10 == 0 {
+        mantissa /= 10;
+        places -= 1;
+    }
+    (mantissa, places)
+}
+
+fn canonical_mixed(value: &Value) -> BTreeMap<String, (i128, u32)> {
+    value
+        .as_object()
+        .expect("mixed amount")
+        .iter()
+        .map(|(commodity, qty)| (commodity.clone(), canonical_dec(qty)))
+        .filter(|(_, (mantissa, _))| *mantissa != 0)
+        .collect()
+}
+
+/// The listing's `annual` and `joinable` reproduce what the SPA's
+/// `budget/sort.ts annualised` and `budget/target.ts joinableRule` (as they
+/// were before plan 26 B6 moved them here) computed
+/// over the same journals — `fixtures/budget-summary/budget-listing.json`,
+/// CAPTURED from the TypeScript before it was deleted.
+#[tokio::test]
+async fn listing_annual_and_joinable_match_the_captured_typescript() {
+    let path = common::fixtures_dir().join("budget-summary/budget-listing.json");
+    let golden: Value =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("readable")).expect("JSON");
+    let mut goals = 0;
+    for entry in golden["journals"].as_array().expect("journals") {
+        let rel = entry["journal"].as_str().expect("journal");
+        let state = AppState::from_journal_path(common::fixtures_dir().join(rel)).expect("opens");
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/budget/lines")
+            .body(Body::empty())
+            .expect("request builds");
+        let (status, body) = send(router_with_state(state), request).await;
+        assert_eq!(status, StatusCode::OK, "{rel}");
+        let listing = json_or_text(&body);
+        for want in entry["goals"].as_array().expect("goals") {
+            let journal_id = want["journalId"].as_str().expect("journalId");
+            let index = want["index"].as_u64().expect("index");
+            let goal = listing["files"]
+                .as_array()
+                .expect("files")
+                .iter()
+                .filter(|file| file["journalId"] == journal_id)
+                .flat_map(|file| file["rules"].as_array().expect("rules"))
+                .flat_map(|rule| rule["lines"].as_array().expect("lines"))
+                .find(|line| line["index"].as_u64() == Some(index))
+                .unwrap_or_else(|| panic!("{rel}: no goal {journal_id}#{index}"));
+            assert_eq!(goal["account"], want["account"], "{rel}: goal {index}");
+            match (&goal["annual"], &want["annual"]) {
+                (Value::Null, Value::Null) => {}
+                (got, expected) => assert_eq!(
+                    canonical_mixed(got),
+                    canonical_mixed(expected),
+                    "{rel}: {journal_id}#{index} annual"
+                ),
+            }
+            goals += 1;
+        }
+        for (period, want) in want_joinable(entry) {
+            assert_eq!(
+                listing["joinable"]
+                    .get(period)
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                want,
+                "{rel}: joinable {period}"
+            );
+        }
+    }
+    assert!(goals >= 20, "too few goals compared: {goals}");
+}
+
+fn want_joinable(entry: &Value) -> Vec<(&str, Value)> {
+    entry["joinable"]
+        .as_object()
+        .expect("joinable")
+        .iter()
+        .map(|(period, target)| (period.as_str(), target.clone()))
+        .collect()
+}
+
+/// The engine decides which rule a new goal joins: the first writable,
+/// UNLOCKED rule of each period, in file order. A rule Ledgeline will not
+/// rewrite (balanced-virtual postings) is passed over rather than named.
+#[tokio::test]
+async fn joinable_names_the_first_unlocked_rule_of_each_period() {
+    let tree = Tree::with(
+        "\
+~ monthly  balanced
+    [expenses:a]     $1
+    [assets:b]
+
+~ monthly  open
+    (expenses:c)     $2
+
+~ monthly  later
+    (expenses:d)     $3
+
+~ yearly  annual
+    (expenses:e)    $40
+
+~ every 2 weeks  fortnightly
+    (expenses:f)     $5
+",
+    );
+    let (status, body) = get(&tree, "/api/budget/lines").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["joinable"],
+        json!({
+            "monthly": {"journalId": "main.journal", "block": 1},
+            "yearly": {"journalId": "main.journal", "block": 3},
+        })
+    );
+    // Every goal carries its annualised magnitude — except the fortnightly
+    // one, which is not ranked rather than guessed at.
+    let annual: Vec<Value> = body["files"][0]["rules"]
+        .as_array()
+        .expect("rules")
+        .iter()
+        .flat_map(|rule| rule["lines"].as_array().expect("lines").clone())
+        .map(|line| line["annual"].clone())
+        .collect();
+    assert_eq!(annual[2], json!({"$": {"mantissa": "24", "places": 0}}));
+    assert_eq!(annual[4], json!({"$": {"mantissa": "40", "places": 0}}));
+    assert_eq!(annual[5], Value::Null);
+}

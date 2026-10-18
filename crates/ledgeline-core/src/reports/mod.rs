@@ -27,6 +27,7 @@ pub mod accounts;
 pub mod aggregate;
 pub mod balance_sheet;
 pub mod budget;
+pub mod budget_summary;
 pub mod cash_flow;
 pub mod flows;
 pub mod income_statement;
@@ -58,8 +59,8 @@ pub use account_groups::{
 };
 pub use account_types::{
     ACCOUNT_TYPE_TAG, AccountDecl, AccountType, AccountTypes, accepted_type_tags, account_decls,
-    account_decls_from, cash_predicate, declared_types, is_account_type, parse_account_type_tag,
-    resolve_account_type,
+    account_decls_from, cash_predicate, declared_types, entered_negated, is_account_type,
+    parse_account_type_tag, resolve_account_type, signed_entry,
 };
 pub use accounts::{RootCategory, account_matches, categorize};
 pub use aggregate::{PostingFilter, account_totals, at_depth, roll_up};
@@ -70,6 +71,10 @@ pub use balance_sheet::{
 pub use budget::{
     BudgetCell, BudgetGaps, BudgetOpts, BudgetReport, BudgetRow, GapRow, UNBUDGETED, budget_gaps,
     budget_report,
+};
+pub use budget_summary::{
+    BarLabel, BudgetBar, BudgetHealth, BudgetLine, BudgetSection, BudgetSectionKind, BudgetSummary,
+    Elapsed, GapTotals, LabelKind, annualised, budget_summary, gap_totals,
 };
 pub use cash_flow::{cash_flow, cash_flow_range, is_cash_like};
 pub use flows::{

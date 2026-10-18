@@ -112,6 +112,7 @@ import type {
     BalanceSeries,
     EventPosting,
     Growth,
+    LineSection,
     Projection,
     ProjectionFile,
     ProjectionIndex,
@@ -147,10 +148,14 @@ import type {
     BsSubsection,
     BsTerm,
     BsValuation,
+    BudgetBar,
     BudgetCell,
     BudgetGaps,
+    BudgetHealth,
+    BudgetLabelKind,
     BudgetReport,
     BudgetRow,
+    BudgetSummary,
     DateRange,
     FlowGraph,
     FlowLink,
@@ -369,11 +374,38 @@ interface RawBudgetRow {
     cells?: RawBudgetCell[];
 }
 
+interface RawBudgetBar {
+    account?: string;
+    income?: boolean;
+    actual?: RawMixed;
+    goal?: RawMixed;
+    pace?: RawMixed;
+    remaining?: RawMixed;
+    health?: string | null;
+    label?: {kind?: string; amount?: RawMixed | null};
+}
+
+interface RawBudgetSection {
+    kind?: string;
+    overall?: RawBudgetBar;
+    bars?: RawBudgetBar[];
+}
+
+interface RawBudgetSummary {
+    from?: string;
+    to?: string;
+    asOf?: string;
+    elapsedDays?: number;
+    spanDays?: number;
+    sections?: RawBudgetSection[];
+}
+
 interface RawBudgetReport {
     buckets?: unknown[];
     periods?: unknown;
     rows?: RawBudgetRow[];
     totals?: RawBudgetCell[];
+    summary?: RawBudgetSummary;
 }
 
 // Projections (plans/22). EVERY optional field on these is `null` on the wire
@@ -403,6 +435,7 @@ interface RawGrowth {
 }
 
 interface RawScenarioLine {
+    section?: string;
     id?: string;
     group?: string;
     role?: string;
@@ -1855,6 +1888,56 @@ function decodeBudgetRow(raw: RawBudgetRow | undefined, context: string): Budget
     });
 }
 
+const BUDGET_HEALTHS: readonly BudgetHealth[] = ["healthy", "behind", "over"];
+const BUDGET_LABEL_KINDS: readonly BudgetLabelKind[] = ["onPlan", "behindPace", "aboveTarget", "toGo", "over", "aheadOfPace", "left"];
+
+function oneOf<T extends string>(value: unknown, allowed: readonly T[], context: string): T {
+    const found = allowed.find((candidate) => candidate === value);
+    if (found === undefined) throw new ApiShapeError(`${context}: expected one of ${allowed.join("|")}, got ${JSON.stringify(value)}`);
+    return found;
+}
+
+function decodeBudgetBar(raw: RawBudgetBar | undefined, context: string): BudgetBar {
+    if (typeof raw !== "object" || raw === null || typeof raw.income !== "boolean" || typeof raw.label !== "object" || raw.label === null) {
+        throw new ApiShapeError(`${context}: expected a bar with income and label`);
+    }
+    return Object.freeze({
+        account: str(raw.account, `${context} account`),
+        income: raw.income,
+        actual: decodeMixed(raw.actual, `${context} actual`),
+        goal: decodeMixed(raw.goal, `${context} goal`),
+        pace: decodeMixed(raw.pace, `${context} pace`),
+        remaining: decodeMixed(raw.remaining, `${context} remaining`),
+        health: raw.health === null ? null : oneOf(raw.health, BUDGET_HEALTHS, `${context} health`),
+        label: Object.freeze({
+            kind: oneOf(raw.label.kind, BUDGET_LABEL_KINDS, `${context} label kind`),
+            amount: decodeOptMixed(raw.label.amount, `${context} label amount`),
+        }),
+    });
+}
+
+function decodeBudgetSummary(raw: RawBudgetSummary | undefined): BudgetSummary {
+    if (typeof raw !== "object" || raw === null || !Array.isArray(raw.sections)) throw new ApiShapeError("budget summary: expected a sections array");
+    return Object.freeze({
+        from: str(raw.from, "budget summary from"),
+        to: str(raw.to, "budget summary to"),
+        asOf: str(raw.asOf, "budget summary asOf"),
+        elapsedDays: num(raw.elapsedDays, "budget summary elapsedDays"),
+        spanDays: num(raw.spanDays, "budget summary spanDays"),
+        sections: frozen(
+            raw.sections.map((section, i) => {
+                const context = `budget summary sections[${i}]`;
+                if (!Array.isArray(section.bars)) throw new ApiShapeError(`${context}: expected a bars array`);
+                return Object.freeze({
+                    kind: oneOf(section.kind, ["revenue", "expense"] as const, `${context} kind`),
+                    overall: decodeBudgetBar(section.overall, `${context} overall`),
+                    bars: frozen(section.bars.map((bar, j) => decodeBudgetBar(bar, `${context} bars[${j}]`))),
+                });
+            })
+        ),
+    });
+}
+
 export function decodeBudgetReport(raw: unknown): BudgetReport {
     const report = raw as RawBudgetReport;
     if (typeof report !== "object" || report === null || !Array.isArray(report.buckets) || !Array.isArray(report.rows) || !Array.isArray(report.totals)) {
@@ -1866,6 +1949,7 @@ export function decodeBudgetReport(raw: unknown): BudgetReport {
         periods: decodePeriods(report.periods, report.buckets.length, "budget periods"),
         rows: frozen(report.rows.map((row, i) => decodeBudgetRow(row, `budget row #${i}`))),
         totals: frozen(report.totals.map((total, i) => decodeBudgetCell(total, `budget totals[${i}]`))),
+        summary: decodeBudgetSummary(report.summary),
     });
 }
 
@@ -1951,6 +2035,21 @@ function decodeScenarioLine(raw: RawScenarioLine | undefined, context: string): 
         opening: decodeNullable(raw.opening, `${context} opening`, decodeScenarioAmount),
         note: str(raw.note, `${context} note`),
         source: decodeEnum(LINE_SOURCES, raw.source, `${context} source`),
+        // The engine's placement, pinned to what it placed. Optional (not
+        // nullable-required like the rest of this wire): the table previews a
+        // section itself when it is missing, so an older body still renders.
+        ...(raw.section === undefined ? {} : {resolved: decodeResolved(raw, context)}),
+    });
+}
+
+const LINE_SECTIONS: readonly LineSection[] = ["income", "expense", "asset", "oneoff"];
+
+function decodeResolved(raw: RawScenarioLine, context: string): ScenarioLine["resolved"] {
+    return Object.freeze({
+        role: decodeEnum(LINE_ROLES, raw.role, `${context} role`),
+        account: str(raw.account, `${context} account`),
+        raw: str(raw.period?.raw, `${context} period raw`),
+        section: decodeEnum(LINE_SECTIONS, raw.section, `${context} section`),
     });
 }
 
@@ -3648,6 +3747,7 @@ interface RawBudgetGoal {
     amount?: RawMixed;
     entry?: RawBudgetEntry;
     inverted?: boolean;
+    annual?: RawMixed;
     locked?: string;
 }
 
@@ -3679,6 +3779,7 @@ interface RawBudgetListing {
     canCreateFile?: boolean;
     createFileName?: string;
     files?: RawBudgetFile[];
+    joinable?: Record<string, {journalId?: string; block?: number}>;
 }
 
 interface RawCreatedBudgetFile {
@@ -3731,6 +3832,7 @@ function decodeBudgetGoal(raw: RawBudgetGoal, context: string): BudgetGoal {
                       value: decodeDec(entry.value, `${context} entry value`),
                   }),
         inverted: raw.inverted === true,
+        annual: raw.annual === undefined || raw.annual === null ? null : decodeMixed(raw.annual, `${context} annual`),
         locked: optStr(raw.locked, `${context} locked`),
     });
 }
@@ -3792,7 +3894,21 @@ export function decodeBudgetListing(raw: unknown): BudgetListing {
         // is only ever shown beside a `canCreateFile` of false.
         createFileName: optStr(listing.createFileName, "budget listing createFileName") ?? "budget.journal",
         files: frozen(listing.files.map((file, i) => decodeBudgetFile(file, `budget listing files[${i}]`))),
+        joinable: decodeJoinable(listing.joinable),
     });
+}
+
+/** The engine's join targets; an unrecognised period is dropped rather than refused, as `decodeRulePeriod` does. */
+function decodeJoinable(raw: RawBudgetListing["joinable"]): BudgetListing["joinable"] {
+    const out: BudgetListing["joinable"] = {};
+    for (const [period, target] of Object.entries(raw ?? {})) {
+        if (!isBudgetPeriod(period)) continue;
+        out[period] = Object.freeze({
+            journalId: str(target.journalId, `budget listing joinable ${period} journalId`),
+            block: num(target.block, `budget listing joinable ${period} block`),
+        });
+    }
+    return Object.freeze(out);
 }
 
 /** `PUT /api/budget/lines/{*id}` → the file it just wrote, at its new revision. */
@@ -4046,6 +4162,7 @@ interface RawGapRow {
     account?: string;
     depth?: number;
     total?: RawMixed;
+    magnitude?: RawMixed;
 }
 
 interface RawBudgetGaps {
@@ -4053,6 +4170,9 @@ interface RawBudgetGaps {
     expense?: RawGapRow[];
     from?: string;
     to?: string;
+    revenueTotal?: RawMixed;
+    expenseTotal?: RawMixed;
+    headline?: RawMixed;
 }
 
 /**
@@ -4068,6 +4188,7 @@ function decodeGapRow(raw: RawGapRow, context: string): GapRow {
         account: str(raw.account, `${context} account`),
         depth: num(raw.depth, `${context} depth`),
         total: decodeMixed(raw.total, `${context} total`),
+        magnitude: decodeMixed(raw.magnitude, `${context} magnitude`),
     });
 }
 
@@ -4084,5 +4205,8 @@ export function decodeBudgetGaps(raw: unknown): BudgetGaps {
         // with the wrong span is worse than one that refuses to render.
         from: str(gaps.from, "budget gaps from"),
         to: str(gaps.to, "budget gaps to"),
+        revenueTotal: decodeMixed(gaps.revenueTotal, "budget gaps revenueTotal"),
+        expenseTotal: decodeMixed(gaps.expenseTotal, "budget gaps expenseTotal"),
+        headline: decodeMixed(gaps.headline, "budget gaps headline"),
     });
 }

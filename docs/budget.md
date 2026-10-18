@@ -329,7 +329,14 @@ the engine has already folded both into one span total — and it keeps a bar fr
 flipping colour on the 1st for reasons that have nothing to do with money.
 
 "Today" is your computer's local date. Nothing in the report engine reads a
-clock; the page passes the date in.
+clock; the page sends the date with the request (`/api/budget?asOf=`), so the
+server's time zone cannot move a bar.
+
+Pace is exact: the engine compares `actual × days in span` with
+`goal × days elapsed`, so a bar sitting precisely on pace counts as on pace.
+The pace *figure* it reports (and quotes in "behind pace" / "ahead of pace") is
+that ratio rounded six decimal places past the goal's own precision, far below
+anything a bar or a label can show.
 
 ### Ordering
 

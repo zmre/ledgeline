@@ -35,20 +35,21 @@ use ledgeline_core::model::{Commodity, Journal};
 use ledgeline_core::reports::periods;
 use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
-    Amounts, BalanceSheetReport, BsGroup, BsOpts, BsSection, BsSectionKind, BsSubsection, BsTerm,
-    BucketSpan, BudgetCell, BudgetGaps, BudgetOpts, BudgetReport, BudgetRow, Cadence, ChangeKind,
-    ChangeRow, Columns, CostOfLiving, DEFAULT_EXCLUDE_DESC, DateRange, FlowGraph, FlowLink,
-    FlowNode, FlowOpts, FlowReport, FlowSide, GapRow, GroupSource, IS_GROUP_TAG,
-    IncomeStatementReport, InsightsOpts, InsightsPeriod, InsightsReport, Interval, InvestmentPerf,
-    IsGroup, IsOpts, IsRow, IsSection, IsSectionKind, IsSubtotal, IsSubtotalKind, MetricDelta,
-    MixedAmount, MoverRow, NetWorthOpts, PerfPoint, PeriodReport, PeriodRow, ReportError,
-    ReportMeta, ReportRow, RowKind, Section, SectionedReport, Subscription, SubscriptionOpts,
-    SubscriptionsReport, TopTxn, Valuation, account_decls, account_groups, account_sections,
-    balance_sheet, balance_sheet_grouped, bs_terms, budget_gaps, budget_report, cash_flow,
+    Amounts, BalanceSheetReport, BarLabel, BsGroup, BsOpts, BsSection, BsSectionKind, BsSubsection,
+    BsTerm, BucketSpan, BudgetBar, BudgetCell, BudgetGaps, BudgetHealth, BudgetOpts, BudgetReport,
+    BudgetRow, BudgetSection, BudgetSectionKind, BudgetSummary, Cadence, ChangeKind, ChangeRow,
+    Columns, CostOfLiving, DEFAULT_EXCLUDE_DESC, DateRange, FlowGraph, FlowLink, FlowNode,
+    FlowOpts, FlowReport, FlowSide, GapRow, GroupSource, IS_GROUP_TAG, IncomeStatementReport,
+    InsightsOpts, InsightsPeriod, InsightsReport, Interval, InvestmentPerf, IsGroup, IsOpts, IsRow,
+    IsSection, IsSectionKind, IsSubtotal, IsSubtotalKind, LabelKind, MetricDelta, MixedAmount,
+    MoverRow, NetWorthOpts, PerfPoint, PeriodReport, PeriodRow, ReportError, ReportMeta, ReportRow,
+    RowKind, Section, SectionedReport, Subscription, SubscriptionOpts, SubscriptionsReport, TopTxn,
+    Valuation, account_decls, account_groups, account_sections, balance_sheet,
+    balance_sheet_grouped, bs_terms, budget_gaps, budget_report, budget_summary, cash_flow,
     cash_flow_range, cash_predicate, compared_windows, declared_groups, declared_types,
-    detect_subscriptions, income_statement, income_statement_columns, income_statement_flows,
-    income_statement_grouped, insights, interval_windows, net_worth, prices_any_on_sheet,
-    prices_any_on_statement,
+    detect_subscriptions, gap_totals, income_statement, income_statement_columns,
+    income_statement_flows, income_statement_grouped, insights, interval_windows, net_worth,
+    prices_any_on_sheet, prices_any_on_statement,
 };
 use serde::{Deserialize, Serialize};
 
@@ -852,7 +853,8 @@ impl From<&BudgetRow> for WireBudgetRow {
     }
 }
 
-/// A budget report: bucket keys, rows, and a grand-total row of cells.
+/// A budget report: bucket keys, rows, a grand-total row of cells, and the
+/// span summary the Budget tab draws.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WireBudgetReport {
@@ -861,15 +863,132 @@ pub(crate) struct WireBudgetReport {
     periods: Vec<WirePeriodInfo>,
     rows: Vec<WireBudgetRow>,
     totals: Vec<WireBudgetCell>,
+    /// The span totals, pace, health and labels (plan 26 B6).
+    summary: WireBudgetSummary,
 }
 
-impl From<&BudgetReport> for WireBudgetReport {
-    fn from(report: &BudgetReport) -> Self {
+impl WireBudgetReport {
+    fn new(report: &BudgetReport, summary: &BudgetSummary) -> Self {
         Self {
             buckets: report.buckets.clone(),
             periods: WirePeriodInfo::all(&report.buckets),
             rows: report.rows.iter().map(WireBudgetRow::from).collect(),
             totals: report.totals.iter().map(WireBudgetCell::from).collect(),
+            summary: WireBudgetSummary::from(summary),
+        }
+    }
+}
+
+/// The Budget tab's reading of the report: one bar per leaf budget over the
+/// whole span, judged against pace. Every amount is a MAGNITUDE; `income` says
+/// which way round the goal was written, so a client negates nothing.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireBudgetSummary {
+    /// Inclusive span start (the first day of the oldest bucket).
+    from: String,
+    /// Inclusive span end.
+    to: String,
+    /// The day pace is measured at.
+    as_of: String,
+    /// Days of the span elapsed by `asOf`, clamped to `0..=spanDays`; pace is
+    /// exactly `goal × elapsedDays ÷ spanDays`.
+    elapsed_days: u32,
+    span_days: u32,
+    /// Income then Expenses, each present only when it has a budget.
+    sections: Vec<WireBudgetSection>,
+}
+
+impl From<&BudgetSummary> for WireBudgetSummary {
+    fn from(summary: &BudgetSummary) -> Self {
+        Self {
+            from: summary.from.clone(),
+            to: summary.to.clone(),
+            as_of: summary.as_of.clone(),
+            elapsed_days: summary.elapsed.done,
+            span_days: summary.elapsed.span,
+            sections: summary
+                .sections
+                .iter()
+                .map(WireBudgetSection::from)
+                .collect(),
+        }
+    }
+}
+
+/// One half of the Budget tab.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireBudgetSection {
+    /// `revenue` | `expense`, by the accounts' resolved type.
+    kind: BudgetSectionKind,
+    /// The section's "spent of budgeted" bar; `account` is empty.
+    overall: WireBudgetBar,
+    /// One bar per leaf budget, in account order (the client sorts).
+    bars: Vec<WireBudgetBar>,
+}
+
+impl From<&BudgetSection> for WireBudgetSection {
+    fn from(section: &BudgetSection) -> Self {
+        Self {
+            kind: section.kind,
+            overall: WireBudgetBar::from(&section.overall),
+            bars: section.bars.iter().map(WireBudgetBar::from).collect(),
+        }
+    }
+}
+
+/// One bullet bar.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireBudgetBar {
+    account: String,
+    /// The goal is credit-normal: word it as earnings ("earned … of … target").
+    income: bool,
+    actual: WireMixed,
+    /// The span total.
+    goal: WireMixed,
+    /// Where `actual` should be by `asOf`.
+    pace: WireMixed,
+    /// `goal − actual`.
+    remaining: WireMixed,
+    /// `healthy` | `behind` | `over`, or `null` for a multi-commodity line,
+    /// which has no single bar to draw.
+    health: Option<BudgetHealth>,
+    label: WireBarLabel,
+}
+
+impl From<&BudgetBar> for WireBudgetBar {
+    fn from(bar: &BudgetBar) -> Self {
+        Self {
+            account: bar.account.clone(),
+            income: bar.income,
+            actual: wire_mixed(&bar.actual),
+            goal: wire_mixed(&bar.goal),
+            pace: wire_mixed(&bar.pace),
+            remaining: wire_mixed(&bar.remaining),
+            health: bar.health,
+            label: WireBarLabel::from(&bar.label),
+        }
+    }
+}
+
+/// The words under a bar: which sentence, and the amount it quotes.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireBarLabel {
+    /// `onPlan` | `behindPace` | `aboveTarget` | `toGo` | `over` |
+    /// `aheadOfPace` | `left`.
+    kind: LabelKind,
+    /// `null` for `onPlan`.
+    amount: Option<WireMixed>,
+}
+
+impl From<&BarLabel> for WireBarLabel {
+    fn from(label: &BarLabel) -> Self {
+        Self {
+            kind: label.kind,
+            amount: label.amount.as_ref().map(wire_mixed),
         }
     }
 }
@@ -880,16 +999,22 @@ impl From<&BudgetReport> for WireBudgetReport {
 struct WireGapRow {
     account: String,
     depth: usize,
+    /// The span total, in the journal's own signs.
     total: WireMixed,
+    /// `|total|`, the figure the section shows.
+    magnitude: WireMixed,
 }
 
-impl From<&GapRow> for WireGapRow {
-    fn from(row: &GapRow) -> Self {
-        Self {
+impl WireGapRow {
+    fn new(row: &GapRow) -> Result<Self, ReportError> {
+        Ok(Self {
             account: row.account.clone(),
             depth: row.depth,
             total: wire_mixed(&row.total),
-        }
+            magnitude: wire_mixed(&ledgeline_core::reports::budget_summary::magnitude(
+                &row.total,
+            )?),
+        })
     }
 }
 
@@ -902,16 +1027,34 @@ pub(crate) struct WireBudgetGaps {
     expense: Vec<WireGapRow>,
     from: String,
     to: String,
+    /// `|Σ revenue|`.
+    revenue_total: WireMixed,
+    /// `|Σ expense|`.
+    expense_total: WireMixed,
+    /// `|Σ revenue| + |Σ expense|` — summed separately, never netted.
+    headline: WireMixed,
 }
 
-impl From<&BudgetGaps> for WireBudgetGaps {
-    fn from(gaps: &BudgetGaps) -> Self {
-        Self {
-            revenue: gaps.revenue.iter().map(WireGapRow::from).collect(),
-            expense: gaps.expense.iter().map(WireGapRow::from).collect(),
+impl WireBudgetGaps {
+    fn new(gaps: &BudgetGaps) -> Result<Self, ReportError> {
+        let totals = gap_totals(gaps)?;
+        Ok(Self {
+            revenue: gaps
+                .revenue
+                .iter()
+                .map(WireGapRow::new)
+                .collect::<Result<_, _>>()?,
+            expense: gaps
+                .expense
+                .iter()
+                .map(WireGapRow::new)
+                .collect::<Result<_, _>>()?,
             from: gaps.from.clone(),
             to: gaps.to.clone(),
-        }
+            revenue_total: wire_mixed(&totals.revenue),
+            expense_total: wire_mixed(&totals.expense),
+            headline: wire_mixed(&totals.headline),
+        })
     }
 }
 
@@ -2262,7 +2405,7 @@ pub(crate) struct NetWorthQuery {
     value_in: Option<String>,
 }
 
-/// `?end=&interval=&count=&depth=&budgetDesc=` — budget report.
+/// `?end=&interval=&count=&depth=&budgetDesc=&asOf=` — budget report.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BudgetQuery {
@@ -2271,6 +2414,10 @@ pub(crate) struct BudgetQuery {
     count: Option<usize>,
     depth: Option<usize>,
     budget_desc: Option<String>,
+    /// The day the summary's pace is measured at — the CLIENT's today, so the
+    /// server's time zone cannot move a bar (as `?today=` on diagnostics).
+    /// Defaults to the server's UTC date.
+    as_of: Option<String>,
 }
 
 /// `?end=&interval=&count=&depth=` — the budget's unbudgeted categories.
@@ -2885,8 +3032,10 @@ pub(crate) async fn budget(
         query.depth,
     )?;
     let budget_desc = query.budget_desc.filter(|pattern| !pattern.is_empty());
+    let as_of = parse_date("asOf", query.as_of, today_utc)?;
 
     compute(move || {
+        let declared = declared_types(&account_decls(&snapshot.journal));
         let opts = BudgetOpts {
             end: &window.end,
             interval: window.interval,
@@ -2899,7 +3048,8 @@ pub(crate) async fn budget(
             &snapshot.journal.periodic_transactions,
             &opts,
         )?;
-        Ok(WireBudgetReport::from(&report))
+        let summary = budget_summary(&report, &declared, &window.end, &as_of)?;
+        Ok(WireBudgetReport::new(&report, &summary))
     })
     .await
 }
@@ -2938,7 +3088,7 @@ pub(crate) async fn budget_gaps_report(
             &declared,
             &opts,
         )?;
-        Ok(WireBudgetGaps::from(&gaps))
+        Ok(WireBudgetGaps::new(&gaps)?)
     })
     .await
 }

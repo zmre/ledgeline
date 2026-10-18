@@ -7,9 +7,8 @@ import {describe, expect, it} from "vitest";
 import {Workbook, type Worksheet} from "exceljs";
 import {decodeBalanceSheetReport, decodeIncomeStatementReport} from "#lib/api/nativeDecode.js";
 import {dec, type MixedAmount} from "#lib/domain/money.js";
-import {NO_ACCOUNT_CLASSES} from "#lib/domain/accountClass.js";
 import type {Holding, HoldingsReport} from "#lib/holdings/types.js";
-import type {BudgetCell, BudgetReport, PeriodReport, SectionedReport} from "#lib/reports/types.js";
+import type {BudgetBar, BudgetReport, PeriodReport, SectionedReport} from "#lib/reports/types.js";
 import {CLASSIFIED_BALANCE_SHEET, GROUPED_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "#lib/testing/balanceSheetFixture.js";
 import {GROUPED_INCOME_STATEMENT, MULTI_STEP_INCOME_STATEMENT, UNCOMPARED_INCOME_STATEMENT} from "#lib/testing/incomeStatementFixture.js";
 import {buildBalanceSheetWorkbook, buildBudgetWorkbook, buildHoldingsWorkbook, buildIncomeStatementWorkbook, buildWorkbook, numberFormat} from "./xlsx";
@@ -949,24 +948,41 @@ describe("UNIT export/xlsx", () => {
     // sum by another for "% of budget". BudgetSummary.svelte renders two
     // sections with two totals; so does the export now.
     describe("budget workbook mirrors the two on-screen sections", () => {
-        const cell = (actual: MixedAmount, goal: MixedAmount | null): BudgetCell => ({actual, goal});
-        const declared = NO_ACCOUNT_CLASSES;
+        /** An engine bar: every amount already a magnitude, `remaining` = goal − actual. */
+        const bar = (account: string, actual: number, goal: number, income = false): BudgetBar => ({
+            account,
+            income,
+            actual: usd(actual),
+            goal: usd(goal),
+            pace: usd(goal),
+            remaining: usd(goal - actual),
+            health: "healthy",
+            label: {kind: "onPlan", amount: null},
+        });
 
-        // Income is credit-normal (negative on the wire); expenses positive.
+        // The engine's summary for two months of: salary earned $3,000/mo of a
+        // $2,500/mo target, rent $2,000 of $2,000, food $300 of $400.
         const report: BudgetReport = {
             kind: "budget",
             buckets: ["2026-06", "2026-07"],
             periods: periodsOf(["2026-06", "2026-07"]),
-            rows: [
-                {account: "income:salary", depth: 2, cells: [cell(usd(-300000), usd(-250000)), cell(usd(-300000), usd(-250000))]},
-                {account: "expenses:rent", depth: 2, cells: [cell(usd(200000), usd(200000)), cell(usd(200000), usd(200000))]},
-                {account: "expenses:food", depth: 2, cells: [cell(usd(30000), usd(40000)), cell(usd(30000), usd(40000))]},
-            ],
-            totals: [cell(new Map(), null), cell(new Map(), null)],
+            rows: [],
+            totals: [],
+            summary: {
+                from: "2026-06-01",
+                to: "2026-07-31",
+                asOf: "2026-08-01",
+                elapsedDays: 1,
+                spanDays: 1,
+                sections: [
+                    {kind: "revenue", overall: bar("", 600000, 500000, true), bars: [bar("income:salary", 600000, 500000, true)]},
+                    {kind: "expense", overall: bar("", 460000, 480000), bars: [bar("expenses:rent", 400000, 400000), bar("expenses:food", 60000, 80000)]},
+                ],
+            },
         };
 
         it("writes an Income section then an Expenses section, each with its own total", async () => {
-            const ws = await readBack(await buildBudgetWorkbook(report, {title: "Budget", params: "2026-06 – 2026-07"}, declared), "Budget");
+            const ws = await readBack(await buildBudgetWorkbook(report, {title: "Budget", params: "2026-06 – 2026-07"}), "Budget");
 
             expect(Array.from({length: 5}, (_, i) => ws.getCell(4, i + 1).value)).toEqual(["Account", "Spent", "Budget", "Remaining", "% of budget"]);
             expect(Array.from({length: 7}, (_, i) => ws.getCell(5 + i, 1).value)).toEqual([
@@ -983,7 +999,7 @@ describe("UNIT export/xlsx", () => {
         });
 
         it("totals each section on its own scale — never |income| + |expenses|", async () => {
-            const ws = await readBack(await buildBudgetWorkbook(report, {title: "Budget", params: "p"}, declared), "Budget");
+            const ws = await readBack(await buildBudgetWorkbook(report, {title: "Budget", params: "p"}), "Budget");
 
             // Income: earned $6,000 of a $5,000 target (magnitudes, as the page shows them).
             expect([ws.getCell("B7").value, ws.getCell("C7").value, ws.getCell("D7").value]).toEqual([6000, 5000, -1000]);
@@ -999,9 +1015,12 @@ describe("UNIT export/xlsx", () => {
             expect(ws.getCell("B12").value).toBeNull();
         });
 
-        it("omits a section entirely when the period has no leaf of that type", async () => {
-            const expensesOnly: BudgetReport = {...report, rows: report.rows.filter((r) => r.account.startsWith("expenses"))};
-            const ws = await readBack(await buildBudgetWorkbook(expensesOnly, {title: "Budget", params: "p"}, declared), "Budget");
+        it("omits a section entirely when the engine sends none of that type", async () => {
+            const expensesOnly: BudgetReport = {
+                ...report,
+                summary: {...report.summary, sections: report.summary.sections.filter((section) => section.kind === "expense")},
+            };
+            const ws = await readBack(await buildBudgetWorkbook(expensesOnly, {title: "Budget", params: "p"}), "Budget");
             expect(Array.from({length: 4}, (_, i) => ws.getCell(5 + i, 1).value)).toEqual(["Expenses", "expenses:rent", "expenses:food", "Total Expenses"]);
         });
     });

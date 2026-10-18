@@ -814,6 +814,7 @@ describe("UNIT nativeDecode — BudgetReport over the budget golden", () => {
                 },
             ],
             totals: [{actual: {$: dec(-23, 0)}, goal: {$: dec(400, 0)}}],
+            summary: {from: "2026-01-01", to: "2026-02-28", asOf: "2026-02-28", elapsedDays: 1, spanDays: 1, sections: []},
         });
         expect(report.rows[0].cells[0].goal).toBeNull();
         const gifts = report.rows[1];
@@ -825,6 +826,58 @@ describe("UNIT nativeDecode — BudgetReport over the budget golden", () => {
 
     it("throws ApiShapeError when totals is missing", () => {
         expect(() => decodeBudgetReport({buckets: [], rows: []})).toThrow(ApiShapeError);
+    });
+
+    // The engine's span summary (plan 26 B6): magnitudes, a verdict, and the
+    // sentence to say it with — the shapes the bars render without any math.
+    describe("the span summary", () => {
+        const bar = (overrides: Record<string, unknown> = {}) => ({
+            account: "income:salary",
+            income: true,
+            actual: {$: dec(2000, 0)},
+            goal: {$: dec(6000, 0)},
+            pace: {$: dec(3000, 0)},
+            remaining: {$: dec(4000, 0)},
+            health: "behind",
+            label: {kind: "behindPace", amount: {$: dec(1000, 0)}},
+            ...overrides,
+        });
+        const body = (bars: unknown[]) => ({
+            buckets: [],
+            periods: [],
+            rows: [],
+            totals: [],
+            summary: {
+                from: "2026-01-01",
+                to: "2026-06-30",
+                asOf: "2026-03-31",
+                elapsedDays: 90,
+                spanDays: 181,
+                sections: [{kind: "revenue", overall: bar({account: ""}), bars}],
+            },
+        });
+
+        it("decodes sections, bars, health and labels", () => {
+            const summary = decodeBudgetReport(body([bar(), bar({account: "income:mixed", health: null, label: {kind: "onPlan", amount: null}})])).summary;
+            expect(summary.elapsedDays).toBe(90);
+            expect(summary.spanDays).toBe(181);
+            const [section] = summary.sections;
+            expect(section.kind).toBe("revenue");
+            expect(section.bars[0].health).toBe("behind");
+            expect(section.bars[0].label.kind).toBe("behindPace");
+            expect(section.bars[0].label.amount?.get("$")).toEqual({m: 1000n, p: 0});
+            expect(section.bars[1].health).toBeNull();
+            expect(section.bars[1].label.amount).toBeNull();
+        });
+
+        it("refuses a label or health it does not know rather than rendering a guess", () => {
+            expect(() => decodeBudgetReport(body([bar({label: {kind: "wayOver", amount: null}})]))).toThrow(ApiShapeError);
+            expect(() => decodeBudgetReport(body([bar({health: "fine"})]))).toThrow(ApiShapeError);
+        });
+
+        it("throws when the summary is missing", () => {
+            expect(() => decodeBudgetReport({buckets: [], periods: [], rows: [], totals: []})).toThrow(ApiShapeError);
+        });
     });
 
     it("throws ApiShapeError when a row lacks cells", () => {

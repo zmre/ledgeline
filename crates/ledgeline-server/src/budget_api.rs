@@ -79,7 +79,7 @@ use ledgeline_core::periodic::{
 };
 use ledgeline_core::reports::{
     AccountType, Interval, MixedAmount, ReferenceOpts, account_decls, account_reference,
-    declared_types, is_account_type,
+    annualised, declared_types, entered_negated,
 };
 use ledgeline_core::vault::{Revision, VaultError, VaultPath};
 use ledgeline_core::{Dec, journals, periodic};
@@ -155,6 +155,22 @@ pub(crate) struct WireBudgetLines {
     create_file_name: &'static str,
     /// Every file declaring a `~` rule, in the order the parse read them.
     files: Vec<WireBudgetFile>,
+    /// For each period the editor offers, the rule a NEW goal of that period
+    /// joins: the first writable, unlocked rule stating it, in file order
+    /// across `files`. A period with no such rule is absent, and a goal of it
+    /// opens a new rule (`addRule`). Decided here so both of the tab's Add
+    /// paths — and any other client — name the same rule (plan 26 B6).
+    joinable: BTreeMap<&'static str, WireJoinTarget>,
+}
+
+/// The rule a new goal of one period joins.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WireJoinTarget {
+    /// The file it is in — the `PUT` target.
+    journal_id: String,
+    /// The rule, by [`WireBudgetRule::block`] — what an `add` names.
+    block: usize,
 }
 
 /// One journal file's `~` rules.
@@ -250,6 +266,12 @@ pub(crate) struct WireBudgetLine {
     /// Whether `entry` is the negation of `amount`, i.e. whether a number sent
     /// back for this line will be negated before it is written.
     inverted: bool,
+    /// `entry` normalised to a year (× 365/52/12/4/1), so goals of different
+    /// periods compare when sorted by amount; the empty amount for a line with
+    /// no `entry`. Absent for a rule that is not a bare fixed interval, which
+    /// Ledgeline will not rank rather than guess a factor for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    annual: Option<WireMixed>,
     /// The sentence to show when this line is read-only, else absent. Set when
     /// EITHER the line or its rule is locked, so a client can drive an edit
     /// affordance off this one field.
@@ -627,7 +649,10 @@ fn budget_lines(state: &AppState, editable: bool) -> Result<WireBudgetLines, App
         })
         .map(|(_, file)| file.journal_id.clone());
 
+    let joinable = joinable_targets(&files);
+
     Ok(WireBudgetLines {
+        joinable,
         editable,
         can_create_file: editable
             && location
@@ -637,6 +662,33 @@ fn budget_lines(state: &AppState, editable: bool) -> Result<WireBudgetLines, App
         default_target,
         files,
     })
+}
+
+/// For each offered period, the first writable, unlocked rule that states it,
+/// in file order — the rule a new goal of that period joins.
+///
+/// Across FILES, which is the one thing `PeriodicDoc::joinable_block` (one
+/// file, period AND name) cannot answer: the tab adds to a rule it can name by
+/// `{journalId, block}`, so the name already matches by construction. A locked
+/// rule is skipped for the reason the engine skips one — Ledgeline will not
+/// rewrite it, so a goal appended to it would be refused.
+fn joinable_targets(files: &[WireBudgetFile]) -> BTreeMap<&'static str, WireJoinTarget> {
+    let mut targets = BTreeMap::new();
+    for file in files.iter().filter(|file| file.writable) {
+        for rule in &file.rules {
+            let Some(period) = rule.period.simple else {
+                continue;
+            };
+            if rule.locked.is_some() {
+                continue;
+            }
+            targets.entry(period).or_insert_with(|| WireJoinTarget {
+                journal_id: file.journal_id.clone(),
+                block: rule.block,
+            });
+        }
+    }
+    targets
 }
 
 /// Whether `path` is a writable file the parse read that holds no transactions.
@@ -697,7 +749,7 @@ fn wire_rules(
             lines: block
                 .lines
                 .iter()
-                .map(|at| wire_line(doc, *at, rule, declared))
+                .map(|at| wire_line(doc, *at, rule, block.period, declared))
                 .collect(),
         })
         .collect()
@@ -714,6 +766,7 @@ fn wire_line(
     doc: &PeriodicDoc,
     at: usize,
     rule: &PeriodicTransaction,
+    period: Option<PeriodExpr>,
     declared: &DeclaredTypes,
 ) -> WireBudgetLine {
     let line = &doc.lines()[at];
@@ -727,24 +780,38 @@ fn wire_line(
         .as_ref()
         .and_then(|_| rule.postings.get(line.at))
         .and_then(|posting| posting.amounts.first());
+    // `neg` overflows only at the `i128` boundary, which no amount that came
+    // out of the parser can be at; the value itself is the honest fallback
+    // rather than a panic.
+    let entry = written.map(|amount| {
+        let value = if flip {
+            amount.quantity.neg().unwrap_or(amount.quantity)
+        } else {
+            amount.quantity
+        };
+        (amount.commodity.clone(), value)
+    });
+    let entry_amount = entry
+        .as_ref()
+        .map(|(commodity, value)| MixedAmount::single(commodity.clone(), *value))
+        .unwrap_or_default();
     WireBudgetLine {
         index: line.index,
         line: line.line,
         account: line.account.clone(),
         unbalanced: line.ptype == PostingType::Virtual,
         amount: written.map(|amount| wire_mixed(&single(amount))),
-        entry: written.map(|amount| WireEntry {
-            commodity: amount.commodity.0.clone(),
-            // `neg` overflows only at the `i128` boundary, which no amount that
-            // came out of the parser can be at; the value itself is the honest
-            // fallback rather than a panic.
-            value: WireDec::from(if flip {
-                amount.quantity.neg().unwrap_or(amount.quantity)
-            } else {
-                amount.quantity
-            }),
+        entry: entry.as_ref().map(|(commodity, value)| WireEntry {
+            commodity: commodity.0.clone(),
+            value: WireDec::from(*value),
         }),
         inverted: flip,
+        // Overflow is unreachable for a parsed amount times twelve; absent is
+        // the honest fallback ("not ranked") rather than a panic.
+        annual: annualised(&entry_amount, period)
+            .ok()
+            .flatten()
+            .map(|annual| wire_mixed(&annual)),
         locked: doc.line_lock(line.index),
     }
 }
@@ -790,7 +857,7 @@ fn oriented(amounts: &MixedAmount, flip: bool) -> Result<MixedAmount, AppError> 
 /// sign the journal and the editor disagree about. `seed_scenario` then reads
 /// that goal straight into a projection line.
 fn inverted_with(declared: &DeclaredTypes, account: &str) -> bool {
-    is_account_type(account, declared, AccountType::Revenue)
+    entered_negated(account, declared)
 }
 
 // ===========================================================================

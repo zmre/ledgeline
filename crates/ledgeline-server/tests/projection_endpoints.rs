@@ -1584,3 +1584,101 @@ async fn every_projection_file_route_requires_the_token() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Magnitudes in, signs and sections out (plan 26 B6)
+// ---------------------------------------------------------------------------
+
+/// An income line sent as a MAGNITUDE (`entry`) projects exactly as the same
+/// line sent signed the way hledger writes it — so a client need not know that
+/// revenue is negative.
+#[tokio::test]
+async fn an_entry_is_signed_by_the_accounts_type() {
+    let income = |quantity: &str, entry: Option<&str>| {
+        let mut line = json!({
+            "id": "salary",
+            "group": "rule:0",
+            "account": "income:salary",
+            "amount": {"commodity": "$", "quantity": {"mantissa": quantity, "places": 2}, "precision": 2},
+            "period": {"raw": "monthly"},
+            "growth": null,
+            "note": "",
+            "source": "journal"
+        });
+        if let Some(entry) = entry {
+            line["entry"] = json!({"mantissa": entry, "places": 2});
+        }
+        line
+    };
+    let window = |line: Value| {
+        json!({
+            "scenario": scenario_with(vec![line], vec![]),
+            "asOf": "2026-07-08",
+            "interval": "monthly",
+            "count": 2,
+            "depth": 2
+        })
+    };
+    let signed = run(window(income("-500000", None))).await;
+    // The quantity beside an entry is ignored, whatever its sign; a NEGATIVE
+    // entry is still a magnitude.
+    let from_entry = run(window(income("0", Some("500000")))).await;
+    let from_negative_entry = run(window(income("123", Some("-500000")))).await;
+    assert_eq!(
+        signed["netIncome"]["totals"],
+        from_entry["netIncome"]["totals"]
+    );
+    assert_eq!(
+        signed["netIncome"]["totals"],
+        from_negative_entry["netIncome"]["totals"]
+    );
+    let totals: Vec<i128> = signed["netIncome"]["totals"]
+        .as_array()
+        .expect("totals")
+        .iter()
+        .map(dollars)
+        .collect();
+    assert_eq!(totals, [5000, 5000], "income projects as income");
+
+    // An expense entry stays positive.
+    let mut rent = rent_line();
+    rent["amount"]["quantity"]["mantissa"] = json!("-1");
+    rent["entry"] = json!({"mantissa": "420000", "places": 2});
+    let projection = run(window(rent)).await;
+    let totals: Vec<i128> = projection["netIncome"]["totals"]
+        .as_array()
+        .expect("totals")
+        .iter()
+        .map(dollars)
+        .collect();
+    assert_eq!(totals, [-4200, -4200]);
+}
+
+/// A saved entry is WRITTEN with the journal's sign, every outbound line says
+/// which section it belongs in, and a line handed straight back — `section`
+/// and all — is accepted.
+#[tokio::test]
+async fn a_save_writes_an_entry_signed_and_lines_carry_their_section() {
+    let tree = Tree::standard();
+    let (revision, mut scenario) = open_plan(&tree.state).await;
+    let sections: Vec<&str> = scenario["lines"]
+        .as_array()
+        .expect("lines")
+        .iter()
+        .map(|line| line["section"].as_str().expect("section"))
+        .collect();
+    assert_eq!(sections, ["expense", "income"]);
+
+    scenario["lines"][1]["entry"] = json!({"mantissa": "1300000", "places": 2});
+    let (status, doc) = file_json(
+        &tree.state,
+        "PUT",
+        PLAN_URI,
+        Some(json!({"revision": revision, "scenario": scenario})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let after = tree.read("plans/projection-plan.journal");
+    assert!(after.contains("(revenues:salary)  $-13000.00\n"), "{after}");
+    assert_eq!(doc["scenario"]["lines"][1]["section"], "income");
+}

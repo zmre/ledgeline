@@ -628,6 +628,8 @@ export interface BudgetQuery {
     depth?: number;
     /** Case-insensitive periodic-rule description filter; absent/empty = all rules. */
     budgetDesc?: string;
+    /** The client's today: the summary's pace is measured at it, so the server's time zone cannot move a bar. */
+    asOf?: string;
 }
 
 /**
@@ -703,6 +705,13 @@ export interface WireScenarioLineIn {
      * balance only compounds, which is the `$0` posting the file carries.
      */
     amount: WireAmountIn;
+    /**
+     * The MAGNITUDE the user typed, for an edited line (plan 26 B6). The engine
+     * signs it by the account's type and it replaces `amount.quantity`; absent,
+     * `amount.quantity` is taken as already signed. So the SPA never carries
+     * the "revenue is negative" rule.
+     */
+    entry?: WireDec;
     period: WirePeriodIn;
     growth: WireGrowthIn | null;
     /**
@@ -1022,7 +1031,7 @@ export class LedgelineApi {
     /** Budget report (actuals vs. periodic-rule goals). Note: top-level /api/budget, NOT under /api/reports/. */
     budget(query: BudgetQuery = {}): Promise<unknown> {
         return this.getJson(
-            `/api/budget${queryString({end: query.end, interval: query.interval, count: query.count, depth: query.depth, budgetDesc: query.budgetDesc})}`
+            `/api/budget${queryString({end: query.end, interval: query.interval, count: query.count, depth: query.depth, budgetDesc: query.budgetDesc, asOf: query.asOf})}`
         );
     }
 

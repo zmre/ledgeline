@@ -1,53 +1,38 @@
 <!-- Budget summary (primary budget view): per-category bullet bars grouped into
-     Income (revenue) and Expenses, à la Goodbudget / YNAB envelopes. The engine
-     returns per-bucket cells; summarizeBudget folds them into one {actual, goal}
-     per account. Only revenue & expense accounts are shown (assets/liabilities
-     and the synthetic <unbudgeted> cash offset are excluded); revenue budgets
-     are entered NEGATIVE per hledger's credit convention, so they read in
-     magnitude as "earned $X of $Y target". Clicking a category opens the journal
-     filtered to that account subtree for the same period.
+     Income (revenue) and Expenses, à la Goodbudget / YNAB envelopes. The ENGINE
+     computes everything a reader is told (`reports/budget_summary.rs`, served as
+     `BudgetReport.summary`, plan 26 B6): one {actual, goal} per leaf budget over
+     the span, in magnitudes, split by the accounts' resolved type, with each
+     bar's pace, health and label. This component turns that into words and
+     pixels and nothing else. Clicking a category opens the journal filtered to
+     that account subtree for the same period.
 
      # Pace, and why a bar is one colour
 
      A bar is judged against where it SHOULD be by now, not against the whole
-     period's goal: `summarizeBudget` sums a goal over every bucket in the span
-     while the actual can only run to today, so in June a year-to-date view read
-     every income line as a shortfall and every expense line as a large,
-     reassuring underspend. `elapsedFraction` prorates the goal by days elapsed
-     and `budgetHealth` decides, from the same three numbers, which side of that
-     mark the line is on — at or above it for revenue, at or below it for expense.
+     period's goal: the goal is summed over every bucket in the span while the
+     actual can only run to today, so in June a year-to-date view read every
+     income line as a shortfall and every expense line as a large, reassuring
+     underspend. The engine prorates the goal by days elapsed (exactly) and
+     decides health from the same three numbers — at or above pace for revenue,
+     at or below it for expense.
 
      The fill is therefore ONE colour. It used to be green up to the goal marker
      and red past it, which is precisely what made "earned more than target"
      render as a red overspend on an income line. The goal marker stays as the
      high-contrast line; the pace mark is a second, quieter tick. -->
 <script lang="ts">
-    import {isAccountType, type AccountClasses, type AccountType} from "#lib/domain/accountClass.js";
     import {openJournal} from "#lib/journal/openJournal.js";
-    import {maAdd, maNeg, type MixedAmount} from "#lib/domain/money.js";
+    import type {MixedAmount} from "#lib/domain/money.js";
     import type {AmountStyle, ISODate} from "#lib/domain/types.js";
     import {sortBudgetLines, type BudgetSortKey, type SortDir} from "#lib/budget/sort.js";
     import {formatTotals} from "#lib/journal/rowModel.js";
-    import {
-        barGeometry,
-        budgetHealth,
-        budgetLeaves,
-        budgetTotals,
-        elapsedFraction,
-        magnitudeAmount,
-        paceAmount,
-        primaryValue,
-        summarizeBudget,
-        type BarGeometry,
-        type BudgetHealth,
-        type BudgetLine,
-    } from "#lib/reports/budgetSummary.js";
-    import type {BudgetReport} from "#lib/reports/types.js";
+    import {barGeometry, primaryValue, type BarGeometry} from "#lib/reports/budgetSummary.js";
+    import type {BudgetBar as WireBar, BudgetHealth, BudgetReport} from "#lib/reports/types.js";
 
     let {
         report,
         styles,
-        declared,
         from,
         to,
         asOf,
@@ -56,17 +41,10 @@
     }: {
         report: BudgetReport;
         styles: ReadonlyMap<string, AmountStyle>;
-        /** The engine's account classes (journal.accountClasses). */
-        declared: AccountClasses;
         /** The budget period (inclusive), forwarded to the journal on a category click. */
         from: ISODate;
         to: ISODate;
-        /**
-         * Today, as the page's local clock reads it. A PROP, not a clock read:
-         * `budgetSummary.ts` is purity-guarded and may not read one, and a
-         * component that took it from `today()` itself could not be tested at a
-         * fixed date without mocking a module.
-         */
+        /** The day pace was measured at (the page sent it with the query); shown on the pace tick. */
         asOf: ISODate;
         sort: BudgetSortKey;
         dir: SortDir;
@@ -91,59 +69,44 @@
         goal: MixedAmount;
     }
 
-    /** How much of the span has run. One number for the whole screen: both sections cover the same dates. */
-    const elapsed = $derived(elapsedFraction(from, to, asOf));
-
-    /**
-     * The label under a bar, in the vocabulary plans/20 fixes.
-     *
-     * Six cases, three per column, and "on plan" for the exact-zero remainder in
-     * either. Every amount here is a magnitude, so nothing needs a sign.
-     */
-    function labelFor(health: BudgetHealth | null, income: boolean, goal: MixedAmount, actual: MixedAmount, pace: MixedAmount): string {
-        // A multi-commodity line has no bar and no health; it keeps the neutral
-        // wording it has always had rather than gaining a colour it cannot earn.
-        if (health === null) return "on plan";
-        const remainder = maAdd(goal, maNeg(actual)); // |budget| − |spent|
-        const left = primaryValue(remainder) ?? 0;
-        if (income) {
-            if (health === "behind") return `${fmt(maAdd(pace, maNeg(actual)))} behind pace`;
-            if (left < 0) return `${fmt(maNeg(remainder))} above target`;
-            return left === 0 ? "on plan" : `${fmt(remainder)} to go`;
+    /** The words under a bar, in the vocabulary plans/20 fixes. The engine picks the sentence and its amount. */
+    function labelText(label: WireBar["label"]): string {
+        const amount = label.amount === null ? "" : fmt(label.amount);
+        switch (label.kind) {
+            case "onPlan":
+                return "on plan";
+            case "behindPace":
+                return `${amount} behind pace`;
+            case "aboveTarget":
+                return `${amount} above target`;
+            case "toGo":
+                return `${amount} to go`;
+            case "over":
+                return `${amount} over`;
+            case "aheadOfPace":
+                return `${amount} ahead of pace`;
+            case "left":
+                return `${amount} left`;
         }
-        if (health === "over") return `${fmt(maNeg(remainder))} over`;
-        if (health === "behind") return `${fmt(maAdd(actual, maNeg(pace)))} ahead of pace`;
-        return left === 0 ? "on plan" : `${fmt(remainder)} left`;
     }
 
-    /** Build a bar view-model from a budgeted line (goal is non-null here). Works in magnitudes so
-     *  income budgets (entered NEGATIVE per hledger's credit convention) read "earned $X of $Y". */
-    function toBar(line: BudgetLine): BudgetBar {
-        const rawGoal = line.goal ?? new Map();
-        const income = (primaryValue(rawGoal) ?? 0) < 0; // credit-normal (revenue) budgets are negative
-        const goal = magnitudeAmount(rawGoal);
-        const actual = magnitudeAmount(line.actual);
-        const pace = paceAmount(goal, elapsed);
-        const spent = primaryValue(actual);
-        const budget = primaryValue(goal);
-        const paceValue = primaryValue(pace);
-
-        // All three or none: the geometry and the health test read the same
-        // numbers, so a line that cannot produce one cannot produce the other.
-        // (A multi-commodity line produces neither — `primaryValue` refuses a
-        // single magnitude for it, and there is no bar to draw.)
-        const geom = spent !== null && budget !== null && paceValue !== null ? barGeometry(spent, budget, paceValue) : null;
-        const health = spent !== null && budget !== null && paceValue !== null ? budgetHealth(spent, paceValue, budget, income) : null;
-
+    /** An engine bar → what the row renders. Geometry is the only arithmetic, and it is pixels. */
+    function toBar(bar: WireBar): BudgetBar {
+        // A bar with no health has no single magnitude to draw (multi-commodity):
+        // the engine withheld the verdict, so no geometry either.
+        const spent = primaryValue(bar.actual);
+        const budget = primaryValue(bar.goal);
+        const pace = primaryValue(bar.pace);
+        const geom = bar.health !== null && spent !== null && budget !== null && pace !== null ? barGeometry(spent, budget, pace) : null;
         return {
-            account: line.account,
-            spentText: fmt(actual),
-            budgetText: fmt(goal),
-            remainderText: labelFor(health, income, goal, actual, pace),
-            health,
+            account: bar.account,
+            spentText: fmt(bar.actual),
+            budgetText: fmt(bar.goal),
+            remainderText: labelText(bar.label),
+            health: bar.health,
             pct: geom !== null && geom.ratio !== null ? Math.round(geom.ratio * 100) : null,
             geom,
-            goal,
+            goal: bar.goal,
         };
     }
 
@@ -155,34 +118,16 @@
         bars: BudgetBar[];
     }
 
-    function buildSection(title: string, verbSpent: string, verbOf: string, secLines: BudgetLine[]): Section | null {
-        if (secLines.length === 0) return null;
-        const totals = budgetTotals(secLines);
-        return {
-            title,
-            verbSpent,
-            verbOf,
-            overall: toBar({account: "", depth: 0, actual: totals.actual, goal: totals.goal}),
-            // A bar's goal is ALREADY the span total — `summarizeBudget` summed
-            // every bucket — so it needs no annualising, which is what passing
-            // "yearly" (factor 1) says to the shared comparator. The editor below
-            // sorts the same list by the per-period figures its rules state, and
-            // that is where the factors earn their keep.
-            bars: sortBudgetLines(secLines.map(toBar), sort, dir, (bar) => ({account: bar.account, amount: bar.goal, period: "yearly"})),
-        };
-    }
+    const WORDS = {revenue: {title: "Income", verbSpent: "Earned", verbOf: "target"}, expense: {title: "Expenses", verbSpent: "Spent", verbOf: "budgeted"}};
 
-    const leaves = $derived(budgetLeaves(summarizeBudget(report)));
-    // `isAccountType`, so the subtypes fold as the engine folds them. These two
-    // filters are the WHOLE partition — there is no "other" section — so a goal
-    // on a declared `type: G` account that matched neither would appear nowhere
-    // at all, while `budget_gaps` files it under Revenue and the editor writes
-    // it negated as revenue (plan 22, amendment 42).
-    const isType = (account: string, type: AccountType): boolean => isAccountType(account, declared, type);
-    const income = $derived(leaves.filter((l) => isType(l.account, "revenue")));
-    const expenses = $derived(leaves.filter((l) => isType(l.account, "expense")));
-    const sections = $derived(
-        [buildSection("Income", "Earned", "target", income), buildSection("Expenses", "Spent", "budgeted", expenses)].filter((s): s is Section => s !== null)
+    // A bar's goal is ALREADY the span total, so it is comparable as it stands —
+    // the editor below sorts by the engine's annualised figures instead.
+    const sections = $derived<Section[]>(
+        report.summary.sections.map((section) => ({
+            ...WORDS[section.kind],
+            overall: toBar(section.overall),
+            bars: sortBudgetLines(section.bars.map(toBar), sort, dir, (bar) => ({account: bar.account, amount: bar.goal})),
+        }))
     );
 
     // The exact dates, not just the month names: the bars cover whole months, so
