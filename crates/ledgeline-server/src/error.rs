@@ -69,6 +69,13 @@ pub(crate) enum AppError {
     /// The report scheduler is shutting down. `503`.
     #[error("{0}")]
     Unavailable(String),
+    /// A file the request needs is listed by its file provider (iCloud Drive,
+    /// …) but its content is not on this device yet — the vault's
+    /// `NotDownloaded`, which reaches here as an `io::ErrorKind::WouldBlock`.
+    /// `503` with a `Retry-After`: the download has been (or can be) asked
+    /// for, and the same request is expected to succeed once it lands.
+    #[error("{0}")]
+    NotDownloaded(String),
     /// An invariant broke, or an operation that cannot fail for realistic data
     /// did. `500`.
     #[error("{0}")]
@@ -101,18 +108,59 @@ impl AppError {
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Conflict(_) => StatusCode::CONFLICT,
             Self::EditingDisabled(_) => StatusCode::NOT_IMPLEMENTED,
-            Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Unavailable(_) | Self::NotDownloaded(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+
+    /// The same failure class with a different sentence — how a caller adds
+    /// context without re-deciding the status.
+    pub(crate) fn with_message(self, message: String) -> Self {
+        match self {
+            Self::BadRequest(_) => Self::BadRequest(message),
+            Self::NotFound(_) => Self::NotFound(message),
+            Self::Conflict(_) => Self::Conflict(message),
+            Self::EditingDisabled(_) => Self::EditingDisabled(message),
+            Self::Unavailable(_) => Self::Unavailable(message),
+            Self::NotDownloaded(_) => Self::NotDownloaded(message),
+            Self::Internal(_) => Self::Internal(message),
+        }
+    }
+
+    /// `otherwise`, unless `error` is a not-downloaded file — then the `503`
+    /// that tells the client to retry. For the storage failures the handlers
+    /// render themselves (a rules file, a projection, the journal).
+    pub(crate) fn unless_not_downloaded(error: &std::io::Error, otherwise: Self) -> Self {
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            Self::NotDownloaded(format!(
+                "{otherwise}. The file is not downloaded to this device yet; its download was \
+                 requested, so try again shortly."
+            ))
+        } else {
+            otherwise
         }
     }
 }
 
+/// Seconds a client should wait before retrying a [`AppError::NotDownloaded`].
+/// Short: a journal is small, and the download was already asked for.
+const NOT_DOWNLOADED_RETRY_SECS: &str = "2";
+
 impl IntoResponse for AppError {
     /// Renders exactly as the `(StatusCode, String)` tuple this type replaced:
     /// the status, `Content-Type: text/plain; charset=utf-8`, and the message
-    /// as the body. See the module docs for why it is not JSON.
+    /// as the body. See the module docs for why it is not JSON. A
+    /// [`AppError::NotDownloaded`] adds a `Retry-After`.
     fn into_response(self) -> Response {
-        (self.status(), self.to_string()).into_response()
+        let retry = matches!(self, Self::NotDownloaded(_));
+        let mut response = (self.status(), self.to_string()).into_response();
+        if retry {
+            response.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static(NOT_DOWNLOADED_RETRY_SECS),
+            );
+        }
+        response
     }
 }
 
@@ -171,6 +219,9 @@ impl From<EditError> for AppError {
             EditError::TransactionNotFound(_) | EditError::PostingNotFound { .. } => {
                 Self::NotFound(message)
             }
+            EditError::Io(ref io) if io.kind() == std::io::ErrorKind::WouldBlock => {
+                Self::NotDownloaded(message)
+            }
             EditError::Io(_)
             | EditError::Parse(_)
             | EditError::Decimal(_)
@@ -183,14 +234,7 @@ impl From<EditError> for AppError {
             // `BulkTransaction` is exactly its wrapped failure, just attributed
             // to one input transaction, so it gets the SAME classification —
             // with THIS variant's own message (which names the batch position).
-            EditError::BulkTransaction { source, .. } => match Self::from(*source) {
-                Self::BadRequest(_) => Self::BadRequest(message),
-                Self::NotFound(_) => Self::NotFound(message),
-                Self::Conflict(_) => Self::Conflict(message),
-                Self::EditingDisabled(_) => Self::EditingDisabled(message),
-                Self::Unavailable(_) => Self::Unavailable(message),
-                Self::Internal(_) => Self::Internal(message),
-            },
+            EditError::BulkTransaction { source, .. } => Self::from(*source).with_message(message),
         }
     }
 }
@@ -269,6 +313,10 @@ mod tests {
                 StatusCode::SERVICE_UNAVAILABLE,
             ),
             (
+                AppError::NotDownloaded(String::new()),
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
                 AppError::Internal(String::new()),
                 StatusCode::INTERNAL_SERVER_ERROR,
             ),
@@ -316,6 +364,46 @@ mod tests {
     /// One row per [`RulesError`] variant, so adding a variant to the engine
     /// without deciding its status fails here rather than defaulting to a `500`
     /// in front of a user who typed a bad account name.
+    /// A not-downloaded file (the vault's `NotDownloaded`, carried as
+    /// `WouldBlock`) is a retryable `503`, never the `500` an unexplained I/O
+    /// failure gets — and only that kind is.
+    #[test]
+    fn a_not_downloaded_file_is_a_503_with_a_retry_hint() {
+        let blocked = EditError::Io(std::io::Error::from(std::io::ErrorKind::WouldBlock));
+        let converted = AppError::from(blocked);
+        assert!(matches!(converted, AppError::NotDownloaded(_)));
+        let response = converted.into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response.headers()[axum::http::header::RETRY_AFTER],
+            NOT_DOWNLOADED_RETRY_SECS
+        );
+
+        let other = EditError::Io(std::io::Error::other("disk on fire"));
+        assert_eq!(
+            AppError::from(other).status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert!(
+            !AppError::Internal(String::new())
+                .into_response()
+                .headers()
+                .contains_key(axum::http::header::RETRY_AFTER)
+        );
+
+        let read = std::io::Error::from(std::io::ErrorKind::WouldBlock);
+        let mapped =
+            AppError::unless_not_downloaded(&read, AppError::Internal("could not read x".into()));
+        assert!(
+            matches!(mapped, AppError::NotDownloaded(ref m) if m.starts_with("could not read x"))
+        );
+        let plain = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert!(matches!(
+            AppError::unless_not_downloaded(&plain, AppError::Internal("x".into())),
+            AppError::Internal(_)
+        ));
+    }
+
     #[test]
     fn every_rules_error_variant_maps_to_its_status() {
         let cases = [

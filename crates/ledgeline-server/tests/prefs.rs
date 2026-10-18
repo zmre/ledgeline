@@ -34,12 +34,16 @@
 //! No test requires a real `hledger`: every resolution test points at a shell
 //! stub written into a tempdir.
 
+#[path = "../src/app_dirs.rs"]
+mod app_dirs;
+
 #[path = "../src/prefs.rs"]
 mod prefs;
 
 #[path = "../src/hledger.rs"]
 mod hledger;
 
+use app_dirs::AppDirs;
 use hledger::{Hledger, HledgerError, MIN_HLEDGER, NO_CONF, Version};
 use prefs::{Prefs, PrefsError};
 use std::path::{Path, PathBuf};
@@ -53,6 +57,14 @@ use tempfile::TempDir;
 /// The env var this test file uses to hand a child process its scratch dir,
 /// since a child cannot be given a `TempDir` handle.
 const CHILD_DIR_ENV: &str = "LEDGELINE_TEST_CHILD_DIR";
+
+/// [`Hledger::resolve`] with the desktop's directories, which is where
+/// `$LEDGELINE_HLEDGER` enters resolution ([`AppDirs::from_env`]). Every
+/// resolution test goes through this, so the env-var children still exercise
+/// the real environment lookup.
+fn resolve(prefs: &Prefs) -> Result<Hledger, HledgerError> {
+    Hledger::resolve(prefs, &AppDirs::from_env())
+}
 
 /// Write an executable `hledger` stub that prints `banner` on stdout, and return
 /// its absolute path.
@@ -782,7 +794,7 @@ fn child_config_dir_env_var_is_honoured() {
     // The env-reading `load`/`store`, not the `_in` variants: this is the one
     // test that exercises the real environment path end to end.
     assert_eq!(
-        prefs::load(),
+        prefs::load(&AppDirs::from_env()),
         Prefs::default(),
         "a fresh config dir has no settings"
     );
@@ -791,9 +803,9 @@ fn child_config_dir_env_var_is_honoured() {
         hledger_path: None,
         git_autocommit: Some(false),
     };
-    prefs::store(&written).expect("store through the env-resolved path");
+    prefs::store(&AppDirs::from_env(), &written).expect("store through the env-resolved path");
     assert_eq!(
-        prefs::load(),
+        prefs::load(&AppDirs::from_env()),
         written,
         "and load reads back what store wrote"
     );
@@ -942,7 +954,7 @@ fn child_resolve_uses_the_env_var() {
     let Some(dir) = child_dir() else { return };
     let expected = dir.join("hledger");
 
-    let resolved = Hledger::resolve(&Prefs::default()).expect("the stub must resolve");
+    let resolved = resolve(&Prefs::default()).expect("the stub must resolve");
     assert_eq!(resolved.path(), expected);
     assert_eq!(
         resolved.version(),
@@ -977,12 +989,12 @@ fn child_preference_outranks_the_env_var() {
     let Some(dir) = child_dir() else { return };
 
     // Sanity: with no preference, the env var wins and we get 1.44.
-    let from_env = Hledger::resolve(&Prefs::default()).expect("env stub resolves");
+    let from_env = resolve(&Prefs::default()).expect("env stub resolves");
     assert_eq!(from_env.path(), dir.join("from-env"));
     assert_eq!(from_env.version().minor, 44);
 
     // With a preference set, it takes precedence — and the version proves it.
-    let preferred = Hledger::resolve(&Prefs {
+    let preferred = resolve(&Prefs {
         hledger_path: Some(dir.join("from-prefs")),
         git_autocommit: None,
     })
@@ -1016,7 +1028,7 @@ fn an_old_hledger_is_refused_as_too_old() {
 fn child_an_old_stub_is_too_old() {
     let Some(_dir) = child_dir() else { return };
 
-    match Hledger::resolve(&Prefs::default()) {
+    match resolve(&Prefs::default()) {
         Err(HledgerError::TooOld { found, min }) => {
             assert_eq!(
                 found,
@@ -1054,7 +1066,7 @@ fn too_old_does_not_fall_through_to_a_newer_candidate() {
 fn child_too_old_is_terminal() {
     let Some(dir) = child_dir() else { return };
 
-    let error = Hledger::resolve(&Prefs {
+    let error = resolve(&Prefs {
         hledger_path: Some(dir.join("old")),
         git_autocommit: None,
     })
@@ -1098,7 +1110,7 @@ fn resolve_finds_an_hledger_next_to_the_executable() {
 fn child_resolve_uses_the_sibling() {
     let Some(dir) = child_dir() else { return };
 
-    let resolved = Hledger::resolve(&Prefs::default()).expect("the sibling stub must resolve");
+    let resolved = resolve(&Prefs::default()).expect("the sibling stub must resolve");
     assert_eq!(
         resolved.path(),
         dir.join("hledger"),
@@ -1141,7 +1153,7 @@ fn child_explicit_outranks_the_sibling() {
     // about precedence, not about the sibling having failed to resolve.
     assert!(dir.join("hledger").is_file(), "the sibling stub must exist");
 
-    let resolved = Hledger::resolve(&Prefs::default()).expect("a stub must resolve");
+    let resolved = resolve(&Prefs::default()).expect("a stub must resolve");
     assert_eq!(
         resolved.version().minor,
         52,
@@ -1176,7 +1188,7 @@ fn child_stale_preference_falls_through() {
         dir.clone(),                 // a directory, which `exists()` would accept
         PathBuf::from("hledger"),    // relative
     ] {
-        let resolved = Hledger::resolve(&Prefs {
+        let resolved = resolve(&Prefs {
             hledger_path: Some(stale.clone()),
             git_autocommit: None,
         })
@@ -1215,7 +1227,7 @@ fn child_nothing_is_not_found() {
         return;
     }
     assert_eq!(
-        Hledger::resolve(&Prefs::default()),
+        resolve(&Prefs::default()),
         Err(HledgerError::NotFound),
         "no preference, no env var and an empty $PATH is NotFound"
     );
@@ -1243,10 +1255,7 @@ fn child_not_hledger_is_unrunnable() {
     if child_dir().is_none() {
         return;
     }
-    assert_eq!(
-        Hledger::resolve(&Prefs::default()),
-        Err(HledgerError::Unrunnable)
-    );
+    assert_eq!(resolve(&Prefs::default()), Err(HledgerError::Unrunnable));
 }
 
 // ---------------------------------------------------------------------------
@@ -1365,7 +1374,7 @@ fn a_binary_that_predates_the_flag_still_reports_its_version() {
     .expect("write the ancient stub");
     make_executable(&script);
 
-    let error = Hledger::resolve(&Prefs {
+    let error = resolve(&Prefs {
         hledger_path: Some(script.clone()),
         git_autocommit: None,
     })
@@ -1619,7 +1628,7 @@ fn a_binary_that_is_still_open_for_writing_is_waited_for() {
         drop(held);
     });
 
-    let hledger = Hledger::resolve(&Prefs {
+    let hledger = resolve(&Prefs {
         hledger_path: Some(script.clone()),
         git_autocommit: None,
     })
@@ -1630,7 +1639,7 @@ fn a_binary_that_is_still_open_for_writing_is_waited_for() {
 /// Resolve a stub by absolute path through the ordinary preference route, so the
 /// invocation tests exercise the same `Hledger` a real caller would hold.
 fn resolve_stub(path: &Path) -> Hledger {
-    Hledger::resolve(&Prefs {
+    resolve(&Prefs {
         hledger_path: Some(path.to_path_buf()),
         git_autocommit: None,
     })

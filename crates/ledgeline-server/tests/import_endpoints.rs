@@ -46,6 +46,10 @@ mod common;
 // `allow(dead_code)` because this file uses a different subset of them than
 // `tests/prefs.rs` does — the modules themselves carry no blanket allow any
 // more, now that `import_api.rs` consumes them.
+#[path = "../src/app_dirs.rs"]
+#[allow(dead_code)]
+mod app_dirs;
+
 #[path = "../src/prefs.rs"]
 #[allow(dead_code)]
 mod prefs;
@@ -708,6 +712,43 @@ async fn prefs_round_trip_child() {
     // …and the rejected write left the good settings alone.
     let (_, after) = get(&tree, "/api/prefs").await;
     assert_eq!(after["gitAutocommit"], json!(false));
+}
+
+/// The `AppDirs` seam (plan 26, A2): a state given its own directories keeps
+/// its preferences and its staged uploads THERE, with no environment variable
+/// involved — the shape a sandboxed host (iOS) relies on. In-process, no child:
+/// nothing here reads the environment, which is the point.
+#[tokio::test]
+async fn injected_app_dirs_hold_the_prefs_and_the_staging_area() {
+    let app = TempDir::new().expect("app dir");
+    let dirs = ledgeline::AppDirs::under(app.path());
+    dirs.create_all().expect("create the app dirs");
+    let mut tree = Tree::bare();
+    tree.state = tree.state.clone().with_app_dirs(dirs.clone());
+
+    let (status, body) = put(&tree, "/api/prefs", json!({"gitAutocommit": false})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stored = app.path().join("config").join("prefs.json");
+    let saved: Value =
+        serde_json::from_str(&std::fs::read_to_string(&stored).expect("prefs.json written"))
+            .expect("prefs.json is JSON");
+    assert_eq!(saved["gitAutocommit"], json!(false));
+    let (_, reloaded) = get(&tree, "/api/prefs").await;
+    assert_eq!(reloaded["gitAutocommit"], json!(false));
+
+    let (status, body) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let roots: Vec<String> = std::fs::read_dir(&dirs.temp_dir)
+        .expect("temp dir readable")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        roots
+            .iter()
+            .any(|name| name.starts_with("ledgeline-stage-")),
+        "the session root belongs under the injected temp dir, found {roots:?}"
+    );
 }
 
 /// A too-old hledger is reported with a reason code and an actionable sentence,
@@ -3322,7 +3363,7 @@ fn assert_no_absolute_path(tree: &Tree, body: &str, what: &str) {
 /// A resolved real hledger, for the tests that need one. Only ever called behind
 /// [`require_hledger`].
 fn resolve_hledger() -> Hledger {
-    Hledger::resolve(&Prefs::default()).unwrap_or_else(|error| {
+    Hledger::resolve(&Prefs::default(), &app_dirs::AppDirs::from_env()).unwrap_or_else(|error| {
         panic!("{IMPORT_CHECK} is set but no usable hledger was found: {error}")
     })
 }

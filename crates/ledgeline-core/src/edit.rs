@@ -215,6 +215,24 @@ impl Fingerprint {
     pub fn token(&self) -> String {
         format!("{:x}-{:016x}", self.len, self.hash)
     }
+
+    /// The content length in bytes.
+    #[must_use]
+    pub fn content_len(&self) -> u64 {
+        self.len
+    }
+
+    /// The FNV-1a 64-bit hash of the content.
+    ///
+    /// **A stable contract**, unlike [`token`](Self::token)'s format: a host
+    /// that must re-check a file outside Rust (the iOS file coordinator's
+    /// conditional replace) recomputes it. FNV-1a, 64-bit: start from the
+    /// offset basis `0xcbf29ce484222325`; for each byte, XOR it into the
+    /// hash, then multiply by the prime `0x100000001b3` modulo 2^64.
+    #[must_use]
+    pub fn content_hash(&self) -> u64 {
+        self.hash
+    }
 }
 
 /// FNV-1a 64-bit hash — small, dependency-free, and deterministic within a run
@@ -3321,6 +3339,22 @@ mod tests {
             )],
         );
         assert!(!transactions_equivalent(&usd, &eur));
+    }
+
+    #[test]
+    fn fingerprint_components_are_the_documented_fnv1a_64_and_length() {
+        // Published FNV-1a 64 test vectors: a host recomputing the hash outside
+        // Rust (the iOS coordinator) is checked against the same numbers.
+        let empty = Fingerprint::of_bytes(b"");
+        assert_eq!(empty.content_hash(), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(empty.content_len(), 0);
+        assert_eq!(
+            Fingerprint::of_bytes(b"a").content_hash(),
+            0xaf63_dc4c_8601_ec8c
+        );
+        let foobar = Fingerprint::of_bytes(b"foobar");
+        assert_eq!(foobar.content_hash(), 0x8594_4171_f739_67e8);
+        assert_eq!(foobar.content_len(), 6);
     }
 
     #[test]

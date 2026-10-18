@@ -16,7 +16,6 @@
 
 #[cfg(feature = "gui")]
 mod gui;
-mod recents;
 
 use std::net::IpAddr;
 #[cfg(feature = "watcher")]
@@ -30,7 +29,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use ledgeline::{
-    AppState, ProcessToken, Security, SecurityError, TOKEN_ENV, router_with_security,
+    AppDirs, AppState, ProcessToken, Security, SecurityError, TOKEN_ENV, router_with_security,
     token_from_env_or_random,
 };
 #[cfg(feature = "watcher")]
@@ -170,12 +169,16 @@ fn run(cli: Cli) -> Result<(), AppError> {
     // A subcommand is a job, not a mode: it runs and the process exits, and
     // neither `--server` nor the GUI is consulted. Checked FIRST so the branches
     // below keep reading exactly as they did when they were the whole function.
+    // The app's own directories, from the environment and the OS — built ONCE
+    // here and threaded through, so the recents store, the preferences, the
+    // staging area and hledger resolution all agree on one set.
+    let app_dirs = AppDirs::from_env();
     if let Some(Command::Import(args)) = &cli.command {
-        return run_import(args);
+        return run_import(args, app_dirs);
     }
     #[cfg(feature = "gui")]
     if !cli.server {
-        return gui::run(&cli);
+        return gui::run(&cli, app_dirs);
     }
     #[cfg(not(feature = "gui"))]
     if !cli.server {
@@ -183,7 +186,7 @@ fn run(cli: Cli) -> Result<(), AppError> {
             "ledgeline: built without the `gui` feature — running headless. Pass --server to silence this."
         );
     }
-    run_server_blocking(&cli)
+    run_server_blocking(&cli, app_dirs)
 }
 
 /// `ledgeline import` — one import, then exit.
@@ -210,16 +213,17 @@ fn run(cli: Cli) -> Result<(), AppError> {
 /// this does not record the journal in the recents store: a scripted import is
 /// not the user choosing a journal to work in, and it would push whatever a cron
 /// job touched to the top of the desktop app's list.
-fn run_import(args: &ledgeline::CliImport) -> Result<(), AppError> {
+fn run_import(args: &ledgeline::CliImport, app_dirs: AppDirs) -> Result<(), AppError> {
     let journal_path = args.root_journal_path();
     let editor_path = journal_path
         .canonicalize()
         .unwrap_or_else(|_| journal_path.to_path_buf());
-    let state =
-        AppState::from_journal_path(&editor_path).map_err(|source| AppError::OpenEditor {
+    let state = AppState::from_journal_path(&editor_path)
+        .map_err(|source| AppError::OpenEditor {
             path: journal_path.display().to_string(),
             source,
-        })?;
+        })?
+        .with_app_dirs(app_dirs);
 
     let report = ledgeline::run_cli_import(&state, args).map_err(AppError::Import)?;
     match report {
@@ -341,11 +345,11 @@ fn plural(count: usize) -> &'static str {
 /// Resolve the journal path: positional arg → `$LEDGELINE_FIXTURE` → the
 /// most-recently-opened journal that still exists → the default dev fixture. So
 /// `ledgeline` with no args re-opens the last journal you used.
-pub(crate) fn resolve_journal(cli: &Cli) -> PathBuf {
+pub(crate) fn resolve_journal(cli: &Cli, app_dirs: &AppDirs) -> PathBuf {
     cli.journal
         .clone()
         .or_else(|| std::env::var("LEDGELINE_FIXTURE").ok().map(PathBuf::from))
-        .or_else(recents::most_recent)
+        .or_else(|| ledgeline::recents::most_recent(app_dirs))
         .unwrap_or_else(|| PathBuf::from(DEFAULT_FIXTURE))
 }
 
@@ -659,11 +663,11 @@ fn event_matches_source(candidate: &Path, sources: &[PathBuf]) -> bool {
 
 /// Headless mode: serve the API + embedded SPA on a fixed port with graceful
 /// shutdown, hot-reloading the journal on file change.
-fn run_server_blocking(cli: &Cli) -> Result<(), AppError> {
+fn run_server_blocking(cli: &Cli, app_dirs: AppDirs) -> Result<(), AppError> {
     // Decide the security posture BEFORE touching the journal, so a refused
     // non-loopback bind (SEC-9) fails fast and never opens the file.
     let (process_token, security_plan) = plan_security(cli)?;
-    let journal_path = resolve_journal(cli);
+    let journal_path = resolve_journal(cli, &app_dirs);
     // Bind an editor to the file so the write endpoints (`POST`/`DELETE
     // /api/transactions`) are live. Canonicalize first so the editor's save target
     // and recorded source name match the watcher's canonical path and the
@@ -671,13 +675,14 @@ fn run_server_blocking(cli: &Cli) -> Result<(), AppError> {
     let editor_path = journal_path
         .canonicalize()
         .unwrap_or_else(|_| journal_path.clone());
-    let state =
-        AppState::from_journal_path(&editor_path).map_err(|source| AppError::OpenEditor {
+    let state = AppState::from_journal_path(&editor_path)
+        .map_err(|source| AppError::OpenEditor {
             path: journal_path.display().to_string(),
             source,
-        })?;
+        })?
+        .with_app_dirs(app_dirs);
     // Remember this journal as the most-recently-opened (canonical path).
-    recents::record(&editor_path);
+    ledgeline::recents::record(state.app_dirs(), &editor_path);
     let host = cli.host.clone();
     let port = cli.port.unwrap_or(DEFAULT_SERVER_PORT);
 

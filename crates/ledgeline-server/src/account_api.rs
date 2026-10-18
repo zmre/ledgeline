@@ -610,7 +610,10 @@ fn create_accounts_file(state: &AppState) -> Result<WireCreatedFile, AppError> {
     // here — never through a link swapped in since, never over an edit made in
     // between.
     let (main_text, main_revision) = read_pinned_text(&location, &main).map_err(|error| {
-        AppError::Internal(format!("your journal could not be read: {}", error.kind()))
+        AppError::unless_not_downloaded(
+            &error,
+            AppError::Internal(format!("your journal could not be read: {}", error.kind())),
+        )
     })?;
     let newline = if main_text.contains("\r\n") {
         "\r\n"

@@ -1236,7 +1236,10 @@ fn stale(id: &str) -> AppError {
 /// this path: every error here comes straight from `File::open` or `read_to_end`.
 /// The only name in the sentence is the caller's own id.
 fn read_failed(id: &str, error: &std::io::Error) -> AppError {
-    AppError::Internal(format!("could not read {}: {error}", quoted(id)))
+    AppError::unless_not_downloaded(
+        error,
+        AppError::Internal(format!("could not read {}: {error}", quoted(id))),
+    )
 }
 
 /// A `500` for an I/O failure while WRITING a rules file — and deliberately
@@ -1256,11 +1259,14 @@ fn read_failed(id: &str, error: &std::io::Error) -> AppError {
 /// space left on device`), which keeps the half of the diagnostic a user can act
 /// on and carries no payload at all.
 fn write_failed(id: &str, error: &std::io::Error) -> AppError {
-    AppError::Internal(format!(
-        "could not write {}: {}. Nothing was changed.",
-        quoted(id),
-        error.kind()
-    ))
+    AppError::unless_not_downloaded(
+        error,
+        AppError::Internal(format!(
+            "could not write {}: {}. Nothing was changed.",
+            quoted(id),
+            error.kind()
+        )),
+    )
 }
 
 // ===========================================================================

@@ -793,7 +793,7 @@ pub(crate) fn commit_journal(
     // Sequencing rule (mirrors `import_api::run_commit`'s rule 3): checked
     // server-side, over every file this write *could* touch — see the module
     // docs for why that is the whole tree rather than one known target.
-    let prefs = crate::prefs::load();
+    let prefs = crate::prefs::load(state.app_dirs());
     let handles: Vec<String> = snapshot
         .journal
         .source_files

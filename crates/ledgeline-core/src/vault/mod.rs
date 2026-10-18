@@ -61,7 +61,7 @@ use std::time::SystemTime;
 
 pub use crate::edit::Fingerprint;
 pub use crate::pinned::FileIdentity;
-pub use local::LocalVault;
+pub use local::{AvailabilityProbe, LocalVault};
 pub use mem::MemVault;
 pub use path::{VaultPath, VaultPathError};
 
