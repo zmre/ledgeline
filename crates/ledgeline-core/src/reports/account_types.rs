@@ -303,7 +303,7 @@ pub fn is_account_type(
 /// Whether an already-resolved type is a member of `category`, subtypes
 /// included. Shared by [`is_account_type`] and [`AccountTypes::is_type`] so the
 /// two cannot drift.
-fn is_category(resolved: Option<AccountType>, category: AccountType) -> bool {
+pub(crate) fn is_category(resolved: Option<AccountType>, category: AccountType) -> bool {
     match resolved {
         Some(AccountType::Cash) => matches!(category, AccountType::Asset | AccountType::Cash),
         Some(AccountType::Gain) => matches!(category, AccountType::Revenue | AccountType::Gain),

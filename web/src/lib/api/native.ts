@@ -902,6 +902,15 @@ export class LedgelineApi {
     }
 
     /**
+     * Cash and short-term-liability balances as of `asOf` (the CLIENT's local
+     * date), every commodity at once (decode with `decodeCashBalances`). The
+     * whole journal, ignoring the filter bar — a balance is cumulative.
+     */
+    cashBalances(asOf: string): Promise<unknown> {
+        return this.getJson(`/api/balances/cash${queryString({asOf})}`);
+    }
+
+    /**
      * The flat, unvalued balance sheet. Still here, and still exercised by the
      * hledger parity golden — the screen no longer uses it, but
      * `fixtures/native/v1/balancesheet.json` must stay byte-identical.

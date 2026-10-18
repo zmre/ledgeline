@@ -52,7 +52,10 @@ const json = (body: unknown): Response => new Response(JSON.stringify(body), {st
  */
 export function routes(table: Record<string, unknown>): (url: string) => Promise<Response> {
     return (url: string) => {
-        const key = Object.keys(table).find((route) => url.endsWith(route));
+        // A route matches the full URL OR its path alone, so a table entry need
+        // not spell out a query string the client builds (`?asOf=…`).
+        const path = url.split("?", 1)[0];
+        const key = Object.keys(table).find((route) => url.endsWith(route)) ?? Object.keys(table).find((route) => path.endsWith(route));
         const body = key === undefined ? undefined : table[key];
         if (body === undefined) return Promise.resolve(new Response(`no route for ${url}`, {status: 404}));
         return Promise.resolve(body instanceof Response ? body : json(body));

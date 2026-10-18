@@ -1,0 +1,98 @@
+; Journal-view edge cases (plan 26 B3-B5): one journal that exercises every
+; local check rule, every cash-balance membership branch, and the search /
+; chart corners the windowed journal API must reproduce exactly.
+;
+; Goldens captured from the TypeScript before it was deleted live beside it in
+; fixtures/journal-view/*.json.
+
+account assets:bank:checking   ; type: C
+account assets:bank:savings    ; type: C
+account assets:bank:long-term-cd  ; type: C
+account assets:brokerage       ; type: A
+account liabilities:card       ; type: L
+account liabilities:mortgage   ; type: L
+account liabilities:auto-loan  ; type: L, bsterm: noncurrent
+account liabilities:heloc      ; type: L, bsterm: current
+account cogs                   ; type: X
+account gastos                 ; type: X
+account ingresos               ; type: R
+
+commodity $1,000.00
+commodity 1.000,00 EUR
+
+2025-01-01 Opening balances
+    assets:bank:checking            $1,000.00 = $1,000.00
+    assets:bank:savings             $5,000.00
+    assets:bank:long-term-cd        $2,500.00
+    liabilities:mortgage         $-200,000.00
+    liabilities:auto-loan         $-12,000.00
+    liabilities:heloc              $-3,000.00
+    equity:opening
+
+2025-01-03 * Paycheck  ; payroll:
+    assets:bank:checking            $2,400.00
+    ingresos:salary
+
+2025-01-05 ! Grocery Mart | weekly shop
+    gastos:groceries                  $123.456
+    assets:bank:checking
+
+2025-01-06 (CHK101) Rent
+    expenses:rent                   $1,500.00
+    liabilities:card
+
+2025-01-07 Mystery charge
+    expenses:unknown                   $42.00
+    assets:bank:checking
+
+2025-01-08 Bare root expense
+    expenses                           $10.00
+    assets:bank:checking
+
+2025-01-09 Bare typed root
+    cogs                               $75.00
+    assets:bank:checking
+
+2025-01-10
+    expenses:misc                       $5.00
+    assets:bank:checking
+
+2025-01-11 Euro dinner
+    gastos:dining                    20,50 EUR
+    assets:bank:savings             -20,50 EUR
+
+2025-01-12 Card payment
+    liabilities:card                  $800.00
+    assets:bank:checking
+
+2025-01-13 Refund from store
+    assets:bank:checking               $30.00
+    gastos:groceries
+
+2025-01-14 Virtual envelope
+    [assets:bank:checking]            $-50.00
+    [budget:envelope]                  $50.00
+
+2025-01-15 Posting date
+    expenses:utilities                 $60.00  ; date:2025-02-01
+    assets:bank:checking
+
+2025-01-16 Uncategorized twice
+    expenses:uncategorized             $10.00
+    expenses:uncategorized             $15.00
+    Assets:Bank:Checking
+
+2025-01-17 Overdraft
+    expenses:travel                 $9,000.00
+    assets:bank:checking
+
+2025-01-18 Shares
+    assets:brokerage                   10 AAPL @ $150.00
+    assets:bank:savings
+
+2025-01-20 Check balance
+    assets:bank:savings                $0 = $3,500.00
+
+2030-06-01 Future rent
+    expenses:rent                   $1,600.00
+    liabilities:card

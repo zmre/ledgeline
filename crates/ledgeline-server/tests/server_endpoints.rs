@@ -496,6 +496,7 @@ async fn wire_and_api_routes_require_the_token() {
         "/api/holdings",
         "/api/diagnostics",
         "/api/journal",
+        "/api/balances/cash",
     ] {
         let (missing, missing_headers) =
             probe(local_security(), "GET", uri, &[(header::HOST, GOOD_HOST)]).await;

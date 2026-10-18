@@ -12,12 +12,13 @@
      settings.insightsTab; the header row stays visible with the active view's
      headline figure even when collapsed. -->
 <script lang="ts">
-    import {NO_ACCOUNT_CLASSES} from "#lib/domain/accountClass.js";
     import {formatAmount, toNumber} from "#lib/domain/money.js";
     import type {Transaction} from "#lib/domain/types.js";
+    import {DEFAULT_AMOUNT_STYLE, ZERO} from "#lib/format/amounts.js";
     import {signClass} from "#lib/format/sign.js";
-    import {accountBalances, balanceCommodities, summarize} from "#lib/reports/cashBalances.js";
     import {today} from "#lib/reports/periods.js";
+    import {cashBalances} from "#lib/stores/cashBalances.svelte.js";
+    import {journal} from "#lib/stores/journal.svelte.js";
     import {settings, type InsightsTab} from "#lib/stores/settings.svelte.js";
     import BalancesView from "./BalancesView.svelte";
     import BigNumbers from "./BigNumbers.svelte";
@@ -37,24 +38,35 @@
         {id: "balances", label: "Balances"},
     ];
 
-    const journalTxns = $derived(allTxns ?? txns);
-
     const primary = $derived(commoditiesInUse(txns, accounts)[0] ?? "$");
     const net = $derived(bigNumbers(txns, primary, accounts, allTxns, declared).net);
 
+    // The Balances view's data: the engine's answer for the whole journal as of
+    // today, refetched whenever the journal generation moves (an edit, a file
+    // change). Fetched only while that tab is the active one — it is the only
+    // reader, and the collapsed header shows the ACTIVE tab's figure.
+    $effect(() => {
+        const serverUrl = settings.serverUrl;
+        const generation = journal.generation;
+        if (serverUrl === null || generation === null || settings.insightsTab !== "balances") return;
+        void cashBalances.load(serverUrl, {asOf: today(), generation});
+    });
+    const balancesView = $derived(cashBalances.value);
+
     // The collapsed header's figure follows the active tab, because that is the
-    // one number worth a scan for whichever view you left it on. Both are cheap
-    // for the same reason: the activity net is the value BigNumbers computes
-    // anyway, and the balances net comes off the memo the `negative-cash` check
-    // rule already fills once per journal swap (lib/reports/cashBalances).
+    // one number worth a scan for whichever view you left it on.
     const headline = $derived.by(() => {
         if (settings.insightsTab === "activity") {
             return {label: "Net", qty: net, text: formatAmount({commodity: primary, qty: net, style: styleFor(txns, primary)})};
         }
-        const balances = accountBalances(journalTxns, declared ?? NO_ACCOUNT_CLASSES, today());
-        const commodity = balanceCommodities(balances)[0] ?? primary;
-        const {net: netCash} = summarize(balances, commodity);
-        return {label: "Net cash", qty: netCash, text: formatAmount({commodity, qty: netCash, style: styleFor(journalTxns, commodity)})};
+        const summary = balancesView?.summaries[0];
+        if (summary === undefined)
+            return {
+                label: "Net cash",
+                qty: ZERO,
+                text: balancesView === null ? "…" : formatAmount({commodity: primary, qty: ZERO, style: DEFAULT_AMOUNT_STYLE}),
+            };
+        return {label: "Net cash", qty: summary.net, text: formatAmount({commodity: summary.commodity, qty: summary.net, style: summary.style})};
     });
 
     // Default depth matches the reports page (defaultReportParams().depth). The
@@ -110,7 +122,13 @@
                 {/each}
             </div>
             {#if settings.insightsTab === "balances"}
-                <BalancesView allTxns={journalTxns} classes={declared ?? NO_ACCOUNT_CLASSES} />
+                {#if balancesView !== null}
+                    <BalancesView view={balancesView} />
+                {:else if cashBalances.status === "error"}
+                    <p class="py-6 text-center text-sm text-error">Couldn't load balances: {cashBalances.error?.message ?? "unknown error"}</p>
+                {:else}
+                    <div class="flex justify-center py-6" aria-label="Loading balances"><span class="loading loading-spinner"></span></div>
+                {/if}
             {:else}
                 <BigNumbers {txns} {accounts} {allTxns} {declared} />
                 <ChartWidget {txns} {accounts} {allTxns} {depth} {declared} />

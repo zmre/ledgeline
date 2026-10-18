@@ -71,7 +71,7 @@ let inFlightAbort: AbortController | null = null;
 let roundToken = 0;
 let lastFingerprint = 0;
 /** The snapshot generation the swapped-in state came from (`/api/journal`). */
-let lastGeneration: string | null = null;
+let lastGeneration = $state<string | null>(null);
 
 /**
  * Content-aware change fingerprint so polling refreshes don't churn every
@@ -411,6 +411,10 @@ export const journal = {
     },
     get fetchedAt(): number | null {
         return fetchedAt;
+    },
+    /** The `/api/journal` generation the state on screen came from; null before the first successful round. */
+    get generation(): string | null {
+        return lastGeneration;
     },
     /**
      * Full refetch of /transactions, /accountnames, /prices, /api/diagnostics, /api/journal.

@@ -12,11 +12,13 @@
 
 import {render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
-import {beforeEach, describe, expect, it} from "vitest";
+import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {classesOf} from "#lib/domain/accountClassFixtures.js";
 import {dec} from "#lib/domain/money.js";
 import type {Amount, AmountStyle, Posting, Transaction} from "#lib/domain/types.js";
+import {journal} from "#lib/stores/journal.svelte.js";
 import {settings} from "#lib/stores/settings.svelte.js";
+import {connectFakeEngine} from "#lib/testing/fakeEngine.js";
 import InsightsPanel from "./InsightsPanel.svelte";
 
 const STYLE: AmountStyle = {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]};
@@ -49,10 +51,35 @@ const TXNS: Transaction[] = [
 const mount = () => render(InsightsPanel, {txns: TXNS, allTxns: TXNS, declared: DECLS});
 const tab = (name: string): HTMLElement => screen.getByRole("tab", {name});
 
-beforeEach(() => {
+const STYLE_WIRE = {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]};
+/** What the engine answers for TXNS as of today: $5,000 opening, less $200 spent, plus $3,000 of salary. */
+const CASH_VIEW = {
+    asOf: "2026-09-13",
+    commodities: ["$"],
+    summaries: [
+        {
+            commodity: "$",
+            style: STYLE_WIRE,
+            cash: [{account: "assets:bank:checking", qty: {m: "780000", p: 2}, asOf: "2026-02-11", confirmed: false}],
+            liabilities: [],
+            totalCash: {m: "780000", p: 2},
+            totalLiabilities: {m: "0", p: 0},
+            net: {m: "780000", p: 2},
+        },
+    ],
+    guessedLongTerm: [],
+};
+
+beforeEach(async () => {
     settings.insightsOpen = true;
     settings.insightsTab = "activity";
+    // The Balances tab reads the engine, keyed on the journal generation, so
+    // the journal round has to have run once against the fake engine.
+    await connectFakeEngine({"/transactions": [], "/accountnames": [], "/prices": [], "/api/balances/cash": CASH_VIEW});
+    await journal.refresh({force: true});
 });
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("COMPONENT InsightsPanel tabs", () => {
     it("opens on Activity, the P&L view, as the default", () => {
@@ -94,10 +121,10 @@ describe("COMPONENT InsightsPanel tabs", () => {
         tab("Balances").click();
         await screen.findByTestId("balances-view");
         // Balances: cash + short-term debt as of today, over the whole journal —
-        // a different question, so deliberately a different number. $5,000
-        // opening, less $200 spent, plus $3,000 of salary.
+        // a different question, so deliberately a different number (the
+        // engine's, see CASH_VIEW).
         expect(header().textContent).toContain("Net cash");
-        expect(header().textContent).toContain("$7,800.00");
+        await vi.waitFor(() => expect(header().textContent).toContain("$7,800.00"));
 
         settings.insightsOpen = false;
         await tick();

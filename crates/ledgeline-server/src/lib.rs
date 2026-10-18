@@ -46,6 +46,7 @@ mod error;
 mod git;
 mod hledger;
 mod import_api;
+mod journal_api;
 mod location;
 mod prefs;
 mod prices_api;
@@ -168,6 +169,9 @@ pub(crate) struct Snapshot {
     /// than on a thread of its own: two cheap passes over the postings and one
     /// over the account names, small beside `/transactions`.
     pub(crate) journal_info: Bytes,
+    /// Lazily-built derivations for the journal-view routes ([`journal_api`]):
+    /// computed at most once per snapshot, and dropped with it.
+    pub(crate) view: journal_api::ViewCache,
 }
 
 impl Snapshot {
@@ -279,6 +283,7 @@ impl Snapshot {
             journal_info,
             journal,
             location,
+            view: journal_api::ViewCache::default(),
         }
     }
 }
@@ -844,6 +849,8 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         // is token-gated with everything else: it is the only route that says
         // anything at all about the journal's own file.
         .route("/api/journal", get(journal_info))
+        // Journal-view routes (plan 26 B3-B5): see `journal_api`.
+        .route("/api/balances/cash", get(journal_api::cash_balances))
         .route("/api/reports/balancesheet", get(reports_api::balancesheet))
         // The grouped/valued three-box balance sheet. A SIBLING route, not a
         // mode of the one above: that one is a flat hledger-parity shape with a

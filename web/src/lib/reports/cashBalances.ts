@@ -1,4 +1,10 @@
-// Cash and short-term liability balances for the journal tab's Balances view.
+// Cash balances for the `negative-cash` check rule ONLY (checks/rules.ts).
+//
+// The Balances view itself is served by the engine (`/api/balances/cash`,
+// crates/ledgeline-core/src/view/cash.rs), which was held to goldens captured
+// from this module; what is left here goes when the check rules move to the
+// engine too (plan 26 B4).
+//
 // Pure TS, relative imports only — this directory is the engine that ports to
 // Rust (see purity.test.ts).
 //
@@ -46,7 +52,7 @@
 // reads these same balances.
 
 import {accountTermOf, accountTypeOf, type AccountClasses} from "../domain/accountClass";
-import {add, cmp, dec, isZero, neg, rankCommodities, type Dec, type MixedAmount} from "../domain/money";
+import {add, dec, type Dec, type MixedAmount} from "../domain/money";
 import type {ISODate, Transaction} from "../domain/types";
 
 /** Which half of the view an account belongs to. */
@@ -69,28 +75,6 @@ export interface AccountBalance {
     asOf: ISODate | null;
     /** True when a posting on that latest date carried a balance assertion — the figure was checked, not merely accumulated. */
     confirmed: boolean;
-}
-
-/** One row of the rendered view: one account, one commodity. */
-export interface BalanceRow {
-    account: string;
-    qty: Dec;
-    asOf: ISODate | null;
-    confirmed: boolean;
-}
-
-/** The whole view for one commodity: two lists and the three headline figures. */
-export interface BalanceSummary {
-    commodity: string;
-    /** Cash accounts, largest holding first; a negative (overdrawn) balance sorts by magnitude like any other. */
-    cash: BalanceRow[];
-    /** Liability accounts, largest debt first. */
-    liabilities: BalanceRow[];
-    totalCash: Dec;
-    /** Negative when money is owed, matching how the rows read. */
-    totalLiabilities: Dec;
-    /** totalCash + totalLiabilities — what is left after clearing short-term debt. */
-    net: Dec;
 }
 
 /** Exact zero — the accumulator seed and the miss value for a commodity lookup. */
@@ -195,18 +179,6 @@ export function accountBalances(txns: Transaction[], classes: AccountClasses, as
     return cashBalanceSet(txns, classes, asOf).balances;
 }
 
-/**
- * Accounts left out of the view because a word in their NAME looked long-term,
- * with no `bsterm:` tag anywhere in the ancestry to say so. Shares the pass and
- * the memo with [`accountBalances`].
- *
- * This exists so the guess is never silent: the view names them, and one
- * `bsterm: current` tag brings any of them back.
- */
-export function guessedLongTerm(txns: Transaction[], classes: AccountClasses, asOf: ISODate): string[] {
-    return cashBalanceSet(txns, classes, asOf).guessedLongTerm;
-}
-
 /** The actual pass; [`cashBalanceSet`] is the memoized front door. */
 function computeAccountBalances(txns: Transaction[], classes: AccountClasses, asOf: ISODate): CashBalanceSet {
     const classify = cashViewClassifier(classes);
@@ -250,61 +222,4 @@ function computeAccountBalances(txns: Transaction[], classes: AccountClasses, as
         }
     }
     return {balances: [...entries.values()], guessedLongTerm: [...guessed].sort()};
-}
-
-/**
- * Commodities held by any account in the view, most-used first (ties
- * alphabetical) — drives the currency selector.
- *
- * "Most used" is per ACCOUNT, which is what an `AccountBalance`'s amounts
- * already are: one entry per commodity, however many postings built it.
- */
-export function balanceCommodities(balances: readonly AccountBalance[]): string[] {
-    return rankCommodities(balances.map((balance) => balance.amounts));
-}
-
-function abs(d: Dec): Dec {
-    return d.m < 0n ? neg(d) : d;
-}
-
-/** Largest magnitude first; exact zeroes last, then alphabetical, so the ordering is total and stable. */
-function byMagnitude(a: BalanceRow, b: BalanceRow): number {
-    const magnitude = cmp(abs(b.qty), abs(a.qty));
-    return magnitude !== 0 ? magnitude : a.account < b.account ? -1 : 1;
-}
-
-/**
- * Project one commodity out of [`accountBalances`] into the two rendered lists
- * and the three headline figures.
- *
- * An account with no posting at all in `commodity` is omitted; one whose
- * postings NET to zero is kept. "This account is empty" and "this account has
- * never held this currency" are different statements, and only the first is
- * worth a row the reader can choose to hide.
- */
-export function summarize(balances: readonly AccountBalance[], commodity: string): BalanceSummary {
-    const cash: BalanceRow[] = [];
-    const liabilities: BalanceRow[] = [];
-    let totalCash = ZERO;
-    let totalLiabilities = ZERO;
-    for (const balance of balances) {
-        const qty = balance.amounts.get(commodity);
-        if (qty === undefined) continue;
-        const row: BalanceRow = {account: balance.account, qty, asOf: balance.asOf, confirmed: balance.confirmed};
-        if (balance.kind === "cash") {
-            cash.push(row);
-            totalCash = add(totalCash, qty);
-        } else {
-            liabilities.push(row);
-            totalLiabilities = add(totalLiabilities, qty);
-        }
-    }
-    cash.sort(byMagnitude);
-    liabilities.sort(byMagnitude);
-    return {commodity, cash, liabilities, totalCash, totalLiabilities, net: add(totalCash, totalLiabilities)};
-}
-
-/** Rows worth drawing: every row when `hideZero` is false, else only those with a non-zero balance. */
-export function visibleRows(rows: readonly BalanceRow[], hideZero: boolean): BalanceRow[] {
-    return hideZero ? rows.filter((row) => !isZero(row.qty)) : [...rows];
 }

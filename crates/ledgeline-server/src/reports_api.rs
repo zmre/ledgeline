@@ -1849,7 +1849,7 @@ pub(crate) fn checked_date(field: &str, raw: &str) -> Result<String, AppError> {
 /// we cannot answer, and a report for some other date is not the answer. (The
 /// SPA's `queryString` omits empty params rather than sending them, so this
 /// costs it nothing.)
-fn parse_date(
+pub(crate) fn parse_date(
     field: &str,
     raw: Option<String>,
     default: impl FnOnce() -> String,
