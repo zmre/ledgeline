@@ -1106,7 +1106,10 @@ fn stale(id: &str) -> AppError {
 /// produced carries no path, and every error on this path comes straight from
 /// `File::open` or `read_to_end`.
 fn read_failed(id: &str, error: &std::io::Error) -> AppError {
-    AppError::Internal(format!("could not read {}: {error}", quoted(id)))
+    AppError::unless_not_downloaded(
+        error,
+        AppError::Internal(format!("could not read {}: {error}", quoted(id))),
+    )
 }
 
 /// A `500` for an I/O failure while WRITING — and deliberately only the
@@ -1114,11 +1117,14 @@ fn read_failed(id: &str, error: &std::io::Error) -> AppError {
 /// built that names the journal directory, which is precisely the disclosure
 /// the error sentences here exist to prevent.
 fn write_failed(id: &str, error: &std::io::Error) -> AppError {
-    AppError::Internal(format!(
-        "could not write {}: {}. Nothing was changed.",
-        quoted(id),
-        error.kind()
-    ))
+    AppError::unless_not_downloaded(
+        error,
+        AppError::Internal(format!(
+            "could not write {}: {}. Nothing was changed.",
+            quoted(id),
+            error.kind()
+        )),
+    )
 }
 
 /// How a [`CreateRefusal`] is reported.

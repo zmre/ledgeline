@@ -23,7 +23,7 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
-use ledgeline::{AccessToken, AppDirs, AppState, recents, router_with_security};
+use ledgeline::{AccessToken, AppDirs, AppState, recents, router_with_security, token_init_script};
 use muda::{
     Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
     accelerator::{Accelerator, Code, Modifiers},
@@ -560,30 +560,6 @@ fn navigation_allowed(base: &str, candidate: &str) -> bool {
 /// be honoured in full. The caller logs the ones it drops.
 fn first_journal_path(urls: &[Url]) -> Option<PathBuf> {
     urls.iter().find_map(|url| url.to_file_path().ok())
-}
-
-/// The initialization script that hands the WebView its access token.
-///
-/// This is how the token reaches the SPA WITHOUT appearing in any response body:
-/// the shell is served unauthenticated, so anything that can reach loopback can
-/// read it, and it used to carry the token for exactly that reason. wry runs this
-/// at document start, before the page's own scripts, outside the page's CSP —
-/// but on EVERY document the main frame loads, whatever its origin. The
-/// navigation handler already confines the WebView to our origin; the
-/// `location.origin` check means a document from anywhere else would still get
-/// nothing, should one ever load.
-///
-/// Both values are serialized as JSON string literals rather than interpolated
-/// raw. [`AccessToken::parse`] already restricts the token to a safe character
-/// set, and the origin is ours, so this is belt and braces — but it costs
-/// nothing and does not depend on either staying true.
-fn token_init_script(origin: &str, token: &AccessToken) -> String {
-    let literal = |value: &str| serde_json::Value::from(value).to_string();
-    format!(
-        "if (window.location.origin === {origin}) {{ window.__LEDGELINE_TOKEN__ = {token}; }}",
-        origin = literal(origin),
-        token = literal(token.as_str()),
-    )
 }
 
 /// Build the wry webview for `window`, pointed at `url`, with `token` handed to

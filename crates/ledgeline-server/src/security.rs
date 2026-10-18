@@ -268,6 +268,26 @@ impl Security {
         }
     }
 
+    /// The posture for IN-PROCESS dispatch — a mobile host's custom-scheme
+    /// handler feeding requests to the router with `Router::oneshot`, no socket
+    /// at all (`ledgeline-ffi`).
+    ///
+    /// * **The token is still required.** A scheme handler receives every
+    ///   request its web view makes, including one from a foreign page that
+    ///   somehow got loaded into it (a link followed, an injected frame): the
+    ///   browser enforces CORS on the *response*, not on whether the request is
+    ///   delivered, so a blind write would land without it. The host hands the
+    ///   token to its own pages out of band ([`token_init_script`]), as the
+    ///   desktop WebView gets it.
+    /// * **No `Host` guard.** It exists against DNS rebinding, which needs a
+    ///   socket to rebind to. There is none, and the authority a custom scheme
+    ///   presents is whatever the host chose.
+    /// * **No CORS**, as on every default posture.
+    #[must_use]
+    pub fn in_process(token: AccessToken) -> Self {
+        Self::any_host(token)
+    }
+
     /// Require `token` but accept any `Host`. Only for an explicitly requested
     /// non-loopback bind, where the legitimate `Host` values are unknowable —
     /// which also means this posture has NO anti-DNS-rebinding control.
@@ -338,6 +358,33 @@ impl Security {
                 .max_age(PREFLIGHT_MAX_AGE),
         )
     }
+}
+
+/// The initialization script that hands the WebView its access token.
+///
+/// Shared by the desktop GUI (wry's initialization script, `gui.rs`) and a
+/// mobile host (a `WKUserScript` at document start — see `ledgeline-ffi`).
+///
+/// This is how the token reaches the SPA WITHOUT appearing in any response body:
+/// the shell is served unauthenticated, so anything that can reach loopback can
+/// read it, and it used to carry the token for exactly that reason. wry runs this
+/// at document start, before the page's own scripts, outside the page's CSP —
+/// but on EVERY document the main frame loads, whatever its origin. The
+/// navigation handler already confines the WebView to our origin; the
+/// `location.origin` check means a document from anywhere else would still get
+/// nothing, should one ever load.
+///
+/// Both values are serialized as JSON string literals rather than interpolated
+/// raw. [`AccessToken::parse`] already restricts the token to a safe character
+/// set, and the origin is ours, so this is belt and braces — but it costs
+/// nothing and does not depend on either staying true.
+pub fn token_init_script(origin: &str, token: &AccessToken) -> String {
+    let literal = |value: &str| serde_json::Value::from(value).to_string();
+    format!(
+        "if (window.location.origin === {origin}) {{ window.__LEDGELINE_TOKEN__ = {token}; }}",
+        origin = literal(origin),
+        token = literal(token.as_str()),
+    )
 }
 
 /// Reject any request whose `Host` is not one this server answers to.

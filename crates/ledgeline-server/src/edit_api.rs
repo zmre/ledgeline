@@ -779,14 +779,7 @@ fn apply_additions(
 /// person to act on.
 fn labeled(error: EditError, context: String) -> AppError {
     let message = format!("{context}: {error}");
-    match AppError::from(error) {
-        AppError::BadRequest(_) => AppError::BadRequest(message),
-        AppError::NotFound(_) => AppError::NotFound(message),
-        AppError::Conflict(_) => AppError::Conflict(message),
-        AppError::EditingDisabled(_) => AppError::EditingDisabled(message),
-        AppError::Unavailable(_) => AppError::Unavailable(message),
-        AppError::Internal(_) => AppError::Internal(message),
-    }
+    AppError::from(error).with_message(message)
 }
 
 /// The transaction with `tindex` `index` in the editor's current journal.

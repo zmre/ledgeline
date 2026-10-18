@@ -91,6 +91,7 @@ pub use app_dirs::{AppDirs, CONFIG_DIR_ENV, HLEDGER_ENV};
 pub use location::JournalLocation;
 pub use security::{
     AccessToken, ProcessToken, Security, SecurityError, TOKEN_ENV, token_from_env_or_random,
+    token_init_script,
 };
 // `ledgeline import` (WP-16 Phase 3). The binary is a SEPARATE crate from this
 // library, so the `pub(crate)` the rest of `import_api` uses would not reach it —
@@ -573,7 +574,26 @@ impl AppState {
     /// are left unchanged.
     pub fn rebind_editor(&self, path: impl AsRef<Path>) -> Result<(), EditError> {
         // Open first so a failure leaves the current editor + snapshot untouched.
-        let editor = JournalEditor::open(path.as_ref())?;
+        self.bind_editor(JournalEditor::open(path.as_ref())?);
+        Ok(())
+    }
+
+    /// [`Self::rebind_editor`] for a vault: open a fresh editor over `main` in
+    /// `vault` and bind it. How a host without a desktop path (iOS) gets
+    /// editing back after a failed reload unbound the editor — a file evicted
+    /// mid-read, or a synced-in edit that did not parse — once the journal
+    /// reads cleanly again.
+    ///
+    /// # Errors
+    /// [`EditError::Parse`] (or `Io`) if the journal cannot be read or does not
+    /// parse; the previous editor and snapshot are then left unchanged.
+    pub fn rebind_vault(&self, vault: Arc<dyn Vault>, main: VaultPath) -> Result<(), EditError> {
+        self.bind_editor(JournalEditor::open_in(vault, main)?);
+        Ok(())
+    }
+
+    /// Publish `editor`'s journal and bind it as the editor.
+    fn bind_editor(&self, editor: JournalEditor) {
         self.inner.store(Arc::new(Snapshot::from_journal(
             Arc::clone(editor.journal()),
             Some(location_of(&editor)),
@@ -583,7 +603,6 @@ impl AppState {
         // The previously-bound editor is discarded wholesale, so any poison flag
         // from a panic during its lifetime no longer describes live state.
         self.editor.clear_poison();
-        Ok(())
     }
 
     /// Re-read the journal from its vault and republish it: re-open the bound
@@ -670,7 +689,8 @@ impl AppState {
     /// A poisoned mutex still answers honestly: the flag says an earlier request
     /// panicked mid-edit, not that the binding went away, and [`edit_api`]'s
     /// `lock_editor` is what recovers from it (SEC-11).
-    pub(crate) fn editing_enabled(&self) -> bool {
+    #[must_use]
+    pub fn editing_enabled(&self) -> bool {
         self.editor
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
