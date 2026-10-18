@@ -21,18 +21,26 @@
 //! new snapshot with an empty cache, so nothing here can go stale.
 
 use crate::error::AppError;
-use crate::reports_api::{self, parse_date, today_utc};
-use crate::{AppState, Snapshot, if_none_match_hits};
+use crate::reports_api::{self, parse_date, parse_opt_date, today_utc};
+use crate::{AppState, Snapshot, generation_of, if_none_match_hits};
 use axum::body::{Body, Bytes};
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use ledgeline_core::Journal;
+use ledgeline_core::reports::Interval;
 use ledgeline_core::view::Classes;
 use ledgeline_core::view::cash::cash_balances_view;
 use ledgeline_core::view::checks::{
-    Diagnostics, Finding, diagnostics_body, engine_findings, local_findings,
+    Diagnostics, Finding, WireFlag, diagnostics_body, engine_findings, local_findings,
 };
-use serde::Deserialize;
+use ledgeline_core::view::filter::{JournalFilter, display_order, filter_positions};
+use ledgeline_core::view::rows::{Row, RowContext, haystack};
+use ledgeline_core::view::series::{
+    ChartMode, ChartSpec, JournalView, SignTable, chart, parse_category, sign_table, summary,
+};
+use ledgeline_core::view::wire::DeclaredStyles;
+use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 /// How many distinct `today`s keep their problem list cached per snapshot. One
@@ -57,36 +65,110 @@ pub(crate) struct ViewCache {
     engine: OnceLock<Arc<Vec<Finding>>>,
     /// Engine + local findings per client `today`, most recent last.
     diagnostics: Mutex<Vec<Arc<DiagnosticsEntry>>>,
+    /// The declared commodity styles every row and summary renders with.
+    declared: OnceLock<Arc<DeclaredStyles>>,
+    /// Every transaction position in display order (date desc, tindex desc).
+    order: OnceLock<Arc<Vec<u32>>>,
+    /// Every transaction's lowercase search text, by position — built only
+    /// when a filter first carries a query.
+    haystacks: OnceLock<Arc<Vec<Box<str>>>>,
+    /// Every commodity's sign conventions over the whole journal.
+    signs: OnceLock<Arc<SignTable>>,
+    /// Recent filter results, most recently used last ([`FILTER_CACHE`]).
+    filters: Mutex<Vec<(JournalFilter, Arc<Vec<u32>>)>>,
 }
 
+/// How many filter results each snapshot keeps. Scrolling one view asks for
+/// the same filter block after block, and the summary, chart and position
+/// routes ask for it again; a handful covers flipping between recent filters.
+const FILTER_CACHE: usize = 8;
+
 impl ViewCache {
-    fn classes(&self, snapshot: &Snapshot) -> Arc<Classes> {
-        Arc::clone(
-            self.classes
-                .get_or_init(|| Arc::new(Classes::of(&snapshot.journal))),
-        )
+    /// A fresh cache for `journal`, warmed on a background thread so the
+    /// first requests after a load or an edit find the expensive derivations
+    /// already built (see [`ViewCache::prewarm`]).
+    pub(crate) fn warmed(journal: &Arc<Journal>) -> Arc<Self> {
+        let cache = Arc::new(Self::default());
+        let weak = Arc::downgrade(&cache);
+        let journal = Arc::clone(journal);
+        // A failure to spawn only means the first requests build these
+        // themselves, which is exactly what they would do without the warm-up.
+        let _ = std::thread::Builder::new()
+            .name("ledgeline-view-warm".to_string())
+            .spawn(move || Self::prewarm(&weak, &journal));
+        cache
+    }
+
+    /// Build, in the order the SPA's first screen asks for them: the display
+    /// order and the problem list (every row embeds its flags, and the badge
+    /// counts them), then the summary's inputs, then the search text.
+    ///
+    /// Each step re-checks that the snapshot still exists: an edit publishes a
+    /// new snapshot, and warming a superseded one is wasted work. Everything is
+    /// a `OnceLock`, so a request racing a step simply shares its answer.
+    fn prewarm(cache: &std::sync::Weak<Self>, journal: &Journal) {
+        let today = today_utc();
+        let steps: [&dyn Fn(&Self); 5] = [
+            &|view| drop(view.order(journal)),
+            &|view| drop(view.diagnostics(journal, &today)),
+            &|view| drop(view.signs(journal)),
+            &|view| drop(view.declared(journal)),
+            &|view| drop(view.haystacks(journal)),
+        ];
+        for step in steps {
+            let Some(view) = cache.upgrade() else { return };
+            step(&view);
+        }
+    }
+
+    fn order(&self, journal: &Journal) -> Arc<Vec<u32>> {
+        Arc::clone(self.order.get_or_init(|| Arc::new(display_order(journal))))
+    }
+
+    fn haystacks(&self, journal: &Journal) -> Arc<Vec<Box<str>>> {
+        Arc::clone(self.haystacks.get_or_init(|| {
+            let declared = self.declared(journal);
+            Arc::new(
+                journal
+                    .transactions
+                    .iter()
+                    .map(|txn| haystack(txn, &declared).into_boxed_str())
+                    .collect(),
+            )
+        }))
+    }
+
+    fn classes(&self, journal: &Journal) -> Arc<Classes> {
+        Arc::clone(self.classes.get_or_init(|| Arc::new(Classes::of(journal))))
     }
 
     /// Every finding for `today`: the date-free engine half memoized for the
     /// snapshot, the local rules memoized per date.
-    pub(crate) fn diagnostics(&self, snapshot: &Snapshot, today: &str) -> Arc<DiagnosticsEntry> {
+    pub(crate) fn diagnostics(&self, journal: &Journal, today: &str) -> Arc<DiagnosticsEntry> {
         let cached = |entries: &Vec<Arc<DiagnosticsEntry>>| {
             entries.iter().find(|entry| entry.today == today).cloned()
         };
         if let Some(hit) = cached(&self.lock_diagnostics()) {
             return hit;
         }
-        let engine = Arc::clone(
-            self.engine
-                .get_or_init(|| Arc::new(engine_findings(&snapshot.journal))),
-        );
-        let classes = self.classes(snapshot);
+        // The engine half and the local rules are independent passes (the
+        // local ones need the account classes first): run them side by side.
+        let (engine, local) = std::thread::scope(|scope| {
+            let engine = scope.spawn(|| {
+                Arc::clone(
+                    self.engine
+                        .get_or_init(|| Arc::new(engine_findings(journal))),
+                )
+            });
+            let local = local_findings(journal, &self.classes(journal), today);
+            let engine = engine
+                .join()
+                .unwrap_or_else(|payload| std::panic::resume_unwind(payload));
+            (engine, local)
+        });
         let entry = Arc::new(DiagnosticsEntry {
             today: today.to_string(),
-            diagnostics: Arc::new(Diagnostics::new(
-                &engine,
-                local_findings(&snapshot.journal, &classes, today),
-            )),
+            diagnostics: Arc::new(Diagnostics::new(&engine, local)),
             full_body: OnceLock::new(),
         });
         let mut entries = self.lock_diagnostics();
@@ -99,6 +181,53 @@ impl ViewCache {
         }
         entries.push(Arc::clone(&entry));
         entry
+    }
+
+    fn declared(&self, journal: &Journal) -> Arc<DeclaredStyles> {
+        Arc::clone(
+            self.declared
+                .get_or_init(|| Arc::new(DeclaredStyles::of(journal))),
+        )
+    }
+
+    fn signs(&self, journal: &Journal) -> Arc<SignTable> {
+        Arc::clone(
+            self.signs
+                .get_or_init(|| Arc::new(sign_table(journal, &self.classes(journal)))),
+        )
+    }
+
+    /// The positions `filter` keeps, in display order — from the cache when a
+    /// recent request asked the same question.
+    fn filtered(&self, journal: &Journal, filter: &JournalFilter) -> Arc<Vec<u32>> {
+        {
+            let mut cache = self.lock_filters();
+            if let Some(at) = cache.iter().position(|(key, _)| key == filter) {
+                let hit = cache.remove(at);
+                let positions = Arc::clone(&hit.1);
+                cache.push(hit);
+                return positions;
+            }
+        }
+        let order = self.order(journal);
+        let haystacks = (!filter.query().is_empty()).then(|| self.haystacks(journal));
+        let positions = Arc::new(filter_positions(
+            journal,
+            &order,
+            haystacks.as_deref().map(Vec::as_slice),
+            filter,
+        ));
+        let mut cache = self.lock_filters();
+        if cache.len() == FILTER_CACHE {
+            cache.remove(0);
+        }
+        cache.push((filter.clone(), Arc::clone(&positions)));
+        positions
+    }
+
+    fn lock_filters(&self) -> std::sync::MutexGuard<'_, Vec<(JournalFilter, Arc<Vec<u32>>)>> {
+        // Entries are pushed and removed whole; a poisoned lock is still sound.
+        self.filters.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn lock_diagnostics(&self) -> std::sync::MutexGuard<'_, Vec<Arc<DiagnosticsEntry>>> {
@@ -204,7 +333,7 @@ pub(crate) async fn cash_balances(
 ) -> Result<Response, AppError> {
     let as_of = parse_date("asOf", query.as_of, today_utc)?;
     conditional(state.snapshot(), &headers, move |snapshot| {
-        let classes = snapshot.view.classes(snapshot);
+        let classes = snapshot.view.classes(&snapshot.journal);
         to_bytes(&cash_balances_view(&snapshot.journal, &classes, &as_of))
     })
     .await
@@ -238,7 +367,7 @@ pub(crate) async fn diagnostics(
     let snapshot = state.snapshot();
     let etag = dated_etag(&snapshot, &today);
     conditional_tagged(snapshot, etag, &headers, move |snapshot| {
-        let entry = snapshot.view.diagnostics(snapshot, &today);
+        let entry = snapshot.view.diagnostics(&snapshot.journal, &today);
         if let Some(limit) = query.limit {
             return to_bytes(&diagnostics_body(
                 &snapshot.journal,
@@ -255,6 +384,393 @@ pub(crate) async fn diagnostics(
             None,
         ))?;
         Ok(entry.full_body.get_or_init(|| body).clone())
+    })
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// The windowed journal (plan 26 B5)
+// ---------------------------------------------------------------------------
+
+/// The journal filter every windowed route shares, spelled as the SPA's URL
+/// already spells it: `from`/`to` inclusive ISO dates, `accounts` a
+/// comma-separated list of subtree roots, `q` the free text.
+fn journal_filter(
+    from: Option<String>,
+    to: Option<String>,
+    accounts: Option<&str>,
+    q: Option<&str>,
+) -> Result<JournalFilter, AppError> {
+    let accounts = accounts
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .map(str::to_string);
+    Ok(JournalFilter::new(
+        parse_opt_date("from", from)?,
+        parse_opt_date("to", to)?,
+        accounts,
+        q.unwrap_or_default(),
+    ))
+}
+
+/// The most rows one `rows` request returns.
+const MAX_ROWS: usize = 1000;
+/// Rows per request when `limit` is absent: one client block.
+const DEFAULT_ROWS: usize = 200;
+
+/// `?from&to&accounts&q&offset&limit&order&today`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RowsQuery {
+    from: Option<String>,
+    to: Option<String>,
+    accounts: Option<String>,
+    q: Option<String>,
+    offset: Option<usize>,
+    limit: Option<usize>,
+    order: Option<String>,
+    today: Option<String>,
+}
+
+/// `{generation, total, offset, rows}`.
+#[derive(Serialize)]
+struct RowsBody<'a> {
+    generation: &'a str,
+    total: usize,
+    offset: usize,
+    rows: Vec<Row<'a>>,
+}
+
+/// Whether a request asked for ascending (oldest-first) order.
+fn ascending(order: Option<&str>) -> Result<bool, AppError> {
+    match order {
+        None | Some("desc") => Ok(false),
+        Some("asc") => Ok(true),
+        Some(other) => Err(AppError::BadRequest(format!(
+            "order must be asc or desc, got {other:?}"
+        ))),
+    }
+}
+
+/// The flags for the transaction at `position`, as a row embeds them.
+fn flags_of(diagnostics: &Diagnostics, position: usize) -> Vec<WireFlag<'_>> {
+    diagnostics
+        .for_position(position)
+        .map(WireFlag::from)
+        .collect()
+}
+
+/// `GET /api/journal/rows` — one window of the filtered journal, in display
+/// order (`desc`, the default: newest first) or its exact reverse (`asc`, for
+/// an export reading the journal oldest-first).
+///
+/// Each row is the domain transaction the SPA's row components render, with
+/// its check findings embedded as `flags` (as of the client's `today`).
+/// `total` is the filtered count, so a client can size a scroll area before it
+/// has any rows; `limit` is capped at [`MAX_ROWS`].
+pub(crate) async fn rows(
+    State(state): State<AppState>,
+    Query(query): Query<RowsQuery>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let filter = journal_filter(
+        query.from,
+        query.to,
+        query.accounts.as_deref(),
+        query.q.as_deref(),
+    )?;
+    let ascending = ascending(query.order.as_deref())?;
+    let today = parse_date("today", query.today, today_utc)?;
+    let offset = query.offset.unwrap_or(0);
+    let limit = query.limit.unwrap_or(DEFAULT_ROWS).min(MAX_ROWS);
+    let snapshot = state.snapshot();
+    let etag = dated_etag(&snapshot, &today);
+    conditional_tagged(snapshot, etag, &headers, move |snapshot| {
+        let view = &snapshot.view;
+        let positions = view.filtered(&snapshot.journal, &filter);
+        let entry = view.diagnostics(&snapshot.journal, &today);
+        let declared = view.declared(&snapshot.journal);
+        let context = RowContext::new(&snapshot.journal, &declared);
+        let window: Box<dyn Iterator<Item = &u32>> = if ascending {
+            Box::new(positions.iter().rev().skip(offset).take(limit))
+        } else {
+            Box::new(positions.iter().skip(offset).take(limit))
+        };
+        let rows = window
+            .map(|position| {
+                let at = *position as usize;
+                context.row(
+                    &snapshot.journal.transactions[at],
+                    flags_of(&entry.diagnostics, at),
+                )
+            })
+            .collect();
+        to_bytes(&RowsBody {
+            generation: generation_of(&snapshot.etag),
+            total: positions.len(),
+            offset,
+            rows,
+        })
+    })
+    .await
+}
+
+/// `?from&to&accounts&q` — the filter alone.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FilterQuery {
+    from: Option<String>,
+    to: Option<String>,
+    accounts: Option<String>,
+    q: Option<String>,
+}
+
+/// `{generation, …Summary}`.
+#[derive(Serialize)]
+struct WithGeneration<'a, T: Serialize> {
+    generation: &'a str,
+    #[serde(flatten)]
+    body: T,
+}
+
+fn journal_view<'a>(
+    snapshot: &'a Snapshot,
+    classes: &'a Classes,
+    signs: &'a SignTable,
+    declared: &'a DeclaredStyles,
+) -> JournalView<'a> {
+    JournalView {
+        journal: &snapshot.journal,
+        classes,
+        signs,
+        declared,
+    }
+}
+
+/// `GET /api/journal/summary` — for the filtered view: the count, the
+/// footer's visible net, every commodity's income/expenses/net with its style
+/// and categories, the commodities ranked by use, and the deepest account
+/// ([`ledgeline_core::view::series::summary`]). Sign conventions are detected
+/// over the whole journal and memoized per snapshot.
+pub(crate) async fn summary_route(
+    State(state): State<AppState>,
+    Query(query): Query<FilterQuery>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let filter = journal_filter(
+        query.from,
+        query.to,
+        query.accounts.as_deref(),
+        query.q.as_deref(),
+    )?;
+    conditional(state.snapshot(), &headers, move |snapshot| {
+        let cache = &snapshot.view;
+        let positions = cache.filtered(&snapshot.journal, &filter);
+        let (classes, signs, declared) = (
+            cache.classes(&snapshot.journal),
+            cache.signs(&snapshot.journal),
+            cache.declared(&snapshot.journal),
+        );
+        to_bytes(&WithGeneration {
+            generation: generation_of(&snapshot.etag),
+            body: summary(
+                journal_view(snapshot, &classes, &signs, &declared),
+                &positions,
+                &filter,
+            ),
+        })
+    })
+    .await
+}
+
+/// `?<filter>&mode=pie|line&depth&commodity&category&interval&max`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChartQuery {
+    from: Option<String>,
+    to: Option<String>,
+    accounts: Option<String>,
+    q: Option<String>,
+    mode: Option<String>,
+    depth: Option<usize>,
+    commodity: String,
+    category: Option<String>,
+    interval: Option<String>,
+    max: Option<usize>,
+}
+
+/// Default and ceiling for a chart's group count.
+const DEFAULT_GROUPS: usize = 6;
+const MAX_GROUPS: usize = 50;
+/// Deepest clamp a chart honours (account names are not deeper in practice).
+const MAX_DEPTH: usize = 100;
+
+fn chart_mode(mode: Option<&str>, interval: Option<&str>) -> Result<ChartMode, AppError> {
+    match mode.unwrap_or("pie") {
+        "pie" => Ok(ChartMode::Pie),
+        "line" => match interval.unwrap_or("monthly") {
+            "daily" => Ok(ChartMode::Line(Interval::Daily)),
+            "weekly" => Ok(ChartMode::Line(Interval::Weekly)),
+            "monthly" => Ok(ChartMode::Line(Interval::Monthly)),
+            other => Err(AppError::BadRequest(format!(
+                "interval must be daily, weekly or monthly, got {other:?}"
+            ))),
+        },
+        other => Err(AppError::BadRequest(format!(
+            "mode must be pie or line, got {other:?}"
+        ))),
+    }
+}
+
+/// `GET /api/journal/chart` — the insights pie or line for the filtered view,
+/// one commodity, clamped to `depth` (default 2), scoped to `category` (absent
+/// or `all` = every category), the tail past `max` groups (default 6) folded
+/// into `(other)`. `groups` is the rank order colours are assigned from, so an
+/// account keeps its colour whichever mode is drawn.
+pub(crate) async fn chart_route(
+    State(state): State<AppState>,
+    Query(query): Query<ChartQuery>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let filter = journal_filter(
+        query.from,
+        query.to,
+        query.accounts.as_deref(),
+        query.q.as_deref(),
+    )?;
+    let mode = chart_mode(query.mode.as_deref(), query.interval.as_deref())?;
+    let category = match query.category.as_deref() {
+        None | Some("" | "all") => None,
+        Some(code) => Some(
+            parse_category(code)
+                .ok_or_else(|| AppError::BadRequest(format!("unknown category {code:?}")))?,
+        ),
+    };
+    let spec = ChartSpec {
+        depth: query.depth.unwrap_or(2).min(MAX_DEPTH),
+        commodity: query.commodity,
+        category,
+        max: query.max.unwrap_or(DEFAULT_GROUPS).clamp(1, MAX_GROUPS),
+    };
+    conditional(state.snapshot(), &headers, move |snapshot| {
+        let cache = &snapshot.view;
+        let positions = cache.filtered(&snapshot.journal, &filter);
+        let (classes, signs, declared) = (
+            cache.classes(&snapshot.journal),
+            cache.signs(&snapshot.journal),
+            cache.declared(&snapshot.journal),
+        );
+        let view = journal_view(snapshot, &classes, &signs, &declared);
+        to_bytes(&WithGeneration {
+            generation: generation_of(&snapshot.etag),
+            body: chart(view, &positions, &filter, &spec, mode),
+        })
+    })
+    .await
+}
+
+/// The position of the transaction with `tindex` in `journal.transactions`.
+/// Tindexes are assigned in file order, so the fast path is one probe; the
+/// scan is the fallback should that ever not hold.
+fn position_of(snapshot: &Snapshot, tindex: u32) -> Option<usize> {
+    let txns = &snapshot.journal.transactions;
+    let guess = usize::try_from(tindex).ok()?.checked_sub(1)?;
+    if txns.get(guess).is_some_and(|txn| txn.index.0 == tindex) {
+        return Some(guess);
+    }
+    txns.iter().position(|txn| txn.index.0 == tindex)
+}
+
+/// `?index=N&<filter>`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PositionQuery {
+    index: u32,
+    from: Option<String>,
+    to: Option<String>,
+    accounts: Option<String>,
+    q: Option<String>,
+}
+
+/// `{generation, position, date, total}`.
+#[derive(Serialize)]
+struct PositionBody<'a> {
+    generation: &'a str,
+    /// 0-based row of the transaction in the filtered display order, or null
+    /// when the filter hides it (or it does not exist).
+    position: Option<usize>,
+    /// The transaction's date, so a client can widen a date filter to reveal
+    /// it; null when no transaction has this index.
+    date: Option<&'a str>,
+    /// The filtered count.
+    total: usize,
+}
+
+/// `GET /api/journal/position?index=N&<filter>` — where the transaction with
+/// `tindex` N sits in the filtered view: what a jump (problems drawer, a
+/// cursor re-anchor) scrolls to without the client holding the journal.
+pub(crate) async fn position_route(
+    State(state): State<AppState>,
+    Query(query): Query<PositionQuery>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let filter = journal_filter(
+        query.from,
+        query.to,
+        query.accounts.as_deref(),
+        query.q.as_deref(),
+    )?;
+    let tindex = query.index;
+    conditional(state.snapshot(), &headers, move |snapshot| {
+        let positions = snapshot.view.filtered(&snapshot.journal, &filter);
+        let at = position_of(snapshot, tindex);
+        let row = at.and_then(|at| {
+            let at = u32::try_from(at).ok()?;
+            positions.iter().position(|p| *p == at)
+        });
+        to_bytes(&PositionBody {
+            generation: generation_of(&snapshot.etag),
+            position: row,
+            date: at.map(|at| snapshot.journal.transactions[at].date.as_str()),
+            total: positions.len(),
+        })
+    })
+    .await
+}
+
+/// `?today=` for a single transaction's flags.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TransactionQuery {
+    today: Option<String>,
+}
+
+/// `GET /api/transactions/{index}` — one transaction as a row, flags and all:
+/// what the edit popup opens on. A GET on the COLLECTION path stays
+/// unanswered (`405`): the SPA's "can I edit?" probe depends on it.
+pub(crate) async fn transaction(
+    State(state): State<AppState>,
+    Path(index): Path<u32>,
+    Query(query): Query<TransactionQuery>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let today = parse_date("today", query.today, today_utc)?;
+    let snapshot = state.snapshot();
+    let Some(at) = position_of(&snapshot, index) else {
+        return Err(AppError::NotFound(format!(
+            "no transaction with index {index}"
+        )));
+    };
+    let etag = dated_etag(&snapshot, &today);
+    conditional_tagged(snapshot, etag, &headers, move |snapshot| {
+        let entry = snapshot.view.diagnostics(&snapshot.journal, &today);
+        let declared = snapshot.view.declared(&snapshot.journal);
+        let context = RowContext::new(&snapshot.journal, &declared);
+        to_bytes(&context.row(
+            &snapshot.journal.transactions[at],
+            flags_of(&entry.diagnostics, at),
+        ))
     })
     .await
 }

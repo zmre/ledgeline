@@ -509,6 +509,11 @@ async fn wire_and_api_routes_require_the_token() {
         "/api/diagnostics",
         "/api/journal",
         "/api/balances/cash",
+        "/api/journal/rows",
+        "/api/journal/summary",
+        "/api/journal/chart?commodity=%24",
+        "/api/journal/position?index=1",
+        "/api/transactions/1",
     ] {
         let (missing, missing_headers) =
             probe(local_security(), "GET", uri, &[(header::HOST, GOOD_HOST)]).await;

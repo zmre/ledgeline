@@ -20,6 +20,9 @@
 
 pub mod cash;
 pub mod checks;
+pub mod filter;
+pub mod rows;
+pub mod series;
 pub mod wire;
 
 use crate::model::Journal;

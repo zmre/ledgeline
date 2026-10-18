@@ -9,9 +9,13 @@
 //! immutable [`Bytes`] and stored in a [`Snapshot`]; a request hands the buffer
 //! straight to the response body, which is a refcount bump rather than a copy
 //! (PERF-1 — holding `serde_json::Value` trees instead cost 2.7 GB and re-walked
-//! them on every request). The native report/budget endpoints ([`reports_api`])
-//! instead depend on request query params, so they are computed per request from
-//! the parsed [`Journal`] the same snapshot holds.
+//! them on every request). The biggest of them, `/transactions`, is serialized
+//! on its first request rather than at build time, because the SPA no longer
+//! reads it (plan 26 B5). The native report/budget endpoints ([`reports_api`])
+//! and the journal-view routes ([`journal_api`]) instead depend on request query
+//! params, so they are computed per request from the parsed [`Journal`] the same
+//! snapshot holds, with the journal view's whole-journal derivations memoized in
+//! the snapshot.
 //!
 //! Every snapshot carries an `ETag`, so the SPA's 30-second poll costs a `304`
 //! and no body at all until the journal actually changes (PERF-2).
@@ -73,7 +77,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware,
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{get, post},
 };
 use ledgeline_core::vault::{Vault, VaultPath};
 use ledgeline_core::{EditError, Journal, JournalEditor, wire};
@@ -145,7 +149,12 @@ pub(crate) struct Snapshot {
     pub(crate) etag: HeaderValue,
     pub(crate) version: Bytes,
     pub(crate) accountnames: Bytes,
-    pub(crate) transactions: Bytes,
+    /// The hledger-web `/transactions` body, serialized on FIRST REQUEST rather
+    /// than at build time (plan 26 B5). The SPA reads the journal through the
+    /// windowed `/api/journal/*` routes and never asks for it, so only an
+    /// external hledger-web client pays its 563 ms and 347 MB at 200k — once per
+    /// snapshot, with bytes identical to what the eager build produced.
+    pub(crate) transactions: std::sync::OnceLock<Bytes>,
     pub(crate) prices: Bytes,
     pub(crate) commodities: Bytes,
     pub(crate) accounts: Bytes,
@@ -159,7 +168,7 @@ pub(crate) struct Snapshot {
     pub(crate) journal_info: Bytes,
     /// Lazily-built derivations for the journal-view routes ([`journal_api`]):
     /// computed at most once per snapshot, and dropped with it.
-    pub(crate) view: journal_api::ViewCache,
+    pub(crate) view: Arc<journal_api::ViewCache>,
 }
 
 impl Snapshot {
@@ -205,12 +214,11 @@ impl Snapshot {
     /// so any (impossible) `serde_json` error collapses to the JSON body `null`
     /// — the same guarantee Phase 1 relies on in `parse_to_transactions_value`.
     ///
-    /// The eight payloads are independent read-only passes over the same journal,
-    /// and `/transactions` alone is roughly half the work (563 ms of the 1,048 ms
-    /// at 200k). Building it on one extra thread while the rest run here overlaps
-    /// the two halves almost perfectly, which is what keeps this — the bulk of
-    /// app startup, of every live-reload, and of every edit's republish — near
-    /// the cost of its single most expensive payload.
+    /// Every payload here is a cheap pass; the expensive ones are LAZY.
+    /// `/transactions` (563 ms of the old 1,048 ms build at 200k) is serialized
+    /// on first request ([`Snapshot::transactions`]), so startup, every
+    /// live-reload and every edit's republish no longer pay for a payload the
+    /// SPA does not read.
     ///
     /// `/api/diagnostics` is NOT built here any more (plan 26 B4): it depends
     /// on the client's date, so it is computed per request and memoized in the
@@ -219,43 +227,30 @@ impl Snapshot {
     fn from_journal(journal: Arc<Journal>, location: Option<Arc<JournalLocation>>) -> Self {
         // Minted FIRST, because `/api/journal` carries it as `generation`.
         let etag = next_etag();
-        let (transactions, rest) = std::thread::scope(|scope| {
-            let transactions = scope.spawn(|| json_bytes(&wire::journal_to_transactions(&journal)));
-            let rest = (
-                json_bytes(&wire::version_value()),
-                json_bytes(&wire::journal_to_accountnames(&journal)),
-                json_bytes(&wire::journal_to_prices(&journal)),
-                json_bytes(&wire::journal_to_commodities(&journal)),
-                json_bytes(&wire::journal_to_accounts(&journal)),
-                json_bytes(&JournalInfoBody {
-                    info: wire::journal_to_info(&journal),
-                    generation: generation_of(&etag),
-                }),
-            );
-            // The only way a join fails is a panic in the serializer, which would
-            // have aborted the request anyway; resume it on this thread so
-            // `CatchPanicLayer` still turns it into a 500 rather than a snapshot
-            // silently missing a payload.
-            let joined = |handle: std::thread::ScopedJoinHandle<'_, Bytes>| {
-                handle
-                    .join()
-                    .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
-            };
-            (joined(transactions), rest)
-        });
+        let rest = (
+            json_bytes(&wire::version_value()),
+            json_bytes(&wire::journal_to_accountnames(&journal)),
+            json_bytes(&wire::journal_to_prices(&journal)),
+            json_bytes(&wire::journal_to_commodities(&journal)),
+            json_bytes(&wire::journal_to_accounts(&journal)),
+            json_bytes(&JournalInfoBody {
+                info: wire::journal_to_info(&journal),
+                generation: generation_of(&etag),
+            }),
+        );
         let (version, accountnames, prices, commodities, accounts, journal_info) = rest;
         Self {
             etag,
             version,
             accountnames,
-            transactions,
+            transactions: std::sync::OnceLock::new(),
             prices,
             commodities,
             accounts,
             journal_info,
+            view: journal_api::ViewCache::warmed(&journal),
             journal,
             location,
-            view: journal_api::ViewCache::default(),
         }
     }
 }
@@ -823,6 +818,10 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         .route("/api/journal", get(journal_info))
         // Journal-view routes (plan 26 B3-B5): see `journal_api`.
         .route("/api/balances/cash", get(journal_api::cash_balances))
+        .route("/api/journal/rows", get(journal_api::rows))
+        .route("/api/journal/summary", get(journal_api::summary_route))
+        .route("/api/journal/chart", get(journal_api::chart_route))
+        .route("/api/journal/position", get(journal_api::position_route))
         .route("/api/reports/balancesheet", get(reports_api::balancesheet))
         // The grouped/valued three-box balance sheet. A SIBLING route, not a
         // mode of the one above: that one is a flat hledger-parity shape with a
@@ -939,7 +938,8 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         .route("/api/transactions", post(edit_api::add_transaction))
         .route(
             "/api/transactions/{index}",
-            delete(edit_api::delete_transaction)
+            get(journal_api::transaction)
+                .delete(edit_api::delete_transaction)
                 .put(edit_api::replace_transaction)
                 .patch(edit_api::patch_transaction),
         )
@@ -1206,9 +1206,30 @@ async fn accountnames(State(state): State<AppState>, headers: HeaderMap) -> Resp
     serve(&snapshot, &headers, &snapshot.accountnames)
 }
 
+/// `/transactions` is serialized on first request (see
+/// [`Snapshot::transactions`]): on the blocking pool, so the 563 ms at 200k
+/// never stalls a runtime worker, and at most once per snapshot. A revalidation
+/// that hits needs no body at all, so it is answered before any of that.
 async fn transactions(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let snapshot = state.snapshot();
-    serve(&snapshot, &headers, &snapshot.transactions)
+    if let Some(body) = snapshot.transactions.get() {
+        return serve(&snapshot, &headers, body);
+    }
+    if if_none_match_hits(&headers, &snapshot.etag) {
+        return serve(&snapshot, &headers, &Bytes::new());
+    }
+    let worker = Arc::clone(&snapshot);
+    let built = reports_api::compute(move || {
+        Ok(worker
+            .transactions
+            .get_or_init(|| json_bytes(&wire::journal_to_transactions(&worker.journal)))
+            .clone())
+    })
+    .await;
+    match built {
+        Ok(body) => serve(&snapshot, &headers, &body.0),
+        Err(error) => error.into_response(),
+    }
 }
 
 async fn prices(State(state): State<AppState>, headers: HeaderMap) -> Response {

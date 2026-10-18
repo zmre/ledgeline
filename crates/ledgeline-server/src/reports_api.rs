@@ -1865,7 +1865,7 @@ pub(crate) fn parse_date(
 /// Only `gainSince` uses this: an empty `gainSince` is its documented sentinel
 /// for "all-time gain" (see [`holdings`]), so unlike the defaulted params above
 /// an empty value here is a real request, not a malformed date.
-fn parse_opt_date(field: &str, raw: Option<String>) -> Result<Option<String>, AppError> {
+pub(crate) fn parse_opt_date(field: &str, raw: Option<String>) -> Result<Option<String>, AppError> {
     match raw.filter(|value| !value.is_empty()) {
         None => Ok(None),
         Some(value) => checked_date(field, &value).map(Some),

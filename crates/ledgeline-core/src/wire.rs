@@ -929,18 +929,21 @@ pub fn journal_to_info(journal: &Journal) -> WireJournalInfo {
 /// lexically. The synthetic root is not a real account and is excluded.
 #[must_use]
 pub fn journal_to_accountnames(journal: &Journal) -> Vec<String> {
-    let from_postings = journal
+    // Distinct accounts FIRST: a journal posts to a few hundred names across
+    // hundreds of thousands of postings, and expanding every posting's
+    // ancestors (one `String` per segment) was 1.5 million allocations at 200k
+    // transactions for the same few hundred answers.
+    let distinct: HashSet<&AccountName> = journal
         .transactions
         .iter()
         .flat_map(|transaction| &transaction.postings)
-        .flat_map(|posting| posting.account.self_and_ancestors());
-    let from_declarations = journal
-        .accounts
-        .iter()
-        .flat_map(|declaration| declaration.name.self_and_ancestors());
-    // A BTreeSet dedupes and yields the names in lexical order in one pass.
-    from_postings
-        .chain(from_declarations)
+        .map(|posting| &posting.account)
+        .chain(journal.accounts.iter().map(|declaration| &declaration.name))
+        .collect();
+    // A BTreeSet dedupes the ancestors and yields the names in lexical order.
+    distinct
+        .into_iter()
+        .flat_map(AccountName::self_and_ancestors)
         .collect::<BTreeSet<String>>()
         .into_iter()
         .collect()

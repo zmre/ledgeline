@@ -159,6 +159,11 @@ pub(crate) fn js_trim(s: &str) -> &str {
     s.trim_matches(is_js_space)
 }
 
+/// `s.trimEnd()` as JavaScript computes it.
+pub(crate) fn js_trim_end(s: &str) -> &str {
+    s.trim_end_matches(is_js_space)
+}
+
 /// A decimal as plain text — sign, digits, point, no grouping and no symbol —
 /// for diagnostic messages (`checks/rules.ts` `decToString`).
 #[must_use]
@@ -202,6 +207,7 @@ mod tests {
     #[test]
     fn js_trim_strips_the_bom() {
         assert_eq!(js_trim("\u{feff} x \t"), "x");
+        assert_eq!(js_trim_end(" x \u{feff}"), " x");
     }
 
     #[test]

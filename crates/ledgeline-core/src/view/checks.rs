@@ -84,12 +84,29 @@ impl Finding {
 /// `normalizeDiagnostics` cleaned them: an entry with a blank message, an
 /// out-of-range position or no anchor at all is dropped, and exact duplicates
 /// (same transaction, rule and message) collapse to one.
+///
+/// The holdings pass behind the stock findings is the slowest of the three
+/// (about 210 ms at 200k transactions) and shares nothing with the balance and
+/// assertion checks, so it runs on a scoped thread of its own while they run
+/// here; the result is in exactly [`wire::journal_to_all_diagnostics`]'s order.
 #[must_use]
 pub fn engine_findings(journal: &Journal) -> Vec<Finding> {
     let count = journal.transactions.len();
+    let all = std::thread::scope(|scope| {
+        let stock = scope.spawn(|| wire::journal_to_stock_diagnostics(journal));
+        let mut all = wire::journal_to_diagnostics(journal);
+        all.extend(wire::journal_to_tag_diagnostics(journal));
+        // A join fails only on a panic in the pass, which would have failed
+        // the request anyway; resume it here so it surfaces as one.
+        all.extend(
+            stock
+                .join()
+                .unwrap_or_else(|payload| std::panic::resume_unwind(payload)),
+        );
+        all
+    });
     let mut seen: HashSet<(Option<usize>, &'static str, String)> = HashSet::new();
-    wire::journal_to_all_diagnostics(journal)
-        .into_iter()
+    all.into_iter()
         .filter_map(|diagnostic: WireDiagnostic| {
             let severity = Severity::from_wire(diagnostic.severity)?;
             if js_trim(&diagnostic.message).is_empty() {
@@ -143,12 +160,23 @@ fn pending(position: usize, txn: &Transaction) -> Option<Finding> {
     })
 }
 
-fn uncategorized(position: usize, txn: &Transaction, classes: &Classes) -> Vec<Finding> {
+fn uncategorized<'a>(
+    position: usize,
+    txn: &'a Transaction,
+    verdicts: &mut HashMap<&'a str, bool>,
+    classes: &Classes,
+) -> Vec<Finding> {
     let mut seen: HashSet<&str> = HashSet::new();
     txn.postings
         .iter()
         .map(|posting| posting.account.0.as_str())
-        .filter(|account| is_uncategorized(account, classes) && seen.insert(account))
+        .filter(|account| {
+            // Memoized per account: a few hundred names behind every posting.
+            *verdicts
+                .entry(account)
+                .or_insert_with(|| is_uncategorized(account, classes))
+                && seen.insert(account)
+        })
         .map(|account| {
             Finding::txn(
                 position,
@@ -220,7 +248,10 @@ fn future_date(position: usize, txn: &Transaction, today: &str) -> Option<Findin
 pub fn local_findings(journal: &Journal, classes: &Classes, today: &str) -> Vec<Finding> {
     let txns = || journal.transactions.iter().enumerate();
     let pending = txns().filter_map(|(at, txn)| pending(at, txn));
-    let uncategorized = txns().flat_map(|(at, txn)| uncategorized(at, txn, classes));
+    let mut verdicts: HashMap<&str, bool> = HashMap::new();
+    let uncategorized: Vec<Finding> = txns()
+        .flat_map(|(at, txn)| uncategorized(at, txn, &mut verdicts, classes))
+        .collect();
     let negative = negative_cash(journal, classes, today);
     let missing = txns().filter_map(|(at, txn)| missing_description(at, txn));
     let future = txns().filter_map(|(at, txn)| future_date(at, txn, today));
