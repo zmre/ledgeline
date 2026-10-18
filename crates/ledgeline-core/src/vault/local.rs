@@ -16,11 +16,19 @@ use std::time::SystemTime;
 use super::{Entry, EntryKind, FileIdentity, Revision, Vault, VaultError, VaultPath};
 use crate::pinned;
 
+/// Classifies a file's [`Availability`](super::Availability) from the metadata
+/// a `stat` or listing already fetched — see
+/// [`LocalVault::with_availability_probe`].
+pub type AvailabilityProbe = fn(&fs::Metadata) -> super::Availability;
+
 /// A journal directory on the local filesystem.
 #[derive(Debug, Clone)]
 pub struct LocalVault {
     /// Canonicalized at construction — see [`LocalVault::new`].
     root: PathBuf,
+    /// How a file's availability is decided; `None` reports every file
+    /// [`Availability::Local`](super::Availability::Local) with no I/O.
+    probe: Option<AvailabilityProbe>,
 }
 
 impl LocalVault {
@@ -36,7 +44,24 @@ impl LocalVault {
         let root = root.into();
         Self {
             root: fs::canonicalize(&root).unwrap_or(root),
+            probe: None,
         }
+    }
+
+    /// Classify every file this vault describes with `probe`, which sees the
+    /// metadata the `stat` or listing already fetched — so a host that can
+    /// tell a not-downloaded file from its metadata (Apple's `SF_DATALESS` in
+    /// `st_flags`) pays no extra call per file. [`Vault::availability`] then
+    /// stats the file (without following a link) and asks the probe;
+    /// [`Availability::Unknown`](super::Availability::Unknown) when it cannot
+    /// be stat'ed.
+    ///
+    /// The platform knowledge stays with the caller: core has no `cfg` for it
+    /// (see the [module docs](super)).
+    #[must_use]
+    pub fn with_availability_probe(mut self, probe: AvailabilityProbe) -> Self {
+        self.probe = Some(probe);
+        self
     }
 
     /// The vault for the journal at `main`: rooted at the directory of `main`'s
@@ -69,7 +94,7 @@ impl LocalVault {
         path.to_native(&self.root)
     }
 
-    fn entry(path: VaultPath, metadata: &fs::Metadata) -> Entry {
+    fn entry(&self, path: VaultPath, metadata: &fs::Metadata) -> Entry {
         let file_type = metadata.file_type();
         let kind = if file_type.is_symlink() {
             EntryKind::Symlink
@@ -85,7 +110,10 @@ impl LocalVault {
             kind,
             size: metadata.len(),
             modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-            availability: super::Availability::Local,
+            availability: match (kind, self.probe) {
+                (EntryKind::File, Some(probe)) => probe(metadata),
+                _ => super::Availability::Local,
+            },
             identity: FileIdentity::of(metadata),
         }
     }
@@ -108,7 +136,7 @@ impl Vault for LocalVault {
 
     fn stat(&self, path: &VaultPath) -> Result<Option<Entry>, VaultError> {
         match fs::symlink_metadata(self.native(path)) {
-            Ok(metadata) => Ok(Some(Self::entry(path.clone(), &metadata))),
+            Ok(metadata) => Ok(Some(self.entry(path.clone(), &metadata))),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(VaultError::from_io(path, e)),
         }
@@ -127,7 +155,7 @@ impl Vault for LocalVault {
                 // described as itself. An entry that vanished mid-listing is
                 // dropped rather than reported.
                 let metadata = entry.metadata().ok()?;
-                Some(Self::entry(path, &metadata))
+                Some(self.entry(path, &metadata))
             })
             .collect())
     }
@@ -198,6 +226,14 @@ impl Vault for LocalVault {
         fs::remove_file(self.native(path)).map_err(|e| VaultError::from_io(path, e))
     }
 
+    fn availability(&self, path: &VaultPath) -> super::Availability {
+        match self.probe {
+            None => super::Availability::Local,
+            Some(probe) => fs::symlink_metadata(self.native(path))
+                .map_or(super::Availability::Unknown, |metadata| probe(&metadata)),
+        }
+    }
+
     fn local_path(&self, path: &VaultPath) -> Option<PathBuf> {
         Some(self.native(path))
     }
@@ -247,6 +283,40 @@ mod tests {
         fs::write(dir.path().join("sub/a.journal"), "; a\n").unwrap();
         let vault = LocalVault::new(dir.path());
         (dir, vault)
+    }
+
+    /// An injected probe decides file availability from the metadata the
+    /// stat or listing already has; directories are never asked about, and
+    /// without a probe everything is local with no I/O.
+    #[test]
+    fn an_injected_probe_classifies_files_and_only_files() {
+        fn all_remote(_: &fs::Metadata) -> Availability {
+            Availability::NotDownloaded
+        }
+        let (_dir, plain) = fixture("probe");
+        let probed = plain.clone().with_availability_probe(all_remote);
+
+        assert_eq!(plain.availability(&vp("main.journal")), Availability::Local);
+        assert_eq!(
+            probed.availability(&vp("main.journal")),
+            Availability::NotDownloaded
+        );
+        assert_eq!(
+            probed.availability(&vp("missing.journal")),
+            Availability::Unknown
+        );
+        let stat = |v: &LocalVault, p: &str| v.stat(&vp(p)).unwrap().unwrap().availability;
+        assert_eq!(stat(&probed, "main.journal"), Availability::NotDownloaded);
+        assert_eq!(stat(&probed, "sub"), Availability::Local);
+        assert_eq!(stat(&plain, "main.journal"), Availability::Local);
+        let listed: Vec<(String, Availability)> = probed
+            .list_dir(&VaultPath::root(), None)
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.name().to_string(), e.availability))
+            .collect();
+        assert!(listed.contains(&("main.journal".to_string(), Availability::NotDownloaded)));
+        assert!(listed.contains(&("sub".to_string(), Availability::Local)));
     }
 
     #[test]
