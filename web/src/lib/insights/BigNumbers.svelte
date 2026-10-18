@@ -1,19 +1,23 @@
 <!-- Big numbers (WP-05): Income / Expenses / Net for the filtered period.
      Primary (most-used) commodity prominent; other commodities listed small.
-     Values are exact Dec strings via formatAmount — no float accumulation. -->
+     Every figure is the engine's exact Dec (`/api/journal/summary`, sign-adjusted
+     per the journal's detected conventions), formatted with formatAmount — no
+     float accumulation anywhere. -->
 <script lang="ts">
     import {formatAmount, toNumber, type Dec} from "#lib/domain/money.js";
-    import type {Transaction} from "#lib/domain/types.js";
+    import {DEFAULT_AMOUNT_STYLE, ZERO} from "#lib/format/amounts.js";
     import {signClass} from "#lib/format/sign.js";
-    import {bigNumbers, commoditiesInUse, styleFor, type AccountSelection, type DeclaredTypes} from "./series";
+    import type {CommoditySummary, JournalSummary} from "#lib/journalView/types.js";
 
-    let {txns, accounts, allTxns, declared}: {txns: Transaction[]; accounts?: AccountSelection; allTxns?: Transaction[]; declared?: DeclaredTypes} = $props();
+    let {summary}: {summary: JournalSummary | null} = $props();
 
-    const commodities = $derived(commoditiesInUse(txns, accounts));
-    const primary = $derived(commodities[0] ?? "$");
-    const others = $derived(commodities.slice(1));
+    /** An empty (or still-loading) view reads as zeros in dollars, exactly as an empty journal always has. */
+    const EMPTY: CommoditySummary = {commodity: "$", style: DEFAULT_AMOUNT_STYLE, income: ZERO, expenses: ZERO, net: ZERO, categories: []};
 
-    const fmt = (commodity: string, qty: Dec): string => formatAmount({commodity, qty, style: styleFor(txns, commodity)});
+    const primary = $derived(summary?.perCommodity[0] ?? EMPTY);
+    const others = $derived(summary?.perCommodity.slice(1) ?? []);
+
+    const fmt = (entry: CommoditySummary, qty: Dec): string => formatAmount({commodity: entry.commodity, qty, style: entry.style});
 
     interface Stat {
         label: string;
@@ -23,19 +27,12 @@
     }
 
     const stats: Stat[] = $derived.by(() => {
-        const primaryNums = bigNumbers(txns, primary, accounts, allTxns, declared);
-        const otherNums = others.map((c) => ({commodity: c, nums: bigNumbers(txns, c, accounts, allTxns, declared)}));
-        const extras = (pick: (nums: {income: Dec; expenses: Dec; net: Dec}) => Dec): string[] =>
-            otherNums.filter(({nums}) => pick(nums).m !== 0n).map(({commodity, nums}) => fmt(commodity, pick(nums)));
+        const extras = (pick: (entry: CommoditySummary) => Dec): string[] =>
+            others.filter((entry) => pick(entry).m !== 0n).map((entry) => fmt(entry, pick(entry)));
         return [
-            {label: "Income", value: fmt(primary, primaryNums.income), valueClass: "", extras: extras((n) => n.income)},
-            {label: "Expenses", value: fmt(primary, primaryNums.expenses), valueClass: "", extras: extras((n) => n.expenses)},
-            {
-                label: "Net",
-                value: fmt(primary, primaryNums.net),
-                valueClass: signClass(toNumber(primaryNums.net)),
-                extras: extras((n) => n.net),
-            },
+            {label: "Income", value: fmt(primary, primary.income), valueClass: "", extras: extras((n) => n.income)},
+            {label: "Expenses", value: fmt(primary, primary.expenses), valueClass: "", extras: extras((n) => n.expenses)},
+            {label: "Net", value: fmt(primary, primary.net), valueClass: signClass(toNumber(primary.net)), extras: extras((n) => n.net)},
         ];
     });
 </script>

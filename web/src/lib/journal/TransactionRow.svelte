@@ -120,7 +120,7 @@
                 class="btn btn-square shrink-0 btn-ghost opacity-0 btn-xs group-hover/desc:opacity-100 focus:opacity-100"
                 title="Edit whole transaction"
                 aria-label="Edit whole transaction"
-                onclick={() => txnModal.openEdit(txn)}
+                onclick={() => txnModal.openEdit(txn.index)}
             >
                 ✎
             </button>

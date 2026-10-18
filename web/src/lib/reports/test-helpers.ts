@@ -24,7 +24,7 @@ let nextIndex = 1;
 export function txn(date: string, postings: [string, ...Amount[]][], description = ""): Transaction {
     const built: Posting[] = postings.map(([account, ...amounts]) => ({account, amounts, status: "unmarked", comment: "", tags: []}));
     nextIndex += 1;
-    return {index: nextIndex, date, status: "cleared", description, code: "", comment: "", tags: [], postings: built, haystack: ""};
+    return {index: nextIndex, date, status: "cleared", description, code: "", comment: "", tags: [], postings: built};
 }
 
 /**

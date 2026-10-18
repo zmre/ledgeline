@@ -112,6 +112,10 @@
 
             {#if problems.count === 0}
                 <p class="text-sm text-base-content/60">No problems found. All checks pass.</p>
+            {:else if problems.listLoading && problems.all.length === 0}
+                <p class="flex items-center gap-2 text-sm text-base-content/60" role="status">
+                    <span class="loading loading-xs loading-spinner"></span> Loading findings…
+                </p>
             {:else}
                 {#each groups as [rule, list] (rule)}
                     <section>

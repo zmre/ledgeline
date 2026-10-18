@@ -19,7 +19,7 @@ import {aliasListing, aliasStore} from "#lib/imports/aliasStore.svelte.js";
 import {importStore} from "#lib/imports/importStore.svelte.js";
 import {openRules, rulesIndex, rulesStore} from "#lib/imports/rulesStore.svelte.js";
 import {CAPABILITIES} from "#lib/testing/importFixtures.js";
-import {FAKE_ENGINE} from "#lib/testing/fakeEngine.js";
+import {FAKE_ENGINE, journalInfoBody} from "#lib/testing/fakeEngine.js";
 import {holdingsData, holdingsScope} from "./holdings.svelte";
 import {pricesStore} from "./prices.svelte";
 import {settings} from "./settings.svelte";
@@ -119,9 +119,8 @@ function respond(url: string): Response {
     // The preview is decoration and `loadPreview` swallows its failure, so it is
     // deliberately left to 404 — a document that loaded must not be lost with it.
     if (url.includes("/api/rules/")) return json(RULES_DOC);
-    if (url.includes("/transactions")) return json([]);
-    if (url.includes("/accountnames")) return json([]);
-    if (url.includes("/prices")) return json([]);
+    // The journal round: one metadata request (plan 26 B5).
+    if (url.endsWith("/api/journal")) return json(journalInfoBody());
     if (url.includes("/accounts")) return json([]);
     return new Response(`no route for ${url}`, {status: 404});
 }
@@ -235,7 +234,7 @@ describe("UNIT refreshAll — a press, against an app that has already loaded", 
         expect(hits("/api/aliases")).toBe(1);
         expect(hits("/api/accounts")).toBe(1);
         expect(hits("/api/import/capabilities")).toBe(1);
-        expect(hits("/transactions")).toBe(1);
+        expect(hits("/api/journal")).toBe(1);
     });
 
     it("re-reads the price status and the holdings report, which nothing else re-reads", async () => {
@@ -301,7 +300,7 @@ describe("UNIT refreshAll — a press, against an app that has already loaded", 
 
         expect(hits("/api/aliases")).toBe(1);
         expect(hits("/api/import/capabilities")).toBe(1);
-        expect(hits("/transactions")).toBe(1);
+        expect(hits("/api/journal")).toBe(1);
         expect(rulesIndex.value?.files[0]?.id).toBe(OPEN_ID);
     });
 });

@@ -15,6 +15,7 @@ import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {dec} from "#lib/domain/money.js";
 import type {Amount, AmountStyle, ISODate, Posting, Transaction} from "#lib/domain/types.js";
 import {keymap} from "#lib/keys/keymap.svelte.js";
+import {showRows} from "#lib/testing/journalViewFixture.js";
 import TransactionTable from "./TransactionTable.svelte";
 import {rowActions} from "./rowAction.svelte";
 
@@ -26,7 +27,7 @@ function txn(index: number, date: ISODate, description: string): Transaction {
         {account: "expenses:misc", amounts: [usd(1000)], status: "unmarked", comment: "", tags: []},
         {account: "assets:bank:checking", amounts: [usd(-1000)], status: "unmarked", comment: "", tags: []},
     ];
-    return {index, date, status: "unmarked", code: "", description, comment: "", tags: [], postings, haystack: description.toLowerCase()};
+    return {index, date, status: "unmarked", code: "", description, comment: "", tags: [], postings};
 }
 
 const TXNS: Transaction[] = [txn(1, "2026-07-03", "Plumber"), txn(2, "2026-07-02", "Coffee"), txn(3, "2026-07-01", "Rent")];
@@ -38,7 +39,8 @@ class FakeResizeObserver {
     disconnect(): void {}
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+    await showRows(TXNS);
     vi.stubGlobal("ResizeObserver", FakeResizeObserver);
     // Without a width the component picks the narrow card layout and there are
     // no <tr>s to assert on. A stand-in for a viewport, not a layout claim.
@@ -62,13 +64,13 @@ const cursored = (): string | null => document.querySelector("[aria-current='tru
 
 describe("COMPONENT TransactionTable cursor", () => {
     it("has no cursor until a key moves it", () => {
-        render(TransactionTable, {txns: TXNS});
+        render(TransactionTable);
 
         expect(document.querySelector("[aria-current='true']")).toBeNull();
     });
 
     it("lands on the first row and then advances with j", async () => {
-        render(TransactionTable, {txns: TXNS});
+        render(TransactionTable);
 
         await press("j");
         expect(cursored()).toBe("Plumber");
@@ -78,7 +80,7 @@ describe("COMPONENT TransactionTable cursor", () => {
     });
 
     it("moves back with k and stops at the top", async () => {
-        render(TransactionTable, {txns: TXNS});
+        render(TransactionTable);
         await press("j");
         await press("j");
 
@@ -90,7 +92,7 @@ describe("COMPONENT TransactionTable cursor", () => {
     });
 
     it("answers the arrow keys as well as j and k", async () => {
-        render(TransactionTable, {txns: TXNS});
+        render(TransactionTable);
 
         await press("ArrowDown");
         await press("ArrowDown");
@@ -99,7 +101,7 @@ describe("COMPONENT TransactionTable cursor", () => {
     });
 
     it("jumps to the ends with gg and G", async () => {
-        render(TransactionTable, {txns: TXNS});
+        render(TransactionTable);
 
         await press("G");
         expect(cursored()).toBe("Rent");
@@ -110,7 +112,7 @@ describe("COMPONENT TransactionTable cursor", () => {
     });
 
     it("moves by a half page on ctrl-d and back on ctrl-u", async () => {
-        render(TransactionTable, {txns: TXNS});
+        render(TransactionTable);
 
         await press("d", {ctrlKey: true});
         const afterDown = cursored();
@@ -121,7 +123,7 @@ describe("COMPONENT TransactionTable cursor", () => {
     });
 
     it("clears on Escape", async () => {
-        render(TransactionTable, {txns: TXNS});
+        render(TransactionTable);
         await press("j");
 
         await press("Escape");
@@ -130,7 +132,7 @@ describe("COMPONENT TransactionTable cursor", () => {
     });
 
     it("marks the cursored row with aria-current and nothing else", async () => {
-        render(TransactionTable, {txns: TXNS});
+        render(TransactionTable);
 
         await press("j");
 
@@ -138,7 +140,7 @@ describe("COMPONENT TransactionTable cursor", () => {
     });
 
     it("announces the cursored row, since there is no focus to carry it", async () => {
-        render(TransactionTable, {txns: TXNS});
+        render(TransactionTable);
 
         await press("j");
 
@@ -146,7 +148,7 @@ describe("COMPONENT TransactionTable cursor", () => {
     });
 
     it("unregisters its keys when it goes away", async () => {
-        const view = render(TransactionTable, {txns: TXNS});
+        const view = render(TransactionTable);
 
         view.unmount();
         await tick();
@@ -159,13 +161,13 @@ describe("COMPONENT TransactionTable edit keys", () => {
     // `editing.canEdit` is false with no server configured, so the edit keys are
     // registered-but-disabled — which is itself the thing to assert.
     it("does not offer edit keys on a read-only engine", () => {
-        render(TransactionTable, {txns: TXNS});
+        render(TransactionTable);
 
         expect(keymap.active.filter((binding) => ["e", "c", "s", "x"].includes(binding.keys))).toHaveLength(0);
     });
 
     it("keeps the movement keys available regardless", () => {
-        render(TransactionTable, {txns: TXNS});
+        render(TransactionTable);
 
         expect(keymap.active.map((binding) => binding.keys)).toContain("j");
     });
@@ -173,7 +175,7 @@ describe("COMPONENT TransactionTable edit keys", () => {
     it("leaves ctrl-u unclaimed when it has nothing to do", async () => {
         // Ctrl-U is view-source in Chrome. Claiming it when the table is not
         // even mounted would break the browser for nothing.
-        const view = render(TransactionTable, {txns: TXNS});
+        const view = render(TransactionTable);
         view.unmount();
         await tick();
 

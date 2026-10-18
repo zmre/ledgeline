@@ -32,7 +32,7 @@ export interface PostingSpec {
 /** Cleared transaction with an explicit index (txnIndex anchoring matters here). */
 export function txn(index: number, date: ISODate, postings: PostingSpec[], tags: [string, string][] = []): Transaction {
     const built: Posting[] = postings.map((p) => ({account: p.account, amounts: p.amounts, status: "unmarked", comment: "", tags: p.tags ?? []}));
-    return {index, date, status: "cleared", description: `txn ${index}`, code: "", comment: "", tags, postings: built, haystack: ""};
+    return {index, date, status: "cleared", description: `txn ${index}`, code: "", comment: "", tags, postings: built};
 }
 
 /** P directive: `commodity` priced at `priceCents` of `target` on `date`. */

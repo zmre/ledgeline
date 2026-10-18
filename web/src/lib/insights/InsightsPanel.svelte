@@ -1,10 +1,9 @@
 <!-- Insights panel (WP-05): collapsible box at the top of the journal view.
      Two views behind a tab strip, and the whole box still closes:
 
-       Activity (default) — the period P&L. Receives the ALREADY-FILTERED
-         transactions as a prop (the journal store / +page.svelte owns filtering
-         — WP-03/04); everything here is $derived, so mode/interval/depth
-         changes never refetch.
+       Activity (default) — the period P&L for the FILTERED view, from the
+         engine's journal summary (`journalView.summary`, which +page.svelte
+         keeps in step with the filter) and its chart route.
        Balances — cash and short-term liabilities as of today, from the WHOLE
          journal and ignoring the filter bar entirely (see BalancesView for why).
 
@@ -13,33 +12,28 @@
      headline figure even when collapsed. -->
 <script lang="ts">
     import {formatAmount, toNumber} from "#lib/domain/money.js";
-    import type {Transaction} from "#lib/domain/types.js";
     import {DEFAULT_AMOUNT_STYLE, ZERO} from "#lib/format/amounts.js";
     import {signClass} from "#lib/format/sign.js";
     import {today} from "#lib/reports/periods.js";
     import {cashBalances} from "#lib/stores/cashBalances.svelte.js";
     import {journal} from "#lib/stores/journal.svelte.js";
+    import {journalView} from "#lib/stores/journalView.svelte.js";
     import {settings, type InsightsTab} from "#lib/stores/settings.svelte.js";
     import BalancesView from "./BalancesView.svelte";
     import BigNumbers from "./BigNumbers.svelte";
     import ChartWidget from "./ChartWidget.svelte";
     import DepthSlider from "./DepthSlider.svelte";
-    import {bigNumbers, commoditiesInUse, maxAccountDepth, styleFor, type AccountSelection, type DeclaredTypes} from "./series";
-
-    // txns: the filtered view to summarize/chart. allTxns: the whole journal —
-    // used to detect the journal's sign conventions so they stay stable across
-    // filter changes (see series.signConventions), and as the only correct input
-    // to the cumulative balances. declared: the engine's account classes (type
-    // and balance-sheet term per account).
-    let {txns, accounts, allTxns, declared}: {txns: Transaction[]; accounts?: AccountSelection; allTxns?: Transaction[]; declared?: DeclaredTypes} = $props();
 
     const TABS: {id: InsightsTab; label: string}[] = [
         {id: "activity", label: "Activity"},
         {id: "balances", label: "Balances"},
     ];
 
-    const primary = $derived(commoditiesInUse(txns, accounts)[0] ?? "$");
-    const net = $derived(bigNumbers(txns, primary, accounts, allTxns, declared).net);
+    // The filtered view's figures; null while the first answer for a new
+    // filter is in flight. Sign conventions are the engine's, detected over the
+    // whole journal so they hold still as the filter moves.
+    const summary = $derived(journalView.summary);
+    const primary = $derived(summary?.perCommodity[0] ?? null);
 
     // The Balances view's data: the engine's answer for the whole journal as of
     // today, refetched whenever the journal generation moves (an edit, a file
@@ -57,14 +51,15 @@
     // one number worth a scan for whichever view you left it on.
     const headline = $derived.by(() => {
         if (settings.insightsTab === "activity") {
-            return {label: "Net", qty: net, text: formatAmount({commodity: primary, qty: net, style: styleFor(txns, primary)})};
+            const qty = primary?.net ?? ZERO;
+            return {label: "Net", qty, text: formatAmount({commodity: primary?.commodity ?? "$", qty, style: primary?.style ?? DEFAULT_AMOUNT_STYLE})};
         }
         const summary = balancesView?.summaries[0];
         if (summary === undefined)
             return {
                 label: "Net cash",
                 qty: ZERO,
-                text: balancesView === null ? "…" : formatAmount({commodity: primary, qty: ZERO, style: DEFAULT_AMOUNT_STYLE}),
+                text: balancesView === null ? "…" : formatAmount({commodity: primary?.commodity ?? "$", qty: ZERO, style: DEFAULT_AMOUNT_STYLE}),
             };
         return {label: "Net cash", qty: summary.net, text: formatAmount({commodity: summary.commodity, qty: summary.net, style: summary.style})};
     });
@@ -73,7 +68,7 @@
     // slider is bound to this same `depth` the chart consumes, so the bar and the
     // chart never drift.
     let depth = $state(2);
-    const max = $derived(maxAccountDepth(txns, accounts));
+    const max = $derived(summary?.maxDepth ?? 1);
 </script>
 
 <section class="collapse-arrow collapse bg-base-200" data-testid="insights-panel">
@@ -130,9 +125,9 @@
                     <div class="flex justify-center py-6" aria-label="Loading balances"><span class="loading loading-spinner"></span></div>
                 {/if}
             {:else}
-                <BigNumbers {txns} {accounts} {allTxns} {declared} />
-                <ChartWidget {txns} {accounts} {allTxns} {depth} {declared} />
-                <!-- Keyed on max: the slider can mount while txns are still loading (max=1),
+                <BigNumbers {summary} />
+                <ChartWidget {summary} {depth} />
+                <!-- Keyed on max: the slider can mount while the summary is still loading (max=1),
                      and the browser clamps the input's value to that max without updating the
                      bound state; remounting once the real max arrives re-applies `depth`
                      (same guard as reports/ui/ReportControls.svelte). -->

@@ -1,9 +1,10 @@
 <script lang="ts">
     // Journal footer (WP-03): filtered transaction count and active period label
     // on the left; the right-aligned "Visible Journal Total" on the right — the
-    // per-commodity net (income − expenses) of the filtered view (see visibleNet
-    // in insights/series.ts). Expenses read negative, revenue positive, and equal
-    // refunds offset, so filtering by e.g. a store shows the net spent there.
+    // primary commodity's net (income − expenses) of the filtered view, from the
+    // engine's journal summary (`visibleNet`, crates/ledgeline-core/src/view/
+    // series.rs). Expenses read negative, revenue positive, and equal refunds
+    // offset, so filtering by e.g. a store shows the net spent there.
     import type {Snippet} from "svelte";
     import {formatAmount} from "#lib/domain/money.js";
     import type {Amount} from "#lib/domain/types.js";

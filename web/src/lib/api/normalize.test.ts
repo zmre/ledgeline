@@ -225,17 +225,6 @@ describe("UNIT normalizeTransactions", () => {
         expect(txn.postings[1].amounts[0].cost).toBeUndefined();
     });
 
-    it("builds a lowercase haystack from desc, comments, accounts, amounts, commodities", () => {
-        const [txn] = normalizeTransactions([modernTxn]);
-        expect(txn.haystack).toContain("grocery run");
-        expect(txn.haystack).toContain("expenses:food:groceries");
-        expect(txn.haystack).toContain("organic");
-        expect(txn.haystack).toContain("$87.20"); // formatted amount
-        expect(txn.haystack).toContain("3 aapl"); // spaced right-side commodity
-        expect(txn.haystack).toContain("type: food"); // txn comment
-        expect(txn.haystack).not.toMatch(/[A-Z]/);
-    });
-
     it("freezes transactions, postings, and amounts", () => {
         "use strict";
         const [txn] = normalizeTransactions([modernTxn]);
@@ -412,7 +401,7 @@ describe("UNIT normalizeTransactions over the fixtures/api/v1.52 snapshot", () =
         expect(checking?.amounts[0].qty).toEqual({m: 500000n, p: 2});
     });
 
-    it("builds lowercase haystacks (the pending flight)", () => {
+    it("decodes the pending flight", () => {
         // Located by description rather than by index: it is the journal's one
         // `!` transaction, and pinning the index here meant every later fixture
         // edit failed as `expected undefined` instead of naming what moved. The
@@ -421,10 +410,7 @@ describe("UNIT normalizeTransactions over the fixtures/api/v1.52 snapshot", () =
         expect(flight?.index).toBe(188);
         expect(flight?.status).toBe("pending");
         expect(flight?.date).toBe("2026-07-02");
-        expect(flight?.haystack).toContain("delta airlines");
-        expect(flight?.haystack).toContain("expenses:travel:flights");
-        expect(flight?.haystack).toContain("$412.80");
-        expect(flight?.haystack).not.toMatch(/[A-Z]/);
+        expect(flight?.postings.map((p) => p.account)).toContain("expenses:travel:flights");
     });
 
     it("freezes normalized snapshot objects", () => {

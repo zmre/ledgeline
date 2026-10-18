@@ -519,6 +519,24 @@ function queryString(values: Record<string, QueryValue>): string {
     return encoded === "" ? "" : `?${encoded}`;
 }
 
+/** The journal filter as the windowed routes take it (the journal filter bar's value). */
+export interface JournalQueryFilter {
+    from: string | null;
+    to: string | null;
+    accounts: ReadonlySet<string>;
+    query: string;
+}
+
+/** `from`/`to`/`accounts`/`q`, empty parts dropped; accounts sorted so equal filters build equal URLs. */
+export function filterParams(filter: JournalQueryFilter): Record<string, QueryValue> {
+    return {
+        from: filter.from ?? undefined,
+        to: filter.to ?? undefined,
+        accounts: [...filter.accounts].sort().join(","),
+        q: filter.query,
+    };
+}
+
 export interface BalanceSheetQuery {
     asOf?: string;
     depth?: number;
@@ -907,6 +925,42 @@ export class LedgelineApi {
      */
     cashBalances(asOf: string): Promise<unknown> {
         return this.getJson(`/api/balances/cash${queryString({asOf})}`);
+    }
+
+    /**
+     * One window of the filtered journal (decode with `decodeRowsPage`): rows in
+     * display order (`desc`, newest first) or its exact reverse (`asc`), each
+     * with its check findings as of `today`. `total` is the whole filtered count.
+     */
+    journalRows(filter: JournalQueryFilter, window: {offset: number; limit: number; order?: "asc" | "desc"; today: string}): Promise<unknown> {
+        return this.getJson(`/api/journal/rows${queryString({...filterParams(filter), ...window})}`);
+    }
+
+    /** The filtered view's footer total, big numbers and chart selectors (decode with `decodeJournalSummary`). */
+    journalSummary(filter: JournalQueryFilter): Promise<unknown> {
+        return this.getJson(`/api/journal/summary${queryString(filterParams(filter))}`);
+    }
+
+    /** The insights pie or line for the filtered view (decode with `decodeChart`). */
+    journalChart(
+        filter: JournalQueryFilter,
+        chart: {mode: "pie" | "line"; commodity: string; depth: number; category?: string; interval?: string; max?: number}
+    ): Promise<unknown> {
+        return this.getJson(`/api/journal/chart${queryString({...filterParams(filter), ...chart})}`);
+    }
+
+    /** Where the transaction with tindex `index` sits in the filtered view (decode with `decodeRowPosition`). */
+    journalPosition(filter: JournalQueryFilter, index: number): Promise<unknown> {
+        return this.getJson(`/api/journal/position${queryString({...filterParams(filter), index})}`);
+    }
+
+    /**
+     * One transaction by tindex, as a row (decode with `decodeRow`) — what the
+     * edit popup opens on. Never `GET /api/transactions` (the collection): the
+     * write probe above relies on that answering 405.
+     */
+    transaction(index: number, today: string): Promise<unknown> {
+        return this.getJson(`/api/transactions/${index}${queryString({today})}`);
     }
 
     /**

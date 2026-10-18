@@ -7,7 +7,6 @@
 // with a Number.isSafeInteger guard (never a silent float fallback).
 
 import type {Dec} from "#lib/domain/money.js";
-import {formatAmount} from "#lib/domain/money.js";
 import type {Amount, AmountStyle, BalanceAssertion, Posting, PostingType, PriceDirective, Transaction, TxnStatus} from "#lib/domain/types.js";
 import {ApiShapeError} from "./client";
 import type {
@@ -165,27 +164,12 @@ function toPosting(raw: RawPosting, context: string, declared: CommodityStyles):
     return Object.freeze(posting);
 }
 
-/** Lowercase search text: description + comments + accounts + amounts + commodities. */
-function buildHaystack(txn: Omit<Transaction, "haystack">): string {
-    const parts: string[] = [txn.description, txn.code, txn.comment];
-    for (const posting of txn.postings) {
-        parts.push(posting.account, posting.comment);
-        for (const amount of posting.amounts) {
-            parts.push(formatAmount(amount), amount.commodity);
-        }
-    }
-    return parts
-        .filter((part) => part !== "")
-        .join("\n")
-        .toLowerCase();
-}
-
 function toTransaction(raw: RawTransaction, declared: CommodityStyles): Transaction {
     if (typeof raw.tindex !== "number" || typeof raw.tdate !== "string") {
         throw new ApiShapeError(`transaction ${JSON.stringify(raw.tindex ?? null)}: missing tindex/tdate`);
     }
     const context = `transaction #${raw.tindex} "${raw.tdescription ?? ""}" (${raw.tdate})`;
-    const base: Omit<Transaction, "haystack"> = {
+    const txn: Transaction = {
         index: raw.tindex,
         date: raw.tdate,
         status: toStatus(raw.tstatus),
@@ -195,7 +179,6 @@ function toTransaction(raw: RawTransaction, declared: CommodityStyles): Transact
         tags: toTags(raw.ttags),
         postings: frozen((raw.tpostings ?? []).map((posting) => toPosting(posting, context, declared))),
     };
-    const txn: Transaction = {...base, haystack: buildHaystack(base)};
     if (typeof raw.tdate2 === "string") txn.date2 = raw.tdate2;
     return Object.freeze(txn);
 }

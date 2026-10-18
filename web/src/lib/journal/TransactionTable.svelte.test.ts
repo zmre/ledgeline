@@ -21,6 +21,7 @@ import {dec} from "#lib/domain/money.js";
 import type {Amount, AmountStyle, ISODate, Posting, Transaction} from "#lib/domain/types.js";
 import {settings} from "#lib/stores/settings.svelte.js";
 import {accountColumn} from "./accountColumn.svelte";
+import {showRows} from "#lib/testing/journalViewFixture.js";
 import TransactionTable from "./TransactionTable.svelte";
 
 /** Give jsdom the 2D canvas it lacks, in a monospaced 6px font. Not a layout claim. */
@@ -47,7 +48,6 @@ function txn(index: number, date: ISODate, accounts: [string, string], descripti
         comment: "",
         tags: [],
         postings,
-        haystack: [description, ...accounts].join("\n").toLowerCase(),
     };
 }
 
@@ -87,7 +87,8 @@ function accountsObserver(): FakeResizeObserver | undefined {
 
 let columnsBefore: typeof settings.columns;
 
-beforeEach(() => {
+beforeEach(async () => {
+    await showRows(TXNS);
     FakeResizeObserver.instances = [];
     vi.stubGlobal("ResizeObserver", FakeResizeObserver);
     // jsdom reports every element as 0px wide, and the component reads
@@ -114,14 +115,14 @@ describe("COMPONENT TransactionTable", () => {
         // The blunt one. A component that throws while rendering takes its
         // SIBLINGS down with it — which is how a change to the table's `<th>`
         // stopped the column menu beside it from opening.
-        expect(() => render(TransactionTable, {txns: TXNS})).not.toThrow();
+        expect(() => render(TransactionTable)).not.toThrow();
 
         expect(screen.getByText("Plumber")).toBeDefined();
         expect(screen.getByRole("columnheader", {name: "Accounts"})).toBeDefined();
     });
 
     it("keeps the column menu mounted and operable alongside the table", () => {
-        const {container} = render(TransactionTable, {txns: TXNS});
+        const {container} = render(TransactionTable);
 
         // The menu's own behaviour is ColumnMenu.svelte.test.ts's job; what is
         // checked HERE is that mounting it beside the table leaves it intact and
@@ -135,7 +136,7 @@ describe("COMPONENT TransactionTable", () => {
     });
 
     it("observes the accounts header exactly once, however many rows are alive", () => {
-        render(TransactionTable, {txns: TXNS});
+        render(TransactionTable);
         const observer = accountsObserver();
 
         expect(observer).toBeDefined();
@@ -143,7 +144,7 @@ describe("COMPONENT TransactionTable", () => {
     });
 
     it("survives a resize callback and publishes the width to the chips", () => {
-        render(TransactionTable, {txns: TXNS});
+        render(TransactionTable);
         const observer = accountsObserver();
 
         expect(() => observer?.emit(447)).not.toThrow();
@@ -151,7 +152,7 @@ describe("COMPONENT TransactionTable", () => {
     });
 
     it("disconnects and retracts the width when the table goes away", () => {
-        const view = render(TransactionTable, {txns: TXNS});
+        const view = render(TransactionTable);
         const observer = accountsObserver();
         observer?.emit(447);
 
@@ -170,7 +171,7 @@ describe("COMPONENT TransactionTable", () => {
         // arrows, which is how a build that silently fell back to the character
         // budget looked completely healthy.
         withMeasurableFont();
-        render(TransactionTable, {txns: TXNS});
+        render(TransactionTable);
 
         // Before any width arrives there is nothing to measure against, so the
         // coarse 30-character budget applies and eats two whole segments.
@@ -188,7 +189,7 @@ describe("COMPONENT TransactionTable", () => {
         // Plain jsdom: `ResizeObserver` is faked but there is still no 2D
         // canvas, which is the same shape as a browser that refuses the font.
         // The proven-live fallback, not a theoretical one.
-        render(TransactionTable, {txns: TXNS});
+        render(TransactionTable);
 
         accountsObserver()?.emit(447);
         await tick();
@@ -199,7 +200,7 @@ describe("COMPONENT TransactionTable", () => {
     it("renders when the accounts column is switched off and there is no header to watch", () => {
         settings.columns = {...settings.columns, accounts: false};
 
-        expect(() => render(TransactionTable, {txns: TXNS})).not.toThrow();
+        expect(() => render(TransactionTable)).not.toThrow();
         expect(screen.queryByRole("columnheader", {name: "Accounts"})).toBeNull();
     });
 });

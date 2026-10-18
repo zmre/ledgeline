@@ -29,7 +29,6 @@ const txn = (index: number, date: string, description: string, postings: Posting
     comment: "",
     tags: [],
     postings,
-    haystack: "",
     ...extra,
 });
 

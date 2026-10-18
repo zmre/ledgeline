@@ -42,7 +42,6 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live hledger-
         for (const txn of txns) {
             expect(txn.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
             expect(Object.isFrozen(txn)).toBe(true);
-            expect(txn.haystack).toBe(txn.haystack.toLowerCase());
         }
         const prices = normalizePrices(await api.prices());
         for (const price of prices) {

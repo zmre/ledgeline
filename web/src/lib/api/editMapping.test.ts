@@ -57,7 +57,6 @@ function txn(index: number, description: string, postings: Posting[], extra: {da
         comment: extra.comment ?? "",
         tags: [],
         postings,
-        haystack: "",
         ...(extra.date2 !== undefined ? {date2: extra.date2} : {}),
     };
 }

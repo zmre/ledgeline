@@ -1,54 +1,37 @@
-// Journal store (WP-03): Svelte 5 runes state holding the normalized journal,
-// plus the filtered $derived views consumed by the journal route. `refresh()`
-// is called on startup (once settings.serverUrl is set) and by WP-08's poller;
-// state is swapped only after a successful normalize, so old data stays
-// visible on error (the route shows an error toast from `status`/`error`).
+// Journal METADATA store (WP-03, reshaped by plan 26 B5): which journal is
+// open, its account names and classes, its styles, and the snapshot
+// GENERATION everything else keys on.
+//
+// The journal itself is no longer downloaded. Rows, totals and charts come
+// from the engine's windowed routes for exactly the slice on screen
+// (`stores/journalView.svelte.ts`); this store is one small `/api/journal`
+// request per round, and a changed `generation` is the signal that every
+// journal-derived view is stale (an edit, a file change, File→Open).
+//
+// `refresh()` is called on startup, by the 30-second poller, after every edit
+// (`force`), and by the app-wide refresh. State is swapped only after a
+// successful round, so the old metadata stays visible on error (the route shows
+// an error toast from `status`/`error`).
 
-import {HledgerApi, isNotModified, resetConditionalCache} from "#lib/api/client.js";
 import {LedgelineApi} from "#lib/api/native.js";
 import {decodeJournalInfo} from "#lib/api/nativeDecode.js";
-import {type CommodityStyles, normalizePrices, normalizeTransactions} from "#lib/api/normalize.js";
-import type {Dec} from "#lib/domain/money.js";
+import type {CommodityStyles} from "#lib/api/normalize.js";
 import {NO_ACCOUNT_CLASSES, type AccountClasses} from "#lib/domain/accountClass.js";
-import type {PriceDirective, Transaction} from "#lib/domain/types.js";
-import {filterTxns, sortTxnsDesc} from "#lib/journal/rowModel.js";
-import {filters} from "#lib/stores/filters.svelte.js";
 import {settings} from "#lib/stores/settings.svelte.js";
 
 type JournalStatus = "idle" | "loading" | "ready" | "error";
 
-/**
- * The journal payloads, every one of them `$state.raw` rather than `$state`.
- *
- * NOT a micro-optimization, and not redundant with the freezing `normalize.ts`
- * already does. `$state` wraps its value in Svelte's `proxy()`, and `proxy()`
- * has no frozen check (see svelte/src/internal/client/proxy.js): it bails out
- * for non-objects, existing proxies and exotic prototypes, but a frozen plain
- * object with `Object.prototype` still gets a `Proxy` and an entry in the parent
- * array's sources `Map` — minted lazily on the FIRST read of each index and then
- * retained for the life of the array. At 150k transactions that measured
- * +172 MB retained and made a full scan 7.4× slower (72 ms proxied vs 10 ms
- * raw), which every whole-journal pass in the app then pays: signConventions,
- * runChecks, contentFingerprint, filterTxns.
- *
- * The precondition `$state.raw` demands is that mutation happens by REPLACING
- * the value, never by mutating it in place. That was already true here and is
- * the store's existing contract: `doRefresh` swaps all five wholesale in one
- * block (the only assignment to any of them), `normalize.ts` deep-freezes what
- * it builds, and no consumer mutates — `filterTxns`/`sortTxnsDesc` both return
- * new arrays. Anything added later that wants to change a payload must build a
- * new array and assign it, or reactivity will silently stop firing.
- */
-let txns = $state.raw<Transaction[]>([]);
+// `$state.raw`: these are replaced wholesale on a generation change and never
+// mutated in place, and the account tables can be large.
 let accountNames = $state.raw<string[]>([]);
-/** The engine-computed whole-journal metadata (`/api/journal`), swapped with the payloads above. */
 let reportStyles = $state.raw<CommodityStyles>(new Map());
 let accountClasses = $state.raw<AccountClasses>(NO_ACCOUNT_CLASSES);
 let dominantCommodity = $state<string>("$");
-let prices = $state.raw<PriceDirective[]>([]);
 /** The engine's name for the journal on screen, and its main file — the app bar's label. */
 let title = $state<string | null>(null);
 let file = $state<string | null>(null);
+let txnCount = $state(0);
+let generation = $state<string | null>(null);
 let status = $state<JournalStatus>("idle");
 let error = $state<string | null>(null);
 let fetchedAt = $state<number | null>(null);
@@ -59,137 +42,20 @@ let inFlightUrl: string | null = null;
 /** Cancels the in-flight round when a newer one supersedes it. */
 let inFlightAbort: AbortController | null = null;
 /**
- * Monotonic round id. Only the newest round may touch state.
- *
- * Without it a round could still be answering after it had been superseded and
- * would write its (older) result anyway — most damagingly `lastFingerprint`,
- * which is the one variable that decides whether a LATER, correct result gets
- * swapped in at all.
+ * Monotonic round id. Only the newest round may touch state: a superseded
+ * round that answers late must never overwrite a newer one's metadata.
  */
 let roundToken = 0;
-let lastFingerprint = 0;
-/** The snapshot generation the swapped-in state came from (`/api/journal`). */
-let lastGeneration = $state<string | null>(null);
 
 /**
- * Content-aware change fingerprint so polling refreshes don't churn every
- * $derived when nothing changed, while never discarding a REAL change — an
- * in-place edit to any transaction (recategorize, amount fix) must swap state,
- * not just appends. djb2 over each txn's index/dates/status/haystack plus its
- * postings' account, status, date, type, balance assertion and EXACT amounts,
- * then account names, price directives, and the engine's journal metadata —
- * account classes and report styles (a `type:` edit must recompute the
- * cash-flow report). Exported for unit tests.
+ * One fetch round. Every write is guarded on `token` still being the newest.
  *
- * The haystack alone is NOT enough, even though it mentions amounts: it is
- * built for searching, so its amounts run through `formatAmount`, which rounds
- * to `MAX_DISPLAY_DECIMALS` (2). Anything that changes only below that — a
- * sub-cent broker fee, a share count's third decimal — renders identically and
- * would hash the same, so the refresh after an edit would fetch the new data
- * and then discard it, leaving stale transactions on screen and stale problems
- * in the badge. Hashing `qty` exactly (mantissa AND scale, plus any cost
- * annotation) is what makes those edits visible.
+ * WHY PER ROUND, and not once per connection: the desktop File→Open action
+ * rebinds the engine to a DIFFERENT journal at the SAME URL, and nothing about
+ * the connection changes when it does. The title and the generation travel
+ * with the round that re-reads everything else.
  */
-/** The `/api/journal` metadata that swaps with the journal payloads. */
-export interface JournalMeta {
-    reportStyles: CommodityStyles;
-    accountClasses: AccountClasses;
-    dominantCommodity: string;
-}
-
-const NO_META: JournalMeta = {reportStyles: new Map(), accountClasses: NO_ACCOUNT_CLASSES, dominantCommodity: "$"};
-
-export function contentFingerprint(
-    list: readonly Transaction[],
-    names: readonly string[],
-    priceList: readonly PriceDirective[],
-    meta: JournalMeta = NO_META
-): number {
-    let h = 5381;
-    const mixStr = (s: string): void => {
-        for (let i = 0; i < s.length; i += 1) h = (Math.imul(h, 33) + s.charCodeAt(i)) >>> 0;
-    };
-    /** Exact, unrounded: the full mantissa as text plus its scale. */
-    const mixDec = (d: Dec): void => {
-        mixStr(d.m.toString());
-        mixStr(String(d.p));
-    };
-    for (const t of list) {
-        h = (Math.imul(h, 33) + t.index) >>> 0;
-        mixStr(t.date);
-        // Secondary date: nothing else here mixes it, and it is absent from the
-        // haystack, so adding/clearing one used to hash identically.
-        mixStr(t.date2 ?? "");
-        mixStr(t.status);
-        mixStr(t.haystack);
-        for (const posting of t.postings) {
-            mixStr(posting.account);
-            // Per-posting status and date, the posting type (`(a)` / `[a]`) and
-            // the balance assertion are all invisible to the haystack, so an
-            // edit that touches only one of them produced an unchanged
-            // fingerprint — the refresh fetched the new journal and then threw
-            // it away, permanently (see `lastFingerprint` in doRefresh).
-            mixStr(posting.status);
-            mixStr(posting.date ?? "");
-            mixStr(posting.type ?? "regular");
-            if (posting.balanceAssertion !== undefined) {
-                const assertion = posting.balanceAssertion;
-                mixStr(assertion.amount.commodity);
-                mixDec(assertion.amount.qty);
-                mixStr(`${assertion.inclusive ? "*" : ""}${assertion.total ? "=" : ""}`);
-            }
-            for (const amount of posting.amounts) {
-                mixStr(amount.commodity);
-                mixDec(amount.qty);
-                if (amount.cost !== undefined) {
-                    mixStr(amount.cost.commodity);
-                    mixStr(amount.cost.per ? "@" : "@@");
-                    mixDec(amount.cost.qty);
-                }
-            }
-        }
-    }
-    for (const name of names) mixStr(name);
-    for (const p of priceList) {
-        mixStr(p.date);
-        mixStr(p.commodity);
-        mixStr(p.price.commodity);
-        // `mixDec`, exactly like every other amount. The old line mixed
-        // `Number(BigInt.asIntN(32, qty.m))` — mantissa only, truncated to 32
-        // bits — so `P VTI $1.00` (m=100n,p=2) and `P VTI $100` (m=100n,p=0)
-        // hashed the same, as did any two 8-dp mantissas 2^32 apart. Prices
-        // drive holdings and every valuation report, and a skipped swap also
-        // rewrites `lastFingerprint`, so a collision stranded a stale portfolio
-        // on screen for good rather than for one poll.
-        mixDec(p.price.qty);
-    }
-    for (const [name, c] of meta.accountClasses) {
-        mixStr(name);
-        mixStr(`${c.type ?? ""}|${c.typeDeclared}|${c.term ?? ""}|${c.termGuessed}`);
-    }
-    for (const [commodity, style] of meta.reportStyles) {
-        mixStr(commodity);
-        mixStr(JSON.stringify(style));
-    }
-    mixStr(meta.dominantCommodity);
-    return h;
-}
-
-/**
- * One fetch round.
- *
- * `token` is this round's id: every write below is guarded on it still being
- * the newest, so a round that has been superseded (by a reconnect, or by the
- * forced refetch after a write) resolves without touching state — including
- * `lastFingerprint`, whose whole job is to decide what the NEXT round is
- * allowed to swap in.
- *
- * `unconditional` forces a full refetch by first forgetting every recorded
- * ETag; `doRefresh` sets it for the single retry it does when a conditional
- * round comes back mixed (see below). That retry is a continuation of the same
- * round, so it keeps the same token and signal.
- */
-async function doRefresh(token: number, unconditional: boolean, signal: AbortSignal): Promise<void> {
+async function doRefresh(token: number, signal: AbortSignal): Promise<void> {
     const baseUrl = settings.serverUrl;
     if (baseUrl === null) {
         if (token !== roundToken) return;
@@ -197,113 +63,29 @@ async function doRefresh(token: number, unconditional: boolean, signal: AbortSig
         error = "No hledger-web server configured";
         return;
     }
-    if (unconditional) resetConditionalCache();
     if (token === roundToken) status = "loading";
     try {
-        // `conditional`: this is the one caller that repeats these requests
-        // forever (a 30-second poll) and can act on a 304 by keeping what it has.
-        const api = new HledgerApi(baseUrl, undefined, {conditional: true, signal});
-        // The native client for the journal metadata: same base URL, same
-        // abort signal, same round.
-        const native = new LedgelineApi(baseUrl, {signal});
-        // The SPA requires the Ledgeline engine (plan 26): the journal metadata
-        // is a native route, and a failure on it fails the round like any
-        // other — there is no plain-hledger-web fallback to keep alive. (The
-        // problem list is fetched by the problems store, per generation.) The journal metadata (title, styles) rides this round, and
-        // WHY PER ROUND, and not once per connection. The desktop File→Open
-        // action rebinds the engine to a DIFFERENT journal at the SAME URL, and
-        // nothing about the connection changes when it does — no new address, no
-        // reconnect, no nonce. A title fetched once per connection would go on
-        // naming the previous entity for as long as the window stayed open,
-        // which is exactly the mistake this label exists to prevent: somebody
-        // running several sets of books reading the wrong one confidently. The
-        // journal round is the thing that already reruns whenever the journal
-        // might have changed, so the name travels with the data it names.
-        // No `/accounts`: account types and terms arrive resolved, on `/api/journal`.
-        const [rawTxns, nextNames, rawPrices, nextInfo] = await Promise.all([
-            api.transactions(),
-            api.accountNames(),
-            api.prices(),
-            native.journalInfo().then(decodeJournalInfo),
-        ]);
-
-        // Superseded while the network was answering: these payloads describe a
-        // server, or a moment, the app has already moved on from. Falling
-        // through would write `lastFingerprint` from them and make the newer
-        // round's swap look like a no-op.
+        // The SPA requires the Ledgeline engine (plan 26): there is no
+        // plain-hledger-web fallback to keep alive.
+        const info = decodeJournalInfo(await new LedgelineApi(baseUrl, {signal}).journalInfo());
         if (token !== roundToken) return;
-
-        // The ledger's name, assigned HERE: after the supersession guard, so a
-        // late-answering older round can never relabel the screen, and before
-        // the 304 branches below — every one of which returns — so the label
-        // still tracks the newest successful round even when the journal itself
-        // was unchanged and nothing was swapped.
-        //
-        // It is deliberately NOT part of `contentFingerprint`. That hash gates
-        // the transaction-state swap; this is separate state with no cost to
-        // reassign, and folding it in would make a retitled journal look like
-        // changed transactions.
-        //
-        // A round that fails outright never reaches this line, so a red dot
-        // keeps the last good title beside it, exactly as it keeps the last
-        // good transactions.
-        title = nextInfo.title;
-        file = nextInfo.file;
-
-        // Every journal payload comes from one server-side snapshot carrying one
-        // ETag, so an unchanged journal answers 304 on both of the big
-        // conditional routes and there is nothing to normalize, hash or swap —
-        // the point of PERF-2. (`/accountnames` is small and unconditional; it
-        // derives from the same snapshot, so these vouch for it.)
-        if (isNotModified(rawTxns) && isNotModified(rawPrices)) {
-            // `fetchedAt === null` means we have ETags but no state to keep — a
-            // round that recorded them and then failed to normalize. Refetch.
-            // A generation other than the one on screen means `/api/journal`
-            // answered from a NEWER snapshot than the 304s vouched for (a swap
-            // landed mid-round), so its metadata cannot be paired with what is
-            // held: same remedy, one clean unconditional round.
-            if (fetchedAt === null || nextInfo.generation !== lastGeneration) {
-                if (unconditional) throw new Error("the server answered 304 to an unconditional request");
-                await doRefresh(token, true, signal);
-                return;
-            }
-            fetchedAt = Date.now();
-            status = "ready";
-            error = null;
-            if (import.meta.env.DEV) console.debug("[journal] 304 — nothing refetched");
-            return;
+        title = info.title;
+        file = info.file;
+        // A generation is unique per snapshot, so an unchanged one means
+        // nothing journal-derived changed: skip the swap and leave every
+        // `$derived` downstream untouched.
+        if (info.generation !== generation) {
+            // `/api/journal` lists every account `/accountnames` does, with its
+            // class — one request instead of two. Sorted again here because a
+            // JS object puts integer-like keys (an account named `1000`) first.
+            accountNames = [...info.accounts.keys()].sort();
+            accountClasses = info.accounts;
+            reportStyles = info.reportStyles;
+            dominantCommodity = info.dominantCommodity;
+            txnCount = info.txnCount;
+            generation = info.generation;
+            if (import.meta.env.DEV) console.debug(`[journal] generation ${info.generation} (${info.txnCount} txns)`);
         }
-        if (isNotModified(rawTxns) || isNotModified(rawPrices)) {
-            // A journal swap landed mid-round, so some routes answered 304 against
-            // the OLD snapshot while others returned the NEW one. The halves cannot
-            // be combined; drop the tags and take one clean unconditional round.
-            // Bounded: the retry sends no `If-None-Match`, so it cannot come back
-            // mixed again.
-            if (unconditional) throw new Error("the server answered 304 to an unconditional request");
-            await doRefresh(token, true, signal);
-            return;
-        }
-
-        // Declared `commodity` styles, when the engine served them: every amount
-        // then displays the way the journal asks (`$0.6` → `$0.60`). They also
-        // reach the fingerprint, through each transaction's formatted haystack.
-        const nextTxns = normalizeTransactions(rawTxns, nextInfo.commodityStyles);
-        const nextPrices = normalizePrices(rawPrices);
-        const nextMeta: JournalMeta = {reportStyles: nextInfo.reportStyles, accountClasses: nextInfo.accounts, dominantCommodity: nextInfo.dominantCommodity};
-        const nextFingerprint = contentFingerprint(nextTxns, nextNames, nextPrices, nextMeta);
-        if (fetchedAt === null || nextFingerprint !== lastFingerprint) {
-            txns = nextTxns;
-            accountNames = nextNames;
-            prices = nextPrices;
-            reportStyles = nextMeta.reportStyles;
-            accountClasses = nextMeta.accountClasses;
-            dominantCommodity = nextMeta.dominantCommodity;
-            if (import.meta.env.DEV) console.debug(`[journal] state swapped (${nextTxns.length} txns)`);
-        } else if (import.meta.env.DEV) {
-            console.debug("[journal] poll unchanged — state swap skipped");
-        }
-        lastFingerprint = nextFingerprint;
-        lastGeneration = nextInfo.generation;
         fetchedAt = Date.now();
         status = "ready";
         error = null;
@@ -316,20 +98,14 @@ async function doRefresh(token: number, unconditional: boolean, signal: AbortSig
     }
 }
 
-/**
- * Begin a new round, superseding and cancelling any round already running.
- *
- * The abort is what makes a hung server recoverable: without it the previous
- * round holds its socket until the deadline, and the promise every caller is
- * waiting on with it.
- */
+/** Begin a new round, superseding and cancelling any round already running. */
 function startRound(): Promise<void> {
     const token = ++roundToken;
     inFlightAbort?.abort();
     const controller = new AbortController();
     inFlightAbort = controller;
     inFlightUrl = settings.serverUrl;
-    const promise = doRefresh(token, false, controller.signal).finally(() => {
+    const promise = doRefresh(token, controller.signal).finally(() => {
         // A newer round owns these now; clearing them would strand it.
         if (token !== roundToken) return;
         inFlight = null;
@@ -341,10 +117,7 @@ function startRound(): Promise<void> {
 }
 
 export const journal = {
-    /** Normalized, frozen transactions in journal order. */
-    get txns(): Transaction[] {
-        return txns;
-    },
+    /** Every account the journal knows (posted-to, declared, implied ancestors), sorted. */
     get accountNames(): string[] {
         return accountNames;
     },
@@ -360,8 +133,17 @@ export const journal = {
     get dominantCommodity(): string {
         return dominantCommodity;
     },
-    get prices(): PriceDirective[] {
-        return prices;
+    /** How many transactions the journal holds. */
+    get txnCount(): number {
+        return txnCount;
+    },
+    /**
+     * The engine snapshot the metadata came from, or null before the first
+     * successful round. Compared for equality only: a change means every
+     * journal-derived view (rows, totals, problems, balances) is stale.
+     */
+    get generation(): string | null {
+        return generation;
     },
     /**
      * What the engine calls the journal on screen (its first-line comment, else
@@ -384,27 +166,17 @@ export const journal = {
     get fetchedAt(): number | null {
         return fetchedAt;
     },
-    /** The `/api/journal` generation the state on screen came from; null before the first successful round. */
-    get generation(): string | null {
-        return lastGeneration;
-    },
     /**
-     * Full refetch of /transactions, /accountnames, /prices, /api/journal.
+     * Re-read `/api/journal`.
      *
      * Concurrent calls share one in-flight round — but only when that round is
      * answering the same question. Two cases must never join one:
      *
-     *  - `force`, for any caller that has just CHANGED something the round is
-     *    reading. A round's GETs went out before the write did, so joining it
-     *    resolves the write "ok" against pre-edit data and then records the
-     *    pre-edit fingerprint, which suppresses the swap for the real result
-     *    too. Visibly: toggle one row's status, then another's, and the second
-     *    badge doesn't move for up to 30 seconds — and since the cycle button
-     *    steps from the DISPLAYED status, clicking again advances the journal
-     *    file two steps (FE-5e).
-     *  - a different `serverUrl`. Reconnecting handed back the OLD server's
-     *    promise, and every page guard had already latched, so nothing retried
-     *    against the new one (FE-5d).
+     *  - `force`, for any caller that has just CHANGED something. A round whose
+     *    request went out before the write would report the pre-edit generation,
+     *    and the views keyed on it would never refetch (FE-5e).
+     *  - a different `serverUrl`: reconnecting must not hand back the OLD
+     *    server's promise (FE-5d).
      */
     refresh(options?: {force?: boolean}): Promise<void> {
         if (inFlight !== null && options?.force !== true && inFlightUrl === settings.serverUrl) return inFlight;
@@ -414,12 +186,10 @@ export const journal = {
 
 /**
  * Live-update polling loop (WP-08). Refreshes every `intervalMs` (default 30s)
- * via `journal.refresh()` — which already dedups concurrent calls and skips the
- * state swap when the fingerprint is unchanged. Pauses while the document is
- * hidden; on becoming visible again it refreshes immediately and resumes. On
- * fetch errors `refresh()` keeps stale data and sets `status = "error"`, which
- * the layout surfaces as a red status dot with a reconnect affordance.
- * Returns a stop function.
+ * via `journal.refresh()`, which dedups concurrent calls; a changed generation
+ * is what makes the views refetch. Pauses while the document is hidden; on
+ * becoming visible again it refreshes immediately and resumes. Returns a stop
+ * function.
  */
 export function startPolling(intervalMs = 30_000): () => void {
     let timer: ReturnType<typeof setInterval> | null = null;
@@ -446,14 +216,4 @@ export function startPolling(intervalMs = 30_000): () => void {
         stop();
         document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-}
-
-// Filtered views (WP-03 contract): pure derivation logic lives in
-// lib/journal/rowModel.ts; these wrappers just wire it to the runes graph.
-const filtered = $derived.by(() => filterTxns(txns, filters.value));
-const filteredSorted = $derived.by(() => sortTxnsDesc(filtered));
-
-/** Transactions matching the current filters, sorted for display (date desc, index desc). */
-export function getFilteredTxns(): Transaction[] {
-    return filteredSorted;
 }

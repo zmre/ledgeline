@@ -23,22 +23,10 @@ function deferred<T>(): {promise: Promise<T>; resolve: (value: T) => void} {
 
 const json = (body: unknown): Response => new Response(JSON.stringify(body), {status: 200, headers: {"Content-Type": "application/json"}});
 
-/** One wire transaction, enough for normalizeTransactions. */
-const wireTxn = (index: number): unknown => ({
-    tindex: index,
-    tdate: `2026-01-0${index}`,
-    tstatus: "Cleared",
-    tdescription: `txn ${index}`,
-    tpostings: [{paccount: "expenses:food", pamount: []}],
-});
-
-/** A whole journal of `count` transactions, per route. */
+/** The journal metadata of a journal holding `count` transactions (its generation names the count). */
 const payloadFor = (url: string, count: number): unknown => {
     if (url.endsWith("/version")) return "1.52";
-    if (url.endsWith("/transactions")) return Array.from({length: count}, (_, i) => wireTxn(i + 1));
-    if (url.endsWith("/accountnames")) return ["expenses:food"];
-    if (url.endsWith("/api/journal")) return journalInfoBody();
-    if (url.endsWith("/api/diagnostics")) return {diagnostics: []};
+    if (url.endsWith("/api/journal")) return journalInfoBody({txnCount: count, generation: `gen-${count}`});
     return [];
 };
 
@@ -61,17 +49,17 @@ const ok =
         Promise.resolve(json(payloadFor(url, count)));
 let handler: Handler = ok();
 
-/** How many times /transactions has been requested so far. */
-const txnHits = (): number => requested.filter((url) => url.endsWith("/transactions")).length;
+/** How many times /api/journal has been requested so far: one per round. */
+const txnHits = (): number => requested.filter((url) => url.endsWith("/api/journal")).length;
 
 /**
- * Answer /transactions differently on each attempt (index 0 = first round),
+ * Answer /api/journal differently on each attempt (index 0 = first round),
  * everything else immediately. `nth` is captured BEFORE the request is counted.
  */
 function perAttempt(...answers: ((signal: AbortSignal | undefined) => Promise<Response>)[]): Handler {
     let attempt = -1;
     return (url, signal) => {
-        if (!url.endsWith("/transactions")) return Promise.resolve(json(payloadFor(url, 0)));
+        if (!url.endsWith("/api/journal")) return Promise.resolve(json(payloadFor(url, 0)));
         attempt += 1;
         const answer = answers[Math.min(attempt, answers.length - 1)];
         return answer(signal);
@@ -111,21 +99,19 @@ describe("INTEGRATION journal.refresh in-flight sharing", () => {
         expect(second).toBe(first);
         expect(txnHits()).toBe(1);
 
-        gate.resolve(json(payloadFor("/transactions", 1)));
+        gate.resolve(json(payloadFor("/api/journal", 1)));
         await Promise.all([first, second]);
     });
 
     it("a FORCED refresh starts its own round instead of joining (FE-5e)", async () => {
         // `editing.run()` does `await write; await journal.refresh()`. A round
-        // already in flight issued its GETs BEFORE the write, so joining it
-        // resolved the edit "ok" against pre-edit data and then banked the
-        // pre-edit fingerprint — which suppressed the swap for the real result
-        // too. Toggle row A's status then row B's and B's badge sat unchanged
-        // for up to 30 seconds.
+        // already in flight issued its request BEFORE the write, so joining it
+        // resolved the edit "ok" against the pre-edit generation — and every
+        // view keyed on the generation would never have refetched.
         const gate = deferred<Response>();
         handler = perAttempt(
             () => gate.promise,
-            () => Promise.resolve(json(payloadFor("/transactions", 2)))
+            () => Promise.resolve(json(payloadFor("/api/journal", 2)))
         );
 
         const stale = journal.refresh();
@@ -136,15 +122,16 @@ describe("INTEGRATION journal.refresh in-flight sharing", () => {
         expect(txnHits()).toBe(2);
 
         await forced;
-        expect(journal.txns).toHaveLength(2);
+        expect(journal.txnCount).toBe(2);
 
-        gate.resolve(json(payloadFor("/transactions", 1)));
+        gate.resolve(json(payloadFor("/api/journal", 1)));
         await stale;
+        expect(journal.txnCount).toBe(2);
     });
 
     it("does not hand a reconnect the OLD server's promise (FE-5d)", async () => {
         handler = (url, signal) =>
-            url.startsWith("http://engine-a") && url.endsWith("/transactions") ? hang(signal) : Promise.resolve(json(payloadFor(url, 1)));
+            url.startsWith("http://engine-a") && url.endsWith("/api/journal") ? hang(signal) : Promise.resolve(json(payloadFor(url, 1)));
 
         const hung = journal.refresh();
         expect(txnHits()).toBe(1);
@@ -155,30 +142,30 @@ describe("INTEGRATION journal.refresh in-flight sharing", () => {
         expect(reconnected).not.toBe(hung);
 
         await Promise.all([hung, reconnected]);
-        expect(requested).toContain("http://engine-b/transactions");
+        expect(requested).toContain("http://engine-b/api/journal");
         expect(journal.status).toBe("ready");
     });
 
-    it("discards a superseded round's answers, including its fingerprint", async () => {
+    it("discards a superseded round's answers, including its generation", async () => {
         // The token. A round that answers after being superseded must not write
-        // state — least of all `lastFingerprint`, which is what decides whether
-        // the NEXT (correct) result is swapped in at all.
+        // state — least of all the generation, which is what decides whether
+        // every journal-derived view refetches.
         const late = deferred<Response>();
         handler = perAttempt(
             // Deliberately ignores the abort signal: a fetch that had already
             // completed when the abort landed behaves exactly like this.
             () => late.promise,
-            () => Promise.resolve(json(payloadFor("/transactions", 3)))
+            () => Promise.resolve(json(payloadFor("/api/journal", 3)))
         );
 
         const superseded = journal.refresh();
         const winner = journal.refresh({force: true});
         await winner;
-        expect(journal.txns).toHaveLength(3);
+        expect(journal.generation).toBe("gen-3");
 
-        late.resolve(json([wireTxn(1)]));
+        late.resolve(json(payloadFor("/api/journal", 1)));
         await superseded;
-        expect(journal.txns).toHaveLength(3);
+        expect(journal.generation).toBe("gen-3");
     });
 });
 
