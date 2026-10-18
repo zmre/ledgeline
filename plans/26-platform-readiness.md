@@ -265,3 +265,110 @@ Each wave merges into this branch, followed by a full `just pre-push`.
   `docs/development/perf-baseline.md`.
 - FFI: `cargo test -p ledgeline-ffi --features mobile` exercises `handle()`
   against a `MemVault` journal. The iOS target `cargo check` passes.
+
+## Status (2026-10-17)
+
+All four work packages of this round landed on branch `2026-10-16-no-web`
+(`git log --oneline f858be3..HEAD`). `just pre-push` is green after each merge
+and after B6.
+
+### What landed
+
+- **A1, vault seam.** `f37b31a` (types, `LocalVault`, `MemVault`), `a5c767a`
+  (parse and discovery through the vault), `bfeab2f` (editor pinned to the
+  parse's own reads, closing the parse-to-pin gap), `56b0f5d`
+  (`JournalLocation` on every snapshot; `AppState::from_vault`, `reload`,
+  `refresh`), `ef4b014` `1cf2bc3` `c8e3390` `9ff595e` `acc5365` `525b35a`
+  `780edb9` (every `*_api` read and write through the vault; the two
+  `create_exclusive` helpers folded into `create_new`), `6a788c5` (`watcher`
+  and `external-tools` features), `1d1aeed` (restored the desktop's
+  `hledger.conf` walk above the root and the umask mode for authored files),
+  `d382636` `40f3035` `8936651` (tests and doc fixes). Merged in `2e95016`.
+- **A2, `AppDirs`.** `e9afd82`: config, cache, temp and `hledger` injected;
+  recents store an opaque `RecentLocation` token, and existing `recent.json`
+  files load unchanged.
+- **A3, `ledgeline-ffi`.** `f487e33` (injectable availability probe,
+  fingerprint components), `b213a5c` (in-process hooks; `NotDownloaded` is a
+  503 with `Retry-After`), `3b048ff` (the crate: `CoordinatedVault`,
+  `SingleFileVault`, `FileCoordinator`, fail-fast iopolicy,
+  `LedgelineApp::{open, open_file, handle, refresh}`). Merged with A2 in
+  `42d6c26`.
+- **B0, cleanup.** `562a4c1`: dead TS modules and the plain-hledger-web
+  fallbacks removed.
+- **B1, metadata.** `82ba76b` (engine: `reportStyles`, `dominantCommodity`,
+  `txnCount`, dates, `generation`, account types and terms, period info,
+  benchmark labels), `d15127c` (SPA reads them; `accountTypes.ts` and most of
+  `accountTerms.ts` deleted).
+- **B2, display formatter.** `644a6d6`, with the shared golden
+  `fixtures/display-format/cases.json`.
+- **B3, cash balances.** `483f371`: `/api/balances/cash`. A straight port, with
+  no alignment to the grouped balance sheet.
+- **B4, checks.** `949fa26`: the five local rules in `/api/diagnostics?today=`;
+  `checks/rules.ts` deleted.
+- **B5, windowed journal.** `95034b5` (engine: `/api/journal/{rows,summary,
+  chart,position}`, `GET /api/transactions/{index}`, per-snapshot memoized
+  views and an 8-entry filter LRU, lazy `/transactions`), `7be2be1` (SPA:
+  metadata store plus a filter-keyed view store of 200-row blocks), `acaa6e3`
+  (the `LEDGELINE_PERF` launch and scroll probe as a dev tool). At 200k
+  transactions first rows went from 4.25 s to 1.01 s and WebContent from
+  2.7–3.5 GB to 144–185 MB, with no scroll regression
+  (`docs/development/perf-baseline.md` §8). All three success criteria met.
+- **B6, budget summary and projection rules.** `fafbc74`.
+  - `/api/budget` gains `summary` (span, `elapsedDays`/`spanDays`, Income and
+    Expenses sections by resolved type, each bar's magnitudes, pace,
+    `remaining`, health and label kind plus amount), and takes `?asOf=`.
+  - `/api/budget/gaps` gains `revenueTotal`, `expenseTotal`, `headline` and a
+    per-row `magnitude`.
+  - `/api/budget/lines` gains each goal's `annual` (exact × 365/52/12/4/1,
+    absent for an unmodelled period) and `joinable`, the rule a new goal of
+    each period joins.
+  - Projections: a scenario line may carry `entry`, a magnitude the server
+    signs by account type (`account_types::signed_entry`); every outbound line
+    carries `section` (`projections::line_section`). Bodies without `entry`
+    mean what they always did. Saved scenario files are unchanged.
+  - Goldens captured from the TypeScript first: `fixtures/budget-summary/`
+    (8 fixture journals, 7 with budgets; 176 window × as-of cases; 1,067 bars) and
+    `fixtures/projections-signs/`.
+
+### Deviations
+
+- **Pace is exact, so it differs slightly from the TypeScript.** The TS
+  snapped the elapsed fraction to six places before multiplying, an error of
+  up to `|goal| × 5e-7`. The engine keeps the ratio exact: health compares
+  `actual × span` with `goal × done`, and the pace amount is rounded six places
+  past the goal's scale. 453 of the captured pace figures differ, the largest
+  by $0.0143 on a $30,450 span goal. Above roughly $20,000 that can move a
+  displayed "ahead of / behind pace" figure by a cent; the engine's is the
+  correct one. Every health verdict and label kind matched exactly. The
+  golden compares pace (and the two labels quoted from it) within
+  `|goal| × 5e-7` plus one unit in its last place, and everything else
+  exactly.
+- **Projection sections are previewed in TS while typing.** The engine's
+  `section` is authoritative for a line as it was sent. While a user retypes an
+  account, the table still has to place the row synchronously for a name the
+  engine has not seen, so `resolvedSection` keeps a preview of the same rule
+  over the engine's account table until the line round-trips. The two are
+  locked together by `scenario_signs_golden.rs`.
+- **`goalChange` and `alreadyBudgeted` stay in TS** as request assembly over
+  the engine's `joinable` answer. `joinableRule` is now a lookup.
+- **B3** deliberately did not align cash balances with the grouped balance
+  sheet (virtual postings, `bsgroup`).
+- The wave-3 end-to-end perf re-measure was not repeated. B6 does not touch the
+  launch path; the B5 measurement stands.
+
+### Deferred
+
+- By decision: a view-model crate (report row shaping), server-side xlsx
+  export, and edit and import form protocols.
+- The journal summary and chart are not cached per filter (only the row filter
+  results are, in the LRU).
+- The SPA sends `Cache-Control: no-store`, so it does not use the `ETag`s the
+  journal routes serve.
+- The prewarm thread computes the problem list for the server's UTC date; a
+  browser in another date pays for its own.
+- Some `*_api` read paths still answer 500, not 503, on `NotDownloaded`.
+- On mobile, `PUT /api/prefs` has no config directory to write to.
+- The desktop watcher's reload does not rebind the editor after a failed
+  reload.
+- No Swift shell or xcframework yet.
+- Pre-existing: the Insights panel squeezes the table at 1280×720.

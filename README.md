@@ -139,6 +139,7 @@ cd web && bun run build && cd .. && cargo build --release && ./target/release/le
 
 The [development section of the manual](https://zmre.github.io/ledgeline/development/) covers the internals:
 
+- **[Architecture](https://zmre.github.io/ledgeline/development/architecture/)**: how core, the server and the hosts fit together, and where a native UI would plug in.
 - **[Building](https://zmre.github.io/ledgeline/development/building/)**: the Nix + Crane build cache, the `nix build .#{ledgeline,clippy,tests,fmt,macApp}` outputs, CI, and how the SPA is built and embedded.
 - **[Releasing](https://zmre.github.io/ledgeline/development/releasing/)**: `scripts/release.sh`, the signed and notarized DMGs, and crates.io publishing.
 - **[Imports internals](https://zmre.github.io/ledgeline/development/imports-internals/)**: the CSV rules-file editor — the format-preserving model, what it will and won't edit, and the guards on its write path.
@@ -146,7 +147,13 @@ The [development section of the manual](https://zmre.github.io/ledgeline/develop
 
 ## Architecture
 
-This spins up a local tokio axum API server and uses the native OS browser as a GUI window (via wry, part of the tauri project) hosting a svelte frontend app.  All assets are built into the single binary, which is pretty snappy.
+Three layers:
+
+- **`ledgeline-core`**: the product. Journal storage behind a `Vault` trait, parsing, safe in-place edits, and every report and view (exact decimals throughout). No platform code, no HTTP.
+- **`ledgeline-server`**: a tokio/axum API over core, with immutable journal snapshots and injected app directories. Cargo features add the desktop window (`gui`), a file watcher (`watcher`) and the `hledger`/`git` subprocesses (`external-tools`).
+- **Hosts**: the desktop app opens the native OS webview (via wry, part of the tauri project) on a loopback port and shows the embedded Svelte app; `--server` runs the same API headless; `ledgeline-ffi` runs the router in-process for a future iOS app.
+
+The Svelte app only presents what the API computes. All assets are built into the single binary, which is pretty snappy. See [Architecture](https://zmre.github.io/ledgeline/development/architecture/) in the manual for the details.
 
 ## License
 
