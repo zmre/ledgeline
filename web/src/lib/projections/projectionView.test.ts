@@ -15,6 +15,7 @@ import {
     seriesOf,
 } from "./projectionView";
 import type {AssetRow, Projection} from "./types";
+import {periodsOf} from "#lib/reports/test-helpers.js";
 
 const money = (entries: [string, number][]): MixedAmount => new Map(entries.map(([c, n]) => [c, dec(n, 0)]));
 const usd = (n: number): MixedAmount => money([["$", n]]);
@@ -26,6 +27,7 @@ const usd = (n: number): MixedAmount => money([["$", n]]);
  */
 const NET_INCOME: PeriodReport = {
     buckets: ["2026-08", "2026-09"],
+    periods: periodsOf(["2026-08", "2026-09"]),
     rows: [
         {account: "expenses", depth: 1, values: [usd(-4200), usd(-4200)]},
         {account: "expenses:rent", depth: 2, values: [usd(-4200), usd(-4200)]},
@@ -133,7 +135,7 @@ describe("UNIT projectionView — reading one commodity out of a mixed amount", 
 
     it("falls back only when the projection names no commodity at all", () => {
         const empty = projection({
-            netIncome: {buckets: [], rows: [], totals: []},
+            netIncome: {buckets: [], periods: periodsOf([]), rows: [], totals: []},
             cash: {opening: new Map(), values: []},
             netWorth: {opening: new Map(), values: []},
         });
@@ -180,7 +182,7 @@ describe("UNIT projectionView — the flow chart's three columns", () => {
     });
 
     it("an empty report charts nothing rather than throwing", () => {
-        expect(flowSeries({buckets: [], rows: [], totals: []}, "$")).toEqual({inflows: [], outflows: [], net: []});
+        expect(flowSeries({buckets: [], periods: periodsOf([]), rows: [], totals: []}, "$")).toEqual({inflows: [], outflows: [], net: []});
     });
 });
 

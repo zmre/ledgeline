@@ -14,12 +14,11 @@
     // renders unchanged; scope/as-of changes refetch. The scope AND the tab live
     // in the URL (?asof=&acct=&mode=&gain=&tab=) via the WP-04 replaceState
     // pattern, through ONE writer — see holdings/ui/urlCodec.ts. Display styles
-    // for the base commodity come from the journal wire feed (styleFor).
+    // for the base commodity come from the engine's journal metadata (reportStyles).
     import {onMount} from "svelte";
     import AsyncSection from "#lib/components/AsyncSection.svelte";
     import ErrorToast from "#lib/components/ErrorToast.svelte";
     import {formatAmount, type Dec} from "#lib/domain/money.js";
-    import type {AmountStyle} from "#lib/domain/types.js";
     import {exportHoldingsXlsx} from "#lib/export/xlsx.js";
     import {styleOf} from "#lib/format/amounts.js";
     import GainersLosers from "#lib/holdings/ui/GainersLosers.svelte";
@@ -34,7 +33,7 @@
     import UpdatePricesButton from "#lib/holdings/ui/UpdatePricesButton.svelte";
     import {startHoldingsUrlSync} from "#lib/holdings/ui/urlSync.js";
     import {formatUnitsWith, partitionShortPositions, shortPositionNote} from "#lib/holdings/ui/view.js";
-    import {formatChartValue, formatCompactChartValue, styleFor} from "#lib/insights/series.js";
+    import {formatChartValue, formatCompactChartValue} from "#lib/insights/series.js";
     import ExportButton from "#lib/reports/ui/ExportButton.svelte";
     import {holdingsData, holdingsScope, holdingsTab, otherHoldingsData} from "#lib/stores/holdings.svelte.js";
     import {journal} from "#lib/stores/journal.svelte.js";
@@ -94,14 +93,14 @@
     // used to also require `journal.txns.length > 0` — a row count from the
     // separate hledger-web feed — so a working engine plus a failing feed spun
     // forever, and so did a legitimately empty journal on a new user's first
-    // run (FE-5c). The base commodity's display style is the only thing that
-    // feed contributes here, and `styleFor` already falls back when it has none.
+    // run (FE-5c). The base commodity's display style comes from the engine's
+    // journal metadata, and `styleOf` falls back when it has none.
 
     // Both reports name the same base; the Other one is a fallback so the Other
     // tab still formats money when the STOCK request is the one that failed.
     const base = $derived(report?.base ?? otherReport?.base ?? "$");
     const gainPeriod = $derived(holdingsScope.value.gainPeriod);
-    const style = $derived(styleFor(journal.txns, base));
+    const style = $derived(styleOf(journal.reportStyles, base));
     const format = (qty: Dec): string => formatAmount({commodity: base, qty, style});
     const formatTrendValue = (v: number): string => formatChartValue(v, base, style);
     const formatTrendAxis = (v: number): string => formatCompactChartValue(v, base, style);
@@ -116,25 +115,9 @@
     // early one, and it fills in the moment the report lands.
     const accountNames = $derived((holdingsTab.value === "stocks" ? report?.accounts : otherReport?.accounts) ?? []);
 
-    // Display styles for the units the Other tab prints ("1 HOUSE"), resolved
-    // ONCE per report rather than per cell: `styleFor` walks the whole journal
-    // feed, and a 50k-transaction scan behind every render of every row is not a
-    // lookup. The set of commodities here is tiny by construction — a house, a
-    // van — so the memo is cheap and rebuilds only when the report or the feed
-    // does.
-    // Built from a finished list rather than by mutating a Map: this is an
-    // immutable snapshot the derivation replaces wholesale, so a SvelteMap would
-    // add a reactivity layer over a value that never changes in place.
-    const unitStyles = $derived.by(() => {
-        const commodities: string[] = [];
-        for (const holding of otherReport?.holdings ?? []) {
-            for (const commodity of holding.commodities.keys()) {
-                if (!commodities.includes(commodity)) commodities.push(commodity);
-            }
-        }
-        return new Map<string, AmountStyle>(commodities.map((commodity) => [commodity, styleFor(journal.txns, commodity)]));
-    });
-    const formatUnits = $derived(formatUnitsWith((commodity: string) => styleOf(unitStyles, commodity)));
+    // Display styles for the units the Other tab prints ("1 HOUSE"): the
+    // engine's report styles, a map lookup per commodity.
+    const formatUnits = $derived(formatUnitsWith((commodity: string) => styleOf(journal.reportStyles, commodity)));
 
     // The engine reports net-SHORT rows (sold more than was ever bought) so its
     // totals reconcile with the balance sheet, but nobody holds −2 shares, so the

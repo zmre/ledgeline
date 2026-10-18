@@ -291,7 +291,7 @@ pub mod matching;
 
 pub use discovery::{
     CreateRefusal, DiscoveredRules, Discovery, Preview, PreviewUnavailable, RulesPath, discover,
-    label_for, read_text,
+    discover_in, label_for, read_text,
 };
 
 use itertools::Itertools;

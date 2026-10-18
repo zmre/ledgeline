@@ -7,7 +7,7 @@
 import {fireEvent, render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {afterEach, describe, expect, it, vi} from "vitest";
-import {connectFakeEngine} from "#lib/testing/fakeEngine.js";
+import {connectFakeEngine, journalInfoBody} from "#lib/testing/fakeEngine.js";
 import {journal} from "#lib/stores/journal.svelte.js";
 import TransactionModal from "./TransactionModal.svelte";
 import {txnModal} from "./modalState.svelte";
@@ -23,13 +23,13 @@ afterEach(() => {
  * store instead would prove the modal renders whatever it is handed, which is
  * never what breaks.
  */
+let generation = 0;
 async function withAccounts(names: string[]): Promise<void> {
-    await connectFakeEngine({
-        "/accountnames": names,
-        "/transactions": [],
-        "/prices": [],
-        "/accounts": [],
-    });
+    // Account names ride `/api/journal` (every account, with its class), and
+    // the store swaps them only on a NEW generation — so each call mints one.
+    generation += 1;
+    const accounts = Object.fromEntries(names.map((name) => [name, {type: null, typeDeclared: false, term: null, termGuessed: false}]));
+    await connectFakeEngine({"/api/journal": journalInfoBody({accounts, generation: `accounts-${generation}`})});
     await journal.refresh({force: true});
 }
 

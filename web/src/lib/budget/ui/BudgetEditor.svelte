@@ -81,20 +81,14 @@
      * Sort within one period group, by the page's one order control.
      *
      * The grouping is NOT disturbed: it is the organising idea, and the sort
-     * operates inside it. A goal's amount is its own per-period figure, so
-     * `sortBudgetLines` annualises it — which inside a single period group is a
-     * constant factor and therefore the same order the written figures give, and
-     * across the "Other periods" list is the only order that means anything.
+     * operates inside it. Goals rank by the engine's `annual` figure — the
+     * typed magnitude normalised to a year — which inside a single period group
+     * is a constant factor and therefore the same order the written figures
+     * give, and across the "Other periods" list is the only order that means
+     * anything. The engine leaves `annual` null for a rule it will not model,
+     * which ranks last.
      */
-    const ordered = (items: Row[]): Row[] =>
-        sortBudgetLines(items, sort, dir, (row) => ({
-            account: row.goal.account,
-            // The magnitude the user typed, not the signed amount — an income
-            // goal must not sort as a large negative. `entry` is null only for
-            // the leg hledger infers, which shows "—" and ranks as nothing.
-            amount: row.goal.entry === null ? new Map() : new Map([[row.goal.entry.commodity, row.goal.entry.value]]),
-            period: periodOf(row.rule),
-        }));
+    const ordered = (items: Row[]): Row[] => sortBudgetLines(items, sort, dir, (row) => ({account: row.goal.account, amount: row.goal.annual}));
 
     /**
      * The goals, grouped by period, in the order the editor offers periods, and

@@ -60,7 +60,6 @@
 import {maAdd, maIsZero, maNeg, rankCommodities, type MixedAmount} from "#lib/domain/money.js";
 import {colorAt, type ChartPalette} from "#lib/format/palette.js";
 import {amountIn} from "#lib/projections/projectionView.js";
-import {bucketLabel} from "../periods";
 import type {PeriodReport, PeriodRow, PeriodRowKind} from "../types";
 import {compressPeriodRows, type DisplayRow} from "./displayRows";
 
@@ -238,7 +237,7 @@ export function periodStack(report: PeriodReport, palette: ChartPalette, fallbac
     return {
         commodity,
         omitted,
-        labels: report.buckets.map(bucketLabel),
+        labels: report.periods.map((p) => p.label),
         entities,
         series: splitBySign(entities),
         net: report.totals.map((total) => amountIn(total, commodity)),

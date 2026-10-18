@@ -506,3 +506,112 @@ up as a clean 2×, and it is still microseconds. And `prices/lookup_early_date`
 - **`/api/insights`'s 7 `PriceDb::build`s.** `prices/PriceDb_build` is 5.70 ms on
   v2 against 1.69 ms on v1 at 200k, so seven of them is ~40 ms per request, but
   nothing here counts the calls.
+
+---
+
+## 8. Desktop launch and scroll at 200k (plan 26 B5)
+
+Everything above measures the engine in isolation. This section measures what a
+person waits for: the desktop app opening a 200k-transaction journal, the first
+rows appearing, and a hard scroll through them.
+
+### 8.1 The probe
+
+A dev tool, inert unless asked for. When `LEDGELINE_PERF` names a script, the
+GUI (`mod perf` in `crates/ledgeline-server/src/gui.rs`) injects it into the
+WebView and prints every message it posts back as
+`PERF js <ms since launch> <json>`, plus its own milestones as
+`PERF rust <label> <ms since launch>` (`journal_loaded`, `window_built`,
+`webview_built`). A `{"ev":"scroll_done"}` message ends the process.
+
+`scripts/perf/probe.js` reports `dom_content_loaded`, every API request made
+before the first rows (`fetch`, with its duration), `data_on_screen` (the first
+frame committed with REAL rows — the windowed table's skeleton rows do not
+count), and, after a 300-frame scroll at 120 px/frame, `scroll_stats`: frame
+interval, dropped frames (> 1.5 × the median interval), forced-layout cost, and
+how many frames still showed a skeleton. It switches the journal to
+`?preset=all` first, because the synthetic corpus ends 2025-12-31 and the
+default last-90-days view would be empty.
+
+`scripts/perf/run-probe.sh` runs it end to end: it launches the app with
+`HOME` pointed at a scratch directory (your real preferences and recents are
+never touched), samples `footprint` for the `ledgeline` process and the newest
+`com.apple.WebKit.WebContent` process while the probe holds the window open
+after its scroll, and prints the `PERF` lines.
+
+```bash
+just perf-probe            # generates the corpus if missing, builds, runs
+# or by hand:
+cargo run --release -p ledgeline-core --example gen_journal -- 200000
+(cd web && bun run build) && cargo build --release -p ledgeline
+scripts/perf/run-probe.sh target/perf/synthetic-v1-200000.journal
+# LEDGELINE_BIN=<other binary> measures another build with the same probe.
+```
+
+The window must be visible and frontmost: WebKit throttles `requestAnimationFrame`
+for an occluded window, which shows up as a 33 ms frame interval.
+
+### 8.2 Before and after
+
+Measured 2026-10-17 on an Apple M5 Max, 18 cores, 64 GB, macOS 27.0.1, both
+builds `--release`, same machine, same corpus, same probe. "Before" is
+`2e95016` (the last commit before B3) with the probe hook applied; "after" is
+B5. Times are milliseconds since launch, medians of 2 (before) and 3 (after)
+runs.
+
+| | Before (SPA downloads `/transactions`) | After (windowed `/api/journal/*`) |
+|---|---|---|
+| `journal_loaded` (parse + editor + snapshot) | 817 | 525 |
+| `dom_content_loaded` | 1,086 | 808 |
+| First rows on screen (`data_on_screen`) | **4,250** | **1,011** |
+| Scroll frame interval (median / p95) | 17 / ~17 ms | 17 / ~17 ms |
+| Dropped frames / 300 | 0 | 0 |
+| WebContent footprint | **2.7–3.5 GB** | **144–185 MB** |
+| `ledgeline` footprint | 1.08 GB | ~690 MB |
+
+The 2026-10-16 baseline in plan 26 (first rows ~4.6 s, WebContent ~3.1 GB,
+ledgeline ~1.0 GB) agrees with the "before" column. Plan 26's targets — first
+rows well under 1.5 s, WebContent under 500 MB, no scroll regression — are met.
+
+### 8.3 Where the launch time goes now
+
+From `dom_content_loaded`, the SPA asks for `/api/journal` (one small cached
+body), then the first 200-row block and the summary in parallel. The block is
+~80 ms; the rest is SvelteKit hydrating and the first paint.
+
+The first block embeds each row's check findings, so it needs the whole problem
+list — the slowest thing a fresh snapshot computes. Three changes keep that off
+the critical path:
+
+- **Prewarm.** Every snapshot starts a background thread
+  (`ViewCache::warmed`) that builds, in order, the display order, the problem
+  list for the server's date, the sign conventions, the declared styles and the
+  search text — while the WebView is still being created. A request that races
+  a step shares its `OnceLock`.
+- **Parallel diagnostics.** The holdings pass behind the stock findings
+  (~210 ms) runs beside the balance/assertion checks (~125 ms) inside
+  `engine_findings`, and the local rules run beside both.
+- **Account names deduplicated first.** `journal_to_accountnames` expanded every
+  POSTING's ancestors (1.5 M strings at 200k); it now expands the few hundred
+  distinct accounts. Account classification went from 145 ms to 32 ms, and the
+  snapshot build — which lists account names twice — got faster with it.
+
+Cold costs at 200k, release build, for reference (`/transactions` is now built
+on first request only, so an SPA session never pays it):
+
+| Derivation (once per snapshot) | ms |
+|---|---|
+| Display order (sort) | 4 |
+| Account classes | 32 |
+| Engine findings (parallel) | 195 |
+| Local check rules | 67 |
+| Sign conventions | 30 |
+| Search text (haystacks) | 109 |
+
+| Request, warm | ms |
+|---|---|
+| `rows` (200 rows, 144 KB) | < 1 |
+| `summary`, whole journal | 70–78 |
+| `chart`, whole journal (pie / monthly line) | 113 / 133 |
+| filter with a query | ~2 (cached search text) |
+| `/transactions`, first request | ~950 (334 MB body) |

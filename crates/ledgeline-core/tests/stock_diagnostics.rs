@@ -351,9 +351,9 @@ fn sample_journal_reports_its_three_deliberate_stock_records() {
     // added the two 2024-07-01 opening positions and the 2025-06-30 vehicle
     // depreciation, all of which sort ahead of the GLD gift.)
     //
-    // web/src/lib/checks/stock-diagnostics.test.ts asserts the other end of this
-    // from the captured payload; keeping both means a change to either side
-    // fails somewhere rather than drifting.
+    // `/api/diagnostics` now resolves the positions to `tindex` itself, and the
+    // whole list (these plus the local rules) is pinned against the SPA's former
+    // output by `checks_golden.rs`.
     let found = anchors_of(&common::fixture_journal());
     assert_eq!(
         found,
@@ -364,31 +364,3 @@ fn sample_journal_reports_its_three_deliberate_stock_records() {
         ]
     );
 }
-
-#[test]
-fn the_committed_sample_capture_still_describes_the_engine() {
-    // fixtures/api/ledgeline/diagnostics.json is what the SPA test consumes. If
-    // this fails, re-capture it (the recipe is in that test's header).
-    let expected: Value = serde_json::from_str(
-        &std::fs::read_to_string(common::fixtures_dir().join("api/ledgeline/diagnostics.json"))
-            .expect("capture readable"),
-    )
-    .expect("capture is JSON");
-    let actual =
-        wire::journal_to_diagnostics_value(&common::fixture_journal()).expect("payload serializes");
-    assert_eq!(actual, expected);
-}
-
-// ---------------------------------------------------------------------------
-// The wire ⇄ SPA allow-list
-// ---------------------------------------------------------------------------
-//
-// `diagnostic_rules_match_the_spa_allow_list` used to live here and read
-// `web/src/lib/api/normalize.ts`. It passed under `cargo test` and FAILED under
-// `nix build .#tests` — which is what CI runs — because that derivation's source
-// is `craneLib.cleanCargoSource`, so `web/` is not in it at all.
-//
-// The assertion now lives in `web/src/lib/checks/stock-diagnostics.test.ts`,
-// which reads BOTH files: vitest always runs from a full checkout, so it works
-// in CI and locally. It is mutation-checked — widening DIAGNOSTIC_RULES on
-// either side fails it.

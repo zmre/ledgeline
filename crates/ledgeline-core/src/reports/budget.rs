@@ -625,9 +625,9 @@ pub struct BudgetGaps {
 /// `expenses:insurance` remaps to `expenses` rather than to [`UNBUDGETED`], and
 /// a gaps list built on that set would be empty for every real budget.
 ///
-/// Worse, that money is not visible anywhere else either: the SPA's
-/// `budgetLeaves` hides an aggregate parent when a deeper budgeted row exists,
-/// so the `expenses` row carrying the insurance never reaches a bar. Measuring
+/// Worse, that money is not visible anywhere else either:
+/// [`budget_leaves`](super::budget_summary::budget_leaves) hides an aggregate
+/// parent when a deeper budgeted row exists, so the `expenses` row carrying the insurance never reaches a bar. Measuring
 /// against the rule accounts themselves asks the question the user asked — "what
 /// does my budget not mention" — and an account remaps to a rule account exactly
 /// when some goal's bar already includes it.

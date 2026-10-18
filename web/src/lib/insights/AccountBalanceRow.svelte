@@ -26,7 +26,7 @@
      box that decided how long the label may be. -->
 <script lang="ts">
     import AccountLabel from "#lib/components/AccountLabel.svelte";
-    import type {BalanceRow} from "#lib/reports/cashBalances.js";
+    import type {BalanceRow} from "#lib/journalView/types.js";
 
     let {
         entry,

@@ -109,6 +109,7 @@ impl Redactor {
             AppError::Conflict(message) => AppError::Conflict(self.apply(&message)),
             AppError::EditingDisabled(message) => AppError::EditingDisabled(self.apply(&message)),
             AppError::Unavailable(message) => AppError::Unavailable(self.apply(&message)),
+            AppError::NotDownloaded(message) => AppError::NotDownloaded(self.apply(&message)),
             AppError::Internal(message) => AppError::Internal(self.apply(&message)),
         }
     }

@@ -21,8 +21,8 @@
 //!
 //! The 2026-09 report ("adding growth to payroll… shows a huge build up of cash
 //! into infinity") was a browser-side sign flip; the engine was correct
-//! throughout, and `web/src/lib/domain/accountTypes.test.ts` plus
-//! `fixtures/account-types/classification-cases.json` are what guard that half.
+//! throughout, and `fixtures/account-types/classification-cases.json` (plus, since
+//! plan 26 B1, the browser reading the engine's resolved classes) guards that half.
 //! What was missing HERE is that not one exact-figure test in the projection
 //! suite states which way anything is supposed to move, so none of them could
 //! have noticed. [`a_negative_expense_is_an_inflow_which_is_why_the_sign_matters`]

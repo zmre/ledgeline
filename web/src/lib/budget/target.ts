@@ -25,27 +25,34 @@
 
 import {encodeDec} from "#lib/api/editMapping.js";
 import type {BudgetChange} from "#lib/api/native.js";
-import type {BudgetFile, BudgetListing, BudgetPeriod, BudgetRule, GoalDraft, GoalSubmission} from "#lib/budget/types.js";
+import {
+    isBudgetPeriod,
+    type BudgetFile,
+    type BudgetListing,
+    type BudgetPeriod,
+    type BudgetRule,
+    type GoalDraft,
+    type GoalSubmission,
+} from "#lib/budget/types.js";
 
 /**
- * The rule a new goal of `period` joins, and the file it is written in: the
- * first writable, unlocked rule of that period, in file order.
+ * The rule a new goal of `period` joins, and the file it is written in — as the
+ * ENGINE decided it (`BudgetListing.joinable`, plan 26 B6): the first writable,
+ * unlocked rule of that period, in file order.
  *
  * `null` means no rule states that period yet, and one has to be opened.
  *
- * The first, in file order, deliberately — it is the same rule the engine picks
- * on its own (`PeriodicDoc::joinable_block`), so the rule the tab says it will
- * add to is the rule that is actually added to. A locked rule is skipped for the
- * same reason the engine skips it: Ledgeline will not rewrite one, so a goal
- * appended to it would be refused.
+ * This only finds the rule the engine named in the listing it sent, so the rule
+ * the tab says it will add to is the rule that is actually added to — the same
+ * rule `PeriodicDoc::joinable_block` would pick, with the locked-rule skip
+ * decided in one place.
  */
 export function joinableRule(listing: BudgetListing, period: string): {file: BudgetFile; rule: BudgetRule} | null {
-    return (
-        listing.files
-            .filter((file) => file.writable)
-            .flatMap((file) => file.rules.map((rule) => ({file, rule})))
-            .find(({rule}) => rule.period.simple === period && rule.locked === null) ?? null
-    );
+    const target = isBudgetPeriod(period) ? listing.joinable[period] : undefined;
+    if (target === undefined) return null;
+    const file = listing.files.find((candidate) => candidate.journalId === target.journalId);
+    const rule = file?.rules.find((candidate) => candidate.block === target.block);
+    return file === undefined || rule === undefined ? null : {file, rule};
 }
 
 /**

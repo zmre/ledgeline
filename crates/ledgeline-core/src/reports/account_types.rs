@@ -1,11 +1,13 @@
-//! Declared/inferred account types — port of
-//! `web/src/lib/domain/accountTypes.ts`.
+//! Declared/inferred account types — the ONE resolver. The SPA reads its
+//! answers off `/api/journal` (`account_class.rs`) rather than re-deriving
+//! them (plan 26 B1).
 //!
 //! An account's EFFECTIVE type is its own declared `type:`, else the nearest
 //! declared ancestor's, else inferred from the name. `Cash` is the subtype
 //! `hledger cashflow` selects on.
 
 use super::accounts::{RootCategory, ascii_or_lowercased, categorize};
+use crate::decimal::{Dec, DecError};
 use crate::model::{AccountDeclaration, Journal};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -33,6 +35,24 @@ pub enum AccountType {
     /// `G` — a subtype of Revenue (hledger `type:G` accounts also match
     /// `type:R`).
     Gain,
+}
+
+impl AccountType {
+    /// The wire spelling (`"asset"`, `"cash"`, …) — the SPA's `AccountType`
+    /// union, word for word.
+    #[must_use]
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Asset => "asset",
+            Self::Liability => "liability",
+            Self::Equity => "equity",
+            Self::Revenue => "revenue",
+            Self::Expense => "expense",
+            Self::Cash => "cash",
+            Self::Conversion => "conversion",
+            Self::Gain => "gain",
+        }
+    }
 }
 
 /// Fold two types into the one that describes both, or `None` when they
@@ -281,10 +301,45 @@ pub fn is_account_type(
     is_category(resolve_account_type(account, declared), category)
 }
 
+/// Whether amounts on `account` are ENTERED as magnitudes but WRITTEN negated —
+/// i.e. whether it is revenue (a declared `type: G` gain included).
+///
+/// hledger writes income negative while everybody says "I earn twelve
+/// hundred". Revenue is the only inversion: an expense, an asset and a
+/// liability all read naturally with hledger's own sign. Decided by the
+/// account's resolved TYPE, never its name; the budget editor and the
+/// projections table both sign through here, so a goal and a scenario line on
+/// one account cannot disagree about which way up it is.
+#[must_use]
+pub fn entered_negated(account: &str, declared: &BTreeMap<String, AccountType>) -> bool {
+    is_account_type(account, declared, AccountType::Revenue)
+}
+
+/// A user-entered amount → the signed quantity the journal carries: its
+/// magnitude, negated for a revenue account ([`entered_negated`]).
+///
+/// The sign the caller sent is discarded — an entry is a magnitude — so a
+/// client never has to know the rule to send a correct number.
+///
+/// # Errors
+/// [`DecError::Overflow`] only for a mantissa of `i128::MIN`.
+pub fn signed_entry(
+    account: &str,
+    entry: Dec,
+    declared: &BTreeMap<String, AccountType>,
+) -> Result<Dec, DecError> {
+    let magnitude = entry.abs()?;
+    if entered_negated(account, declared) {
+        magnitude.neg()
+    } else {
+        Ok(magnitude)
+    }
+}
+
 /// Whether an already-resolved type is a member of `category`, subtypes
 /// included. Shared by [`is_account_type`] and [`AccountTypes::is_type`] so the
 /// two cannot drift.
-fn is_category(resolved: Option<AccountType>, category: AccountType) -> bool {
+pub(crate) fn is_category(resolved: Option<AccountType>, category: AccountType) -> bool {
     match resolved {
         Some(AccountType::Cash) => matches!(category, AccountType::Asset | AccountType::Cash),
         Some(AccountType::Gain) => matches!(category, AccountType::Revenue | AccountType::Gain),

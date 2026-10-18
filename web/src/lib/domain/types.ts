@@ -78,8 +78,6 @@ export interface Transaction {
     comment: string;
     tags: [string, string][];
     postings: Posting[];
-    /** Precomputed lowercase search text (desc+comments+accounts+amounts+commodities). */
-    haystack: string;
 }
 
 export interface PriceDirective {

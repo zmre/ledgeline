@@ -5,8 +5,8 @@
     // control change refetches (keyed on the active tab's params); the last good
     // report stays visible across a refetch. Tab + controls still live in the
     // URL (parsed once on mount, mirrored back with debounced replaceState).
-    // Display styles come from the journal wire feed (reportStyles), fetched in
-    // parallel — the engine returns exact numbers, not commodity display styles.
+    // Display styles come from the engine's journal metadata (`/api/journal`
+    // reportStyles), fetched in parallel with the report.
     import {onMount} from "svelte";
     import {goto} from "$app/navigation";
     import {resolve} from "$app/paths";
@@ -36,7 +36,6 @@
         type ReportTab,
     } from "#lib/reports/ui/params.js";
     import type {FlowsPanel} from "#lib/reports/ui/sankeyModel.js";
-    import {reportStyles} from "#lib/reports/ui/styles.js";
     import {reportsEnd} from "#lib/stores/reportsEnd.js";
     import {flows, loadFlowsWhenWatched} from "#lib/stores/flows.svelte.js";
     import {dataView} from "#lib/stores/loadState.js";
@@ -122,12 +121,10 @@
         if (url !== null && !selfHosted) void reports.load(url, query);
     });
 
-    // Display styles are a nicety, never a gate: they come from the SEPARATE
-    // hledger-web feed, so requiring them (`journal.txns.length > 0`) spun
-    // forever whenever the engine answered and that feed did not — and on a
-    // legitimately empty journal, for every new user (FE-5c). `formatTotals`
-    // already falls back per commodity when the map has no entry.
-    const styles = $derived(reportStyles(journal.txns));
+    // Display styles are a nicety, never a gate (FE-5c): an empty map before the
+    // journal round lands is fine, because `formatTotals` falls back per
+    // commodity. The engine computes them (`/api/journal` reportStyles).
+    const styles = $derived(journal.reportStyles);
     const maxDepth = $derived(journal.accountNames.reduce((max, name) => Math.max(max, name.split(":").length), 1));
 
     const report = $derived(reports.report);

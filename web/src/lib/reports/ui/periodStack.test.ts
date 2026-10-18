@@ -13,6 +13,7 @@ import {amountIn} from "#lib/projections/projectionView.js";
 import type {PeriodReport, PeriodRow, PeriodRowKind} from "../types";
 import {compressPeriodRows} from "./displayRows";
 import {periodStack, slotsBySize, splitBySign, stackCommodity, stackSegments, type StackSegment} from "./periodStack";
+import {periodsOf} from "../test-helpers";
 
 /** `{$: 12.34}`-style amounts from whole dollars, exact. */
 const usd = (n: number): MixedAmount => (n === 0 ? new Map() : new Map([["$", dec(Math.round(n * 100), 2)]]));
@@ -27,7 +28,7 @@ function row(account: string, values: MixedAmount[], kind?: PeriodRowKind): Peri
 const dollars = (account: string, values: number[], kind?: PeriodRowKind): PeriodRow => row(account, values.map(usd), kind);
 
 function report(rows: PeriodRow[], totals: number[], buckets = totals.map((_, i) => `202${i}`)): PeriodReport {
-    return {buckets, rows, totals: totals.map(usd)};
+    return {buckets, periods: periodsOf(buckets), rows, totals: totals.map(usd)};
 }
 
 const golden = (name: string): PeriodReport =>
@@ -44,6 +45,7 @@ const SAMPLE_NET_WORTH = golden("networth");
  */
 const CASH_FLOW: PeriodReport = {
     buckets: ["2026-01", "2026-02", "2026-03"],
+    periods: periodsOf(["2026-01", "2026-02", "2026-03"]),
     rows: [
         row("assets", [both(50, 20), usd(-30), usd(20)]),
         row("assets:bank", [both(60, 20), usd(-20), usd(20)]),
@@ -387,7 +389,7 @@ describe("UNIT periodStack — every account, and its colour", () => {
 describe("UNIT periodStack — commodity", () => {
     it("charts the commodity carrying the most figures, and names the rest", () => {
         const rows: PeriodRow[] = [row("assets:checking", [usd(10), usd(20), usd(30)]), row("assets:wise", [eur(5), new Map(), new Map()])];
-        const r: PeriodReport = {buckets: ["a", "b", "c"], rows, totals: [both(10, 5), usd(20), usd(30)]};
+        const r: PeriodReport = {buckets: ["a", "b", "c"], periods: periodsOf(["a", "b", "c"]), rows, totals: [both(10, 5), usd(20), usd(30)]};
         expect(stackCommodity(r, "X")).toEqual({commodity: "$", omitted: ["EUR"]});
         const stack = periodStack(r, DEFAULT_PALETTE, "X");
         // wise holds only EUR: nothing to draw, so no entity — the note names EUR.
@@ -396,7 +398,7 @@ describe("UNIT periodStack — commodity", () => {
     });
 
     it("falls back when the report holds no commodity at all", () => {
-        expect(stackCommodity({buckets: ["a"], rows: [], totals: [new Map()]}, "$")).toEqual({commodity: "$", omitted: []});
+        expect(stackCommodity({buckets: ["a"], periods: periodsOf(["a"]), rows: [], totals: [new Map()]}, "$")).toEqual({commodity: "$", omitted: []});
     });
 });
 

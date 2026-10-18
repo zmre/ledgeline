@@ -3,6 +3,7 @@ import {describe, expect, it} from "vitest";
 import {CLASSIFIED_BALANCE_SHEET, GROUPED_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "#lib/testing/balanceSheetFixture.js";
 import {GROUPED_INCOME_STATEMENT, MULTI_STEP_INCOME_STATEMENT, UNCOMPARED_INCOME_STATEMENT} from "#lib/testing/incomeStatementFixture.js";
 import {ApiShapeError} from "./client";
+import {periodsOf} from "#lib/reports/test-helpers.js";
 import {
     decodeAccountReference,
     decodeBalanceSheetReport,
@@ -611,8 +612,8 @@ describe("UNIT nativeDecode — IncomeStatementReport (interval mode)", () => {
 
     it("decodes the buckets, clamped to the range, and no prior window", () => {
         expect(report.buckets).toHaveLength(7);
-        expect(report.buckets?.[0]).toEqual({key: "2026-01", from: "2026-01-01", to: "2026-01-31"});
-        expect(report.buckets?.at(-1)).toEqual({key: "2026-07", from: "2026-07-01", to: "2026-07-08"});
+        expect(report.buckets?.[0]).toEqual({key: "2026-01", label: "Jan 2026", from: "2026-01-01", to: "2026-01-31"});
+        expect(report.buckets?.at(-1)).toEqual({key: "2026-07", label: "Jul 2026", from: "2026-07-01", to: "2026-07-08"});
         expect(report.prior).toBeNull();
     });
 
@@ -676,7 +677,13 @@ describe("UNIT nativeDecode — PeriodReport over the cashflow / networth golden
     // Literal: sample.journal leaves nothing unpriced, so `meta` never appears in
     // the goldens — but the field exists and the SPA renders it.
     it("decodes the net-worth meta.unpriced list", () => {
-        const report = decodePeriodReport({buckets: ["2026-07"], rows: [], totals: [{$: dec(1, 0)}], meta: {unpriced: ["GLD", "TSLA"]}});
+        const report = decodePeriodReport({
+            buckets: ["2026-07"],
+            periods: periodsOf(["2026-07"]),
+            rows: [],
+            totals: [{$: dec(1, 0)}],
+            meta: {unpriced: ["GLD", "TSLA"]},
+        });
         expect(report.meta?.unpriced).toEqual(["GLD", "TSLA"]);
     });
 
@@ -721,12 +728,16 @@ describe("UNIT nativeDecode — PeriodReport over the cashflow / networth golden
         // that reads as "no change"; a row total with no grand total has no
         // column to sit in.
         const row = {account: "assets", depth: 1, values: [{}]};
-        expect(() => decodePeriodReport({buckets: ["2026-07"], rows: [row], totals: [{}], grandTotal: {}})).toThrow(/total: missing amount/);
-        expect(() => decodePeriodReport({buckets: ["2026-07"], rows: [{...row, total: {}}], totals: [{}]})).toThrow(/no grand total/);
+        expect(() => decodePeriodReport({buckets: ["2026-07"], periods: periodsOf(["2026-07"]), rows: [row], totals: [{}], grandTotal: {}})).toThrow(
+            /total: missing amount/
+        );
+        expect(() => decodePeriodReport({buckets: ["2026-07"], periods: periodsOf(["2026-07"]), rows: [{...row, total: {}}], totals: [{}]})).toThrow(
+            /no grand total/
+        );
     });
 
     it("throws on a row side it does not know rather than stacking it nowhere", () => {
-        const raw = {buckets: ["2026-07"], rows: [{account: "assets", depth: 1, values: [{}], kind: "equity"}], totals: [{}]};
+        const raw = {buckets: ["2026-07"], periods: periodsOf(["2026-07"]), rows: [{account: "assets", depth: 1, values: [{}], kind: "equity"}], totals: [{}]};
         expect(() => decodePeriodReport(raw)).toThrow(/kind: expected one of asset\/liability\/mixed, got "equity"/);
     });
 });
@@ -789,6 +800,7 @@ describe("UNIT nativeDecode — BudgetReport over the budget golden", () => {
     it("keeps null goal (unbudgeted) distinct from an empty-object goal (budgeted-but-zero)", () => {
         const report = decodeBudgetReport({
             buckets: ["2026-01", "2026-02"],
+            periods: periodsOf(["2026-01", "2026-02"]),
             rows: [
                 {account: "<unbudgeted>", depth: 1, cells: [{actual: {$: dec(-375, 0)}, goal: null}]},
                 // budgeted-but-zero-this-bucket: goal is {} (empty object), NOT null.
@@ -802,6 +814,7 @@ describe("UNIT nativeDecode — BudgetReport over the budget golden", () => {
                 },
             ],
             totals: [{actual: {$: dec(-23, 0)}, goal: {$: dec(400, 0)}}],
+            summary: {from: "2026-01-01", to: "2026-02-28", asOf: "2026-02-28", elapsedDays: 1, spanDays: 1, sections: []},
         });
         expect(report.rows[0].cells[0].goal).toBeNull();
         const gifts = report.rows[1];
@@ -813,6 +826,58 @@ describe("UNIT nativeDecode — BudgetReport over the budget golden", () => {
 
     it("throws ApiShapeError when totals is missing", () => {
         expect(() => decodeBudgetReport({buckets: [], rows: []})).toThrow(ApiShapeError);
+    });
+
+    // The engine's span summary (plan 26 B6): magnitudes, a verdict, and the
+    // sentence to say it with — the shapes the bars render without any math.
+    describe("the span summary", () => {
+        const bar = (overrides: Record<string, unknown> = {}) => ({
+            account: "income:salary",
+            income: true,
+            actual: {$: dec(2000, 0)},
+            goal: {$: dec(6000, 0)},
+            pace: {$: dec(3000, 0)},
+            remaining: {$: dec(4000, 0)},
+            health: "behind",
+            label: {kind: "behindPace", amount: {$: dec(1000, 0)}},
+            ...overrides,
+        });
+        const body = (bars: unknown[]) => ({
+            buckets: [],
+            periods: [],
+            rows: [],
+            totals: [],
+            summary: {
+                from: "2026-01-01",
+                to: "2026-06-30",
+                asOf: "2026-03-31",
+                elapsedDays: 90,
+                spanDays: 181,
+                sections: [{kind: "revenue", overall: bar({account: ""}), bars}],
+            },
+        });
+
+        it("decodes sections, bars, health and labels", () => {
+            const summary = decodeBudgetReport(body([bar(), bar({account: "income:mixed", health: null, label: {kind: "onPlan", amount: null}})])).summary;
+            expect(summary.elapsedDays).toBe(90);
+            expect(summary.spanDays).toBe(181);
+            const [section] = summary.sections;
+            expect(section.kind).toBe("revenue");
+            expect(section.bars[0].health).toBe("behind");
+            expect(section.bars[0].label.kind).toBe("behindPace");
+            expect(section.bars[0].label.amount?.get("$")).toEqual({m: 1000n, p: 0});
+            expect(section.bars[1].health).toBeNull();
+            expect(section.bars[1].label.amount).toBeNull();
+        });
+
+        it("refuses a label or health it does not know rather than rendering a guess", () => {
+            expect(() => decodeBudgetReport(body([bar({label: {kind: "wayOver", amount: null}})]))).toThrow(ApiShapeError);
+            expect(() => decodeBudgetReport(body([bar({health: "fine"})]))).toThrow(ApiShapeError);
+        });
+
+        it("throws when the summary is missing", () => {
+            expect(() => decodeBudgetReport({buckets: [], periods: [], rows: [], totals: []})).toThrow(ApiShapeError);
+        });
     });
 
     it("throws ApiShapeError when a row lacks cells", () => {
@@ -1291,12 +1356,12 @@ describe("UNIT nativeDecode — a missing MixedAmount throws instead of renderin
     });
 
     it("a period report missing a bucket value throws", () => {
-        const bad = {buckets: ["2026-07"], rows: [{account: "a", depth: 1, values: [undefined]}], totals: [{}]};
+        const bad = {buckets: ["2026-07"], periods: periodsOf(["2026-07"]), rows: [{account: "a", depth: 1, values: [undefined]}], totals: [{}]};
         expect(() => decodePeriodReport(bad)).toThrow(/values\[0\]: missing amount/);
     });
 
     it("a budget cell missing `actual` throws", () => {
-        const bad = {buckets: ["2026-07"], rows: [{account: "a", depth: 1, cells: [{goal: null}]}], totals: []};
+        const bad = {buckets: ["2026-07"], periods: periodsOf(["2026-07"]), rows: [{account: "a", depth: 1, cells: [{goal: null}]}], totals: []};
         expect(() => decodeBudgetReport(bad)).toThrow(/actual: missing amount/);
     });
 
@@ -1659,12 +1724,30 @@ describe("UNIT nativeDecode — RulesPreview", () => {
 });
 
 describe("UNIT nativeDecode — journal identity (which ledger is on screen)", () => {
+    /** The plan-26 metadata every `/api/journal` body carries, minimal. */
+    const META = {reportStyles: {}, dominantCommodity: "$", txnCount: 0, firstDate: null, lastDate: null, accounts: {}, generation: "g-1"};
+    const DECODED_META = {
+        reportStyles: new Map(),
+        dominantCommodity: "$",
+        txnCount: 0,
+        firstDate: null,
+        lastDate: null,
+        accounts: new Map(),
+        generation: "g-1",
+    };
+
     it("decodes the engine's title and the bare journal file name", () => {
-        expect(decodeJournalInfo({title: "Acme Books", file: "2026.journal"})).toEqual({title: "Acme Books", file: "2026.journal", commodityStyles: new Map()});
+        expect(decodeJournalInfo({title: "Acme Books", file: "2026.journal", ...META})).toEqual({
+            title: "Acme Books",
+            file: "2026.journal",
+            commodityStyles: new Map(),
+            ...DECODED_META,
+        });
     });
 
     it("decodes declared commodity styles, skipping junk entries instead of failing the title", () => {
         const info = decodeJournalInfo({
+            ...META,
             title: "Acme Books",
             file: "2026.journal",
             commodityStyles: {
@@ -1674,24 +1757,53 @@ describe("UNIT nativeDecode — journal identity (which ledger is on screen)", (
         });
         expect(info.title).toBe("Acme Books");
         expect(info.commodityStyles).toEqual(new Map([["$", {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]}]]));
-        expect(decodeJournalInfo({title: null, file: null, commodityStyles: []}).commodityStyles.size).toBe(0);
+        expect(decodeJournalInfo({...META, title: null, file: null, commodityStyles: []}).commodityStyles.size).toBe(0);
     });
 
-    it("reads null and absent alike as `the engine derived none`", () => {
-        // The app bar's fallback (name the server URL instead) is driven off
-        // null, so an older engine that omits a key entirely must land in the
-        // same branch as one that sends it as null — not in a decode failure.
-        expect(decodeJournalInfo({title: null, file: null})).toEqual({title: null, file: null, commodityStyles: new Map()});
-        expect(decodeJournalInfo({})).toEqual({title: null, file: null, commodityStyles: new Map()});
-        expect(decodeJournalInfo({title: "Acme Books"})).toEqual({title: "Acme Books", file: null, commodityStyles: new Map()});
+    it("reads null and absent title/file alike as `the engine derived none`", () => {
+        expect(decodeJournalInfo({...META, title: null, file: null})).toMatchObject({title: null, file: null});
+        expect(decodeJournalInfo({...META})).toMatchObject({title: null, file: null});
+        expect(decodeJournalInfo({...META, title: "Acme Books"})).toMatchObject({title: "Acme Books", file: null});
+    });
+
+    it("decodes the engine's display metadata and account classes (plan 26 B1)", () => {
+        const info = decodeJournalInfo({
+            ...META,
+            reportStyles: {
+                AAPL: {ascommodityside: "R", ascommodityspaced: true, asdecimalmark: ".", asdigitgroups: null, asprecision: 4, asrounding: "NoRounding"},
+            },
+            dominantCommodity: "EUR",
+            txnCount: 3,
+            firstDate: "2026-01-05",
+            lastDate: "2026-03-01",
+            accounts: {
+                "assets:bank": {type: "cash", typeDeclared: true, term: null, termGuessed: false},
+                "liabilities:mortgage": {type: "liability", typeDeclared: false, term: "noncurrent", termGuessed: true},
+                cogs: {type: null, typeDeclared: false, term: null, termGuessed: false},
+            },
+        });
+        expect(info.reportStyles.get("AAPL")).toEqual({side: "R", spaced: true, precision: 4, decimalPoint: ".", digitGroups: null});
+        expect([info.dominantCommodity, info.txnCount, info.firstDate, info.lastDate]).toEqual(["EUR", 3, "2026-01-05", "2026-03-01"]);
+        expect(info.accounts.get("assets:bank")).toEqual({type: "cash", typeDeclared: true, term: null, termGuessed: false});
+        expect(info.accounts.get("liabilities:mortgage")).toEqual({type: "liability", typeDeclared: false, term: "noncurrent", termGuessed: true});
+        expect(info.accounts.get("cogs")?.type).toBeNull();
+    });
+
+    it("requires the metadata — a renamed field must not read as `nothing to say`", () => {
+        for (const missing of ["dominantCommodity", "txnCount", "accounts", "generation"]) {
+            const body: Record<string, unknown> = {...META};
+            delete body[missing];
+            expect(() => decodeJournalInfo(body), `without ${missing}`).toThrow(ApiShapeError);
+        }
+        expect(() => decodeJournalInfo({...META, accounts: {a: {type: "assets"}}})).toThrow(ApiShapeError);
+        expect(() => decodeJournalInfo({...META, accounts: {a: {type: "liability", term: "long"}}})).toThrow(ApiShapeError);
     });
 
     it("throws rather than labelling the screen with whatever a non-string stringifies to", () => {
         // The whole feature is "say WHICH ledger this is", so a title of
-        // `"[object Object]"` or `"7"` would be worse than no title at all: the
-        // caller's null branch shows the URL, which at least does not claim.
-        expect(() => decodeJournalInfo({title: {name: "Acme"}, file: "2026.journal"})).toThrow(ApiShapeError);
-        expect(() => decodeJournalInfo({title: "Acme Books", file: 7})).toThrow(ApiShapeError);
+        // `"[object Object]"` or `"7"` would be worse than no title at all.
+        expect(() => decodeJournalInfo({...META, title: {name: "Acme"}, file: "2026.journal"})).toThrow(ApiShapeError);
+        expect(() => decodeJournalInfo({...META, title: "Acme Books", file: 7})).toThrow(ApiShapeError);
     });
 
     it("throws on a body that is not an object at all", () => {
@@ -1812,6 +1924,7 @@ const PROJECTION_RUN = {
     start: "2026-08-01",
     netIncome: {
         buckets: ["2026-08", "2026-09", "2026-10"],
+        periods: periodsOf(["2026-08", "2026-09", "2026-10"]),
         rows: [
             {account: "expenses", depth: 1, values: [{$: dec(-420000, 2)}, {$: dec(-420000, 2)}, {$: dec(-420000, 2)}]},
             {account: "expenses:rent", depth: 2, values: [{$: dec(-420000, 2)}, {$: dec(-420000, 2)}, {$: dec(-420000, 2)}]},

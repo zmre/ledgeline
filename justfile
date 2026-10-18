@@ -272,10 +272,15 @@ version-set version:
 
 # Builds the SPA, packages both crates, and proves the real UI — not build.rs's
 # placeholder — is inside the .crate. Publishes NOTHING.
+#
+# `--exclude ledgeline-ffi`: that crate is `publish = false` (an iOS staticlib),
+# but `cargo package --workspace` packages unpublished members anyway and then
+# rejects its version-less path dependency on the server. Excluding it beats
+# adding a third version literal for scripts/release.sh to keep in step.
 # Rehearse the crates.io package locally
 package-crates:
     cd web && bun run build
-    cargo package --workspace --allow-dirty
+    cargo package --workspace --exclude ledgeline-ffi --allow-dirty
     @echo "spa files in the packaged crate: $(tar tzf target/package/ledgeline-[0-9]*.crate | grep -c '/spa/')"
 
 # --- Rust engine (crates/) ---
@@ -284,9 +289,12 @@ package-crates:
 engine-build:
     cargo build
 
+# `ledgeline-ffi/mobile` so the iOS crate's in-process app is tested too, as
+# the flake's `tests` check does; without it only that crate's storage half
+# builds.
 # Test the Rust journal engine
 engine-test:
-    cargo test
+    cargo test --features ledgeline-ffi/mobile
 
 # `--all`, not bare `--check`: the workspace root has no bin or lib of its own,
 # so plain `cargo fmt` exits non-zero with "Failed to find targets" and never
@@ -294,7 +302,13 @@ engine-test:
 # already passes --all — so this recipe was the only place that was broken.
 # Format + lint the Rust engine (clippy warnings are errors)
 engine-check:
-    cargo fmt --all --check && cargo clippy --all-targets -- -D warnings
+    cargo fmt --all --check && cargo clippy --all-targets --features ledgeline-ffi/mobile -- -D warnings
+
+# macOS + Xcode only, and not part of pre-push: CI has no iOS SDK. See
+# scripts/ios-check.sh for why cargo needs shims to reach Xcode's SDK.
+# cargo check the iOS staticlib (ledgeline-ffi, both iOS targets)
+ios-check:
+    ./scripts/ios-check.sh
 
 # Run the local engine server (Phase 2+): `just serve-engine ~/finance/2026.journal`
 serve-engine file="fixtures/sample.journal":
@@ -338,6 +352,18 @@ perf-rss size="200000":
             | awk '/maximum resident set size/ {print $1}')
         awk -v s="$stage" -v p="$peak" 'BEGIN{printf "%-10s peak RSS %9.1f MB\n", s, p/1048576}'
     done
+
+# Opens a window; keep it frontmost. Runs with HOME in a scratch dir, so your
+# prefs and recents are untouched. See docs/development/perf-baseline.md §8.
+# Desktop launch + scroll probe (macOS): first rows, scroll frames, memory
+perf-probe size="200000":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    journal=target/perf/synthetic-v1-{{size}}.journal
+    [[ -f $journal ]] || cargo run --release -p ledgeline-core --example gen_journal -- {{size}}
+    (cd web && bun run build)
+    cargo build --release -p ledgeline
+    ./scripts/perf/run-probe.sh "$journal"
 
 # The user manual in docs/ is an mbr site (see docs/development/docs-site.md and
 # .github/workflows/docs.yml). Same pinned mbr as CI, run through nix so nothing

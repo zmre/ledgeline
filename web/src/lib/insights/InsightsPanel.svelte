@@ -1,10 +1,9 @@
 <!-- Insights panel (WP-05): collapsible box at the top of the journal view.
      Two views behind a tab strip, and the whole box still closes:
 
-       Activity (default) — the period P&L. Receives the ALREADY-FILTERED
-         transactions as a prop (the journal store / +page.svelte owns filtering
-         — WP-03/04); everything here is $derived, so mode/interval/depth
-         changes never refetch.
+       Activity (default) — the period P&L for the FILTERED view, from the
+         engine's journal summary (`journalView.summary`, which +page.svelte
+         keeps in step with the filter) and its chart route.
        Balances — cash and short-term liabilities as of today, from the WHOLE
          journal and ignoring the filter bar entirely (see BalancesView for why).
 
@@ -12,62 +11,64 @@
      settings.insightsTab; the header row stays visible with the active view's
      headline figure even when collapsed. -->
 <script lang="ts">
-    import type {AccountDecl} from "#lib/domain/accountTypes.js";
     import {formatAmount, toNumber} from "#lib/domain/money.js";
-    import type {Transaction} from "#lib/domain/types.js";
+    import {DEFAULT_AMOUNT_STYLE, ZERO} from "#lib/format/amounts.js";
     import {signClass} from "#lib/format/sign.js";
-    import {accountBalances, balanceCommodities, summarize} from "#lib/reports/cashBalances.js";
     import {today} from "#lib/reports/periods.js";
+    import {cashBalances} from "#lib/stores/cashBalances.svelte.js";
+    import {journal} from "#lib/stores/journal.svelte.js";
+    import {journalView} from "#lib/stores/journalView.svelte.js";
     import {settings, type InsightsTab} from "#lib/stores/settings.svelte.js";
     import BalancesView from "./BalancesView.svelte";
     import BigNumbers from "./BigNumbers.svelte";
     import ChartWidget from "./ChartWidget.svelte";
     import DepthSlider from "./DepthSlider.svelte";
-    import {bigNumbers, commoditiesInUse, maxAccountDepth, styleFor, type AccountSelection, type DeclaredTypes} from "./series";
-
-    // txns: the filtered view to summarize/chart. allTxns: the whole journal —
-    // used to detect the journal's sign conventions so they stay stable across
-    // filter changes (see series.signConventions), and as the only correct input
-    // to the cumulative balances. decls: the raw declarations, which carry the
-    // `bsterm:` tag `declared` (a type map) cannot.
-    let {
-        txns,
-        accounts,
-        allTxns,
-        declared,
-        decls = [],
-    }: {txns: Transaction[]; accounts?: AccountSelection; allTxns?: Transaction[]; declared?: DeclaredTypes; decls?: readonly AccountDecl[]} = $props();
 
     const TABS: {id: InsightsTab; label: string}[] = [
         {id: "activity", label: "Activity"},
         {id: "balances", label: "Balances"},
     ];
 
-    const journalTxns = $derived(allTxns ?? txns);
+    // The filtered view's figures; null while the first answer for a new
+    // filter is in flight. Sign conventions are the engine's, detected over the
+    // whole journal so they hold still as the filter moves.
+    const summary = $derived(journalView.summary);
+    const primary = $derived(summary?.perCommodity[0] ?? null);
 
-    const primary = $derived(commoditiesInUse(txns, accounts)[0] ?? "$");
-    const net = $derived(bigNumbers(txns, primary, accounts, allTxns, declared).net);
+    // The Balances view's data: the engine's answer for the whole journal as of
+    // today, refetched whenever the journal generation moves (an edit, a file
+    // change). Fetched only while that tab is the active one — it is the only
+    // reader, and the collapsed header shows the ACTIVE tab's figure.
+    $effect(() => {
+        const serverUrl = settings.serverUrl;
+        const generation = journal.generation;
+        if (serverUrl === null || generation === null || settings.insightsTab !== "balances") return;
+        void cashBalances.load(serverUrl, {asOf: today(), generation});
+    });
+    const balancesView = $derived(cashBalances.value);
 
     // The collapsed header's figure follows the active tab, because that is the
-    // one number worth a scan for whichever view you left it on. Both are cheap
-    // for the same reason: the activity net is the value BigNumbers computes
-    // anyway, and the balances net comes off the memo the `negative-cash` check
-    // rule already fills once per journal swap (lib/reports/cashBalances).
+    // one number worth a scan for whichever view you left it on.
     const headline = $derived.by(() => {
         if (settings.insightsTab === "activity") {
-            return {label: "Net", qty: net, text: formatAmount({commodity: primary, qty: net, style: styleFor(txns, primary)})};
+            const qty = primary?.net ?? ZERO;
+            return {label: "Net", qty, text: formatAmount({commodity: primary?.commodity ?? "$", qty, style: primary?.style ?? DEFAULT_AMOUNT_STYLE})};
         }
-        const balances = accountBalances(journalTxns, decls, today());
-        const commodity = balanceCommodities(balances)[0] ?? primary;
-        const {net: netCash} = summarize(balances, commodity);
-        return {label: "Net cash", qty: netCash, text: formatAmount({commodity, qty: netCash, style: styleFor(journalTxns, commodity)})};
+        const summary = balancesView?.summaries[0];
+        if (summary === undefined)
+            return {
+                label: "Net cash",
+                qty: ZERO,
+                text: balancesView === null ? "…" : formatAmount({commodity: primary?.commodity ?? "$", qty: ZERO, style: DEFAULT_AMOUNT_STYLE}),
+            };
+        return {label: "Net cash", qty: summary.net, text: formatAmount({commodity: summary.commodity, qty: summary.net, style: summary.style})};
     });
 
     // Default depth matches the reports page (defaultReportParams().depth). The
     // slider is bound to this same `depth` the chart consumes, so the bar and the
     // chart never drift.
     let depth = $state(2);
-    const max = $derived(maxAccountDepth(txns, accounts));
+    const max = $derived(summary?.maxDepth ?? 1);
 </script>
 
 <section class="collapse-arrow collapse bg-base-200" data-testid="insights-panel">
@@ -116,11 +117,17 @@
                 {/each}
             </div>
             {#if settings.insightsTab === "balances"}
-                <BalancesView allTxns={journalTxns} {decls} />
+                {#if balancesView !== null}
+                    <BalancesView view={balancesView} />
+                {:else if cashBalances.status === "error"}
+                    <p class="py-6 text-center text-sm text-error">Couldn't load balances: {cashBalances.error?.message ?? "unknown error"}</p>
+                {:else}
+                    <div class="flex justify-center py-6" aria-label="Loading balances"><span class="loading loading-spinner"></span></div>
+                {/if}
             {:else}
-                <BigNumbers {txns} {accounts} {allTxns} {declared} />
-                <ChartWidget {txns} {accounts} {allTxns} {depth} {declared} />
-                <!-- Keyed on max: the slider can mount while txns are still loading (max=1),
+                <BigNumbers {summary} />
+                <ChartWidget {summary} {depth} />
+                <!-- Keyed on max: the slider can mount while the summary is still loading (max=1),
                      and the browser clamps the input's value to that max without updating the
                      bound state; remounting once the real max arrives re-applies `depth`
                      (same guard as reports/ui/ReportControls.svelte). -->

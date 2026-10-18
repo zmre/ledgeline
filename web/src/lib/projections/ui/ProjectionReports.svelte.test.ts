@@ -27,12 +27,14 @@ import {DEFAULT_AMOUNT_STYLE} from "#lib/format/amounts.js";
 import type {PeriodReport} from "#lib/reports/types.js";
 import type {Projection} from "../types";
 import ProjectionReports from "./ProjectionReports.svelte";
+import {periodsOf} from "#lib/reports/test-helpers.js";
 
 const usd = (n: number): MixedAmount => new Map([["$", dec(n, 0)]]);
 const STYLES: ReadonlyMap<string, AmountStyle> = new Map([["$", DEFAULT_AMOUNT_STYLE]]);
 
 const NET_INCOME: PeriodReport = {
     buckets: ["2026-08", "2026-09"],
+    periods: periodsOf(["2026-08", "2026-09"]),
     rows: [
         {account: "expenses", depth: 1, values: [usd(-4200), usd(-4200)]},
         {account: "expenses:rent", depth: 2, values: [usd(-4200), usd(-4200)]},

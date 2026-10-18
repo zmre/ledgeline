@@ -23,7 +23,7 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
-use ledgeline::{AccessToken, AppState, router_with_security};
+use ledgeline::{AccessToken, AppDirs, AppState, recents, router_with_security, token_init_script};
 use muda::{
     Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
     accelerator::{Accelerator, Code, Modifiers},
@@ -57,26 +57,29 @@ enum UserEvent {
 }
 
 /// GUI entry point: stand up the in-process server, then run the window.
-pub(crate) fn run(cli: &Cli) -> Result<(), AppError> {
+pub(crate) fn run(cli: &Cli, app_dirs: AppDirs) -> Result<(), AppError> {
+    perf::start();
     // Same posture the headless server takes (token + Host guard, non-loopback
     // binds refused), decided before the journal is opened. The token is NOT
     // printed here, and it is not in the served shell either: the WebView gets
     // it out of band, from `token_init_script`.
     let (process_token, security_plan) = crate::plan_security(cli)?;
-    let journal_path = crate::resolve_journal(cli);
+    let journal_path = crate::resolve_journal(cli, &app_dirs);
     // Bind an editor to the file so the GUI's edit endpoints are live (this is the
     // primary mode). Canonicalize first — like `run_server_blocking` — so the
     // editor's save target and source name match the watcher's canonical path.
     let editor_path = journal_path
         .canonicalize()
         .unwrap_or_else(|_| journal_path.clone());
-    let state =
-        AppState::from_journal_path(&editor_path).map_err(|source| AppError::OpenEditor {
+    let state = AppState::from_journal_path(&editor_path)
+        .map_err(|source| AppError::OpenEditor {
             path: journal_path.display().to_string(),
             source,
-        })?;
+        })?
+        .with_app_dirs(app_dirs);
+    perf::stamp("journal_loaded");
     // Remember this journal as the most-recently-opened (canonical path).
-    crate::recents::record(&editor_path);
+    recents::record(state.app_dirs(), &editor_path);
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -494,6 +497,7 @@ fn build_menu() -> AppMenu {
 /// dispatch a click. Called at startup and after every successful open so the
 /// list always reflects the latest history.
 fn rebuild_recent(
+    dirs: &AppDirs,
     submenu: &Submenu,
     map: &RefCell<Vec<(MenuId, PathBuf)>>,
     current: Option<&Path>,
@@ -501,7 +505,7 @@ fn rebuild_recent(
     // Clear existing entries (remove index 0 until the submenu is empty) first.
     while submenu.remove_at(0).is_some() {}
 
-    let recents: Vec<PathBuf> = crate::recents::list()
+    let recents: Vec<PathBuf> = recents::list(dirs)
         .into_iter()
         .filter(|path| Some(path.as_path()) != current)
         .take(RECENT_MENU_LIMIT)
@@ -521,7 +525,7 @@ fn rebuild_recent(
     for (index, path) in recents.iter().enumerate() {
         let item = MenuItem::with_id(
             format!("recent-{index}"),
-            crate::recents::display_label(path),
+            recents::display_label(path),
             true,
             None,
         );
@@ -558,30 +562,6 @@ fn navigation_allowed(base: &str, candidate: &str) -> bool {
 /// be honoured in full. The caller logs the ones it drops.
 fn first_journal_path(urls: &[Url]) -> Option<PathBuf> {
     urls.iter().find_map(|url| url.to_file_path().ok())
-}
-
-/// The initialization script that hands the WebView its access token.
-///
-/// This is how the token reaches the SPA WITHOUT appearing in any response body:
-/// the shell is served unauthenticated, so anything that can reach loopback can
-/// read it, and it used to carry the token for exactly that reason. wry runs this
-/// at document start, before the page's own scripts, outside the page's CSP —
-/// but on EVERY document the main frame loads, whatever its origin. The
-/// navigation handler already confines the WebView to our origin; the
-/// `location.origin` check means a document from anywhere else would still get
-/// nothing, should one ever load.
-///
-/// Both values are serialized as JSON string literals rather than interpolated
-/// raw. [`AccessToken::parse`] already restricts the token to a safe character
-/// set, and the origin is ours, so this is belt and braces — but it costs
-/// nothing and does not depend on either staying true.
-fn token_init_script(origin: &str, token: &AccessToken) -> String {
-    let literal = |value: &str| serde_json::Value::from(value).to_string();
-    format!(
-        "if (window.location.origin === {origin}) {{ window.__LEDGELINE_TOKEN__ = {token}; }}",
-        origin = literal(origin),
-        token = literal(token.as_str()),
-    )
 }
 
 /// Build the wry webview for `window`, pointed at `url`, with `token` handed to
@@ -622,6 +602,13 @@ fn build_webview(
                 show_download_error(path.as_deref());
             }
         });
+    // Dev-only: the launch/scroll probe, when `LEDGELINE_PERF` names one.
+    let builder = match perf::script() {
+        Some(script) => builder
+            .with_initialization_script(script)
+            .with_ipc_handler(|request| perf::on_message(request.body())),
+        None => builder,
+    };
 
     #[cfg(not(target_os = "linux"))]
     let webview = builder
@@ -788,7 +775,9 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
             .init_for_gtk_window(window.gtk_window(), window.default_vbox());
     }
 
+    perf::stamp("window_built");
     let webview = build_webview(&window, &ctx.url, &ctx.token)?;
+    perf::stamp("webview_built");
 
     let open_id = menu.open.id().clone();
     let reload_id = menu.reload.id().clone();
@@ -844,7 +833,12 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
     let recent_map: RefCell<Vec<(MenuId, PathBuf)>> = RefCell::new(Vec::new());
     {
         let current_ref = current.borrow();
-        rebuild_recent(&recent_submenu, &recent_map, Some(current_ref.as_path()));
+        rebuild_recent(
+            state.app_dirs(),
+            &recent_submenu,
+            &recent_map,
+            Some(current_ref.as_path()),
+        );
     }
 
     event_loop.run(move |event, _target, control_flow| {
@@ -860,9 +854,14 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
             match state.rebind_editor(&editor_path) {
                 Ok(()) => {
                     watcher.replace(crate::spawn_watcher(&editor_path, state.clone()).ok());
-                    crate::recents::record(&editor_path);
+                    recents::record(state.app_dirs(), &editor_path);
                     current.replace(editor_path.clone());
-                    rebuild_recent(&recent_submenu, &recent_map, Some(editor_path.as_path()));
+                    rebuild_recent(
+                        state.app_dirs(),
+                        &recent_submenu,
+                        &recent_map,
+                        Some(editor_path.as_path()),
+                    );
                     let _ = webview.load_url(&url);
                     eprintln!("ledgeline: opened {}", editor_path.display());
                 }
@@ -1153,6 +1152,67 @@ mod linux_keyboard_tests {
             linux_shortcut_for(&Key::Escape, ModifiersState::empty()),
             None
         );
+    }
+}
+
+/// Dev-only launch and scroll probe (`docs/development/perf-baseline.md`).
+///
+/// Inert unless `LEDGELINE_PERF` names a probe script (`scripts/perf/probe.js`).
+/// When it does, the script is injected into every page the WebView loads and
+/// may report back over `window.ipc.postMessage`; each message is printed to
+/// stderr as `PERF js <ms since launch> <json>`, the Rust-side milestones as
+/// `PERF rust <label> <ms since launch>`, and a `{"ev":"scroll_done",…}`
+/// message ends the process — so a measurement is one command, start to exit.
+mod perf {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+
+    /// The environment variable naming the probe script.
+    const ENV: &str = "LEDGELINE_PERF";
+
+    static START: OnceLock<Instant> = OnceLock::new();
+
+    fn enabled() -> bool {
+        std::env::var_os(ENV).is_some()
+    }
+
+    fn elapsed_ms() -> f64 {
+        START.get_or_init(Instant::now).elapsed().as_secs_f64() * 1000.0
+    }
+
+    /// Fix the launch instant every other stamp is measured from.
+    pub(super) fn start() {
+        START.get_or_init(Instant::now);
+    }
+
+    /// Print a Rust-side milestone, when probing.
+    pub(super) fn stamp(label: &str) {
+        if enabled() {
+            eprintln!("PERF rust {label} {:.1}", elapsed_ms());
+        }
+    }
+
+    /// The probe script to inject, when `LEDGELINE_PERF` names a readable file.
+    pub(super) fn script() -> Option<String> {
+        let path = std::env::var_os(ENV)?;
+        match std::fs::read_to_string(&path) {
+            Ok(script) => Some(script),
+            Err(error) => {
+                eprintln!(
+                    "ledgeline: {ENV}: cannot read {}: {error}",
+                    path.to_string_lossy()
+                );
+                None
+            }
+        }
+    }
+
+    /// One message from the probe: printed, and the end of the run on `scroll_done`.
+    pub(super) fn on_message(body: &str) {
+        eprintln!("PERF js {:.1} {body}", elapsed_ms());
+        if body.contains("\"ev\":\"scroll_done\"") {
+            std::process::exit(0);
+        }
     }
 }
 

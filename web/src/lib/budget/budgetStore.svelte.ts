@@ -38,6 +38,8 @@ export interface BudgetReportQuery {
     end: string;
     count: number;
     depth: number;
+    /** The page's today, which the engine measures each bar's pace at. Not part of the gaps' question. */
+    asOf: string;
 }
 
 /** The history strip's query. */
@@ -61,7 +63,9 @@ export interface ReferenceQuery {
 export const REFERENCE_PERIODS = 5;
 
 const report = createResource<BudgetReportQuery, BudgetReport>(async (serverUrl, query) =>
-    decodeBudgetReport(await new LedgelineApi(serverUrl).budget({end: query.end, interval: "monthly", count: query.count, depth: query.depth}))
+    decodeBudgetReport(
+        await new LedgelineApi(serverUrl).budget({end: query.end, interval: "monthly", count: query.count, depth: query.depth, asOf: query.asOf})
+    )
 );
 
 /**
@@ -85,7 +89,7 @@ const reference = createResource<ReferenceQuery, AccountReference>(async (server
 
 /** Whether two report queries ask for exactly the same bars (gates the export, per FE-1). */
 export function sameBudgetQuery(a: BudgetReportQuery, b: BudgetReportQuery): boolean {
-    return a.from === b.from && a.end === b.end && a.count === b.count && a.depth === b.depth;
+    return a.from === b.from && a.end === b.end && a.count === b.count && a.depth === b.depth && a.asOf === b.asOf;
 }
 
 let available = $state(true);

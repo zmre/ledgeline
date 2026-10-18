@@ -42,13 +42,14 @@
 //! [`Journal::source_files`] already lists every file the parse read — including
 //! the `include`s that contribute only directives — and every
 //! [`crate::model::Transaction`] already records the file it came from. So this
-//! is a fold over data already in hand. The one filesystem call is the `stat`
-//! behind [`JournalTarget::writable`], which asks about the file's *type*, never
-//! its contents.
+//! is a fold over data already in hand. The one storage call is the `stat`
+//! behind [`JournalTarget::writable`] ([`Vault::stat`], which never follows a
+//! link), and it asks about the file's *type*, never its contents.
 
 use crate::model::Journal;
+use crate::vault::{LocalVault, Vault, VaultPath};
 use std::collections::HashMap;
-use std::path::{Component, Path};
+use std::path::Path;
 
 /// One journal file an import could be written to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,36 +87,54 @@ pub struct JournalTarget {
     pub writable: bool,
 }
 
-/// Rank every file `journal` was parsed from, best-first.
+/// Rank every file `journal` was parsed from, best-first, judging
+/// [`JournalTarget::writable`] on disk beside the main file.
 ///
 /// See the module docs for the ranking and for why it never looks at a name.
 #[must_use]
 pub fn targets(journal: &Journal) -> Vec<JournalTarget> {
-    let include_root = journal
+    let root = journal
         .source_files
         .first()
         .and_then(|main| main.parent())
         .unwrap_or_else(|| Path::new("."));
+    targets_in(&LocalVault::new(root), journal)
+}
+
+/// [`targets`] for a journal parsed through `vault` ([`crate::parse::parse_journal_in`]),
+/// whose source-file keys are [`Vault::key`]s.
+#[must_use]
+pub fn targets_in(vault: &dyn Vault, journal: &Journal) -> Vec<JournalTarget> {
+    let include_root = journal
+        .source_files
+        .first()
+        .and_then(|main| vault.vault_path(main).ok())
+        .and_then(|main| main.parent())
+        .unwrap_or_default();
     let tallies = tally(journal);
 
     let mut targets: Vec<JournalTarget> = journal
         .source_files
         .iter()
         .enumerate()
-        .map(|(at, path)| {
+        .map(|(at, key)| {
             let (txn_count, last_txn_date) = tallies
-                .get(path.as_path())
+                .get(key.as_path())
                 .map_or((0, None), |&(count, last)| {
                     (count, last.map(str::to_string))
                 });
-            let id = identify(include_root, path);
+            let path = vault
+                .vault_path(key)
+                .ok()
+                .filter(|path| path.starts_with(&include_root) && *path != include_root);
+            let id = identify(&include_root, path.as_ref(), key);
             JournalTarget {
                 label: id.rsplit('/').next().unwrap_or(&id).to_string(),
                 id,
                 txn_count,
                 last_txn_date,
                 is_root: at == 0,
-                writable: writable(include_root, path),
+                writable: path.is_some_and(|path| vault.is_file(&path)),
             }
         })
         .collect();
@@ -153,81 +172,100 @@ fn tally(journal: &Journal) -> HashMap<&Path, (usize, Option<&str>)> {
         })
 }
 
-/// `path`'s id: relative to `root` when it sits below it, else its bare name.
-fn identify(root: &Path, path: &Path) -> String {
-    relative_id(root, path)
+/// A file's id: its vault path relative to `root` when it sits below it, else
+/// its key's bare name — never an absolute path.
+fn identify(root: &VaultPath, path: Option<&VaultPath>, key: &Path) -> String {
+    path.and_then(|path| relative_id(root, path))
         .or_else(|| {
-            path.file_name()
+            key.file_name()
                 .map(|name| name.to_string_lossy().into_owned())
         })
         .unwrap_or_default()
 }
 
 /// `path` relative to `root`, forward-slash separated, or `None` if it is not
-/// below `root` or has any component that is not a plain UTF-8 name.
+/// strictly below `root`.
 ///
-/// Requiring every component to be [`Component::Normal`] is a guard rather than
-/// tidiness — the same one the rules-file ids hold to. It is what makes it
-/// impossible for a `.`, a `..`, a root or a Windows prefix to appear inside an
-/// id, and therefore impossible for a well-formed id to mean anything other than
-/// "this file, below the root".
-fn relative_id(root: &Path, path: &Path) -> Option<String> {
-    let parts: Option<Vec<&str>> = path
-        .strip_prefix(root)
-        .ok()?
-        .components()
-        .map(|component| match component {
-            Component::Normal(name) => name.to_str(),
-            _ => None,
-        })
-        .collect();
-    parts.filter(|parts| !parts.is_empty()).map(|parts| {
-        // `join` rather than `Path::display`: an id is a wire string with one
-        // separator on every platform, not a local path.
-        parts.join("/")
+/// A [`VaultPath`] holds only plain components, so an id cannot contain a `.`,
+/// a `..`, a root or a Windows prefix — the same guarantee the rules-file ids
+/// hold to — and therefore cannot mean anything other than "this file, below
+/// the root". `join` rather than `Path::display`: an id is a wire string with
+/// one separator on every platform, not a local path.
+fn relative_id(root: &VaultPath, path: &VaultPath) -> Option<String> {
+    (path != root && path.starts_with(root)).then(|| {
+        path.segments()
+            .skip(root.segments().count())
+            .collect::<Vec<_>>()
+            .join("/")
     })
-}
-
-/// Is `path` a regular file, not a symlink, inside `root`?
-///
-/// [`std::fs::symlink_metadata`] does not follow links, so a symlink answers
-/// `false` on its own file type without a second question being asked.
-fn writable(root: &Path, path: &Path) -> bool {
-    path.starts_with(root)
-        && std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_file())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vault::MemVault;
+
+    fn vp(s: &str) -> VaultPath {
+        VaultPath::new(s).unwrap()
+    }
 
     #[test]
     fn an_id_is_a_forward_slash_relative_path_of_plain_components() {
-        let root = Path::new("/books");
+        let root = vp("books");
         assert_eq!(
-            relative_id(root, Path::new("/books/2026/2026.journal")).as_deref(),
+            relative_id(&root, &vp("books/2026/2026.journal")).as_deref(),
             Some("2026/2026.journal")
         );
         assert_eq!(
-            relative_id(root, Path::new("/books/main.journal")).as_deref(),
+            relative_id(&root, &vp("books/main.journal")).as_deref(),
             Some("main.journal")
         );
         // Not below the root, and the root itself, both decline.
-        assert_eq!(relative_id(root, Path::new("/elsewhere/x.journal")), None);
-        assert_eq!(relative_id(root, root), None);
+        assert_eq!(relative_id(&root, &vp("elsewhere/x.journal")), None);
+        assert_eq!(relative_id(&root, &root), None);
     }
 
     #[test]
     fn a_file_outside_the_include_root_falls_back_to_its_bare_name() {
         // Never an absolute path: an id is a handle, not a location.
         assert_eq!(
-            identify(Path::new("/books"), Path::new("/elsewhere/other.journal")),
+            identify(&vp("books"), None, Path::new("/elsewhere/other.journal")),
             "other.journal"
         );
     }
 
     #[test]
-    fn nothing_outside_the_include_root_is_writable() {
-        assert!(!writable(Path::new("/books"), Path::new("/etc/hosts")));
+    fn writable_means_a_regular_file_below_the_root_in_the_vault() {
+        let vault = MemVault::new()
+            .with_file(
+                "main.journal",
+                "include 2026.journal\ninclude linked.journal\n",
+            )
+            .with_file("2026.journal", "2026-01-01 x\n  a  1\n  b\n");
+        vault.insert_symlink("linked.journal", "2026.journal");
+        let parsed = crate::parse::parse_journal_in(
+            &vault,
+            &vp("main.journal"),
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
+        let mut journal = parsed.journal;
+        // A source the parse could not have produced: outside the vault.
+        journal
+            .source_files
+            .push(std::path::PathBuf::from("/etc/hosts"));
+        let targets = targets_in(&vault, &journal);
+        let by_id = |id: &str| targets.iter().find(|t| t.id == id).unwrap().clone();
+        assert!(by_id("main.journal").writable);
+        assert!(by_id("main.journal").is_root);
+        assert!(by_id("2026.journal").writable);
+        // Included twice — once through the in-vault link, which resolves to the
+        // same file — so it holds two parsed transactions, one source entry.
+        assert_eq!(by_id("2026.journal").txn_count, 2);
+        assert!(targets.iter().all(|t| t.id != "linked.journal"));
+        assert!(
+            !by_id("hosts").writable,
+            "nothing outside the root is writable"
+        );
     }
 }

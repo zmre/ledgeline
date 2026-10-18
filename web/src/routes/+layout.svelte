@@ -11,6 +11,7 @@
     import KeyHelp from "#lib/keys/KeyHelp.svelte";
     import {keymap, registerKeys} from "#lib/keys/keymap.svelte.js";
     import {globalLayer} from "#lib/keys/navBindings.js";
+    import {localToday} from "#lib/stores/filters.svelte.js";
     import {journal} from "#lib/stores/journal.svelte.js";
     import {problems} from "#lib/stores/problems.svelte.js";
     import {refreshEverything} from "#lib/stores/refreshAll.js";
@@ -63,6 +64,17 @@
         lastVerified = nonce;
         reconnectOpen = false;
         if (settings.serverUrl !== null) void journal.refresh({force: true});
+    });
+
+    // The problems badge is always on screen, so its list is fetched HERE, once
+    // per journal generation: the engine runs every check (plan 26 B4), as of
+    // the browser's local date. `problems.load` dedupes on (server, generation,
+    // today), so this re-running on unrelated changes costs nothing.
+    $effect(() => {
+        const serverUrl = settings.serverUrl;
+        const generation = journal.generation;
+        if (serverUrl === null || generation === null) return;
+        void problems.load(serverUrl, generation, localToday());
     });
 </script>
 

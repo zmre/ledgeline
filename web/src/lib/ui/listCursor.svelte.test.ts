@@ -8,7 +8,7 @@
 
 import {flushSync} from "svelte";
 import {describe, expect, it} from "vitest";
-import {listCursor, type ListCursor} from "./listCursor.svelte";
+import {lazyListCursor, listCursor, type ListCursor} from "./listCursor.svelte";
 
 interface Row {
     id: number;
@@ -197,5 +197,89 @@ describe("UNIT listCursor index does not rescan an unchanged list", () => {
         setIds([5, 4, 3, 2, 1]);
 
         expect({index: cursor.index, item: cursor.item}).toEqual({index: 0, item: {id: 5}});
+    });
+});
+
+/**
+ * A lazy cursor over `total` rows of which only `loaded` exist — the windowed
+ * journal's shape. Both can change under the cursor.
+ */
+function lazyHarness(total: number, loaded: number[]): {cursor: ListCursor<Row>; set: (total: number, loaded: number[]) => void} {
+    let count = $state(total);
+    let present = $state<number[]>(loaded);
+    let cursor!: ListCursor<Row>;
+    $effect.root(() => {
+        cursor = lazyListCursor<Row>(
+            () => count,
+            (at) => (present.includes(at) ? {id: at + 100} : null),
+            (row) => row.id
+        );
+    });
+    return {
+        cursor,
+        set: (nextTotal, nextLoaded) => {
+            count = nextTotal;
+            present = nextLoaded;
+            flushSync();
+        },
+    };
+}
+
+describe("UNIT lazyListCursor", () => {
+    it("starts unset and lands on row 0 for the first move, in either direction", () => {
+        const down = lazyHarness(5, [0, 1, 2]);
+        expect(down.cursor.index).toBe(-1);
+        down.cursor.move(1);
+        expect(down.cursor.index).toBe(0);
+        const up = lazyHarness(5, [0, 1, 2]);
+        up.cursor.move(-1);
+        expect(up.cursor.index).toBe(0);
+    });
+
+    it("moves and clamps against the TOTAL, loaded or not", () => {
+        const {cursor} = lazyHarness(1000, [0, 1]);
+        cursor.last();
+        expect(cursor.index).toBe(999);
+        cursor.move(5);
+        expect(cursor.index).toBe(999);
+        cursor.first();
+        expect(cursor.index).toBe(0);
+    });
+
+    it("reports a null item and key while the cursored row's block loads", () => {
+        const {cursor, set} = lazyHarness(1000, [0, 1]);
+        cursor.to(500);
+        expect(cursor.item).toBeNull();
+        expect(cursor.key).toBeNull();
+        set(1000, [0, 1, 500]);
+        expect(cursor.item).toEqual({id: 600});
+        expect(cursor.key).toBe(600);
+    });
+
+    it("holds the POSITION when the list changes under it (an edit re-reads the rows)", () => {
+        const {cursor, set} = lazyHarness(10, [0, 1, 2, 3]);
+        cursor.to(2);
+        set(9, [0, 1, 2, 3]);
+        expect(cursor.index).toBe(2);
+        cursor.reanchor();
+        expect(cursor.index).toBe(2);
+    });
+
+    it("clamps when the list shrinks past it, and remembers it across an empty list", () => {
+        const {cursor, set} = lazyHarness(10, [0]);
+        cursor.to(8);
+        set(4, [0]);
+        expect(cursor.index).toBe(3);
+        set(0, []);
+        expect(cursor.index).toBe(-1);
+        set(10, [0]);
+        expect(cursor.index).toBe(8);
+    });
+
+    it("clears", () => {
+        const {cursor} = lazyHarness(3, [0, 1, 2]);
+        cursor.move(1);
+        cursor.clear();
+        expect(cursor.index).toBe(-1);
     });
 });

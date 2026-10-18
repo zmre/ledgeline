@@ -281,7 +281,7 @@ non-Mac users can install with:
 ```sh
 # Headless — serves the UI over HTTP. Open the http://127.0.0.1:PORT/#token=…
 # URL it prints in your own browser; the page itself never carries the token.
-cargo install ledgeline --no-default-features
+cargo install ledgeline --no-default-features --features watcher,external-tools
 
 # With the desktop window. Needs webkitgtk-4.1, gtk3, libsoup-3 and libxdo
 # (Debian/Ubuntu: libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libxdo-dev).
@@ -377,7 +377,7 @@ Rehearse the whole thing locally without publishing anything:
 
 ```sh
 cd web && bun run build && cd ..     # populate web/build so build.rs mirrors it
-cargo package --workspace --allow-dirty
+cargo package --workspace --exclude ledgeline-ffi --allow-dirty   # the iOS crate is publish = false
 tar tzf target/package/ledgeline-[0-9]*.crate | grep -c '/spa/'   # expect ~76
 ```
 

@@ -19,8 +19,8 @@
 /* eslint-disable svelte/prefer-svelte-reactivity -- `entries` is replaced
    wholesale on every change (an immutable snapshot), so a plain Map is correct. */
 import {LedgelineApi} from "#lib/api/native.js";
-import {decodeBenchmarks} from "#lib/api/nativeDecode.js";
-import type {BenchmarkLine} from "#lib/holdings/benchmarks.js";
+import {decodeBenchmarkCatalog, decodeBenchmarks} from "#lib/api/nativeDecode.js";
+import type {BenchmarkCatalog, BenchmarkLine} from "#lib/holdings/benchmarks.js";
 import type {HoldingsScope} from "#lib/holdings/types.js";
 import {trendQuery} from "./holdings.svelte";
 
@@ -105,3 +105,44 @@ export const benchmarkLines = {
         entries = new Map();
     },
 };
+
+// ---------------------------------------------------------------------------
+// The catalog (plan 26 B1): which benchmarks exist, their labels and their
+// slot order, served by the engine so the SPA keeps no copy. Fetched once per
+// server; a failure leaves it null (the picker then shows nothing to tick) and
+// lets the next `ensure` try again.
+// ---------------------------------------------------------------------------
+
+let catalog = $state.raw<BenchmarkCatalog | null>(null);
+let catalogUrl: string | null = null;
+
+export const benchmarkCatalog = {
+    /** The engine's catalog in slot order; null until loaded (or after a failed load). */
+    get value(): BenchmarkCatalog | null {
+        return catalog;
+    },
+    /** Load the catalog for `serverUrl` unless it is already loaded or loading. */
+    ensure(serverUrl: string): void {
+        if (catalogUrl === serverUrl) return;
+        catalogUrl = serverUrl;
+        catalog = null;
+        new LedgelineApi(serverUrl)
+            .benchmarkCatalog()
+            .then((raw) => {
+                if (catalogUrl === serverUrl) catalog = decodeBenchmarkCatalog(raw);
+            })
+            .catch(() => {
+                if (catalogUrl === serverUrl) catalogUrl = null;
+            });
+    },
+    /** Forget the catalog (tests). */
+    reset(): void {
+        catalog = null;
+        catalogUrl = null;
+    },
+};
+
+/** `picked` restricted to the catalog and put in its (slot) order — what a request may ask for. */
+export function catalogOrder(cat: BenchmarkCatalog | null, picked: readonly string[]): string[] {
+    return (cat ?? []).map((b) => b.symbol).filter((symbol) => picked.includes(symbol));
+}

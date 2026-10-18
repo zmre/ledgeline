@@ -1,9 +1,8 @@
 import {describe, expect, it} from "vitest";
 import {dec} from "#lib/domain/money.js";
-import {normalizeAccounts} from "#lib/api/normalize.js";
-import {declaredTypes, resolveAccountType, type AccountType} from "#lib/domain/accountTypes.js";
+import {NO_ACCOUNT_CLASSES, type AccountClasses} from "#lib/domain/accountClass.js";
+import {classesOf} from "#lib/domain/accountClassFixtures.js";
 import {
-    amountFor,
     blankAssetLine,
     blankLine,
     cloneScenario,
@@ -27,11 +26,11 @@ import {
     sectionOfLine,
     sectionPrefix,
     slugFilename,
-    signedQuantity,
     splitStep,
     takenIds,
     trimDec,
     withAccount,
+    withMagnitude,
     withBounds,
     withInterval,
 } from "./scenarioModel";
@@ -42,12 +41,7 @@ import type {Scenario, ScenarioLine} from "./types";
  * regexes — [[account-type-not-name]]: `wages` is revenue here because it is
  * DECLARED revenue, which is the case name matching gets wrong.
  */
-const DECLARED: ReadonlyMap<string, AccountType> = new Map<string, AccountType>([
-    ["income", "revenue"],
-    ["wages", "revenue"],
-    ["expenses", "expense"],
-    ["assets", "asset"],
-]);
+const DECLARED: AccountClasses = classesOf(["income", "revenue"], ["wages", "revenue"], ["expenses", "expense"], ["assets", "asset"]);
 
 function line(overrides: Partial<ScenarioLine> = {}): ScenarioLine {
     return {
@@ -71,155 +65,43 @@ function scenario(lines: ScenarioLine[]): Scenario {
 
 // ---------------------------------------------------------------------------
 
-describe("UNIT scenarioModel — the sign flip", () => {
-    it("a revenue line carries the journal's NEGATIVE amount; everything else stays positive", () => {
-        expect(signedQuantity(dec(500000, 2), "income:salary", DECLARED)).toEqual(dec(-500000, 2));
-        expect(signedQuantity(dec(420000, 2), "expenses:rent", DECLARED)).toEqual(dec(420000, 2));
-        expect(signedQuantity(dec(100000, 2), "assets:savings", DECLARED)).toEqual(dec(100000, 2));
-    });
-
-    it("decides by DECLARED type, not by the name", () => {
-        // Nothing about "wages" matches hledger's revenue regex; the declaration
-        // is what makes it revenue.
-        expect(isRevenueAccount("wages:contract", DECLARED)).toBe(true);
-        expect(isRevenueAccount("wages:contract", new Map())).toBe(false);
-    });
-
-    it("falls back to name inference when nothing is declared", () => {
-        expect(isRevenueAccount("income:salary", new Map())).toBe(true);
-        expect(isRevenueAccount("expenses:rent", new Map())).toBe(false);
-    });
-
-    it("a magnitude the user typed is idempotent under the flip — a minus sign is not a second negation", () => {
-        expect(signedQuantity(dec(-500000, 2), "income:salary", DECLARED)).toEqual(dec(-500000, 2));
-        expect(signedQuantity(dec(-420000, 2), "expenses:rent", DECLARED)).toEqual(dec(420000, 2));
-    });
+describe("UNIT scenarioModel — magnitudes in, the engine signs", () => {
+    // The sign rule itself — revenue negative, by the account's resolved TYPE —
+    // is the engine's (`account_types::signed_entry`, locked to the TypeScript it
+    // replaced by `scenario_signs_golden.rs`). This side only keeps the number a
+    // user typed and says that it is one.
 
     it("the table shows a magnitude whichever way the wire signed it", () => {
-        expect(magnitudeOf({commodity: "$", quantity: dec(-518833, 2), precision: 2})).toEqual(dec(518833, 2));
-        expect(magnitudeOf({commodity: "$", quantity: dec(187500, 2), precision: 2})).toEqual(dec(187500, 2));
+        expect(magnitudeOf(line({amount: {commodity: "$", quantity: dec(-518833, 2), precision: 2}}))).toEqual(dec(518833, 2));
+        expect(magnitudeOf(line({amount: {commodity: "$", quantity: dec(187500, 2), precision: 2}}))).toEqual(dec(187500, 2));
     });
 
-    it("moving a row from an expense account to a revenue one RE-SIGNS what it already held", () => {
-        const moved = withAccount(line(), "income:consulting", DECLARED);
-        expect(moved.amount.quantity).toEqual(dec(-420000, 2));
-        // …and back again.
-        expect(withAccount(moved, "expenses:rent", DECLARED).amount.quantity).toEqual(dec(420000, 2));
+    it("a typed amount becomes the line's ENTRY, a magnitude, and the shown figure", () => {
+        const edited = withMagnitude(line({account: "income:salary"}), dec(-900000, 2));
+        expect(edited.entry).toEqual(dec(900000, 2));
+        expect(magnitudeOf(edited)).toEqual(dec(900000, 2));
     });
 
-    it("editing an amount signs it for the account the row already has", () => {
-        // Through `amountFor`, which is the call the amount box makes
-        // (`ProjectionsTable.setMagnitude`). The `withMagnitude` wrapper this
-        // used to go through had no caller outside this file.
-        const income = amountFor(line({account: "income:salary"}).amount, dec(900000, 2), "income:salary", DECLARED);
-        expect(income.quantity).toEqual(dec(-900000, 2));
+    it("moving a row to another account re-enters what it held, so the engine re-signs it", () => {
+        const moved = withAccount(line({amount: {commodity: "$", quantity: dec(-420000, 2), precision: 2}}), "expenses:rent");
+        expect(moved.account).toBe("expenses:rent");
+        expect(moved.entry).toEqual(dec(420000, 2));
     });
 
     it("display precision is RAISED to fit a typed amount and never lowered", () => {
-        const seeded = {commodity: "$", quantity: dec(187500, 2), precision: 2};
+        const seeded = line({amount: {commodity: "$", quantity: dec(187500, 2), precision: 2}});
         // Retyping "1875" must not quietly move this line's growth onto whole dollars.
-        expect(amountFor(seeded, dec(1875, 0), "expenses:housing", DECLARED).precision).toBe(2);
+        expect(withMagnitude(seeded, dec(1875, 0)).amount.precision).toBe(2);
         // A third decimal place has to be representable or the growth walk rounds it away.
-        expect(amountFor(seeded, dec(1875125, 3), "expenses:housing", DECLARED).precision).toBe(3);
-    });
-});
-
-// ---------------------------------------------------------------------------
-
-/**
- * The sign the WIRE carries, for every way a real journal declares a cost.
- *
- * The block above proves the flip is correct given a correct declaration table.
- * These prove the table itself is built from what journals actually say — which
- * is where the 2026-09 bug lived, and which no test of `signedQuantity` alone
- * could reach.
- *
- * Declarations go through `normalizeAccounts`, the REAL `/accounts` decoder, so
- * a `type:` spelling the browser cannot parse fails here exactly as it failed
- * the user: silently, by falling through to English name inference.
- */
-describe("UNIT scenarioModel — what reaches the engine is signed the way the journal books it", () => {
-    /** One `/accounts` entry, exactly as the engine sends one. */
-    const decl = (name: string, type: string): unknown => ({aname: name, adeclarationinfo: {aditags: [["type", type]]}});
-    const tableOf = (...entries: unknown[]): ReadonlyMap<string, AccountType> => declaredTypes(normalizeAccounts(entries));
-
-    /** What the wire would carry after a user types `100000` into this row. */
-    const typed = (account: string, declared: ReadonlyMap<string, AccountType>): bigint =>
-        amountFor({commodity: "$", quantity: dec(0, 2), precision: 2}, dec(10000000, 2), account, declared).quantity.m;
-
-    // Every spelling of "this is a cost" a journal may carry — the single
-    // letter, the singular word, the plural hledger rejects and we accept, and
-    // the same again in the wrong case.
-    for (const spelling of ["X", "x", "expense", "expenses", "EXPENSES", "Expense"]) {
-        it(`a cost declared \`type: ${spelling}\` reaches the engine POSITIVE, whatever its account is called`, () => {
-            // `income:contractors` is the discriminating one: it INFERS revenue
-            // from its root name, so a declaration this loop cannot parse flips
-            // the assertion. The other four infer nothing and would pass either way.
-            for (const account of ["expenses:payroll", "cogs:nomina", "gastos:oficina", "personalkosten:lohn", "income:contractors"]) {
-                const declared = tableOf(decl(account, spelling));
-                expect(isRevenueAccount(account, declared), `${account} declared \`type: ${spelling}\` must not read as revenue`).toBe(false);
-                expect(
-                    typed(account, declared) > 0n,
-                    `a $100,000 cost on ${account} (\`type: ${spelling}\`) must reach the engine POSITIVE — ` +
-                        `a negative expense is money coming IN, and it builds cash forever`
-                ).toBe(true);
-            }
-        });
-    }
-
-    for (const spelling of ["R", "r", "revenue", "revenues", "income", "incomes", "G", "gain", "gains"]) {
-        it(`revenue declared \`type: ${spelling}\` reaches the engine NEGATIVE, whatever its account is called`, () => {
-            for (const account of ["income:consulting", "ingresos:consultoria", "omzet:advies"]) {
-                const declared = tableOf(decl(account, spelling));
-                expect(isRevenueAccount(account, declared), `${account} declared \`type: ${spelling}\` must read as revenue`).toBe(true);
-                expect(
-                    typed(account, declared) < 0n,
-                    `$40,000 of revenue on ${account} (\`type: ${spelling}\`) must reach the engine NEGATIVE — ` +
-                        `hledger books revenue as a credit, and a positive one would drain the bank`
-                ).toBe(true);
-            }
-        });
-    }
-
-    it("REGRESSION: a cost under a revenue-NAMED root is still a cost", () => {
-        // The reported bug, in one line. `income:contractors` looks like revenue
-        // to the English name heuristic and IS an expense; the declaration is
-        // the only thing that says so, so dropping it flips the sign.
-        const declared = tableOf(decl("income:contractors", "expenses"));
-        expect(
-            isRevenueAccount("income:contractors", declared),
-            "`income:contractors ; type: expenses` is a COST, so it must not read as revenue — " + "its own declaration outranks what its root name looks like"
-        ).toBe(false);
-        expect(
-            typed("income:contractors", declared) > 0n,
-            "`income:contractors ; type: expenses` is a COST. A declaration the browser " +
-                "cannot parse falls through to name inference, the amount gets negated, and " +
-                "the engine projects a payroll that pays money in"
-        ).toBe(true);
+        expect(withMagnitude(seeded, dec(1875125, 3)).amount.precision).toBe(3);
     });
 
-    it("REGRESSION: a cost under a revenue-DECLARED ancestor is still a cost", () => {
-        const declared = tableOf(decl("ingresos", "R"), decl("ingresos:nomina", "expenses"));
-        expect(typed("ingresos:nomina", declared) > 0n, "the account's OWN declaration outranks its ancestor's").toBe(true);
-        expect(typed("ingresos:consultoria", declared) < 0n, "…and its undeclared sibling still inherits revenue").toBe(true);
-    });
-
-    it("REGRESSION: a depth-clamped parent keeps its subtree's type", () => {
-        // The projection SEED clamps rows to depth 2, so `ingresos:consultoria`
-        // is a row the user really does edit even though only its children are
-        // declared. Resolving it as untyped would make retyping its amount flip
-        // the sign of a revenue line.
-        const declared = tableOf(decl("ingresos:consultoria:acme", "R"), decl("ingresos:consultoria:beta", "R"));
-        expect(typed("ingresos:consultoria", declared) < 0n, "a clamped parent whose declared children agree inherits their type").toBe(true);
-    });
-
-    it("an unrecognized `type:` is not a licence to guess the opposite", () => {
-        // `bogus` is untyped on both sides. The account then falls to name
-        // inference, which is the documented fallback — what matters is that the
-        // two implementations agree about it.
-        const declared = tableOf(decl("cogs:nomina", "bogus"));
-        expect(resolveAccountType("cogs:nomina", declared), "an unparseable `type:` leaves the account untyped, exactly as the engine leaves it").toBe(null);
-        expect(typed("cogs:nomina", declared) > 0n, "an untyped account is not revenue, so its amount is not negated").toBe(true);
+    it("the preview classification honours the engine's declared type over the name", () => {
+        // Nothing about "wages" matches hledger's revenue regex; the declaration
+        // is what makes it revenue.
+        expect(isRevenueAccount("wages:contract", DECLARED)).toBe(true);
+        expect(isRevenueAccount("wages:contract", NO_ACCOUNT_CLASSES)).toBe(false);
+        expect(isRevenueAccount("income:salary", NO_ACCOUNT_CLASSES)).toBe(true);
     });
 });
 
@@ -253,26 +135,20 @@ describe("UNIT scenarioModel — sections", () => {
 
     it("a new row opens on a prefix of the right TYPE, learned from the journal", () => {
         const names = ["revenues:salary", "revenues:consulting", "spending:rent"];
-        const declared = new Map<string, AccountType>([
-            ["revenues", "revenue"],
-            ["spending", "expense"],
-        ]);
+        const declared = classesOf(["revenues", "revenue"], ["spending", "expense"]);
         expect(sectionPrefix("income", names, declared)).toBe("revenues:");
         expect(sectionPrefix("expense", names, declared)).toBe("spending:");
     });
 
     it("falls back to the hledger defaults when the journal has nothing of that type yet", () => {
-        expect(sectionPrefix("income", [], new Map())).toBe("income:");
-        expect(sectionPrefix("expense", [], new Map())).toBe("expenses:");
-        expect(sectionPrefix("asset", [], new Map())).toBe("assets:");
+        expect(sectionPrefix("income", [], NO_ACCOUNT_CLASSES)).toBe("income:");
+        expect(sectionPrefix("expense", [], NO_ACCOUNT_CLASSES)).toBe("expenses:");
+        expect(sectionPrefix("asset", [], NO_ACCOUNT_CLASSES)).toBe("assets:");
     });
 
     it("an ASSET section learns its prefix the same way the other two do", () => {
         const names = ["patrimonio:corretaje", "gastos:alquiler"];
-        const declared = new Map<string, AccountType>([
-            ["patrimonio", "asset"],
-            ["gastos", "expense"],
-        ]);
+        const declared = classesOf(["patrimonio", "asset"], ["gastos", "expense"]);
         expect(sectionPrefix("asset", names, declared)).toBe("patrimonio:");
     });
 });
@@ -568,6 +444,14 @@ describe("UNIT scenarioModel — putting a scenario on the wire", () => {
         expect(wire.lines[0].amount).toEqual({commodity: "$", quantity: {mantissa: "-518833", places: 2}, precision: 2});
         expect(wire.lines[0].growth).toBeNull();
         expect(wire.created).toBeNull();
+    });
+
+    it("sends an edited line's ENTRY for the engine to sign, and no entry for an untouched one", () => {
+        const untouched = line({account: "income:salary", amount: {commodity: "$", quantity: dec(-518833, 2), precision: 2}});
+        const edited = withMagnitude(untouched, dec(600000, 2));
+        const wire = scenarioToWire(scenario([untouched, {...edited, id: "b", group: "rule:1"}]));
+        expect(wire.lines[0].entry).toBeUndefined();
+        expect(wire.lines[1].entry).toEqual({mantissa: "600000", places: 2});
     });
 
     it("sends a growth rate as the fraction it is", () => {

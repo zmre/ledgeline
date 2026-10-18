@@ -9,13 +9,14 @@ use crate::holdings::{
     HOLDINGS_TAG, HoldingsScope, ScopeMode, VALUATION_TAG, WarningKind, compute_holdings,
     parse_holdings_tag, parse_valuation_tag,
 };
+use crate::journal_meta;
 use crate::model::{
     AccountDeclaration, AccountName, Amount, AmountStyle, CommoditySide, CostKind, Journal,
     Posting, PostingType, PriceDirective, SourcePos, Status, Transaction,
 };
 use crate::reports::{
-    ACCOUNT_TYPE_TAG, BS_TERM_TAG, IS_SECTION_TAG, parse_account_type_tag, parse_bs_term_tag,
-    parse_is_section_tag,
+    ACCOUNT_TYPE_TAG, AccountClass, AccountType, BS_TERM_TAG, BsTerm, IS_SECTION_TAG,
+    account_classes, parse_account_type_tag, parse_bs_term_tag, parse_is_section_tag,
 };
 use crate::title::{journal_title, main_file_name};
 use serde::Serialize;
@@ -295,7 +296,7 @@ pub(crate) fn inherited_account_tags(
 /// tags from the `commodity` directives of the posting's amounts are appended,
 /// but only for names not already present (a posting or account tag of the same
 /// name takes precedence, matching hledger).
-fn posting_tags(
+pub(crate) fn posting_tags(
     posting: &Posting,
     account_tags: &HashMap<&str, &[(String, String)]>,
     commodity_tags: &HashMap<&str, &[(String, String)]>,
@@ -342,7 +343,12 @@ impl<'a> SourceNames<'a> {
     fn new(journal: &'a Journal) -> Self {
         Self {
             main_name: &journal.source_name,
-            main_file: crate::parse::resolve_source_file(&journal.source_name),
+            // The parser records the main file first, under the key every one
+            // of its positions carries — no filesystem lookup needed (or
+            // possible, for a journal that does not live on one). A journal
+            // built in memory has no source files; its positions carry the
+            // empty path, which `of` already treats as the main file.
+            main_file: journal.source_files.first().cloned().unwrap_or_default(),
         }
     }
 
@@ -409,19 +415,17 @@ pub struct WireDiagnostic {
     /// so the UI can flag the row. Absent for a finding about an `account`
     /// directive, which has no transaction to point at.
     #[serde(rename = "txnIndex", skip_serializing_if = "Option::is_none")]
-    txn_index: Option<usize>,
+    pub(crate) txn_index: Option<usize>,
     /// The declaring account, for a finding about an `account` directive.
     /// Absent for every transaction-anchored rule.
     #[serde(skip_serializing_if = "Option::is_none")]
-    account: Option<String>,
-    /// One of [`DIAGNOSTIC_RULES`]. The SPA allow-lists exactly this set
-    /// (`normalizeDiagnostics` in `web/src/lib/api/normalize.ts`) and drops
-    /// anything else, so the two lists must be grown together.
-    rule: &'static str,
+    pub(crate) account: Option<String>,
+    /// One of [`DIAGNOSTIC_RULES`].
+    pub(crate) rule: &'static str,
     /// `"error"` or `"warning"`; the SPA's `Severity` is `info|warning|error`.
-    severity: &'static str,
+    pub(crate) severity: &'static str,
     /// Human-readable, hledger-style.
-    message: String,
+    pub(crate) message: String,
 }
 
 /// Diagnostic severity for the two hledger-level rules: both are errors.
@@ -434,18 +438,13 @@ const DIAGNOSTIC_ERROR: &str = "error";
 /// are warnings, and never promoted to errors.
 const DIAGNOSTIC_WARNING: &str = "warning";
 
-/// Every `rule` value `/api/diagnostics` can emit, in the order the SPA's
-/// drawer groups them. The first two are hledger-level errors; `account-tag` is
-/// the journal's own `account` directives; the last three are the stock findings
-/// from the holdings engine.
+/// Every ENGINE `rule` value, in the order the drawer groups them. The first
+/// two are hledger-level errors; `account-tag` is the journal's own `account`
+/// directives; the last three are the stock findings from the holdings engine.
 ///
-/// This is the wire contract the SPA's `DIAGNOSTIC_RULES` allow-list mirrors.
-/// The SPA drops an unrecognized rule SILENTLY, so the two are pinned together
-/// by `web/src/lib/checks/stock-diagnostics.test.ts`, which reads both files —
-/// it lives on that side because `nix build .#tests` builds from
-/// `cleanCargoSource`, which does not contain `web/`. That test parses this
-/// declaration with `/\[&str; \d+\]/`, so the array form and the bumped length
-/// are load-bearing.
+/// `/api/diagnostics` follows these with the five local check rules
+/// (`crate::view::checks`). The SPA no longer allow-lists rule ids (plan 26
+/// B4): the engine is the only producer of every rule.
 pub const DIAGNOSTIC_RULES: [&str; 6] = [
     "unbalanced",
     "assertion",
@@ -816,16 +815,19 @@ pub fn version_value() -> serde_json::Value {
 // /api/journal
 // ===========================================================================
 
-/// The `/api/journal` payload: which journal the user is looking at.
+/// The `/api/journal` payload: which journal the user is looking at, and the
+/// whole-journal display metadata every screen needs without walking every
+/// transaction (plan 26 B1).
 ///
 /// A NATIVE route, so the field names are camelCase like the rest of the
-/// `/api/*` wire (both happen to be single words, and the rename is declared
-/// anyway so adding a second-word field cannot silently break the convention).
+/// `/api/*` wire.
 ///
-/// Both fields are nullable and independently so: a journal can be titled with
-/// no file behind it (an in-memory journal that opens with a comment) and a file
-/// can be there with nothing to call it. `null` is served explicitly rather than
-/// the key being omitted, so the SPA never has to tell "absent" from "unknown".
+/// `title` and `file` are nullable and independently so: a journal can be
+/// titled with no file behind it (an in-memory journal that opens with a
+/// comment) and a file can be there with nothing to call it. `null` is served
+/// explicitly rather than the key being omitted, so the SPA never has to tell
+/// "absent" from "unknown". The same holds for `firstDate`/`lastDate`, which
+/// are `null` exactly when `txnCount` is 0.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WireJournalInfo {
@@ -840,15 +842,61 @@ pub struct WireJournalInfo {
     /// amount's as-written precision on that wire and applies the declared
     /// style only when it renders a report, so the SPA does the same.
     commodity_styles: BTreeMap<String, WireStyle>,
+    /// The style reports format totals with, per posted commodity — see
+    /// [`journal_meta::report_styles`] for the one rule. Same `astyle` shape
+    /// as `commodityStyles`.
+    report_styles: BTreeMap<String, WireStyle>,
+    /// The journal's most-used commodity — see
+    /// [`journal_meta::dominant_commodity`]. Never empty; `$` for an empty
+    /// journal.
+    dominant_commodity: String,
+    /// How many transactions the journal holds (periodic `~` rules excluded).
+    txn_count: usize,
+    /// Earliest primary transaction date, `null` for an empty journal.
+    first_date: Option<String>,
+    /// Latest primary transaction date, `null` for an empty journal.
+    last_date: Option<String>,
+    /// Every account `/accountnames` lists, with its resolved type and
+    /// balance-sheet term — see [`account_classes`].
+    accounts: BTreeMap<String, WireAccountClass>,
 }
 
-/// The open journal's derived title, the bare name of its main file, and its
-/// declared commodity styles.
+/// One account's classification on `/api/journal`'s `accounts`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WireAccountClass {
+    /// `"asset" | "liability" | "equity" | "revenue" | "expense" | "cash" |
+    /// "conversion" | "gain"`, or `null` when untyped.
+    #[serde(rename = "type")]
+    account_type: Option<&'static str>,
+    /// The type came from a `type:` declaration on the account or an ancestor.
+    type_declared: bool,
+    /// `"current" | "noncurrent"`, or `null` when undeclared and not guessed.
+    term: Option<&'static str>,
+    /// `term` is a name-heuristic guess, not a tag.
+    term_guessed: bool,
+}
+
+impl From<&AccountClass> for WireAccountClass {
+    fn from(class: &AccountClass) -> Self {
+        Self {
+            account_type: class.account_type.map(AccountType::code),
+            type_declared: class.type_declared,
+            term: class.term.map(BsTerm::code),
+            term_guessed: class.term_guessed,
+        }
+    }
+}
+
+/// The open journal's derived title, the bare name of its main file, its
+/// declared commodity styles, and its whole-journal display metadata.
 ///
-/// Cheap: every field reads data the parse already captured. No filesystem
-/// access, no pass over the transactions.
+/// No filesystem access. Two passes over the postings (styles, dominant
+/// commodity) and one over the account names — cheap beside the snapshot's
+/// other payloads, and paid once per snapshot rather than per request.
 #[must_use]
 pub fn journal_to_info(journal: &Journal) -> WireJournalInfo {
+    let span = journal_meta::date_span(journal);
     WireJournalInfo {
         title: journal_title(journal),
         file: main_file_name(journal),
@@ -856,6 +904,18 @@ pub fn journal_to_info(journal: &Journal) -> WireJournalInfo {
             .commodity_styles
             .iter()
             .map(|(commodity, style)| (commodity.0.clone(), style_to_wire(style)))
+            .collect(),
+        report_styles: journal_meta::report_styles(journal)
+            .iter()
+            .map(|(commodity, style)| (commodity.0.clone(), style_to_wire(style)))
+            .collect(),
+        dominant_commodity: journal_meta::dominant_commodity(journal),
+        txn_count: journal.transactions.len(),
+        first_date: span.map(|(first, _)| first.to_string()),
+        last_date: span.map(|(_, last)| last.to_string()),
+        accounts: account_classes(journal)
+            .iter()
+            .map(|(name, class)| (name.clone(), WireAccountClass::from(class)))
             .collect(),
     }
 }
@@ -869,18 +929,21 @@ pub fn journal_to_info(journal: &Journal) -> WireJournalInfo {
 /// lexically. The synthetic root is not a real account and is excluded.
 #[must_use]
 pub fn journal_to_accountnames(journal: &Journal) -> Vec<String> {
-    let from_postings = journal
+    // Distinct accounts FIRST: a journal posts to a few hundred names across
+    // hundreds of thousands of postings, and expanding every posting's
+    // ancestors (one `String` per segment) was 1.5 million allocations at 200k
+    // transactions for the same few hundred answers.
+    let distinct: HashSet<&AccountName> = journal
         .transactions
         .iter()
         .flat_map(|transaction| &transaction.postings)
-        .flat_map(|posting| posting.account.self_and_ancestors());
-    let from_declarations = journal
-        .accounts
-        .iter()
-        .flat_map(|declaration| declaration.name.self_and_ancestors());
-    // A BTreeSet dedupes and yields the names in lexical order in one pass.
-    from_postings
-        .chain(from_declarations)
+        .map(|posting| &posting.account)
+        .chain(journal.accounts.iter().map(|declaration| &declaration.name))
+        .collect();
+    // A BTreeSet dedupes the ancestors and yields the names in lexical order.
+    distinct
+        .into_iter()
+        .flat_map(AccountName::self_and_ancestors)
         .collect::<BTreeSet<String>>()
         .into_iter()
         .collect()

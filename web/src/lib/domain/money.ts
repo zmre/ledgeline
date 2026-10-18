@@ -86,28 +86,6 @@ export function maAdd(a: MixedAmount, b: MixedAmount): MixedAmount {
     return out;
 }
 
-/**
- * Every commodity scaled by one exact factor.
- *
- * The caller builds the `Dec`, because the two things that scale money build it
- * from different material: an annualisation factor is a whole number of periods
- * (`budget/sort.ts`), a pace fraction is a day ratio snapped to six places
- * (`reports/budgetSummary.ts`). Both had grown their own copy of this loop.
- *
- * Zeros are KEPT, unlike `maAdd` — which is what both copies already did, so
- * this is their behaviour and not a choice made here. It is a KNOWN
- * disagreement with the engine: `MixedAmount::ma_scale` prunes a scaled zero,
- * and only a `× 0` factor (a `$0` goal, a pace fraction of exactly 0) reaches a
- * state where the two answer differently — an empty map there, a `{$: 0}` here.
- * `sortMagnitude` reads that empty map as zero and the one-entry map as zero
- * too, so nothing on this side turns on it today.
- */
-export function maScale(a: MixedAmount, factor: Dec): MixedAmount {
-    const out: MixedAmount = new Map();
-    for (const [commodity, qty] of a) out.set(commodity, mul(qty, factor));
-    return out;
-}
-
 export function maNeg(a: MixedAmount): MixedAmount {
     const out: MixedAmount = new Map();
     for (const [commodity, qty] of a) out.set(commodity, neg(qty));
@@ -228,7 +206,13 @@ export function displayPlaces(d: Dec, precision: number, maxDecimals: number = M
     return relaxed > places && roundTo(d, relaxed).m !== 0n ? relaxed : places;
 }
 
-/** Format a Dec per style. Rounding (see `displayPlaces`) happens HERE only. */
+/**
+ * Format a Dec per style. Rounding (see `displayPlaces`) happens HERE only.
+ *
+ * The engine carries a port (crates/ledgeline-core/src/display.rs); both are
+ * held to fixtures/display-format/cases.json (displayFormat.golden.test.ts), so
+ * a change here must be regenerated into that golden and matched in Rust.
+ */
 export function formatDec(d: Dec, style: AmountStyle, maxDecimals: number = MAX_DISPLAY_DECIMALS): string {
     const rounded = roundTo(d, displayPlaces(d, style.precision, maxDecimals));
     const negative = rounded.m < 0n;

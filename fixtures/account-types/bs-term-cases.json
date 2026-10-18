@@ -1,0 +1,689 @@
+{
+  "_comment": [
+    "GOLDEN for the bsterm name heuristic, captured from web/src/lib/domain/accountTerms.ts inferBsTerm",
+    "before it moved to Rust (plan 26 B1). `term` is null for 'no opinion'.",
+    "Asserted by crates/ledgeline-core/tests/account_types.rs (infer_bs_term)."
+  ],
+  "cases": [
+    {
+      "account": "liabilities:long-term-debt",
+      "kind": "cash",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:long-term-debt",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:longterm:notes",
+      "kind": "cash",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:longterm:notes",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:non-current:provisions",
+      "kind": "cash",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:non-current:provisions",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "assets:bank:noncurrent-reserve",
+      "kind": "cash",
+      "term": "noncurrent"
+    },
+    {
+      "account": "assets:bank:noncurrent-reserve",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "assets:bank:long-term-cd",
+      "kind": "cash",
+      "term": "noncurrent"
+    },
+    {
+      "account": "assets:bank:long-term-cd",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:long-term-debt:current-maturities",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:long-term-debt:current-maturities",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "liabilities:longterm:current-portion",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:longterm:current-portion",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "liabilities:mortgage:due-within-one-year",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:mortgage:due-within-one-year",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "liabilities:mortgage",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:mortgage",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:mortgage:wells-fargo",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:mortgage:wells-fargo",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "Liabilities:Mortgage",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "Liabilities:Mortgage",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:mortage:chase",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:mortage:chase",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:heloc",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:heloc",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:loans:student",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:loans:student",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "Liabilities:Loans:nz_student_loan",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "Liabilities:Loans:nz_student_loan",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:pension",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:pension",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:loans:personal",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:loans:personal",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "liabilities:car",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:car",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "liabilities:auto-loan",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:auto-loan",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "liabilities:lease:office",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:lease:office",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "liabilities:notes-payable",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:notes-payable",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "liabilities:bonds",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:bonds",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "liabilities:creditcard",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:creditcard",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "liabilities:cc:visa",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:cc:visa",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "assets:pension:cash-account",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "assets:pension:cash-account",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "assets:student:allowance",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "assets:student:allowance",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "assets:mortgage-escrow",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "assets:mortgage-escrow",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "assets:bank:savings",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "assets:bank:savings",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "assets:current",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "assets:current",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "assets:cash:lira",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "assets:cash:lira",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "liabilities:wilson-ltd",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:wilson-ltd",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "liabilities:sep:settlement",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:sep:settlement",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "liabilities:a:b:c:mortgage",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:a:b:c:mortgage",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:mortgageable",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:mortgageable",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "liabilities:studentship-fund",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:studentship-fund",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "Liabilities:HELOC",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "Liabilities:HELOC",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:Long_Term:debt",
+      "kind": "cash",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:Long_Term:debt",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:LONG TERM:debt",
+      "kind": "cash",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:LONG TERM:debt",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:non current",
+      "kind": "cash",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:non current",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:non_current:x",
+      "kind": "cash",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:non_current:x",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:noncurrent",
+      "kind": "cash",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:noncurrent",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "assets:longterm",
+      "kind": "cash",
+      "term": "noncurrent"
+    },
+    {
+      "account": "assets:longterm",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:due within:mortgage",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:due within:mortgage",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "liabilities:currentportion:heloc",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:currentportion:heloc",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "liabilities:current maturities:longterm",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:current maturities:longterm",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "pasivo:hipoteca",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "pasivo:hipoteca",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "pasivo:long-term",
+      "kind": "cash",
+      "term": "noncurrent"
+    },
+    {
+      "account": "pasivo:long-term",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "Liabilities:Pension:Plan",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "Liabilities:Pension:Plan",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:Student Loans",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:Student Loans",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:STUDENTLOAN",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:STUDENTLOAN",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "liabilities:mortgage2",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:mortgage2",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "liabilities:2mortgage",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:2mortgage",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "liabilities:mort-gage",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:mort-gage",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:ünïcode:mortgage",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:ünïcode:mortgage",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:KELVIN:Key",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:KELVIN:Key",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "liabilities:straße:heloc",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:straße:heloc",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:long:term",
+      "kind": "cash",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:long:term",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:long",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:long",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "liabilities:term",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:term",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": ":",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": ":",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "liabilities::mortgage",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities::mortgage",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:-mortgage-",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:-mortgage-",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "assets:bank:checking",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "assets:bank:checking",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "assets:401k",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "assets:401k",
+      "kind": "liability",
+      "term": null
+    },
+    {
+      "account": "liabilities:tax:pension-contributions",
+      "kind": "cash",
+      "term": null
+    },
+    {
+      "account": "liabilities:tax:pension-contributions",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:longterm:current",
+      "kind": "cash",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:longterm:current",
+      "kind": "liability",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:current:longterm",
+      "kind": "cash",
+      "term": "noncurrent"
+    },
+    {
+      "account": "liabilities:current:longterm",
+      "kind": "liability",
+      "term": "noncurrent"
+    }
+  ]
+}

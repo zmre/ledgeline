@@ -81,6 +81,7 @@
 //! different `skip` and therefore needs a different copy.
 
 use ledgeline_core::convert::{self, SourceFormat};
+use ledgeline_core::vault::{Vault, VaultPath};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -290,11 +291,15 @@ impl Stage {
     /// fails, or — [`ErrorKind::InvalidData`](std::io::ErrorKind::InvalidData) —
     /// if `latest_from` holds a `.latest.NAME` that exists but cannot be
     /// carried. That last one is a refusal, not a fault: see [`Latest`].
+    ///
+    /// `latest_from` is the destination's directory **in the journal's vault**
+    /// — the dedup state is read through it, never by path. The run directory
+    /// itself is this process's own temp space and is written directly.
     pub(crate) fn materialize(
         &self,
         slot: &str,
         name: &str,
-        latest_from: Option<&Path>,
+        latest_from: Option<(&dyn Vault, &VaultPath)>,
         skip: u32,
     ) -> std::io::Result<PathBuf> {
         if !is_bare_name(name) {
@@ -312,7 +317,7 @@ impl Stage {
         let staged = run.join(name);
         std::fs::write(&staged, self.aligned_bytes(skip)?)?;
 
-        match latest_from.map(|dir| latest_state(dir, name)) {
+        match latest_from.map(|(vault, dir)| latest_state(vault, dir, name)) {
             None | Some(Latest::Absent) => {}
             // Verbatim, repeated same-date lines and all: the repeat count is
             // what hledger de-duplicates by.
@@ -401,8 +406,8 @@ const UNREADABLE: &str = "could not be read";
 ///
 /// `None` when there is no usable state. Callers that must distinguish "nothing
 /// there" from "there and unusable" ask [`latest_state`] instead.
-pub(crate) fn latest_marker(dir: &Path, name: &str) -> Option<String> {
-    let Latest::Present(bytes) = latest_state(dir, name) else {
+pub(crate) fn latest_marker(vault: &dyn Vault, dir: &VaultPath, name: &str) -> Option<String> {
+    let Latest::Present(bytes) = latest_state(vault, dir, name) else {
         return None;
     };
     let text = String::from_utf8(bytes).ok()?;
@@ -410,18 +415,29 @@ pub(crate) fn latest_marker(dir: &Path, name: &str) -> Option<String> {
     (!marker.is_empty()).then(|| marker.to_string())
 }
 
-/// `.latest.NAME`'s bytes, or why they are not available.
+/// `.latest.NAME`'s bytes in the vault directory `dir`, or why they are not
+/// available.
 ///
-/// [`std::fs::symlink_metadata`] rather than `metadata`, so the file type is
-/// this file's own rather than that of whatever a symlink points at.
-pub(crate) fn latest_state(dir: &Path, name: &str) -> Latest {
-    let path = dir.join(latest_name(name));
-    match std::fs::symlink_metadata(&path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Latest::Absent,
+/// [`Vault::stat`] never follows a link, so the file type is this file's own
+/// rather than that of whatever a symlink points at; the read is capped at
+/// [`MAX_LATEST_BYTES`] and refuses a link at the final component too.
+pub(crate) fn latest_state(vault: &dyn Vault, dir: &VaultPath, name: &str) -> Latest {
+    let Ok(path) = dir.child(&latest_name(name)) else {
+        return Latest::Unusable(UNREADABLE);
+    };
+    match vault.stat(&path) {
+        Ok(None) => Latest::Absent,
         Err(_) => Latest::Unusable(UNREADABLE),
-        Ok(meta) if !meta.file_type().is_file() => Latest::Unusable(NOT_A_REGULAR_FILE),
-        Ok(meta) if meta.len() > MAX_LATEST_BYTES => Latest::Unusable(IMPLAUSIBLY_LARGE),
-        Ok(_) => std::fs::read(&path).map_or(Latest::Unusable(UNREADABLE), Latest::Present),
+        Ok(Some(entry)) if !entry.is_file() => Latest::Unusable(NOT_A_REGULAR_FILE),
+        Ok(Some(entry)) if entry.size > MAX_LATEST_BYTES => Latest::Unusable(IMPLAUSIBLY_LARGE),
+        Ok(Some(_)) => match vault.read_pinned(&path, Some(MAX_LATEST_BYTES)) {
+            Ok((bytes, _)) => Latest::Present(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
+                Latest::Unusable(IMPLAUSIBLY_LARGE)
+            }
+            Err(error) if error.is_not_regular_file() => Latest::Unusable(NOT_A_REGULAR_FILE),
+            Err(_) => Latest::Unusable(UNREADABLE),
+        },
     }
 }
 
@@ -441,8 +457,12 @@ fn is_bare_name(name: &str) -> bool {
 
 /// The per-session staging area. One per [`AppState`](crate::AppState), shared by
 /// every clone of it.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct StageArea {
+    /// The directory the session root is created under — the injected
+    /// [`AppDirs::temp_dir`](crate::app_dirs::AppDirs::temp_dir), so a sandboxed
+    /// host stages into its own container rather than a shared `/tmp`.
+    temp_dir: PathBuf,
     inner: Mutex<Area>,
 }
 
@@ -459,6 +479,15 @@ struct Area {
 }
 
 impl StageArea {
+    /// An empty area whose session root will be created under `temp_dir` on
+    /// the first upload. Nothing touches the filesystem until then.
+    pub(crate) fn new(temp_dir: PathBuf) -> Self {
+        Self {
+            temp_dir,
+            inner: Mutex::default(),
+        }
+    }
+
     /// Stage `csv` and hand back its handle.
     ///
     /// `upload_name` is the name the file arrived under — already validated as a
@@ -478,7 +507,7 @@ impl StageArea {
         let root = match &area.root {
             Some(root) => root.clone(),
             None => {
-                let root = session_root()?;
+                let root = session_root(&self.temp_dir)?;
                 create_private_dir(&root)?;
                 area.root = Some(root.clone());
                 root
@@ -533,16 +562,17 @@ impl Drop for StageArea {
     }
 }
 
-/// A fresh, unguessable session root under the OS temp directory.
+/// A fresh, unguessable session root under `temp_dir` (on the desktop, the OS
+/// temp directory).
 ///
 /// The random component is what makes two servers in one process — which is
 /// exactly what the integration tests build — unable to see each other's stages
 /// even before the map lookup gets a chance to refuse.
-fn session_root() -> std::io::Result<PathBuf> {
+fn session_root(temp_dir: &Path) -> std::io::Result<PathBuf> {
     let id = StageId::mint().ok_or_else(|| {
         std::io::Error::other("the operating system's random source is unavailable")
     })?;
-    Ok(std::env::temp_dir().join(format!("ledgeline-stage-{}", id.as_str())))
+    Ok(temp_dir.join(format!("ledgeline-stage-{}", id.as_str())))
 }
 
 /// Create a directory only this user can enter.
@@ -567,6 +597,15 @@ fn create_private_dir(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ledgeline_core::vault::LocalVault;
+
+    /// An area under the OS temp dir — the desktop's [`AppDirs::from_env`]
+    /// choice.
+    ///
+    /// [`AppDirs::from_env`]: crate::app_dirs::AppDirs::from_env
+    fn area() -> StageArea {
+        StageArea::new(std::env::temp_dir())
+    }
 
     /// The shape gate in full. Anything that is not 32 lowercase hex characters
     /// must be refused before it can be looked up — including the spellings
@@ -612,7 +651,7 @@ mod tests {
     /// A staged file lands in a private directory and reads back byte for byte.
     #[test]
     fn a_stage_holds_the_csv_it_was_given() {
-        let area = StageArea::default();
+        let area = area();
         let (id, stage) = area
             .put("a,b\n1,2\n", SourceFormat::Csv, "statement.xlsx")
             .expect("stage");
@@ -639,7 +678,7 @@ mod tests {
     /// dropped, and `import_api::cli_argv` renders it as `--input`.
     #[test]
     fn a_stage_remembers_the_name_the_upload_arrived_under() {
-        let area = StageArea::default();
+        let area = area();
         let (_, stage) = area
             .put("a\n1\n", SourceFormat::Xlsx, "Statement Feb 2026.xlsx")
             .expect("stage");
@@ -652,8 +691,8 @@ mod tests {
     /// stranger, even though it is perfectly well-formed.
     #[test]
     fn one_areas_id_never_resolves_in_another() {
-        let mine = StageArea::default();
-        let theirs = StageArea::default();
+        let mine = area();
+        let theirs = area();
         let (id, _) = theirs
             .put("a\n1\n", SourceFormat::Csv, "bank.csv")
             .expect("stage");
@@ -665,7 +704,7 @@ mod tests {
     /// exists.
     #[test]
     fn materializing_carries_the_destinations_latest_marker() {
-        let area = StageArea::default();
+        let area = area();
         let (_, stage) = area
             .put("a\n1\n", SourceFormat::Csv, "bank.csv")
             .expect("stage");
@@ -678,7 +717,12 @@ mod tests {
         std::fs::write(dest.join(".latest.bank.csv"), "2026-02-05\n").expect("marker");
 
         let staged = stage
-            .materialize(RUN_WITH_LATEST, "bank.csv", Some(&dest), 1)
+            .materialize(
+                RUN_WITH_LATEST,
+                "bank.csv",
+                Some((&LocalVault::new(&dest) as &dyn Vault, &VaultPath::root())),
+                1,
+            )
             .expect("materialize");
         assert_eq!(
             staged.file_name().and_then(|n| n.to_str()),
@@ -690,7 +734,7 @@ mod tests {
             "2026-02-05\n"
         );
         assert_eq!(
-            latest_marker(&dest, "bank.csv").as_deref(),
+            latest_marker(&LocalVault::new(&dest), &VaultPath::root(), "bank.csv").as_deref(),
             Some("2026-02-05")
         );
 
@@ -730,7 +774,7 @@ mod tests {
     /// and an editor between them can produce.
     #[test]
     fn a_multi_line_latest_marker_is_copied_verbatim() {
-        let area = StageArea::default();
+        let area = area();
         let (_, stage) = area
             .put("a\n1\n", SourceFormat::Csv, "bank.csv")
             .expect("stage");
@@ -744,7 +788,12 @@ mod tests {
         ] {
             std::fs::write(dest.join(".latest.bank.csv"), original).expect("marker");
             let staged = stage
-                .materialize(RUN_WITH_LATEST, "bank.csv", Some(&dest), 1)
+                .materialize(
+                    RUN_WITH_LATEST,
+                    "bank.csv",
+                    Some((&LocalVault::new(&dest) as &dyn Vault, &VaultPath::root())),
+                    1,
+                )
                 .expect("materialize");
             let carried =
                 std::fs::read_to_string(staged.parent().expect("run dir").join(".latest.bank.csv"))
@@ -752,7 +801,7 @@ mod tests {
             assert_eq!(carried, original, "the dedup state must not be rewritten");
             // The date the UI reports is still just the date.
             assert_eq!(
-                latest_marker(&dest, "bank.csv").as_deref(),
+                latest_marker(&LocalVault::new(&dest), &VaultPath::root(), "bank.csv").as_deref(),
                 Some("2026-05-22")
             );
         }
@@ -768,7 +817,7 @@ mod tests {
     /// account reaches, and dropped the whole file without a word.
     #[test]
     fn a_state_file_for_thousands_of_same_day_records_is_still_carried() {
-        let area = StageArea::default();
+        let area = area();
         let (_, stage) = area
             .put("a\n1\n", SourceFormat::Csv, "bank.csv")
             .expect("stage");
@@ -779,7 +828,12 @@ mod tests {
         std::fs::write(dest.join(".latest.bank.csv"), &busy).expect("marker");
 
         let staged = stage
-            .materialize(RUN_WITH_LATEST, "bank.csv", Some(&dest), 1)
+            .materialize(
+                RUN_WITH_LATEST,
+                "bank.csv",
+                Some((&LocalVault::new(&dest) as &dyn Vault, &VaultPath::root())),
+                1,
+            )
             .expect("materialize");
         assert_eq!(
             std::fs::read_to_string(staged.parent().expect("run dir").join(".latest.bank.csv"))
@@ -800,14 +854,14 @@ mod tests {
     fn a_latest_that_is_there_but_unusable_is_not_reported_as_absent() {
         let dest = scratch_destination();
         assert_eq!(
-            latest_state(&dest, "bank.csv"),
+            latest_state(&LocalVault::new(&dest), &VaultPath::root(), "bank.csv"),
             Latest::Absent,
             "no file is the ordinary first import"
         );
 
         std::fs::write(dest.join(".latest.bank.csv"), "2026-05-22\n").expect("marker");
         assert_eq!(
-            latest_state(&dest, "bank.csv"),
+            latest_state(&LocalVault::new(&dest), &VaultPath::root(), "bank.csv"),
             Latest::Present(b"2026-05-22\n".to_vec())
         );
 
@@ -819,7 +873,7 @@ mod tests {
         )
         .expect("marker");
         assert_eq!(
-            latest_state(&dest, "bank.csv"),
+            latest_state(&LocalVault::new(&dest), &VaultPath::root(), "bank.csv"),
             Latest::Unusable(IMPLAUSIBLY_LARGE)
         );
 
@@ -827,11 +881,11 @@ mod tests {
         std::fs::remove_file(dest.join(".latest.bank.csv")).expect("remove");
         std::fs::create_dir(dest.join(".latest.bank.csv")).expect("a directory in its place");
         assert_eq!(
-            latest_state(&dest, "bank.csv"),
+            latest_state(&LocalVault::new(&dest), &VaultPath::root(), "bank.csv"),
             Latest::Unusable(NOT_A_REGULAR_FILE)
         );
         assert_eq!(
-            latest_marker(&dest, "bank.csv"),
+            latest_marker(&LocalVault::new(&dest), &VaultPath::root(), "bank.csv"),
             None,
             "the marker string is for display and has nothing to show here"
         );
@@ -844,7 +898,7 @@ mod tests {
     /// forget.
     #[test]
     fn materializing_refuses_to_drop_unusable_dedup_state() {
-        let area = StageArea::default();
+        let area = area();
         let (_, stage) = area
             .put("a\n1\n", SourceFormat::Csv, "bank.csv")
             .expect("stage");
@@ -852,7 +906,12 @@ mod tests {
         std::fs::create_dir(dest.join(".latest.bank.csv")).expect("not a regular file");
 
         let error = stage
-            .materialize(RUN_WITH_LATEST, "bank.csv", Some(&dest), 1)
+            .materialize(
+                RUN_WITH_LATEST,
+                "bank.csv",
+                Some((&LocalVault::new(&dest) as &dyn Vault, &VaultPath::root())),
+                1,
+            )
             .expect_err("an unusable marker must not be silently skipped");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
 
@@ -870,7 +929,7 @@ mod tests {
     /// the caller believed it had already checked.
     #[test]
     fn materializing_refuses_anything_but_a_bare_name() {
-        let area = StageArea::default();
+        let area = area();
         let (_, stage) = area
             .put("a\n1\n", SourceFormat::Csv, "bank.csv")
             .expect("stage");
@@ -893,7 +952,7 @@ mod tests {
     /// is that both routes out of a stage go through it.
     #[test]
     fn every_copy_hledger_reads_is_aligned_and_the_canonical_one_is_not() {
-        let area = StageArea::default();
+        let area = area();
         let csv = "Date,Description,Amount\n2026-01-05,A,-1.00\n";
         let (_, stage) = area.put(csv, SourceFormat::Csv, "bank.csv").expect("stage");
 
@@ -931,7 +990,7 @@ mod tests {
     /// The cap bounds what one session can hold, and evicts the oldest.
     #[test]
     fn the_oldest_stage_is_evicted_past_the_cap() {
-        let area = StageArea::default();
+        let area = area();
         let ids: Vec<StageId> = (0..=MAX_LIVE_STAGES)
             .map(|n| {
                 area.put(&format!("a\n{n}\n"), SourceFormat::Csv, "bank.csv")
@@ -949,7 +1008,7 @@ mod tests {
     /// Dropping the area takes the whole session root with it.
     #[test]
     fn dropping_the_area_removes_every_stage() {
-        let area = StageArea::default();
+        let area = area();
         let (_, stage) = area
             .put("a\n1\n", SourceFormat::Csv, "bank.csv")
             .expect("stage");

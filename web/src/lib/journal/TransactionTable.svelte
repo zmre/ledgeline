@@ -1,27 +1,32 @@
 <script lang="ts">
     // Virtualized transaction list (WP-03): simple fixed-pitch windowing over a
     // scroll container (see computeWindow in rowModel.ts) — the rendered-row
-    // count is bounded by viewport/pitch + overscan, independent of txns.length,
-    // which keeps 50k+ rows smooth. Desktop renders a daisyUI table with a
+    // count is bounded by viewport/pitch + overscan, independent of the row
+    // count, which keeps 200k rows smooth. Desktop renders a daisyUI table with a
     // sticky header + spacer rows; narrow widths (<640px) render card-per-txn.
+    //
+    // The rows themselves are WINDOWED too (plan 26 B5): the journal view store
+    // fetches 200-row blocks from the engine as the window reaches them, and a
+    // row whose block has not arrived renders as a skeleton of the same height,
+    // so the scroll geometry never moves under the user.
     import {untrack} from "svelte";
     import {statusPatch} from "#lib/api/editMapping.js";
     import type {Transaction} from "#lib/domain/types.js";
+    import type {JournalRow} from "#lib/journalView/types.js";
     import {registerKeys} from "#lib/keys/keymap.svelte.js";
     import {PRIORITY} from "#lib/keys/types.js";
     import {editing} from "#lib/stores/editing.svelte.js";
     import {filters} from "#lib/stores/filters.svelte.js";
+    import {journalView} from "#lib/stores/journalView.svelte.js";
     import {problems} from "#lib/stores/problems.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
-    import {listCursor} from "#lib/ui/listCursor.svelte.js";
+    import {lazyListCursor} from "#lib/ui/listCursor.svelte.js";
     import ColumnMenu from "./ColumnMenu.svelte";
     import TransactionRow from "./TransactionRow.svelte";
     import {measureAccountColumn} from "./accountColumn.svelte";
     import {txnModal} from "./edit/modalState.svelte";
     import {rowActions} from "./rowAction.svelte";
     import {centerOffset, computeWindow, halfPageRows, nearestOffset, nextStatus} from "./rowModel";
-
-    let {txns}: {txns: Transaction[]} = $props();
 
     const ROW_PITCH = 40; // h-10 table rows
     const CARD_PITCH = 104; // h-24 card (96px) + mb-2 (8px)
@@ -42,8 +47,27 @@
     // The sticky <thead> paints over the top of the viewport in table mode; card
     // mode has no header at all.
     const headroom = $derived(mode === "card" ? 0 : headHeight);
-    const win = $derived(computeWindow(scrollTop, viewportHeight, pitch, txns.length, OVERSCAN));
-    const visible = $derived(txns.slice(win.start, win.end));
+    /** Rows the filter keeps; 0 until the engine has said. */
+    const total = $derived(journalView.total ?? 0);
+    const win = $derived(computeWindow(scrollTop, viewportHeight, pitch, total, OVERSCAN));
+    /** One slot per rendered position: the row, or null while its block loads (a skeleton). */
+    const visible = $derived.by((): {position: number; row: JournalRow | null}[] => {
+        const slots: {position: number; row: JournalRow | null}[] = [];
+        for (let position = win.start; position < win.end; position += 1) slots.push({position, row: journalView.rowAt(position)});
+        return slots;
+    });
+    /** Svelte `{#each}` key: the transaction once loaded, else its position (a skeleton never collides with a tindex). */
+    const slotKey = (slot: {position: number; row: JournalRow | null}): string => (slot.row === null ? `p${slot.position}` : `t${slot.row.txn.index}`);
+
+    // Ask for the rows the window covers. Keyed on the window and on the view's
+    // QUERY (a generation change re-reads the same window), deliberately NOT on
+    // the rows themselves — an effect that refetched whenever a block landed
+    // would chase its own tail.
+    $effect(() => {
+        void journalView.query;
+        const {start, end} = win;
+        untrack(() => journalView.ensure(start, end));
+    });
     const columns = $derived(settings.columns);
     const colCount = $derived(Object.values(columns).filter(Boolean).length);
 
@@ -55,17 +79,19 @@
     // on screen to explain why. `<tr>` is also not interactive, so making it
     // focusable is exactly the shape that trips `a11y_interactive_supports_focus`
     // in a codebase with no `svelte-ignore` comments.
-    const cursor = listCursor<Transaction>(
-        () => txns,
+    const cursor = lazyListCursor<Transaction>(
+        () => total,
+        (position) => journalView.rowAt(position)?.txn ?? null,
         (txn) => txn.index
     );
     /** The transaction `x` has armed for deletion, or null. */
     let armedDelete = $state<Transaction | null>(null);
 
     const announcement = $derived.by(() => {
+        if (cursor.index === -1) return "";
         const txn = cursor.item;
-        if (txn === null) return "";
-        return `Row ${cursor.index + 1} of ${txns.length}. ${txn.date}, ${txn.description || "no description"}.`;
+        if (txn === null) return `Row ${cursor.index + 1} of ${total}. Loading.`;
+        return `Row ${cursor.index + 1} of ${total}. ${txn.date}, ${txn.description || "no description"}.`;
     });
 
     /**
@@ -83,7 +109,7 @@
                   // header in content coordinates. `centerOffset` itself is
                   // unchanged — it is simply being given the right origin now.
                   centerOffset(position, pitch, viewportHeight, topInset + headroom)
-                : nearestOffset(scrollTop, position, pitch, rowHeight, viewportHeight, txns.length, headroom, topInset);
+                : nearestOffset(scrollTop, position, pitch, rowHeight, viewportHeight, total, headroom, topInset);
         if (top === scrollTop) return;
         if (scroller !== null) scroller.scrollTop = top;
         scrollTop = top;
@@ -156,7 +182,7 @@
                 label: "Edit transaction",
                 group: "Journal",
                 enabled: canEdit,
-                run: () => cursor.item !== null && txnModal.openEdit(cursor.item),
+                run: () => cursor.item !== null && txnModal.openEdit(cursor.item.index),
             },
             {keys: "e", label: "Edit description", group: "Journal", enabled: canEdit, run: () => requestRowAction("description")},
             {keys: "c", label: "Edit category", group: "Journal", enabled: canEdit, run: () => requestRowAction("category")},
@@ -171,16 +197,16 @@
         const row = (target as HTMLElement | null)?.closest?.("[data-txn]");
         if (row === null || row === undefined) return;
         const index = Number(row.getAttribute("data-txn"));
-        const position = txns.findIndex((txn) => txn.index === index);
-        if (position !== -1) cursor.to(position);
+        const slot = visible.find((candidate) => candidate.row?.txn.index === index);
+        if (slot !== undefined) cursor.to(slot.position);
     }
 
     // EFFECT 1 — when the FILTER changes, jump back to the top: it is a
     // different list now, so the old scroll position means nothing.
     //
-    // Keyed on `filters.value`, NOT on `txns`. `txns` is a fresh array after
+    // Keyed on `filters.value`, NOT on the rows. The rows are re-read after
     // every refresh — including the one `editing.patch` fires on success — so
-    // keying on it sent the user back to row 0 after every inline edit. Nobody
+    // keying on them sent the user back to row 0 after every inline edit. Nobody
     // noticed because clicking is slow; it becomes the first complaint the
     // moment a keystroke can cycle a status. `filters.value` is replaced
     // wholesale on every filter change, so its identity is a valid key.
@@ -197,9 +223,16 @@
     let pulseIndex = $state<number | null>(null);
     let pulseTimer: ReturnType<typeof setTimeout> | undefined;
 
-    export function scrollToTxn(index: number): void {
-        const position = txns.findIndex((txn) => txn.index === index);
-        if (position === -1) return;
+    /**
+     * Scroll to the transaction with tindex `index`, wherever it sits in the
+     * filtered view. The client holds only the rows near the viewport, so the
+     * engine says where it is (`/api/journal/position`); a transaction the
+     * filter hides is not jumped to.
+     */
+    export async function scrollToTxn(index: number): Promise<void> {
+        const found = await journalView.locate(index).catch(() => null);
+        const position = found?.position ?? null;
+        if (position === null) return;
         reveal(position, "center");
         // Arriving from the drawer leaves you on that row, so `j` continues from
         // there rather than starting over at the top.
@@ -228,7 +261,7 @@
     $effect(() => {
         const request = problems.focusRequest;
         if (request === null) return;
-        scrollToTxn(request.txnIndex);
+        void scrollToTxn(request.txnIndex);
         problems.clearFocus();
     });
 </script>
@@ -270,7 +303,9 @@
         onfocusin={(event) => syncCursorFromTarget(event.target)}
         class="min-h-0 grow overflow-y-auto rounded-lg border border-base-300"
     >
-        {#if txns.length === 0}
+        {#if journalView.total === null}
+            <div class="flex justify-center p-8" aria-label="Loading transactions"><span class="loading loading-spinner"></span></div>
+        {:else if total === 0}
             <div class="p-8 text-center text-sm text-base-content/60">No transactions match the current filters.</div>
         {:else if mode === "table"}
             <table class="table table-fixed table-sm">
@@ -298,15 +333,23 @@
                     {#if win.padTop > 0}
                         <tr aria-hidden="true" style="height: {win.padTop}px"><td colspan={colCount} class="p-0"></td></tr>
                     {/if}
-                    {#each visible as txn (txn.index)}
-                        <TransactionRow
-                            {txn}
-                            {columns}
-                            mode="row"
-                            flags={problems.byTxn.get(txn.index)}
-                            pulse={pulseIndex === txn.index}
-                            cursor={cursor.key === txn.index}
-                        />
+                    {#each visible as slot (slotKey(slot))}
+                        {#if slot.row === null}
+                            <!-- A row whose block is still loading: same height, no
+                                 `data-txn` (nothing to act on), hidden from AT. -->
+                            <tr class="h-10" aria-hidden="true" data-skeleton>
+                                <td colspan={colCount} class="py-1"><div class="h-3 w-full skeleton opacity-40"></div></td>
+                            </tr>
+                        {:else}
+                            <TransactionRow
+                                txn={slot.row.txn}
+                                {columns}
+                                mode="row"
+                                flags={slot.row.flags}
+                                pulse={pulseIndex === slot.row.txn.index}
+                                cursor={cursor.index === slot.position}
+                            />
+                        {/if}
                     {/each}
                     {#if win.padBottom > 0}
                         <tr aria-hidden="true" style="height: {win.padBottom}px"><td colspan={colCount} class="p-0"></td></tr>
@@ -315,15 +358,19 @@
             </table>
         {:else}
             <div class="p-2" style="padding-top: {win.padTop + 8}px; padding-bottom: {win.padBottom + 8}px">
-                {#each visible as txn (txn.index)}
-                    <TransactionRow
-                        {txn}
-                        {columns}
-                        mode="card"
-                        flags={problems.byTxn.get(txn.index)}
-                        pulse={pulseIndex === txn.index}
-                        cursor={cursor.key === txn.index}
-                    />
+                {#each visible as slot (slotKey(slot))}
+                    {#if slot.row === null}
+                        <div class="mb-2 h-24 skeleton opacity-40" aria-hidden="true" data-skeleton></div>
+                    {:else}
+                        <TransactionRow
+                            txn={slot.row.txn}
+                            {columns}
+                            mode="card"
+                            flags={slot.row.flags}
+                            pulse={pulseIndex === slot.row.txn.index}
+                            cursor={cursor.index === slot.position}
+                        />
+                    {/if}
                 {/each}
             </div>
         {/if}

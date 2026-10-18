@@ -16,40 +16,44 @@
         `height: calc(100dvh - 7rem)` with only the transaction table scrolling,
         so every pixel this box takes comes straight out of the table.
 
-     Balance maths lives in #lib/reports/cashBalances (pure, ported to Rust
-     later); this file is display only. -->
+     Balance maths lives in the engine (`crates/ledgeline-core/src/view/cash.rs`,
+     served at `/api/balances/cash`); this file is display only. -->
 <script lang="ts">
     import {PieChart, Tooltip} from "layerchart";
-    import type {AccountDecl} from "#lib/domain/accountTypes.js";
     import {formatAmount, toNumber, type Dec} from "#lib/domain/money.js";
-    import type {Transaction} from "#lib/domain/types.js";
+    import {DEFAULT_AMOUNT_STYLE, ZERO} from "#lib/format/amounts.js";
     import {chartColors} from "#lib/format/chartColors.svelte.js";
     import {OTHER_LABEL} from "#lib/format/palette.js";
     import {signClass} from "#lib/format/sign.js";
-    import {accountBalances, balanceCommodities, guessedLongTerm, summarize, visibleRows, type BalanceRow} from "#lib/reports/cashBalances.js";
-    import {today} from "#lib/reports/periods.js";
+    import type {BalanceRow, BalanceSummary, CashBalancesView} from "#lib/journalView/types.js";
     import {settings} from "#lib/stores/settings.svelte.js";
     import AccountBalanceRow from "./AccountBalanceRow.svelte";
-    import {styleFor} from "./series";
 
-    // allTxns: the UNFILTERED journal. Named for what it must be, because
-    // passing the filtered array would silently produce wrong balances rather
-    // than an error.
-    let {allTxns, decls}: {allTxns: Transaction[]; decls: readonly AccountDecl[]} = $props();
+    // view: the engine's answer for the WHOLE journal as of today, every
+    // commodity at once (`/api/balances/cash`), so switching currency is local.
+    let {view}: {view: CashBalancesView} = $props();
 
-    const asOf = today();
-    // Memoized in cashBalances on (txns, decls, asOf) identity, so the
-    // `negative-cash` check rule and this view share one whole-journal pass.
-    const balances = $derived(accountBalances(allTxns, decls, asOf));
-    // Same memoized pass as `balances`, so naming the guesses costs nothing.
-    const guessed = $derived(guessedLongTerm(allTxns, decls, asOf));
-    const commodities = $derived(balanceCommodities(balances));
+    const asOf = $derived(view.asOf);
+    const guessed = $derived(view.guessedLongTerm);
+    const commodities = $derived(view.commodities);
+
+    /** Rows worth drawing: every row when `hideZero` is false, else only those with a non-zero balance. */
+    const visibleRows = (rows: readonly BalanceRow[], hideZero: boolean): BalanceRow[] => (hideZero ? rows.filter((row) => row.qty.m !== 0n) : [...rows]);
+    /** A journal holding no cash or liability account at all: no rows, zero totals. */
+    const emptySummary = (c: string): BalanceSummary => ({
+        commodity: c,
+        style: DEFAULT_AMOUNT_STYLE,
+        cash: [],
+        liabilities: [],
+        totalCash: ZERO,
+        totalLiabilities: ZERO,
+        net: ZERO,
+    });
 
     let chosenCommodity = $state<string | null>(null);
     const commodity = $derived(chosenCommodity !== null && commodities.includes(chosenCommodity) ? chosenCommodity : (commodities[0] ?? "$"));
-    const style = $derived(styleFor(allTxns, commodity));
-
-    const summary = $derived(summarize(balances, commodity));
+    const summary = $derived(view.summaries[Math.max(0, commodities.indexOf(commodity))] ?? emptySummary(commodity));
+    const style = $derived(summary.style);
     const cash = $derived(visibleRows(summary.cash, settings.hideZeroBalances));
     const liabilities = $derived(visibleRows(summary.liabilities, settings.hideZeroBalances));
     const hiddenCount = $derived(summary.cash.length + summary.liabilities.length - cash.length - liabilities.length);

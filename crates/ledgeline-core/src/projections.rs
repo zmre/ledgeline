@@ -106,8 +106,8 @@ mod discovery;
 pub mod serialize;
 
 pub use discovery::{
-    CreateRefusal, DiscoveredProjection, Discovery, ProjectionPath, discover, is_journal_name,
-    label_for, slug_filename,
+    CreateRefusal, DiscoveredProjection, Discovery, ProjectionPath, discover, discover_in,
+    is_journal_name, label_for, slug_filename,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -271,6 +271,70 @@ impl LineRole {
             _ => None,
         }
     }
+}
+
+/// Which of the what-if table's four sections a line belongs in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LineSection {
+    /// A recurring flow on a revenue account.
+    Income,
+    /// Every other recurring flow — expenses, and transfers to an asset
+    /// ("expenses and other outflows").
+    Expense,
+    /// A [`LineRole::Asset`] row: a balance that compounds.
+    Asset,
+    /// A single-date rule (`~ 2027-03-01`): a line in the model, a one-off to a
+    /// reader.
+    Oneoff,
+}
+
+/// The section a line's ROLE, PERIOD and ACCOUNT TYPE put it in (plan 26 B6;
+/// the rule the SPA's `scenarioModel.resolvedSection` carried).
+///
+/// The order of the three tests is the contract:
+///
+/// 1. **`role: asset` wins outright.** An asset row states a BALANCE, and only
+///    `role` can make one, so its section is constant for the row's life — a
+///    dated asset row is still a balance.
+/// 2. **A single-date period is a one-off.** `seed_scenario` deliberately
+///    leaves `~ 2027-03-01` a LINE so the file round trip says so, but a reader
+///    reads it among the events; the engine treats the two identically.
+/// 3. **Revenue is Income; everything else is Expense**, a recurring transfer
+///    to an asset account included — the same two-way split the budget makes,
+///    decided by the account's resolved TYPE ([`entered_negated`]), never its
+///    name.
+///
+/// [`entered_negated`]: crate::reports::account_types::entered_negated
+#[must_use]
+pub fn line_section(
+    role: LineRole,
+    period_raw: &str,
+    account: &str,
+    declared: &BTreeMap<String, AccountType>,
+) -> LineSection {
+    if role == LineRole::Asset {
+        return LineSection::Asset;
+    }
+    if is_single_date(period_raw.trim()) {
+        return LineSection::Oneoff;
+    }
+    if crate::reports::account_types::entered_negated(account, declared) {
+        LineSection::Income
+    } else {
+        LineSection::Expense
+    }
+}
+
+/// `YYYY-MM-DD` by shape — what a single-date `~` header is, and all the SPA's
+/// date inputs produce.
+fn is_single_date(raw: &str) -> bool {
+    let bytes = raw.as_bytes();
+    bytes.len() == 10
+        && bytes.iter().enumerate().all(|(at, byte)| match at {
+            4 | 7 => *byte == b'-',
+            _ => byte.is_ascii_digit(),
+        })
 }
 
 /// One recurring row of the what-if table.

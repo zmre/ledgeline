@@ -18,8 +18,9 @@
 //! `/api/prices/status` is a read of a computed report, same as everything in
 //! `reports_api`. The other two are writes into the user's journal, carrying
 //! the same safety apparatus that implies: `journals::targets`-resolved
-//! handles, a `Fingerprint` and inode pin closing the write's TOCTOU window,
-//! one `pinned::replace`, a reparse-and-verify before it. The model is `budget_api`,
+//! handles, a `Fingerprint` and identity pin (a vault `Revision`) closing the
+//! write's TOCTOU window, one `Vault::replace` (on the desktop
+//! `pinned::replace`), a reparse-and-verify before it. The model is `budget_api`,
 //! which solves the identical problem for `~` budget rules, and the pipeline
 //! below is deliberately the same pipeline.
 //!
@@ -63,16 +64,17 @@ use futures::stream::{self, StreamExt};
 use ledgeline_core::edit::render_amount;
 use ledgeline_core::holdings::{HoldingsScope, ScopeMode, compute_holdings};
 use ledgeline_core::model::{Amount, Commodity, Journal};
-use ledgeline_core::pinned::{self, Pin, WriteError};
-use ledgeline_core::{Dec, journals, parse};
+use ledgeline_core::vault::{Revision, VaultError, VaultPath};
+use ledgeline_core::{Dec, journals};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
-use std::path::{Path as FsPath, PathBuf};
+use std::path::Path as FsPath;
 use std::sync::Arc;
 
 use crate::AppState;
 use crate::edit_api::{infer_style, json_body};
 use crate::error::{AppError, editing_disabled};
+use crate::location::JournalLocation;
 use crate::reports_api::{WireDec, compute, today_utc};
 use crate::security::no_store_json as no_store;
 use crate::yahoo::{FetchedPrice, YahooError};
@@ -304,12 +306,18 @@ fn prices_status(state: &AppState, editable: bool) -> Result<WirePricesStatus, A
     let as_of = today_utc();
     let (symbols, quote) = symbols_to_price(journal, &as_of)?;
 
-    let candidates = candidate_targets(journal);
+    // A journal with no backing file has no files to offer.
+    let location = snapshot.storage();
     let tally = price_counts(journal);
-    let files: Vec<WirePricesFile> = candidates
-        .iter()
-        .map(|target| wire_file(journal, target, &tally))
-        .collect();
+    let files: Vec<WirePricesFile> = location
+        .as_ref()
+        .map(|location| {
+            candidate_targets(location, journal)
+                .iter()
+                .map(|target| wire_file(location, journal, target, &tally))
+                .collect()
+        })
+        .unwrap_or_default();
     let default_target = files
         .iter()
         .find(|file| file.writable)
@@ -320,7 +328,10 @@ fn prices_status(state: &AppState, editable: bool) -> Result<WirePricesStatus, A
         quote_commodity: quote.0,
         symbols,
         default_target,
-        can_create_file: editable && can_create(journal).is_ok(),
+        can_create_file: editable
+            && location
+                .as_ref()
+                .is_some_and(|location| can_create(location, journal).is_ok()),
         create_file_name: PRICES_FILE,
         files,
     })
@@ -392,12 +403,13 @@ fn price_counts(journal: &Journal) -> HashMap<&FsPath, usize> {
 }
 
 fn wire_file(
+    location: &JournalLocation,
     journal: &Journal,
     target: &journals::JournalTarget,
     tally: &HashMap<&FsPath, usize>,
 ) -> WirePricesFile {
-    let price_count = journal_path(journal, &target.id)
-        .and_then(|path| tally.get(path.as_path()).copied())
+    let price_count = journal_path(location, journal, &target.id)
+        .and_then(|path| tally.get(location.key(&path).as_path()).copied())
         .unwrap_or(0);
     WirePricesFile {
         journal_id: target.id.clone(),
@@ -421,15 +433,18 @@ fn wire_file(
 /// journal still has somewhere for its first price to go.
 ///
 /// [`PriceDirective::source_file`]: ledgeline_core::model::PriceDirective::source_file
-fn candidate_targets(journal: &Journal) -> Vec<journals::JournalTarget> {
-    let targets = journals::targets(journal);
+fn candidate_targets(
+    location: &JournalLocation,
+    journal: &Journal,
+) -> Vec<journals::JournalTarget> {
+    let targets = location.targets(journal);
     let tally = price_counts(journal);
     let counted: Vec<(journals::JournalTarget, usize)> = targets
         .iter()
         .cloned()
         .map(|target| {
-            let count = journal_path(journal, &target.id)
-                .and_then(|path| tally.get(path.as_path()).copied())
+            let count = journal_path(location, journal, &target.id)
+                .and_then(|path| tally.get(location.key(&path).as_path()).copied())
                 .unwrap_or(0);
             (target, count)
         })
@@ -479,10 +494,14 @@ const PRICES_FILE_HEADER: &str = "\
 /// Whether a `prices.journal` may be created, and why not when it may not.
 /// Mirrors `budget_api::can_create` exactly, keyed on `journal.prices` instead
 /// of `journal.periodic_transactions`.
-fn can_create(journal: &Journal) -> Result<(PathBuf, PathBuf), AppError> {
+fn can_create(
+    location: &JournalLocation,
+    journal: &Journal,
+) -> Result<(VaultPath, VaultPath), AppError> {
     let main = journal
         .source_files
         .first()
+        .and_then(|key| location.path_of(key))
         .ok_or_else(|| AppError::BadRequest("no journal is open".to_string()))?;
     let root = main.parent().ok_or_else(|| {
         AppError::Internal("the open journal has no containing directory".to_string())
@@ -494,8 +513,11 @@ fn can_create(journal: &Journal) -> Result<(PathBuf, PathBuf), AppError> {
                 .to_string(),
         ));
     }
-    let prices_file = root.join(PRICES_FILE);
-    if prices_file.symlink_metadata().is_ok() {
+    let prices_file = root
+        .child(PRICES_FILE)
+        .map_err(|_| AppError::Internal(format!("{PRICES_FILE} is not a valid file name")))?;
+    // `stat` never follows a link: a dangling symlink at the name is taken.
+    if !matches!(location.vault().stat(&prices_file), Ok(None)) {
         return Err(already_exists());
     }
     Ok((main.clone(), prices_file))
@@ -517,13 +539,19 @@ fn already_exists() -> AppError {
 fn create_prices_file(state: &AppState) -> Result<WireCreatedPricesFile, AppError> {
     let snapshot = state.snapshot();
     let journal = &snapshot.journal;
-    let (main, prices_file) = can_create(journal)?;
+    let location = snapshot
+        .storage()
+        .ok_or_else(|| AppError::BadRequest("no journal is open".to_string()))?;
+    let (main, prices_file) = can_create(&location, journal)?;
 
     // Pinned, so the `include` below lands only on the main journal as read
     // here — never through a link swapped in since, never over an edit made in
     // between.
-    let (main_text, main_pin) = pinned::read_pinned_string(&main).map_err(|error| {
-        AppError::Internal(format!("your journal could not be read: {}", error.kind()))
+    let (main_text, main_revision) = read_pinned_text(&location, &main).map_err(|error| {
+        AppError::unless_not_downloaded(
+            &error,
+            AppError::Internal(format!("your journal could not be read: {}", error.kind())),
+        )
     })?;
     let newline = if main_text.contains("\r\n") {
         "\r\n"
@@ -542,36 +570,45 @@ fn create_prices_file(state: &AppState) -> Result<WireCreatedPricesFile, AppErro
         (main.clone(), new_main.clone()),
         (prices_file.clone(), PRICES_FILE_HEADER.to_string()),
     ]);
-    if parse::parse_journal_with_overrides(&journal.source_name, &overrides).is_err() {
+    if location.reparse(&overrides).is_err() {
         return Err(AppError::BadRequest(
             "including a prices file would make your journal unreadable, so nothing was written"
                 .to_string(),
         ));
     }
 
-    // `O_CREAT | O_EXCL | O_NOFOLLOW`: the "never overwritten" promise
-    // `can_create` checked is the kernel's, decided at the open, so a file or a
-    // symlink planted since that check is refused rather than written through.
-    pinned::create_new(&prices_file, PRICES_FILE_HEADER.as_bytes()).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::AlreadyExists {
-            return already_exists();
-        }
-        AppError::Internal(format!(
-            "{PRICES_FILE} could not be created: {}. Nothing else was changed.",
-            error.kind()
-        ))
-    })?;
-    pinned::replace(&main, new_main.as_bytes(), &main_pin).map_err(|error| {
-        let reason = match error {
-            WriteError::Changed => "it changed on disk while this was being done".to_string(),
-            WriteError::Io(error) => error.kind().to_string(),
-        };
-        AppError::Internal(format!(
-            "{PRICES_FILE} was created, but your main journal could not be updated to include it: \
-             {}. Add `{include_line}` to it yourself, or delete {PRICES_FILE}.",
-            reason
-        ))
-    })?;
+    // `Vault::create_new` (on the desktop `O_CREAT | O_EXCL | O_NOFOLLOW`): the
+    // "never overwritten" promise `can_create` checked is decided at the create
+    // itself, so a file or a symlink planted since that check is refused rather
+    // than written through.
+    location
+        .vault()
+        .create_new(&prices_file, PRICES_FILE_HEADER.as_bytes())
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                return already_exists();
+            }
+            AppError::Internal(format!(
+                "{PRICES_FILE} could not be created: {}. Nothing else was changed.",
+                error.kind()
+            ))
+        })?;
+    location
+        .vault()
+        .replace(&main, new_main.as_bytes(), &main_revision)
+        .map_err(|error| {
+            let reason = match error {
+                VaultError::Changed { .. } => {
+                    "it changed on disk while this was being done".to_string()
+                }
+                error => error.kind().to_string(),
+            };
+            AppError::Internal(format!(
+                "{PRICES_FILE} was created, but your main journal could not be updated to \
+                 include it: {}. Add `{include_line}` to it yourself, or delete {PRICES_FILE}.",
+                reason
+            ))
+        })?;
 
     if let Some(Err(error)) = state.reopen_editor() {
         eprintln!(
@@ -579,8 +616,11 @@ fn create_prices_file(state: &AppState) -> Result<WireCreatedPricesFile, AppErro
         );
     }
 
-    let journal = state.snapshot().journal.clone();
-    let targets = journals::targets(&journal);
+    let after = state.snapshot();
+    let targets = after
+        .storage()
+        .map(|location| location.targets(&after.journal))
+        .unwrap_or_default();
     let main_journal_id = targets
         .iter()
         .find(|target| target.is_root)
@@ -602,11 +642,14 @@ fn create_prices_file(state: &AppState) -> Result<WireCreatedPricesFile, AppErro
 /// the fingerprint recheck in [`apply_update`] rather than silently mixed in.
 struct UpdatePlan {
     id: String,
-    path: PathBuf,
+    /// The vault `path` is in — the plan's own, so the write after the fetch
+    /// lands in the storage the read came from.
+    location: Arc<JournalLocation>,
+    path: VaultPath,
     text: String,
-    /// The inode and bytes `text` was read as. The write, after the network
+    /// The identity and bytes `text` was read as. The write, after the network
     /// round trip, lands only if the file is still exactly that.
-    pin: Pin,
+    revision: Revision,
     as_of: String,
     quote: Commodity,
     symbols: Vec<WirePriceSymbol>,
@@ -616,7 +659,9 @@ struct UpdatePlan {
 fn plan_update(state: &AppState, id: &str) -> Result<UpdatePlan, AppError> {
     let snapshot = state.snapshot();
     let journal = &snapshot.journal;
-    let target = journals::targets(journal)
+    let location = snapshot.storage().ok_or_else(|| unresolved(id))?;
+    let target = location
+        .targets(journal)
         .into_iter()
         .find(|target| target.id == id)
         .ok_or_else(|| unresolved(id))?;
@@ -627,16 +672,17 @@ fn plan_update(state: &AppState, id: &str) -> Result<UpdatePlan, AppError> {
             quoted(id)
         )));
     }
-    let path = journal_path(journal, id).ok_or_else(|| unresolved(id))?;
-    let (text, pin) = read_journal(&path, id)?;
+    let path = journal_path(&location, journal, id).ok_or_else(|| unresolved(id))?;
+    let (text, revision) = read_journal(&location, &path, id)?;
     let as_of = today_utc();
     let (symbols, quote) = symbols_to_price(journal, &as_of)?;
 
     Ok(UpdatePlan {
         id: id.to_string(),
+        location,
         path,
         text,
-        pin,
+        revision,
         as_of,
         quote,
         symbols,
@@ -735,7 +781,7 @@ fn apply_update(
 
     if new_text != plan.text {
         let overrides = HashMap::from([(plan.path.clone(), new_text.clone())]);
-        parse::parse_journal_with_overrides(&journal.source_name, &overrides).map_err(|_| {
+        plan.location.reparse(&overrides).map_err(|_| {
             AppError::BadRequest(format!(
                 "the fetched prices could not be added to {}: doing so would make it unreadable as \
                  part of your journal, so nothing was written",
@@ -743,19 +789,21 @@ fn apply_update(
             ))
         })?;
 
-        // Pinned to the inode and bytes read before the fetch: `pinned::replace`
-        // re-checks both through the descriptor it replaces, right up to the
-        // rename, and never follows a link.
-        pinned::replace(&plan.path, new_text.as_bytes(), &plan.pin).map_err(
-            |error| match error {
-                WriteError::Changed => stale(&plan.id),
-                WriteError::Io(error) => AppError::Internal(format!(
+        // Pinned to the identity and bytes read before the fetch:
+        // `Vault::replace` (on the desktop `pinned::replace`) re-checks both
+        // through the descriptor it replaces, right up to the rename, and never
+        // follows a link.
+        plan.location
+            .vault()
+            .replace(&plan.path, new_text.as_bytes(), &plan.revision)
+            .map_err(|error| match error {
+                VaultError::Changed { .. } => stale(&plan.id),
+                error => AppError::Internal(format!(
                     "{} could not be written: {}. Nothing else was changed.",
                     quoted(&plan.id),
                     error.kind()
                 )),
-            },
-        )?;
+            })?;
 
         if let Some(Err(error)) = state.reopen_editor() {
             eprintln!("ledgeline: the journal could not be re-read after a price update: {error}");
@@ -764,11 +812,13 @@ fn apply_update(
 
     let after = state.snapshot();
     let tally = price_counts(&after.journal);
-    let target = journals::targets(&after.journal)
+    let location = after.storage().ok_or_else(|| unresolved(&plan.id))?;
+    let target = location
+        .targets(&after.journal)
         .into_iter()
         .find(|target| target.id == plan.id)
         .ok_or_else(|| unresolved(&plan.id))?;
-    let file = wire_file(&after.journal, &target, &tally);
+    let file = wire_file(&location, &after.journal, &target, &tally);
     Ok(WireUpdateResponse { file, results })
 }
 
@@ -847,14 +897,8 @@ fn line_exists(text: &str, date: &str, symbol: &str) -> bool {
 
 /// The path a `journalId` names, taken from the files the parse actually read.
 /// Mirrors `budget_api::journal_path` exactly.
-fn journal_path(journal: &Journal, id: &str) -> Option<PathBuf> {
-    let root = journal.source_files.first()?.parent()?;
-    let candidate = root.join(id);
-    journal
-        .source_files
-        .iter()
-        .find(|source| *source == &candidate)
-        .cloned()
+fn journal_path(location: &JournalLocation, journal: &Journal, id: &str) -> Option<VaultPath> {
+    location.source_path(journal, id)
 }
 
 /// Layer 1: shape, before any filesystem call. Mirrors
@@ -893,13 +937,17 @@ fn validate_journal_id(id: &str) -> Result<(), AppError> {
 }
 
 /// Read one journal file, reporting only what the caller already knows, with
-/// the [`Pin`] a later write of it must still match — identity and fingerprint
-/// from one open descriptor.
+/// the [`Revision`] a later write of it must still match — identity and
+/// fingerprint from one read.
 ///
 /// Never follows a symlink: the path is the real one the snapshot resolved, so
 /// a link there now was swapped in since, and that is a stale revision.
-fn read_journal(path: &FsPath, id: &str) -> Result<(String, Pin), AppError> {
-    pinned::read_pinned_string(path).map_err(|error| {
+fn read_journal(
+    location: &JournalLocation,
+    path: &VaultPath,
+    id: &str,
+) -> Result<(String, Revision), AppError> {
+    read_pinned_text(location, path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::InvalidInput {
             return stale(id);
         }
@@ -909,6 +957,23 @@ fn read_journal(path: &FsPath, id: &str) -> Result<(String, Pin), AppError> {
             error.kind()
         ))
     })
+}
+
+/// A journal file's text and the [`Revision`] a later write of it must still
+/// match — identity and fingerprint from one read, never through a link at the
+/// final component. As an `io::Error` so callers branch on its kind: a symlink
+/// or non-regular file is `InvalidInput`, non-UTF-8 is `InvalidData`.
+fn read_pinned_text(
+    location: &JournalLocation,
+    path: &VaultPath,
+) -> std::io::Result<(String, Revision)> {
+    let (bytes, revision) = location
+        .vault()
+        .read_pinned(path, None)
+        .map_err(std::io::Error::from)?;
+    let text = String::from_utf8(bytes)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    Ok((text, revision))
 }
 
 /// A `404` that quotes only the caller's own handle.
@@ -944,6 +1009,7 @@ fn quoted(value: &str) -> String {
 mod tests {
     use super::*;
     use ledgeline_core::model::{Commodity as CoreCommodity, PriceDirective};
+    use std::path::PathBuf;
 
     fn price_directive(date: &str, commodity: &str, source_file: &str) -> PriceDirective {
         use ledgeline_core::decimal::Dec;

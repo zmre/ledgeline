@@ -3,7 +3,6 @@
 
 import {HledgerApi, SETTINGS_STORAGE_KEY} from "#lib/api/client.js";
 import {PIE_DIMENSIONS, type PieDimension} from "#lib/holdings/profileTypes.js";
-import {BENCHMARKS, isBenchmarkSymbol} from "#lib/holdings/benchmarks.js";
 
 /** Journal table column toggles (defaults per WP-03: Date, Status, Description, Accounts, Amount). */
 export interface ColumnConfig {
@@ -28,8 +27,8 @@ interface PersistedSettings {
      * the engine prints at startup and takes from $LEDGELINE_TOKEN. Embedded
      * (same-origin) pages ignore this: the GUI hands its WebView the token out
      * of band and a headless engine prints a `#token=` launch URL, and
-     * `apiToken()` in api/client.ts prefers either of those. Null when
-     * talking to a plain hledger-web, which has no token.
+     * `apiToken()` in api/client.ts prefers either of those. Null when no
+     * token was entered.
      */
     serverToken: string | null;
     columns: ColumnConfig;
@@ -90,9 +89,17 @@ interface PersistedSettings {
 }
 
 /** Keep only catalog symbols, once each, in catalog order. */
+/**
+ * Ticked benchmark symbols as persisted: ticker-shaped strings, deduplicated, in
+ * the order they were ticked. Membership in the catalog is NOT checked here — the
+ * catalog is the engine's (`/api/holdings/benchmarks/catalog`) and is not known
+ * at startup — so the chart restricts these to the catalog, in slot order, before
+ * it asks (`catalogOrder`).
+ */
+const TICKER = /^[A-Z0-9.^=-]{1,12}$/;
 function cleanBenchmarks(value: unknown): string[] {
-    const picked = Array.isArray(value) ? value.filter(isBenchmarkSymbol) : [];
-    return BENCHMARKS.map((b) => b.symbol).filter((symbol) => picked.includes(symbol));
+    const picked = Array.isArray(value) ? value.filter((v): v is string => typeof v === "string" && TICKER.test(v)) : [];
+    return [...new Set(picked)];
 }
 
 const defaults = (): PersistedSettings => ({

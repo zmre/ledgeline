@@ -10,28 +10,15 @@
 // 1005/1e3 is stored as 1.00499999999999989…, which Excel prints as 1.00 while
 // the screen prints 1.01.
 
-import {isAccountType, type AccountType} from "#lib/domain/accountTypes.js";
-import {
-    dec,
-    displayPlaces,
-    formatDec,
-    maAdd,
-    maNeg,
-    MAX_DISPLAY_DECIMALS,
-    MAX_QUANTITY_DECIMALS,
-    roundTo,
-    toNumber,
-    type Dec,
-    type MixedAmount,
-} from "#lib/domain/money.js";
+import {dec, displayPlaces, formatDec, MAX_DISPLAY_DECIMALS, MAX_QUANTITY_DECIMALS, roundTo, toNumber, type Dec, type MixedAmount} from "#lib/domain/money.js";
 import type {AmountStyle} from "#lib/domain/types.js";
 import type {HoldingsReport} from "#lib/holdings/types.js";
-import {budgetLeaves, budgetTotals, magnitudeAmount, primaryValue, summarizeBudget, type BudgetLine} from "#lib/reports/budgetSummary.js";
-import {bucketLabel} from "#lib/reports/periods.js";
+import {primaryValue} from "#lib/reports/budgetSummary.js";
 import type {
     Amounts,
     BalanceSheetReport,
     BsSectionKind,
+    BudgetBar,
     BudgetReport,
     IncomeStatementReport,
     IsSectionKind,
@@ -597,51 +584,37 @@ function setPct(cell: Cell, spent: number | null, budget: number | null, bold = 
     if (bold) cell.font = {bold: true};
 }
 
-/** One Spent/Budget/Remaining/% row from a line's magnitudes (income budgets are negative on the wire). */
-function addBudgetRow(ws: Worksheet, rowIx: number, label: string, actual: MixedAmount, goal: MixedAmount, indent: number, bold = false): void {
+/** One Spent/Budget/Remaining/% row from an engine bar (all magnitudes already). */
+function addBudgetRow(ws: Worksheet, rowIx: number, label: string, bar: BudgetBar, indent: number, bold = false): void {
     labelCell(ws, rowIx, label, indent, bold);
-    setAmount(ws.getCell(rowIx, 2), actual);
-    setAmount(ws.getCell(rowIx, 3), goal);
-    setAmount(ws.getCell(rowIx, 4), maAdd(goal, maNeg(actual)));
-    setPct(ws.getCell(rowIx, 5), primaryValue(actual), primaryValue(goal), bold);
+    setAmount(ws.getCell(rowIx, 2), bar.actual);
+    setAmount(ws.getCell(rowIx, 3), bar.goal);
+    setAmount(ws.getCell(rowIx, 4), bar.remaining);
+    setPct(ws.getCell(rowIx, 5), primaryValue(bar.actual), primaryValue(bar.goal), bold);
     if (bold) for (const col of [2, 3, 4]) ws.getCell(rowIx, col).font = {bold: true};
 }
 
 /**
  * Budget summary: Spent / Budget / Remaining / % of budget per leaf category,
- * split into the SAME two sections the page renders (BudgetSummary.svelte:
- * Income then Expenses), each with its own total.
+ * split into the SAME two sections the page renders (the engine's
+ * `BudgetReport.summary`: Income then Expenses), each with its own total.
  *
- * There is deliberately no single grand total. Income and expenses are opposite
- * signs on the wire and are shown here in magnitude, so one sum over both
- * columns is |income| + |expenses| — a figure that appears nowhere on screen and
- * means nothing (its "% of budget" even less). Two sections, two totals, exactly
- * as the page shows them.
- *
- * Section totals come from `budgetTotals` and take their magnitude AFTER
- * summing, matching the page's overall bar rather than re-deriving it.
+ * There is deliberately no single grand total. Income and expenses are shown in
+ * magnitude, so one sum over both columns is |income| + |expenses| — a figure
+ * that appears nowhere on screen and means nothing (its "% of budget" even
+ * less). Two sections, two totals, exactly as the page shows them.
  */
-function addBudget(ws: Worksheet, report: BudgetReport, declared: ReadonlyMap<string, AccountType>): void {
-    const leaves = budgetLeaves(summarizeBudget(report));
-    // `isAccountType`, so a declared subtype folds into its parent section.
-    // These two sections are the whole partition, so a `type: G` goal matching
-    // neither would be exported nowhere at all.
-    const ofType = (type: AccountType): BudgetLine[] => leaves.filter((l) => isAccountType(l.account, declared, type));
-    const sections = [
-        {title: "Income", lines: ofType("revenue")},
-        {title: "Expenses", lines: ofType("expense")},
-    ].filter((s) => s.lines.length > 0);
-
+function addBudget(ws: Worksheet, report: BudgetReport): void {
     let rowIx = 5;
-    for (const section of sections) {
-        labelCell(ws, rowIx, section.title, 0, true);
+    for (const section of report.summary.sections) {
+        const title = section.kind === "revenue" ? "Income" : "Expenses";
+        labelCell(ws, rowIx, title, 0, true);
         rowIx += 1;
-        for (const line of section.lines) {
-            addBudgetRow(ws, rowIx, line.account, magnitudeAmount(line.actual), magnitudeAmount(line.goal ?? new Map()), 1);
+        for (const bar of section.bars) {
+            addBudgetRow(ws, rowIx, bar.account, bar, 1);
             rowIx += 1;
         }
-        const totals = budgetTotals(section.lines);
-        addBudgetRow(ws, rowIx, `Total ${section.title}`, magnitudeAmount(totals.actual), magnitudeAmount(totals.goal), 0, true);
+        addBudgetRow(ws, rowIx, `Total ${title}`, section.overall, 0, true);
         rowIx += 1;
     }
 }
@@ -711,7 +684,7 @@ export async function buildIncomeStatementWorkbook(report: IncomeStatementReport
     const priorExtrasHeader = report.prior === null ? [] : [`Other commodities (${report.prior.from} … ${report.prior.to})`];
     const headers =
         report.buckets !== null
-            ? ["Account", ...report.buckets.map((bucket) => bucketLabel(bucket.key)), `Total${inBase}`, "Other commodities"]
+            ? ["Account", ...report.buckets.map((bucket) => bucket.label), `Total${inBase}`, "Other commodities"]
             : report.prior !== null
               ? ["Account", `Amount${inBase}`, ...priorHeader, "% change", "Other commodities", ...priorExtrasHeader]
               : ["Account", `Amount${inBase}`, "Other commodities"];
@@ -769,16 +742,12 @@ export async function buildHoldingsWorkbook(report: HoldingsReport, meta: {title
 }
 
 /** Budget workbook: one row per revenue/expense leaf (Spent/Budget/Remaining/% of budget) and a bold total. */
-export async function buildBudgetWorkbook(
-    report: BudgetReport,
-    meta: {title: string; params: string},
-    declared: ReadonlyMap<string, AccountType>
-): Promise<Workbook> {
+export async function buildBudgetWorkbook(report: BudgetReport, meta: {title: string; params: string}): Promise<Workbook> {
     const {Workbook: ExcelWorkbook} = await import("exceljs");
     const workbook = new ExcelWorkbook();
     const ws = workbook.addWorksheet(meta.title);
     addTitleRows(ws, meta, ["Account", "Spent", "Budget", "Remaining", "% of budget"]);
-    addBudget(ws, report, declared);
+    addBudget(ws, report);
     return workbook;
 }
 
@@ -820,11 +789,6 @@ export async function exportHoldingsXlsx(report: HoldingsReport, meta: {title: s
 }
 
 /** Build the budget .xlsx and trigger a browser download. */
-export async function exportBudgetXlsx(
-    report: BudgetReport,
-    meta: {title: string; params: string},
-    filename: string,
-    declared: ReadonlyMap<string, AccountType>
-): Promise<void> {
-    await downloadWorkbook(await buildBudgetWorkbook(report, meta, declared), filename);
+export async function exportBudgetXlsx(report: BudgetReport, meta: {title: string; params: string}, filename: string): Promise<void> {
+    await downloadWorkbook(await buildBudgetWorkbook(report, meta), filename);
 }

@@ -785,7 +785,7 @@ pub(crate) fn commit_journal(
         return Ok(WireQbCommit {
             imported: 0,
             id_matches,
-            ordering: qb_ordering(&snapshot.journal, &[]),
+            ordering: qb_ordering(&snapshot, &[]),
             git: None,
         });
     }
@@ -793,7 +793,7 @@ pub(crate) fn commit_journal(
     // Sequencing rule (mirrors `import_api::run_commit`'s rule 3): checked
     // server-side, over every file this write *could* touch — see the module
     // docs for why that is the whole tree rather than one known target.
-    let prefs = crate::prefs::load();
+    let prefs = crate::prefs::load(state.app_dirs());
     let handles: Vec<String> = snapshot
         .journal
         .source_files
@@ -850,7 +850,7 @@ pub(crate) fn commit_journal(
 
     // `edit_api::add_transactions` already republished the snapshot; read it
     // fresh here so the ordering check sees the bytes it just wrote.
-    let ordering = qb_ordering(&state.snapshot().journal, &touched);
+    let ordering = qb_ordering(&state.snapshot(), &touched);
 
     Ok(WireQbCommit {
         imported,
@@ -968,11 +968,19 @@ fn journal_handle(journal: &Journal, path: &Path) -> String {
     })
 }
 
-fn qb_ordering(journal: &Journal, touched: &[PathBuf]) -> WireQbOrdering {
+/// Whether each file the import touched is still in date order, read back
+/// through the journal's vault (`snapshot`'s storage). A file that cannot be
+/// read back is left out rather than failing an import that already landed.
+fn qb_ordering(snapshot: &crate::Snapshot, touched: &[PathBuf]) -> WireQbOrdering {
+    let journal = &snapshot.journal;
+    let storage = snapshot.storage();
     let mut files = Vec::new();
     let mut in_order = true;
     for path in touched {
-        let Ok(text) = std::fs::read_to_string(path) else {
+        let Some(text) = storage.as_ref().and_then(|location| {
+            let file = location.path_of(path)?;
+            location.vault().read_to_string(&file).ok()
+        }) else {
             continue;
         };
         let (file_in_order, moves) = match sort::plan(&text) {

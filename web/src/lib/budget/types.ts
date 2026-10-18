@@ -58,6 +58,12 @@ export interface BudgetGoal {
     entry: BudgetEntry | null;
     /** Whether `entry` is the negation of `amount`. */
     inverted: boolean;
+    /**
+     * `entry` normalised to a year by the engine (× 365/52/12/4/1), so goals of
+     * different periods sort comparably; empty for a line with no `entry`, and
+     * null for a rule that is not a bare fixed interval (unranked, not guessed).
+     */
+    annual: MixedAmount | null;
     /** Why this goal is read-only, or null when it can be edited. */
     locked: string | null;
 }
@@ -112,6 +118,12 @@ export interface BudgetListing {
     /** The name that button would create, so the UI can say it out loud. */
     createFileName: string;
     files: BudgetFile[];
+    /**
+     * Per period, the rule a NEW goal of it joins — the first writable,
+     * unlocked rule stating it, in file order — as the engine decided it. A
+     * period with no entry has no such rule, and a goal of it opens one.
+     */
+    joinable: Partial<Record<BudgetPeriod, {journalId: string; block: number}>>;
 }
 
 /** `POST /api/budget/file` — what was created. */

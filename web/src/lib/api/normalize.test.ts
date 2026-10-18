@@ -1,8 +1,8 @@
 import {readFileSync} from "node:fs";
-import {describe, expect, it, vi} from "vitest";
+import {describe, expect, it} from "vitest";
 import {ApiShapeError} from "./client";
 import {formatAmount, MAX_QUANTITY_DECIMALS} from "#lib/domain/money.js";
-import {lastSkippedAccountCount, normalizeAccounts, normalizeCommodityStyles, normalizeDiagnostics, normalizePrices, normalizeTransactions} from "./normalize";
+import {normalizeCommodityStyles, normalizePrices, normalizeTransactions} from "./normalize";
 
 // Hand-rolled wire samples (fixtures/api snapshots are WP-09).
 // "Modern" shape verified against a live hledger 1.52: acost/asdecimalmark/UnitCost.
@@ -225,17 +225,6 @@ describe("UNIT normalizeTransactions", () => {
         expect(txn.postings[1].amounts[0].cost).toBeUndefined();
     });
 
-    it("builds a lowercase haystack from desc, comments, accounts, amounts, commodities", () => {
-        const [txn] = normalizeTransactions([modernTxn]);
-        expect(txn.haystack).toContain("grocery run");
-        expect(txn.haystack).toContain("expenses:food:groceries");
-        expect(txn.haystack).toContain("organic");
-        expect(txn.haystack).toContain("$87.20"); // formatted amount
-        expect(txn.haystack).toContain("3 aapl"); // spaced right-side commodity
-        expect(txn.haystack).toContain("type: food"); // txn comment
-        expect(txn.haystack).not.toMatch(/[A-Z]/);
-    });
-
     it("freezes transactions, postings, and amounts", () => {
         "use strict";
         const [txn] = normalizeTransactions([modernTxn]);
@@ -412,7 +401,7 @@ describe("UNIT normalizeTransactions over the fixtures/api/v1.52 snapshot", () =
         expect(checking?.amounts[0].qty).toEqual({m: 500000n, p: 2});
     });
 
-    it("builds lowercase haystacks (the pending flight)", () => {
+    it("decodes the pending flight", () => {
         // Located by description rather than by index: it is the journal's one
         // `!` transaction, and pinning the index here meant every later fixture
         // edit failed as `expected undefined` instead of naming what moved. The
@@ -421,10 +410,7 @@ describe("UNIT normalizeTransactions over the fixtures/api/v1.52 snapshot", () =
         expect(flight?.index).toBe(188);
         expect(flight?.status).toBe("pending");
         expect(flight?.date).toBe("2026-07-02");
-        expect(flight?.haystack).toContain("delta airlines");
-        expect(flight?.haystack).toContain("expenses:travel:flights");
-        expect(flight?.haystack).toContain("$412.80");
-        expect(flight?.haystack).not.toMatch(/[A-Z]/);
+        expect(flight?.postings.map((p) => p.account)).toContain("expenses:travel:flights");
     });
 
     it("freezes normalized snapshot objects", () => {
@@ -468,168 +454,6 @@ describe("UNIT normalizePrices", () => {
     it("throws ApiShapeError on unrecognized shapes", () => {
         expect(() => normalizePrices("nope")).toThrow(ApiShapeError);
         expect(() => normalizePrices([{bogus: true}])).toThrow(ApiShapeError);
-    });
-});
-
-// ---------------------------------------------------------------------------
-// Engine diagnostics (unbalanced / balance assertion). Advisory findings on a
-// journal the engine DID open, so nothing here may throw — a junk entry costs
-// that one finding, never the journal load.
-// ---------------------------------------------------------------------------
-
-/** Three transactions whose 1-based tindex deliberately differs from their 0-based position. */
-const diagTxns = normalizeTransactions([
-    {...modernTxn, tindex: 1},
-    {...modernTxn, tindex: 2},
-    {...modernTxn, tindex: 3},
-]);
-
-const unbalancedDiag = {
-    txnIndex: 0,
-    rule: "unbalanced",
-    severity: "error",
-    message: "This transaction is unbalanced. The real postings' sum should be 0 but is: $-1.00",
-};
-const assertionDiag = {
-    txnIndex: 2,
-    rule: "assertion",
-    severity: "error",
-    message: "balance assertion failed in assets:bank\n  expected: $10.00\n  actual:   $12.00",
-};
-
-/** Every malformed shape returns [] rather than throwing. */
-const expectNoDiagnostics = (raw: unknown): void => {
-    expect(normalizeDiagnostics(raw, diagTxns)).toEqual([]);
-};
-
-describe("UNIT normalizeDiagnostics", () => {
-    it("decodes a well-formed array, translating the 0-based wire position to the txn's own index", () => {
-        const decoded = normalizeDiagnostics({diagnostics: [unbalancedDiag, assertionDiag]}, diagTxns);
-        expect(decoded).toEqual([
-            {txnIndex: 1, rule: "unbalanced", severity: "error", message: unbalancedDiag.message},
-            {txnIndex: 3, rule: "assertion", severity: "error", message: assertionDiag.message},
-        ]);
-    });
-
-    it("preserves a multi-line message verbatim", () => {
-        const [decoded] = normalizeDiagnostics({diagnostics: [assertionDiag]}, diagTxns);
-        expect(decoded.message).toBe(assertionDiag.message);
-        expect(decoded.message.split("\n")).toHaveLength(3);
-    });
-
-    it("treats an empty array as clean", () => {
-        expectNoDiagnostics({diagnostics: []});
-    });
-
-    it("treats a missing field, null, or a non-array as no diagnostics", () => {
-        expectNoDiagnostics({transactions: []}); // field absent — an older engine build
-        expectNoDiagnostics({diagnostics: null});
-        expectNoDiagnostics({diagnostics: undefined});
-        expectNoDiagnostics({diagnostics: 42});
-        expectNoDiagnostics({diagnostics: "unbalanced"});
-        expectNoDiagnostics({diagnostics: {txnIndex: 0}});
-        expectNoDiagnostics(null); // whole payload null
-        expectNoDiagnostics(undefined);
-        expectNoDiagnostics("nope");
-        expectNoDiagnostics([]); // a bare (pre-diagnostics) transactions array
-    });
-
-    it("skips an entry with a bad severity", () => {
-        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, severity: "critical"}]});
-        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, severity: "ERROR"}]});
-        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, severity: 2}]});
-        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, severity: null}]});
-        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, severity: undefined}]});
-    });
-
-    it("skips an entry with a non-integer or out-of-range txnIndex", () => {
-        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, txnIndex: 1.5}]});
-        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, txnIndex: "0"}]});
-        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, txnIndex: -1}]});
-        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, txnIndex: NaN}]});
-        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, txnIndex: undefined}]});
-        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, txnIndex: null}]});
-        // Past the end of the served array: unanchorable to any row, so dropped.
-        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, txnIndex: 3}]});
-    });
-
-    // An `account`-anchored finding: the `account-tag` rule, whose subject is an
-    // `account` DIRECTIVE and so has no transaction to point at. It is the first
-    // diagnostic to arrive without a `txnIndex`, and the decoder used to drop
-    // exactly that shape.
-    // The engine's real sentence, both halves (`journal_to_tag_diagnostics` in
-    // wire.rs): the accepted codes, then what ignoring the tag cost. Kept whole
-    // because the decoder passes the message through verbatim, and a truncated
-    // fixture would let a decoder that mangled the tail still pass.
-    const tagDiag = {
-        account: "assets:property:house",
-        rule: "account-tag",
-        severity: "warning",
-        message:
-            "account 'assets:property:house' declares `holdings: real-estate`, which is not one of stocks, other, none; " +
-            "the tag is ignored and the account is classified mechanically (does it hold a non-currency commodity?)",
-    };
-
-    it("keeps an account-anchored entry, with a null txnIndex", () => {
-        expect(normalizeDiagnostics({diagnostics: [tagDiag]}, diagTxns)).toEqual([
-            {txnIndex: null, account: "assets:property:house", rule: "account-tag", severity: "warning", message: tagDiag.message},
-        ]);
-    });
-
-    it("drops an entry with NEITHER anchor", () => {
-        // No txnIndex and no account: renderable, but nothing could say what it
-        // was about — worse than losing the one finding.
-        expectNoDiagnostics({diagnostics: [{rule: "account-tag", severity: "warning", message: "something is wrong somewhere"}]});
-        expectNoDiagnostics({diagnostics: [{...tagDiag, account: ""}]});
-        expectNoDiagnostics({diagnostics: [{...tagDiag, account: "   "}]});
-        expectNoDiagnostics({diagnostics: [{...tagDiag, account: 42}]});
-        expectNoDiagnostics({diagnostics: [{...tagDiag, account: null}]});
-    });
-
-    it("still refuses a junk txnIndex rather than demoting it to an account anchor", () => {
-        // An entry carrying BOTH a bad txnIndex and a good account is a bug on
-        // the engine side, not a finding to salvage: the anchors are exclusive,
-        // so falling back would hide the contradiction.
-        expectNoDiagnostics({diagnostics: [{...tagDiag, txnIndex: 99}]});
-        expectNoDiagnostics({diagnostics: [{...tagDiag, txnIndex: 1.5}]});
-        expectNoDiagnostics({diagnostics: [{...tagDiag, txnIndex: null}]});
-    });
-
-    it("decodes both anchor kinds side by side", () => {
-        const decoded = normalizeDiagnostics({diagnostics: [unbalancedDiag, tagDiag, assertionDiag]}, diagTxns);
-        expect(decoded.map((p) => p.txnIndex)).toEqual([1, null, 3]);
-        expect(decoded.map((p) => p.account)).toEqual([undefined, "assets:property:house", undefined]);
-    });
-
-    it("skips an entry with a missing or empty message", () => {
-        expectNoDiagnostics({diagnostics: [{txnIndex: 0, rule: "unbalanced", severity: "error"}]});
-        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, message: ""}]});
-        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, message: "   "}]});
-        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, message: 7}]});
-    });
-
-    it("skips an entry with an unknown or missing rule, and non-object entries", () => {
-        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, rule: "made-up"}]});
-        expectNoDiagnostics({diagnostics: [{...unbalancedDiag, rule: undefined}]});
-        expectNoDiagnostics({diagnostics: [null, undefined, 3, "x", []]});
-    });
-
-    it("keeps the good entries when a bad one sits between them", () => {
-        const decoded = normalizeDiagnostics({diagnostics: [unbalancedDiag, {rule: "assertion"}, null, assertionDiag]}, diagTxns);
-        expect(decoded.map((p) => p.txnIndex)).toEqual([1, 3]);
-    });
-
-    it("collapses exact duplicates (the drawer keys its list by txnIndex + message)", () => {
-        const decoded = normalizeDiagnostics({diagnostics: [unbalancedDiag, {...unbalancedDiag}, assertionDiag]}, diagTxns);
-        expect(decoded).toHaveLength(2);
-    });
-
-    it("accepts a bare diagnostics array as well as the payload envelope", () => {
-        expect(normalizeDiagnostics([unbalancedDiag], diagTxns)).toHaveLength(1);
-    });
-
-    it("returns [] for any diagnostics when no transactions were served", () => {
-        expect(normalizeDiagnostics({diagnostics: [unbalancedDiag]}, [])).toEqual([]);
     });
 });
 
@@ -726,7 +550,7 @@ describe("UNIT normalizeTransactions — posting type and balance assertion", ()
 
 describe("UNIT normalizeTransactions journal payload envelope", () => {
     it("accepts a {transactions, diagnostics} envelope as well as a bare array", () => {
-        const enveloped = normalizeTransactions({transactions: [modernTxn], diagnostics: [unbalancedDiag]});
+        const enveloped = normalizeTransactions({transactions: [modernTxn], diagnostics: [{rule: "unbalanced"}]});
         expect(enveloped).toHaveLength(1);
         expect(enveloped[0].index).toBe(2);
     });
@@ -734,78 +558,5 @@ describe("UNIT normalizeTransactions journal payload envelope", () => {
     it("still throws ApiShapeError when the payload is neither", () => {
         expect(() => normalizeTransactions({nope: true})).toThrow(ApiShapeError);
         expect(() => normalizeTransactions("nope")).toThrow(ApiShapeError);
-    });
-});
-
-describe("UNIT normalizeAccounts", () => {
-    it("extracts the declared `type:` tag; missing/absent declaration → null", () => {
-        const raw = [
-            {aname: "assets:bank:checking", adeclarationinfo: {adicomment: "type: C\n", aditags: [["type", "C"]]}},
-            {aname: "assets:wallet", adeclarationinfo: {aditags: [["type", "Cash"]]}},
-            {aname: "expenses:food", adeclarationinfo: {aditags: []}}, // declared without a type
-            {aname: "assets:broker", adeclarationinfo: null}, // never declared (tree-only)
-        ];
-        expect(normalizeAccounts(raw)).toEqual([
-            {name: "assets:bank:checking", type: "cash", bsterm: null},
-            {name: "assets:wallet", type: "cash", bsterm: null},
-            {name: "expenses:food", type: null, bsterm: null},
-            {name: "assets:broker", type: null, bsterm: null},
-        ]);
-    });
-
-    it("extracts the declared `bsterm:` tag, and refuses a spelling outside the closed vocabulary", () => {
-        // The Balances view and the balance sheet both drop non-current
-        // accounts, so a misspelt term that quietly fell back to `current`
-        // would file a mortgage under short-term debt and look fine doing it.
-        const raw = [
-            {aname: "liabilities:mortgage", adeclarationinfo: {aditags: [["bsterm", "noncurrent"]]}},
-            {aname: "liabilities:card", adeclarationinfo: {aditags: [["bsterm", "Short-Term"]]}}, // synonym, any case
-            {aname: "assets:art", adeclarationinfo: {aditags: [["bsterm", "long-ish"]]}}, // outside the vocabulary → null
-        ];
-        expect(normalizeAccounts(raw)).toEqual([
-            {name: "liabilities:mortgage", type: null, bsterm: "noncurrent"},
-            {name: "liabilities:card", type: null, bsterm: "current"},
-            {name: "assets:art", type: null, bsterm: null},
-        ]);
-    });
-
-    it("skips the empty root account and unknown type letters", () => {
-        const raw = [
-            {aname: "", adeclarationinfo: null},
-            {aname: "assets", adeclarationinfo: {aditags: [["type", "Z"]]}}, // unrecognized → null, not dropped
-        ];
-        expect(normalizeAccounts(raw)).toEqual([{name: "assets", type: null, bsterm: null}]);
-    });
-
-    it("throws ApiShapeError when the payload is not an array", () => {
-        expect(() => normalizeAccounts({nope: true})).toThrow(ApiShapeError);
-    });
-
-    it("counts and reports malformed entries instead of dropping them in silence (FE-5g)", () => {
-        // A dropped declaration is not a small loss: reports classify accounts
-        // by their DECLARED type, so losing one re-buckets a whole subtree and
-        // makes its totals read zero — a wrong answer that looks like a right
-        // one. Skipping it quietly left nothing to notice.
-        const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-        try {
-            const raw = [{aname: "assets", adeclarationinfo: {aditags: [["type", "A"]]}}, {aname: 42}, {nothing: true}];
-            expect(normalizeAccounts(raw)).toEqual([{name: "assets", type: "asset", bsterm: null}]);
-            expect(lastSkippedAccountCount()).toBe(2);
-            expect(warn).toHaveBeenCalledTimes(1);
-            expect(String(warn.mock.calls[0][0])).toMatch(/skipped 2 malformed entries/);
-        } finally {
-            warn.mockRestore();
-        }
-    });
-
-    it("stays silent about the empty root account, which every healthy payload has", () => {
-        const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-        try {
-            expect(normalizeAccounts([{aname: "", adeclarationinfo: null}, {aname: "assets"}])).toEqual([{name: "assets", type: null, bsterm: null}]);
-            expect(lastSkippedAccountCount()).toBe(0);
-            expect(warn).not.toHaveBeenCalled();
-        } finally {
-            warn.mockRestore();
-        }
     });
 });

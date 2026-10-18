@@ -1,30 +1,36 @@
-// Editing a scenario: the sign flip, the sections, step split/merge, and the
+// Editing a scenario: magnitudes, the sections, step split/merge, and the
 // encoder that puts one on the wire.
 //
 // Pure module — no Svelte, no DOM, no clock — so every decision below is tested
 // by calling it rather than by building a screen to reach it (`web/README.md`).
 // `scenarioStore.svelte.ts` is the thin `$state` wrapper that calls into here.
 //
-// # The sign, stated once
+// # The sign is the engine's
 //
-// A scenario line carries the JOURNAL's sign: `(income:salary) $-5188.33` is
-// negative, `(expenses:rent) $4200` is positive, exactly as
-// `projections_api.rs` sends and reads them. The table shows and takes
-// MAGNITUDES, the way the budget editor does for goals — a user typing an income
-// line types what they earn, not the negation of it.
+// A scenario line as the engine sends it carries the JOURNAL's sign:
+// `(income:salary) $-5188.33` is negative, `(expenses:rent) $4200` positive. The
+// table shows and takes MAGNITUDES, the way the budget editor does for goals —
+// a user typing an income line types what they earn. An edited line keeps what
+// was typed as its `entry` and sends it as such; the ENGINE signs it by the
+// account's resolved type (`account_types::signed_entry`, plan 26 B6). Nothing
+// here negates an amount, so nothing here can get the sign wrong — moving a row
+// from `expenses:rent` to `income:rent` just re-enters its magnitude
+// ([`withAccount`]) and the engine re-signs it.
 //
-// [`signedQuantity`] is the only place that flip happens, and it decides by the
-// account's resolved TYPE, never by its name ([[account-type-not-name]]). That
-// is also why [`withAccount`] exists: moving a row from `expenses:rent` to
-// `income:rent` has to re-sign the amount it already holds, and a component that
-// wrote `line.account = …` directly would leave a positive number under a
-// revenue account, which the engine would then project as negative revenue.
+// # Sections: the engine's, previewed while typing
+//
+// Every line the engine sends says which section it belongs in
+// (`ScenarioLine.resolved`). While the user retypes an account or a period the
+// table still has to place the row, synchronously, for a name the engine has not
+// seen — so [`resolvedSection`] previews the same rule from the engine's account
+// table until the line round-trips. The two agree by construction (the rule is
+// locked to the engine's by `scenario_signs_golden.rs`).
 
 import {encodeDec} from "#lib/api/editMapping.js";
 import type {RunProjectionBody, WireScenarioIn} from "#lib/api/native.js";
 import {absDec} from "#lib/format/amounts.js";
-import {neg, type Dec} from "#lib/domain/money.js";
-import {isAccountType, type AccountType} from "#lib/domain/accountTypes.js";
+import type {Dec} from "#lib/domain/money.js";
+import {isAccountType, type AccountClasses, type AccountType} from "#lib/domain/accountClass.js";
 import type {ISODate} from "#lib/domain/types.js";
 import {isIsoDate as isIsoDateExact} from "#lib/url/params.js";
 import type {
@@ -58,39 +64,27 @@ export function isIsoDate(value: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// The sign
+// Magnitudes
 // ---------------------------------------------------------------------------
 
 /**
- * Whether postings to this account are written negative — i.e. it is revenue.
+ * Whether `account` is revenue by the engine's account table — the preview
+ * half of [`resolvedSection`], for a name the engine has not placed yet.
  *
- * `isAccountType`, not `resolveAccountType(...) === "revenue"`: a declared
- * `type: G` gain is revenue to the engine (hledger's `type:R` query matches
- * one), and a row the engine books as revenue while this says otherwise is a row
- * whose amount reaches the engine with the wrong sign.
+ * `isAccountType`, not `accountTypeOf(...) === "revenue"`: a declared
+ * `type: G` gain is revenue to the engine (hledger's `type:R` query matches one).
  */
-export function isRevenueAccount(account: string, declared: ReadonlyMap<string, AccountType>): boolean {
+export function isRevenueAccount(account: string, declared: AccountClasses): boolean {
     return isAccountType(account, declared, "revenue");
 }
 
-/**
- * A magnitude the user typed → the signed quantity the journal would carry.
- *
- * THE ONE SIGN FLIP. Everything that writes an amount into a scenario goes
- * through here; nothing else may negate.
- */
-export function signedQuantity(magnitude: Dec, account: string, declared: ReadonlyMap<string, AccountType>): Dec {
-    const mag = absDec(magnitude);
-    return isRevenueAccount(account, declared) ? neg(mag) : mag;
-}
-
-/** A signed scenario amount → the magnitude the table shows. */
-export function magnitudeOf(amount: ScenarioAmount): Dec {
-    return absDec(amount.quantity);
+/** The magnitude the table shows: what was typed, else the engine's signed amount's size. */
+export function magnitudeOf(line: ScenarioLine): Dec {
+    return absDec(line.entry ?? line.amount.quantity);
 }
 
 /**
- * Re-sign an amount for an account, keeping its commodity.
+ * The line re-entered at `magnitude`, which the engine will sign by account type.
  *
  * The display precision is RAISED to fit the new quantity and never lowered.
  * Raising it is required — an amount whose precision was below its own places
@@ -99,14 +93,14 @@ export function magnitudeOf(amount: ScenarioAmount): Dec {
  * line's growth onto whole dollars, which is a modelling change made by a
  * cosmetic edit.
  */
-export function amountFor(amount: ScenarioAmount, magnitude: Dec, account: string, declared: ReadonlyMap<string, AccountType>): ScenarioAmount {
-    const quantity = signedQuantity(magnitude, account, declared);
-    return {...amount, quantity, precision: Math.max(amount.precision, quantity.p)};
+export function withMagnitude(line: ScenarioLine, magnitude: Dec): ScenarioLine {
+    const entry = absDec(magnitude);
+    return {...line, entry, amount: {...line.amount, precision: Math.max(line.amount.precision, entry.p)}};
 }
 
-/** A line with a new account, its amount RE-SIGNED for the account's type. */
-export function withAccount(line: ScenarioLine, account: string, declared: ReadonlyMap<string, AccountType>): ScenarioLine {
-    return {...line, account, amount: amountFor(line.amount, magnitudeOf(line.amount), account, declared)};
+/** A line with a new account, its magnitude re-entered so the engine re-signs it for the account's type. */
+export function withAccount(line: ScenarioLine, account: string): ScenarioLine {
+    return {...withMagnitude(line, magnitudeOf(line)), account};
 }
 
 // ---------------------------------------------------------------------------
@@ -114,28 +108,24 @@ export function withAccount(line: ScenarioLine, account: string, declared: Reado
 // ---------------------------------------------------------------------------
 
 /**
- * The section a line's ROLE and ACCOUNT TYPE put it in — the reading that
- * ignores any hold.
+ * The section a line's ROLE, PERIOD and ACCOUNT TYPE put it in — the reading
+ * that ignores any hold.
  *
- * The order of the three tests is the contract:
+ * The ENGINE's answer (`ScenarioLine.resolved`, from `projections::line_section`)
+ * while the line still has the role, account and period it was answered for.
+ * After an edit, a preview of the same rule from the engine's account table, in
+ * the same order:
  *
- * 1. **`role: "asset"` wins outright**, ahead of the period and ahead of the
- *    account. An asset row states a BALANCE, and the only field that can make
- *    one is `role` — which no box on the row edits. So an asset row's section
- *    is constant for the row's whole life, and the section-stability rule below
- *    has nothing to defend it from. (That also settles the dated asset row: a
- *    balance with a single-date contribution is still a balance, and filing it
- *    among the one-offs would hide its rate behind a table with no Growth
- *    column.)
- * 2. A single-date rule (`~ 2027-03-01`) is a LINE in the model —
- *    `seed_scenario` deliberately leaves it one so the file round trip says so —
- *    but it is a one-off to a reader, so it is shown among the events. The
- *    engine treats the two identically (plan 22, amendment 12).
- * 3. Everything else that is not revenue lands under Expenses, including a
- *    recurring transfer to an asset account. That is a two-way split, like the
- *    budget editor's, and it is why the heading says "and other outflows".
+ * 1. **`role: "asset"` wins outright** — a balance's section is its role, which
+ *    no box on the row edits.
+ * 2. **A single-date rule (`~ 2027-03-01`) is a one-off** to a reader, though the
+ *    model keeps it a line (plan 22, amendment 12).
+ * 3. **Revenue is Income; everything else is Expenses**, a recurring transfer to
+ *    an asset included — hence "and other outflows".
  */
-export function resolvedSection(line: ScenarioLine, declared: ReadonlyMap<string, AccountType>): LineSection {
+export function resolvedSection(line: ScenarioLine, declared: AccountClasses): LineSection {
+    const engine = line.resolved;
+    if (engine !== undefined && engine.role === line.role && engine.account === line.account && engine.raw === line.period.raw) return engine.section;
     if (line.role === "asset") return "asset";
     if (line.period.simple === null && isIsoDate(line.period.raw)) return "oneoff";
     return isRevenueAccount(line.account, declared) ? "income" : "expense";
@@ -158,7 +148,7 @@ export function resolvedSection(line: ScenarioLine, declared: ReadonlyMap<string
  * hold left on a row that became one must not drag it back into the flow
  * tables.
  */
-export function sectionOfLine(line: ScenarioLine, declared: ReadonlyMap<string, AccountType>): LineSection {
+export function sectionOfLine(line: ScenarioLine, declared: AccountClasses): LineSection {
     const resolved = resolvedSection(line, declared);
     if (resolved === "oneoff" || resolved === "asset") return resolved;
     return line.section ?? resolved;
@@ -183,7 +173,7 @@ export type SectionRows = Record<LineSection, LogicalRow[]>;
  *
  * All four sections at once because the table wants all four, and asking one at
  * a time walked the scenario once per section — each walk resolving
- * `sectionOfLine` → `resolveAccountType` → `isRevenueAccount` for every line in
+ * `sectionOfLine` → `isRevenueAccount` → `accountTypeOf` for every line in
  * it, including the ones it was about to discard. That cost is per KEYSTROKE:
  * the scenario is deep `$state` and every one of those reads touches
  * `line.account`, so a single character invalidated all four derivations.
@@ -192,7 +182,7 @@ export type SectionRows = Record<LineSection, LogicalRow[]>;
  * RULE exactly where it was: a row's identity is still `line.id`, and its
  * section is still whatever `sectionOfLine` says — hold and all.
  */
-export function groupLines(lines: readonly ScenarioLine[], declared: ReadonlyMap<string, AccountType>): SectionRows {
+export function groupLines(lines: readonly ScenarioLine[], declared: AccountClasses): SectionRows {
     const sections: SectionRows = {income: [], expense: [], asset: [], oneoff: []};
     // Keyed by section AND id, not by id alone. Grouping WITHIN a section is
     // the behaviour a single pass has to keep: two segments of one row can
@@ -218,7 +208,7 @@ export function groupLines(lines: readonly ScenarioLine[], declared: ReadonlyMap
 }
 
 /** One section's logical rows. The table itself reads [`groupLines`], once for all four. */
-export function logicalRows(lines: readonly ScenarioLine[], declared: ReadonlyMap<string, AccountType>, section: LineSection): LogicalRow[] {
+export function logicalRows(lines: readonly ScenarioLine[], declared: AccountClasses, section: LineSection): LogicalRow[] {
     return groupLines(lines, declared)[section];
 }
 
@@ -347,7 +337,7 @@ const HLEDGER_DEFAULT_TOP: Record<AddSection, string> = {income: "income", expen
  * defaults when nothing in the journal has the type yet — which is the
  * first-run case, where there is nothing to learn from.
  */
-export function sectionPrefix(section: AddSection, accountNames: readonly string[], declared: ReadonlyMap<string, AccountType>): string {
+export function sectionPrefix(section: AddSection, accountNames: readonly string[], declared: AccountClasses): string {
     const want: AccountType = SECTION_TYPE[section];
     const counts = new Map<string, number>();
     for (const name of accountNames) {
@@ -377,7 +367,7 @@ export function sectionPrefix(section: AddSection, accountNames: readonly string
  * cent; a SEEDED row takes the engine's precision instead, which is the
  * journal's own. It is a module constant rather than a parameter of the three
  * constructors below because every call site passed exactly this — three
- * parameters threaded through seven calls to say "2" — and `amountFor` raises
+ * parameters threaded through seven calls to say "2" — and `withMagnitude` raises
  * it the moment a user types a third decimal anyway.
  */
 const NEW_ROW_PRECISION = 2;
@@ -608,6 +598,7 @@ export function cloneScenario(scenario: Scenario): Scenario {
             // freezes it: a spread alone would hand the editor a frozen object
             // to write a new quantity into.
             opening: line.opening === null ? null : cloneAmount(line.opening),
+            ...(line.entry === undefined ? {} : {entry: {m: line.entry.m, p: line.entry.p}}),
         })),
         events: scenario.events.map((event) => ({
             ...event,
@@ -642,6 +633,8 @@ export function scenarioToWire(scenario: Scenario): WireScenarioIn {
             role: line.role,
             account: line.account,
             amount: {commodity: line.amount.commodity, quantity: encodeDec(line.amount.quantity), precision: line.amount.precision},
+            // Only for an edited line: the engine signs it by account type.
+            ...(line.entry === undefined ? {} : {entry: encodeDec(line.entry)}),
             period: {raw: line.period.raw},
             growth: line.growth === null ? null : {rate: encodeDec(line.growth.rate), unit: line.growth.unit},
             opening:

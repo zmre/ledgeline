@@ -8,9 +8,11 @@
 //
 // Not purity-guarded (this is `lib/budget/`, not `lib/reports/`), but it still
 // imports no Svelte and reads no clock, so the whole module is unit-testable
-// under node.
+// under node. The annual factors that make goals of different periods
+// comparable are the engine's (`BudgetGoal.annual`, plan 26 B6); this only
+// orders what it is handed.
 
-import {dec, maScale, toNumber, type MixedAmount} from "#lib/domain/money.js";
+import {toNumber, type MixedAmount} from "#lib/domain/money.js";
 import type {BudgetRule} from "#lib/budget/types.js";
 
 /** Which column the goals are ordered by. */
@@ -25,67 +27,31 @@ export const SORT_DIRS: readonly SortDir[] = ["asc", "desc"];
  *
  * `simple` when the editor models the period, else the raw expression. Falling
  * back to `raw` rather than to null is what makes the rest of this module keep
- * working unchanged: `every 2 weeks` matches no offered period (so the rule
- * groups under "Other", as it must) and is absent from `ANNUAL_FACTOR` (so it
- * sorts unranked, which is the documented refusal to invent a position for a
- * rule Ledgeline will not model). Null would have needed both of those handled
- * again, separately.
+ * working unchanged: `every 2 weeks` matches no offered period, so the rule
+ * groups under "Other", as it must.
  */
 export function periodOf(rule: BudgetRule): string {
     return rule.period.simple ?? rule.period.raw;
 }
 
 /**
- * How many times a goal of each period recurs in a year.
- *
- * A period this map does not name has no factor, and is NOT guessed at: a
- * `~ every 2 weeks` rule (which plan 21 teaches the parser to read) is shown
- * read-only by the editor precisely because Ledgeline will not model it, and
- * inventing a sort position for it would be the same claim in another place.
- *
- * A `Map`, not an object literal, because the key is free text off the wire and
- * `get` is the lookup whose type says "this may not be there".
- */
-const ANNUAL_FACTOR: ReadonlyMap<string, number> = new Map([
-    ["daily", 365],
-    ["weekly", 52],
-    ["monthly", 12],
-    ["quarterly", 4],
-    ["yearly", 1],
-]);
-
-/**
- * A goal's magnitude normalised to a year, so periods compare: $100 weekly is a
- * bigger commitment than $300 monthly, and a list that sorted on the written
- * figures alone would say the opposite.
- *
- * An unrecognised period has no factor to apply, so the amount comes back
- * unscaled — `sortBudgetLines` sorts those rows to the end rather than pretending
- * the unscaled figure is comparable.
- */
-export function annualised(amount: MixedAmount, period: string): MixedAmount {
-    const factor = ANNUAL_FACTOR.get(period);
-    if (factor === undefined) return amount;
-    return maScale(amount, dec(factor, 0));
-}
-
-/**
  * The number an amount sorts by, or null when it has none.
  *
- * Null for an unrecognised period (see `annualised`) and for a multi-commodity
- * goal, which has no single magnitude for the same reason `primaryValue` refuses
- * one — $100 and €100 do not add up without a price, and the sort must not
- * invent one. Both cases sort last.
+ * Null for an amount the engine would not rank (a rule that is not a bare fixed
+ * interval — see `BudgetGoal.annual`) and for a multi-commodity one, which has no
+ * single magnitude for the same reason `primaryValue` refuses one — $100 and €100
+ * do not add up without a price, and the sort must not invent one. Both sort
+ * last.
  *
  * The magnitude, never the signed value: revenue is credit-normal, so a signed
  * descending sort would put the smallest earner at the top of the income list.
+ * (Both callers already hand over magnitudes; `abs` keeps that a non-question.)
  */
-function sortMagnitude(amount: MixedAmount, period: string): number | null {
-    if (!ANNUAL_FACTOR.has(period)) return null;
-    const scaled = annualised(amount, period);
-    if (scaled.size === 0) return 0;
-    if (scaled.size > 1) return null;
-    const [qty] = scaled.values();
+function sortMagnitude(amount: MixedAmount | null): number | null {
+    if (amount === null) return null;
+    if (amount.size === 0) return 0;
+    if (amount.size > 1) return null;
+    const [qty] = amount.values();
     return Math.abs(toNumber(qty));
 }
 
@@ -97,10 +63,12 @@ function compareAccount(a: string, b: string): number {
 /** What `sortBudgetLines` needs to know about one item, whatever the item is. */
 export interface SortFields {
     account: string;
-    /** The goal amount, in whatever sign the source carries; only its magnitude is read. */
-    amount: MixedAmount;
-    /** The recurrence `amount` is stated per — see `annualised`. */
-    period: string;
+    /**
+     * The amount to rank by, already comparable across items: a bar's span-total
+     * goal, or a goal's engine-annualised `annual` (so $100 weekly outranks $300
+     * monthly). Null ranks last. Only its magnitude is read.
+     */
+    amount: MixedAmount | null;
 }
 
 /**
@@ -123,8 +91,8 @@ export function sortBudgetLines<T>(items: readonly T[], key: BudgetSortKey, dir:
             const order = compareAccount(a.fields.account, b.fields.account);
             return order !== 0 ? sign * order : a.index - b.index;
         }
-        const left = sortMagnitude(a.fields.amount, a.fields.period);
-        const right = sortMagnitude(b.fields.amount, b.fields.period);
+        const left = sortMagnitude(a.fields.amount);
+        const right = sortMagnitude(b.fields.amount);
         if (left === null || right === null) {
             if (left !== null) return -1;
             if (right !== null) return 1;

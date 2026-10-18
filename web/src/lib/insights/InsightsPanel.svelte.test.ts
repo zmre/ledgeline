@@ -12,11 +12,13 @@
 
 import {render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
-import {beforeEach, describe, expect, it} from "vitest";
-import type {AccountDecl} from "#lib/domain/accountTypes.js";
+import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {dec} from "#lib/domain/money.js";
 import type {Amount, AmountStyle, Posting, Transaction} from "#lib/domain/types.js";
+import {journal} from "#lib/stores/journal.svelte.js";
 import {settings} from "#lib/stores/settings.svelte.js";
+import {connectFakeEngine, FAKE_JOURNAL_INFO} from "#lib/testing/fakeEngine.js";
+import {showRows, summaryBody} from "#lib/testing/journalViewFixture.js";
 import InsightsPanel from "./InsightsPanel.svelte";
 
 const STYLE: AmountStyle = {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]};
@@ -26,36 +28,83 @@ let nextIndex = 0;
 function txn(date: string, postings: [string, Amount][]): Transaction {
     nextIndex += 1;
     const built: Posting[] = postings.map(([account, amount]) => ({account, amounts: [amount], status: "unmarked", comment: "", tags: []}));
-    return {index: nextIndex, date, status: "cleared", description: "t", code: "", comment: "", tags: [], postings: built, haystack: "t"};
+    return {index: nextIndex, date, status: "cleared", description: "t", code: "", comment: "", tags: [], postings: built};
 }
 
-const DECLS: AccountDecl[] = [
-    {name: "assets:bank:checking", type: "cash"},
-    {name: "liabilities:card", type: "liability"},
-];
-
 const TXNS: Transaction[] = [
-    txn("2026-01-02", [
-        ["assets:bank:checking", usd(500_000)],
-        ["equity:opening", usd(-500_000)],
+    txn("2026-02-11", [
+        ["income:salary", usd(-300_000)],
+        ["assets:bank:checking", usd(300_000)],
     ]),
     txn("2026-02-10", [
         ["expenses:food", usd(20_000)],
         ["assets:bank:checking", usd(-20_000)],
     ]),
-    txn("2026-02-11", [
-        ["income:salary", usd(-300_000)],
-        ["assets:bank:checking", usd(300_000)],
+    txn("2026-01-02", [
+        ["assets:bank:checking", usd(500_000)],
+        ["equity:opening", usd(-500_000)],
     ]),
 ];
 
-const mount = () => render(InsightsPanel, {txns: TXNS, allTxns: TXNS, decls: DECLS});
+const STYLE_WIRE = {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]};
+/** What the engine summarizes TXNS as: $3,000 of income, $200 spent, $2,800 net. */
+const SUMMARY = summaryBody(3, {
+    visibleNet: [{commodity: "$", qty: {m: "280000", p: 2}, style: STYLE_WIRE}],
+    commodities: ["$"],
+    perCommodity: [
+        {
+            commodity: "$",
+            style: STYLE_WIRE,
+            income: {m: "300000", p: 2},
+            expenses: {m: "20000", p: 2},
+            net: {m: "280000", p: 2},
+            categories: ["expense", "revenue", "asset", "equity"],
+        },
+    ],
+    maxDepth: 3,
+    primary: "$",
+});
+const CHART = {generation: "fake-1", commodity: "$", groups: ["expenses:food"], pie: [{account: "expenses:food", value: 200, formatted: "$200.00"}]};
+
+const mount = () => render(InsightsPanel);
 const tab = (name: string): HTMLElement => screen.getByRole("tab", {name});
 
-beforeEach(() => {
+/** What the engine answers for TXNS as of today: $5,000 opening, less $200 spent, plus $3,000 of salary. */
+const CASH_VIEW = {
+    asOf: "2026-09-13",
+    commodities: ["$"],
+    summaries: [
+        {
+            commodity: "$",
+            style: STYLE_WIRE,
+            cash: [{account: "assets:bank:checking", qty: {m: "780000", p: 2}, asOf: "2026-02-11", confirmed: false}],
+            liabilities: [],
+            totalCash: {m: "780000", p: 2},
+            totalLiabilities: {m: "0", p: 0},
+            net: {m: "780000", p: 2},
+        },
+    ],
+    guessedLongTerm: [],
+};
+
+beforeEach(async () => {
     settings.insightsOpen = true;
     settings.insightsTab = "activity";
+    // The Balances tab reads the engine, keyed on the journal generation, so
+    // the journal round has to have run once against the fake engine.
+    await connectFakeEngine({"/api/balances/cash": CASH_VIEW});
+    await journal.refresh({force: true});
+    // The Activity tab reads the journal VIEW: the engine's summary and chart.
+    await showRows(TXNS, {
+        "/version": "1.52",
+        "/api/journal": FAKE_JOURNAL_INFO,
+        "/api/journal/summary": SUMMARY,
+        "/api/journal/chart": CHART,
+        "/api/balances/cash": CASH_VIEW,
+    });
 });
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("COMPONENT InsightsPanel tabs", () => {
     it("opens on Activity, the P&L view, as the default", () => {
@@ -90,17 +139,17 @@ describe("COMPONENT InsightsPanel tabs", () => {
     it("shows the active view's headline figure in the header, and keeps it when collapsed", async () => {
         mount();
         const header = (): HTMLElement => document.querySelector(".collapse-title") as HTMLElement;
-        // Activity: income − expenses over the filtered period.
+        // Activity: income − expenses over the filtered period (the engine's summary).
         expect(header().textContent).toContain("Net");
-        expect(header().textContent).toContain("$2,800.00");
+        await vi.waitFor(() => expect(header().textContent).toContain("$2,800.00"));
 
         tab("Balances").click();
         await screen.findByTestId("balances-view");
         // Balances: cash + short-term debt as of today, over the whole journal —
-        // a different question, so deliberately a different number. $5,000
-        // opening, less $200 spent, plus $3,000 of salary.
+        // a different question, so deliberately a different number (the
+        // engine's, see CASH_VIEW).
         expect(header().textContent).toContain("Net cash");
-        expect(header().textContent).toContain("$7,800.00");
+        await vi.waitFor(() => expect(header().textContent).toContain("$7,800.00"));
 
         settings.insightsOpen = false;
         await tick();

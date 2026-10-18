@@ -13,7 +13,7 @@ import {alreadyBudgeted, defaultRuleName, goalChange, joinableRule} from "#lib/b
 import type {BudgetFile, BudgetGoal, BudgetListing, BudgetPeriod, BudgetRule, GoalDraft, GoalSubmission} from "#lib/budget/types.js";
 
 function goal(index: number, account: string): BudgetGoal {
-    return {index, line: index + 2, account, unbalanced: true, amount: null, entry: null, inverted: false, locked: null};
+    return {index, line: index + 2, account, unbalanced: true, amount: null, entry: null, inverted: false, annual: null, locked: null};
 }
 
 /**
@@ -42,8 +42,31 @@ function file(journalId: string, rules: BudgetRule[], extra: Partial<BudgetFile>
     return {journalId, label: journalId, revision: `rev-${journalId}`, writable: true, rules, ...extra};
 }
 
-function listing(files: BudgetFile[]): BudgetListing {
-    return {editable: true, defaultTarget: files[0]?.journalId ?? null, canCreateFile: false, createFileName: "budget.journal", files};
+/**
+ * A listing, with `joinable` as the ENGINE would send it for these files.
+ *
+ * A stand-in for `budget_api::joinable_targets` (first writable, unlocked rule
+ * per period, in file order), so the cases below read as journals rather than
+ * as hand-written targets. The rule itself is the engine's and is tested there
+ * (`budget_endpoints.rs`); this module only looks its answer up.
+ */
+function listing(files: BudgetFile[], joinable?: BudgetListing["joinable"]): BudgetListing {
+    const engine: BudgetListing["joinable"] = {};
+    for (const f of files.filter((candidate) => candidate.writable)) {
+        for (const r of f.rules) {
+            if (r.period.simple !== null && r.locked === null && engine[r.period.simple] === undefined) {
+                engine[r.period.simple] = {journalId: f.journalId, block: r.block};
+            }
+        }
+    }
+    return {
+        editable: true,
+        defaultTarget: files[0]?.journalId ?? null,
+        canCreateFile: false,
+        createFileName: "budget.journal",
+        files,
+        joinable: joinable ?? engine,
+    };
 }
 
 /** A modal opened by the top-level button: no rule, defaulting to the main file. */
@@ -56,34 +79,21 @@ function submitted(period: BudgetPeriod, account = "expenses:bus"): GoalSubmissi
 }
 
 describe("joinableRule", () => {
-    test("finds the first writable, unlocked rule of the period, in file order", () => {
-        const found = joinableRule(listing([file("a.journal", [rule(0, "monthly", "first"), rule(1, "monthly", "second")])]), "monthly");
-        expect(found?.rule.description).toBe("first");
-        expect(found?.file.journalId).toBe("a.journal");
+    test("finds the rule the engine named, in the file it named", () => {
+        const files = [file("a.journal", [rule(0, "monthly", "first")]), file("b.journal", [rule(0, "monthly", "second"), rule(1, "yearly", "annual")])];
+        const found = joinableRule(listing(files, {monthly: {journalId: "b.journal", block: 0}}), "monthly");
+        expect(found?.rule.description).toBe("second");
+        expect(found?.file.journalId).toBe("b.journal");
     });
 
-    test("skips a locked rule and a rule in a file that cannot be written", () => {
-        const files = [
-            file("readonly.journal", [rule(0, "monthly", "in a read-only file")], {writable: false}),
-            file("main.journal", [rule(0, "monthly", "locked", {locked: "its period is not one Ledgeline models"}), rule(1, "monthly", "usable")]),
-        ];
-        expect(joinableRule(listing(files), "monthly")?.rule.description).toBe("usable");
+    test("is null when the engine names no rule for the period", () => {
+        expect(joinableRule(listing([file("main.journal", [rule(0, "monthly", "monthly budget")])], {}), "monthly")).toBeNull();
     });
 
-    test("is null when no rule states the period", () => {
-        expect(joinableRule(listing([file("main.journal", [rule(0, "monthly", "monthly budget")])]), "yearly")).toBeNull();
-    });
-
-    // `~ every 2 weeks` recurs on a fortnight, not on any period the tab offers,
-    // so there is no period it could be joined FOR. Its `simple` is null, which
-    // matches no offered period, and its lock would refuse the append anyway —
-    // two independent reasons, which is the point: the grouping key and the
-    // editability verdict are now separate fields and neither one alone has to
-    // carry both facts.
-    test("never joins a rule whose period is not a bare interval", () => {
-        const files = [file("main.journal", [unofferedRule(0, "every 2 weeks", "paycheck"), rule(1, "monthly", "usable")])];
-        expect(joinableRule(listing(files), "monthly")?.rule.description).toBe("usable");
-        expect(joinableRule(listing(files), "weekly")).toBeNull();
+    test("is null for a period the editor does not model, and for a target the listing does not hold", () => {
+        const files = [file("main.journal", [unofferedRule(0, "every 2 weeks", "paycheck")])];
+        expect(joinableRule(listing(files), "every 2 weeks")).toBeNull();
+        expect(joinableRule(listing(files, {monthly: {journalId: "gone.journal", block: 0}}), "monthly")).toBeNull();
     });
 });
 

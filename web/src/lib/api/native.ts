@@ -1,12 +1,13 @@
 // ledgeline-engine native (/api/*) HTTP client. Fetch + query-string building +
 // error taxonomy only; wire-shape knowledge lives in nativeDecode.ts. Mirrors
-// HledgerApi (the wire client) but distinguishes a server that simply lacks the
-// native routes (a plain hledger-web) from one that is unreachable.
+// HledgerApi (the wire client) but distinguishes a server that is not the
+// Ledgeline engine (no native routes) from one that is unreachable. The SPA
+// requires the native API; there is no plain-hledger-web fallback.
 
 import type {BudgetPeriod} from "#lib/budget/types.js";
 import {ApiUnreachableError, authHeaders, REQUEST_TIMEOUT_MS, withDeadline} from "./client";
 
-/** The configured server answered, but has no /api/* routes (e.g. plain hledger-web). */
+/** The configured server answered, but has no /api/* routes (it is not the Ledgeline engine, or predates the route). */
 export class NativeApiUnavailableError extends Error {
     constructor(message: string, options?: ErrorOptions) {
         super(message, options);
@@ -518,6 +519,24 @@ function queryString(values: Record<string, QueryValue>): string {
     return encoded === "" ? "" : `?${encoded}`;
 }
 
+/** The journal filter as the windowed routes take it (the journal filter bar's value). */
+export interface JournalQueryFilter {
+    from: string | null;
+    to: string | null;
+    accounts: ReadonlySet<string>;
+    query: string;
+}
+
+/** `from`/`to`/`accounts`/`q`, empty parts dropped; accounts sorted so equal filters build equal URLs. */
+export function filterParams(filter: JournalQueryFilter): Record<string, QueryValue> {
+    return {
+        from: filter.from ?? undefined,
+        to: filter.to ?? undefined,
+        accounts: [...filter.accounts].sort().join(","),
+        q: filter.query,
+    };
+}
+
 export interface BalanceSheetQuery {
     asOf?: string;
     depth?: number;
@@ -609,6 +628,8 @@ export interface BudgetQuery {
     depth?: number;
     /** Case-insensitive periodic-rule description filter; absent/empty = all rules. */
     budgetDesc?: string;
+    /** The client's today: the summary's pace is measured at it, so the server's time zone cannot move a bar. */
+    asOf?: string;
 }
 
 /**
@@ -684,6 +705,13 @@ export interface WireScenarioLineIn {
      * balance only compounds, which is the `$0` posting the file carries.
      */
     amount: WireAmountIn;
+    /**
+     * The MAGNITUDE the user typed, for an edited line (plan 26 B6). The engine
+     * signs it by the account's type and it replaces `amount.quantity`; absent,
+     * `amount.quantity` is taken as already signed. So the SPA never carries
+     * the "revenue is negative" rule.
+     */
+    entry?: WireDec;
     period: WirePeriodIn;
     growth: WireGrowthIn | null;
     /**
@@ -844,7 +872,7 @@ export class LedgelineApi {
             } catch (cause) {
                 throw new ApiUnreachableError(`Cannot reach the Ledgeline engine at ${this.baseUrl} (network or CORS failure)`, {cause});
             }
-            // A server without the native routes (plain hledger-web) 404s here.
+            // A server without the native routes (not the Ledgeline engine) 404s here.
             if (response.status === 404) {
                 throw new NativeApiUnavailableError(NATIVE_UNAVAILABLE_MESSAGE);
             }
@@ -871,16 +899,14 @@ export class LedgelineApi {
     }
 
     /**
-     * Engine-computed journal diagnostics: `{"diagnostics": [...]}`, every
-     * unbalanced transaction and failed balance assertion.
-     *
-     * Its own route rather than a field on `/transactions` because that endpoint
-     * is a byte-for-byte hledger-web emulation whose parity comparator rejects
-     * any unexpected key. A plain hledger-web 404s here, which the caller reads
-     * as "no diagnostics".
+     * Every problem the badge counts and the drawer lists (decode with
+     * `decodeDiagnostics`): the engine diagnostics plus the local check rules,
+     * as of `today` — the browser's LOCAL date, so the server's zone never
+     * decides what counts as "in the future". `limit` caps the entries without
+     * changing `count`/`maxSeverity`; the badge asks for none.
      */
-    diagnostics(): Promise<unknown> {
-        return this.getJson("/api/diagnostics");
+    diagnostics(today: string, limit?: number): Promise<unknown> {
+        return this.getJson(`/api/diagnostics${queryString({today, limit})}`);
     }
 
     /**
@@ -895,12 +921,55 @@ export class LedgelineApi {
      *
      * Its own route rather than a field on `/transactions`, for the reason
      * `diagnostics` has one: that endpoint is a byte-for-byte hledger-web
-     * emulation whose parity comparator rejects any unexpected key. A plain
-     * hledger-web therefore 404s here, which the caller reads as "this server
-     * cannot tell me which ledger it is" and answers by showing no label.
+     * emulation whose parity comparator rejects any unexpected key.
      */
     journalInfo(): Promise<unknown> {
         return this.getJson("/api/journal");
+    }
+
+    /**
+     * Cash and short-term-liability balances as of `asOf` (the CLIENT's local
+     * date), every commodity at once (decode with `decodeCashBalances`). The
+     * whole journal, ignoring the filter bar — a balance is cumulative.
+     */
+    cashBalances(asOf: string): Promise<unknown> {
+        return this.getJson(`/api/balances/cash${queryString({asOf})}`);
+    }
+
+    /**
+     * One window of the filtered journal (decode with `decodeRowsPage`): rows in
+     * display order (`desc`, newest first) or its exact reverse (`asc`), each
+     * with its check findings as of `today`. `total` is the whole filtered count.
+     */
+    journalRows(filter: JournalQueryFilter, window: {offset: number; limit: number; order?: "asc" | "desc"; today: string}): Promise<unknown> {
+        return this.getJson(`/api/journal/rows${queryString({...filterParams(filter), ...window})}`);
+    }
+
+    /** The filtered view's footer total, big numbers and chart selectors (decode with `decodeJournalSummary`). */
+    journalSummary(filter: JournalQueryFilter): Promise<unknown> {
+        return this.getJson(`/api/journal/summary${queryString(filterParams(filter))}`);
+    }
+
+    /** The insights pie or line for the filtered view (decode with `decodeChart`). */
+    journalChart(
+        filter: JournalQueryFilter,
+        chart: {mode: "pie" | "line"; commodity: string; depth: number; category?: string; interval?: string; max?: number}
+    ): Promise<unknown> {
+        return this.getJson(`/api/journal/chart${queryString({...filterParams(filter), ...chart})}`);
+    }
+
+    /** Where the transaction with tindex `index` sits in the filtered view (decode with `decodeRowPosition`). */
+    journalPosition(filter: JournalQueryFilter, index: number): Promise<unknown> {
+        return this.getJson(`/api/journal/position${queryString({...filterParams(filter), index})}`);
+    }
+
+    /**
+     * One transaction by tindex, as a row (decode with `decodeRow`) — what the
+     * edit popup opens on. Never `GET /api/transactions` (the collection): the
+     * write probe above relies on that answering 405.
+     */
+    transaction(index: number, today: string): Promise<unknown> {
+        return this.getJson(`/api/transactions/${index}${queryString({today})}`);
     }
 
     /**
@@ -962,7 +1031,7 @@ export class LedgelineApi {
     /** Budget report (actuals vs. periodic-rule goals). Note: top-level /api/budget, NOT under /api/reports/. */
     budget(query: BudgetQuery = {}): Promise<unknown> {
         return this.getJson(
-            `/api/budget${queryString({end: query.end, interval: query.interval, count: query.count, depth: query.depth, budgetDesc: query.budgetDesc})}`
+            `/api/budget${queryString({end: query.end, interval: query.interval, count: query.count, depth: query.depth, budgetDesc: query.budgetDesc, asOf: query.asOf})}`
         );
     }
 
@@ -1052,6 +1121,11 @@ export class LedgelineApi {
      * instead (decode with `decodeBenchmarks`). May reach Yahoo Finance on the
      * server, so it is fetched only after the base chart has drawn.
      */
+    /** The benchmarks the overlay can draw, in slot order (decode with `decodeBenchmarkCatalog`). */
+    benchmarkCatalog(): Promise<unknown> {
+        return this.getJson("/api/holdings/benchmarks/catalog");
+    }
+
     holdingsBenchmarks(query: HoldingsBenchmarksQuery): Promise<unknown> {
         return this.getJson(
             `/api/holdings/benchmarks${queryString({symbols: query.symbols, asOf: query.asOf, accounts: query.accounts, mode: query.mode, interval: query.interval, count: query.count, since: query.since})}`
@@ -1466,12 +1540,6 @@ export class LedgelineApi {
                     throw new NativeApiUnavailableError(NATIVE_UNAVAILABLE_MESSAGE, {cause});
                 }
             }
-            // The read path's guards (`usableErrorBody`), applied to the write
-            // path too: a POST through a misbehaving proxy answers with an HTML
-            // document or a whole error page, and either one used to land raw
-            // in the edit-failure toast. Guarded to "", every branch below
-            // falls back to its own sentence — the status line for the
-            // unmapped default.
             // The read path's guards (`usableErrorBody`), applied to the write
             // path too: a POST through a misbehaving proxy answers with an HTML
             // document or a whole error page, and either one used to land raw

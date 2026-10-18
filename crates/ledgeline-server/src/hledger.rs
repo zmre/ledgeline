@@ -2,6 +2,13 @@
 //!
 //! # This module and `git.rs` are the ONLY places `Command::new` may appear
 //!
+//! And both are switched off together by building without the
+//! `external-tools` feature (a sandboxed host, where there is no `hledger` to
+//! run and no real path to hand it): [`Hledger::resolve`] and
+//! [`Invocation::run`] then answer [`HledgerError::Disabled`] without spawning
+//! anything. The rest of the module still compiles, so nothing that merely
+//! *mentions* an invocation needs a `cfg` of its own.
+//!
 //! Ledgeline has, until now, run no subprocesses at all. WP-11 introduces
 //! exactly two: `hledger` (here) and `git` (`git.rs`). Every other module that
 //! needs a subprocess goes through one of them. The rule is worth stating as a
@@ -78,7 +85,8 @@
 //! Fixed, and chosen so the most specific answer wins:
 //!
 //! 1. `prefs.hledger_path` — the user pointed at one in the settings form.
-//! 2. `$LEDGELINE_HLEDGER` — a per-launch override, and what the tests drive.
+//! 2. [`AppDirs::hledger_bin`] — on the desktop `$LEDGELINE_HLEDGER`
+//!    ([`AppDirs::from_env`]), a per-launch override, and what the tests drive.
 //! 3. A path baked in at COMPILE time via `option_env!("LEDGELINE_HLEDGER_PATH")`,
 //!    so the Nix flake can pin the exact store path it built against. Note that
 //!    without a `build.rs` emitting `cargo:rerun-if-env-changed`, changing this
@@ -129,6 +137,7 @@
 //! dump, so the version is checked once, up front, and reported as
 //! [`HledgerError::TooOld`] with a number the user can act on.
 
+use crate::app_dirs::AppDirs;
 use crate::prefs::{self, Prefs};
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
@@ -144,9 +153,6 @@ pub(crate) const MIN_HLEDGER: Version = Version {
     major: 1,
     minor: 40,
 };
-
-/// Env override naming an `hledger` binary (resolution step 2).
-const HLEDGER_ENV: &str = "LEDGELINE_HLEDGER";
 
 /// An `hledger` path baked in at build time (resolution step 3), for the Nix
 /// flake to pin its own store path. `None` in an ordinary `cargo build`.
@@ -288,6 +294,13 @@ pub(crate) struct Hledger {
 pub(crate) enum HledgerError {
     #[error("hledger was not found")]
     NotFound,
+    /// This build runs no external programs (it was built without the
+    /// `external-tools` feature). Nothing was spawned.
+    #[error(
+        "this build of Ledgeline cannot run hledger (it was built without the `external-tools` \
+         feature)"
+    )]
+    Disabled,
     #[error("hledger {found} is older than {min}")]
     TooOld { found: Version, min: Version },
     #[error("could not run hledger")]
@@ -295,6 +308,11 @@ pub(crate) enum HledgerError {
     #[error("hledger did not finish within {}s", .after.as_secs())]
     TimedOut { after: Duration },
 }
+
+/// Whether this build may spawn subprocesses at all — the `external-tools`
+/// feature. A `const` rather than a `cfg` on each body, so the gated functions
+/// keep one implementation and the compiler checks it in every build.
+const EXTERNAL_TOOLS: bool = cfg!(feature = "external-tools");
 
 /// The outcome of probing one candidate path.
 enum Probe {
@@ -321,10 +339,13 @@ impl Hledger {
     /// Silently ignoring the binary a user explicitly configured, because we
     /// found a newer one elsewhere, is how "I set the path and it still used the
     /// wrong one" happens. A too-old answer is a real answer, so we report it.
-    pub(crate) fn resolve(prefs: &Prefs) -> Result<Self, HledgerError> {
+    pub(crate) fn resolve(prefs: &Prefs, dirs: &AppDirs) -> Result<Self, HledgerError> {
+        if !EXTERNAL_TOOLS {
+            return Err(HledgerError::Disabled);
+        }
         // Lazy: `find` stops at the first candidate that answers, so the common
         // case spawns exactly one process.
-        let answered = Self::candidates(prefs)
+        let answered = Self::candidates(prefs, dirs)
             .map(|path| {
                 let probe = probe_version(&path);
                 (path, probe)
@@ -352,10 +373,10 @@ impl Hledger {
     /// `$PATH` fallback is a bare name by definition and cannot be checked
     /// without reimplementing the loader's search, so it is always offered and
     /// allowed to fail at spawn.
-    fn candidates(prefs: &Prefs) -> impl Iterator<Item = PathBuf> {
+    fn candidates(prefs: &Prefs, dirs: &AppDirs) -> impl Iterator<Item = PathBuf> {
         let explicit = [
             prefs.hledger_path.clone(),
-            std::env::var_os(HLEDGER_ENV).map(PathBuf::from),
+            dirs.hledger_bin.clone(),
             BAKED_HLEDGER.map(PathBuf::from),
             sibling_hledger(),
         ];
@@ -562,6 +583,9 @@ impl Invocation {
     /// one buffer and exits as soon as the last writer to that pipe does; the
     /// caller is not made to wait for it.
     pub(crate) fn run(self) -> Result<Output, HledgerError> {
+        if !EXTERNAL_TOOLS {
+            return Err(HledgerError::Disabled);
+        }
         // Fixed before the spawn, so the process's own start-up cost counts
         // against the caller's budget rather than extending it.
         let deadline = Instant::now() + self.timeout;
@@ -843,9 +867,35 @@ fn ask_version(program: &Path, read_config: bool) -> Probe {
 /// [`prefs::check_storable`](crate::prefs::check_storable) would otherwise leak
 /// into an `/api/prefs` body — saying which way the probe failed.
 pub(crate) fn probe_answers_like_hledger(program: &Path) -> Result<(), &'static str> {
+    if !EXTERNAL_TOOLS {
+        return Err("cannot be run by this build (it has no external-tools support)");
+    }
     match ask_version(program, false) {
         Probe::Reported(_) => Ok(()),
         Probe::Absent => Err("could not be run"),
         Probe::Unrecognised => Err("did not report an hledger version (1.40+ required)"),
+    }
+}
+
+/// A build without `external-tools` spawns nothing: run with
+/// `cargo test -p ledgeline --no-default-features --features watcher --lib`.
+#[cfg(all(test, not(feature = "external-tools")))]
+mod without_external_tools {
+    use super::*;
+
+    #[test]
+    fn nothing_is_spawned_and_the_error_says_why() {
+        let resolved = Hledger::resolve(&Prefs::default(), &AppDirs::from_env());
+        assert!(matches!(resolved, Err(HledgerError::Disabled)));
+        let ran = Hledger::for_tests(Path::new("/bin/sh"))
+            .invoke(["--version"])
+            .run();
+        assert!(matches!(ran, Err(HledgerError::Disabled)));
+        assert!(
+            HledgerError::Disabled
+                .to_string()
+                .contains("external-tools")
+        );
+        assert!(probe_answers_like_hledger(Path::new("/bin/sh")).is_err());
     }
 }

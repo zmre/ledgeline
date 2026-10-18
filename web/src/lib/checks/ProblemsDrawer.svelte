@@ -7,21 +7,17 @@
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
     import type {Problem, Severity} from "#lib/checks/engine.js";
-    import type {Transaction} from "#lib/domain/types.js";
     import {filters} from "#lib/stores/filters.svelte.js";
-    import {journal} from "#lib/stores/journal.svelte.js";
     import {problems} from "#lib/stores/problems.svelte.js";
 
     const RULE_LABELS: Record<string, string> = {
         unbalanced: "Unbalanced",
-        // Engine-computed (see CheckContext.diagnostics). "unbalanced" above is
-        // shared: the engine's finding and the local rule land in one group.
         assertion: "Balance assertion",
         pending: "Pending",
         uncategorized: "Uncategorized",
         // Account-anchored like "account-tag" below: the running balance is at
         // fault, not any one entry. Mirrors the red rows in the journal tab's
-        // Balances view — both read lib/reports/cashBalances.
+        // Balances view — the engine computes both from one pass.
         "negative-cash": "Negative cash balance",
         "missing-description": "Missing description",
         "future-date": "Future date",
@@ -38,8 +34,6 @@
 
     const SEVERITY_BADGE: Record<Severity, string> = {error: "badge-error", warning: "badge-warning", info: "badge-info"};
 
-    const txnByIndex = $derived.by(() => new Map(journal.txns.map((txn) => [txn.index, txn])));
-
     const groups = $derived.by(() => {
         // eslint-disable-next-line svelte/prefer-svelte-reactivity -- rebuilt wholesale inside $derived.by, never mutated afterwards
         const byRule = new Map<string, Problem[]>();
@@ -51,11 +45,11 @@
         return [...byRule.entries()];
     });
 
-    /** Widen the date filter just enough to include `txn` (accounts/query filters are left alone). */
-    function widenDateRange(txn: Transaction): void {
+    /** Widen the date filter just enough to include `date` (accounts/query filters are left alone). */
+    function widenDateRange(date: string): void {
         const current = filters.value;
-        const from = current.from !== null && txn.date < current.from ? txn.date : current.from;
-        const to = current.to !== null && txn.date > current.to ? txn.date : current.to;
+        const from = current.from !== null && date < current.from ? date : current.from;
+        const to = current.to !== null && date > current.to ? date : current.to;
         if (from !== current.from || to !== current.to) filters.setRange(from, to);
     }
 
@@ -70,8 +64,7 @@
     async function jumpTo(problem: Problem): Promise<void> {
         if (problem.txnIndex === null) return;
         problems.drawerOpen = false;
-        const txn = txnByIndex.get(problem.txnIndex);
-        if (txn !== undefined) widenDateRange(txn);
+        if (problem.date !== undefined) widenDateRange(problem.date);
         if (page.url.pathname !== resolve("/")) await goto(resolve("/"));
         problems.requestFocus(problem.txnIndex);
     }
@@ -119,6 +112,10 @@
 
             {#if problems.count === 0}
                 <p class="text-sm text-base-content/60">No problems found. All checks pass.</p>
+            {:else if problems.listLoading && problems.all.length === 0}
+                <p class="flex items-center gap-2 text-sm text-base-content/60" role="status">
+                    <span class="loading loading-xs loading-spinner"></span> Loading findings…
+                </p>
             {:else}
                 {#each groups as [rule, list] (rule)}
                     <section>
@@ -145,12 +142,11 @@
                                             {@render messageBody(problem)}
                                         </div>
                                     {:else}
-                                        {@const txn = txnByIndex.get(problem.txnIndex)}
                                         <button type="button" class="w-full rounded-lg p-2 text-left hover:bg-base-300" onclick={() => void jumpTo(problem)}>
                                             <span class="flex items-baseline gap-2">
-                                                <span class="shrink-0 font-mono text-xs text-base-content/70">{txn?.date ?? "—"}</span>
-                                                <span class="truncate text-sm" title={txn?.description}>
-                                                    {txn === undefined || txn.description === "" ? "(no description)" : txn.description}
+                                                <span class="shrink-0 font-mono text-xs text-base-content/70">{problem.date ?? "—"}</span>
+                                                <span class="truncate text-sm" title={problem.description}>
+                                                    {problem.description === undefined || problem.description === "" ? "(no description)" : problem.description}
                                                 </span>
                                             </span>
                                             {@render messageBody(problem)}

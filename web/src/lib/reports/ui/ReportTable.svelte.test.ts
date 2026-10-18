@@ -12,6 +12,7 @@ import type {AmountStyle} from "#lib/domain/types.js";
 import {keymap} from "#lib/keys/keymap.svelte.js";
 import type {PeriodReport} from "#lib/reports/types.js";
 import ReportTable from "./ReportTable.svelte";
+import {periodsOf} from "#lib/reports/test-helpers.js";
 
 const STYLES: ReadonlyMap<string, AmountStyle> = new Map<string, AmountStyle>([
     ["$", {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]}],
@@ -20,6 +21,7 @@ const usd = (cents: number): MixedAmount => new Map([["$", dec(cents, 2)]]);
 
 const CASH_FLOW: PeriodReport = {
     buckets: ["2026-06", "2026-07"],
+    periods: periodsOf(["2026-06", "2026-07"]),
     rows: [
         {account: "assets", depth: 1, values: [usd(-5000), usd(10050)], total: usd(5050)},
         {account: "assets:bank", depth: 2, values: [usd(-5000), usd(10050)], total: usd(5050)},
@@ -51,6 +53,7 @@ describe("COMPONENT ReportTable — period Total column", () => {
     it("prints a single bucket as one column headed Total", () => {
         const single: PeriodReport = {
             buckets: ["2025-08-01..2026-07-08"],
+            periods: periodsOf(["2025-08-01..2026-07-08"]),
             rows: [{account: "assets", depth: 1, values: [usd(5050)], total: usd(5050)}],
             totals: [usd(5050)],
             grandTotal: usd(5050),
@@ -65,6 +68,7 @@ describe("COMPONENT ReportTable — period Total column", () => {
     it("leaves net worth, which carries no totals, without a Total column", () => {
         const worth: PeriodReport = {
             buckets: ["2025", "2026"],
+            periods: periodsOf(["2025", "2026"]),
             rows: [{account: "assets", depth: 1, values: [usd(100), usd(200)], kind: "asset"}],
             totals: [usd(100), usd(200)],
         };

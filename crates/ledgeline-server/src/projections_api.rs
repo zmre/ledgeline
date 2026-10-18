@@ -32,42 +32,42 @@
 //! is one rule instead of two.
 
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
 use std::path::{Path as FsPath, PathBuf};
+use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::response::Response;
-use ledgeline_core::Fingerprint;
 use ledgeline_core::decimal::MAX_PARSE_PLACES;
 use ledgeline_core::model::{
     AccountName, Amount, AmountStyle, Commodity, CommoditySide, PeriodSpec, Posting,
 };
 use ledgeline_core::parse::parse_period_spec;
-use ledgeline_core::pinned::{self, Pin, WriteError};
 use ledgeline_core::projections::serialize::{
     ProjectionDoc, SerializeError, new_file, scenario_from_text, write_scenario,
 };
 use ledgeline_core::projections::{
     AssetRow, BalanceSeries, CreateRefusal, DiscoveredProjection, Discovery, Growth, GrowthUnit,
-    LineRole, LineSource, Projection, ProjectionOpts, ProjectionPath, Runway, Scenario,
-    ScenarioEvent, ScenarioLine, SeedOpts, discover, is_journal_name, label_for, project,
-    seed_scenario, virtual_posting,
+    LineRole, LineSection, LineSource, Projection, ProjectionOpts, ProjectionPath, Runway,
+    Scenario, ScenarioEvent, ScenarioLine, SeedOpts, discover_in, is_journal_name, label_for,
+    line_section, project, seed_scenario, virtual_posting,
 };
 use ledgeline_core::reports::account_types::AccountType;
 use ledgeline_core::reports::{
-    BudgetOpts, Interval, account_decls, declared_types, periods::bucket_label,
+    BudgetOpts, Interval, account_decls, declared_types, periods::bucket_label, signed_entry,
 };
+use ledgeline_core::vault::{Revision, VaultError};
+use ledgeline_core::{Dec, Fingerprint};
 use serde::{Deserialize, Serialize};
 
-use crate::AppState;
 use crate::edit_api::{WireDecIn, dec_from_wire, json_body};
 use crate::error::{AppError, editing_disabled};
 use crate::reports_api::{
     Window, WireDec, WireMixed, WirePeriodReport, checked_date, compute, today_utc, wire_mixed,
 };
 use crate::security::no_store_json as no_store;
+use crate::{AppState, JournalLocation, Snapshot};
 
 // ===========================================================================
 // Limits
@@ -207,11 +207,18 @@ struct WireScenarioLine {
     note: String,
     /// `journal` (authored) | `unbudgeted` (estimated from history).
     source: &'static str,
+    /// `income` | `expense` | `asset` | `oneoff` — the table section the
+    /// line's role, period and account TYPE put it in
+    /// ([`ledgeline_core::projections::line_section`]). A client shows a line
+    /// here without carrying the rule; it only needs its own answer for an
+    /// account the user is still typing.
+    section: LineSection,
 }
 
-impl From<&ScenarioLine> for WireScenarioLine {
-    fn from(line: &ScenarioLine) -> Self {
+impl WireScenarioLine {
+    fn new(line: &ScenarioLine, declared: &BTreeMap<String, AccountType>) -> Self {
         Self {
+            section: line_section(line.role, &line.period.raw, &line.account.0, declared),
             id: line.id.clone(),
             group: line.group.clone(),
             role: line.role.as_str(),
@@ -283,13 +290,17 @@ pub(crate) struct WireScenario {
     events: Vec<WireScenarioEvent>,
 }
 
-impl From<&Scenario> for WireScenario {
-    fn from(scenario: &Scenario) -> Self {
+impl WireScenario {
+    fn new(scenario: &Scenario, declared: &BTreeMap<String, AccountType>) -> Self {
         Self {
             name: scenario.name.clone(),
             created: scenario.created.clone(),
             updated: scenario.updated.clone(),
-            lines: scenario.lines.iter().map(WireScenarioLine::from).collect(),
+            lines: scenario
+                .lines
+                .iter()
+                .map(|line| WireScenarioLine::new(line, declared))
+                .collect(),
             events: scenario
                 .events
                 .iter()
@@ -482,6 +493,20 @@ struct ScenarioLineIn {
     role: Option<String>,
     account: String,
     amount: AmountIn,
+    /// The MAGNITUDE the user typed, when this line was edited (plan 26 B6).
+    ///
+    /// Present: the server signs it by the account's TYPE — negative for
+    /// revenue, as hledger writes income ([`signed_entry`]) — and it replaces
+    /// `amount.quantity`; the commodity and precision still come from
+    /// `amount`. A client therefore never carries the sign rule, and moving a
+    /// line from `expenses:rent` to `income:rent` re-signs it here.
+    ///
+    /// Absent: `amount.quantity` is taken as already signed, exactly as every
+    /// body written before this field existed meant — which is also how an
+    /// unedited line keeps a deliberate sign the type rule would not give it
+    /// (a refund written negative under an expense account).
+    #[serde(default)]
+    entry: Option<WireDecIn>,
     period: PeriodIn,
     #[serde(default)]
     growth: Option<GrowthIn>,
@@ -496,6 +521,12 @@ struct ScenarioLineIn {
     /// value is a `400` rather than a silent fallback.
     #[serde(default)]
     source: Option<String>,
+    /// The outbound line's derived `section`, accepted and DROPPED so a client
+    /// can hand a line straight back — the same courtesy [`PeriodIn`] extends
+    /// to `simple`/`from`/`to`. The server re-derives it; a section is never
+    /// an instruction.
+    #[serde(default, rename = "section")]
+    _section: Option<serde::de::IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -646,13 +677,48 @@ fn source_from_wire(source: Option<&str>) -> Result<LineSource, AppError> {
     }
 }
 
+/// A decoded scenario body whose edited lines still await their sign.
+///
+/// The sign of an `entry` depends on the journal's declared account types,
+/// which are read inside a `compute` slot, while decoding (and bounding) a body
+/// happens before one is claimed. So decoding keeps the magnitudes aside and
+/// [`DecodedScenario::signed`] applies them once the types are at hand.
+struct DecodedScenario {
+    scenario: Scenario,
+    /// One per line, in order: the typed magnitude, or `None` for a line whose
+    /// `amount.quantity` is already signed.
+    entries: Vec<Option<Dec>>,
+}
+
+impl DecodedScenario {
+    /// The scenario, each `entry` signed by its account's type.
+    fn signed(self, declared: &BTreeMap<String, AccountType>) -> Result<Scenario, AppError> {
+        let Self {
+            mut scenario,
+            entries,
+        } = self;
+        for (line, entry) in scenario.lines.iter_mut().zip(entries) {
+            if let Some(entry) = entry {
+                line.amount.quantity =
+                    signed_entry(&line.account.0, entry, declared).map_err(|error| {
+                        AppError::BadRequest(format!(
+                            "line '{}' has an amount out of range: {error}",
+                            line.id
+                        ))
+                    })?;
+            }
+        }
+        Ok(scenario)
+    }
+}
+
 /// Validate a scenario body and turn it into the engine's model.
 ///
 /// The counts are checked FIRST, before a single line is decoded: the point of
 /// the limits is to refuse an oversized scenario cheaply, and decoding ten
 /// thousand lines in order to discover there are ten thousand of them is not
 /// that.
-fn scenario_from_wire(scenario: &ScenarioIn) -> Result<Scenario, AppError> {
+fn scenario_from_wire(scenario: &ScenarioIn) -> Result<DecodedScenario, AppError> {
     if scenario.lines.len() > MAX_LINES {
         return Err(AppError::BadRequest(format!(
             "a scenario may have at most {MAX_LINES} lines (received {})",
@@ -727,12 +793,21 @@ fn scenario_from_wire(scenario: &ScenarioIn) -> Result<Scenario, AppError> {
         })
         .collect::<Result<Vec<_>, AppError>>()?;
 
-    Ok(Scenario {
-        name: scenario.name.clone(),
-        created: scenario.created.clone(),
-        updated: scenario.updated.clone(),
-        lines,
-        events,
+    let entries = scenario
+        .lines
+        .iter()
+        .map(|line| line.entry.as_ref().map(dec_from_wire).transpose())
+        .collect::<Result<Vec<_>, AppError>>()?;
+
+    Ok(DecodedScenario {
+        scenario: Scenario {
+            name: scenario.name.clone(),
+            created: scenario.created.clone(),
+            updated: scenario.updated.clone(),
+            lines,
+            events,
+        },
+        entries,
     })
 }
 
@@ -773,11 +848,12 @@ pub(crate) async fn run(
         .map(Commodity);
     // Decoded (and bounded) BEFORE a `compute` slot is claimed: a scenario we
     // are going to refuse must not first wait for a core.
-    let scenario = scenario_from_wire(&request.scenario)?;
+    let decoded = scenario_from_wire(&request.scenario)?;
 
     compute(move || {
         let journal = &snapshot.journal;
         let declared = declared_types(&account_decls(journal));
+        let scenario = decoded.signed(&declared)?;
         let projection = project(
             &scenario,
             &journal.transactions,
@@ -837,7 +913,7 @@ pub(crate) async fn seed(
                 styles: &journal.commodity_styles,
             },
         )?;
-        Ok(WireScenario::from(&scenario))
+        Ok(WireScenario::new(&scenario, &declared))
     })
     .await
 }
@@ -1106,7 +1182,10 @@ fn stale(id: &str) -> AppError {
 /// produced carries no path, and every error on this path comes straight from
 /// `File::open` or `read_to_end`.
 fn read_failed(id: &str, error: &std::io::Error) -> AppError {
-    AppError::Internal(format!("could not read {}: {error}", quoted(id)))
+    AppError::unless_not_downloaded(
+        error,
+        AppError::Internal(format!("could not read {}: {error}", quoted(id))),
+    )
 }
 
 /// A `500` for an I/O failure while WRITING — and deliberately only the
@@ -1114,11 +1193,14 @@ fn read_failed(id: &str, error: &std::io::Error) -> AppError {
 /// built that names the journal directory, which is precisely the disclosure
 /// the error sentences here exist to prevent.
 fn write_failed(id: &str, error: &std::io::Error) -> AppError {
-    AppError::Internal(format!(
-        "could not write {}: {}. Nothing was changed.",
-        quoted(id),
-        error.kind()
-    ))
+    AppError::unless_not_downloaded(
+        error,
+        AppError::Internal(format!(
+            "could not write {}: {}. Nothing was changed.",
+            quoted(id),
+            error.kind()
+        )),
+    )
 }
 
 /// How a [`CreateRefusal`] is reported.
@@ -1174,23 +1256,23 @@ fn serialize_failed(id: &str, error: &SerializeError) -> AppError {
 /// to trailing whitespace, CRLF and everything else this writer preserves but
 /// does not represent, so it would let a save clobber someone else's edit and
 /// report success.
-fn read_file(path: &FsPath, id: &str) -> Result<(String, Fingerprint), AppError> {
-    let file = std::fs::File::open(path).map_err(|error| read_failed(id, &error))?;
-    // `take` bounds the READ itself rather than trimming afterwards, so an
-    // enormous file is never held in memory even briefly. One byte over the cap
-    // is enough to detect it.
+fn read_file(path: &ProjectionPath, id: &str) -> Result<(String, Fingerprint), AppError> {
+    // The cap bounds the READ itself rather than trimming afterwards, so an
+    // enormous file is never held in memory even briefly: the vault reads at
+    // most one byte past it and refuses the file. The open never follows a
+    // symlink and insists on a regular file (`pinned.rs` under a `LocalVault`).
     let cap = u64::try_from(MAX_SCENARIO_BYTES).unwrap_or(u64::MAX);
-    let mut raw = Vec::new();
-    file.take(cap.saturating_add(1))
-        .read_to_end(&mut raw)
-        .map_err(|error| read_failed(id, &error))?;
-    if raw.len() > MAX_SCENARIO_BYTES {
-        return Err(AppError::BadRequest(format!(
-            "{} is larger than {MAX_SCENARIO_BYTES} bytes, so it is listed but cannot be opened \
-             as a projection",
-            quoted(id)
-        )));
-    }
+    let raw = match path.vault().read_pinned(path.vault_path(), Some(cap)) {
+        Ok((raw, _)) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
+            return Err(AppError::BadRequest(format!(
+                "{} is larger than {MAX_SCENARIO_BYTES} bytes, so it is listed but cannot be \
+                 opened as a projection",
+                quoted(id)
+            )));
+        }
+        Err(error) => return Err(read_failed(id, &path_free(error))),
+    };
     let fingerprint = Fingerprint::of_bytes(&raw);
     let text = String::from_utf8(raw).map_err(|_| {
         AppError::BadRequest(format!(
@@ -1207,10 +1289,10 @@ fn read_file(path: &FsPath, id: &str) -> Result<(String, Fingerprint), AppError>
 ///
 /// A file the main journal was parsed from is a plan of record, and the
 /// Projections tab never writes to one. Compared against
-/// `Journal::source_files`, which holds canonical paths, as does a
-/// [`ProjectionPath`] (the scan runs every candidate through `parse::confine`),
-/// so this is an equality test between two canonical paths and not path
-/// arithmetic.
+/// `Journal::source_files`, which holds the vault's keys (canonical paths on the
+/// desktop), as does [`ProjectionPath::as_path`] — both built by
+/// [`ledgeline_core::vault::Vault::key`] — so this is an equality test between
+/// two keys and not path arithmetic.
 fn writable_path(sources: &[PathBuf], path: &FsPath) -> bool {
     !sources.iter().any(|source| source.as_path() == path)
 }
@@ -1236,7 +1318,7 @@ fn open_file(
     writable: bool,
     declared: &BTreeMap<String, AccountType>,
 ) -> Result<WireScenarioFile, AppError> {
-    let (text, fingerprint) = read_file(found.path().as_path(), id)?;
+    let (text, fingerprint) = read_file(found.path(), id)?;
     let name = found.path().as_path().to_string_lossy().to_string();
     // The FALLBACK display name is the filename's label, so a file with no
     // `; projection:` marker still opens with a name — "a file without it still
@@ -1248,43 +1330,31 @@ fn open_file(
         label: found.label.clone(),
         revision: fingerprint.token(),
         writable,
-        scenario: WireScenario::from(&scenario),
+        scenario: WireScenario::new(&scenario, declared),
     })
 }
 
-/// The journal's main file — the scan root's parent, and the only thing that
-/// makes a discovery set exist at all.
-fn main_journal_file(state: &AppState) -> Option<PathBuf> {
-    state.source_files().into_iter().next()
+/// Where the journal lives — the vault the scan walks and the main file whose
+/// directory is its root, and the only thing that makes a discovery set exist
+/// at all. Taken from `snapshot`, so it is the storage of the journal served.
+fn main_journal_file(snapshot: &Snapshot) -> Option<Arc<JournalLocation>> {
+    snapshot.storage()
+}
+
+/// A storage failure as an [`std::io::Error`] that carries no path: the
+/// underlying OS error when there is one, else just its kind. The vault's own
+/// errors name a (relative) path, and [`read_failed`]/[`write_failed`] put
+/// only the caller's id in a sentence.
+fn path_free(error: VaultError) -> std::io::Error {
+    match error {
+        VaultError::Io { source, .. } => source,
+        other => std::io::Error::from(other.kind()),
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Writing
 // ---------------------------------------------------------------------------
-
-/// Write a brand-new file, refusing to touch one that is already there.
-///
-/// `create_new` is `O_EXCL`, so the refusal is the **kernel's**, decided
-/// atomically at the moment of the open. That matters more than it looks:
-/// [`Discovery::resolve_new`]'s own existence check expires the instant it
-/// returns, so a create that leant on it would have a window in which another
-/// process could put a file there and have it silently truncated. Here the
-/// window does not exist.
-///
-/// Deliberately **not** `atomic_write`, whose temp-file-and-rename would
-/// happily replace an existing file — the property that makes it right for a
-/// save is exactly what makes it wrong here.
-fn create_exclusive(path: &FsPath, bytes: &[u8]) -> std::io::Result<()> {
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)?;
-    file.write_all(bytes)?;
-    // Before the handle drops, so "the write returned" means the bytes are on
-    // the disk rather than in a cache — the same durability `atomic_write`
-    // gives a save.
-    file.sync_all()
-}
 
 /// The whole of a CREATE, synchronously, on the blocking pool.
 fn create_scenario(
@@ -1302,15 +1372,32 @@ fn create_scenario(
     let name = path.as_path().to_string_lossy().to_string();
     let text = new_file(scenario, &name, declared).map_err(|error| serialize_failed(id, &error))?;
 
-    create_exclusive(path.as_path(), text.as_bytes()).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::AlreadyExists {
-            // Lost the race with another writer between `resolve_new` and the
-            // open. The kernel refused it; this is only how that is reported.
-            create_refused(id, CreateRefusal::Exists)
-        } else {
-            write_failed(id, &error)
-        }
-    })?;
+    // A brand-new file, refusing to touch one that is already there:
+    // `Vault::create_new` is `O_CREAT | O_EXCL | O_NOFOLLOW` under a
+    // `LocalVault`, so the refusal is the **kernel's**, decided atomically at
+    // the moment of the open. That matters more than it looks:
+    // [`Discovery::resolve_new`]'s own existence check expires the instant it
+    // returns, so a create that leant on it would have a window in which
+    // another process could put a file there and have it silently truncated.
+    // Deliberately **not** `write_atomic`, whose temp-file-and-rename would
+    // happily replace an existing file. Durable (`fsync`ed) before it returns.
+    // The mode is the process umask's (`create_new_shared`), unlike a save,
+    // which carries an existing file's mode forward: there is no previous mode
+    // to carry, and a stricter one than the user's own editor would give them
+    // is a surprise rather than a protection.
+    path.vault()
+        .create_new_shared(path.vault_path(), text.as_bytes())
+        .map(|_| ())
+        .map_err(path_free)
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                // Lost the race with another writer between `resolve_new` and the
+                // open. The kernel refused it; this is only how that is reported.
+                create_refused(id, CreateRefusal::Exists)
+            } else {
+                write_failed(id, &error)
+            }
+        })?;
 
     let label = label_for(id);
     let written = scenario_from_text(&text, &name, &label, declared)
@@ -1323,7 +1410,7 @@ fn create_scenario(
         id: id.to_string(),
         revision: Fingerprint::of_bytes(text.as_bytes()).token(),
         writable: true,
-        scenario: WireScenario::from(&written),
+        scenario: WireScenario::new(&written, declared),
         label,
     })
 }
@@ -1356,7 +1443,7 @@ fn update_scenario(
     }
     let name = path.to_string_lossy().to_string();
 
-    let (text, fingerprint) = read_file(path, id)?;
+    let (text, fingerprint) = read_file(found.path(), id)?;
     // Checked BEFORE anything is rendered, so a client editing an older parse is
     // told the file moved rather than being handed a rendering failure that
     // describes the wrong problem and suggests the wrong fix.
@@ -1391,26 +1478,31 @@ fn update_scenario(
             label: found.label.clone(),
             revision: fingerprint.token(),
             writable: true,
-            scenario: WireScenario::from(&unchanged),
+            scenario: WireScenario::new(&unchanged, declared),
         });
     }
 
-    // Pinned to the scan's `(dev, ino)` and to the revision the client edited.
+    // Pinned to the scan's identity and to the revision the client edited.
     // The scan proved this name was a regular file inside the root; that proof
     // expired the moment the scan ended, and a name can become a symlink, a
-    // FIFO or a different file entirely in between. `pinned::replace` re-checks
-    // both through the descriptor it replaces, right up to the rename, and never
-    // follows a link. A replace and not `create_exclusive`: this file exists,
-    // and its mode is carried forward (a projection carries account names and
-    // figures, so `0600` staying `0600` is not hypothetical).
-    let pin = Pin {
+    // FIFO or a different file entirely in between. `Vault::replace`
+    // (`pinned::replace` under a `LocalVault`) re-checks both through the
+    // descriptor it replaces, right up to the rename, and never follows a
+    // link. A replace and not `create_new`: this file exists, and its mode is
+    // carried forward (a projection carries account names and figures, so
+    // `0600` staying `0600` is not hypothetical).
+    let expected = Revision {
+        fingerprint,
         identity: found.identity(),
-        fingerprint: Some(fingerprint),
     };
-    pinned::replace(path, new_text.as_bytes(), &pin).map_err(|error| match error {
-        WriteError::Changed => stale(id),
-        WriteError::Io(error) => write_failed(id, &error),
-    })?;
+    found
+        .path()
+        .vault()
+        .replace(found.path().vault_path(), new_text.as_bytes(), &expected)
+        .map_err(|error| match error {
+            VaultError::Changed { .. } => stale(id),
+            other => write_failed(id, &path_free(other)),
+        })?;
 
     // Deliberately NO `state.reopen_editor()`: it re-opens the main journal,
     // which a file the main journal does not include cannot have changed.
@@ -1421,7 +1513,7 @@ fn update_scenario(
         label: found.label.clone(),
         revision: Fingerprint::of_bytes(new_text.as_bytes()).token(),
         writable: true,
-        scenario: WireScenario::from(&written),
+        scenario: WireScenario::new(&written, declared),
     })
 }
 
@@ -1433,16 +1525,17 @@ fn update_scenario(
 /// directory tree, `projection-*` first.
 pub(crate) async fn index(State(state): State<AppState>) -> Result<Response, AppError> {
     let editable = state.editing_enabled();
-    let Some(main) = main_journal_file(&state) else {
+    let snapshot = state.snapshot();
+    let Some(main) = main_journal_file(&snapshot) else {
         return Ok(no_store(WireProjectionIndex::without_journal(editable)));
     };
-    let sources = state.source_files();
+    let sources = snapshot.journal.source_files.clone();
     // Through `compute`: a directory walk on a cold or network-mounted journal
     // directory is exactly the blocking work its semaphore and `spawn_blocking`
     // exist for, and running it on a tokio worker would stall the runtime the
     // desktop GUI is hosted in.
     let Json(body) = compute(move || {
-        let discovery = discover(&main);
+        let discovery = discover_in(Arc::clone(main.vault()), main.main());
         Ok(WireProjectionIndex {
             root_label: discovery.root_label(),
             editable,
@@ -1469,11 +1562,11 @@ pub(crate) async fn document(
     // No journal file means no scan root, so no id resolves. Answering the
     // ordinary `404` keeps this route from distinguishing "no journal open"
     // from "no such file".
-    let Some(main) = main_journal_file(&state) else {
+    let snapshot = state.snapshot();
+    let Some(main) = main_journal_file(&snapshot) else {
         return Err(unresolved(&id));
     };
-    let sources = state.source_files();
-    let snapshot = state.snapshot();
+    let sources = snapshot.journal.source_files.clone();
     let Json(body) = compute(move || {
         // The MAIN journal's account types, because a projection file declares
         // none of its own and the asset/flow discriminator needs them
@@ -1487,7 +1580,7 @@ pub(crate) async fn document(
         // `without_headers`: this route resolves exactly one id and never looks
         // at a listing's display name, so opening the other 199 files to read
         // four comment lines out of each is work thrown away.
-        let discovery = Discovery::without_headers(&main);
+        let discovery = Discovery::without_headers_in(Arc::clone(main.vault()), main.main());
         let found = discovery.resolve(&id).ok_or_else(|| unresolved(&id))?;
         let writable = writable_path(&sources, found.path().as_path());
         open_file(found, &id, writable, &declared)
@@ -1512,18 +1605,24 @@ pub(crate) async fn save(
     if !state.editing_enabled() {
         return Err(editing_disabled());
     }
-    let Some(main) = main_journal_file(&state) else {
+    let snapshot = state.snapshot();
+    let Some(main) = main_journal_file(&snapshot) else {
         return Err(unresolved(&id));
     };
-    let sources = state.source_files();
-    let snapshot = state.snapshot();
+    let sources = snapshot.journal.source_files.clone();
     // Decoded (and bounded) BEFORE the lock is taken and before a `compute`
     // slot is claimed: a scenario we are going to refuse must not first wait
     // for a core, and must not hold the write lock while it is refused.
-    let mut scenario = scenario_from_wire(&request.scenario)?;
+    let mut decoded = scenario_from_wire(&request.scenario)?;
     let today = today_utc();
-    scenario.created = Some(scenario.created.unwrap_or_else(|| today.clone()));
-    scenario.updated = Some(today);
+    decoded.scenario.created = Some(
+        decoded
+            .scenario
+            .created
+            .take()
+            .unwrap_or_else(|| today.clone()),
+    );
+    decoded.scenario.updated = Some(today);
     let revision = request.revision;
 
     // `import_writes`, not a mutex of this route's own — see the section header.
@@ -1541,6 +1640,7 @@ pub(crate) async fn save(
         // serializes writers to one journal directory, the runtime serializes
         // the whole application.
         let declared = declared_types(&account_decls(&snapshot.journal));
+        let scenario = decoded.signed(&declared)?;
         // Scanned in THIS request, never cached. That is the whole of security
         // layer 2: an id resolves against a set built from `read_dir` names
         // moments ago, so a cached set would be one that no longer describes
@@ -1551,7 +1651,7 @@ pub(crate) async fn save(
         // each *other* file in the tree, which this route never reads. The walk
         // and every guard on it are exactly as fresh — and this one ran up to
         // 200 pointless opens while holding that lock.
-        let discovery = Discovery::without_headers(&main);
+        let discovery = Discovery::without_headers_in(Arc::clone(main.vault()), main.main());
         if revision == NEW_FILE_REVISION {
             create_scenario(&discovery, &id, &scenario, &declared)
         } else {

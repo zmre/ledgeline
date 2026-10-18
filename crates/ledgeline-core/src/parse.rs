@@ -21,6 +21,14 @@
 //! live-reload watcher at arbitrary directories. Cycles and nesting depth are
 //! bounded too — see [`admit_include`].
 //!
+//! Every file is read through a [`Vault`] ([`parse_journal_in`]): an `include`
+//! is placed lexically inside the vault, its symlinks resolved by
+//! [`Vault::canonicalize`], and read with [`Vault::read_pinned`] — so a caller
+//! gets back the exact bytes parsed and their [`Revision`]. The text-only entry
+//! points ([`parse_journal`], [`parse_journal_with_overrides`]) build the vault
+//! from the journal's own directory; nothing here consults the process's
+//! working directory.
+//!
 //! `Y` sets the default year for yearless dates; every transaction/`P` date is
 //! normalized to ISO `YYYY-MM-DD` (accepting `-`/`/`/`.` separators) and
 //! validated against the calendar, leap years included. Directives that would
@@ -72,6 +80,7 @@ use crate::model::{
     PeriodSpec, PeriodicTransaction, Posting, PostingType, PriceDirective, SourcePos, Status,
     Tindex, Transaction,
 };
+use crate::vault::{LocalVault, MemVault, Revision, Vault, VaultError, VaultPath};
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -166,7 +175,20 @@ struct AmountCtx<'a> {
 
 /// Mutable accumulators shared across the top-level file and any `include`d
 /// files, so transaction indices and declarations continue seamlessly.
-struct Ctx {
+struct Ctx<'v> {
+    /// Where every `include` is read from, and confined to.
+    vault: &'v dyn Vault,
+    /// In-memory replacements for files, by vault path: the editor's
+    /// reparse-to-validate input. A file present here is never read.
+    overrides: Option<&'v HashMap<VaultPath, String>>,
+    /// The main file's vault path and the key it is recorded under. The key is
+    /// [`Vault::key`] for every caller but the text-only wrappers, which keep
+    /// the key they always recorded (see [`resolve_source_file`]).
+    main: VaultPath,
+    main_key: PathBuf,
+    /// Every file read from the vault during this parse, in first-read order,
+    /// with exactly the bytes parsed and their [`Revision`].
+    sources: Vec<ParsedSource>,
     styles: Styles,
     default_decimal_mark: Option<char>,
     default_commodity: Option<(Commodity, AmountStyle)>,
@@ -190,14 +212,14 @@ struct Ctx {
     /// deduplicated, as resolved absolute paths. Feeds [`Journal::source_files`].
     source_files: Vec<PathBuf>,
     /// The directory every `include` must resolve inside: the main journal
-    /// file's own directory, canonicalized. See [`admit_include`].
-    include_root: PathBuf,
+    /// file's own directory. See [`admit_include`].
+    include_root: VaultPath,
     /// The canonical paths of the files on the current `include` stack — the
     /// ancestors of the file being parsed, NOT including that file itself. A
     /// stack (rather than a global visited set) so a diamond include resolves
     /// like hledger's: including the same file from two different branches is
     /// legal and parses it twice.
-    include_stack: Vec<PathBuf>,
+    include_stack: Vec<VaultPath>,
     /// How many `include`s have been admitted so far, capped by
     /// [`MAX_INCLUDE_FILES`].
     includes_admitted: usize,
@@ -208,9 +230,20 @@ struct Ctx {
     tindex: u32,
 }
 
-impl Ctx {
-    fn new(main_source_name: &str) -> Self {
+impl<'v> Ctx<'v> {
+    fn new(
+        vault: &'v dyn Vault,
+        main: &VaultPath,
+        main_key: PathBuf,
+        overrides: Option<&'v HashMap<VaultPath, String>>,
+    ) -> Self {
         Ctx {
+            vault,
+            overrides,
+            include_root: main.parent().unwrap_or_default(),
+            main: main.clone(),
+            main_key,
+            sources: Vec::new(),
             styles: HashMap::new(),
             default_decimal_mark: None,
             default_commodity: None,
@@ -224,7 +257,6 @@ impl Ctx {
             transactions: Vec::new(),
             periodic_transactions: Vec::new(),
             source_files: Vec::new(),
-            include_root: include_root_for(main_source_name),
             include_stack: Vec::new(),
             includes_admitted: 0,
             leading_comment: None,
@@ -249,37 +281,165 @@ impl Ctx {
     }
 }
 
-/// The absolute key a journal file is addressed by: canonicalized when it exists
-/// on disk, else the path as given (so an in-memory source with a placeholder
-/// name still resolves to a stable key). Used to record each transaction's
-/// [`Transaction::source_file`] and to key the editor's per-file ropes and the
-/// in-memory override map consistently.
+/// The absolute key a journal file is addressed by when it is named by a path
+/// rather than a vault: canonicalized when it exists on disk, else the path as
+/// given (so an in-memory source with a placeholder name still resolves to a
+/// stable key). The text-only entry points ([`parse_journal`],
+/// [`parse_journal_with_overrides`]) record the main file under this key, which
+/// for any journal that exists is exactly the [`Vault::key`] a [`LocalVault`]
+/// would give it.
 pub(crate) fn resolve_source_file(path: impl AsRef<Path>) -> PathBuf {
     let path = path.as_ref();
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// Read a source file's text: from `overrides` (keyed by its resolved absolute
-/// path, see [`resolve_source_file`]) when an entry is present there, else from
-/// disk. This lets the editor reparse the WHOLE journal against edited but
-/// not-yet-saved in-memory file contents.
-fn read_source_text(
-    resolved: &Path,
-    overrides: Option<&HashMap<PathBuf, String>>,
-) -> std::io::Result<String> {
-    if let Some(map) = overrides
-        && let Some(text) = map.get(&resolve_source_file(resolved))
-    {
-        return Ok(text.clone());
+/// One source file a vault parse read, as it was read.
+#[derive(Debug, Clone)]
+pub struct ParsedSource {
+    /// Where it is in the vault.
+    pub path: VaultPath,
+    /// The exact text parsed, and the revision of those bytes. `None` when the
+    /// text did not come from storage — it was an override, or the caller's.
+    pub read: Option<(String, Revision)>,
+}
+
+/// A journal parsed through a vault ([`parse_journal_in`]), with every source
+/// file it read.
+///
+/// The sources are what lets a caller that goes on to *write* those files (the
+/// editor) pin the write to exactly the bytes that were parsed, instead of
+/// reading every file a second time and hoping it had not changed in between.
+#[derive(Debug, Clone)]
+pub struct ParsedJournal {
+    pub journal: Journal,
+    /// Main file first, then each `include`d file in first-read order; a file
+    /// included twice (a diamond) appears once, as first read.
+    pub sources: Vec<ParsedSource>,
+}
+
+/// Parse the journal whose main file is `main` in `vault`, reading every
+/// `include` through the vault and confining it to `main`'s directory.
+///
+/// A file whose vault path is a key in `overrides` is parsed from that text and
+/// never read; every other file is read with [`Vault::read_pinned`], and its
+/// text and [`Revision`] come back in [`ParsedJournal::sources`].
+///
+/// Source files are recorded under [`Vault::key`]; the journal's `source_name`
+/// is the main file's key.
+///
+/// # Errors
+/// [`ParseError::Include`] when the main file cannot be read (including
+/// [`crate::vault::VaultError::NotDownloaded`]), and every error
+/// [`parse_journal`] reports.
+pub fn parse_journal_in(
+    vault: &dyn Vault,
+    main: &VaultPath,
+    overrides: &HashMap<VaultPath, String>,
+) -> Result<ParsedJournal, ParseError> {
+    let main_key = vault.key(main);
+    let source_name = main_key.to_string_lossy().into_owned();
+    parse_in(vault, main, main_key, &source_name, overrides)
+}
+
+/// [`parse_journal_in`] with the main file's recorded key and `source_name`
+/// chosen by the caller — the editor keeps whatever spelling the journal was
+/// opened with, exactly as [`parse_journal`] does.
+pub(crate) fn parse_in(
+    vault: &dyn Vault,
+    main: &VaultPath,
+    main_key: PathBuf,
+    source_name: &str,
+    overrides: &HashMap<VaultPath, String>,
+) -> Result<ParsedJournal, ParseError> {
+    let (text, revision) = match overrides.get(main) {
+        Some(text) => (std::borrow::Cow::Borrowed(text.as_str()), None),
+        None => {
+            let (text, revision) = read_source(vault, main)
+                .map_err(|e| ParseError::Include(format!("could not read {source_name}: {e}")))?;
+            (std::borrow::Cow::Owned(text), Some(revision))
+        }
+    };
+    let mut ctx = Ctx::new(vault, main, main_key, Some(overrides));
+    parse_source(&text, source_name, main, &mut ctx)?;
+    let main_read = match (text, revision) {
+        (std::borrow::Cow::Owned(text), Some(revision)) => Some((text, revision)),
+        _ => None,
+    };
+    let sources = std::iter::once(ParsedSource {
+        path: main.clone(),
+        read: main_read,
+    })
+    .chain(std::mem::take(&mut ctx.sources))
+    .collect();
+    Ok(ParsedJournal {
+        journal: ctx.into_journal(source_name),
+        sources,
+    })
+}
+
+/// Read one source file as UTF-8 with its revision.
+///
+/// Non-UTF-8 content is an error, never a lossy decode — the editor reads
+/// through here, and a lossy decode would later write mojibake back over the
+/// original. A bare "stream did not contain valid UTF-8" reads as an
+/// unexplained failure to open the user's books (a `£` or a `ñ` in a Latin-1
+/// payee is enough), so the message says what to do about it.
+fn read_source(vault: &dyn Vault, path: &VaultPath) -> Result<(String, Revision), String> {
+    let (bytes, revision) = vault
+        .read_pinned(path, None)
+        .map_err(|error| read_failure(&error))?;
+    let text = String::from_utf8(bytes).map_err(|_| {
+        "the file is not valid UTF-8. Ledgeline reads and writes UTF-8 journals only; convert \
+         it first (e.g. `iconv -f latin1 -t utf-8`) so no character is silently rewritten"
+            .to_string()
+    })?;
+    Ok((text, revision))
+}
+
+/// Why a source could not be read, without the vault error's own path prefix
+/// (every caller names the file itself).
+fn read_failure(error: &VaultError) -> String {
+    match error {
+        VaultError::NotFound { .. } => "No such file or directory".to_string(),
+        VaultError::NotDownloaded { .. } => {
+            "the file is not downloaded to this device yet".to_string()
+        }
+        VaultError::Io { source, .. } => source.to_string(),
+        other => std::io::Error::from(other.kind()).to_string(),
     }
-    std::fs::read_to_string(resolved)
+}
+
+/// The vault a text-only entry point resolves `include`s through, and the main
+/// file's place in it.
+///
+/// A journal that is named by an absolute path (or one that exists) is a
+/// [`LocalVault`] rooted at its real directory — the same vault the desktop
+/// opens it with. A name with no real directory (an in-memory placeholder such
+/// as `"test.journal"`) gets an EMPTY vault: its `include`s resolve nowhere,
+/// rather than against whatever the process's working directory happens to be.
+pub(crate) fn vault_for_source_name(source_name: &str) -> (Box<dyn Vault>, VaultPath) {
+    let path = Path::new(source_name);
+    if let Ok((vault, main)) = LocalVault::for_journal(path)
+        && vault.root().is_absolute()
+    {
+        return (Box::new(vault), main);
+    }
+    let main = path
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .and_then(|name| VaultPath::root().child(name).ok())
+        .unwrap_or_else(|| VaultPath::new("journal").unwrap_or_default());
+    (Box::new(MemVault::with_root("")), main)
 }
 
 /// Parse `text` (the contents of the journal at `source_name`) into a balanced
-/// [`Journal`]. `include`d files are resolved relative to `source_name`.
+/// [`Journal`]. `include`d files are resolved relative to `source_name`'s real
+/// directory and confined to it; a `source_name` with no real directory
+/// includes nothing (see [`vault_for_source_name`]).
 pub fn parse_journal(text: &str, source_name: &str) -> Result<Journal, ParseError> {
-    let mut ctx = Ctx::new(source_name);
-    parse_source(text, source_name, &mut ctx, None)?;
+    let (vault, main) = vault_for_source_name(source_name);
+    let mut ctx = Ctx::new(&*vault, &main, resolve_source_file(source_name), None);
+    parse_source(text, source_name, &main, &mut ctx)?;
     Ok(ctx.into_journal(source_name))
 }
 
@@ -288,30 +448,43 @@ pub fn parse_journal(text: &str, source_name: &str) -> Result<Journal, ParseErro
 ///
 /// Any file whose resolved absolute path (see [`resolve_source_file`]) is a key
 /// in `overrides` is read from that map; every other file (the main file
-/// included) is read from disk exactly as [`parse_journal`] would. This is the
-/// editor's reparse-to-validate entry point: it lets an edit that spans an
-/// `include`d file be validated against the EDITED in-memory content of every
-/// touched file, not the stale on-disk copies.
+/// included) is read from disk exactly as [`parse_journal`] would. The path
+/// form of [`parse_journal_in`], kept for callers that hold paths.
 pub fn parse_journal_with_overrides(
     main_source_name: &str,
     overrides: &HashMap<PathBuf, String>,
 ) -> Result<Journal, ParseError> {
-    let main_text = read_source_text(Path::new(main_source_name), Some(overrides))
-        .map_err(|e| ParseError::Include(format!("could not read {main_source_name}: {e}")))?;
-    let mut ctx = Ctx::new(main_source_name);
-    parse_source(&main_text, main_source_name, &mut ctx, Some(overrides))?;
-    Ok(ctx.into_journal(main_source_name))
+    let (vault, main) = vault_for_source_name(main_source_name);
+    let main_key = resolve_source_file(main_source_name);
+    let by_vault_path: HashMap<VaultPath, String> = overrides
+        .iter()
+        .filter_map(|(key, text)| {
+            let resolved = resolve_source_file(key);
+            let path = if resolved == main_key {
+                Some(main.clone())
+            } else {
+                crate::vault::place_native(&*vault, &resolved)
+            };
+            path.map(|path| (path, text.clone()))
+        })
+        .collect();
+    parse_in(&*vault, &main, main_key, main_source_name, &by_vault_path)
+        .map(|parsed| parsed.journal)
 }
 
-/// Parse one journal source (the top file or an included one) into `ctx`. When
-/// `overrides` is `Some`, `include`d files are read from it before disk.
+/// Parse one journal source (the top file or an included one, at `source` in
+/// the vault) into `ctx`.
 fn parse_source(
     text: &str,
     source_name: &str,
+    source: &VaultPath,
     ctx: &mut Ctx,
-    overrides: Option<&HashMap<PathBuf, String>>,
 ) -> Result<(), ParseError> {
-    let source_file = resolve_source_file(source_name);
+    let source_file = if *source == ctx.main {
+        ctx.main_key.clone()
+    } else {
+        ctx.vault.key(source)
+    };
     // Are we the MAIN file? Every parse starts with an empty `source_files`, and
     // the push below is the first thing that ever writes to it, so "nothing
     // recorded yet" is exactly "this is the top-level file". Read BEFORE the push.
@@ -439,34 +612,56 @@ fn parse_source(
                 ctx.default_commodity = Some((commodity, style));
             }
             "include" => {
-                let (target, as_written) = resolve_include(trimmed, source_name)
-                    .map_err(|e| locate(source_name, line_no, line, e))?;
+                let as_written =
+                    include_target(trimmed).map_err(|e| locate(source_name, line_no, line, e))?;
                 // Confinement, cycle and budget checks all run BEFORE the file is
                 // read, so a rejected include never has its contents echoed back
                 // through a parse error (SEC-6's read oracle).
-                let path = admit_include(&target, &as_written, &source_file, ctx)
+                let path = admit_include(&as_written, source, ctx)
                     .map_err(|e| locate(source_name, line_no, line, e))?;
-                let included = read_source_text(&path, overrides).map_err(|e| {
-                    locate(
-                        source_name,
-                        line_no,
-                        line,
-                        ParseError::Include(format!("{}: {e}", path.display())),
-                    )
-                })?;
+                let key = ctx.vault.key(&path);
+                let (included, revision) = match ctx.overrides.and_then(|map| map.get(&path)) {
+                    Some(text) => (std::borrow::Cow::Borrowed(text.as_str()), None),
+                    None => {
+                        let (text, revision) = read_source(ctx.vault, &path).map_err(|e| {
+                            locate(
+                                source_name,
+                                line_no,
+                                line,
+                                ParseError::Include(format!("{}: {e}", key.display())),
+                            )
+                        })?;
+                        (std::borrow::Cow::Owned(text), Some(revision))
+                    }
+                };
+                // The slot is taken now, so sources stay in first-read order;
+                // the text moves into it once the nested parse is done with it.
+                // A file read twice (a diamond) keeps its first read.
+                let slot = (!ctx.sources.iter().any(|source| source.path == path)).then(|| {
+                    ctx.sources.push(ParsedSource {
+                        path: path.clone(),
+                        read: None,
+                    });
+                    ctx.sources.len() - 1
+                });
                 // Push the INCLUDING file so the nested parse sees its own full
                 // ancestor chain; pop unconditionally to keep the stack accurate
                 // if the caller ever recovers from the error.
-                ctx.include_stack.push(source_file.clone());
+                ctx.include_stack.push(source.clone());
                 // Aliases flow INTO an include and never back out (verified
                 // against hledger 1.52), so the nested parse inherits this
                 // scope and the parent's is restored whatever it did with it —
                 // including an `end aliases`, which kills the parent's aliases
                 // only within the child.
                 let outer_scope = ctx.alias_scope.clone();
-                let nested = parse_source(&included, &path.to_string_lossy(), ctx, overrides);
+                let nested = parse_source(&included, &key.to_string_lossy(), &path, ctx);
                 ctx.alias_scope = outer_scope;
                 ctx.include_stack.pop();
+                if let (Some(slot), std::borrow::Cow::Owned(text), Some(revision)) =
+                    (slot, included, revision)
+                {
+                    ctx.sources[slot].read = Some((text, revision));
+                }
                 nested?;
             }
             "alias" => {
@@ -853,11 +1048,10 @@ fn parse_decimal_mark_directive(line: &str) -> Result<char, ParseError> {
     }
 }
 
-/// Resolve an `include PATH` target relative to the including file's directory.
-/// Returns the joined path plus the target exactly as written in the directive
-/// — the latter is what diagnostics quote, so a rejected include never discloses
-/// a path the journal did not already name (e.g. a symlink's target).
-fn resolve_include(line: &str, source_name: &str) -> Result<(PathBuf, String), ParseError> {
+/// The target of an `include PATH` directive, exactly as written — which is
+/// what diagnostics quote, so a rejected include never discloses a path the
+/// journal did not already name (e.g. a symlink's target).
+fn include_target(line: &str) -> Result<String, ParseError> {
     let after = line
         .strip_prefix("include")
         .ok_or_else(|| ParseError::MalformedDirective(line.to_string()))?;
@@ -866,118 +1060,52 @@ fn resolve_include(line: &str, source_name: &str) -> Result<(PathBuf, String), P
     if path_str.is_empty() {
         return Err(ParseError::MalformedDirective(line.to_string()));
     }
-    let path = Path::new(path_str);
-    let joined = if path.is_absolute() {
-        path.to_path_buf()
+    Ok(path_str.to_string())
+}
+
+/// Place a path a file *wrote* (an `include` target, a rules file's `source`)
+/// in the vault — **lexically**, relative to `base`, the writing file's own
+/// directory — or `None` when it lands outside the vault.
+///
+/// An absolute value, or one that climbs out with `..`, cannot be a
+/// [`VaultPath`] as written. When the vault has a real directory behind it, such
+/// a spelling is resolved the way the desktop always resolved it (the deepest
+/// existing ancestor canonicalized) and kept if it lands back inside —
+/// `include /books/2026.journal` from `/books/main.journal` is an ordinary
+/// journal. A vault with no real directory has no other spelling to try.
+/// Nothing here consults the process's working directory.
+pub(crate) fn place_written(
+    vault: &dyn Vault,
+    base: &VaultPath,
+    written: &str,
+) -> Option<VaultPath> {
+    if !Path::new(written).is_absolute()
+        && let Ok(path) = base.join(written)
+    {
+        return Some(path);
+    }
+    let native = if Path::new(written).is_absolute() {
+        PathBuf::from(written)
     } else {
-        let base = Path::new(source_name)
-            .parent()
-            .unwrap_or_else(|| Path::new("."));
-        base.join(path)
+        vault.local_path(base)?.join(written)
     };
-    Ok((joined, path_str.to_string()))
+    crate::vault::place_native(vault, &native)
 }
 
-/// The directory `include`s are confined to: the main journal file's own
-/// directory, canonicalized. A main file named without a directory (a bare
-/// `t.journal`, or an in-memory placeholder) roots at the current directory,
-/// which is exactly where [`resolve_include`] already resolves its relative
-/// includes.
-pub(crate) fn include_root_for(main_source_name: &str) -> PathBuf {
-    let main = canonical_include(Path::new(main_source_name));
-    match main.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
-        _ => PathBuf::from("."),
-    }
-}
-
-/// The absolute, symlink-free form of an `include` target. Uses
-/// [`std::fs::canonicalize`] when the whole path exists — the only case that can
-/// leak content — so `..` traversal and symlinks are both resolved before the
-/// confinement test.
+/// `path` with every symlink resolved, when that lands inside `root`; `None`
+/// otherwise. A path whose tail does not exist yet has its deepest existing
+/// ancestor resolved (see [`crate::vault::canonicalize_existing_prefix`]), so
+/// a not-yet-created file under a directory link out of the tree is still
+/// outside.
 ///
-/// A target that is not on disk (a not-yet-saved file supplied through the
-/// editor's override map, or simply a typo) cannot be canonicalized outright, so
-/// its deepest EXISTING ancestor is canonicalized and the remaining components
-/// re-appended. That matters for correctness as much as for security: on macOS
-/// the journal directory itself routinely canonicalizes through a symlink
-/// (`/tmp` -> `/private/tmp`), and a purely lexical fallback would then read as
-/// "outside the journal directory" for an ordinary misspelled sibling.
-pub(crate) fn canonical_include(path: &Path) -> PathBuf {
-    if let Ok(canonical) = std::fs::canonicalize(path) {
-        return canonical;
-    }
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(path))
-            .unwrap_or_else(|_| path.to_path_buf())
-    };
-    let normalized = lexically_normalize(&absolute);
-
-    let mut trailing: Vec<std::ffi::OsString> = Vec::new();
-    let mut cursor = normalized.clone();
-    while let (Some(name), Some(parent)) = (
-        cursor.file_name().map(std::ffi::OsStr::to_os_string),
-        cursor.parent().map(Path::to_path_buf),
-    ) {
-        trailing.push(name);
-        if let Ok(canonical) = std::fs::canonicalize(&parent) {
-            return trailing
-                .iter()
-                .rev()
-                .fold(canonical, |resolved, part| resolved.join(part));
-        }
-        cursor = parent;
-    }
-    normalized
-}
-
-/// Collapse `.` and `..` components textually, without touching the filesystem.
-fn lexically_normalize(path: &Path) -> PathBuf {
-    use std::path::Component;
-    path.components()
-        .fold(PathBuf::new(), |mut out, component| {
-            match component {
-                Component::CurDir => {}
-                Component::ParentDir => {
-                    // `pop` fails only at a root/prefix, where `..` has nowhere
-                    // to go; keep it there so the result still fails any
-                    // containment test rather than silently becoming the root.
-                    if !out.pop() {
-                        out.push(Component::ParentDir);
-                    }
-                }
-                other => out.push(other),
-            }
-            out
-        })
-}
-
-/// The containment test, named once: `path`'s canonical form when it lies inside
-/// `root`, otherwise `None`.
-///
-/// Extracted from [`admit_include`] so the `include` guard (SEC-6) and the
-/// import-rules discovery guard cannot drift apart — a second, hand-rolled
-/// traversal check is exactly the kind of near-duplicate that gets one of its
-/// copies fixed and not the other. Canonicalizing FIRST is the whole point: `..`
-/// components and symlinks are both resolved before the prefix comparison, so a
-/// lexical-only test cannot be walked around.
-///
-/// Callers own the error message, because what may be disclosed differs by
-/// caller: an `include` diagnostic quotes the journal directory (the user named
-/// it), while a rules-file diagnostic quotes neither path.
-///
-/// `pub` rather than `pub(crate)` since the enhanced-import work: writing an
-/// `hledger.conf` is a new write target in `ledgeline-server`, and a second
-/// hand-rolled traversal check there is exactly the near-duplicate this function
-/// was extracted to prevent. It answers usefully for a path that does not exist
-/// yet — [`canonical_include`] canonicalizes the deepest existing ancestor and
-/// re-joins the rest — which is what a not-yet-created config file needs.
-pub fn confine(path: &Path, root: &Path) -> Option<PathBuf> {
-    let path = canonical_include(path);
-    path.starts_with(root).then_some(path)
+/// The containment test, named once: the `include` guard (SEC-6), the
+/// import-rules discovery guard and the create-path guard ([`resolve_new_in`])
+/// all ask it, so they cannot drift apart. Callers own the error message,
+/// because what may be disclosed differs by caller.
+pub fn confine(vault: &dyn Vault, root: &VaultPath, path: &VaultPath) -> Option<VaultPath> {
+    crate::vault::canonicalize_existing_prefix(vault, path)
+        .ok()
+        .filter(|resolved| resolved.starts_with(root))
 }
 
 /// Why [`resolve_new_in`] refused, one variant per guard it applies.
@@ -1008,8 +1136,8 @@ pub enum NewPathRefusal {
     Exists,
 }
 
-/// Where a **new** file called `id` would go below `root` — the one place in
-/// this crate a caller's string is joined onto a root.
+/// Where a **new** file called `id` would go below `root` in `vault` — the one
+/// place in this crate a caller's string is joined onto a root.
 ///
 /// # Why this exists at all, given a discovery scan
 ///
@@ -1019,53 +1147,51 @@ pub enum NewPathRefusal {
 /// unavoidable, so it happens here, once, beside [`confine`] — for the same
 /// reason `confine` itself was extracted. Two features need this chain, and a
 /// second hand-rolled copy of it is exactly the near-duplicate that gets one of
-/// its copies fixed and not the other. (It already did: the symlinked-parent
-/// test below was missing from one of the two copies this replaced.)
+/// its copies fixed and not the other.
 ///
 /// # The guards, in order, and what each is for
 ///
-/// 1. **Shape** ([`NewPathRefusal::Malformed`]) — before any filesystem call,
-///    and deliberately a *second* copy of the question the HTTP layer's own
+/// 1. **Shape** ([`NewPathRefusal::Malformed`]) — before any storage call, and
+///    deliberately a *second* copy of the question the HTTP layer's own
 ///    `validate_id` asks. This function does not get to assume its caller
 ///    checked: a `..` reaching a `join` is the whole traversal bug class.
 /// 2. **Discoverability** ([`NewPathRefusal::Malformed`]) — no component may be
 ///    hidden or in `skip_dirs`, and the final name must satisfy `name_ok`,
 ///    because a scan skips exactly those. Creating a file the scan will never
-///    list would write something the user cannot then open, which is a worse
-///    outcome than refusing.
+///    list would write something the user cannot then open.
 /// 3. **Confinement** ([`NewPathRefusal::OutsideRoot`]) — [`confine`], the same
-///    function `include` is held to, which canonicalizes the deepest existing
-///    ancestor and re-appends the rest, so a symlinked journal directory
-///    (`/tmp` -> `/private/tmp` on macOS) still compares equal.
+///    function `include` is held to, which resolves the deepest existing
+///    ancestor's links and re-appends the rest.
 /// 4. **A real parent directory, reached without a symlink**
 ///    ([`NewPathRefusal::DirectoryMissing`]) — two tests, and it takes both.
-///    Guard 3 canonicalizes, so a `symlink_metadata` on its output asks about
-///    the link's *target*: a canonical path has no links left in it to refuse.
-///    Comparing `confine`'s output against the path as joined is what actually
-///    refuses one, exactly as a scan refuses one; `symlink_metadata` then
+///    Comparing `confine`'s output against the path as joined refuses a link
+///    anywhere in the id (a canonical path has no links left in it to see),
+///    exactly as a scan refuses one, and catches a case-folding filesystem
+///    rewriting a component; [`Vault::stat`], which never follows a link, then
 ///    requires the parent to be a real directory. No directory is ever created.
 /// 5. **Nothing there already** ([`NewPathRefusal::Exists`]).
 ///
 /// Guard 5 is **not** what makes the create safe, and must not be relied on as
 /// if it were: it expires the moment it returns. The write itself has to be
-/// exclusive (`O_EXCL`), and both callers perform it that way — this is the
-/// courtesy that produces a good error message, and the open is what produces
-/// the guarantee.
+/// exclusive ([`Vault::create_new`]), and every caller performs it that way —
+/// this is the courtesy that produces a good error message, and the create is
+/// what produces the guarantee.
 ///
-/// The `PathBuf` that comes back is deliberately naked. Each caller wraps it in
-/// its own unforgeable newtype (`RulesPath`, `ProjectionPath`), which is what
+/// The [`VaultPath`] that comes back is deliberately naked. Each caller wraps it
+/// in its own unforgeable newtype (`RulesPath`, `ProjectionPath`), which is what
 /// carries "you may only write to a path that was resolved" into the write
 /// path; this function cannot mint one and should not be able to.
 ///
 /// # Errors
 /// [`NewPathRefusal`], one variant per guard above.
 pub fn resolve_new_in(
-    root: &Path,
+    vault: &dyn Vault,
+    root: &VaultPath,
     id: &str,
     max_depth: usize,
     skip_dirs: &[&str],
     name_ok: fn(&str) -> bool,
-) -> Result<PathBuf, NewPathRefusal> {
+) -> Result<VaultPath, NewPathRefusal> {
     let parts: Vec<&str> = id.split('/').collect();
     let well_formed = !id.is_empty()
         && parts.len() <= max_depth + 1
@@ -1089,39 +1215,28 @@ pub fn resolve_new_in(
     }
 
     // THE join. Everything above is what earns it.
-    let candidate = root.join(id);
-    let Some(resolved) = confine(&candidate, root) else {
+    let candidate = root.join(id).map_err(|_| NewPathRefusal::Malformed)?;
+    let Some(resolved) = confine(vault, root, &candidate) else {
         return Err(NewPathRefusal::OutsideRoot);
     };
     // **A symlink anywhere in the id is refused**, and this is the test that
-    // does it. `confine` CANONICALIZES, so a `linked/x` whose `linked` is a
-    // symlink into the root comes back resolved to the target and passes
-    // containment — which would put the file somewhere the id does not name,
-    // and therefore somewhere the scan lists under a DIFFERENT id, so the user
-    // could not open what they had just created. The `symlink_metadata` below
-    // cannot catch it: by the time it runs the link has already been resolved
-    // away.
-    //
-    // The root is already canonical and every component of a well-formed id is
-    // a plain name, so the two paths are equal exactly when no link (and no
-    // case-folding filesystem) rewrote one of them. Comparing them fails
-    // closed, which is the right direction for a create.
+    // does it: `confine` resolves links, so a `linked/x` whose `linked` points
+    // elsewhere in the root comes back as the target — somewhere the id does
+    // not name, and therefore somewhere the scan lists under a DIFFERENT id,
+    // so the user could not open what they had just created.
     if resolved != candidate {
         return Err(NewPathRefusal::DirectoryMissing);
     }
     let Some(parent) = resolved.parent() else {
         return Err(NewPathRefusal::DirectoryMissing);
     };
-    // On the CANONICAL path's parent, and with `symlink_metadata`: the parent
-    // of a canonical path exists if anything does. Belt and braces after the
-    // comparison above, which is what a directory symlink is actually refused
-    // by.
-    match std::fs::symlink_metadata(parent) {
-        Ok(meta) if meta.file_type().is_dir() => {}
-        _ => return Err(NewPathRefusal::DirectoryMissing),
+    // Belt and braces after the comparison above, with a `stat` that never
+    // follows a link.
+    if !vault.is_dir(&parent) {
+        return Err(NewPathRefusal::DirectoryMissing);
     }
-    match std::fs::symlink_metadata(&resolved) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(resolved),
+    match vault.stat(&resolved) {
+        Ok(None) => Ok(resolved),
         // Present, or unreadable in a way that is not "absent". Either way this
         // is not a name a create may have.
         _ => Err(NewPathRefusal::Exists),
@@ -1146,24 +1261,16 @@ pub fn resolve_new_in(
 /// A journal that lives in `~/.finance` or `~/.config/ledgeline` is an ordinary
 /// choice, and the user naming their own journal directory is not the case this
 /// guards — an `include` reaching sideways into a hidden sibling of their
-/// journals is. Components are read from the CANONICAL path, so a symlink
+/// journals is. Components are read from the RESOLVED path, so a symlink
 /// pointing into `.git` is caught after resolution rather than by its spelling.
-fn hidden_component<'a>(path: &'a Path, root: &Path) -> Option<&'a str> {
-    path.strip_prefix(root)
-        .ok()?
-        .components()
-        .filter_map(|component| match component {
-            std::path::Component::Normal(name) => name.to_str(),
-            // A non-`Normal` component below an already-canonicalized root is
-            // not a name this test can vouch for; `confine` has already had its
-            // say about traversal, so leave it alone rather than guess.
-            _ => None,
-        })
+fn hidden_component<'a>(path: &'a VaultPath, root: &VaultPath) -> Option<&'a str> {
+    path.segments()
+        .skip(root.segments().count())
         .find(|name| name.starts_with('.'))
 }
 
-/// Decide whether an `include` target may be parsed, returning its canonical
-/// path. Rejects, in order:
+/// Decide whether an `include` target may be parsed, returning its resolved
+/// vault path. Rejects, in order:
 ///
 /// 1. **Escapes the journal directory** (SEC-6). An `include` naming an absolute
 ///    path, traversing with `..`, or crossing a symlink out of the tree turns a
@@ -1186,28 +1293,41 @@ fn hidden_component<'a>(path: &'a Path, root: &Path) -> Option<&'a str> {
 /// 4. **Depth / total-file budget** — bounds an acyclic include bomb, which
 ///    cycle detection alone does not.
 fn admit_include(
-    target: &Path,
     as_written: &str,
-    includer: &Path,
+    includer: &VaultPath,
     ctx: &mut Ctx,
-) -> Result<PathBuf, ParseError> {
-    let path = confine(target, &ctx.include_root).ok_or_else(|| {
+) -> Result<VaultPath, ParseError> {
+    let escapes = || {
         ParseError::Include(format!(
             "'{as_written}' resolves outside the journal directory {}; \
              includes may not escape the main journal's directory",
-            ctx.include_root.display()
+            ctx.vault.key(&ctx.include_root).display()
         ))
-    })?;
+    };
+    let lexical = place_written(
+        ctx.vault,
+        &includer.parent().unwrap_or_default(),
+        as_written,
+    )
+    .filter(|path| path.starts_with(&ctx.include_root))
+    .ok_or_else(escapes)?;
+    let path = match crate::vault::canonicalize_existing_prefix(ctx.vault, &lexical) {
+        Ok(resolved) if resolved.starts_with(&ctx.include_root) => resolved,
+        Ok(_) | Err(VaultError::OutsideRoot { .. }) => return Err(escapes()),
+        // The vault could not say (a permission error part-way down, say): the
+        // name as written is already confined, and the read reports the rest.
+        Err(_) => lexical,
+    };
     if let Some(hidden) = hidden_component(&path, &ctx.include_root) {
         return Err(ParseError::Include(format!(
             "'{as_written}' resolves into the hidden entry '{hidden}', which \
              includes may not read; a hidden entry is not a journal file"
         )));
     }
-    if path == includer || ctx.include_stack.contains(&path) {
+    if path == *includer || ctx.include_stack.contains(&path) {
         return Err(ParseError::Include(format!(
             "this included file forms a cycle: {}",
-            path.display()
+            ctx.vault.key(&path).display()
         )));
     }
     if ctx.include_stack.len() + 1 > MAX_INCLUDE_DEPTH {

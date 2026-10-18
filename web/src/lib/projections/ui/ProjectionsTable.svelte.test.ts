@@ -31,7 +31,7 @@ import {fireEvent, render, screen, within} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {beforeEach, describe, expect, it} from "vitest";
 import {decodeScenario} from "#lib/api/nativeDecode.js";
-import type {AccountType} from "#lib/domain/accountTypes.js";
+import {classesOf} from "#lib/domain/accountClassFixtures.js";
 import {scenarioStore} from "../scenarioStore.svelte";
 import type {AssetRow, Scenario} from "../types";
 import ProjectionsTable from "./ProjectionsTable.svelte";
@@ -53,6 +53,8 @@ const seedLine = (account: string, mantissa: string) => ({
     opening: null,
     note: NOTE,
     source: "unbudgeted",
+    // The engine's placement (plan 26 B6), as the seed sends it.
+    section: account.startsWith("income:") ? "income" : "expense",
 });
 
 const SEED = decodeScenario({
@@ -84,14 +86,11 @@ const assetLine = (account: string, group: string, contribution = "0") => ({
     opening: null,
     note: "",
     source: "journal",
+    section: "asset",
 });
 
 const ACCOUNT_NAMES = ["income:salary", "income:dividends", "expenses:housing", "expenses:taxes", "assets:checking", "assets:brokerage", "assets:house"];
-const DECLARED: ReadonlyMap<string, AccountType> = new Map<string, AccountType>([
-    ["income", "revenue"],
-    ["expenses", "expense"],
-    ["assets", "asset"],
-]);
+const DECLARED = classesOf(["income", "revenue"], ["expenses", "expense"], ["assets", "asset"]);
 
 const STYLES = new Map([["$", {side: "L" as const, spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]] as [string, number[]]}]]);
 
@@ -231,7 +230,7 @@ describe("COMPONENT ProjectionsTable — a seeded scenario", () => {
 });
 
 describe("COMPONENT ProjectionsTable — editing marks the scenario dirty", () => {
-    it("typing an amount re-signs it for the account and marks the scenario edited", async () => {
+    it("typing an amount keeps it as the line's entry for the engine to sign, and marks the scenario edited", async () => {
         mount();
         expect(scenarioStore.dirty).toBe(false);
 
@@ -239,8 +238,9 @@ describe("COMPONENT ProjectionsTable — editing marks the scenario dirty", () =
 
         expect(scenarioStore.dirty).toBe(true);
         const salary = scenarioStore.scenario.lines.find((l) => l.account === "income:salary");
-        // A magnitude in the box; the journal's sign in the model.
-        expect(salary?.amount.quantity).toEqual({m: -6000n, p: 0});
+        // A magnitude in the box and in the model; the ENGINE signs it (plan 26 B6).
+        expect(salary?.entry).toEqual({m: 6000n, p: 0});
+        expect((screen.getByLabelText("Amount for income:salary") as HTMLInputElement).value).toBe("6000");
         // …and the display precision the seed carried is not lowered by it.
         expect(salary?.amount.precision).toBe(2);
     });

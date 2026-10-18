@@ -3,7 +3,7 @@
 //! ever allowed to touch.
 //!
 //! The walk itself is [`crate::dirscan`], which [`crate::rules::discovery`]
-//! also drives: same root ([`crate::parse::include_root_for`]), same
+//! also drives: same root (the main journal file's directory in the vault), same
 //! containment test ([`crate::parse::confine`]), same refusal of every symlink,
 //! same entry and warning budgets, same hidden-entry skip, same "never echo an
 //! absolute path" rule — not because two modules agree about them but because
@@ -53,8 +53,9 @@
 
 use crate::dirscan::{self, ScanSpec};
 use crate::parse;
-use std::io::Read;
+use crate::vault::{Entry, FileIdentity, LocalVault, Vault, VaultPath};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Budgets
@@ -124,19 +125,63 @@ const PROJECTION_PREFIX: &str = "projection-";
 // Types
 // ---------------------------------------------------------------------------
 
-/// An absolute path that a [`Discovery`] produced.
+/// A file in the journal's vault that a [`Discovery`] produced.
 ///
-/// The field is private and there is **no public constructor**, so a write path
-/// that takes a `&ProjectionPath` can only ever be handed one that was scanned
-/// for. Same type, same argument, as `rules::RulesPath`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProjectionPath(PathBuf);
+/// The fields are private and there is **no public constructor**, so a write
+/// path that takes a `&ProjectionPath` can only ever be handed one that was
+/// scanned for. Same type, same argument, as `rules::RulesPath`.
+#[derive(Debug, Clone)]
+pub struct ProjectionPath {
+    vault: Arc<dyn Vault>,
+    path: VaultPath,
+    /// [`Vault::key`] of `path`, computed once.
+    key: PathBuf,
+}
+
+impl PartialEq for ProjectionPath {
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path
+            && std::ptr::addr_eq(Arc::as_ptr(&self.vault), Arc::as_ptr(&other.vault))
+    }
+}
+
+impl Eq for ProjectionPath {}
 
 impl ProjectionPath {
-    /// The path, for the one caller that has to open the file.
+    fn new(vault: &Arc<dyn Vault>, path: VaultPath) -> Self {
+        Self {
+            key: vault.key(&path),
+            vault: Arc::clone(vault),
+            path,
+        }
+    }
+
+    /// The file's key ([`Vault::key`]): on the desktop its real, absolute path,
+    /// and for any other vault an identifier that must never be opened. It is
+    /// what the parsed journal records for the file, so this is what to compare
+    /// against `Journal::source_files`.
     #[must_use]
     pub fn as_path(&self) -> &Path {
-        &self.0
+        &self.key
+    }
+
+    /// The vault the file is in, for the one caller that has to open it.
+    #[must_use]
+    pub fn vault(&self) -> &Arc<dyn Vault> {
+        &self.vault
+    }
+
+    /// Where the file is in [`Self::vault`].
+    #[must_use]
+    pub fn vault_path(&self) -> &VaultPath {
+        &self.path
+    }
+
+    /// The key the parsed journal records this file under ([`Vault::key`]),
+    /// for comparing against `Journal::source_files`.
+    #[must_use]
+    pub fn key(&self) -> PathBuf {
+        self.vault.key(&self.path)
     }
 }
 
@@ -166,9 +211,9 @@ pub struct DiscoveredProjection {
     pub size_bytes: u64,
     /// The absolute path, unforgeable and inaccessible outside this module.
     path: ProjectionPath,
-    /// `(st_dev, st_ino)` as of the scan, or `None` where there is no such
+    /// The file's identity as of the scan, or `None` where there is no such
     /// identity. See [`DiscoveredProjection::identity_unchanged`].
-    identity: Option<(u64, u64)>,
+    identity: Option<FileIdentity>,
 }
 
 impl DiscoveredProjection {
@@ -186,15 +231,15 @@ impl DiscoveredProjection {
     /// [`dirscan::still_the_same_file`] has the long version of this argument.
     #[must_use]
     pub fn identity_unchanged(&self) -> bool {
-        dirscan::still_the_same_file(&self.path.0, self.identity)
+        dirscan::still_the_same_file(&*self.path.vault, &self.path.path, self.identity)
     }
 
     /// The `(dev, ino)` the scan admitted, for a [`crate::pinned::Pin`]: the
     /// write then checks it through the descriptor it replaces, right up to the
     /// rename, rather than in a separate `stat` before it.
     #[must_use]
-    pub fn identity(&self) -> Option<crate::pinned::FileIdentity> {
-        self.identity.map(crate::pinned::FileIdentity::from_raw)
+    pub fn identity(&self) -> Option<FileIdentity> {
+        self.identity
     }
 }
 
@@ -240,8 +285,10 @@ impl From<parse::NewPathRefusal> for CreateRefusal {
 /// The result of one scan.
 #[derive(Debug, Clone)]
 pub struct Discovery {
-    /// The canonical scan root. **Private and never leaves this module.**
-    root: PathBuf,
+    /// The vault the scan walked.
+    vault: Arc<dyn Vault>,
+    /// The scan root. **Private and never leaves this module.**
+    root: VaultPath,
     /// The files found, sorted `projection-*` first and by id within each
     /// group, so two scans of an unchanged tree produce identical output and a
     /// picker needs no sort of its own.
@@ -273,7 +320,27 @@ pub struct Discovery {
 /// screen, and one unreadable directory is not a reason to show nothing.
 #[must_use]
 pub fn discover(main_journal_file: &Path) -> Discovery {
-    scan_tree(main_journal_file, Headers::Read)
+    let (vault, main) = local_vault(main_journal_file);
+    scan_tree(vault, &main, Headers::Read)
+}
+
+/// [`discover`] through a vault: every `*.journal` file below `main`'s own
+/// directory in `vault`.
+#[must_use]
+pub fn discover_in(vault: Arc<dyn Vault>, main: &VaultPath) -> Discovery {
+    scan_tree(vault, main, Headers::Read)
+}
+
+/// The desktop's vault for a journal named by path. A main file with no usable
+/// name gets an empty vault, so the scan fails closed (one warning, no files).
+fn local_vault(main_journal_file: &Path) -> (Arc<dyn Vault>, VaultPath) {
+    match LocalVault::for_journal(main_journal_file) {
+        Ok((vault, main)) => (Arc::new(vault), main),
+        Err(_) => (
+            Arc::new(crate::vault::MemVault::with_root("")),
+            VaultPath::new("missing/journal").unwrap_or_default(),
+        ),
+    }
 }
 
 /// Whether [`describe`] opens a `projection-*.journal` to read its header.
@@ -284,8 +351,8 @@ enum Headers {
 }
 
 /// The one walk, under both entry points.
-fn scan_tree(main_journal_file: &Path, headers: Headers) -> Discovery {
-    let root = parse::include_root_for(&main_journal_file.to_string_lossy());
+fn scan_tree(vault: Arc<dyn Vault>, main: &VaultPath, headers: Headers) -> Discovery {
+    let root = main.parent().unwrap_or_default();
     let spec = ScanSpec {
         name_ok: is_journal_name,
         skip_dirs: SKIP_DIRS,
@@ -294,8 +361,8 @@ fn scan_tree(main_journal_file: &Path, headers: Headers) -> Discovery {
         symlink_note: "projections are only read from and written to real files inside the \
                        journal's own directory",
     };
-    let scanned = dirscan::scan(root, &spec, |id, name, path, meta| {
-        describe(id, name, path, meta, headers)
+    let scanned = dirscan::scan(&*vault, root, &spec, |id, name, entry| {
+        describe(&vault, id, name, entry, headers)
     });
     let mut files = scanned.files;
     // `projection-*` first, then by id. The grouping the plan asks the listing
@@ -303,6 +370,7 @@ fn scan_tree(main_journal_file: &Path, headers: Headers) -> Discovery {
     // of an unchanged tree produce identical output.
     files.sort_by(|a, b| b.is_projection.cmp(&a.is_projection).then(a.id.cmp(&b.id)));
     Discovery {
+        vault,
         root: scanned.root,
         files,
         truncated: scanned.truncated,
@@ -334,7 +402,14 @@ impl Discovery {
     /// which is not a guard and never was.
     #[must_use]
     pub fn without_headers(main_journal_file: &Path) -> Self {
-        scan_tree(main_journal_file, Headers::Skip)
+        let (vault, main) = local_vault(main_journal_file);
+        scan_tree(vault, &main, Headers::Skip)
+    }
+
+    /// [`Self::without_headers`] through a vault.
+    #[must_use]
+    pub fn without_headers_in(vault: Arc<dyn Vault>, main: &VaultPath) -> Self {
+        scan_tree(vault, main, Headers::Skip)
     }
 
     /// The **one** id → path resolution for projections.
@@ -351,10 +426,15 @@ impl Discovery {
     /// The scan root's final path component, for a heading. **Not** the path.
     #[must_use]
     pub fn root_label(&self) -> String {
-        self.root.file_name().map_or_else(
-            || "journal".to_string(),
-            |name| name.to_string_lossy().into_owned(),
-        )
+        self.root
+            .file_name()
+            .or_else(|| {
+                self.vault
+                    .root()
+                    .file_name()
+                    .and_then(std::ffi::OsStr::to_str)
+            })
+            .map_or_else(|| "journal".to_string(), str::to_string)
     }
 
     /// The directories the scan descended into, as relative ids, so a Save As
@@ -402,13 +482,14 @@ impl Discovery {
     /// [`CreateRefusal`], one variant per guard.
     pub fn resolve_new(&self, id: &str) -> Result<ProjectionPath, CreateRefusal> {
         parse::resolve_new_in(
+            &*self.vault,
             &self.root,
             id,
             MAX_PROJECTION_DEPTH,
             SKIP_DIRS,
             is_journal_name,
         )
-        .map(ProjectionPath)
+        .map(|path| ProjectionPath::new(&self.vault, path))
         .map_err(CreateRefusal::from)
     }
 }
@@ -420,18 +501,18 @@ impl Discovery {
 /// Summarize one admitted file, reading its header only when it is one of ours
 /// **and** somebody is going to look at it.
 ///
-/// `meta` is the scan's `symlink_metadata`, so `size_bytes` and the recorded
-/// identity describe the same `stat` that admitted the file.
+/// `entry` is the scan's listing of it, so `size_bytes` and the recorded
+/// identity describe the same listing that admitted the file.
 fn describe(
+    vault: &Arc<dyn Vault>,
     id: String,
     name: &str,
-    path: PathBuf,
-    meta: &std::fs::Metadata,
+    entry: &Entry,
     headers: Headers,
 ) -> DiscoveredProjection {
     let is_projection = is_projection_name(name);
     let header = if is_projection && headers == Headers::Read {
-        read_header(&path)
+        read_header(&**vault, &entry.path)
     } else {
         Header::default()
     };
@@ -441,9 +522,9 @@ fn describe(
         name: header.name,
         created: header.created,
         updated: header.updated,
-        size_bytes: meta.len(),
-        path: ProjectionPath(path),
-        identity: dirscan::file_identity(meta),
+        size_bytes: entry.size,
+        path: ProjectionPath::new(vault, entry.path.clone()),
+        identity: entry.identity,
         id,
     }
 }
@@ -465,14 +546,10 @@ pub(super) struct Header {
 /// the marker is optional by decision, so "no header" is an ordinary state and
 /// not a failure to report. An over-long value is clipped rather than dropped
 /// — a name is display, and the id is what identifies the file.
-fn read_header(path: &Path) -> Header {
-    let Ok(file) = std::fs::File::open(path) else {
+fn read_header(vault: &dyn Vault, path: &VaultPath) -> Header {
+    let Ok(bytes) = vault.read_prefix(path, MAX_HEADER_BYTES) else {
         return Header::default();
     };
-    let mut bytes = Vec::new();
-    if file.take(MAX_HEADER_BYTES).read_to_end(&mut bytes).is_err() {
-        return Header::default();
-    }
     // Lossy: a journal whose *body* is not UTF-8 can still have an ASCII
     // header, and refusing to show its name would be refusing to list it.
     // Nothing here is written back, so a replacement character costs a display

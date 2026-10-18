@@ -118,3 +118,70 @@ export function listCursor<T>(items: () => readonly T[], keyOf: (item: T, at: nu
         },
     };
 }
+
+/**
+ * A cursor over a list whose items load LAZILY — the windowed journal, where
+ * the list is `total` rows long but only the rows near the viewport exist on
+ * the client.
+ *
+ * Anchored to the POSITION, not the key. A key-anchored cursor finds its row
+ * again by scanning the list, and a lazy list cannot be scanned; and the key
+ * here (`Transaction.index`) is reassigned by every write anyway, which is why
+ * the eager cursor's callers already `reanchor()` by position after an edit.
+ * Everything else — clamping, the first move landing on row 0, holding the
+ * position across an empty list, `-1` when unset — matches `listCursor`.
+ *
+ * `item` and `key` are null while the cursored row's block is still loading.
+ */
+export function lazyListCursor<T>(total: () => number, itemAt: (index: number) => T | null, keyOf: (item: T) => CursorKey): ListCursor<T> {
+    /** Where the cursor is, or -1 when unset. Kept across an empty list so widening a filter restores it. */
+    let position = $state(-1);
+
+    const index = $derived.by(() => {
+        const count = total();
+        if (position === -1 || count === 0) return -1;
+        return Math.min(position, count - 1);
+    });
+
+    function set(at: number): void {
+        const count = total();
+        if (count === 0) {
+            position = Math.max(0, position);
+            return;
+        }
+        position = Math.max(0, Math.min(at, count - 1));
+    }
+
+    return {
+        get index(): number {
+            return index;
+        },
+        get item(): T | null {
+            return index === -1 ? null : itemAt(index);
+        },
+        get key(): CursorKey | null {
+            const item = index === -1 ? null : itemAt(index);
+            return item === null ? null : keyOf(item);
+        },
+        move(delta: number): void {
+            set(index === -1 ? 0 : index + delta);
+        },
+        to(at: number): void {
+            set(at);
+        },
+        first(): void {
+            set(0);
+        },
+        last(): void {
+            set(total() - 1);
+        },
+        reanchor(): void {
+            // Position-anchored already: whatever now occupies the row IS the
+            // re-anchored item. Only the clamp can change.
+            if (position !== -1) set(position);
+        },
+        clear(): void {
+            position = -1;
+        },
+    };
+}

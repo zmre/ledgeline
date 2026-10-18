@@ -7,11 +7,12 @@
     // real balancing and its 400 message is shown inline. A 409 closes the popup
     // and lets the page's "changed on disk" banner take over.
     import {tick} from "svelte";
-    import {decToInput, dominantCommodity, formToBody, txnToForm, validateForm, blankForm, emptyPosting, type TxnForm} from "#lib/api/editMapping.js";
+    import {decToInput, formToBody, txnToForm, validateForm, blankForm, emptyPosting, type TxnForm} from "#lib/api/editMapping.js";
     import type {WireBalanceAssertion, WirePostingType} from "#lib/api/native.js";
     import {dismissible} from "#lib/keys/dismissible.js";
     import {localToday} from "#lib/stores/filters.svelte.js";
     import {editing} from "#lib/stores/editing.svelte.js";
+    import type {Transaction} from "#lib/domain/types.js";
     import {journal} from "#lib/stores/journal.svelte.js";
     import {txnModal} from "./modalState.svelte";
     import AccountInput from "./AccountInput.svelte";
@@ -22,49 +23,66 @@
     let submitting = $state(false);
     let confirmingDelete = $state(false);
 
-    // Seed the form ONCE each time the modal opens (add → blank, edit → prefill),
+    // Seed the form ONCE per open (add → blank, edit → the fetched transaction),
     // never on later reactive ticks, so it doesn't clobber what the user typed.
+    // An edit seeds when its transaction ARRIVES — it is fetched on open (see
+    // modalState) — and only that once.
     let wasOpen = false;
+    let seededFrom: Transaction | null = null;
     let dateField = $state<HTMLInputElement | null>(null);
     $effect(() => {
         const open = txnModal.open;
+        const target = txnModal.target;
         if (open && !wasOpen) {
-            const target = txnModal.target;
-            form = txnModal.mode === "edit" && target !== null ? txnToForm(target) : blankForm(localToday(), dominantCommodity(journal.txns));
             clientErrors = [];
             serverError = null;
             confirmingDelete = false;
-            // Nothing used to be focused when this opened, so Escape did nothing
-            // at all until you clicked into a field — the handler was bubble-phase
-            // on a wrapper the user was not inside. (On macOS WebKit a click does
-            // not even focus a <button>, so focus was typically still on <body>.)
-            //
-            // After a tick, because the modal is always mounted and only becomes
-            // visible when `modal-open` lands: `.focus()` on a `visibility:hidden`
-            // element is a silent no-op.
-            void tick().then(() => dateField?.focus());
+            seededFrom = null;
+            if (txnModal.mode === "add") {
+                form = blankForm(localToday(), journal.dominantCommodity);
+                focusDate();
+            }
+        }
+        if (open && txnModal.mode === "edit" && target !== null && target !== seededFrom) {
+            form = txnToForm(target);
+            seededFrom = target;
+            focusDate();
         }
         wasOpen = open;
     });
+
+    /**
+     * Nothing used to be focused when this opened, so Escape did nothing at all
+     * until you clicked into a field. After a tick, because the modal is always
+     * mounted and only becomes visible when `modal-open` lands: `.focus()` on a
+     * `visibility:hidden` element is a silent no-op.
+     */
+    function focusDate(): void {
+        void tick().then(() => dateField?.focus());
+    }
+
+    /** Edit mode before its transaction has arrived: nothing to show or save yet. */
+    const awaitingTarget = $derived(txnModal.mode === "edit" && txnModal.target === null);
 
     const title = $derived(txnModal.mode === "edit" ? "Edit transaction" : "Add transaction");
     const submitLabel = $derived(txnModal.mode === "edit" ? "Save changes" : "Add transaction");
 
     function addRow(): void {
-        form.postings = [...form.postings, emptyPosting(dominantCommodity(journal.txns))];
+        form.postings = [...form.postings, emptyPosting(journal.dominantCommodity)];
     }
     function removeRow(index: number): void {
         form.postings = form.postings.filter((_, i) => i !== index);
     }
 
     async function submit(): Promise<void> {
+        if (awaitingTarget) return;
         clientErrors = validateForm(form);
         if (clientErrors.length > 0) return;
         serverError = null;
         submitting = true;
-        const body = formToBody(form, dominantCommodity(journal.txns));
-        const target = txnModal.target;
-        const result = txnModal.mode === "edit" && target !== null ? await editing.replace(target.index, body) : await editing.add(body);
+        const body = formToBody(form, journal.dominantCommodity);
+        const target = txnModal.targetIndex;
+        const result = txnModal.mode === "edit" && target !== null ? await editing.replace(target, body) : await editing.add(body);
         submitting = false;
         if (result.ok) {
             txnModal.close();
@@ -79,10 +97,10 @@
     }
 
     async function confirmDelete(): Promise<void> {
-        const target = txnModal.target;
+        const target = txnModal.targetIndex;
         if (target === null) return;
         submitting = true;
-        const result = await editing.remove(target.index);
+        const result = await editing.remove(target);
         submitting = false;
         if (result.ok || result.failure.kind === "conflict") {
             txnModal.close();
@@ -141,6 +159,15 @@
 >
     <div class="modal-box max-w-2xl">
         <h3 class="mb-3 text-lg font-semibold">{title}</h3>
+        {#if awaitingTarget}
+            <p class="mb-3 flex items-center gap-2 text-sm text-base-content/60" role="status">
+                {#if txnModal.loadError === null}
+                    <span class="loading loading-xs loading-spinner"></span> Loading the transaction…
+                {:else}
+                    <span class="text-error">Couldn't load the transaction: {txnModal.loadError}</span>
+                {/if}
+            </p>
+        {/if}
 
         <!-- A real <form>, so Enter saves from any field via native implicit
              submission rather than a hand-rolled keydown table. Every field here
@@ -318,7 +345,7 @@
                 </div>
                 <div class="flex gap-2">
                     <button type="button" class="btn btn-ghost btn-sm" onclick={() => txnModal.close()} disabled={submitting}>Cancel</button>
-                    <button type="submit" class="btn btn-primary btn-sm" disabled={submitting}>
+                    <button type="submit" class="btn btn-primary btn-sm" disabled={submitting || awaitingTarget}>
                         {#if submitting}<span class="loading loading-xs loading-spinner"></span>{/if}
                         {submitLabel}
                     </button>

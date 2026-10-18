@@ -27,6 +27,7 @@
 import type {AccountEntry, AccountFile, AccountListing, AccountTag, CreatedAccountsFile} from "#lib/accounts/types.js";
 import {isBudgetPeriod} from "#lib/budget/types.js";
 import type {AccountReference, BudgetFile, BudgetGoal, BudgetListing, BudgetRule, CreatedBudgetFile, RulePeriod} from "#lib/budget/types.js";
+import type {AccountClass, AccountClasses, AccountType} from "#lib/domain/accountClass.js";
 import type {Dec, MixedAmount} from "#lib/domain/money.js";
 import type {ISODate} from "#lib/domain/types.js";
 import type {
@@ -42,7 +43,7 @@ import type {
 } from "#lib/holdings/types.js";
 import type {CreatedPricesFile, PriceOutcome, PriceResult, PricesFile, PricesStatus, PricesUpdateResponse} from "#lib/holdings/pricesTypes.js";
 import {CATEGORY_DIMENSIONS} from "#lib/holdings/profileTypes.js";
-import type {BenchmarkLine, BenchmarksResponse} from "#lib/holdings/benchmarks.js";
+import type {BenchmarkCatalog, BenchmarkLine, BenchmarksResponse} from "#lib/holdings/benchmarks.js";
 import type {Breakdown, CategoryWeight, HoldingsProfiles, SymbolProfile, YahooStatus} from "#lib/holdings/profileTypes.js";
 import type {
     AliasEffect,
@@ -111,6 +112,7 @@ import type {
     BalanceSeries,
     EventPosting,
     Growth,
+    LineSection,
     Projection,
     ProjectionFile,
     ProjectionIndex,
@@ -146,10 +148,14 @@ import type {
     BsSubsection,
     BsTerm,
     BsValuation,
+    BudgetBar,
     BudgetCell,
     BudgetGaps,
+    BudgetHealth,
+    BudgetLabelKind,
     BudgetReport,
     BudgetRow,
+    BudgetSummary,
     DateRange,
     FlowGraph,
     FlowLink,
@@ -160,6 +166,7 @@ import type {
     GroupSource,
     IncomeStatementReport,
     IsBucket,
+    PeriodInfo,
     IsGroup,
     IsRow,
     IsSection,
@@ -288,6 +295,7 @@ interface RawDateRange {
 
 interface RawIsBucket extends RawDateRange {
     key?: string;
+    label?: unknown;
 }
 
 interface RawIncomeStatementReport {
@@ -347,6 +355,7 @@ interface RawReportMeta {
 
 interface RawPeriodReport {
     buckets?: unknown[];
+    periods?: unknown;
     rows?: RawPeriodRow[];
     totals?: RawMixed[];
     grandTotal?: RawMixed | null;
@@ -365,10 +374,38 @@ interface RawBudgetRow {
     cells?: RawBudgetCell[];
 }
 
+interface RawBudgetBar {
+    account?: string;
+    income?: boolean;
+    actual?: RawMixed;
+    goal?: RawMixed;
+    pace?: RawMixed;
+    remaining?: RawMixed;
+    health?: string | null;
+    label?: {kind?: string; amount?: RawMixed | null};
+}
+
+interface RawBudgetSection {
+    kind?: string;
+    overall?: RawBudgetBar;
+    bars?: RawBudgetBar[];
+}
+
+interface RawBudgetSummary {
+    from?: string;
+    to?: string;
+    asOf?: string;
+    elapsedDays?: number;
+    spanDays?: number;
+    sections?: RawBudgetSection[];
+}
+
 interface RawBudgetReport {
     buckets?: unknown[];
+    periods?: unknown;
     rows?: RawBudgetRow[];
     totals?: RawBudgetCell[];
+    summary?: RawBudgetSummary;
 }
 
 // Projections (plans/22). EVERY optional field on these is `null` on the wire
@@ -398,6 +435,7 @@ interface RawGrowth {
 }
 
 interface RawScenarioLine {
+    section?: string;
     id?: string;
     group?: string;
     role?: string;
@@ -1182,8 +1220,16 @@ interface RawJournalInfo {
     // neither a title nor a main file, rather than inventing one.
     title?: string | null;
     file?: string | null;
-    // Symbol → hledger `astyle`; absent from engines that predate it.
+    // Symbol → hledger `astyle`.
     commodityStyles?: unknown;
+    // Plan 26 B1: the whole-journal display metadata.
+    reportStyles?: unknown;
+    dominantCommodity?: unknown;
+    txnCount?: unknown;
+    firstDate?: unknown;
+    lastDate?: unknown;
+    accounts?: unknown;
+    generation?: unknown;
 }
 
 // ---------------------------------------------------------------------------
@@ -1610,7 +1656,7 @@ function decodeIsBuckets(raw: RawIsBucket[] | null | undefined, context: string)
     return frozen(
         raw.map((bucket, i) => {
             if (typeof bucket?.key !== "string") throw new ApiShapeError(`${context} #${i}: missing key`);
-            return Object.freeze({key: bucket.key, ...decodeDateRange(bucket, `${context} #${i}`)});
+            return Object.freeze({key: bucket.key, label: str(bucket.label, `${context} #${i} label`), ...decodeDateRange(bucket, `${context} #${i}`)});
         })
     );
 }
@@ -1776,6 +1822,27 @@ function decodePeriodRow(raw: RawPeriodRow | undefined, context: string, totalle
     return Object.freeze(row);
 }
 
+/**
+ * A period report's `periods`: one `{key, label, start, end}` per bucket. REQUIRED
+ * and length-checked — a header row with a missing label is the kind of quiet
+ * gap DRY-3 exists to catch.
+ */
+function decodePeriods(raw: unknown, count: number, context: string): PeriodInfo[] {
+    if (!Array.isArray(raw) || raw.length !== count) throw new ApiShapeError(`${context}: expected one entry per bucket`);
+    return frozen(
+        raw.map((entry: unknown, i) => {
+            const p = (entry ?? {}) as {key?: unknown; label?: unknown; start?: unknown; end?: unknown};
+            const where = `${context}[${i}]`;
+            return Object.freeze({
+                key: str(p.key, `${where} key`),
+                label: str(p.label, `${where} label`),
+                start: str(p.start, `${where} start`),
+                end: str(p.end, `${where} end`),
+            });
+        })
+    );
+}
+
 export function decodePeriodReport(raw: unknown): PeriodReport {
     const report = raw as RawPeriodReport;
     if (typeof report !== "object" || report === null || !Array.isArray(report.buckets) || !Array.isArray(report.rows) || !Array.isArray(report.totals)) {
@@ -1786,6 +1853,7 @@ export function decodePeriodReport(raw: unknown): PeriodReport {
     const totalled = report.grandTotal !== undefined && report.grandTotal !== null;
     const out: PeriodReport = {
         buckets: frozen(decodeStrings(report.buckets, "report buckets")),
+        periods: decodePeriods(report.periods, report.buckets.length, "report periods"),
         rows: frozen(report.rows.map((row, i) => decodePeriodRow(row, `period row #${i}`, totalled))),
         totals: frozen(report.totals.map((total, i) => decodeMixed(total, `report totals[${i}]`))),
     };
@@ -1820,6 +1888,56 @@ function decodeBudgetRow(raw: RawBudgetRow | undefined, context: string): Budget
     });
 }
 
+const BUDGET_HEALTHS: readonly BudgetHealth[] = ["healthy", "behind", "over"];
+const BUDGET_LABEL_KINDS: readonly BudgetLabelKind[] = ["onPlan", "behindPace", "aboveTarget", "toGo", "over", "aheadOfPace", "left"];
+
+function oneOf<T extends string>(value: unknown, allowed: readonly T[], context: string): T {
+    const found = allowed.find((candidate) => candidate === value);
+    if (found === undefined) throw new ApiShapeError(`${context}: expected one of ${allowed.join("|")}, got ${JSON.stringify(value)}`);
+    return found;
+}
+
+function decodeBudgetBar(raw: RawBudgetBar | undefined, context: string): BudgetBar {
+    if (typeof raw !== "object" || raw === null || typeof raw.income !== "boolean" || typeof raw.label !== "object" || raw.label === null) {
+        throw new ApiShapeError(`${context}: expected a bar with income and label`);
+    }
+    return Object.freeze({
+        account: str(raw.account, `${context} account`),
+        income: raw.income,
+        actual: decodeMixed(raw.actual, `${context} actual`),
+        goal: decodeMixed(raw.goal, `${context} goal`),
+        pace: decodeMixed(raw.pace, `${context} pace`),
+        remaining: decodeMixed(raw.remaining, `${context} remaining`),
+        health: raw.health === null ? null : oneOf(raw.health, BUDGET_HEALTHS, `${context} health`),
+        label: Object.freeze({
+            kind: oneOf(raw.label.kind, BUDGET_LABEL_KINDS, `${context} label kind`),
+            amount: decodeOptMixed(raw.label.amount, `${context} label amount`),
+        }),
+    });
+}
+
+function decodeBudgetSummary(raw: RawBudgetSummary | undefined): BudgetSummary {
+    if (typeof raw !== "object" || raw === null || !Array.isArray(raw.sections)) throw new ApiShapeError("budget summary: expected a sections array");
+    return Object.freeze({
+        from: str(raw.from, "budget summary from"),
+        to: str(raw.to, "budget summary to"),
+        asOf: str(raw.asOf, "budget summary asOf"),
+        elapsedDays: num(raw.elapsedDays, "budget summary elapsedDays"),
+        spanDays: num(raw.spanDays, "budget summary spanDays"),
+        sections: frozen(
+            raw.sections.map((section, i) => {
+                const context = `budget summary sections[${i}]`;
+                if (!Array.isArray(section.bars)) throw new ApiShapeError(`${context}: expected a bars array`);
+                return Object.freeze({
+                    kind: oneOf(section.kind, ["revenue", "expense"] as const, `${context} kind`),
+                    overall: decodeBudgetBar(section.overall, `${context} overall`),
+                    bars: frozen(section.bars.map((bar, j) => decodeBudgetBar(bar, `${context} bars[${j}]`))),
+                });
+            })
+        ),
+    });
+}
+
 export function decodeBudgetReport(raw: unknown): BudgetReport {
     const report = raw as RawBudgetReport;
     if (typeof report !== "object" || report === null || !Array.isArray(report.buckets) || !Array.isArray(report.rows) || !Array.isArray(report.totals)) {
@@ -1828,8 +1946,10 @@ export function decodeBudgetReport(raw: unknown): BudgetReport {
     return Object.freeze({
         kind: "budget" as const,
         buckets: frozen(decodeStrings(report.buckets, "budget buckets")),
+        periods: decodePeriods(report.periods, report.buckets.length, "budget periods"),
         rows: frozen(report.rows.map((row, i) => decodeBudgetRow(row, `budget row #${i}`))),
         totals: frozen(report.totals.map((total, i) => decodeBudgetCell(total, `budget totals[${i}]`))),
+        summary: decodeBudgetSummary(report.summary),
     });
 }
 
@@ -1915,6 +2035,21 @@ function decodeScenarioLine(raw: RawScenarioLine | undefined, context: string): 
         opening: decodeNullable(raw.opening, `${context} opening`, decodeScenarioAmount),
         note: str(raw.note, `${context} note`),
         source: decodeEnum(LINE_SOURCES, raw.source, `${context} source`),
+        // The engine's placement, pinned to what it placed. Optional (not
+        // nullable-required like the rest of this wire): the table previews a
+        // section itself when it is missing, so an older body still renders.
+        ...(raw.section === undefined ? {} : {resolved: decodeResolved(raw, context)}),
+    });
+}
+
+const LINE_SECTIONS: readonly LineSection[] = ["income", "expense", "asset", "oneoff"];
+
+function decodeResolved(raw: RawScenarioLine, context: string): ScenarioLine["resolved"] {
+    return Object.freeze({
+        role: decodeEnum(LINE_ROLES, raw.role, `${context} role`),
+        account: str(raw.account, `${context} account`),
+        raw: str(raw.period?.raw, `${context} period raw`),
+        section: decodeEnum(LINE_SECTIONS, raw.section, `${context} section`),
     });
 }
 
@@ -2295,6 +2430,8 @@ interface RawBenchmarkPoint {
 
 interface RawBenchmarkLine {
     symbol?: unknown;
+    label?: unknown;
+    slot?: unknown;
     points?: unknown;
     stale?: unknown;
     error?: string | null;
@@ -2311,6 +2448,8 @@ function decodeBenchmarkLine(raw: RawBenchmarkLine | undefined, context: string)
     );
     return Object.freeze({
         symbol: str(raw.symbol, `${context} symbol`),
+        label: str(raw.label, `${context} label`),
+        slot: num(raw.slot, `${context} slot`),
         points: frozen(points),
         stale: flag(raw.stale, `${context} stale`),
         error: decodeNullableStr(raw.error, `${context} error`),
@@ -2323,6 +2462,17 @@ export function decodeBenchmarks(raw: unknown): BenchmarksResponse {
     return Object.freeze({
         benchmarks: frozen((body.benchmarks as RawBenchmarkLine[]).map((line, i) => decodeBenchmarkLine(line, `benchmark #${i}`))),
     });
+}
+
+/** `GET /api/holdings/benchmarks/catalog` → the engine's benchmark catalog, in slot order. */
+export function decodeBenchmarkCatalog(raw: unknown): BenchmarkCatalog {
+    const body = raw as {benchmarks?: unknown} | null;
+    if (typeof body !== "object" || body === null || !Array.isArray(body.benchmarks)) throw new ApiShapeError("benchmark catalog: expected a benchmarks array");
+    return frozen(
+        (body.benchmarks as {symbol?: unknown; label?: unknown}[]).map((entry, i) =>
+            Object.freeze({symbol: str(entry?.symbol, `benchmark catalog #${i} symbol`), label: str(entry?.label, `benchmark catalog #${i} label`)})
+        )
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -3475,11 +3625,10 @@ export function decodeQbCommitResult(raw: unknown): QbCommitResult {
 // ---------------------------------------------------------------------------
 
 /**
- * Which journal the engine has open, as the app bar labels it.
- *
- * Declared here rather than in a feature `types.ts` like `HoldingsReport` or
- * `Prefs`: two nullable strings and one consumer do not make a domain, and there
- * is no journal-identity module for them to be the domain OF.
+ * Which journal the engine has open, as the app bar labels it, plus the
+ * whole-journal display metadata every screen needs without walking the
+ * transactions (plan 26 B1). The engine computes all of it; see
+ * `wire::journal_to_info` and `ledgeline_core::journal_meta`.
  */
 export interface JournalInfo {
     /** Display title (the journal's first-line comment, else its folder name); null when the engine derived none. */
@@ -3488,18 +3637,61 @@ export interface JournalInfo {
     file: string | null;
     /** Display styles the journal declares (`commodity`/`D` directives), by symbol; empty when none. */
     commodityStyles: CommodityStyles;
+    /**
+     * The style report TOTALS format with, per posted commodity: the first
+     * posting's (declared) style with its precision raised to the widest amount
+     * written. Absent commodity → fall back to `DEFAULT_AMOUNT_STYLE`.
+     */
+    reportStyles: CommodityStyles;
+    /** The journal's most-posted commodity ("$" for an empty journal) — the one "which commodity" rule. */
+    dominantCommodity: string;
+    txnCount: number;
+    /** Earliest / latest primary transaction date; null exactly when `txnCount` is 0. */
+    firstDate: ISODate | null;
+    lastDate: ISODate | null;
+    /** Every account the journal knows, as the engine classified it. */
+    accounts: AccountClasses;
+    /** This snapshot's identity (its ETag's opaque value). Compare for equality only. */
+    generation: string;
+}
+
+const ACCOUNT_TYPES: readonly AccountType[] = ["asset", "liability", "equity", "revenue", "expense", "cash", "conversion", "gain"];
+const TERMS: readonly BsTerm[] = ["current", "noncurrent"];
+
+/** `/api/journal`'s `accounts` → a map. Strict: a classification is what every report filters on. */
+function decodeAccountClasses(raw: unknown): AccountClasses {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new ApiShapeError("journal info accounts: expected an object");
+    const classes = new Map<string, AccountClass>();
+    for (const [name, value] of Object.entries(raw)) {
+        const context = `journal info account "${name}"`;
+        if (typeof value !== "object" || value === null) throw new ApiShapeError(`${context}: expected an object`);
+        const entry = value as {type?: unknown; typeDeclared?: unknown; term?: unknown; termGuessed?: unknown};
+        const type = optStr(entry.type, `${context} type`);
+        if (type !== null && !(ACCOUNT_TYPES as readonly string[]).includes(type)) throw new ApiShapeError(`${context}: unknown type ${type}`);
+        const term = optStr(entry.term, `${context} term`);
+        if (term !== null && !(TERMS as readonly string[]).includes(term)) throw new ApiShapeError(`${context}: unknown term ${term}`);
+        classes.set(
+            name,
+            Object.freeze({
+                type: type as AccountType | null,
+                typeDeclared: optBool(entry.typeDeclared, `${context} typeDeclared`) === true,
+                term: term as BsTerm | null,
+                termGuessed: optBool(entry.termGuessed, `${context} termGuessed`) === true,
+            })
+        );
+    }
+    return classes;
 }
 
 /**
- * `GET /api/journal` → which ledger this engine has open.
+ * `GET /api/journal` → which ledger this engine has open, and its metadata.
  *
- * Both fields go through `optStr`, so absent and explicitly null decode to the
- * same fact — "the engine could not derive one" — and the caller falls back to
- * naming the server URL, which is honest about not knowing. A non-string is
- * still a throw, and that is the point of decoding two strings at all: a title
- * that quietly became `"[object Object]"` (or `"null"`) would label the screen
- * with confident nonsense, and a wrong-but-confident ledger name is precisely
- * the failure this label exists to prevent.
+ * `title`/`file` go through `optStr`, so absent and explicitly null decode to
+ * the same fact — "the engine could not derive one". A non-string is still a
+ * throw: a title that quietly became `"[object Object]"` would label the screen
+ * with confident nonsense. The metadata is REQUIRED — the SPA requires the
+ * engine, and a renamed field reading as "no styles, no accounts" is the
+ * silent-$0.00 failure DRY-3 exists to stop.
  */
 export function decodeJournalInfo(raw: unknown): JournalInfo {
     const info = raw as RawJournalInfo;
@@ -3511,6 +3703,13 @@ export function decodeJournalInfo(raw: unknown): JournalInfo {
         title: optStr(info.title, "journal info title"),
         file: optStr(info.file, "journal info file"),
         commodityStyles: normalizeCommodityStyles(info.commodityStyles),
+        reportStyles: normalizeCommodityStyles(info.reportStyles),
+        dominantCommodity: str(info.dominantCommodity, "journal info dominantCommodity"),
+        txnCount: num(info.txnCount, "journal info txnCount"),
+        firstDate: optStr(info.firstDate, "journal info firstDate"),
+        lastDate: optStr(info.lastDate, "journal info lastDate"),
+        accounts: decodeAccountClasses(info.accounts),
+        generation: str(info.generation, "journal info generation"),
     });
 }
 
@@ -3548,6 +3747,7 @@ interface RawBudgetGoal {
     amount?: RawMixed;
     entry?: RawBudgetEntry;
     inverted?: boolean;
+    annual?: RawMixed;
     locked?: string;
 }
 
@@ -3579,6 +3779,7 @@ interface RawBudgetListing {
     canCreateFile?: boolean;
     createFileName?: string;
     files?: RawBudgetFile[];
+    joinable?: Record<string, {journalId?: string; block?: number}>;
 }
 
 interface RawCreatedBudgetFile {
@@ -3631,6 +3832,7 @@ function decodeBudgetGoal(raw: RawBudgetGoal, context: string): BudgetGoal {
                       value: decodeDec(entry.value, `${context} entry value`),
                   }),
         inverted: raw.inverted === true,
+        annual: raw.annual === undefined || raw.annual === null ? null : decodeMixed(raw.annual, `${context} annual`),
         locked: optStr(raw.locked, `${context} locked`),
     });
 }
@@ -3692,7 +3894,21 @@ export function decodeBudgetListing(raw: unknown): BudgetListing {
         // is only ever shown beside a `canCreateFile` of false.
         createFileName: optStr(listing.createFileName, "budget listing createFileName") ?? "budget.journal",
         files: frozen(listing.files.map((file, i) => decodeBudgetFile(file, `budget listing files[${i}]`))),
+        joinable: decodeJoinable(listing.joinable),
     });
+}
+
+/** The engine's join targets; an unrecognised period is dropped rather than refused, as `decodeRulePeriod` does. */
+function decodeJoinable(raw: RawBudgetListing["joinable"]): BudgetListing["joinable"] {
+    const out: BudgetListing["joinable"] = {};
+    for (const [period, target] of Object.entries(raw ?? {})) {
+        if (!isBudgetPeriod(period)) continue;
+        out[period] = Object.freeze({
+            journalId: str(target.journalId, `budget listing joinable ${period} journalId`),
+            block: num(target.block, `budget listing joinable ${period} block`),
+        });
+    }
+    return Object.freeze(out);
 }
 
 /** `PUT /api/budget/lines/{*id}` → the file it just wrote, at its new revision. */
@@ -3946,6 +4162,7 @@ interface RawGapRow {
     account?: string;
     depth?: number;
     total?: RawMixed;
+    magnitude?: RawMixed;
 }
 
 interface RawBudgetGaps {
@@ -3953,6 +4170,9 @@ interface RawBudgetGaps {
     expense?: RawGapRow[];
     from?: string;
     to?: string;
+    revenueTotal?: RawMixed;
+    expenseTotal?: RawMixed;
+    headline?: RawMixed;
 }
 
 /**
@@ -3968,6 +4188,7 @@ function decodeGapRow(raw: RawGapRow, context: string): GapRow {
         account: str(raw.account, `${context} account`),
         depth: num(raw.depth, `${context} depth`),
         total: decodeMixed(raw.total, `${context} total`),
+        magnitude: decodeMixed(raw.magnitude, `${context} magnitude`),
     });
 }
 
@@ -3984,5 +4205,8 @@ export function decodeBudgetGaps(raw: unknown): BudgetGaps {
         // with the wrong span is worse than one that refuses to render.
         from: str(gaps.from, "budget gaps from"),
         to: str(gaps.to, "budget gaps to"),
+        revenueTotal: decodeMixed(gaps.revenueTotal, "budget gaps revenueTotal"),
+        expenseTotal: decodeMixed(gaps.expenseTotal, "budget gaps expenseTotal"),
+        headline: decodeMixed(gaps.headline, "budget gaps headline"),
     });
 }

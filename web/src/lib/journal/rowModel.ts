@@ -1,62 +1,14 @@
-// Pure row-model helpers for the journal view (WP-03): filter/totals
-// derivations, the source→destination arrow heuristic, display amounts, and
-// the fixed-pitch windowing math for the virtualized table. No runtime Svelte
-// imports (the filter shape is a type-only import) so vitest runs these in node.
+// Pure row-model helpers for the journal view (WP-03): the source→destination
+// arrow heuristic, display amounts, totals formatting, and the fixed-pitch
+// windowing math for the virtualized table. No runtime Svelte imports, so
+// vitest runs these in node.
+//
+// Filtering and display ORDER are the engine's now (plan 26 B5:
+// crates/ledgeline-core/src/view/filter.rs): the client holds only the rows
+// near the viewport.
 
-import {accountMatches} from "#lib/domain/accounts.js";
 import {add, formatAmount, isZero, neg, type Dec, type MixedAmount} from "#lib/domain/money.js";
 import type {Amount, AmountStyle, ISODate, Posting, Transaction, TxnStatus} from "#lib/domain/types.js";
-import type {JournalFilter} from "#lib/stores/filters.svelte.js";
-
-/** Display order: date descending, then hledger index descending. Returns a new array. */
-export function sortTxnsDesc(txns: readonly Transaction[]): Transaction[] {
-    return [...txns].sort((a, b) => (a.date === b.date ? b.index - a.index : a.date < b.date ? 1 : -1));
-}
-
-function matchesSelection(account: string, selected: readonly string[]): boolean {
-    return selected.some((sel) => accountMatches(sel, account));
-}
-
-/**
- * WP-03 filter semantics: date range inclusive on both ends against `txn.date`;
- * a txn matches the account selection when ANY posting matches ANY selected
- * account (empty selection = all); query is a case-insensitive substring
- * match against the precomputed `txn.haystack`.
- */
-export function filterTxns(txns: readonly Transaction[], filter: JournalFilter): Transaction[] {
-    const query = filter.query.trim().toLowerCase();
-    const selected = filter.accounts.size > 0 ? [...filter.accounts] : null;
-    return txns.filter(
-        (txn) =>
-            (filter.from === null || txn.date >= filter.from) &&
-            (filter.to === null || txn.date <= filter.to) &&
-            (selected === null || txn.postings.some((posting) => matchesSelection(posting.account, selected))) &&
-            (query === "" || txn.haystack.includes(query))
-    );
-}
-
-/**
- * Sum postings whose account matches the selection (ALL postings when the
- * selection is empty) across the given — already filtered — transactions.
- * Commodities that sum to zero are dropped.
- */
-export function filteredTotals(txns: readonly Transaction[], accounts: ReadonlySet<string>): MixedAmount {
-    const selected = accounts.size > 0 ? [...accounts] : null;
-    const totals: MixedAmount = new Map();
-    for (const txn of txns) {
-        for (const posting of txn.postings) {
-            if (selected !== null && !matchesSelection(posting.account, selected)) continue;
-            for (const amount of posting.amounts) {
-                const prev = totals.get(amount.commodity);
-                totals.set(amount.commodity, prev === undefined ? amount.qty : add(prev, amount.qty));
-            }
-        }
-    }
-    for (const [commodity, qty] of totals) {
-        if (isZero(qty)) totals.delete(commodity);
-    }
-    return totals;
-}
 
 type Sign = -1 | 0 | 1;
 
@@ -139,19 +91,6 @@ export function txnComments(txn: Transaction): string[] {
         if (posting.comment !== "") out.push(`${posting.account}: ${posting.comment}`);
     }
     return out;
-}
-
-/** First-seen display style per commodity (MixedAmount totals carry no style of their own). */
-export function commodityStyles(txns: readonly Transaction[]): Map<string, AmountStyle> {
-    const styles = new Map<string, AmountStyle>();
-    for (const txn of txns) {
-        for (const posting of txn.postings) {
-            for (const amount of posting.amounts) {
-                if (!styles.has(amount.commodity)) styles.set(amount.commodity, amount.style);
-            }
-        }
-    }
-    return styles;
 }
 
 export interface TotalLine {

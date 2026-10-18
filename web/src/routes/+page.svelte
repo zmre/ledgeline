@@ -6,32 +6,41 @@
     import ErrorToast from "#lib/components/ErrorToast.svelte";
     import {styleOf} from "#lib/format/amounts.js";
     import ExportButton from "#lib/reports/ui/ExportButton.svelte";
-    import {reportStyles} from "#lib/reports/ui/styles.js";
     import FilterBar from "#lib/filters/FilterBar.svelte";
     import {startUrlSync} from "#lib/filters/urlSync.js";
     import InsightsPanel from "#lib/insights/InsightsPanel.svelte";
-    import {visibleNet} from "#lib/insights/series.js";
-    import {declaredTypes} from "#lib/domain/accountTypes.js";
     import TotalsFooter from "#lib/journal/TotalsFooter.svelte";
     import TransactionTable from "#lib/journal/TransactionTable.svelte";
     import TransactionModal from "#lib/journal/edit/TransactionModal.svelte";
     import {periodLabel} from "#lib/journal/rowModel.js";
     import {editing} from "#lib/stores/editing.svelte.js";
     import {filters} from "#lib/stores/filters.svelte.js";
-    import {getFilteredTxns, journal, startPolling} from "#lib/stores/journal.svelte.js";
+    import {journal, startPolling} from "#lib/stores/journal.svelte.js";
+    import {journalView} from "#lib/stores/journalView.svelte.js";
     import {onServerReady} from "#lib/stores/serverWatch.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
 
-    const txns = $derived(getFilteredTxns());
     const period = $derived(periodLabel(filters.value.from, filters.value.to));
-    const declared = $derived(declaredTypes(journal.accountDecls));
-    const total = $derived(visibleNet(txns, filters.value.accounts, journal.txns, declared));
+
+    // The journal VIEW follows (server, generation, filter): rows, totals and
+    // charts are fetched from the engine for exactly what is on screen (plan 26
+    // B5). A generation change — an edit, a file change the poll noticed —
+    // re-reads the same view; a filter change asks for a different one.
+    $effect(() => {
+        const serverUrl = settings.serverUrl;
+        const generation = journal.generation;
+        const filter = filters.value;
+        if (serverUrl === null || generation === null) return;
+        journalView.sync(serverUrl, generation, filter);
+    });
+    const count = $derived(journalView.total ?? 0);
+    const total = $derived(journalView.summary?.visibleNet ?? []);
 
     /**
      * The journal could not be loaded and there is nothing held over from a
      * previous load.
      *
-     * Everything below summarizes `journal.txns`, and an empty array is a
+     * Everything below summarizes the journal, and an empty journal is a
      * perfectly valid input to all of it — so a failed load used to fall
      * through to the happy path and describe itself as a clean, empty journal:
      * "No transactions match the current filters" (a causal claim about the
@@ -48,15 +57,16 @@
      */
     async function exportJournal(): Promise<void> {
         const {exportJournalXlsx} = await import("#lib/export/journalXlsx.js");
-        const styles = reportStyles(journal.txns);
+        const styles = journal.reportStyles;
         const {from, to} = filters.value;
         const filename = from === null && to === null ? "journal-all-dates.xlsx" : `journal-${from ?? "start"}-to-${to ?? "end"}.xlsx`;
-        // Oldest first, as a journal is read; the table shows newest first.
-        const ordered = [...txns].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.index - b.index));
+        // Oldest first, as a journal is read (the table shows newest first): the
+        // engine pages the filtered view in exactly that order.
+        const ordered = await journalView.allRows();
         await exportJournalXlsx(ordered, (commodity) => styleOf(styles, commodity), {title: journal.title, period}, filename);
     }
 
-    const loadFailed = $derived(journal.status === "error" && journal.txns.length === 0);
+    const loadFailed = $derived(journal.status === "error" && journal.generation === null);
 
     // Restore filters from ?from=&to=&acct=&q= once, then mirror changes to the
     // URL (debounced replaceState). onMount's return value is its cleanup.
@@ -104,7 +114,7 @@
          computed from nothing are indistinguishable from zeroes computed from a
          journal that really nets to zero. -->
     {#if !loadFailed}
-        <InsightsPanel {txns} accounts={filters.value.accounts} allTxns={journal.txns} {declared} decls={journal.accountDecls} />
+        <InsightsPanel />
     {/if}
 
     {#if loadFailed}
@@ -119,18 +129,18 @@
                 <button type="button" class="btn btn-sm" onclick={() => void journal.refresh({force: true})}>Retry</button>
             </div>
         </div>
-    {:else if journal.status === "loading" && journal.txns.length === 0}
+    {:else if journal.generation === null}
         <div class="flex grow items-center justify-center" aria-label="Loading transactions">
             <span class="loading loading-lg loading-spinner"></span>
         </div>
     {:else}
-        <TransactionTable {txns} />
+        <TransactionTable />
     {/if}
 
     {#if !loadFailed}
-        <TotalsFooter count={txns.length} {period} {total}>
+        <TotalsFooter {count} {period} {total}>
             {#snippet actions()}
-                {#if txns.length > 0}
+                {#if count > 0}
                     <ExportButton run={exportJournal} label="Export journal as xlsx" />
                 {/if}
             {/snippet}

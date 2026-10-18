@@ -8,25 +8,31 @@
 //!   SPA on a fixed port (the historical behavior).
 //!
 //! Both modes parse the journal into an [`AppState`] whose journal is
-//! hot-swappable, and both watch the journal file so an external edit reparses
-//! and republishes without a restart (the SPA polls and refetches).
+//! hot-swappable, and — with the default `watcher` feature — both watch the
+//! journal's files so an external edit reparses and republishes without a
+//! restart (the SPA polls and refetches). The reload itself goes through the
+//! journal's vault ([`AppState::reload`]); a build without the watcher picks up
+//! external edits only when something calls [`AppState::refresh`].
 
 #[cfg(feature = "gui")]
 mod gui;
-mod recents;
 
 use std::net::IpAddr;
-use std::path::{Path, PathBuf};
+#[cfg(feature = "watcher")]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::ExitCode;
+#[cfg(feature = "watcher")]
 use std::sync::mpsc;
+#[cfg(feature = "watcher")]
 use std::time::Duration;
 
 use clap::Parser;
 use ledgeline::{
-    AppState, ProcessToken, Security, SecurityError, TOKEN_ENV, router_with_security,
+    AppDirs, AppState, ProcessToken, Security, SecurityError, TOKEN_ENV, router_with_security,
     token_from_env_or_random,
 };
-use ledgeline_core::{Journal, parse_journal};
+#[cfg(feature = "watcher")]
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
 const DEFAULT_HOST: &str = "127.0.0.1";
@@ -98,16 +104,6 @@ pub(crate) enum Command {
 /// Fatal startup/runtime errors surfaced to the user via `main`.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum AppError {
-    #[error("reading {path}: {source}")]
-    Read {
-        path: String,
-        source: std::io::Error,
-    },
-    #[error("parsing {path}: {source}")]
-    Parse {
-        path: String,
-        source: ledgeline_core::ParseError,
-    },
     #[error("opening {path} for editing: {source}")]
     OpenEditor {
         path: String,
@@ -122,6 +118,7 @@ pub(crate) enum AppError {
     },
     #[error("serving HTTP: {0}")]
     Serve(std::io::Error),
+    #[cfg(feature = "watcher")]
     #[error("watching the journal: {0}")]
     Watch(notify::Error),
     #[error("{0}")]
@@ -172,12 +169,16 @@ fn run(cli: Cli) -> Result<(), AppError> {
     // A subcommand is a job, not a mode: it runs and the process exits, and
     // neither `--server` nor the GUI is consulted. Checked FIRST so the branches
     // below keep reading exactly as they did when they were the whole function.
+    // The app's own directories, from the environment and the OS — built ONCE
+    // here and threaded through, so the recents store, the preferences, the
+    // staging area and hledger resolution all agree on one set.
+    let app_dirs = AppDirs::from_env();
     if let Some(Command::Import(args)) = &cli.command {
-        return run_import(args);
+        return run_import(args, app_dirs);
     }
     #[cfg(feature = "gui")]
     if !cli.server {
-        return gui::run(&cli);
+        return gui::run(&cli, app_dirs);
     }
     #[cfg(not(feature = "gui"))]
     if !cli.server {
@@ -185,7 +186,7 @@ fn run(cli: Cli) -> Result<(), AppError> {
             "ledgeline: built without the `gui` feature — running headless. Pass --server to silence this."
         );
     }
-    run_server_blocking(&cli)
+    run_server_blocking(&cli, app_dirs)
 }
 
 /// `ledgeline import` — one import, then exit.
@@ -212,16 +213,17 @@ fn run(cli: Cli) -> Result<(), AppError> {
 /// this does not record the journal in the recents store: a scripted import is
 /// not the user choosing a journal to work in, and it would push whatever a cron
 /// job touched to the top of the desktop app's list.
-fn run_import(args: &ledgeline::CliImport) -> Result<(), AppError> {
+fn run_import(args: &ledgeline::CliImport, app_dirs: AppDirs) -> Result<(), AppError> {
     let journal_path = args.root_journal_path();
     let editor_path = journal_path
         .canonicalize()
         .unwrap_or_else(|_| journal_path.to_path_buf());
-    let state =
-        AppState::from_journal_path(&editor_path).map_err(|source| AppError::OpenEditor {
+    let state = AppState::from_journal_path(&editor_path)
+        .map_err(|source| AppError::OpenEditor {
             path: journal_path.display().to_string(),
             source,
-        })?;
+        })?
+        .with_app_dirs(app_dirs);
 
     let report = ledgeline::run_cli_import(&state, args).map_err(AppError::Import)?;
     match report {
@@ -343,11 +345,11 @@ fn plural(count: usize) -> &'static str {
 /// Resolve the journal path: positional arg → `$LEDGELINE_FIXTURE` → the
 /// most-recently-opened journal that still exists → the default dev fixture. So
 /// `ledgeline` with no args re-opens the last journal you used.
-pub(crate) fn resolve_journal(cli: &Cli) -> PathBuf {
+pub(crate) fn resolve_journal(cli: &Cli, app_dirs: &AppDirs) -> PathBuf {
     cli.journal
         .clone()
         .or_else(|| std::env::var("LEDGELINE_FIXTURE").ok().map(PathBuf::from))
-        .or_else(recents::most_recent)
+        .or_else(|| ledgeline::recents::most_recent(app_dirs))
         .unwrap_or_else(|| PathBuf::from(DEFAULT_FIXTURE))
 }
 
@@ -427,47 +429,25 @@ pub(crate) fn plan_security(cli: &Cli) -> Result<(ProcessToken, SecurityPlan), A
     Ok((process_token, plan))
 }
 
-/// Read + parse a journal file, recording its absolute path as the source name
-/// (matches the wire snapshots and the SPA's expectations).
-pub(crate) fn parse_at(path: &Path) -> Result<Journal, AppError> {
-    let text = std::fs::read_to_string(path).map_err(|source| AppError::Read {
-        path: path.display().to_string(),
-        source,
-    })?;
-    let source_name = path
-        .canonicalize()
-        .unwrap_or_else(|_| path.to_path_buf())
-        .to_string_lossy()
-        .into_owned();
-    parse_journal(&text, &source_name).map_err(|source| AppError::Parse {
-        path: path.display().to_string(),
-        source,
-    })
-}
-
 /// React to an on-disk change of `path` (best-effort: an error is logged and the
 /// previous data is kept, so a mid-edit save never crashes).
 ///
-/// When the state has an editor bound (the write path is enabled), re-open it so
-/// its rope, parsed journal, and external-change fingerprint track the new file
-/// contents — this also republishes the snapshot. When no editor is bound
-/// (read-only state), fall back to a plain reparse + hot-swap.
+/// The reload goes through the journal's vault ([`AppState::reload`]): when an
+/// editor is bound it is re-opened so its ropes, parsed journal and
+/// external-change revisions track the new file contents; when none is bound
+/// (read-only state) the journal is reparsed through the same vault and
+/// hot-swapped. Either way the snapshot is republished.
 ///
 /// This is the EXPENSIVE half of live reload — a full reparse plus a full
 /// snapshot rebuild, ~1.7 s at 200k transactions — so [`watch_loop`] is careful
 /// to call it once per settled change and never for a file that did not actually
 /// change (PERF-4).
+#[cfg(feature = "watcher")]
 pub(crate) fn reload_journal(path: &Path, state: &AppState) {
-    match state.reopen_editor() {
-        Some(Ok(())) => eprintln!("ledgeline: reloaded {} (editor re-synced)", path.display()),
-        Some(Err(error)) => eprintln!("ledgeline: reload skipped: {error}"),
-        None => match parse_at(path) {
-            Ok(journal) => {
-                state.replace_journal(&std::sync::Arc::new(journal));
-                eprintln!("ledgeline: reloaded {}", path.display());
-            }
-            Err(error) => eprintln!("ledgeline: reload skipped: {error}"),
-        },
+    match state.reload() {
+        Ok(ledgeline::Refreshed::Reloaded) => eprintln!("ledgeline: reloaded {}", path.display()),
+        Ok(ledgeline::Refreshed::Unchanged | ledgeline::Refreshed::NoStorage) => {}
+        Err(error) => eprintln!("ledgeline: reload skipped: {error}"),
     }
 }
 
@@ -478,6 +458,7 @@ pub(crate) fn reload_journal(path: &Path, state: &AppState) {
 /// separately. 250 ms is long enough to swallow a whole save (and the burst that
 /// our own `POST /api/transactions` produces) while staying well under the
 /// threshold where a reload feels delayed.
+#[cfg(feature = "watcher")]
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(250);
 
 /// A file's identity for change detection: its length and a hash of its RAW
@@ -491,11 +472,13 @@ const WATCH_DEBOUNCE: Duration = Duration::from_millis(250);
 /// mtime-preserving copy tools exist, and a timestamp-only touch is not a change
 /// at all. Keying off the bytes gets both directions right — no missed edit, and
 /// no 1.1-second reparse for a save that changed nothing.
+#[cfg(feature = "watcher")]
 type FileStamp = (PathBuf, u64, u64);
 
 /// FNV-1a 64-bit, the same non-cryptographic hash `JournalEditor` uses for its
 /// external-change fingerprint. Hashing 26 MB costs a few tens of milliseconds
 /// against the ~1.1 s reload it can avoid.
+#[cfg(feature = "watcher")]
 fn content_hash(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, &byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
@@ -507,6 +490,7 @@ fn content_hash(bytes: &[u8]) -> u64 {
 /// A missing or unreadable file stamps as empty rather than aborting, so a save
 /// caught mid-rename simply looks different from both its neighbours and
 /// resolves on the next event.
+#[cfg(feature = "watcher")]
 fn stamp_sources(sources: &[PathBuf]) -> Vec<FileStamp> {
     let mut stamps: Vec<FileStamp> = sources
         .iter()
@@ -529,6 +513,7 @@ fn stamp_sources(sources: &[PathBuf]) -> Vec<FileStamp> {
 /// no-op save, a `touch`, and a rewrite with identical content all free.
 ///
 /// Before the fix this was one full reparse + snapshot rebuild PER EVENT.
+#[cfg(feature = "watcher")]
 fn watch_loop(events: &mpsc::Receiver<()>, target: &Path, state: &AppState) {
     let mut last = stamp_sources(&current_sources(state, target));
     while events.recv().is_ok() {
@@ -564,7 +549,18 @@ fn watch_loop(events: &mpsc::Receiver<()>, target: &Path, state: &AppState) {
 /// reload. Reloading straight from the callback — as this did before PERF-4 —
 /// meant a full reparse and snapshot rebuild per raw filesystem event, and also
 /// blocked the notify thread for seconds at a time on a large journal.
+#[cfg(feature = "watcher")]
 pub(crate) fn spawn_watcher(path: &Path, state: AppState) -> Result<RecommendedWatcher, AppError> {
+    // A file watcher watches real directories, so it is keyed by the vault's
+    // local paths; a journal with none (a sandboxed or in-memory vault) has
+    // nothing to watch, and its host polls `AppState::refresh` instead.
+    if let Some(location) = state.location()
+        && location.vault().local_path(location.main()).is_none()
+    {
+        return Err(AppError::Watch(notify::Error::generic(
+            "the journal is not on a local filesystem; poll AppState::refresh instead",
+        )));
+    }
     let target = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let callback_state = state.clone();
     let callback_target = target.clone();
@@ -623,6 +619,7 @@ pub(crate) fn spawn_watcher(path: &Path, state: AppState) -> Result<RecommendedW
 }
 
 /// The directory to watch for a source file: its parent, or `.` when it has none.
+#[cfg(feature = "watcher")]
 fn watch_dir(source: &Path) -> PathBuf {
     source
         .parent()
@@ -633,6 +630,7 @@ fn watch_dir(source: &Path) -> PathBuf {
 /// The journal's current source files (main + `include`s) as resolved paths,
 /// always including `main` even if the published journal has not recorded it yet
 /// (e.g. read-only state with an empty snapshot).
+#[cfg(feature = "watcher")]
 fn current_sources(state: &AppState, main: &Path) -> Vec<PathBuf> {
     let mut sources = state.source_files();
     if !sources.iter().any(|s| s == main) {
@@ -648,6 +646,7 @@ fn current_sources(state: &AppState, main: &Path) -> Vec<PathBuf> {
 /// across an editor's atomic rename-into-place even when the file itself
 /// momentarily does not, so this stays robust on save. Source paths are already
 /// resolved, so only the candidate's directory needs canonicalizing.
+#[cfg(feature = "watcher")]
 fn event_matches_source(candidate: &Path, sources: &[PathBuf]) -> bool {
     let name = candidate.file_name();
     let candidate_dir = candidate.parent().and_then(|d| d.canonicalize().ok());
@@ -664,11 +663,11 @@ fn event_matches_source(candidate: &Path, sources: &[PathBuf]) -> bool {
 
 /// Headless mode: serve the API + embedded SPA on a fixed port with graceful
 /// shutdown, hot-reloading the journal on file change.
-fn run_server_blocking(cli: &Cli) -> Result<(), AppError> {
+fn run_server_blocking(cli: &Cli, app_dirs: AppDirs) -> Result<(), AppError> {
     // Decide the security posture BEFORE touching the journal, so a refused
     // non-loopback bind (SEC-9) fails fast and never opens the file.
     let (process_token, security_plan) = plan_security(cli)?;
-    let journal_path = resolve_journal(cli);
+    let journal_path = resolve_journal(cli, &app_dirs);
     // Bind an editor to the file so the write endpoints (`POST`/`DELETE
     // /api/transactions`) are live. Canonicalize first so the editor's save target
     // and recorded source name match the watcher's canonical path and the
@@ -676,13 +675,14 @@ fn run_server_blocking(cli: &Cli) -> Result<(), AppError> {
     let editor_path = journal_path
         .canonicalize()
         .unwrap_or_else(|_| journal_path.clone());
-    let state =
-        AppState::from_journal_path(&editor_path).map_err(|source| AppError::OpenEditor {
+    let state = AppState::from_journal_path(&editor_path)
+        .map_err(|source| AppError::OpenEditor {
             path: journal_path.display().to_string(),
             source,
-        })?;
+        })?
+        .with_app_dirs(app_dirs);
     // Remember this journal as the most-recently-opened (canonical path).
-    recents::record(&editor_path);
+    ledgeline::recents::record(state.app_dirs(), &editor_path);
     let host = cli.host.clone();
     let port = cli.port.unwrap_or(DEFAULT_SERVER_PORT);
 
@@ -727,6 +727,7 @@ fn run_server_blocking(cli: &Cli) -> Result<(), AppError> {
 
         // Live-reload watcher; held for the serve duration (dropping it stops
         // watching). A watcher failure only disables live reload.
+        #[cfg(feature = "watcher")]
         let _watcher = match spawn_watcher(&journal_path, state.clone()) {
             Ok(watcher) => Some(watcher),
             Err(error) => {
@@ -771,9 +772,23 @@ async fn shutdown_signal() {
     println!("ledgeline: received shutdown signal, draining");
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "watcher"))]
 mod tests {
     use super::*;
+    use ledgeline_core::{Journal, parse_journal};
+
+    /// Read + parse a journal file the way the binary's read-only fallback
+    /// used to, recording its canonical path as the source name — so a test
+    /// can build a state with no editor bound.
+    fn parse_at(path: &Path) -> Journal {
+        let text = std::fs::read_to_string(path).expect("journal readable");
+        let source_name = path
+            .canonicalize()
+            .unwrap_or_else(|_| path.to_path_buf())
+            .to_string_lossy()
+            .into_owned();
+        parse_journal(&text, &source_name).expect("journal parses")
+    }
 
     /// A unique temp directory for one test, created fresh.
     /// A scratch directory that cleans itself up and cannot collide.
@@ -911,7 +926,7 @@ mod tests {
             "include inc.journal\n2024-01-01 x\n    expenses:a  $1\n    assets:bank\n",
         )
         .unwrap();
-        let journal = parse_at(&main).unwrap();
+        let journal = parse_at(&main);
         let state = AppState::from_journal(&journal);
         let canonical_main = main.canonicalize().unwrap();
 

@@ -5,40 +5,24 @@
        "(other)". That module documents the validator run and the slot order.
        Secondary encoding, required by the skill at this CVD separation, is the
        always-on legend, pad-angle gaps between pie slices, and full tooltips.
-     - one shared magnitude ranking (series.rankedAccounts) drives the colours AND
-       whichever dataset is on screen, so an account keeps its hue across modes and
-       only the active mode is computed; capped at 6 groups incl. "(other)". -->
+     - one shared magnitude ranking (the engine's, crates/ledgeline-core/src/view/
+       series.rs) drives the colours AND whichever dataset is on screen, so an
+       account keeps its hue across modes and only the active mode is computed;
+       capped at 6 groups incl. "(other)". -->
 <script lang="ts">
     import {LineChart, PieChart, Tooltip} from "layerchart";
+    import {decodeChart} from "#lib/api/journalViewDecode.js";
+    import {LedgelineApi} from "#lib/api/native.js";
     import ChartLegend from "#lib/components/ChartLegend.svelte";
     import {fittedTicks, labelFormatter} from "#lib/components/periodAxis.js";
     import type {RootCategory} from "#lib/domain/accounts.js";
-    import type {Transaction} from "#lib/domain/types.js";
+    import {DEFAULT_AMOUNT_STYLE} from "#lib/format/amounts.js";
     import {chartColors} from "#lib/format/chartColors.svelte.js";
-    import {
-        categoriesInUse,
-        commoditiesInUse,
-        formatChartValue,
-        formatCompactChartValue,
-        groupOrder,
-        lineData,
-        pieData,
-        rankedAccounts,
-        styleFor,
-        OTHER,
-        type AccountSelection,
-        type DeclaredTypes,
-        type Interval,
-        type PieDatum,
-    } from "./series";
+    import type {ChartData, JournalSummary, PieDatum} from "#lib/journalView/types.js";
+    import {journalView} from "#lib/stores/journalView.svelte.js";
+    import {formatChartValue, formatCompactChartValue, OTHER, type Interval} from "./series";
 
-    let {
-        txns,
-        depth,
-        accounts,
-        allTxns,
-        declared,
-    }: {txns: Transaction[]; depth: number; accounts?: AccountSelection; allTxns?: Transaction[]; declared?: DeclaredTypes} = $props();
+    let {summary, depth}: {summary: JournalSummary | null; depth: number} = $props();
 
     const MAX_GROUPS = 6;
 
@@ -59,69 +43,81 @@
     // most useful journal view) when present. "all" shows every category.
     let chosenGroup = $state<RootCategory | "all" | null>(null);
 
-    const commodities = $derived(commoditiesInUse(txns, accounts));
+    const commodities = $derived(summary?.commodities ?? []);
     const commodity = $derived(chosenCommodity !== null && commodities.includes(chosenCommodity) ? chosenCommodity : (commodities[0] ?? "$"));
-    const style = $derived(styleFor(txns, commodity));
+    const entry = $derived(summary?.perCommodity.find((candidate) => candidate.commodity === commodity) ?? null);
+    const style = $derived(entry?.style ?? DEFAULT_AMOUNT_STYLE);
 
-    const groups = $derived(categoriesInUse(txns, commodity, accounts, declared));
+    const groups = $derived(entry?.categories ?? []);
     // Resolve the active scope: honor an explicit pick that's still available,
     // otherwise default to expenses when present (else all categories).
     const group = $derived.by<RootCategory | "all">(() => {
         if (chosenGroup !== null && (chosenGroup === "all" || groups.includes(chosenGroup))) return chosenGroup;
         return groups.includes("expense") ? "expense" : "all";
     });
-    const category = $derived<RootCategory | undefined>(group === "all" ? undefined : group);
 
-    // The magnitude ranking, computed ONCE and shared three ways: it decides the
-    // colour slots, and it is handed to whichever of pieData/lineData actually
-    // runs so neither repeats the pass. At 150k transactions this scan is 49 ms
-    // and each dataset is ~110 ms, so the old shape — both datasets, each
-    // ranking again — was 221 ms per filter change to draw one chart.
-    const ranked = $derived(rankedAccounts(txns, depth, commodity, accounts, category, declared));
-
-    // Only the mode on screen is computed. `{#if mode === "pie"}` below renders
-    // one or the other, and daisyUI does not hide the loser — nothing did, so
-    // both were being built regardless of which was visible.
-    const pie = $derived(
-        mode === "pie" ? pieData(txns, {depth, commodity, maxSlices: MAX_GROUPS, accounts, conventionTxns: allTxns, category, declared, ranked}) : []
-    );
+    // The chart itself comes from the engine (`/api/journal/chart`): one
+    // ranking pass plus ONLY the mode on screen, for the filtered view the
+    // summary describes. Re-asked whenever any input moves; a response for
+    // inputs that have since changed is dropped by the token.
+    let chart = $state.raw<ChartData | null>(null);
+    let chartError = $state<string | null>(null);
+    let chartToken = 0;
+    $effect(() => {
+        const target = journalView.query;
+        const request = {
+            mode,
+            commodity,
+            depth,
+            category: group === "all" ? undefined : group,
+            interval: mode === "line" ? interval : undefined,
+            max: MAX_GROUPS,
+        };
+        const token = ++chartToken;
+        if (target === null || summary === null || commodities.length === 0) {
+            chart = null;
+            return;
+        }
+        new LedgelineApi(target.serverUrl)
+            .journalChart(target.filter, request)
+            .then(decodeChart)
+            .then((next) => {
+                if (token !== chartToken) return;
+                chart = next;
+                chartError = null;
+            })
+            .catch((error: unknown) => {
+                if (token === chartToken) chartError = error instanceof Error ? error.message : String(error);
+            });
+    });
+    const loading = $derived(summary === null || (commodities.length > 0 && chart === null && chartError === null));
+    const pie = $derived(mode === "pie" ? (chart?.pie ?? []) : []);
 
     // A pie encodes parts of a whole by AREA, and a negative part has none.
     // Drawing |value| (the old behaviour) turned a −$500 travel refund into a
     // positive wedge worth a fifth of a $2,000 rent pie, and inflated the whole
     // from the true $1,500 net to $2,500 — only the tooltip carried the sign.
-    // Netting is not an option either: pieData already nets per account group,
-    // so a negative datum IS that category's net credit for the period and has
-    // nothing left to net into.
+    // Netting is not an option either: the engine already nets per account
+    // group, so a negative datum IS that category's net credit for the period
+    // and has nothing left to net into.
     //
     // So the pie draws the positive parts, whose areas do sum to the whole it
     // claims to partition, and the credits are named underneath with their
     // signed amounts rather than silently redrawn as spending.
     const pieSlices = $derived(pie.filter((d) => d.value > 0));
     const pieCredits = $derived(pie.filter((d) => d.value < 0));
-    const line = $derived(
-        mode === "line"
-            ? lineData(txns, {depth, commodity, interval, maxSeries: MAX_GROUPS, accounts, conventionTxns: allTxns, category, declared, ranked})
-            : []
-    );
+    const line = $derived(mode === "line" ? (chart?.line ?? []) : []);
 
-    // Color follows the account, not the mode — now by construction rather than
-    // by coincidence. Slots are assigned from the shared RANKING, which is the
-    // same list `pieData` and `lineData` each order their output by, so an
-    // account keeps its hue when you toggle pie/line even if one mode drops it
-    // (a pie omits accounts that net to zero; a line omits accounts with no
-    // buckets). This used to iterate the line dataset and then the pie dataset,
-    // which needed both to exist.
-    //
-    // `colorAt` FOLDS past the last slot rather than wrapping; the ranking is
-    // capped at MAX_GROUPS so `slot` cannot now exceed 6, but folding is still
-    // the right behaviour and this used to be `PALETTE[slot++ %
-    // PALETTE.length]`, which handed a 7th account slot 1's blue and made it
-    // indistinguishable from the 1st.
+    // Color follows the account, not the mode, by construction: slots are
+    // assigned from the engine's group ORDER — the shared magnitude ranking
+    // folded to MAX_GROUPS, which is the order both datasets come back in — so
+    // an account keeps its hue when you toggle pie/line even if one mode drops
+    // it (a pie omits accounts that net to zero; a line omits accounts with no
+    // buckets). `colorAt` folds past the last slot rather than wrapping.
     const colorOf: Record<string, string> = $derived.by(() => {
         const colors: Record<string, string> = {[OTHER]: chartColors.other};
         let slot = 0;
-        for (const account of groupOrder(ranked, MAX_GROUPS)) {
+        for (const account of chart?.groups ?? []) {
             colors[account] ??= chartColors.colorAt(slot++);
         }
         return colors;
@@ -207,7 +203,11 @@
         {/if}
     </div>
 
-    {#if mode === "pie"}
+    {#if loading}
+        <div class="flex justify-center py-10" aria-label="Loading chart"><span class="loading loading-spinner"></span></div>
+    {:else if chartError !== null}
+        <p class="py-10 text-center text-sm text-error">Couldn't draw the chart: {chartError}</p>
+    {:else if mode === "pie"}
         {#if pieSlices.length === 0}
             <p class="py-10 text-center text-sm text-base-content/60">
                 {#if pieCredits.length === 0}

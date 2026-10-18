@@ -20,12 +20,14 @@
 //! Money arithmetic stays exact-decimal (`Dec`); every fallible `Dec` op is
 //! surfaced through [`ReportError`] rather than unwrapped.
 
+pub mod account_class;
 pub mod account_groups;
 pub mod account_types;
 pub mod accounts;
 pub mod aggregate;
 pub mod balance_sheet;
 pub mod budget;
+pub mod budget_summary;
 pub mod cash_flow;
 pub mod flows;
 pub mod income_statement;
@@ -48,6 +50,7 @@ pub(crate) mod test_support;
 use crate::decimal::DecError;
 use thiserror::Error;
 
+pub use account_class::{AccountClass, account_classes, infer_bs_term};
 pub use account_groups::{
     AccountGroups, BS_GROUP_TAG, BS_TERM_TAG, BsTerm, CASH_GROUP, GroupSource, INVESTMENTS_GROUP,
     IS_GROUP_TAG, RETAINED_EARNINGS_GROUP, VALUATION_ADJUSTMENT_GROUP, account_groups,
@@ -56,8 +59,8 @@ pub use account_groups::{
 };
 pub use account_types::{
     ACCOUNT_TYPE_TAG, AccountDecl, AccountType, AccountTypes, accepted_type_tags, account_decls,
-    account_decls_from, cash_predicate, declared_types, is_account_type, parse_account_type_tag,
-    resolve_account_type,
+    account_decls_from, cash_predicate, declared_types, entered_negated, is_account_type,
+    parse_account_type_tag, resolve_account_type, signed_entry,
 };
 pub use accounts::{RootCategory, account_matches, categorize};
 pub use aggregate::{PostingFilter, account_totals, at_depth, roll_up};
@@ -68,6 +71,10 @@ pub use balance_sheet::{
 pub use budget::{
     BudgetCell, BudgetGaps, BudgetOpts, BudgetReport, BudgetRow, GapRow, UNBUDGETED, budget_gaps,
     budget_report,
+};
+pub use budget_summary::{
+    BarLabel, BudgetBar, BudgetHealth, BudgetLine, BudgetSection, BudgetSectionKind, BudgetSummary,
+    Elapsed, GapTotals, LabelKind, annualised, budget_summary, gap_totals,
 };
 pub use cash_flow::{cash_flow, cash_flow_range, is_cash_like};
 pub use flows::{
@@ -86,9 +93,9 @@ pub use insights::{
 pub use mixed_amount::MixedAmount;
 pub use net_worth::{NetWorthOpts, net_worth};
 pub use periods::{
-    BucketSpan, Interval, add_days, add_months, bucket_as_of, bucket_end, bucket_key, bucket_label,
-    bucket_span, bucket_start, compare_iso, days_between, iso_from_days, last_n_buckets,
-    next_bucket, range_buckets,
+    BucketSpan, Interval, PeriodInfo, add_days, add_months, bucket_as_of, bucket_end, bucket_key,
+    bucket_label, bucket_span, bucket_start, compare_iso, days_between, iso_from_days,
+    last_n_buckets, next_bucket, period_info, range_buckets,
 };
 pub use prices::{PriceDb, ValuationMeta, infer_market_prices, value_at};
 pub use reference::{AccountHistory, ReferenceOpts, ReferencePeriod, account_reference};

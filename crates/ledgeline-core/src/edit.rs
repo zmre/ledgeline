@@ -28,7 +28,8 @@
 //!
 //! # Safety model (data integrity is paramount — this writes real books)
 //! - **Reparse-and-verify.** After any mutation the WHOLE journal is re-parsed
-//!   with [`parse_journal_with_overrides`], resolving `include`s from the EDITED
+//!   through the editor's [`Vault`] with every loaded file overridden by its
+//!   rope ([`crate::parse::parse_journal_in`]), resolving `include`s from the EDITED
 //!   in-memory ropes (not the stale on-disk copies). The edit is committed only
 //!   if it parses cleanly, keeps the expected transaction count, leaves every
 //!   OTHER transaction's source text byte-identical, and introduces no
@@ -36,20 +37,22 @@
 //!   balances and round-trips). See [`JournalEditor::validate_with`]. On failure
 //!   `self` is left untouched.
 //! - **External-change guard.** [`JournalEditor::save`] re-reads each file it is
-//!   about to write and compares its content hash to that file's load-time
-//!   fingerprint, refusing (with [`EditError::ExternalChange`]) — and writing
-//!   nothing — rather than clobbering a file that changed underneath it. An
-//!   unchanged mtime proves nothing (DL-3); what is consulted is the content
-//!   hash and the file's `(dev, ino)`, both pinned at load.
+//!   about to write and compares it to that file's load-time [`Revision`],
+//!   refusing (with [`EditError::ExternalChange`]) — and writing nothing —
+//!   rather than clobbering a file that changed underneath it. An unchanged
+//!   mtime proves nothing (DL-3); what is consulted is the content hash and the
+//!   file's identity (`(dev, ino)` on disk), both pinned at load — from the
+//!   very read the parse used, so nothing can change between parse and pin.
 //! - **Resolve once, pin.** A symlinked journal is resolved to its real path at
 //!   load and edited there; nothing is followed at write time, and a symlink
 //!   swapped in since load is refused. See [`crate::pinned`].
-//! - **Atomic write.** `save` writes each changed file to a temp file in the
-//!   same directory, `fsync`s it, and `rename`s it over the target. The temp
-//!   file is created exclusively (so a planted symlink cannot capture the write)
-//!   and inherits the target's mode and ownership, so saving never widens the
-//!   permissions on the user's books. See [`crate::pinned::replace`] for exactly
-//!   what does and does not survive the rename.
+//! - **Atomic, conditional write.** `save` writes through [`Vault::replace`],
+//!   which on the desktop ([`LocalVault`]) writes each changed file to a temp
+//!   file in the same directory, `fsync`s it, and `rename`s it over the target.
+//!   The temp file is created exclusively (so a planted symlink cannot capture
+//!   the write) and inherits the target's mode and ownership, so saving never
+//!   widens the permissions on the user's books. See [`crate::pinned::replace`]
+//!   for exactly what does and does not survive the rename.
 //! - **Single writer.** Mutations take `&mut self`; the server will wrap the
 //!   editor in a `Mutex` in the next increment (no OS-level lock yet).
 
@@ -58,11 +61,8 @@ use crate::model::{
     Amount, AmountStyle, BalanceAssertion, Commodity, CommoditySide, CostKind, Journal, Posting,
     PostingType, Status, Tindex, Transaction,
 };
-use crate::parse::{
-    ParseError, check_transaction_balances, parse_journal, parse_journal_with_overrides,
-    resolve_source_file,
-};
-use crate::pinned::{self, FileIdentity, Pin, WriteError};
+use crate::parse::{ParseError, ParsedJournal, check_transaction_balances, resolve_source_file};
+use crate::vault::{LocalVault, Revision, Vault, VaultError, VaultPath};
 use ropey::Rope;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -186,7 +186,7 @@ pub enum InsertPosition {
 /// rather than left lying around as a tempting shortcut. A mtime-only touch that
 /// leaves the bytes identical is likewise not an external change. See
 /// [`file_changed_externally`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Fingerprint {
     hash: u64,
     len: u64,
@@ -215,6 +215,24 @@ impl Fingerprint {
     pub fn token(&self) -> String {
         format!("{:x}-{:016x}", self.len, self.hash)
     }
+
+    /// The content length in bytes.
+    #[must_use]
+    pub fn content_len(&self) -> u64 {
+        self.len
+    }
+
+    /// The FNV-1a 64-bit hash of the content.
+    ///
+    /// **A stable contract**, unlike [`token`](Self::token)'s format: a host
+    /// that must re-check a file outside Rust (the iOS file coordinator's
+    /// conditional replace) recomputes it. FNV-1a, 64-bit: start from the
+    /// offset basis `0xcbf29ce484222325`; for each byte, XOR it into the
+    /// hash, then multiply by the prime `0x100000001b3` modulo 2^64.
+    #[must_use]
+    pub fn content_hash(&self) -> u64 {
+        self.hash
+    }
 }
 
 /// FNV-1a 64-bit hash — small, dependency-free, and deterministic within a run
@@ -229,87 +247,73 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
     hash
 }
 
-/// Read a journal file as UTF-8, naming the file and the encoding when it is
-/// not.
+/// A storage failure while reading or writing the journal, as an [`EditError`].
 ///
-/// `read_to_string` reports only *"stream did not contain valid UTF-8"* with no
-/// path, which for a Latin-1 journal (a `£` or a `ñ` in a payee is enough) reads
-/// as an unexplained failure to open the user's books. This fails CLOSED — a
-/// lossy decode would write mojibake back over the original — so the fix is to
-/// say which file and what to do about it, not to guess the charset.
-///
-/// Read through [`pinned::read_pinned_string`]: `path` is a resolved real path,
-/// so a symlink at it now means it was swapped in after resolution and is
-/// refused, and the returned [`Pin`] — identity and fingerprint from one open
-/// descriptor — is what [`JournalEditor::save`] later insists on finding.
-fn read_journal_text(path: &Path) -> Result<(String, Pin), EditError> {
-    pinned::read_pinned_string(path).map_err(|err| {
-        if err.kind() == std::io::ErrorKind::InvalidData {
-            EditError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "{} is not valid UTF-8. Ledgeline reads and writes UTF-8 journals only; \
-                     convert it first (e.g. `iconv -f latin1 -t utf-8`) so no character is \
-                     silently rewritten.",
-                    path.display()
-                ),
-            ))
-        } else {
-            EditError::Io(err)
-        }
-    })
+/// [`VaultError::Changed`] is the external-change refusal; everything else keeps
+/// its `io::ErrorKind` (a not-downloaded file is `WouldBlock`), because the
+/// server answers with a status derived from it.
+fn storage_error(error: VaultError) -> EditError {
+    match error {
+        VaultError::Changed { .. } => EditError::ExternalChange,
+        other => EditError::Io(std::io::Error::from(other)),
+    }
 }
 
-/// One source file's editable buffer: its rope, the load-time fingerprint used
+/// One source file's editable buffer: its rope, the load-time [`Revision`] used
 /// to detect external changes, and whether the rope has been edited since load
 /// (so [`JournalEditor::save`] writes only the files that actually changed).
 struct FileBuf {
-    /// Absolute path to read/write — identical to this buffer's key in
-    /// [`JournalEditor::files`]. Resolved ONCE, at load: a symlinked journal is
-    /// edited through its real path, and nothing is followed at write time.
-    path: PathBuf,
+    /// Where to read and write it in the editor's vault. Resolved ONCE, at
+    /// load: a symlinked journal is edited through its real path, and nothing
+    /// is followed at write time.
+    path: VaultPath,
     rope: Rope,
-    fingerprint: Fingerprint,
-    /// The `(dev, ino)` the file was loaded as, when known. [`JournalEditor::save`]
-    /// refuses to write to a name that now holds a different inode — a swapped-in
-    /// symlink above all — even when the bytes match.
-    identity: Option<FileIdentity>,
+    /// What the file was when its text was read (or last written): content
+    /// fingerprint plus identity. [`JournalEditor::save`] refuses to write over
+    /// anything else — a swapped-in symlink above all — even when the bytes
+    /// match.
+    revision: Revision,
     dirty: bool,
 }
 
 impl FileBuf {
-    fn new(path: PathBuf, text: &str, identity: Option<FileIdentity>) -> Self {
+    fn new(path: VaultPath, text: &str, revision: Revision) -> Self {
         Self {
-            fingerprint: Fingerprint::of_bytes(text.as_bytes()),
             rope: Rope::from_str(text),
             path,
-            identity,
+            revision,
             dirty: false,
-        }
-    }
-
-    /// What the on-disk file must still be for a save to overwrite it.
-    fn pin(&self) -> Pin {
-        Pin {
-            identity: self.identity,
-            fingerprint: Some(self.fingerprint.clone()),
         }
     }
 }
 
 /// A format-preserving editor over a journal that may span several files (a main
 /// journal plus any `include`d files). Each distinct source file has its own
-/// [`FileBuf`], keyed by its resolved absolute path; every edit is applied to the
-/// rope of the file the addressed transaction actually lives in.
+/// [`FileBuf`], keyed by the absolute key the parse records for it
+/// ([`Transaction::source_file`]); every edit is applied to the rope of the file
+/// the addressed transaction actually lives in.
+///
+/// All storage goes through the editor's [`Vault`]: on the desktop a
+/// [`LocalVault`] rooted at the journal's real directory, in tests (and future
+/// hosts) anything else.
 pub struct JournalEditor {
-    /// The main journal's `source_name` (the string passed to the parser),
-    /// re-used to reparse the whole journal on validate.
+    /// Where every file is read from and written to.
+    vault: Arc<dyn Vault>,
+    /// The main file's place in [`Self::vault`].
+    main: VaultPath,
+    /// The main journal's `source_name` (the spelling it was opened with),
+    /// re-used on every reparse so error locations and the wire's
+    /// `sourceName` stay as they were.
     source_name: String,
     /// The resolved key of the main file within [`Self::files`].
     main_key: PathBuf,
     /// One buffer per distinct source file (main + includes-with-transactions),
     /// keyed by resolved absolute path.
     files: HashMap<PathBuf, FileBuf>,
+    /// Every file the journal is built from (directive-only includes too), with
+    /// the revision of the bytes last read or written. What
+    /// [`Self::changed_sources`] compares against.
+    sources: Vec<(VaultPath, Option<Revision>)>,
     /// Behind an [`Arc`] so a consumer that wants to *hold* the parsed journal —
     /// the server's snapshot, above all — can share this one allocation instead
     /// of deep-cloning it (PERF-1b: the clone was 86 ms and 284 MB at 200k
@@ -319,25 +323,57 @@ pub struct JournalEditor {
 }
 
 impl JournalEditor {
-    /// Open `path`, reading the main file and every `include`d file a
-    /// transaction came from into its own rope, parsing the whole journal, and
-    /// capturing a per-file load-time fingerprint.
+    /// Open the journal at `path` on the local filesystem: resolve it once to
+    /// its real path ([`LocalVault::for_journal`]) and open it there with
+    /// [`open_in`](Self::open_in). The journal's `source_name` stays `path` as
+    /// given.
     ///
     /// # Errors
     /// [`EditError::Io`] if a file cannot be read, or [`EditError::Parse`] if
     /// the journal does not parse.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, EditError> {
         let path = path.into();
-        // Resolve once: the main file is read — and later written — through its
-        // real path, so a symlinked journal keeps working without the write
-        // ever following a link.
-        let (text, pin) = read_journal_text(&resolve_source_file(&path))?;
+        let (vault, main) = LocalVault::for_journal(&path).map_err(storage_error)?;
         let source_name = path.to_string_lossy().into_owned();
-        let journal = parse_journal(&text, &source_name)?;
-        Self::load(source_name, journal, &text, pin.identity)
+        let main_key = resolve_source_file(&path);
+        Self::open_parts(Arc::new(vault), main, main_key, source_name)
     }
 
-    /// Re-open this editor's journal from disk **without resolving it again**.
+    /// Open the journal whose main file is `main` in `vault`: parse it (reading
+    /// the main file and every `include` once, through the vault) and keep a rope
+    /// and the read's [`Revision`] for each file a transaction came from.
+    ///
+    /// The revisions are the ones the parse itself read — no file is read a
+    /// second time to "pin" it, so nothing can change between the parse and the
+    /// pin. The journal's `source_name` is the main file's [`Vault::key`].
+    ///
+    /// # Errors
+    /// [`EditError::Parse`] if the journal cannot be read (a not-downloaded file
+    /// included) or does not parse.
+    pub fn open_in(vault: Arc<dyn Vault>, main: VaultPath) -> Result<Self, EditError> {
+        let main_key = vault.key(&main);
+        let source_name = main_key.to_string_lossy().into_owned();
+        Self::open_parts(vault, main, main_key, source_name)
+    }
+
+    fn open_parts(
+        vault: Arc<dyn Vault>,
+        main: VaultPath,
+        main_key: PathBuf,
+        source_name: String,
+    ) -> Result<Self, EditError> {
+        let parsed = crate::parse::parse_in(
+            &*vault,
+            &main,
+            main_key.clone(),
+            &source_name,
+            &HashMap::new(),
+        )?;
+        Self::load(vault, main, main_key, source_name, parsed, None)
+    }
+
+    /// Re-open this editor's journal from its vault **without resolving it
+    /// again**.
     ///
     /// [`open`](Self::open) resolves a symlinked journal to its real path once;
     /// this re-reads that real path and refuses — rather than follows — a
@@ -347,32 +383,31 @@ impl JournalEditor {
     /// job, on a path the user chose.
     ///
     /// # Errors
-    /// [`EditError::ExternalChange`] if the real path no longer resolves to
-    /// itself; [`EditError::Io`] if it cannot be read (a symlink at it is
-    /// refused as `InvalidInput`); [`EditError::Parse`] if it does not parse.
+    /// [`EditError::ExternalChange`] if the main file no longer resolves to
+    /// itself; [`EditError::Parse`] if it cannot be read (a symlink at it is
+    /// refused) or does not parse.
     pub fn reopen(&self) -> Result<Self, EditError> {
-        let path = self.main_key.clone();
-        let (text, pin) = read_journal_text(&path)?;
-        if resolve_source_file(&path) != path {
-            return Err(EditError::ExternalChange);
+        match self.vault.canonicalize(&self.main) {
+            Ok(resolved) if resolved == self.main => {}
+            Ok(_) | Err(VaultError::OutsideRoot { .. }) => return Err(EditError::ExternalChange),
+            Err(error) => return Err(storage_error(error)),
         }
-        let source_name = path.to_string_lossy().into_owned();
-        let journal = parse_journal(&text, &source_name)?;
-        let reopened = Self::load(source_name, journal, &text, pin.identity)?;
-        // `load` resolves the name once more; a swap in between shows up here.
-        if reopened.main_key != path {
-            return Err(EditError::ExternalChange);
-        }
-        Ok(reopened)
+        Self::open_parts(
+            Arc::clone(&self.vault),
+            self.main.clone(),
+            self.main_key.clone(),
+            self.source_name.clone(),
+        )
     }
 
-    /// Build an editor over in-memory `text` associated with `path`, without
-    /// touching the filesystem. This path is single-file: it does not resolve
-    /// `include`s (the initial parse would read them from disk).
+    /// Build an editor over in-memory `text` for the journal at `path`. The
+    /// main file is parsed from `text` rather than read; its `include`s are
+    /// read from `path`'s real directory as [`open`](Self::open) reads them.
     ///
-    /// The main file's fingerprint is taken from `text`, so a later
+    /// The main file's revision is taken from `text`, so a later
     /// [`save`](Self::save) compares against exactly the bytes the caller
-    /// supplied (and requires `path` to exist on disk). Useful for in-memory
+    /// supplied (and requires `path` to exist on disk); its identity is
+    /// whatever the resolved path holds now, best effort. Useful for in-memory
     /// editing (the server can hold the text already) and for tests.
     ///
     /// # Errors
@@ -380,44 +415,132 @@ impl JournalEditor {
     pub fn from_text(path: impl Into<PathBuf>, text: &str) -> Result<Self, EditError> {
         let path = path.into();
         let source_name = path.to_string_lossy().into_owned();
-        let journal = parse_journal(text, &source_name)?;
+        let (vault, main) = crate::parse::vault_for_source_name(&source_name);
+        let vault: Arc<dyn Vault> = Arc::from(vault);
+        let main_key = resolve_source_file(&path);
+        let overrides = HashMap::from([(main.clone(), text.to_string())]);
+        let parsed =
+            crate::parse::parse_in(&*vault, &main, main_key.clone(), &source_name, &overrides)?;
         // Best effort: the caller's text was not read here, so the identity is
         // whatever the resolved path holds now. `save` still checks the bytes.
-        let identity = std::fs::symlink_metadata(resolve_source_file(&source_name))
+        let identity = vault
+            .stat(&main)
             .ok()
-            .filter(|meta| meta.file_type().is_file())
-            .and_then(|meta| FileIdentity::of(&meta));
-        Self::load(source_name, journal, text, identity)
+            .flatten()
+            .filter(crate::vault::Entry::is_file)
+            .and_then(|entry| entry.identity);
+        let main_revision = Revision {
+            identity,
+            ..Revision::of_bytes(text.as_bytes())
+        };
+        Self::load(
+            vault,
+            main,
+            main_key,
+            source_name,
+            parsed,
+            Some((text, main_revision)),
+        )
     }
 
-    /// Build an editor from a freshly-parsed `journal`. The main file's text is
-    /// `main_text` (already in hand); every other file a transaction came from
-    /// is read from disk.
+    /// Build an editor from a fresh parse. Every file a transaction came from
+    /// gets a buffer from the text and revision the parse read it with; the
+    /// main file gets one always (from `main_text` when the caller supplied
+    /// the text instead).
     fn load(
+        vault: Arc<dyn Vault>,
+        main: VaultPath,
+        main_key: PathBuf,
         source_name: String,
-        journal: Journal,
-        main_text: &str,
-        main_identity: Option<FileIdentity>,
+        parsed: ParsedJournal,
+        main_text: Option<(&str, Revision)>,
     ) -> Result<Self, EditError> {
-        let main_key = resolve_source_file(&source_name);
+        let ParsedJournal { journal, sources } = parsed;
+        let key_of = |path: &VaultPath| {
+            if *path == main {
+                main_key.clone()
+            } else {
+                vault.key(path)
+            }
+        };
+        let needed: std::collections::HashSet<&Path> = journal
+            .transactions
+            .iter()
+            .map(|txn| txn.source_file.as_path())
+            .chain(std::iter::once(main_key.as_path()))
+            .collect();
         let mut files: HashMap<PathBuf, FileBuf> = HashMap::new();
-        files.insert(
-            main_key.clone(),
-            FileBuf::new(main_key.clone(), main_text, main_identity),
-        );
-        for txn in &journal.transactions {
-            if !files.contains_key(&txn.source_file) {
-                let key = txn.source_file.clone();
-                let (file_text, pin) = read_journal_text(&key)?;
-                files.insert(key.clone(), FileBuf::new(key, &file_text, pin.identity));
+        let mut revisions: Vec<(VaultPath, Option<Revision>)> = Vec::with_capacity(sources.len());
+        for source in sources {
+            let key = key_of(&source.path);
+            let read = match (&source.read, &main_text) {
+                (Some((text, revision)), _) => Some((text.as_str(), revision.clone())),
+                (None, Some((text, revision))) if source.path == main => {
+                    Some((*text, revision.clone()))
+                }
+                (None, _) => None,
+            };
+            revisions.push((source.path.clone(), read.as_ref().map(|(_, r)| r.clone())));
+            if let Some((text, revision)) = read
+                && needed.contains(key.as_path())
+                && !files.contains_key(&key)
+            {
+                files.insert(key, FileBuf::new(source.path.clone(), text, revision));
             }
         }
+        // Every file a transaction came from was read by the parse, so a miss
+        // here is a bug — refuse rather than build an editor that cannot write
+        // one of its files.
+        if let Some(missing) = needed.iter().find(|key| !files.contains_key(**key)) {
+            return Err(EditError::Internal(format!(
+                "no text was read for source file {}",
+                missing.display()
+            )));
+        }
         Ok(Self {
+            vault,
+            main,
             source_name,
             main_key,
             files,
+            sources: revisions,
             journal: Arc::new(journal),
         })
+    }
+
+    /// The vault this editor reads and writes through.
+    #[must_use]
+    pub fn vault(&self) -> &Arc<dyn Vault> {
+        &self.vault
+    }
+
+    /// The main file's place in [`Self::vault`].
+    #[must_use]
+    pub fn main(&self) -> &VaultPath {
+        &self.main
+    }
+
+    /// The source files whose bytes in the vault no longer match what this
+    /// editor last read or wrote — the vault-based change check a host with no
+    /// file watcher (iOS) polls, and the desktop watcher's own test.
+    ///
+    /// Content only: a file rewritten with identical bytes, or merely touched,
+    /// is not a change (DL-3), and a file that cannot be read (vanished
+    /// mid-save, not downloaded) is. A source the editor never read (an
+    /// override) always counts as changed.
+    #[must_use]
+    pub fn changed_sources(&self) -> Vec<VaultPath> {
+        self.sources
+            .iter()
+            .filter(|(path, known)| {
+                let current = self.vault.read_pinned(path, None).ok().map(|(_, r)| r);
+                !matches!(
+                    (known, current),
+                    (Some(known), Some(now)) if known.fingerprint.content_matches(&now.fingerprint)
+                )
+            })
+            .map(|(path, _)| path.clone())
+            .collect()
     }
 
     /// The main journal file path.
@@ -542,19 +665,14 @@ impl JournalEditor {
         candidate: &Rope,
         expected: usize,
     ) -> Result<Journal, EditError> {
-        let mut texts: HashMap<PathBuf, String> = self
-            .files
-            .iter()
-            .map(|(key, file)| (key.clone(), file.rope.to_string()))
-            .collect();
+        let mut texts = self.rope_texts();
         // Read the pre-edit sources while the map still holds them, so the
         // before and after states cost one materialization of the journal
         // between them rather than two.
-        let before = transaction_sources(&self.journal, &texts)?;
+        let before = transaction_sources(&self.journal, &self.text_of(&texts))?;
 
-        texts.insert(edited_key.to_path_buf(), candidate.to_string());
-        let reparsed = parse_journal_with_overrides(&self.source_name, &texts)
-            .map_err(EditError::ParseInvalidAfterEdit)?;
+        texts.insert(self.vault_path_of(edited_key)?, candidate.to_string());
+        let reparsed = self.reparse(&texts)?;
         if reparsed.transactions.len() != expected {
             return Err(EditError::Internal(format!(
                 "expected {expected} transactions after the edit, found {}",
@@ -562,10 +680,57 @@ impl JournalEditor {
             )));
         }
 
-        let after = transaction_sources(&reparsed, &texts)?;
+        let after = transaction_sources(&reparsed, &self.text_of(&texts))?;
         check_single_change(&before, &after)?;
         check_no_new_imbalance(&self.journal, &before, &reparsed, &after)?;
         Ok(reparsed)
+    }
+
+    /// Every loaded file's current rope text, by vault path — the override map
+    /// a reparse-to-validate starts from.
+    fn rope_texts(&self) -> HashMap<VaultPath, String> {
+        self.files
+            .values()
+            .map(|file| (file.path.clone(), file.rope.to_string()))
+            .collect()
+    }
+
+    /// Look a source file's text up in `texts` by the key the parse records.
+    fn text_of<'a>(
+        &'a self,
+        texts: &'a HashMap<VaultPath, String>,
+    ) -> impl Fn(&Path) -> Option<&'a str> + 'a {
+        move |key: &Path| {
+            let path = self.files.get(key)?.path.clone();
+            texts.get(&path).map(String::as_str)
+        }
+    }
+
+    /// The vault path of the loaded file keyed by `key`.
+    fn vault_path_of(&self, key: &Path) -> Result<VaultPath, EditError> {
+        self.files
+            .get(key)
+            .map(|file| file.path.clone())
+            .ok_or_else(|| {
+                EditError::Internal(format!(
+                    "no loaded buffer for source file {}",
+                    key.display()
+                ))
+            })
+    }
+
+    /// Reparse the whole journal through the vault with `texts` overriding
+    /// what storage holds.
+    fn reparse(&self, texts: &HashMap<VaultPath, String>) -> Result<Journal, EditError> {
+        crate::parse::parse_in(
+            &*self.vault,
+            &self.main,
+            self.main_key.clone(),
+            &self.source_name,
+            texts,
+        )
+        .map(|parsed| parsed.journal)
+        .map_err(EditError::ParseInvalidAfterEdit)
     }
 
     /// Replace `edited_key`'s rope with `candidate` (marking it dirty) and adopt
@@ -1040,20 +1205,15 @@ impl JournalEditor {
         positions: &BulkPositions,
         inputs: &[Transaction],
     ) -> Result<Journal, EditError> {
-        let mut texts: HashMap<PathBuf, String> = self
-            .files
-            .iter()
-            .map(|(key, file)| (key.clone(), file.rope.to_string()))
-            .collect();
-        let before = transaction_sources(&self.journal, &texts)?;
+        let mut texts = self.rope_texts();
+        let before = transaction_sources(&self.journal, &self.text_of(&texts))?;
 
         for (key, candidate) in candidates {
-            texts.insert(key.clone(), candidate.to_string());
+            texts.insert(self.vault_path_of(key)?, candidate.to_string());
         }
         #[cfg(test)]
         BULK_REPARSE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let reparsed = parse_journal_with_overrides(&self.source_name, &texts)
-            .map_err(EditError::ParseInvalidAfterEdit)?;
+        let reparsed = self.reparse(&texts)?;
         if reparsed.transactions.len() != expected {
             return Err(EditError::Internal(format!(
                 "expected {expected} transactions after the bulk edit, found {}",
@@ -1061,7 +1221,7 @@ impl JournalEditor {
             )));
         }
 
-        let after = transaction_sources(&reparsed, &texts)?;
+        let after = transaction_sources(&reparsed, &self.text_of(&texts))?;
 
         // Locate each of the N new transactions by (file, header line), and
         // check it balances and round-trips — attributable per-transaction.
@@ -1598,45 +1758,51 @@ impl JournalEditor {
                     key.display()
                 ))
             })?;
-            if file_changed_externally(file)? {
+            if file_changed_externally(&*self.vault, file)? {
                 return Err(EditError::ExternalChange);
             }
         }
 
-        // Pass 2: atomically write each dirty file and refresh its pin. The
-        // write itself re-checks identity and content through the descriptor it
-        // replaces (see `pinned::replace`), so the TOCTOU window is a single
-        // file's last look to its rename rather than the whole pass.
+        // Pass 2: atomically write each dirty file and refresh its revision.
+        // The write itself re-checks identity and content right up to the
+        // replacement (see `Vault::replace`, and `pinned::replace` behind the
+        // desktop's), so the TOCTOU window is a single file's last look to its
+        // rename rather than the whole pass.
         for key in &dirty {
-            let (path, new_text, pin) = {
+            let (path, new_text, expected) = {
                 let file = self.files.get(key).ok_or_else(|| {
                     EditError::Internal(format!(
                         "no loaded buffer for source file {}",
                         key.display()
                     ))
                 })?;
-                (file.path.clone(), file.rope.to_string(), file.pin())
+                (
+                    file.path.clone(),
+                    file.rope.to_string(),
+                    file.revision.clone(),
+                )
             };
-            let written =
-                pinned::replace(&path, new_text.as_bytes(), &pin).map_err(|error| match error {
-                    WriteError::Changed => EditError::ExternalChange,
-                    WriteError::Io(error) => EditError::Io(error),
-                })?;
+            let written = self
+                .vault
+                .replace(&path, new_text.as_bytes(), &expected)
+                .map_err(storage_error)?;
+            if let Some((_, known)) = self.sources.iter_mut().find(|(p, _)| *p == path) {
+                *known = Some(written.clone());
+            }
             let file = self.files.get_mut(key).ok_or_else(|| {
                 EditError::Internal(format!(
                     "no loaded buffer for source file {}",
                     key.display()
                 ))
             })?;
-            file.fingerprint = Fingerprint::of_bytes(new_text.as_bytes());
-            file.identity = written.identity;
+            file.revision = written;
             file.dirty = false;
         }
         Ok(())
     }
 }
 
-/// Whether the file at `path` differs on disk from its load-time `fingerprint`.
+/// Whether `file` differs in the vault from its load-time revision.
 ///
 /// The file is **always** re-read and its content hashed (DL-3). An unchanged
 /// mtime used to short-circuit this, which any mtime-preserving write defeats:
@@ -1646,23 +1812,17 @@ impl JournalEditor {
 /// added transaction was silently wiped by a `save()` that reported success.
 ///
 /// Journals are small and a save is already dominated by a full reparse, so the
-/// read costs nothing worth having a guess for. `mtime` is still carried on the
-/// [`Fingerprint`], but only as a record — never as a verdict.
+/// read costs nothing worth having a guess for.
 ///
 /// Read without following a link, and judged on identity as well as content: a
 /// name that became a symlink or a non-regular file, or now holds a different
 /// inode than the one loaded, has changed whatever its bytes say.
-fn file_changed_externally(file: &FileBuf) -> Result<bool, EditError> {
-    let current = match pinned::read_pinned(&file.path) {
-        Ok((_, current)) => current,
-        Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => return Ok(true),
-        Err(error) => return Err(EditError::Io(error)),
-    };
-    let same_inode = file.identity.is_none() || current.identity == file.identity;
-    let same_bytes = current
-        .fingerprint
-        .is_some_and(|now| now.content_matches(&file.fingerprint));
-    Ok(!(same_inode && same_bytes))
+fn file_changed_externally(vault: &dyn Vault, file: &FileBuf) -> Result<bool, EditError> {
+    match vault.read_pinned(&file.path, None) {
+        Ok((_, current)) => Ok(!file.revision.matches(&current)),
+        Err(error) if error.is_not_regular_file() => Ok(true),
+        Err(error) => Err(storage_error(error)),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2514,7 +2674,7 @@ type TxnSource = (PathBuf, String);
 /// this runs on every edit.
 fn transaction_sources<'a>(
     journal: &Journal,
-    texts: &'a HashMap<PathBuf, String>,
+    text_of: &dyn Fn(&Path) -> Option<&'a str>,
 ) -> Result<Vec<TxnSource>, EditError> {
     let mut by_file: HashMap<&PathBuf, Vec<&'a str>> = HashMap::new();
     for txn in &journal.transactions {
@@ -2522,7 +2682,7 @@ fn transaction_sources<'a>(
             // Every file a transaction came from is loaded by `load`, so a miss
             // means the edit introduced a source we have no buffer for. Refusing
             // is the safe direction: the guard cannot vouch for what it cannot read.
-            let text = texts.get(&txn.source_file).ok_or_else(|| {
+            let text = text_of(&txn.source_file).ok_or_else(|| {
                 EditError::Internal(format!(
                     "no loaded text for source file {}",
                     txn.source_file.display()
@@ -2817,6 +2977,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use crate::model::{AccountName, Cost, SourcePos};
+    use crate::parse::parse_journal;
 
     fn dollar_style() -> AmountStyle {
         AmountStyle {
@@ -3178,6 +3339,22 @@ mod tests {
             )],
         );
         assert!(!transactions_equivalent(&usd, &eur));
+    }
+
+    #[test]
+    fn fingerprint_components_are_the_documented_fnv1a_64_and_length() {
+        // Published FNV-1a 64 test vectors: a host recomputing the hash outside
+        // Rust (the iOS coordinator) is checked against the same numbers.
+        let empty = Fingerprint::of_bytes(b"");
+        assert_eq!(empty.content_hash(), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(empty.content_len(), 0);
+        assert_eq!(
+            Fingerprint::of_bytes(b"a").content_hash(),
+            0xaf63_dc4c_8601_ec8c
+        );
+        let foobar = Fingerprint::of_bytes(b"foobar");
+        assert_eq!(foobar.content_hash(), 0x8594_4171_f739_67e8);
+        assert_eq!(foobar.content_len(), 6);
     }
 
     #[test]

@@ -203,7 +203,12 @@ async fn the_line_is_the_same_money_into_the_benchmark() {
         .map(String::as_str)
         .collect();
     fields.sort_unstable();
-    assert_eq!(fields, ["error", "points", "stale", "symbol"]);
+    assert_eq!(
+        fields,
+        ["error", "label", "points", "slot", "stale", "symbol"]
+    );
+    assert_eq!(spy["label"], "S&P 500 (SPY)");
+    assert_eq!(spy["slot"], 0);
     assert_eq!(values(spy), vec![Some(1100.0), Some(1210.0), Some(2112.0)]);
     let dates: Vec<&str> = spy["points"]
         .as_array()
@@ -257,6 +262,9 @@ async fn several_benchmarks_come_back_in_catalog_order() {
         .collect();
     assert_eq!(symbols, ["SPY", "GLD"]);
     let gld = &body["benchmarks"][1];
+    // The slot is the CATALOG position, not the position in this response.
+    assert_eq!(gld["slot"], 7);
+    assert_eq!(gld["label"], "Gold (GLD)");
     assert_eq!(values(gld), vec![None, None, None]);
     assert!(gld["error"].as_str().unwrap().contains("GLD"));
 }
@@ -465,5 +473,29 @@ async fn the_benchmarks_route_requires_the_token() {
         .await
         .expect("router responds");
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(tree.calls(), 0);
+}
+
+/// Plan 26 B1: the catalog is served, so the SPA keeps no copy. Its order is the
+/// colour contract, so the whole list is pinned, order included.
+#[tokio::test]
+async fn the_catalog_lists_every_benchmark_in_slot_order() {
+    let tree = Tree::with(JOURNAL, FakeHistory::new([]));
+    let (status, body) = tree.get("/api/holdings/benchmarks/catalog").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body,
+        serde_json::json!({"benchmarks": [
+            {"symbol": "SPY", "label": "S&P 500 (SPY)"},
+            {"symbol": "DIA", "label": "Dow Jones (DIA)"},
+            {"symbol": "QQQ", "label": "Nasdaq-100 (QQQ)"},
+            {"symbol": "VTI", "label": "US total market (VTI)"},
+            {"symbol": "BND", "label": "US bonds (BND)"},
+            {"symbol": "VXUS", "label": "International (VXUS)"},
+            {"symbol": "IWM", "label": "Small cap (IWM)"},
+            {"symbol": "GLD", "label": "Gold (GLD)"},
+        ]})
+    );
+    // Nothing is fetched to answer it.
     assert_eq!(tree.calls(), 0);
 }

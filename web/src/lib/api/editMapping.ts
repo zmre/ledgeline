@@ -293,25 +293,3 @@ export function postingIndicesForAccount(txn: Transaction, account: string): num
 export function accountPatch(txn: Transaction, oldAccount: string, newAccount: string): PatchTransactionBody {
     return {postings: postingIndicesForAccount(txn, oldAccount).map((index) => ({index, account: newAccount}))};
 }
-
-/** The journal's most-common commodity (popup default); "$" when the journal is empty. */
-export function dominantCommodity(txns: readonly Transaction[]): string {
-    const counts = new Map<string, number>();
-    for (const txn of txns) {
-        for (const posting of txn.postings) {
-            for (const amount of posting.amounts) {
-                if (amount.commodity === "") continue;
-                counts.set(amount.commodity, (counts.get(amount.commodity) ?? 0) + 1);
-            }
-        }
-    }
-    let best = "$";
-    let bestCount = 0;
-    for (const [commodity, count] of counts) {
-        if (count > bestCount) {
-            best = commodity;
-            bestCount = count;
-        }
-    }
-    return best;
-}

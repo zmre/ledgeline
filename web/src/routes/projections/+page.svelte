@@ -31,9 +31,7 @@
     // error: it is forgotten and the tab seeds instead, which is where a user
     // who deleted a file outside Ledgeline should end up.
     import {onMount} from "svelte";
-    import {dominantCommodity} from "#lib/api/editMapping.js";
     import AsyncSection from "#lib/components/AsyncSection.svelte";
-    import {declaredTypes} from "#lib/domain/accountTypes.js";
     import DepthSlider from "#lib/insights/DepthSlider.svelte";
     import {fileStore} from "#lib/projections/fileStore.svelte.js";
     import {defaultProjectionParams, projectionParamsToSearch, searchToProjectionParams, type ProjectionParams} from "#lib/projections/params.js";
@@ -44,7 +42,6 @@
     import SaveScenarioDialog from "#lib/projections/ui/SaveScenarioDialog.svelte";
     import ScenarioFileBar from "#lib/projections/ui/ScenarioFileBar.svelte";
     import {bucketStart, today} from "#lib/reports/periods.js";
-    import {reportStyles} from "#lib/reports/ui/styles.js";
     import {MAX_COUNT} from "#lib/reports/ui/params.js";
     import {dataView} from "#lib/stores/loadState.js";
     import {journal} from "#lib/stores/journal.svelte.js";
@@ -74,13 +71,13 @@
         mirror.write(search);
     });
 
-    // Account names, styles and declared types come from the journal wire feed;
+    // Account names, styles and account classes come from the journal round;
     // the seed and the projection are native. Never a gate — `formatTotals`
     // falls back per commodity.
     loadJournalWhenReady();
-    const styles = $derived(reportStyles(journal.txns));
-    const declared = $derived(declaredTypes(journal.accountDecls));
-    const commodity = $derived(dominantCommodity(journal.txns));
+    const styles = $derived(journal.reportStyles);
+    const declared = $derived(journal.accountClasses);
+    const commodity = $derived(journal.dominantCommodity);
     const maxDepth = $derived(journal.accountNames.reduce((max, name) => Math.max(max, name.split(":").length), 1));
 
     // --- The scenario --------------------------------------------------------

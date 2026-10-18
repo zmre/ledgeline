@@ -1,20 +1,15 @@
 import {describe, expect, it} from "vitest";
 import {dec, type MixedAmount} from "#lib/domain/money.js";
 import type {Amount, AmountStyle, ISODate, Posting, Transaction, TxnStatus} from "#lib/domain/types.js";
-import type {JournalFilter} from "#lib/stores/filters.svelte.js";
 import {
     accountFlow,
     centerOffset,
-    commodityStyles,
     computeWindow,
-    filteredTotals,
-    filterTxns,
     formatTotals,
     halfPageRows,
     nearestOffset,
     nextStatus,
     periodLabel,
-    sortTxnsDesc,
     txnComments,
     txnFlowAmounts,
 } from "./rowModel";
@@ -40,10 +35,6 @@ interface TxnSpec {
 function txn(index: number, date: ISODate, postings: PostingSpec[], spec: TxnSpec = {}): Transaction {
     const full: Posting[] = postings.map((p) => ({account: p.account, amounts: p.amounts, status: "unmarked", comment: p.comment ?? "", tags: []}));
     const description = spec.description ?? `txn ${index}`;
-    const haystack = [description, spec.comment ?? "", ...postings.flatMap((p) => [p.account, p.comment ?? ""])]
-        .filter((part) => part !== "")
-        .join("\n")
-        .toLowerCase();
     return {
         index,
         date,
@@ -53,11 +44,8 @@ function txn(index: number, date: ISODate, postings: PostingSpec[], spec: TxnSpe
         comment: spec.comment ?? "",
         tags: [],
         postings: full,
-        haystack,
     };
 }
-
-const filter = (over: Partial<JournalFilter> = {}): JournalFilter => ({from: null, to: null, accounts: new Set<string>(), query: "", ...over});
 
 const groceries = txn(
     1,
@@ -67,15 +55,6 @@ const groceries = txn(
         {account: "liabilities:cc:visa", amounts: [usd(-5624)]},
     ],
     {description: "Safeway | weekly groceries"}
-);
-const rent = txn(
-    2,
-    "2026-07-01",
-    [
-        {account: "expenses:housing:rent", amounts: [usd(187500)]},
-        {account: "assets:bank:checking", amounts: [usd(-187500)]},
-    ],
-    {description: "Oakview Properties | rent", comment: "auto-pay"}
 );
 const paycheck = txn(
     3,
@@ -87,76 +66,8 @@ const paycheck = txn(
     ],
     {description: "Acme Corp | paycheck"}
 );
-const sample = [groceries, rent, paycheck];
 
 describe("UNIT rowModel", () => {
-    describe("filterTxns", () => {
-        it("applies the date range inclusively on both ends against txn.date", () => {
-            const hit = filterTxns(sample, filter({from: "2026-07-01", to: "2026-07-03"}));
-            expect(hit.map((t) => t.index).sort()).toEqual([1, 2]);
-            // boundary dates are included
-            expect(filterTxns(sample, filter({from: "2026-06-30", to: "2026-06-30"})).map((t) => t.index)).toEqual([3]);
-            expect(filterTxns(sample, filter({from: "2026-07-02", to: null})).map((t) => t.index)).toEqual([1]);
-            expect(filterTxns(sample, filter({from: null, to: "2026-06-29"}))).toEqual([]);
-        });
-
-        it("matches a txn when ANY posting matches ANY selected account, including subtrees", () => {
-            const bank = filterTxns(sample, filter({accounts: new Set(["assets:bank"])}));
-            expect(bank.map((t) => t.index).sort()).toEqual([2, 3]);
-            // exact account name and prefix-with-colon both match; string prefix alone does not
-            expect(filterTxns(sample, filter({accounts: new Set(["assets:bank:check"])}))).toEqual([]);
-            expect(filterTxns(sample, filter({accounts: new Set(["income:salary"])})).map((t) => t.index)).toEqual([3]);
-        });
-
-        it("treats an empty account selection as all accounts", () => {
-            expect(filterTxns(sample, filter())).toHaveLength(3);
-        });
-
-        it("matches the query case-insensitively against the haystack", () => {
-            expect(filterTxns(sample, filter({query: "SAFEWAY"})).map((t) => t.index)).toEqual([1]);
-            expect(filterTxns(sample, filter({query: "  auto-pay "})).map((t) => t.index)).toEqual([2]);
-            expect(filterTxns(sample, filter({query: "no such thing"}))).toEqual([]);
-            expect(filterTxns(sample, filter({query: "   "}))).toHaveLength(3);
-        });
-
-        it("combines date, account, and query criteria", () => {
-            const hit = filterTxns(sample, filter({from: "2026-07-01", to: "2026-07-31", accounts: new Set(["expenses"]), query: "rent"}));
-            expect(hit.map((t) => t.index)).toEqual([2]);
-        });
-    });
-
-    describe("filteredTotals", () => {
-        it("sums all postings when the selection is empty (balanced txns net to zero)", () => {
-            expect(filteredTotals(sample, new Set()).size).toBe(0);
-        });
-
-        it("sums only postings in the selected accounts (subtree match)", () => {
-            const totals = filteredTotals(sample, new Set(["expenses"]));
-            expect(totals.get("$")?.m).toBe(5624n + 187500n);
-        });
-
-        it("keeps commodities separate and drops zero entries", () => {
-            const fx = txn(9, "2026-07-04", [
-                {account: "assets:cash:usd", amounts: [usd(-10000)]},
-                {account: "assets:cash:eur", amounts: [eur(9000)]},
-            ]);
-            const totals = filteredTotals([fx], new Set(["assets:cash"]));
-            expect(totals.get("$")?.m).toBe(-10000n);
-            expect(totals.get("EUR")?.m).toBe(9000n);
-            const both = filteredTotals([groceries], new Set(["expenses", "liabilities"]));
-            expect(both.size).toBe(0); // +5624 and -5624 cancel
-        });
-    });
-
-    describe("sortTxnsDesc", () => {
-        it("sorts by date descending, then index descending, without mutating the input", () => {
-            const shuffled = [paycheck, groceries, rent, txn(4, "2026-07-01", [{account: "expenses:misc", amounts: [usd(100)]}])];
-            const sorted = sortTxnsDesc(shuffled);
-            expect(sorted.map((t) => t.index)).toEqual([1, 4, 2, 3]);
-            expect(shuffled.map((t) => t.index)).toEqual([3, 1, 2, 4]);
-        });
-    });
-
     describe("accountFlow", () => {
         it("renders source → dest for a simple 2-posting txn", () => {
             expect(accountFlow(groceries)).toEqual({kind: "flow", source: "liabilities:cc:visa", dest: "expenses:food:groceries"});
@@ -227,15 +138,12 @@ describe("UNIT rowModel", () => {
         });
     });
 
-    describe("formatTotals / commodityStyles", () => {
-        it("formats per-commodity lines using the journal's own styles, sorted by commodity", () => {
-            const fx = txn(20, "2026-07-05", [
-                {account: "assets:cash:eur", amounts: [eur(9000)]},
-                {account: "assets:cash:usd", amounts: [usd(-10000)]},
+    describe("formatTotals", () => {
+        it("formats per-commodity lines in each commodity's style, sorted by commodity", () => {
+            const styles = new Map([
+                ["$", usdStyle],
+                ["EUR", eurStyle],
             ]);
-            const styles = commodityStyles([...sample, fx]);
-            expect(styles.get("$")).toBe(usdStyle);
-            expect(styles.get("EUR")).toBe(eurStyle);
             const totals: MixedAmount = new Map([
                 ["EUR", dec(-4500, 2)],
                 ["$", dec(123456, 2)],
@@ -392,15 +300,6 @@ describe("UNIT rowModel", () => {
                 ],
                 {description: `synthetic vendor ${i % 500}`}
             );
-        });
-
-        it("filters + sorts 50k txns quickly (full-scan cost, paid once per filter change)", () => {
-            const start = performance.now();
-            const sorted = sortTxnsDesc(filterTxns(big, filter()));
-            const elapsed = performance.now() - start;
-            expect(sorted).toHaveLength(50_000);
-            expect(sorted[0].date >= sorted[sorted.length - 1].date).toBe(true);
-            expect(elapsed).toBeLessThan(2000); // typically well under 200ms; generous bound for CI noise
         });
 
         it("keeps the rendered-row count independent of total row count at any scroll offset", () => {

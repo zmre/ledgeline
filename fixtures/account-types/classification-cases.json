@@ -1,11 +1,11 @@
 {
   "_comment": [
-    "The shared truth table for account classification. The engine",
-    "(crates/ledgeline-core/src/reports/account_types.rs) and the browser",
-    "(web/src/lib/domain/accountTypes.ts) are two implementations of one",
-    "specification, and BOTH are checked against this file:",
-    "  - crates/ledgeline-core/tests/account_types.rs",
-    "  - web/src/lib/domain/accountTypes.test.ts",
+    "The shared truth table for account classification, resolved by the engine",
+    "(crates/ledgeline-core/src/reports/account_types.rs) and checked by",
+    "crates/ledgeline-core/tests/account_types.rs. Since plan 26 B1 the browser",
+    "no longer resolves declarations: it reads the engine's answer off",
+    "/api/journal `accounts`, and infers only names the engine never saw — so",
+    "web/src/lib/domain/accountClass.test.ts runs the rows with no declarations.",
     "",
     "They must agree, and 'read the same journal differently' is not a cosmetic",
     "defect. An account the browser cannot type falls all the way through to",
