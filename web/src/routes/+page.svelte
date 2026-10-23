@@ -15,7 +15,7 @@
     import {periodLabel} from "#lib/journal/rowModel.js";
     import {editing} from "#lib/stores/editing.svelte.js";
     import {filters} from "#lib/stores/filters.svelte.js";
-    import {journal, startPolling} from "#lib/stores/journal.svelte.js";
+    import {journal} from "#lib/stores/journal.svelte.js";
     import {journalView} from "#lib/stores/journalView.svelte.js";
     import {onServerReady} from "#lib/stores/serverWatch.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
@@ -94,14 +94,6 @@
         if (at === null || at === lastProbedAt) return;
         lastProbedAt = at;
         if (untrack(() => editing.probeError) !== null) void editing.probe();
-    });
-
-    // WP-08: live updates while the journal page is open. startPolling pauses
-    // itself while the tab is hidden; the returned stop fn is the effect cleanup
-    // (runs on unmount and if the server URL changes).
-    $effect(() => {
-        if (settings.serverUrl === null) return;
-        return startPolling();
     });
 </script>
 

@@ -13,7 +13,9 @@
 import {flushSync} from "svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {FLOW_REPORT} from "#lib/testing/flowsFixture.js";
+import {journalInfoBody} from "#lib/testing/fakeEngine.js";
 import {loadFlowsWhenWatched} from "./flows.svelte";
+import {journal} from "./journal.svelte";
 import {settings} from "./settings.svelte";
 
 const QUERY = {from: "2026-01-01", to: "2026-07-08"};
@@ -98,5 +100,30 @@ describe("UNIT flows are fetched only while a panel is watching", () => {
         flushSync();
 
         expect(requested.length).toBe(1);
+    });
+});
+
+describe("UNIT flows follow the journal", () => {
+    it("refetches when the journal changes under the open P&L (a refresh, an edit on disk)", async () => {
+        let generation = "g-1";
+        vi.stubGlobal("fetch", (input: string) => {
+            const url = String(input);
+            requested.push(url);
+            const body = url.endsWith("/version") ? "1.52" : url.endsWith("/api/journal") ? journalInfoBody({generation}) : FLOW_REPORT;
+            return Promise.resolve(new Response(JSON.stringify(body), {status: 200, headers: {"Content-Type": "application/json"}}));
+        });
+        await journal.refresh({force: true});
+        watch(() => "is");
+        const flowsAsked = (): number => requested.filter((url) => url.includes("/flows")).length;
+        const before = flowsAsked();
+
+        await journal.refresh({force: true});
+        flushSync();
+        expect(flowsAsked(), "the same snapshot again is not a change").toBe(before);
+
+        generation = "g-2";
+        await journal.refresh({force: true});
+        flushSync();
+        expect(flowsAsked()).toBe(before + 1);
     });
 });

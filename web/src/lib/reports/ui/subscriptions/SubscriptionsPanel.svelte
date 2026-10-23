@@ -10,6 +10,7 @@
      branch first, a failed reload left yesterday's detected subscriptions on
      screen with nothing to say so (FE-5). -->
 <script lang="ts">
+    import {journal} from "#lib/stores/journal.svelte.js";
     import AsyncSection from "#lib/components/AsyncSection.svelte";
     import type {AmountStyle} from "#lib/domain/types.js";
     import {today} from "#lib/reports/periods.js";
@@ -18,7 +19,9 @@
 
     let {serverUrl, styles, base = "$"}: {serverUrl: string | null; styles: ReadonlyMap<string, AmountStyle>; base?: string} = $props();
 
+    // Refetched when the journal changes (a refresh, an edit on disk), too.
     $effect(() => {
+        void journal.changes;
         const url = serverUrl;
         if (url === null) return;
         void subscriptions.load(url, today());

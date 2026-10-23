@@ -4,6 +4,7 @@
      bound to the shared ReportParams (insStart/insEnd) so it round-trips in the
      URL like the other tabs. -->
 <script lang="ts">
+    import {journal} from "#lib/stores/journal.svelte.js";
     import AsyncSection from "#lib/components/AsyncSection.svelte";
     import {maIsZero, sub, toNumber, type Dec} from "#lib/domain/money.js";
     import type {AmountStyle} from "#lib/domain/types.js";
@@ -19,8 +20,10 @@
 
     let {params = $bindable(), serverUrl, styles}: {params: ReportParams; serverUrl: string | null; styles: ReadonlyMap<string, AmountStyle>} = $props();
 
-    // Refetch whenever the span changes (or the server is first configured).
+    // Refetch whenever the span changes, the server is first configured, or the
+    // journal changes (a refresh, an edit on disk).
     $effect(() => {
+        void journal.changes;
         const url = serverUrl;
         if (url === null) return;
         void insights.load(url, {start: params.insStart, end: params.insEnd});
