@@ -15,8 +15,9 @@ use crate::model::{
     Posting, PostingType, PriceDirective, SourcePos, Status, Transaction,
 };
 use crate::reports::{
-    ACCOUNT_TYPE_TAG, AccountClass, AccountType, BS_TERM_TAG, BsTerm, IS_SECTION_TAG,
-    account_classes, parse_account_type_tag, parse_bs_term_tag, parse_is_section_tag,
+    ACCOUNT_TYPE_TAG, AccountClass, AccountType, AccountTypes, BS_TERM_TAG, BsTerm, IS_SECTION_TAG,
+    account_classes, account_decls, parse_account_type_tag, parse_bs_term_tag,
+    parse_is_section_tag,
 };
 use crate::title::{journal_title, main_file_name};
 use serde::Serialize;
@@ -597,8 +598,55 @@ const CLOSED_TAGS: [ClosedTag; 5] = [
 /// An EMPTY value (`; issection:`) is not a finding. It already means "no
 /// declaration" to every one of the five readers, and a warning about a value
 /// the user never wrote would be noise.
+///
+/// After those come the readable `issection:` tags that are ignored anyway,
+/// because they sit on a balance-sheet account (see
+/// [`balance_sheet_section_diagnostics`]).
 #[must_use]
 pub fn journal_to_tag_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
+    let mut findings = unreadable_tag_diagnostics(journal);
+    findings.extend(balance_sheet_section_diagnostics(journal));
+    findings
+}
+
+/// An `issection:` on an account whose effective type is asset, liability or
+/// equity, one warning each.
+///
+/// The P&L never shows such an account (see
+/// [`income_statement_grouped`](crate::reports::income_statement_grouped)'s
+/// section resolution), so the tag does nothing. It is still worth saying,
+/// because the tag means the user expected the account to be on the P&L, and
+/// the usual case is a contra-asset tagged to sit beside the expense it
+/// offsets. Showing it there cancelled that expense out of net income.
+fn balance_sheet_section_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
+    let types = AccountTypes::new(&account_decls(journal));
+    journal
+        .accounts
+        .iter()
+        .filter(|decl| {
+            decl.tags
+                .iter()
+                .any(|(key, value)| key == IS_SECTION_TAG && parse_is_section_tag(value).is_some())
+                && types.is_balance_sheet(&decl.name.0)
+        })
+        .map(|decl| WireDiagnostic {
+            txn_index: None,
+            account: Some(decl.name.0.clone()),
+            rule: "account-tag",
+            severity: DIAGNOSTIC_WARNING,
+            message: format!(
+                "account '{}' declares `{IS_SECTION_TAG}:` but is a balance-sheet account; \
+                 the tag is ignored and the account stays off the income statement, which \
+                 shows only revenue and expense accounts",
+                decl.name.0
+            ),
+        })
+        .collect()
+}
+
+/// [`journal_to_tag_diagnostics`]' first half: closed-vocabulary values that
+/// cannot be read.
+fn unreadable_tag_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
     journal
         .accounts
         .iter()

@@ -415,6 +415,18 @@ impl AccountTypes {
         is_category(self.resolve(account), category)
     }
 
+    /// True when `account`'s effective type belongs on the balance sheet: an
+    /// asset (cash included), a liability, or equity (conversion included).
+    pub fn is_balance_sheet(&self, account: &str) -> bool {
+        [
+            AccountType::Asset,
+            AccountType::Liability,
+            AccountType::Equity,
+        ]
+        .into_iter()
+        .any(|category| self.is_type(account, category))
+    }
+
     /// True when `account`'s effective type is Cash — the [`cash_predicate`]
     /// test, answered from the memo.
     pub fn is_cash(&self, account: &str) -> bool {

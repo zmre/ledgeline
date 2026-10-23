@@ -71,6 +71,8 @@ An `account` directive uses one of Ledgeline's account tags with a value it does
 
 The `valuation:` case matters most, because a zero gain looks like a holding that hasn't moved. Fix the spelling in the `account` directive. An empty value (`; bsterm:`) counts as no tag and is not reported.
 
+The same warning appears for a correctly spelled `issection:` on an asset, liability or equity account. The income statement only shows revenue and expense accounts, so the tag is ignored. Remove it, and tag the matching expense or revenue account instead.
+
 The tags are explained on [Accounts](../settings/accounts.md), [Balance sheet](../reports/balance-sheet.md), [Income statement](../reports/income-statement.md) and [Holdings](../holdings/index.md).
 
 ### Stock checks

@@ -297,8 +297,15 @@ fn documented_synonyms_are_not_findings() {
         ("type", "C"),
         ("issection", "  OPEX  "),
     ] {
+        // `issection:` on `assets:house` is its own finding (a balance-sheet
+        // account is never on the P&L), so that one is asked of an expense.
+        let text = if tag == "issection" {
+            format!("account expenses:office  ; {tag}: {value}\n")
+        } else {
+            one_bad(tag, value)
+        };
         assert!(
-            messages(&one_bad(tag, value)).is_empty(),
+            messages(&text).is_empty(),
             "`{tag}: {value}` is accepted by the parser and must not warn"
         );
     }
@@ -563,4 +570,30 @@ fn an_unreadable_valuation_role_falls_back_to_cost() {
         ValuationRole::Cost
     );
     assert_eq!(tag_diagnostics(&bad).len(), 1);
+}
+
+#[test]
+fn issection_on_a_balance_sheet_account_is_reported_as_ignored() {
+    let message = only_message(
+        "account assets:fixed:accum-depreciation  ; type: A, isgroup: Depr & Amort, \
+         issection: other, valuation: depreciation\n\
+         account expenses:depreciation  ; type: X, issection: other\n",
+    );
+    assert!(
+        message.contains("'assets:fixed:accum-depreciation'"),
+        "{message}"
+    );
+    assert!(message.contains("balance-sheet account"), "{message}");
+    assert!(
+        message.contains("stays off the income statement"),
+        "{message}"
+    );
+}
+
+#[test]
+fn issection_on_an_inferred_liability_is_reported_too() {
+    // No `type:` at all: `liabilities:` infers Liability, and the P&L skips it
+    // just the same, so the warning has to follow the same resolution.
+    let message = only_message("account liabilities:deferred  ; issection: revenue\n");
+    assert!(message.contains("'liabilities:deferred'"), "{message}");
 }

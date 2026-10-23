@@ -88,6 +88,15 @@ Both tags **inherit to sub-accounts**, exactly like `type:` does, so tagging
 an `isgroup:` value share a line, even if they live in unrelated parts of the
 tree.
 
+**Balance-sheet accounts never appear here**, whatever they are tagged. An
+account whose type is asset, liability or equity (declared or inferred from its
+name) is left off the income statement even with an `issection:` tag, and
+[Problems](../journal/problems.md#unknown-account-tag-value) warns about the tag.
+The usual case is a contra-asset such as accumulated depreciation. Its credits
+mirror the depreciation expense, so showing it in the same box would cancel that
+expense out of net income. Tag the expense account; the balance sheet shows the
+contra-asset.
+
 An `issection:` value that isn't one of the seven codes is an **error**: the
 report fails, naming the account, the value you wrote and the seven codes it
 could have been. It is not silently ignored — a mistyped classification tag is
