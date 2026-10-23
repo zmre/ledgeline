@@ -137,7 +137,7 @@ test("projections: all three readings render, and the runway is stated in words"
     await expect(page.getByTestId("projection-net")).toBeVisible();
     await expect(page.getByTestId("projection-flow-chart")).toBeVisible();
 
-    await page.getByRole("tab", {name: "Cash & runway"}).click();
+    await page.getByRole("tab", {name: "Runway"}).click();
     await expect(page.getByTestId("projection-cash")).toBeVisible();
     // The question the tab exists for, answered above the picture of it.
     await expect(page.getByTestId("projection-runway")).toContainText(/Cash (turns negative in|never turns negative)/);

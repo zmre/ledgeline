@@ -20,9 +20,11 @@
 // a chart emits in a 0x0 box is meaningless.
 
 import {fireEvent, render, screen} from "@testing-library/svelte";
-import {describe, expect, it} from "vitest";
+import {tick} from "svelte";
+import {afterEach, describe, expect, it} from "vitest";
 import {dec, type MixedAmount} from "#lib/domain/money.js";
 import type {AmountStyle} from "#lib/domain/types.js";
+import {keymap} from "#lib/keys/keymap.svelte.js";
 import {DEFAULT_AMOUNT_STYLE} from "#lib/format/amounts.js";
 import type {PeriodReport} from "#lib/reports/types.js";
 import type {Projection} from "../types";
@@ -163,12 +165,31 @@ describe("COMPONENT ProjectionReports — net worth", () => {
 });
 
 describe("COMPONENT ProjectionReports — the tab strip", () => {
+    afterEach(() => keymap.reset());
+
     it("switches which reading is on screen", async () => {
         mount("net");
         expect(screen.queryByTestId("projection-cash")).toBeNull();
-        await fireEvent.click(screen.getByRole("tab", {name: "Cash & runway"}));
+        await fireEvent.click(screen.getByRole("tab", {name: "Runway"}));
         expect(screen.getByTestId("projection-cash")).toBeDefined();
         expect(screen.queryByTestId("projection-net")).toBeNull();
+    });
+
+    it("binds one digit per reading, in tab order, filed under Projections in `?`", async () => {
+        mount("net");
+        const press = async (key: string) => {
+            keymap.handle(new KeyboardEvent("keydown", {key, cancelable: true}));
+            await tick();
+        };
+        await press("2");
+        expect(screen.getByTestId("projection-cash")).toBeDefined();
+        await press("3");
+        expect(screen.getByTestId("projection-worth")).toBeDefined();
+        await press("1");
+        expect(screen.getByTestId("projection-net")).toBeDefined();
+
+        const section = keymap.help.find((s) => s.group === "Projections");
+        expect(section?.rows.map((b) => `${b.keys} ${b.label}`)).toEqual(["1 Net income", "2 Runway", "3 Net worth"]);
     });
 
     it("marks the active tab for a screen reader, not only with a class", () => {

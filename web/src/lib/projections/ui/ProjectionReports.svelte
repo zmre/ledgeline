@@ -6,7 +6,7 @@
        negative — which is the opposite of `/api/reports/incomestatement` and is
        exactly what the flow chart under it wants. Nothing here re-signs it; the
        chart is handed magnitudes because `PeriodFlowChart` owns the sign.
-     - CASH & RUNWAY answers the question the tab exists for, and answers it in
+     - RUNWAY answers the question the tab exists for, and answers it in
        WORDS above the chart. A crossing point a reader has to find by eye on a
        line is not an answer to "when do I run out".
      - NET WORTH is one line, with the opening balance named beside the heading
@@ -29,6 +29,8 @@
     import type {AmountStyle} from "#lib/domain/types.js";
     import {styleOf} from "#lib/format/amounts.js";
     import {formatChartValue, formatCompactChartValue} from "#lib/insights/series.js";
+    import {registerKeys} from "#lib/keys/keymap.svelte.js";
+    import {PRIORITY} from "#lib/keys/types.js";
     import ReportTable from "#lib/reports/ui/ReportTable.svelte";
     import type {PeriodInterval} from "#lib/reports/ui/params.js";
     import {PROJECTION_TABS, PROJECTION_TAB_LABELS, type ProjectionTab} from "../params";
@@ -63,6 +65,20 @@
     const statement = $derived(runwayStatement(projection, interval, commodity, format));
     const unchartedCommodities = $derived(otherCommodities(projection, commodity));
     const contributions = $derived(assetContributions(projection, commodity));
+
+    // Digits, as on the Reports and Holdings strips: page-local, so they appear
+    // in `?` only while this strip is mounted. Like every key they are ignored
+    // while focus is in a field, and most of this page is fields.
+    registerKeys({
+        id: "projection-tabs",
+        priority: PRIORITY.page,
+        bindings: PROJECTION_TABS.map((t, at) => ({
+            keys: String(at + 1),
+            label: PROJECTION_TAB_LABELS[t],
+            group: "Projections" as const,
+            run: () => (tab = t),
+        })),
+    });
     const grownTotal = $derived(contributions.reduce((sum, row) => sum + row.growth, 0));
 </script>
 

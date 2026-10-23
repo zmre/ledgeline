@@ -23,7 +23,7 @@ export const PROJECTION_TABS: readonly ProjectionTab[] = ["net", "cash", "worth"
 
 export const PROJECTION_TAB_LABELS: Record<ProjectionTab, string> = {
     net: "Net income",
-    cash: "Cash & runway",
+    cash: "Runway",
     worth: "Net worth",
 };
 

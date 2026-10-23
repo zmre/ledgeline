@@ -7,11 +7,13 @@ tags: [projections]
 
 # Projections
 
-The Projections tab asks one question — *if things carry on like this, when does
-the cash run out?* — and lets you argue with the answer. The top half is an
+The Projections tab asks one question — _if things carry on like this, when does
+the cash run out?_ — and lets you argue with the answer. The top half is an
 editable what-if table, seeded from your budget plus whatever your budget does
 not cover. The bottom half is that table read forward in time as net income,
-cash and net worth.
+runway and net worth. Press <kbd>g</kbd> <kbd>p</kbd> to get here from anywhere,
+and <kbd>1</kbd> to <kbd>3</kbd> to switch between those readings (see
+[Keyboard shortcuts](../journal/keyboard.md)).
 
 A scenario is **an ordinary hledger journal file that nothing includes**, so it
 can be edited in your own editor, diffed, committed, and read by `hledger`
