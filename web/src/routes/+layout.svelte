@@ -12,7 +12,7 @@
     import {keymap, registerKeys} from "#lib/keys/keymap.svelte.js";
     import {globalLayer} from "#lib/keys/navBindings.js";
     import {localToday} from "#lib/stores/filters.svelte.js";
-    import {journal} from "#lib/stores/journal.svelte.js";
+    import {journal, startPolling} from "#lib/stores/journal.svelte.js";
     import {problems} from "#lib/stores/problems.svelte.js";
     import {refreshEverything} from "#lib/stores/refreshAll.js";
     import {onServerReady} from "#lib/stores/serverWatch.svelte.js";
@@ -64,6 +64,18 @@
         lastVerified = nonce;
         reconnectOpen = false;
         if (settings.serverUrl !== null) void journal.refresh({force: true});
+    });
+
+    // WP-08: live updates on EVERY screen. This used to run on the journal page
+    // only, so a report, holdings or budget screen never heard that the file
+    // had changed on disk and kept showing the old figures until you left and
+    // came back. A round is one small `/api/journal` request the engine answers
+    // from its snapshot; a changed generation is what makes each screen refetch
+    // (`journal.changes`). startPolling pauses while the window is hidden; the
+    // returned stop fn is the effect cleanup (runs if the server URL changes).
+    $effect(() => {
+        if (settings.serverUrl === null) return;
+        return startPolling();
     });
 
     // The problems badge is always on screen, so its list is fetched HERE, once

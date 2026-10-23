@@ -26,6 +26,7 @@
     import HoldingsStats from "#lib/holdings/ui/HoldingsStats.svelte";
     import HoldingsTable from "#lib/holdings/ui/HoldingsTable.svelte";
     import HoldingsTabs from "#lib/holdings/ui/HoldingsTabs.svelte";
+    import {chartColors} from "#lib/format/chartColors.svelte.js";
     import HoldingsTrend from "#lib/holdings/ui/HoldingsTrend.svelte";
     import StocksTrend from "#lib/holdings/ui/StocksTrend.svelte";
     import OtherHoldingsTable from "#lib/holdings/ui/OtherHoldingsTable.svelte";
@@ -58,10 +59,18 @@
     // restarted on the same port), and keying on the URL alone meant this page
     // never retried after one (FE-5d). The TAB is deliberately absent from this
     // key: it is not part of the scope, so clicking a tab refetches nothing.
-    const loadKey = $derived({url: settings.serverUrl, nonce: settings.serverNonce, scope: holdingsScope.value});
+    // `journal.changes`: a refresh or a change on disk redraws what is on screen.
+    const loadKey = $derived({url: settings.serverUrl, nonce: settings.serverNonce, changes: journal.changes, scope: holdingsScope.value});
     $effect(() => {
         const {url, scope} = loadKey;
         if (url !== null) void holdingsData.load(url, scope);
+    });
+    // Which symbols need a quote follows the journal's commodities and prices,
+    // so re-read it when the journal changes. Never at mount: `ensureStatus`
+    // above already does that.
+    $effect(() => {
+        const changed = journal.changes > 0;
+        if (changed && settings.serverUrl !== null) void pricesStore.reloadStatus(settings.serverUrl);
     });
 
     // The "Update prices" button's status (which symbols need a quote, where a
@@ -247,8 +256,11 @@
                          the stock series' wire shape byte for byte, which is exactly
                          why the engine reuses it. -->
                         {#if otherTrend !== null}
+                            <!-- The palette's first colour: this tab has no benchmark
+                                 lines competing for it, unlike Stocks. -->
                             <HoldingsTrend
                                 trend={otherTrend}
+                                color={chartColors.categorical[0]}
                                 period={otherHoldingsData.scope?.gainPeriod ?? gainPeriod}
                                 formatValue={formatTrendValue}
                                 formatAxis={formatTrendAxis}

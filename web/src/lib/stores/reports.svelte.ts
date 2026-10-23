@@ -6,8 +6,8 @@
 // the very first load shows a spinner).
 
 import {LedgelineApi} from "#lib/api/native.js";
-import {decodeBalanceSheetReport, decodeIncomeStatementReport, decodePeriodReport} from "#lib/api/nativeDecode.js";
-import type {BalanceSheetReport, IncomeStatementReport, PeriodReport, SectionedReport} from "#lib/reports/types.js";
+import {decodeBalanceSheetReport, decodeCashFlowStatement, decodeIncomeStatementReport, decodePeriodReport} from "#lib/api/nativeDecode.js";
+import type {BalanceSheetReport, CashFlowStatement, IncomeStatementReport, PeriodReport, SectionedReport} from "#lib/reports/types.js";
 import type {ReportInterval, ReportParams} from "#lib/reports/ui/params.js";
 import type {LoadStatus} from "./loadState";
 import {createResource} from "./resource.svelte";
@@ -20,7 +20,7 @@ import {createResource} from "./resource.svelte";
  * goldens decode into, and removing it from the union would make the page's
  * `"kind" in current` narrowing vacuous rather than meaningful.
  */
-export type AnyReport = SectionedReport | PeriodReport | BalanceSheetReport | IncomeStatementReport;
+export type AnyReport = SectionedReport | PeriodReport | BalanceSheetReport | IncomeStatementReport | CashFlowStatement;
 
 /** The exact query for one tab — only the fields that endpoint honors, so the fetch effect refires minimally. */
 export type ReportQuery =
@@ -106,7 +106,9 @@ async function fetchReport(api: LedgelineApi, query: ReportQuery): Promise<AnyRe
                 })
             );
         case "cf":
-            return decodePeriodReport(await api.cashFlow({from: query.from, to: query.to, interval: query.interval, depth: query.depth}));
+            // The statement of cash flows (plans/27): net income, adjusted by every
+            // non-cash balance-sheet change, reconciled to cash.
+            return decodeCashFlowStatement(await api.cashFlow({from: query.from, to: query.to, interval: query.interval, depth: query.depth}));
         case "nw":
             return decodePeriodReport(await api.netWorth({end: query.end, interval: query.interval, count: query.count, depth: query.depth}));
     }

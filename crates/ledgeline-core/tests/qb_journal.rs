@@ -252,6 +252,50 @@ fn a_memo_belongs_to_its_posting_and_not_to_the_transaction() {
     );
 }
 
+/// `revenue-recognition.xlsx`: one Journal Entry, two accounts, and a customer
+/// per line pair named only in that line's Description. Every row has to come
+/// through as its own posting with its own memo, including the pairs written
+/// credit-first.
+#[test]
+fn a_revenue_recognition_entry_keeps_one_posting_and_one_memo_per_row() {
+    let journal = parse("revenue-recognition.xlsx");
+    let [entry] = &journal.transactions[..] else {
+        panic!("one group, one transaction");
+    };
+    assert_eq!(entry.id, "7720");
+    assert_eq!(entry.name, None, "Name is blank on every row");
+    let rows: Vec<(&str, Dec, Option<&str>)> = entry
+        .postings
+        .iter()
+        .map(|posting| {
+            (
+                posting.account.as_str(),
+                posting.amount,
+                posting.memo.as_deref(),
+            )
+        })
+        .collect();
+    let deferred = "2500 Deferred Revenue";
+    let sales = "4000 Sales:4400 Hybrid Cloud Enterprise";
+    assert_eq!(
+        rows,
+        [
+            (
+                deferred,
+                dec("12000.5"),
+                Some("Recognized Fernhill Revenue")
+            ),
+            (sales, dec("-12000.5"), Some("Recognized Fernhill Revenue")),
+            (deferred, dec("7500"), Some("Recognized Larkspur Revenue")),
+            (sales, dec("-7500"), Some("Recognized Larkspur Revenue")),
+            (sales, dec("-815.25"), Some("Recognize Quillon Revenue")),
+            (deferred, dec("815.25"), Some("Recognize Quillon Revenue")),
+            (sales, dec("-3100"), Some("Tamberlane")),
+            (deferred, dec("3100"), Some("Tamberlane")),
+        ]
+    );
+}
+
 #[test]
 fn the_total_rows_seventeen_stored_digits_are_read_as_the_cent_value() {
     // `many-postings.xlsx` stores its total as `70120.850000000006`, which is

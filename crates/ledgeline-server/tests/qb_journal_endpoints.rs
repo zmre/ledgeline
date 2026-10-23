@@ -636,6 +636,91 @@ async fn a_hand_edited_transaction_is_reported_conflicting_and_never_overwritten
     );
 }
 
+/// The opt-in half of the policy above: with `updateChanged`, a transaction
+/// QuickBooks now shows differently is replaced in place with the export's
+/// version. Its status and header comment are not something QuickBooks
+/// exports, so they survive the replacement.
+#[tokio::test]
+async fn update_changed_replaces_a_changed_transaction_and_keeps_its_status_and_note() {
+    let tree = Tree::bare();
+    let id = staged(&tree, "simple.xlsx").await;
+    map_every_unmapped_account(&tree, &id).await;
+
+    let (status, first) = post(
+        &tree,
+        "/api/import/qb-journal/commit",
+        json!({ "stageId": id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+
+    // The journal's copy differs from the export (an older amount), and was
+    // since marked cleared with a note beside its id.
+    let edited = tree.journal_text().replace("74999.71", "70000.00").replace(
+        "Ridgeline Partners, LP  ; id: 441",
+        "* Ridgeline Partners, LP  ; id: 441, checked",
+    );
+    assert!(edited.contains("; id: 441, checked"), "{edited}");
+    std::fs::write(tree.dir.path().join("main.journal"), &edited).expect("hand-edit");
+    tree.state
+        .rebind_editor(tree.dir.path().join("main.journal"))
+        .expect("rebind after the external edit");
+
+    let (status, second) = post(
+        &tree,
+        "/api/import/qb-journal/commit",
+        json!({ "stageId": id, "updateChanged": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(second["imported"], 0);
+    assert_eq!(second["updated"], 1, "{second}");
+    assert_eq!(second["idMatches"]["conflictingTotal"], 1);
+
+    let text = tree.journal_text();
+    assert!(
+        text.contains("74999.71"),
+        "the export's amount is back: {text}"
+    );
+    assert!(!text.contains("70000.00"), "{text}");
+    assert!(
+        text.contains("* Ridgeline Partners, LP  ; id: 441, checked"),
+        "status and note survive: {text}"
+    );
+    assert_eq!(
+        text.matches("id: 441").count(),
+        1,
+        "replaced, not duplicated"
+    );
+
+    // Only the status now differs, which an update keeps, so a second run
+    // has nothing to replace.
+    let (status, third) = post(
+        &tree,
+        "/api/import/qb-journal/commit",
+        json!({ "stageId": id, "updateChanged": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{third}");
+    assert_eq!(third["updated"], 0, "{third}");
+    assert_eq!(tree.journal_text(), text);
+}
+
+#[tokio::test]
+async fn update_changed_defaults_to_off() {
+    let tree = Tree::bare();
+    let id = staged(&tree, "simple.xlsx").await;
+    map_every_unmapped_account(&tree, &id).await;
+    let (status, first) = post(
+        &tree,
+        "/api/import/qb-journal/commit",
+        json!({ "stageId": id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert_eq!(first["updated"], 0);
+}
+
 // ===========================================================================
 // ordering
 // ===========================================================================

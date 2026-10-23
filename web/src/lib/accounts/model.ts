@@ -43,12 +43,14 @@ export interface SpecialTagSpec {
  * Every special tag this app's reports classify accounts by, in the order
  * they read most naturally as a form: what the account fundamentally IS
  * (`type`), which statement box and line it lands in (`issection`/`isgroup`
- * for the income statement, `bsgroup`/`bsterm` for the balance sheet), then
- * the holdings-specific pair.
+ * for the income statement, `bsgroup`/`bsterm` for the balance sheet,
+ * `cfsection`/`cfgroup` for the cash flow statement), then the
+ * holdings-specific pair.
  *
  * Sourced from `reports/account_types.rs::parse_account_type_tag`,
  * `reports/income_statement.rs::parse_is_section_tag`,
  * `reports/account_groups.rs::parse_bs_term_tag`,
+ * `reports/cash_flow_statement.rs::parse_cf_section_tag`,
  * `holdings/classify.rs::parse_holdings_tag` and `::parse_valuation_tag`.
  */
 export const SPECIAL_TAGS: readonly SpecialTagSpec[] = [
@@ -105,6 +107,24 @@ export const SPECIAL_TAGS: readonly SpecialTagSpec[] = [
             {value: "current", label: "Current"},
             {value: "noncurrent", label: "Non-current"},
         ],
+    },
+    {
+        key: "cfsection",
+        label: "Cash flow section",
+        help: "Which section of the cash flow statement this balance-sheet account's change lands in. Unset, it follows the account's type and term.",
+        kind: "closed",
+        options: [
+            {value: "operating", label: "Operating"},
+            {value: "investing", label: "Investing"},
+            {value: "financing", label: "Financing"},
+            {value: "cash", label: "Cash (counts as cash)"},
+        ],
+    },
+    {
+        key: "cfgroup",
+        label: "Cash flow line",
+        help: "The label this account prints under on the cash flow statement — free text. Accounts sharing a label share a line.",
+        kind: "free",
     },
     {
         key: "holdings",

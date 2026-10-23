@@ -15,7 +15,7 @@ Every route below is token-guarded and gzip'd like the rest of `/api`, carries t
 
 | Route | Answers |
 |---|---|
-| `GET /api/journal` | Which journal is open, its account names with their types and terms, styles, and the snapshot `generation`. The SPA polls it every 30 seconds; a new generation means every view below is stale. |
+| `GET /api/journal` | Which journal is open, its account names with their types and terms, styles, and the snapshot `generation`. The SPA polls it every 5 seconds from the root layout, on every screen; a new generation means every view below is stale. |
 | `GET /api/journal/rows?from&to&accounts&q&offset&limit&order&today` | One window of the filtered journal, newest first (`order=asc` reverses it), at most 1,000 rows. Each row is the domain transaction the row components render, with its problem `flags`. Also returns `total`, the whole filtered count. |
 | `GET /api/journal/summary?<filter>` | The filtered count, the footer's visible net, each commodity's income/expenses/net with its style and categories, the commodities ranked by use, and the deepest account. |
 | `GET /api/journal/chart?<filter>&mode&depth&commodity&category&interval&max` | The insights pie or line for one commodity, plus `groups`, the order colours are assigned from. |

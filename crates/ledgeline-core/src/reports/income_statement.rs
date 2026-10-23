@@ -754,6 +754,9 @@ pub(super) fn section_resolver<'a>(
     types: &'a AccountTypes,
 ) -> impl Fn(&str) -> Option<IsSectionKind> + 'a {
     move |account: &str| {
+        if types.is_balance_sheet(account) {
+            return None;
+        }
         nearest_declared(sections, account).copied().or_else(|| {
             if types.is_type(account, AccountType::Revenue) {
                 Some(IsSectionKind::Revenue)
@@ -830,6 +833,11 @@ fn build_groups<A>(
 ///
 /// # Section resolution — first match wins
 ///
+/// 0. An account whose effective type is a balance-sheet one (asset,
+///    liability, equity) is never on this statement, whatever it is tagged.
+///    A contra-asset such as accumulated depreciation tagged `issection:` used
+///    to land in its box beside the expense it offsets. The two cancelled, and
+///    depreciation silently dropped out of net income.
 /// 1. `issection:` on the account itself.
 /// 2. `issection:` on the nearest declared ANCESTOR (it inherits, like `type:`).
 /// 3. Effective account type is `Revenue` → `revenue`.

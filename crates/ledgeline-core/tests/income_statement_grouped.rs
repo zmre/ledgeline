@@ -1549,3 +1549,85 @@ fn valuation_cannot_move_an_account_between_boxes_or_lines() {
     assert_eq!(membership(Valuation::Market), membership(Valuation::Cost));
     assert_eq!(membership(Valuation::Market), membership(Valuation::None));
 }
+
+// ===========================================================================
+// A balance-sheet account tagged `issection:` stays off the statement
+// ===========================================================================
+
+/// The reported shape: depreciation booked as a debit to an expense and a
+/// credit to accumulated depreciation, a contra-asset, with BOTH accounts
+/// tagged `issection: other`. The contra-asset used to land in the box beside
+/// the expense, showing a positive "Depr & Amort" line. It cancelled the
+/// expense, so net income left depreciation out entirely, which is what
+/// QuickBooks disagreed with.
+const CONTRA_ASSET_TAGGED: &str = "\
+account revenue:sales  ; type: R
+account expenses:depreciation  ; type: X, isgroup: Other Expenses, issection: other
+account assets:fixed:accum-depreciation  ; type: A, isgroup: Depr & Amort, issection: other, valuation: depreciation
+
+2025-01-10 Sale
+    assets:bank  $1000.00
+    revenue:sales
+
+2025-01-15 Depreciation
+    expenses:depreciation  $401.97
+    assets:fixed:accum-depreciation  $-401.97
+";
+
+#[test]
+fn a_contra_asset_tagged_issection_stays_off_the_income_statement() {
+    let journal = parse_journal(CONTRA_ASSET_TAGGED, "t.journal").expect("parses");
+    for value in BASES {
+        let report = report(&journal, "2025-01-01", "2025-12-31", value, false);
+        assert_eq!(
+            report.group_names(IsSectionKind::Other),
+            [("Other Expenses".to_string(), GroupSource::Tag)],
+            "only the expense is on the statement ({value:?})"
+        );
+        assert_amounts(
+            &report.section(IsSectionKind::Other).total,
+            -40_197,
+            None,
+            "Other income & expense reads as a net expense",
+        );
+        assert_amounts(
+            &report.net_income,
+            100_000 - 40_197,
+            None,
+            "net income is reduced by depreciation",
+        );
+    }
+}
+
+#[test]
+fn issection_on_liability_and_equity_accounts_is_ignored_too() {
+    let journal = parse_journal(
+        "\
+account revenue:sales  ; type: R
+account liabilities:deferred  ; type: L, issection: revenue
+account equity:owner  ; type: E, issection: other
+
+2025-01-10 Prepaid, then recognized
+    assets:bank  $500.00
+    liabilities:deferred  $-500.00
+
+2025-02-10 Recognize
+    liabilities:deferred  $200.00
+    revenue:sales  $-200.00
+
+2025-03-01 Owner draw
+    equity:owner  $50.00
+    assets:bank
+",
+        "t.journal",
+    )
+    .expect("parses");
+    let report = report(&journal, "2025-01-01", "2025-12-31", Valuation::None, false);
+    assert_eq!(report.kinds(), [IsSectionKind::Revenue]);
+    assert_amounts(
+        &report.net_income,
+        20_000,
+        None,
+        "only the recognized revenue",
+    );
+}

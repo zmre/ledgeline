@@ -79,6 +79,7 @@ const ALIASES = {
 
 const COMMIT = {
     imported: 2,
+    updated: 0,
     idMatches: {new: 2, unchanged: 0, conflicting: [], conflictingTotal: 0},
     ordering: {
         inOrder: false,
@@ -207,11 +208,21 @@ describe("UNIT qbJournalStore — commit", () => {
         expect(store.commitResult?.ordering.files[0]?.inOrder).toBe(false);
     });
 
-    it("sends only the stage id — no journalId, per the pipeline's own contract", async () => {
+    it("sends only the stage id and the update choice — no journalId, per the pipeline's own contract", async () => {
         const {store, fetchMock} = await freshStore({"/api/import/qb-journal/commit": COMMIT});
         await store.commitStage("http://engine.test", "s1");
 
-        expect(bodyOf(fetchMock, "/api/import/qb-journal/commit")).toEqual({stageId: "s1"});
+        expect(bodyOf(fetchMock, "/api/import/qb-journal/commit")).toEqual({stageId: "s1", updateChanged: false});
+    });
+
+    it("updating changed rows is off by default and sent when chosen", async () => {
+        const {store, fetchMock} = await freshStore({"/api/import/qb-journal/commit": {...COMMIT, updated: 1}});
+        expect(store.updateChanged).toBe(false);
+        store.setUpdateChanged(true);
+        await store.commitStage("http://engine.test", "s1");
+
+        expect(bodyOf(fetchMock, "/api/import/qb-journal/commit")).toEqual({stageId: "s1", updateChanged: true});
+        expect(store.commitResult?.updated).toBe(1);
     });
 
     it("surfaces the 400 refusal naming unmapped accounts as an error, not a thrown crash", async () => {

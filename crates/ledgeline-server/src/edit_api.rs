@@ -678,6 +678,15 @@ fn apply_statuses(
     Ok(())
 }
 
+/// One replacement chosen by [`add_and_replace_transactions`]' `replace`: the
+/// transaction to overwrite, what to write over it, and a label naming it in
+/// an error.
+pub(crate) struct Replacement {
+    pub(crate) index: Tindex,
+    pub(crate) transaction: Transaction,
+    pub(crate) label: String,
+}
+
 /// Add several transactions in one edit, saving once.
 ///
 /// The QuickBooks Journal import's write step (WP-17): calls
@@ -719,15 +728,36 @@ fn apply_statuses(
 /// [`ledgeline_core::EditError::BulkTransaction`] deliberately does NOT wrap
 /// (see its own docs). Those fall back to a "batch of N" framing instead of
 /// naming one row.
-pub(crate) fn add_transactions(
+///
+/// # Replacing, in the same edit
+///
+/// After the additions, `replace` picks existing transactions to overwrite in
+/// place (the QuickBooks import's opt-in "update changed entries"). Both
+/// happen under ONE editor lock and are saved ONCE, so a failure anywhere
+/// leaves the file exactly as it was. `replace` is handed the journal the editor holds AFTER the additions, for
+/// [`set_statuses`]' reason: the additions have just shifted every file-order
+/// index after their insertion points, so the caller resolves its targets
+/// (by id) against that journal and a stale index cannot reach the editor.
+/// [`JournalEditor::replace_transaction`] keeps the transaction count and
+/// order, so each index it returns stays valid across the replacements before
+/// it.
+///
+/// Returns the touched files and how many transactions were replaced.
+pub(crate) fn add_and_replace_transactions(
     state: &AppState,
     transactions: &[Transaction],
     labels: &[String],
     position: InsertPosition,
-) -> Result<Vec<std::path::PathBuf>, AppError> {
+    replace: &dyn Fn(&Journal) -> Vec<Replacement>,
+) -> Result<(Vec<std::path::PathBuf>, usize), AppError> {
     let mut guard = lock_editor(state)?;
     let editor = bound(&mut guard)?;
-    if let Err((index, error)) = apply_additions(editor, transactions, position) {
+    let added = if transactions.is_empty() {
+        Ok(())
+    } else {
+        apply_additions(editor, transactions, position)
+    };
+    if let Err((index, error)) = added {
         resync_from_disk(state, &mut guard)?;
         let context = match index {
             Some(index) => {
@@ -744,13 +774,35 @@ pub(crate) fn add_transactions(
         };
         return Err(labeled(error, context));
     }
+    let editor = bound(&mut guard)?;
+    let replacements = replace(editor.journal());
+    if let Err((label, error)) = apply_replacements(editor, &replacements) {
+        resync_from_disk(state, &mut guard)?;
+        return Err(labeled(error, format!("transaction {label}")));
+    }
     let touched: Vec<std::path::PathBuf> = bound(&mut guard)?
         .dirty_files()
         .into_iter()
         .map(std::path::Path::to_path_buf)
         .collect();
-    save_and_publish(state, &mut guard)?;
-    Ok(touched)
+    if !touched.is_empty() {
+        save_and_publish(state, &mut guard)?;
+    }
+    Ok((touched, replacements.len()))
+}
+
+/// Replace each of `replacements` in order, stopping at the first error and
+/// naming it by its label. Separate for [`apply_statuses`]' borrow-checking
+/// reason.
+fn apply_replacements(
+    editor: &mut JournalEditor,
+    replacements: &[Replacement],
+) -> Result<(), (String, EditError)> {
+    replacements.iter().try_for_each(|replacement| {
+        editor
+            .replace_transaction(replacement.index, &replacement.transaction)
+            .map_err(|error| (replacement.label.clone(), error))
+    })
 }
 
 /// Call the core bulk [`JournalEditor::add_transactions`] once and unwrap its
@@ -1576,8 +1628,14 @@ mod tests {
             "QB-200 — 2024-02-02 Bad".to_string(),
         ];
 
-        let error = add_transactions(&state, &[good, bad], &labels, InsertPosition::Append)
-            .expect_err("the second transaction does not balance");
+        let error = add_and_replace_transactions(
+            &state,
+            &[good, bad],
+            &labels,
+            InsertPosition::Append,
+            &|_| Vec::new(),
+        )
+        .expect_err("the second transaction does not balance");
         let message = error.to_string();
         assert!(
             message.contains("QB-200"),
@@ -1619,7 +1677,10 @@ mod tests {
         );
 
         let error =
-            add_transactions(&state, &[bad], &[], InsertPosition::Append).expect_err("unbalanced");
+            add_and_replace_transactions(&state, &[bad], &[], InsertPosition::Append, &|_| {
+                Vec::new()
+            })
+            .expect_err("unbalanced");
         assert!(
             error.to_string().contains('#'),
             "falls back to a plain position rather than panicking on a short labels slice: {error}"

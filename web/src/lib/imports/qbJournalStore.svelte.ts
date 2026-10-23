@@ -16,7 +16,7 @@
 // exact same conflict/revision handling.
 
 import {classify, type EditFailure} from "#lib/api/editFailure.js";
-import {LedgelineApi} from "#lib/api/native.js";
+import {LedgelineApi, type QbJournalCommitBody} from "#lib/api/native.js";
 import {decodeQbCommitResult, decodeQbPreview, decodeSortResult} from "#lib/api/nativeDecode.js";
 import {aliasListing, aliasStore} from "./aliasStore.svelte";
 import {isInFlight} from "./importModel";
@@ -50,9 +50,9 @@ export const preview = createResource<string, QbPreview>(async (serverUrl, stage
     decodeQbPreview(await new LedgelineApi(serverUrl).qbJournalPreview(stageId))
 );
 
-/** Keyed on `stageId`, exactly like the request body — there is nothing else the request could vary by. */
-export const commit = createResource<string, QbCommitResult>(async (serverUrl, stageId) =>
-    decodeQbCommitResult(await new LedgelineApi(serverUrl, {timeoutMs: QB_JOURNAL_COMMIT_TIMEOUT_MS}).qbJournalCommit({stageId}))
+/** Keyed on the request body itself: the stage, and whether changed rows are to be replaced. */
+export const commit = createResource<QbJournalCommitBody, QbCommitResult>(async (serverUrl, body) =>
+    decodeQbCommitResult(await new LedgelineApi(serverUrl, {timeoutMs: QB_JOURNAL_COMMIT_TIMEOUT_MS}).qbJournalCommit(body))
 );
 
 /** Which stage `preview` was last asked to load — so `ensurePreview` fetches once per stage, not once per render. */
@@ -65,6 +65,13 @@ let mappingError = $state<string | null>(null);
 
 /** `Import` was pressed, so a commit exists or is running. */
 let commitRequested = $state(false);
+
+/**
+ * Replace rows the journal already holds differently with the export's version.
+ * Off by default, and back off for every new stage: the usual reason a row
+ * differs is that its accounts were categorized by hand after the import.
+ */
+let updateChanged = $state(false);
 
 /** The re-sort offer is per touched FILE (a multi-year import can touch more than one), unlike the CSV path's single target. */
 let sortingJournalId = $state<string | null>(null);
@@ -82,6 +89,7 @@ function resetForNewStage(): void {
     mappingSaving = false;
     mappingError = null;
     commitRequested = false;
+    updateChanged = false;
     sortingJournalId = null;
     sortMoved = {};
     sortErrors = {};
@@ -185,11 +193,18 @@ export const qbJournalStore = {
         return isInFlight(commit.status);
     },
 
+    get updateChanged(): boolean {
+        return updateChanged;
+    },
+    setUpdateChanged(value: boolean): void {
+        updateChanged = value;
+    },
+
     async commitStage(serverUrl: string, stageId: string): Promise<void> {
         commitRequested = true;
         sortMoved = {};
         sortErrors = {};
-        await commit.load(serverUrl, stageId);
+        await commit.load(serverUrl, {stageId, updateChanged});
     },
 
     // --- the post-commit re-sort, per touched file ------------------------------

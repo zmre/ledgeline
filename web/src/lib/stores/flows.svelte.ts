@@ -6,6 +6,7 @@
 import {LedgelineApi} from "#lib/api/native.js";
 import {decodeFlowReport} from "#lib/api/nativeDecode.js";
 import type {FlowReport} from "#lib/reports/types.js";
+import {journal} from "./journal.svelte";
 import {createResource} from "./resource.svelte";
 import {settings} from "./settings.svelte";
 
@@ -41,6 +42,8 @@ export function loadFlowsWhenWatched(read: () => {tab: string; query: FlowsQuery
         // identical (the engine restarted on the same port), so an effect keyed
         // on the URL never retries after one (FE-5d).
         void settings.serverNonce;
+        // Likewise: the journal changed (a refresh, an edit on disk).
+        void journal.changes;
         // Both read unconditionally, never behind `||`: a short-circuited read
         // is not a subscription, so the effect would miss a flip of whichever
         // flag the operator skipped.

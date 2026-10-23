@@ -90,6 +90,17 @@ describe("INTEGRATION journal metadata rounds", () => {
         expect(journal.generation).toBe("g-9");
     });
 
+    it("counts a change only when the generation moves, not on a round that finds the same snapshot", async () => {
+        const before = journal.changes;
+        await journal.refresh({force: true});
+        expect(journal.changes).toBe(before);
+
+        answers = [journalInfoBody({generation: "g-changed-on-disk"})];
+        hits = 0;
+        await journal.refresh({force: true});
+        expect(journal.changes).toBe(before + 1);
+    });
+
     it("fails the round when the server has no /api/journal — the SPA requires the engine", async () => {
         answers = [null];
         hits = 0;

@@ -467,3 +467,172 @@ fn sort_restores_date_order_after_a_quickbooks_commit() {
     assert!(text.contains("later transaction"), "{text}");
     assert!(text.contains("earlier than the one above"), "{text}");
 }
+
+/// Plain aliases for `revenue-recognition.xlsx`'s two accounts. The alias on
+/// the parent `4000 Sales` covers the `:4400 …` sub-account by the plain-alias
+/// prefix rule.
+const RECOGNITION_ALIASES: &str = "alias 2500 Deferred Revenue = liabilities:deferred-revenue\n\
+                                   alias 4000 Sales = revenue:sales\n";
+
+/// The reported bug: a Journal Entry recognizing revenue for several
+/// customers, every line on the same two accounts, was written as ONE debit
+/// and ONE credit. The per-line Description, the only place the customer was
+/// named, was dropped, and same-account postings with identical (empty)
+/// comments were then summed together. Every row must come through as its
+/// own posting carrying its own memo.
+#[test]
+fn a_multi_line_journal_entry_keeps_every_line_and_its_memo() {
+    let tree = Tree::write(&format!("{RECOGNITION_ALIASES}\n{OPENING}"));
+    let input = qb_fixture_path("revenue-recognition.xlsx");
+
+    let output = tree.import(&[
+        "-i",
+        input.to_str().expect("utf-8"),
+        "-j",
+        "main.journal",
+        "--no-git",
+    ]);
+    assert!(output.status.success(), "{}", transcript(&output));
+
+    let text = tree.journal_text();
+    let entry = text
+        .split("\n\n")
+        .find(|block| block.contains("id: 7720"))
+        .unwrap_or_else(|| panic!("transaction 7720 was written:\n{text}"));
+    let postings: Vec<(&str, &str)> = entry
+        .lines()
+        .skip(1)
+        .map(|line| {
+            let (posting, memo) = line.split_once(';').expect("every posting has a memo");
+            (
+                posting.split_whitespace().next().expect("an account"),
+                memo.trim(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        postings,
+        [
+            (
+                "liabilities:deferred-revenue",
+                "Recognized Fernhill Revenue"
+            ),
+            ("revenue:sales:4400", "Recognized Fernhill Revenue"),
+            (
+                "liabilities:deferred-revenue",
+                "Recognized Larkspur Revenue"
+            ),
+            ("revenue:sales:4400", "Recognized Larkspur Revenue"),
+            ("revenue:sales:4400", "Recognize Quillon Revenue"),
+            ("liabilities:deferred-revenue", "Recognize Quillon Revenue"),
+            ("revenue:sales:4400", "Tamberlane"),
+            ("liabilities:deferred-revenue", "Tamberlane"),
+        ],
+        "{entry}"
+    );
+    assert!(entry.contains("$3100"), "{entry}");
+    assert!(entry.contains("$-3100"), "{entry}");
+}
+
+/// The other half of the report: the journal held an OLDER, collapsed
+/// version of the entry, from before QuickBooks gained a line. Re-import
+/// rightly never overwrites it, but saying only "1 conflicting" left no way
+/// to find which entry or what differed. The CLI must name the id and the
+/// difference, and still leave the journal untouched.
+#[test]
+fn a_conflicting_reimport_names_the_id_and_what_differs() {
+    let stale = "2026-07-31 Journal Entry: Recognized Fernhill Revenue  ; id: 7720\n\
+                 \x20   liabilities:deferred-revenue                $20315.75\n\
+                 \x20   revenue:sales:4400 Hybrid Cloud Enterprise  $-20315.75\n";
+    let tree = Tree::write(&format!("{RECOGNITION_ALIASES}\n{OPENING}\n{stale}"));
+    let before = tree.snapshot();
+    let input = qb_fixture_path("revenue-recognition.xlsx");
+
+    for dry_run in [true, false] {
+        let mut args = vec![
+            "-i",
+            input.to_str().expect("utf-8"),
+            "-j",
+            "main.journal",
+            "--no-git",
+        ];
+        if dry_run {
+            args.push("--dry-run");
+        }
+        let output = tree.import(&args);
+        assert!(output.status.success(), "{}", transcript(&output));
+        let said = String::from_utf8_lossy(&output.stdout);
+        assert!(said.contains("1 conflicting"), "{said}");
+        assert!(said.contains("conflicting id 7720:"), "{said}");
+        assert!(
+            said.contains("postings: journal has 2, export has 8"),
+            "{said}"
+        );
+    }
+    assert_eq!(
+        tree.snapshot(),
+        before,
+        "a conflicting id is reported, never overwritten"
+    );
+}
+
+/// `--update-changed` replaces the stale, collapsed copy with the export's
+/// eight lines, keeping the journal's own status and note; `--dry-run` with
+/// it says what would happen and writes nothing.
+#[test]
+fn update_changed_replaces_a_stale_entry_with_the_exports_version() {
+    let stale = "2026-07-31 * Journal Entry: Recognized Fernhill Revenue  ; id: 7720, checked\n\
+                 \x20   liabilities:deferred-revenue                $20315.75\n\
+                 \x20   revenue:sales:4400 Hybrid Cloud Enterprise  $-20315.75\n";
+    let tree = Tree::write(&format!("{RECOGNITION_ALIASES}\n{OPENING}\n{stale}"));
+    let before = tree.snapshot();
+    let input = qb_fixture_path("revenue-recognition.xlsx");
+    let args = [
+        "-i",
+        input.to_str().expect("utf-8"),
+        "-j",
+        "main.journal",
+        "--no-git",
+        "--update-changed",
+    ];
+
+    let dry = tree.import(&[&args[..], &["--dry-run"]].concat());
+    assert!(dry.status.success(), "{}", transcript(&dry));
+    let said = String::from_utf8_lossy(&dry.stdout);
+    assert!(said.contains("1 would be updated"), "{said}");
+    assert!(
+        said.contains("0 transactions would be imported and 1 updated"),
+        "{said}"
+    );
+    assert_eq!(tree.snapshot(), before, "a dry run writes nothing");
+
+    let output = tree.import(&args);
+    assert!(output.status.success(), "{}", transcript(&output));
+    let said = String::from_utf8_lossy(&output.stdout);
+    assert!(said.contains("updated 1 changed transaction"), "{said}");
+    assert!(!said.contains("appended 0"), "{said}");
+
+    let text = tree.journal_text();
+    let entry = text
+        .split("\n\n")
+        .find(|block| block.contains("id: 7720"))
+        .unwrap_or_else(|| panic!("transaction 7720 is still there:\n{text}"));
+    assert!(
+        entry.starts_with(
+            "2026-07-31 * Journal Entry: Recognized Fernhill Revenue  ; id: 7720, checked"
+        ),
+        "{entry}"
+    );
+    assert_eq!(
+        entry.lines().count(),
+        9,
+        "the header and eight postings: {entry}"
+    );
+    assert!(entry.contains("; Tamberlane"), "{entry}");
+    assert!(!entry.contains("20315.75"), "{entry}");
+    assert_eq!(
+        text.matches("id: 7720").count(),
+        1,
+        "replaced, not duplicated"
+    );
+}

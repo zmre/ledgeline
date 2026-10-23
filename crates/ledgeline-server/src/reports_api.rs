@@ -37,19 +37,19 @@ use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
     Amounts, BalanceSheetReport, BarLabel, BsGroup, BsOpts, BsSection, BsSectionKind, BsSubsection,
     BsTerm, BucketSpan, BudgetBar, BudgetCell, BudgetGaps, BudgetHealth, BudgetOpts, BudgetReport,
-    BudgetRow, BudgetSection, BudgetSectionKind, BudgetSummary, Cadence, ChangeKind, ChangeRow,
-    Columns, CostOfLiving, DEFAULT_EXCLUDE_DESC, DateRange, FlowGraph, FlowLink, FlowNode,
-    FlowOpts, FlowReport, FlowSide, GapRow, GroupSource, IS_GROUP_TAG, IncomeStatementReport,
-    InsightsOpts, InsightsPeriod, InsightsReport, Interval, InvestmentPerf, IsGroup, IsOpts, IsRow,
-    IsSection, IsSectionKind, IsSubtotal, IsSubtotalKind, LabelKind, MetricDelta, MixedAmount,
-    MoverRow, NetWorthOpts, PerfPoint, PeriodReport, PeriodRow, ReportError, ReportMeta, ReportRow,
-    RowKind, Section, SectionedReport, Subscription, SubscriptionOpts, SubscriptionsReport, TopTxn,
-    Valuation, account_decls, account_groups, account_sections, balance_sheet,
-    balance_sheet_grouped, bs_terms, budget_gaps, budget_report, budget_summary, cash_flow,
-    cash_flow_range, cash_predicate, compared_windows, declared_groups, declared_types,
-    detect_subscriptions, gap_totals, income_statement, income_statement_columns,
-    income_statement_flows, income_statement_grouped, insights, interval_windows, net_worth,
-    prices_any_on_sheet, prices_any_on_statement,
+    BudgetRow, BudgetSection, BudgetSectionKind, BudgetSummary, Cadence, CashFlowStatement,
+    CfLineSource, CfOpts, CfTags, ChangeKind, ChangeRow, Columns, CostOfLiving,
+    DEFAULT_EXCLUDE_DESC, DateRange, FlowGraph, FlowLink, FlowNode, FlowOpts, FlowReport, FlowSide,
+    GapRow, GroupSource, IS_GROUP_TAG, IncomeStatementReport, InsightsOpts, InsightsPeriod,
+    InsightsReport, Interval, InvestmentPerf, IsGroup, IsOpts, IsRow, IsSection, IsSectionKind,
+    IsSubtotal, IsSubtotalKind, LabelKind, MetricDelta, MixedAmount, MoverRow, NetWorthOpts,
+    PerfPoint, PeriodReport, PeriodRow, ReportError, ReportMeta, ReportRow, RowKind, Section,
+    SectionedReport, Subscription, SubscriptionOpts, SubscriptionsReport, TopTxn, Valuation,
+    account_decls, account_groups, account_sections, balance_sheet, balance_sheet_grouped,
+    bs_terms, budget_gaps, budget_report, budget_summary, cash_flow_statement, compared_windows,
+    declared_groups, declared_types, detect_subscriptions, gap_totals, income_statement,
+    income_statement_columns, income_statement_flows, income_statement_grouped, insights,
+    interval_windows, net_worth, prices_any_on_sheet, prices_any_on_statement,
 };
 use serde::{Deserialize, Serialize};
 
@@ -2933,51 +2933,215 @@ impl CashFlowWindow {
     }
 }
 
-/// `GET /api/reports/cashflow` — per-bucket cash-like-asset changes. The cash
-/// predicate honors the journal's declared account types (same as the SPA).
+/// `GET /api/reports/cashflow` — the statement of cash flows, indirect method
+/// (`plans/27-cash-flow-statement.md`): net income, the change in every
+/// non-cash balance-sheet account by operating/investing/financing, and the
+/// cash balances it reconciles to.
 ///
 /// - `from=YYYY-MM-DD`, `to=YYYY-MM-DD` (default: today), both INCLUSIVE — one
 ///   column per `interval` bucket across the range, the first clamped to `from`
 ///   and the last to `to`.
 /// - `interval=total|monthly|quarterly|yearly` (also `daily`/`weekly`; default
 ///   `monthly`). `total` is ONE column over the whole range.
-/// - `depth=N` (default 2) clamps the account rows.
+/// - `depth=N` (default 2): account lines without a `cfgroup:` roll up to it.
 ///
-/// Without `from`, the legacy `end=&count=&interval=` window: the last `count`
-/// buckets ending with the one containing `end`. Either way every row carries a
-/// `total` (the sum of its buckets) and the report a `grandTotal` (the sum of
-/// `totals`) — the Total column.
+/// Without `from`, the legacy `end=&count=&interval=` window is converted to
+/// the range it covers: the first of the `count` buckets ending with the one
+/// containing `end`, through `end`.
 pub(crate) async fn cashflow(
     State(state): State<AppState>,
     Query(query): Query<CashFlowQuery>,
-) -> Result<Json<WirePeriodReport>, AppError> {
+) -> Result<Json<WireCashFlow>, AppError> {
     let snapshot = state.snapshot();
     let window = CashFlowWindow::resolve(query)?;
 
     compute(move || {
-        let decls = account_decls(&snapshot.journal);
-        let predicate = cash_predicate(&decls);
-        let is_cash: &dyn Fn(&str) -> bool = &predicate;
-        let txns = &snapshot.journal.transactions;
-        let report = match window {
+        let (from, to, interval, depth) = match window {
             CashFlowWindow::Range {
                 from,
                 to,
                 interval,
                 depth,
-            } => cash_flow_range(txns, &from, &to, interval, depth, Some(is_cash))?,
-            CashFlowWindow::Trailing(window) => cash_flow(
-                txns,
-                &window.end,
-                window.interval,
-                window.count,
-                window.depth,
-                Some(is_cash),
-            )?,
+            } => (from, to, interval, depth),
+            CashFlowWindow::Trailing(window) => {
+                let buckets = ledgeline_core::reports::last_n_buckets(
+                    &window.end,
+                    window.interval,
+                    window.count,
+                )?;
+                let first = buckets.first().cloned().unwrap_or_default();
+                let (from, _) = ledgeline_core::reports::bucket_span(&first, &window.end)?;
+                (from, window.end, Some(window.interval), window.depth)
+            }
         };
-        Ok(WirePeriodReport::from(&report))
+        let tags = CfTags::from_journal(&snapshot.journal);
+        let report = cash_flow_statement(
+            &snapshot.journal.transactions,
+            &CfOpts {
+                from: &from,
+                to: &to,
+                interval,
+                depth,
+            },
+            &tags,
+        )?;
+        Ok(WireCashFlow::from(&report))
     })
     .await
+}
+
+// ---------------------------------------------------------------------------
+// Statement of cash flows (plans/27-cash-flow-statement.md)
+// ---------------------------------------------------------------------------
+
+/// One figure per column, and the Total column. For a flow the Total is the
+/// sum; for a balance (beginning/ending cash) it is the first or last
+/// column's, never a sum.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WireCfColumns {
+    values: Vec<WireMixed>,
+    total: WireMixed,
+}
+
+impl From<&Columns> for WireCfColumns {
+    fn from(columns: &Columns) -> Self {
+        Self {
+            values: columns.values.iter().map(wire_mixed).collect(),
+            total: wire_mixed(&columns.total),
+        }
+    }
+}
+
+fn wire_cf_source(source: CfLineSource) -> &'static str {
+    match source {
+        CfLineSource::Group => "group",
+        CfLineSource::Account => "account",
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireCfRow {
+    account: String,
+    amounts: WireCfColumns,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireCfLine {
+    name: String,
+    /// `"group"` (a `cfgroup:` tag) or `"account"` (the account at depth).
+    source: &'static str,
+    total: WireCfColumns,
+    rows: Vec<WireCfRow>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireCfSection {
+    /// `"operating" | "investing" | "financing"`.
+    kind: &'static str,
+    title: String,
+    lines: Vec<WireCfLine>,
+    total: WireCfColumns,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireCfCashRow {
+    account: String,
+    beginning: WireCfColumns,
+    ending: WireCfColumns,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireCfCashLine {
+    name: String,
+    source: &'static str,
+    beginning: WireCfColumns,
+    ending: WireCfColumns,
+    rows: Vec<WireCfCashRow>,
+}
+
+/// `GET /api/reports/cashflow`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WireCashFlow {
+    from: String,
+    to: String,
+    buckets: Vec<WireBucketSpan>,
+    net_income: WireCfColumns,
+    sections: Vec<WireCfSection>,
+    /// Effect of exchange rates on cash; all-empty in a single-currency journal.
+    exchange: WireCfColumns,
+    net_change: WireCfColumns,
+    cash: Vec<WireCfCashLine>,
+    beginning_cash: WireCfColumns,
+    ending_cash: WireCfColumns,
+    reconciles: bool,
+}
+
+impl From<&CashFlowStatement> for WireCashFlow {
+    fn from(report: &CashFlowStatement) -> Self {
+        Self {
+            from: report.from.clone(),
+            to: report.to.clone(),
+            buckets: report.buckets.iter().map(WireBucketSpan::from).collect(),
+            net_income: WireCfColumns::from(&report.net_income),
+            sections: report
+                .sections
+                .iter()
+                .map(|section| WireCfSection {
+                    kind: section.kind.code(),
+                    title: section.title.clone(),
+                    lines: section
+                        .lines
+                        .iter()
+                        .map(|line| WireCfLine {
+                            name: line.name.clone(),
+                            source: wire_cf_source(line.source),
+                            total: WireCfColumns::from(&line.total),
+                            rows: line
+                                .rows
+                                .iter()
+                                .map(|row| WireCfRow {
+                                    account: row.account.clone(),
+                                    amounts: WireCfColumns::from(&row.amounts),
+                                })
+                                .collect(),
+                        })
+                        .collect(),
+                    total: WireCfColumns::from(&section.total),
+                })
+                .collect(),
+            exchange: WireCfColumns::from(&report.exchange),
+            net_change: WireCfColumns::from(&report.net_change),
+            cash: report
+                .cash
+                .iter()
+                .map(|line| WireCfCashLine {
+                    name: line.name.clone(),
+                    source: wire_cf_source(line.source),
+                    beginning: WireCfColumns::from(&line.beginning),
+                    ending: WireCfColumns::from(&line.ending),
+                    rows: line
+                        .rows
+                        .iter()
+                        .map(|row| WireCfCashRow {
+                            account: row.account.clone(),
+                            beginning: WireCfColumns::from(&row.beginning),
+                            ending: WireCfColumns::from(&row.ending),
+                        })
+                        .collect(),
+                })
+                .collect(),
+            beginning_cash: WireCfColumns::from(&report.beginning_cash),
+            ending_cash: WireCfColumns::from(&report.ending_cash),
+            reconciles: report.reconciles,
+        }
+    }
 }
 
 /// `GET /api/reports/networth` — market-valued net worth per bucket. Prices come

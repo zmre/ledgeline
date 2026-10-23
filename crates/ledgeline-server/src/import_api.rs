@@ -4885,6 +4885,14 @@ pub struct CliImport {
     /// Do not commit to git around this import, whatever the preferences say.
     #[arg(long)]
     no_git: bool,
+
+    /// QuickBooks Journal exports only: overwrite transactions already
+    /// imported (matched by `id:`) that the export now shows differently,
+    /// instead of only reporting them. Each keeps its own status, code,
+    /// secondary date and header comment. Off by default, because a
+    /// difference usually means you fixed the transaction up by hand.
+    #[arg(long)]
+    update_changed: bool,
 }
 
 impl CliImport {
@@ -4989,8 +4997,25 @@ pub struct CliQbReport {
     /// transaction — a hand-edit outranks a re-download, so these are never
     /// overwritten (see `qb_journal_api`'s own docs).
     pub conflicting: usize,
+    /// One entry per conflicting id, in export order, naming what differs.
+    pub conflicts: Vec<CliQbConflict>,
+    /// `--update-changed` was given.
+    pub update_changed: bool,
+    /// How many of `conflicts` `--update-changed` would replace: an id
+    /// carried by more than one transaction, or one differing only in what an
+    /// update keeps (status, code, secondary date, header comment), is not.
+    pub updatable: usize,
     /// `None` on `--dry-run`.
     pub written: Option<CliQbWritten>,
+}
+
+/// One id the journal already holds, differently from the export.
+#[derive(Debug, Clone)]
+pub struct CliQbConflict {
+    /// QuickBooks' own Trans #.
+    pub id: String,
+    /// Every disagreement, in field order (see `reimport::classify`).
+    pub diffs: Vec<ledgeline_core::reimport::FieldDiff>,
 }
 
 /// What a committing QuickBooks Journal run actually wrote.
@@ -5002,8 +5027,11 @@ pub struct CliQbWritten {
     /// file — see `qb_journal_api`'s module docs.
     pub journals: Vec<String>,
     /// Transactions appended — every `new` id from [`CliQbReport`] is
-    /// written; every `unchanged`/`conflicting` one never is.
+    /// written; every `unchanged` one never is.
     pub imported: usize,
+    /// Conflicting transactions replaced with the export's version; `0`
+    /// without `--update-changed`.
+    pub updated: usize,
     /// Every touched file is in date order after the import (and after a
     /// `--sort`, if one was asked for and needed).
     pub in_order: bool,
@@ -5161,6 +5189,13 @@ fn cli_import_csv(
              destination and a rules file, like every other import.",
             missing_sentence(&missing),
         )));
+    }
+    if args.update_changed {
+        return Err(AppError::BadRequest(
+            "--update-changed only applies to a QuickBooks Journal export; this input is not \
+             one, and a CSV import never overwrites a transaction it already holds."
+                .to_string(),
+        ));
     }
     let output = args.output.as_deref().expect("checked above");
     let rules = args.rules.as_deref().expect("checked above");
@@ -5371,6 +5406,7 @@ fn cli_import_qb_journal(
         args.sort,
         args.dry_run,
         args.no_git,
+        args.update_changed,
     );
 
     let report = crate::qb_journal_api::classify_report(state, &parsed)?;
@@ -5393,11 +5429,14 @@ fn cli_import_qb_journal(
             new: report.new,
             unchanged: report.unchanged,
             conflicting: report.conflicting,
+            conflicts: report.conflicts,
+            update_changed: args.update_changed,
+            updatable: report.updatable,
             written: None,
         });
     }
 
-    let commit = crate::qb_journal_api::commit_journal(state, &parsed, git)?;
+    let commit = crate::qb_journal_api::commit_journal(state, &parsed, git, args.update_changed)?;
     let journals: Vec<String> = commit
         .ordering
         .files
@@ -5437,9 +5476,13 @@ fn cli_import_qb_journal(
         new: report.new,
         unchanged: report.unchanged,
         conflicting: report.conflicting,
+        conflicts: report.conflicts,
+        update_changed: args.update_changed,
+        updatable: report.updatable,
         written: Some(CliQbWritten {
             journals,
             imported: commit.imported,
+            updated: commit.updated,
             in_order: commit.ordering.in_order || sorted.is_some(),
             sorted,
         }),
@@ -5458,6 +5501,7 @@ fn qb_cli_invocation(
     sort: bool,
     dry_run: bool,
     no_git: bool,
+    update_changed: bool,
 ) -> String {
     let mut argv: Vec<String> = ["ledgeline", "import", "-i", input, "-j", journal_id]
         .into_iter()
@@ -5475,6 +5519,9 @@ fn qb_cli_invocation(
     }
     if no_git {
         argv.push("--no-git".to_string());
+    }
+    if update_changed {
+        argv.push("--update-changed".to_string());
     }
     argv.iter()
         .map(|argument| shell_quote(argument))

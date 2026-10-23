@@ -18,7 +18,7 @@ The page has four parts, top to bottom:
 - The transaction table lists the matching transactions.
 - The totals footer counts them, nets them, and exports them.
 
-The view refreshes itself every 30 seconds while the window is visible. If you edit the journal in a text editor, the change shows up without a restart.
+Every screen refreshes itself within a few seconds while the window is visible. If you edit the journal in a text editor, the change shows up on whatever you are looking at, including reports and holdings, without a restart or switching screens.
 
 ## The transaction table
 

@@ -450,6 +450,8 @@ export interface PrefsBody {
  */
 export interface QbJournalCommitBody {
     stageId: string;
+    /** Replace transactions the journal already holds differently with the export's version. Omitted means off. */
+    updateChanged?: boolean;
 }
 
 /**

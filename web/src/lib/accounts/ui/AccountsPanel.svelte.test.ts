@@ -97,7 +97,9 @@ describe("COMPONENT AccountsPanel", () => {
         expect(screen.getByLabelText("Income statement section")).toBeDefined();
         expect(screen.getByLabelText("Holdings tab")).toBeDefined();
         expect(screen.getByLabelText("Balance sheet line")).toBeDefined();
-        expect(screen.getAllByLabelText(/^About /).length).toBe(7);
+        expect(screen.getByLabelText("Cash flow section")).toBeDefined();
+        expect(screen.getByLabelText("Cash flow line")).toBeDefined();
+        expect(screen.getAllByLabelText(/^About /).length).toBe(9);
     });
 
     it("lets a brand-new name (known to nothing else) be added and edited", async () => {

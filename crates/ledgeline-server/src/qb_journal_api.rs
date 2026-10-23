@@ -28,6 +28,10 @@
 //!   reports (never overwrites) ids it holds differently — the same "ask,
 //!   don't guess" and "a hand-edit outranks a re-download" policies the CSV
 //!   path's [`reimport`] already encodes, reused rather than re-derived.
+//!   Unless the request sets `updateChanged`: then those ids are replaced in
+//!   place with the export's version (see [`replacements`]). Off by default,
+//!   because the usual reason an imported transaction differs is that its
+//!   unknown accounts were categorized by hand afterwards.
 //!
 //! # No `journalId`
 //!
@@ -48,7 +52,7 @@
 //! PRE-write check here looks at every file [`Journal::source_files`] lists —
 //! the superset of anything `DateOrdered` could possibly touch — and the
 //! POST-write git commit is then narrowed to exactly the files
-//! [`edit_api::add_transactions`] reports as touched
+//! [`edit_api::add_and_replace_transactions`] reports as touched
 //! ([`JournalEditor::dirty_files`](ledgeline_core::edit::JournalEditor::dirty_files)),
 //! so the commit's blast radius matches what was actually written, same as
 //! the CSV path's own `committed` set.
@@ -248,6 +252,9 @@ struct WireQbFieldDiff {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WireQbCommit {
     pub(crate) imported: usize,
+    /// Conflicting ids replaced with the export's version. Always `0` unless
+    /// the request set `updateChanged`.
+    pub(crate) updated: usize,
     pub(crate) id_matches: WireQbIdMatches,
     pub(crate) ordering: WireQbOrdering,
     /// `null` when nothing was written, when no touched file is under version
@@ -283,6 +290,10 @@ pub(crate) struct WireQbFileOrdering {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct WireQbCommitRequest {
     stage_id: String,
+    /// Replace ids the journal holds differently with the export's version,
+    /// instead of only reporting them. Absent means `false`.
+    #[serde(default)]
+    update_changed: bool,
 }
 
 // ===========================================================================
@@ -316,8 +327,10 @@ pub(crate) async fn commit(
     // file, and both may run a git commit over it — see the module docs.
     let guard = state.clone();
     let _write = guard.import_writes().lock().await;
-    let Json(body) =
-        crate::reports_api::compute(move || run_commit(&state, &request.stage_id)).await?;
+    let Json(body) = crate::reports_api::compute(move || {
+        run_commit(&state, &request.stage_id, request.update_changed)
+    })
+    .await?;
     Ok(no_store(body))
 }
 
@@ -598,8 +611,8 @@ fn build_transaction(
     })
 }
 
-/// Combine postings that resolved to the SAME account and carry IDENTICAL
-/// `class`/`customer`/`vendor` tags, summing their amounts.
+/// Combine postings that resolved to the SAME account and carry an IDENTICAL
+/// memo and `class`/`customer`/`vendor` tags, summing their amounts.
 ///
 /// QuickBooks can legitimately split one account's real effect across
 /// several rows of one Journal Entry — a payroll entry touching `…:Benefits`
@@ -614,18 +627,15 @@ fn build_transaction(
 /// surfaced this). Merging first removes the zero rows this way rather than
 /// just writing around them.
 ///
-/// class/customer/vendor must match EXACTLY (confirmed with the user, since
-/// this is real financial data): two postings to the same account with
-/// DIFFERING tags — already folded into each [`Posting::comment`] by
-/// [`build_posting`]/[`posting_comment`] by the time this runs, so comparing
-/// the rendered comment IS comparing the three tags — are kept separate
-/// rather than merged, so no vendor/customer/class detail is ever silently
+/// memo and class/customer/vendor must match EXACTLY (confirmed with the
+/// user, since this is real financial data): two postings to the same account
+/// with a DIFFERING memo or tag — already folded into each
+/// [`Posting::comment`] by [`build_posting`]/[`posting_comment`] by the time
+/// this runs, so comparing the rendered comment IS comparing all four — are
+/// kept separate rather than merged, so no per-line detail is ever silently
 /// combined or dropped. Order-preserving: a merged posting stays at its
-/// FIRST occurrence's position: `qb_journal.rs`'s own module docs establish
-/// that account/date/type repeat across a group's rows while the per-posting
-/// detail (originally memo, here class/customer/vendor) is what varies, so
-/// the first occurrence's tags are exactly the ones a reader would expect to
-/// see once the repeats are gone.
+/// FIRST occurrence's position. Since only rows with identical comments
+/// merge, there is no "whose comment wins" question.
 ///
 /// # Errors
 /// [`AppError::BadRequest`], naming `id`, if summing two real QuickBooks
@@ -697,8 +707,23 @@ fn build_posting(
 /// line into two — so the same sanitizer used for the description is reused
 /// rather than reasoning about which of its two replacements this call site
 /// still needs.
+///
+/// The row's own `memo` (QuickBooks' per-line Description) leads the comment
+/// as plain note text, ahead of the tags. It was once left out entirely, and
+/// that was a real data-loss bug, not a style choice: a nine-line revenue
+/// recognition Journal Entry with one customer per line and one description per
+/// line built eighteen postings whose comments were all empty. So
+/// [`merge_same_account_postings`] summed them into one debit and one credit,
+/// and nothing in the written journal said which customer accounted for which
+/// part of the total. With the memo in the comment, rows with different memos
+/// can never merge.
 fn posting_comment(posting: &QbPosting) -> String {
-    let tags: Vec<String> = [
+    let memo = posting
+        .memo
+        .as_deref()
+        .filter(|memo| !memo.trim().is_empty())
+        .map(|memo| qb_import::journal_safe(memo.trim()));
+    let tags = [
         ("class", posting.class.as_deref()),
         ("customer", posting.customer.as_deref()),
         ("vendor", posting.vendor.as_deref()),
@@ -706,12 +731,12 @@ fn posting_comment(posting: &QbPosting) -> String {
     .into_iter()
     .filter_map(|(name, value)| {
         value.map(|value| format!("{name}: {}", qb_import::journal_safe(value)))
-    })
-    .collect();
-    if tags.is_empty() {
+    });
+    let segments: Vec<String> = memo.into_iter().chain(tags).collect();
+    if segments.is_empty() {
         String::new()
     } else {
-        format!("{}\n", tags.join(", "))
+        format!("{}\n", segments.join(", "))
     }
 }
 
@@ -719,14 +744,18 @@ fn posting_comment(posting: &QbPosting) -> String {
 // Commit: refuse unmapped accounts, git-check, write, git-commit, report
 // ===========================================================================
 
-fn run_commit(state: &AppState, stage_id: &str) -> Result<WireQbCommit, AppError> {
+fn run_commit(
+    state: &AppState,
+    stage_id: &str,
+    update_changed: bool,
+) -> Result<WireQbCommit, AppError> {
     let (_, stage) = resolve_stage(state, stage_id)?;
     // Always `FromPrefs`: the HTTP route has no `--no-git`-equivalent
     // request field, and never has — git behaviour here is governed purely
     // by Preferences, exactly as it always was. See [`commit_journal`]'s own
     // docs for why it now takes this as a parameter rather than deciding it
     // internally.
-    commit_journal(state, stage.journal(), GitPolicy::FromPrefs)
+    commit_journal(state, stage.journal(), GitPolicy::FromPrefs, update_changed)
 }
 
 /// Classify every parsed transaction by id, refuse if any account is
@@ -757,17 +786,26 @@ pub(crate) fn commit_journal(
     state: &AppState,
     parsed: &QbJournal,
     git: GitPolicy,
+    update_changed: bool,
 ) -> Result<WireQbCommit, AppError> {
     let (snapshot, built) = classify_parsed(state, parsed)?;
     let id_matches = wire_id_matches(&built);
-    let new: Vec<Classified> = built
+    let (new, changed): (Vec<Classified>, Vec<Classified>) = built
         .into_iter()
-        .filter(|row| row.classification == RowClassification::New)
+        .filter(|row| {
+            row.classification == RowClassification::New
+                || (update_changed
+                    && matches!(row.classification, RowClassification::Conflicting { .. }))
+        })
+        .partition(|row| row.classification == RowClassification::New);
+    let changed: Vec<(String, Transaction)> = changed
+        .into_iter()
+        .map(|row| (row.id, row.transaction))
         .collect();
     // The QuickBooks Trans #, date and description of each — so a write
     // failure names the one transaction it happened on rather than an index
     // into a batch that can run into the thousands. See
-    // `edit_api::add_transactions`'s own docs on why this has to be supplied
+    // `edit_api::add_and_replace_transactions`'s own docs on why this has to be supplied
     // here: nothing past this point still knows which QuickBooks id a given
     // `Transaction` came from.
     let labels: Vec<String> = new
@@ -781,9 +819,10 @@ pub(crate) fn commit_journal(
         .collect();
     let new_transactions: Vec<Transaction> = new.into_iter().map(|row| row.transaction).collect();
 
-    if new_transactions.is_empty() {
+    if new_transactions.is_empty() && replacements(&snapshot.journal, &changed).is_empty() {
         return Ok(WireQbCommit {
             imported: 0,
+            updated: 0,
             id_matches,
             ordering: qb_ordering(&snapshot, &[]),
             git: None,
@@ -820,11 +859,12 @@ pub(crate) fn commit_journal(
         )));
     }
 
-    let touched = edit_api::add_transactions(
+    let (touched, updated) = edit_api::add_and_replace_transactions(
         state,
         &new_transactions,
         &labels,
         InsertPosition::DateOrdered,
+        &|journal| replacements(journal, &changed),
     )?;
 
     let touched_handles: Vec<String> = touched
@@ -845,28 +885,89 @@ pub(crate) fn commit_journal(
     let imported = new_transactions.len();
     let git = git
         .enabled(&prefs)
-        .then(|| import_api::commit_targets(&committed, &commit_message(imported), &redactor))
+        .then(|| {
+            import_api::commit_targets(&committed, &commit_message(imported, updated), &redactor)
+        })
         .filter(|result| result.committed || result.message.is_some());
 
-    // `edit_api::add_transactions` already republished the snapshot; read it
+    // `edit_api::add_and_replace_transactions` already republished the snapshot; read it
     // fresh here so the ordering check sees the bytes it just wrote.
     let ordering = qb_ordering(&state.snapshot(), &touched);
 
     Ok(WireQbCommit {
         imported,
+        updated,
         id_matches,
         ordering,
         git,
     })
 }
 
-/// [`classify_report`]'s result: the three id-match counts, without
-/// `wire_id_matches`'s HTTP-shaped `conflicting: Vec<WireQbConflict>` detail
-/// the CLI's own summary line has no use for.
+/// Which of `changed` — `(QuickBooks id, transaction built from the export)`
+/// for each conflicting id — to write over the journal's copy, and with what.
+///
+/// The export's version wins on everything QuickBooks owns: date,
+/// description, postings, accounts, amounts, memos. Four fields it never
+/// exports are kept from the journal's copy instead, so updating cannot
+/// wipe them: the status (`*`/`!` from reconciling), the code, the secondary
+/// date, and the header comment (which carries the `id:` tag and any note
+/// written beside it).
+///
+/// An id carried by more than one transaction is skipped; there is no way to
+/// say which copy the export meant. So is one whose only difference was in
+/// those four kept fields, because the replacement would be identical.
+///
+/// Resolved by id against `journal` every time rather than once, so the
+/// caller can ask again after additions have moved every index (see
+/// [`edit_api::add_and_replace_transactions`]).
+fn replacements(
+    journal: &Journal,
+    changed: &[(String, Transaction)],
+) -> Vec<edit_api::Replacement> {
+    let index = reimport::build_index(journal, reimport::ID_TAG);
+    changed
+        .iter()
+        .filter_map(|(id, incoming)| {
+            let (existing, 1) = index.get(id)? else {
+                return None;
+            };
+            let transaction = Transaction {
+                index: existing.index,
+                status: existing.status,
+                code: existing.code.clone(),
+                date2: existing.date2.clone(),
+                comment: existing.comment.clone(),
+                ..incoming.clone()
+            };
+            matches!(
+                reimport::classify(&index, id, &transaction, false),
+                RowClassification::Conflicting { .. }
+            )
+            .then(|| edit_api::Replacement {
+                index: existing.index,
+                label: format!("{id} — {} {}", transaction.date, transaction.description),
+                transaction,
+            })
+        })
+        .collect()
+}
+
+/// [`classify_report`]'s result: the three id-match counts, plus every
+/// conflicting id and what differs about it.
+///
+/// The detail is there because a bare "1 conflicting" told a person nothing
+/// they could act on. A transaction QuickBooks changed after it was first
+/// imported (a line added to a Journal Entry, say) is left alone by design,
+/// so the journal keeps the old figures, and the only place the difference
+/// was ever reported was a count.
 pub(crate) struct QbClassifyReport {
     pub(crate) new: usize,
     pub(crate) unchanged: usize,
     pub(crate) conflicting: usize,
+    pub(crate) conflicts: Vec<import_api::CliQbConflict>,
+    /// How many conflicts an `updateChanged` commit would replace — see
+    /// [`replacements`] for the ones it would not.
+    pub(crate) updatable: usize,
 }
 
 /// The read-only half of [`commit_journal`]: classify `parsed`'s transactions
@@ -892,12 +993,29 @@ pub(crate) fn classify_report(
     state: &AppState,
     parsed: &QbJournal,
 ) -> Result<QbClassifyReport, AppError> {
-    let (_, built) = classify_parsed(state, parsed)?;
+    let (snapshot, built) = classify_parsed(state, parsed)?;
     let matches = wire_id_matches(&built);
+    let changed: Vec<(String, Transaction)> = built
+        .iter()
+        .filter(|row| matches!(row.classification, RowClassification::Conflicting { .. }))
+        .map(|row| (row.id.clone(), row.transaction.clone()))
+        .collect();
+    let updatable = replacements(&snapshot.journal, &changed).len();
+    let conflicts = built
+        .into_iter()
+        .filter_map(|row| match row.classification {
+            RowClassification::Conflicting { diffs, .. } => {
+                Some(import_api::CliQbConflict { id: row.id, diffs })
+            }
+            _ => None,
+        })
+        .collect();
     Ok(QbClassifyReport {
         new: matches.new,
         unchanged: matches.unchanged,
         conflicting: matches.conflicting_total,
+        conflicts,
+        updatable,
     })
 }
 
@@ -932,9 +1050,17 @@ fn unmapped_refusal(unmapped: &[String]) -> AppError {
     ))
 }
 
-fn commit_message(imported: usize) -> String {
-    let plural = if imported == 1 { "" } else { "s" };
-    format!("import {imported} transaction{plural} from a QuickBooks Journal export")
+fn commit_message(imported: usize, updated: usize) -> String {
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    let what = match (imported, updated) {
+        (imported, 0) => format!("import {imported} transaction{}", plural(imported)),
+        (0, updated) => format!("update {updated} transaction{}", plural(updated)),
+        (imported, updated) => format!(
+            "import {imported} transaction{} and update {updated}",
+            plural(imported)
+        ),
+    };
+    format!("{what} from a QuickBooks Journal export")
 }
 
 /// A journal id for `path`: relative to the main file's own directory,
@@ -1232,5 +1358,147 @@ mod tests {
             sum, 0,
             "the merge changes nothing about the transaction's own balance"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // posting_comment: the per-line memo
+    // -----------------------------------------------------------------------
+
+    fn qb_posting(account: &str, cents: i128, memo: Option<&str>) -> QbPosting {
+        QbPosting {
+            account: account.to_string(),
+            amount: Dec::new(cents, 2),
+            memo: memo.map(str::to_string),
+            class: None,
+            customer: None,
+            vendor: None,
+        }
+    }
+
+    #[test]
+    fn the_memo_leads_the_posting_comment() {
+        let posting = qb_posting(
+            "2500 Deferred Revenue",
+            1750000,
+            Some("Recognized Zephyr Revenue"),
+        );
+        assert_eq!(posting_comment(&posting), "Recognized Zephyr Revenue\n");
+    }
+
+    #[test]
+    fn the_memo_comes_before_the_tags() {
+        let mut posting = qb_posting("2500 Deferred Revenue", 100, Some("Annual license"));
+        posting.customer = Some("Acme".to_string());
+        posting.class = Some("Enterprise".to_string());
+        assert_eq!(
+            posting_comment(&posting),
+            "Annual license, class: Enterprise, customer: Acme\n"
+        );
+    }
+
+    #[test]
+    fn a_blank_memo_writes_no_comment() {
+        assert_eq!(
+            posting_comment(&qb_posting("1000 Checking", 100, Some("  "))),
+            ""
+        );
+        assert_eq!(posting_comment(&qb_posting("1000 Checking", 100, None)), "");
+    }
+
+    #[test]
+    fn a_memo_is_made_journal_safe() {
+        let posting = qb_posting("1000 Checking", 100, Some("Smith; Jones\nretainer"));
+        assert_eq!(posting_comment(&posting), "Smith, Jones retainer\n");
+    }
+
+    /// The reported shape: one Journal Entry recognizing revenue for several
+    /// customers, every line debiting the same deferred-revenue account and
+    /// crediting the same sales account, with the customer named only in each
+    /// line's memo. It was written as one debit and one credit, which made the
+    /// per-customer split, and any later change to it, impossible to see.
+    #[test]
+    fn same_account_lines_with_different_memos_stay_separate_postings() {
+        let journal = journal(
+            "alias 2500 Deferred Revenue = liabilities:deferred-revenue\n\
+             alias 4000 Sales = revenue:sales\n\
+             2026-01-01 opening\n    assets:bank  $1000.00\n    equity:opening\n",
+        );
+        let aliases = plain_aliases(&journal);
+        let lines = [
+            ("Recognized Hoover Revenue", 3040875),
+            ("Recognized Zephyr Revenue", 1750000),
+            ("Attago", 910000),
+        ];
+        let postings = lines
+            .iter()
+            .flat_map(|(memo, cents)| {
+                [
+                    qb_posting("2500 Deferred Revenue", *cents, Some(memo)),
+                    qb_posting(
+                        "4000 Sales:4400 Hybrid Cloud Enterprise",
+                        -cents,
+                        Some(memo),
+                    ),
+                ]
+            })
+            .collect();
+        let qb_txn = QbTransaction {
+            id: "10972".to_string(),
+            date: "2026-07-31".to_string(),
+            transaction_type: "Journal Entry".to_string(),
+            num: Some("598".to_string()),
+            name: None,
+            postings,
+        };
+        let built = build_transaction(&journal, &qb_txn, &aliases, &commodity_for(&journal))
+            .expect("builds");
+        let written: Vec<(&str, i128, &str)> = built
+            .postings
+            .iter()
+            .map(|p| (p.account.0.as_str(), cents_of(p), p.comment.as_str()))
+            .collect();
+        assert_eq!(
+            written,
+            [
+                (
+                    "liabilities:deferred-revenue",
+                    3040875,
+                    "Recognized Hoover Revenue\n"
+                ),
+                (
+                    "revenue:sales:4400 Hybrid Cloud Enterprise",
+                    -3040875,
+                    "Recognized Hoover Revenue\n"
+                ),
+                (
+                    "liabilities:deferred-revenue",
+                    1750000,
+                    "Recognized Zephyr Revenue\n"
+                ),
+                (
+                    "revenue:sales:4400 Hybrid Cloud Enterprise",
+                    -1750000,
+                    "Recognized Zephyr Revenue\n"
+                ),
+                ("liabilities:deferred-revenue", 910000, "Attago\n"),
+                (
+                    "revenue:sales:4400 Hybrid Cloud Enterprise",
+                    -910000,
+                    "Attago\n"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn same_account_lines_with_the_same_memo_still_merge() {
+        let postings = vec![
+            posting("expenses:benefits", "March payroll\n", 608702),
+            posting("expenses:benefits", "March payroll\n", 0),
+            posting("expenses:benefits", "March payroll\n", 13451),
+        ];
+        let merged = merge_same_account_postings("913", postings).expect("no overflow");
+        assert_eq!(merged.len(), 1);
+        assert_eq!(cents_of(&merged[0]), 622153);
     }
 }

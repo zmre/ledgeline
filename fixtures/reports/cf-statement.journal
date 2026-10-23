@@ -1,0 +1,89 @@
+; Statement of cash flows fixture (plans/27-cash-flow-statement.md).
+;
+; A small business's first quarter of 2026. Every account the defaults sort
+; is here once: receivables, prepaid, a card, a vendor payable and deferred
+; revenue (operating), accumulated depreciation (operating, by its
+; `valuation:` tag, though it sits under a non-current asset), equipment
+; (investing), a note (financing), two cash groups, and a closing entry that
+; must not count net income twice.
+
+account assets:bank:checking                 ; type: C, cfgroup: Operating cash
+account assets:bank:savings                  ; type: C, cfgroup: Operating cash
+account assets:petty-cash                    ; type: C
+account assets:receivable                    ; type: A
+account assets:prepaid                       ; type: A
+account assets:equipment                     ; type: A, bsterm: noncurrent
+account assets:equipment:accum-depreciation  ; type: A, valuation: depreciation
+account liabilities:payable                  ; type: L
+account liabilities:card                     ; type: L
+account liabilities:deferred-revenue         ; type: L
+account liabilities:note                     ; type: L, bsterm: noncurrent
+account equity:capital                       ; type: E
+account equity:retained-earnings             ; type: E
+account revenue:sales                        ; type: R
+account expenses:rent                        ; type: X
+account expenses:software                    ; type: X
+account expenses:depreciation                ; type: X
+
+2025-12-31 Opening capital
+    assets:bank:checking   $10000.00
+    equity:capital
+
+2026-01-05 Invoice Acme
+    assets:receivable      $5000.00
+    revenue:sales
+
+2026-01-10 Rent
+    expenses:rent          $1500.00
+    assets:bank:checking
+
+2026-01-15 Software on the card
+    expenses:software      $200.00
+    liabilities:card
+
+2026-01-20 Prepay insurance
+    assets:prepaid         $1200.00
+    assets:bank:checking
+
+2026-01-25 Customer prepays a year
+    assets:bank:checking   $2400.00
+    liabilities:deferred-revenue
+
+2026-01-31 Recognize a month
+    liabilities:deferred-revenue  $200.00
+    revenue:sales
+
+2026-02-03 Acme pays
+    assets:bank:checking   $5000.00
+    assets:receivable
+
+2026-02-10 Buy a laptop
+    assets:equipment       $3000.00
+    assets:bank:checking
+
+2026-02-15 Vendor bill
+    expenses:software      $300.00
+    liabilities:payable
+
+2026-02-28 Depreciation
+    expenses:depreciation  $100.00
+    assets:equipment:accum-depreciation
+
+2026-03-01 Loan
+    assets:bank:savings    $8000.00
+    liabilities:note
+
+2026-03-05 Pay the card
+    liabilities:card       $200.00
+    assets:bank:checking
+
+2026-03-10 Petty cash
+    assets:petty-cash      $50.00
+    assets:bank:checking
+
+2026-03-31 Close the quarter
+    revenue:sales          $5200.00
+    expenses:rent         $-1500.00
+    expenses:software      $-500.00
+    expenses:depreciation  $-100.00
+    equity:retained-earnings

@@ -90,7 +90,8 @@
     // The nonce is in the key because a reconnect usually leaves the URL
     // identical (the engine restarted on the same port), and keying on the URL
     // alone meant a page never retried after one (FE-5d).
-    const loadKey = $derived({url: settings.serverUrl, nonce: settings.serverNonce, query: reportQuery});
+    // `journal.changes`: a refresh or a change on disk redraws what is on screen.
+    const loadKey = $derived({url: settings.serverUrl, nonce: settings.serverNonce, changes: journal.changes, query: reportQuery});
     $effect(() => {
         const {url, query} = loadKey;
         if (url !== null) void budgetStore.report.load(url, query);

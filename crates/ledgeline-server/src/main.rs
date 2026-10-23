@@ -294,11 +294,42 @@ fn print_qb_report(report: &ledgeline::CliQbReport) {
             ""
         }
     );
-    println!(
-        "{} new, {} already imported, {} conflicting (left alone, never overwritten)",
-        report.new, report.unchanged, report.conflicting
-    );
+    if report.update_changed {
+        println!(
+            "{} new, {} already imported, {} conflicting ({} {} updated from the export)",
+            report.new,
+            report.unchanged,
+            report.conflicting,
+            report.updatable,
+            if report.written.is_some() {
+                "to be"
+            } else {
+                "would be"
+            }
+        );
+    } else {
+        println!(
+            "{} new, {} already imported, {} conflicting (left alone, never overwritten; \
+             --update-changed replaces them)",
+            report.new, report.unchanged, report.conflicting
+        );
+    }
+    for conflict in &report.conflicts {
+        println!("  conflicting id {}:", conflict.id);
+        for diff in &conflict.diffs {
+            println!(
+                "    {}: journal has {}, export has {}",
+                diff.field, diff.existing, diff.incoming
+            );
+        }
+    }
     match &report.written {
+        None if report.update_changed => println!(
+            "{} transaction{} would be imported and {} updated. Nothing was written (--dry-run).",
+            report.new,
+            plural(report.new),
+            report.updatable
+        ),
         None => println!(
             "{} transaction{} would be imported. Nothing was written (--dry-run).",
             report.new,
@@ -314,12 +345,21 @@ fn print_qb_report(report: &ledgeline::CliQbReport) {
             );
         }
         Some(written) => {
-            println!(
-                "appended {} transaction{} to {}",
-                written.imported,
-                plural(written.imported),
-                written.journals.join(", ")
-            );
+            if written.imported > 0 || written.updated == 0 {
+                println!(
+                    "appended {} transaction{} to {}",
+                    written.imported,
+                    plural(written.imported),
+                    written.journals.join(", ")
+                );
+            }
+            if written.updated > 0 {
+                println!(
+                    "updated {} changed transaction{}",
+                    written.updated,
+                    plural(written.updated)
+                );
+            }
             match written.sorted {
                 Some(0) => {}
                 Some(moved) => println!(

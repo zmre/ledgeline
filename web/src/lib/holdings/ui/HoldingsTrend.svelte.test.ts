@@ -15,6 +15,7 @@ import {render} from "@testing-library/svelte";
 import {describe, expect, it} from "vitest";
 import {dec} from "#lib/domain/money.js";
 import type {HoldingsPoint, HoldingsSeries} from "#lib/holdings/types.js";
+import {chartColors} from "#lib/format/chartColors.svelte.js";
 import HoldingsTrend from "./HoldingsTrend.svelte";
 
 const MONTHS = ["Aug 2025", "Sep 2025", "Oct 2025", "Nov 2025", "Dec 2025", "Jan 2026", "Feb 2026", "Mar 2026", "Apr 2026", "May 2026", "Jun 2026", "Jul 2026"];
@@ -58,6 +59,18 @@ describe("COMPONENT HoldingsTrend", () => {
 
         expect(document.querySelectorAll("path.lc-path")).toHaveLength(1);
         expect(document.querySelector('[data-testid="holdings-trend-legend"]')).toBeNull();
+    });
+
+    it("draws the line in the foreground ink by default, and in the colour it is given", () => {
+        const values = MONTHS.map((_, i) => 100_000 + i * 1_000);
+        const {unmount} = mount(series(values));
+        const stroke = (): string | null => document.querySelector("path.lc-path")?.getAttribute("stroke") ?? null;
+        expect(stroke()).toBe(chartColors.flowNet);
+        unmount();
+
+        render(HoldingsTrend, {trend: series(values), formatValue: money, formatAxis: compact, color: chartColors.categorical[0]});
+        expect(stroke()).toBe(chartColors.categorical[0]);
+        expect(chartColors.categorical[0]).not.toBe(chartColors.flowNet);
     });
 
     it("says nothing is priced rather than drawing a flat line along zero", () => {

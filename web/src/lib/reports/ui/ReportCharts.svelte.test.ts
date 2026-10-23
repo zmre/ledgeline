@@ -8,13 +8,13 @@ import {fireEvent, render} from "@testing-library/svelte";
 import {afterEach, describe, expect, it} from "vitest";
 import {dec, type MixedAmount} from "#lib/domain/money.js";
 import {settings} from "#lib/stores/settings.svelte.js";
-import type {PeriodReport, PeriodRow, PeriodRowKind} from "../types";
+import {CASH_FLOW, CASH_FLOW_TOTAL, flow, usd} from "#lib/testing/cashFlowFixture.js";
+import type {CashFlowStatement, PeriodReport, PeriodRow, PeriodRowKind} from "../types";
 import CashFlowChart from "./CashFlowChart.svelte";
 import {compressPeriodRows} from "./displayRows";
 import NetWorthChart from "./NetWorthChart.svelte";
 import {periodsOf} from "#lib/reports/test-helpers.js";
 
-const usd = (n: number): MixedAmount => (n === 0 ? new Map() : new Map([["$", dec(Math.round(n * 100), 2)]]));
 const eur = (n: number): MixedAmount => new Map([["EUR", dec(Math.round(n * 100), 2)]]);
 
 function row(account: string, values: number[], kind?: PeriodRowKind): PeriodRow {
@@ -37,24 +37,6 @@ const NET_WORTH: PeriodReport = {
         row("liabilities:mortgage", [-400, -390, -380, -370, -360], "liability"),
     ],
     totals: [200, 220, 270, 330, 360].map(usd),
-};
-
-/**
- * The table shows `assets` › `bank` (with postings of its own) › `checking`,
- * `savings`, and `broker:cash` (a collapsed single-child chain).
- */
-const CASH_FLOW: PeriodReport = {
-    buckets: ["2026-01", "2026-02", "2026-03"],
-    periods: periodsOf(["2026-01", "2026-02", "2026-03"]),
-    rows: [
-        row("assets", [50, -30, 20]),
-        row("assets:bank", [60, -20, 20]),
-        row("assets:bank:checking", [80, -60, 10]),
-        row("assets:bank:savings", [-30, 30, 10]),
-        row("assets:broker", [-10, -10, 0]),
-        row("assets:broker:cash", [-10, -10, 0]),
-    ],
-    totals: [50, -30, 20].map(usd),
 };
 
 /** The table's displayed rows with no displayed child, by the table's own function, as labelled there. */
@@ -144,13 +126,17 @@ describe("COMPONENT NetWorthChart", () => {
 });
 
 describe("COMPONENT CashFlowChart", () => {
-    it("stacks exactly the table's displayed leaves, plus a parent's own postings, under the table's labels", () => {
+    it("stacks one series per activity, with the net change in cash as the line", () => {
         render(CashFlowChart, {report: CASH_FLOW, styles: STYLES});
 
-        // The table's own rows, by the table's own function: every displayed
-        // row with no displayed child, and `bank` again for its own postings.
-        expect(displayedLeaves(CASH_FLOW)).toEqual(["checking", "savings", "broker:cash"]);
-        expect(legend("cashflow-chart")).toEqual(["bank", ...displayedLeaves(CASH_FLOW), "Net change"]);
+        expect(legend("cashflow-chart")).toEqual(["Operating", "Investing", "Financing", "Net change in cash"]);
+    });
+
+    it("adds the effect of exchange rates as its own series when there is one", () => {
+        const withFx: CashFlowStatement = {...CASH_FLOW, exchange: flow([0, 10, 0])};
+        render(CashFlowChart, {report: withFx, styles: STYLES});
+
+        expect(legend("cashflow-chart")).toContain("Exchange rates");
     });
 
     it("has no breakdown toggle", () => {
@@ -158,23 +144,18 @@ describe("COMPONENT CashFlowChart", () => {
 
         expect(container.querySelector('[role="radiogroup"]')).toBeNull();
         expect(container.querySelector('[data-testid^="cashflow-chart-mode"]')).toBeNull();
-        expect(container.textContent).not.toMatch(/By (source|account)/);
     });
 
-    it("draws areas, one per sign half", () => {
+    it("draws bars, not areas", () => {
         const {container} = render(CashFlowChart, {report: CASH_FLOW, styles: STYLES});
 
-        // bank's own +, checking ±, savings ±, broker:cash −: an account that
-        // flips sign between buckets is two drawn halves but ONE legend entry.
-        expect(container.querySelectorAll("path.lc-area-path")).toHaveLength(6);
+        expect(container.querySelectorAll("path.lc-area-path")).toHaveLength(0);
     });
 
     it("names the commodities it could not chart", () => {
-        const mixed: PeriodReport = {
-            buckets: ["2026-01", "2026-02"],
-            periods: periodsOf(["2026-01", "2026-02"]),
-            rows: [row("assets:bank", [5, 6]), {account: "assets:wise", depth: 2, values: [eur(1), eur(2)]}],
-            totals: [new Map([...usd(5), ...eur(1)]), new Map([...usd(6), ...eur(2)])],
+        const mixed: CashFlowStatement = {
+            ...CASH_FLOW,
+            sections: [{...CASH_FLOW.sections[0], total: {values: [usd(5), eur(1), usd(6)], total: usd(11)}}],
         };
         render(CashFlowChart, {report: mixed, styles: STYLES});
 
@@ -191,27 +172,14 @@ describe("COMPONENT CashFlowChart", () => {
     });
 
     it("says so when no cash moved", () => {
-        const still: PeriodReport = {
-            buckets: CASH_FLOW.buckets,
-            periods: periodsOf(CASH_FLOW.buckets),
-            rows: [],
-            totals: CASH_FLOW.buckets.map(() => new Map()),
-        };
+        const still: CashFlowStatement = {...CASH_FLOW, sections: [], netChange: flow([0, 0, 0])};
         render(CashFlowChart, {report: still, styles: STYLES});
 
         expect(document.querySelector('[data-testid="cashflow-chart-empty"]')?.textContent).toContain("No cash moved");
     });
 
     it("asks for a wider range on Interval = Total, whose one column is no trend", () => {
-        // plans/24: the Total grain is ONE bucket spanning the whole range.
-        const total: PeriodReport = {
-            buckets: ["2025-08-01..2026-07-08"],
-            periods: periodsOf(["2025-08-01..2026-07-08"]),
-            rows: [{...row("assets:bank", [40]), total: usd(40)}],
-            totals: [usd(40)],
-            grandTotal: usd(40),
-        };
-        render(CashFlowChart, {report: total, styles: STYLES});
+        render(CashFlowChart, {report: CASH_FLOW_TOTAL, styles: STYLES});
 
         expect(document.querySelector('[data-testid="cashflow-chart-empty"]')?.textContent).toContain("Only one period");
     });

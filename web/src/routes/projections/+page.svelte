@@ -167,7 +167,15 @@
     // --- The projection ------------------------------------------------------
 
     const projectionWindow = $derived<ProjectionWindow>({interval: params.interval, count: params.count, depth: params.depth});
-    const loadKey = $derived({url: settings.serverUrl, nonce: settings.serverNonce, revision: scenarioStore.revision, window: projectionWindow});
+    // `journal.changes`: projections start from the journal's balances, so a
+    // refresh or a change on disk recomputes them.
+    const loadKey = $derived({
+        url: settings.serverUrl,
+        nonce: settings.serverNonce,
+        changes: journal.changes,
+        revision: scenarioStore.revision,
+        window: projectionWindow,
+    });
     $effect(() => {
         const {url, window: w} = loadKey;
         // `revision` is read through `loadKey`, so an edit re-runs this effect —

@@ -9,9 +9,10 @@
      legend box, colours from the shared palette. Everything below the props is
      that component's.
 
-     The portfolio is drawn in the foreground ink, solid and a little heavier:
-     it is the subject, and the palette's first eight slots belong to the eight
-     benchmarks. `overlays` are extra lines drawn over it (the Stocks tab's
+     The portfolio is drawn solid and a little heavier: it is the subject. By
+     default it is in the foreground ink, because on Stocks the palette's first
+     eight slots belong to the eight benchmarks. A caller with no benchmarks
+     (the Other tab) passes `color` so the line is not a grey on grey. `overlays` are extra lines drawn over it (the Stocks tab's
      benchmarks): each carries its own palette slot and dash, and from the first
      one on the legend appears, because two lines are never told apart by
      colour alone. `controls` renders in the chart's heading row — the
@@ -39,6 +40,7 @@
         formatAxis,
         overlays = [],
         controls,
+        color,
     }: {
         trend: HoldingsSeries;
         /** The window `trend` was fetched for; names it beside the heading. */
@@ -47,6 +49,8 @@
         formatAxis?: (n: number) => string;
         overlays?: readonly PeriodSeries[];
         controls?: Snippet;
+        /** The portfolio line's colour; the foreground ink when omitted. */
+        color?: string;
     } = $props();
 
     const labels = $derived(trendLabels(trend.points));
@@ -55,7 +59,7 @@
     // The portfolio is ink whatever is overlaid on it, so it never repaints.
     // "Market value" alone; "Your portfolio" once a benchmark sits beside it in the legend.
     const series = $derived<PeriodSeries[]>([
-        {name: overlays.length > 0 ? "Your portfolio" : "Market value", values, color: chartColors.flowNet, hero: true},
+        {name: overlays.length > 0 ? "Your portfolio" : "Market value", values, color: color ?? chartColors.flowNet, hero: true},
         ...overlays,
     ]);
 </script>

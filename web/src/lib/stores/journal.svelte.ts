@@ -8,7 +8,7 @@
 // request per round, and a changed `generation` is the signal that every
 // journal-derived view is stale (an edit, a file change, File→Open).
 //
-// `refresh()` is called on startup, by the 30-second poller, after every edit
+// `refresh()` is called on startup, by the 5-second poller (every screen, from the root layout), after every edit
 // (`force`), and by the app-wide refresh. State is swapped only after a
 // successful round, so the old metadata stays visible on error (the route shows
 // an error toast from `status`/`error`).
@@ -32,6 +32,8 @@ let title = $state<string | null>(null);
 let file = $state<string | null>(null);
 let txnCount = $state(0);
 let generation = $state<string | null>(null);
+/** Bumped each time the generation moves from one known snapshot to another. See `journal.changes`. */
+let changes = $state(0);
 let status = $state<JournalStatus>("idle");
 let error = $state<string | null>(null);
 let fetchedAt = $state<number | null>(null);
@@ -83,6 +85,7 @@ async function doRefresh(token: number, signal: AbortSignal): Promise<void> {
             reportStyles = info.reportStyles;
             dominantCommodity = info.dominantCommodity;
             txnCount = info.txnCount;
+            if (generation !== null) changes += 1;
             generation = info.generation;
             if (import.meta.env.DEV) console.debug(`[journal] generation ${info.generation} (${info.txnCount} txns)`);
         }
@@ -146,6 +149,21 @@ export const journal = {
         return generation;
     },
     /**
+     * How many times the journal has changed under this page: an edit, a file
+     * changed on disk, File→Open. Starts at 0 and does NOT move on the first
+     * successful round, which only reveals what was already there.
+     *
+     * For views fetched by their own query (the reports, holdings, budget,
+     * projections) to put in their load key, so a change refetches what is on
+     * screen instead of waiting for the user to leave and come back. Keying on
+     * `generation` itself would fetch everything twice at startup, once before
+     * the first round and once when the generation first appears, and gating
+     * on it would hold a report hostage to the metadata round (FE-5c).
+     */
+    get changes(): number {
+        return changes;
+    },
+    /**
      * What the engine calls the journal on screen (its first-line comment, else
      * its folder), for the app bar. Null when the journal has neither, and
      * before the first successful round.
@@ -185,13 +203,13 @@ export const journal = {
 };
 
 /**
- * Live-update polling loop (WP-08). Refreshes every `intervalMs` (default 30s)
+ * Live-update polling loop (WP-08). Refreshes every `intervalMs` (default 5s)
  * via `journal.refresh()`, which dedups concurrent calls; a changed generation
  * is what makes the views refetch. Pauses while the document is hidden; on
  * becoming visible again it refreshes immediately and resumes. Returns a stop
  * function.
  */
-export function startPolling(intervalMs = 30_000): () => void {
+export function startPolling(intervalMs = 5_000): () => void {
     let timer: ReturnType<typeof setInterval> | null = null;
     const start = (): void => {
         timer ??= setInterval(() => void journal.refresh(), intervalMs);

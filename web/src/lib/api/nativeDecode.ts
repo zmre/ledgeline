@@ -156,6 +156,12 @@ import type {
     BudgetReport,
     BudgetRow,
     BudgetSummary,
+    CashFlowStatement,
+    CfCashLine,
+    CfColumns,
+    CfLine,
+    CfSection,
+    CfSectionKind,
     DateRange,
     FlowGraph,
     FlowLink,
@@ -1205,6 +1211,7 @@ interface RawQbOrdering {
 
 interface RawQbCommitResult {
     imported?: number;
+    updated?: number;
     idMatches?: RawQbIdMatches;
     ordering?: RawQbOrdering;
     git?: RawGitReport | null;
@@ -1712,6 +1719,147 @@ export function decodeIncomeStatementReport(raw: unknown): IncomeStatementReport
 }
 
 // ---------------------------------------------------------------------------
+// Statement of cash flows (plans/27-cash-flow-statement.md)
+// ---------------------------------------------------------------------------
+
+interface RawCfColumns {
+    values?: RawMixed[];
+    total?: RawMixed;
+}
+
+interface RawCfLine {
+    name?: string;
+    source?: string;
+    total?: RawCfColumns;
+    rows?: {account?: string; amounts?: RawCfColumns}[];
+}
+
+interface RawCfSection {
+    kind?: string;
+    title?: string;
+    lines?: RawCfLine[];
+    total?: RawCfColumns;
+}
+
+interface RawCfCashLine {
+    name?: string;
+    source?: string;
+    beginning?: RawCfColumns;
+    ending?: RawCfColumns;
+    rows?: {account?: string; beginning?: RawCfColumns; ending?: RawCfColumns}[];
+}
+
+interface RawCashFlowStatement {
+    from?: string;
+    to?: string;
+    buckets?: RawIsBucket[] | null;
+    netIncome?: RawCfColumns;
+    sections?: RawCfSection[];
+    exchange?: RawCfColumns;
+    netChange?: RawCfColumns;
+    cash?: RawCfCashLine[];
+    beginningCash?: RawCfColumns;
+    endingCash?: RawCfColumns;
+    reconciles?: boolean;
+}
+
+const CF_SECTION_KINDS: readonly CfSectionKind[] = ["operating", "investing", "financing"];
+const CF_LINE_SOURCES: readonly CfLine["source"][] = ["group", "account"];
+
+/** One figure per column (exactly `columns` of them) and the Total. */
+function decodeCfColumns(raw: RawCfColumns | undefined, context: string, columns: number): CfColumns {
+    if (raw === undefined || raw === null || !Array.isArray(raw.values)) throw new ApiShapeError(`${context}: expected {values, total}`);
+    if (raw.values.length !== columns) throw new ApiShapeError(`${context}: ${raw.values.length} values for ${columns} columns`);
+    return Object.freeze({
+        values: frozen(raw.values.map((value, i) => decodeMixed(value, `${context} values[${i}]`))),
+        total: decodeMixed(raw.total, `${context} total`),
+    });
+}
+
+function decodeCfArray<T>(raw: T[] | undefined, context: string): T[] {
+    if (!Array.isArray(raw)) throw new ApiShapeError(`${context}: expected an array`);
+    return raw;
+}
+
+/**
+ * `GET /api/reports/cashflow` → the statement of cash flows.
+ *
+ * `kind: "cashFlow"` is added HERE, as for the other statements, so the page
+ * can pick a renderer and a workbook builder (FE-1). Every figure must carry
+ * exactly one value per bucket, which is checked rather than trusted: a short
+ * array would shift every later column under the wrong heading.
+ */
+export function decodeCashFlowStatement(raw: unknown): CashFlowStatement {
+    const report = raw as RawCashFlowStatement;
+    if (typeof report !== "object" || report === null || typeof report.from !== "string" || typeof report.to !== "string") {
+        throw new ApiShapeError("cash flow: expected from and to");
+    }
+    const buckets = decodeIsBuckets(report.buckets, "cash flow buckets");
+    if (buckets === null) throw new ApiShapeError("cash flow buckets: expected at least one column");
+    const n = buckets.length;
+    const columns = (value: RawCfColumns | undefined, context: string) => decodeCfColumns(value, context, n);
+    return Object.freeze({
+        kind: "cashFlow",
+        from: report.from as ISODate,
+        to: report.to as ISODate,
+        buckets,
+        netIncome: columns(report.netIncome, "cash flow netIncome"),
+        sections: frozen(
+            decodeCfArray(report.sections, "cash flow sections").map((section, i): CfSection => {
+                const at = `cash flow section #${i}`;
+                return Object.freeze({
+                    kind: decodeEnum(CF_SECTION_KINDS, section.kind, `${at} kind`),
+                    title: str(section.title, `${at} title`),
+                    lines: frozen(
+                        decodeCfArray(section.lines, `${at} lines`).map((line, j): CfLine =>
+                            Object.freeze({
+                                name: str(line.name, `${at} line #${j} name`),
+                                source: decodeEnum(CF_LINE_SOURCES, line.source, `${at} line #${j} source`),
+                                total: columns(line.total, `${at} line #${j} total`),
+                                rows: frozen(
+                                    decodeCfArray(line.rows, `${at} line #${j} rows`).map((row, k) =>
+                                        Object.freeze({
+                                            account: str(row.account, `${at} line #${j} row #${k} account`),
+                                            amounts: columns(row.amounts, `${at} line #${j} row #${k} amounts`),
+                                        })
+                                    )
+                                ),
+                            })
+                        )
+                    ),
+                    total: columns(section.total, `${at} total`),
+                });
+            })
+        ),
+        exchange: columns(report.exchange, "cash flow exchange"),
+        netChange: columns(report.netChange, "cash flow netChange"),
+        cash: frozen(
+            decodeCfArray(report.cash, "cash flow cash").map((line, i): CfCashLine => {
+                const at = `cash flow cash line #${i}`;
+                return Object.freeze({
+                    name: str(line.name, `${at} name`),
+                    source: decodeEnum(CF_LINE_SOURCES, line.source, `${at} source`),
+                    beginning: columns(line.beginning, `${at} beginning`),
+                    ending: columns(line.ending, `${at} ending`),
+                    rows: frozen(
+                        decodeCfArray(line.rows, `${at} rows`).map((row, k) =>
+                            Object.freeze({
+                                account: str(row.account, `${at} row #${k} account`),
+                                beginning: columns(row.beginning, `${at} row #${k} beginning`),
+                                ending: columns(row.ending, `${at} row #${k} ending`),
+                            })
+                        )
+                    ),
+                });
+            })
+        ),
+        beginningCash: columns(report.beginningCash, "cash flow beginningCash"),
+        endingCash: columns(report.endingCash, "cash flow endingCash"),
+        reconciles: decodeBoolean(report.reconciles, "cash flow reconciles"),
+    });
+}
+
+// ---------------------------------------------------------------------------
 // FlowReport (the income statement's two Sankey diagrams)
 // ---------------------------------------------------------------------------
 
@@ -2134,7 +2282,7 @@ function decodeAssetRow(raw: RawAssetRow | undefined, context: string): AssetRow
  * `POST /api/projections/run`.
  *
  * `netIncome` is a plain `WirePeriodReport`, so it goes through the same
- * `decodePeriodReport` the cash-flow report does and `ReportTable` renders it
+ * `decodePeriodReport` net worth does and `ReportTable` renders it
  * with no edits — in CASH-FLOW ORIENTATION, revenue positive and expenses
  * negative. Nothing here re-signs it.
  */
@@ -3614,6 +3762,7 @@ export function decodeQbCommitResult(raw: unknown): QbCommitResult {
     if (typeof result !== "object" || result === null) throw new ApiShapeError("qb commit result: expected an object");
     return Object.freeze({
         imported: num(result.imported, "qb commit result imported"),
+        updated: num(result.updated, "qb commit result updated"),
         idMatches: decodeQbIdMatches(result.idMatches, "qb commit result idMatches"),
         ordering: decodeQbOrdering(result.ordering, "qb commit result ordering"),
         git: decodeGitReport(result.git, "qb commit result git"),

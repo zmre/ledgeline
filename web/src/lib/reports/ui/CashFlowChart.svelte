@@ -1,27 +1,29 @@
-<!-- The chart above the Cash Flow table: stacked areas per bucket, money into
-     cash above zero and out of it below, with the net change as a dashed line.
+<!-- The chart above the statement of cash flows (plans/27): per period, one
+     stacked bar per activity (operating, investing, financing, and the effect
+     of exchange rates when there is one), cash in above zero and out below,
+     with the net change in cash as the line.
 
-     It draws exactly the table below it: the same displayed rows, under the same
-     labels, and the table's Net row as the net line (`periodStack`). A parent
-     row is its children stacked, plus its own postings when it has any, so every
-     figure in the table is a segment or a sum of segments here. The table is the
-     chart's accessible twin. -->
+     Every segment is a section total in the statement below, and the line is its
+     Net change in cash row, so the statement is the chart's accessible twin. -->
 <script lang="ts">
     import type {AmountStyle} from "#lib/domain/types.js";
     import {settings} from "#lib/stores/settings.svelte.js";
-    import type {PeriodReport} from "../types";
+    import type {CashFlowStatement} from "../types";
+    import {cashFlowChartReport} from "./cashFlowRows";
     import ChartPanel from "./ChartPanel.svelte";
     import PeriodStackView from "./PeriodStackView.svelte";
 
-    let {report, styles}: {report: PeriodReport; styles: ReadonlyMap<string, AmountStyle>} = $props();
+    let {report, styles}: {report: CashFlowStatement; styles: ReadonlyMap<string, AmountStyle>} = $props();
+
+    const chart = $derived(cashFlowChartReport(report));
 </script>
 
 <ChartPanel
     heading="Cash flow over time"
-    note="into cash above zero, out below"
+    note="cash in above zero, out below"
     open={settings.cashFlowChartOpen}
     onToggle={(next) => (settings.cashFlowChartOpen = next)}
     testid="cashflow-chart-panel"
 >
-    <PeriodStackView {report} {styles} mark="area" netLabel="Net change" empty="No cash moved in this range." testid="cashflow-chart" />
+    <PeriodStackView report={chart} {styles} mark="bar" netLabel="Net change in cash" labelNet empty="No cash moved in this range." testid="cashflow-chart" />
 </ChartPanel>

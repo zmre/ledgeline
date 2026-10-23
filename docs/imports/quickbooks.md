@@ -63,15 +63,18 @@ Press **Import**. Ledgeline writes each new transaction into the journal file wh
 Each transaction carries:
 
 - an `id:` tag holding QuickBooks' Trans #;
+- each line's own memo (QuickBooks' Description column) as that posting's comment;
 - `class:`, `customer:` and `vendor:` tags on each posting, when those columns were in the export;
 - the payee name as its description, or the QuickBooks transaction type plus the first memo when there is no payee;
 - amounts in your journal's default commodity (its `D` directive), or else the commodity your journal uses most.
 
 ```journal
 2017-01-03 Office Depot  ; id: 615
-    assets:equipment:computers        $49.99  ; vendor: Office Depot
-    assets:bank:checking             $-49.99
+    assets:equipment:computers        $49.99  ; Monitor arms, vendor: Office Depot
+    assets:bank:checking             $-49.99  ; Monitor arms
 ```
+
+Every line of a QuickBooks transaction becomes its own posting, even when several lines use the same account. Lines are combined only when they have the same account, memo and tags. Such lines would read identically anyway, and combining them avoids writing a row of `$0.00` postings.
 
 The result panel says how many transactions were imported. If any journal file ended up out of date order, it offers to re-sort that file.
 
@@ -83,9 +86,13 @@ Before writing, Ledgeline compares every transaction in the export with the tran
 
 - A transaction whose id isn't in the journal is written.
 - A transaction already in the journal, unchanged, is skipped.
-- A transaction already in the journal with different details is reported with the number of differing rows, and is never written or overwritten.
+- A transaction already in the journal with different details is reported with the number of differing rows and left alone, unless you ask for it to be updated (below). From a terminal, each one is listed by id along with what differs, such as `postings: journal has 2, export has 18`.
 
-So you can export **All dates** every time, or overlapping periods, without creating duplicates. A difference usually means you edited the transaction after importing it, so your version wins. That includes marking it cleared with `*`, and changing an account mapping after the first import. Both make the old transactions differ from what the export now produces.
+So you can export **All dates** every time, or overlapping periods, without creating duplicates.
+
+To take QuickBooks' version of the transactions that differ, tick **Update transactions that changed in QuickBooks** before pressing **Import** (`--update-changed` from a terminal). Each one is replaced in place with the export's dates, description, postings and memos. Its cleared or pending status, code, secondary date and the comment beside its `id:` tag are kept, because QuickBooks doesn't export them. The option is off by default and has to be ticked for each import. Leave it off if you recategorize imported transactions by hand, because the update would put the export's accounts back.
+
+A difference usually means you edited the transaction after importing it, so your version wins. That includes marking it cleared with `*`, and changing an account mapping after the first import. Both make the old transactions differ from what the export now produces. It also happens when the transaction changed in QuickBooks after you imported it, for example when someone added a line to a journal entry. Your journal keeps the old version until you update it.
 
 One limit follows from the matching. QuickBooks numbers transactions per company, so the same Trans # can exist in two different companies. Import each company into its own journal.
 
@@ -97,6 +104,6 @@ The same import runs without the window:
 ledgeline import -i Journal.xlsx -j main.journal
 ```
 
-Ledgeline detects the QuickBooks format from the file. The `-o`, `-r` and balance options are refused for this format, because there is no CSV, rules file or single statement balance. Every account still has to be mapped first. `ledgeline import --help` lists the remaining options, including `--dry-run` and `--no-git`.
+Ledgeline detects the QuickBooks format from the file. The `-o`, `-r` and balance options are refused for this format, because there is no CSV, rules file or single statement balance. Every account still has to be mapped first. `ledgeline import --help` lists the remaining options, including `--dry-run`, `--no-git` and `--update-changed`.
 
 The design notes for this importer are in [plan 17](https://github.com/zmre/ledgeline/blob/main/plans/17-quickbooks-journal-import.md).

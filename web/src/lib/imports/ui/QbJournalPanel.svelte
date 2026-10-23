@@ -128,6 +128,23 @@
                     <span class="text-sm text-warning" role="status">Map every account above before importing.</span>
                 {/if}
             </div>
+            <label class="flex items-start gap-2 text-sm" data-testid="qb-update-changed-label">
+                <input
+                    type="checkbox"
+                    class="checkbox mt-0.5 checkbox-sm"
+                    checked={qbJournalStore.updateChanged}
+                    onchange={(event) => qbJournalStore.setUpdateChanged(event.currentTarget.checked)}
+                    disabled={qbJournalStore.committing}
+                    data-testid="qb-update-changed"
+                />
+                <span>
+                    Update transactions that changed in QuickBooks
+                    <span class="block text-xs text-base-content/60">
+                        Already-imported transactions the export now shows differently are replaced with the export's version, keeping their cleared status and
+                        notes. Leave this off if you re-categorize imported transactions by hand — those edits would be overwritten.
+                    </span>
+                </span>
+            </label>
 
             {#if qbJournalStore.commitRequested}
                 <AsyncSection
@@ -145,8 +162,13 @@
                             <p class="text-sm" data-testid="qb-imported">
                                 Imported {result.imported} transaction{result.imported === 1 ? "" : "s"}.
                             </p>
-                            {#if qbIdMatchesSummary(result.idMatches) !== null}
-                                <p class="text-sm text-warning">{qbIdMatchesSummary(result.idMatches)}</p>
+                            {#if result.updated > 0}
+                                <p class="text-sm" data-testid="qb-updated">
+                                    Updated {result.updated} changed transaction{result.updated === 1 ? "" : "s"} from the export.
+                                </p>
+                            {/if}
+                            {#if qbIdMatchesSummary(result.idMatches, result.updated) !== null}
+                                <p class="text-sm text-warning">{qbIdMatchesSummary(result.idMatches, result.updated)}</p>
                             {/if}
 
                             {#each filesNeedingSort(result.ordering) as file (file.journalId)}

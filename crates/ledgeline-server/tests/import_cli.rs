@@ -334,6 +334,7 @@ fn the_import_subcommand_documents_every_flag() {
         "--sort",
         "--dry-run",
         "--no-git",
+        "--update-changed",
     ] {
         assert!(help.contains(flag), "`{flag}` must be documented:\n{help}");
     }
@@ -416,6 +417,29 @@ fn a_missing_output_flag_is_refused_before_anything_runs() {
     ]);
     assert!(!output.status.success(), "{}", transcript(&output));
     assert!(stderr(&output).contains("--output"), "{}", stderr(&output));
+    assert_eq!(
+        changed(&before, &tree.snapshot()),
+        Vec::<String>::new(),
+        "a refused run writes nothing"
+    );
+}
+
+/// `--update-changed` only means something for a QuickBooks Journal export.
+/// A CSV import never overwrites a transaction it already holds, so the flag
+/// is refused by name rather than silently ignored.
+#[test]
+fn update_changed_is_refused_for_a_csv_import() {
+    let tree = Tree::split_year();
+    let before = tree.snapshot();
+    let mut args = tree.standard_args();
+    args.push("--update-changed");
+    let output = tree.import(&args);
+    assert!(!output.status.success(), "{}", transcript(&output));
+    assert!(
+        stderr(&output).contains("--update-changed"),
+        "{}",
+        stderr(&output)
+    );
     assert_eq!(
         changed(&before, &tree.snapshot()),
         Vec::<String>::new(),
