@@ -1,6 +1,7 @@
 <script lang="ts">
     // Date range with quick presets (WP-04). Native date inputs for good
     // mobile UX; all range math goes through presetRange (pure, tested).
+    import DateInput from "#lib/components/DateInput.svelte";
     import type {ISODate} from "#lib/domain/types.js";
     import {filters, type DatePreset} from "#lib/stores/filters.svelte.js";
 
@@ -123,8 +124,8 @@
         </ul>
     </details>
     <div class="flex items-center gap-1">
-        <input type="date" class="input w-36 input-sm" value={filters.value.from ?? ""} onchange={setFrom} aria-label="From date" />
+        <DateInput class="w-36" value={filters.value.from} onchange={setFrom} aria-label="From date" />
         <span class="text-base-content/60" aria-hidden="true">–</span>
-        <input type="date" class="input w-36 input-sm" value={filters.value.to ?? ""} onchange={setTo} aria-label="To date" />
+        <DateInput class="w-36" value={filters.value.to} onchange={setTo} aria-label="To date" />
     </div>
 </div>

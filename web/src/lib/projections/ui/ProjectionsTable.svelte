@@ -96,6 +96,7 @@
      cannot address is not a delete. -->
 <script lang="ts">
     import {onDestroy} from "svelte";
+    import DateInput from "#lib/components/DateInput.svelte";
     import AccountInput from "#lib/journal/edit/AccountInput.svelte";
     import {decToInput, parseAmountInput} from "#lib/api/editMapping.js";
     import type {AccountClasses} from "#lib/domain/accountClass.js";
@@ -622,13 +623,14 @@
 
 <!-- Both ends of a span, because they differ only in which one they are.
      `to` says "(exclusive)" out loud: it is hledger's own convention and the
-     one thing about a bound a user cannot see from the date in the box. -->
+     one thing about a bound a user cannot see from the date in the box.
+     An UNSET bound is open-ended; `DateInput` keeps it from reading as today. -->
 {#snippet boundCell(line: ScenarioLine, key: "from" | "to", label: string)}
     <td>
-        <input
-            type="date"
-            class="input w-full input-xs"
-            value={line.period[key] ?? ""}
+        <DateInput
+            size="xs"
+            class="w-full"
+            value={line.period[key]}
             disabled={line.period.simple === null}
             aria-label={key === "from" ? `From date for ${label}` : `To date for ${label} (exclusive)`}
             onchange={(e) => setBound(line, key, e.currentTarget.value)}

@@ -284,6 +284,20 @@ describe("COMPONENT ProjectionsTable — editing marks the scenario dirty", () =
         await fireEvent.change(screen.getByLabelText("To date for expenses:housing (exclusive)"), {target: {value: "2028-01-01"}});
         expect(scenarioStore.scenario.lines.find((l) => l.account === "expenses:housing")?.period.raw).toBe("monthly to 2028-01-01");
     });
+
+    it("REGRESSION: an UNSET bound wears a placeholder hint, not WebKit's today", async () => {
+        mount();
+        const cellOf = (label: string) => screen.getByLabelText(label).closest("td") as HTMLElement;
+        const to = "To date for expenses:housing (exclusive)";
+        // WebKit paints today into an empty date input; the hint must cover it.
+        expect(within(cellOf(to)).queryByTestId("date-unset")).not.toBeNull();
+        expect(screen.getByLabelText(to).className).toContain("opacity-0");
+
+        await fireEvent.change(screen.getByLabelText(to), {target: {value: "2028-01-01"}});
+        await tick();
+        expect(within(cellOf(to)).queryByTestId("date-unset")).toBeNull();
+        expect(screen.getByLabelText(to).className).not.toContain("opacity-0");
+    });
 });
 
 /**
