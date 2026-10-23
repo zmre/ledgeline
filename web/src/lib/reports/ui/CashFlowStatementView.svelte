@@ -10,8 +10,9 @@
 
      Every line reads as its effect on cash: an asset that grew is negative (cash
      went into it), a liability that grew is positive. The engine guarantees the
-     sections add up to the change in the cash accounts; the warning at the top
-     appears only if a posting date splits a transaction across two columns.
+     sections add up to the change in the cash accounts; the footnote at the
+     bottom appears only if a posting date splits a transaction across two
+     columns.
 
      Cash lines start OPEN (the per-account cash detail this tab used to show);
      section lines start closed. Keyboard: j/k walk every visible row, Enter opens
@@ -169,15 +170,6 @@
 <div class="flex flex-col gap-4" data-testid="cash-flow-statement">
     <p class="-mb-1 text-xs text-base-content/50">At cost, for {report.from} to {report.to}</p>
 
-    {#if !report.reconciles}
-        <div class="alert rounded-box px-3 py-2 text-sm alert-warning" role="alert" data-testid="cf-unreconciled">
-            <span>
-                In some periods the net change in cash differs from the change in cash balances. A posting date can do this by placing one side of a transaction
-                in a different period from the other. The Total column still agrees.
-            </span>
-        </div>
-    {/if}
-
     {#each model.boxes as box (box.kind)}
         <section class="overflow-x-auto rounded-box border border-base-content/10" data-testid="cf-section-{box.kind}">
             <h3 class="bg-base-200 {ACCENT[box.kind].rule} border-b-2 px-4 py-2.5 text-sm font-semibold tracking-wide uppercase {ACCENT[box.kind].text}">
@@ -225,4 +217,14 @@
             </table>
         </section>
     {/each}
+
+    <!-- A footnote, not a warning: it is almost always a posting date putting
+         one side of a transaction in the next period, the Total column still
+         agrees, and nothing needs fixing. -->
+    {#if !report.reconciles}
+        <p class="text-xs text-base-content/50" role="note" data-testid="cf-unreconciled">
+            In some periods the net change in cash differs from the change in cash balances. A posting date can do this by placing one side of a transaction in
+            a different period from the other. The Total column still agrees.
+        </p>
+    {/if}
 </div>

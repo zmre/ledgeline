@@ -83,7 +83,11 @@ describe("COMPONENT CashFlowStatementView", () => {
         expect(screen.queryByTestId("cf-unreconciled")).toBeNull();
         unmount();
         mount({...CASH_FLOW, reconciles: false});
-        expect(screen.getByTestId("cf-unreconciled").textContent).toContain("posting date");
+        const note = screen.getByTestId("cf-unreconciled");
+        expect(note.textContent).toContain("posting date");
+        // A footnote under everything, not a banner over the statement.
+        expect(note.parentElement?.lastElementChild).toBe(note);
+        expect(note.getAttribute("role")).toBe("note");
     });
 
     it("leaves out the exchange-rate line when there is none", () => {

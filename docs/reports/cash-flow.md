@@ -35,7 +35,7 @@ Every line shows the account's **effect on cash**. An asset that grew used cash,
 
 ## It always reconciles
 
-Every transaction balances, so net income plus every line adds up exactly to the change in your cash accounts, in every column and every currency. **Net change in cash** is computed that way, and **Ending cash** minus **Beginning cash** must equal it. If a column ever disagreed, the tab would say so above the statement rather than hide it. The one thing that can cause that is a posting date that puts one side of a transaction in a different period from the other; the Total column still agrees.
+Every transaction balances, so net income plus every line adds up exactly to the change in your cash accounts, in every column and every currency. **Net change in cash** is computed that way, and **Ending cash** minus **Beginning cash** must equal it. If a column ever disagreed, a note at the bottom of the statement would say so rather than hide it. The one thing that can cause that is a posting date that puts one side of a transaction in a different period from the other; the Total column still agrees.
 
 Three rules keep it reconciling:
 
