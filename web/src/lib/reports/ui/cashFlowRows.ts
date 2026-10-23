@@ -70,22 +70,29 @@ function rowLabel(account: string, line: string): string {
     return account.startsWith(`${line}:`) ? account.slice(line.length + 1) : account;
 }
 
-/** A line can open when it stands for anything other than exactly one account of the same name. */
-function expandable(name: string, accounts: readonly string[]): boolean {
-    return accounts.length > 1 || accounts[0] !== name;
+/**
+ * Whether a line can open, and what it is called.
+ *
+ * An account line (rolled up to the report's depth) that turns out to stand
+ * for exactly ONE account is printed as that account, in full, with nothing to
+ * open: `assets:fidelity:ira` folding over a lone `cash` was a disclosure that
+ * hid one row and then showed it. A `cfgroup:` line keeps its name and its
+ * arrow even with one account, because there the name is the user's own and
+ * the account behind it is information the line does not show.
+ */
+function folding(line: {name: string; source: CfLine["source"]; rows: readonly {account: string}[]}): {label: string; canOpen: boolean} {
+    if (line.source === "account" && line.rows.length === 1) return {label: line.rows[0].account, canOpen: false};
+    return {label: line.name, canOpen: line.rows.length > 1 || line.rows[0]?.account !== line.name};
 }
 
 function lineRows(prefix: string, line: CfLine, isOpen: IsOpen): CfDisplayRow[] {
     const key = `${prefix}/${line.source}/${line.name}`;
-    const canOpen = expandable(
-        line.name,
-        line.rows.map((row) => row.account)
-    );
+    const {label, canOpen} = folding(line);
     const open = canOpen && isOpen(key, false);
     const head: CfDisplayRow = {
         kind: "line",
         key,
-        label: line.name,
+        label,
         indent: 0,
         account: canOpen ? null : (line.rows[0]?.account ?? null),
         amounts: line.total,
@@ -110,17 +117,14 @@ function lineRows(prefix: string, line: CfLine, isOpen: IsOpen): CfDisplayRow[] 
 
 function cashRows(edge: "beginning" | "ending", line: CfCashLine, isOpen: IsOpen): CfDisplayRow[] {
     const key = `cash/${line.source}/${line.name}`;
-    const canOpen = expandable(
-        line.name,
-        line.rows.map((row) => row.account)
-    );
+    const {label, canOpen} = folding(line);
     // One fold for both blocks: opening "Mercury" under Beginning cash opens it
     // under Ending cash too, so the two lists always line up.
     const open = canOpen && isOpen(key, true);
     const head: CfDisplayRow = {
         kind: "line",
         key: `${edge}/${key}`,
-        label: line.name,
+        label,
         indent: 0,
         account: canOpen ? null : (line.rows[0]?.account ?? null),
         amounts: line[edge],

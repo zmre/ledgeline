@@ -96,3 +96,53 @@ describe("UNIT cashFlowChartReport", () => {
         expect(chart.periods.map((period) => period.label)).toEqual(["Jan 2026", "Feb 2026", "Mar 2026"]);
     });
 });
+
+describe("UNIT cfDisplayModel — a rolled-up line that is one account", () => {
+    // The reported case: depth 3 rolls `assets:fidelity:ira:cash` up to
+    // `assets:fidelity:ira`, and nothing else is under it. It printed as a
+    // pre-opened disclosure hiding exactly one row.
+    const lone = {
+        ...CASH_FLOW,
+        cash: [
+            {
+                name: "assets:fidelity:ira",
+                source: "account" as const,
+                beginning: CASH_FLOW.cash[1].beginning,
+                ending: CASH_FLOW.cash[1].ending,
+                rows: [{account: "assets:fidelity:ira:cash", beginning: CASH_FLOW.cash[1].beginning, ending: CASH_FLOW.cash[1].ending}],
+            },
+        ],
+        sections: [
+            {
+                ...CASH_FLOW.sections[0],
+                lines: [
+                    {
+                        name: "assets:fixed",
+                        source: "account" as const,
+                        total: flow([0, 100, 0]),
+                        rows: [{account: "assets:fixed:accum-depreciation", amounts: flow([0, 100, 0])}],
+                    },
+                ],
+            },
+        ],
+    };
+
+    it("prints the whole account, with nothing to open, under the cash balances", () => {
+        const model = cfDisplayModel(lone, defaults);
+        expect(model.beginning.rows.map((row) => [row.label, row.expandable, row.account])).toEqual([
+            ["assets:fidelity:ira:cash", false, "assets:fidelity:ira:cash"],
+        ]);
+        expect(model.ending.rows).toHaveLength(1);
+    });
+
+    it("does the same in a section", () => {
+        const row = cfDisplayModel(lone, defaults).boxes[0].rows[1];
+        expect([row.label, row.expandable, row.account]).toEqual(["assets:fixed:accum-depreciation", false, "assets:fixed:accum-depreciation"]);
+    });
+
+    it("keeps a cfgroup line's own name and arrow even with one account behind it", () => {
+        const grouped = {...lone, cash: [{...lone.cash[0], name: "Retirement", source: "group" as const}]};
+        const [head] = cfDisplayModel(grouped, defaults).beginning.rows;
+        expect([head.label, head.expandable]).toEqual(["Retirement", true]);
+    });
+});
