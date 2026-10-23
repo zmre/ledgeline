@@ -54,7 +54,7 @@ The top bar has a tab for each part of the app. Most things can be done from the
 
 - [Journal](journal/index.md): the transaction list, [filtering](journal/filtering.md), editing, [problems](journal/problems.md) the background checks find, [keyboard shortcuts](journal/keyboard.md), and [exporting the journal to XLSX](journal/export.md).
 - [Imports](imports/index.md): [bringing in bank and card statements](imports/new-transactions.md), [creating](imports/create-rules.md) and [editing](imports/rules-editor.md) CSV rules files, and [importing from QuickBooks](imports/quickbooks.md).
-- [Reports](reports/index.md): [Insights](reports/insights.md), the [balance sheet](reports/balance-sheet.md), the [income statement](reports/income-statement.md), [cash flow and net worth](reports/cash-flow-and-net-worth.md), and [subscriptions](reports/subscriptions.md).
+- [Reports](reports/index.md): [Insights](reports/insights.md), the [balance sheet](reports/balance-sheet.md), the [income statement](reports/income-statement.md), [cash flow](reports/cash-flow.md), [net worth](reports/net-worth.md), and [subscriptions](reports/subscriptions.md).
 - [Holdings](holdings/index.md): stocks and other assets, the [`holdings:` and `valuation:` tags](holdings/tags.md), [price updates](holdings/prices.md), [allocation](holdings/allocation.md) and [benchmarks](holdings/benchmarks.md).
 - [Budget](budget.md): goals written as hledger `~` rules, and how you're tracking against them.
 - [Projections](projections/index.md): what-if scenarios for cash runway and net worth.

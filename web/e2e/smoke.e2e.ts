@@ -252,18 +252,21 @@ test("reports: cash flow takes From/To, adds a Total column, and Interval = Tota
     await expect(page.getByLabel("End", {exact: true})).toHaveCount(0);
     await expect(page).toHaveURL(/tab=cf&from=2025-08-01&to=2026-07-08&interval=monthly/);
 
-    // Twelve months, then a Total summing everything to its left.
-    const headers = page.locator("table thead td");
+    // Twelve months, then a Total summing everything to its left. The
+    // statement (plans/27) reconciles to cash, so its Net change in cash is
+    // the same $17,703.07 the old per-account view's Net row printed —
+    // `hledger bal type:C -b 2025-08-01 -e 2026-07-09`.
+    const headers = page.getByTestId("cf-section-operating").locator("thead th:not(:first-child)");
     await expect(headers.first()).toHaveText("Aug 2025");
     await expect(headers.nth(11)).toHaveText("Jul 2026");
     await expect(headers.nth(12)).toHaveText("Total");
-    const net = page.locator("tbody tr").filter({has: page.locator("th", {hasText: /^Net$/})});
+    const net = page.getByTestId("cf-net-change");
     await expect(net.locator("td").last()).toContainText("$17,703.07");
 
-    // Interval = Total: ONE column, headed Total, and the chart asks for a
-    // wider range instead of drawing a single point.
+    // Interval = Total: ONE column, and the chart asks for a wider range
+    // instead of drawing a single point.
     await page.getByLabel("Interval").selectOption("total");
-    await expect(headers).toHaveText(["Total"]);
+    await expect(headers).toHaveText(["Amount"]);
     await expect(net.locator("td")).toHaveCount(1);
     await expect(net.locator("td")).toContainText("$17,703.07");
     await expect(page.getByTestId("cashflow-chart-empty")).toContainText("Only one period");
@@ -309,7 +312,7 @@ test("reports: an old cash-flow link with end and count still opens the same col
     await page.goto("/reports?tab=cf&end=2026-07-08&interval=monthly&count=3&depth=2");
     await expect(page.getByLabel("From", {exact: true})).toHaveValue("2026-05-01");
     await expect(page.getByLabel("To", {exact: true})).toHaveValue("2026-07-08");
-    await expect(page.locator("table thead td")).toHaveText(["May 2026", "Jun 2026", "Jul 2026", "Total"]);
+    await expect(page.getByTestId("cf-section-operating").locator("thead th:not(:first-child)")).toHaveText(["May 2026", "Jun 2026", "Jul 2026", "Total"]);
     await expect(page).toHaveURL(/tab=cf&from=2026-05-01&to=2026-07-08&interval=monthly&depth=2/);
 });
 
@@ -373,23 +376,18 @@ test("reports: net worth and cash flow draw their charts above the tables", asyn
     // empty columns and get no "$0" label.
     await expect(worth.locator("g.lc-net-point")).toHaveCount(3);
 
-    // Cash flow: exactly the table's accounts, under the table's own labels,
-    // and no breakdown toggle. At the default depth the table shows assets ›
-    // bank › checking, savings, wise, and the collapsed broker:taxable; wise
-    // holds only EUR, which the $ chart cannot draw and says so.
+    // Cash flow (plans/27): one stacked series per activity, plus the effect of
+    // exchange rates (the May dollars-to-euros change), and no breakdown
+    // toggle. Euros cannot be drawn on the $ axis, and neither can the 5 GLD
+    // that sample.journal moves in from equity with no cost (one of its
+    // deliberate problems); the note names both.
     await page.getByRole("tab", {name: "Cash Flow"}).click();
     const cash = page.getByTestId("cashflow-chart-panel");
-    await expect(cash.getByTestId("cashflow-chart-legend").locator("li")).toHaveText(["checking", "savings", "broker:taxable", "Net change"]);
-    await expect(cash.getByTestId("cashflow-chart-omitted")).toContainText("EUR not shown");
+    await expect(cash.getByTestId("cashflow-chart-legend").locator("li")).toContainText(["Operating", "Investing", "Exchange rates", "Net change in cash"]);
+    await expect(cash.getByTestId("cashflow-chart-omitted")).toContainText("EUR, GLD not shown");
     await expect(cash.getByRole("radiogroup")).toHaveCount(0);
-    await expect(cash.getByText(/By (source|account)/)).toHaveCount(0);
-    for (const [account, label] of [
-        ["assets:bank:checking", "checking"],
-        ["assets:bank:savings", "savings"],
-        ["assets:broker:taxable", "broker:taxable"],
-    ]) {
-        await expect(page.locator(`tr[data-account="${account}"] th`)).toHaveText(label);
-    }
+    // The cash detail under the statement is open by default.
+    await expect(page.locator('[data-testid="cf-cash-ending"] tr[data-account="assets:bank:checking"]')).toBeVisible();
 });
 
 test("reports: the net worth tooltip names the segment under the pointer, else the column top to bottom", async ({page}) => {

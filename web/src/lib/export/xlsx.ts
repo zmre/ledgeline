@@ -20,6 +20,8 @@ import type {
     BsSectionKind,
     BudgetBar,
     BudgetReport,
+    CashFlowStatement,
+    CfColumns,
     IncomeStatementReport,
     IsSectionKind,
     PeriodReport,
@@ -27,6 +29,7 @@ import type {
 } from "#lib/reports/types.js";
 import {bsSectionBlocks, bsSummary} from "#lib/reports/ui/balanceSheetRows.js";
 import {compressIsRows, compressPeriodRows, compressSectionRows} from "#lib/reports/ui/displayRows.js";
+import {cfDisplayModel, type CfDisplayRow} from "#lib/reports/ui/cashFlowRows.js";
 import {amountsPct, isSummary} from "#lib/reports/ui/incomeStatementRows.js";
 import {periodTable} from "#lib/reports/ui/periodTable.js";
 import type {Workbook, Worksheet} from "exceljs"; // type-only: erased at build time
@@ -696,6 +699,66 @@ export async function buildIncomeStatementWorkbook(report: IncomeStatementReport
 }
 
 /**
+ * Statement of cash flows workbook (plans/27): the screen's own rows, from the
+ * same display model, so the workbook shows exactly what the page shows. Every
+ * line is opened, because a workbook has no disclosure to click; the cash
+ * detail is there as on screen.
+ *
+ * One money column per period plus Total (or a single Amount), in `base`.
+ * Anything in another commodity goes to an "Other commodities" column for the
+ * Total, rather than being dropped.
+ */
+export async function buildCashFlowWorkbook(report: CashFlowStatement, meta: {title: string; params: string}, base: string | null): Promise<Workbook> {
+    const {Workbook: ExcelWorkbook} = await import("exceljs");
+    const workbook = new ExcelWorkbook();
+    const ws = workbook.addWorksheet(meta.title);
+    const model = cfDisplayModel(report, () => true);
+    const inBase = base === null ? "" : ` (${base})`;
+    const periods = model.buckets?.map((bucket) => bucket.label) ?? [];
+    const headers = ["Account", ...periods, periods.length > 0 ? `Total${inBase}` : `Amount${inBase}`, "Other commodities"];
+    addTitleRows(ws, meta, headers);
+    const extrasCol = headers.length;
+    ws.getColumn(extrasCol).width = 24;
+    ws.views = [{state: "frozen", ySplit: 4}];
+
+    let rowIx = 5;
+    const write = (label: string, indent: number, columns: CfColumns, bold: boolean): void => {
+        labelCell(ws, rowIx, label, indent, bold);
+        const figures = periods.length > 0 ? [...columns.values, columns.total] : [columns.total];
+        figures.forEach((ma, i) => {
+            const cell = ws.getCell(rowIx, i + 2);
+            if (base === null) setAmount(cell, ma);
+            else setDec(cell, base, ma.get(base) ?? ZERO_MONEY);
+            if (bold) cell.font = {bold: true};
+        });
+        if (base !== null) {
+            const leftovers = sortedEntries(columns.total).filter(([commodity, qty]) => commodity !== base && qty.m !== 0n);
+            if (leftovers.length > 0) ws.getCell(rowIx, extrasCol).value = amountsText(leftovers);
+        }
+        rowIx += 1;
+    };
+    const writeRows = (rows: readonly CfDisplayRow[], indent: number): void => {
+        for (const row of rows) write(row.label, indent + row.indent, row.amounts, false);
+    };
+
+    for (const box of model.boxes) {
+        labelCell(ws, rowIx, box.title, 0, true);
+        rowIx += 1;
+        writeRows(box.rows, 1);
+        write(box.totalLabel, 0, box.total, true);
+        rowIx += 1;
+    }
+    if (model.exchange !== null) write("Effect of exchange rates on cash", 0, model.exchange, true);
+    write("Net change in cash", 0, model.netChange, true);
+    rowIx += 1;
+    for (const block of [model.beginning, model.ending]) {
+        write(block.title, 0, block.total, true);
+        writeRows(block.rows, 1);
+    }
+    return workbook;
+}
+
+/**
  * Holdings workbook: one row per holding mirroring the UI table (Name …
  * Gain %), then a bold totals row with values ONLY in Basis and Market value
  * — the engine's honest totals, never recomputed (basis blank when any
@@ -781,6 +844,16 @@ export async function exportBalanceSheetXlsx(report: BalanceSheetReport, meta: {
 /** Build the grouped income-statement .xlsx and trigger a browser download. */
 export async function exportIncomeStatementXlsx(report: IncomeStatementReport, meta: {title: string; params: string}, filename: string): Promise<void> {
     await downloadWorkbook(await buildIncomeStatementWorkbook(report, meta), filename);
+}
+
+/** Build the statement-of-cash-flows .xlsx and trigger a browser download. */
+export async function exportCashFlowXlsx(
+    report: CashFlowStatement,
+    meta: {title: string; params: string},
+    filename: string,
+    base: string | null
+): Promise<void> {
+    await downloadWorkbook(await buildCashFlowWorkbook(report, meta, base), filename);
 }
 
 /** Build the holdings .xlsx and trigger a browser download. */

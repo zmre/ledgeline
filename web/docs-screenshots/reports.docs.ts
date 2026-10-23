@@ -77,25 +77,27 @@ test.describe("income statement", () => {
     });
 });
 
-// Cash flow over the first half of 2026: the From/To range boxed, Interval
-// circled, the Total column boxed. A box for the range because an ellipse wide
-// enough for two date fields runs into the Interval circle.
+// The statement of cash flows over the first half of 2026 (plans/27): the
+// From/To range boxed, Interval circled, and the Total column boxed from its
+// heading to Net cash from operating activities. Only the Operating section is
+// in frame: the whole statement is taller than the viewport, and measuring it
+// would scroll the page out from under the fixed annotation overlay.
 test.describe("cash flow", () => {
-    // The chart collapsed so the whole table fits under the controls.
+    // The chart collapsed so the statement sits right under the controls.
     test.use({settings: {cashFlowChartOpen: false}});
 
     test("cash flow", async ({page}) => {
         await page.goto("/reports?tab=cf&from=2026-01-01&to=2026-06-30&interval=monthly");
-        // The period table's header cells are <td>, not column headers.
-        const table = page.locator("table").filter({has: page.locator("thead td", {hasText: "Total"})});
-        const totalHead = table.locator("thead td").last();
+        const operating = page.getByTestId("cf-section-operating");
+        await expect(operating).toBeVisible();
+        const totalHead = operating.locator("thead th").last();
         await expect(totalHead).toHaveText("Total");
-        const totalNet = table.locator("tbody tr").last().locator("td").last();
+        const totalFoot = operating.locator("tfoot td").last();
         const drawn = await annotate(page, [
             {kind: "box", target: await around([page.getByText("From", {exact: true}), page.getByLabel("To", {exact: true})])},
             {kind: "circle", target: await intervalControl(page)},
-            {kind: "box", target: await around([totalHead, totalNet])},
+            {kind: "box", target: await around([totalHead, totalFoot])},
         ]);
-        await shot(page, SECTION, "cash-flow", {clip: [page.getByRole("tablist", {name: "Report"}), table, drawn], padding: 8});
+        await shot(page, SECTION, "cash-flow", {clip: [page.getByRole("tablist", {name: "Report"}), operating, drawn], padding: 8});
     });
 });

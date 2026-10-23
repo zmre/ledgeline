@@ -17,6 +17,7 @@ import {
     decodeInsightsReport,
     decodeJournalInfo,
     decodeOtherHoldingsReport,
+    decodeCashFlowStatement,
     decodePeriodReport,
     decodeProjection,
     decodeProjectionIndex,
@@ -646,24 +647,43 @@ describe("UNIT nativeDecode — IncomeStatementReport (interval mode)", () => {
     });
 });
 
-describe("UNIT nativeDecode — PeriodReport over the cashflow / networth goldens", () => {
-    it("decodes buckets, per-bucket MixedAmounts, and totals", () => {
-        const report = decodePeriodReport(golden("cashflow"));
-        expect(report.buckets).toEqual(["2026-05", "2026-06", "2026-07"]);
-        expect(report.rows.map((r) => r.account)).toEqual(["assets", "assets:bank", "assets:broker"]);
-        expect(report.rows[0].values[0].get("$")).toEqual({m: 138878n, p: 2});
-        expect(report.rows[0].values[0].get("EUR")).toEqual({m: 50000n, p: 2});
-        expect(report.rows[0].values[2].get("$")).toEqual({m: -187500n, p: 2});
-        // places 0 stays places 0
-        expect(report.rows[2].values[1].get("$")).toEqual({m: 630n, p: 0});
-        // a bucket with no activity is an empty object → an empty Map
-        expect(report.rows[2].values[2].size).toBe(0);
-        expect(report.totals[1].get("$")).toEqual({m: 242512n, p: 2});
-        // sample.journal prices every commodity, so the server omits `meta` entirely
-        // (reports_golden.rs asserts the same on the Rust side).
-        expect(report.meta).toBeUndefined();
+describe("UNIT nativeDecode — the statement of cash flows over the cashflow goldens", () => {
+    it("decodes columns, sections, cash lines and the reconciliation flag", () => {
+        const report = decodeCashFlowStatement(golden("cashflow"));
+        expect(report.kind).toBe("cashFlow");
+        expect(report.buckets.map((b) => b.key)).toEqual(["2026-05", "2026-06", "2026-07"]);
+        expect(report.sections.map((s) => s.kind)).toEqual(["operating", "investing"]);
+        expect(report.cash.map((line) => line.name)).toEqual(["assets:bank", "assets:broker"]);
+        expect(report.reconciles).toBe(true);
+        // Every figure has one value per column.
+        expect(report.netChange.values).toHaveLength(3);
+        // The May currency exchange: 500 EUR in, $571 out, as the exchange line.
+        expect(report.exchange.total.get("EUR")).toEqual({m: 50000n, p: 2});
+        expect(report.exchange.total.get("$")).toEqual({m: -571n, p: 0});
     });
 
+    it("decodes the single-column Total grain, whose balances take the first and last edge", () => {
+        const total = decodeCashFlowStatement(golden("cashflow-total"));
+        expect(total.buckets.map((b) => b.key)).toEqual(["2025-08-01..2026-07-08"]);
+        expect(total.netChange.values[0]).toEqual(total.netChange.total);
+        expect(total.beginningCash.values[0]).toEqual(total.beginningCash.total);
+        expect(decodeCashFlowStatement(golden("cashflow-range")).buckets.map((b) => b.key)).toEqual(["2026-04", "2026-05", "2026-06", "2026-07"]);
+    });
+
+    it("refuses a figure with the wrong number of columns rather than shifting it under the wrong heading", () => {
+        const raw = golden("cashflow") as {netChange: {values: unknown[]}};
+        const short = {...raw, netChange: {...raw.netChange, values: raw.netChange.values.slice(1)}};
+        expect(() => decodeCashFlowStatement(short)).toThrow(/2 values for 3 columns/);
+    });
+
+    it("refuses a section kind it does not know", () => {
+        const raw = golden("cashflow") as {sections: {kind: string}[]};
+        const bad = {...raw, sections: [{...raw.sections[0], kind: "other"}]};
+        expect(() => decodeCashFlowStatement(bad)).toThrow(/kind/);
+    });
+});
+
+describe("UNIT nativeDecode — PeriodReport over the networth golden", () => {
     it("decodes market-valued net worth at full computed precision", () => {
         const report = decodePeriodReport(golden("networth"));
         expect(report.rows[0]).toMatchObject({account: "assets", depth: 1});
@@ -691,7 +711,7 @@ describe("UNIT nativeDecode — PeriodReport over the cashflow / networth golden
         expect(() => decodePeriodReport({buckets: [], rows: []})).toThrow(ApiShapeError);
     });
 
-    it("carries each net-worth row's balance-sheet side, and no side on the cash flow", () => {
+    it("carries each net-worth row's balance-sheet side", () => {
         const worth = decodePeriodReport(golden("networth"));
         expect(worth.rows.map((r) => [r.account, r.kind])).toEqual([
             ["assets", "asset"],
@@ -703,24 +723,12 @@ describe("UNIT nativeDecode — PeriodReport over the cashflow / networth golden
             ["liabilities:cc", "liability"],
             ["liabilities:mortgage", "liability"],
         ]);
-        const flow = decodePeriodReport(golden("cashflow"));
-        expect(flow.rows.every((r) => !("kind" in r))).toBe(true);
     });
 
-    it("carries cash flow's Total column and no Total on net worth", () => {
-        const flow = decodePeriodReport(golden("cashflow"));
-        expect(flow.grandTotal?.get("$")).toEqual({m: 193890n, p: 2});
-        expect(flow.rows.every((r) => r.total !== undefined)).toBe(true);
+    it("carries no Total on net worth", () => {
         const worth = decodePeriodReport(golden("networth"));
         expect(worth.grandTotal).toBeUndefined();
         expect(worth.rows.every((r) => !("total" in r))).toBe(true);
-    });
-
-    it("decodes the from/to window and its single-column Total grain", () => {
-        expect(decodePeriodReport(golden("cashflow-range")).buckets).toEqual(["2026-04", "2026-05", "2026-06", "2026-07"]);
-        const total = decodePeriodReport(golden("cashflow-total"));
-        expect(total.buckets).toEqual(["2025-08-01..2026-07-08"]);
-        expect(total.totals[0]).toEqual(total.grandTotal);
     });
 
     it("throws when the Total column is half there", () => {
@@ -2225,9 +2233,9 @@ describe("UNIT nativeDecode — renaming any wire key is detected, not absorbed"
         ["incomestatement-grouped", decodeIncomeStatementReport, golden("incomestatement-grouped")],
         ["incomestatement-flows", decodeFlowReport, golden("incomestatement-flows")],
         ["incomestatement-grouped-monthly", decodeIncomeStatementReport, golden("incomestatement-grouped-monthly")],
-        ["cashflow", decodePeriodReport, golden("cashflow")],
-        ["cashflow-range", decodePeriodReport, golden("cashflow-range")],
-        ["cashflow-total", decodePeriodReport, golden("cashflow-total")],
+        ["cashflow", decodeCashFlowStatement, golden("cashflow")],
+        ["cashflow-range", decodeCashFlowStatement, golden("cashflow-range")],
+        ["cashflow-total", decodeCashFlowStatement, golden("cashflow-total")],
         ["networth", decodePeriodReport, golden("networth")],
         ["budget", decodeBudgetReport, golden("budget")],
         ["budget-gaps", decodeBudgetGaps, golden("budget-gaps")],

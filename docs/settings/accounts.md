@@ -37,9 +37,11 @@ The first part is a field for each tag a Ledgeline report reads. Most take a fix
 | Income statement section | `issection:` | `revenue`, `cogs`, `opex`, `depreciation`, `interest`, `tax`, `other` | [Income statement](../reports/income-statement.md) |
 | Income statement line | `isgroup:` | Free text | [Income statement](../reports/income-statement.md) |
 | Balance sheet line | `bsgroup:` | Free text, with suggestions such as "Cash and cash equivalents" and "Investments" | [Balance sheet](../reports/balance-sheet.md) |
-| Balance sheet term | `bsterm:` | `current`, `noncurrent` | [Balance sheet](../reports/balance-sheet.md) |
+| Balance sheet term | `bsterm:` | `current`, `noncurrent` | [Balance sheet](../reports/balance-sheet.md), [Cash flow](../reports/cash-flow.md) |
+| Cash flow section | `cfsection:` | `operating`, `investing`, `financing`, `cash` | [Cash flow](../reports/cash-flow.md) |
+| Cash flow line | `cfgroup:` | Free text | [Cash flow](../reports/cash-flow.md) |
 | Holdings tab | `holdings:` | `stock`, `other`, `none` | [Holdings](../holdings/index.md) |
-| Valuation role | `valuation:` | `cost`, `unrealized`, `depreciation`, `adjustment`, `mark` | [Holdings](../holdings/index.md) |
+| Valuation role | `valuation:` | `cost`, `unrealized`, `depreciation`, `adjustment`, `mark` | [Holdings](../holdings/index.md), [Cash flow](../reports/cash-flow.md) |
 
 Each field has a help icon with a one-line explanation. Pick "(none)" or clear the text to remove the tag.
 

@@ -462,11 +462,11 @@ export interface PeriodRow {
     values: MixedAmount[];
     /** Net worth only; absent on every other period report. */
     kind?: PeriodRowKind;
-    /** Cash flow only: the sum of `values`, the row's Total column. Present exactly when `PeriodReport.grandTotal` is. */
+    /** The sum of `values`, the row's Total column. Present exactly when `PeriodReport.grandTotal` is. */
     total?: MixedAmount;
 }
 
-/** Cash flow / net worth: one column per bucket, oldest → newest. */
+/** Net worth, projections, and the cash-flow chart's input: one column per bucket, oldest → newest. */
 export interface PeriodReport {
     buckets: string[];
     /** One per `buckets` key, same order. */
@@ -474,7 +474,7 @@ export interface PeriodReport {
     rows: PeriodRow[];
     totals: MixedAmount[];
     /**
-     * Cash flow only: the sum of `totals`, the Net row's Total column. Its
+     * The sum of `totals`, the Net row's Total column, on reports that have one. Its
      * presence is what says the report HAS a Total column — net worth's
      * snapshot columns mean nothing summed, so it never carries one.
      */
@@ -596,4 +596,78 @@ export interface BudgetGaps {
     expenseTotal: MixedAmount;
     /** `|Σ revenue| + |Σ expense|` — summed separately, never netted against each other. */
     headline: MixedAmount;
+}
+
+// ---------------------------------------------------------------------------
+// Statement of cash flows (plans/27-cash-flow-statement.md)
+// ---------------------------------------------------------------------------
+
+/**
+ * One figure per column, and the Total column. For a flow the Total is the sum
+ * of the columns; for a balance (beginning or ending cash) it is the first or
+ * last column's, never a sum.
+ */
+export interface CfColumns {
+    values: MixedAmount[];
+    total: MixedAmount;
+}
+
+/** Where a line's name came from: a `cfgroup:` tag, or the account itself at the report's depth. */
+export type CfLineSource = "group" | "account";
+
+export type CfSectionKind = "operating" | "investing" | "financing";
+
+/** One account inside a line: its contribution (−Δ) per column. */
+export interface CfRow {
+    account: string;
+    amounts: CfColumns;
+}
+
+export interface CfLine {
+    name: string;
+    source: CfLineSource;
+    total: CfColumns;
+    rows: CfRow[];
+}
+
+export interface CfSection {
+    kind: CfSectionKind;
+    title: string;
+    /** Operating's lines do not include net income, which is `CashFlowStatement.netIncome`. */
+    lines: CfLine[];
+    /** Net cash from the activity. Operating's includes net income. */
+    total: CfColumns;
+}
+
+export interface CfCashRow {
+    account: string;
+    beginning: CfColumns;
+    ending: CfColumns;
+}
+
+export interface CfCashLine {
+    name: string;
+    source: CfLineSource;
+    beginning: CfColumns;
+    ending: CfColumns;
+    rows: CfCashRow[];
+}
+
+/** `GET /api/reports/cashflow`: net income, adjusted by every non-cash balance-sheet change, reconciled to cash. */
+export interface CashFlowStatement {
+    /** Decoder-applied discriminator; never on the wire. */
+    kind: "cashFlow";
+    from: ISODate;
+    to: ISODate;
+    buckets: IsBucket[];
+    netIncome: CfColumns;
+    sections: CfSection[];
+    /** Effect of exchange rates on cash; empty in a single-currency journal. */
+    exchange: CfColumns;
+    netChange: CfColumns;
+    cash: CfCashLine[];
+    beginningCash: CfColumns;
+    endingCash: CfColumns;
+    /** Net change equals ending − beginning cash in every column. False only when a posting date splits a transaction across columns. */
+    reconciles: boolean;
 }

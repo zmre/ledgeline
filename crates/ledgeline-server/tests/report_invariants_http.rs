@@ -309,14 +309,14 @@ async fn served_monthly_buckets_sum_to_the_served_yearly_bucket() {
         )
         .await;
 
-        let summed = monthly["totals"]
+        let summed = monthly["netChange"]["values"]
             .as_array()
-            .expect("totals array")
+            .expect("net change per column")
             .iter()
             .fold(Wire::new(), |acc, total| wire_add(&acc, &parse_wire(total)));
         assert_eq!(
             canon(&summed),
-            canon(&parse_wire(&yearly["totals"][0])),
+            canon(&parse_wire(&yearly["netChange"]["values"][0])),
             "Σ {months} served monthly buckets == the served yearly bucket at {end}"
         );
     }
@@ -343,9 +343,10 @@ async fn served_interval_reports_truncate_the_final_bucket_at_end() {
         "/api/reports/cashflow?end=2026-02-16&interval=monthly&count=2&depth=1",
     )
     .await;
-    assert_eq!(truncated["buckets"][1], "2026-02");
+    assert_eq!(truncated["buckets"][1]["key"], "2026-02");
+    assert_eq!(truncated["buckets"][1]["to"], "2026-02-16");
     assert_eq!(
-        canon(&parse_wire(&truncated["totals"][1])),
+        canon(&parse_wire(&truncated["netChange"]["values"][1])),
         Canon::from([("$".to_string(), (-227_684, 2))]),
         "final bucket is 2026-02-01..2026-02-16 → $-2,276.84"
     );
@@ -356,7 +357,7 @@ async fn served_interval_reports_truncate_the_final_bucket_at_end() {
     )
     .await;
     assert_eq!(
-        canon(&parse_wire(&whole_month["totals"][0])),
+        canon(&parse_wire(&whole_month["netChange"]["values"][0])),
         Canon::from([("$".to_string(), (192_316, 2))]),
         "the whole month is $1,923.16 — the $4,200.00 salary lands 2026-02-27"
     );

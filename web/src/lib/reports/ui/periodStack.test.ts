@@ -4,7 +4,7 @@
 
 import {readFileSync} from "node:fs";
 import {describe, expect, it} from "vitest";
-import {decodePeriodReport} from "#lib/api/nativeDecode.js";
+import {decodeCashFlowStatement, decodePeriodReport} from "#lib/api/nativeDecode.js";
 import {dec, maAdd, maIsZero, maNeg, type MixedAmount} from "#lib/domain/money.js";
 import {DEFAULT_PALETTE} from "#lib/format/palette.js";
 
@@ -12,6 +12,7 @@ const SLOTS = DEFAULT_PALETTE.categorical.length;
 import {amountIn} from "#lib/projections/projectionView.js";
 import type {PeriodReport, PeriodRow, PeriodRowKind} from "../types";
 import {compressPeriodRows} from "./displayRows";
+import {cashFlowChartReport} from "./cashFlowRows";
 import {periodStack, slotsBySize, splitBySign, stackCommodity, stackSegments, type StackSegment} from "./periodStack";
 import {periodsOf} from "../test-helpers";
 
@@ -31,11 +32,12 @@ function report(rows: PeriodRow[], totals: number[], buckets = totals.map((_, i)
     return {buckets, periods: periodsOf(buckets), rows, totals: totals.map(usd)};
 }
 
-const golden = (name: string): PeriodReport =>
-    decodePeriodReport(JSON.parse(readFileSync(new URL(`../../../../../fixtures/native/v1/${name}.json`, import.meta.url), "utf8")));
+const raw = (name: string): unknown => JSON.parse(readFileSync(new URL(`../../../../../fixtures/native/v1/${name}.json`, import.meta.url), "utf8"));
+const golden = (name: string): PeriodReport => decodePeriodReport(raw(name));
 
 /** The sample journal's own reports (fixtures/native/v1, depth 2). */
-const SAMPLE_CASH_FLOW = golden("cashflow");
+/** The cash-flow chart's input, as the tab builds it from the statement (plans/27). */
+const SAMPLE_CASH_FLOW = cashFlowChartReport(decodeCashFlowStatement(raw("cashflow")));
 const SAMPLE_NET_WORTH = golden("networth");
 
 /**
@@ -138,13 +140,10 @@ describe("UNIT periodStack — the chart agrees with the table", () => {
         assertAgreement(r);
     });
 
-    it("stacks the sample cash flow's displayed leaves under the table's labels", () => {
+    it("stacks the sample cash flow's activities, and the effect of exchange rates, as the statement names them", () => {
         const stack = periodStack(SAMPLE_CASH_FLOW, DEFAULT_PALETTE, "$");
         expect(stack.omitted).toEqual(["EUR"]);
-        expect(stack.entities.map((e) => [e.key, e.label])).toEqual([
-            ["assets:bank", "bank"],
-            ["assets:broker", "broker"],
-        ]);
+        expect(stack.entities.map((e) => e.label)).toEqual(["Operating", "Investing", "Exchange rates"]);
     });
 
     it("stacks every sample net-worth row the table shows, assets then liabilities", () => {

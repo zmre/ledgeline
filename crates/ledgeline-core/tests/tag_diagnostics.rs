@@ -597,3 +597,25 @@ fn issection_on_an_inferred_liability_is_reported_too() {
     let message = only_message("account liabilities:deferred  ; issection: revenue\n");
     assert!(message.contains("'liabilities:deferred'"), "{message}");
 }
+
+#[test]
+fn a_misspelt_cfsection_names_the_four_codes() {
+    let message = only_message("account assets:receivable  ; type: A, cfsection: operations\n");
+    assert!(message.contains("`cfsection: operations`"), "{message}");
+    assert!(
+        message.contains("operating, investing, financing, cash"),
+        "{message}"
+    );
+}
+
+#[test]
+fn cash_flow_tags_on_a_revenue_or_expense_account_are_reported_as_ignored() {
+    let all = messages(
+        "account expenses:depreciation  ; type: X, cfsection: investing, cfgroup: Depreciation\n",
+    );
+    assert_eq!(all.len(), 2, "one per tag: {all:#?}");
+    assert!(
+        all.iter().all(|m| m.contains("only through net income")),
+        "{all:#?}"
+    );
+}

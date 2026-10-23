@@ -29,6 +29,7 @@ pub mod balance_sheet;
 pub mod budget;
 pub mod budget_summary;
 pub mod cash_flow;
+pub mod cash_flow_statement;
 pub mod flows;
 pub mod income_statement;
 pub mod insights;
@@ -77,6 +78,11 @@ pub use budget_summary::{
     Elapsed, GapTotals, LabelKind, annualised, budget_summary, gap_totals,
 };
 pub use cash_flow::{cash_flow, cash_flow_range, is_cash_like};
+pub use cash_flow_statement::{
+    CF_GROUP_TAG, CF_SECTION_TAG, CashFlowStatement, CfCashLine, CfCashRow, CfLine, CfLineSource,
+    CfOpts, CfRole, CfRow, CfSection, CfSectionKind, CfTags, cash_flow_statement, cf_role_resolver,
+    declared_cf_sections, is_closing_entry, parse_cf_section_tag,
+};
 pub use flows::{
     FlowGraph, FlowLink, FlowNode, FlowOpts, FlowReport, FlowSide, income_statement_flows,
 };

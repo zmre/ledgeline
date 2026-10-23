@@ -11,7 +11,16 @@ import type {Holding, HoldingsReport} from "#lib/holdings/types.js";
 import type {BudgetBar, BudgetReport, PeriodReport, SectionedReport} from "#lib/reports/types.js";
 import {CLASSIFIED_BALANCE_SHEET, GROUPED_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "#lib/testing/balanceSheetFixture.js";
 import {GROUPED_INCOME_STATEMENT, MULTI_STEP_INCOME_STATEMENT, UNCOMPARED_INCOME_STATEMENT} from "#lib/testing/incomeStatementFixture.js";
-import {buildBalanceSheetWorkbook, buildBudgetWorkbook, buildHoldingsWorkbook, buildIncomeStatementWorkbook, buildWorkbook, numberFormat} from "./xlsx";
+import {
+    buildBalanceSheetWorkbook,
+    buildBudgetWorkbook,
+    buildCashFlowWorkbook,
+    buildHoldingsWorkbook,
+    buildIncomeStatementWorkbook,
+    buildWorkbook,
+    numberFormat,
+} from "./xlsx";
+import {CASH_FLOW, CASH_FLOW_TOTAL} from "#lib/testing/cashFlowFixture.js";
 import {periodsOf} from "#lib/reports/test-helpers.js";
 
 const usd = (cents: number): MixedAmount => new Map([["$", dec(cents, 2)]]);
@@ -1023,5 +1032,56 @@ describe("UNIT export/xlsx", () => {
             const ws = await readBack(await buildBudgetWorkbook(expensesOnly, {title: "Budget", params: "p"}), "Budget");
             expect(Array.from({length: 4}, (_, i) => ws.getCell(5 + i, 1).value)).toEqual(["Expenses", "expenses:rent", "expenses:food", "Total Expenses"]);
         });
+    });
+});
+
+// plans/27: the statement of cash flows, from the same display model as the
+// screen, with every line opened since a workbook has nothing to click.
+describe("statement of cash flows workbook", () => {
+    const title = "Statement of Cash Flows";
+    const build = (report = CASH_FLOW) => buildCashFlowWorkbook(report, {title, params: "2026-01-01 to 2026-03-31, monthly"}, "$");
+    const column = (ws: Worksheet, from: number, count: number, col = 1) => Array.from({length: count}, (_, i) => ws.getCell(from + i, col).value);
+
+    it("heads a column per month, a Total and the other commodities", async () => {
+        const ws = await readBack(await build(), title);
+        expect(column(ws, 4, 1, 1)).toEqual(["Account"]);
+        expect([2, 3, 4, 5, 6].map((col) => ws.getCell(4, col).value)).toEqual(["Jan 2026", "Feb 2026", "Mar 2026", "Total ($)", "Other commodities"]);
+        expect(ws.views[0]).toMatchObject({state: "frozen", ySplit: 4});
+    });
+
+    it("lists each section with every line opened, then net change and the cash balances", async () => {
+        const ws = await readBack(await build(), title);
+        expect(column(ws, 5, 11)).toEqual([
+            "Operating activities",
+            "Net income",
+            "assets:equipment:accum-depreciation",
+            "assets:prepaid",
+            "assets:receivable",
+            "Payables",
+            "liabilities:card",
+            "liabilities:payable",
+            "liabilities:deferred-revenue",
+            "Net cash from operating activities",
+            null,
+        ]);
+        const labels = column(ws, 5, 40);
+        expect(labels).toContain("Net change in cash");
+        expect(labels.indexOf("Beginning cash")).toBeLessThan(labels.indexOf("Ending cash"));
+        expect(labels).not.toContain("Effect of exchange rates on cash");
+    });
+
+    it("writes real numbers: the Total sums the months for flows, and takes the edge for balances", async () => {
+        const ws = await readBack(await build(), title);
+        const labels = column(ws, 5, 40);
+        const row = (label: string) => 5 + labels.indexOf(label);
+        expect(ws.getCell(row("Net change in cash"), 5).value).toBe(9500);
+        expect(ws.getCell(row("Beginning cash"), 5).value).toBe(10000);
+        expect(ws.getCell(row("Ending cash"), 5).value).toBe(19500);
+        expect(ws.getCell(row("Net change in cash"), 5).font?.bold).toBe(true);
+    });
+
+    it("has a single Amount column on Interval = Total", async () => {
+        const ws = await readBack(await build(CASH_FLOW_TOTAL), title);
+        expect([2, 3].map((col) => ws.getCell(4, col).value)).toEqual(["Amount ($)", "Other commodities"]);
     });
 });

@@ -12,10 +12,11 @@
     import {resolve} from "$app/paths";
     import AsyncSection from "#lib/components/AsyncSection.svelte";
     import ErrorToast from "#lib/components/ErrorToast.svelte";
-    import {exportBalanceSheetXlsx, exportIncomeStatementXlsx, exportXlsx} from "#lib/export/xlsx.js";
+    import {exportBalanceSheetXlsx, exportCashFlowXlsx, exportIncomeStatementXlsx, exportXlsx} from "#lib/export/xlsx.js";
     import InsightsDashboard from "#lib/reports/ui/insights/InsightsDashboard.svelte";
     import BalanceSheetView from "#lib/reports/ui/BalanceSheetView.svelte";
     import CashFlowChart from "#lib/reports/ui/CashFlowChart.svelte";
+    import CashFlowStatementView from "#lib/reports/ui/CashFlowStatementView.svelte";
     import ExportButton from "#lib/reports/ui/ExportButton.svelte";
     import IncomeStatementView from "#lib/reports/ui/IncomeStatementView.svelte";
     import NetWorthChart from "#lib/reports/ui/NetWorthChart.svelte";
@@ -230,7 +231,7 @@
                 };
             case "cf":
                 return {
-                    title: "Cash Flow",
+                    title: "Statement of Cash Flows",
                     params: `${params.cfFrom} to ${params.cfTo}, ${grain}, depth ${params.depth}`,
                     filename: `cash-flow-${params.cfFrom}-to-${params.cfTo}-${params.interval}.xlsx`,
                 };
@@ -239,7 +240,7 @@
         }
     });
 
-    /** Export the current report — the two tagged shapes own their builders; cf/nw share exportXlsx. */
+    /** Export the current report — the tagged shapes own their builders; nw uses exportXlsx. */
     function runExport(current: AnyReport): Promise<void> {
         const meta = {title: exportInfo.title, params: exportInfo.params};
         if (!("kind" in current)) return exportXlsx(current, meta, exportInfo.filename);
@@ -248,6 +249,8 @@
                 return exportBalanceSheetXlsx(current, meta, exportInfo.filename);
             case "incomeStatement":
                 return exportIncomeStatementXlsx(current, meta, exportInfo.filename);
+            case "cashFlow":
+                return exportCashFlowXlsx(current, meta, exportInfo.filename, journal.dominantCommodity);
         }
     }
 </script>
@@ -297,8 +300,12 @@
                 {#if "kind" in current}
                     {#if current.kind === "balanceSheet"}
                         <BalanceSheetView report={current} {styles} />
-                    {:else}
+                    {:else if current.kind === "incomeStatement"}
                         <IncomeStatementView report={current} {styles} flows={flowsPanel} />
+                    {:else}
+                        <!-- The chart sits above the statement it draws. -->
+                        <CashFlowChart report={current} {styles} />
+                        <CashFlowStatementView report={current} {styles} base={journal.dominantCommodity} />
                     {/if}
                 {:else}
                     <!-- The charts sit ABOVE the table they draw; the table is their
@@ -307,8 +314,6 @@
                          PeriodReport both tabs hold (a SectionedReport has none). -->
                     {#if params.tab === "nw" && "buckets" in current}
                         <NetWorthChart report={current} {styles} />
-                    {:else if params.tab === "cf" && "buckets" in current}
-                        <CashFlowChart report={current} {styles} />
                     {/if}
                     <ReportTable report={current} {styles} />
                 {/if}

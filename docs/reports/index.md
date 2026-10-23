@@ -14,8 +14,8 @@ Reports holds six tabs. Ledgeline computes every figure in its Rust engine with 
 | Insights | <kbd>1</kbd> | How did this period compare with the one before it? | [Insights](insights.md) |
 | Balance Sheet | <kbd>2</kbd> | What do I own and owe on a given date? | [The balance sheet](balance-sheet.md) |
 | P&L | <kbd>3</kbd> | What came in and went out over a date range? | [The income statement](income-statement.md) |
-| Cash Flow | <kbd>4</kbd> | How did my cash accounts change, period by period? | [Cash Flow and Net Worth](cash-flow-and-net-worth.md) |
-| Net Worth | <kbd>5</kbd> | How have assets and liabilities moved over time? | [Cash Flow and Net Worth](cash-flow-and-net-worth.md) |
+| Cash Flow | <kbd>4</kbd> | Where did cash come from and go: operations, investing or financing? | [Cash flow](cash-flow.md) |
+| Net Worth | <kbd>5</kbd> | How have assets and liabilities moved over time? | [Net worth](net-worth.md) |
 | Subscriptions | <kbd>6</kbd> | Which charges recur every month or year? | [Subscriptions](subscriptions.md) |
 
 Insights is the tab that opens first. The digit shortcuts work only while the Reports page is showing, and <kbd>?</kbd> lists them with the rest of the page's keys. See [Keyboard shortcuts](../journal/keyboard.md).
@@ -62,7 +62,7 @@ To fix it, add a `P` directive for the commodity, or fetch prices from the Holdi
 
 The URL records the tab and every control the tab uses. Copy the address and anyone with the same journal sees the same report, even after the today-based defaults have moved on.
 
-Links saved before Cash Flow switched to From and To, and before the P&L had an Interval, still work. A P&L link with no `interval` opens at Total. A Cash Flow link with `end` and `count` but no `from` opens on the same columns it used to show, and the address bar switches to the From/To form. See [Cash Flow and Net Worth](cash-flow-and-net-worth.md).
+Links saved before Cash Flow switched to From and To, and before the P&L had an Interval, still work. A P&L link with no `interval` opens at Total. A Cash Flow link with `end` and `count` but no `from` opens on the same columns it used to show, and the address bar switches to the From/To form. See [Cash flow](cash-flow.md).
 
 An old bookmark that points at the Budget tab, which used to live here, forwards to the [Budget](../budget.md) page with its dates and depth carried over.
 

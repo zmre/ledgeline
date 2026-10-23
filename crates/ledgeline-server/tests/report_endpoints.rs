@@ -1680,6 +1680,9 @@ async fn the_flat_incomestatement_is_unchanged_by_the_grouped_one() {
 // Cash flow — vs fixtures/golden/cf-monthly.json (per-bucket totals)
 // ===========================================================================
 
+/// The statement's Net change in cash, per month, is hledger's `cf` total for
+/// that month: both are the change in the cash accounts. And it reconciles:
+/// Ending − Beginning cash says the same.
 #[tokio::test]
 async fn cashflow_matches_cf_monthly_golden() {
     let journal = sample_journal();
@@ -1689,29 +1692,35 @@ async fn cashflow_matches_cf_monthly_golden() {
     )
     .await;
 
-    let buckets: Vec<&str> = body["buckets"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|b| b.as_str().unwrap())
-        .collect();
+    let buckets = bucket_keys(&body);
     assert_eq!(
         buckets,
         [
             "2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06"
         ]
     );
+    assert_eq!(body["reconciles"], true);
 
     let g = golden("golden", "cf-monthly.json");
     let sub = &g["cbrSubreports"][0][1];
-    let totals = body["totals"].as_array().unwrap();
+    let net_change = body["netChange"]["values"].as_array().unwrap();
     for (i, bucket) in buckets.iter().enumerate() {
         assert_eq!(
-            wire_ma(&totals[i]),
+            wire_ma(&net_change[i]),
             sum_golden(&sub["prTotals"]["prrAmounts"][i]),
-            "cash-flow total bucket {bucket}"
+            "net change in cash, {bucket}"
         );
     }
+}
+
+/// A cash-flow response's column keys.
+fn bucket_keys(body: &Value) -> Vec<String> {
+    body["buckets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["key"].as_str().unwrap().to_string())
+        .collect()
 }
 
 // ===========================================================================
@@ -1842,24 +1851,9 @@ async fn networth_rows_carry_their_balance_sheet_side() {
     );
 }
 
-/// The cash flow's own rows carry no `kind`: the key is omitted, not `null`,
-/// so that report's wire is byte-for-byte what it was.
-#[tokio::test]
-async fn cashflow_rows_omit_kind() {
-    let journal = sample_journal();
-    let body = body_ok(
-        &journal,
-        "/api/reports/cashflow?end=2026-06-30&interval=monthly&count=3&depth=3",
-    )
-    .await;
-    let rows = body["rows"].as_array().unwrap();
-    assert!(!rows.is_empty());
-    assert!(rows.iter().all(|row| row.get("kind").is_none()));
-}
-
 /// From/to cash flow: buckets cover the range, the first clamped to `from`.
-/// Every whole bucket matches hledger's, each row carries its Total and the
-/// report a grand total.
+/// Every whole month's net change matches hledger's, every line's Total is
+/// the sum of its months, and so is net change's.
 #[tokio::test]
 async fn cashflow_from_to_covers_the_range_with_totals() {
     let journal = sample_journal();
@@ -1868,41 +1862,39 @@ async fn cashflow_from_to_covers_the_range_with_totals() {
         "/api/reports/cashflow?from=2026-01-15&to=2026-06-30&interval=monthly&depth=99",
     )
     .await;
-    let buckets: Vec<&str> = body["buckets"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|b| b.as_str().unwrap())
-        .collect();
+    let buckets = bucket_keys(&body);
     assert_eq!(
         buckets,
         [
             "2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06"
         ]
     );
+    assert_eq!(body["buckets"][0]["from"], "2026-01-15");
 
     // February..June are whole months, so hledger's cf-monthly golden holds.
     let g = golden("golden", "cf-monthly.json");
     let sub = &g["cbrSubreports"][0][1];
-    let totals = body["totals"].as_array().unwrap();
+    let net_change = body["netChange"]["values"].as_array().unwrap();
     for i in 1..buckets.len() {
         assert_eq!(
-            wire_ma(&totals[i]),
+            wire_ma(&net_change[i]),
             sum_golden(&sub["prTotals"]["prrAmounts"][i]),
-            "cash-flow total bucket {}",
+            "net change in cash, {}",
             buckets[i]
         );
     }
 
-    for row in body["rows"].as_array().unwrap() {
-        assert_eq!(
-            wire_ma(&row["total"]),
-            sum_wire(row["values"].as_array().unwrap()),
-            "{} total = sum of its buckets",
-            row["account"]
-        );
+    for section in body["sections"].as_array().unwrap() {
+        for line in section["lines"].as_array().unwrap() {
+            assert_eq!(
+                wire_ma(&line["total"]["total"]),
+                sum_wire(line["total"]["values"].as_array().unwrap()),
+                "{} total = sum of its months",
+                line["name"]
+            );
+        }
     }
-    assert_eq!(wire_ma(&body["grandTotal"]), sum_wire(totals));
+    assert_eq!(wire_ma(&body["netChange"]["total"]), sum_wire(net_change));
 }
 
 /// The legacy `end`/`count` window still works, and is the same report as the
@@ -1921,11 +1913,11 @@ async fn cashflow_legacy_end_count_equals_the_matching_range() {
     )
     .await;
     assert_eq!(legacy, range);
-    assert!(legacy.get("grandTotal").is_some());
+    assert_eq!(legacy["reconciles"], true);
 }
 
-/// `interval=total` is ONE column over the whole range — equal to the grand
-/// total of the monthly report over the same dates, row by row.
+/// `interval=total` is ONE column over the whole range — equal to the Total
+/// column of the monthly report over the same dates, line by line.
 #[tokio::test]
 async fn cashflow_interval_total_is_one_column_over_the_range() {
     let journal = sample_journal();
@@ -1939,26 +1931,32 @@ async fn cashflow_interval_total_is_one_column_over_the_range() {
         "/api/reports/cashflow?from=2026-01-01&to=2026-06-30&interval=monthly&depth=2",
     )
     .await;
-    assert_eq!(
-        total["buckets"],
-        serde_json::json!(["2026-01-01..2026-06-30"])
-    );
-    assert_eq!(
-        wire_ma(&total["totals"][0]),
-        wire_ma(&monthly["grandTotal"])
-    );
-    assert_eq!(
-        wire_ma(&total["grandTotal"]),
-        wire_ma(&monthly["grandTotal"])
-    );
-    let monthly_rows = monthly["rows"].as_array().unwrap();
-    for row in total["rows"].as_array().unwrap() {
-        let twin = monthly_rows
-            .iter()
-            .find(|r| r["account"] == row["account"])
-            .expect("same rows");
-        assert_eq!(wire_ma(&row["values"][0]), wire_ma(&twin["total"]));
-        assert_eq!(wire_ma(&row["total"]), wire_ma(&twin["total"]));
+    assert_eq!(bucket_keys(&total), ["2026-01-01..2026-06-30"]);
+    for figure in ["netIncome", "netChange", "beginningCash", "endingCash"] {
+        assert_eq!(
+            wire_ma(&total[figure]["values"][0]),
+            wire_ma(&monthly[figure]["total"]),
+            "{figure}"
+        );
+    }
+    for (section, twin) in total["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(monthly["sections"].as_array().unwrap())
+    {
+        for line in section["lines"].as_array().unwrap() {
+            let other = twin["lines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|l| l["name"] == line["name"])
+                .expect("same lines");
+            assert_eq!(
+                wire_ma(&line["total"]["total"]),
+                wire_ma(&other["total"]["total"])
+            );
+        }
     }
 }
 
@@ -2610,10 +2608,18 @@ async fn malformed_end_no_longer_produces_a_garbage_bucket() {
         "/api/budget",
     ] {
         let uri = format!("{endpoint}?end=2026-7-1&count=3");
-        let buckets = body_ok(&journal, &uri).await["buckets"].clone();
+        let body = body_ok(&journal, &uri).await;
+        // The cash-flow statement's buckets are spans; the period reports'
+        // are bare keys.
+        let buckets: Vec<String> = body["buckets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b.get("key").unwrap_or(b).as_str().unwrap().to_string())
+            .collect();
         assert_eq!(
             buckets,
-            serde_json::json!(["2026-05", "2026-06", "2026-07"]),
+            ["2026-05", "2026-06", "2026-07"],
             "GET {uri} must bucket by the real date, not 2026-00"
         );
     }

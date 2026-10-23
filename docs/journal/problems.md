@@ -65,6 +65,7 @@ An `account` directive uses one of Ledgeline's account tags with a value it does
 | --- | --- | --- |
 | `type:` | `A`, `L`, `E`, `R`, `X`, `C`, `V`, `G`, or `Asset`, `Liability`, `Equity`, `Revenue`, `Expense`, `Cash`, `Conversion`, `Gain` | The type is guessed from the account name. |
 | `issection:` | `revenue`, `cogs`, `opex`, `depreciation`, `interest`, `tax`, `other` | The account goes to its default P&L section. |
+| `cfsection:` | `operating`, `investing`, `financing`, `cash` | The account goes to its default cash flow section. |
 | `bsterm:` | `current`, `noncurrent` | The account gets the default balance sheet grouping. |
 | `holdings:` | `stocks`, `other`, `none` | The account lands on a Holdings tab by whether it holds a non-currency commodity. |
 | `valuation:` | `cost`, `unrealized`, `depreciation`, `adjustment` | The account counts as cost basis, so any unrealized gain on that holding reads as zero. |
@@ -72,6 +73,8 @@ An `account` directive uses one of Ledgeline's account tags with a value it does
 The `valuation:` case matters most, because a zero gain looks like a holding that hasn't moved. Fix the spelling in the `account` directive. An empty value (`; bsterm:`) counts as no tag and is not reported.
 
 The same warning appears for a correctly spelled `issection:` on an asset, liability or equity account. The income statement only shows revenue and expense accounts, so the tag is ignored. Remove it, and tag the matching expense or revenue account instead.
+
+It also appears for a `cfsection:` or `cfgroup:` on a revenue or expense account. The [cash flow statement](../reports/cash-flow.md) counts those accounts only through net income, so the tag is ignored.
 
 The tags are explained on [Accounts](../settings/accounts.md), [Balance sheet](../reports/balance-sheet.md), [Income statement](../reports/income-statement.md) and [Holdings](../holdings/index.md).
 

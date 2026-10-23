@@ -12,7 +12,7 @@ lines are *groups* rather than raw accounts, valued into a single currency so
 every line is one number. Under the boxes is a spreadsheet tie-out that proves the
 statement balances. There is no separate net-worth line: net worth is assets
 minus liabilities, which is Total Equity, so it would print the same number twice.
-The [Net Worth tab](cash-flow-and-net-worth.md) shows it over time.
+The [Net Worth tab](net-worth.md) shows it over time.
 
 ![The balance sheet as of 2026-07-08: the unvalued-holdings warning, then current and non-current assets](images/balance-sheet.png)
 
