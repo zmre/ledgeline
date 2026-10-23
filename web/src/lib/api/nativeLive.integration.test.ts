@@ -18,6 +18,7 @@ import {styleOf} from "#lib/format/amounts.js";
 import {formatTotals} from "#lib/journal/rowModel.js";
 import {LedgelineApi} from "./native";
 import {
+    decodeCashFlowStatement,
     decodeBalanceSheetReport,
     decodeHoldingsReport,
     decodeHoldingsSeries,
@@ -127,10 +128,11 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         expect(report.meta).toBeUndefined();
     });
 
-    it("cash flow buckets end at the as-of month", async () => {
-        const report = decodePeriodReport(await new LedgelineApi(url).cashFlow({end: AS_OF, interval: "monthly", count: 3, depth: 2}));
-        expect(report.buckets).toEqual(["2026-05", "2026-06", "2026-07"]);
-        expect(report.rows.length).toBeGreaterThan(0);
+    it("cash flow buckets end at the as-of month, and the statement reconciles", async () => {
+        const report = decodeCashFlowStatement(await new LedgelineApi(url).cashFlow({end: AS_OF, interval: "monthly", count: 3, depth: 2}));
+        expect(report.buckets.map((bucket) => bucket.key)).toEqual(["2026-05", "2026-06", "2026-07"]);
+        expect(report.sections.length).toBeGreaterThan(0);
+        expect(report.reconciles).toBe(true);
     });
 
     it("holdings render AAPL/VTI values, GLD tainted, NVDA absent, TSLA short-and-hidden, partial totals", async () => {
