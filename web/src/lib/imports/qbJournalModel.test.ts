@@ -166,6 +166,11 @@ describe("UNIT qbJournalModel — id-match summary", () => {
     it("pluralises for more than one conflict", () => {
         expect(qbIdMatchesSummary(idMatches({conflictingTotal: 2}))).toContain("2 rows");
     });
+
+    it("counts only the conflicts a commit did not update", () => {
+        expect(qbIdMatchesSummary(idMatches({conflictingTotal: 3}), 2)).toContain("1 row ");
+        expect(qbIdMatchesSummary(idMatches({conflictingTotal: 2}), 2)).toBeNull();
+    });
 });
 
 describe("UNIT qbJournalModel — per-file ordering after a commit", () => {

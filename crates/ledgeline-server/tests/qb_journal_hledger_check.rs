@@ -333,3 +333,53 @@ async fn hledger_accepts_the_full_report_fixture() {
         "the opening balance plus the report's 45 transactions"
     );
 }
+
+/// A multi-customer revenue-recognition entry: hledger must accept eight
+/// postings on two accounts and read each line's memo back as that posting's
+/// own comment, not one comment for the whole entry.
+#[tokio::test]
+async fn hledger_reads_a_memo_per_posting_on_a_multi_line_journal_entry() {
+    require_hledger!();
+    let tree = Tree::bare();
+    let id = staged(&tree, "revenue-recognition.xlsx").await;
+    map_every_unmapped_account(&tree, &id).await;
+
+    let (status, body) = post(
+        &tree,
+        "/api/import/qb-journal/commit",
+        json!({ "stageId": id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["imported"], 1, "{body}");
+
+    hledger_check(&tree.journal_path()).expect("hledger check accepts the written journal");
+    let printed =
+        hledger_print_json(&tree.journal_path()).expect("hledger print re-reads the journal");
+    let entry = printed
+        .as_array()
+        .expect("an array")
+        .iter()
+        .find(|txn| txn["tdescription"] == "Journal Entry: Recognized Fernhill Revenue")
+        .unwrap_or_else(|| panic!("the entry round-trips: {printed}"));
+    let comments: Vec<&str> = entry["tpostings"]
+        .as_array()
+        .expect("postings array")
+        .iter()
+        .map(|posting| posting["pcomment"].as_str().expect("a comment").trim())
+        .collect();
+    assert_eq!(
+        comments,
+        [
+            "Recognized Fernhill Revenue",
+            "Recognized Fernhill Revenue",
+            "Recognized Larkspur Revenue",
+            "Recognized Larkspur Revenue",
+            "Recognize Quillon Revenue",
+            "Recognize Quillon Revenue",
+            "Tamberlane",
+            "Tamberlane",
+        ],
+        "{printed}"
+    );
+}

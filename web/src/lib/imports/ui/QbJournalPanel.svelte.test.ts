@@ -150,7 +150,7 @@ describe("COMPONENT QbJournalPanel — the commit flow", () => {
     it("shows the imported count once the write succeeds", async () => {
         const stageId = "commit-1";
         const idMatches = {new: 2, unchanged: 0, conflicting: [], conflictingTotal: 0};
-        const commit = {imported: 2, idMatches, ordering: {inOrder: true, files: []}, git: null};
+        const commit = {imported: 2, updated: 0, idMatches, ordering: {inOrder: true, files: []}, git: null};
         await connectFakeEngine({
             [`/api/import/qb-journal/${stageId}`]: {...previewMapped(stageId), idMatches},
             "/api/import/qb-journal/commit": commit,
@@ -171,6 +171,7 @@ describe("COMPONENT QbJournalPanel — the commit flow", () => {
         const idMatches = {new: 1, unchanged: 0, conflicting: [], conflictingTotal: 0};
         const commitOutOfOrder = {
             imported: 1,
+            updated: 0,
             idMatches,
             ordering: {
                 inOrder: false,
@@ -222,5 +223,32 @@ describe("COMPONENT QbJournalPanel — the commit flow", () => {
 
         await vi.waitFor(() => expect(screen.getByTestId("qb-commit-error")).toBeTruthy());
         expect(screen.getByTestId("qb-commit-error").textContent).toContain("3000 Member Equity");
+    });
+    it("asks for changed rows to be updated only when the box is ticked, and reports how many were", async () => {
+        const stageId = "commit-update";
+        const idMatches = {new: 0, unchanged: 0, conflicting: [{id: "7720", diffs: []}], conflictingTotal: 1};
+        const commit = {imported: 0, updated: 1, idMatches, ordering: {inOrder: true, files: []}, git: null};
+        const fetchMock = vi.fn((url: string) => {
+            if (url.endsWith("/version")) return Promise.resolve(json("1.52"));
+            if (url.endsWith(`/qb-journal/${stageId}`)) return Promise.resolve(json({...previewMapped(stageId), idMatches}));
+            if (url.endsWith("/qb-journal/commit")) return Promise.resolve(json(commit));
+            return Promise.resolve(new Response("no route", {status: 404}));
+        });
+        vi.stubGlobal("fetch", fetchMock);
+        if (settings.serverUrl === null) await settings.setServerUrl(FAKE_ENGINE);
+
+        render(QbJournalPanel, {props: {stageId, accountNames: []}});
+        await vi.waitFor(() => expect((screen.getByTestId("qb-commit") as HTMLButtonElement).disabled).toBe(false));
+        const box = screen.getByTestId("qb-update-changed") as HTMLInputElement;
+        expect(box.checked).toBe(false);
+
+        await fireEvent.click(box);
+        await fireEvent.click(screen.getByTestId("qb-commit"));
+
+        await vi.waitFor(() => expect(screen.getByTestId("qb-updated")).toBeTruthy());
+        const sent = (fetchMock.mock.calls as unknown as FetchCall[]).find(([url]) => url.endsWith("/qb-journal/commit"));
+        expect(JSON.parse((sent?.[1] as RequestInit).body as string)).toEqual({stageId, updateChanged: true});
+        expect(screen.getByTestId("qb-updated").textContent).toContain("Updated 1 changed transaction");
+        expect(screen.getByTestId("qb-result").textContent).not.toContain("left untouched");
     });
 });

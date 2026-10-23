@@ -904,6 +904,49 @@ def qb_semicolon_in_payee_xlsx() -> None:
     )
 
 
+# A month-end revenue-recognition Journal Entry, shaped like a real one: every
+# line pair debits the same deferred-revenue account and credits the same sales
+# account, `Name` is blank, and the customer appears only in each line's
+# Description. Some pairs come credit-first, as the real one's later pairs did.
+# Ten columns: the customized header without its four right-hand additions.
+QB_RECOGNITION_HEADER = QB_CUSTOM_HEADER[:10]
+QB_RECOGNITION_LINES = [
+    ("Recognized Fernhill Revenue", 12000.5, False),
+    ("Recognized Larkspur Revenue", 7500, False),
+    ("Recognize Quillon Revenue", 815.25, True),
+    ("Tamberlane", 3100, True),
+]
+
+
+def _qb_recognition_rows():
+    rows = []
+    for memo, amount, credit_first in QB_RECOGNITION_LINES:
+        debit = ["", "07/31/2026", "Journal Entry", "412", "", memo, "2500",
+                 "2500 Deferred Revenue", amount, None]
+        credit = ["", "07/31/2026", "Journal Entry", "412", "", memo, "4400",
+                  "4000 Sales:4400 Hybrid Cloud Enterprise", None, amount]
+        rows += [credit, debit] if credit_first else [debit, credit]
+    return rows
+
+
+def qb_revenue_recognition_xlsx() -> None:
+    """One Journal Entry, many customers, two accounts, a memo per line.
+
+    Every line hits the same two accounts, so the customer is identified ONLY by
+    the line's Description. A writer that drops the per-line memo and merges
+    same-account postings writes one debit and one credit for the whole entry.
+    The total is still right, but nothing says whose revenue it was, and when
+    QuickBooks later adds a line a re-import cannot show what changed.
+    """
+    total = sum(amount for _, amount, _ in QB_RECOGNITION_LINES)
+    _qb_write(
+        "revenue-recognition.xlsx",
+        QB_RECOGNITION_HEADER,
+        [("7720", _qb_recognition_rows(), ("Total for 7720", total, total))],
+        total=total,
+    )
+
+
 def qb_near_miss_xlsx() -> None:
     """NOT a QuickBooks Journal, and the reason detection cannot stop at the header.
 
@@ -1002,6 +1045,7 @@ def main() -> None:
         qb_summation_drift_xlsx,
         qb_zero_net_leg_xlsx,
         qb_semicolon_in_payee_xlsx,
+        qb_revenue_recognition_xlsx,
         qb_repeated_account_xlsx,
         qb_near_miss_xlsx,
         qb_report_xlsx,

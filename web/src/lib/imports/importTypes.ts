@@ -590,6 +590,8 @@ export interface QbOrdering {
 /** `POST /api/import/qb-journal/commit` — what was written. */
 export interface QbCommitResult {
     readonly imported: number;
+    /** Conflicting transactions replaced with the export's version; 0 unless the commit asked for `updateChanged`. */
+    readonly updated: number;
     readonly idMatches: QbIdMatches;
     readonly ordering: QbOrdering;
     readonly git: GitReport | null;

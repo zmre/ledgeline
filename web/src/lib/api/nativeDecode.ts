@@ -1205,6 +1205,7 @@ interface RawQbOrdering {
 
 interface RawQbCommitResult {
     imported?: number;
+    updated?: number;
     idMatches?: RawQbIdMatches;
     ordering?: RawQbOrdering;
     git?: RawGitReport | null;
@@ -3614,6 +3615,7 @@ export function decodeQbCommitResult(raw: unknown): QbCommitResult {
     if (typeof result !== "object" || result === null) throw new ApiShapeError("qb commit result: expected an object");
     return Object.freeze({
         imported: num(result.imported, "qb commit result imported"),
+        updated: num(result.updated, "qb commit result updated"),
         idMatches: decodeQbIdMatches(result.idMatches, "qb commit result idMatches"),
         ordering: decodeQbOrdering(result.ordering, "qb commit result ordering"),
         git: decodeGitReport(result.git, "qb commit result git"),

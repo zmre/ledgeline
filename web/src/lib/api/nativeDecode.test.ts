@@ -1880,6 +1880,7 @@ describe("UNIT nativeDecode — QuickBooks Journal preview (qb_journal_api.rs, W
 describe("UNIT nativeDecode — QuickBooks Journal commit result", () => {
     const COMMIT = {
         imported: 2,
+        updated: 1,
         idMatches: {new: 2, unchanged: 0, conflicting: [], conflictingTotal: 0},
         ordering: {
             inOrder: false,
@@ -1902,6 +1903,10 @@ describe("UNIT nativeDecode — QuickBooks Journal commit result", () => {
 
     it("throws on a body missing the ordering report", () => {
         expect(() => decodeQbCommitResult(without(COMMIT, "ordering"))).toThrow(ApiShapeError);
+    });
+
+    it("throws on a body missing the updated count", () => {
+        expect(() => decodeQbCommitResult(without(COMMIT, "updated"))).toThrow(ApiShapeError);
     });
 
     it("throws on a body that is not an object", () => {

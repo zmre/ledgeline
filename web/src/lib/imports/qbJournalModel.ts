@@ -123,10 +123,15 @@ export function canCommitQbJournal(preview: QbPreview | null): boolean {
 // `QbIdMatches`'s own doc comment).
 // ---------------------------------------------------------------------------
 
-/** The id-matching section's headline, or null when there is nothing worth a section for (see `importModel.idMatchesSummary`'s own reasoning). */
-export function qbIdMatchesSummary(idMatches: QbIdMatches | null): string | null {
-    if (idMatches === null || idMatches.conflictingTotal === 0) return null;
-    const n = idMatches.conflictingTotal;
+/**
+ * The id-matching section's headline, or null when there is nothing worth a section for (see `importModel.idMatchesSummary`'s own reasoning).
+ *
+ * `updated` is how many of the conflicting rows a commit replaced; only the rest were left untouched, so only they are counted here.
+ */
+export function qbIdMatchesSummary(idMatches: QbIdMatches | null, updated = 0): string | null {
+    if (idMatches === null) return null;
+    const n = idMatches.conflictingTotal - updated;
+    if (n <= 0) return null;
     return `${n} row${n === 1 ? "" : "s"} the journal already holds differently — left untouched, since a field disagreement more likely means you edited it on purpose than that the export's data changed.`;
 }
 

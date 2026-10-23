@@ -109,8 +109,8 @@ pub use security::{
 // variant's own payload, alongside the CSV path's pre-existing
 // `CliImportReport`/`CliImportWritten`.
 pub use import_api::{
-    CliImport, CliImportReport, CliImportWritten, CliQbReport, CliQbWritten, CliRunReport,
-    run_cli_import,
+    CliImport, CliImportReport, CliImportWritten, CliQbConflict, CliQbReport, CliQbWritten,
+    CliRunReport, run_cli_import,
 };
 // Spreadsheet parsing runs in a resource-limited child process (see
 // `workbook_sandbox`). The binary needs the worker entry point and the
