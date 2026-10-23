@@ -26,6 +26,7 @@
     import HoldingsStats from "#lib/holdings/ui/HoldingsStats.svelte";
     import HoldingsTable from "#lib/holdings/ui/HoldingsTable.svelte";
     import HoldingsTabs from "#lib/holdings/ui/HoldingsTabs.svelte";
+    import {chartColors} from "#lib/format/chartColors.svelte.js";
     import HoldingsTrend from "#lib/holdings/ui/HoldingsTrend.svelte";
     import StocksTrend from "#lib/holdings/ui/StocksTrend.svelte";
     import OtherHoldingsTable from "#lib/holdings/ui/OtherHoldingsTable.svelte";
@@ -255,8 +256,11 @@
                          the stock series' wire shape byte for byte, which is exactly
                          why the engine reuses it. -->
                         {#if otherTrend !== null}
+                            <!-- The palette's first colour: this tab has no benchmark
+                                 lines competing for it, unlike Stocks. -->
                             <HoldingsTrend
                                 trend={otherTrend}
+                                color={chartColors.categorical[0]}
                                 period={otherHoldingsData.scope?.gainPeriod ?? gainPeriod}
                                 formatValue={formatTrendValue}
                                 formatAxis={formatTrendAxis}
