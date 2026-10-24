@@ -56,6 +56,23 @@ When you **save**, Ledgeline writes the default it used into the file, so the
 file becomes plain balanced hledger and the numbers do not move. It never
 writes to `budget.journal`.
 
+## In the table
+
+Every Income, Expenses and One-off row has a **Counter-account** column. It
+starts empty, with the default Ledgeline would use greyed in it. Type an
+account to override it; clear the box to go back to the default. An event has
+one counter-account, on its first posting: it takes whatever the event's
+postings leave unbalanced.
+
+The scenario's own default, the `; cash:` header, is the **Default cash
+account** box above the table. It starts greyed with the account Ledgeline
+falls back to (steps 3 and 4 above).
+
+A rule has exactly one counter-account. When you give one line of a
+multi-line rule a different counter-account from the rest, Ledgeline moves that
+line into a rule of its own, so the file can still be written as hledger reads
+it. No number changes; the file just has one more `~` rule.
+
 ## Accruals and partial payments
 
 To keep a bill off your cash until you pay it, give it a liability as its
@@ -97,7 +114,8 @@ because neither account is revenue or expense:
 
 - **Runway counts cash only**: the balance of your cash-typed accounts. Stock
   you could sell is not runway.
-- **Net income** reads revenue and expense postings only.
+- **Net income** is the income statement's: revenue and expense postings
+  only.
 - **Appreciation** on an asset row is booked to a gains account
   (`equity:unrealized gains` by default), so it moves net worth and not net
   income or cash. See [Asset rows](asset-rows.md).

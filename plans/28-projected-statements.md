@@ -606,3 +606,152 @@ hledger interop test is a single check, not Phase 6's per-account,
 per-period parity. The docs (`docs/projections/cash.md`, `file-format.md`,
 `asset-rows.md`, `index.md`) were rewritten for counter-accounts, gains
 accounts, price trends, the cutoff and the exact hledger command.
+
+---
+
+**Phases 4 and 5** (2026-10-24). Phase 3 (`balance_sheet_columns`) landed in
+`c62e4fc` without amendments of its own.
+
+### 14. The run wire
+
+`POST /api/projections/run` takes `lookback` (default `DEFAULT_LOOKBACK`, `0`
+allowed; `lookback + count` above `MAX_BUCKETS` is a `400` naming both) and
+answers:
+
+```text
+buckets, lookback          forecast keys; actual keys before them
+actualsEnd                 the cutoff (was `start`, renamed: same value)
+projectedFrom              index of the first forecast column in the statements
+cash {opening, values}     forecast periods only, as before
+runway, assets, warnings   as before
+balanceSheet               WireBalanceSheetColumns (below)
+incomeStatement            WireIncomeStatementReport, interval mode
+cashFlow                   WireCashFlow
+defaults {cash, gains, lines: {group: account}, events: {id: account}}
+```
+
+`netIncome` and `netWorth` are gone. The statements cover `lookback ++
+buckets`; `cash`/`runway` cover `buckets` only, so the runway still counts from
+the cutoff. `cash.history` (amendment 8) is still not serialized.
+
+**The balance sheet is PIVOTED on the server.** `balance_sheet_columns`
+returns independent reports; `reports::pivot_balance_sheets` joins them into
+`BalanceSheetColumns`: one tree with the single-date report's keys at every
+level (`sections[].groups[].rows[]`, `subsections[]`), every figure an array
+with one entry per column (`total`, `own`, `inclusive`, `netWorth`, `check`,
+`balanced`), and `{}` where a column lacks the node. Groups are keyed by
+(section, term, name), ordered by the single-date sort key (now one shared
+`group_order`). Chosen over an array of reports because the join is logic and
+belongs in Rust (plan 26), and because a client-side join cannot reproduce
+chain compression per column. `columns` carries the same `{key, label, from,
+to}` spans the income statement and cash flow statement do, so the three line
+up column for column.
+
+The run is still not in the `fixtures/native/v1` manifest (it is a POST with a
+body; the harness replays GET URIs). It is pinned by
+`projection_endpoints.rs`, by `nativeLive.integration.test.ts` against a live
+engine, and its two reused types by their own goldens.
+
+### 15. How the statements are built
+
+`projected_statements` in `projections_api.rs`: `merged_transactions` and
+`merged_prices` over the window `[from, end]`; `balance_sheet_columns` at each
+`range_buckets` span's `to` (depth `None`, as the SPA asks the Reports tab);
+`income_statement_columns` with `compare: false`; `cash_flow_statement` with
+interval columns and the request's `depth`. The declarations come from
+`reports_api::StatementShape::of(journal)` (declared types, `bsgroup:`,
+`bsterm:`, `issection:`, `isgroup:`), which the Reports handlers now use too;
+the cash flow tags are `CfTags::from_journal`, the call the Reports handler
+makes.
+
+**One deviation:** valuation is market, into the projection's own target
+(`Forecast::target`: `valueIn`, else the price table's base). The Reports tab
+resolves `valueIn` through `resolve_grouped_value_in` (journal `D` default,
+admission test). Using the forecast's target keeps the runway and the
+statements in one commodity; it agrees with the Reports tab whenever `D` is
+the base commodity, as in every fixture.
+
+### 16. Grown prices only for commodities a real `P` prices
+
+`merged_prices` now drops a forecast price whose commodity no real explicit
+directive (before the cutoff) prices. The expansion grows prices from the
+latest explicit OR inferred price (amendment 10), but the statements value
+through explicit `P` only. Without the filter, a commodity priced only by its
+cost (sample.journal's GLD) became priced in forecast columns only: a jump the
+size of the whole holding at the first growth step, which is not growth. With
+it, such a commodity reads as share counts and `meta.unpriced` in every column,
+as on the Reports tab. The legacy net-worth series (`project`) is unchanged.
+
+### 17. `Projection` keeps its `Forecast`; defaults on the wire
+
+`Projection.forecast` holds the expansion, so the server builds the statements
+from the same generated transactions the cash series came from. `Forecast`
+gained `defaults: ForecastDefaults`: per group of counter-less lines and per
+counter-less event, `CounterDefaults::for_accounts` over their accounts;
+`cash`, the header-less fallback (Decision 7 steps 3–4); `gains`,
+`DEFAULT_GAINS_ACCOUNT`. These are what the table greys.
+
+### 18. The tab
+
+- Tabs and URL codes: **Runway** `cash` (unchanged), **Balance sheet** `bs`,
+  **Income statement** `is`, **Cash flow** `cf` — the Reports tab's codes.
+  Runway is first and the default: it is the reading only this tab has. Digits
+  1–4 follow strip order. `tab=net` and `tab=worth` fall back to Runway.
+- A new **Actuals** number input (`lookback`, URL `lookback=`, 0–120) beside
+  Interval and Periods. The depth slider now rolls up the cash flow
+  statement's lines.
+- The statements render through `BalanceSheetView`, `IncomeStatementView` and
+  `CashFlowStatementView`, each with an optional `projectedFrom`. A shared
+  `ProjectedHeadRow` prints an **Actual / Projected** band over the columns,
+  and `projectedEdge` rules the first projected column. Null changes nothing,
+  so the Reports tab is unchanged.
+- `BalanceSheetView` takes a `BalanceSheetReport` or a `BalanceSheetColumns`.
+  A single report becomes one column labelled "Amount" (`asColumns`), so there
+  is one template. The display walk is generic over the figure type
+  (`columnSectionRows`); in columns a parent folds into its child only when it
+  has nothing of its own in EVERY column. The tie-out keeps one verdict cell;
+  the warning names the first column that does not balance. Unconverted
+  commodities stack one per line in columns, so the boxes stay aligned.
+- The runway chart's labels are the balance sheet's forecast column labels.
+  The asset breakdown, the net-income chart and the net-worth chart are gone.
+
+### 19. The table: counter, gains and cash
+
+- **Counter-account** column on Income, Expenses, dated `~` lines and events
+  (an event's on its first posting). **Gains account** column on asset rows.
+  **Default cash account** box above the sections (`Scenario.cash`). Each is an
+  `AccountInput` (which gained a `label` prop) that is empty with the engine's
+  default as placeholder, from the last good projection; `default` before one
+  lands. Clearing a box means "the default" (`null`).
+- **Not shown:** an asset row's own counter-account (its contribution's). It is
+  carried through untouched and defaults as before. The ask named counter for
+  flows and events and gains for asset rows; adding a ninth column to the asset
+  table was left for when contributions need it.
+- **One counter per rule.** `withCounter` sets one line's counter and, when any
+  rule-mate's counter would then differ, gives the line a fresh `group`, so the
+  serializer's refusal (amendment 5) is never reached. Clearing counts as
+  differing: a counter-less line beside a countered one is written virtual,
+  which hledger leaves out of balancing. A split re-keys the row, so focus
+  leaves it after Enter. Splitting each line of a rule to the same new counter
+  one by one yields one rule per line, not one rule; the numbers are the same.
+- `scenarioToWire` trims `counter`, `gains` and `cash`; blank is `null`.
+
+### 20. Seen while verifying, not fixed here
+
+- **The runway can fire on a non-charted commodity.** It is the first bucket
+  where ANY commodity of the cash series is negative. Over sample.journal's
+  seed the EUR lines are added unvalued (amendment 9), the opening EUR was
+  valued into `$`, so EUR goes negative in month one and the sentence reads
+  "Cash turns negative in Jul 2026" over a $51K balance. This predates Phases 4
+  and 5.
+- **Decision 7 pairs by account, not commodity.** The seed's `$` food line
+  defaults to `assets:bank:wise:eur`, the account food was most often paid
+  from, so the forecast posts dollars into the EUR account.
+- `merged_transactions` clones the real journal per run. Not measured against
+  the plan 26 baseline.
+
+### 21. Not done
+
+Phase 6. The Reports tab's periodic balance sheet (Phase 3's last sentence).
+The docs screenshots were not regenerated; `projections.docs.ts` waits on the
+Runway reading instead of the removed Net income one.

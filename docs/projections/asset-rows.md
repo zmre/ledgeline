@@ -127,6 +127,7 @@ Expenses and before One-off events:
 | **Account** | the account whose balance this row carries |
 | **Balance** | **the journal's own figure**, greyed, until you type over it |
 | **Growth** | the rate the balance compounds at, and the unit it steps on |
+| **Gains account** | where the growth is booked; `equity:unrealized gains`, greyed, until you name another |
 | **Contribution** | what you add each period. `0` is normal — see below |
 | **Per** | how often the contribution happens |
 | **From** / **To** | optional bounds, `To` exclusive as hledger writes it |
@@ -145,8 +146,9 @@ fixed amount each period.
 into — and it is what the file writes as a `$0` posting.
 
 **Growth here is unrealised.** It moves net worth and nothing else: not cash,
-not net income, not your runway date. The Net worth tab breaks the growth down
-per asset underneath its chart, so you can see which row produced it.
+not net income, not your runway date. On the Balance sheet tab it is visible
+as equity: the gains account's line for an unpriced asset, and the valuation
+adjustment for priced holdings, whose grown prices revalue them.
 
 ## The opening tag restates the balance and says so
 

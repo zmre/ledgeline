@@ -10,10 +10,11 @@ tags: [projections]
 The Projections tab asks one question — _if things carry on like this, when does
 the cash run out?_ — and lets you argue with the answer. The top half is an
 editable what-if table, seeded from your budget plus whatever your budget does
-not cover. The bottom half is that table read forward in time as net income,
-runway and net worth. Press <kbd>g</kbd> <kbd>p</kbd> to get here from anywhere,
-and <kbd>1</kbd> to <kbd>3</kbd> to switch between those readings (see
-[Keyboard shortcuts](../journal/keyboard.md)).
+not cover. The bottom half is that table read forward in time: the runway, and
+the same balance sheet, income statement and cash flow statement the Reports
+tab shows, run forward. Press <kbd>g</kbd> <kbd>p</kbd> to get here from
+anywhere, and <kbd>1</kbd> to <kbd>4</kbd> to switch between those readings
+(see [Keyboard shortcuts](../journal/keyboard.md)).
 
 A scenario is **an ordinary hledger journal file that nothing includes**, so it
 can be edited in your own editor, diffed, committed, and read by `hledger`
@@ -30,6 +31,30 @@ This section has four pages:
 
 Design notes and the reasoning behind each decision live in
 [`plans/22-projections.md`](https://github.com/zmre/ledgeline/blob/main/plans/22-projections.md).
+
+## The four readings
+
+| Tab | What it shows |
+|---|---|
+| **Runway** | when your cash runs out, in a sentence, above a chart of your cash balance. Cash accounts only; investments are not runway. |
+| **Balance sheet** | the Reports tab's balance sheet at the end of every period, side by side |
+| **Income statement** | the Reports tab's income statement, one column per period plus a Total |
+| **Cash flow** | the Reports tab's statement of cash flows over the same periods |
+
+The statements are computed by the same code as on the Reports tab, with the
+same groups, sections, valuation and balance check, over your real
+transactions up to the projection's start and the scenario's projected
+transactions after it. They begin with a few **actual** periods, so you can see
+where the forecast starts from: the **Actuals** control sets how many (two by
+default; `0` shows the forecast alone). A rule and the word **Projected** mark
+the first projected column. The projection starts at the first period that is
+not yet complete; [What moves cash](cash.md#where-the-projection-starts) says
+exactly where.
+
+**Interval** and **Periods** set the columns for every reading. The depth
+slider rolls up the cash flow statement's account lines.
+
+A link to an older `tab=net` or `tab=worth` reading opens Runway.
 
 ## Where the files live, and what Ledgeline will write
 
