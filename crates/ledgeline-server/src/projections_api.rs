@@ -48,12 +48,14 @@ use ledgeline_core::projections::serialize::{
     ProjectionDoc, SerializeError, new_file, scenario_from_text, write_scenario,
 };
 use ledgeline_core::projections::{
-    AssetRow, BalanceSeries, CreateRefusal, DiscoveredProjection, Discovery, Growth, GrowthUnit,
-    LineRole, LineSection, LineSource, Projection, ProjectionOpts, ProjectionPath, Runway,
-    Scenario, ScenarioEvent, ScenarioLine, SeedOpts, discover_in, is_journal_name, label_for,
-    line_section, project, seed_scenario, virtual_posting,
+    AssetRow, BalanceSeries, CounterDefaults, CreateRefusal, DEFAULT_LOOKBACK,
+    DiscoveredProjection, Discovery, Growth, GrowthUnit, History, LineRole, LineSection,
+    LineSource, Projection, ProjectionOpts, ProjectionPath, Runway, Scenario, ScenarioEvent,
+    ScenarioLine, SeedOpts, discover_in, forecast_cutoff, is_journal_name, label_for,
+    latest_real_date, line_section, project, seed_scenario, upgrade_legacy_counters,
+    virtual_posting,
 };
-use ledgeline_core::reports::account_types::AccountType;
+use ledgeline_core::reports::account_types::{AccountType, AccountTypes};
 use ledgeline_core::reports::{
     BudgetOpts, Interval, account_decls, declared_types, periods::bucket_label, signed_entry,
 };
@@ -205,6 +207,11 @@ struct WireScenarioLine {
     /// table shows the journal's real figure greyed.
     opening: Option<WireAmount>,
     note: String,
+    /// The account the line balances against (plan 28), or `null` for a
+    /// pre-plan-28 line whose default the engine picks and a save writes.
+    counter: Option<String>,
+    /// Asset rows only: the gains account, or `null` for the default.
+    gains: Option<String>,
     /// `journal` (authored) | `unbudgeted` (estimated from history).
     source: &'static str,
     /// `income` | `expense` | `asset` | `oneoff` — the table section the
@@ -228,6 +235,8 @@ impl WireScenarioLine {
             growth: line.growth.as_ref().map(WireGrowth::from),
             opening: line.opening.as_ref().map(WireAmount::from),
             note: line.note.clone(),
+            counter: line.counter.as_ref().map(|account| account.0.clone()),
+            gains: line.gains.as_ref().map(|account| account.0.clone()),
             source: line.source.as_str(),
         }
     }
@@ -255,6 +264,8 @@ struct WireScenarioEvent {
     date: String,
     description: String,
     postings: Vec<WireEventPosting>,
+    /// The account the event balances against, or `null`.
+    counter: Option<String>,
 }
 
 impl From<&ScenarioEvent> for WireScenarioEvent {
@@ -273,6 +284,7 @@ impl From<&ScenarioEvent> for WireScenarioEvent {
                     })
                 })
                 .collect(),
+            counter: event.counter.as_ref().map(|account| account.0.clone()),
         }
     }
 }
@@ -288,6 +300,8 @@ pub(crate) struct WireScenario {
     updated: Option<String>,
     lines: Vec<WireScenarioLine>,
     events: Vec<WireScenarioEvent>,
+    /// `; cash:` — the scenario's default counter-account, or `null`.
+    cash: Option<String>,
 }
 
 impl WireScenario {
@@ -306,6 +320,7 @@ impl WireScenario {
                 .iter()
                 .map(WireScenarioEvent::from)
                 .collect(),
+            cash: scenario.cash.as_ref().map(|account| account.0.clone()),
         }
     }
 }
@@ -517,6 +532,12 @@ struct ScenarioLineIn {
     opening: Option<AmountIn>,
     #[serde(default)]
     note: String,
+    /// The counter-account. Absent or `null` is a pre-plan-28 line.
+    #[serde(default)]
+    counter: Option<String>,
+    /// Asset rows only; a flow line that carries one is a `400`.
+    #[serde(default)]
+    gains: Option<String>,
     /// `journal` | `unbudgeted`. Absent reads as `journal`; an unrecognized
     /// value is a `400` rather than a silent fallback.
     #[serde(default)]
@@ -544,6 +565,8 @@ struct ScenarioEventIn {
     #[serde(default)]
     description: String,
     postings: Vec<EventPostingIn>,
+    #[serde(default)]
+    counter: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -559,6 +582,8 @@ struct ScenarioIn {
     lines: Vec<ScenarioLineIn>,
     #[serde(default)]
     events: Vec<ScenarioEventIn>,
+    #[serde(default)]
+    cash: Option<String>,
 }
 
 /// `POST /api/projections/run`.
@@ -641,6 +666,14 @@ fn account_from_wire(account: &str) -> Result<AccountName, AppError> {
         ));
     }
     Ok(AccountName(trimmed.to_string()))
+}
+
+/// An optional account: absent, `null` and blank all mean "none".
+fn optional_account(account: Option<&String>) -> Result<Option<AccountName>, AppError> {
+    match account.map(|account| account.trim()) {
+        None | Some("") => Ok(None),
+        Some(account) => account_from_wire(account).map(Some),
+    }
 }
 
 fn growth_from_wire(growth: &GrowthIn) -> Result<Growth, AppError> {
@@ -744,7 +777,16 @@ fn scenario_from_wire(scenario: &ScenarioIn) -> Result<DecodedScenario, AppError
                     line.id
                 )));
             }
+            let gains = optional_account(line.gains.as_ref())?;
+            if role == LineRole::Flow && gains.is_some() {
+                return Err(AppError::BadRequest(format!(
+                    "line '{}' names a gains account, which only an asset row has",
+                    line.id
+                )));
+            }
             Ok(ScenarioLine {
+                counter: optional_account(line.counter.as_ref())?,
+                gains,
                 id: line.id.clone(),
                 group: line.group.clone(),
                 role,
@@ -789,6 +831,7 @@ fn scenario_from_wire(scenario: &ScenarioIn) -> Result<DecodedScenario, AppError
                 date: checked_date("event date", &event.date)?,
                 description: event.description.clone(),
                 postings,
+                counter: optional_account(event.counter.as_ref())?,
             })
         })
         .collect::<Result<Vec<_>, AppError>>()?;
@@ -806,6 +849,7 @@ fn scenario_from_wire(scenario: &ScenarioIn) -> Result<DecodedScenario, AppError
             updated: scenario.updated.clone(),
             lines,
             events,
+            cash: optional_account(scenario.cash.as_ref())?,
         },
         entries,
     })
@@ -859,7 +903,8 @@ pub(crate) async fn run(
             &journal.transactions,
             &journal.prices,
             &ProjectionOpts {
-                as_of: &window.end,
+                today: &window.end,
+                lookback: DEFAULT_LOOKBACK,
                 interval: window.interval,
                 count: window.count,
                 depth: window.depth,
@@ -1641,6 +1686,26 @@ pub(crate) async fn save(
         // the whole application.
         let declared = declared_types(&account_decls(&snapshot.journal));
         let scenario = decoded.signed(&declared)?;
+        // Plan 28: a pre-plan-28 group that does not balance is written with
+        // the default counter-account the engine already books it to, so the
+        // file becomes plain balanced hledger and no number moves.
+        let history = History {
+            txns: &snapshot.journal.transactions,
+            prices: &snapshot.journal.prices,
+        };
+        let cutoff = forecast_cutoff(
+            &today_utc(),
+            latest_real_date(history.txns),
+            Interval::Monthly,
+        )?;
+        let defaults = CounterDefaults::new(
+            &history,
+            &AccountTypes::from_declared(declared.clone()),
+            &cutoff,
+            scenario.cash.as_ref(),
+            None,
+        )?;
+        let scenario = upgrade_legacy_counters(&scenario, &defaults);
         // Scanned in THIS request, never cached. That is the whole of security
         // layer 2: an id resolves against a set built from `read_dir` names
         // moments ago, so a cached set would be one that no longer describes

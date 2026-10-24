@@ -516,6 +516,13 @@ pub struct PeriodicTransaction {
     pub tags: Vec<(String, String)>,
     /// The rule's postings, after amount inference/balancing.
     pub postings: Vec<Posting>,
+    /// The index in [`postings`](Self::postings) of the REGULAR posting whose
+    /// amount was elided in the file and inferred by balancing, if any.
+    ///
+    /// Inference erases the difference between a stated and an inferred
+    /// amount, and a projection needs it: the elided posting IS the rule's
+    /// counter-account (plan 28 Decision 1), not a line of its own.
+    pub elided: Option<usize>,
     /// `[first line, line after last posting]`, both at column 1, exactly as
     /// [`Transaction::source_span`] is defined — and relative to
     /// [`source_file`](Self::source_file), not to the main journal.

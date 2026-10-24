@@ -110,6 +110,8 @@ fn usd(mantissa: i128, places: u32, precision: u32) -> Amount {
 
 fn line(group: &str, id: &str, account: &str, amount: Amount, period: &str) -> ScenarioLine {
     ScenarioLine {
+        counter: None,
+        gains: None,
         id: id.to_string(),
         group: group.to_string(),
         role: LineRole::Flow,
@@ -517,6 +519,7 @@ fn a_save_that_changes_nothing_produces_the_same_bytes() {
 /// apply and which is asserted about separately below.
 fn cross_check_scenario() -> Scenario {
     Scenario {
+        cash: None,
         name: "Cross check".to_string(),
         created: Some("2026-01-01".to_string()),
         updated: Some("2026-01-02".to_string()),
@@ -569,6 +572,7 @@ fn cross_check_scenario() -> Scenario {
             },
         ],
         events: vec![ScenarioEvent {
+            counter: None,
             id: "rule:3".to_string(),
             date: "2027-03-01".to_string(),
             description: "Series A".to_string(),
@@ -962,8 +966,115 @@ fn the_committed_asset_fixture_reads_and_rewrites_unchanged() {
 
     let doc = ProjectionDoc::parse(&text, &name, &declared()).expect("it parses");
     let rewritten = write_scenario(&doc, &scenario, &name).expect("it writes");
+    // The fixture predates plan 28, and its growing asset rows book
+    // appreciation to `equity:unrealized gains`, which neither the main journal
+    // nor the file declares. So the FIRST save declares it in the file
+    // (Decision 4), under the header — and changes nothing else.
     assert_eq!(
-        rewritten, text,
-        "a save that changes nothing must change no byte of the fixture"
+        rewritten,
+        text.replacen(
+            "; updated: 2026-09-20\n\n",
+            "; updated: 2026-09-20\n\naccount equity:unrealized gains  ; type: E\n\n",
+            1,
+        ),
+        "a save that changes nothing must change no byte but the gains declaration"
+    );
+    let doc = ProjectionDoc::parse(&rewritten, &name, &declared()).expect("it parses");
+    assert_eq!(
+        write_scenario(&doc, &scenario, &name).expect("it writes"),
+        rewritten,
+        "a save of the upgraded file must change no byte at all"
+    );
+}
+
+/// Plan 28: a scenario with counter-accounts is ordinary BALANCED hledger.
+/// The complaint the plan opens with — `hledger bs --forecast` showed salary in
+/// the P&L and never in any bank account — is what this pins: forecast over the
+/// written file, checking moves by the net of the rule, and the file's own
+/// gains declaration passes `check`.
+#[test]
+fn hledger_forecasts_a_balanced_scenario_into_the_counter_account() {
+    let Some(_) = hledger(&["--version"]) else {
+        eprintln!("skipped: set {OPT_IN}=1 (see `just hledger-checks`)");
+        return;
+    };
+    let scratch = Scratch::new("hledger-balanced");
+    let counter = Some(AccountName("assets:checking".to_string()));
+    let scenario = Scenario {
+        name: "Balanced".to_string(),
+        cash: counter.clone(),
+        lines: vec![
+            ScenarioLine {
+                counter: counter.clone(),
+                ..line(
+                    "rule:0",
+                    "rule:0:0",
+                    "revenues:salary",
+                    usd(-1_200_000, 2, 2),
+                    "monthly",
+                )
+            },
+            ScenarioLine {
+                counter: counter.clone(),
+                ..line(
+                    "rule:0",
+                    "rule:0:1",
+                    "expenses:rent",
+                    usd(420_000, 2, 2),
+                    "monthly",
+                )
+            },
+            ScenarioLine {
+                role: LineRole::Asset,
+                growth: Some(Growth {
+                    rate: Dec::new(4, 2),
+                    unit: GrowthUnit::Year,
+                }),
+                ..line(
+                    "rule:1",
+                    "rule:1:0",
+                    "assets:house",
+                    usd(0, 2, 2),
+                    "monthly",
+                )
+            },
+        ],
+        ..Scenario::default()
+    };
+    let path = scratch.path().join("projection-balanced.journal");
+    let text = new_file(&scenario, &path.to_string_lossy(), &declared()).expect("it writes");
+    assert!(
+        text.contains("account equity:unrealized gains  ; type: E"),
+        "{text}"
+    );
+    std::fs::write(&path, &text).expect("write");
+    let file = path.to_string_lossy().to_string();
+
+    let checked = hledger(&["-f", &file, "check"]).expect("hledger runs");
+    assert!(
+        checked.status.success(),
+        "hledger check refused the file:\n{}\n--- the file ---\n{text}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+    let balance = hledger(&[
+        "-f",
+        &file,
+        "balance",
+        "--forecast=2027-01-01..2027-03-01",
+        "assets:checking",
+        "--layout=bare",
+        "-N",
+    ])
+    .expect("hledger runs");
+    assert!(
+        balance.status.success(),
+        "{}",
+        String::from_utf8_lossy(&balance.stderr)
+    );
+    let report = String::from_utf8_lossy(&balance.stdout);
+    // Two months of $12,000 in and $4,200 out.
+    assert!(
+        report.contains("15600.00"),
+        "the forecast did not land in checking:\n{report}\n--- the file ---\n{text}"
     );
 }

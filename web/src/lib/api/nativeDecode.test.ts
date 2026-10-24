@@ -2026,6 +2026,8 @@ const SCENARIO_FILE = {
                 growth: {rate: {mantissa: "2", places: 2}, unit: "year"},
                 opening: null,
                 note: "projection",
+                counter: null,
+                gains: null,
                 source: "journal",
             },
         ],
@@ -2035,8 +2037,10 @@ const SCENARIO_FILE = {
                 date: "2027-03-01",
                 description: "Series A",
                 postings: [{account: "assets:cash", amount: {commodity: "$", quantity: {mantissa: "200000000", places: 2}, precision: 2}}],
+                counter: null,
             },
         ],
+        cash: null,
     },
 };
 

@@ -1,9 +1,9 @@
 //! Projections — a what-if scenario read forward in time.
 //!
 //! A [`Scenario`] is the model of a projection file (`plans/22-projections.md`,
-//! §"The file format"): a set of recurring [`ScenarioLine`]s and dated
-//! [`ScenarioEvent`]s, both expressed as unbalanced virtual postings exactly as
-//! budget goals are. [`project`] reads one forward over a run of buckets and
+//! §"The file format", as amended by `plans/28-projected-statements.md`): a set
+//! of recurring [`ScenarioLine`]s and dated [`ScenarioEvent`]s, each balanced
+//! against a counter-account. [`project`] reads one forward over a run of buckets and
 //! answers the three questions the tab asks — what net income does this imply,
 //! what does cash do, and what does net worth do — plus the one that actually
 //! matters: when does the cash run out.
@@ -19,38 +19,27 @@
 //! cash and net worth and leaves net income alone, because that is what those
 //! accounts ARE — not because the file said so.
 //!
-//! # The implied cash leg is the group's RESIDUAL
+//! # A scenario is expanded into balanced transactions (plan 28)
 //!
-//! A projection line has no funding leg, so the balance-sheet effect is implied.
-//! One rule, stated once and tested:
+//! There is one source of truth. [`forecast_transactions`] expands every line
+//! and event into dated, BALANCED transactions after the cutoff, the way
+//! `hledger --forecast` does, and [`project`] reads its series off them beside
+//! the real journal before the cutoff. Each line is balanced against its
+//! [`ScenarioLine::counter`]; a pre-plan-28 line with none has its group's
+//! unbalanced sum posted to the default counter-account ([`CounterDefaults`]),
+//! which reproduces the old residual rule's numbers exactly — so plan 22's table
+//! still holds, now as postings:
 //!
-//! > For each GROUP (one `~` rule, or one dated event), sum EVERY posting. The
-//! > negation of that sum — the group's residual — is the implied cash leg, and
-//! > it applies IN ADDITION TO whatever cash postings the group already states.
-//! > Cash is an asset, so net worth takes that same implied leg beside the
-//! > group's own asset and liability postings.
-//!
-//! A residual rather than a guard, because a guard has to answer "did this group
-//! already fund itself?" as a boolean, and can only answer for the fundings it
-//! recognises:
-//!
-//! | group | residual → implied leg | net cash |
+//! | group | posted | net cash |
 //! |---|---|---|
-//! | `(expenses:rent) $4200` | −4200 | −4200 |
-//! | …beside `(assets:checking) $-4200` | 0 | −4200, the stated leg |
-//! | `(expenses:legal) $45000` beside `(liabilities:payable) $-45000` | 0 | **0** |
-//! | `(assets:cash) $2M` beside `(equity:preferred) $-2M` | 0 | +2,000,000 |
-//! | `(expenses:rent) $4200` beside `(assets:cash) $-2000` | −2200 | −4200 |
+//! | `(expenses:rent) $4200` | rent, and −4200 to the default cash account | −4200 |
+//! | …beside `(assets:checking) $-4200` | as stated; it balances | −4200 |
+//! | `expenses:legal $45000`, counter `liabilities:payable` | an accrual | **0** |
+//! | `assets:cash $2M`, counter `equity:preferred` | a raise | +2,000,000 |
+//! | `(expenses:rent) $4200` beside `(assets:cash) $-2000` | the −2200 rest to the default | −4200 |
 //!
-//! Row three is an ACCRUAL, and it is what a cash-posting guard gets wrong: a
-//! liability is not cash, so the guard would not fire and the bill would charge
-//! cash it has not yet cost. Row five is a PARTIAL payment, which no boolean
-//! guard can express at all.
-//!
-//! Cash-likeness is still the predicate the cash-flow report uses
-//! ([`AccountTypes::is_cash`]), so the two reports cannot disagree about what
-//! counts as cash — but it now decides only which STATED postings are cash,
-//! never whether an implied leg exists.
+//! Cash-likeness is [`AccountTypes::is_cash`], the predicate the cash-flow
+//! report uses, so the two cannot disagree about what counts as cash.
 //!
 //! # Growth is stepwise
 //!
@@ -75,14 +64,16 @@
 //!    `an_asset_row_with_no_growth_and_no_contribution_changes_nothing`: a row
 //!    with a zero rate and no contribution must leave every bucket of both
 //!    series identical to the same scenario without the row at all.
-//! 2. **Appreciation moves net worth and nothing else.** Paper gains do not pay
-//!    salaries, so they never reach cash and never reach net income — a runway
-//!    that counted them would be worse than one that ignored them. A burning
-//!    scenario with a growing asset still shows cash falling at the burn rate.
-//! 3. **A contribution needs NO new cash logic.** It is a posting to an asset
-//!    account inside a group, so the residual rule above already implies the
-//!    cash leg: cash −2000, asset +2000, net worth unchanged. Writing a second
-//!    path for it is how the two series start to drift.
+//! 2. **Appreciation is a posting or a price, never cash.** On an UNPRICED
+//!    account it is a posting from the asset to its gains account
+//!    ([`ScenarioLine::gains`], default [`DEFAULT_GAINS_ACCOUNT`], equity), so
+//!    it moves net worth and neither net income nor cash — unless the row's own
+//!    account IS cash, where the interest really is money in the account. On an
+//!    account holding PRICED commodities it grows their prices in memory
+//!    ([`Forecast::prices`]) and the holding is revalued (plan 28 Decision 3).
+//! 3. **A contribution is an ordinary line.** It is balanced against its
+//!    counter-account like any flow: cash −2000, asset +2000, net worth
+//!    unchanged.
 //! 4. **ONE asset row per account, and the first one in the file owns it.** The
 //!    running balance is seeded from the journal once per ROW, so two rows
 //!    naming one account each start from the whole balance and each compound
@@ -103,11 +94,17 @@
 /// `rules::discovery` is: the guarded surface is what `pub use` below
 /// re-exports, and nothing else.
 mod discovery;
+mod forecast;
 pub mod serialize;
 
 pub use discovery::{
     CreateRefusal, DiscoveredProjection, Discovery, ProjectionPath, discover, discover_in,
     is_journal_name, label_for, slug_filename,
+};
+pub use forecast::{
+    CounterDefaults, DEFAULT_GAINS_ACCOUNT, DEFAULT_LOOKBACK, Forecast, ForecastOpts,
+    ForecastWindow, GENERATED_TAG, History, forecast_cutoff, forecast_transactions, is_generated,
+    latest_real_date, merged_prices, merged_transactions, upgrade_legacy_counters,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -120,15 +117,15 @@ use crate::model::{
 };
 use crate::reports::ReportError;
 use crate::reports::account_types::{AccountType, AccountTypes};
-use crate::reports::aggregate::{at_depth, roll_up};
-use crate::reports::budget::{BudgetOpts, budget_gaps, occurrences, step_from};
+use crate::reports::aggregate::{PostingFilter, account_totals, at_depth, roll_up};
+use crate::reports::budget::{BudgetOpts, budget_gaps, step_from};
 use crate::reports::mixed_amount::MixedAmount;
 use crate::reports::net_worth::{NetWorthOpts, net_worth_priced, valued};
 use crate::reports::periods::{
-    Interval, bucket_end, bucket_key, bucket_span, bucket_start, clamped_date, compare_iso,
-    days_between, months_between, next_bucket, next_n_buckets, parts,
+    Interval, bucket_end, bucket_start, clamped_date, compare_iso, days_between, months_between,
+    parts,
 };
-use crate::reports::prices::{PriceDb, infer_market_prices};
+use crate::reports::prices::PriceDb;
 use crate::reports::types::{PeriodReport, PeriodRow};
 
 // ===========================================================================
@@ -247,8 +244,8 @@ pub enum LineRole {
     Flow,
     /// The amount is a per-period CONTRIBUTION to a balance that compounds at
     /// [`ScenarioLine::growth`]. Only the growth reaches net worth; the
-    /// contribution is a posting like any other and its cash leg is the
-    /// group's residual, as for every other row.
+    /// contribution is a posting like any other, balanced against the row's
+    /// counter-account as every other row is.
     Asset,
 }
 
@@ -347,9 +344,10 @@ fn is_single_date(raw: &str) -> bool {
 ///   up — is two bounded segments of one row, sharing an `id`, which is what
 ///   lets the editor show them as a single line with a "from" on it.
 /// - `group` is the SOURCE RULE: every posting of one `~` block shares it. It is
-///   what the residual is summed over (see the module docs), and a model with
-///   only `id` has nothing to group on — a rule that states its own cash leg
-///   would have its spending counted twice.
+///   what a pre-plan-28 group's unbalanced sum is taken over (see the module
+///   docs) and what one generated transaction per date is built from; a model
+///   with only `id` has nothing to group on — a rule that states its own cash
+///   leg would have its spending counted twice.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScenarioLine {
     /// The logical row this segment belongs to.
@@ -380,6 +378,19 @@ pub struct ScenarioLine {
     /// opening already contains this account's real figure, so only the
     /// DIFFERENCE is applied, once, in the first bucket, and it is warned about.
     pub opening: Option<Amount>,
+    /// The account this line is balanced against — where its money lands or
+    /// comes from (plan 28 Decision 1). `None` is a pre-plan-28 line: its
+    /// group's unbalanced sum goes to the DEFAULT counter-account
+    /// ([`CounterDefaults`], Decision 7) when the scenario is expanded, and is
+    /// written explicitly on the next save ([`upgrade_legacy_counters`]).
+    ///
+    /// In the file it is the block's AMOUNTLESS posting, so every line of one
+    /// `~` rule that has a counter shares it.
+    pub counter: Option<AccountName>,
+    /// [`LineRole::Asset`] only: the account appreciation is booked against
+    /// (Decision 4). `None` is [`DEFAULT_GAINS_ACCOUNT`]. In the file it is the
+    /// posting's `; gains: <account>` tag.
+    pub gains: Option<AccountName>,
     /// Free text for the row — the rule's description, or where a seeded row
     /// came from.
     pub note: String,
@@ -390,9 +401,11 @@ pub struct ScenarioLine {
 /// A dated one-off: its postings say whether it touches the P&L, the balance
 /// sheet, or both.
 ///
-/// An event is its own group, so its postings sum into one residual:
-/// `(assets:cash) $2M` beside `(equity:preferred) $-2M` nets to zero and implies
-/// nothing, while a lone `(expenses:legal) $45k` implies the whole `$-45k` leg.
+/// An event is its own group and one generated transaction: its postings plus
+/// its [`ScenarioEvent::counter`] taking whatever they do not balance. With no
+/// counter, `(assets:cash) $2M` beside `(equity:preferred) $-2M` balances and
+/// adds nothing, while a lone `(expenses:legal) $45k` posts `$-45k` to the
+/// default counter-account.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScenarioEvent {
     /// A stable handle for the row. Not in `plans/22-projections.md`'s sketch;
@@ -403,8 +416,12 @@ pub struct ScenarioEvent {
     pub date: String,
     /// What it is, for the row and for a `~ DATE  DESCRIPTION` header.
     pub description: String,
-    /// Its postings.
+    /// Its postings, each with an amount.
     pub postings: Vec<Posting>,
+    /// The account the event balances against: the block's amountless posting
+    /// in the file. `None` with postings that do not balance is a
+    /// pre-plan-28 event, and its sum goes to the default counter-account.
+    pub counter: Option<AccountName>,
 }
 
 /// A whole what-if.
@@ -421,6 +438,9 @@ pub struct Scenario {
     pub lines: Vec<ScenarioLine>,
     /// The dated one-offs.
     pub events: Vec<ScenarioEvent>,
+    /// `; cash: <account>` from the header: the default counter-account when
+    /// history names none (Decision 7, step 2).
+    pub cash: Option<AccountName>,
 }
 
 // ===========================================================================
@@ -430,15 +450,20 @@ pub struct Scenario {
 /// Inputs to [`project`].
 #[derive(Debug, Clone)]
 pub struct ProjectionOpts<'a> {
-    /// Opening balances are taken as of this date; the first bucket is the next
-    /// WHOLE one after it (decision 9 — a partial first period would make the
-    /// first bar shorter than the rest for reasons that have nothing to do with
-    /// the scenario).
-    pub as_of: &'a str,
+    /// The caller's today. The projection starts at the CUTOFF (plan 28
+    /// Decision 5): the start of the period containing the earlier of this and
+    /// the day after the latest real transaction ([`forecast_cutoff`]). Opening
+    /// balances are the real ones the day before it, so no column is a partial
+    /// period.
+    pub today: &'a str,
     /// Bucketing interval.
     pub interval: Interval,
-    /// How many buckets to project.
+    /// How many buckets to project, starting at the cutoff.
     pub count: usize,
+    /// How many FULL periods before the cutoff to report as actuals
+    /// ([`BalanceSeries::history`], [`Projection::lookback`]); Decision 6's
+    /// default is [`DEFAULT_LOOKBACK`].
+    pub lookback: usize,
     /// Account-depth clamp for the net-income rows. The totals are summed over
     /// the unclamped accounts, so none of them move with it.
     pub depth: usize,
@@ -452,10 +477,13 @@ pub struct ProjectionOpts<'a> {
 /// An opening balance and the closing balance at the end of each bucket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BalanceSeries {
-    /// The balance as of [`ProjectionOpts::as_of`], before any projected flow.
+    /// The real balance the day before the cutoff, before any projected flow.
     pub opening: MixedAmount,
     /// The closing balance at the end of each bucket, oldest → newest.
     pub values: Vec<MixedAmount>,
+    /// The REAL closing balance at the end of each lookback period
+    /// ([`Projection::lookback`]), oldest → newest. Empty with no lookback.
+    pub history: Vec<MixedAmount>,
 }
 
 /// Where the cash crosses zero.
@@ -502,16 +530,18 @@ pub struct AssetRow {
     pub group: String,
     /// The account, as the row states it.
     pub account: String,
-    /// The journal's own SUBTREE balance for that account at
-    /// [`ProjectionOpts::as_of`], valued the way the opening net worth is. This
+    /// The journal's own SUBTREE balance for that account the day before the
+    /// cutoff, valued the way the opening net worth is. This
     /// is the figure an `opening` override overrides.
     pub journal_opening: MixedAmount,
     /// The balance the row actually started compounding from: the override when
     /// there is one, else `journal_opening`.
     pub opening: MixedAmount,
     /// Total appreciation over the span — the sum of every growth step's
-    /// difference. Zero for a row with no rate. Never includes a contribution,
-    /// and never includes the opening-override adjustment.
+    /// gains posting, plus, for a row whose account holds PRICED commodities,
+    /// their revaluation under the grown prices to the end of the span. Zero
+    /// for a row with no rate. Never includes a contribution, and never
+    /// includes the opening-override adjustment.
     pub growth: MixedAmount,
 }
 
@@ -520,10 +550,12 @@ pub struct AssetRow {
 pub struct Projection {
     /// Bucket keys, oldest → newest.
     pub buckets: Vec<String>,
-    /// The first day of the first bucket. Echoed because decision 9 makes the
-    /// start a derived fact the tab has to state, and a UI that re-derived it
-    /// would be re-deriving "the next whole bucket".
+    /// The first day of the first bucket: the CUTOFF (plan 28 Decision 5).
+    /// Everything strictly before it is actuals.
     pub start: String,
+    /// The full actual periods before the cutoff, oldest → newest
+    /// ([`ProjectionOpts::lookback`] of them).
+    pub lookback: Vec<String>,
     /// Projected revenue and expense accounts per bucket, in CASH-FLOW
     /// ORIENTATION — revenue positive (an inflow), expenses negative (an
     /// outflow) — so that `totals[i]` is the sum of `rows[i]` and IS net income.
@@ -558,525 +590,26 @@ pub struct Projection {
 /// the budget report's `MAX_OCCURRENCES`.
 const MAX_GROWTH_STEPS: i64 = 100_000;
 
-/// Which kind of thing a group of legs came from.
+/// Project `scenario` forward over `opts.count` buckets from the cutoff.
 ///
-/// `Event` is declared FIRST so the derived order reproduces the lexical order
-/// of the `"event:{id}"` / `"line:{group}"` strings this replaced (`e` < `l`).
-/// Group order is not cosmetic: it decides the order each bucket's legs are
-/// summed into the running cash and net-worth deltas, and
-/// [`MixedAmount::ma_add_assign`] prunes per addition, so a commodity that nets
-/// to zero and returns could come back at a different scale under a different
-/// order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum GroupKind {
-    Event,
-    Line,
-}
-
-/// What [`Layout::per_bucket`] groups legs by: the kind, and the id or group
-/// name that identifies one.
+/// ONE source of truth (plan 28): the scenario is expanded into balanced
+/// transactions ([`forecast_transactions`]) and every series here is read off
+/// them, beside the real journal before the cutoff:
 ///
-/// A borrowed pair rather than a `format!`ed key. The key is rebuilt once per
-/// OCCURRENCE — a monthly line over a hundred buckets built a hundred identical
-/// `String`s — and both halves already live in the scenario the layout is
-/// reading, so `&'a str` costs nothing to produce. Ordering is unchanged; see
-/// [`GroupKind`].
-type GroupKey<'a> = (GroupKind, &'a str);
-
-/// A group's postings for one bucket: account name → amount. Borrowed from the
-/// scenario for [`GroupKey`]'s reason — `&str` and `String` order alike, so the
-/// legs still iterate in account order.
-type GroupLegs<'a> = BTreeMap<&'a str, MixedAmount>;
-
-/// The scenario, laid out over the projected buckets.
+/// - **cash** opens at the real cash balance the day before the cutoff, valued
+///   as `net_worth` values it, and moves by the generated postings to
+///   cash-typed accounts ([`AccountTypes::is_cash`]) — the runway reads it;
+/// - **net worth** opens at `net_worth` the day before the cutoff and moves by
+///   the generated postings to asset and liability accounts, plus the
+///   revaluation of real holdings whose prices an asset row grows;
+/// - **net income** is the generated postings to revenue and expense accounts.
 ///
-/// A struct rather than a pile of `&mut` parameters: placing a line needs the
-/// span, the bucket spans, the per-bucket accumulator, the commodity set AND the
-/// warning list, and threading six of those through two free functions is how
-/// one of them silently stops being updated.
+/// Generated amounts are NOT valued, exactly as the per-bucket engine this
+/// replaced did not value them: a scenario in another commodity is added as
+/// that commodity, and warned about.
 ///
-/// `'a` is the scenario's: the group and account keys borrow it.
-struct Layout<'a> {
-    start: String,
-    end: String,
-    /// Each bucket's inclusive `[start, end]` dates, ascending and contiguous —
-    /// what [`Layout::bucket_of`] binary-searches. They carry the bucketing, so
-    /// the layout no longer needs to hold the [`Interval`] that produced them.
-    spans: Vec<(String, String)>,
-    /// `[bucket][group][account] → amount`.
-    per_bucket: Vec<BTreeMap<GroupKey<'a>, GroupLegs<'a>>>,
-    /// Per bucket, the amounts that move NET WORTH and nothing else: an asset
-    /// row's appreciation, and an opening-balance override's one-off adjustment.
-    ///
-    /// Deliberately NOT a group leg. A leg would be summed into the group's
-    /// residual and imply a cash leg of the same size, which is the whole error:
-    /// a paper gain does not put money in the bank.
-    net_worth_only: Vec<MixedAmount>,
-    /// One [`AssetRow`] per asset row actually modelled, in scenario order.
-    assets: Vec<AssetRow>,
-    /// Every commodity the scenario contributes, for the mismatch warning.
-    commodities: BTreeSet<Commodity>,
-    warnings: Vec<String>,
-}
-
-/// What placing a [`LineRole::Asset`] row needs from the real journal.
-///
-/// A struct rather than five parameters threaded through one call: the running
-/// balance is seeded from the journal and valued the same way the opening net
-/// worth beside it is, and the two going out of step is the failure that makes
-/// an asset row's growth land in a commodity the series is not denominated in.
-struct AssetWorld<'a> {
-    types: &'a AccountTypes,
-    /// The journal's per-account balances at `as_of`, walked ONCE for the whole
-    /// projection — see [`account_balances_at`]. Not the transactions: every
-    /// asset row seeding itself from them cost a full pass each.
-    balances: &'a AccountBalances<'a>,
-    prices: &'a PriceDb,
-    target: Option<&'a Commodity>,
-    as_of: &'a str,
-}
-
-impl<'a> Layout<'a> {
-    /// # Errors
-    /// Returns [`ReportError::InvalidBucketKey`] if `buckets` holds a key
-    /// [`bucket_span`] cannot read.
-    fn new(buckets: &[String], start: String, end: String) -> Result<Self, ReportError> {
-        // `bucket_span` clamps a bucket's end to the report's; `end` is the last
-        // bucket's own end, so nothing is actually clamped and these are the
-        // plain `[bucket_start, bucket_end]` pairs.
-        let spans: Vec<(String, String)> = buckets
-            .iter()
-            .map(|key| bucket_span(key, &end))
-            .collect::<Result<_, ReportError>>()?;
-        Ok(Self {
-            start,
-            end,
-            spans,
-            per_bucket: (0..buckets.len()).map(|_| BTreeMap::new()).collect(),
-            net_worth_only: (0..buckets.len()).map(|_| MixedAmount::new()).collect(),
-            assets: Vec::new(),
-            commodities: BTreeSet::new(),
-            warnings: Vec::new(),
-        })
-    }
-
-    /// Which bucket `date` falls in, or `None` when it is outside the span.
-    ///
-    /// A binary search over the bucket spans, which is the idiom the budget and
-    /// net-worth reports already place a posting with. It replaces a
-    /// `bucket_key` + map lookup that allocated a fresh key `String` on every
-    /// call — and this is called once per occurrence, per growth boundary and
-    /// per contribution.
-    ///
-    /// `next_n_buckets` yields CONTIGUOUS buckets oldest → newest, so the `end`
-    /// bounds ascend strictly and every date falls in at most one of them. A
-    /// date past the last bucket lands off the end of the vector; one before the
-    /// first fails the `start` test on bucket 0.
-    fn bucket_of(&self, date: &str) -> Option<usize> {
-        let index = self.spans.partition_point(|(_, end)| end.as_str() < date);
-        let (start, _) = self.spans.get(index)?;
-        (start.as_str() <= date).then_some(index)
-    }
-
-    /// The accumulator for one account's leg of one group in one bucket.
-    ///
-    /// The entry chain written once. [`Layout`]'s own doc argues for the struct
-    /// so this threading happens in one place, and three copies of it had grown
-    /// anyway — a flow line's, an asset row's contribution and an event's.
-    fn leg(&mut self, index: usize, group: GroupKey<'a>, account: &'a str) -> &mut MixedAmount {
-        self.per_bucket[index]
-            .entry(group)
-            .or_default()
-            .entry(account)
-            .or_default()
-    }
-
-    /// Place one recurring row, whichever kind it is.
-    fn place_line(
-        &mut self,
-        line: &'a ScenarioLine,
-        world: &AssetWorld<'_>,
-    ) -> Result<(), ReportError> {
-        let label = line_label(line);
-        if line.period.kind == PeriodKind::Unsupported {
-            self.warnings.push(format!(
-                "{label}: the period '{}' is not a recurrence this engine can enumerate, \
-                 so the line contributes nothing",
-                line.period.raw
-            ));
-            return Ok(());
-        }
-        match line.role {
-            LineRole::Flow => self.place_flow(line, &label),
-            LineRole::Asset => self.place_asset(line, &label, world),
-        }
-    }
-
-    /// Place one flow line's occurrences, stepping its growth as the dates
-    /// advance.
-    fn place_flow(&mut self, line: &'a ScenarioLine, label: &str) -> Result<(), ReportError> {
-        if line.growth.is_some() && line.period.kind == PeriodKind::Once {
-            self.warnings.push(format!(
-                "{label}: growth is set on a line that fires once, so it never applies"
-            ));
-        }
-
-        // The growth anchor. With a `from`, growth is measured from the date the
-        // segment starts — which is what makes the second half of a step change
-        // grow from its NEW base rather than from the projection's start.
-        let anchor = self.anchor_of(line);
-        // Everything below that is a property of the LINE rather than of one
-        // occurrence, lifted clear of the walk: the group key, the account, and
-        // the growth factor. `1 + rate` in particular was recomputed per
-        // occurrence from inside the `if let`, so it ran even on the occurrences
-        // whose `while` body did not — and `place_asset` had already hoisted its
-        // copy, which is the shape both should have.
-        let group = (GroupKind::Line, line.group.as_str());
-        let account = line.account.0.as_str();
-        let factor = match &line.growth {
-            Some(growth) => Dec::new(1, 0).add(growth.rate)?,
-            None => Dec::new(1, 0),
-        };
-        let mut current = MixedAmount::single(line.amount.commodity.clone(), line.amount.quantity);
-        let mut applied: i64 = 0;
-        let mut overflowed = false;
-        // Whether any occurrence landed inside the span. The commodity is
-        // registered for the mismatch warning only if one did — that was the
-        // effect of registering it below the `bucket_of` guard, and a line that
-        // contributes no money has no money to be mismatched.
-        let mut placed = false;
-
-        // `occurrences` returns ASCENDING dates, so the step count is
-        // non-decreasing and the growth walk is done once rather than
-        // recomputed from the anchor per occurrence.
-        for date in occurrences(&self.start, &self.end, &line.period)? {
-            let Some(index) = self.bucket_of(&date) else {
-                continue;
-            };
-            if let Some(growth) = &line.growth
-                && !overflowed
-            {
-                let wanted = growth_steps(&anchor, &date, growth.unit).min(MAX_GROWTH_STEPS);
-                while applied < wanted {
-                    match grow_once(&current, factor, line.amount.style.precision) {
-                        Ok(next) => current = next,
-                        // A compounding amount can outgrow `i128` long before the
-                        // span does (10%/week over 1200 weeks is 10^49). That is
-                        // a scenario this engine cannot state, not a server
-                        // fault, so the line holds its last representable amount
-                        // and SAYS so rather than failing the whole projection
-                        // with a 500.
-                        Err(_) => {
-                            overflowed = true;
-                            self.warnings.push(format!(
-                                "{label}: growth overflowed the exact-decimal range after \
-                                 {applied} steps; the line is held flat from there on"
-                            ));
-                            break;
-                        }
-                    }
-                    applied += 1;
-                }
-            }
-            placed = true;
-            self.leg(index, group, account).ma_add_assign(&current)?;
-        }
-        if placed {
-            self.commodities.insert(line.amount.commodity.clone());
-        }
-        Ok(())
-    }
-
-    /// Place one ASSET row: carry a running balance, credit its appreciation to
-    /// net worth alone, and place its contributions as ordinary group legs.
-    ///
-    /// The balance is seeded from the REAL journal and the opening is never
-    /// contributed — see the module docs. What this adds to the answer is:
-    ///
-    /// - one [`Layout::net_worth_only`] entry per growth step, the DIFFERENCE
-    ///   the step made, in the bucket the step's boundary falls in;
-    /// - one group leg per contribution occurrence, identical in every way to a
-    ///   flow line's, so the residual rule implies the cash outflow exactly once;
-    /// - one [`AssetRow`] in [`Layout::assets`], attributing both balances and
-    ///   the total appreciation back to the row, which is what the table's
-    ///   Balance column and the net-worth breakdown read.
-    fn place_asset(
-        &mut self,
-        line: &'a ScenarioLine,
-        label: &str,
-        world: &AssetWorld<'_>,
-    ) -> Result<(), ReportError> {
-        // Liabilities are out of scope (`plans/23-asset-growth.md` decision 8):
-        // a mortgage needs principal-versus-interest, which plan 22 decision 8
-        // already established cannot be recovered from the journal. Anything
-        // that is not an asset SAYS so rather than being modelled as one.
-        if !world.types.is_type(&line.account.0, AccountType::Asset) {
-            self.warnings.push(format!(
-                "{label}: an asset row needs an account of type asset, and '{}' is {}, \
-                 so the row contributes nothing (liabilities are out of scope)",
-                line.account.0,
-                describe_type(world.types.resolve(&line.account.0)),
-            ));
-            return Ok(());
-        }
-
-        // ONE asset row per account, and the FIRST one in scenario order owns
-        // it. `seed_asset_balance` reads the journal once PER ROW, so two rows
-        // naming the same account — or two whose subtrees overlap — each start
-        // from the same money and each compound it, roughly doubling the
-        // growth. Nothing downstream can take one of them back out.
-        //
-        // The engine will not net the overlap out instead, because it cannot:
-        // an `opening` override restates a row's balance, and how much of a
-        // restated balance belongs to the other row is not a question the
-        // journal answers. And a row is declined WHOLESALE — its contribution
-        // goes with its growth — for the reason the non-asset check above is:
-        // a row the engine will not model must not half-model itself.
-        let clash = self
-            .asset_row_sharing_a_balance_with(&line.account.0)
-            .map(|placed| placed.account.clone());
-        if let Some(placed) = clash {
-            let detail = if placed == line.account.0 {
-                format!(
-                    "an earlier asset row already models '{}', so the row contributes \
-                     nothing (one asset row per account; both would compound the same \
-                     balance)",
-                    line.account.0
-                )
-            } else {
-                format!(
-                    "'{}' shares its balance with '{placed}', which an earlier asset row \
-                     already models, so the row contributes nothing (an asset row's \
-                     balance is the account and everything under it; both would compound \
-                     the shared money)",
-                    line.account.0
-                )
-            };
-            self.warnings.push(format!("{label}: {detail}"));
-            return Ok(());
-        }
-
-        let (journal_opening, mut balance) = self.seed_asset_balance(line, label, world)?;
-        let opening = balance.clone();
-        // The row's own share of `net_worth_only`, accumulated beside it rather
-        // than reconstructed afterwards: the per-bucket accumulator sums every
-        // row's steps together and nothing could take one row's back out of it.
-        let mut appreciation = MixedAmount::new();
-        let anchor = self.anchor_of(line);
-        // A zero rate is no growth at all, and short-circuiting it is not an
-        // optimisation: `grow_once` ROUNDS, so walking the steps of a 0% row
-        // would round a valued balance to the row's own precision and call the
-        // difference appreciation. A row that states no growth must move
-        // nothing, which is what the double-count detector asserts.
-        let steps = match &line.growth {
-            Some(growth) if !growth.rate.is_zero() => {
-                growth_boundaries(&anchor, growth.unit, &self.start, &self.end)
-            }
-            _ => Vec::new(),
-        };
-        let factor = match &line.growth {
-            Some(growth) => Dec::new(1, 0).add(growth.rate)?,
-            None => Dec::new(1, 0),
-        };
-        // A zero contribution is the `$0` posting the file format writes for a
-        // row that only compounds. Placing it would add an empty group and
-        // register its commodity for the mismatch warning, both for nothing.
-        let contributions = if line.amount.quantity.is_zero() {
-            Vec::new()
-        } else {
-            occurrences(&self.start, &self.end, &line.period)?
-        };
-
-        // Line-constant, lifted clear of the merge walk below for the reason
-        // `place_flow`'s are: the contribution branch rebuilt both per
-        // occurrence.
-        let group = (GroupKind::Line, line.group.as_str());
-        let account = line.account.0.as_str();
-
-        // The two date series, merged. GROWTH WINS A TIE: decision 7 applies a
-        // step to the balance at the START of its period, before that period's
-        // contributions, so a contribution dated on a boundary does not earn
-        // that step.
-        let (mut next_step, mut next_contribution) = (0usize, 0usize);
-        let mut applied = 0usize;
-        let mut overflowed = false;
-        // As in `place_flow`: the commodity is registered only if a contribution
-        // actually landed in a bucket.
-        let mut contributed = false;
-        while next_step < steps.len() || next_contribution < contributions.len() {
-            let grow_now = match (steps.get(next_step), contributions.get(next_contribution)) {
-                (Some(step), Some(date)) => compare_iso(step, date) != std::cmp::Ordering::Greater,
-                (Some(_), None) => true,
-                _ => false,
-            };
-            if grow_now {
-                let date = &steps[next_step];
-                next_step += 1;
-                if overflowed {
-                    continue;
-                }
-                // Every boundary is inside the span by construction, so the
-                // `else` is defensive rather than a case.
-                let Some(index) = self.bucket_of(date) else {
-                    continue;
-                };
-                match grow_once(&balance, factor, line.amount.style.precision) {
-                    Ok(grown) => {
-                        // The DIFFERENCE, not the new balance: the balance is
-                        // already in the opening figure, and only what the step
-                        // added is new money.
-                        let step = grown.ma_add(&balance.ma_neg()?)?;
-                        self.net_worth_only[index].ma_add_assign(&step)?;
-                        appreciation.ma_add_assign(&step)?;
-                        balance = grown;
-                        applied += 1;
-                    }
-                    // As for a flow line: a compounding balance can outgrow
-                    // `i128` long before the span does, and that is a scenario
-                    // this engine cannot state rather than a server fault.
-                    Err(_) => {
-                        overflowed = true;
-                        self.warnings.push(format!(
-                            "{label}: growth overflowed the exact-decimal range after \
-                             {applied} steps; the balance is held flat from there on"
-                        ));
-                    }
-                }
-                continue;
-            }
-            let date = &contributions[next_contribution];
-            next_contribution += 1;
-            let Some(index) = self.bucket_of(date) else {
-                continue;
-            };
-            contributed = true;
-            self.leg(index, group, account)
-                .accumulate(&line.amount.commodity, line.amount.quantity)?;
-            balance.accumulate(&line.amount.commodity, line.amount.quantity)?;
-        }
-        if contributed {
-            self.commodities.insert(line.amount.commodity.clone());
-        }
-        self.assets.push(AssetRow {
-            group: line.group.clone(),
-            account: line.account.0.clone(),
-            journal_opening,
-            opening,
-            growth: appreciation,
-        });
-        Ok(())
-    }
-
-    /// The asset row ALREADY PLACED whose balance `account` would compound a
-    /// second time, if there is one.
-    ///
-    /// The test is subtree overlap in EITHER direction, because the seed is a
-    /// subtree balance ([`account_balance_at`]): a row on `assets:broker` and a
-    /// row on `assets:broker:roth` share the roth's money exactly as two
-    /// `assets:broker` rows share all of it, and which of the two was written
-    /// first does not change what is shared. [`in_subtree`] is reflexive, so the
-    /// identical-account case falls out of the same predicate rather than being
-    /// a second rule to keep in step with this one.
-    ///
-    /// Scanning [`Layout::assets`] rather than the scenario means only a row the
-    /// engine actually MODELLED claims an account: a row declined for naming a
-    /// liability compounds nothing, so it has no balance to share.
-    fn asset_row_sharing_a_balance_with(&self, account: &str) -> Option<&AssetRow> {
-        self.assets.iter().find(|placed| {
-            in_subtree(account, &placed.account) || in_subtree(&placed.account, account)
-        })
-    }
-
-    /// The JOURNAL's balance for an asset row's account and the balance the row
-    /// starts compounding from, plus the one-off adjustment an override implies.
-    ///
-    /// Both are returned because the table shows both: the journal's figure is
-    /// what the Balance column greys out, and the second is what the curve used.
-    /// Without an override they are the same value.
-    ///
-    /// The journal's own figure is the SUBTREE balance of the account
-    /// ([`subtree_balance`], a scan over the one set of per-account balances
-    /// `project` walked the journal for), valued the way the opening net worth
-    /// beside it is — `assets:broker` means the account and everything under it,
-    /// which is what a user means by it and what every other report here rolls
-    /// up.
-    ///
-    /// An override does not replace the opening balance, because the opening
-    /// balance is not this row's to state: it is already inside
-    /// `Projection::net_worth.opening`. Only the DIFFERENCE is applied, once, in
-    /// the first bucket — and it is warned about, because a chart that silently
-    /// started at a number the balance sheet disagrees with would be lying.
-    fn seed_asset_balance(
-        &mut self,
-        line: &ScenarioLine,
-        label: &str,
-        world: &AssetWorld<'_>,
-    ) -> Result<(MixedAmount, MixedAmount), ReportError> {
-        // No `meta` sink: a projection has no unpriced banner to fill.
-        let journal = valued(
-            &subtree_balance(world.balances, &line.account.0)?,
-            world.target,
-            world.prices,
-            world.as_of,
-            None,
-        )?;
-        let Some(opening) = &line.opening else {
-            return Ok((journal.clone(), journal));
-        };
-        let stated = MixedAmount::single(opening.commodity.clone(), opening.quantity);
-        let adjustment = stated.ma_add(&journal.ma_neg()?)?;
-        self.commodities.insert(opening.commodity.clone());
-        if let Some(first) = self.net_worth_only.first_mut() {
-            first.ma_add_assign(&adjustment)?;
-        }
-        self.warnings.push(format!(
-            "{label}: the opening balance is stated as {}, but the journal says {}; \
-             net worth is adjusted by {} in the first bucket",
-            show(&stated),
-            show(&journal),
-            show(&adjustment),
-        ));
-        Ok((journal, stated))
-    }
-
-    /// The date a row's growth is measured from: its own `from` when it has one,
-    /// else the projection's start. With a `from`, the second segment of a step
-    /// change grows from its NEW base rather than from the projection's start.
-    fn anchor_of(&self, line: &ScenarioLine) -> String {
-        line.period
-            .start
-            .clone()
-            .unwrap_or_else(|| self.start.clone())
-    }
-
-    /// Place one dated event. An event is its own group, so its postings sum
-    /// into one residual.
-    fn place_event(&mut self, event: &'a ScenarioEvent) -> Result<(), ReportError> {
-        let Some(index) = self.bucket_of(&event.date) else {
-            return Ok(());
-        };
-        // ONE key for the whole event — it is one group by definition — rather
-        // than one rebuilt per posting.
-        let group = (GroupKind::Event, event.id.as_str());
-        for posting in &event.postings {
-            // The commodities are registered in their own pass so that the `&mut
-            // self` the leg borrows does not have to be handed back mid-posting.
-            for amount in &posting.amounts {
-                self.commodities.insert(amount.commodity.clone());
-            }
-            let legs = self.leg(index, group, posting.account.0.as_str());
-            for amount in &posting.amounts {
-                legs.accumulate(&amount.commodity, amount.quantity)?;
-            }
-        }
-        Ok(())
-    }
-}
-
-/// Project `scenario` forward over `opts.count` buckets.
-///
-/// `txns` and `prices` are the REAL journal's — they supply the opening
-/// balances and nothing else. The scenario supplies every flow.
+/// `txns` and `prices` are the REAL journal's, in any order; nothing dated on or
+/// after the cutoff is read.
 ///
 /// # Errors
 /// Returns [`ReportError`] on decimal overflow or unrecognized bucket math. A
@@ -1088,147 +621,138 @@ pub fn project(
     prices: &[PriceDirective],
     opts: &ProjectionOpts,
 ) -> Result<Projection, ReportError> {
-    let mut warnings: Vec<String> = Vec::new();
-
-    // --- The span: the next WHOLE bucket after `as_of`, and `count` of them. ---
-    let first_key = next_bucket(&bucket_key(opts.as_of, opts.interval), opts.interval)?;
-    let start = bucket_start(&first_key)?;
-    let buckets = next_n_buckets(&start, opts.interval, opts.count)?;
-    let end = match buckets.last() {
-        Some(key) => bucket_end(key)?,
-        // No buckets is no span. The openings are still real and still reported;
-        // everything per-bucket is simply empty. (`count == 0` reaches here the
-        // way it reaches `budget_report`'s own empty-report guard.)
-        None => start.clone(),
-    };
-    // --- Opening balances, from the REAL journal. ---
-    //
-    // Computed BEFORE the layout, because an asset row's running balance is
-    // seeded from this same journal and valued into this same commodity: two
-    // passes with two answers is how an asset's growth ends up denominated in
-    // something the net-worth series is not.
-    let mut all_prices = infer_market_prices(txns)?;
-    all_prices.extend_from_slice(prices);
-    let db = PriceDb::build(&all_prices);
-    let target: Option<Commodity> = opts
-        .value_in
-        .clone()
-        .or_else(|| db.base_commodity().cloned());
     let types = AccountTypes::from_declared(opts.declared.clone());
+    let (forecast, real_prices) = forecast::expand(
+        scenario,
+        &ForecastOpts {
+            today: opts.today,
+            interval: opts.interval,
+            count: opts.count,
+            lookback: opts.lookback,
+            value_in: opts.value_in.clone(),
+        },
+        &types,
+        &History { txns, prices },
+    )?;
+    let Forecast {
+        window,
+        txns: generated,
+        prices: grown,
+        assets,
+        warnings,
+        target,
+    } = forecast;
+    let as_of = window.actuals_as_of();
+    let mut all_prices = real_prices;
+    all_prices.extend(grown.iter().cloned());
+    let db = PriceDb::build(&all_prices);
+    let net_worth_opts = |end, count| NetWorthOpts {
+        end,
+        interval: opts.interval,
+        count,
+        // The total is summed over every asset/liability ACCOUNT, so it is
+        // depth-independent; 1 is simply the cheapest rows to build.
+        depth: 1,
+        value_in: target.clone(),
+        declared: opts.declared,
+    };
 
-    // ONE walk of the journal for every balance the projection opens on — the
-    // cash total, and one subtree total per asset row. Each of those used to
-    // walk it for itself, so a scenario with A asset rows paid `1 + A` passes
-    // over every posting for what is one pass and a pair of scans over the few
-    // hundred accounts it produces.
-    let balances = account_balances_at(txns, opts.as_of)?;
-
+    // --- Opening balances: REAL only, the day before the cutoff. ---
+    let balances = account_balances_at(txns, &as_of)?;
     let opening_cash = valued(
         &cash_balance(&balances, &types)?,
         target.as_ref(),
         &db,
-        opts.as_of,
+        &as_of,
         None,
     )?;
-    // `net_worth_priced`, not `net_worth`: the combined price set is already in
-    // hand, and the public entry point's first act is to re-derive it — a sort
-    // of the whole journal plus an allocation per costed posting, on a route the
-    // SPA re-runs on a 250 ms keystroke debounce. The set passed is exactly what
-    // `net_worth` would have built (inferred, then explicit), which is that
-    // function's stated contract.
-    let opening_net_worth = net_worth_priced(
-        txns,
-        &all_prices,
-        &NetWorthOpts {
-            end: opts.as_of,
-            interval: opts.interval,
-            count: 1,
-            // The total is summed over every asset/liability ACCOUNT, so it is
-            // depth-independent; 1 is simply the cheapest rows to build.
-            depth: 1,
-            value_in: target.clone(),
-            declared: opts.declared,
-        },
-    )?
-    .totals
-    .first()
-    .cloned()
-    .unwrap_or_default();
+    // `net_worth_priced` with the combined price set: it values at `as_of`, so
+    // no forecast price (every one dated after the cutoff) can reach it.
+    let opening_net_worth =
+        net_worth_priced(txns, &all_prices, &net_worth_opts(as_of.as_str(), 1))?
+            .totals
+            .first()
+            .cloned()
+            .unwrap_or_default();
 
-    // --- Every projected posting, per bucket, per group. ---
-    let world = AssetWorld {
-        types: &types,
-        balances: &balances,
-        prices: &db,
-        target: target.as_ref(),
-        as_of: opts.as_of,
+    // --- The lookback: actuals, closing balance per full period. ---
+    let lookback_ends: Vec<String> = window
+        .lookback
+        .iter()
+        .map(|key| bucket_end(key))
+        .collect::<Result<_, ReportError>>()?;
+    let cash_history = closing_cash(txns, &lookback_ends, &types)?
+        .iter()
+        .zip(&lookback_ends)
+        .map(|(cash, end)| valued(cash, target.as_ref(), &db, end, None))
+        .collect::<Result<Vec<_>, ReportError>>()?;
+    let net_worth_history = if window.lookback.is_empty() {
+        Vec::new()
+    } else {
+        net_worth_priced(
+            txns,
+            &all_prices,
+            &net_worth_opts(as_of.as_str(), window.lookback.len()),
+        )?
+        .totals
     };
-    let mut layout = Layout::new(&buckets, start.clone(), end)?;
-    for line in &scenario.lines {
-        layout.place_line(line, &world)?;
-    }
-    for event in &scenario.events {
-        layout.place_event(event)?;
-    }
-    warnings.append(&mut layout.warnings);
 
-    warn_on_commodity_mismatch(&layout.commodities, target.as_ref(), &mut warnings);
+    // --- The real holdings whose PRICES a row grows, for their revaluation. ---
+    let grown_commodities: BTreeSet<&Commodity> =
+        grown.iter().map(|price| &price.commodity).collect();
+    let mut held = MixedAmount::new();
+    for (account, ma) in &balances {
+        if !is_balance_sheet_side(&types, account) {
+            continue;
+        }
+        for (commodity, qty) in ma.iter() {
+            if grown_commodities.contains(commodity) {
+                held.accumulate(commodity, *qty)?;
+            }
+        }
+    }
+    held.drop_zeros();
+    let held_at_open = valued(&held, target.as_ref(), &db, &as_of, None)?;
 
-    // --- Roll forward. ---
-    let mut income_rows: Vec<BTreeMap<String, MixedAmount>> = Vec::with_capacity(buckets.len());
-    let mut income_totals: Vec<MixedAmount> = Vec::with_capacity(buckets.len());
-    let mut cash_values: Vec<MixedAmount> = Vec::with_capacity(buckets.len());
-    let mut net_worth_values: Vec<MixedAmount> = Vec::with_capacity(buckets.len());
+    // --- Roll forward over the generated transactions, bucket by bucket. ---
+    let spans: Vec<(String, String)> = window
+        .buckets
+        .iter()
+        .map(|key| Ok((bucket_start(key)?, bucket_end(key)?)))
+        .collect::<Result<_, ReportError>>()?;
+    let mut income_rows: Vec<BTreeMap<String, MixedAmount>> = Vec::with_capacity(spans.len());
+    let mut income_totals: Vec<MixedAmount> = Vec::with_capacity(spans.len());
+    let mut cash_values: Vec<MixedAmount> = Vec::with_capacity(spans.len());
+    let mut net_worth_values: Vec<MixedAmount> = Vec::with_capacity(spans.len());
     let mut cash_running = opening_cash.clone();
     let mut net_worth_running = opening_net_worth.clone();
+    let mut cursor = 0usize;
+    for (_, end) in &spans {
+        // `generated` is ascending and starts at the cutoff, so each bucket is
+        // the next contiguous slice — and `account_totals` over it is the same
+        // one-pass sum every report here makes.
+        let upto = generated
+            .partition_point(|txn| compare_iso(&txn.date, end) != std::cmp::Ordering::Greater);
+        let totals = account_totals(&generated[cursor..upto], &PostingFilter::default())?;
+        cursor = upto;
 
-    for (index, groups) in layout.per_bucket.iter().enumerate() {
         let mut income_own: BTreeMap<String, MixedAmount> = BTreeMap::new();
-        let mut cash_delta = MixedAmount::new();
-        // Asset appreciation and any opening-balance adjustment, neither of
-        // which is a posting and neither of which reaches cash or net income.
-        let mut net_worth_delta = layout.net_worth_only[index].clone();
-
-        for legs in groups.values() {
-            let mut residual = MixedAmount::new();
-            let mut stated_cash = MixedAmount::new();
-            let mut stated_balance_sheet = MixedAmount::new();
-
-            for (account, ma) in legs {
-                // EVERY posting, whatever its type — that is what makes this a
-                // residual rather than a guess about which legs were "funding".
-                residual.ma_add_assign(ma)?;
-                if types.is_cash(account) {
-                    stated_cash.ma_add_assign(ma)?;
-                }
-                if types.is_type(account, AccountType::Asset)
-                    || types.is_type(account, AccountType::Liability)
-                {
-                    stated_balance_sheet.ma_add_assign(ma)?;
-                }
-                if types.is_type(account, AccountType::Revenue)
-                    || types.is_type(account, AccountType::Expense)
-                {
-                    // Cash-flow orientation: revenue up, expenses down.
-                    income_own
-                        .entry((*account).to_string())
-                        .or_default()
-                        .ma_add_assign(&ma.ma_neg()?)?;
-                }
+        for (account, ma) in &totals {
+            if types.is_cash(account) {
+                cash_running.ma_add_assign(ma)?;
             }
-
-            // The implied cash leg, added BESIDE the stated postings rather than
-            // instead of them (module docs). It is cash, and cash is an asset,
-            // so both series take it.
-            let implied = residual.ma_neg()?;
-            cash_delta.ma_add_assign(&stated_cash)?;
-            cash_delta.ma_add_assign(&implied)?;
-            net_worth_delta.ma_add_assign(&stated_balance_sheet)?;
-            net_worth_delta.ma_add_assign(&implied)?;
+            if is_balance_sheet_side(&types, account) {
+                net_worth_running.ma_add_assign(ma)?;
+            }
+            if types.is_type(account, AccountType::Revenue)
+                || types.is_type(account, AccountType::Expense)
+            {
+                // Cash-flow orientation: revenue up, expenses down.
+                income_own.insert(account.clone(), ma.ma_neg()?);
+            }
         }
-
-        // The total is the sum of the OWN amounts, exactly as `cash_flow`'s is,
-        // so it does not move with `depth`.
+        // The total is the sum of the OWN amounts, so it does not move with
+        // `depth`.
         let mut total = MixedAmount::new();
         for ma in income_own.values() {
             total.ma_add_assign(ma)?;
@@ -1236,10 +760,13 @@ pub fn project(
         income_totals.push(total);
         income_rows.push(at_depth(&roll_up(&income_own)?, opts.depth));
 
-        cash_running.ma_add_assign(&cash_delta)?;
-        net_worth_running.ma_add_assign(&net_worth_delta)?;
+        let mut net_worth = net_worth_running.clone();
+        if !held.is_empty() {
+            let revalued = valued(&held, target.as_ref(), &db, end, None)?;
+            net_worth.ma_add_assign(&revalued.ma_add(&held_at_open.ma_neg()?)?)?;
+        }
         cash_values.push(cash_running.clone());
-        net_worth_values.push(net_worth_running.clone());
+        net_worth_values.push(net_worth);
     }
 
     let accounts: BTreeSet<String> = income_rows
@@ -1266,7 +793,7 @@ pub fn project(
         .map(|bucket| {
             Ok::<_, ReportError>(Runway {
                 bucket,
-                date: bucket_end(&buckets[bucket])?,
+                date: bucket_end(&window.buckets[bucket])?,
                 periods: bucket + 1,
             })
         })
@@ -1274,7 +801,7 @@ pub fn project(
 
     Ok(Projection {
         net_income: PeriodReport {
-            buckets: buckets.clone(),
+            buckets: window.buckets.clone(),
             rows,
             totals: income_totals,
             grand_total: None,
@@ -1283,17 +810,61 @@ pub fn project(
         cash: BalanceSeries {
             opening: opening_cash,
             values: cash_values,
+            history: cash_history,
         },
         net_worth: BalanceSeries {
             opening: opening_net_worth,
             values: net_worth_values,
+            history: net_worth_history,
         },
         runway,
-        assets: layout.assets,
+        assets,
         warnings,
-        buckets,
-        start,
+        buckets: window.buckets,
+        lookback: window.lookback,
+        start: window.cutoff,
     })
+}
+
+/// Whether `account` is on the net-worth side: an asset (cash included) or a
+/// liability, by effective type — the membership `net_worth` uses.
+fn is_balance_sheet_side(types: &AccountTypes, account: &str) -> bool {
+    types.is_type(account, AccountType::Asset) || types.is_type(account, AccountType::Liability)
+}
+
+/// The cash balance at each of `ends` (ascending), in one pass.
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow.
+fn closing_cash(
+    txns: &[Transaction],
+    ends: &[String],
+    types: &AccountTypes,
+) -> Result<Vec<MixedAmount>, ReportError> {
+    let mut deltas: Vec<MixedAmount> = vec![MixedAmount::new(); ends.len()];
+    for txn in txns {
+        for posting in &txn.postings {
+            let date = posting.date.as_deref().unwrap_or(&txn.date);
+            let index =
+                ends.partition_point(|end| compare_iso(end, date) == std::cmp::Ordering::Less);
+            if index >= ends.len() || !types.is_cash(&posting.account.0) {
+                continue;
+            }
+            for amount in &posting.amounts {
+                deltas[index].accumulate(&amount.commodity, amount.quantity)?;
+            }
+        }
+    }
+    let mut running = MixedAmount::new();
+    deltas
+        .into_iter()
+        .map(|delta| {
+            running.ma_add_assign(&delta)?;
+            let mut snapshot = running.clone();
+            snapshot.drop_zeros();
+            Ok(snapshot)
+        })
+        .collect()
 }
 
 /// How a warning names a line: its note when it has one, else its account.
@@ -1674,6 +1245,10 @@ pub fn seed_scenario(
                 period: monthly_spec(),
                 growth: None,
                 opening: None,
+                // History decides it when the scenario is expanded, and the
+                // save writes it (Decision 7).
+                counter: None,
+                gains: None,
                 note: format!("unbudgeted — average over {} to {}", gaps.from, gaps.to),
                 source: LineSource::Unbudgeted,
             });
@@ -1689,6 +1264,7 @@ pub fn seed_scenario(
         updated: None,
         lines,
         events: Vec::new(),
+        cash: None,
     })
 }
 
@@ -1724,10 +1300,22 @@ pub(crate) fn lines_from_rule(
     rule: &PeriodicTransaction,
     types: &AccountTypes,
 ) -> Vec<ScenarioLine> {
+    let counter = rule_counter(rule);
     rule.postings
         .iter()
         .enumerate()
+        // The elided posting is the counter-account, not a line: its amount was
+        // inferred, and reading it as a stated leg would write it back stated.
+        .filter(|(posting_index, _)| Some(*posting_index) != rule.elided)
         .flat_map(|(posting_index, posting)| {
+            // A REGULAR posting is balanced by the block's amountless one, as
+            // hledger balances it; a virtual `(account)` posting is outside
+            // balancing, so it keeps no counter and its sum is the legacy
+            // residual (plan 28).
+            let counter = match posting.ptype {
+                PostingType::Regular => counter.clone(),
+                _ => None,
+            };
             let role = if has_tag(&posting.tags, "growth")
                 && types.is_type(&posting.account.0, AccountType::Asset)
             {
@@ -1751,11 +1339,30 @@ pub(crate) fn lines_from_rule(
                     LineRole::Asset => parse_opening(&posting.tags, amount),
                     LineRole::Flow => None,
                 },
+                counter: counter.clone(),
+                gains: match role {
+                    LineRole::Asset => tag(&posting.tags, "gains")
+                        .map(str::trim)
+                        .filter(|gains| !gains.is_empty())
+                        .map(|gains| AccountName(gains.to_string())),
+                    LineRole::Flow => None,
+                },
                 note: rule.description.clone(),
                 source: LineSource::Journal,
             })
         })
         .collect()
+}
+
+/// A block's counter-account: its REGULAR posting whose amount was elided,
+/// which is the posting hledger infers to balance the rest (plan 28 Decision
+/// 1). [`PeriodicTransaction::elided`] says which, because by the time a rule
+/// is parsed the inferred amount looks like any other.
+pub(crate) fn rule_counter(rule: &PeriodicTransaction) -> Option<AccountName> {
+    rule.elided
+        .and_then(|index| rule.postings.get(index))
+        .filter(|posting| posting.ptype == PostingType::Regular)
+        .map(|posting| posting.account.clone())
 }
 
 /// A bare `~ monthly` spec, spelled the way the parser spells one.
@@ -1891,6 +1498,8 @@ mod tests {
     /// would get.
     fn line(group: &str, account: &str, money: Amount, period: &str) -> ScenarioLine {
         ScenarioLine {
+            counter: None,
+            gains: None,
             id: group.to_string(),
             group: group.to_string(),
             role: LineRole::Flow,
@@ -1920,6 +1529,7 @@ mod tests {
 
     fn event(id: &str, date: &str, postings: &[(&str, Amount)]) -> ScenarioEvent {
         ScenarioEvent {
+            counter: None,
             id: id.to_string(),
             date: date.to_string(),
             description: id.to_string(),
@@ -1934,6 +1544,7 @@ mod tests {
 
     fn scenario(lines: Vec<ScenarioLine>, events: Vec<ScenarioEvent>) -> Scenario {
         Scenario {
+            cash: None,
             name: "test".to_string(),
             created: None,
             updated: None,
@@ -1975,7 +1586,8 @@ mod tests {
             txns,
             &[],
             &ProjectionOpts {
-                as_of,
+                today: as_of,
+                lookback: 0,
                 interval,
                 count,
                 depth,
@@ -2020,32 +1632,131 @@ mod tests {
     // The span
     // -----------------------------------------------------------------------
 
-    /// Decision 9: opening balances are as of today, and the first projected
-    /// period is the next COMPLETE one. A partial first bucket would make the
-    /// first bar shorter than the rest for reasons that have nothing to do with
-    /// the scenario.
+    /// Plan 28 Decision 5: the projection starts at the first period that is
+    /// not complete — the start of the period containing the EARLIER of today
+    /// and the day after the latest real transaction. There is no mixed period,
+    /// and the opening balances are the real ones the day before.
+    ///
+    /// This REPLACES plan 22 Decision 9's "next whole bucket after as-of":
+    /// today 2026-10-23 now projects October (its real transactions so far are
+    /// left out) where it used to start in November.
     #[test]
-    fn the_projection_starts_at_the_next_whole_bucket() {
+    fn the_projection_starts_at_the_first_incomplete_period() {
         let flat = scenario(
             vec![line("rent", "expenses:rent", usd(420_000), "monthly")],
             Vec::new(),
         );
+        let on = |date: &str| {
+            vec![txn(
+                1,
+                date,
+                vec![
+                    ("assets:bank:checking", vec![usd(100)]),
+                    ("equity:opening", vec![usd(-100)]),
+                ],
+            )]
+        };
 
-        let monthly = run(&flat, "2026-09-20", Interval::Monthly, 3);
-        assert_eq!(monthly.buckets, ["2026-10", "2026-11", "2026-12"]);
-        assert_eq!(monthly.start, "2026-10-01");
+        // The plan's three worked examples. Today 2026-10-23, monthly, with
+        // activity this month: August and September are actuals, October on is
+        // projected, and October's real transactions are left out.
+        let mid_month = run_over(&flat, &on("2026-10-20"), "2026-10-23", Interval::Monthly, 3);
+        assert_eq!(mid_month.buckets, ["2026-10", "2026-11", "2026-12"]);
+        assert_eq!(mid_month.start, "2026-10-01");
+        assert!(
+            mid_month.cash.opening.is_empty(),
+            "a real txn after the cutoff is not an opening"
+        );
+        // Latest real transaction 2026-10-15 while today is in November:
+        // October is incomplete, so it is projected too.
+        let stale = run_over(&flat, &on("2026-10-15"), "2026-11-10", Interval::Monthly, 1);
+        assert_eq!(stale.start, "2026-10-01");
+        // Latest real transaction 2026-10-31: the day after is 2026-11-01, so
+        // October is complete and an actual.
+        let complete = run_over(&flat, &on("2026-10-31"), "2026-11-10", Interval::Monthly, 1);
+        assert_eq!(complete.start, "2026-11-01");
+        assert_eq!(complete.cash.opening, usd_ma(100));
 
-        // The last day of a bucket is still INSIDE it, so the next one is next.
-        let boundary = run(&flat, "2026-09-30", Interval::Monthly, 1);
-        assert_eq!(boundary.buckets, ["2026-10"]);
-
-        let quarterly = run(&flat, "2026-09-20", Interval::Quarterly, 2);
+        // With no journal at all, today alone decides, on any interval.
+        let quarterly = run(&flat, "2026-10-01", Interval::Quarterly, 2);
         assert_eq!(quarterly.buckets, ["2026-Q4", "2027-Q1"]);
         assert_eq!(quarterly.start, "2026-10-01");
+        let yearly = run(&flat, "2026-10-01", Interval::Yearly, 2);
+        assert_eq!(yearly.buckets, ["2026", "2027"]);
+        assert_eq!(yearly.start, "2026-01-01");
+    }
 
-        let yearly = run(&flat, "2026-09-20", Interval::Yearly, 2);
-        assert_eq!(yearly.buckets, ["2027", "2028"]);
-        assert_eq!(yearly.start, "2027-01-01");
+    /// Decision 6: the lookback is a count of FULL periods before the cutoff,
+    /// reported as actuals beside the forecast — never generated into.
+    #[test]
+    fn the_lookback_is_full_periods_before_the_cutoff() {
+        let journal = vec![
+            txn(
+                1,
+                "2026-08-05",
+                vec![
+                    ("assets:bank:checking", vec![usd(1_000_000)]),
+                    ("equity:opening", vec![usd(-1_000_000)]),
+                ],
+            ),
+            txn(
+                2,
+                "2026-09-10",
+                vec![
+                    ("expenses:rent", vec![usd(420_000)]),
+                    ("assets:bank:checking", vec![usd(-420_000)]),
+                ],
+            ),
+            // On the cutoff's own period: left out of everything.
+            txn(
+                3,
+                "2026-10-02",
+                vec![
+                    ("expenses:rent", vec![usd(420_000)]),
+                    ("assets:bank:checking", vec![usd(-420_000)]),
+                ],
+            ),
+        ];
+        let flat = scenario(
+            vec![line("rent", "expenses:rent", usd(100_000), "monthly")],
+            Vec::new(),
+        );
+        let declared = BTreeMap::new();
+        let projection = project(
+            &flat,
+            &journal,
+            &[],
+            &ProjectionOpts {
+                today: "2026-10-23",
+                interval: Interval::Monthly,
+                count: 2,
+                lookback: DEFAULT_LOOKBACK,
+                depth: 99,
+                declared: &declared,
+                value_in: None,
+            },
+        )
+        .expect("the projection computes");
+        assert_eq!(DEFAULT_LOOKBACK, 2);
+        assert_eq!(projection.lookback, ["2026-08", "2026-09"]);
+        assert_eq!(projection.buckets, ["2026-10", "2026-11"]);
+        // August closes at $10,000, September at $5,800, and the forecast opens
+        // on September's close — October's real rent is not in it.
+        assert_eq!(
+            projection.cash.history,
+            [usd_ma(1_000_000), usd_ma(580_000)]
+        );
+        assert_eq!(
+            projection.net_worth.history,
+            [usd_ma(1_000_000), usd_ma(580_000)]
+        );
+        assert_eq!(projection.cash.opening, usd_ma(580_000));
+        assert_eq!(series_units(&projection.cash), [4800, 3800]);
+
+        // Zero is allowed, and is no history at all.
+        let none = run_over(&flat, &journal, "2026-10-23", Interval::Monthly, 2);
+        assert!(none.lookback.is_empty());
+        assert!(none.cash.history.is_empty());
     }
 
     /// `count == 0` has no span and must answer with the empty projection —
@@ -2057,7 +1768,7 @@ mod tests {
             vec![line("rent", "expenses:rent", usd(420_000), "monthly")],
             Vec::new(),
         );
-        let projection = run(&flat, "2026-09-20", Interval::Monthly, 0);
+        let projection = run(&flat, "2026-10-01", Interval::Monthly, 0);
         assert!(projection.buckets.is_empty());
         assert!(projection.net_income.rows.is_empty());
         assert!(projection.net_income.totals.is_empty());
@@ -2079,7 +1790,7 @@ mod tests {
             vec![line("rent", "expenses:rent", usd(420_000), "monthly")],
             Vec::new(),
         );
-        let projection = run(&flat, "2026-09-20", Interval::Monthly, 12);
+        let projection = run(&flat, "2026-10-01", Interval::Monthly, 12);
 
         assert_eq!(projection.buckets.len(), 12);
         assert_eq!(projection.buckets.first().unwrap(), "2026-10");
@@ -2119,7 +1830,7 @@ mod tests {
             vec![line("pay", "income:salary", usd(-1_200_000), "monthly")],
             Vec::new(),
         );
-        let projection = run(&earning, "2026-09-20", Interval::Monthly, 3);
+        let projection = run(&earning, "2026-10-01", Interval::Monthly, 3);
         assert_eq!(row_units(&projection, "income:salary"), [12_000; 3]);
         assert_eq!(totals_units(&projection), [12_000; 3]);
         assert_eq!(series_units(&projection.cash), [12_000, 24_000, 36_000]);
@@ -2142,7 +1853,7 @@ mod tests {
         // 14 buckets from 2026-10: the twelfth anniversary month is 2027-10.
         let projection = run(
             &scenario(vec![rent], Vec::new()),
-            "2026-09-20",
+            "2026-10-01",
             Interval::Monthly,
             14,
         );
@@ -2170,7 +1881,7 @@ mod tests {
         );
         let projection = run(
             &scenario(vec![salary], Vec::new()),
-            "2026-06-30",
+            "2027-01-01",
             Interval::Yearly,
             6,
         );
@@ -2200,7 +1911,7 @@ mod tests {
         );
         let projection = run(
             &scenario(vec![subscription], Vec::new()),
-            "2026-09-20",
+            "2026-10-01",
             Interval::Monthly,
             4,
         );
@@ -2258,7 +1969,7 @@ mod tests {
         );
         let projection = run(
             &scenario(vec![once], Vec::new()),
-            "2026-09-20",
+            "2026-10-01",
             Interval::Monthly,
             6,
         );
@@ -2308,7 +2019,7 @@ mod tests {
 
         let projection = run(
             &scenario(vec![before, after], Vec::new()),
-            "2026-12-31",
+            "2027-01-01",
             Interval::Monthly,
             6,
         );
@@ -2342,7 +2053,7 @@ mod tests {
         );
         let projection = run(
             &scenario(vec![after], Vec::new()),
-            "2026-12-31",
+            "2027-01-01",
             Interval::Yearly,
             3,
         );
@@ -2367,7 +2078,7 @@ mod tests {
         let legal = event("legal", "2027-06-15", &[("expenses:legal", usd(4_500_000))]);
         let projection = run(
             &scenario(Vec::new(), vec![legal]),
-            "2027-03-31",
+            "2027-04-01",
             Interval::Monthly,
             4,
         );
@@ -2408,7 +2119,7 @@ mod tests {
         );
         let projection = run(
             &scenario(Vec::new(), vec![raise]),
-            "2026-12-31",
+            "2027-01-01",
             Interval::Monthly,
             4,
         );
@@ -2522,7 +2233,7 @@ mod tests {
             let group = event("group", "2026-10-15", &case.postings);
             let projection = run(
                 &scenario(Vec::new(), vec![group]),
-                "2026-09-20",
+                "2026-10-01",
                 Interval::Monthly,
                 1,
             );
@@ -2549,7 +2260,7 @@ mod tests {
             ],
             Vec::new(),
         );
-        let projection = run(&accrued, "2026-09-20", Interval::Monthly, 3);
+        let projection = run(&accrued, "2026-10-01", Interval::Monthly, 3);
         assert_eq!(series_units(&projection.cash), [0, 0, 0]);
         assert_eq!(
             series_units(&projection.net_worth),
@@ -2566,7 +2277,7 @@ mod tests {
             ],
             Vec::new(),
         );
-        let projection = run(&partial, "2026-09-20", Interval::Monthly, 3);
+        let projection = run(&partial, "2026-10-01", Interval::Monthly, 3);
         assert_eq!(series_units(&projection.cash), [-4200, -8400, -12_600]);
         assert_eq!(series_units(&projection.net_worth), [-4200, -8400, -12_600]);
     }
@@ -2594,7 +2305,7 @@ mod tests {
         );
         let projection = run(
             &scenario(Vec::new(), vec![booked, settled]),
-            "2026-09-20",
+            "2026-10-01",
             Interval::Monthly,
             3,
         );
@@ -2620,7 +2331,7 @@ mod tests {
         let funding = line("rule:0", "assets:checking", usd(-420_000), "monthly");
         let with_leg = run(
             &scenario(vec![rent.clone(), funding], Vec::new()),
-            "2026-09-20",
+            "2026-10-01",
             Interval::Monthly,
             3,
         );
@@ -2634,7 +2345,7 @@ mod tests {
         // because the implied leg is exactly the one the user wrote.
         let implied = run(
             &scenario(vec![rent], Vec::new()),
-            "2026-09-20",
+            "2026-10-01",
             Interval::Monthly,
             3,
         );
@@ -2658,7 +2369,7 @@ mod tests {
                 ],
                 Vec::new(),
             ),
-            "2026-09-20",
+            "2026-10-01",
             Interval::Monthly,
             2,
         );
@@ -2676,13 +2387,26 @@ mod tests {
     fn invested_journal() -> Vec<Transaction> {
         vec![txn(
             1,
-            "2026-01-10",
+            "2026-09-30",
             vec![
                 ("assets:bank:checking", vec![usd(1_000_000)]),
                 ("assets:brokerage:vanguard", vec![usd(20_000_000)]),
                 ("equity:opening", vec![usd(-21_000_000)]),
             ],
         )]
+    }
+
+    /// `txns` with every transaction moved to 2026-12-31, for a YEARLY
+    /// projection run on 2027-01-01: Decision 5 projects an incomplete year,
+    /// so a journal whose last transaction is mid-2026 would put the cutoff at
+    /// 2026-01-01 and leave that transaction out of the openings.
+    fn at_year_end(txns: Vec<Transaction>) -> Vec<Transaction> {
+        txns.into_iter()
+            .map(|txn| Transaction {
+                date: "2026-12-31".to_string(),
+                ..txn
+            })
+            .collect()
     }
 
     /// **THE DOUBLE-COUNT DETECTOR.** An asset row with no growth and no
@@ -2702,7 +2426,7 @@ mod tests {
         let without = run_over(
             &scenario(vec![burn.clone()], Vec::new()),
             &invested_journal(),
-            "2026-09-20",
+            "2026-10-01",
             Interval::Monthly,
             6,
         );
@@ -2713,7 +2437,7 @@ mod tests {
             let with = run_over(
                 &scenario(vec![burn.clone(), row], Vec::new()),
                 &invested_journal(),
-                "2026-09-20",
+                "2026-10-01",
                 Interval::Monthly,
                 6,
             );
@@ -2748,8 +2472,8 @@ mod tests {
         );
         let projection = run_over(
             &scenario(vec![brokerage], Vec::new()),
-            &invested_journal(),
-            "2026-09-20",
+            &at_year_end(invested_journal()),
+            "2027-01-01",
             Interval::Yearly,
             3,
         );
@@ -2784,7 +2508,7 @@ mod tests {
         let projection = run_over(
             &scenario(vec![brokerage], Vec::new()),
             &invested_journal(),
-            "2026-09-20",
+            "2026-10-01",
             Interval::Monthly,
             14,
         );
@@ -2805,7 +2529,7 @@ mod tests {
         let projection = run_over(
             &scenario(vec![brokerage], Vec::new()),
             &invested_journal(),
-            "2026-09-20",
+            "2026-10-01",
             Interval::Monthly,
             3,
         );
@@ -2831,7 +2555,7 @@ mod tests {
         let projection = run_over(
             &scenario(vec![savings], Vec::new()),
             &invested_journal(),
-            "2026-09-20",
+            "2026-10-01",
             Interval::Monthly,
             3,
         );
@@ -2860,7 +2584,7 @@ mod tests {
             ],
             Vec::new(),
         );
-        let projection = run(&shared, "2026-09-20", Interval::Monthly, 3);
+        let projection = run(&shared, "2026-10-01", Interval::Monthly, 3);
         // One residual of $6,200 per bucket: $2,000 saved and $4,200 spent.
         assert_eq!(series_units(&projection.cash), [-6200, -12_400, -18_600]);
         // Net worth falls by the RENT only — the saving is neutral.
@@ -2876,7 +2600,7 @@ mod tests {
             ],
             Vec::new(),
         );
-        let projection = run(&stated, "2026-09-20", Interval::Monthly, 3);
+        let projection = run(&stated, "2026-10-01", Interval::Monthly, 3);
         assert_eq!(series_units(&projection.cash), [-2000, -4000, -6000]);
         assert_eq!(series_units(&projection.net_worth), [0, 0, 0]);
     }
@@ -2910,7 +2634,7 @@ mod tests {
         );
         let projection = run(
             &scenario(vec![pension], Vec::new()),
-            "2026-12-31",
+            "2027-01-01",
             Interval::Yearly,
             3,
         );
@@ -2938,7 +2662,7 @@ mod tests {
         );
         let projection = run(
             &scenario(vec![pension], Vec::new()),
-            "2026-12-31",
+            "2027-01-01",
             Interval::Yearly,
             2,
         );
@@ -3000,7 +2724,7 @@ mod tests {
         ];
         let burning = run(
             &scenario(partial.clone(), Vec::new()),
-            "2026-09-20",
+            "2026-10-01",
             Interval::Monthly,
             3,
         );
@@ -3017,7 +2741,7 @@ mod tests {
         let with_asset = run_over(
             &scenario(lines, Vec::new()),
             &invested_journal(),
-            "2026-09-20",
+            "2026-10-01",
             Interval::Monthly,
             3,
         );
@@ -3056,7 +2780,7 @@ mod tests {
     fn an_asset_rows_balance_is_its_whole_subtree() {
         assert_eq!(
             ma_units(
-                &account_balance_at(&invested_journal(), "assets:brokerage", "2026-09-20").unwrap()
+                &account_balance_at(&invested_journal(), "assets:brokerage", "2026-10-01").unwrap()
             ),
             200_000
         );
@@ -3071,7 +2795,7 @@ mod tests {
             ],
         ));
         assert_eq!(
-            ma_units(&account_balance_at(&journal, "assets:brokerage", "2026-09-20").unwrap()),
+            ma_units(&account_balance_at(&journal, "assets:brokerage", "2026-10-01").unwrap()),
             200_000
         );
     }
@@ -3090,8 +2814,8 @@ mod tests {
         brokerage.opening = Some(usd(30_000_000));
         let projection = run_over(
             &scenario(vec![brokerage], Vec::new()),
-            &invested_journal(),
-            "2026-09-20",
+            &at_year_end(invested_journal()),
+            "2027-01-01",
             Interval::Yearly,
             2,
         );
@@ -3138,8 +2862,8 @@ mod tests {
         let savings = asset("save", "assets:pension", usd(100_000), "monthly");
         let projection = run_over(
             &scenario(vec![brokerage, savings], Vec::new()),
-            &invested_journal(),
-            "2026-09-20",
+            &at_year_end(invested_journal()),
+            "2027-01-01",
             Interval::Yearly,
             2,
         );
@@ -3186,8 +2910,8 @@ mod tests {
         brokerage.opening = Some(usd(30_000_000));
         let projection = run_over(
             &scenario(vec![brokerage], Vec::new()),
-            &invested_journal(),
-            "2026-09-20",
+            &at_year_end(invested_journal()),
+            "2027-01-01",
             Interval::Yearly,
             2,
         );
@@ -3233,8 +2957,8 @@ mod tests {
         let project = |lines: Vec<ScenarioLine>| {
             run_over(
                 &scenario(lines, Vec::new()),
-                &invested_journal(),
-                "2026-09-20",
+                &at_year_end(invested_journal()),
+                "2027-01-01",
                 Interval::Yearly,
                 3,
             )
@@ -3331,8 +3055,8 @@ mod tests {
         let project = |lines: Vec<ScenarioLine>| {
             run_over(
                 &scenario(lines, Vec::new()),
-                &journal,
-                "2026-09-20",
+                &at_year_end(journal.clone()),
+                "2027-01-01",
                 Interval::Yearly,
                 3,
             )
@@ -3423,8 +3147,8 @@ mod tests {
                 ],
                 Vec::new(),
             ),
-            &journal,
-            "2026-09-20",
+            &at_year_end(journal),
+            "2027-01-01",
             Interval::Yearly,
             3,
         );
@@ -3462,7 +3186,7 @@ mod tests {
             let projection = run_over(
                 &scenario(vec![row], Vec::new()),
                 &invested_journal(),
-                "2026-09-20",
+                "2026-10-01",
                 Interval::Monthly,
                 3,
             );
@@ -3500,7 +3224,7 @@ mod tests {
         .collect();
         let txns = vec![txn(
             1,
-            "2026-01-10",
+            "2026-09-30",
             vec![
                 ("activo:inversiones", vec![usd(10_000_000)]),
                 ("equity:opening", vec![usd(-10_000_000)]),
@@ -3518,8 +3242,8 @@ mod tests {
         );
         let projection = run_typed(
             &scenario(vec![spanish, misleading], Vec::new()),
-            &txns,
-            "2026-09-20",
+            &at_year_end(txns),
+            "2027-01-01",
             Interval::Yearly,
             2,
             99,
@@ -3580,7 +3304,7 @@ mod tests {
         runaway.opening = Some(amount("$", 10_i128.pow(30), 0));
         let projection = run(
             &scenario(vec![runaway], Vec::new()),
-            "2026-09-20",
+            "2026-10-01",
             Interval::Monthly,
             12,
         );
@@ -3615,7 +3339,7 @@ mod tests {
         let projection = run_over(
             &scenario(vec![odd], Vec::new()),
             &invested_journal(),
-            "2026-09-20",
+            "2026-10-01",
             Interval::Monthly,
             3,
         );
@@ -3637,7 +3361,7 @@ mod tests {
             vec![line("burn", "expenses:burn", usd(400_000), "monthly")],
             Vec::new(),
         );
-        let projection = run_over(&burn, &funded_journal(), "2026-09-20", Interval::Monthly, 6);
+        let projection = run_over(&burn, &funded_journal(), "2026-10-01", Interval::Monthly, 6);
 
         assert_eq!(projection.cash.opening, usd_ma(1_000_000));
         assert_eq!(
@@ -3665,7 +3389,7 @@ mod tests {
         let projection = run_over(
             &earning,
             &funded_journal(),
-            "2026-09-20",
+            "2026-10-01",
             Interval::Monthly,
             6,
         );
@@ -3683,7 +3407,7 @@ mod tests {
     fn funded_journal() -> Vec<Transaction> {
         vec![txn(
             1,
-            "2026-01-10",
+            "2026-09-30",
             vec![
                 ("assets:bank:checking", vec![usd(1_000_000)]),
                 ("equity:opening", vec![usd(-1_000_000)]),
@@ -3704,7 +3428,7 @@ mod tests {
 
         let projection = run(
             &scenario(vec![unsupported], Vec::new()),
-            "2026-09-20",
+            "2026-10-01",
             Interval::Monthly,
             3,
         );
@@ -3737,7 +3461,7 @@ mod tests {
         let projection = run_typed(
             &euros,
             &funded_journal(),
-            "2026-09-20",
+            "2026-10-01",
             Interval::Monthly,
             2,
             99,
@@ -3787,7 +3511,7 @@ mod tests {
         let projection = run_typed(
             &scenario,
             &[],
-            "2026-09-20",
+            "2026-10-01",
             Interval::Monthly,
             1,
             99,
@@ -3822,7 +3546,7 @@ mod tests {
         let projection = run_typed(
             &scenario,
             &[],
-            "2026-09-20",
+            "2026-10-01",
             Interval::Monthly,
             2,
             99,
@@ -3847,7 +3571,7 @@ mod tests {
         let shallow = run_typed(
             &scenario,
             &[],
-            "2026-09-20",
+            "2026-10-01",
             Interval::Monthly,
             1,
             1,
@@ -3899,6 +3623,7 @@ mod tests {
 
     fn goal_rule(description: &str, postings: Vec<Posting>) -> PeriodicTransaction {
         PeriodicTransaction {
+            elided: None,
             period: parse_period_spec("monthly"),
             description: description.to_string(),
             comment: String::new(),
@@ -4060,7 +3785,7 @@ mod tests {
         assert_ne!(authored[0].id, authored[1].id);
 
         // …and the guard fires on the seeded scenario, unchanged.
-        let projection = run(&seeded, "2026-09-20", Interval::Monthly, 2);
+        let projection = run(&seeded, "2026-10-01", Interval::Monthly, 2);
         assert_eq!(series_units(&projection.cash), [-4200, -8400]);
     }
 
@@ -4183,7 +3908,7 @@ mod tests {
         let ascending = vec![
             txn(
                 1,
-                "2026-01-10",
+                "2026-09-30",
                 vec![
                     ("assets:bank:checking", vec![usd(1_000_000)]),
                     ("equity:opening", vec![usd(-1_000_000)]),
@@ -4204,8 +3929,8 @@ mod tests {
         descending[1].index = Tindex(2);
 
         let empty = scenario(Vec::new(), Vec::new());
-        let a = run_over(&empty, &ascending, "2026-09-20", Interval::Monthly, 1);
-        let b = run_over(&empty, &descending, "2026-09-20", Interval::Monthly, 1);
+        let a = run_over(&empty, &ascending, "2026-10-01", Interval::Monthly, 1);
+        let b = run_over(&empty, &descending, "2026-10-01", Interval::Monthly, 1);
         assert_eq!(a.cash.opening, usd_ma(750_000));
         assert_eq!(a.cash.opening, b.cash.opening);
         assert_eq!(a.net_worth.opening, b.net_worth.opening);
@@ -4217,7 +3942,7 @@ mod tests {
         let later = vec![
             txn(
                 1,
-                "2026-01-10",
+                "2026-09-30",
                 vec![
                     ("assets:bank:checking", vec![usd(1_000_000)]),
                     ("equity:opening", vec![usd(-1_000_000)]),
@@ -4233,7 +3958,7 @@ mod tests {
             ),
         ];
         let empty = scenario(Vec::new(), Vec::new());
-        let projection = run_over(&empty, &later, "2026-09-20", Interval::Monthly, 1);
+        let projection = run_over(&empty, &later, "2026-10-01", Interval::Monthly, 1);
         assert_eq!(projection.cash.opening, usd_ma(1_000_000));
     }
 }

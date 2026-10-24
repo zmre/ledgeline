@@ -538,6 +538,9 @@ pub(super) struct Header {
     pub(super) created: Option<String>,
     /// `; updated: <date>`.
     pub(super) updated: Option<String>,
+    /// `; cash: <account>` — the scenario's default counter-account (plan 28
+    /// Decision 7).
+    pub(super) cash: Option<String>,
 }
 
 /// Read the leading comment block of a file and pull the header out of it.
@@ -589,6 +592,7 @@ pub(super) fn parse_header(text: &str) -> Header {
             "projection" => &mut header.name,
             "created" => &mut header.created,
             "updated" => &mut header.updated,
+            "cash" => &mut header.cash,
             _ => continue,
         };
         if slot.is_none() {

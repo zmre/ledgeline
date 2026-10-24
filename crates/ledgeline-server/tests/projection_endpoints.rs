@@ -125,6 +125,20 @@ fn dollars(mixed: &Value) -> i128 {
     mantissa / 10_i128.pow(places)
 }
 
+/// The `$` figure exactly, at twelve decimal places.
+fn exact(mixed: &Value) -> i128 {
+    let Some(dec) = mixed.get("$") else {
+        return 0;
+    };
+    let mantissa: i128 = dec["mantissa"]
+        .as_str()
+        .expect("mantissa")
+        .parse()
+        .expect("parses");
+    let places = dec["places"].as_u64().expect("places") as u32;
+    mantissa * 10_i128.pow(12 - places)
+}
+
 fn series(node: &Value) -> Vec<i128> {
     node["values"]
         .as_array()
@@ -151,12 +165,14 @@ async fn run_projects_the_scenario_in_the_body() {
     }))
     .await;
 
-    // The first projected bucket is the next WHOLE one after `asOf`.
+    // Plan 28 Decision 5: the projection starts at the first INCOMPLETE
+    // period. sample.journal's last transaction is 2026-07-03, so July is
+    // projected (and July 1–3 are left out of the openings).
     assert_eq!(
         projection["buckets"],
-        json!(["2026-08", "2026-09", "2026-10"])
+        json!(["2026-07", "2026-08", "2026-09"])
     );
-    assert_eq!(projection["start"], "2026-08-01");
+    assert_eq!(projection["start"], "2026-07-01");
 
     // Net income is a `PeriodReport`, so `ReportTable` renders it unchanged —
     // in cash-flow orientation, so an expense reads negative.
@@ -258,8 +274,13 @@ async fn an_asset_row_grows_net_worth_and_leaves_cash_alone() {
     assert!(held > 0, "sample.journal holds a taxable brokerage: {held}");
     // No override, so the row compounded exactly the journal's figure…
     assert_eq!(rows[0]["opening"], rows[0]["journalOpening"]);
-    // …and its attributed growth IS the gap the net-worth series opened up.
-    assert_eq!(dollars(&rows[0]["growth"]), grew[2] - flat[2]);
+    // …and its attributed growth IS the gap the net-worth series opened up —
+    // compared EXACTLY, because the brokerage holds priced shares whose grown
+    // prices value to more places than whole dollars truncate consistently.
+    assert_eq!(
+        exact(&rows[0]["growth"]),
+        exact(&with["netWorth"]["values"][2]) - exact(&without["netWorth"]["values"][2])
+    );
 }
 
 /// A CONTRIBUTION on an asset row implies its cash outflow through the same
@@ -417,10 +438,11 @@ async fn a_large_event_produces_a_runway_naming_its_bucket() {
     }))
     .await;
     let runway = &projection["runway"];
-    assert_eq!(runway["bucket"], 1);
+    // July, August, September: the cutoff is 2026-07-01 (plan 28 Decision 5).
+    assert_eq!(runway["bucket"], 2);
     assert_eq!(runway["label"], "Sep 2026");
     assert_eq!(runway["date"], "2026-09-30");
-    assert_eq!(runway["periods"], 2);
+    assert_eq!(runway["periods"], 3);
 }
 
 /// A period the engine cannot enumerate is a WARNING and a zero contribution —
@@ -468,7 +490,8 @@ async fn a_bounded_period_round_trips_through_the_journals_grammar() {
         .iter()
         .map(dollars)
         .collect();
-    assert_eq!(totals, [0, -4200, 0]);
+    // July, August, September (plan 28 Decision 5).
+    assert_eq!(totals, [0, 0, -4200]);
 }
 
 /// The derived period fields go OUT beside `raw`, and a client may hand the
@@ -535,7 +558,7 @@ async fn an_unpadded_event_date_is_normalized_rather_than_refused() {
     .await;
     assert_eq!(
         projection["buckets"],
-        json!(["2026-08", "2026-09", "2026-10"])
+        json!(["2026-07", "2026-08", "2026-09"])
     );
     let totals: Vec<i128> = projection["netIncome"]["totals"]
         .as_array()
@@ -544,7 +567,7 @@ async fn an_unpadded_event_date_is_normalized_rather_than_refused() {
         .map(dollars)
         .collect();
     // September, not a garbage `2026-00` bucket and not nothing at all.
-    assert_eq!(totals, [0, -45_000, 0]);
+    assert_eq!(totals, [0, 0, -45_000]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1236,11 +1259,11 @@ async fn a_save_rewrites_only_the_rule_it_changed() {
     );
     assert!(after.contains("; created: 2026-01-01\n"), "{after}");
     // Within one block the amounts land in one column, so the two lines of
-    // this rule are laid out against the longer of the two accounts.
-    assert!(
-        after.contains("    (expenses:rent)    $4500.00\n"),
-        "{after}"
-    );
+    // this rule are laid out against the longer of the two accounts. The rule
+    // did not balance, so the save also UPGRADED it (plan 28): plain postings
+    // and the amountless default counter-account hledger balances them with.
+    assert!(after.contains("    expenses:rent    $4500.00\n"), "{after}");
+    assert!(after.contains("    assets:cash\n"), "{after}");
     // `updated:` is the SERVER's today, never the client's — a timestamp a
     // caller supplies is a timestamp that can say anything.
     assert!(
@@ -1249,7 +1272,7 @@ async fn a_save_rewrites_only_the_rule_it_changed() {
     );
     // The other line of the same rule is untouched in content.
     assert!(
-        after.contains("    (revenues:salary)  $-12000.00\n"),
+        after.contains("    revenues:salary  $-12000.00\n"),
         "{after}"
     );
 }
@@ -1409,7 +1432,7 @@ async fn an_empty_revision_creates_a_new_file() {
         "{written}"
     );
     assert!(
-        written.contains("    (expenses:rent)    $4200.00\n"),
+        written.contains("    expenses:rent    $4200.00\n"),
         "{written}"
     );
 
@@ -1679,6 +1702,9 @@ async fn a_save_writes_an_entry_signed_and_lines_carry_their_section() {
     .await;
     assert_eq!(status, StatusCode::OK, "{doc}");
     let after = tree.read("plans/projection-plan.journal");
-    assert!(after.contains("(revenues:salary)  $-13000.00\n"), "{after}");
+    assert!(
+        after.contains("    revenues:salary  $-13000.00\n"),
+        "{after}"
+    );
     assert_eq!(doc["scenario"]["lines"][1]["section"], "income");
 }

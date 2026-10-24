@@ -134,6 +134,15 @@ export interface ScenarioLine {
      */
     opening: ScenarioAmount | null;
     note: string;
+    /**
+     * The account this line balances against (plan 28 Decision 1). `null` is a
+     * pre-plan-28 line: the engine books it to the default counter-account and
+     * a save writes that default. Carried through untouched until the table
+     * gains a counter column (plan 28 Phase 5).
+     */
+    counter: string | null;
+    /** `asset` rows only: the gains account; `null` is `equity:unrealized gains`. */
+    gains: string | null;
     source: LineSource;
     /**
      * The section the table is HOLDING this row in, or absent for "wherever its
@@ -183,6 +192,8 @@ export interface ScenarioEvent {
     date: ISODate;
     description: string;
     postings: EventPosting[];
+    /** The account the event balances against (plan 28), or `null`. */
+    counter: string | null;
 }
 
 /** A whole what-if. `name` is empty on a seed: naming it is Phase 3's Save As dialog's job. */
@@ -192,6 +203,8 @@ export interface Scenario {
     updated: ISODate | null;
     lines: ScenarioLine[];
     events: ScenarioEvent[];
+    /** `; cash:` — the scenario's default counter-account, or `null`. */
+    cash: string | null;
 }
 
 /** An opening balance and each bucket's closing balance. `opening` is a real figure from the journal. */

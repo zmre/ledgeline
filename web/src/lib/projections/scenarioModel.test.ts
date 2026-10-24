@@ -54,6 +54,8 @@ function line(overrides: Partial<ScenarioLine> = {}): ScenarioLine {
         growth: null,
         opening: null,
         note: "",
+        counter: null,
+        gains: null,
         source: "journal",
         ...overrides,
     };
@@ -469,14 +471,22 @@ describe("UNIT scenarioModel — putting a scenario on the wire", () => {
                     date: "2027-03-01",
                     description: "raise",
                     postings: [{account: "assets:cash", amount: {commodity: "$", quantity: dec(200, 0), precision: 0}}],
+                    counter: null,
                 },
                 {
                     id: "e2",
                     date: "2027-03-01",
                     description: "half typed",
                     postings: [{account: "", amount: {commodity: "$", quantity: dec(0, 0), precision: 0}}],
+                    counter: null,
                 },
-                {id: "e3", date: "", description: "no date", postings: [{account: "assets:cash", amount: {commodity: "$", quantity: dec(1, 0), precision: 0}}]},
+                {
+                    id: "e3",
+                    date: "",
+                    description: "no date",
+                    postings: [{account: "assets:cash", amount: {commodity: "$", quantity: dec(1, 0), precision: 0}}],
+                    counter: null,
+                },
             ],
         };
         const kept = projectable(half);

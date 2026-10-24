@@ -388,6 +388,9 @@ export function blankLine(id: string, commodity: string): ScenarioLine {
         growth: null,
         opening: null,
         note: "",
+        // Plan 28: no counter-account yet, so the engine picks the default.
+        counter: null,
+        gains: null,
         // Authored, not estimated: the user is writing it, so it must not wear
         // the "from history" flag a seeded row wears.
         source: "journal",
@@ -413,7 +416,7 @@ export function blankAssetLine(id: string, commodity: string): ScenarioLine {
 /** A blank dated event with one empty posting. */
 export function blankEvent(id: string, date: ISODate, commodity: string): ScenarioEvent {
     const precision = NEW_ROW_PRECISION;
-    return {id, date, description: "", postings: [{account: "", amount: {commodity, quantity: {m: 0n, p: precision}, precision}}]};
+    return {id, date, description: "", postings: [{account: "", amount: {commodity, quantity: {m: 0n, p: precision}, precision}}], counter: null};
 }
 
 /**
@@ -573,7 +576,7 @@ export const GROWTH_UNIT_ABBREV: Record<Growth["unit"], string> = {week: "wk", m
 
 /** An empty, unnamed scenario — what the tab holds before a seed answers. */
 export function emptyScenario(): Scenario {
-    return {name: "", created: null, updated: null, lines: [], events: []};
+    return {name: "", created: null, updated: null, lines: [], events: [], cash: null};
 }
 
 /**
@@ -604,6 +607,7 @@ export function cloneScenario(scenario: Scenario): Scenario {
             ...event,
             postings: event.postings.map((posting) => ({account: posting.account, amount: cloneAmount(posting.amount)})),
         })),
+        cash: scenario.cash,
     };
 }
 
@@ -642,6 +646,10 @@ export function scenarioToWire(scenario: Scenario): WireScenarioIn {
                     ? null
                     : {commodity: line.opening.commodity, quantity: encodeDec(line.opening.quantity), precision: line.opening.precision},
             note: line.note,
+            // Plan 28: carried through untouched, so a counter-account the file
+            // states survives a save from a table that does not show it yet.
+            counter: line.counter,
+            gains: line.gains,
             source: line.source,
         })),
         events: scenario.events.map((event) => ({
@@ -652,7 +660,9 @@ export function scenarioToWire(scenario: Scenario): WireScenarioIn {
                 account: posting.account,
                 amount: {commodity: posting.amount.commodity, quantity: encodeDec(posting.amount.quantity), precision: posting.amount.precision},
             })),
+            counter: event.counter,
         })),
+        cash: scenario.cash,
     };
 }
 

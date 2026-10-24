@@ -843,6 +843,7 @@ mod tests {
         postings: Vec<Posting>,
     ) -> PeriodicTransaction {
         PeriodicTransaction {
+            elided: None,
             period,
             description: description.to_string(),
             comment: String::new(),

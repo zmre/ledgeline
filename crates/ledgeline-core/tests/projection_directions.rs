@@ -64,7 +64,7 @@ use std::collections::BTreeMap;
 /// cases need no declarations at all — which is the point: they are what a
 /// journal with no `type:` tags does.
 const ENGLISH_JOURNAL: &str = "\
-2026-01-01 opening balances
+2026-09-30 opening balances
     assets:checking      $3000000.00
     equity:opening      $-3000000.00
 ";
@@ -77,12 +77,14 @@ account cogs:nomina        ; type: X
 account ingresos:consultoria  ; type: R
 account patrimonio:inicio  ; type: E
 
-2026-01-01 saldos iniciales
+2026-09-30 saldos iniciales
     activo:banco           $3000000.00
     patrimonio:inicio     $-3000000.00
 ";
 
-const AS_OF: &str = "2026-09-20";
+/// Today. The journals above end on 2026-09-30, so by plan 28 Decision 5 the
+/// cutoff is 2026-10-01 and the openings are every real figure.
+const AS_OF: &str = "2026-10-01";
 
 fn journal_of(text: &str) -> (Journal, BTreeMap<String, AccountType>) {
     let journal = parse_journal(text, "main.journal").expect("the test journal parses");
@@ -101,7 +103,8 @@ fn project_file(file: &str, journal_text: &str, count: usize) -> Projection {
         &journal.transactions,
         &journal.prices,
         &ProjectionOpts {
-            as_of: AS_OF,
+            today: AS_OF,
+            lookback: 0,
             interval: Interval::Monthly,
             count,
             depth: 99,
@@ -410,7 +413,7 @@ fn a_negative_expense_is_an_inflow_which_is_why_the_sign_matters() {
     const CONTRACTORS: &str = "\
 account income:contractors  ; type: expenses
 
-2026-01-01 opening balances
+2026-09-30 opening balances
     assets:checking      $3000000.00
     equity:opening      $-3000000.00
 ";
@@ -591,7 +594,7 @@ fn a_cogs_rooted_chart_projects_identically_to_an_expenses_rooted_one() {
 #[test]
 fn an_asset_rows_appreciation_never_moves_cash() {
     const INVESTED: &str = "\
-2026-01-01 opening balances
+2026-09-30 opening balances
     assets:checking          $3000000.00
     assets:brokerage          $200000.00
     equity:opening          $-3200000.00

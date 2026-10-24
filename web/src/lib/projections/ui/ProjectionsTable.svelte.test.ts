@@ -52,6 +52,8 @@ const seedLine = (account: string, mantissa: string) => ({
     growth: null,
     opening: null,
     note: NOTE,
+    counter: null,
+    gains: null,
     source: "unbudgeted",
     // The engine's placement (plan 26 B6), as the seed sends it.
     section: account.startsWith("income:") ? "income" : "expense",
@@ -69,6 +71,7 @@ const SEED = decodeScenario({
         seedLine("expenses:taxes", "133833"),
     ],
     events: [],
+    cash: null,
 });
 
 /**
@@ -85,6 +88,8 @@ const assetLine = (account: string, group: string, contribution = "0") => ({
     growth: {rate: {mantissa: "7", places: 2}, unit: "year"},
     opening: null,
     note: "",
+    counter: null,
+    gains: null,
     source: "journal",
     section: "asset",
 });
@@ -499,6 +504,7 @@ function withAssets(...lines: ReturnType<typeof assetLine>[]): Scenario {
         updated: null,
         lines: [seedLine("expenses:housing", "187500"), ...lines],
         events: [],
+        cash: null,
     });
 }
 
@@ -532,6 +538,7 @@ describe("COMPONENT ProjectionsTable — the Assets and balances section", () =>
                 updated: null,
                 lines: [seedLine("assets:checking", "50000")],
                 events: [],
+                cash: null,
             })
         );
         mount();
@@ -572,6 +579,7 @@ describe("COMPONENT ProjectionsTable — the Assets and balances section", () =>
                 updated: null,
                 lines: [seedLine("assets:checking", "50000"), assetLine("assets:checking", "brok")],
                 events: [],
+                cash: null,
             })
         );
         mount();

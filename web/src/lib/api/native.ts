@@ -723,6 +723,10 @@ export interface WireScenarioLineIn {
      */
     opening: WireAmountIn | null;
     note: string;
+    /** The account the line balances against (plan 28); `null` lets the engine pick its default. */
+    counter: string | null;
+    /** Asset rows only: the gains account; `null` is `equity:unrealized gains`. */
+    gains: string | null;
     /** `journal` | `unbudgeted`. An unrecognized value is a 400, not a silent fallback. */
     source: string;
 }
@@ -737,6 +741,8 @@ export interface WireScenarioEventIn {
     date: string;
     description: string;
     postings: WireEventPostingIn[];
+    /** The account the event balances against (plan 28), or `null`. */
+    counter: string | null;
 }
 
 export interface WireScenarioIn {
@@ -745,6 +751,8 @@ export interface WireScenarioIn {
     updated: string | null;
     lines: WireScenarioLineIn[];
     events: WireScenarioEventIn[];
+    /** `; cash:` — the scenario's default counter-account, or `null`. */
+    cash: string | null;
 }
 
 /** The whole `POST /api/projections/run` body. */

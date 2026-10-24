@@ -451,6 +451,8 @@ interface RawScenarioLine {
     growth?: RawGrowth | null;
     opening?: RawScenarioAmount | null;
     note?: string;
+    counter?: string | null;
+    gains?: string | null;
     source?: string;
 }
 
@@ -464,6 +466,7 @@ interface RawScenarioEvent {
     date?: string;
     description?: string;
     postings?: RawEventPosting[];
+    counter?: string | null;
 }
 
 interface RawScenario {
@@ -472,6 +475,7 @@ interface RawScenario {
     updated?: string | null;
     lines?: RawScenarioLine[];
     events?: RawScenarioEvent[];
+    cash?: string | null;
 }
 
 interface RawProjectionFile {
@@ -2182,6 +2186,9 @@ function decodeScenarioLine(raw: RawScenarioLine | undefined, context: string): 
         // Nullable but never ABSENT, like every other optional on this wire.
         opening: decodeNullable(raw.opening, `${context} opening`, decodeScenarioAmount),
         note: str(raw.note, `${context} note`),
+        // Plan 28: nullable, never absent, like every optional on this wire.
+        counter: decodeNullableStr(raw.counter, `${context} counter`),
+        gains: decodeNullableStr(raw.gains, `${context} gains`),
         source: decodeEnum(LINE_SOURCES, raw.source, `${context} source`),
         // The engine's placement, pinned to what it placed. Optional (not
         // nullable-required like the rest of this wire): the table previews a
@@ -2213,6 +2220,7 @@ function decodeScenarioEvent(raw: RawScenarioEvent | undefined, context: string)
         date: str(raw.date, `${context} date`),
         description: str(raw.description, `${context} description`),
         postings: frozen(raw.postings.map((posting, i) => decodeEventPosting(posting, `${context} postings[${i}]`))),
+        counter: decodeNullableStr(raw.counter, `${context} counter`),
     });
 }
 
@@ -2233,6 +2241,7 @@ export function decodeScenario(raw: unknown): Scenario {
         updated: decodeNullableStr(scenario.updated, "scenario updated"),
         lines: frozen(scenario.lines.map((line, i) => decodeScenarioLine(line, `scenario line #${i}`))),
         events: frozen(scenario.events.map((event, i) => decodeScenarioEvent(event, `scenario event #${i}`))),
+        cash: decodeNullableStr(scenario.cash, "scenario cash"),
     });
 }
 

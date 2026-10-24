@@ -42,10 +42,13 @@ const SEED_BODY = {
             growth: null,
             opening: null,
             note: "unbudgeted — average over 2025-08-01 to 2026-07-08",
+            counter: null,
+            gains: null,
             source: "unbudgeted",
         },
     ],
     events: [],
+    cash: null,
 };
 
 const RUN_BODY = {
@@ -80,7 +83,7 @@ beforeEach(async () => {
     });
     // Back to a known, not-dirty state: the store is a module singleton shared
     // by every test in this file.
-    scenarioStore.adopt({name: "", created: null, updated: null, lines: [], events: []});
+    scenarioStore.adopt({name: "", created: null, updated: null, lines: [], events: [], cash: null});
 });
 
 afterEach(() => {

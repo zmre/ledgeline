@@ -1586,6 +1586,10 @@ fn parse_periodic_transaction(
     // `date:` posting tag inherits only the `Y` default year.
     resolve_posting_dates(&mut raw_postings, default_year, lines, source_name)?;
 
+    // Recorded BEFORE balancing fills it in (see `PeriodicTransaction::elided`).
+    let elided = raw_postings
+        .iter()
+        .position(|posting| posting.ptype == PostingType::Regular && posting.amount.is_none());
     let postings = balance_postings(raw_postings, header_no)
         .map_err(|e| locate(source_name, header_no, header_line, e))?;
     // `j` is the index of the first line the rule did NOT consume, so its
@@ -1608,6 +1612,7 @@ fn parse_periodic_transaction(
             comment,
             tags,
             postings,
+            elided,
             source_span,
             source_file: source_file.to_path_buf(),
         },
