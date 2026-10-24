@@ -3,7 +3,7 @@
 use super::accounts::account_matches;
 use super::mixed_amount::MixedAmount;
 use crate::decimal::DecError;
-use crate::model::{Status, Transaction};
+use crate::model::{Posting, Status, Transaction};
 use std::collections::BTreeMap;
 
 /// Filters applied to a posting before it contributes to a total. Absent fields
@@ -74,21 +74,40 @@ pub fn account_totals(
             {
                 continue;
             }
-            let entry = totals.entry(posting.account.0.clone()).or_default();
-            for amount in &posting.amounts {
-                let (commodity, quantity) = if filter.at_cost {
-                    amount.at_cost()?
-                } else {
-                    (&amount.commodity, amount.quantity)
-                };
-                entry.accumulate(commodity, quantity)?;
-            }
+            add_posting(&mut totals, posting, filter.at_cost)?;
         }
     }
     for ma in totals.values_mut() {
         ma.drop_zeros();
     }
     Ok(totals)
+}
+
+/// Add one posting's amounts into `totals[posting.account]`, as written or at
+/// COST — the accumulation step of [`account_totals`], WITHOUT its zero sweep.
+///
+/// Shared so a caller walking the postings itself (the cumulative columns of
+/// `balance_sheet::balance_sheet_columns`) sums exactly as `account_totals`
+/// does: the account's slot is created even for a posting with no amounts, and
+/// zeros are kept until the caller prunes a snapshot.
+///
+/// # Errors
+/// Returns [`DecError`] on decimal overflow.
+pub(super) fn add_posting(
+    totals: &mut BTreeMap<String, MixedAmount>,
+    posting: &Posting,
+    at_cost: bool,
+) -> Result<(), DecError> {
+    let entry = totals.entry(posting.account.0.clone()).or_default();
+    for amount in &posting.amounts {
+        let (commodity, quantity) = if at_cost {
+            amount.at_cost()?
+        } else {
+            (&amount.commodity, amount.quantity)
+        };
+        entry.accumulate(commodity, quantity)?;
+    }
+    Ok(())
 }
 
 /// Add each account's total into itself and all ancestors (inclusive balances).

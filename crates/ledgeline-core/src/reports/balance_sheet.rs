@@ -7,13 +7,13 @@ use super::account_groups::{
     group_rank, resolve_bs_term,
 };
 use super::account_types::{AccountType, AccountTypes};
-use super::aggregate::{PostingFilter, account_totals, at_depth, roll_up};
+use super::aggregate::{PostingFilter, account_totals, add_posting, at_depth, roll_up};
 use super::mixed_amount::MixedAmount;
 use super::prices::{PriceDb, ValuationMeta, priced_count, value_at};
 use super::sections::build_section;
 use super::types::{ReportMeta, ReportRow, SectionedReport};
 use crate::decimal::Dec;
-use crate::model::{Commodity, PriceDirective, Transaction};
+use crate::model::{Amount, Commodity, Posting, PriceDirective, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 
@@ -315,143 +315,318 @@ pub fn balance_sheet_grouped(
             },
         )
     };
-    let written = totals(false)?;
-    let at_cost = totals(true)?;
+    SheetBuilder::new(explicit_prices, opts, declared, groups, terms).report(
+        opts.as_of,
+        &totals(false)?,
+        &totals(true)?,
+        || WrittenPrecision::scan(txns, opts.as_of),
+    )
+}
 
-    let prices = PriceDb::build(explicit_prices);
-    let target: Option<Commodity> = opts
-        .value_in
-        .clone()
-        .or_else(|| prices.base_commodity().cloned());
-    let types = AccountTypes::from_declared(declared.clone());
-    // The group signal reads the AS-WRITTEN balances, so flipping the valuation
-    // never moves an account between groups.
-    let account_groups =
-        AccountGroups::new(groups.clone(), types.clone(), &written, target.as_ref());
+/// [`balance_sheet_grouped`] at every date in `ends`: one report per entry, in
+/// the order given, each EXACTLY the report `balance_sheet_grouped` returns with
+/// `as_of` set to that date — same sections, `bsgroup:` groups, `bsterm:`
+/// halves, retained earnings, valuation adjustment, `check` and `balanced`
+/// verdict. `opts.as_of` is ignored; every other option applies to every
+/// column.
+///
+/// Each column is valued at ITS OWN end, so a market-valued column uses the
+/// prices in effect on that date; a date past the last `P` directive carries
+/// the latest one flat, exactly as the single-date report does. A date past
+/// the last transaction is simply the sheet with nothing new posted — and a
+/// projection's synthetic future transactions are ordinary entries in `txns`,
+/// its future prices ordinary entries in `explicit_prices`.
+///
+/// For interval columns, pass the bucket ends: each
+/// [`super::periods::range_buckets`] span's `to`.
+///
+/// # Cost
+///
+/// ONE pass over the postings, not one per column: each posting is placed by
+/// binary search in the first column whose end it falls on or before, and the
+/// columns are then walked oldest → newest carrying cumulative totals forward.
+/// Per column only the per-ACCOUNT work remains (grouping, valuation, rows),
+/// which does not grow with the number of transactions. Calling
+/// `balance_sheet_grouped` once per column costs `O(columns × postings)`; this
+/// costs `O(postings × log columns + columns × accounts)`.
+///
+/// # Shape
+///
+/// The columns are independent reports, not a pivoted table: a group with a
+/// balance at one date and none at another appears only where it has one, so a
+/// consumer laying them side by side joins on (section kind, term, group name)
+/// and on account.
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow.
+pub fn balance_sheet_columns(
+    txns: &[Transaction],
+    explicit_prices: &[PriceDirective],
+    opts: &BsOpts,
+    ends: &[String],
+    declared: &BTreeMap<String, AccountType>,
+    groups: &BTreeMap<String, String>,
+    terms: &BTreeMap<String, BsTerm>,
+) -> Result<Vec<BalanceSheetReport>, ReportError> {
+    let builder = SheetBuilder::new(explicit_prices, opts, declared, groups, terms);
+    let mut dates: Vec<&str> = ends.iter().map(String::as_str).collect();
+    dates.sort_unstable();
+    dates.dedup();
 
-    // Only balance-sheet accounts are ever displayed — revenues and expenses
-    // reach the report solely through retained earnings, at cost. Narrowing here
-    // also keeps `meta.unpriced` to commodities the user can actually see.
-    let on_sheet = |source: &BTreeMap<String, MixedAmount>| -> BTreeMap<String, MixedAmount> {
-        source
-            .iter()
-            .filter(|(account, _)| {
-                SECTIONS
-                    .iter()
-                    .any(|(_, _, category, _)| types.is_type(account, *category))
-            })
-            .map(|(account, ma)| (account.clone(), ma.clone()))
-            .collect()
-    };
-    let sheet_cost = on_sheet(&at_cost);
-
-    let mut meta = ValuationMeta::default();
-    let display: BTreeMap<String, MixedAmount> = match (opts.value, target.as_ref()) {
-        (Valuation::Cost, _) => sheet_cost.clone(),
-        (Valuation::None, _) | (Valuation::Market, None) => on_sheet(&written),
-        (Valuation::Market, Some(base)) => on_sheet(&written)
-            .iter()
-            .map(|(account, ma)| {
-                Ok((
-                    account.clone(),
-                    valued_keeping_unpriced(ma, base, &prices, opts.as_of, &mut meta)?,
-                ))
-            })
-            .collect::<Result<_, ReportError>>()?,
-    };
-
-    let retained = sum_all(&members_of(&at_cost, &types, AccountType::Revenue))?
-        .ma_add(&sum_all(&members_of(
-            &at_cost,
-            &types,
-            AccountType::Expense,
-        ))?)?
-        .ma_neg()?;
-    let valuation_adjustment = sum_all(&display)?.ma_add(&sum_all(&sheet_cost)?.ma_neg()?)?;
-
-    // ADAPTIVE: with no `bsterm:` anywhere the split is off entirely and every
-    // group's term is `None`, so the report is byte-identical to the one this
-    // feature did not exist for. A personal ledger is never handed a
-    // classification it did not ask for.
-    let bs_terms = if terms.is_empty() { None } else { Some(terms) };
-
-    let mut sections: Vec<BsSection> = Vec::with_capacity(SECTIONS.len());
-    for (kind, title, category, flip) in SECTIONS {
-        let members = members_of(&display, &types, category);
-        let mut total = signed(&sum_all(&members)?, flip)?;
-        // Equity is never split — the question the split asks (when does this
-        // convert to cash, when does this come due) is not asked of capital.
-        let section_terms = if kind == BsSectionKind::Equity {
-            None
-        } else {
-            bs_terms
-        };
-        let mut section_groups = build_groups(
-            &members,
-            &display,
-            &account_groups,
-            opts.depth,
-            flip,
-            section_terms,
-        )?;
-        if kind == BsSectionKind::Equity {
-            // Retained earnings is a real line even at zero; the valuation
-            // adjustment only exists when the display basis moved off cost.
-            for (name, amount) in [
-                (RETAINED_EARNINGS_GROUP, &retained),
-                (VALUATION_ADJUSTMENT_GROUP, &valuation_adjustment),
-            ] {
-                if name == VALUATION_ADJUSTMENT_GROUP && amount.is_zero() {
-                    continue;
-                }
-                total = total.ma_add(amount)?;
-                section_groups.push(BsGroup {
-                    name: name.to_string(),
-                    source: GroupSource::Computed,
-                    term: None,
-                    rows: Vec::new(),
-                    total: amount.clone(),
-                });
+    // The column each posting first counts in. A posting dated after the last
+    // column lands at `dates.len()`, which has no slot, and is never read.
+    let mut arrivals: Vec<Vec<&Posting>> = vec![Vec::new(); dates.len()];
+    for txn in txns {
+        for posting in &txn.postings {
+            let date = posting.date.as_deref().unwrap_or(&txn.date);
+            if let Some(slot) = arrivals.get_mut(dates.partition_point(|end| *end < date)) {
+                slot.push(posting);
             }
-            sort_groups(&mut section_groups);
         }
-        let subsections = if section_terms.is_some() {
-            build_subsections(kind, &section_groups)?
-        } else {
-            Vec::new()
-        };
-        sections.push(BsSection {
-            kind,
-            title: title.to_string(),
-            groups: section_groups,
-            subsections,
-            total,
-        });
     }
 
-    let net_worth = sections[0].total.ma_add(&sections[1].total.ma_neg()?)?;
-    let check = net_worth.ma_add(&sections[2].total.ma_neg()?)?;
-    // Short-circuit: an empty residual is balanced under any precision, so the
-    // extra pass over the postings is only paid when there is dust to judge.
-    let balanced =
-        check.is_zero() || is_balanced(&check, &WrittenPrecision::scan(txns, opts.as_of));
-    meta.unpriced.sort();
-    meta.unpriced.dedup();
+    let mut running = RunningTotals::default();
+    let by_date: Vec<BalanceSheetReport> = dates
+        .iter()
+        .zip(arrivals)
+        .map(|(end, postings)| {
+            for posting in postings {
+                running.add(posting)?;
+            }
+            builder.report(
+                end,
+                &pruned(&running.written),
+                &pruned(&running.at_cost),
+                || running.precision.clone(),
+            )
+        })
+        .collect::<Result<_, ReportError>>()?;
 
-    Ok(BalanceSheetReport {
-        as_of: opts.as_of.to_string(),
-        base: match opts.value {
-            Valuation::Market => target,
-            Valuation::Cost | Valuation::None => None,
-        },
-        sections,
-        net_worth,
-        check,
-        balanced,
-        meta: ReportMeta {
-            unpriced: meta.unpriced,
-        },
-    })
+    // Every `end` is in `dates` by construction, so `partition_point` lands on
+    // it exactly and the index is in bounds.
+    Ok(ends
+        .iter()
+        .map(|end| by_date[dates.partition_point(|date| *date < end.as_str())].clone())
+        .collect())
+}
+
+/// The cumulative state [`balance_sheet_columns`] carries from one column to
+/// the next: the two [`account_totals`] maps `balance_sheet_grouped` builds,
+/// and the [`WrittenPrecision`] its verdict reads, all over the same postings.
+#[derive(Debug, Default)]
+struct RunningTotals {
+    written: BTreeMap<String, MixedAmount>,
+    at_cost: BTreeMap<String, MixedAmount>,
+    precision: WrittenPrecision,
+}
+
+impl RunningTotals {
+    fn add(&mut self, posting: &Posting) -> Result<(), ReportError> {
+        add_posting(&mut self.written, posting, false)?;
+        add_posting(&mut self.at_cost, posting, true)?;
+        posting
+            .amounts
+            .iter()
+            .for_each(|amount| self.precision.note(amount));
+        Ok(())
+    }
+}
+
+/// A snapshot of running totals with zero commodities dropped — the final sweep
+/// [`account_totals`] applies, taken without disturbing the accumulator (a
+/// commodity at zero now may be posted to again in a later column).
+fn pruned(totals: &BTreeMap<String, MixedAmount>) -> BTreeMap<String, MixedAmount> {
+    totals
+        .iter()
+        .map(|(account, ma)| {
+            let mut ma = ma.clone();
+            ma.drop_zeros();
+            (account.clone(), ma)
+        })
+        .collect()
+}
+
+/// Everything about a grouped balance sheet that does not depend on its date:
+/// the price table, the valuation target, the type resolver and the grouping
+/// inputs. Built once, then asked for a [`BalanceSheetReport`] at one date
+/// ([`balance_sheet_grouped`]) or many ([`balance_sheet_columns`]), so the two
+/// cannot assemble a sheet differently.
+struct SheetBuilder<'a> {
+    prices: PriceDb,
+    target: Option<Commodity>,
+    types: AccountTypes,
+    groups: &'a BTreeMap<String, String>,
+    terms: &'a BTreeMap<String, BsTerm>,
+    depth: Option<usize>,
+    value: Valuation,
+}
+
+impl<'a> SheetBuilder<'a> {
+    fn new(
+        explicit_prices: &[PriceDirective],
+        opts: &BsOpts,
+        declared: &BTreeMap<String, AccountType>,
+        groups: &'a BTreeMap<String, String>,
+        terms: &'a BTreeMap<String, BsTerm>,
+    ) -> Self {
+        let prices = PriceDb::build(explicit_prices);
+        let target = opts
+            .value_in
+            .clone()
+            .or_else(|| prices.base_commodity().cloned());
+        Self {
+            prices,
+            target,
+            types: AccountTypes::from_declared(declared.clone()),
+            groups,
+            terms,
+            depth: opts.depth,
+            value: opts.value,
+        }
+    }
+
+    /// The sheet at `as_of`, from the [`account_totals`] through that date as
+    /// written and at cost. `precision` is asked for only when the residual is
+    /// non-zero, so the single-date report pays for its scan only then.
+    fn report(
+        &self,
+        as_of: &str,
+        written: &BTreeMap<String, MixedAmount>,
+        at_cost: &BTreeMap<String, MixedAmount>,
+        precision: impl FnOnce() -> WrittenPrecision,
+    ) -> Result<BalanceSheetReport, ReportError> {
+        let types = &self.types;
+        let target = self.target.as_ref();
+        // The group signal reads the AS-WRITTEN balances, so flipping the
+        // valuation never moves an account between groups.
+        let account_groups =
+            AccountGroups::new(self.groups.clone(), types.clone(), written, target);
+
+        // Only balance-sheet accounts are ever displayed — revenues and expenses
+        // reach the report solely through retained earnings, at cost. Narrowing
+        // here also keeps `meta.unpriced` to commodities the user can actually
+        // see.
+        let on_sheet = |source: &BTreeMap<String, MixedAmount>| -> BTreeMap<String, MixedAmount> {
+            source
+                .iter()
+                .filter(|(account, _)| {
+                    SECTIONS
+                        .iter()
+                        .any(|(_, _, category, _)| types.is_type(account, *category))
+                })
+                .map(|(account, ma)| (account.clone(), ma.clone()))
+                .collect()
+        };
+        let sheet_cost = on_sheet(at_cost);
+
+        let mut meta = ValuationMeta::default();
+        let display: BTreeMap<String, MixedAmount> = match (self.value, target) {
+            (Valuation::Cost, _) => sheet_cost.clone(),
+            (Valuation::None, _) | (Valuation::Market, None) => on_sheet(written),
+            (Valuation::Market, Some(base)) => on_sheet(written)
+                .iter()
+                .map(|(account, ma)| {
+                    Ok((
+                        account.clone(),
+                        valued_keeping_unpriced(ma, base, &self.prices, as_of, &mut meta)?,
+                    ))
+                })
+                .collect::<Result<_, ReportError>>()?,
+        };
+
+        let retained = sum_all(&members_of(at_cost, types, AccountType::Revenue))?
+            .ma_add(&sum_all(&members_of(at_cost, types, AccountType::Expense))?)?
+            .ma_neg()?;
+        let valuation_adjustment = sum_all(&display)?.ma_add(&sum_all(&sheet_cost)?.ma_neg()?)?;
+
+        // ADAPTIVE: with no `bsterm:` anywhere the split is off entirely and
+        // every group's term is `None`, so the report is byte-identical to the
+        // one this feature did not exist for. A personal ledger is never handed
+        // a classification it did not ask for.
+        let bs_terms = if self.terms.is_empty() {
+            None
+        } else {
+            Some(self.terms)
+        };
+
+        let mut sections: Vec<BsSection> = Vec::with_capacity(SECTIONS.len());
+        for (kind, title, category, flip) in SECTIONS {
+            let members = members_of(&display, types, category);
+            let mut total = signed(&sum_all(&members)?, flip)?;
+            // Equity is never split — the question the split asks (when does
+            // this convert to cash, when does this come due) is not asked of
+            // capital.
+            let section_terms = if kind == BsSectionKind::Equity {
+                None
+            } else {
+                bs_terms
+            };
+            let mut section_groups = build_groups(
+                &members,
+                &display,
+                &account_groups,
+                self.depth,
+                flip,
+                section_terms,
+            )?;
+            if kind == BsSectionKind::Equity {
+                // Retained earnings is a real line even at zero; the valuation
+                // adjustment only exists when the display basis moved off cost.
+                for (name, amount) in [
+                    (RETAINED_EARNINGS_GROUP, &retained),
+                    (VALUATION_ADJUSTMENT_GROUP, &valuation_adjustment),
+                ] {
+                    if name == VALUATION_ADJUSTMENT_GROUP && amount.is_zero() {
+                        continue;
+                    }
+                    total = total.ma_add(amount)?;
+                    section_groups.push(BsGroup {
+                        name: name.to_string(),
+                        source: GroupSource::Computed,
+                        term: None,
+                        rows: Vec::new(),
+                        total: amount.clone(),
+                    });
+                }
+                sort_groups(&mut section_groups);
+            }
+            let subsections = if section_terms.is_some() {
+                build_subsections(kind, &section_groups)?
+            } else {
+                Vec::new()
+            };
+            sections.push(BsSection {
+                kind,
+                title: title.to_string(),
+                groups: section_groups,
+                subsections,
+                total,
+            });
+        }
+
+        let net_worth = sections[0].total.ma_add(&sections[1].total.ma_neg()?)?;
+        let check = net_worth.ma_add(&sections[2].total.ma_neg()?)?;
+        // Short-circuit: an empty residual is balanced under any precision, so
+        // the precision is only computed when there is dust to judge.
+        let balanced = check.is_zero() || is_balanced(&check, &precision());
+        meta.unpriced.sort();
+        meta.unpriced.dedup();
+
+        Ok(BalanceSheetReport {
+            as_of: as_of.to_string(),
+            base: match self.value {
+                Valuation::Market => self.target.clone(),
+                Valuation::Cost | Valuation::None => None,
+            },
+            sections,
+            net_worth,
+            check,
+            balanced,
+            meta: ReportMeta {
+                unpriced: meta.unpriced,
+            },
+        })
+    }
 }
 
 /// True when valuing this balance sheet in `target` prices at least one of the
@@ -631,7 +806,7 @@ fn under_one_unit(residual: Dec, precision: u32) -> bool {
 /// still the fallback for a commodity that reaches the report only as a cost —
 /// the same two-tier rule, for the same reason, as
 /// `parse::Residual::tolerance_precision`.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct WrittenPrecision {
     posted: BTreeMap<Commodity, u32>,
     costed: BTreeMap<Commodity, u32>,
@@ -644,16 +819,21 @@ impl WrittenPrecision {
             .filter(|(txn, posting)| posting.date.as_deref().unwrap_or(&txn.date) <= as_of)
             .flat_map(|(_, posting)| &posting.amounts)
             .fold(Self::default(), |mut acc, amount| {
-                widen(&mut acc.posted, &amount.commodity, amount.quantity.places);
-                if let Some(cost) = amount.cost.as_deref() {
-                    widen(
-                        &mut acc.costed,
-                        &cost.amount.commodity,
-                        cost.amount.quantity.places,
-                    );
-                }
+                acc.note(amount);
                 acc
             })
+    }
+
+    /// Widen by one posted amount (and its cost annotation, if any).
+    fn note(&mut self, amount: &Amount) {
+        widen(&mut self.posted, &amount.commodity, amount.quantity.places);
+        if let Some(cost) = amount.cost.as_deref() {
+            widen(
+                &mut self.costed,
+                &cost.amount.commodity,
+                cost.amount.quantity.places,
+            );
+        }
     }
 
     /// A commodity nothing in the window mentions gets 0 places — whole units,
@@ -668,8 +848,14 @@ impl WrittenPrecision {
 }
 
 fn widen(into: &mut BTreeMap<Commodity, u32>, commodity: &Commodity, places: u32) {
-    let slot = into.entry(commodity.clone()).or_default();
-    *slot = (*slot).max(places);
+    // Look up before inserting: nearly every call finds the commodity already
+    // there, and `entry` would clone its name each time to find out.
+    match into.get_mut(commodity) {
+        Some(slot) => *slot = (*slot).max(places),
+        None => {
+            into.insert(commodity.clone(), places);
+        }
+    }
 }
 
 /// Value `ma` into `target`, KEEPING the commodities no price reaches.

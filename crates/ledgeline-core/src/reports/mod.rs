@@ -67,7 +67,7 @@ pub use accounts::{RootCategory, account_matches, categorize};
 pub use aggregate::{PostingFilter, account_totals, at_depth, roll_up};
 pub use balance_sheet::{
     BalanceSheetReport, BsGroup, BsOpts, BsSection, BsSectionKind, BsSubsection, Valuation,
-    balance_sheet, balance_sheet_grouped, prices_any_on_sheet,
+    balance_sheet, balance_sheet_columns, balance_sheet_grouped, prices_any_on_sheet,
 };
 pub use budget::{
     BudgetCell, BudgetGaps, BudgetOpts, BudgetReport, BudgetRow, GapRow, UNBUDGETED, budget_gaps,

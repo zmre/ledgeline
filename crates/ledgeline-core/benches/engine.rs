@@ -45,10 +45,12 @@ use ledgeline_core::holdings::SeriesWindow;
 use ledgeline_core::holdings::{HoldingsScope, ScopeMode, compute_holdings, holdings_series};
 use ledgeline_core::model::{Commodity, Journal, PriceDirective};
 use ledgeline_core::reports::{
-    AccountDecl, AccountType, BudgetOpts, InsightsOpts, Interval, MixedAmount, NetWorthOpts,
-    PostingFilter, PriceDb, SubscriptionOpts, account_decls, account_totals, balance_sheet,
-    budget_report, cash_flow, cash_predicate, declared_types, detect_subscriptions,
-    income_statement, infer_market_prices, insights, net_worth, resolve_account_type, roll_up,
+    AccountDecl, AccountType, BsOpts, BudgetOpts, InsightsOpts, Interval, MixedAmount,
+    NetWorthOpts, PostingFilter, PriceDb, SubscriptionOpts, Valuation, account_decls,
+    account_groups, account_totals, balance_sheet, balance_sheet_columns, balance_sheet_grouped,
+    bs_terms, budget_report, cash_flow, cash_predicate, declared_types, detect_subscriptions,
+    income_statement, infer_market_prices, insights, net_worth, range_buckets,
+    resolve_account_type, roll_up,
 };
 use ledgeline_core::{parse_journal, wire};
 use std::collections::{BTreeMap, BTreeSet};
@@ -60,6 +62,8 @@ use std::time::Duration;
 const AS_OF: &str = "2025-12-31";
 /// Insights compares two halves of this span (the corpus's last two years).
 const INSIGHTS_START: &str = "2024-01-01";
+/// First month of the periodic balance-sheet bench: 30 month ends up to `AS_OF`.
+const BS_COLUMNS_FROM: &str = "2023-07-01";
 /// A date near the START of the 30-year price series: `PriceDb::latest`'s
 /// reverse scan has to walk the whole list to reach it (PERF-5d).
 const EARLY_DATE: &str = "1996-06-30";
@@ -402,6 +406,65 @@ fn bench_reports(c: &mut Criterion, fixtures: &[Fixture]) {
                         &fixture.declared,
                     )
                     .unwrap()
+                });
+            },
+        );
+
+        // Plan 28 Phase 3: a periodic grouped balance sheet. `n_calls` is the
+        // fallback (one `balance_sheet_grouped` per column, O(columns × txns));
+        // `one_pass` is `balance_sheet_columns`. Same 30 month ends, same output.
+        let ends: Vec<String> = range_buckets(BS_COLUMNS_FROM, AS_OF, Some(Interval::Monthly))
+            .unwrap()
+            .into_iter()
+            .map(|span| span.to)
+            .collect();
+        let bs_groups = account_groups(&fixture.journal);
+        let bs_terms_map = bs_terms(&fixture.journal);
+        let bs_opts = BsOpts {
+            as_of: AS_OF,
+            depth: None,
+            value: Valuation::Market,
+            value_in: None,
+        };
+        group.bench_with_input(
+            BenchmarkId::new("balance_sheet_columns/one_pass_30", &id),
+            fixture,
+            |b, fixture| {
+                b.iter(|| {
+                    balance_sheet_columns(
+                        black_box(&fixture.journal.transactions),
+                        &fixture.journal.prices,
+                        &bs_opts,
+                        &ends,
+                        &fixture.declared,
+                        &bs_groups,
+                        &bs_terms_map,
+                    )
+                    .unwrap()
+                });
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("balance_sheet_columns/n_calls_30", &id),
+            fixture,
+            |b, fixture| {
+                b.iter(|| {
+                    ends.iter()
+                        .map(|as_of| {
+                            balance_sheet_grouped(
+                                black_box(&fixture.journal.transactions),
+                                &fixture.journal.prices,
+                                &BsOpts {
+                                    as_of,
+                                    ..bs_opts.clone()
+                                },
+                                &fixture.declared,
+                                &bs_groups,
+                                &bs_terms_map,
+                            )
+                            .unwrap()
+                        })
+                        .collect::<Vec<_>>()
                 });
             },
         );
