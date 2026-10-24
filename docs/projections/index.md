@@ -25,7 +25,7 @@ This section has four pages:
 
 - this one: where scenario files live and how saving works;
 - [The scenario file format](file-format.md): the `~` rules, the tag vocabulary, growth, and reading a scenario with hledger;
-- [What moves cash](cash.md): the residual rule that decides each line's cash and net-worth effect;
+- [What moves cash](cash.md): counter-accounts, the defaults Ledgeline picks, and where a projection starts;
 - [Asset rows](asset-rows.md): balances that compound, contributions, and `opening:` overrides.
 
 Design notes and the reasoning behind each decision live in

@@ -1,6 +1,6 @@
 ---
 title: The scenario file format
-description: "A projection is an ordinary hledger journal of ~ rules plus four tags: projection, growth, line and opening."
+description: "A projection is an ordinary, balanced hledger journal of ~ rules plus a few tags: projection, cash, growth, line, opening and gains."
 order: 10
 tags: [projections]
 ---
@@ -14,51 +14,75 @@ This is the whole of it:
 ; projection: Series A with a hiring ramp
 ; created: 2026-09-18
 ; updated: 2026-09-20
+; cash: assets:checking
 
+account equity:unrealized gains  ; type: E
+
+; Every rule ends with its COUNTER-ACCOUNT, written with no amount: where the
+; money lands or comes from. hledger fills the amount in, so each rule is an
+; ordinary balanced transaction.
 ~ monthly  projection
-    (revenues:salary)      $-12000  ; growth: 3%/yr
-    (revenues:consulting)   $-2500
-    (expenses:rent)          $4200  ; growth: 2%/yr
-    (expenses:software)       $900
+    revenues:salary      $-12000  ; growth: 3%/yr
+    revenues:consulting   $-2500
+    expenses:rent          $4200  ; growth: 2%/yr
+    expenses:software       $900
+    assets:checking
 
 ; A STEP: payroll jumps in April and grows from the new base. Two bounded rules
 ; for one account, linked by the `line:` tag so the editor shows one row.
 ~ monthly to 2027-04-01  projection
-    (expenses:payroll)      $50000  ; line: payroll
+    expenses:payroll      $50000  ; line: payroll
+    assets:checking
 
 ~ monthly from 2027-04-01  projection
-    (expenses:payroll)     $120000  ; line: payroll, growth: 5%/yr
+    expenses:payroll     $120000  ; line: payroll, growth: 5%/yr
+    assets:checking
 
 ; A ONE-OFF on the balance sheet: cash and equity, no net-income effect.
 ~ 2027-03-01  Series A
-    (assets:cash)         $2000000
-    (equity:preferred)   $-2000000
+    assets:checking     $2000000
+    equity:preferred
 
-; A ONE-OFF on the P&L.
+; A ONE-OFF on the P&L, accrued: no cash moves until it is paid.
 ~ 2027-06-15  legal fees
-    (expenses:legal)         $45000
+    expenses:legal        $45000
+    liabilities:payable
 
 ; ASSET ROWS: a balance, a rate, and what you put into it. The amount is the
 ; CONTRIBUTION — `$0` when the balance just compounds — and `growth:` is what
-; marks the row as a stock rather than a flow.
+; marks the row as a stock rather than a flow. Appreciation is booked to the
+; row's gains account.
 ~ monthly  investing
-    (assets:brokerage)           $0  ; growth: 7%/yr
-    (assets:savings)          $2000  ; growth: 4%/yr
+    assets:house              $0  ; growth: 4%/yr, gains: equity:unrealized gains
+    assets:savings         $2000  ; growth: 4%/yr
+    assets:checking
 ```
 
 Every line of it is hledger's own syntax. Nothing here is a Ledgeline format.
 
+Files written before counter-accounts existed use unbalanced virtual postings,
+`(expenses:rent) $4200`, with no counter-account. They still load and project
+the same numbers, and Ledgeline writes the counter-account it used the next
+time you save. [What moves cash](cash.md) explains how it picks one.
+
 ## The tag vocabulary
 
-Four tags. One lives in a comment at the top of the file, and the other three
-go on postings.
+One header tag names the scenario, one names its default cash account, and the
+rest go on postings.
 
 | tag | where | means |
 |---|---|---|
 | `projection: <name>` | a comment at the top of the file | the scenario's display name |
+| `cash: <account>` | a comment at the top of the file | the counter-account for a line your history says nothing about |
 | `growth: <rate>/<unit>` | a posting comment | the amount grows by `rate` per completed `unit`; on an asset-typed account it ALSO marks the row as a balance |
 | `line: <id>` | a posting comment | two bounded rules are two segments of ONE row |
 | `opening: <number>` | an asset row's posting comment | override the journal's balance for that account |
+| `gains: <account>` | an asset row's posting comment | where appreciation is booked; `equity:unrealized gains` when absent |
+
+**The gains account is a real, declared account.** If your main journal does
+not declare it, Ledgeline declares it in the scenario file
+(`account equity:unrealized gains  ; type: E`), so hledger and Ledgeline
+classify it the same way and your main journal is not touched.
 
 **`; projection: <name>` is the display name and the only marker.** A file
 without it still loads — any journal with budget-like entries can be used as a
@@ -105,7 +129,9 @@ $ hledger -f projection-series-a.journal balance --budget -M
 $ hledger -f projection-series-a.journal print --forecast=2026-10-01..2029-10-01
 ```
 
-**What hledger will not do is apply `growth:`.** hledger has no arithmetic in
+**What hledger will not do is apply `growth:`**, and it never sees the future
+prices Ledgeline uses to grow a stock holding (see [Asset rows](asset-rows.md)).
+Both are shown flat by hledger. hledger has no arithmetic in
 amounts — `$1200 * 1.03` is a parse error — so a journal file cannot state a
 growing amount. `growth:` is a comment to hledger, and a `balance --budget`
 report over a projection file shows the **base** amount in every period, in year
@@ -137,4 +163,10 @@ $ hledger -f main.journal -f projection-series-a.journal balance --budget -M
 
 # Every asset row in a file, by the tag that marks one.
 $ hledger -f projection-series-a.journal print --forecast=2027-01-01..2027-02-01 tag:growth
+
+# The balance sheet the tab projects, from a cutoff of 2026-10-01: actuals before
+# it, forecast from it, and no real transaction after it counted twice.
+$ hledger -f main.journal -f projection-series-a.journal bs \
+    --forecast=2026-10-01..2027-10-01 -M -b 2026-08-01 -e 2027-10-01 \
+    expr:"NOT (date:2026-10-01.. AND NOT tag:generated)"
 ```
