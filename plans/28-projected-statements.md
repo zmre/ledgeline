@@ -755,3 +755,121 @@ counter-less event, `CounterDefaults::for_accounts` over their accounts;
 Phase 6. The Reports tab's periodic balance sheet (Phase 3's last sentence).
 The docs screenshots were not regenerated; `projections.docs.ts` waits on the
 Runway reading instead of the removed Net income one.
+
+---
+
+**Fixes after Phase 5** (2026-10-24). Three bugs seen on the Projections tab
+over `fixtures/sample.journal`, the e2e fixture. Amendment 20's first two
+bullets are fixed here. Amendment 22 SUPERSEDES the "cash-typed" wording of
+Decision 7 and amendment 4's definition of "paired with".
+
+### 22. Runway reads total cash, valued per period (bug 1)
+
+**Root cause.** `project()` valued the real opening cash into the target
+commodity (`valued`, which also drops unpriced commodities) and then added the
+generated postings raw. Over sample.journal the opening EUR became dollars,
+while the seed's EUR food and travel lines subtracted raw EUR. The series held
+`$51K + −19.06 EUR` in July, and the runway check ("any commodity negative")
+fired in month one over a growing dollar balance. Per-account balances played
+no part. Wise's −$215 (bug 2) is netted inside the `$` total.
+
+**Fix.** Cash is carried RAW, per commodity, summed over every `is_cash`
+account (opening plus generated postings). Every figure read off it (opening,
+each period's close, the lookback history) is valued at that period's end by
+`valued_keeping_unpriced` (now `pub(crate)`). A commodity a price reaches is
+converted into the target. One that no price reaches is kept as itself, never
+dropped. The runway is the first period whose valued total has any negative
+component.
+
+**How mixed commodities are judged:** after summing across accounts and
+after valuation. EUR spending beyond the EUR balance is covered by dollars, so
+it is not exhaustion. A negative commodity that cannot be valued cannot be
+netted, so it fires on its own. One cash account overdrawn while the total is
+positive is never a runway. This supersedes amendment 9's "generated amounts
+are deliberately NOT valued" for the CASH series. The net-worth series is
+unchanged and off the wire.
+
+The "added without conversion" warning now names only commodities NO price
+converts into the target. EUR has a `P` price in sample.journal, so its seed
+now warns about nothing.
+
+Tests: `eur_spending_against_eur_cash_is_no_false_runway` (the sample-journal
+shape), `one_overdrawn_cash_account_is_not_a_runway_while_total_cash_is_positive`,
+`a_priced_commodity_is_netted_into_the_total_before_it_is_judged`,
+`an_unpriced_commodity_below_zero_is_a_runway_on_its_own`, and server
+`the_sample_seed_raises_no_false_runway_and_infers_counters_per_commodity`.
+The e2e now asserts "Cash never turns negative" over the fixture.
+
+### 23. Default counter-account: per commodity, any balance-sheet account, one liability hop (bugs 2 and 3)
+
+Patrick's decision was "infer the counter accounts based on most common
+pairing in history". Decision 7 restricted that to cash-typed accounts, so
+`expenses:depreciation` defaulted to checking and drained cash. Amendment 4
+also paired by account only, so the `$` food line defaulted to the EUR-only
+Wise account. `CounterDefaults` now works like this:
+
+1. **Pairing, per (account, commodity).** Over `[cutoff − 12 months,
+   cutoff)`, each real transaction's postings are netted per (account,
+   commodity). For the line's account (its subtree pooled, as before) in the
+   line's commodity, a **counterparty** is another account in the same
+   transaction, same commodity, opposite sign. The counterparty must be an
+   **asset or a liability**, cash or not.
+2. **Weighting by amount, not by transaction count.** Each counterparty is
+   credited `min(|its amount|, |the line account's amount|)`, and the
+   largest total wins (ties lexical). Count-weighting was tried first: over
+   sample.journal the brokerage's six small dividends outvoted its four large
+   deposits from checking, so a contribution row was balanced against
+   `income:dividends`. Amounts answer "where the money went".
+3. **Equity, revenue and expense are not counterparties.** Equity is left out
+   because an opening-balance transaction pairs every account with
+   `equity:opening` (this broke the asset-contribution tests). Revenue and
+   expense are left out because payroll withholding pairs
+   `expenses:taxes` with `income:salary`. Projected that way, the tax never
+   leaves cash while the gross salary lands in checking, which overstated
+   sample.journal's build by about $973 a month (seen in the visual check).
+   Such a line falls through to the fallbacks and comes out of cash.
+4. **One liability hop.** If the winner is a liability, its settlement is the
+   same vote over its own DEBIT postings (the payments that reduce it), in
+   the same commodities. If that settlement is a cash account, the cash
+   account is used. A projection does not project card payments, so spending
+   left on the card would never draw cash down. If the card is settled from
+   a non-cash account, or never, the card stays.
+5. **Fallbacks, commodity-aware.** The order is unchanged: header `; cash:`,
+   largest valued cash balance, first declared `type: C`, then any cash
+   account. Each step is first restricted to cash accounts that HOLD one of
+   the line's commodities: a non-zero balance at the cutoff, or a posting in
+   it in the window. A header that holds nothing at all (a fresh account)
+   still stands. Only when no cash account holds the commodity does the
+   unfiltered chain run, ending at `assets:cash`.
+6. **API.** `for_accounts(accounts)` became
+   `for_lines(impl IntoIterator<Item = (&str, &Commodity)>)` and
+   `for_account(account, commodity)`. Events contribute one pair per stated
+   amount. A group that mixes commodities pools raw quantities across them;
+   the seed never builds one (one group per account and commodity). The
+   wire's `defaults.cash` is `cash_fallback()`, the header-less fallback in
+   the valuation commodity. The legacy residual and the save-time upgrade
+   still give a group ONE counter (amendments 3 and 5).
+
+Over sample.journal the inferred defaults are now:
+
+| line | counter |
+|---|---|
+| `$` food, housing, utilities, transport | `assets:bank:checking` (food via the visa hop) |
+| `$` taxes | `assets:bank:checking` (no balance-sheet pairing; fallback) |
+| `$` depreciation | `assets:vehicles:car:depreciation` |
+| EUR food, EUR travel | `assets:bank:wise:eur` |
+| `$` travel | `assets:bank:checking`, never Wise |
+| salary / dividends | `assets:bank:checking` / `assets:broker:taxable:cash` |
+
+Tests (in `projections/forecast.rs`): depreciation stays non-cash, both
+inferred and expanded; card-paid food resolves through the card to checking;
+an unsettled card is kept; salary goes to checking and withheld tax falls back
+to cash; a `$` line never picks an EUR-only account, even when the header names
+one; the no-history fallbacks. The e2e checks that depreciation's greyed
+counter is the contra-asset. No golden pinned the old defaults: the existing
+`rule:0` and event assertions still answer `assets:bank:checking`.
+
+### 24. Still not done
+
+Amendment 20's third bullet (`merged_transactions` clones the journal) and
+amendment 21 are unchanged.

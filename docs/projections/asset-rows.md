@@ -217,6 +217,6 @@ contribution *is* the amount, and zero is what "no contribution" is worth.
   distribution over outcomes (Monte Carlo and friends).
 
 The engine tells you when it could not do something: a period it cannot
-enumerate, a growth rate that overflows, a commodity your opening balances are
-not valued in. A projection that quietly drops a line is worse than one that
+enumerate, a growth rate that overflows, a commodity no price converts into
+the one your opening balances are valued in. A projection that quietly drops a line is worse than one that
 says so, so every one of those appears in the warnings above the charts.

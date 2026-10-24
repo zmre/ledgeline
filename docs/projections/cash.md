@@ -31,14 +31,37 @@ accounts; net worth is your assets less your liabilities.
 Older scenario files, `budget.journal` rules and freshly seeded estimates have
 no counter-account. Ledgeline picks a default for them, in this order:
 
-1. **the cash account the line's account was most often paired with** in your
-   real transactions over the last twelve months. Salary that always landed in
-   `assets:checking` projects into `assets:checking`;
+1. **the account your history paired it with.** Ledgeline looks at your real
+   transactions over the last twelve months that post the line's account in
+   the line's commodity, and asks where the other side of the money went: the
+   asset or liability account with the most money paired with it. Salary that
+   always landed in `assets:checking` projects into `assets:checking`.
+   Depreciation booked against `assets:car:depreciation` keeps booking there,
+   so it never touches cash.
+   - **A credit card is followed to the account that pays it.** Groceries paid
+     on `liabilities:visa` would never reduce cash in a projection, because
+     the projection does not project the card payments. So when the pairing is
+     a liability, and that liability is mostly paid down from a cash account,
+     the cash account is the default. One hop only.
+   - **Commodities are kept apart.** A `$` line is only paired with an account
+     that took `$`; a EUR line with one that took EUR. Dollar groceries never
+     land in your euro account.
+   - **Equity, revenue and expense accounts are not pairings.** An opening
+     balance says nothing about where next month's money goes, and tax
+     withheld from a payslip pairs the tax with the salary rather than with
+     where the money sits. A line with no other pairing falls through to the
+     steps below.
 2. otherwise the scenario's own default, a `; cash: <account>` line in the
    file's header;
 3. otherwise the cash account with the largest balance;
 4. otherwise the first account you have declared `type: C`, and failing that
    `assets:cash`.
+
+Steps 2 to 4 prefer a cash account that holds the line's commodity, so a EUR
+line with no history goes to your euro account even if your dollar account is
+larger. A `; cash:` header naming an account that only ever held another
+commodity is passed over for that line. Only when no cash account holds the
+commodity does the order run without that preference.
 
 A cash account is one whose type is Cash: declared `type: C`, or inferred the
 way hledger infers it. Account names are never guessed at.
@@ -114,6 +137,14 @@ because neither account is revenue or expense:
 
 - **Runway counts cash only**: the balance of your cash-typed accounts. Stock
   you could sell is not runway.
+- **Runway reads total cash, never one account.** Every cash account is
+  summed, commodity by commodity, and each period's total is valued into your
+  main commodity at that period's end. The runway is the first period where
+  that total closes below zero. One account going overdrawn while the rest
+  cover it is not running out of cash, and neither is spending more euros
+  than your euro account holds while your dollars cover it. A commodity no
+  price converts cannot be netted against anything, so it is judged on its
+  own: if it closes below zero, that is a runway.
 - **Net income** is the income statement's: revenue and expense postings
   only.
 - **Appreciation** on an asset row is booked to a gains account
