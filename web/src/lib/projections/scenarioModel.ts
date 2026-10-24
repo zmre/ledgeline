@@ -500,6 +500,48 @@ function maxDate(dates: (ISODate | null)[]): ISODate | null {
     return best;
 }
 
+// ---------------------------------------------------------------------------
+// Counter-accounts and gains accounts (plan 28)
+// ---------------------------------------------------------------------------
+
+/** A typed account, or null for "the engine's default" — blank means none, as on the wire. */
+export function accountOrNull(raw: string | null): string | null {
+    const trimmed = (raw ?? "").trim();
+    return trimmed === "" ? null : trimmed;
+}
+
+/**
+ * Set ONE line's counter-account, keeping every rule writable.
+ *
+ * A `~` rule has ONE counter-account: its amountless posting (plan 28,
+ * amendment 5), and the file writer refuses a rule whose lines name two. So
+ * when the line shares its rule (`group`) with any other line whose counter
+ * would now DIFFER — a different account, or none — the line moves into a rule
+ * of its own, with a fresh `group`, rather than leaving a scenario that cannot
+ * be saved. "None" counts as different on purpose: a counter-less line beside
+ * a countered one is written as a virtual `(account)` posting, which hledger
+ * leaves out of balancing, so the file would stop meaning what the projection
+ * shows.
+ *
+ * A line alone in its rule, or one whose rule-mates already agree, keeps its
+ * group, so a no-op edit changes nothing.
+ */
+export function withCounter(lines: readonly ScenarioLine[], id: string, group: string, counter: string | null, taken: ReadonlySet<string>): ScenarioLine[] {
+    const value = accountOrNull(counter);
+    const split = lines.some((line) => line.group === group && line.id !== id && line.counter !== value);
+    const nextGroup = split ? freshId("group", new Set([...taken, group])) : group;
+    return lines.map((line) => (line.id === id && line.group === group ? {...line, counter: value, group: nextGroup} : line));
+}
+
+/**
+ * Set an asset row's gains account. A posting tag (`gains:`), so unlike a
+ * counter it is per line and never splits a rule.
+ */
+export function withGains(lines: readonly ScenarioLine[], group: string, gains: string | null): ScenarioLine[] {
+    const value = accountOrNull(gains);
+    return lines.map((line) => (line.group === group && line.role === "asset" ? {...line, gains: value} : line));
+}
+
 /** Remove one SEGMENT (one `~` rule) by its group. */
 export function removeSegment(lines: readonly ScenarioLine[], group: string): ScenarioLine[] {
     return lines.filter((line) => line.group !== group);
@@ -646,10 +688,10 @@ export function scenarioToWire(scenario: Scenario): WireScenarioIn {
                     ? null
                     : {commodity: line.opening.commodity, quantity: encodeDec(line.opening.quantity), precision: line.opening.precision},
             note: line.note,
-            // Plan 28: carried through untouched, so a counter-account the file
-            // states survives a save from a table that does not show it yet.
-            counter: line.counter,
-            gains: line.gains,
+            // Plan 28: blank is "none" on the wire too, but trimmed here so a
+            // half-cleared box is never sent as an account named " ".
+            counter: accountOrNull(line.counter),
+            gains: accountOrNull(line.gains),
             source: line.source,
         })),
         events: scenario.events.map((event) => ({
@@ -660,9 +702,9 @@ export function scenarioToWire(scenario: Scenario): WireScenarioIn {
                 account: posting.account,
                 amount: {commodity: posting.amount.commodity, quantity: encodeDec(posting.amount.quantity), precision: posting.amount.precision},
             })),
-            counter: event.counter,
+            counter: accountOrNull(event.counter),
         })),
-        cash: scenario.cash,
+        cash: accountOrNull(scenario.cash),
     };
 }
 
@@ -694,11 +736,12 @@ export function projectable(scenario: Scenario): Scenario {
  * from a balance sheet by a timezone. The start date the tab shows is
  * `Projection.start`, which the engine derives and returns.
  */
-export function runBody(scenario: Scenario, window: {interval: string; count: number; depth: number}): RunProjectionBody {
+export function runBody(scenario: Scenario, window: {interval: string; count: number; lookback: number; depth: number}): RunProjectionBody {
     return {
         scenario: scenarioToWire(projectable(scenario)),
         interval: window.interval,
         count: window.count,
+        lookback: window.lookback,
         depth: window.depth,
     };
 }

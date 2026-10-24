@@ -19,8 +19,8 @@
 
 import {beforeEach, afterEach, describe, expect, it, vi} from "vitest";
 import {connectFakeEngine, FAKE_ENGINE} from "#lib/testing/fakeEngine.js";
+import {rawProjectionRun} from "#lib/testing/projectionFixture.js";
 import {scenarioStore, sameProjectionQuery, type ProjectionWindow} from "./scenarioStore.svelte";
-import {periodsOf} from "#lib/reports/test-helpers.js";
 
 const SEED_ROUTE = "/api/projections/seed?count=12&depth=2";
 const RUN_ROUTE = "/api/projections/run";
@@ -51,20 +51,9 @@ const SEED_BODY = {
     cash: null,
 };
 
-const RUN_BODY = {
-    buckets: ["2026-08"],
-    start: "2026-08-01",
-    netIncome: {buckets: ["2026-08"], periods: periodsOf(["2026-08"]), rows: [], totals: [{$: {mantissa: "0", places: 2}}]},
-    cash: {opening: {$: {mantissa: "500000", places: 2}}, values: [{$: {mantissa: "500000", places: 2}}]},
-    netWorth: {opening: {$: {mantissa: "900000", places: 2}}, values: [{$: {mantissa: "900000", places: 2}}]},
-    runway: null,
-    // `[]` is a real answer and the key is never absent — this scenario holds
-    // no asset rows. `decodeProjection` refuses a missing one.
-    assets: [],
-    warnings: [],
-};
+const RUN_BODY = rawProjectionRun();
 
-const WINDOW: ProjectionWindow = {interval: "monthly", count: 24, depth: 2};
+const WINDOW: ProjectionWindow = {interval: "monthly", count: 24, lookback: 2, depth: 2};
 
 /** Every URL the store asked for, in order. */
 let asked: string[] = [];
@@ -175,7 +164,7 @@ describe("COMPONENT scenarioStore — the debounced recompute", () => {
     it("a Retry skips the debounce entirely", async () => {
         await scenarioStore.runNow(FAKE_ENGINE, WINDOW);
         expect(asked.filter((url) => url.endsWith(RUN_ROUTE))).toHaveLength(1);
-        expect(scenarioStore.projection.value?.start).toBe("2026-08-01");
+        expect(scenarioStore.projection.value?.actualsEnd).toBe("2026-08-01");
     });
 });
 

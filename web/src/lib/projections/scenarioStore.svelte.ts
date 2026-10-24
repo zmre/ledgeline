@@ -38,16 +38,18 @@ import type {Projection, Scenario} from "./types";
 
 /** How many trailing months the seed's unbudgeted averages are taken over. The engine's own default, stated so the request is readable. */
 const SEED_COUNT = 12;
-/** How finely the seed names its unbudgeted categories. Matches `DEFAULT_PROJECTION_DEPTH`, so the seeded rows and the net-income rows agree. */
+/** How finely the seed names its unbudgeted categories. Matches `DEFAULT_PROJECTION_DEPTH`, so the seeded rows and the cash flow statement's lines agree. */
 const SEED_DEPTH = 2;
 
 /** The same 250 ms the URL mirror uses, and for the same reason. */
 const DEBOUNCE_MS = 250;
 
-/** The window the three report tabs share. */
+/** The window every reading shares. */
 export interface ProjectionWindow {
     interval: PeriodInterval;
     count: number;
+    /** Full actual periods the statements show before the forecast. */
+    lookback: number;
     depth: number;
 }
 
@@ -65,7 +67,7 @@ export interface ProjectionQuery extends ProjectionWindow {
 
 /** Whether two queries ask for exactly the same projection (the FE-1 gate). */
 export function sameProjectionQuery(a: ProjectionQuery, b: ProjectionQuery): boolean {
-    return a.revision === b.revision && a.interval === b.interval && a.count === b.count && a.depth === b.depth;
+    return a.revision === b.revision && a.interval === b.interval && a.count === b.count && a.lookback === b.lookback && a.depth === b.depth;
 }
 
 let scenario = $state<Scenario>(emptyScenario());

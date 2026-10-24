@@ -93,7 +93,21 @@
 
      Every row's menu carries a UNIQUE accessible name, falling back to its
      position when the account is blank (`rowName`), because "Delete row" you
-     cannot address is not a delete. -->
+     cannot address is not a delete.
+
+     # Counter-accounts, gains accounts and the default cash account (plan 28)
+
+     Every flow line, one-off and dated line names the account its money comes
+     from or lands in (its COUNTER-ACCOUNT); every asset row names the account
+     its appreciation is booked against (its GAINS account). Both are greyed
+     until overridden, exactly as the Balance column is: the box is empty and the
+     engine's inferred default (`Projection.defaults`, from the last good
+     projection) is its placeholder. Clearing a box goes back to the default.
+
+     A `~` rule has ONE counter-account, so a line whose new counter differs
+     from its rule-mates' moves into a rule of its own (`withCounter`) — the
+     only way the file stays writable. The scenario's own `cash:` default sits
+     above the sections, because it is the fallback for every row at once. -->
 <script lang="ts">
     import {onDestroy} from "svelte";
     import DateInput from "#lib/components/DateInput.svelte";
@@ -105,6 +119,7 @@
     import {EM_DASH, fmt} from "#lib/format/amounts.js";
     import {journalBalanceFor} from "../projectionView";
     import {
+        accountOrNull,
         blankAssetLine,
         blankEvent,
         blankLine,
@@ -127,6 +142,8 @@
         takenIds,
         withAccount,
         withBounds,
+        withCounter,
+        withGains,
         withInterval,
         withMagnitude,
         type LogicalRow,
@@ -136,6 +153,7 @@
         SCENARIO_INTERVALS,
         type AddSection,
         type AssetRow,
+        type ForecastDefaults,
         type GrowthUnit,
         type HeldSection,
         type Scenario,
@@ -152,6 +170,7 @@
         commodity,
         stepDate,
         assetBalances,
+        defaults = null,
         styles,
         onChange,
     }: {
@@ -174,6 +193,12 @@
          * flicker with no information in it.
          */
         assetBalances: ReadonlyMap<string, AssetRow>;
+        /**
+         * The engine's inferred counter, gains and cash accounts — the greyed
+         * placeholders. From the LAST GOOD projection, for `assetBalances`'
+         * reason; null before the first one lands.
+         */
+        defaults?: ForecastDefaults | null;
         /** Commodity display styles, for the ledger figure under an overridden balance. */
         styles: ReadonlyMap<string, AmountStyle>;
         /** Called after every edit. The store bumps its revision and debounces a recompute. */
@@ -411,6 +436,50 @@
         onChange();
     }
 
+    // --- Counter, gains and cash accounts (plan 28) ----------------------------
+
+    /** The greyed placeholder: the engine's default, or a word saying one is coming. */
+    const DEFAULT_PENDING = "default";
+
+    const counterPlaceholder = (line: ScenarioLine): string => defaults?.lines.get(line.group) ?? DEFAULT_PENDING;
+
+    /** Typing writes the box straight through, as the account box does; the commit is what may split a rule. */
+    function draftCounter(line: ScenarioLine, next: string): void {
+        line.counter = next === "" ? null : next;
+    }
+
+    function commitCounter(line: ScenarioLine): void {
+        scenario.lines = withCounter(scenario.lines, line.id, line.group, line.counter, takenIds(scenario));
+        onChange();
+    }
+
+    function draftGains(line: ScenarioLine, next: string): void {
+        line.gains = next === "" ? null : next;
+    }
+
+    function commitGains(line: ScenarioLine): void {
+        scenario.lines = withGains(scenario.lines, line.group, line.gains);
+        onChange();
+    }
+
+    function draftEventCounter(event: ScenarioEvent, next: string): void {
+        event.counter = next === "" ? null : next;
+    }
+
+    function commitEventCounter(event: ScenarioEvent): void {
+        event.counter = accountOrNull(event.counter);
+        onChange();
+    }
+
+    function draftCash(next: string): void {
+        scenario.cash = next === "" ? null : next;
+    }
+
+    function commitCash(): void {
+        scenario.cash = accountOrNull(scenario.cash);
+        onChange();
+    }
+
     // --- Rows ----------------------------------------------------------------
 
     /**
@@ -577,6 +646,21 @@
     </td>
 {/snippet}
 
+<!-- The counter-account: empty, with the engine's default greyed in it, until
+     the user names one. `name` is the row's name, so two rows' boxes differ. -->
+{#snippet counterCell(line: ScenarioLine, name: string)}
+    <td>
+        <AccountInput
+            bind:value={() => line.counter ?? "", (next) => draftCounter(line, next)}
+            {accountNames}
+            size="xs"
+            label="Counter-account for {name}"
+            placeholder={counterPlaceholder(line)}
+            onCommit={() => commitCounter(line)}
+        />
+    </td>
+{/snippet}
+
 {#snippet periodCell(line: ScenarioLine, label: string)}
     <td>
         {#if line.period.simple === null}
@@ -653,6 +737,24 @@
         {moveNotice}
     </p>
 
+    <!-- The scenario's `; cash:` header: where a row's money goes when history
+         pairs its account with no cash account. Greyed with the journal's own
+         fallback until set. -->
+    <div class="flex flex-wrap items-center gap-2 text-sm" data-testid="projection-cash-default">
+        <span class="text-base-content/70">Default cash account</span>
+        <div class="w-64">
+            <AccountInput
+                bind:value={() => scenario.cash ?? "", (next) => draftCash(next)}
+                {accountNames}
+                size="xs"
+                label="Default cash account"
+                placeholder={defaults?.cash ?? DEFAULT_PENDING}
+                onCommit={commitCash}
+            />
+        </div>
+        <span class="text-xs text-base-content/50">Used for a line whose account history never paired with a cash account.</span>
+    </div>
+
     {#each SECTIONS as section (section.id)}
         {@const rows = sections[section.id]}
         {@const names = namesFor(rows, section.id)}
@@ -673,6 +775,7 @@
                             <tr>
                                 <th class="w-64">Account</th>
                                 <th class="w-36">Amount</th>
+                                <th class="w-56" title="The account the money comes from or goes to">Counter-account</th>
                                 <th class="w-28">Per</th>
                                 <th class="w-36">Growth</th>
                                 <th class="w-36">From</th>
@@ -697,6 +800,7 @@
                                     >
                                         {@render accountCell(line, at, true)}
                                         {@render amountCell(line, `Amount for ${name}`)}
+                                        {@render counterCell(line, name)}
                                         {@render periodCell(line, `Period for ${name}`)}
                                         {@render growthCell(line, name)}
                                         {@render boundCell(line, "from", name)}
@@ -726,7 +830,9 @@
         <div class="flex flex-wrap items-baseline justify-between gap-2">
             <h2 class="text-sm font-semibold">
                 {ASSET_TITLE}
-                <span class="ml-1 font-normal text-base-content/50">What you hold and what it grows at. Only the growth moves net worth.</span>
+                <span class="ml-1 font-normal text-base-content/50"
+                    >What you hold and what it grows at. Growth is booked to the gains account, not to income.</span
+                >
             </h2>
             <button type="button" class="btn btn-ghost btn-xs" onclick={() => addRow("asset")}>+ Add an asset</button>
         </div>
@@ -740,6 +846,7 @@
                             <th class="w-64">Account</th>
                             <th class="w-40">Balance</th>
                             <th class="w-36">Growth</th>
+                            <th class="w-56" title="Where appreciation is booked. Equity by default, so it never reaches net income.">Gains account</th>
                             <th class="w-36">Contribution</th>
                             <th class="w-28">Per</th>
                             <th class="w-36">From</th>
@@ -795,6 +902,16 @@
                                         </div>
                                     </td>
                                     {@render growthCell(line, balanceOf(name))}
+                                    <td>
+                                        <AccountInput
+                                            bind:value={() => line.gains ?? "", (next) => draftGains(line, next)}
+                                            {accountNames}
+                                            size="xs"
+                                            label="Gains account for {balanceOf(name)}"
+                                            placeholder={defaults?.gains ?? DEFAULT_PENDING}
+                                            onCommit={() => commitGains(line)}
+                                        />
+                                    </td>
                                     <!-- The row's `amount`. Zero is the normal case and is what
                                          the file writes as `$0` — a balance that only compounds. -->
                                     {@render amountCell(line, `Contribution for ${name}`)}
@@ -846,6 +963,7 @@
                             <th class="w-48">Description</th>
                             <th class="w-64">Account</th>
                             <th class="w-36">Amount</th>
+                            <th class="w-56" title="The account that takes whatever the postings leave unbalanced">Counter-account</th>
                             <th class="w-10"><span class="sr-only">Row menu</span></th>
                         </tr>
                     </thead>
@@ -893,6 +1011,20 @@
                                             />
                                         </label>
                                     </td>
+                                    <td>
+                                        <!-- One per EVENT, so on its first posting only: an event is
+                                             one transaction with one amountless posting. -->
+                                        {#if at === 0}
+                                            <AccountInput
+                                                bind:value={() => event.counter ?? "", (next) => draftEventCounter(event, next)}
+                                                {accountNames}
+                                                size="xs"
+                                                label="Counter-account for {eventName}"
+                                                placeholder={defaults?.events.get(event.id) ?? DEFAULT_PENDING}
+                                                onCommit={() => commitEventCounter(event)}
+                                            />
+                                        {/if}
+                                    </td>
                                     <td class="text-right">
                                         {#if at === 0}
                                             <RowMenu
@@ -936,6 +1068,7 @@
                                      the row above, so it never wears the continuation arrow. -->
                                 {@render accountCell(line, 0, true)}
                                 {@render amountCell(line, `Amount for the one-off ${line.account}`)}
+                                {@render counterCell(line, `the one-off ${line.account}`)}
                                 <td class="text-right">
                                     {@render dropSegmentButton(line, `Delete the one-off ${line.account}`)}
                                 </td>

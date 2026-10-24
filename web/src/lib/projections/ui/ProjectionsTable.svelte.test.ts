@@ -33,7 +33,7 @@ import {beforeEach, describe, expect, it} from "vitest";
 import {decodeScenario} from "#lib/api/nativeDecode.js";
 import {classesOf} from "#lib/domain/accountClassFixtures.js";
 import {scenarioStore} from "../scenarioStore.svelte";
-import type {AssetRow, Scenario} from "../types";
+import type {AssetRow, ForecastDefaults, Scenario} from "../types";
 import ProjectionsTable from "./ProjectionsTable.svelte";
 
 const NOTE = "unbudgeted — average over 2025-08-01 to 2026-07-08";
@@ -108,7 +108,11 @@ const attributed = (group: string, account: string, held: bigint): AssetRow => (
     growth: new Map([["$", {m: 0n, p: 2}]]),
 });
 
-function mount(scenario: Scenario = scenarioStore.scenario, assetBalances: ReadonlyMap<string, AssetRow> = new Map()) {
+function mount(
+    scenario: Scenario = scenarioStore.scenario,
+    assetBalances: ReadonlyMap<string, AssetRow> = new Map(),
+    defaults: ForecastDefaults | null = null
+) {
     return render(ProjectionsTable, {
         scenario,
         accountNames: ACCOUNT_NAMES,
@@ -116,6 +120,7 @@ function mount(scenario: Scenario = scenarioStore.scenario, assetBalances: Reado
         commodity: "$",
         stepDate: "2027-04-01",
         assetBalances,
+        defaults,
         styles: STYLES,
         onChange: () => scenarioStore.touch(),
     });
@@ -728,5 +733,90 @@ describe("COMPONENT ProjectionsTable — one-off events", () => {
         expect(oneoff.getByLabelText("Amount for the one-off expenses:housing")).toBeDefined();
         expect(within(screen.getByTestId("projection-section-expense")).queryByTestId("projection-line")).toBeNull();
         expect(oneoff.getByLabelText("Date of the one-off expenses:housing")).toHaveProperty("value", "2027-03-01");
+    });
+});
+
+describe("COMPONENT ProjectionsTable — counter-accounts, gains accounts and the cash default (plan 28)", () => {
+    const DEFAULTS: ForecastDefaults = {
+        cash: "assets:checking",
+        gains: "equity:unrealized gains",
+        lines: new Map([["gap:income:salary:$", "assets:checking"]]),
+        events: new Map(),
+    };
+
+    /** Type into an account combobox and leave it, which is what commits it. */
+    async function typeAccount(field: HTMLElement, value: string): Promise<void> {
+        await fireEvent.input(field, {target: {value}});
+        await fireEvent.blur(field);
+        await tick();
+    }
+
+    it("shows the engine's inferred counter-account GREYED, with the box left empty", () => {
+        mount(scenarioStore.scenario, new Map(), DEFAULTS);
+        const box = screen.getByLabelText("Counter-account for income:salary") as HTMLInputElement;
+        expect(box.value).toBe("");
+        expect(box.placeholder).toBe("assets:checking");
+        // Nothing overridden, so nothing is stated.
+        expect(scenarioStore.scenario.lines.find((l) => l.account === "income:salary")?.counter).toBeNull();
+        // A rule the engine has not answered for yet says so rather than guessing.
+        expect((screen.getByLabelText("Counter-account for expenses:housing") as HTMLInputElement).placeholder).toBe("default");
+    });
+
+    it("typing one names it, marks the scenario edited, and clearing goes back to the default", async () => {
+        mount(scenarioStore.scenario, new Map(), DEFAULTS);
+        const box = screen.getByLabelText("Counter-account for income:salary");
+        await typeAccount(box, "assets:savings");
+        expect(scenarioStore.scenario.lines.find((l) => l.account === "income:salary")?.counter).toBe("assets:savings");
+        expect(scenarioStore.dirty).toBe(true);
+
+        await typeAccount(screen.getByLabelText("Counter-account for income:salary"), "");
+        expect(scenarioStore.scenario.lines.find((l) => l.account === "income:salary")?.counter).toBeNull();
+    });
+
+    it("SPLITS a line out of a shared rule when its counter differs, so the file can still be written", async () => {
+        const [salary, dividends] = SEED.lines;
+        scenarioStore.adopt({
+            ...SEED,
+            lines: [
+                {...salary, group: "rule:0", counter: "assets:checking"},
+                {...dividends, group: "rule:0", counter: "assets:checking"},
+            ],
+        });
+        mount();
+        await typeAccount(screen.getByLabelText("Counter-account for income:dividends"), "assets:brokerage");
+
+        const lines = scenarioStore.scenario.lines;
+        const moved = lines.find((l) => l.account === "income:dividends");
+        expect(moved?.counter).toBe("assets:brokerage");
+        expect(moved?.group).not.toBe("rule:0");
+        expect(lines.find((l) => l.account === "income:salary")).toMatchObject({group: "rule:0", counter: "assets:checking"});
+    });
+
+    it("an asset row's gains account is greyed with the default, and typing one sets it", async () => {
+        scenarioStore.adopt(withAssets(assetLine("assets:house", "house")));
+        mount(scenarioStore.scenario, new Map(), DEFAULTS);
+        const box = screen.getByLabelText("Gains account for the assets:house balance") as HTMLInputElement;
+        expect(box.value).toBe("");
+        expect(box.placeholder).toBe("equity:unrealized gains");
+        await typeAccount(box, "equity:home gains");
+        expect(scenarioStore.scenario.lines.find((l) => l.group === "house")?.gains).toBe("equity:home gains");
+    });
+
+    it("an event takes ONE counter-account, on its first posting", async () => {
+        mount(scenarioStore.scenario, new Map(), DEFAULTS);
+        await fireEvent.click(screen.getByRole("button", {name: "+ Add an event"}));
+        await tick();
+        await typeAccount(screen.getByLabelText("Counter-account for the new event 1"), "assets:checking");
+        expect(scenarioStore.scenario.events[0].counter).toBe("assets:checking");
+    });
+
+    it("the scenario's default cash account is greyed with the journal's fallback, and settable", async () => {
+        mount(scenarioStore.scenario, new Map(), DEFAULTS);
+        const box = screen.getByLabelText("Default cash account") as HTMLInputElement;
+        expect(box.value).toBe("");
+        expect(box.placeholder).toBe("assets:checking");
+        await typeAccount(box, "  assets:savings ");
+        expect(scenarioStore.scenario.cash).toBe("assets:savings");
+        expect(scenarioStore.dirty).toBe(true);
     });
 });

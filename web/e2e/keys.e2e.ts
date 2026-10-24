@@ -123,6 +123,10 @@ test.describe("global keys", () => {
         await expect(runway).toBeVisible();
 
         await page.keyboard.press("2");
+        await expect(page.getByRole("tab", {name: "Balance sheet"})).toHaveAttribute("aria-selected", "true");
+        await page.keyboard.press("4");
+        await expect(page.getByRole("tab", {name: "Cash flow"})).toHaveAttribute("aria-selected", "true");
+        await page.keyboard.press("1");
         await expect(runway).toHaveAttribute("aria-selected", "true");
     });
 });

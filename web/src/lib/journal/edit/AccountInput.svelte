@@ -24,6 +24,7 @@
         value = $bindable(""),
         accountNames,
         placeholder = "account",
+        label = "Account",
         autofocus = false,
         size = "sm",
         disabled = false,
@@ -33,6 +34,8 @@
         value?: string;
         accountNames: string[];
         placeholder?: string;
+        /** The field's accessible name. "Account" unless a row has two account fields to tell apart. */
+        label?: string;
         autofocus?: boolean;
         size?: "sm" | "xs";
         disabled?: boolean;
@@ -240,7 +243,7 @@
         {placeholder}
         {disabled}
         role="combobox"
-        aria-label="Account"
+        aria-label={label}
         aria-expanded={open}
         aria-controls={listId}
         aria-autocomplete="list"

@@ -4,9 +4,15 @@
 // standalone feature route owning its own codec. Pure module (no Svelte/DOM
 // imports) so the round trip is unit-testable under node.
 //
-// Scheme: `?tab=net|cash|worth&interval=&count=&depth=`. All four are written in
-// full, never only the non-defaults, so a shared or reloaded URL reproduces the
-// same three charts — the reports codec's rule, for the reason it gives there.
+// Scheme: `?tab=cash|bs|is|cf&interval=&count=&lookback=&depth=`. All five are
+// written in full, never only the non-defaults, so a shared or reloaded URL
+// reproduces the same readings — the reports codec's rule, for the reason it
+// gives there.
+//
+// `cash` is the Runway tab's value, unchanged since it was "Cash & runway", so
+// old links keep working. The statements take the Reports tab's own codes.
+// `net` and `worth` (the Net income and Net worth readings plan 28 replaced)
+// are no longer tabs: an old link naming one opens the default, Runway.
 //
 // The SCENARIO is deliberately not in the URL. It is a table of money with
 // account names in it, a query string is the one part of a page that gets pasted
@@ -16,15 +22,23 @@
 import {MAX_COUNT, type PeriodInterval} from "#lib/reports/ui/params.js";
 import {clampedInt, oneOf} from "#lib/url/params.js";
 
-/** Which of the three report tabs the bottom half is showing. */
-export type ProjectionTab = "net" | "cash" | "worth";
+/** Which reading the bottom half is showing. */
+export type ProjectionTab = "cash" | "bs" | "is" | "cf";
 
-export const PROJECTION_TABS: readonly ProjectionTab[] = ["net", "cash", "worth"];
+/**
+ * In strip order, which is also the digit order (1–4).
+ *
+ * Runway first: it is the one reading only this tab has, and the question the
+ * tab is most often opened to answer. The three statements follow in the
+ * Reports tab's own order.
+ */
+export const PROJECTION_TABS: readonly ProjectionTab[] = ["cash", "bs", "is", "cf"];
 
 export const PROJECTION_TAB_LABELS: Record<ProjectionTab, string> = {
-    net: "Net income",
     cash: "Runway",
-    worth: "Net worth",
+    bs: "Balance sheet",
+    is: "Income statement",
+    cf: "Cash flow",
 };
 
 /** The Projections tab's URL state. */
@@ -33,7 +47,9 @@ export interface ProjectionParams {
     interval: PeriodInterval;
     /** How many buckets forward to project. */
     count: number;
-    /** Account depth clamp for the net-income rows. Never clamps the totals. */
+    /** How many full ACTUAL periods the statements show before the forecast (plan 28 Decision 6). `0` is allowed. */
+    lookback: number;
+    /** The cash flow statement's account roll-up depth. Never clamps the totals. */
     depth: number;
 }
 
@@ -47,6 +63,9 @@ export interface ProjectionParams {
 export const DEFAULT_PROJECTION_INTERVAL: PeriodInterval = "monthly";
 export const DEFAULT_PROJECTION_COUNT = 24;
 
+/** Two full periods back (plan 28 Decision 6) — enough to see where the forecast starts from. */
+export const DEFAULT_PROJECTION_LOOKBACK = 2;
+
 /**
  * Depth 2, not the reports' 3.
  *
@@ -57,12 +76,13 @@ export const DEFAULT_PROJECTION_COUNT = 24;
  */
 export const DEFAULT_PROJECTION_DEPTH = 2;
 
-/** Defaults: net income, monthly × 24, depth 2. */
+/** Defaults: runway, monthly × 24 with two periods of actuals, depth 2. */
 export function defaultProjectionParams(): ProjectionParams {
     return {
-        tab: "net",
+        tab: "cash",
         interval: DEFAULT_PROJECTION_INTERVAL,
         count: DEFAULT_PROJECTION_COUNT,
+        lookback: DEFAULT_PROJECTION_LOOKBACK,
         depth: DEFAULT_PROJECTION_DEPTH,
     };
 }
@@ -73,6 +93,7 @@ export function projectionParamsToSearch(params: ProjectionParams): string {
     q.set("tab", params.tab);
     q.set("interval", params.interval);
     q.set("count", String(params.count));
+    q.set("lookback", String(params.lookback));
     q.set("depth", String(params.depth));
     return q.toString();
 }
@@ -93,6 +114,7 @@ export function searchToProjectionParams(search: string, dflt: ProjectionParams)
         tab: oneOf(PROJECTION_TABS, q.get("tab"), dflt.tab),
         interval: oneOf(INTERVALS, q.get("interval"), dflt.interval),
         count: clampedInt(q.get("count"), 1, MAX_COUNT, dflt.count),
+        lookback: clampedInt(q.get("lookback"), 0, MAX_COUNT, dflt.lookback),
         depth: clampedInt(q.get("depth"), 1, 99, dflt.depth),
     };
 }

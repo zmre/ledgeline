@@ -30,7 +30,7 @@
 // Note the one thing this spec cannot pin: the engine takes opening balances as
 // of ITS today, and `page.clock` only moves the browser's. So nothing here
 // asserts a projected figure — only that the tab is reachable, seeds, and
-// renders all three readings.
+// renders all four readings (plan 28), the statements with their divider.
 
 import {expect, test} from "@playwright/test";
 import {API_TOKEN} from "../playwright.config";
@@ -93,7 +93,7 @@ test("projections: the Assets and balances section is there, empty, on a seeded 
 // UNVERIFIED, as above.
 test("projections: adding an asset row shows the ledger's own balance, greyed", async ({page}) => {
     await page.goto("/projections");
-    await expect(page.getByTestId("projection-net")).toBeVisible();
+    await expect(page.getByTestId("projection-cash")).toBeVisible();
 
     await page.getByRole("button", {name: "+ Add an asset"}).click();
     const row = page.getByTestId("projection-asset-line").first();
@@ -120,41 +120,64 @@ test("projections: adding an asset row shows the ledger's own balance, greyed", 
     await expect(page.getByTestId("ledger-balance")).toHaveCount(0);
 });
 
-test("projections: opens on net income over two years, and says so in the URL", async ({page}) => {
+test("projections: opens on the runway over two years with two periods of actuals, and says so in the URL", async ({page}) => {
     await page.goto("/projections");
 
-    await expect(page.getByRole("tab", {name: "Net income"})).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("tab", {name: "Runway"})).toHaveAttribute("aria-selected", "true");
     await expect(page.getByLabel("Number of periods")).toHaveValue("24");
+    await expect(page.getByLabel("Actual periods before the projection")).toHaveValue("2");
     await expect(page.getByLabel("Interval")).toHaveValue("monthly");
-    await expect(page).toHaveURL(/tab=net&interval=monthly&count=24/);
+    await expect(page).toHaveURL(/tab=cash&interval=monthly&count=24&lookback=2/);
 });
 
-test("projections: all three readings render, and the runway is stated in words", async ({page}) => {
+test("projections: all four readings render, the runway in words and the statements with their divider", async ({page}) => {
     await page.goto("/projections");
 
-    // Net income is a PeriodReport, so it renders through the ordinary report
-    // table, above the inflow/outflow chart.
-    await expect(page.getByTestId("projection-net")).toBeVisible();
-    await expect(page.getByTestId("projection-flow-chart")).toBeVisible();
-
-    await page.getByRole("tab", {name: "Runway"}).click();
     await expect(page.getByTestId("projection-cash")).toBeVisible();
     // The question the tab exists for, answered above the picture of it.
     await expect(page.getByTestId("projection-runway")).toContainText(/Cash (turns negative in|never turns negative)/);
     await expect(page.getByTestId("projection-cash-chart")).toBeVisible();
 
-    await page.getByRole("tab", {name: "Net worth"}).click();
-    await expect(page.getByTestId("projection-worth")).toBeVisible();
-    await expect(page.getByTestId("projection-worth")).toContainText("opening");
-    await expect(page.getByTestId("projection-worth-chart")).toBeVisible();
+    // The Reports tab's own statements, over actuals and then the forecast.
+    await page.getByRole("tab", {name: "Balance sheet"}).click();
+    const sheet = page.getByTestId("projection-bs");
+    await expect(sheet.getByTestId("balance-sheet")).toBeVisible();
+    await expect(sheet.getByTestId("bs-section-assets").getByTestId("projected-label")).toHaveText("Projected");
+    await expect(sheet.getByTestId("bs-tie-out")).toContainText("Balanced");
+
+    await page.getByRole("tab", {name: "Income statement"}).click();
+    await expect(page.getByTestId("projection-is").getByTestId("income-statement")).toBeVisible();
+    await expect(page.getByTestId("projection-is").getByTestId("projected-label").first()).toHaveText("Projected");
+
+    await page.getByRole("tab", {name: "Cash flow"}).click();
+    await expect(page.getByTestId("projection-cf").getByTestId("cash-flow-statement")).toBeVisible();
+    await expect(page.getByTestId("projection-cf").getByTestId("projected-label").first()).toHaveText("Projected");
+});
+
+test("projections: a seeded row shows its inferred counter-account greyed", async ({page}) => {
+    await page.goto("/projections");
+    await expect(page.getByTestId("projection-cash")).toBeVisible();
+    // Empty box, the engine's default as the placeholder — "greyed until you
+    // type over it", as the Balance column is.
+    const counter = page.getByLabel("Counter-account for expenses:housing");
+    await expect(counter).toHaveValue("");
+    await expect(counter).toHaveAttribute("placeholder", /^assets:/);
+    await expect(page.getByLabel("Default cash account")).toHaveAttribute("placeholder", /^assets:/);
 });
 
 test("projections: a bookmarked URL reopens the same tab and window", async ({page}) => {
-    await page.goto("/projections?tab=worth&interval=yearly&count=5&depth=1");
+    await page.goto("/projections?tab=is&interval=yearly&count=5&lookback=1&depth=1");
 
-    await expect(page.getByRole("tab", {name: "Net worth"})).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("tab", {name: "Income statement"})).toHaveAttribute("aria-selected", "true");
     await expect(page.getByLabel("Interval")).toHaveValue("yearly");
     await expect(page.getByLabel("Number of periods")).toHaveValue("5");
+    await expect(page.getByLabel("Actual periods before the projection")).toHaveValue("1");
+});
+
+test("projections: a link to a reading plan 28 retired opens the runway instead", async ({page}) => {
+    await page.goto("/projections?tab=worth&interval=monthly&count=6&depth=2");
+    await expect(page.getByRole("tab", {name: "Runway"})).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByTestId("projection-cash")).toBeVisible();
 });
 
 test("projections: editing the table marks it edited and recomputes", async ({page}) => {
@@ -168,7 +191,7 @@ test("projections: editing the table marks it edited and recomputes", async ({pa
     });
 
     await page.goto("/projections");
-    await expect(page.getByTestId("projection-net")).toBeVisible();
+    await expect(page.getByTestId("projection-cash")).toBeVisible();
     const before = runs.length;
 
     await page.getByLabel("Amount for expenses:housing").fill("2500");
@@ -183,11 +206,15 @@ test("projections: editing the table marks it edited and recomputes", async ({pa
 
 test("projections: changing the window re-asks the engine and mirrors to the URL", async ({page}) => {
     await page.goto("/projections");
-    await expect(page.getByTestId("projection-net")).toBeVisible();
+    await expect(page.getByTestId("projection-cash")).toBeVisible();
 
     await page.getByLabel("Interval").selectOption("quarterly");
     await expect(page).toHaveURL(/interval=quarterly/);
-    await expect(page.getByTestId("projection-flow-chart")).toBeVisible();
+    await expect(page.getByTestId("projection-cash-chart")).toBeVisible();
+
+    await page.getByLabel("Actual periods before the projection").fill("0");
+    await page.getByLabel("Actual periods before the projection").blur();
+    await expect(page).toHaveURL(/lookback=0/);
 });
 
 // ---------------------------------------------------------------------------
@@ -227,7 +254,7 @@ test("projections: the fixture journal is loadable and marked read-only", async 
     await expect(page.getByTestId("projection-read-only")).toContainText("part of your main journal");
     await expect(page.getByTestId("projection-save")).toBeDisabled();
     // The table is still there, still projecting, just from a different source.
-    await expect(page.getByTestId("projection-net")).toBeVisible();
+    await expect(page.getByTestId("projection-cash")).toBeVisible();
 });
 
 test("projections: Save as shows the path it would write, and cancels without writing", async ({page}) => {

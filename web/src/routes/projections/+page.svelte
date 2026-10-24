@@ -2,8 +2,9 @@
     // The Projections tab: a what-if you can edit, and the runway it implies.
     //
     // Top half is the editable scenario table, bottom half is that scenario read
-    // forward as net income, cash and net worth. They are one subject read two
-    // ways, so they share a page and a recompute: every edit bumps the store's
+    // forward as the runway and the three official statements (plan 28). They
+    // are one subject read two ways, so they share a page and a recompute: every
+    // edit bumps the store's
     // revision and schedules one debounced `POST /api/projections/run`, and the
     // charts below say so while it is in flight rather than showing a projection
     // of a table that is no longer on screen.
@@ -166,7 +167,7 @@
 
     // --- The projection ------------------------------------------------------
 
-    const projectionWindow = $derived<ProjectionWindow>({interval: params.interval, count: params.count, depth: params.depth});
+    const projectionWindow = $derived<ProjectionWindow>({interval: params.interval, count: params.count, lookback: params.lookback, depth: params.depth});
     // `journal.changes`: projections start from the journal's balances, so a
     // refresh or a change on disk recomputes them.
     const loadKey = $derived({
@@ -242,10 +243,22 @@
      * `journalBalanceFor` refuses an entry whose account no longer matches.
      */
     const assetBalances = $derived(assetRowsByGroup(projection.value));
+    /**
+     * The engine's inferred counter, gains and cash accounts, greyed in the
+     * table — off the last good answer for `assetBalances`' reason. A row whose
+     * rule was just split has no entry until the next answer lands, and shows
+     * "default" meanwhile rather than another rule's account.
+     */
+    const forecastDefaults = $derived(projection.value?.defaults ?? null);
 
     function setCount(value: string): void {
         const n = Number(value);
         if (Number.isInteger(n)) params.count = Math.min(MAX_COUNT, Math.max(1, n));
+    }
+
+    function setLookback(value: string): void {
+        const n = Number(value);
+        if (Number.isInteger(n)) params.lookback = Math.min(MAX_COUNT, Math.max(0, n));
     }
 
     function retry(): void {
@@ -266,7 +279,7 @@
         <h1 class="text-lg font-semibold">Projections</h1>
         {#if current !== null}
             <p class="text-sm text-base-content/60">
-                Opening balances as of today; the first projected period starts {current.start}.
+                Actuals run to the last complete period; the first projected period starts {current.actualsEnd}.
             </p>
         {/if}
     </div>
@@ -317,6 +330,7 @@
             {commodity}
             {stepDate}
             {assetBalances}
+            defaults={forecastDefaults}
             {styles}
             onChange={() => scenarioStore.touch()}
         />
@@ -343,6 +357,20 @@
                 value={params.count}
                 onchange={(e) => setCount(e.currentTarget.value)}
                 aria-label="Number of periods"
+            />
+        </label>
+        <!-- How many full ACTUAL periods the statements show before the
+             forecast (plan 28 Decision 6). Zero is allowed: forecast only. -->
+        <label class="form-control">
+            <span class="label-text mb-1 block text-xs text-base-content/70">Actuals</span>
+            <input
+                type="number"
+                class="input w-20 input-sm"
+                min="0"
+                max={MAX_COUNT}
+                value={params.lookback}
+                onchange={(e) => setLookback(e.currentTarget.value)}
+                aria-label="Actual periods before the projection"
             />
         </label>
         <!-- Keyed on maxDepth for the reason the reports bar keys it: the slider

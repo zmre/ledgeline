@@ -3,6 +3,7 @@ import {dec} from "#lib/domain/money.js";
 import {NO_ACCOUNT_CLASSES, type AccountClasses} from "#lib/domain/accountClass.js";
 import {classesOf} from "#lib/domain/accountClassFixtures.js";
 import {
+    accountOrNull,
     blankAssetLine,
     blankLine,
     cloneScenario,
@@ -30,6 +31,8 @@ import {
     takenIds,
     trimDec,
     withAccount,
+    withCounter,
+    withGains,
     withMagnitude,
     withBounds,
     withInterval,
@@ -495,9 +498,9 @@ describe("UNIT scenarioModel — putting a scenario on the wire", () => {
     });
 
     it("sends no `asOf`: the engine's today is the clock every other report on the page is read against", () => {
-        const body = runBody(scenario([line()]), {interval: "monthly", count: 24, depth: 2});
+        const body = runBody(scenario([line()]), {interval: "monthly", count: 24, lookback: 2, depth: 2});
         expect(body.asOf).toBeUndefined();
-        expect(body).toMatchObject({interval: "monthly", count: 24, depth: 2});
+        expect(body).toMatchObject({interval: "monthly", count: 24, lookback: 2, depth: 2});
     });
 });
 
@@ -600,5 +603,88 @@ describe("UNIT scenarioModel — the name and the file it becomes", () => {
         it("is null when the name has no file name in it", () => {
             expect(projectionId("plans", "!!!")).toBeNull();
         });
+    });
+});
+
+describe("UNIT scenarioModel — counter-accounts, one per rule (plan 28)", () => {
+    // One `~` rule of three lines, the shape a budget.journal rule seeds as.
+    const rule = (): ScenarioLine[] => [
+        line({id: "food", group: "rule:0", account: "expenses:food", counter: "assets:checking"}),
+        line({id: "rent", group: "rule:0", account: "expenses:rent", counter: "assets:checking"}),
+        line({id: "fun", group: "rule:0", account: "expenses:fun", counter: "assets:checking"}),
+    ];
+    const taken = (lines: ScenarioLine[]) => takenIds(scenario(lines));
+
+    it("moves a line whose counter now DIFFERS into a rule of its own, so the file stays writable", () => {
+        const lines = rule();
+        const next = withCounter(lines, "rent", "rule:0", "liabilities:card", taken(lines));
+        const rent = next.find((l) => l.id === "rent")!;
+        expect(rent.counter).toBe("liabilities:card");
+        expect(rent.group).not.toBe("rule:0");
+        expect(taken(lines).has(rent.group)).toBe(false);
+        // The rest of the rule is untouched, and still agrees with itself.
+        expect(next.filter((l) => l.group === "rule:0").map((l) => [l.id, l.counter])).toEqual([
+            ["food", "assets:checking"],
+            ["fun", "assets:checking"],
+        ]);
+        // Every rule now names ONE counter — what the serializer requires.
+        const byGroup = new Map<string, Set<string | null>>();
+        for (const l of next) byGroup.set(l.group, (byGroup.get(l.group) ?? new Set()).add(l.counter));
+        expect([...byGroup.values()].every((counters) => counters.size === 1)).toBe(true);
+    });
+
+    it("keeps the rule when the new counter agrees with every rule-mate", () => {
+        const lines = rule();
+        expect(withCounter(lines, "rent", "rule:0", "assets:checking", taken(lines))).toEqual(lines);
+    });
+
+    it("keeps the rule for a line alone in it, whatever it is set to", () => {
+        const lines = [line({counter: null})];
+        const next = withCounter(lines, "rent", "rule:0", "assets:savings", taken(lines));
+        expect(next).toEqual([{...lines[0], counter: "assets:savings"}]);
+    });
+
+    it("clearing one line's counter splits it too: a counter-less line beside a countered one would be written virtual", () => {
+        const lines = rule();
+        const next = withCounter(lines, "food", "rule:0", "  ", taken(lines));
+        const food = next.find((l) => l.id === "food")!;
+        expect(food.counter).toBeNull();
+        expect(food.group).not.toBe("rule:0");
+    });
+
+    it("touches only the segment named, not the other segments of a step change", () => {
+        const lines = [line({id: "pay", group: "g:a", counter: null}), line({id: "pay", group: "g:b", counter: null})];
+        const next = withCounter(lines, "pay", "g:b", "assets:savings", taken(lines));
+        expect(next.map((l) => [l.group, l.counter])).toEqual([
+            ["g:a", null],
+            ["g:b", "assets:savings"],
+        ]);
+    });
+
+    it("trims a typed account, and blank means the engine's default", () => {
+        expect(accountOrNull("  assets:checking ")).toBe("assets:checking");
+        expect(accountOrNull("   ")).toBeNull();
+        expect(accountOrNull(null)).toBeNull();
+    });
+
+    it("sets an asset row's gains account without touching its rule", () => {
+        const lines = [line({id: "house", group: "rule:9", role: "asset", account: "assets:house"}), line()];
+        const next = withGains(lines, "rule:9", " equity:home gains ");
+        expect(next[0]).toEqual({...lines[0], gains: "equity:home gains"});
+        // Never on a flow line — the wire refuses one there.
+        expect(withGains(lines, "rule:0", "equity:x")[1].gains).toBeNull();
+        expect(withGains(next, "rule:9", "")[0].gains).toBeNull();
+    });
+
+    it("sends trimmed accounts, and blank as null, so ' ' is never an account name on the wire", () => {
+        const wire = scenarioToWire({
+            ...scenario([line({counter: " assets:checking ", gains: ""})]),
+            cash: "  ",
+            events: [{id: "e", date: "2027-01-01", description: "", postings: [], counter: ""}],
+        });
+        expect(wire.lines[0].counter).toBe("assets:checking");
+        expect(wire.lines[0].gains).toBeNull();
+        expect(wire.cash).toBeNull();
+        expect(wire.events[0].counter).toBeNull();
     });
 });

@@ -1,13 +1,11 @@
 import {describe, expect, it} from "vitest";
 import {dec, type MixedAmount} from "#lib/domain/money.js";
-import type {PeriodReport} from "#lib/reports/types.js";
+import {projectionFixture} from "#lib/testing/projectionFixture.js";
 import {
     amountIn,
-    assetContributions,
     assetRowsByGroup,
     balanceNumbers,
     chartCommodity,
-    flowSeries,
     journalBalanceFor,
     otherCommodities,
     periodsPhrase,
@@ -15,41 +13,12 @@ import {
     seriesOf,
 } from "./projectionView";
 import type {AssetRow, Projection} from "./types";
-import {periodsOf} from "#lib/reports/test-helpers.js";
 
 const money = (entries: [string, number][]): MixedAmount => new Map(entries.map(([c, n]) => [c, dec(n, 0)]));
 const usd = (n: number): MixedAmount => money([["$", n]]);
 
-/**
- * A net-income report in CASH-FLOW ORIENTATION, depth-clamped: `expenses` and
- * `income` are the depth-1 rows and their children repeat the same money one
- * level down, which is why summing every row would double it.
- */
-const NET_INCOME: PeriodReport = {
-    buckets: ["2026-08", "2026-09"],
-    periods: periodsOf(["2026-08", "2026-09"]),
-    rows: [
-        {account: "expenses", depth: 1, values: [usd(-4200), usd(-4200)]},
-        {account: "expenses:rent", depth: 2, values: [usd(-4200), usd(-4200)]},
-        {account: "income", depth: 1, values: [usd(9000), usd(9000)]},
-        {account: "income:salary", depth: 2, values: [usd(9000), usd(9000)]},
-    ],
-    totals: [usd(4800), usd(4800)],
-};
-
-function projection(overrides: Partial<Projection> = {}): Projection {
-    return {
-        buckets: ["2026-08", "2026-09"],
-        start: "2026-08-01",
-        netIncome: NET_INCOME,
-        cash: {opening: usd(10000), values: [usd(14800), usd(19600)]},
-        netWorth: {opening: usd(50000), values: [usd(54800), usd(59600)]},
-        runway: null,
-        assets: [],
-        warnings: [],
-        ...overrides,
-    };
-}
+/** The shared two-plus-two projection: $10,000 of cash building $4,800 a month. */
+const projection = (overrides: Partial<Projection> = {}): Projection => projectionFixture(overrides);
 
 /** One attributed asset row, as `Projection.assets` carries it. */
 const assetRow = (group: string, account: string, held: number, grew: number, compounded = held): AssetRow => ({
@@ -94,35 +63,6 @@ describe("UNIT projectionView — an asset row's journal balance", () => {
     });
 });
 
-describe("UNIT projectionView — the net-worth growth breakdown", () => {
-    it("lists the biggest contributor first, and keeps a row that grew nothing", () => {
-        const p = projection({
-            assets: [assetRow("a", "assets:savings", 1000, 0), assetRow("b", "assets:brokerage", 500000, 35000), assetRow("c", "assets:house", 640000, 19200)],
-        });
-        expect(assetContributions(p, "$")).toEqual([
-            {account: "assets:brokerage", opening: 500000, growth: 35000},
-            {account: "assets:house", opening: 640000, growth: 19200},
-            // Kept, not filtered: a $0 line is the answer to "why did nothing
-            // happen", and dropping it sends the reader back to the table.
-            {account: "assets:savings", opening: 1000, growth: 0},
-        ]);
-    });
-
-    it("SUMS two rules that name one account, rather than listing it twice", () => {
-        const p = projection({assets: [assetRow("a", "assets:brokerage", 1000, 70), assetRow("b", "assets:brokerage", 1000, 30)]});
-        expect(assetContributions(p, "$")).toEqual([{account: "assets:brokerage", opening: 2000, growth: 100}]);
-    });
-
-    it("reports the balance the row COMPOUNDED, which an override replaces", () => {
-        const p = projection({assets: [assetRow("h", "assets:house", 512300, 19200, 640000)]});
-        expect(assetContributions(p, "$")[0].opening).toBe(640000);
-    });
-
-    it("is empty for a scenario with no asset rows", () => {
-        expect(assetContributions(projection(), "$")).toEqual([]);
-    });
-});
-
 describe("UNIT projectionView — reading one commodity out of a mixed amount", () => {
     it("an amount that holds none of the charted commodity is zero, not a gap", () => {
         expect(amountIn(money([["EUR", 5]]), "$")).toBe(0);
@@ -134,11 +74,8 @@ describe("UNIT projectionView — reading one commodity out of a mixed amount", 
     });
 
     it("falls back only when the projection names no commodity at all", () => {
-        const empty = projection({
-            netIncome: {buckets: [], periods: periodsOf([]), rows: [], totals: []},
-            cash: {opening: new Map(), values: []},
-            netWorth: {opening: new Map(), values: []},
-        });
+        // Only the runway's cash is charted, so only it is counted.
+        const empty = projection({cash: {opening: new Map(), values: []}});
         expect(chartCommodity(empty, "£")).toBe("£");
     });
 
@@ -158,31 +95,6 @@ describe("UNIT projectionView — reading one commodity out of a mixed amount", 
 
     it("an opening balance is a real figure, kept beside the closing ones", () => {
         expect(balanceNumbers(projection().cash, "$")).toEqual({opening: 10000, values: [14800, 19600]});
-    });
-});
-
-describe("UNIT projectionView — the flow chart's three columns", () => {
-    it("splits the DEPTH-1 rows by sign, into magnitudes", () => {
-        // Depth-1 only: summing every row would count the rent twice, once under
-        // `expenses`. `PeriodFlowChart` owns the sign, so both come back positive.
-        expect(flowSeries(NET_INCOME, "$")).toEqual({inflows: [9000, 9000], outflows: [4200, 4200], net: [4800, 4800]});
-    });
-
-    it("does NOT flip the sign again — revenue already arrives positive", () => {
-        const {inflows, outflows} = flowSeries(NET_INCOME, "$");
-        expect(inflows.every((n) => n > 0)).toBe(true);
-        expect(outflows.every((n) => n > 0)).toBe(true);
-    });
-
-    it("takes `net` from the engine's totals rather than recomputing it from the two columns", () => {
-        // A report whose total includes something in neither column must chart
-        // the total it states, not the difference this function can see.
-        const odd: PeriodReport = {...NET_INCOME, totals: [usd(1), usd(2)]};
-        expect(flowSeries(odd, "$").net).toEqual([1, 2]);
-    });
-
-    it("an empty report charts nothing rather than throwing", () => {
-        expect(flowSeries({buckets: [], periods: periodsOf([]), rows: [], totals: []}, "$")).toEqual({inflows: [], outflows: [], net: []});
     });
 });
 

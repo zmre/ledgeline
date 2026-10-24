@@ -7,7 +7,7 @@ const SECTION = "projections";
 
 test("seeded table", async ({page}) => {
     await page.goto("/projections");
-    await expect(page.getByTestId("projection-net")).toBeVisible();
+    await expect(page.getByTestId("projection-cash")).toBeVisible();
     await shot(page, SECTION, "seeded");
 });
 
