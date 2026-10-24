@@ -1,0 +1,26 @@
+; Ledgeline projection
+; projection: Parity legacy
+; created: 2026-10-20
+; updated: 2026-10-20
+
+; A PRE-plan-28 file: unbalanced virtual postings with an implied cash leg.
+; hledger reads this as-is without moving any bank account, so it is only
+; comparable AFTER Ledgeline's save-time upgrade (plan 28 amendment 7) writes
+; the default counter-account into each unbalanced rule. The balanced virtual
+; pair and the balanced dated pairs are left alone by the upgrade, and hledger
+; counts their virtual postings exactly as Ledgeline does.
+
+~ monthly  projection
+    (revenues:salary)    $-6000.00
+    (expenses:food)        $500.00
+
+~ monthly  sweep
+    (assets:savings)       $300.00
+    (assets:checking)     $-300.00
+
+~ 2026-11-15  legal, net 60
+    (expenses:legal)      $4500.00
+
+~ 2027-01-15  settle legal
+    (liabilities:payable)  $4500.00
+    (assets:checking)    $-4500.00

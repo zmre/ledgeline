@@ -1,0 +1,15 @@
+; Ledgeline projection
+; projection: Parity step
+; created: 2026-10-20
+; updated: 2026-10-20
+
+; A step change: one line in two bounded segments. `to` is exclusive and
+; `from` inclusive, so February 2027 is the first month at the new figure.
+
+~ monthly to 2027-02-01  payroll
+    expenses:payroll      $5000.00  ; line: payroll
+    assets:checking
+
+~ monthly from 2027-02-01  payroll
+    expenses:payroll      $8000.00  ; line: payroll
+    assets:checking

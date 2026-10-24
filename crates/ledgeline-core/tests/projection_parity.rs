@@ -10,6 +10,11 @@
 //! opening balances, by a different rule. So any difference here is the
 //! EXPANSION's, not the start date's.
 //!
+//! One exception, deliberate and recaptured: case 4's bare `~ weekly` line.
+//! Phase 6 found that `hledger --forecast` phases a rule with no `from` from
+//! the forecast start, not from ISO Mondays, and the expansion now does too
+//! (plan 28 amendment 25). Its figures are the new engine's.
+//!
 //! The scenarios are written as files in the PRE-plan-28 format (unbalanced and
 //! balanced virtual postings), because that is the input whose numbers plan 28
 //! promises to keep: "a group whose postings do not balance … gets its residual
@@ -212,13 +217,18 @@ nw=[65080000, 64780000, 64480000, 64180000, 63880000, 63580000, 63280000, 629800
 income=[-300000, -300000, -300000, -300000, -300000, -300000, -300000, -300000, -300000, -300000, -300000, -300000, -300000, -300000, -300000]
 runway=Some((10, \"2027-08-31\", 11))
 assets=[(\"assets:house\", 50000000, 50000000, 2000000), (\"assets:brokerage\", 10000000, 10000000, 868000)]",
-    // 4: a step change and weekly growth, quarterly
+    // 4: a step change and weekly growth, quarterly. The ONE deliberate
+    // departure from the old engine (plan 28 amendment 25): a bare `~ weekly`
+    // is phased from the cutoff, Thursday 2026-10-01, as `hledger --forecast`
+    // phases it, not from ISO Mondays. Q4 2026 now holds 14 weekly
+    // occurrences rather than 13, and every later quarter shifts with its own
+    // Thursday count; the step-change payroll is untouched.
     "buckets=[\"2026-Q4\", \"2027-Q1\", \"2027-Q2\", \"2027-Q3\", \"2027-Q4\", \"2028-Q1\"]
 cash.opening=5380000
-cash=[-6270688, -17697030, -49883989, -81815530, -113474546, -144842787]
+cash=[-6003942, -17697030, -49883989, -81491509, -113128821, -144473904]
 nw.opening=65380000
-nw=[53729312, 42302970, 10116011, -21815530, -53474546, -84842787]
-income=[-11650688, -11426342, -32186959, -31931541, -31659016, -31368241]
+nw=[53996058, 42302970, 10116011, -21491509, -53128821, -84473904]
+income=[-11383942, -11693088, -32186959, -31607520, -31637312, -31345083]
 runway=Some((0, \"2026-12-31\", 1))
 assets=[]",
 ];

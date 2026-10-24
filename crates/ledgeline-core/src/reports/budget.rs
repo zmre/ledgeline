@@ -239,6 +239,41 @@ pub(crate) fn occurrences(
         .collect())
 }
 
+/// The dates `spec` fires on under `hledger --forecast=<start>..`, within the
+/// inclusive span `[start, end]`.
+///
+/// One difference from [`occurrences`], and it is hledger's: a fixed-interval
+/// rule with NO `from` (`~ weekly`, `~ every 2 weeks`, `~ yearly`) is phased
+/// from the FORECAST START itself, not from the start of the unit period that
+/// contains it. With `--forecast=2026-10-01..` hledger 1.52 fires `~ weekly`
+/// on Thursday 10-01, 10-08, … (where `balance --budget` reports Mondays),
+/// `~ yearly` on 2026-10-01 and 2027-10-01 (not January 1st), and, from
+/// 2026-10-05, `~ monthly` on the 5th of every month. Everything else
+/// reads the same both ways and goes to [`occurrences`] unchanged: a rule with
+/// `from` keeps its own phase, the anchored forms (`every 15th day of month`,
+/// `every tuesday`) are a lower bound, and a dated one-off and the exclusive
+/// `to` are as before. Verified by
+/// driving `hledger print --forecast` with forecast starts on, and off, every
+/// unit's boundary; pinned per rule by the plan 28 parity tests in
+/// `tests/projection_files.rs`.
+pub(crate) fn forecast_occurrences(
+    start: &str,
+    end: &str,
+    spec: &PeriodSpec,
+) -> Result<Vec<String>, ReportError> {
+    match (spec.kind, &spec.start) {
+        (PeriodKind::Every { .. }, None) => occurrences(
+            start,
+            end,
+            &PeriodSpec {
+                start: Some(start.to_string()),
+                ..spec.clone()
+            },
+        ),
+        _ => occurrences(start, end, spec),
+    }
+}
+
 /// `daily` … `yearly`, with or without a multiplier.
 fn every_dates(
     start: &str,
@@ -1294,6 +1329,73 @@ mod tests {
         assert_eq!(
             monthly_goals(spec(PeriodKind::Unsupported, None, None)),
             [0; 6]
+        );
+    }
+
+    /// `hledger print --forecast=<start>..` (1.52), transcribed: a rule with no
+    /// `from` is phased from the forecast start itself; a rule with `from`, an
+    /// anchored rule and a dated one-off are read exactly as the budget reads
+    /// them.
+    #[test]
+    fn a_forecast_phases_a_bare_interval_from_its_own_start() {
+        let every = |unit, multiplier, from: Option<&str>| {
+            spec(PeriodKind::Every { unit, multiplier }, from, None)
+        };
+        let first = |start: &str, spec: &PeriodSpec, n: usize| -> Vec<String> {
+            forecast_occurrences(start, "2028-12-31", spec)
+                .unwrap()
+                .into_iter()
+                .take(n)
+                .collect()
+        };
+        // 2026-10-01 is a Thursday: no snapping back to Monday.
+        let weekly = every(PeriodExpr::Weekly, 1, None);
+        assert_eq!(
+            first("2026-10-01", &weekly, 3),
+            ["2026-10-01", "2026-10-08", "2026-10-15"]
+        );
+        assert_eq!(
+            first("2026-10-01", &every(PeriodExpr::Weekly, 2, None), 3),
+            ["2026-10-01", "2026-10-15", "2026-10-29"]
+        );
+        // Not January 1st, and not the 1st of the month either.
+        assert_eq!(
+            first("2026-10-01", &every(PeriodExpr::Yearly, 1, None), 2),
+            ["2026-10-01", "2027-10-01"]
+        );
+        assert_eq!(
+            first("2026-10-05", &every(PeriodExpr::Monthly, 1, None), 3),
+            ["2026-10-05", "2026-11-05", "2026-12-05"]
+        );
+        assert_eq!(
+            first("2026-10-17", &every(PeriodExpr::Quarterly, 1, None), 2),
+            ["2026-10-17", "2027-01-17"]
+        );
+        // `from` is the rule's own phase, in both readings.
+        let from = every(PeriodExpr::Weekly, 2, Some("2026-09-03"));
+        assert_eq!(first("2026-10-05", &from, 2), ["2026-10-15", "2026-10-29"]);
+        let monthly_from = every(PeriodExpr::Monthly, 1, Some("2026-01-15"));
+        assert_eq!(
+            first("2026-10-17", &monthly_from, 2),
+            ["2026-11-15", "2026-12-15"]
+        );
+        // Anchored forms are a lower bound, unchanged.
+        let fifteenth = spec(
+            PeriodKind::Anchored {
+                unit: PeriodExpr::Monthly,
+                anchor: Anchor::DayOfMonth(15),
+            },
+            None,
+            None,
+        );
+        assert_eq!(
+            first("2026-10-17", &fifteenth, 2),
+            occurrences("2026-10-17", "2028-12-31", &fifteenth).unwrap()[..2]
+        );
+        // And the budget reading itself does not move.
+        assert_eq!(
+            occurrences("2026-10-01", "2026-10-31", &weekly).unwrap(),
+            ["2026-10-05", "2026-10-12", "2026-10-19", "2026-10-26"]
         );
     }
 

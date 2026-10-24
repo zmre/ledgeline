@@ -873,3 +873,141 @@ counter is the contra-asset. No golden pinned the old defaults: the existing
 
 Amendment 20's third bullet (`merged_transactions` clones the journal) and
 amendment 21 are unchanged.
+
+---
+
+**Phase 6** (2026-10-24): hledger parity.
+
+### 25. A rule with no `from` is phased from the cutoff (engine fix)
+
+**Found by the parity test.** The expansion walked occurrences with the
+budget report's phase (`budget::occurrences`): a bare `every N <unit>` rule
+starts at the start of the unit period that contains the span start. That is
+right for `hledger balance --budget` and is pinned by the budget golden. It is
+NOT what `hledger --forecast` does. Driving `hledger print --forecast=S..`
+(1.52) with `S` on and off every unit's boundary shows that a fixed-interval
+rule with no `from` is phased from `S` itself:
+
+| rule | `--forecast=2026-10-01..` | was (Ledgeline) |
+|---|---|---|
+| `~ weekly` | Thu 10-01, 10-08, … | Mon 10-05, 10-12, … |
+| `~ every 2 weeks` | 10-01, 10-15, … | 10-12, 10-26, … |
+| `~ yearly` | 2026-10-01, 2027-10-01 | 2027-01-01 |
+| `~ monthly`, from 2026-10-05 | 10-05, 11-05, … | 11-01, 12-01, … |
+
+Everything else already agreed: a rule with `from` (its own phase), the
+anchored forms (`every 15th day of month`, `every tuesday`: a lower bound),
+dated one-offs and the exclusive `to`.
+
+**Fix.** `budget::forecast_occurrences` substitutes the span start as the
+phase of an `Every` rule with no `from`, then calls `occurrences` unchanged.
+The expansion's two walks (flows, asset contributions) use it, and the budget
+report keeps `occurrences`. Growth anchors are unchanged (the row's `from`,
+else the cutoff). Because the cutoff is always a period start, `~ monthly`
+still lands on the 1st in a monthly, quarterly or yearly projection. In a
+weekly projection, whose cutoff is a Monday, it lands on that Monday's day of
+the month, as hledger's does.
+
+**Golden moved deliberately.** `projection_parity.rs` case 4 has a bare
+`~ weekly` line under a quarterly cutoff of Thursday 2026-10-01. Q4 2026 now
+has 14 occurrences instead of 13, and the later quarters shift with their
+Thursday counts. Its figures were recaptured and the module docs say why.
+Nothing else in `just engine-test` moved. Unit test
+`a_forecast_phases_a_bare_interval_from_its_own_start` pins the hledger dates
+without the binary.
+
+### 26. What the parity suite covers
+
+`tests/projection_files.rs`, the `parity_*` tests (opt-in,
+`LEDGELINE_HLEDGER_PROJECTION_CHECK=1`; `just hledger-checks` already runs this
+file). Fixtures are in `fixtures/projections-parity/`. `main.journal` declares
+every account and commodity. Its latest transaction is a real 2026-10-05 one,
+after the 2026-10-01 cutoff, and EUR is repriced inside the lookback. The
+scenarios are `flows` (explicit counters; weekly, every 2 weeks, quarterly,
+yearly, bounded `from`/`to`, a dated rule), `events` (an accrual to a
+liability, its settlement, an equity raise), `legacy` (unbalanced pre-plan-28
+rules), `assets` (an asset row with `growth:` and no rate, and a gains
+account), `step` and `commodities` (EUR lines, and one rule mixing EUR and `$`
+against one counter).
+
+For each scenario and cadence (monthly, and quarterly or weekly where they
+differ), the file goes through the server's save path
+(`upgrade_legacy_counters` at a monthly cutoff, then `write_scenario`) and the
+next load is expanded. Then:
+
+- `hledger -f main -f scenario check --strict ordereddates` passes.
+- `hledger print --forecast=<cutoff>..<end+1> tag:generated` equals the
+  expansion's postings as (date, account, commodity, amount) multisets.
+- `bs`, `bse` (equity rows), `is` and `cf` run in the documented form with
+  `-O csv --layout=bare`; `bs`, `bse` and `is` add `--value=end,$`. They must
+  equal, per account, per commodity and per column, `balance_sheet_columns` /
+  `income_statement_columns` (market, the forecast's target) and the cash
+  flow statement's per-cash-account change over `merged_transactions` and
+  `merged_prices`. These are the calls `projected_statements` makes.
+  hledger's `cf` is a list of cash-account changes, not our indirect
+  statement, so only the per-account change is compared; ours must also
+  `reconcile`.
+- A test removes the `expr:` and shows hledger then counts the real $77 from
+  October. The command does real work in this fixture.
+
+**With growth** (`growth.journal`), the test asserts the two accepted
+deviations and nothing else. hledger books rent at its base while ours grows,
+and cash differs by exactly the extra rent. hledger's house is flat with no
+`equity:unrealized gains` row, while ours rises and the gains account books
+the difference. hledger values AAPL at its last real `P` while ours revalues
+it. Every other account agrees per column, and the scenario's own gains
+declaration passes `check --strict`.
+
+**One representational difference, not a numeric one.** A legacy balanced
+`(account)` pair stays virtual in hledger, which still counts it in every
+report run without `-R`. The expansion books it as a regular posting, because
+the cash flow statement drops virtual ones. The generated-posting comparison
+strips the marker.
+
+**Docs.** `cash.md`'s command lacked `-b <lookback start>`. Both docs now give
+the full form, explain each part, add `--value=end,$` for other commodities,
+and say what `cf` compares. `file-format.md` gained "When a rule fires"
+(amendment 25).
+
+---
+
+## Status: built
+
+All six phases shipped on `2026-10-23-projection-fixes`:
+
+- **Phase 1:** `forecast_transactions` expands a scenario into balanced, dated,
+  `generated-transaction`-tagged transactions per (group, date). Decision 5
+  sets the cutoff. Decision 7, amended by 23, infers default counters per
+  commodity. Legacy residuals are posted to the default counter. Unpriced
+  asset rows post gains, and priced holdings grow in-memory prices. The
+  per-bucket accumulators are gone.
+- **Phase 2:** the format carries counter-accounts as the amountless posting,
+  plus `gains:`, `; cash:` and gains declarations. Old files load, and are
+  upgraded only on save.
+- **Phase 3:** `balance_sheet_columns` (one pass) and `pivot_balance_sheets`.
+- **Phase 4:** `POST /api/projections/run` returns the three statements over
+  `lookback ++ buckets`, plus `actualsEnd`, `projectedFrom`, runway and
+  defaults.
+- **Phase 5:** the tabs are Runway, Balance sheet, Income statement and Cash
+  flow, with an Actuals control, an Actual/Projected divider, and counter,
+  gains and cash columns in the table.
+- **Fixes:** runway reads total cash valued per period (22). Counters are
+  inferred per commodity, against any balance-sheet account, with one
+  liability hop (23).
+- **Phase 6:** per-account, per-period hledger parity for scenarios without
+  growth, the growth deviations pinned, `check --strict`, and the forecast
+  phase fix (25, 26).
+
+**Still out:**
+
+- The Reports tab's periodic balance sheet (Phase 3's last sentence;
+  amendment 21).
+- Net-worth series conversion. `project()`'s net-worth series still adds
+  generated amounts unvalued (amendment 9). It is off the wire, and the
+  statements value per column.
+- Mixed-commodity groups. A group mixing commodities pools raw quantities
+  when inferring its one default counter (amendment 23, item 6). The seed
+  never builds one.
+- `merged_transactions` clones the journal on every run, and this has not
+  been measured against the plan 26 baseline (amendments 20 and 24).
+- Docs screenshots were not regenerated (amendment 21).

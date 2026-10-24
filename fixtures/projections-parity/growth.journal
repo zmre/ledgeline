@@ -1,0 +1,21 @@
+; Ledgeline projection
+; projection: Parity growth
+; created: 2026-10-20
+; updated: 2026-10-20
+; cash: assets:checking
+
+; WITH growth: the two accepted deviations from hledger (plan 28 Decisions 2
+; and 3). hledger shows the rent at its base amount, never moves the house
+; (no gains postings) and values the brokerage's AAPL at its last real price.
+
+~ monthly  rent
+    expenses:rent         $2000.00  ; growth: 2%/mo
+    assets:checking
+
+~ monthly  salary
+    revenues:salary      $-6000.00
+    assets:checking
+
+~ monthly  holdings
+    (assets:house)           $0.00  ; growth: 1%/mo
+    (assets:brokerage)       $0.00  ; growth: 3%/mo

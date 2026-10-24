@@ -1,0 +1,12 @@
+; Ledgeline projection
+; projection: Parity assets
+; created: 2026-10-20
+; updated: 2026-10-20
+
+; Asset rows with NO growth rate (`growth:` with no value): contributions only,
+; booked against the counter-account. The gains account is named but never
+; used, so the file is ordinary hledger and parity is exact.
+
+~ monthly  savings plan
+    assets:savings        $1000.00  ; growth:, gains: equity:savings gains
+    assets:checking

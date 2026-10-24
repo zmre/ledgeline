@@ -1,0 +1,19 @@
+; Ledgeline projection
+; projection: Parity events
+; created: 2026-10-20
+; updated: 2026-10-20
+
+; Plan 22's residual table, restated with explicit counter-accounts: an
+; accrual to a liability, its settlement from cash, and a one-off equity raise.
+
+~ 2026-11-15  legal, net 60
+    expenses:legal         $4500.00
+    liabilities:payable
+
+~ 2027-01-15  settle legal
+    liabilities:payable    $4500.00
+    assets:checking
+
+~ 2026-12-01  series A
+    assets:checking      $200000.00
+    equity:preferred

@@ -162,12 +162,25 @@ projected, because it is not over. If your latest transaction is 15 October
 and today is in November, October is projected too. If your latest transaction
 is 31 October, October is complete.
 
-The same view in hledger, for a monthly projection starting 2026-10-01:
+The same view in hledger, for a monthly projection starting 2026-10-01 with
+the default two months of actuals before it:
 
 ```console
 $ hledger -f main.journal -f projection-x.journal bs --forecast=2026-10-01..2027-10-01 \
-    -M -e 2027-10-01 expr:"NOT (date:2026-10-01.. AND NOT tag:generated)"
+    -M -b 2026-08-01 -e 2027-10-01 expr:"NOT (date:2026-10-01.. AND NOT tag:generated)"
 ```
 
-hledger differs from Ledgeline only by growth: it shows `growth:` amounts and
-grown prices flat.
+`--forecast=` starts on the cutoff and `-b` on the first actual period. Both
+end dates are exclusive, so they are the day after the last projected day. The
+`expr:` leaves out real transactions dated on or after the cutoff and keeps the
+forecast. Use `-Q`, `-Y` or `-W` instead of `-M` for other intervals, and `is`
+or `cf` instead of `bs` for the other statements. If you hold other
+commodities, add `--value=end,$` to value each column at its own end, as the
+tab does.
+
+Per account and per period, hledger then shows the same figures as the tab.
+Two things differ, both because of growth: hledger shows `growth:` amounts at
+their base, and it values a holding whose price a growth rate raises at its
+last real price. hledger's `cf` lists the change in each cash account. The
+tab's cash flow statement starts from net income instead, but its cash
+balances agree with hledger's account by account.

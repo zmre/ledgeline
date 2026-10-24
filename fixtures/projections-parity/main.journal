@@ -1,0 +1,119 @@
+; The MAIN journal of the plan 28 Phase 6 hledger parity suite
+; (crates/ledgeline-core/tests/projection_files.rs, the `parity_*` tests).
+;
+; Every account and commodity is declared, so `hledger check --strict` can run
+; over this file plus any scenario beside it. `equity:unrealized gains` is
+; deliberately NOT declared: the growth scenario's writer must declare it in
+; the scenario file (plan 28 Decision 4).
+;
+; The latest real transaction is 2026-10-05. With "today" 2026-10-20 the
+; monthly cutoff is 2026-10-01, so the October transaction below is a real
+; transaction AFTER the cutoff: both Ledgeline and hledger's
+; `expr:"NOT (date:CUTOFF.. AND NOT tag:generated)"` must leave it out.
+;
+; EUR is repriced inside the lookback (2026-09-15), so market valuation at
+; each column's end is exercised against hledger's `--value=end,$`.
+
+commodity $1,000.00
+commodity 1,000.00 EUR
+commodity 1,000.0000 AAPL
+
+account assets:checking            ; type: C
+account assets:savings             ; type: C
+account assets:wise:eur            ; type: C
+account assets:brokerage           ; type: A
+account assets:house               ; type: A
+account liabilities:card           ; type: L
+account liabilities:payable        ; type: L
+account equity:opening             ; type: E
+account equity:preferred           ; type: E
+account revenues:salary            ; type: R
+account revenues:bonus             ; type: R
+account expenses:rent              ; type: X
+account expenses:food              ; type: X
+account expenses:insurance         ; type: X
+account expenses:travel            ; type: X
+account expenses:legal             ; type: X
+account expenses:payroll           ; type: X
+account expenses:consulting        ; type: X
+
+P 2026-01-01 EUR $1.10
+P 2026-01-01 AAPL $100.00
+
+2026-01-01 opening balances
+    assets:checking           $20,000.00
+    assets:savings             $5,000.00
+    assets:wise:eur            3,000.00 EUR
+    assets:brokerage          10.0000 AAPL @ $100.00
+    assets:house             $400,000.00
+    equity:opening
+
+2026-07-01 salary
+    assets:checking            $6,000.00
+    revenues:salary
+
+2026-07-02 rent
+    expenses:rent              $2,000.00
+    assets:checking
+
+2026-07-10 groceries
+    expenses:food                $550.00
+    liabilities:card
+
+2026-07-20 lisbon
+    expenses:travel              250.00 EUR
+    assets:wise:eur
+
+2026-07-28 card payment
+    liabilities:card             $550.00
+    assets:checking
+
+2026-08-01 salary
+    assets:checking            $6,000.00
+    revenues:salary
+
+2026-08-02 rent
+    expenses:rent              $2,000.00
+    assets:checking
+
+2026-08-10 groceries
+    expenses:food                $610.00
+    liabilities:card
+
+2026-08-20 porto
+    expenses:travel              320.00 EUR
+    assets:wise:eur
+
+2026-08-28 card payment
+    liabilities:card             $610.00
+    assets:checking
+
+P 2026-09-15 EUR $1.12
+
+2026-09-01 salary
+    assets:checking            $6,000.00
+    revenues:salary
+
+2026-09-02 rent
+    expenses:rent              $2,000.00
+    assets:checking
+
+2026-09-10 groceries
+    expenses:food                $590.00
+    liabilities:card
+
+2026-09-15 insurance
+    expenses:insurance           $900.00
+    assets:savings
+
+2026-09-20 madrid
+    expenses:travel              280.00 EUR
+    assets:wise:eur
+
+2026-09-28 card payment
+    liabilities:card             $590.00
+    assets:checking
+
+2026-10-05 a real October transaction, after the cutoff
+    expenses:food                 $77.00
+    assets:checking

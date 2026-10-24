@@ -49,7 +49,7 @@ use crate::model::{
 };
 use crate::reports::ReportError;
 use crate::reports::account_types::{AccountType, AccountTypes};
-use crate::reports::budget::occurrences;
+use crate::reports::budget::forecast_occurrences;
 use crate::reports::mixed_amount::MixedAmount;
 use crate::reports::net_worth::valued;
 use crate::reports::periods::{
@@ -989,7 +989,7 @@ impl<'a> Expansion<'a> {
         let mut placed = false;
         // `occurrences` is ASCENDING, so the step count never decreases and the
         // growth walk is done once.
-        for date in occurrences(&self.start, &self.end, &line.period)? {
+        for date in forecast_occurrences(&self.start, &self.end, &line.period)? {
             if let Some(growth) = &line.growth
                 && !overflowed
             {
@@ -1259,7 +1259,7 @@ impl<'a> Expansion<'a> {
         let contributions = if line.amount.quantity.is_zero() {
             Vec::new()
         } else {
-            occurrences(&self.start, &self.end, &line.period)?
+            forecast_occurrences(&self.start, &self.end, &line.period)?
         };
         let contribution = MixedAmount::single(line.amount.commodity.clone(), line.amount.quantity);
 

@@ -120,6 +120,26 @@ Growth anniversaries are counted from the line's `from` date when it has one,
 and from the start of the projection otherwise. That is what makes the second
 segment of a step change grow from its **new** base.
 
+## When a rule fires
+
+On the days `hledger --forecast` fires it, from the first projected day:
+
+- A rule with a `from` keeps its own rhythm: `~ monthly from 2027-01-15` fires
+  on the 15th of every month.
+- A rule with **no** `from` starts on the first projected day. `~ weekly` fires
+  on that day's weekday, not on Mondays, and `~ yearly` on that day's
+  anniversary, not on January 1st. A monthly, quarterly or yearly projection
+  starts on the 1st of a month, so `~ monthly` lands on the 1st. A weekly
+  projection starts on a Monday, so there `~ monthly` lands on that Monday's
+  day of the month.
+- `to` is exclusive: `~ monthly to 2027-04-01` last fires in March.
+- `every 15th day of month` and `every tuesday` fire on that day.
+- A dated rule, `~ 2027-03-01`, fires once.
+
+`hledger balance --budget` places a bare `~ weekly` goal on Mondays instead.
+The Budget tab follows that report, and the Projections tab follows
+`--forecast`.
+
 ## What hledger does, and does not, do with this
 
 `hledger` reads these files. Both of these work:
@@ -169,4 +189,14 @@ $ hledger -f projection-series-a.journal print --forecast=2027-01-01..2027-02-01
 $ hledger -f main.journal -f projection-series-a.journal bs \
     --forecast=2026-10-01..2027-10-01 -M -b 2026-08-01 -e 2027-10-01 \
     expr:"NOT (date:2026-10-01.. AND NOT tag:generated)"
+
+# The same window as an income statement, other commodities valued as the tab
+# values them.
+$ hledger -f main.journal -f projection-series-a.journal is \
+    --forecast=2026-10-01..2027-10-01 -M -b 2026-08-01 -e 2027-10-01 \
+    expr:"NOT (date:2026-10-01.. AND NOT tag:generated)" --value=end,$
 ```
+
+These agree with the tab account by account and period by period, except where
+`growth:` applies. [What moves cash](cash.md#where-the-projection-starts) explains
+each part of the command.
