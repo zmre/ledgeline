@@ -658,19 +658,64 @@ async fn the_seed_emits_derived_period_fields_that_a_run_accepts_back() {
     assert_eq!(projection["buckets"].as_array().unwrap().len(), 3);
     assert!(dollars(&projection["cash"]["opening"]) > 0);
 
-    // sample.journal spends in EUR as well as `$`, so the seed does too — and
-    // the projection SAYS so rather than quietly adding the two together. This
-    // is the warning working, not a defect in the round trip.
+    // sample.journal spends in EUR as well as `$`, so the seed does too. EUR
+    // has a `P` price, so it is converted where figures are read, and nothing
+    // is carried unconverted to warn about.
     let warnings = projection["warnings"]
         .as_array()
         .expect("warnings is an array");
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
-    assert!(
-        warnings[0]
-            .as_str()
-            .is_some_and(|w| w.contains("EUR") && w.contains("without conversion")),
-        "{warnings:?}"
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+/// The sample.journal false alarm (plan 28 amendment 22). The seeded scenario
+/// builds cash, yet the runway used to read "Cash turns negative in Jul 2026":
+/// the EUR seed lines were added unvalued against a dollar-valued opening, and
+/// the `$` food line defaulted to the EUR-only Wise account. And projected
+/// depreciation drained checking.
+#[tokio::test]
+async fn the_sample_seed_raises_no_false_runway_and_infers_counters_per_commodity() {
+    let (status, text) = get("/api/projections/seed?end=2026-07-08&count=12&depth=2").await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let seed: Value = serde_json::from_str(&text).expect("the seed body is JSON");
+    let projection = run(json!({"scenario": seed, "asOf": "2026-07-08", "count": 12})).await;
+
+    // Total cash never closes below zero in any commodity, so no runway.
+    assert_eq!(projection["runway"], Value::Null, "{}", projection["cash"]);
+    for (index, value) in projection["cash"]["values"]
+        .as_array()
+        .expect("cash values")
+        .iter()
+        .enumerate()
+    {
+        for (commodity, qty) in value.as_object().expect("a mixed amount") {
+            assert!(
+                !qty["mantissa"].as_str().unwrap_or("").starts_with('-'),
+                "cash is negative in {commodity} in bucket {index}: {value}"
+            );
+        }
+    }
+
+    let defaults = &projection["defaults"]["lines"];
+    let default_of = |group: &str| defaults[group].as_str().unwrap_or_default().to_string();
+    // `$` food went on the visa, paid from checking: one hop, to checking —
+    // never the EUR-only Wise account.
+    assert_eq!(default_of("gap:expenses:food:$"), "assets:bank:checking");
+    assert_eq!(default_of("gap:expenses:food:EUR"), "assets:bank:wise:eur");
+    assert_eq!(
+        default_of("gap:expenses:travel:$"),
+        "assets:bank:checking",
+        "{defaults}"
     );
+    // Depreciation books against its contra-asset, which is not cash.
+    assert_eq!(
+        default_of("gap:expenses:depreciation:$"),
+        "assets:vehicles:car:depreciation"
+    );
+    // Salary still lands where it always landed.
+    assert_eq!(default_of("gap:income:salary:$"), "assets:bank:checking");
+    // Withheld tax pairs only with the salary, which is not where money sits,
+    // so it comes out of cash.
+    assert_eq!(default_of("gap:expenses:taxes:$"), "assets:bank:checking");
 }
 
 /// A date is NORMALIZED, not merely validated — `2026-9-1` is what hledger's

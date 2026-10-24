@@ -118,6 +118,7 @@ use crate::model::{
 use crate::reports::ReportError;
 use crate::reports::account_types::{AccountType, AccountTypes};
 use crate::reports::aggregate::{PostingFilter, account_totals, at_depth, roll_up};
+use crate::reports::balance_sheet::valued_keeping_unpriced;
 use crate::reports::budget::{BudgetOpts, budget_gaps, step_from};
 use crate::reports::mixed_amount::MixedAmount;
 use crate::reports::net_worth::{NetWorthOpts, net_worth_priced, valued};
@@ -125,7 +126,7 @@ use crate::reports::periods::{
     Interval, bucket_end, bucket_start, clamped_date, compare_iso, days_between, months_between,
     parts,
 };
-use crate::reports::prices::PriceDb;
+use crate::reports::prices::{PriceDb, ValuationMeta, value_at};
 use crate::reports::types::{PeriodReport, PeriodRow};
 
 // ===========================================================================
@@ -601,17 +602,19 @@ const MAX_GROWTH_STEPS: i64 = 100_000;
 /// transactions ([`forecast_transactions`]) and every series here is read off
 /// them, beside the real journal before the cutoff:
 ///
-/// - **cash** opens at the real cash balance the day before the cutoff, valued
-///   as `net_worth` values it, and moves by the generated postings to
-///   cash-typed accounts ([`AccountTypes::is_cash`]) — the runway reads it;
+/// - **cash** is the real cash balance the day before the cutoff plus the
+///   generated postings to cash-typed accounts ([`AccountTypes::is_cash`]),
+///   carried raw per commodity across every cash account and valued at each
+///   period's end, keeping what no price converts (plan 28 amendment 22). The
+///   runway reads this TOTAL, never one account;
 /// - **net worth** opens at `net_worth` the day before the cutoff and moves by
 ///   the generated postings to asset and liability accounts, plus the
 ///   revaluation of real holdings whose prices an asset row grows;
 /// - **net income** is the generated postings to revenue and expense accounts.
 ///
-/// Generated amounts are NOT valued, exactly as the per-bucket engine this
-/// replaced did not value them: a scenario in another commodity is added as
-/// that commodity, and warned about.
+/// For net worth and net income, generated amounts are NOT valued, exactly as
+/// the per-bucket engine this replaced did not value them. A scenario commodity
+/// no price converts is warned about.
 ///
 /// `txns` and `prices` are the REAL journal's, in any order; nothing dated on or
 /// after the cutoff is read.
@@ -660,13 +663,12 @@ pub fn project(
 
     // --- Opening balances: REAL only, the day before the cutoff. ---
     let balances = account_balances_at(txns, &as_of)?;
-    let opening_cash = valued(
-        &cash_balance(&balances, &types)?,
-        target.as_ref(),
-        &db,
-        &as_of,
-        None,
-    )?;
+    // Cash is carried RAW, per commodity, summed over every cash account, and
+    // valued only when a figure is read off it (`cash_total`). Valuing the
+    // opening but not the generated postings is how a EUR scenario line used to
+    // read as negative EUR against a dollar-valued opening (amendment 22).
+    let raw_opening_cash = cash_balance(&balances, &types)?;
+    let opening_cash = cash_total(&raw_opening_cash, target.as_ref(), &db, &as_of)?;
     // `net_worth_priced` with the combined price set: it values at `as_of`, so
     // no forecast price (every one dated after the cutoff) can reach it.
     let opening_net_worth =
@@ -685,7 +687,7 @@ pub fn project(
     let cash_history = closing_cash(txns, &lookback_ends, &types)?
         .iter()
         .zip(&lookback_ends)
-        .map(|(cash, end)| valued(cash, target.as_ref(), &db, end, None))
+        .map(|(cash, end)| cash_total(cash, target.as_ref(), &db, end))
         .collect::<Result<Vec<_>, ReportError>>()?;
     let net_worth_history = if window.lookback.is_empty() {
         Vec::new()
@@ -725,7 +727,7 @@ pub fn project(
     let mut income_totals: Vec<MixedAmount> = Vec::with_capacity(spans.len());
     let mut cash_values: Vec<MixedAmount> = Vec::with_capacity(spans.len());
     let mut net_worth_values: Vec<MixedAmount> = Vec::with_capacity(spans.len());
-    let mut cash_running = opening_cash.clone();
+    let mut cash_running = raw_opening_cash;
     let mut net_worth_running = opening_net_worth.clone();
     let mut cursor = 0usize;
     for (_, end) in &spans {
@@ -766,7 +768,7 @@ pub fn project(
             let revalued = valued(&held, target.as_ref(), &db, end, None)?;
             net_worth.ma_add_assign(&revalued.ma_add(&held_at_open.ma_neg()?)?)?;
         }
-        cash_values.push(cash_running.clone());
+        cash_values.push(cash_total(&cash_running, target.as_ref(), &db, end)?);
         net_worth_values.push(net_worth);
     }
 
@@ -788,6 +790,11 @@ pub fn project(
         })
         .collect();
 
+    // TOTAL cash, never one account: `cash_values` is every cash account summed
+    // per commodity and valued at the bucket's end, so a commodity a price
+    // reaches is already netted into the valuation commodity. What is left
+    // negative is either that valued total or a commodity no price converts —
+    // money that genuinely cannot be netted against the rest.
     let runway = cash_values
         .iter()
         .position(|ma| ma.iter().any(|(_, qty)| qty.mantissa < 0))
@@ -1026,6 +1033,27 @@ fn account_balances_at<'a>(
 ///
 /// # Errors
 /// Returns [`ReportError`] on decimal overflow.
+/// A raw cash total as the series reports it: valued into `target` at `as_of`
+/// wherever a price reaches, each commodity no price converts kept as itself
+/// (never dropped, which would hide money), and identity with no target.
+fn cash_total(
+    raw: &MixedAmount,
+    target: Option<&Commodity>,
+    db: &PriceDb,
+    as_of: &str,
+) -> Result<MixedAmount, ReportError> {
+    match target {
+        Some(target) => {
+            valued_keeping_unpriced(raw, target, db, as_of, &mut ValuationMeta::default())
+        }
+        None => {
+            let mut out = raw.clone();
+            out.drop_zeros();
+            Ok(out)
+        }
+    }
+}
+
 fn cash_balance(
     balances: &AccountBalances<'_>,
     types: &AccountTypes,
@@ -1139,16 +1167,19 @@ fn show(ma: &MixedAmount) -> String {
     }
 }
 
-/// Warn when a scenario's money is not the money the opening balances are in.
+/// Warn when a scenario's money is in a commodity no price converts into the
+/// one the opening balances are valued in.
 ///
-/// The projected flows are NOT valued — there are no market prices for a future
-/// date, and hledger never looks ahead to one — so a EUR scenario added onto a
-/// `$` opening balance produces a two-commodity series that is arithmetically
-/// correct and financially meaningless. Saying so is the whole of what this
-/// engine can honestly do about it.
+/// A commodity a price DOES reach is converted wherever a figure is read: the
+/// cash series values its total at each period end (amendment 22), and the
+/// statements value per column. One no price reaches stays as itself beside
+/// the valued total — arithmetically right, but not one number — and saying so
+/// is the whole of what this engine can honestly do about it.
 fn warn_on_commodity_mismatch(
     commodities: &BTreeSet<Commodity>,
     target: Option<&Commodity>,
+    db: &PriceDb,
+    as_of: &str,
     warnings: &mut Vec<String>,
 ) {
     let Some(target) = target else {
@@ -1157,12 +1188,18 @@ fn warn_on_commodity_mismatch(
     let strangers: Vec<&str> = commodities
         .iter()
         .filter(|commodity| *commodity != target)
+        .filter(|commodity| {
+            let mut meta = ValuationMeta::default();
+            let unit = MixedAmount::single((*commodity).clone(), Dec::new(1, 0));
+            value_at(&unit, target, db, as_of, Some(&mut meta)).is_err()
+                || !meta.unpriced.is_empty()
+        })
         .map(|commodity| commodity.0.as_str())
         .collect();
     if !strangers.is_empty() {
         warnings.push(format!(
-            "the scenario is partly in {}, but opening balances are valued in {}; \
-             the projected flows are added without conversion",
+            "the scenario is partly in {}, which no price converts into {}; \
+             those flows are carried without conversion",
             strangers.join(", "),
             target.0
         ));
@@ -3402,6 +3439,129 @@ mod tests {
         );
         // Net worth opens at the real journal's own figure, not at zero.
         assert_eq!(projection.net_worth.opening, usd_ma(1_000_000));
+    }
+
+    /// ONE cash account going negative is not runway exhaustion while total
+    /// cash is positive (amendment 22): the runway reads every cash account
+    /// summed, never one of them.
+    #[test]
+    fn one_overdrawn_cash_account_is_not_a_runway_while_total_cash_is_positive() {
+        let journal = vec![txn(
+            1,
+            "2026-09-30",
+            vec![
+                ("assets:bank:checking", vec![usd(1_000_000)]),
+                ("assets:bank:savings", vec![usd(10_000)]),
+                ("equity:opening", vec![usd(-1_010_000)]),
+            ],
+        )];
+        let mut burn = line("burn", "expenses:burn", usd(50_000), "monthly");
+        burn.counter = Some(AccountName("assets:bank:savings".to_string()));
+        let projection = run_over(
+            &scenario(vec![burn], Vec::new()),
+            &journal,
+            "2026-10-01",
+            Interval::Monthly,
+            6,
+        );
+        // Savings is below zero from the first month; the total never is.
+        assert_eq!(
+            series_units(&projection.cash),
+            [9600, 9100, 8600, 8100, 7600, 7100]
+        );
+        assert_eq!(projection.runway, None);
+    }
+
+    /// Run over a journal with `$` checking and a EUR account, EUR priced at
+    /// $1.14 — the shape of sample.journal, whose seed spends EUR.
+    fn two_currency_run(lines: Vec<ScenarioLine>, count: usize) -> Projection {
+        let journal = vec![txn(
+            1,
+            "2026-09-30",
+            vec![
+                ("assets:bank:checking", vec![usd(1_000_000)]),
+                ("assets:bank:wise:eur", vec![amount("EUR", 50_000, 2)]),
+                (
+                    "equity:opening",
+                    vec![usd(-1_000_000), amount("EUR", -50_000, 2)],
+                ),
+            ],
+        )];
+        let prices = vec![crate::reports::test_support::price(
+            "2026-09-01",
+            "EUR",
+            usd(114),
+        )];
+        project(
+            &scenario(lines, Vec::new()),
+            &journal,
+            &prices,
+            &ProjectionOpts {
+                today: "2026-10-01",
+                lookback: 0,
+                interval: Interval::Monthly,
+                count,
+                depth: 99,
+                declared: &BTreeMap::new(),
+                value_in: None,
+            },
+        )
+        .expect("the projection computes")
+    }
+
+    /// The sample.journal false alarm, reproduced: the opening EUR used to be
+    /// valued into `$` while the generated EUR spending was added unvalued, so
+    /// the series held a negative EUR from month one and the runway fired over
+    /// a healthy dollar balance. Cash is now carried raw and valued at each
+    /// period end, so EUR spending draws the EUR down inside one total.
+    #[test]
+    fn eur_spending_against_eur_cash_is_no_false_runway() {
+        let food = line("food", "expenses:food", amount("EUR", 10_000, 2), "monthly");
+        let projection = two_currency_run(vec![food], 3);
+        assert_eq!(projection.runway, None);
+        // $10,000 + (500 − 100n) EUR × $1.14, one commodity per figure.
+        assert_eq!(projection.cash.opening, usd_ma(1_057_000));
+        assert_eq!(
+            projection.cash.values,
+            [usd_ma(1_045_600), usd_ma(1_034_200), usd_ma(1_022_800)]
+        );
+    }
+
+    /// Mixed commodities are judged AFTER valuation: overspending the EUR
+    /// account is converted dollars, not exhaustion, until the valued total
+    /// itself crosses zero.
+    #[test]
+    fn a_priced_commodity_is_netted_into_the_total_before_it_is_judged() {
+        // 4,000 EUR a month ≈ $4,560: EUR is negative in month one, the total
+        // only in month three ($10,570 − 3 × $4,560 < 0).
+        let trip = line(
+            "trip",
+            "expenses:travel",
+            amount("EUR", 400_000, 2),
+            "monthly",
+        );
+        let projection = two_currency_run(vec![trip], 4);
+        assert_eq!(
+            projection.runway,
+            Some(Runway {
+                bucket: 2,
+                date: "2026-12-31".to_string(),
+                periods: 3,
+            })
+        );
+    }
+
+    /// A commodity no price converts cannot be netted against anything, so it
+    /// is judged on its own: negative CHF is a runway even beside dollars.
+    #[test]
+    fn an_unpriced_commodity_below_zero_is_a_runway_on_its_own() {
+        let ski = line("ski", "expenses:ski", amount("CHF", 10_000, 2), "monthly");
+        let projection = two_currency_run(vec![ski], 2);
+        assert_eq!(projection.runway.map(|runway| runway.bucket), Some(0));
+        assert_eq!(
+            projection.cash.values[0].get(&Commodity("CHF".into())),
+            Some(Dec::new(-10_000, 2))
+        );
     }
 
     /// $10,000 of cash, funded from equity — the opening balance every runway

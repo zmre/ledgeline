@@ -135,7 +135,10 @@ test("projections: all four readings render, the runway in words and the stateme
 
     await expect(page.getByTestId("projection-cash")).toBeVisible();
     // The question the tab exists for, answered above the picture of it.
-    await expect(page.getByTestId("projection-runway")).toContainText(/Cash (turns negative in|never turns negative)/);
+    // sample.journal's seed builds cash: TOTAL cash never closes below zero,
+    // so there is no runway (plan 28 amendment 22 — this used to be a false
+    // "Cash turns negative in Jul 2026" off unvalued EUR seed lines).
+    await expect(page.getByTestId("projection-runway")).toContainText("Cash never turns negative");
     await expect(page.getByTestId("projection-cash-chart")).toBeVisible();
 
     // The Reports tab's own statements, over actuals and then the forecast.
@@ -162,6 +165,9 @@ test("projections: a seeded row shows its inferred counter-account greyed", asyn
     const counter = page.getByLabel("Counter-account for expenses:housing");
     await expect(counter).toHaveValue("");
     await expect(counter).toHaveAttribute("placeholder", /^assets:/);
+    // Inferred from the most common pairing in history, ANY account type:
+    // depreciation books against its contra-asset, never cash.
+    await expect(page.getByLabel("Counter-account for expenses:depreciation")).toHaveAttribute("placeholder", "assets:vehicles:car:depreciation");
     await expect(page.getByLabel("Default cash account")).toHaveAttribute("placeholder", /^assets:/);
 });
 

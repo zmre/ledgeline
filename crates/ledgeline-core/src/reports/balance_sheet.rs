@@ -866,11 +866,12 @@ fn widen(into: &mut BTreeMap<Commodity, u32>, commodity: &Commodity, places: u32
 /// visible alongside the valued part and are recorded in `meta` as well. That is
 /// also exactly what `hledger bs -V` prints.
 ///
-/// `pub(super)` because [`super::income_statement::income_statement_grouped`]
+/// `pub(crate)` because [`super::income_statement::income_statement_grouped`]
 /// values its rows on exactly these terms — `hledger is -V` keeps an unpriced
 /// commodity on the line too — and a second copy of the keep-and-record dance is
-/// a second chance to drop a holding silently.
-pub(super) fn valued_keeping_unpriced(
+/// a second chance to drop a holding silently. [`crate::projections`] values
+/// its cash series on the same terms, so the runway judges one total.
+pub(crate) fn valued_keeping_unpriced(
     ma: &MixedAmount,
     target: &Commodity,
     prices: &PriceDb,

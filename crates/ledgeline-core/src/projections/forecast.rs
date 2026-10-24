@@ -219,7 +219,8 @@ pub struct Forecast {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForecastDefaults {
     /// Group → the default counter-account its counter-less lines balance
-    /// against ([`CounterDefaults::for_accounts`] over those lines' accounts).
+    /// against ([`CounterDefaults::for_lines`] over those lines' accounts and
+    /// commodities).
     /// Only groups with at least one counter-less line appear.
     pub lines: BTreeMap<String, AccountName>,
     /// Event id → the default counter-account, for events that name none.
@@ -237,38 +238,39 @@ impl ForecastDefaults {
     /// The defaults `scenario` would get from `defaults`.
     #[must_use]
     pub fn of(scenario: &Scenario, defaults: &CounterDefaults) -> Self {
-        let mut grouped: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        let mut grouped: BTreeMap<&str, Vec<(&str, &Commodity)>> = BTreeMap::new();
         for line in scenario.lines.iter().filter(|line| line.counter.is_none()) {
             grouped
                 .entry(line.group.as_str())
                 .or_default()
-                .push(line.account.0.as_str());
+                .push((line.account.0.as_str(), &line.amount.commodity));
         }
         Self {
             lines: grouped
                 .into_iter()
-                .map(|(group, accounts)| (group.to_string(), defaults.for_accounts(accounts)))
+                .map(|(group, lines)| (group.to_string(), defaults.for_lines(lines)))
                 .collect(),
             events: scenario
                 .events
                 .iter()
                 .filter(|event| event.counter.is_none())
-                .map(|event| {
-                    (
-                        event.id.clone(),
-                        defaults.for_accounts(
-                            event
-                                .postings
-                                .iter()
-                                .map(|posting| posting.account.0.as_str()),
-                        ),
-                    )
-                })
+                .map(|event| (event.id.clone(), defaults.for_lines(event_lines(event))))
                 .collect(),
-            cash: AccountName(defaults.fallback.clone()),
+            cash: defaults.cash_fallback(),
             gains: AccountName(DEFAULT_GAINS_ACCOUNT.to_string()),
         }
     }
+}
+
+/// An event's postings as `(account, commodity)`, one per stated amount — what
+/// its default counter-account is inferred from.
+fn event_lines(event: &ScenarioEvent) -> impl Iterator<Item = (&str, &Commodity)> {
+    event.postings.iter().flat_map(|posting| {
+        posting
+            .amounts
+            .iter()
+            .map(|amount| (posting.account.0.as_str(), &amount.commodity))
+    })
 }
 
 /// Whether `txn` is one a forecast generated, by hledger's own marker.
@@ -356,27 +358,75 @@ pub fn merged_prices(history: &[PriceDirective], forecast: &Forecast) -> Vec<Pri
 // The default counter-account (Decision 7)
 // ===========================================================================
 
-/// Which account a line with no counter-account is balanced against.
+/// Which account a line with no counter-account is balanced against
+/// (Decision 7 as amended by amendment 22).
 ///
-/// In order:
+/// Everything is judged per `(account, commodity)`: a `$` line is only ever
+/// balanced against an account that took `$` in history.
 ///
-/// 1. the CASH-typed account the line's account (or anything under it) was most
-///    often posted against in a real transaction over the trailing twelve
-///    months before the cutoff — salary that always landed in
-///    `assets:checking` projects into `assets:checking`;
-/// 2. else the scenario header's `; cash: <account>`;
-/// 3. else the cash account with the largest balance at the cutoff;
-/// 4. else the first DECLARED cash account, else [`FALLBACK_CASH_ACCOUNT`].
-///
-/// Ties go to the lexically first account, so the answer is deterministic.
+/// 1. **History.** Over the trailing twelve months before the cutoff, every
+///    real transaction that posts the line's account (or anything under it) in
+///    the line's commodity credits each COUNTERPARTY — another account posted
+///    in the same commodity with the opposite sign — with the smaller of the
+///    two amounts. Weighting by amount, not by transaction count, is what
+///    makes it "where the money went": salary credits net pay in checking
+///    $4,050, and a brokerage's four large deposits from checking outweigh six
+///    small dividends. A counterparty is any ASSET or LIABILITY, cash or not —
+///    `expenses:depreciation` pairs with its accumulated depreciation. Equity
+///    is not one (an opening balance is bookkeeping, not where a recurring
+///    flow's money goes), and neither is revenue or expense: payroll tax
+///    withheld from salary pairs the tax with the salary, and projecting it
+///    that way would never take the tax out of cash while the gross landed in
+///    checking. A counterparty inside the line's own subtree is not a pairing. The largest
+///    total wins; ties go to the lexically first. A group that mixes
+///    commodities sums raw quantities across them (the seed never builds one:
+///    it is one group per account and commodity).
+/// 2. **One hop through a liability.** If the winner is a liability whose own
+///    settlement — the most common counterparty of the postings that REDUCE it
+///    (a card's payments), same commodity — is a cash account, that cash account
+///    is the counter. A projection does not project the card payments, so
+///    spending booked to the card would never draw cash down. One hop, no more;
+///    a liability settled from a non-cash account stays as it is.
+/// 3. **No history:** the fallbacks, preferring a cash account that HOLDS the
+///    commodity (a balance in it at the cutoff, or a posting in it in the
+///    window): the scenario header's `; cash:` (unless it is known to hold only
+///    other commodities), else the largest cash balance,
+///    else the first declared `type: C` account. Only when no cash account
+///    holds the commodity at all does the chain run without that filter, ending
+///    at [`FALLBACK_CASH_ACCOUNT`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CounterDefaults {
-    /// account → cash account → how many real transactions paired them.
-    pairings: BTreeMap<String, BTreeMap<String, usize>>,
+    /// account → every real transaction in the window that posted it.
+    records: BTreeMap<String, Vec<Pairing>>,
+    /// Accounts seen in the window that are liabilities, for the hop.
+    liabilities: BTreeSet<String>,
+    /// Accounts seen in the window that are cash, for the hop.
+    cash: BTreeSet<String>,
+    /// Cash account → the commodities it holds (balance at the cutoff, or a
+    /// posting in the window).
+    holdings: BTreeMap<String, BTreeSet<Commodity>>,
+    /// Cash accounts by valued balance at the cutoff, largest first.
+    by_size: Vec<String>,
+    /// Declared `type: C` accounts, in declaration-map order.
+    declared_cash: Vec<String>,
     /// The scenario header's `; cash:`.
     header: Option<AccountName>,
-    /// Steps 3 and 4, resolved once.
-    fallback: String,
+    /// The valuation commodity, for the header-less wire default.
+    target: Option<Commodity>,
+}
+
+/// One real transaction's view from one account, in one commodity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Pairing {
+    commodity: Commodity,
+    /// The account's net posting was positive (a debit: spending, or paying a
+    /// liability down).
+    debit: bool,
+    /// The magnitude of the account's net posting.
+    amount: Dec,
+    /// The other accounts whose net posting in this commodity had the opposite
+    /// sign, with its magnitude, lexically ordered.
+    partners: Vec<(String, Dec)>,
 }
 
 impl CounterDefaults {
@@ -417,113 +467,230 @@ impl CounterDefaults {
         db: &PriceDb,
     ) -> Result<Self, ReportError> {
         let window_start = add_months(cutoff, -COUNTER_WINDOW_MONTHS);
-        let mut pairings: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+        let mut records: BTreeMap<String, Vec<Pairing>> = BTreeMap::new();
+        let mut holdings: BTreeMap<String, BTreeSet<Commodity>> = BTreeMap::new();
         for txn in txns {
             if !before(&txn.date, cutoff) || before(&txn.date, &window_start) {
                 continue;
             }
-            let cash: BTreeSet<&str> = txn
-                .postings
-                .iter()
-                .map(|posting| posting.account.0.as_str())
-                .filter(|account| types.is_cash(account))
-                .collect();
-            if cash.is_empty() {
-                continue;
-            }
-            let accounts: BTreeSet<&str> = txn
-                .postings
-                .iter()
-                .map(|posting| posting.account.0.as_str())
-                .collect();
-            for account in accounts {
-                for cash_account in &cash {
-                    if *cash_account == account {
-                        continue;
-                    }
-                    *pairings
-                        .entry(account.to_string())
-                        .or_default()
-                        .entry((*cash_account).to_string())
-                        .or_insert(0) += 1;
+            // Net per (account, commodity): an account posted twice in one
+            // transaction is one side of it.
+            let mut net: BTreeMap<(&str, &Commodity), Dec> = BTreeMap::new();
+            for posting in &txn.postings {
+                for amount in &posting.amounts {
+                    let slot = net
+                        .entry((posting.account.0.as_str(), &amount.commodity))
+                        .or_insert_with(Dec::zero);
+                    *slot = slot.add(amount.quantity)?;
                 }
             }
+            for ((account, commodity), qty) in &net {
+                if types.is_cash(account) {
+                    holdings
+                        .entry((*account).to_string())
+                        .or_default()
+                        .insert((*commodity).clone());
+                }
+                if qty.is_zero() {
+                    continue;
+                }
+                let debit = qty.mantissa > 0;
+                let partners = net
+                    .iter()
+                    .filter(|((other, c), q)| {
+                        other != account
+                            && c == commodity
+                            && !q.is_zero()
+                            && (q.mantissa > 0) != debit
+                            && (types.is_type(other, AccountType::Asset)
+                                || types.is_type(other, AccountType::Liability))
+                    })
+                    .map(|((other, _), q)| Ok(((*other).to_string(), q.abs()?)))
+                    .collect::<Result<Vec<_>, ReportError>>()?;
+                if partners.is_empty() {
+                    continue;
+                }
+                records
+                    .entry((*account).to_string())
+                    .or_default()
+                    .push(Pairing {
+                        commodity: (*commodity).clone(),
+                        debit,
+                        amount: qty.abs()?,
+                        partners,
+                    });
+            }
         }
+        let seen: BTreeSet<&str> = records
+            .iter()
+            .flat_map(|(account, pairings)| {
+                std::iter::once(account.as_str()).chain(
+                    pairings
+                        .iter()
+                        .flat_map(|p| p.partners.iter().map(|(b, _)| b.as_str())),
+                )
+            })
+            .collect();
+        let liabilities = seen
+            .iter()
+            .filter(|account| types.is_type(account, AccountType::Liability))
+            .map(|account| (*account).to_string())
+            .collect();
+        let cash = seen
+            .iter()
+            .filter(|account| types.is_cash(account))
+            .map(|account| (*account).to_string())
+            .collect();
 
-        // Step 3: the largest cash balance at the cutoff, valued the way the
-        // opening cash is. Ties go to the lexically first, which a `BTreeMap`
-        // walk and a strict `>` give for free.
-        let mut largest: Option<(&str, Dec)> = None;
+        // The largest cash balance at the cutoff, valued the way the opening
+        // cash is. A stable sort over a `BTreeMap` walk keeps ties lexical.
+        let mut sized: Vec<(String, Dec)> = Vec::new();
         for (account, balance) in balances {
             if !types.is_cash(account) {
                 continue;
+            }
+            for (commodity, qty) in balance.iter() {
+                if !qty.is_zero() {
+                    holdings
+                        .entry(account.to_string())
+                        .or_default()
+                        .insert(commodity.clone());
+                }
             }
             let value = valued(balance, target, db, &add_days(cutoff, -1), None)?
                 .iter()
                 .map(|(_, qty)| *qty)
                 .try_fold(Dec::zero(), Dec::add)?;
-            if largest.is_none_or(|(_, best)| value > best) {
-                largest = Some((account, value));
-            }
+            sized.push((account.to_string(), value));
         }
-        let fallback = largest.map_or_else(
-            || {
-                types
-                    .declared()
-                    .iter()
-                    .find(|(_, ty)| **ty == AccountType::Cash)
-                    .map_or_else(
-                        || FALLBACK_CASH_ACCOUNT.to_string(),
-                        |(name, _)| name.clone(),
-                    )
-            },
-            |(account, _)| account.to_string(),
-        );
+        sized.sort_by_key(|(_, value)| std::cmp::Reverse(*value));
+        let declared_cash = types
+            .declared()
+            .iter()
+            .filter(|(_, ty)| **ty == AccountType::Cash)
+            .map(|(name, _)| name.clone())
+            .collect();
         Ok(Self {
-            pairings,
+            records,
+            liabilities,
+            cash,
+            holdings,
+            by_size: sized.into_iter().map(|(account, _)| account).collect(),
+            declared_cash,
             header: header.cloned(),
-            fallback,
+            target: target.cloned(),
         })
     }
 
-    /// The default counter-account for one line's account.
+    /// The default counter-account for one line: its account and commodity.
     #[must_use]
-    pub fn for_account(&self, account: &str) -> AccountName {
-        self.for_accounts([account])
+    pub fn for_account(&self, account: &str, commodity: &Commodity) -> AccountName {
+        self.for_lines([(account, commodity)])
     }
 
-    /// The default counter-account for a GROUP of lines: the pairing counts of
-    /// every account named are pooled, so a one-line group answers exactly as
-    /// [`CounterDefaults::for_account`] does.
+    /// The default counter-account for a GROUP of lines, each an
+    /// `(account, commodity)`: their votes are pooled, so a one-line group
+    /// answers exactly as [`CounterDefaults::for_account`] does.
     #[must_use]
-    pub fn for_accounts<'x>(&self, accounts: impl IntoIterator<Item = &'x str>) -> AccountName {
-        let roots: Vec<&str> = accounts.into_iter().collect();
-        let mut pooled: BTreeMap<&str, usize> = BTreeMap::new();
-        for (account, partners) in &self.pairings {
+    pub fn for_lines<'x>(
+        &self,
+        lines: impl IntoIterator<Item = (&'x str, &'x Commodity)>,
+    ) -> AccountName {
+        let lines: Vec<(&str, &Commodity)> = lines.into_iter().collect();
+        let commodities: BTreeSet<&Commodity> = lines.iter().map(|(_, c)| *c).collect();
+        let roots: Vec<&str> = lines.iter().map(|(account, _)| *account).collect();
+        let Some(best) = self.vote(&roots, &commodities, None) else {
+            return self.fallback(&commodities, self.header.as_ref());
+        };
+        if self.liabilities.contains(best) {
+            // The card's settlement: the postings that pay it down.
+            if let Some(settled) = self.vote(&[best], &commodities, Some(true))
+                && self.cash.contains(settled)
+            {
+                return AccountName(settled.to_string());
+            }
+        }
+        AccountName(best.to_string())
+    }
+
+    /// The header-less fallback in the valuation commodity: what the wire's
+    /// `defaults.cash` shows.
+    #[must_use]
+    pub fn cash_fallback(&self) -> AccountName {
+        let commodities: BTreeSet<&Commodity> = self.target.iter().collect();
+        self.fallback(&commodities, None)
+    }
+
+    /// The counterparty of `roots` in `commodities` with the most money paired
+    /// with it. `debit` keeps only the transactions on that side of the root.
+    fn vote(
+        &self,
+        roots: &[&str],
+        commodities: &BTreeSet<&Commodity>,
+        debit: Option<bool>,
+    ) -> Option<&str> {
+        let mut weights: BTreeMap<&str, Dec> = BTreeMap::new();
+        for (account, pairings) in &self.records {
             let Some(root) = roots.iter().find(|root| in_subtree(account, root)) else {
                 continue;
             };
-            for (cash, count) in partners {
-                // A transfer INSIDE the line's own subtree is not a pairing.
-                if in_subtree(cash, root) {
+            for pairing in pairings {
+                if !commodities.contains(&pairing.commodity)
+                    || debit.is_some_and(|side| side != pairing.debit)
+                {
                     continue;
                 }
-                *pooled.entry(cash.as_str()).or_insert(0) += count;
+                // A transfer INSIDE the root is not a pairing.
+                for (partner, size) in &pairing.partners {
+                    if in_subtree(partner, root) {
+                        continue;
+                    }
+                    let slot = weights.entry(partner.as_str()).or_insert_with(Dec::zero);
+                    // Exact-decimal sums only overflow far past any journal;
+                    // a saturated weight still ranks.
+                    *slot = slot.add((*size).min(pairing.amount)).unwrap_or(*slot);
+                }
             }
         }
-        // Highest count; a strict `>` over a lexical walk keeps the first tie.
-        let best = pooled
-            .iter()
-            .fold(None::<(&str, usize)>, |best, (cash, count)| match best {
-                Some((_, top)) if *count <= top => best,
-                _ => Some((cash, *count)),
-            });
-        if let Some((cash, _)) = best {
-            return AccountName(cash.to_string());
-        }
-        self.header
-            .clone()
-            .unwrap_or_else(|| AccountName(self.fallback.clone()))
+        // The largest total; a strict `>` over the lexical walk keeps the
+        // first tie.
+        weights
+            .into_iter()
+            .fold(None::<(&str, Dec)>, |best, (partner, weight)| match best {
+                Some((_, top)) if weight <= top => best,
+                _ => Some((partner, weight)),
+            })
+            .map(|(partner, _)| partner)
+    }
+
+    /// Steps 3 and 4: header, largest cash balance, first declared cash
+    /// account — first among the cash accounts that hold one of
+    /// `commodities`, then, only if none does, among all of them.
+    fn fallback(
+        &self,
+        commodities: &BTreeSet<&Commodity>,
+        header: Option<&AccountName>,
+    ) -> AccountName {
+        let holds = |account: &str| {
+            self.holdings
+                .get(account)
+                .is_some_and(|held| held.iter().any(|c| commodities.contains(c)))
+        };
+        let anyone_holds = self.holdings.keys().any(|account| holds(account));
+        let ok = |account: &str| !anyone_holds || holds(account);
+        // A header naming an account with no history at all (a fresh one) is
+        // the user's word and stands; one KNOWN to hold only other commodities
+        // is passed over.
+        header
+            .filter(|header| ok(&header.0) || !self.holdings.contains_key(&header.0))
+            .map(|header| header.0.clone())
+            .or_else(|| self.by_size.iter().find(|a| ok(a)).cloned())
+            .or_else(|| self.declared_cash.iter().find(|a| ok(a)).cloned())
+            .or_else(|| self.holdings.keys().find(|a| ok(a)).cloned())
+            .map_or_else(
+                || AccountName(FALLBACK_CASH_ACCOUNT.to_string()),
+                AccountName,
+            )
     }
 }
 
@@ -564,7 +731,11 @@ pub fn upgrade_legacy_counters(scenario: &Scenario, defaults: &CounterDefaults) 
         if sum.is_empty() {
             continue;
         }
-        let counter = defaults.for_accounts(lines.iter().map(|line| line.account.0.as_str()));
+        let counter = defaults.for_lines(
+            lines
+                .iter()
+                .map(|line| (line.account.0.as_str(), &line.amount.commodity)),
+        );
         for &index in members {
             out.lines[index].counter = Some(counter.clone());
         }
@@ -581,14 +752,7 @@ pub fn upgrade_legacy_counters(scenario: &Scenario, defaults: &CounterDefaults) 
             .any(|amount| sum.accumulate(&amount.commodity, amount.quantity).is_err());
         sum.drop_zeros();
         if overflowed || !sum.is_empty() {
-            event.counter = Some(
-                defaults.for_accounts(
-                    event
-                        .postings
-                        .iter()
-                        .map(|posting| posting.account.0.as_str()),
-                ),
-            );
+            event.counter = Some(defaults.for_lines(event_lines(event)));
         }
     }
     out
@@ -687,7 +851,7 @@ pub(super) fn expand(
         mut warnings,
         ..
     } = expansion;
-    super::warn_on_commodity_mismatch(&commodities, target.as_ref(), &mut warnings);
+    super::warn_on_commodity_mismatch(&commodities, target.as_ref(), &db, &as_of, &mut warnings);
     let forecast_defaults = ForecastDefaults::of(scenario, &defaults);
 
     // Ascending by date, stable, so a reader that walks them once is right.
@@ -743,8 +907,9 @@ struct DatedLegs {
     counters: BTreeMap<String, MixedAmount>,
     /// The sum of the counter-less postings: the legacy residual.
     unbalanced: MixedAmount,
-    /// The accounts of the counter-less postings, for the group's default.
-    unbalanced_accounts: BTreeSet<String>,
+    /// The accounts and commodities of the counter-less postings, for the
+    /// group's default.
+    unbalanced_accounts: BTreeSet<(String, Commodity)>,
 }
 
 /// The expansion in progress. A struct for the reason `Layout` was one before
@@ -892,7 +1057,8 @@ impl<'a> Expansion<'a> {
                 .ma_add_assign(&amount.ma_neg()?)?,
             None => {
                 legs.unbalanced.ma_add_assign(amount)?;
-                legs.unbalanced_accounts.insert(line.account.0.clone());
+                legs.unbalanced_accounts
+                    .insert((line.account.0.clone(), line.amount.commodity.clone()));
             }
         }
         Ok(())
@@ -916,9 +1082,11 @@ impl<'a> Expansion<'a> {
                 let mut residual = legs.unbalanced.clone();
                 residual.drop_zeros();
                 if !residual.is_empty() {
-                    let counter = self
-                        .defaults
-                        .for_accounts(legs.unbalanced_accounts.iter().map(String::as_str));
+                    let counter = self.defaults.for_lines(
+                        legs.unbalanced_accounts
+                            .iter()
+                            .map(|(a, c)| (a.as_str(), c)),
+                    );
                     postings.extend(posting(&counter.0, &residual.ma_neg()?, &plain_style()));
                 }
                 self.txns
@@ -950,10 +1118,10 @@ impl<'a> Expansion<'a> {
         }
         sum.drop_zeros();
         if !sum.is_empty() {
-            let counter = event.counter.clone().unwrap_or_else(|| {
-                self.defaults
-                    .for_accounts(event.postings.iter().map(|item| item.account.0.as_str()))
-            });
+            let counter = event
+                .counter
+                .clone()
+                .unwrap_or_else(|| self.defaults.for_lines(event_lines(event)));
             postings.extend(posting(&counter.0, &sum.ma_neg()?, &plain_style()));
         }
         if postings.is_empty() {
@@ -1473,6 +1641,10 @@ mod tests {
             .expect("the forecast expands")
     }
 
+    fn dollar() -> Commodity {
+        Commodity("$".to_string())
+    }
+
     fn defaults_over(txns: &[Transaction], header: Option<&str>) -> CounterDefaults {
         let types = AccountTypes::from_declared(BTreeMap::new());
         let header = header.map(|account| AccountName(account.to_string()));
@@ -1557,20 +1729,29 @@ mod tests {
     fn the_default_counter_is_the_most_common_cash_pairing() {
         let defaults = defaults_over(&journal(), Some("assets:header"));
         // Salary always landed in checking — and a parent line pools its children.
-        assert_eq!(defaults.for_account("revenues:salary").0, "assets:checking");
         assert_eq!(
-            defaults.for_account("revenues:salary:base").0,
+            defaults.for_account("revenues:salary", &dollar()).0,
+            "assets:checking"
+        );
+        assert_eq!(
+            defaults.for_account("revenues:salary:base", &dollar()).0,
             "assets:checking"
         );
         // Rent was always paid from savings.
-        assert_eq!(defaults.for_account("expenses:rent").0, "assets:savings");
+        assert_eq!(
+            defaults.for_account("expenses:rent", &dollar()).0,
+            "assets:savings"
+        );
         // No history: the scenario header's `; cash:`.
-        assert_eq!(defaults.for_account("expenses:travel").0, "assets:header");
+        assert_eq!(
+            defaults.for_account("expenses:travel", &dollar()).0,
+            "assets:header"
+        );
         // A group pools its lines: two salary pairings beat one rent pairing? No —
         // three each; the tie goes to the lexically first.
         assert_eq!(
             defaults
-                .for_accounts(["revenues:salary", "expenses:rent"])
+                .for_lines([("revenues:salary", &dollar()), ("expenses:rent", &dollar())])
                 .0,
             "assets:checking"
         );
@@ -1580,11 +1761,17 @@ mod tests {
     fn without_history_or_header_the_largest_cash_balance_is_the_default() {
         let defaults = defaults_over(&journal(), None);
         // Savings ends September at $17,000, checking at $14,000.
-        assert_eq!(defaults.for_account("expenses:travel").0, "assets:savings");
+        assert_eq!(
+            defaults.for_account("expenses:travel", &dollar()).0,
+            "assets:savings"
+        );
         // A journal with no cash account at all falls back to `assets:cash`,
         // which hledger's own heuristic reads as Cash.
         let none = defaults_over(&[], None);
-        assert_eq!(none.for_account("expenses:travel").0, FALLBACK_CASH_ACCOUNT);
+        assert_eq!(
+            none.for_account("expenses:travel", &dollar()).0,
+            FALLBACK_CASH_ACCOUNT
+        );
         // A declared cash account wins over the fallback even with no balance.
         let types = AccountTypes::from_declared(
             [("activo:banco".to_string(), AccountType::Cash)]
@@ -1602,7 +1789,10 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(declared.for_account("gastos:viaje").0, "activo:banco");
+        assert_eq!(
+            declared.for_account("gastos:viaje", &dollar()).0,
+            "activo:banco"
+        );
     }
 
     #[test]
@@ -1635,8 +1825,276 @@ mod tests {
             ),
         ];
         assert_eq!(
-            defaults_over(&txns, None).for_account("expenses:gym").0,
+            defaults_over(&txns, None)
+                .for_account("expenses:gym", &dollar())
+                .0,
             "assets:savings"
+        );
+    }
+
+    // --- Amendment 22: any-type, per-commodity pairing, one liability hop ---
+
+    fn eur(cents: i128) -> Amount {
+        amount("EUR", cents, 2)
+    }
+
+    /// A household shaped like sample.journal: checking (`$`) pays rent and the
+    /// card, wise holds EUR only, groceries go on the card, salary lands in
+    /// checking net of tax, depreciation books against its contra-asset.
+    fn household() -> (Vec<Transaction>, AccountTypes) {
+        let types = AccountTypes::from_declared(
+            [
+                ("assets:bank:checking", AccountType::Cash),
+                ("assets:bank:wise:eur", AccountType::Cash),
+                ("assets:vehicles:car:depreciation", AccountType::Asset),
+                ("liabilities:cc:visa", AccountType::Liability),
+                ("income:salary", AccountType::Revenue),
+                ("expenses", AccountType::Expense),
+                ("equity:opening", AccountType::Equity),
+            ]
+            .into_iter()
+            .map(|(name, ty)| (name.to_string(), ty))
+            .collect(),
+        );
+        let mut txns = vec![txn(
+            1,
+            "2026-01-02",
+            vec![
+                ("assets:bank:checking", vec![usd(2_000_000)]),
+                ("assets:bank:wise:eur", vec![eur(50_000)]),
+                ("equity:opening", vec![usd(-2_000_000), eur(-50_000)]),
+            ],
+        )];
+        let mut index = 2;
+        let mut push = |date: &str, postings: Vec<(&str, Vec<Amount>)>| {
+            txns.push(txn(index, date, postings));
+            index += 1;
+        };
+        for month in ["06", "07", "08", "09"] {
+            push(
+                &format!("2026-{month}-05"),
+                vec![
+                    ("expenses:food:groceries", vec![usd(18_000)]),
+                    ("liabilities:cc:visa", vec![usd(-18_000)]),
+                ],
+            );
+            push(
+                &format!("2026-{month}-15"),
+                vec![
+                    ("liabilities:cc:visa", vec![usd(30_000)]),
+                    ("assets:bank:checking", vec![usd(-30_000)]),
+                ],
+            );
+            push(
+                &format!("2026-{month}-27"),
+                vec![
+                    ("income:salary", vec![usd(-540_000)]),
+                    ("expenses:taxes:federal", vec![usd(105_000)]),
+                    ("expenses:taxes:state", vec![usd(30_000)]),
+                    ("assets:bank:checking", vec![usd(405_000)]),
+                ],
+            );
+        }
+        // A Berlin trip: EUR food and travel, both paid from wise. Food is
+        // paid from wise in EUR twice, on the card in `$` four times.
+        for day in ["12", "14"] {
+            push(
+                &format!("2026-09-{day}"),
+                vec![
+                    ("expenses:food:restaurants", vec![eur(2_350)]),
+                    ("assets:bank:wise:eur", vec![eur(-2_350)]),
+                ],
+            );
+        }
+        push(
+            "2026-09-12",
+            vec![
+                ("expenses:travel:lodging", vec![eur(64_500)]),
+                ("assets:bank:wise:eur", vec![eur(-64_500)]),
+            ],
+        );
+        push(
+            "2026-06-30",
+            vec![
+                ("expenses:depreciation", vec![usd(350_000)]),
+                ("assets:vehicles:car:depreciation", vec![usd(-350_000)]),
+            ],
+        );
+        (txns, types)
+    }
+
+    fn household_defaults(header: Option<&str>) -> CounterDefaults {
+        let (txns, types) = household();
+        let header = header.map(|account| AccountName(account.to_string()));
+        CounterDefaults::new(
+            &History {
+                txns: &txns,
+                prices: &[],
+            },
+            &types,
+            "2026-10-01",
+            header.as_ref(),
+            None,
+        )
+        .expect("the defaults build")
+    }
+
+    #[test]
+    fn depreciation_pairs_with_its_contra_asset_and_never_with_cash() {
+        let defaults = household_defaults(None);
+        assert_eq!(
+            defaults.for_account("expenses:depreciation", &dollar()).0,
+            "assets:vehicles:car:depreciation"
+        );
+    }
+
+    #[test]
+    fn spending_on_a_card_resolves_through_the_card_to_the_account_that_pays_it() {
+        let defaults = household_defaults(None);
+        // Groceries were only ever on the visa, and the visa is paid from
+        // checking: one hop, to checking.
+        assert_eq!(
+            defaults.for_account("expenses:food:groceries", &dollar()).0,
+            "assets:bank:checking"
+        );
+        // The parent pools: $720 on the card, so `$` food is
+        // checking too — never the EUR-only wise account the trip used.
+        assert_eq!(
+            defaults.for_account("expenses:food", &dollar()).0,
+            "assets:bank:checking"
+        );
+    }
+
+    #[test]
+    fn a_card_with_no_cash_settlement_is_kept_as_the_counter() {
+        let (mut txns, types) = household();
+        // Drop every payment: the visa is never settled from cash.
+        txns.retain(|txn| {
+            !txn.postings
+                .iter()
+                .any(|p| p.account.0 == "liabilities:cc:visa")
+                || txn
+                    .postings
+                    .iter()
+                    .all(|p| p.account.0 != "assets:bank:checking")
+        });
+        let defaults = CounterDefaults::new(
+            &History {
+                txns: &txns,
+                prices: &[],
+            },
+            &types,
+            "2026-10-01",
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            defaults.for_account("expenses:food:groceries", &dollar()).0,
+            "liabilities:cc:visa"
+        );
+    }
+
+    #[test]
+    fn salary_lands_where_the_net_pay_landed_not_in_the_taxes() {
+        let defaults = household_defaults(None);
+        // Net pay is the payslip's only balance-sheet counterparty.
+        assert_eq!(
+            defaults.for_account("income:salary", &dollar()).0,
+            "assets:bank:checking"
+        );
+        // The tax withheld pairs only with the salary — revenue, which is no
+        // counterparty — so it falls back to cash and DOES draw cash down.
+        // Paired with the salary it would leave cash untouched while the gross
+        // landed in checking.
+        assert_eq!(
+            defaults.for_account("expenses:taxes", &dollar()).0,
+            "assets:bank:checking"
+        );
+    }
+
+    #[test]
+    fn a_line_is_paired_only_with_accounts_that_took_its_commodity() {
+        let defaults = household_defaults(None);
+        // EUR food: the trip, from wise.
+        assert_eq!(
+            defaults
+                .for_account("expenses:food", &Commodity("EUR".to_string()))
+                .0,
+            "assets:bank:wise:eur"
+        );
+        // `$` travel has no `$` history at all (the trip was EUR), so it falls
+        // back — to a cash account that holds `$`, never to wise.
+        assert_eq!(
+            defaults.for_account("expenses:travel", &dollar()).0,
+            "assets:bank:checking"
+        );
+        // Even a header naming the EUR-only account is passed over for `$`…
+        let headed = household_defaults(Some("assets:bank:wise:eur"));
+        assert_eq!(
+            headed.for_account("expenses:gifts", &dollar()).0,
+            "assets:bank:checking"
+        );
+        // …and honoured for EUR.
+        assert_eq!(
+            headed
+                .for_account("expenses:gifts", &Commodity("EUR".to_string()))
+                .0,
+            "assets:bank:wise:eur"
+        );
+    }
+
+    #[test]
+    fn with_no_history_the_fallbacks_prefer_a_holder_of_the_commodity() {
+        let defaults = household_defaults(None);
+        // No account ever held CHF: the unfiltered chain, largest cash first.
+        assert_eq!(
+            defaults
+                .for_account("expenses:ski", &Commodity("CHF".to_string()))
+                .0,
+            "assets:bank:checking"
+        );
+        // A header is honoured when nothing holds the commodity either.
+        let headed = household_defaults(Some("assets:bank:wise:eur"));
+        assert_eq!(
+            headed
+                .for_account("expenses:ski", &Commodity("CHF".to_string()))
+                .0,
+            "assets:bank:wise:eur"
+        );
+        assert_eq!(defaults.cash_fallback().0, "assets:bank:checking");
+    }
+
+    /// The expansion books projected depreciation against the contra-asset, so
+    /// the cash series never sees it.
+    #[test]
+    fn projected_depreciation_does_not_drain_cash() {
+        let (txns, types) = household();
+        let scenario = scenario(
+            vec![line("dep", "expenses:depreciation", usd(29_167), "monthly")],
+            Vec::new(),
+        );
+        let forecast = forecast_transactions(
+            &scenario,
+            &opts(3),
+            &types,
+            &History {
+                txns: &txns,
+                prices: &[],
+            },
+        )
+        .unwrap();
+        assert_balanced(&forecast);
+        for txn in &forecast.txns {
+            assert!(
+                txn.postings.iter().all(|p| !types.is_cash(&p.account.0)),
+                "{:?}",
+                legs(txn)
+            );
+        }
+        assert_eq!(
+            forecast.defaults.lines["dep"].0,
+            "assets:vehicles:car:depreciation"
         );
     }
 
