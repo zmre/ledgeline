@@ -920,15 +920,225 @@ pub(super) fn signed(ma: &MixedAmount, flip: bool) -> Result<MixedAmount, Report
 /// Known groups in balance-sheet order, then the rest alphabetically, then the
 /// synthetic equity lines.
 fn sort_groups(groups: &mut [BsGroup]) {
-    groups.sort_by_key(|group| {
-        (
-            // Current before non-current; `None` (split off) is one bucket, so
-            // this reduces to the old ordering exactly.
-            group.term.map_or(0, BsTerm::rank),
-            group_rank(&group.name, group.source),
-            group.name.clone(),
-        )
-    });
+    groups.sort_by_key(|group| group_order(group.term, &group.name, group.source));
+}
+
+/// The presentation order of one group: term (current first; `None`, the
+/// split switched off, is one bucket, so this reduces to the old ordering
+/// exactly), then the built-in rank, then name. Shared by [`sort_groups`] and
+/// [`pivot_balance_sheets`], so a pivoted column cannot order its groups
+/// differently from the sheets it was built from.
+fn group_order(term: Option<BsTerm>, name: &str, source: GroupSource) -> (usize, usize, String) {
+    (
+        term.map_or(0, BsTerm::rank),
+        group_rank(name, source),
+        name.to_string(),
+    )
+}
+
+// ===========================================================================
+// Pivoted columns — plans/28-projected-statements.md, Phase 4
+// ===========================================================================
+
+/// One account row across every column: `own` and `inclusive` per column,
+/// empty where the column's group had no such row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BsColumnRow {
+    /// Full, colon-delimited account name.
+    pub account: String,
+    /// Number of `:`-separated segments in `account`.
+    pub depth: usize,
+    /// [`ReportRow::own`], per column.
+    pub own: Vec<MixedAmount>,
+    /// [`ReportRow::inclusive`], per column.
+    pub inclusive: Vec<MixedAmount>,
+}
+
+/// One group across every column. A group present in only some columns has
+/// an empty total in the others.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BsColumnGroup {
+    /// [`BsGroup::name`].
+    pub name: String,
+    /// The first column's [`BsGroup::source`] for this group.
+    pub source: GroupSource,
+    /// [`BsGroup::term`]. Part of the group's identity, as it is there.
+    pub term: Option<BsTerm>,
+    /// The union of every column's rows, lexically ordered.
+    pub rows: Vec<BsColumnRow>,
+    /// [`BsGroup::total`], per column.
+    pub total: Vec<MixedAmount>,
+}
+
+/// One current/non-current band across every column.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BsColumnSubsection {
+    /// [`BsSubsection::term`].
+    pub term: BsTerm,
+    /// [`BsSubsection::heading`].
+    pub heading: String,
+    /// [`BsSubsection::label`].
+    pub label: String,
+    /// [`BsSubsection::total`], per column.
+    pub total: Vec<MixedAmount>,
+}
+
+/// One of the three boxes across every column.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BsColumnSection {
+    /// Which box.
+    pub kind: BsSectionKind,
+    /// Display title.
+    pub title: String,
+    /// The union of every column's groups, in [`BsSection::groups`]' order.
+    pub groups: Vec<BsColumnGroup>,
+    /// The union of every column's bands, current first.
+    pub subsections: Vec<BsColumnSubsection>,
+    /// [`BsSection::total`], per column.
+    pub total: Vec<MixedAmount>,
+}
+
+/// Several [`BalanceSheetReport`]s laid side by side: ONE tree of sections,
+/// groups, bands and rows — the union of the columns' — with one figure per
+/// column at every node.
+///
+/// [`balance_sheet_columns`] returns independent reports, and a group appears
+/// only in the columns where it has a balance. A reader showing them side by
+/// side has to join them; this is that join, done once, so every consumer
+/// shows the same rows in the same order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BalanceSheetColumns {
+    /// Each column's [`BalanceSheetReport::as_of`], in the order given.
+    pub as_of: Vec<String>,
+    /// The first column's [`BalanceSheetReport::base`] that is `Some`. Every
+    /// column is built with the same options and prices, so they agree.
+    pub base: Option<Commodity>,
+    /// Always the three boxes, in order, when there is at least one column.
+    pub sections: Vec<BsColumnSection>,
+    /// [`BalanceSheetReport::net_worth`], per column.
+    pub net_worth: Vec<MixedAmount>,
+    /// [`BalanceSheetReport::check`], per column.
+    pub check: Vec<MixedAmount>,
+    /// [`BalanceSheetReport::balanced`], per column.
+    pub balanced: Vec<bool>,
+    /// Every column's unpriced commodities (sorted, deduped).
+    pub meta: ReportMeta,
+}
+
+/// Join `reports` into one [`BalanceSheetColumns`]: the union of their groups
+/// (keyed by section, term and name), bands (by term) and rows (by account),
+/// each carrying one figure per report and an empty amount where a report had
+/// no such node.
+///
+/// Group order is the single-date order ([`group_order`]); since every
+/// column is already sorted by it, the union is too.
+#[must_use]
+pub fn pivot_balance_sheets(reports: &[BalanceSheetReport]) -> BalanceSheetColumns {
+    let columns = reports.len();
+    let empty = || vec![MixedAmount::new(); columns];
+    let kinds: Vec<(BsSectionKind, String)> = reports
+        .first()
+        .map(|first| {
+            first
+                .sections
+                .iter()
+                .map(|section| (section.kind, section.title.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let sections = kinds
+        .into_iter()
+        .map(|(kind, title)| {
+            let mut total = empty();
+            let mut groups: BTreeMap<(usize, usize, String, Option<BsTerm>), BsColumnGroup> =
+                BTreeMap::new();
+            let mut rows: BTreeMap<(Option<BsTerm>, String), BTreeMap<String, BsColumnRow>> =
+                BTreeMap::new();
+            let mut subsections: BTreeMap<usize, BsColumnSubsection> = BTreeMap::new();
+            for (column, report) in reports.iter().enumerate() {
+                let Some(section) = report.sections.iter().find(|s| s.kind == kind) else {
+                    continue;
+                };
+                total[column] = section.total.clone();
+                for group in &section.groups {
+                    let (term_rank, rank, name) =
+                        group_order(group.term, &group.name, group.source);
+                    let entry = groups
+                        .entry((term_rank, rank, name, group.term))
+                        .or_insert_with(|| BsColumnGroup {
+                            name: group.name.clone(),
+                            source: group.source,
+                            term: group.term,
+                            rows: Vec::new(),
+                            total: empty(),
+                        });
+                    entry.total[column] = group.total.clone();
+                    let by_account = rows.entry((group.term, group.name.clone())).or_default();
+                    for row in &group.rows {
+                        let pivoted =
+                            by_account
+                                .entry(row.account.clone())
+                                .or_insert_with(|| BsColumnRow {
+                                    account: row.account.clone(),
+                                    depth: row.depth,
+                                    own: empty(),
+                                    inclusive: empty(),
+                                });
+                        pivoted.own[column] = row.own.clone();
+                        pivoted.inclusive[column] = row.inclusive.clone();
+                    }
+                }
+                for band in &section.subsections {
+                    subsections
+                        .entry(band.term.rank())
+                        .or_insert_with(|| BsColumnSubsection {
+                            term: band.term,
+                            heading: band.heading.clone(),
+                            label: band.label.clone(),
+                            total: empty(),
+                        })
+                        .total[column] = band.total.clone();
+                }
+            }
+            let groups = groups
+                .into_values()
+                .map(|mut group| {
+                    group.rows = rows
+                        .remove(&(group.term, group.name.clone()))
+                        .map(|by_account| by_account.into_values().collect())
+                        .unwrap_or_default();
+                    group
+                })
+                .collect();
+            BsColumnSection {
+                kind,
+                title,
+                groups,
+                subsections: subsections.into_values().collect(),
+                total,
+            }
+        })
+        .collect();
+
+    let unpriced: BTreeSet<Commodity> = reports
+        .iter()
+        .flat_map(|report| report.meta.unpriced.iter().cloned())
+        .collect();
+    BalanceSheetColumns {
+        as_of: reports.iter().map(|report| report.as_of.clone()).collect(),
+        base: reports.iter().find_map(|report| report.base.clone()),
+        sections,
+        net_worth: reports
+            .iter()
+            .map(|report| report.net_worth.clone())
+            .collect(),
+        check: reports.iter().map(|report| report.check.clone()).collect(),
+        balanced: reports.iter().map(|report| report.balanced).collect(),
+        meta: ReportMeta {
+            unpriced: unpriced.into_iter().collect(),
+        },
+    }
 }
 
 /// Partition `members` into groups, each rolled up and clamped to `depth`.

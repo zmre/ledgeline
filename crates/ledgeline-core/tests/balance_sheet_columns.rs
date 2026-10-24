@@ -18,9 +18,9 @@ mod common;
 
 use ledgeline_core::model::Commodity;
 use ledgeline_core::reports::{
-    AccountType, BalanceSheetReport, BsOpts, BsSectionKind, Interval, RETAINED_EARNINGS_GROUP,
-    Valuation, account_decls, account_groups, balance_sheet_columns, balance_sheet_grouped,
-    bs_terms, declared_types, range_buckets,
+    AccountType, BalanceSheetReport, BsOpts, BsSectionKind, Interval, MixedAmount,
+    RETAINED_EARNINGS_GROUP, Valuation, account_decls, account_groups, balance_sheet_columns,
+    balance_sheet_grouped, bs_terms, declared_types, pivot_balance_sheets, range_buckets,
 };
 use ledgeline_core::{Journal, parse_journal};
 use proptest::prelude::*;
@@ -167,6 +167,112 @@ fn every_column_equals_the_single_date_report_on_every_fixture() {
         let journal = journal_fixture(fixture);
         assert_columns_match(&journal, &month_ends(from, to), &[None, Some(2)]);
     }
+}
+
+/// `pivot_balance_sheets` is a JOIN and nothing else: column `i` of the pivot,
+/// read back node by node, is report `i` — every group, band and row it had,
+/// with its own figures — and every node it lacked reads empty. The union's
+/// order restricted to one column is that column's own order.
+#[test]
+fn the_pivot_is_each_column_read_side_by_side() {
+    let cases = [
+        // Groups that come and go: the window opens before the first
+        // transaction, so early columns hold almost nothing.
+        ("sample.journal", "2024-05-01", "2026-09-30"),
+        ("reports/bs-groups.journal", "2025-11-01", "2026-12-31"),
+        ("reports/nested-types.journal", "2025-12-01", "2026-12-31"),
+    ];
+    for (fixture, from, to) in cases {
+        let journal = journal_fixture(fixture);
+        let ends = month_ends(from, to);
+        let reports = columns(&journal, None, Valuation::Market, &ends);
+        let pivot = pivot_balance_sheets(&reports);
+        assert_eq!(pivot.as_of, ends, "{fixture}: one column per end");
+        assert_eq!(pivot.sections.len(), 3);
+        for (column, report) in reports.iter().enumerate() {
+            assert_eq!(pivot.net_worth[column], report.net_worth);
+            assert_eq!(pivot.check[column], report.check);
+            assert_eq!(pivot.balanced[column], report.balanced);
+            for (section, pivoted) in report.sections.iter().zip(&pivot.sections) {
+                assert_eq!(section.kind, pivoted.kind);
+                assert_eq!(pivoted.total[column], section.total);
+                // The union, restricted to the groups this column has, is in
+                // this column's own order.
+                let present: Vec<(&str, _)> = pivoted
+                    .groups
+                    .iter()
+                    .filter(|group| {
+                        section
+                            .groups
+                            .iter()
+                            .any(|g| g.name == group.name && g.term == group.term)
+                    })
+                    .map(|group| (group.name.as_str(), group.term))
+                    .collect();
+                let own: Vec<(&str, _)> = section
+                    .groups
+                    .iter()
+                    .map(|group| (group.name.as_str(), group.term))
+                    .collect();
+                assert_eq!(present, own, "{fixture} {} group order", report.as_of);
+                for group in &pivoted.groups {
+                    let Some(original) = section
+                        .groups
+                        .iter()
+                        .find(|g| g.name == group.name && g.term == group.term)
+                    else {
+                        assert_eq!(group.total[column], MixedAmount::new());
+                        assert!(
+                            group
+                                .rows
+                                .iter()
+                                .all(|row| row.inclusive[column].is_empty())
+                        );
+                        continue;
+                    };
+                    assert_eq!(group.total[column], original.total);
+                    for row in &group.rows {
+                        match original.rows.iter().find(|r| r.account == row.account) {
+                            Some(r) => {
+                                assert_eq!(row.own[column], r.own);
+                                assert_eq!(row.inclusive[column], r.inclusive);
+                            }
+                            None => assert!(row.inclusive[column].is_empty()),
+                        }
+                    }
+                    assert!(
+                        original
+                            .rows
+                            .iter()
+                            .all(|r| group.rows.iter().any(|row| row.account == r.account)),
+                        "every row of the column is in the union"
+                    );
+                }
+                for band in &section.subsections {
+                    let pivoted_band = pivoted
+                        .subsections
+                        .iter()
+                        .find(|b| b.term == band.term)
+                        .expect("every band of the column is in the union");
+                    assert_eq!(pivoted_band.total[column], band.total);
+                    assert_eq!(pivoted_band.label, band.label);
+                }
+            }
+        }
+        // Something really did come and go, or this proves nothing.
+        assert!(
+            pivot
+                .sections
+                .iter()
+                .any(|section| section.groups.iter().any(|group| group
+                    .total
+                    .first()
+                    .is_some_and(MixedAmount::is_empty)
+                    && group.total.last().is_some_and(|last| !last.is_empty()))),
+            "{fixture}: some group should appear partway through the window"
+        );
+    }
+    assert_eq!(pivot_balance_sheets(&[]).sections.len(), 0);
 }
 
 /// The fixtures above really do reach the branches this suite claims to cover;
