@@ -35,18 +35,50 @@
 
      The balance check is shown only when it is non-zero, and then as a warning:
      the engine computes it from exact `Dec` values, so a non-zero check is a
-     real journal-integrity failure and never a rounding artefact. -->
+     real journal-integrity failure and never a rounding artefact.
+
+     COLUMNS (plans/28). The same view renders a multi-column sheet — the
+     Projections tab's balance sheet at the end of every period — from the
+     engine's pivoted `BalanceSheetColumns`. A single-date report is turned into
+     a ONE-column one (`asColumns`), so there is one template, and on the Reports
+     tab it reads exactly as before: one "Amount" column. `projectedFrom` marks
+     where actuals end. -->
 <script lang="ts">
     import type {MixedAmount} from "#lib/domain/money.js";
     import type {AmountStyle} from "#lib/domain/types.js";
     import {openJournal} from "#lib/journal/openJournal.js";
     import {registerKeys} from "#lib/keys/keymap.svelte.js";
     import {PRIORITY} from "#lib/keys/types.js";
-    import type {BalanceSheetReport, BsSectionKind} from "#lib/reports/types.js";
+    import type {BalanceSheetColumns, BalanceSheetReport, BsSectionKind} from "#lib/reports/types.js";
     import {listCursor} from "#lib/ui/listCursor.svelte.js";
-    import {amountCell, bsCursorRows, bsSummary, sectionDisplayRows, type AmountCell, type BsDisplayRow} from "./balanceSheetRows";
+    import {
+        amountCell,
+        asColumns,
+        bsColumnSummaries,
+        bsCursorRows,
+        columnSectionRows,
+        type AmountCell,
+        type BsDisplayRow,
+        type BsSummary,
+    } from "./balanceSheetRows";
+    import ProjectedHeadRow from "./ProjectedHeadRow.svelte";
+    import {projectedEdge} from "./projectedColumns";
 
-    let {report, styles}: {report: BalanceSheetReport; styles: ReadonlyMap<string, AmountStyle>} = $props();
+    let {
+        report,
+        styles,
+        projectedFrom = null,
+    }: {
+        /** A single-date sheet (the Reports tab) or a multi-column one (Projections). */
+        report: BalanceSheetReport | BalanceSheetColumns;
+        styles: ReadonlyMap<string, AmountStyle>;
+        /** The first FORECAST column, drawn as a divider under "Projected"; null for none. */
+        projectedFrom?: number | null;
+    } = $props();
+
+    /** Every sheet as columns: one template, whichever shape arrived. */
+    const sheet = $derived<BalanceSheetColumns>(report.kind === "balanceSheet" ? asColumns(report) : report);
+    const multi = $derived(report.kind === "balanceSheetColumns");
 
     /**
      * Which groups are open, keyed by `BsDisplayRow.key`.
@@ -71,8 +103,8 @@
     // iterates the very same arrays, so a row can never be reachable by `j` and
     // absent from the screen. The filter drops the band rows only — see
     // `bsCursorRows`.
-    const sectionRows = $derived(report.sections.map((section) => sectionDisplayRows(section, isExpanded)));
-    const cursorable = $derived<BsDisplayRow[]>(bsCursorRows(sectionRows.flat()));
+    const sectionRows = $derived(sheet.sections.map((section) => columnSectionRows(section, isExpanded)));
+    const cursorable = $derived<BsDisplayRow<MixedAmount[]>[]>(bsCursorRows(sectionRows.flat()));
 
     const cursor = listCursor(
         () => cursorable,
@@ -115,7 +147,9 @@
         ],
     });
 
-    const cell = (row: {amount: BsDisplayRow["amount"]}): AmountCell => amountCell(row.amount, report.base, styles);
+    const cell = (ma: MixedAmount | undefined): AmountCell => amountCell(ma ?? new Map(), sheet.base, styles);
+    /** The widths every box pins its figure columns to, so the boxes line up. */
+    const figureWidth = $derived(multi ? "w-28 min-w-28" : "");
 
     /** Per-box accent. Static literals so Tailwind's scanner sees every class. */
     const ACCENT: Record<BsSectionKind, {text: string; rule: string}> = {
@@ -128,36 +162,81 @@
     // rendered strings, and `balanced` is the engine's own verdict rather than
     // anything decided here — see `bsSummary`. The xlsx export reads the same
     // function, so the workbook cannot disagree with the page it came from.
-    const summary = $derived(bsSummary(report));
-    const check = $derived(amountCell(report.check, report.base, styles));
+    const summaries = $derived(bsColumnSummaries(sheet));
+    const allBalanced = $derived(summaries.every((summary) => summary.balanced));
+    /** The first column that does not balance — the one the warning names. */
+    const unbalanced = $derived(summaries.findIndex((summary) => !summary.balanced));
+    const check = $derived(cell(sheet.check[Math.max(unbalanced, 0)]));
 
     const valuationLabel = $derived(
-        report.value === "market" ? `Market value${report.base === null ? "" : ` in ${report.base}`}` : report.value === "cost" ? "At cost" : "Unvalued"
+        sheet.value === "market" ? `Market value${sheet.base === null ? "" : ` in ${sheet.base}`}` : sheet.value === "cost" ? "At cost" : "Unvalued"
     );
+    const asOfLabel = $derived(report.kind === "balanceSheet" ? `as of ${report.asOf}` : "at the end of each period");
 </script>
 
+<!-- Side by side, each unconverted commodity takes its own line rather than
+     one `·`-joined run: a run of three is wider than a period column, and the
+     boxes' columns then stop lining up with each other. -->
 {#snippet amount(c: AmountCell, size: string)}
     <span class="{size} {c.negative ? 'text-error' : ''}">{c.text}</span>
     {#if c.extras.length > 0}
-        <span class="block text-xs font-normal text-base-content/50">{c.extras.join(" · ")}</span>
+        {#if multi}
+            {#each c.extras as extra (extra)}
+                <span class="block text-xs font-normal text-base-content/50">{extra}</span>
+            {/each}
+        {:else}
+            <span class="block text-xs font-normal text-base-content/50">{c.extras.join(" · ")}</span>
+        {/if}
     {/if}
 {/snippet}
 
-<!-- One label/figure line of the tie-out. The third cell exists on every row so
+<!-- One figure per column, divider and all. -->
+{#snippet figures(values: readonly MixedAmount[], emphasis: string)}
+    {#each sheet.columns as column, at (column.key)}
+        <td
+            class="{figureWidth} {projectedEdge(at, projectedFrom)} text-right align-top font-mono whitespace-nowrap tabular-nums"
+            data-column={multi ? column.key : undefined}
+        >
+            {@render amount(cell(values[at]), emphasis)}
+        </td>
+    {/each}
+{/snippet}
+
+<!-- The column headings: "Amount" on a single-date sheet, each period on a
+     multi-column one, under the actual/projected band when there is one. -->
+{#snippet figureHeads(label: string, verdict: boolean)}
+    <ProjectedHeadRow columns={sheet.columns.length} {projectedFrom} trailing={verdict ? 1 : 0} />
+    <tr class="text-[0.65rem] text-base-content/40">
+        <th class="w-full font-normal"><span class="sr-only">{label}</span></th>
+        {#each sheet.columns as column, at (column.key)}
+            <th class="{figureWidth} {projectedEdge(at, projectedFrom)} text-right font-normal" title={multi ? `as of ${column.to}` : undefined}
+                >{column.label}</th
+            >
+        {/each}
+        {#if verdict}
+            <th class="font-normal"><span class="sr-only">Balance check</span></th>
+        {/if}
+    </tr>
+{/snippet}
+
+<!-- One label/figure line of the tie-out. The last cell exists on every row so
      the verdict on the last one does not widen the column under the others. -->
-{#snippet tieRow(label: string, ma: MixedAmount, emphasis: string)}
+{#snippet tieRow(label: string, pick: (summary: BsSummary) => MixedAmount, emphasis: string)}
     <tr>
         <th class="w-full font-normal">{label}</th>
-        <td class="text-right align-top font-mono whitespace-nowrap tabular-nums">{@render amount(amountCell(ma, report.base, styles), emphasis)}</td>
+        {@render figures(
+            summaries.map((summary) => pick(summary)),
+            emphasis
+        )}
         <td></td>
     </tr>
 {/snippet}
 
 <div class="flex flex-col gap-4" data-testid="balance-sheet">
-    <p class="-mb-1 text-xs text-base-content/50">{valuationLabel} as of {report.asOf}</p>
+    <p class="-mb-1 text-xs text-base-content/50">{valuationLabel} {asOfLabel}</p>
 
-    {#each report.sections as section, at (section.kind)}
-        <section class="overflow-hidden rounded-box border border-base-content/10" data-testid="bs-section-{section.kind}">
+    {#each sheet.sections as section, at (section.kind)}
+        <section class="{multi ? 'overflow-x-auto' : 'overflow-hidden'} rounded-box border border-base-content/10" data-testid="bs-section-{section.kind}">
             <h3
                 class="bg-base-200 {ACCENT[section.kind].rule} border-b-2 px-4 py-2.5 text-sm font-semibold tracking-wide uppercase {ACCENT[section.kind].text}"
             >
@@ -173,10 +252,7 @@
                      whatever could not convert is a footnote INSIDE that cell,
                      never a column of its own. -->
                 <thead>
-                    <tr class="text-[0.65rem] text-base-content/40">
-                        <th class="w-full font-normal"><span class="sr-only">{section.title} line</span></th>
-                        <th class="text-right font-normal">Amount</th>
-                    </tr>
+                    {@render figureHeads(`${section.title} line`, false)}
                 </thead>
                 <tbody>
                     {#each sectionRows[at] ?? [] as row (row.key)}
@@ -200,7 +276,7 @@
                                  reader to look for a difference between them. -->
                             <tr class="bg-base-200/40" data-bs-row={row.key} data-testid="bs-subsection-{section.kind}-{row.term}">
                                 <th class="w-full pt-3 text-[0.7rem] font-semibold tracking-widest text-base-content/60 uppercase">{row.label}</th>
-                                <td></td>
+                                <td colspan={sheet.columns.length}></td>
                             </tr>
                         {:else if row.kind === "subtotal"}
                             <!-- A band's subtotal. A thin rule and semibold, against the
@@ -209,9 +285,7 @@
                                  part and that one is the whole. -->
                             <tr class="border-t border-base-content/20 text-sm" data-bs-row={row.key} data-testid="bs-subtotal-{section.kind}-{row.term}">
                                 <th class="w-full font-semibold text-base-content/80">{row.label}</th>
-                                <td class="text-right align-top font-mono whitespace-nowrap tabular-nums">
-                                    {@render amount(cell(row), "font-semibold")}
-                                </td>
+                                {@render figures(row.amount, "font-semibold")}
                             </tr>
                         {:else}
                             <tr
@@ -253,25 +327,21 @@
                                         >
                                     {/if}
                                 </th>
-                                <td class="text-right align-top font-mono whitespace-nowrap tabular-nums">
-                                    {@render amount(cell(row), row.kind === "group" ? "font-medium" : "text-base-content/70")}
-                                </td>
+                                {@render figures(row.amount, row.kind === "group" ? "font-medium" : "text-base-content/70")}
                             </tr>
                         {/if}
                     {/each}
                     {#if section.groups.length === 0}
                         <tr>
                             <th class="w-full font-normal text-base-content/50">No {section.title.toLowerCase()}</th>
-                            <td></td>
+                            <td colspan={sheet.columns.length}></td>
                         </tr>
                     {/if}
                 </tbody>
                 <tfoot>
                     <tr class="border-t-2 border-base-content/20 bg-base-200 text-sm font-bold text-base-content">
                         <th class="w-full font-bold">Total {section.title}</th>
-                        <td class="text-right align-top font-mono whitespace-nowrap tabular-nums">
-                            {@render amount(amountCell(section.total, report.base, styles), "font-bold")}
-                        </td>
+                        {@render figures(section.total, "font-bold")}
                     </tr>
                 </tfoot>
             </table>
@@ -284,50 +354,51 @@
     <!-- A `div`, not a `section`: the three boxes above are named landmarks by
          their `h3`, and an unnamed one here would just be noise to a screen
          reader. The table carries the name instead. -->
-    <div class="overflow-hidden rounded-box border border-base-content/20" data-testid="bs-summary">
+    <div class="{multi ? 'overflow-x-auto' : 'overflow-hidden'} rounded-box border border-base-content/20" data-testid="bs-summary">
         <table class="table table-sm" aria-label="Balance sheet totals">
-            <!-- The boxes' header treatment again, plus a name for the third
+            <!-- The boxes' header treatment again, plus a name for the last
                  column: the verdict cell exists on EVERY row (see `tieRow`), so
                  to a screen reader it is a real column, and a real column with
                  no name is the omission this thead exists to prevent. -->
             <thead>
-                <tr class="text-[0.65rem] text-base-content/40">
-                    <th class="w-full font-normal"><span class="sr-only">Total</span></th>
-                    <th class="text-right font-normal">Amount</th>
-                    <th class="font-normal"><span class="sr-only">Balance check</span></th>
-                </tr>
+                {@render figureHeads("Total", true)}
             </thead>
             <tbody>
-                {@render tieRow("Total Assets", summary.assets, "")}
-                {@render tieRow("Total Liabilities", summary.liabilities, "")}
-                {@render tieRow("Total Equity", summary.equity, "")}
+                {@render tieRow("Total Assets", (summary) => summary.assets, "")}
+                {@render tieRow("Total Liabilities", (summary) => summary.liabilities, "")}
+                {@render tieRow("Total Equity", (summary) => summary.equity, "")}
             </tbody>
             <tfoot class="text-sm text-base-content">
                 <tr class="border-t-2 border-base-content/20">
                     <th class="w-full font-semibold">Liabilities + Equity</th>
-                    <td class="text-right align-top font-mono whitespace-nowrap tabular-nums">
-                        {@render amount(amountCell(summary.liabilitiesPlusEquity, report.base, styles), "font-semibold")}
-                    </td>
+                    {@render figures(
+                        summaries.map((summary) => summary.liabilitiesPlusEquity),
+                        "font-semibold"
+                    )}
                     <td></td>
                 </tr>
                 <tr data-testid="bs-tie-out">
                     <th class="w-full font-semibold">Total Assets</th>
-                    <td class="text-right align-top font-mono whitespace-nowrap tabular-nums">
-                        {@render amount(amountCell(summary.assets, report.base, styles), "font-semibold")}
-                    </td>
-                    <td class="align-top text-sm font-semibold whitespace-nowrap {summary.balanced ? 'text-success' : 'text-warning'}">
-                        <span aria-hidden="true">{summary.balanced ? "✓" : "✗"}</span>
-                        {summary.balanced ? "Balanced" : "Out of balance"}
+                    {@render figures(
+                        summaries.map((summary) => summary.assets),
+                        "font-semibold"
+                    )}
+                    <!-- One verdict for the whole row: every column balances, or the
+                         warning below names the first that does not. -->
+                    <td class="align-top text-sm font-semibold whitespace-nowrap {allBalanced ? 'text-success' : 'text-warning'}">
+                        <span aria-hidden="true">{allBalanced ? "✓" : "✗"}</span>
+                        {allBalanced ? "Balanced" : "Out of balance"}
                     </td>
                 </tr>
             </tfoot>
         </table>
     </div>
 
-    {#if !summary.balanced}
+    {#if !allBalanced}
         <div class="alert rounded-box px-3 py-2 text-sm alert-warning" role="alert" data-testid="bs-check">
             <span>
-                This journal doesn't balance: assets − liabilities − equity should be zero, but it is
+                {#if multi}At {sheet.columns[unbalanced]?.label ?? "one column"}, this{:else}This{/if} journal doesn't balance: assets − liabilities − equity should
+                be zero, but it is
                 <span class="font-mono tabular-nums">{check.text}{check.extras.length > 0 ? ` (${check.extras.join(", ")})` : ""}</span>. Look for a transaction
                 whose postings don't sum to zero.
             </span>

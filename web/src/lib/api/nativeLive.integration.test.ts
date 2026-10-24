@@ -16,6 +16,8 @@ import type {MixedAmount} from "#lib/domain/money.js";
 import {partitionShortPositions, shortPositionNote} from "#lib/holdings/ui/view.js";
 import {styleOf} from "#lib/format/amounts.js";
 import {formatTotals} from "#lib/journal/rowModel.js";
+import {blankLine, runBody, withMagnitude} from "#lib/projections/scenarioModel.js";
+import {dec} from "#lib/domain/money.js";
 import {LedgelineApi} from "./native";
 import {
     decodeCashFlowStatement,
@@ -25,6 +27,7 @@ import {
     decodeIncomeStatementReport,
     decodeJournalInfo,
     decodePeriodReport,
+    decodeProjection,
     decodeSectionedReport,
 } from "./nativeDecode";
 
@@ -212,6 +215,33 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
     // against each other. `fixtures/sample.journal` opens with an eight-word
     // sentence about the file, which is a description and not a name, so the
     // folder answers instead: both halves of the fallback in one assertion.
+    // The projection run (plan 28): the body the tab builds, through the real
+    // engine and the real decoder, with the three statements on it. `asOf` is
+    // pinned here — the tab sends none, so the engine's clock would decide.
+    it("a projection run carries the three statements, the cutoff and the defaults", async () => {
+        const styles = decodeJournalInfo(await new LedgelineApi(url).journalInfo()).reportStyles;
+        const rent = {...withMagnitude({...blankLine("rent", "$"), account: "expenses:rent"}, dec(420000, 2)), group: "rule:0"};
+        const body = {
+            ...runBody({name: "", created: null, updated: null, lines: [rent], events: [], cash: null}, {interval: "monthly", count: 3, lookback: 2, depth: 2}),
+            asOf: AS_OF,
+        };
+        const projection = decodeProjection(await new LedgelineApi(url).runProjection(body));
+
+        // sample.journal's last transaction is 2026-07-03, so July is projected.
+        expect(projection.actualsEnd).toBe("2026-07-01");
+        expect(projection.lookback).toEqual(["2026-05", "2026-06"]);
+        expect(projection.projectedFrom).toBe(2);
+        expect(projection.balanceSheet.columns.map((c) => c.label)).toEqual(["May 2026", "Jun 2026", "Jul 2026", "Aug 2026", "Sep 2026"]);
+        expect(projection.balanceSheet.balanced).toEqual([true, true, true, true, true]);
+        // The rent is the forecast's whole net income, rendered the way the
+        // income statement renders it.
+        const forecast = (projection.incomeStatement.netIncome.values ?? []).slice(projection.projectedFrom);
+        expect(forecast.map((ma) => dollarLine(ma, styles))).toEqual(["$-4,200.00", "$-4,200.00", "$-4,200.00"]);
+        expect(projection.cashFlow.buckets).toHaveLength(5);
+        expect(projection.defaults.lines.get("rule:0")).toBe("assets:bank:checking");
+        expect(projection.defaults.gains).toBe("equity:unrealized gains");
+    });
+
     it("journal info falls back to the fixture folder's name", async () => {
         const info = decodeJournalInfo(await new LedgelineApi(url).journalInfo());
         expect({title: info.title, file: info.file}).toEqual({title: "fixtures", file: "sample.journal"});

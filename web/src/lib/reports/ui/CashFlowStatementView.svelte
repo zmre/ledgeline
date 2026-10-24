@@ -27,8 +27,17 @@
     import {listCursor} from "#lib/ui/listCursor.svelte.js";
     import {amountCell, type AmountCell} from "./amountCell";
     import {cfCursorRows, cfDisplayModel, cfFoldKey, type CfDisplayRow} from "./cashFlowRows";
+    import ProjectedHeadRow from "./ProjectedHeadRow.svelte";
+    import {projectedEdge} from "./projectedColumns";
 
-    let {report, styles, base}: {report: CashFlowStatement; styles: ReadonlyMap<string, AmountStyle>; base: string | null} = $props();
+    // `projectedFrom` (plans/28): the first FORECAST column on the Projections
+    // tab, drawn as a divider under "Projected". Null changes nothing.
+    let {
+        report,
+        styles,
+        base,
+        projectedFrom = null,
+    }: {report: CashFlowStatement; styles: ReadonlyMap<string, AmountStyle>; base: string | null; projectedFrom?: number | null} = $props();
 
     /** Folds the user has flipped from their starting state, keyed by `cfFoldKey`, so they survive a refetch. */
     let flipped = $state<Record<string, boolean>>({});
@@ -99,7 +108,9 @@
 {#snippet figures(columns: CfColumns, emphasis: string)}
     {#if buckets !== null}
         {#each columns.values as value, i (i)}
-            <td class="w-28 min-w-28 text-right align-top font-mono whitespace-nowrap tabular-nums">{@render amount(cell(value), "")}</td>
+            <td class="w-28 min-w-28 {projectedEdge(i, projectedFrom)} text-right align-top font-mono whitespace-nowrap tabular-nums"
+                >{@render amount(cell(value), "")}</td
+            >
         {/each}
         <td class="w-32 min-w-32 text-right align-top font-mono whitespace-nowrap tabular-nums" data-column="total">
             {@render amount(cell(columns.total), emphasis)}
@@ -112,8 +123,8 @@
 {#snippet figureHeads(label: string)}
     <th class="w-full font-normal"><span class="sr-only">{label}</span></th>
     {#if buckets !== null}
-        {#each buckets as bucket (bucket.key)}
-            <th class="w-28 min-w-28 text-right font-normal" title="{bucket.from} to {bucket.to}">{bucket.label}</th>
+        {#each buckets as bucket, i (bucket.key)}
+            <th class="w-28 min-w-28 {projectedEdge(i, projectedFrom)} text-right font-normal" title="{bucket.from} to {bucket.to}">{bucket.label}</th>
         {/each}
         <th class="w-32 min-w-32 text-right font-normal">Total</th>
     {:else}
@@ -177,6 +188,7 @@
             </h3>
             <table class="table table-sm">
                 <thead>
+                    <ProjectedHeadRow columns={buckets?.length ?? 0} {projectedFrom} trailing={1} />
                     <tr class="text-[0.65rem] text-base-content/40">{@render figureHeads(`${box.title} line`)}</tr>
                 </thead>
                 <tbody>
@@ -203,6 +215,7 @@
         <section class="overflow-x-auto rounded-box border border-base-content/20 bg-base-200/40" data-testid="cf-cash-{block.kind}">
             <table class="table table-sm">
                 <thead>
+                    <ProjectedHeadRow columns={buckets?.length ?? 0} {projectedFrom} trailing={1} />
                     <tr class="text-[0.65rem] text-base-content/40">{@render figureHeads(block.title)}</tr>
                 </thead>
                 <tbody>

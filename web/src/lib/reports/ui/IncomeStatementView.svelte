@@ -41,13 +41,23 @@
     import {settings} from "#lib/stores/settings.svelte.js";
     import {listCursor} from "#lib/ui/listCursor.svelte.js";
     import {amountCell, fmtPct, isCursorRows, isDisplayModel, type AmountCell, type IsDisplayRow} from "./incomeStatementRows";
+    import ProjectedHeadRow from "./ProjectedHeadRow.svelte";
+    import {projectedEdge} from "./projectedColumns";
     import SankeyPanel from "./SankeyPanel.svelte";
     import {type FlowsPanel} from "./sankeyModel";
 
     // `flows` is OPTIONAL with a null default deliberately: it keeps
     // IncomeStatementView.svelte.test.ts scoped exactly as it was written, and
     // the panels carry their own tests.
-    let {report, styles, flows = null}: {report: IncomeStatementReport; styles: ReadonlyMap<string, AmountStyle>; flows?: FlowsPanel | null} = $props();
+    // `projectedFrom` (plans/28): the first FORECAST bucket on the Projections
+    // tab, drawn as a divider under "Projected". Null — every Reports-tab
+    // statement — changes nothing.
+    let {
+        report,
+        styles,
+        flows = null,
+        projectedFrom = null,
+    }: {report: IncomeStatementReport; styles: ReadonlyMap<string, AmountStyle>; flows?: FlowsPanel | null; projectedFrom?: number | null} = $props();
 
     /**
      * Which groups are open, keyed by `IsDisplayRow.key`.
@@ -164,7 +174,9 @@
 {#snippet figures(amounts: Amounts, pct: number | null, emphasis: string)}
     {#if buckets !== null}
         {#each amounts.values ?? [] as value, i (i)}
-            <td class="w-28 min-w-28 text-right align-top font-mono whitespace-nowrap tabular-nums">{@render amount(cell(value), "")}</td>
+            <td class="w-28 min-w-28 {projectedEdge(i, projectedFrom)} text-right align-top font-mono whitespace-nowrap tabular-nums"
+                >{@render amount(cell(value), "")}</td
+            >
         {/each}
         <td class="w-32 min-w-32 text-right align-top font-mono whitespace-nowrap tabular-nums" data-column="total">
             {@render amount(cell(amounts.current), emphasis)}
@@ -181,8 +193,8 @@
 <!-- The column headings for those figures, in the same order. -->
 {#snippet figureHeads()}
     {#if buckets !== null}
-        {#each buckets as bucket (bucket.key)}
-            <th class="w-28 min-w-28 text-right font-normal" title="{bucket.from} to {bucket.to}">{bucket.label}</th>
+        {#each buckets as bucket, i (bucket.key)}
+            <th class="w-28 min-w-28 {projectedEdge(i, projectedFrom)} text-right font-normal" title="{bucket.from} to {bucket.to}">{bucket.label}</th>
         {/each}
         <th class="w-32 min-w-32 text-right font-normal">Total</th>
     {:else}
@@ -236,6 +248,7 @@
                      aligned with the columns under it, and a table with no column
                      headers is a table a screen reader cannot narrate. -->
                 <thead>
+                    <ProjectedHeadRow columns={buckets?.length ?? 0} {projectedFrom} trailing={1} />
                     <tr class="text-[0.65rem] text-base-content/40">
                         <th class="w-full font-normal"><span class="sr-only">{box.title} line</span></th>
                         {@render figureHeads()}
@@ -335,6 +348,7 @@
         <div class="overflow-x-auto rounded-box border border-base-content/20 bg-base-200" data-testid="is-net-income">
             <table class="table table-sm">
                 <thead>
+                    <ProjectedHeadRow columns={buckets.length} {projectedFrom} trailing={1} />
                     <tr class="text-[0.65rem] text-base-content/40">
                         <th class="w-full font-normal"><span class="sr-only">Net income</span></th>
                         {@render figureHeads()}

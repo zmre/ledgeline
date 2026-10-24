@@ -111,6 +111,7 @@ import type {
     AssetRow,
     BalanceSeries,
     EventPosting,
+    ForecastDefaults,
     Growth,
     LineSection,
     Projection,
@@ -141,7 +142,12 @@ import type {
 } from "#lib/reports/insightsTypes.js";
 import type {
     Amounts,
+    BalanceSheetColumns,
     BalanceSheetReport,
+    BsColumnGroup,
+    BsColumnRow,
+    BsColumnSection,
+    BsColumnSubsection,
     BsGroup,
     BsSection,
     BsSectionKind,
@@ -247,6 +253,48 @@ interface RawBsSection {
     groups?: RawBsGroup[];
     subsections?: RawBsSubsection[];
     total?: RawMixed;
+}
+
+/** The multi-column balance sheet: `RawBalanceSheetReport`'s tree with every figure an array. */
+interface RawBsColumnRow {
+    account?: string;
+    depth?: number;
+    own?: RawMixed[];
+    inclusive?: RawMixed[];
+}
+
+interface RawBsColumnGroup {
+    name?: string;
+    source?: string;
+    term?: string | null;
+    rows?: RawBsColumnRow[];
+    total?: RawMixed[];
+}
+
+interface RawBsColumnSubsection {
+    term?: string;
+    heading?: string;
+    label?: string;
+    total?: RawMixed[];
+}
+
+interface RawBsColumnSection {
+    kind?: string;
+    title?: string;
+    groups?: RawBsColumnGroup[];
+    subsections?: RawBsColumnSubsection[];
+    total?: RawMixed[];
+}
+
+interface RawBalanceSheetColumns {
+    columns?: RawIsBucket[];
+    base?: string | null;
+    value?: string;
+    sections?: RawBsColumnSection[];
+    netWorth?: RawMixed[];
+    check?: RawMixed[];
+    balanced?: boolean[];
+    meta?: RawReportMeta | null;
 }
 
 interface RawBalanceSheetReport {
@@ -526,15 +574,26 @@ interface RawAssetRow {
     growth?: RawMixed;
 }
 
+interface RawForecastDefaults {
+    cash?: string;
+    gains?: string;
+    lines?: Record<string, unknown>;
+    events?: Record<string, unknown>;
+}
+
 interface RawProjection {
     buckets?: unknown[];
-    start?: string;
-    netIncome?: RawPeriodReport;
+    lookback?: unknown[];
+    actualsEnd?: string;
+    projectedFrom?: number;
     cash?: RawBalanceSeries;
-    netWorth?: RawBalanceSeries;
     runway?: RawRunway | null;
     assets?: RawAssetRow[];
     warnings?: unknown[];
+    balanceSheet?: RawBalanceSheetColumns;
+    incomeStatement?: unknown;
+    cashFlow?: unknown;
+    defaults?: RawForecastDefaults;
 }
 
 interface RawHoldingPrice {
@@ -1542,6 +1601,101 @@ export function decodeBalanceSheetReport(raw: unknown): BalanceSheetReport {
 }
 
 // ---------------------------------------------------------------------------
+// BalanceSheetColumns (the multi-column balance sheet — plans/28)
+// ---------------------------------------------------------------------------
+
+/**
+ * One figure per column, EXACTLY `columns` of them. A short array would shift
+ * every figure after the gap one column left, under the wrong date, which is
+ * the silent misreading this check exists to refuse.
+ */
+function decodeColumnFigures(raw: RawMixed[] | undefined, context: string, columns: number): MixedAmount[] {
+    if (!Array.isArray(raw) || raw.length !== columns) throw new ApiShapeError(`${context}: expected ${columns} column figures`);
+    return frozen(raw.map((value, i) => decodeMixed(value, `${context}[${i}]`)));
+}
+
+function decodeBsColumnRow(raw: RawBsColumnRow | undefined, context: string, columns: number): BsColumnRow {
+    if (raw === undefined || typeof raw.account !== "string" || typeof raw.depth !== "number") {
+        throw new ApiShapeError(`${context}: missing account/depth`);
+    }
+    return Object.freeze({
+        account: raw.account,
+        depth: raw.depth,
+        own: decodeColumnFigures(raw.own, `${context} own`, columns),
+        inclusive: decodeColumnFigures(raw.inclusive, `${context} inclusive`, columns),
+    });
+}
+
+function decodeBsColumnGroup(raw: RawBsColumnGroup | undefined, context: string, columns: number): BsColumnGroup {
+    // `rows` demanded even when empty, for `decodeBsGroup`'s reason.
+    if (raw === undefined || typeof raw.name !== "string" || !Array.isArray(raw.rows)) throw new ApiShapeError(`${context}: missing name/rows`);
+    return Object.freeze({
+        name: raw.name,
+        source: decodeEnum(GROUP_SOURCES, raw.source, `${context} source`),
+        term: decodeNullableEnum(BS_TERMS, raw.term, `${context} term`),
+        rows: frozen(raw.rows.map((row, i) => decodeBsColumnRow(row, `${context} row #${i}`, columns))),
+        total: decodeColumnFigures(raw.total, `${context} total`, columns),
+    });
+}
+
+function decodeBsColumnSubsection(raw: RawBsColumnSubsection | undefined, context: string, columns: number): BsColumnSubsection {
+    if (raw === undefined || typeof raw.heading !== "string" || typeof raw.label !== "string") throw new ApiShapeError(`${context}: missing heading/label`);
+    return Object.freeze({
+        term: decodeEnum(BS_TERMS, raw.term, `${context} term`),
+        heading: raw.heading,
+        label: raw.label,
+        total: decodeColumnFigures(raw.total, `${context} total`, columns),
+    });
+}
+
+function decodeBsColumnSection(raw: RawBsColumnSection | undefined, context: string, columns: number): BsColumnSection {
+    // `subsections` demanded for `decodeBsSection`'s reason.
+    if (raw === undefined || typeof raw.title !== "string" || !Array.isArray(raw.groups) || !Array.isArray(raw.subsections)) {
+        throw new ApiShapeError(`${context}: missing title/groups/subsections`);
+    }
+    return Object.freeze({
+        kind: decodeEnum(BS_SECTION_KINDS, raw.kind, `${context} kind`),
+        title: raw.title,
+        groups: frozen(raw.groups.map((group, i) => decodeBsColumnGroup(group, `${context} group #${i}`, columns))),
+        subsections: frozen(raw.subsections.map((band, i) => decodeBsColumnSubsection(band, `${context} subsection #${i}`, columns))),
+        total: decodeColumnFigures(raw.total, `${context} total`, columns),
+    });
+}
+
+/**
+ * The multi-column balance sheet (`WireBalanceSheetColumns`).
+ *
+ * `columns` is read FIRST and is the length every figure array is held to, the
+ * way `decodeAmounts` holds interval `values` to the bucket count.
+ * `kind: "balanceSheetColumns"` is added here, never on the wire.
+ */
+export function decodeBalanceSheetColumns(raw: unknown): BalanceSheetColumns {
+    const report = raw as RawBalanceSheetColumns;
+    if (typeof report !== "object" || report === null || !Array.isArray(report.sections) || !Array.isArray(report.balanced)) {
+        throw new ApiShapeError("balance sheet columns: expected sections and balanced arrays");
+    }
+    const columns = decodeIsBuckets(report.columns, "balance sheet columns") ?? [];
+    const n = columns.length;
+    if (report.balanced.length !== n || report.balanced.some((verdict) => typeof verdict !== "boolean")) {
+        throw new ApiShapeError(`balance sheet columns balanced: expected ${n} verdicts`);
+    }
+    const out: BalanceSheetColumns = {
+        kind: "balanceSheetColumns",
+        columns,
+        base: decodeNullableStr(report.base, "balance sheet columns base"),
+        value: decodeEnum(BS_VALUATIONS, report.value, "balance sheet columns value"),
+        sections: frozen(report.sections.map((section, i) => decodeBsColumnSection(section, `balance sheet columns section #${i}`, n))),
+        netWorth: decodeColumnFigures(report.netWorth, "balance sheet columns netWorth", n),
+        // Required for `decodeBalanceSheetReport`'s reason: absent is a broken
+        // contract, never "it balances".
+        check: decodeColumnFigures(report.check, "balance sheet columns check", n),
+        balanced: frozen([...report.balanced]),
+    };
+    if (report.meta !== undefined && report.meta !== null) out.meta = decodeReportMeta(report.meta, "balance sheet columns meta");
+    return Object.freeze(out);
+}
+
+// ---------------------------------------------------------------------------
 // IncomeStatementReport (grouped, adaptive GAAP — plans/13)
 // ---------------------------------------------------------------------------
 
@@ -2287,13 +2441,30 @@ function decodeAssetRow(raw: RawAssetRow | undefined, context: string): AssetRow
     });
 }
 
+/** `group`/`id` → account, every value a string. */
+function decodeAccountMap(raw: Record<string, unknown> | undefined, context: string): ReadonlyMap<string, string> {
+    if (raw === undefined || raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new ApiShapeError(`${context}: expected an object`);
+    return new Map(Object.entries(raw).map(([key, value]) => [key, str(value, `${context}.${key}`)]));
+}
+
+function decodeForecastDefaults(raw: RawForecastDefaults | undefined): ForecastDefaults {
+    if (raw === undefined || raw === null) throw new ApiShapeError("projection defaults: missing");
+    return Object.freeze({
+        cash: str(raw.cash, "projection defaults cash"),
+        gains: str(raw.gains, "projection defaults gains"),
+        lines: decodeAccountMap(raw.lines, "projection defaults lines"),
+        events: decodeAccountMap(raw.events, "projection defaults events"),
+    });
+}
+
 /**
- * `POST /api/projections/run`.
+ * `POST /api/projections/run` (plan 28).
  *
- * `netIncome` is a plain `WirePeriodReport`, so it goes through the same
- * `decodePeriodReport` net worth does and `ReportTable` renders it
- * with no edits — in CASH-FLOW ORIENTATION, revenue positive and expenses
- * negative. Nothing here re-signs it.
+ * The three statements go through the Reports tab's OWN decoders — the same
+ * engine functions produced them — so a projected statement is checked exactly
+ * as strictly as a real one. `projectedFrom` is held to the statements' column
+ * count, because a divider past the last column would label nothing as
+ * projected.
  */
 export function decodeProjection(raw: unknown): Projection {
     const projection = raw as RawProjection;
@@ -2305,16 +2476,27 @@ export function decodeProjection(raw: unknown): Projection {
     // blank the Balance column of every row against an engine whose key had
     // been renamed, and the table would show nothing rather than say so.
     if (!Array.isArray(projection.assets)) throw new ApiShapeError("projection assets: expected an array");
+    // Likewise always sent, `[]` at `lookback: 0`.
+    if (!Array.isArray(projection.lookback)) throw new ApiShapeError("projection lookback: expected an array");
+    const balanceSheet = decodeBalanceSheetColumns(projection.balanceSheet);
+    const projectedFrom = decodeCount(projection.projectedFrom, "projection projectedFrom");
+    if (projectedFrom > balanceSheet.columns.length) {
+        throw new ApiShapeError(`projection projectedFrom: ${projectedFrom} is past the ${balanceSheet.columns.length} statement columns`);
+    }
     return Object.freeze({
         buckets: frozen(decodeStrings(projection.buckets, "projection buckets")),
-        start: str(projection.start, "projection start"),
-        netIncome: decodePeriodReport(projection.netIncome),
+        lookback: frozen(decodeStrings(projection.lookback, "projection lookback")),
+        actualsEnd: str(projection.actualsEnd, "projection actualsEnd") as ISODate,
+        projectedFrom,
         cash: decodeBalanceSeries(projection.cash, "projection cash"),
-        netWorth: decodeBalanceSeries(projection.netWorth, "projection netWorth"),
         runway: decodeNullable(projection.runway, "projection runway", decodeRunway),
         assets: frozen(projection.assets.map((row, i) => decodeAssetRow(row, `projection assets[${i}]`))),
         // Never empty silently: a dropped line always says so here.
         warnings: frozen(decodeStrings(projection.warnings, "projection warnings")),
+        balanceSheet,
+        incomeStatement: decodeIncomeStatementReport(projection.incomeStatement),
+        cashFlow: decodeCashFlowStatement(projection.cashFlow),
+        defaults: decodeForecastDefaults(projection.defaults),
     });
 }
 

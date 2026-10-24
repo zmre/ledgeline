@@ -758,10 +758,12 @@ export interface WireScenarioIn {
 /** The whole `POST /api/projections/run` body. */
 export interface RunProjectionBody {
     scenario: WireScenarioIn;
-    /** Opening balances are taken here; the first projected bucket is the next WHOLE one after it. */
+    /** The caller's today; the projection starts at the first incomplete period (plan 28 Decision 5). */
     asOf?: string;
     interval?: string;
     count?: number;
+    /** Full actual periods the statements show before the forecast (default 2, `0` allowed). */
+    lookback?: number;
     depth?: number;
     valueIn?: string;
 }

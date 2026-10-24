@@ -10,17 +10,17 @@
 //     NEGATIVE (`(income:salary) $-5188.33`) and an expense line is positive,
 //     exactly as the postings are written. The table shows magnitudes; the flip
 //     lives in `scenarioModel.ts` and nowhere else.
-//  2. `Projection.netIncome` IS THE OTHER WAY UP — cash-flow orientation,
-//     revenue positive and expenses negative, so `totals` is the sum of the
-//     depth-1 rows and IS net income. A `$4200` rent line arrives as `-4200`.
-//     Do not flip it again.
+//  2. The projection's STATEMENTS are the Reports tab's own (plan 28): the
+//     balance sheet, income statement and cash flow statement over the real
+//     journal before the cutoff plus the scenario's generated transactions
+//     after it, in the Reports tab's signs. Nothing here re-signs them.
 //
 // Pure module: no Svelte, no DOM, so every helper over these is unit-testable
 // under node.
 
 import type {Dec, MixedAmount} from "#lib/domain/money.js";
 import type {ISODate} from "#lib/domain/types.js";
-import type {PeriodReport} from "#lib/reports/types.js";
+import type {BalanceSheetColumns, CashFlowStatement, IncomeStatementReport} from "#lib/reports/types.js";
 
 /** The unit a growth rate steps on. */
 export type GrowthUnit = "week" | "month" | "year";
@@ -137,8 +137,12 @@ export interface ScenarioLine {
     /**
      * The account this line balances against (plan 28 Decision 1). `null` is a
      * pre-plan-28 line: the engine books it to the default counter-account and
-     * a save writes that default. Carried through untouched until the table
-     * gains a counter column (plan 28 Phase 5).
+     * a save writes that default. The table shows that default greyed
+     * (`ForecastDefaults.lines`, keyed by `group`).
+     *
+     * ONE PER RULE: every line of one `group` that names a counter must name
+     * the same one, or the file cannot be written. `withCounter` keeps that
+     * true by moving a line whose counter differs into a rule of its own.
      */
     counter: string | null;
     /** `asset` rows only: the gains account; `null` is `equity:unrealized gains`. */
@@ -250,20 +254,49 @@ export interface AssetRow {
     growth: MixedAmount;
 }
 
-/** The answer. */
+/**
+ * The accounts the engine books to where the scenario names none — what the
+ * table shows GREYED until the user types over it (plan 28, Decisions 4 and 7).
+ */
+export interface ForecastDefaults {
+    /** What a scenario with no `cash:` header falls back to: the cash control's greyed value. */
+    cash: string;
+    /** The gains account of an asset row that names none. */
+    gains: string;
+    /** `ScenarioLine.group` → the default counter-account of that rule's counter-less lines. */
+    lines: ReadonlyMap<string, string>;
+    /** `ScenarioEvent.id` → its default counter-account, for events that name none. */
+    events: ReadonlyMap<string, string>;
+}
+
+/**
+ * The answer.
+ *
+ * Two kinds of column: `buckets`, `cash` and `runway` cover the FORECAST
+ * periods only, while the three statements cover the lookback's full actual
+ * periods and then the forecast. `projectedFrom` is the first forecast column's
+ * index in the statements — where the actuals/projected divider is drawn.
+ */
 export interface Projection {
+    /** Forecast bucket keys, oldest → newest. */
     buckets: string[];
-    /** The first day of the first bucket — the next WHOLE bucket after `asOf`. */
-    start: ISODate;
-    /** CASH-FLOW ORIENTATION — see fact (2) at the top of this file. */
-    netIncome: PeriodReport;
+    /** The full ACTUAL periods the statements show before the forecast. */
+    lookback: string[];
+    /** The cutoff: the first projected day. Actuals are strictly before it. */
+    actualsEnd: ISODate;
+    /** The first forecast column's index in the statements (`lookback.length`). */
+    projectedFrom: number;
     cash: BalanceSeries;
-    netWorth: BalanceSeries;
     runway: Runway | null;
     /** One entry per asset row the engine modelled, in scenario order. `[]` when there are none. */
     assets: AssetRow[];
     /** Everything the projection could not do. A dropped line always says so here. */
     warnings: string[];
+    balanceSheet: BalanceSheetColumns;
+    /** Interval mode: one column per lookback and forecast period, plus the Total. */
+    incomeStatement: IncomeStatementReport;
+    cashFlow: CashFlowStatement;
+    defaults: ForecastDefaults;
 }
 
 // ---------------------------------------------------------------------------

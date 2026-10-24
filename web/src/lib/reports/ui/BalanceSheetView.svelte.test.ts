@@ -17,6 +17,9 @@ import {decodeBalanceSheetReport} from "#lib/api/nativeDecode.js";
 import type {AmountStyle} from "#lib/domain/types.js";
 import {keymap} from "#lib/keys/keymap.svelte.js";
 import {CLASSIFIED_BALANCE_SHEET, GROUPED_BALANCE_SHEET, STRADDLING_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "#lib/testing/balanceSheetFixture.js";
+import {PROJECTION_COLUMNS, widenSheet} from "#lib/testing/projectionFixture.js";
+import type {BalanceSheetColumns} from "#lib/reports/types.js";
+import {asColumns} from "./balanceSheetRows";
 import BalanceSheetView from "./BalanceSheetView.svelte";
 
 // The drill-down navigates, and a router is neither available nor the subject
@@ -559,5 +562,52 @@ describe("COMPONENT BalanceSheetView", () => {
             expect(screen.getByTestId("bs-tie-out").textContent).toContain("Balanced");
             expect(screen.getByTestId("bs-tie-out").textContent).not.toContain("Out of balance");
         });
+    });
+});
+
+describe("COMPONENT BalanceSheetView — columns side by side (plan 28)", () => {
+    afterEach(() => keymap.reset());
+
+    const COLUMNS: BalanceSheetColumns = widenSheet(asColumns(REPORT), PROJECTION_COLUMNS);
+    const mountColumns = (report: BalanceSheetColumns = COLUMNS, projectedFrom: number | null = 2) =>
+        render(BalanceSheetView, {report, styles: STYLES, projectedFrom});
+
+    it("heads every box with the periods, and says the figures are at each period's end", () => {
+        mountColumns();
+        const head = screen.getByTestId("bs-section-assets").querySelector("thead tr:not([data-testid])");
+        expect([...(head?.querySelectorAll("th") ?? [])].slice(1).map((th) => th.textContent?.trim())).toEqual([
+            "Jun 2026",
+            "Jul 2026",
+            "Aug 2026",
+            "Sep 2026",
+        ]);
+        expect(screen.getByTestId("balance-sheet").textContent).toContain("at the end of each period");
+    });
+
+    it("prints one figure per column on every line, the tie-out included", () => {
+        mountColumns();
+        const firstGroup = screen.getByTestId("bs-section-assets").querySelector("tbody tr");
+        expect(firstGroup?.querySelectorAll("td")).toHaveLength(4);
+        // Four figures and the one verdict.
+        expect(screen.getByTestId("bs-tie-out").querySelectorAll("td")).toHaveLength(5);
+    });
+
+    it("draws no actual/projected band when nothing is projected", () => {
+        mountColumns(COLUMNS, null);
+        expect(screen.queryByTestId("projected-band")).toBeNull();
+    });
+
+    it("names the first column that does not balance", () => {
+        mountColumns({...COLUMNS, balanced: [true, true, false, false]});
+        expect(screen.getByTestId("bs-check").textContent).toContain("At Aug 2026");
+        expect(screen.getByTestId("bs-tie-out").textContent).toContain("Out of balance");
+    });
+
+    it("the Reports tab's single-date sheet still has ONE Amount column and no band", () => {
+        mount();
+        const head = screen.getByTestId("bs-section-assets").querySelector("thead tr:not([data-testid])");
+        expect([...(head?.querySelectorAll("th") ?? [])].map((th) => th.textContent?.trim())).toEqual([expect.stringContaining("line"), "Amount"]);
+        expect(screen.queryByTestId("projected-band")).toBeNull();
+        expect(screen.getByTestId("balance-sheet").textContent).toContain(`as of ${REPORT.asOf}`);
     });
 });
