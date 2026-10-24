@@ -35,10 +35,11 @@ use ledgeline_core::model::{Commodity, Journal};
 use ledgeline_core::reports::periods;
 use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
-    Amounts, BalanceSheetReport, BarLabel, BsGroup, BsOpts, BsSection, BsSectionKind, BsSubsection,
-    BsTerm, BucketSpan, BudgetBar, BudgetCell, BudgetGaps, BudgetHealth, BudgetOpts, BudgetReport,
-    BudgetRow, BudgetSection, BudgetSectionKind, BudgetSummary, Cadence, CashFlowStatement,
-    CfLineSource, CfOpts, CfTags, ChangeKind, ChangeRow, Columns, CostOfLiving,
+    AccountType, Amounts, BalanceSheetColumns, BalanceSheetReport, BarLabel, BsColumnGroup,
+    BsColumnRow, BsColumnSection, BsColumnSubsection, BsGroup, BsOpts, BsSection, BsSectionKind,
+    BsSubsection, BsTerm, BucketSpan, BudgetBar, BudgetCell, BudgetGaps, BudgetHealth, BudgetOpts,
+    BudgetReport, BudgetRow, BudgetSection, BudgetSectionKind, BudgetSummary, Cadence,
+    CashFlowStatement, CfLineSource, CfOpts, CfTags, ChangeKind, ChangeRow, Columns, CostOfLiving,
     DEFAULT_EXCLUDE_DESC, DateRange, FlowGraph, FlowLink, FlowNode, FlowOpts, FlowReport, FlowSide,
     GapRow, GroupSource, IS_GROUP_TAG, IncomeStatementReport, InsightsOpts, InsightsPeriod,
     InsightsReport, Interval, InvestmentPerf, IsGroup, IsOpts, IsRow, IsSection, IsSectionKind,
@@ -272,11 +273,7 @@ struct WireBsSection {
 impl From<&BsSection> for WireBsSection {
     fn from(section: &BsSection) -> Self {
         Self {
-            kind: match section.kind {
-                BsSectionKind::Assets => "assets",
-                BsSectionKind::Liabilities => "liabilities",
-                BsSectionKind::Equity => "equity",
-            },
+            kind: bs_section_kind(section.kind),
             title: section.title.clone(),
             groups: section.groups.iter().map(WireBsGroup::from).collect(),
             subsections: section
@@ -286,6 +283,16 @@ impl From<&BsSection> for WireBsSection {
                 .collect(),
             total: wire_mixed(&section.total),
         }
+    }
+}
+
+/// The one `BsSectionKind` → wire spelling, shared by the single-date and the
+/// multi-column balance sheet.
+fn bs_section_kind(kind: BsSectionKind) -> &'static str {
+    match kind {
+        BsSectionKind::Assets => "assets",
+        BsSectionKind::Liabilities => "liabilities",
+        BsSectionKind::Equity => "equity",
     }
 }
 
@@ -328,6 +335,149 @@ impl WireBalanceSheetReport {
             net_worth: wire_mixed(&report.net_worth),
             check: wire_mixed(&report.check),
             balanced: report.balanced,
+            meta: WireReportMeta::from(&report.meta),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Multi-column balance sheet (plans/28-projected-statements.md, Phase 4)
+// ---------------------------------------------------------------------------
+//
+// The SAME tree as `WireBalanceSheetReport` — same keys at every level — with
+// every figure (and `balanced`) an ARRAY, one entry per column. Pivoted once
+// in the engine (`pivot_balance_sheets`), so a group that appears only in
+// later columns reads `{}` in the earlier ones rather than being missing, and
+// every client shows the same rows in the same order.
+
+/// One account row: `own` and `inclusive` per column.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireBsColumnRow {
+    account: String,
+    depth: usize,
+    own: Vec<WireMixed>,
+    inclusive: Vec<WireMixed>,
+}
+
+impl From<&BsColumnRow> for WireBsColumnRow {
+    fn from(row: &BsColumnRow) -> Self {
+        Self {
+            account: row.account.clone(),
+            depth: row.depth,
+            own: row.own.iter().map(wire_mixed).collect(),
+            inclusive: row.inclusive.iter().map(wire_mixed).collect(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireBsColumnGroup {
+    name: String,
+    source: &'static str,
+    term: Option<&'static str>,
+    rows: Vec<WireBsColumnRow>,
+    total: Vec<WireMixed>,
+}
+
+impl From<&BsColumnGroup> for WireBsColumnGroup {
+    fn from(group: &BsColumnGroup) -> Self {
+        Self {
+            name: group.name.clone(),
+            source: group_source(group.source),
+            term: group.term.map(BsTerm::code),
+            rows: group.rows.iter().map(WireBsColumnRow::from).collect(),
+            total: group.total.iter().map(wire_mixed).collect(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireBsColumnSubsection {
+    term: &'static str,
+    heading: String,
+    label: String,
+    total: Vec<WireMixed>,
+}
+
+impl From<&BsColumnSubsection> for WireBsColumnSubsection {
+    fn from(sub: &BsColumnSubsection) -> Self {
+        Self {
+            term: sub.term.code(),
+            heading: sub.heading.clone(),
+            label: sub.label.clone(),
+            total: sub.total.iter().map(wire_mixed).collect(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireBsColumnSection {
+    kind: &'static str,
+    title: String,
+    groups: Vec<WireBsColumnGroup>,
+    subsections: Vec<WireBsColumnSubsection>,
+    total: Vec<WireMixed>,
+}
+
+impl From<&BsColumnSection> for WireBsColumnSection {
+    fn from(section: &BsColumnSection) -> Self {
+        Self {
+            kind: bs_section_kind(section.kind),
+            title: section.title.clone(),
+            groups: section.groups.iter().map(WireBsColumnGroup::from).collect(),
+            subsections: section
+                .subsections
+                .iter()
+                .map(WireBsColumnSubsection::from)
+                .collect(),
+            total: section.total.iter().map(wire_mixed).collect(),
+        }
+    }
+}
+
+/// A balance sheet at the end of each of several periods, side by side.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WireBalanceSheetColumns {
+    /// One per column, oldest → newest; each column is the sheet as of its
+    /// `to`. The same spans the income statement and cash flow statement
+    /// beside it carry, so the three line up column for column.
+    columns: Vec<WireBucketSpan>,
+    base: Option<String>,
+    value: &'static str,
+    sections: Vec<WireBsColumnSection>,
+    net_worth: Vec<WireMixed>,
+    check: Vec<WireMixed>,
+    /// The engine's verdict, per column.
+    balanced: Vec<bool>,
+    meta: WireReportMeta,
+}
+
+impl WireBalanceSheetColumns {
+    /// `spans` are the periods whose ends the columns were built at, in the
+    /// same order.
+    pub(crate) fn new(
+        report: &BalanceSheetColumns,
+        spans: &[BucketSpan],
+        value: &'static str,
+    ) -> Self {
+        debug_assert_eq!(report.as_of.len(), spans.len());
+        Self {
+            columns: spans.iter().map(WireBucketSpan::from).collect(),
+            base: report.base.as_ref().map(|base| base.0.clone()),
+            value,
+            sections: report
+                .sections
+                .iter()
+                .map(WireBsColumnSection::from)
+                .collect(),
+            net_worth: report.net_worth.iter().map(wire_mixed).collect(),
+            check: report.check.iter().map(wire_mixed).collect(),
+            balanced: report.balanced.clone(),
             meta: WireReportMeta::from(&report.meta),
         }
     }
@@ -623,6 +773,12 @@ impl WireIncomeStatementReport {
             net_income: WireAmounts::from(&report.net_income),
             meta: WireReportMeta::from(&report.meta),
         }
+    }
+
+    /// An interval-mode statement, for a caller outside this module (the
+    /// projected statements, plan 28 Phase 4).
+    pub(crate) fn columns(report: &IncomeStatementReport<Columns>, value: &'static str) -> Self {
+        Self::new(report, value)
     }
 }
 
@@ -2307,6 +2463,36 @@ impl Window {
     }
 }
 
+/// Everything a journal's `account` directives say about how the balance
+/// sheet and the income statement are laid out: declared types,
+/// `bsgroup:`/`bsterm:` and `issection:`/`isgroup:`. (The cash flow statement
+/// reads its own, [`CfTags::from_journal`], and both callers call exactly that.)
+///
+/// ONE constructor, read by the Reports handlers and by the projected
+/// statements (`projections_api`, plan 28 Phase 4), so a projected balance
+/// sheet cannot be grouped, banded or typed differently from the one on the
+/// Reports tab. Every field is a walk over the `account` directives, so the
+/// handlers that need only some of them pay nothing worth measuring.
+pub(crate) struct StatementShape {
+    pub(crate) declared: BTreeMap<String, AccountType>,
+    pub(crate) bs_groups: BTreeMap<String, String>,
+    pub(crate) bs_terms: BTreeMap<String, BsTerm>,
+    pub(crate) is_sections: BTreeMap<String, IsSectionKind>,
+    pub(crate) is_groups: BTreeMap<String, String>,
+}
+
+impl StatementShape {
+    pub(crate) fn of(journal: &Journal) -> Self {
+        Self {
+            declared: declared_types(&account_decls(journal)),
+            bs_groups: account_groups(journal),
+            bs_terms: bs_terms(journal),
+            is_sections: account_sections(journal),
+            is_groups: declared_groups(journal, IS_GROUP_TAG),
+        }
+    }
+}
+
 /// `?asOf=&depth=` — balance sheet.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2615,7 +2801,7 @@ pub(crate) async fn balancesheet_grouped(
 
     compute(move || {
         let journal = &snapshot.journal;
-        let declared = declared_types(&account_decls(journal));
+        let shape = StatementShape::of(journal);
         // Like `holdings_scope`, admitting `valueIn` scans the whole journal
         // for a price route, so it belongs on the blocking side with the
         // report.
@@ -2628,7 +2814,7 @@ pub(crate) async fn balancesheet_grouped(
                     &journal.transactions,
                     &journal.prices,
                     &as_of,
-                    &declared,
+                    &shape.declared,
                     target,
                 )
             },
@@ -2642,9 +2828,9 @@ pub(crate) async fn balancesheet_grouped(
                 value,
                 value_in,
             },
-            &declared,
-            &account_groups(journal),
-            &bs_terms(journal),
+            &shape.declared,
+            &shape.bs_groups,
+            &shape.bs_terms,
         )?;
         Ok(WireBalanceSheetReport::new(&report, label))
     })
@@ -2738,8 +2924,12 @@ pub(crate) async fn incomestatement_grouped(
 
     compute(move || {
         let journal = &snapshot.journal;
-        let declared = declared_types(&account_decls(journal));
-        let sections = account_sections(journal);
+        let StatementShape {
+            declared,
+            is_sections: sections,
+            is_groups: groups,
+            ..
+        } = StatementShape::of(journal);
         // The admission test asks about exactly the windows the statement will
         // value, so a `valueIn` is refused or admitted for the report it is for.
         let windows = match grain {
@@ -2774,7 +2964,6 @@ pub(crate) async fn incomestatement_grouped(
             value_in,
             compare,
         };
-        let groups = declared_groups(journal, IS_GROUP_TAG);
         Ok(match grain {
             None => WireIncomeStatementReport::new(
                 &income_statement_grouped(
@@ -2974,7 +3163,6 @@ pub(crate) async fn cashflow(
                 (from, window.end, Some(window.interval), window.depth)
             }
         };
-        let tags = CfTags::from_journal(&snapshot.journal);
         let report = cash_flow_statement(
             &snapshot.journal.transactions,
             &CfOpts {
@@ -2983,7 +3171,7 @@ pub(crate) async fn cashflow(
                 interval,
                 depth,
             },
-            &tags,
+            &CfTags::from_journal(&snapshot.journal),
         )?;
         Ok(WireCashFlow::from(&report))
     })

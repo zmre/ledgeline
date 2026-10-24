@@ -102,9 +102,9 @@ pub use discovery::{
     is_journal_name, label_for, slug_filename,
 };
 pub use forecast::{
-    CounterDefaults, DEFAULT_GAINS_ACCOUNT, DEFAULT_LOOKBACK, Forecast, ForecastOpts,
-    ForecastWindow, GENERATED_TAG, History, forecast_cutoff, forecast_transactions, is_generated,
-    latest_real_date, merged_prices, merged_transactions, upgrade_legacy_counters,
+    CounterDefaults, DEFAULT_GAINS_ACCOUNT, DEFAULT_LOOKBACK, Forecast, ForecastDefaults,
+    ForecastOpts, ForecastWindow, GENERATED_TAG, History, forecast_cutoff, forecast_transactions,
+    is_generated, latest_real_date, merged_prices, merged_transactions, upgrade_legacy_counters,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -578,6 +578,11 @@ pub struct Projection {
     /// Everything the projection could not do. A projection that quietly drops a
     /// line is worse than one that says so.
     pub warnings: Vec<String>,
+    /// The expansion every series above was read from (plan 28): the generated
+    /// transactions and in-memory prices the projected statements are built
+    /// over ([`merged_transactions`], [`merged_prices`]), and the defaults it
+    /// picked. Kept so one expansion serves every reading.
+    pub forecast: Forecast,
 }
 
 /// The most growth steps one line may be walked through.
@@ -634,14 +639,10 @@ pub fn project(
         &types,
         &History { txns, prices },
     )?;
-    let Forecast {
-        window,
-        txns: generated,
-        prices: grown,
-        assets,
-        warnings,
-        target,
-    } = forecast;
+    let window = &forecast.window;
+    let generated = &forecast.txns;
+    let grown = &forecast.prices;
+    let target = forecast.target.clone();
     let as_of = window.actuals_as_of();
     let mut all_prices = real_prices;
     all_prices.extend(grown.iter().cloned());
@@ -818,11 +819,12 @@ pub fn project(
             history: net_worth_history,
         },
         runway,
-        assets,
-        warnings,
-        buckets: window.buckets,
-        lookback: window.lookback,
-        start: window.cutoff,
+        assets: forecast.assets.clone(),
+        warnings: forecast.warnings.clone(),
+        buckets: window.buckets.clone(),
+        lookback: window.lookback.clone(),
+        start: window.cutoff.clone(),
+        forecast,
     })
 }
 

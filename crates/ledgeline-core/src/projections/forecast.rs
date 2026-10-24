@@ -208,6 +208,67 @@ pub struct Forecast {
     pub warnings: Vec<String>,
     /// The commodity balances were valued into, if any.
     pub target: Option<Commodity>,
+    /// The counter- and gains accounts the expansion picked for everything
+    /// that names none — what a table shows greyed until the user overrides it.
+    pub defaults: ForecastDefaults,
+}
+
+/// The accounts a forecast books to where the scenario names none
+/// (Decisions 4 and 7), so an editor can show the inferred default beside the
+/// blank it fills.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForecastDefaults {
+    /// Group → the default counter-account its counter-less lines balance
+    /// against ([`CounterDefaults::for_accounts`] over those lines' accounts).
+    /// Only groups with at least one counter-less line appear.
+    pub lines: BTreeMap<String, AccountName>,
+    /// Event id → the default counter-account, for events that name none.
+    pub events: BTreeMap<String, AccountName>,
+    /// The journal's own fallback (Decision 7 steps 3 and 4): what a scenario
+    /// with no `; cash:` header balances a line against when history pairs it
+    /// with nothing. The header overrides it.
+    pub cash: AccountName,
+    /// [`DEFAULT_GAINS_ACCOUNT`]: the gains account of an asset row that names
+    /// none.
+    pub gains: AccountName,
+}
+
+impl ForecastDefaults {
+    /// The defaults `scenario` would get from `defaults`.
+    #[must_use]
+    pub fn of(scenario: &Scenario, defaults: &CounterDefaults) -> Self {
+        let mut grouped: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for line in scenario.lines.iter().filter(|line| line.counter.is_none()) {
+            grouped
+                .entry(line.group.as_str())
+                .or_default()
+                .push(line.account.0.as_str());
+        }
+        Self {
+            lines: grouped
+                .into_iter()
+                .map(|(group, accounts)| (group.to_string(), defaults.for_accounts(accounts)))
+                .collect(),
+            events: scenario
+                .events
+                .iter()
+                .filter(|event| event.counter.is_none())
+                .map(|event| {
+                    (
+                        event.id.clone(),
+                        defaults.for_accounts(
+                            event
+                                .postings
+                                .iter()
+                                .map(|posting| posting.account.0.as_str()),
+                        ),
+                    )
+                })
+                .collect(),
+            cash: AccountName(defaults.fallback.clone()),
+            gains: AccountName(DEFAULT_GAINS_ACCOUNT.to_string()),
+        }
+    }
 }
 
 /// Whether `txn` is one a forecast generated, by hledger's own marker.
@@ -260,13 +321,33 @@ pub fn merged_transactions(history: &[Transaction], forecast: &Forecast) -> Vec<
         .collect()
 }
 
-/// Real `P` directives before the cutoff, then the forecast's in-memory ones.
+/// Real `P` directives before the cutoff, then the forecast's in-memory ones
+/// for every commodity a real directive prices — the price list the projected
+/// statements value with.
+///
+/// A forecast price for a commodity NO real directive prices is left out. The
+/// expansion grows a price from the latest explicit OR inferred (cost) price,
+/// but the balance sheet and income statement value through explicit `P`
+/// directives alone, exactly as on the Reports tab. A grown price for a
+/// commodity they cannot value today would make it valued in the forecast
+/// columns only — a jump at the first growth step that is the whole holding,
+/// not its appreciation. Left out, the commodity reads as share counts in every
+/// column (and in `meta.unpriced`), as it does on the Reports tab.
 #[must_use]
 pub fn merged_prices(history: &[PriceDirective], forecast: &Forecast) -> Vec<PriceDirective> {
-    history
+    let real: Vec<&PriceDirective> = history
         .iter()
         .filter(|price| before(&price.date, &forecast.window.cutoff))
-        .chain(&forecast.prices)
+        .collect();
+    let priced: BTreeSet<&Commodity> = real.iter().map(|price| &price.commodity).collect();
+    real.iter()
+        .copied()
+        .chain(
+            forecast
+                .prices
+                .iter()
+                .filter(|price| priced.contains(&price.commodity)),
+        )
         .cloned()
         .collect()
 }
@@ -607,6 +688,7 @@ pub(super) fn expand(
         ..
     } = expansion;
     super::warn_on_commodity_mismatch(&commodities, target.as_ref(), &mut warnings);
+    let forecast_defaults = ForecastDefaults::of(scenario, &defaults);
 
     // Ascending by date, stable, so a reader that walks them once is right.
     txns.sort_by(|a, b| compare_iso(&a.date, &b.date));
@@ -628,6 +710,7 @@ pub(super) fn expand(
             assets,
             warnings,
             target,
+            defaults: forecast_defaults,
         },
         prices,
     ))

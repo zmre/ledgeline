@@ -49,15 +49,18 @@ use ledgeline_core::projections::serialize::{
 };
 use ledgeline_core::projections::{
     AssetRow, BalanceSeries, CounterDefaults, CreateRefusal, DEFAULT_LOOKBACK,
-    DiscoveredProjection, Discovery, Growth, GrowthUnit, History, LineRole, LineSection,
-    LineSource, Projection, ProjectionOpts, ProjectionPath, Runway, Scenario, ScenarioEvent,
-    ScenarioLine, SeedOpts, discover_in, forecast_cutoff, is_journal_name, label_for,
-    latest_real_date, line_section, project, seed_scenario, upgrade_legacy_counters,
-    virtual_posting,
+    DiscoveredProjection, Discovery, ForecastDefaults, Growth, GrowthUnit, History, LineRole,
+    LineSection, LineSource, Projection, ProjectionOpts, ProjectionPath, Runway, Scenario,
+    ScenarioEvent, ScenarioLine, SeedOpts, discover_in, forecast_cutoff, is_journal_name,
+    label_for, latest_real_date, line_section, merged_prices, merged_transactions, project,
+    seed_scenario, upgrade_legacy_counters, virtual_posting,
 };
 use ledgeline_core::reports::account_types::{AccountType, AccountTypes};
+use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
-    BudgetOpts, Interval, account_decls, declared_types, periods::bucket_label, signed_entry,
+    BsOpts, BudgetOpts, CfOpts, CfTags, Interval, IsOpts, Valuation, account_decls,
+    balance_sheet_columns, cash_flow_statement, declared_types, income_statement_columns,
+    periods::bucket_label, pivot_balance_sheets, range_buckets, signed_entry,
 };
 use ledgeline_core::vault::{Revision, VaultError};
 use ledgeline_core::{Dec, Fingerprint};
@@ -66,7 +69,8 @@ use serde::{Deserialize, Serialize};
 use crate::edit_api::{WireDecIn, dec_from_wire, json_body};
 use crate::error::{AppError, editing_disabled};
 use crate::reports_api::{
-    Window, WireDec, WireMixed, WirePeriodReport, checked_date, compute, today_utc, wire_mixed,
+    StatementShape, Window, WireBalanceSheetColumns, WireCashFlow, WireDec,
+    WireIncomeStatementReport, WireMixed, checked_date, compute, today_utc, wire_mixed,
 };
 use crate::security::no_store_json as no_store;
 use crate::{AppState, JournalLocation, Snapshot};
@@ -329,7 +333,7 @@ impl WireScenario {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WireBalanceSeries {
-    /// The balance as of the request's `asOf`, before any projected flow.
+    /// The real balance the day before the cutoff, before any projected flow.
     opening: WireMixed,
     /// One closing balance per bucket, oldest → newest.
     values: Vec<WireMixed>,
@@ -398,22 +402,68 @@ impl From<&AssetRow> for WireAssetRow {
     }
 }
 
-/// The answer.
+/// The accounts the expansion books to where the scenario names none — what
+/// the what-if table shows greyed until the user overrides it (plan 28,
+/// Decisions 4 and 7).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireForecastDefaults {
+    /// The journal's own default counter-account: what a scenario with no
+    /// `; cash:` header falls back to. The `cash` control's greyed value.
+    cash: String,
+    /// The gains account of an asset row that names none.
+    gains: String,
+    /// `group` → the default counter-account of that rule's counter-less
+    /// lines. Only rules with at least one such line appear.
+    lines: BTreeMap<String, String>,
+    /// Event `id` → its default counter-account, for events that name none.
+    events: BTreeMap<String, String>,
+}
+
+impl From<&ForecastDefaults> for WireForecastDefaults {
+    fn from(defaults: &ForecastDefaults) -> Self {
+        let names = |map: &BTreeMap<String, AccountName>| {
+            map.iter()
+                .map(|(key, account)| (key.clone(), account.0.clone()))
+                .collect()
+        };
+        Self {
+            cash: defaults.cash.0.clone(),
+            gains: defaults.gains.0.clone(),
+            lines: names(&defaults.lines),
+            events: names(&defaults.events),
+        }
+    }
+}
+
+/// The answer (plan 28, Phase 4).
+///
+/// Two kinds of column live here, and the difference is load-bearing:
+///
+/// - `buckets`, `cash` and `runway` cover the FORECAST periods only — the
+///   runway counts from the cutoff;
+/// - the three statements cover `lookback ++ buckets`: the full actual periods
+///   before the cutoff, then the forecast. `projectedFrom` is the index of the
+///   first forecast column in them (`lookback.len()`), which is where a client
+///   draws the actuals/projected divider.
+///
+/// Net income and net worth are not series here any more: the income
+/// statement's `netIncome` and the balance sheet's `netWorth` are, computed by
+/// the same code as on the Reports tab.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WireProjection {
-    /// Bucket keys, oldest → newest.
+    /// Forecast bucket keys, oldest → newest. The first starts at `actualsEnd`.
     buckets: Vec<String>,
-    /// The first day of the first bucket — the next WHOLE bucket after `asOf`.
-    start: String,
-    /// Projected revenue and expenses, in CASH-FLOW ORIENTATION: revenue
-    /// positive (an inflow), expenses negative (an outflow), so `totals` is the
-    /// sum of `rows` and IS net income. This is the opposite sign convention to
-    /// `/api/reports/incomestatement`, deliberately — see
-    /// `projections::Projection::net_income`.
-    net_income: WirePeriodReport,
+    /// The full ACTUAL periods shown before the forecast, oldest → newest.
+    lookback: Vec<String>,
+    /// The cutoff (Decision 5): the first projected day. Actuals are
+    /// everything strictly before it, and no real transaction on or after it
+    /// is in any figure here.
+    actuals_end: String,
+    /// The index of the first forecast column in the statements' columns.
+    projected_from: usize,
     cash: WireBalanceSeries,
-    net_worth: WireBalanceSeries,
     runway: Option<WireRunway>,
     /// One entry per asset row the walk modelled, in scenario order. `[]` for a
     /// scenario with no asset rows, and always present.
@@ -421,22 +471,117 @@ pub(crate) struct WireProjection {
     /// Everything the projection could not do. Never empty silently: a dropped
     /// line always says so here.
     warnings: Vec<String>,
+    /// The balance sheet at the end of every column, market-valued at its own
+    /// end with the forecast's in-memory prices.
+    balance_sheet: WireBalanceSheetColumns,
+    /// The grouped income statement, one column per period plus the Total.
+    income_statement: WireIncomeStatementReport,
+    /// The statement of cash flows over the same columns.
+    cash_flow: WireCashFlow,
+    defaults: WireForecastDefaults,
 }
 
-impl From<&Projection> for WireProjection {
-    fn from(projection: &Projection) -> Self {
+/// The three official statements over `real ++ forecast`, built exactly as the
+/// Reports tab builds them — the same [`StatementShape`], the same
+/// [`CfTags::from_journal`], the same functions — over the merged transactions
+/// and prices, across `lookback ++ buckets`.
+///
+/// Valued (balance sheet, income statement) at market in the projection's own
+/// valuation commodity, each column at its own end, so a column past the last
+/// real price reads the forecast's in-memory prices (Decision 3) and the
+/// balance sheet's valuation adjustment keeps it balanced.
+fn projected_statements(
+    journal: &ledgeline_core::Journal,
+    projection: &Projection,
+    shape: &StatementShape,
+    depth: usize,
+) -> Result<
+    (
+        WireBalanceSheetColumns,
+        WireIncomeStatementReport,
+        WireCashFlow,
+    ),
+    AppError,
+> {
+    let forecast = &projection.forecast;
+    let window = &forecast.window;
+    let txns = merged_transactions(&journal.transactions, forecast);
+    let prices = merged_prices(&journal.prices, forecast);
+    let spans = range_buckets(&window.from, &window.end, Some(window.interval))?;
+    let ends: Vec<String> = spans.iter().map(|span| span.to.clone()).collect();
+    let value_in = forecast.target.clone();
+
+    let sheets = balance_sheet_columns(
+        &txns,
+        &prices,
+        &BsOpts {
+            as_of: &window.end,
+            depth: None,
+            value: Valuation::Market,
+            value_in: value_in.clone(),
+        },
+        &ends,
+        &shape.declared,
+        &shape.bs_groups,
+        &shape.bs_terms,
+    )?;
+    let income = income_statement_columns(
+        &txns,
+        &prices,
+        &IsOpts {
+            from: &window.from,
+            to: &window.end,
+            value: Valuation::Market,
+            value_in,
+            compare: false,
+        },
+        window.interval,
+        &shape.declared,
+        &shape.is_sections,
+        &shape.is_groups,
+    )?;
+    let cash_flow = cash_flow_statement(
+        &txns,
+        &CfOpts {
+            from: &window.from,
+            to: &window.end,
+            interval: Some(window.interval),
+            depth,
+        },
+        &CfTags::from_journal(journal),
+    )?;
+    Ok((
+        WireBalanceSheetColumns::new(&pivot_balance_sheets(&sheets), &spans, "market"),
+        WireIncomeStatementReport::columns(&income, "market"),
+        WireCashFlow::from(&cash_flow),
+    ))
+}
+
+impl WireProjection {
+    fn new(
+        projection: &Projection,
+        (balance_sheet, income_statement, cash_flow): (
+            WireBalanceSheetColumns,
+            WireIncomeStatementReport,
+            WireCashFlow,
+        ),
+    ) -> Self {
         Self {
             buckets: projection.buckets.clone(),
-            start: projection.start.clone(),
-            net_income: WirePeriodReport::from(&projection.net_income),
+            lookback: projection.lookback.clone(),
+            actuals_end: projection.start.clone(),
+            projected_from: projection.lookback.len(),
             cash: WireBalanceSeries::from(&projection.cash),
-            net_worth: WireBalanceSeries::from(&projection.net_worth),
             runway: projection
                 .runway
                 .as_ref()
                 .map(|runway| wire_runway(runway, &projection.buckets)),
             assets: projection.assets.iter().map(WireAssetRow::from).collect(),
             warnings: projection.warnings.clone(),
+            balance_sheet,
+            income_statement,
+            cash_flow,
+            defaults: WireForecastDefaults::from(&projection.forecast.defaults),
         }
     }
 }
@@ -599,10 +744,27 @@ pub(crate) struct RunRequest {
     interval: Option<String>,
     #[serde(default)]
     count: Option<usize>,
+    /// How many full ACTUAL periods the statements show before the forecast
+    /// (Decision 6). Default [`DEFAULT_LOOKBACK`]; `0` is allowed.
+    #[serde(default)]
+    lookback: Option<usize>,
     #[serde(default)]
     depth: Option<usize>,
     #[serde(default)]
     value_in: Option<String>,
+}
+
+/// `lookback`, defaulted and bounded: the statements carry `lookback + count`
+/// columns, so together they are held to the same [`MAX_BUCKETS`] every
+/// other report's columns are.
+fn checked_lookback(lookback: Option<usize>, count: usize) -> Result<usize, AppError> {
+    let lookback = lookback.unwrap_or(DEFAULT_LOOKBACK);
+    match lookback.checked_add(count) {
+        Some(columns) if columns <= MAX_BUCKETS => Ok(lookback),
+        _ => Err(AppError::BadRequest(format!(
+            "lookback {lookback} plus count {count} is more than {MAX_BUCKETS} columns"
+        ))),
+    }
 }
 
 /// `?end=&count=&depth=` — the seed window.
@@ -861,17 +1023,21 @@ fn scenario_from_wire(scenario: &ScenarioIn) -> Result<DecodedScenario, AppError
 
 /// `POST /api/projections/run` — project a scenario forward.
 ///
-/// Body: `{scenario, asOf?, interval?, count?, depth?, valueIn?}`. The scenario
-/// travels in the body precisely so that UNSAVED edits project; nothing here
-/// touches the filesystem.
+/// Body: `{scenario, asOf?, interval?, count?, lookback?, depth?, valueIn?}`.
+/// The scenario travels in the body precisely so that UNSAVED edits project;
+/// nothing here touches the filesystem.
 ///
-/// - `asOf=YYYY-MM-DD` (default: today) — opening balances are taken here, and
-///   the first projected bucket is the next WHOLE one after it.
+/// - `asOf=YYYY-MM-DD` (default: today) — the caller's today. The projection
+///   starts at the CUTOFF (plan 28 Decision 5): the start of the period
+///   containing the earlier of this and the day after the latest real
+///   transaction. It comes back as `actualsEnd`.
 /// - `interval`, `count`, `depth` — as `/api/reports/cashflow`, through the same
-///   [`Window`].
-/// - `valueIn=$` — the commodity opening balances are valued into. The projected
-///   FLOWS are never valued (there are no market prices for a future date), so a
-///   scenario in another commodity comes back with a warning saying so.
+///   [`Window`]. `depth` rolls up the cash flow statement's account lines.
+/// - `lookback` (default 2) — full actual periods the statements show before
+///   the forecast; `lookback + count` is held to `MAX_BUCKETS`.
+/// - `valueIn=$` — the commodity balances are valued into. The cash series
+///   adds generated flows unvalued, and warns about a scenario in another
+///   commodity; the statements value every column as the Reports tab does.
 pub(crate) async fn run(
     State(state): State<AppState>,
     payload: Result<Json<RunRequest>, JsonRejection>,
@@ -885,6 +1051,7 @@ pub(crate) async fn run(
         request.count,
         request.depth,
     )?;
+    let lookback = checked_lookback(request.lookback, window.count)?;
     let value_in = request
         .value_in
         .map(|symbol| symbol.trim().to_string())
@@ -896,23 +1063,27 @@ pub(crate) async fn run(
 
     compute(move || {
         let journal = &snapshot.journal;
-        let declared = declared_types(&account_decls(journal));
-        let scenario = decoded.signed(&declared)?;
+        let shape = StatementShape::of(journal);
+        let scenario = decoded.signed(&shape.declared)?;
+        // ONE expansion serves every reading: the cash series and runway are
+        // read off it inside `project`, and the statements below are built
+        // over the same generated transactions and prices.
         let projection = project(
             &scenario,
             &journal.transactions,
             &journal.prices,
             &ProjectionOpts {
                 today: &window.end,
-                lookback: DEFAULT_LOOKBACK,
+                lookback,
                 interval: window.interval,
                 count: window.count,
                 depth: window.depth,
-                declared: &declared,
+                declared: &shape.declared,
                 value_in,
             },
         )?;
-        Ok(WireProjection::from(&projection))
+        let statements = projected_statements(journal, &projection, &shape, window.depth)?;
+        Ok(WireProjection::new(&projection, statements))
     })
     .await
 }
