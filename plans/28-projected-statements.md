@@ -317,3 +317,292 @@ lands.
 ## Open questions
 
 None blocking. Decisions 1–8 were settled with Patrick on 2026-10-23.
+
+---
+
+## Contract amendments made during implementation
+
+**Phases 1 and 2 only** (2026-10-24). Everything below was settled while
+building the expansion, the file format and the wire. Phases 3 to 6 should
+trust these over the prose above.
+
+### 1. The API Phase 4 builds on
+
+All in `crates/ledgeline-core/src/projections/forecast.rs`, re-exported from
+`ledgeline_core::projections`:
+
+```rust
+pub struct History<'a> { pub txns: &'a [Transaction], pub prices: &'a [PriceDirective] }
+pub struct ForecastOpts<'a> {
+    pub today: &'a str, pub interval: Interval, pub count: usize,
+    pub lookback: usize, pub value_in: Option<Commodity>,
+}
+pub struct ForecastWindow {
+    pub cutoff: String,          // first projected day == Phase 4's `actualsEnd`
+    pub from: String,            // first day of the first lookback period
+    pub end: String,             // last day of the last forecast period
+    pub interval: Interval,
+    pub lookback: Vec<String>,   // full actual periods before the cutoff
+    pub buckets: Vec<String>,    // forecast periods; the first starts at `cutoff`
+}
+pub struct Forecast {
+    pub window: ForecastWindow,
+    pub txns: Vec<Transaction>,        // generated, date-ascending, balanced
+    pub prices: Vec<PriceDirective>,   // in-memory only, dated at growth steps
+    pub assets: Vec<AssetRow>,
+    pub warnings: Vec<String>,
+    pub target: Option<Commodity>,
+}
+pub fn forecast_transactions(scenario: &Scenario, opts: &ForecastOpts, types: &AccountTypes,
+                             history: &History) -> Result<Forecast, ReportError>;
+pub fn forecast_cutoff(today: &str, latest_real: Option<&str>, interval: Interval) -> Result<String, ReportError>;
+pub fn latest_real_date(txns: &[Transaction]) -> Option<&str>;
+pub fn merged_transactions(history: &[Transaction], forecast: &Forecast) -> Vec<Transaction>;
+pub fn merged_prices(history: &[PriceDirective], forecast: &Forecast) -> Vec<PriceDirective>;
+pub fn is_generated(txn: &Transaction) -> bool;
+pub struct CounterDefaults { .. }   // ::new(history, types, cutoff, header, value_in)
+                                     // .for_account(a) / .for_accounts(iter)
+pub fn upgrade_legacy_counters(scenario: &Scenario, defaults: &CounterDefaults) -> Scenario;
+pub const DEFAULT_LOOKBACK: usize = 2;
+pub const DEFAULT_GAINS_ACCOUNT: &str = "equity:unrealized gains";
+pub const GENERATED_TAG: &str = "generated-transaction";
+```
+
+Phase 4's statements are `real ++ forecast` = `merged_transactions` and
+`merged_prices`. Both drop real data dated on or after the cutoff. `Forecast`
+carries no real transactions, so the server does not clone the journal unless
+it needs the merged list.
+
+Generated transactions are marked as hledger marks them: tags
+`generated-transaction: ~ <period>` and `_generated-transaction`, plus the same
+text in `comment`. Their `Tindex` continues from the journal's highest, and
+their `source_file` is empty.
+
+### 2. One transaction per GROUP and DATE, not per line
+
+The plan says "one balanced transaction per occurrence: the line's posting plus
+its counter-account posting". The expansion builds one transaction per
+`(group, date)` instead: every line of one `~` rule that fires that day, its
+explicit counter postings (pooled per counter account), and the legacy
+residual. That is what hledger generates from one rule. It is also the only
+place the legacy residual can be computed, because the residual belongs to the
+group. Each line is still balanced against its own counter.
+
+Asset growth steps are separate transactions (`<account> growth`, period
+marker `~ growth`): the asset up by the step, the gains account down by it.
+
+### 3. The legacy rule is per occurrence, pooled per group
+
+For lines with `counter: None`, the expansion sums their postings per group per
+date. If the sum is non-zero, it is posted, negated, to
+`CounterDefaults::for_accounts(<those lines' accounts>)`. The pairing counts of
+the group's accounts are pooled, so a one-line group answers exactly as
+Decision 7 states. Groups get one default because a `~` block can hold only
+one amountless posting (amendment 5). Per occurrence rather than per base
+amount, because a rule balanced at its base amounts can drift out of balance
+once growth applies, and the old engine's residual was per bucket.
+
+The parity golden (`tests/projection_parity.rs`) pins this: five scenarios,
+including unbalanced legacy rules with growth, the accrual / partial / raise
+events, unpriced asset rows with contributions, a step change and weekly
+growth. Cash, net worth, net income, runway and per-row asset attribution all
+equal the old engine's figures exactly. The old figures were captured from
+`33439a7` before the accumulators were deleted.
+
+### 4. Decision 7, filled in
+
+- **Window:** transactions dated in `[cutoff − 12 months, cutoff)`.
+- **"Paired with":** each real transaction that has a cash-typed posting counts
+  once for every (other account, cash account) pair in it. A line account
+  pools its descendants (`revenues:salary` sees `revenues:salary:base`). A cash
+  account inside the line's own subtree never counts as a pairing.
+- **Ties** go to the lexically first account at every step.
+- **Largest balance** is valued into the valuation commodity the day before the
+  cutoff.
+- **Two steps the plan did not have:** if the journal has no cash balance at all,
+  the first account declared `type: C`, and failing that `assets:cash`.
+  hledger's own name heuristic reads `assets:cash` as Cash, so the runway still
+  sees the money in an empty or untyped journal. This is why the old unit
+  tests over an empty journal still pass unchanged.
+
+### 5. The file format: the amountless posting IS the counter
+
+- A rule's counter-account is its **regular posting with no amount**. The
+  journal parser infers that posting's amount during balancing and recorded
+  nothing about it, so `PeriodicTransaction` gained
+  `pub elided: Option<usize>`: the index of the regular posting whose amount
+  was elided, recorded before balancing. `lines_from_rule` skips that posting
+  and gives its account to every regular line of the block. **This changes the
+  seed:** a `budget.journal` rule written `expenses:food $500` /
+  `assets:checking` now seeds ONE line, with `counter: assets:checking`. It
+  used to seed two lines, the second being the inferred `$-500` "stated cash
+  leg". The numbers are identical.
+- **Virtual lines keep no counter.** In a block that has a counter, a
+  `(account) amount` line stays `counter: None`, because hledger leaves
+  unbalanced virtual postings out of balancing. The writer mirrors this: lines
+  with a counter are written plain, lines without are written `(account)`, and
+  the counter row comes last. A pre-plan-28 block with no counters is written
+  byte-for-byte as before.
+- **Two different counters in one group are refused**
+  (`SerializeError::Invalid`, "every line of one rule must share its
+  counter-account; split them into separate rules"), as two recurrences in one
+  rule already are. Phase 5's table must give a row whose counter differs from
+  its group's a group of its own.
+- **Events** gained `ScenarioEvent::counter`: the block's amountless posting,
+  which takes whatever the event's postings do not balance. The plan named only
+  `ScenarioLine::counter`, but every pre-plan-28 event is unbalanced too.
+- **`gains:`** is a posting tag on asset rows (`gains: equity:home gains`;
+  spaces are fine, commas are refused). It is refused on a flow line.
+- **`; cash: <account>`** is a header line (`Scenario::cash`). The header span
+  and `parse_header` recognise it.
+- `chunk_print`, the round-trip comparison, now includes each line's counter
+  and gains and each event's counter, so `confirm_round_trip` proves them.
+
+### 6. The gains declaration (Decision 4) and its one-time byte change
+
+The writer declares `account <gains>  ; type: <letter>` for each gains account
+that a row with a **non-zero** rate books to and that neither the main
+journal's declared types nor the file itself declares. The letter is the
+account's resolved type, Equity when it resolves to nothing. The declaration
+goes below the header, set off by a blank line, so the next read's header span
+ends before it and a second save is byte-identical.
+
+Consequence: the **first** save of a pre-plan-28 file with a growing asset row
+adds that declaration even if nothing else changed. Two tests pinned "an
+unchanged save rewrites no byte" over such files. Both now assert the one
+inserted declaration and then byte-identity on the second save:
+`a_growth_tag_on_an_asset_account_reads_as_an_asset_row` and
+`the_committed_asset_fixture_reads_and_rewrites_unchanged`.
+`fixtures/asset-growth-scenario.journal` itself was NOT edited, because it also
+feeds the TypeScript-captured `journal_meta` golden.
+
+### 7. The save-time upgrade lives in the server's save handler
+
+`projections_api::save` now runs `upgrade_legacy_counters` before writing. It
+uses defaults built with `today_utc()` and a monthly cutoff. Only a group in
+which **no** line names a counter and whose base amounts do not sum to zero is
+touched, and every line in it gets the group's default. The same goes for an
+unbalanced event with no counter. Balanced groups, mixed groups and anything
+already countered are left alone. `the_upgrade_moves_no_number` pins that the
+upgraded scenario expands to the same account totals.
+
+### 8. `ProjectionOpts.as_of` became `today`, plus `lookback`
+
+The start semantics changed deliberately (Decision 5). `Projection::start` is
+now the cutoff. `Projection` gained `lookback: Vec<String>`, and
+`BalanceSeries` gained `history: Vec<MixedAmount>`: the REAL closing balances at
+the end of each lookback period. `net_worth.history` comes from
+`net_worth_priced`; `cash.history` comes from a one-pass closing-balance scan.
+The server passes `DEFAULT_LOOKBACK` but does not serialize either field yet,
+so the wire is unchanged for them.
+
+Opening balances are real figures the day before the cutoff. Every real read
+(`account_balances_at`, `net_worth_priced`, counter inference) is bounded
+there, by posting date, so the journal is never cloned to filter it. Real `P`
+directives and inferred cost prices dated on or after the cutoff are dropped
+too, consistent with "no mixed period".
+
+### 9. How the legacy series are derived, and why not by valuing each column
+
+`project()` reads cash, net worth and net income off `forecast.txns`, one
+`account_totals` call per bucket over the date-sorted slice, beside the real
+openings:
+
+- cash = valued real cash opening + raw generated postings to `is_cash`
+  accounts;
+- net worth = `net_worth_priced` opening + raw generated postings to asset and
+  liability accounts + the revaluation of every REAL asset/liability holding
+  in a commodity with forecast prices (valued at the bucket end, less valued at
+  the cutoff);
+- net income = generated revenue and expense postings, cash-flow oriented, as
+  before.
+
+Generated amounts are deliberately NOT valued per column. `value_at` drops
+unpriced commodities, so valuing would silently delete a EUR scenario line
+that the old engine added as EUR with a warning. That warning ("added without
+conversion") is unchanged and still true. Phase 4's statements value per
+column as the Reports tab does. That is right there, and it differs from this
+legacy series only for multi-commodity scenarios.
+
+### 10. Asset rows: when a row is "priced", and what grows
+
+A row grows through **prices** when all of these hold: there is a valuation
+commodity, the row has no `opening:` override, and its subtree holds a
+commodity other than that one with a direct price (explicit or inferred) the
+day before the cutoff. Then:
+
+- each such commodity gets stepwise `PriceDirective`s at the row's growth
+  boundaries (anchor = the row's `from`, else the cutoff), starting from that
+  latest price and rounded at every step to
+  `max(price places, price display precision, 4)`. The floor of 4 places keeps a
+  1%/yr step on a $5 price from rounding to nothing;
+- the row's **base-commodity** part (cash held in the brokerage, plus
+  contributions) still compounds through gains postings, as an unpriced row
+  does;
+- `AssetRow::growth` = the gains steps + the priced holdings revalued from the
+  cutoff to the end of the span;
+- the net-worth series revalues **every** real holding of a grown commodity,
+  wherever it sits, because a price belongs to the commodity. So the series can
+  move more than the sum of `AssetRow::growth` when one commodity is held
+  outside the row's account.
+
+An `opening:` override makes the row compound as one balance (the old
+behaviour). Its difference from the journal is now a gains transaction dated
+the cutoff (asset vs gains account) rather than a net-worth-only adjustment.
+The warning text is unchanged.
+
+**One behaviour change:** a growing asset row on a **cash-typed** account (a
+savings account declared `type: C`) now moves cash, because its gains posting
+lands in a cash account. Before, appreciation never reached cash. This is
+interest in the account, so the runway counts it. No existing test covered
+the case.
+
+### 11. The wire (Phase 2 only)
+
+- `WireScenarioLine` gained `counter` and `gains`, `WireScenarioEvent` gained
+  `counter`, and `WireScenario` gained `cash`. All are strings or `null`, never
+  absent (plan 22 amendment 14). Inbound they are optional, and blank means
+  none. `gains` on a flow line is a `400`.
+- `fixtures/native/v1/projections-seed.json` and `projections-asset.json` were
+  regenerated by replaying through the in-process oneshot (no port bound).
+  Every other golden is byte-identical.
+- TypeScript: `ScenarioLine.counter/gains`, `ScenarioEvent.counter` and
+  `Scenario.cash` were added to `projections/types.ts`, the raw types and
+  decoders in `nativeDecode.ts`, `WireScenario*In` in `native.ts`, and
+  `scenarioToWire` / `cloneScenario` / `blankLine` / `blankEvent` /
+  `emptyScenario`. They carry the values through untouched, so a counter stated
+  in a file survives a UI save. **Nothing renders them yet; that is Phase 5.**
+  `TOLERATED` did not grow.
+- `WireProjection` is unchanged.
+
+### 12. Tests that changed meaning, deliberately
+
+Every test that read "as-of 2026-09-20, projection starts October" now reads
+"today 2026-10-01 over a journal ending 2026-09-30" (the fixture journals moved
+from 2026-01-10 / 2026-01-01 to 2026-09-30). Yearly tests over a journal use
+`at_year_end` with today 2027-01-01. Tests whose as-of was a period's last day
+moved to the next day. `the_projection_starts_at_the_next_whole_bucket` became
+`the_projection_starts_at_the_first_incomplete_period`, with the plan's three
+worked examples. In `projection_endpoints.rs`, `sample.journal` ends
+2026-07-03, so at `asOf=2026-07-08` July is now projected and the buckets,
+runway index and totals positions moved by one month. Three save tests now
+expect the upgraded, balanced form of the legacy plan file.
+
+New tests: the cutoff examples, the window, counter inference (pairing,
+subtree pooling, trailing window, header, largest balance, declared and
+fallback), the legacy residual, balanced groups, explicit counters, plan 22's
+table restated with explicit counters (accrual, partial, raise, card), gains
+postings, price trends with the conflict warning and net-worth revaluation,
+the upgrade (what it touches, and that it moves no number), serializer round
+trips of counter/gains/cash and the refusals, the lookback, the parity golden,
+and a gated hledger interop test proving the balanced format forecasts into
+checking and passes `hledger check`.
+
+### 13. Not done here
+
+Phases 3 to 6. In particular, there is no multi-column balance sheet, no
+statements on the wire, and no counter or gains columns in the table. The
+hledger interop test is a single check, not Phase 6's per-account,
+per-period parity. The docs (`docs/projections/cash.md`, `file-format.md`,
+`asset-rows.md`, `index.md`) were rewritten for counter-accounts, gains
+accounts, price trends, the cutoff and the exact hledger command.
