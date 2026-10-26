@@ -2079,7 +2079,7 @@ const SCENARIO_FILE = {
                 role: "flow",
                 account: "expenses:rent",
                 amount: {commodity: "$", quantity: {mantissa: "420000", places: 2}, precision: 2},
-                period: {raw: "monthly", simple: "monthly", from: null, to: null},
+                period: {raw: "monthly", simple: "monthly", base: null, from: null, to: null},
                 growth: {rate: {mantissa: "2", places: 2}, unit: "year"},
                 opening: null,
                 note: "projection",
@@ -2120,7 +2120,7 @@ describe("UNIT nativeDecode — the projection seed over its golden", () => {
         expect(salary?.amount.precision).toBe(2);
         expect(salary?.source).toBe("unbudgeted");
         expect(salary?.growth).toBeNull();
-        expect(salary?.period).toEqual({raw: "monthly", simple: "monthly", from: null, to: null});
+        expect(salary?.period).toEqual({raw: "monthly", simple: "monthly", base: null, from: null, to: null});
 
         const housing = scenario.lines.find((l) => l.account === "expenses:housing");
         expect(housing?.amount.quantity).toEqual({m: 187500n, p: 2});

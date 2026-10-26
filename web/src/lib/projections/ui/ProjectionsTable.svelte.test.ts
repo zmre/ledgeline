@@ -48,7 +48,7 @@ const seedLine = (account: string, mantissa: string) => ({
     role: "flow",
     account,
     amount: {commodity: "$", quantity: {mantissa, places: 2}, precision: 2},
-    period: {raw: "monthly", simple: "monthly", from: null, to: null},
+    period: {raw: "monthly", simple: "monthly", base: null, from: null, to: null},
     growth: null,
     opening: null,
     note: NOTE,
@@ -84,7 +84,7 @@ const assetLine = (account: string, group: string, contribution = "0") => ({
     role: "asset",
     account,
     amount: {commodity: "$", quantity: {mantissa: contribution, places: 2}, precision: 2},
-    period: {raw: "monthly", simple: "monthly", from: null, to: null},
+    period: {raw: "monthly", simple: "monthly", base: null, from: null, to: null},
     growth: {rate: {mantissa: "7", places: 2}, unit: "year"},
     opening: null,
     note: "",
@@ -284,6 +284,7 @@ describe("COMPONENT ProjectionsTable — editing marks the scenario dirty", () =
         expect(scenarioStore.scenario.lines.find((l) => l.account === "expenses:housing")?.period).toEqual({
             raw: "quarterly",
             simple: "quarterly",
+            base: null,
             from: null,
             to: null,
         });
@@ -307,6 +308,99 @@ describe("COMPONENT ProjectionsTable — editing marks the scenario dirty", () =
         await tick();
         expect(within(cellOf(to)).queryByTestId("date-unset")).toBeNull();
         expect(screen.getByLabelText(to).className).not.toContain("opacity-0");
+    });
+});
+
+// REGRESSION: `~ monthly from 2026-11-01  <description>` showed its whole `raw`
+// in the Per column and locked From/To, because the engine answered `simple`
+// only for an UNBOUNDED interval. The periods below are what the engine now
+// sends for each form (`projection_endpoints.rs` pins that side).
+const periodLine = (account: string, period: Record<string, string | null>, note: string) => ({
+    ...seedLine(account, "10000"),
+    id: account,
+    group: account,
+    period,
+    note,
+    source: "journal",
+    section: "expense",
+});
+
+const BOUNDED = decodeScenario({
+    name: "",
+    created: null,
+    updated: null,
+    lines: [
+        periodLine("expenses:a", {raw: "monthly from 2026-11-01", simple: "monthly", base: null, from: "2026-11-01", to: null}, NOTE),
+        periodLine("expenses:b", {raw: "monthly to 2027-06-01", simple: "monthly", base: null, from: null, to: "2027-06-01"}, ""),
+        periodLine("expenses:c", {raw: "yearly from 2026-11-01 to 2030-01-01", simple: "yearly", base: null, from: "2026-11-01", to: "2030-01-01"}, "ends"),
+        periodLine("expenses:d", {raw: "every 3 months from 2026-11-01", simple: null, base: "every 3 months", from: "2026-11-01", to: null}, ""),
+        periodLine(
+            "expenses:e",
+            {raw: "every 15th day of month from 2026-11-01", simple: null, base: "every 15th day of month", from: "2026-11-01", to: null},
+            "mid-month"
+        ),
+        periodLine("expenses:f", {raw: "every weekday", simple: null, base: null, from: null, to: null}, "workdays"),
+    ],
+    events: [],
+    cash: null,
+});
+
+describe("COMPONENT ProjectionsTable — REGRESSION: bounded periods stay editable", () => {
+    beforeEach(() => scenarioStore.adopt(BOUNDED));
+
+    const periodOf = (account: string) => scenarioStore.scenario.lines.find((l) => l.account === account)?.period;
+    const from = (account: string) => screen.getByLabelText(`From date for ${account}`) as HTMLInputElement;
+    const to = (account: string) => screen.getByLabelText(`To date for ${account} (exclusive)`) as HTMLInputElement;
+
+    it.each([
+        ["expenses:a", "monthly", "2026-11-01", ""],
+        ["expenses:b", "monthly", "", "2027-06-01"],
+        ["expenses:c", "yearly", "2026-11-01", "2030-01-01"],
+    ])("%s selects %s in Per and shows editable bounds", (account, interval, start, end) => {
+        mount();
+        expect((screen.getByLabelText(`Period for ${account}`) as HTMLSelectElement).value).toBe(interval);
+        expect(from(account).disabled).toBe(false);
+        expect(to(account).disabled).toBe(false);
+        expect(from(account).value).toBe(start);
+        expect(to(account).value).toBe(end);
+    });
+
+    it("moving a bounded rule's `from` rewrites `raw` and keeps the description", async () => {
+        mount();
+        await fireEvent.change(from("expenses:a"), {target: {value: "2026-12-01"}});
+        expect(periodOf("expenses:a")?.raw).toBe("monthly from 2026-12-01");
+        expect(scenarioStore.scenario.lines.find((l) => l.account === "expenses:a")?.note).toBe(NOTE);
+        await fireEvent.change(from("expenses:a"), {target: {value: ""}});
+        expect(periodOf("expenses:a")?.raw).toBe("monthly");
+    });
+
+    it("changing a bounded rule's interval keeps both bounds", async () => {
+        mount();
+        await fireEvent.change(screen.getByLabelText("Period for expenses:c"), {target: {value: "quarterly"}});
+        expect(periodOf("expenses:c")?.raw).toBe("quarterly from 2026-11-01 to 2030-01-01");
+    });
+
+    it.each([
+        ["expenses:d", "every 3 months"],
+        ["expenses:e", "every 15th day of month"],
+    ])("%s shows its words as written and still re-bounds around them", async (account, words) => {
+        mount();
+        const cell = rowOf(account)?.querySelector('[data-testid="period-as-written"]');
+        expect(cell?.textContent?.trim()).toBe(words);
+        expect(from(account).value).toBe("2026-11-01");
+        await fireEvent.change(to(account), {target: {value: "2027-06-01"}});
+        expect(periodOf(account)?.raw).toBe(`${words} from 2026-11-01 to 2027-06-01`);
+    });
+
+    it("a recurrence the engine cannot rebuild locks its bounds and says why", () => {
+        mount();
+        const cell = rowOf("expenses:f")?.querySelector('[data-testid="period-as-written"]');
+        expect(cell?.textContent?.trim()).toBe("every weekday");
+        for (const box of [from("expenses:f"), to("expenses:f")]) {
+            expect(box.disabled).toBe(true);
+            expect(box.title).toContain("can't be edited here");
+            expect(box.closest("td")?.title).toContain("every weekday");
+        }
     });
 });
 
@@ -726,7 +820,9 @@ describe("COMPONENT ProjectionsTable — one-off events", () => {
         const dated = SEED.lines[0];
         scenarioStore.adopt({
             ...SEED,
-            lines: [{...dated, id: "buy", group: "buy", account: "expenses:housing", period: {raw: "2027-03-01", simple: null, from: null, to: null}}],
+            lines: [
+                {...dated, id: "buy", group: "buy", account: "expenses:housing", period: {raw: "2027-03-01", simple: null, base: null, from: null, to: null}},
+            ],
         });
         mount();
         const oneoff = within(screen.getByTestId("projection-section-oneoff"));

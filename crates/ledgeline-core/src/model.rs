@@ -480,6 +480,58 @@ impl PeriodSpec {
     pub fn is_simple(&self) -> bool {
         self.interval().is_some()
     }
+
+    /// The interval this rule steps by, **whatever its bounds**: one of the five
+    /// units with no multiplier, `from`/`to` or not.
+    ///
+    /// The scenario editor's question, which differs from
+    /// [`interval`](Self::interval)'s by exactly the bounds. That editor keeps
+    /// `from` and `to` in fields of their own and rebuilds the whole expression
+    /// as `WORD [from D] [to D]`, so `~ monthly from 2026-11-01` loses nothing
+    /// when it is read as `monthly` plus a start — whereas the budget editor
+    /// writes back the single word and would drop the bound.
+    #[must_use]
+    pub fn bounded_interval(&self) -> Option<PeriodExpr> {
+        match self.kind {
+            PeriodKind::Every {
+                unit,
+                multiplier: 1,
+            } => Some(unit),
+            _ => None,
+        }
+    }
+
+    /// The interval words of [`raw`](Self::raw) — everything before its
+    /// `from`/`to` clause, as written — when the rule's bounds can be rewritten
+    /// around them; `None` when they cannot.
+    ///
+    /// They can whenever the words are a recurrence this engine understands:
+    /// [`parse_period_spec`](crate::parse::parse_period_spec) only reaches one of
+    /// those kinds after reading the bounds as a trailing `from D` / `to D`
+    /// suffix, so cutting that suffix and writing a new one reads back as the
+    /// same recurrence with the new bounds. They cannot for
+    /// [`PeriodKind::Once`], whose bounds ARE the occurrence, nor for
+    /// [`PeriodKind::Unsupported`], whose bounds were never read.
+    ///
+    /// Runs of whitespace between the words collapse to one space; hledger
+    /// does not distinguish them.
+    #[must_use]
+    pub fn interval_words(&self) -> Option<String> {
+        match self.kind {
+            PeriodKind::Every { .. } | PeriodKind::Anchored { .. } | PeriodKind::Annual { .. } => {
+                let is_bound = |word: &&str| {
+                    word.eq_ignore_ascii_case("from") || word.eq_ignore_ascii_case("to")
+                };
+                let words: Vec<&str> = self
+                    .raw
+                    .split_whitespace()
+                    .take_while(|word| !is_bound(word))
+                    .collect();
+                Some(words.join(" "))
+            }
+            PeriodKind::Once | PeriodKind::Unsupported => None,
+        }
+    }
 }
 
 /// A `~ PERIODEXPR  [DESCRIPTION]` periodic transaction rule.

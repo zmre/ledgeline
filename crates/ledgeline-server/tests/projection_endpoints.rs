@@ -1548,6 +1548,144 @@ async fn a_projection_file_reads_back_as_the_scenario_it_states() {
     assert_eq!(scenario["events"], json!([]));
 }
 
+/// One rule per period form the what-if table must edit, with and without a
+/// two-space description.
+const BOUNDED: &str = "\
+; Ledgeline projection
+; projection: Bounded
+; created: 2026-01-01
+; updated: 2026-01-01
+
+~ monthly from 2026-11-01  unbudgeted — average over 2025-11-01 to 2026-10-22
+    (expenses:a)  $1.00
+
+~ monthly from 2026-11-01
+    (expenses:b)  $1.00
+
+~ monthly to 2027-06-01  ends
+    (expenses:c)  $1.00
+
+~ yearly from 2026-11-01 to 2030-01-01
+    (expenses:d)  $1.00
+
+~ every 3 months from 2026-11-01  quarterly-ish
+    (expenses:e)  $1.00
+
+~ every 15th day of month from 2026-11-01  mid-month
+    (expenses:f)  $1.00
+
+~ every weekday  workdays
+    (expenses:g)  $1.00
+";
+
+/// The report: `~ monthly from 2026-11-01  …` showed its whole `raw` in the
+/// Per column and locked From/To, because `simple` was answered by
+/// `PeriodSpec::interval`, which is `None` for ANY bounded rule. A bounded
+/// rule on one of the five words is `simple` now; one the editor cannot spell
+/// still names the words its bounds can be rewritten around (`base`); and a
+/// save of an edited bound writes hledger's syntax with the description kept.
+#[tokio::test]
+async fn a_bounded_rule_reads_as_its_interval_and_saves_an_edited_bound() {
+    let uri = "/api/projections/projection-bounded.journal";
+    let tree = Tree::new(&[("projection-bounded.journal", BOUNDED)]);
+    let (status, doc) = file_json(&tree.state, "GET", uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let periods: Vec<Value> = doc["scenario"]["lines"]
+        .as_array()
+        .expect("lines")
+        .iter()
+        .map(|line| line["period"].clone())
+        .collect();
+    let expect = |raw: &str, simple: Value, base: Value, from: Value, to: Value| json!({"raw": raw, "simple": simple, "base": base, "from": from, "to": to});
+    let null = Value::Null;
+    assert_eq!(
+        periods,
+        vec![
+            expect(
+                "monthly from 2026-11-01",
+                json!("monthly"),
+                null.clone(),
+                json!("2026-11-01"),
+                null.clone()
+            ),
+            expect(
+                "monthly from 2026-11-01",
+                json!("monthly"),
+                null.clone(),
+                json!("2026-11-01"),
+                null.clone()
+            ),
+            expect(
+                "monthly to 2027-06-01",
+                json!("monthly"),
+                null.clone(),
+                null.clone(),
+                json!("2027-06-01")
+            ),
+            expect(
+                "yearly from 2026-11-01 to 2030-01-01",
+                json!("yearly"),
+                null.clone(),
+                json!("2026-11-01"),
+                json!("2030-01-01")
+            ),
+            expect(
+                "every 3 months from 2026-11-01",
+                null.clone(),
+                json!("every 3 months"),
+                json!("2026-11-01"),
+                null.clone()
+            ),
+            expect(
+                "every 15th day of month from 2026-11-01",
+                null.clone(),
+                json!("every 15th day of month"),
+                json!("2026-11-01"),
+                null.clone()
+            ),
+            expect(
+                "every weekday",
+                null.clone(),
+                null.clone(),
+                null.clone(),
+                null
+            ),
+        ]
+    );
+
+    // Edit two bounds the way the table does — `raw` rebuilt from the derived
+    // fields — and hand everything else back untouched.
+    let revision = doc["revision"].clone();
+    let mut scenario = doc["scenario"].clone();
+    scenario["lines"][0]["period"]["raw"] = json!("monthly from 2026-12-01 to 2027-12-01");
+    scenario["lines"][5]["period"]["raw"] = json!("every 15th day of month from 2027-01-01");
+    let (status, saved) = file_json(
+        &tree.state,
+        "PUT",
+        uri,
+        Some(json!({"revision": revision, "scenario": scenario})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let written = tree.read("projection-bounded.journal");
+    for header in [
+        "~ monthly from 2026-12-01 to 2027-12-01  unbudgeted — average over 2025-11-01 to 2026-10-22\n",
+        "~ monthly from 2026-11-01\n",
+        "~ monthly to 2027-06-01  ends\n",
+        "~ every 15th day of month from 2027-01-01  mid-month\n",
+        "~ every weekday  workdays\n",
+    ] {
+        assert!(
+            written.contains(header),
+            "missing {header:?} in:\n{written}"
+        );
+    }
+    assert_eq!(
+        saved["scenario"]["lines"][0]["period"]["to"],
+        json!("2027-12-01")
+    );
+}
+
 #[tokio::test]
 async fn a_journal_the_main_one_includes_can_be_read_but_never_written() {
     // The ask: "We should default to showing the last loaded and if there isn't

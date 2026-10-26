@@ -47,10 +47,9 @@ export type LineRole = "flow" | "asset";
 export const LINE_ROLES: readonly LineRole[] = ["flow", "asset"];
 
 /**
- * A BARE fixed interval, when the line's period is one.
+ * One of the five fixed intervals a line's period can step by, bounds aside.
  *
- * `null` on a bounded-but-irregular or single-date rule, in which case `raw` is
- * the only reading — the engine re-parses `raw` and ignores everything else.
+ * The engine re-parses `raw` and ignores everything else.
  */
 export type ScenarioInterval = "daily" | "weekly" | "monthly" | "quarterly" | "yearly";
 export const SCENARIO_INTERVALS: readonly ScenarioInterval[] = ["daily", "weekly", "monthly", "quarterly", "yearly"];
@@ -72,8 +71,20 @@ export interface ScenarioAmount {
 export interface ScenarioPeriod {
     /** The period expression as it would be written in a journal. The round-trip field. */
     raw: string;
-    /** `daily`…`yearly` when `raw` is a bare fixed interval, else null. */
+    /**
+     * `daily`…`yearly` when `raw` steps by one of the five intervals, BOUNDED
+     * OR NOT (`monthly from 2026-11-01` is `monthly`), else null. `raw` is
+     * rebuilt as `simple [from D] [to D]`.
+     */
     simple: ScenarioInterval | null;
+    /**
+     * When `simple` is null but the bounds can still be rewritten: the interval
+     * words as written (`every 15th day of month`), which `raw` is rebuilt
+     * around. Null when `simple` is set, and when the bounds cannot be
+     * rewritten at all (a one-off, or a recurrence the engine does not
+     * understand) — `raw` is then the only reading of the period.
+     */
+    base: string | null;
     /** Inclusive start, or null. */
     from: ISODate | null;
     /** EXCLUSIVE end, as hledger writes `to`, or null. */

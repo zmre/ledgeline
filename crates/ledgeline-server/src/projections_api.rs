@@ -132,18 +132,27 @@ impl From<&Amount> for WireAmount {
     }
 }
 
-/// A recurrence, in the three readings a client needs.
+/// A recurrence, in the readings a client needs.
 ///
 /// `raw` is the round-trip field and the only one the server reads back;
-/// `simple`, `from` and `to` are derived, and are here so the table can show a
-/// period without re-implementing hledger's grammar in TypeScript.
+/// `simple`, `base`, `from` and `to` are derived, and are here so the table can
+/// show and re-bound a period without re-implementing hledger's grammar in
+/// TypeScript.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WireScenarioPeriod {
     /// The period expression exactly as it would be written in a journal.
     raw: String,
-    /// `daily`…`yearly` when this is a BARE fixed interval, else `null`.
+    /// `daily`…`yearly` when this steps by one of the five intervals, BOUNDED OR
+    /// NOT (`monthly from 2026-11-01` is `monthly`), else `null`. The client
+    /// rebuilds `raw` as `WORD [from D] [to D]`, so the bounds are not lost.
     simple: Option<&'static str>,
+    /// When `simple` is `null` but the bounds can still be rewritten: the
+    /// interval words as written (`every 15th day of month`), which the client
+    /// rebuilds `raw` around. `null` when `simple` is set, and when the bounds
+    /// cannot be rewritten (a one-off, or a recurrence this engine does not
+    /// understand).
+    base: Option<String>,
     /// The `from` date, ISO, or `null`.
     from: Option<String>,
     /// The `to` date, ISO and EXCLUSIVE as hledger writes it, or `null`.
@@ -152,9 +161,13 @@ struct WireScenarioPeriod {
 
 impl From<&PeriodSpec> for WireScenarioPeriod {
     fn from(period: &PeriodSpec) -> Self {
+        let simple = period
+            .bounded_interval()
+            .map(ledgeline_core::periodic::period_word);
         Self {
             raw: period.raw.clone(),
-            simple: period.interval().map(ledgeline_core::periodic::period_word),
+            simple,
+            base: simple.is_none().then(|| period.interval_words()).flatten(),
             from: period.start.clone(),
             to: period.end.clone(),
         }
@@ -615,9 +628,9 @@ struct AmountIn {
 /// A recurrence on the way in: `{"raw": "monthly from 2027-04-01"}`.
 ///
 /// **The one type here without `deny_unknown_fields`, deliberately.**
-/// [`WireScenarioPeriod`] goes out with three DERIVED fields beside `raw`, and a
+/// [`WireScenarioPeriod`] goes out with four DERIVED fields beside `raw`, and a
 /// client should be able to hand the object straight back rather than stripping
-/// it first — so `simple`, `from` and `to` are accepted and dropped. Declaring
+/// it first — so `simple`, `base`, `from` and `to` are accepted and dropped. Declaring
 /// them as ignored fields would be the same contract spelled as dead code.
 ///
 /// The server re-parses `raw` through the JOURNAL's own grammar
@@ -954,7 +967,7 @@ fn scenario_from_wire(scenario: &ScenarioIn) -> Result<DecodedScenario, AppError
                 role,
                 account: account_from_wire(&line.account)?,
                 amount: amount_from_wire(&line.amount)?,
-                // `simple`/`from`/`to` are echoes; `raw` is the fact.
+                // `simple`/`base`/`from`/`to` are echoes; `raw` is the fact.
                 period: parse_period_spec(&line.period.raw),
                 growth: line.growth.as_ref().map(growth_from_wire).transpose()?,
                 opening: line.opening.as_ref().map(amount_from_wire).transpose()?,

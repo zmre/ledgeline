@@ -479,6 +479,7 @@ interface RawScenarioAmount {
 interface RawScenarioPeriod {
     raw?: string;
     simple?: string | null;
+    base?: string | null;
     from?: string | null;
     to?: string | null;
 }
@@ -2310,6 +2311,7 @@ function decodeScenarioPeriod(raw: RawScenarioPeriod | undefined, context: strin
         // `null` is a real answer — "this period is not a bare fixed interval" —
         // and the engine says it explicitly, so an absent key is not it.
         simple: decodeNullableEnum(SCENARIO_INTERVALS, raw.simple, `${context} simple`),
+        base: decodeNullableStr(raw.base, `${context} base`),
         from: decodeNullableStr(raw.from, `${context} from`),
         to: decodeNullableStr(raw.to, `${context} to`),
     });

@@ -38,7 +38,7 @@ const SEED_BODY = {
             role: "flow",
             account: "expenses:housing",
             amount: amount("187500"),
-            period: {raw: "monthly", simple: "monthly", from: null, to: null},
+            period: {raw: "monthly", simple: "monthly", base: null, from: null, to: null},
             growth: null,
             opening: null,
             note: "unbudgeted — average over 2025-08-01 to 2026-07-08",

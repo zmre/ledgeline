@@ -1640,3 +1640,21 @@ said anything. `a_negative_expense_is_an_inflow_which_is_why_the_sign_matters` i
 the join between the two halves: it feeds the engine exactly what the browser
 used to send and pins that the runway disappears, so the browser-side fix is
 demonstrably load-bearing rather than merely asserted to be.
+
+### 43. A bounded rule is still its interval: `simple` ignores bounds, `base` added
+
+`WireScenarioPeriod.simple` was answered by `PeriodSpec::interval`, the BUDGET
+editor's question, which is `None` for any rule with a `from`/`to` because that
+editor writes back the single word. The what-if table rebuilds `raw` as
+`WORD [from D] [to D]` and keeps the bounds in boxes of their own, so the
+question was the wrong one: `~ monthly from 2026-11-01  <description>` showed its
+whole `raw` in the Per column and locked From/To.
+
+`simple` is now `PeriodSpec::bounded_interval` (the five words, multiplier 1,
+bounds or not). A new derived field, `base`, is the interval words as written
+(`PeriodSpec::interval_words`) when `simple` is `null` but the bounds are still
+the trailing `from`/`to` clause — `every 3 months`, `every 15th day of month` —
+so those re-bound too. `base` is `null` beside a `simple`, and for a one-off or
+an `Unsupported` period, whose From/To boxes are disabled with a tooltip saying
+why. The period goes OUT as `{raw, simple, base, from, to}`; `PeriodIn` still
+reads only `raw`.

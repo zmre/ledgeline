@@ -6,6 +6,7 @@ import {
     accountOrNull,
     blankAssetLine,
     blankLine,
+    boundsLockedReason,
     cloneScenario,
     duplicateRow,
     emptyScenario,
@@ -53,7 +54,7 @@ function line(overrides: Partial<ScenarioLine> = {}): ScenarioLine {
         role: "flow",
         account: "expenses:rent",
         amount: {commodity: "$", quantity: dec(420000, 2), precision: 2},
-        period: {raw: "monthly", simple: "monthly", from: null, to: null},
+        period: {raw: "monthly", simple: "monthly", base: null, from: null, to: null},
         growth: null,
         opening: null,
         note: "",
@@ -118,20 +119,20 @@ describe("UNIT scenarioModel — sections", () => {
     });
 
     it("a single-date `~` rule is shown among the one-offs, though the engine keeps it a LINE", () => {
-        const dated = line({period: {raw: "2027-03-01", simple: null, from: null, to: null}});
+        const dated = line({period: {raw: "2027-03-01", simple: null, base: null, from: null, to: null}});
         expect(sectionOfLine(dated, DECLARED)).toBe("oneoff");
     });
 
     it("a bounded-but-irregular period is NOT a one-off — its raw is not a date", () => {
-        const weird = line({period: {raw: "every weekday", simple: null, from: null, to: null}});
+        const weird = line({period: {raw: "every weekday", simple: null, base: null, from: null, to: null}});
         expect(sectionOfLine(weird, DECLARED)).toBe("expense");
     });
 
     it("groups segments into one logical row, earliest span first, keeping the rows' own order", () => {
         const lines = [
             line({id: "b", group: "g-b", account: "expenses:software"}),
-            line({id: "a", group: "g-a2", period: withBounds({raw: "", simple: "monthly", from: null, to: null}, "2027-04-01", null)}),
-            line({id: "a", group: "g-a1", period: withBounds({raw: "", simple: "monthly", from: null, to: null}, null, "2027-04-01")}),
+            line({id: "a", group: "g-a2", period: withBounds({raw: "", simple: "monthly", base: null, from: null, to: null}, "2027-04-01", null)}),
+            line({id: "a", group: "g-a1", period: withBounds({raw: "", simple: "monthly", base: null, from: null, to: null}, null, "2027-04-01")}),
         ];
         const rows = logicalRows(lines, DECLARED, "expense");
         expect(rows.map((r) => r.id)).toEqual(["b", "a"]);
@@ -176,7 +177,7 @@ describe("UNIT scenarioModel — the ASSET section (plan 23, Phase 3)", () => {
     it("`asset` beats a single-date period, which `oneoff` would otherwise claim", () => {
         // A balance with a dated contribution is still a balance, and the
         // one-off table has no Growth column to show its rate in.
-        const dated = line({role: "asset", account: "assets:house", period: {raw: "2027-03-01", simple: null, from: null, to: null}});
+        const dated = line({role: "asset", account: "assets:house", period: {raw: "2027-03-01", simple: null, base: null, from: null, to: null}});
         expect(sectionOfLine(dated, DECLARED)).toBe("asset");
         expect(resolvedSection(dated, DECLARED)).toBe("asset");
     });
@@ -229,7 +230,7 @@ describe("UNIT scenarioModel — a HELD section", () => {
     });
 
     it("never lets a hold beat `oneoff`, which is the PERIOD talking", () => {
-        const dated = line({account: "expenses:rent", section: "income", period: {raw: "2027-03-01", simple: null, from: null, to: null}});
+        const dated = line({account: "expenses:rent", section: "income", period: {raw: "2027-03-01", simple: null, base: null, from: null, to: null}});
         expect(sectionOfLine(dated, DECLARED)).toBe("oneoff");
     });
 
@@ -252,14 +253,14 @@ describe("UNIT scenarioModel — a HELD section", () => {
             group: "g-1",
             account: "inc",
             section: "income",
-            period: withBounds({raw: "", simple: "monthly", from: null, to: null}, null, "2027-04-01"),
+            period: withBounds({raw: "", simple: "monthly", base: null, from: null, to: null}, null, "2027-04-01"),
         });
         const second = line({
             id: "pay",
             group: "g-2",
             account: "inc",
             section: "income",
-            period: withBounds({raw: "", simple: "monthly", from: null, to: null}, "2027-04-01", null),
+            period: withBounds({raw: "", simple: "monthly", base: null, from: null, to: null}, "2027-04-01", null),
         });
         const rows = logicalRows([first, second], DECLARED, "income");
         expect(rows).toHaveLength(1);
@@ -307,13 +308,26 @@ describe("UNIT scenarioModel — periods", () => {
     });
 
     it("changing the interval regenerates `raw`, which is the only field the engine reads", () => {
-        const bounded = withBounds({raw: "monthly", simple: "monthly", from: null, to: null}, "2027-04-01", null);
-        expect(withInterval(bounded, "yearly")).toEqual({raw: "yearly from 2027-04-01", simple: "yearly", from: "2027-04-01", to: null});
+        const bounded = withBounds({raw: "monthly", simple: "monthly", base: null, from: null, to: null}, "2027-04-01", null);
+        expect(withInterval(bounded, "yearly")).toEqual({raw: "yearly from 2027-04-01", simple: "yearly", base: null, from: "2027-04-01", to: null});
     });
 
     it("leaves a period it cannot rebuild exactly as it arrived", () => {
-        const weird = {raw: "every weekday", simple: null, from: null, to: null} as const;
+        const weird = {raw: "every weekday", simple: null, base: null, from: null, to: null} as const;
         expect(withBounds(weird, "2027-01-01", null)).toBe(weird);
+        expect(boundsLockedReason(weird)).toContain("every weekday");
+    });
+
+    it("re-bounds a period it cannot spell around the words the engine handed back", () => {
+        const anchored = {raw: "every 15th day of month from 2026-11-01", simple: null, base: "every 15th day of month", from: "2026-11-01", to: null} as const;
+        expect(boundsLockedReason(anchored)).toBeNull();
+        expect(withBounds(anchored, null, "2027-06-01")).toEqual({
+            raw: "every 15th day of month to 2027-06-01",
+            simple: null,
+            base: "every 15th day of month",
+            from: null,
+            to: "2027-06-01",
+        });
     });
 });
 
@@ -324,8 +338,8 @@ describe("UNIT scenarioModel — step split and merge", () => {
         const split = splitStep(base.lines, "payroll", "2027-04-01", takenIds(base));
         expect(split).toHaveLength(2);
         expect(split.map((s) => s.id)).toEqual(["payroll", "payroll"]);
-        expect(split[0].period).toEqual({raw: "monthly to 2027-04-01", simple: "monthly", from: null, to: "2027-04-01"});
-        expect(split[1].period).toEqual({raw: "monthly from 2027-04-01", simple: "monthly", from: "2027-04-01", to: null});
+        expect(split[0].period).toEqual({raw: "monthly to 2027-04-01", simple: "monthly", base: null, from: null, to: "2027-04-01"});
+        expect(split[1].period).toEqual({raw: "monthly from 2027-04-01", simple: "monthly", base: null, from: "2027-04-01", to: null});
     });
 
     it("the two halves are two `~` RULES, so they take distinct groups", () => {
@@ -350,11 +364,14 @@ describe("UNIT scenarioModel — step split and merge", () => {
     });
 
     it("merging spans the UNION, so a bounded row keeps its own bounds", () => {
-        const bounded = scenario([line({id: "payroll", period: withBounds({raw: "", simple: "monthly", from: null, to: null}, "2027-01-01", "2029-01-01")})]);
+        const bounded = scenario([
+            line({id: "payroll", period: withBounds({raw: "", simple: "monthly", base: null, from: null, to: null}, "2027-01-01", "2029-01-01")}),
+        ]);
         const split = splitStep(bounded.lines, "payroll", "2028-01-01", takenIds(bounded));
         expect(mergeStep(split, "payroll")[0].period).toEqual({
             raw: "monthly from 2027-01-01 to 2029-01-01",
             simple: "monthly",
+            base: null,
             from: "2027-01-01",
             to: "2029-01-01",
         });
@@ -367,12 +384,14 @@ describe("UNIT scenarioModel — step split and merge", () => {
     });
 
     it("splitting refuses a date outside the span, a row that is not there, and a period it cannot rebuild", () => {
-        const bounded = scenario([line({id: "payroll", period: withBounds({raw: "", simple: "monthly", from: null, to: null}, "2027-01-01", "2028-01-01")})]);
+        const bounded = scenario([
+            line({id: "payroll", period: withBounds({raw: "", simple: "monthly", base: null, from: null, to: null}, "2027-01-01", "2028-01-01")}),
+        ]);
         expect(splitStep(bounded.lines, "payroll", "2026-01-01", new Set())).toHaveLength(1);
         expect(splitStep(bounded.lines, "nope", "2027-06-01", new Set())).toHaveLength(1);
         expect(splitStep(bounded.lines, "payroll", "not-a-date", new Set())).toHaveLength(1);
 
-        const weird = scenario([line({id: "payroll", period: {raw: "every weekday", simple: null, from: null, to: null}})]);
+        const weird = scenario([line({id: "payroll", period: {raw: "every weekday", simple: null, base: null, from: null, to: null}})]);
         expect(splitStep(weird.lines, "payroll", "2027-06-01", new Set())).toHaveLength(1);
     });
 
@@ -440,7 +459,7 @@ describe("UNIT scenarioModel — growth rates", () => {
 
 describe("UNIT scenarioModel — putting a scenario on the wire", () => {
     it("hands back only `raw` for the period: the derived fields are echoes", () => {
-        const wire = scenarioToWire(scenario([line({period: {raw: "monthly from 2027-04-01", simple: "monthly", from: "2027-04-01", to: null}})]));
+        const wire = scenarioToWire(scenario([line({period: {raw: "monthly from 2027-04-01", simple: "monthly", base: null, from: "2027-04-01", to: null}})]));
         expect(wire.lines[0].period).toEqual({raw: "monthly from 2027-04-01"});
     });
 

@@ -253,34 +253,53 @@ function compareSegments(a: ScenarioLine, b: ScenarioLine): number {
 // ---------------------------------------------------------------------------
 
 /**
- * `{simple, from, to}` → the period expression a journal would carry.
+ * `{interval words, from, to}` → the period expression a journal would carry.
  *
  * This is the string the engine re-parses through hledger's own grammar, so it
- * has to be hledger's spelling: `to` is EXCLUSIVE and the interval word comes
- * first. A period with no `simple` cannot be rebuilt — its `raw` is the only
- * reading of it — so callers must not reach here with one.
+ * has to be hledger's spelling: `to` is EXCLUSIVE and the interval words come
+ * first. `words` is a `simple` interval or an engine-supplied `base`; a period
+ * with neither cannot be rebuilt, so callers must not reach here with one.
  */
-export function periodRaw(simple: ScenarioInterval, from: ISODate | null, to: ISODate | null): string {
-    let raw: string = simple;
+export function periodRaw(words: string, from: ISODate | null, to: ISODate | null): string {
+    let raw = words;
     if (from !== null) raw += ` from ${from}`;
     if (to !== null) raw += ` to ${to}`;
     return raw;
 }
 
-/** A period rebuilt with new bounds, `raw` regenerated to match. */
+/**
+ * The interval words a period's bounds are written after, or `null` when its
+ * bounds cannot be rewritten (a one-off, or a recurrence the engine does not
+ * understand — its `raw` is then the only reading of it).
+ */
+export function periodWords(period: ScenarioPeriod): string | null {
+    return period.simple ?? period.base;
+}
+
+/**
+ * Why a period's From/To cannot be edited, or `null` when they can. The text is
+ * the boxes' tooltip, so a disabled box says why it is disabled.
+ */
+export function boundsLockedReason(period: ScenarioPeriod): string | null {
+    if (periodWords(period) !== null) return null;
+    return `The dates of “${period.raw}” can't be edited here: it isn't a recurrence this editor can rebuild. Edit the rule in the file instead.`;
+}
+
+/** A period rebuilt with new bounds, `raw` regenerated to match. Unchanged when its bounds cannot be rewritten. */
 export function withBounds(period: ScenarioPeriod, from: ISODate | null, to: ISODate | null): ScenarioPeriod {
-    if (period.simple === null) return period;
-    return {raw: periodRaw(period.simple, from, to), simple: period.simple, from, to};
+    const words = periodWords(period);
+    if (words === null) return period;
+    return {raw: periodRaw(words, from, to), simple: period.simple, base: period.base, from, to};
 }
 
 /** A period on a new interval, bounds kept, `raw` regenerated to match. */
 export function withInterval(period: ScenarioPeriod, simple: ScenarioInterval): ScenarioPeriod {
-    return {raw: periodRaw(simple, period.from, period.to), simple, from: period.from, to: period.to};
+    return {raw: periodRaw(simple, period.from, period.to), simple, base: null, from: period.from, to: period.to};
 }
 
 /** A bare monthly period — what a brand-new row opens as. */
 export function monthlyPeriod(): ScenarioPeriod {
-    return {raw: "monthly", simple: "monthly", from: null, to: null};
+    return {raw: "monthly", simple: "monthly", base: null, from: null, to: null};
 }
 
 // ---------------------------------------------------------------------------
@@ -431,7 +450,7 @@ export function blankEvent(id: string, date: ISODate, commodity: string): Scenar
  * against each other.
  *
  * Returns `lines` unchanged when there is nothing to split: no such row, a row
- * whose period has no bare interval to rebuild (its `raw` is the only reading of
+ * whose period has no interval words to rebuild (its `raw` is the only reading of
  * it), or a date already on a segment boundary.
  */
 export function splitStep(lines: readonly ScenarioLine[], id: string, on: ISODate, taken: ReadonlySet<string>): ScenarioLine[] {
@@ -439,7 +458,7 @@ export function splitStep(lines: readonly ScenarioLine[], id: string, on: ISODat
     const index = lines.findIndex((line) => line.id === id && spans(line.period, on));
     if (index < 0) return [...lines];
     const segment = lines[index];
-    if (segment.period.simple === null) return [...lines];
+    if (periodWords(segment.period) === null) return [...lines];
 
     const before: ScenarioLine = {...segment, period: withBounds(segment.period, segment.period.from, on)};
     const after: ScenarioLine = {
@@ -470,7 +489,7 @@ export function mergeStep(lines: readonly ScenarioLine[], id: string): ScenarioL
     const segments = lines.filter((line) => line.id === id).sort(compareSegments);
     if (segments.length < 2) return [...lines];
     const first = segments[0];
-    if (first.period.simple === null) return [...lines];
+    if (periodWords(first.period) === null) return [...lines];
 
     const from = segments.some((s) => s.period.from === null) ? null : segments[0].period.from;
     const to = segments.some((s) => s.period.to === null) ? null : maxDate(segments.map((s) => s.period.to));

@@ -3827,6 +3827,105 @@ mod tests {
         }
     }
 
+    /// The scenario editor's reading of a header: the interval regardless of
+    /// bounds, and the words its bounds can be rewritten around. Each header is
+    /// written with AND without a two-space description, because the
+    /// description is cut before the period is parsed and must never leak into
+    /// either answer.
+    #[test]
+    fn bounded_headers_keep_their_interval_and_their_words() {
+        /// `(header, bounded_interval, interval_words, start, end)`.
+        type Case<'a> = (
+            &'a str,
+            Option<PeriodExpr>,
+            Option<&'a str>,
+            Option<&'a str>,
+            Option<&'a str>,
+        );
+        let cases: [Case; 10] = [
+            (
+                "monthly",
+                Some(PeriodExpr::Monthly),
+                Some("monthly"),
+                None,
+                None,
+            ),
+            (
+                "monthly from 2026-11-01",
+                Some(PeriodExpr::Monthly),
+                Some("monthly"),
+                Some("2026-11-01"),
+                None,
+            ),
+            (
+                "monthly to 2027-06-01",
+                Some(PeriodExpr::Monthly),
+                Some("monthly"),
+                None,
+                Some("2027-06-01"),
+            ),
+            (
+                "yearly from 2026-11-01 to 2030-01-01",
+                Some(PeriodExpr::Yearly),
+                Some("yearly"),
+                Some("2026-11-01"),
+                Some("2030-01-01"),
+            ),
+            (
+                "every month from 2026-11",
+                Some(PeriodExpr::Monthly),
+                Some("every month"),
+                Some("2026-11-01"),
+                None,
+            ),
+            // A multiplier is not one of the five words, but its bounds are
+            // still the trailing clause.
+            (
+                "every 3 months from 2026-11-01",
+                None,
+                Some("every 3 months"),
+                Some("2026-11-01"),
+                None,
+            ),
+            (
+                "every 15th day of month to 2027-01-01",
+                None,
+                Some("every 15th day of month"),
+                None,
+                Some("2027-01-01"),
+            ),
+            // Case is kept as written.
+            ("Every 2 Weeks", None, Some("Every 2 Weeks"), None, None),
+            // A one-off's bounds ARE its occurrence; nothing to rewrite around.
+            (
+                "from 2027-01-01 to 2027-02-01",
+                None,
+                None,
+                Some("2027-01-01"),
+                Some("2027-02-01"),
+            ),
+            // Never understood, so never rewritten.
+            ("every weekday from 2026-11-01", None, None, None, None),
+        ];
+        for (expr, interval, words, start, end) in cases {
+            for header in [
+                expr.to_string(),
+                format!("{expr}  unbudgeted — average over 2025-11-01 to 2026-10-22"),
+            ] {
+                let spec = period_spec(&header);
+                assert_eq!(spec.raw, expr, "raw of `{header}`");
+                assert_eq!(spec.bounded_interval(), interval, "interval of `{header}`");
+                assert_eq!(
+                    spec.interval_words().as_deref(),
+                    words,
+                    "words of `{header}`"
+                );
+                assert_eq!(spec.start.as_deref(), start, "start of `{header}`");
+                assert_eq!(spec.end.as_deref(), end, "end of `{header}`");
+            }
+        }
+    }
+
     /// The three forms hledger ITSELF rejects, plus a single-space description
     /// (which hledger reads as part of the period expression, and errors on).
     /// All four degrade to a locked rule with `raw` intact — **the journal still

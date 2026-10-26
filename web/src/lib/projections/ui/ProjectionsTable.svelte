@@ -123,6 +123,7 @@
         blankAssetLine,
         blankEvent,
         blankLine,
+        boundsLockedReason,
         duplicateRow,
         freshId,
         GROWTH_UNIT_ABBREV,
@@ -566,7 +567,7 @@
     /** The date a single-date line fires on lives in its `raw`, which IS the date. */
     function setDatedLine(line: ScenarioLine, value: string): void {
         if (!isIsoDate(value)) return;
-        line.period = {raw: value, simple: null, from: null, to: null};
+        line.period = {raw: value, simple: null, base: null, from: null, to: null};
         onChange();
     }
 </script>
@@ -664,9 +665,17 @@
 {#snippet periodCell(line: ScenarioLine, label: string)}
     <td>
         {#if line.period.simple === null}
-            <!-- A period this editor cannot rebuild — its `raw` is the only
+            <!-- A period this editor cannot spell as one of the five words.
+                 With a `base`, its bounds are still the From/To boxes', so only
+                 the words are shown here; without one, `raw` is the only
                  reading of it, and the engine re-parses exactly that. -->
-            <span class="font-mono text-xs text-base-content/60" title="This recurrence is shown as written">{line.period.raw}</span>
+            <span
+                class="font-mono text-xs text-base-content/60"
+                data-testid="period-as-written"
+                title="This recurrence is shown as written: it isn't one of the intervals this editor offers"
+            >
+                {line.period.base ?? line.period.raw}
+            </span>
         {:else}
             <select class="select w-full select-xs" value={line.period.simple} aria-label={label} onchange={(e) => setInterval(line, e.currentTarget.value)}>
                 {#each SCENARIO_INTERVALS as interval (interval)}
@@ -710,12 +719,16 @@
      one thing about a bound a user cannot see from the date in the box.
      An UNSET bound is open-ended; `DateInput` keeps it from reading as today. -->
 {#snippet boundCell(line: ScenarioLine, key: "from" | "to", label: string)}
-    <td>
+    {@const locked = boundsLockedReason(line.period)}
+    <!-- The reason is on the CELL too: some browsers send a disabled input no
+         pointer events, so its own tooltip never shows. -->
+    <td title={locked ?? undefined}>
         <DateInput
             size="xs"
             class="w-full"
             value={line.period[key]}
-            disabled={line.period.simple === null}
+            disabled={locked !== null}
+            title={locked ?? undefined}
             aria-label={key === "from" ? `From date for ${label}` : `To date for ${label} (exclusive)`}
             onchange={(e) => setBound(line, key, e.currentTarget.value)}
         />
