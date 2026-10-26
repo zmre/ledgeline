@@ -86,6 +86,10 @@ account assets:art   ; type: A, bsgroup: Art and antiques  ; ✓ group is "Art a
 **The tag name is the last word before the colon**, so don't put a space inside
 it — `; balance sheet group: Cash` declares a tag called `group`, not `bsgroup`.
 
+**Revenue and expense accounts never appear here**, so a `bsgroup:` or `bsterm:`
+on one is ignored, and
+[Problems](../journal/problems.md#unknown-account-tag-value) warns about it.
+
 ## Current vs non-current (`bsterm:`)
 
 Tag an account `bsterm: noncurrent` and the Assets and Liabilities boxes split

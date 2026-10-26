@@ -14,10 +14,12 @@ use crate::model::{
     AccountDeclaration, AccountName, Amount, AmountStyle, CommoditySide, CostKind, Journal,
     Posting, PostingType, PriceDirective, SourcePos, Status, Transaction,
 };
+use crate::reports::account_types::{declared_descendant_types, infer_account_type, root_type};
 use crate::reports::{
-    ACCOUNT_TYPE_TAG, AccountClass, AccountType, AccountTypes, BS_TERM_TAG, BsTerm, CF_GROUP_TAG,
-    CF_SECTION_TAG, IS_SECTION_TAG, account_classes, account_decls, parse_account_type_tag,
-    parse_bs_term_tag, parse_cf_section_tag, parse_is_section_tag,
+    ACCOUNT_TYPE_TAG, AccountClass, AccountType, AccountTypes, BS_GROUP_TAG, BS_TERM_TAG, BsTerm,
+    CF_GROUP_TAG, CF_SECTION_TAG, IS_GROUP_TAG, IS_SECTION_TAG, account_classes, account_decls,
+    declared_types, parse_account_type_tag, parse_bs_term_tag, parse_cf_section_tag,
+    parse_is_section_tag,
 };
 use crate::title::{journal_title, main_file_name};
 use serde::Serialize;
@@ -606,90 +608,421 @@ const CLOSED_TAGS: [ClosedTag; 6] = [
 /// declaration" to every one of the readers, and a warning about a value
 /// the user never wrote would be noise.
 ///
-/// After those come the readable `issection:` tags that are ignored anyway,
-/// because they sit on a balance-sheet account (see
-/// [`balance_sheet_section_diagnostics`]).
+/// After those come the readable tags that are ignored anyway because they
+/// belong to the OTHER statement (see [`statement_tag_diagnostics`]), and then
+/// the declared types that contradict everything else about their account (see
+/// [`type_contradiction`]).
 #[must_use]
 pub fn journal_to_tag_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
+    let declared = declared_types(&account_decls(journal));
+    let contradictions: Vec<TypeContradiction<'_>> = journal
+        .accounts
+        .iter()
+        .filter_map(|decl| type_contradiction(decl, &declared))
+        .collect();
+    let contradicted: HashSet<&str> = contradictions.iter().map(|c| c.account()).collect();
+
     let mut findings = unreadable_tag_diagnostics(journal);
-    findings.extend(balance_sheet_section_diagnostics(journal));
-    findings.extend(income_statement_cash_flow_diagnostics(journal));
+    findings.extend(statement_tag_diagnostics(
+        journal,
+        &AccountTypes::from_declared(declared.clone()),
+        &contradicted,
+    ));
+    findings.extend(contradictions.iter().map(TypeContradiction::diagnostic));
     findings
 }
 
-/// A `cfsection:` or `cfgroup:` on a revenue or expense account, one warning
-/// each.
+/// The two statements an account can be reported on. Cash flow is not a third:
+/// its lines are the changes in balance-sheet accounts, and revenue and expense
+/// reach it only as net income.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Statement {
+    BalanceSheet,
+    IncomeStatement,
+}
+
+impl Statement {
+    /// The statement an account of type `ty` is reported on.
+    fn of(ty: AccountType) -> Self {
+        match root_type(ty) {
+            AccountType::Revenue | AccountType::Expense => Self::IncomeStatement,
+            _ => Self::BalanceSheet,
+        }
+    }
+
+    /// "balance-sheet" / "income-statement", as an adjective.
+    fn adjective(self) -> &'static str {
+        match self {
+            Self::BalanceSheet => "balance-sheet",
+            Self::IncomeStatement => "income-statement",
+        }
+    }
+}
+
+/// An `account` tag that only one statement reads, paired with what the
+/// warning says when it sits on an account of the other one.
+struct StatementTag {
+    /// The tag key as written in the directive.
+    tag: &'static str,
+    /// The only statement whose accounts this tag does anything for.
+    statement: Statement,
+    /// Whether a value counts as a declaration worth reporting. A closed tag
+    /// whose value is unreadable already has its own finding in
+    /// [`unreadable_tag_diagnostics`], so it is not reported twice.
+    declares: fn(&str) -> bool,
+    /// Completes "account 'x' declares `tag:` but …".
+    ignored_because: &'static str,
+}
+
+/// "On the income statement only": the clause both P&L tags share.
+const OFF_THE_INCOME_STATEMENT: &str = "is a balance-sheet account; the tag is ignored and the \
+     account stays off the income statement, which shows only revenue and expense accounts";
+
+/// "On the balance sheet only": the clause both balance-sheet tags share.
+const OFF_THE_BALANCE_SHEET: &str = "is a revenue or expense account; the tag is ignored, \
+     because the balance sheet shows only asset, liability and equity accounts";
+
+/// "On the cash-flow statement only": the clause both cash-flow tags share.
+const ONLY_THROUGH_NET_INCOME: &str = "is a revenue or expense account; the tag is ignored, \
+     because the statement of cash flows counts these accounts only through net income";
+
+/// A non-empty value: the rule for the free-text tags.
+fn non_empty(value: &str) -> bool {
+    !value.trim().is_empty()
+}
+
+/// Every tag that one statement alone reads, and the statement (plans 12, 13,
+/// 27). `type:` picks the statement; these all refine a position WITHIN one, so
+/// on an account of the other statement each of them does nothing:
 ///
-/// Those accounts are the statement of cash flows' net income, never a line of
-/// their own (see [`cf_role_resolver`](crate::reports::cf_role_resolver)), so
-/// either tag does nothing. Said, because the user tagged it expecting it to
-/// show.
-fn income_statement_cash_flow_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
-    let types = AccountTypes::new(&account_decls(journal));
+/// | tag          | read by                             |
+/// |--------------|-------------------------------------|
+/// | `issection:` | income statement: the box           |
+/// | `isgroup:`   | income statement: the line          |
+/// | `bsgroup:`   | balance sheet: the line             |
+/// | `bsterm:`    | balance sheet (and cash flow): the half |
+/// | `cfsection:` | cash flow: the section of a balance-sheet account's change |
+/// | `cfgroup:`   | cash flow: the line of that change  |
+///
+/// The cash-flow tags count as balance-sheet tags: an equity account's
+/// `cfsection:` is meaningful (it is a financing flow), a revenue account's is
+/// not.
+const STATEMENT_TAGS: [StatementTag; 6] = [
+    StatementTag {
+        tag: IS_SECTION_TAG,
+        statement: Statement::IncomeStatement,
+        declares: |value| parse_is_section_tag(value).is_some(),
+        ignored_because: OFF_THE_INCOME_STATEMENT,
+    },
+    StatementTag {
+        tag: IS_GROUP_TAG,
+        statement: Statement::IncomeStatement,
+        declares: non_empty,
+        ignored_because: OFF_THE_INCOME_STATEMENT,
+    },
+    StatementTag {
+        tag: BS_GROUP_TAG,
+        statement: Statement::BalanceSheet,
+        declares: non_empty,
+        ignored_because: OFF_THE_BALANCE_SHEET,
+    },
+    StatementTag {
+        tag: BS_TERM_TAG,
+        statement: Statement::BalanceSheet,
+        declares: |value| parse_bs_term_tag(value).is_some(),
+        ignored_because: OFF_THE_BALANCE_SHEET,
+    },
+    // Any non-empty `cfsection:`, readable or not, as it always has been: an
+    // unreadable one on a revenue account is wrong twice over, and says so.
+    StatementTag {
+        tag: CF_SECTION_TAG,
+        statement: Statement::BalanceSheet,
+        declares: non_empty,
+        ignored_because: ONLY_THROUGH_NET_INCOME,
+    },
+    StatementTag {
+        tag: CF_GROUP_TAG,
+        statement: Statement::BalanceSheet,
+        declares: non_empty,
+        ignored_because: ONLY_THROUGH_NET_INCOME,
+    },
+];
+
+/// The [`STATEMENT_TAGS`] `decl` itself declares (inherited ones are its
+/// ancestor's finding), in table order.
+fn declared_statement_tags(decl: &AccountDeclaration) -> impl Iterator<Item = &StatementTag> {
+    STATEMENT_TAGS.iter().filter(|statement_tag| {
+        decl.tags
+            .iter()
+            .any(|(key, value)| key == statement_tag.tag && (statement_tag.declares)(value))
+    })
+}
+
+/// A statement-only tag on an account of the other statement, one warning per
+/// tag, in declaration order and then [`STATEMENT_TAGS`] order.
+///
+/// The statement is the account's EFFECTIVE type's, so an untyped
+/// `liabilities:deferred` is a balance-sheet account by name, and an account
+/// with no resolvable type at all (an untyped parent over mixed children) is on
+/// neither statement and never reported.
+///
+/// The usual case is a contra-asset tagged `issection:`/`isgroup:` to sit
+/// beside the expense it offsets; showing it there once cancelled that expense
+/// out of net income. Said, because the tag means the user expected the account
+/// to be on that statement.
+///
+/// An account in `contradicted` is skipped: its type itself is the likelier
+/// mistake, and [`TypeContradiction::diagnostic`] already names these tags as
+/// part of saying so, so a second and third warning would only bury the one
+/// that says what to change.
+fn statement_tag_diagnostics(
+    journal: &Journal,
+    types: &AccountTypes,
+    contradicted: &HashSet<&str>,
+) -> Vec<WireDiagnostic> {
     journal
         .accounts
         .iter()
-        .filter(|decl| {
-            types.is_type(&decl.name.0, AccountType::Revenue)
-                || types.is_type(&decl.name.0, AccountType::Expense)
+        .filter(|decl| !contradicted.contains(decl.name.0.as_str()))
+        .filter_map(|decl| {
+            types
+                .resolve(&decl.name.0)
+                .map(|ty| (decl, Statement::of(ty)))
         })
-        .flat_map(|decl| {
-            [CF_SECTION_TAG, CF_GROUP_TAG]
-                .into_iter()
-                .filter(|tag| {
-                    decl.tags
-                        .iter()
-                        .any(|(key, value)| key == tag && !value.trim().is_empty())
-                })
-                .map(|tag| WireDiagnostic {
+        .flat_map(|(decl, statement)| {
+            declared_statement_tags(decl)
+                .filter(move |statement_tag| statement_tag.statement != statement)
+                .map(|statement_tag| WireDiagnostic {
                     txn_index: None,
                     account: Some(decl.name.0.clone()),
                     rule: "account-tag",
                     severity: DIAGNOSTIC_WARNING,
                     message: format!(
-                        "account '{}' declares `{tag}:` but is a revenue or expense account; \
-                         the tag is ignored, because the statement of cash flows counts these \
-                         accounts only through net income",
-                        decl.name.0
+                        "account '{}' declares `{}:` but {}",
+                        decl.name.0, statement_tag.tag, statement_tag.ignored_because
                     ),
                 })
         })
         .collect()
 }
 
-/// An `issection:` on an account whose effective type is asset, liability or
-/// equity, one warning each.
+/// An account whose declared `type:` is contradicted by its own name AND by a
+/// second, independent signal — see [`type_contradiction`].
+struct TypeContradiction<'a> {
+    decl: &'a AccountDeclaration,
+    /// The `type:` value as written.
+    written: &'a str,
+    /// The declared type, folded to its root.
+    declared: AccountType,
+    /// The root type the name and the corroborating signal agree on.
+    expected: AccountType,
+    /// True when every declared subaccount is of the `expected` root type.
+    children_agree: bool,
+    /// The tags `decl` carries that only `expected`'s statement reads.
+    foreign_tags: Vec<&'static str>,
+}
+
+/// An `account` directive whose declared `type:` is probably a typo, or `None`.
 ///
-/// The P&L never shows such an account (see
-/// [`income_statement_grouped`](crate::reports::income_statement_grouped)'s
-/// section resolution), so the tag does nothing. It is still worth saying,
-/// because the tag means the user expected the account to be on the P&L, and
-/// the usual case is a contra-asset tagged to sit beside the expense it
-/// offsets. Showing it there cancelled that expense out of net income.
-fn balance_sheet_section_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
-    let types = AccountTypes::new(&account_decls(journal));
-    journal
-        .accounts
+/// The declared type is the product rule — accounts are classified by it, and
+/// the name is only a fallback — so this never changes how the account is
+/// classified. It is ADVISORY, and it fires only on a contradiction that two
+/// independent signals agree on, because a declared type that disagrees with
+/// the name alone is often deliberate.
+///
+/// # The rule
+///
+/// For a directive declaring a readable `type:` T (the type the account is
+/// actually classified by), let N be the type its NAME infers
+/// ([`infer_account_type`]: `assets:`, `liabilities:`, `equity:`, `income:` /
+/// `revenues:`, `expenses:` roots). Subtypes fold into their root first
+/// (`C`→`A`, `G`→`R`, `V`→`E`), so `type: C` under `assets:` is no conflict.
+/// It warns when:
+///
+/// 1. N exists and differs from T, AND
+/// 2. at least one of:
+///    - (a) the account has subaccounts that declare their own `type:`, and
+///      EVERY one of them is of type N; or
+///    - (b) T and N are on different statements, and the directive itself
+///      carries a tag only N's statement reads ([`STATEMENT_TAGS`]: an
+///      `issection:`/`isgroup:` under a balance-sheet T, a
+///      `bsgroup:`/`bsterm:`/`cfsection:`/`cfgroup:` under a P&L T).
+///
+/// # Examples
+///
+/// ```text
+/// account expenses:ga        ; type:A, issection:opex   ← warns (1, 2a, 2b)
+/// account expenses:ga:rent   ; type:X
+///
+/// account expenses:ga        ; type:A, isgroup:G&A      ← warns (1, 2b)
+/// account liabilities:cards  ; type:A                   ← warns (1, 2a)
+/// account liabilities:cards:visa ; type:L
+///
+/// account expenses:prepaid   ; type:A                   ← quiet: name only
+/// account income:receivable  ; type:A, bsterm:current   ← quiet: the tag fits T
+/// account assets:receivables ; type:A                   ← quiet: no conflict
+/// account assets:bank        ; type:C                   ← quiet: C is an A
+/// account expenses:prepaid   ; type:A                   ← quiet: children
+/// account expenses:prepaid:rent ; type:A                ←   agree with T
+/// account business           ; type:X                   ← quiet: no name type
+/// account expenses           ; type:X                   ← quiet: mixed children
+/// account expenses:prepaid   ; type:A                   ←   (and T == N anyway)
+/// ```
+///
+/// A subaccount without its own `type:` is not a signal either way: it
+/// inherits T, so it can neither confirm nor contradict it.
+fn type_contradiction<'a>(
+    decl: &'a AccountDeclaration,
+    declared: &BTreeMap<String, AccountType>,
+) -> Option<TypeContradiction<'a>> {
+    let name = decl.name.0.as_str();
+    // This directive's own readable `type:` — and only when it is the one the
+    // account is classified by (a repeated directive may have been overruled).
+    let (written, own) = decl
+        .tags
         .iter()
-        .filter(|decl| {
-            decl.tags
-                .iter()
-                .any(|(key, value)| key == IS_SECTION_TAG && parse_is_section_tag(value).is_some())
-                && types.is_balance_sheet(&decl.name.0)
-        })
-        .map(|decl| WireDiagnostic {
+        .find(|(key, _)| key == ACCOUNT_TYPE_TAG)
+        .and_then(|(_, value)| parse_account_type_tag(value).map(|ty| (value.trim(), ty)))?;
+    if declared.get(name) != Some(&own) {
+        return None;
+    }
+    let declared_root = root_type(own);
+    let expected = infer_account_type(name).map(root_type)?;
+    if expected == declared_root {
+        return None;
+    }
+
+    let mut children = declared_descendant_types(name, declared)
+        .map(root_type)
+        .peekable();
+    let children_agree = children.peek().is_some() && children.all(|child| child == expected);
+
+    let foreign_tags: Vec<&'static str> = if Statement::of(expected) == Statement::of(own) {
+        Vec::new()
+    } else {
+        declared_statement_tags(decl)
+            .filter(|statement_tag| statement_tag.statement == Statement::of(expected))
+            .map(|statement_tag| statement_tag.tag)
+            .collect()
+    };
+
+    (children_agree || !foreign_tags.is_empty()).then_some(TypeContradiction {
+        decl,
+        written,
+        declared: declared_root,
+        expected,
+        children_agree,
+        foreign_tags,
+    })
+}
+
+/// The `type:` code to suggest for a root type.
+fn type_code(root: AccountType) -> &'static str {
+    match root {
+        AccountType::Asset | AccountType::Cash => "A",
+        AccountType::Liability => "L",
+        AccountType::Equity | AccountType::Conversion => "E",
+        AccountType::Revenue | AccountType::Gain => "R",
+        AccountType::Expense => "X",
+    }
+}
+
+/// A root type as a bare word: "asset", "liability", …
+fn type_word(root: AccountType) -> &'static str {
+    match root {
+        AccountType::Asset | AccountType::Cash => "asset",
+        AccountType::Liability => "liability",
+        AccountType::Equity | AccountType::Conversion => "equity",
+        AccountType::Revenue | AccountType::Gain => "revenue",
+        AccountType::Expense => "expense",
+    }
+}
+
+/// A root type as a noun phrase: "an asset", "a liability", …
+fn type_noun(root: AccountType) -> &'static str {
+    match root {
+        AccountType::Asset | AccountType::Cash => "an asset",
+        AccountType::Liability => "a liability",
+        AccountType::Equity | AccountType::Conversion => "equity",
+        AccountType::Revenue | AccountType::Gain => "revenue",
+        AccountType::Expense => "an expense",
+    }
+}
+
+/// `` `a:` `` / `` `a:` and `b:` `` / `` `a:`, `b:` and `c:` ``.
+fn tag_list(tags: &[&str]) -> String {
+    let quoted: Vec<String> = tags.iter().map(|tag| format!("`{tag}:`")).collect();
+    match quoted.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        Some((only, _)) => only.clone(),
+        None => String::new(),
+    }
+}
+
+/// Where a directive was declared, as `file:line` with the BARE file name
+/// (never a path — see [`WireJournalInfo`]'s `file`).
+fn declared_at(decl: &AccountDeclaration) -> String {
+    decl.source_file.file_name().map_or_else(
+        || format!("line {}", decl.position.line),
+        |file| format!("{}:{}", file.to_string_lossy(), decl.position.line),
+    )
+}
+
+impl TypeContradiction<'_> {
+    fn account(&self) -> &str {
+        &self.decl.name.0
+    }
+
+    /// The warning: what was declared, the evidence against it, the suggested
+    /// code, what the declared type is costing meanwhile, and where to fix it.
+    fn diagnostic(&self) -> WireDiagnostic {
+        let expected_noun = type_noun(self.expected);
+        let mut evidence = vec![format!("its name reads as {expected_noun}")];
+        if self.children_agree {
+            evidence.push(format!(
+                "its subaccounts are declared `type: {}` ({})",
+                type_code(self.expected),
+                type_word(self.expected)
+            ));
+        }
+        if !self.foreign_tags.is_empty() {
+            evidence.push(format!(
+                "it carries {}, which only {} accounts use",
+                tag_list(&self.foreign_tags),
+                Statement::of(self.expected).adjective()
+            ));
+        }
+        let evidence = match evidence.as_slice() {
+            [only] => only.clone(),
+            [first, second] => format!("{first} and {second}"),
+            [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+            [] => String::new(),
+        };
+        let ignored = match self.foreign_tags.len() {
+            0 => String::new(),
+            1 => format!(", and {} is ignored", tag_list(&self.foreign_tags)),
+            _ => format!(", and {} are ignored", tag_list(&self.foreign_tags)),
+        };
+        WireDiagnostic {
             txn_index: None,
-            account: Some(decl.name.0.clone()),
+            account: Some(self.account().to_string()),
             rule: "account-tag",
             severity: DIAGNOSTIC_WARNING,
             message: format!(
-                "account '{}' declares `{IS_SECTION_TAG}:` but is a balance-sheet account; \
-                 the tag is ignored and the account stays off the income statement, which \
-                 shows only revenue and expense accounts",
-                decl.name.0
+                "account '{}' is declared `type: {}` ({}), but {}. Did you mean `type: {}`? \
+                 Accounts are classified by their declared type, so for now this account and \
+                 any subaccount without its own `type:` count as {}{} (declared at {})",
+                self.account(),
+                self.written,
+                type_word(self.declared),
+                evidence,
+                type_code(self.expected),
+                type_noun(self.declared),
+                ignored,
+                declared_at(self.decl),
             ),
-        })
-        .collect()
+        }
+    }
 }
 
 /// [`journal_to_tag_diagnostics`]' first half: closed-vocabulary values that

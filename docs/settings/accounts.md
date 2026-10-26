@@ -98,4 +98,6 @@ An account none of these places has no type, and the type-based reports leave it
 
 Cash (`C`) counts as an Asset, Gain (`G`) as Revenue and Conversion (`V`) as Equity, matching hledger.
 
+A declared type always wins over the name, even when the two disagree. `expenses:prepaid ; type: A` is a fine way to keep prepaid expenses on the balance sheet. When a declared type disagrees with the name *and* with something else about the account, it is more likely a typo, and [Problems](../journal/problems.md#a-type-that-looks-like-a-typo) says so. The account is still classified by the type you declared.
+
 The dropdown writes the single-letter codes. If you edit the file by hand, hledger also accepts the singular words (`Asset`, `Liability`, `Expense` and so on). Ledgeline also reads the plurals and `income`, which hledger rejects, so it classifies them sensibly rather than dropping them. Use the single letters if you also run hledger from a terminal.

@@ -519,12 +519,16 @@ fn the_fixtures_declare_no_unreadable_tags() {
 /// Unrelated tags are none of this rule's business. `bsgroup:` and `isgroup:`
 /// are deliberately FREE TEXT — they name a line inside a box the account is
 /// already in, so there is no table for them to fail to match — and a rule that
-/// warned about them would be warning about correct journals.
+/// warned about them would be warning about correct journals. (On the WRONG
+/// statement's account either one is reported as ignored — see
+/// `balance_sheet_tags_on_a_revenue_or_expense_account_are_reported_as_ignored`
+/// — so each sits on its own statement here.)
 #[test]
 fn free_text_tags_are_never_findings() {
     assert!(
         messages(
-            "account expenses:rent  ; bsgroup: Whatever You Like, isgroup: Anything At All, note: hello\n"
+            "account expenses:rent  ; isgroup: Anything At All, note: hello\n\
+             account assets:house  ; bsgroup: Whatever You Like, note: hello\n"
         )
         .is_empty()
     );
@@ -574,20 +578,27 @@ fn an_unreadable_valuation_role_falls_back_to_cost() {
 
 #[test]
 fn issection_on_a_balance_sheet_account_is_reported_as_ignored() {
-    let message = only_message(
+    // `isgroup:` is just as ignored as `issection:`, and says so separately —
+    // one finding per tag, the cash-flow pair's convention.
+    let all = messages(
         "account assets:fixed:accum-depreciation  ; type: A, isgroup: Depr & Amort, \
          issection: other, valuation: depreciation\n\
          account expenses:depreciation  ; type: X, issection: other\n",
     );
-    assert!(
-        message.contains("'assets:fixed:accum-depreciation'"),
-        "{message}"
-    );
-    assert!(message.contains("balance-sheet account"), "{message}");
-    assert!(
-        message.contains("stays off the income statement"),
-        "{message}"
-    );
+    assert_eq!(all.len(), 2, "one per tag: {all:#?}");
+    assert!(all[0].contains("`issection:`"), "{}", all[0]);
+    assert!(all[1].contains("`isgroup:`"), "{}", all[1]);
+    for message in &all {
+        assert!(
+            message.contains("'assets:fixed:accum-depreciation'"),
+            "{message}"
+        );
+        assert!(message.contains("balance-sheet account"), "{message}");
+        assert!(
+            message.contains("stays off the income statement"),
+            "{message}"
+        );
+    }
 }
 
 #[test]
@@ -618,4 +629,262 @@ fn cash_flow_tags_on_a_revenue_or_expense_account_are_reported_as_ignored() {
         all.iter().all(|m| m.contains("only through net income")),
         "{all:#?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Statement-only tags on the other statement's accounts
+// ---------------------------------------------------------------------------
+
+#[test]
+fn isgroup_on_a_balance_sheet_account_is_reported_as_ignored() {
+    let message = only_message("account assets:fixed:accum  ; type: A, isgroup: Depreciation\n");
+    assert!(message.contains("`isgroup:`"), "{message}");
+    assert!(message.contains("balance-sheet account"), "{message}");
+}
+
+#[test]
+fn balance_sheet_tags_on_a_revenue_or_expense_account_are_reported_as_ignored() {
+    let all = messages("account expenses:rent  ; type: X, bsgroup: Rent, bsterm: current\n");
+    assert_eq!(all.len(), 2, "one per tag: {all:#?}");
+    assert!(all[0].contains("`bsgroup:`"), "{}", all[0]);
+    assert!(all[1].contains("`bsterm:`"), "{}", all[1]);
+    assert!(
+        all.iter()
+            .all(|m| m.contains("the balance sheet shows only asset, liability and equity")),
+        "{all:#?}"
+    );
+}
+
+#[test]
+fn an_unreadable_bsterm_on_an_expense_is_reported_once_not_twice() {
+    // The unreadable-value finding already covers it; "ignored because it is an
+    // expense" on top would be a second warning about the same five characters.
+    let message = only_message("account expenses:rent  ; type: X, bsterm: soon\n");
+    assert!(message.contains("`bsterm: soon`"), "{message}");
+}
+
+#[test]
+fn statement_tags_on_the_right_statement_or_an_untyped_parent_are_quiet() {
+    let quiet = [
+        // Where they belong.
+        "account expenses:rent  ; type: X, issection: opex, isgroup: Rent\n",
+        "account assets:house  ; type: A, bsgroup: Property, bsterm: noncurrent\n",
+        // Equity is a balance-sheet account; its cash-flow section is meaningful.
+        "account equity:draws  ; type: E, cfsection: financing, cfgroup: Draws\n",
+        // An untyped parent over mixed children is on neither statement.
+        "account business  ; bsgroup: Ops, isgroup: Ops\n\
+         account business:bank  ; type: C\n\
+         account business:rent  ; type: X\n",
+        // Empty values are not declarations.
+        "account expenses:rent  ; type: X, bsgroup:\n",
+    ];
+    for text in quiet {
+        assert!(messages(text).is_empty(), "{text}: {:#?}", messages(text));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A declared type contradicted by the name AND a second signal
+// ---------------------------------------------------------------------------
+
+/// The messages that are type-contradiction findings.
+fn type_contradictions(text: &str) -> Vec<String> {
+    messages(text)
+        .into_iter()
+        .filter(|m| m.contains("is declared `type:"))
+        .collect()
+}
+
+#[test]
+fn a_type_contradicted_by_name_children_and_tags_is_one_warning() {
+    let text = "account expenses:ga  ; type:A, issection:opex, isgroup:G&A\n\
+                account expenses:ga:rent  ; type:X\n\
+                account expenses:ga:software  ; type:X\n";
+    // ONE finding: the `issection:`/`isgroup:` "ignored on a balance-sheet
+    // account" warnings are folded into it, because the type is the mistake.
+    let message = only_message(text);
+    assert!(
+        message.contains("'expenses:ga' is declared `type: A` (asset)"),
+        "{message}"
+    );
+    assert!(
+        message.contains("its name reads as an expense"),
+        "{message}"
+    );
+    assert!(
+        message.contains("its subaccounts are declared `type: X` (expense)"),
+        "{message}"
+    );
+    assert!(
+        message.contains("it carries `issection:` and `isgroup:`"),
+        "{message}"
+    );
+    assert!(message.contains("Did you mean `type: X`?"), "{message}");
+    assert!(
+        message.contains("`issection:` and `isgroup:` are ignored"),
+        "{message}"
+    );
+    assert!(
+        message.contains("(declared at tag-diagnostics.journal:1)"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_type_contradicted_by_name_and_children_alone_warns() {
+    // Same statement (both balance sheet), so no tag can corroborate; the
+    // children do.
+    let text = "account assets:bank  ; type: C\n\
+                account liabilities:cards  ; type: A\n\
+                account liabilities:cards:visa  ; type: L\n\
+                account liabilities:cards:amex  ; type: Liability\n";
+    let message = only_message(text);
+    assert!(message.contains("'liabilities:cards'"), "{message}");
+    assert!(message.contains("Did you mean `type: L`?"), "{message}");
+    assert!(!message.contains("it carries"), "{message}");
+    assert!(
+        message.contains("(declared at tag-diagnostics.journal:2)"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_type_contradicted_by_name_and_foreign_tags_alone_warns() {
+    let message = only_message("account expenses:ga  ; type: A, isgroup: G&A\n");
+    assert!(message.contains("Did you mean `type: X`?"), "{message}");
+    assert!(!message.contains("subaccounts"), "{message}");
+    assert!(message.contains("`isgroup:` is ignored"), "{message}");
+
+    // And the mirror: a P&L type under a balance-sheet name, with a cash-flow
+    // tag. The "cash-flow tags on an expense" warning is folded in.
+    let message = only_message("account assets:equipment  ; type: X, cfsection: investing\n");
+    assert!(message.contains("(expense)"), "{message}");
+    assert!(message.contains("Did you mean `type: A`?"), "{message}");
+    assert!(
+        message.contains("which only balance-sheet accounts use"),
+        "{message}"
+    );
+}
+
+#[test]
+fn legitimate_unusual_types_are_not_contradictions() {
+    let quiet = [
+        // Name alone disagrees: prepaid expenses ARE assets.
+        "account expenses:prepaid  ; type: A\n",
+        // No disagreement at all.
+        "account assets:receivables  ; type: A\n",
+        // Subtypes fold into their root.
+        "account assets:bank  ; type: C\n",
+        "account assets:bank  ; type: A\n\
+         account assets:bank:checking  ; type: C\n",
+        "account income:gains  ; type: G\n",
+        "account equity:conversion  ; type: V\n",
+        // Children agree with the DECLARED type, not the name.
+        "account expenses:prepaid  ; type: A\n\
+         account expenses:prepaid:insurance  ; type: A\n",
+        // Mixed children: no unanimous second opinion.
+        "account expenses:odd  ; type: A\n\
+         account expenses:odd:rent  ; type: X\n\
+         account expenses:odd:deposit  ; type: A\n",
+        // A name that infers nothing cannot contradict anything.
+        "account business:ga  ; type: A, issection: opex\n\
+         account business:ga:rent  ; type: X\n",
+        // An untyped parent over mixed children declares nothing to contradict.
+        "account expenses\n\
+         account expenses:rent  ; type: X\n\
+         account expenses:deposit  ; type: A\n",
+        // A tag that fits the DECLARED type is not evidence against it.
+        "account income:receivable  ; type: A, bsterm: current\n",
+        // Children that inherit the type (no `type:` of their own) say nothing.
+        "account expenses:prepaid  ; type: A\n\
+         account expenses:prepaid:rent\n",
+    ];
+    for text in quiet {
+        assert!(
+            type_contradictions(text).is_empty(),
+            "{text}: {:#?}",
+            messages(text)
+        );
+    }
+}
+
+#[test]
+fn the_warning_is_advisory_and_the_declared_type_still_classifies() {
+    let journal = journal(
+        "account expenses:ga  ; type: A, issection: opex\n\
+         account expenses:ga:rent  ; type: X\n",
+    );
+    let declared = declared_types(&account_decls(&journal));
+    assert_eq!(
+        resolve_account_type("expenses:ga", &declared),
+        Some(AccountType::Asset)
+    );
+    assert_eq!(
+        resolve_account_type("expenses:ga:rent", &declared),
+        Some(AccountType::Expense)
+    );
+}
+
+/// Parse a file under `fixtures/` with its real path, so includes resolve and
+/// the declaration's location names the real file.
+fn fixture(relative: &str) -> Journal {
+    let path = common::fixtures_dir().join(relative);
+    let text = std::fs::read_to_string(&path).expect("fixture readable");
+    parse_journal(&text, &path.to_string_lossy()).expect("fixture parses")
+}
+
+#[test]
+fn the_expense_as_asset_typo_fixture_warns_and_its_fix_does_not() {
+    let typo = tag_diagnostics(&fixture("projections-expense-as-asset/typo.journal"));
+    assert_eq!(typo.len(), 1, "{typo:#?}");
+    assert_eq!(typo[0]["account"], "expenses:ga");
+    let message = typo[0]["message"].as_str().expect("a message");
+    assert!(message.contains("Did you mean `type: X`?"), "{message}");
+    assert!(
+        message.contains("(declared at typo.journal:11)"),
+        "{message}"
+    );
+
+    let fixed = tag_diagnostics(&fixture("projections-expense-as-asset/fixed.journal"));
+    assert!(fixed.is_empty(), "{fixed:#?}");
+}
+
+/// No committed journal other than the typo repro trips the type rule, and
+/// `sample.journal` has no `account-tag` finding at all.
+#[test]
+fn no_other_fixture_reads_as_a_type_contradiction() {
+    assert!(tag_diagnostics(&common::fixture_journal()).is_empty());
+
+    let mut pending = vec![common::fixtures_dir()];
+    let mut hits = Vec::new();
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).expect("readable dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "journal")
+                || path.ends_with("projections-expense-as-asset/typo.journal")
+            {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("readable fixture");
+            // The error corpus is deliberately unparseable.
+            let Ok(parsed) = parse_journal(&text, &path.to_string_lossy()) else {
+                continue;
+            };
+            hits.extend(
+                tag_diagnostics(&parsed)
+                    .into_iter()
+                    .filter(|d| {
+                        d["message"]
+                            .as_str()
+                            .is_some_and(|m| m.contains("is declared `type:"))
+                    })
+                    .map(|d| format!("{}: {}", path.display(), d["message"])),
+            );
+        }
+    }
+    assert!(hits.is_empty(), "{hits:#?}");
 }

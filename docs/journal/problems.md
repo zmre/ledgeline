@@ -72,9 +72,37 @@ An `account` directive uses one of Ledgeline's account tags with a value it does
 
 The `valuation:` case matters most, because a zero gain looks like a holding that hasn't moved. Fix the spelling in the `account` directive. An empty value (`; bsterm:`) counts as no tag and is not reported.
 
-The same warning appears for a correctly spelled `issection:` on an asset, liability or equity account. The income statement only shows revenue and expense accounts, so the tag is ignored. Remove it, and tag the matching expense or revenue account instead.
+The same warning appears for a correctly spelled tag on an account of the wrong statement, because the tag is ignored there:
 
-It also appears for a `cfsection:` or `cfgroup:` on a revenue or expense account. The [cash flow statement](../reports/cash-flow.md) counts those accounts only through net income, so the tag is ignored.
+| Tag | Ignored on | Why |
+| --- | --- | --- |
+| `issection:`, `isgroup:` | asset, liability and equity accounts | The income statement only shows revenue and expense accounts. |
+| `bsgroup:`, `bsterm:` | revenue and expense accounts | The balance sheet only shows asset, liability and equity accounts. |
+| `cfsection:`, `cfgroup:` | revenue and expense accounts | The [cash flow statement](../reports/cash-flow.md) counts those accounts only through net income. |
+
+The type that decides this is the account's effective type, declared or guessed from its name. Remove the tag, or move it to the account it was meant for.
+
+#### A type that looks like a typo
+
+The same group also warns when an account's declared `type:` disagrees with its name and with one more piece of evidence. For example:
+
+```journal
+account expenses:ga        ; type:A, issection:opex, isgroup:G&A
+account expenses:ga:rent   ; type:X
+```
+
+The message names the account, the type you wrote, the evidence and the file and line of the directive:
+
+> account 'expenses:ga' is declared `type: A` (asset), but its name reads as an expense, its subaccounts are declared `type: X` (expense), and it carries `issection:` and `isgroup:`, which only income-statement accounts use. Did you mean `type: X`? … (declared at books.journal:11)
+
+It warns only when the name's type differs from the declared type, and at least one of these is also true:
+
+- the account has subaccounts with their own `type:`, and every one of them matches the name
+- the account carries a tag that only the name's statement uses, such as `issection:` or `isgroup:` on an account declared as an asset, or `bsgroup:`, `bsterm:`, `cfsection:` or `cfgroup:` on one declared as an expense
+
+A disagreement with the name alone is not reported, because it is often deliberate. `expenses:prepaid ; type: A` stays quiet, and so does a parent whose subaccounts have mixed types. Cash, Gain and Conversion count as Asset, Revenue and Equity, so `assets:bank ; type: C` is not a disagreement.
+
+This warning is advice. Ledgeline still classifies the account by the type you declared, so until you fix it the account sits on the balance sheet, and anything posted to it directly, including a projection, is booked as an asset. When this warning fires, the separate "tag is ignored" warnings for the same account are left out, since fixing the type fixes those too.
 
 The tags are explained on [Accounts](../settings/accounts.md), [Balance sheet](../reports/balance-sheet.md), [Income statement](../reports/income-statement.md) and [Holdings](../holdings/index.md).
 
