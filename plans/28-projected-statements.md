@@ -1106,3 +1106,85 @@ depths 2 and 3.
 **Not done:** dated lines (single-date `~` rules shown among the one-offs) have
 no move controls. They are listed after the events in journal order and aren't
 a list of their own. Docs screenshots were not regenerated.
+
+### Accounts and Journal tabs
+
+Patrick: "with hledger, I can see how all accounts are changing over time …
+(optionally with empty accounts not mentioned so i can see what i've missed),
+and I can see the forward projected journal". Two more tabs, **Accounts**
+(`tab=accounts`) and **Journal** (`tab=journal`), digits 5 and 6.
+
+**Core.**
+- `reports::account_periods` (new module `account_periods.rs`) is
+  `hledger balance -M` over `[from, to]` with a `BalanceMode`: `Change` (each
+  period's movement, rows carry a Total) or `Historical` (closing balance,
+  everything before `from` included, no Total). It returns the existing
+  `PeriodReport`. The per-period pass is the cash flow report's own, extracted
+  as `cash_flow::bucket_totals(txns, ranges, include)`, and the roll-up and depth
+  clamp are its `pivot`, so no aggregation is duplicated. `known: Option<&[String]>`
+  adds every named account, clamped with its ancestors, as all-zero rows (`-E
+  --declared`). Without it, rows whose whole subtree is zero in every column are
+  dropped (hledger's default). A zero parent with a live child stays.
+- `Forecast.origins: Vec<ForecastOrigin>`, index-aligned with `txns`:
+  `Rule(group)`, `Event(id)`, `Growth(group)`. It rides alongside because a
+  `Transaction` has no slot for it, and a tag would leak into every report over
+  the merged list. The date sort sorts the pairs.
+
+**Wire: the run response, behind request flags.** Not a sibling endpoint: both
+readings need the same expansion and the same merged list, and a second route
+would expand the scenario twice per edit. `RunRequest` gained
+`accounts: {mode: "change"|"balance", empty}` and `journal: bool`. The answer
+gained `accounts: WirePeriodReport | null` and `journal: {total, entries:
+[{origin: {kind, key}, txn: Row}], truncated} | null`. Each is computed only
+when asked. The SPA asks only while the matching tab is open, so the four
+original tabs' bodies are unchanged. The journal's `txn` is the journal view's
+own `Row` (`RowContext::row`), so the client decodes it with `decodeRow` and the
+generated tag (`generated-transaction: ~ monthly`) arrives as hledger prints
+it. `MAX_JOURNAL_ENTRIES = 5000` caps it. Without a cap, the count is bounded only
+by lines × occurrences, and the columns already obey `MAX_BUCKETS`. Past the cap,
+the earliest entries are kept and `truncated` says so. `projected_statements`
+now takes the `Merged {txns, prices}` built once per run, shared with Accounts.
+
+**Valuation: none.** Accounts shows amounts as written and in natural signs,
+like `hledger balance` without `-V`. The statements already give the valued
+view. A per-account raw reading is the point of this tab, and valuing a change
+column has no single right answer (hledger `-V` on change reports values each
+period's change at its end). Consequence: grown prices (Decision 3) do not show
+here, only on the balance sheet.
+
+**Known accounts for "Show empty accounts":** declared (`account` directives),
+every account posted to in the journal (before or after the cutoff), and every
+account the forecast books to.
+
+**The tab.**
+- `ProjectedAccountsView.svelte` uses the statements' fixed template
+  (`FigureColgroup`, `statementMinWidth`, `ProjectedHeadRow`, `projectedEdge`)
+  and the Reports period tables' `compressPeriodRows`.
+- A Change|Balance button pair and a Show empty accounts checkbox sit above it.
+  They are in the URL as `accounts=change|balance&empty=0|1` (default change, 0)
+  and are kept while other tabs are open.
+- `ForecastJournalView.svelte` renders `print`-style blocks: a header with
+  date, description and an origin badge (the rule's `~ period`, `event` or
+  `growth`), then one line per posting.
+- The journal tab's `TransactionTable` is NOT reused: it is bound to the
+  windowed journal store and to editing, and its fixed-pitch virtualisation
+  cannot represent variable-height blocks. `AmountCell` and `AccountLabel` are
+  reused. The list is paginated at 100.
+- Switching onto either tab re-runs the projection (the query differs). Until
+  it lands, the held projection has `null` there and the tab shows a "Reading…"
+  placeholder.
+
+**Tests.**
+- Core: `account_periods` (change, historical, depth, empty, zero parent, net
+  zero) and `every_generated_transaction_names_its_origin`.
+- Server (`projection_endpoints.rs`): null unless asked; change vs balance with
+  `balance[i] = balance[i−1] + change[i]` on every row; depth; empty inclusion;
+  bad mode is a `400`; journal entries in print shape with origins, agreeing
+  with the Accounts columns; growth origin.
+- Web: decoder (and the rename sweep), params, store query identity, `runBody`
+  flags, component tests (tabs, digits 1–6, band, toggles, paging, cap), live
+  integration, and two e2e specs.
+
+**Not done.** No hledger parity test for `balance`/`print` was added to the
+gated `parity_*` suite. Both readings sit on the merged list and expansion
+those tests already pin. No keyboard row cursor on the Accounts table.

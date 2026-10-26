@@ -4,10 +4,12 @@
 // standalone feature route owning its own codec. Pure module (no Svelte/DOM
 // imports) so the round trip is unit-testable under node.
 //
-// Scheme: `?tab=cash|bs|is|cf&interval=&count=&lookback=&depth=`. All five are
-// written in full, never only the non-defaults, so a shared or reloaded URL
-// reproduces the same readings — the reports codec's rule, for the reason it
-// gives there.
+// Scheme: `?tab=cash|bs|is|cf|accounts|journal&interval=&count=&lookback=&depth=
+// &accounts=change|balance&empty=0|1`. All seven are written in full, never only
+// the non-defaults, so a shared or reloaded URL reproduces the same readings —
+// the reports codec's rule, for the reason it gives there. `accounts` and
+// `empty` are the Accounts tab's two toggles; they are kept while another tab
+// is open, so switching back finds them as they were.
 //
 // `cash` is the Runway tab's value, unchanged since it was "Cash & runway", so
 // old links keep working. The statements take the Reports tab's own codes.
@@ -21,24 +23,29 @@
 
 import {MAX_COUNT, type PeriodInterval} from "#lib/reports/ui/params.js";
 import {clampedInt, oneOf} from "#lib/url/params.js";
+import {ACCOUNTS_MODES, type AccountsMode} from "./types";
 
 /** Which reading the bottom half is showing. */
-export type ProjectionTab = "cash" | "bs" | "is" | "cf";
+export type ProjectionTab = "cash" | "bs" | "is" | "cf" | "accounts" | "journal";
 
 /**
- * In strip order, which is also the digit order (1–4).
+ * In strip order, which is also the digit order (1–6).
  *
  * Runway first: it is the one reading only this tab has, and the question the
  * tab is most often opened to answer. The three statements follow in the
- * Reports tab's own order.
+ * Reports tab's own order, then the two raw readings the statements are built
+ * from: every account per period (`hledger balance`) and the generated
+ * transactions themselves (`hledger print --forecast`).
  */
-export const PROJECTION_TABS: readonly ProjectionTab[] = ["cash", "bs", "is", "cf"];
+export const PROJECTION_TABS: readonly ProjectionTab[] = ["cash", "bs", "is", "cf", "accounts", "journal"];
 
 export const PROJECTION_TAB_LABELS: Record<ProjectionTab, string> = {
     cash: "Runway",
     bs: "Balance sheet",
     is: "Income statement",
     cf: "Cash flow",
+    accounts: "Accounts",
+    journal: "Journal",
 };
 
 /** The Projections tab's URL state. */
@@ -49,8 +56,12 @@ export interface ProjectionParams {
     count: number;
     /** How many full ACTUAL periods the statements show before the forecast (plan 28 Decision 6). `0` is allowed. */
     lookback: number;
-    /** The cash flow statement's account roll-up depth. Never clamps the totals. */
+    /** The roll-up depth of the cash flow statement's lines and the Accounts rows. Never clamps the totals. */
     depth: number;
+    /** The Accounts tab: each period's movement, or the balance at its end. */
+    accounts: AccountsMode;
+    /** The Accounts tab: whether declared and known accounts with nothing in any column are rows too. */
+    empty: boolean;
 }
 
 /**
@@ -77,7 +88,10 @@ export const DEFAULT_PROJECTION_LOOKBACK = 2;
  */
 export const DEFAULT_PROJECTION_DEPTH = 2;
 
-/** Defaults: runway, monthly × 24 with two periods of actuals, depth 2. */
+/**
+ * Defaults: runway, monthly × 24 with two periods of actuals, depth 2; the
+ * Accounts tab on Change (hledger's own default) with empty accounts hidden.
+ */
 export function defaultProjectionParams(): ProjectionParams {
     return {
         tab: "cash",
@@ -85,6 +99,8 @@ export function defaultProjectionParams(): ProjectionParams {
         count: DEFAULT_PROJECTION_COUNT,
         lookback: DEFAULT_PROJECTION_LOOKBACK,
         depth: DEFAULT_PROJECTION_DEPTH,
+        accounts: "change",
+        empty: false,
     };
 }
 
@@ -96,6 +112,8 @@ export function projectionParamsToSearch(params: ProjectionParams): string {
     q.set("count", String(params.count));
     q.set("lookback", String(params.lookback));
     q.set("depth", String(params.depth));
+    q.set("accounts", params.accounts);
+    q.set("empty", params.empty ? "1" : "0");
     return q.toString();
 }
 
@@ -117,5 +135,7 @@ export function searchToProjectionParams(search: string, dflt: ProjectionParams)
         count: clampedInt(q.get("count"), 1, MAX_COUNT, dflt.count),
         lookback: clampedInt(q.get("lookback"), 0, MAX_COUNT, dflt.lookback),
         depth: clampedInt(q.get("depth"), 1, 99, dflt.depth),
+        accounts: oneOf(ACCOUNTS_MODES, q.get("accounts"), dflt.accounts),
+        empty: oneOf(["0", "1"], q.get("empty"), dflt.empty ? "1" : "0") === "1",
     };
 }

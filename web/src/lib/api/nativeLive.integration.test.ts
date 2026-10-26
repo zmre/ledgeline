@@ -240,6 +240,26 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         expect(projection.cashFlow.buckets).toHaveLength(5);
         expect(projection.defaults.lines.get("rule:0")).toBe("assets:bank:checking");
         expect(projection.defaults.gains).toBe("equity:unrealized gains");
+        // Not asked for: null, never absent.
+        expect(projection.accounts).toBeNull();
+        expect(projection.journal).toBeNull();
+
+        // Asked for, the Accounts and Journal readings decode the real engine's bytes.
+        const rent3 = {
+            ...runBody(
+                {name: "", created: null, updated: null, lines: [rent], events: [], cash: null},
+                {interval: "monthly", count: 3, lookback: 2, depth: 2, accounts: {mode: "balance", empty: true}, journal: true}
+            ),
+            asOf: AS_OF,
+        };
+        const full = decodeProjection(await new LedgelineApi(url).runProjection(rent3));
+        expect(full.accounts?.periods.map((p) => p.label)).toEqual(["May 2026", "Jun 2026", "Jul 2026", "Aug 2026", "Sep 2026"]);
+        const rentRow = full.accounts?.rows.find((row) => row.account === "expenses:rent");
+        expect(rentRow?.values.map((ma) => dollarLine(ma, styles))).toEqual([undefined, undefined, "$4,200.00", "$8,400.00", "$12,600.00"]);
+        // `empty`: a declared account nothing posts to is still a row.
+        expect(full.accounts?.rows.some((row) => row.account === "expenses:shopping")).toBe(true);
+        expect(full.journal?.entries.map((entry) => entry.txn.date)).toEqual(["2026-07-01", "2026-08-01", "2026-09-01"]);
+        expect(full.journal?.entries[0]?.origin).toEqual({kind: "rule", key: "rule:0"});
     });
 
     it("journal info falls back to the fixture folder's name", async () => {

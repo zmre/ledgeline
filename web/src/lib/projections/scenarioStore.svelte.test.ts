@@ -55,7 +55,7 @@ const SEED_BODY = {
 
 const RUN_BODY = rawProjectionRun();
 
-const WINDOW: ProjectionWindow = {interval: "monthly", count: 24, lookback: 2, depth: 2};
+const WINDOW: ProjectionWindow = {interval: "monthly", count: 24, lookback: 2, depth: 2, accounts: null, journal: false};
 
 /** Every URL the store asked for, in order. */
 let asked: string[] = [];
@@ -224,6 +224,18 @@ describe("COMPONENT scenarioStore — the payload and the question it answers", 
         expect(sameProjectionQuery(held!, {...WINDOW, count: 12, revision: scenarioStore.revision})).toBe(false);
         expect(sameProjectionQuery(held!, {...WINDOW, interval: "yearly", revision: scenarioStore.revision})).toBe(false);
         expect(sameProjectionQuery(held!, {...WINDOW, depth: 3, revision: scenarioStore.revision})).toBe(false);
+    });
+
+    it("asking for the Accounts or Journal reading, or changing a toggle, is a different question", async () => {
+        await scenarioStore.runNow(FAKE_ENGINE, WINDOW);
+        const held = scenarioStore.projection.query!;
+        const revision = scenarioStore.revision;
+        expect(sameProjectionQuery(held, {...WINDOW, journal: true, revision})).toBe(false);
+        expect(sameProjectionQuery(held, {...WINDOW, accounts: {mode: "change", empty: false}, revision})).toBe(false);
+        const accounts = {...held, accounts: {mode: "change" as const, empty: false}};
+        expect(sameProjectionQuery(accounts, {...WINDOW, accounts: {mode: "change", empty: false}, revision})).toBe(true);
+        expect(sameProjectionQuery(accounts, {...WINDOW, accounts: {mode: "balance", empty: false}, revision})).toBe(false);
+        expect(sameProjectionQuery(accounts, {...WINDOW, accounts: {mode: "change", empty: true}, revision})).toBe(false);
     });
 });
 

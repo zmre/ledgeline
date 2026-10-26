@@ -32,7 +32,7 @@ This section has four pages:
 Design notes and the reasoning behind each decision live in
 [`plans/22-projections.md`](https://github.com/zmre/ledgeline/blob/main/plans/22-projections.md).
 
-## The four readings
+## The six readings
 
 | Tab | What it shows |
 |---|---|
@@ -40,6 +40,8 @@ Design notes and the reasoning behind each decision live in
 | **Balance sheet** | the Reports tab's balance sheet at the end of every period, side by side |
 | **Income statement** | the Reports tab's income statement, one column per period plus a Total |
 | **Cash flow** | the Reports tab's statement of cash flows over the same periods |
+| **Accounts** | every account, one row each, one column per period: what changed, or the balance at each period's end |
+| **Journal** | the transactions the scenario generates, in date order, one block per transaction |
 
 The statements are computed by the same code as on the Reports tab, with the
 same groups, sections, valuation and balance check, over your real
@@ -52,7 +54,45 @@ not yet complete; [What moves cash](cash.md#where-the-projection-starts) says
 exactly where.
 
 **Interval** and **Periods** set the columns for every reading. The depth
-slider rolls up the cash flow statement's account lines.
+slider rolls up the cash flow statement's lines and the Accounts rows.
+
+### Accounts
+
+The plain ledger the statements are built from, over the same columns, with
+the same Actual and Projected marking. Every account is a row in a tree, cut
+off at the depth slider. Amounts are shown as written, one line per commodity,
+and are not valued into one currency. Signs are hledger's: revenue and equity
+read negative.
+
+- **Change** (the default) shows what moved in each period, with a Total
+  column. This is `hledger balance -M --forecast`.
+- **Balance** shows each account's balance at the end of each period,
+  including everything before the first column. It has no Total column,
+  because adding up balances means nothing. This is `hledger balance -M -H`
+  (`--historical`).
+- **Show empty accounts** adds the accounts nothing touches in these periods:
+  every account the journal declares or posts to, and every account the
+  scenario books to. They show as zero rows, which is how to see what the
+  projection leaves out. This is `-E --declared`. Without it, a row is shown
+  only if it, or an account under it, is non-zero in some column.
+
+The hledger command is the one in
+[What moves cash](cash.md#where-the-projection-starts), with `balance` instead of
+`bs` and without `--value`.
+
+### Journal
+
+Only the generated transactions, never your real ones. This is
+`hledger print --forecast=<cutoff>..<end> tag:generated`. Each transaction shows
+its date, its description (the rule's note, or `projection`), and a badge for
+what produced it: the rule's period (`~ monthly`), `event` for a dated event,
+or `growth` for an asset row's appreciation. Every posting follows on its own
+line with its account and amount. The list is read-only and shows 100
+transactions per page. Over a very long horizon it stops at the first 5,000 and
+says so.
+
+The Accounts and Journal readings are computed only while their tab is open.
+Switching to one runs the projection again.
 
 The depth slider also sets how finely a **new** scenario is seeded. At depth 2
 you get `expenses:housing`, and at depth 3 you get `expenses:housing:rent`. Once

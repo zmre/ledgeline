@@ -35,7 +35,7 @@ import type {PeriodInterval} from "#lib/reports/ui/params.js";
 import {dataView, type DataView, type LoadStatus} from "#lib/stores/loadState.js";
 import {createResource} from "#lib/stores/resource.svelte.js";
 import {cloneScenario, emptyScenario, runBody} from "./scenarioModel";
-import type {Projection, Scenario} from "./types";
+import type {AccountsRequest, Projection, Scenario} from "./types";
 
 /** How many trailing months the seed's unbudgeted averages are taken over. The engine's own default, stated so the request is readable. */
 const SEED_COUNT = 12;
@@ -50,6 +50,13 @@ export interface ProjectionWindow {
     /** Full actual periods the statements show before the forecast. */
     lookback: number;
     depth: number;
+    /**
+     * The Accounts reading, or null. Asked for only while its tab is open: the
+     * other readings never show it, and every edit re-runs the projection.
+     */
+    accounts: AccountsRequest | null;
+    /** Whether to carry the generated transactions (the Journal tab). Off for the same reason. */
+    journal: boolean;
 }
 
 /** The exact question a held projection answers. */
@@ -81,7 +88,16 @@ export function scenarioTableView(adoptedScenario: boolean, seedStatus: LoadStat
 
 /** Whether two queries ask for exactly the same projection (the FE-1 gate). */
 export function sameProjectionQuery(a: ProjectionQuery, b: ProjectionQuery): boolean {
-    return a.revision === b.revision && a.interval === b.interval && a.count === b.count && a.lookback === b.lookback && a.depth === b.depth;
+    return (
+        a.revision === b.revision &&
+        a.interval === b.interval &&
+        a.count === b.count &&
+        a.lookback === b.lookback &&
+        a.depth === b.depth &&
+        a.journal === b.journal &&
+        a.accounts?.mode === b.accounts?.mode &&
+        a.accounts?.empty === b.accounts?.empty
+    );
 }
 
 let scenario = $state<Scenario>(emptyScenario());

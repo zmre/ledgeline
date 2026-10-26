@@ -1,4 +1,4 @@
-// The four readings, mounted (plan 28).
+// The six readings, mounted (plan 28).
 //
 // What only a mount can answer is what each surface was HANDED and whether it
 // said it:
@@ -22,7 +22,8 @@ import {dec} from "#lib/domain/money.js";
 import type {AmountStyle} from "#lib/domain/types.js";
 import {DEFAULT_AMOUNT_STYLE} from "#lib/format/amounts.js";
 import {keymap} from "#lib/keys/keymap.svelte.js";
-import {projectionFixture, usd} from "#lib/testing/projectionFixture.js";
+import {accountsFixture, journalFixture, projectionFixture, usd} from "#lib/testing/projectionFixture.js";
+import {expectSharedGrid} from "#lib/testing/statementGrid.js";
 import type {ProjectionTab} from "../params";
 import type {Projection} from "../types";
 import ProjectionReports from "./ProjectionReports.svelte";
@@ -31,8 +32,8 @@ const STYLES: ReadonlyMap<string, AmountStyle> = new Map([["$", DEFAULT_AMOUNT_S
 
 const projection = (overrides: Partial<Projection> = {}): Projection => projectionFixture(overrides);
 
-function mount(tab: ProjectionTab, value: Projection = projection()) {
-    return render(ProjectionReports, {tab, projection: value, interval: "monthly" as const, styles: STYLES, fallbackCommodity: "$"});
+function mount(tab: ProjectionTab, value: Projection = projection(), extra: {accountsMode?: "change" | "balance"; emptyAccounts?: boolean} = {}) {
+    return render(ProjectionReports, {tab, projection: value, interval: "monthly" as const, styles: STYLES, fallbackCommodity: "$", ...extra});
 }
 
 /** The header cells of the first table inside `testid`, in order. */
@@ -124,9 +125,16 @@ describe("COMPONENT ProjectionReports — the statements", () => {
 describe("COMPONENT ProjectionReports — the tab strip", () => {
     afterEach(() => keymap.reset());
 
-    it("is Runway, then the three statements", () => {
+    it("is Runway, then the three statements, then Accounts and Journal", () => {
         mount("cash");
-        expect(screen.getAllByRole("tab").map((tab) => tab.textContent?.trim())).toEqual(["Runway", "Balance sheet", "Income statement", "Cash flow"]);
+        expect(screen.getAllByRole("tab").map((tab) => tab.textContent?.trim())).toEqual([
+            "Runway",
+            "Balance sheet",
+            "Income statement",
+            "Cash flow",
+            "Accounts",
+            "Journal",
+        ]);
     });
 
     it("switches which reading is on screen", async () => {
@@ -149,11 +157,22 @@ describe("COMPONENT ProjectionReports — the tab strip", () => {
         expect(screen.getByTestId("projection-is")).toBeDefined();
         await press("4");
         expect(screen.getByTestId("projection-cf")).toBeDefined();
+        await press("5");
+        expect(screen.getByTestId("projection-accounts")).toBeDefined();
+        await press("6");
+        expect(screen.getByTestId("projection-journal")).toBeDefined();
         await press("1");
         expect(screen.getByTestId("projection-cash")).toBeDefined();
 
         const section = keymap.help.find((s) => s.group === "Projections");
-        expect(section?.rows.map((b) => `${b.keys} ${b.label}`)).toEqual(["1 Runway", "2 Balance sheet", "3 Income statement", "4 Cash flow"]);
+        expect(section?.rows.map((b) => `${b.keys} ${b.label}`)).toEqual([
+            "1 Runway",
+            "2 Balance sheet",
+            "3 Income statement",
+            "4 Cash flow",
+            "5 Accounts",
+            "6 Journal",
+        ]);
     });
 
     it("marks the active tab for a screen reader, not only with a class", () => {
@@ -183,5 +202,95 @@ describe("COMPONENT ProjectionReports — a scenario in more than one commodity"
     it("says nothing when there is nothing left out", () => {
         mount("cash");
         expect(screen.queryByTestId("projection-uncharted")).toBeNull();
+    });
+});
+
+describe("COMPONENT ProjectionReports — accounts", () => {
+    const rowsOf = (): string[] =>
+        [...screen.getByTestId("accounts-table").querySelectorAll("tbody tr[data-account]")].map((tr) => tr.getAttribute("data-account") ?? "");
+
+    it("renders every account per period on the statements' column template, with the band and a Total", () => {
+        mount("accounts", projection({accounts: accountsFixture("change")}));
+        const table = screen.getByTestId("accounts-table");
+        expect(headings("accounts-table")).toEqual(["Account", "Jun 2026", "Jul 2026", "Aug 2026", "Sep 2026", "Total"]);
+        expect(table.querySelector('[data-testid="projected-label"]')?.getAttribute("colspan")).toBe("2");
+        const cells = [...(table.querySelector('tbody tr[data-account="expenses:rent"]')?.querySelectorAll("td") ?? [])];
+        expect(cells.map((td) => td.textContent?.trim())).toEqual(["$4,200.00", "$4,200.00", "$4,200.00", "$4,200.00", "$16,800.00"]);
+        // The divider down the first projected column, and nowhere else.
+        expect(cells.map((td) => td.className.includes("border-l-2"))).toEqual([false, false, true, false, false]);
+        // One fixed template, every row filling it: the shared-grid assertion,
+        // over a stack of one (plus the same table again so the helper's
+        // "more than one block" holds).
+        expectSharedGrid([table, table], 5, true);
+    });
+
+    it("draws Balance without a Total column — snapshots mean nothing summed", () => {
+        mount("accounts", projection({accounts: accountsFixture("balance")}), {accountsMode: "balance"});
+        expect(headings("accounts-table")).toEqual(["Account", "Jun 2026", "Jul 2026", "Aug 2026", "Sep 2026"]);
+        expect(screen.getByRole("button", {name: "Balance"}).getAttribute("aria-pressed")).toBe("true");
+        expect(screen.getByRole("button", {name: "Change"}).getAttribute("aria-pressed")).toBe("false");
+    });
+
+    it("indents the tree and folds a parent into its only child", () => {
+        mount("accounts", projection({accounts: accountsFixture("change")}));
+        // `assets` equals `assets:checking` in every column, so the chain folds.
+        expect(rowsOf()).toContain("assets:checking");
+        expect(rowsOf()).not.toContain("assets");
+    });
+
+    it("toggles Change/Balance and Show empty accounts through its bindings", async () => {
+        const view = mount("accounts", projection({accounts: accountsFixture("change")}));
+        const checkbox = screen.getByRole("checkbox", {name: "Show empty accounts"}) as HTMLInputElement;
+        expect(checkbox.checked).toBe(false);
+        await fireEvent.click(screen.getByRole("button", {name: "Balance"}));
+        expect(screen.getByRole("button", {name: "Balance"}).getAttribute("aria-pressed")).toBe("true");
+        await fireEvent.click(checkbox);
+        expect(checkbox.checked).toBe(true);
+        view.unmount();
+    });
+
+    it("says it is reading while a projection held from another tab has no accounts yet", () => {
+        mount("accounts");
+        expect(screen.getByTestId("projection-accounts-pending")).toBeDefined();
+        expect(screen.queryByTestId("accounts-table")).toBeNull();
+    });
+});
+
+describe("COMPONENT ProjectionReports — journal", () => {
+    it("lists the generated transactions as hledger print does, naming each one's origin", () => {
+        mount("journal", projection({journal: journalFixture(2)}));
+        const entries = screen.getAllByTestId("forecast-entry");
+        expect(entries).toHaveLength(3);
+        expect(entries.map((entry) => entry.getAttribute("data-origin"))).toEqual(["rule", "rule", "event"]);
+        const first = entries[0]!;
+        expect(first.textContent).toContain("2026-08-01");
+        expect(first.textContent).toContain("projection");
+        expect(first.textContent).toContain("~ monthly");
+        expect(first.textContent).toContain("expenses:rent");
+        expect(first.textContent).toContain("$4,200.00");
+        expect(first.textContent).toContain("$-4,200.00");
+        expect(entries[2]!.textContent).toContain("new laptop");
+        expect(entries[2]!.textContent).toContain("event");
+        expect(screen.getByTestId("forecast-journal-count").textContent).toContain("1–3 of 3");
+    });
+
+    it("pages a long horizon a hundred at a time", async () => {
+        mount("journal", projection({journal: journalFixture(150)}));
+        expect(screen.getAllByTestId("forecast-entry")).toHaveLength(100);
+        expect(screen.getByTestId("forecast-journal-count").textContent).toContain("1–100 of 151");
+        await fireEvent.click(screen.getAllByRole("button", {name: "Next page"})[0]!);
+        expect(screen.getAllByTestId("forecast-entry")).toHaveLength(51);
+        expect(screen.getByTestId("forecast-journal-count").textContent).toContain("101–151 of 151");
+    });
+
+    it("says when the engine capped the list", () => {
+        const journal = {...journalFixture(2), total: 9000, truncated: true};
+        mount("journal", projection({journal}));
+        expect(screen.getByTestId("forecast-journal-count").textContent).toContain("the first 3 are listed");
+    });
+
+    it("says it is listing while a projection held from another tab has no journal yet", () => {
+        mount("journal");
+        expect(screen.getByTestId("projection-journal-pending")).toBeDefined();
     });
 });

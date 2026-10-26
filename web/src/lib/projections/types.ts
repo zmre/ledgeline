@@ -19,8 +19,8 @@
 // under node.
 
 import type {Dec, MixedAmount} from "#lib/domain/money.js";
-import type {ISODate} from "#lib/domain/types.js";
-import type {BalanceSheetColumns, CashFlowStatement, IncomeStatementReport} from "#lib/reports/types.js";
+import type {ISODate, Transaction} from "#lib/domain/types.js";
+import type {BalanceSheetColumns, CashFlowStatement, IncomeStatementReport, PeriodReport} from "#lib/reports/types.js";
 
 /** The unit a growth rate steps on. */
 export type GrowthUnit = "week" | "month" | "year";
@@ -308,6 +308,48 @@ export interface Projection {
     incomeStatement: IncomeStatementReport;
     cashFlow: CashFlowStatement;
     defaults: ForecastDefaults;
+    /** Every account per column (`hledger balance`), when the run asked for it; null otherwise. */
+    accounts: PeriodReport | null;
+    /** The generated transactions, when the run asked for them; null otherwise. */
+    journal: ForecastJournal | null;
+}
+
+/**
+ * The Accounts tab's two readings of one set of columns: each period's
+ * movement (`hledger balance`, the default) or the balance at its end
+ * (`hledger balance -H`).
+ */
+export type AccountsMode = "change" | "balance";
+export const ACCOUNTS_MODES: readonly AccountsMode[] = ["change", "balance"];
+
+/** What the run is asked to compute beyond the four readings every run carries. */
+export interface AccountsRequest {
+    mode: AccountsMode;
+    /** Rows for declared and known accounts with nothing in any column (`-E --declared`). */
+    empty: boolean;
+}
+
+/** The part of a scenario one generated transaction came from: a rule's `group`, an event's `id`, or an asset row's `group`. */
+export interface ForecastOrigin {
+    kind: "rule" | "event" | "growth";
+    key: string;
+}
+
+export const FORECAST_ORIGIN_KINDS: readonly ForecastOrigin["kind"][] = ["rule", "event", "growth"];
+
+/** One generated transaction, in the journal view's own domain shape. */
+export interface ForecastEntry {
+    origin: ForecastOrigin;
+    txn: Transaction;
+}
+
+/** The forecast journal: generated transactions only, date-ascending, capped by the engine. */
+export interface ForecastJournal {
+    /** How many the forecast generated, before the cap. */
+    total: number;
+    entries: ForecastEntry[];
+    /** Whether `entries` stops short of `total`. */
+    truncated: boolean;
 }
 
 // ---------------------------------------------------------------------------

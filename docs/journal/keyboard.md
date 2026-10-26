@@ -80,9 +80,9 @@ On the Holdings page, which has no search box, <kbd>/</kbd> opens the account pi
 
 ## Projections
 
-| Keys                         | Action                                                 |
-| ---------------------------- | ------------------------------------------------------ |
-| <kbd>1</kbd> to <kbd>4</kbd> | Runway, Balance sheet, Income statement, Cash flow     |
+| Keys                         | Action                                                                    |
+| ---------------------------- | ------------------------------------------------------------------------- |
+| <kbd>1</kbd> to <kbd>6</kbd> | Runway, Balance sheet, Income statement, Cash flow, Accounts, Journal     |
 
 Like every shortcut, these are ignored while you're typing in the what-if table. Click outside the field first.
 

@@ -2026,6 +2026,64 @@ const PROJECTION_RUN = {
         },
     ],
     warnings: ["'every weekday' is not a recurrence this projection can enumerate"],
+    // Both present (a run asked for them), so the sweep reaches their keys.
+    // `accounts` is a period report in Change mode: row totals and a grand total.
+    accounts: {
+        buckets: ["2026-07", "2026-08", "2026-09"],
+        periods: [
+            {key: "2026-07", label: "Jul 2026", start: "2026-07-01", end: "2026-07-31"},
+            {key: "2026-08", label: "Aug 2026", start: "2026-08-01", end: "2026-08-31"},
+            {key: "2026-09", label: "Sep 2026", start: "2026-09-01", end: "2026-09-30"},
+        ],
+        rows: [
+            {
+                account: "expenses:rent",
+                depth: 2,
+                values: [{}, {$: dec(420000, 2)}, {$: dec(420000, 2)}],
+                total: {$: dec(840000, 2)},
+            },
+        ],
+        totals: [{}, {}, {}],
+        grandTotal: {},
+    },
+    // One generated transaction, in the journal view's own row shape.
+    journal: {
+        total: 1,
+        truncated: false,
+        entries: [
+            {
+                origin: {kind: "rule", key: "rule:0"},
+                txn: {
+                    index: 401,
+                    date: "2026-08-01",
+                    status: "unmarked",
+                    code: "",
+                    description: "projection",
+                    comment: "generated-transaction: ~ monthly",
+                    tags: [
+                        ["generated-transaction", "~ monthly"],
+                        ["_generated-transaction", "~ monthly"],
+                    ],
+                    postings: [
+                        {
+                            account: "expenses:rent",
+                            amounts: [
+                                {
+                                    commodity: "$",
+                                    qty: {m: "420000", p: 2},
+                                    style: {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]},
+                                },
+                            ],
+                            status: "unmarked",
+                            comment: "",
+                            tags: [],
+                        },
+                    ],
+                    flags: [],
+                },
+            },
+        ],
+    },
 };
 
 /**
@@ -2299,6 +2357,39 @@ describe("UNIT nativeDecode — a projection run", () => {
         // every Balance column rather than say so.
         expect(() => decodeProjection(without(PROJECTION_RUN, "assets"))).toThrow(ApiShapeError);
         expect(decodeProjection({...PROJECTION_RUN, assets: []}).assets).toEqual([]);
+    });
+
+    it("decodes the Accounts reading through the period report's own decoder", () => {
+        const accounts = decodeProjection(PROJECTION_RUN).accounts;
+        expect(accounts?.periods.map((period) => period.label)).toEqual(["Jul 2026", "Aug 2026", "Sep 2026"]);
+        expect(accounts?.rows[0]?.total?.get("$")).toEqual({m: 840000n, p: 2});
+        expect(accounts?.grandTotal).toBeDefined();
+    });
+
+    it("decodes the generated transactions as journal rows, each with its origin", () => {
+        const journal = decodeProjection(PROJECTION_RUN).journal;
+        expect(journal?.total).toBe(1);
+        expect(journal?.truncated).toBe(false);
+        expect(journal?.entries[0]?.origin).toEqual({kind: "rule", key: "rule:0"});
+        const txn = journal?.entries[0]?.txn;
+        expect(txn?.date).toBe("2026-08-01");
+        expect(txn?.tags).toContainEqual(["generated-transaction", "~ monthly"]);
+        expect(txn?.postings[0]?.amounts[0]?.qty).toEqual({m: 420000n, p: 2});
+    });
+
+    it("null Accounts and Journal readings are real answers; ABSENT ones are broken contracts", () => {
+        const none = decodeProjection({...PROJECTION_RUN, accounts: null, journal: null});
+        expect(none.accounts).toBeNull();
+        expect(none.journal).toBeNull();
+        expect(() => decodeProjection(without(PROJECTION_RUN, "accounts"))).toThrow(ApiShapeError);
+        expect(() => decodeProjection(without(PROJECTION_RUN, "journal"))).toThrow(ApiShapeError);
+    });
+
+    it("refuses an origin of an unknown kind, and more entries than the total", () => {
+        const entry = PROJECTION_RUN.journal.entries[0]!;
+        const odd = {...PROJECTION_RUN, journal: {...PROJECTION_RUN.journal, entries: [{...entry, origin: {kind: "budget", key: "x"}}]}};
+        expect(() => decodeProjection(odd)).toThrow(ApiShapeError);
+        expect(() => decodeProjection({...PROJECTION_RUN, journal: {...PROJECTION_RUN.journal, total: 0}})).toThrow(ApiShapeError);
     });
 
     it("an absent series or opening balance throws rather than charting zeros", () => {

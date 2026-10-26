@@ -14,7 +14,7 @@ describe("UNIT projections params — the URL codec", () => {
     const dflt = defaultProjectionParams();
 
     it("opens on the runway, monthly, over two years with two periods of actuals", () => {
-        expect(dflt).toEqual({tab: "cash", interval: "monthly", count: DEFAULT_PROJECTION_COUNT, lookback: 2, depth: 2});
+        expect(dflt).toEqual({tab: "cash", interval: "monthly", count: DEFAULT_PROJECTION_COUNT, lookback: 2, depth: 2, accounts: "change", empty: false});
         // The horizon a runway question is asked over, and inside MAX_COUNT.
         expect(DEFAULT_PROJECTION_COUNT).toBe(24);
         expect(DEFAULT_PROJECTION_COUNT).toBeLessThanOrEqual(MAX_COUNT);
@@ -22,29 +22,31 @@ describe("UNIT projections params — the URL codec", () => {
 
     it("round-trips every tab", () => {
         for (const tab of PROJECTION_TABS) {
-            const params: ProjectionParams = {tab, interval: "quarterly", count: 8, lookback: 3, depth: 4};
+            const params: ProjectionParams = {tab, interval: "quarterly", count: 8, lookback: 3, depth: 4, accounts: "balance", empty: true};
             expect(searchToProjectionParams(projectionParamsToSearch(params), dflt)).toEqual(params);
         }
     });
 
     it("round-trips through a search string with a leading ?", () => {
-        const params: ProjectionParams = {tab: "cash", interval: "yearly", count: 5, lookback: 0, depth: 1};
+        const params: ProjectionParams = {tab: "cash", interval: "yearly", count: 5, lookback: 0, depth: 1, accounts: "change", empty: false};
         expect(searchToProjectionParams(`?${projectionParamsToSearch(params)}`, dflt)).toEqual(params);
     });
 
     it("writes every param in full, so a shared link reproduces the same charts", () => {
         // Not only the non-defaults: the defaults are relative to a codebase that
         // can change them, and a link saved today must still open the same page.
-        expect(projectionParamsToSearch(dflt)).toBe("tab=cash&interval=monthly&count=24&lookback=2&depth=2");
+        expect(projectionParamsToSearch(dflt)).toBe("tab=cash&interval=monthly&count=24&lookback=2&depth=2&accounts=change&empty=0");
     });
 
     it("falls back per field rather than wholesale, so one bad param does not discard the rest", () => {
-        expect(searchToProjectionParams("tab=nonsense&interval=weekly&count=6&lookback=4&depth=3", dflt)).toEqual({
+        expect(searchToProjectionParams("tab=nonsense&interval=weekly&count=6&lookback=4&depth=3&accounts=cumulative&empty=maybe", dflt)).toEqual({
             tab: "cash",
             interval: "monthly",
             count: 6,
             lookback: 4,
             depth: 3,
+            accounts: "change",
+            empty: false,
         });
     });
 
@@ -57,9 +59,21 @@ describe("UNIT projections params — the URL codec", () => {
         expect(searchToProjectionParams("tab=worth", dflt).tab).toBe("cash");
     });
 
-    it("the strip is the runway, then the statements in the Reports tab's order, under its codes", () => {
-        expect(PROJECTION_TABS).toEqual(["cash", "bs", "is", "cf"]);
-        expect(PROJECTION_TABS.map((tab) => PROJECTION_TAB_LABELS[tab])).toEqual(["Runway", "Balance sheet", "Income statement", "Cash flow"]);
+    it("the strip is the runway, the statements in the Reports tab's order under its codes, then accounts and journal", () => {
+        expect(PROJECTION_TABS).toEqual(["cash", "bs", "is", "cf", "accounts", "journal"]);
+        expect(PROJECTION_TABS.map((tab) => PROJECTION_TAB_LABELS[tab])).toEqual([
+            "Runway",
+            "Balance sheet",
+            "Income statement",
+            "Cash flow",
+            "Accounts",
+            "Journal",
+        ]);
+    });
+
+    it("reads the Accounts tab's two toggles", () => {
+        expect(searchToProjectionParams("tab=accounts&accounts=balance&empty=1", dflt)).toMatchObject({tab: "accounts", accounts: "balance", empty: true});
+        expect(searchToProjectionParams("tab=journal", dflt).tab).toBe("journal");
     });
 
     it("clamps lookback into [0, MAX_COUNT], and zero is a real answer", () => {
@@ -83,7 +97,7 @@ describe("UNIT projections params — the URL codec", () => {
     });
 
     it("never carries the scenario — a query string is the one part of a page that gets pasted into chat windows", () => {
-        const search = projectionParamsToSearch({tab: "cash", interval: "monthly", count: 24, lookback: 2, depth: 2});
-        expect([...new URLSearchParams(search).keys()].sort()).toEqual(["count", "depth", "interval", "lookback", "tab"]);
+        const search = projectionParamsToSearch(dflt);
+        expect([...new URLSearchParams(search).keys()].sort()).toEqual(["accounts", "count", "depth", "empty", "interval", "lookback", "tab"]);
     });
 });

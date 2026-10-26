@@ -1,4 +1,4 @@
-<!-- The bottom half: four readings of one projection, behind a tab strip over
+<!-- The bottom half: six readings of one projection, behind a tab strip over
      shared interval/count/lookback controls (plans/28-projected-statements.md).
 
      - RUNWAY answers the question only this tab asks, and answers it in WORDS
@@ -10,6 +10,13 @@
        journal before the cutoff and the scenario's generated transactions
        after it. The first `lookback` columns are actuals; `projectedFrom` is
        where the views draw the divider and print "Projected".
+     - ACCOUNTS is every account per period over the same columns, as written
+       (`hledger balance -M`), as each period's Change or its closing Balance,
+       optionally with the accounts nothing touches. JOURNAL is the generated
+       transactions themselves (`hledger print --forecast tag:generated`).
+       Both are computed only while their tab is open (`projection.accounts`
+       and `projection.journal` are null otherwise), so a projection held from
+       another tab shows a placeholder until the re-run lands.
 
      The runway chart plots one commodity (`chartCommodity`) because a mixed
      amount has no single number in it; what that leaves out is named under the
@@ -28,16 +35,24 @@
     import type {PeriodInterval} from "#lib/reports/ui/params.js";
     import {PROJECTION_TABS, PROJECTION_TAB_LABELS, type ProjectionTab} from "../params";
     import {balanceNumbers, chartCommodity, otherCommodities, runwayStatement} from "../projectionView";
-    import type {Projection} from "../types";
+    import type {AccountsMode, Projection} from "../types";
+    import ForecastJournalView from "./ForecastJournalView.svelte";
+    import ProjectedAccountsView from "./ProjectedAccountsView.svelte";
 
     let {
         tab = $bindable(),
+        accountsMode = $bindable("change"),
+        emptyAccounts = $bindable(false),
         projection,
         interval,
         styles,
         fallbackCommodity,
     }: {
         tab: ProjectionTab;
+        /** The Accounts tab: each period's movement or its closing balance. */
+        accountsMode?: AccountsMode;
+        /** The Accounts tab: whether accounts with nothing in any column are rows too. */
+        emptyAccounts?: boolean;
         projection: Projection;
         /** The interval the buckets were built on — the noun the runway sentence counts in. */
         interval: PeriodInterval;
@@ -120,9 +135,48 @@
         <div data-testid="projection-is">
             <IncomeStatementView report={projection.incomeStatement} {styles} projectedFrom={projection.projectedFrom} />
         </div>
-    {:else}
+    {:else if tab === "cf"}
         <div data-testid="projection-cf">
             <CashFlowStatementView report={projection.cashFlow} {styles} base={projection.balanceSheet.base} projectedFrom={projection.projectedFrom} />
+        </div>
+    {:else if tab === "accounts"}
+        <div class="flex flex-col gap-3" data-testid="projection-accounts">
+            <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+                <div class="join" role="group" aria-label="Accounts reading">
+                    <button
+                        type="button"
+                        class="btn join-item btn-sm {accountsMode === 'change' ? 'btn-active' : ''}"
+                        aria-pressed={accountsMode === "change"}
+                        title="What moved in each period (hledger balance)"
+                        onclick={() => (accountsMode = "change")}>Change</button
+                    >
+                    <button
+                        type="button"
+                        class="btn join-item btn-sm {accountsMode === 'balance' ? 'btn-active' : ''}"
+                        aria-pressed={accountsMode === "balance"}
+                        title="The balance at each period's end (hledger balance --historical)"
+                        onclick={() => (accountsMode = "balance")}>Balance</button
+                    >
+                </div>
+                <label class="label cursor-pointer gap-2 text-sm">
+                    <input type="checkbox" class="checkbox checkbox-sm" bind:checked={emptyAccounts} />
+                    Show empty accounts
+                </label>
+                <p class="text-xs text-base-content/50">As written, not valued; revenue reads negative, as in hledger.</p>
+            </div>
+            {#if projection.accounts === null}
+                <p class="text-sm text-base-content/60" role="status" data-testid="projection-accounts-pending">Reading every account…</p>
+            {:else}
+                <ProjectedAccountsView report={projection.accounts} {styles} projectedFrom={projection.projectedFrom} />
+            {/if}
+        </div>
+    {:else}
+        <div data-testid="projection-journal">
+            {#if projection.journal === null}
+                <p class="text-sm text-base-content/60" role="status" data-testid="projection-journal-pending">Listing the generated transactions…</p>
+            {:else}
+                <ForecastJournalView journal={projection.journal} />
+            {/if}
         </div>
     {/if}
 </div>

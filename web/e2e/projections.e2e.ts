@@ -30,7 +30,7 @@
 // Note the one thing this spec cannot pin: the engine takes opening balances as
 // of ITS today, and `page.clock` only moves the browser's. So nothing here
 // asserts a projected figure — only that the tab is reachable, seeds, and
-// renders all four readings (plan 28), the statements with their divider.
+// renders all six readings (plan 28), the statements with their divider.
 
 import {expect, test} from "@playwright/test";
 import {API_TOKEN} from "../playwright.config";
@@ -130,7 +130,7 @@ test("projections: opens on the runway over two years with two periods of actual
     await expect(page).toHaveURL(/tab=cash&interval=monthly&count=24&lookback=2/);
 });
 
-test("projections: all four readings render, the runway in words and the statements with their divider", async ({page}) => {
+test("projections: the runway and statements render, the runway in words and the statements with their divider", async ({page}) => {
     await page.goto("/projections");
 
     await expect(page.getByTestId("projection-cash")).toBeVisible();
@@ -155,6 +155,48 @@ test("projections: all four readings render, the runway in words and the stateme
     await page.getByRole("tab", {name: "Cash flow"}).click();
     await expect(page.getByTestId("projection-cf").getByTestId("cash-flow-statement")).toBeVisible();
     await expect(page.getByTestId("projection-cf").getByTestId("projected-label").first()).toHaveText("Projected");
+});
+
+test("projections: the Accounts tab lists every account per period, Change or Balance, with empty accounts on request", async ({page}) => {
+    await page.goto("/projections?tab=accounts");
+    await expect(page.getByRole("tab", {name: "Accounts"})).toHaveAttribute("aria-selected", "true");
+    const view = page.getByTestId("projection-accounts");
+    const table = view.getByTestId("accounts-table");
+    await expect(table).toBeVisible();
+    await expect(table.getByTestId("projected-label")).toHaveText("Projected");
+    await expect(table.locator("thead tr:not([data-testid]) th").last()).toHaveText("Total");
+    await expect(page).toHaveURL(/accounts=change&empty=0/);
+    // `expenses:shopping` is declared in sample.journal and never posted to.
+    await expect(table.locator('[data-account="expenses:shopping"]')).toHaveCount(0);
+
+    await view.getByRole("button", {name: "Balance"}).click();
+    await expect(page).toHaveURL(/accounts=balance/);
+    await expect(view.getByRole("button", {name: "Balance"})).toHaveAttribute("aria-pressed", "true");
+    // Balances are snapshots: no Total column once the re-run lands.
+    await expect(table.locator("thead tr:not([data-testid]) th").last()).not.toHaveText("Total");
+
+    await view.getByRole("checkbox", {name: "Show empty accounts"}).check();
+    await expect(page).toHaveURL(/empty=1/);
+    await expect(table.locator('[data-account="expenses:shopping"]')).toHaveCount(1);
+});
+
+test("projections: the Journal tab lists the generated transactions only, each naming its rule", async ({page}) => {
+    await page.goto("/projections");
+    await expect(page.getByTestId("projection-cash")).toBeVisible();
+    // Digit 6 is the Journal tab (focus is on the page, not in a field).
+    await page.locator("h1").click();
+    await page.keyboard.press("6");
+    await expect(page.getByRole("tab", {name: "Journal"})).toHaveAttribute("aria-selected", "true");
+    await expect(page).toHaveURL(/tab=journal/);
+    const journal = page.getByTestId("forecast-journal");
+    await expect(journal).toBeVisible();
+    const first = journal.getByTestId("forecast-entry").first();
+    await expect(first).toHaveAttribute("data-origin", "rule");
+    // The seed is monthly rules, marked as hledger marks them.
+    await expect(first).toContainText("~ monthly");
+    await expect(journal.getByTestId("forecast-journal-count")).toContainText("Generated transactions 1–");
+    await page.keyboard.press("5");
+    await expect(page.getByRole("tab", {name: "Accounts"})).toHaveAttribute("aria-selected", "true");
 });
 
 test("projections: a seeded row shows its inferred counter-account greyed", async ({page}) => {

@@ -106,12 +106,15 @@ import type {
     RulesSourcePref,
     RulesWarning,
 } from "#lib/imports/types.js";
-import {GROWTH_UNITS, LINE_ROLES, LINE_SOURCES, SCENARIO_INTERVALS} from "#lib/projections/types.js";
+import {FORECAST_ORIGIN_KINDS, GROWTH_UNITS, LINE_ROLES, LINE_SOURCES, SCENARIO_INTERVALS} from "#lib/projections/types.js";
 import type {
     AssetRow,
     BalanceSeries,
     EventPosting,
     ForecastDefaults,
+    ForecastEntry,
+    ForecastJournal,
+    ForecastOrigin,
     Growth,
     LineSection,
     Projection,
@@ -194,6 +197,7 @@ import type {
     SectionedReport,
 } from "#lib/reports/types.js";
 import {ApiShapeError} from "./client";
+import {decodeRow} from "./journalViewDecode";
 import {type CommodityStyles, normalizeCommodityStyles} from "./normalize";
 
 // ---------------------------------------------------------------------------
@@ -595,6 +599,19 @@ interface RawProjection {
     incomeStatement?: unknown;
     cashFlow?: unknown;
     defaults?: RawForecastDefaults;
+    accounts?: unknown;
+    journal?: RawForecastJournal | null;
+}
+
+interface RawForecastJournal {
+    total?: number;
+    entries?: unknown[];
+    truncated?: boolean;
+}
+
+interface RawForecastEntry {
+    origin?: {kind?: string; key?: string};
+    txn?: unknown;
 }
 
 interface RawHoldingPrice {
@@ -2459,6 +2476,30 @@ function decodeForecastDefaults(raw: RawForecastDefaults | undefined): ForecastD
     });
 }
 
+function decodeForecastOrigin(raw: RawForecastEntry["origin"], context: string): ForecastOrigin {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing origin`);
+    const kind = str(raw.kind, `${context} kind`);
+    if (!(FORECAST_ORIGIN_KINDS as readonly string[]).includes(kind)) throw new ApiShapeError(`${context}: unknown kind ${JSON.stringify(kind)}`);
+    return Object.freeze({kind: kind as ForecastOrigin["kind"], key: str(raw.key, `${context} key`)});
+}
+
+/**
+ * The generated transactions. Each `txn` is the journal view's own row, so it
+ * goes through the journal view's decoder; its `flags` are always `[]`.
+ */
+function decodeForecastJournal(raw: RawForecastJournal, context: string): ForecastJournal {
+    if (!Array.isArray(raw.entries)) throw new ApiShapeError(`${context} entries: expected an array`);
+    const entries = raw.entries.map((value, i): ForecastEntry => {
+        const entry = value as RawForecastEntry;
+        const at = `${context} entries[${i}]`;
+        if (typeof entry !== "object" || entry === null) throw new ApiShapeError(`${at}: expected an object`);
+        return Object.freeze({origin: decodeForecastOrigin(entry.origin, `${at} origin`), txn: decodeRow(entry.txn, `${at} txn`).txn});
+    });
+    const total = decodeCount(raw.total, `${context} total`);
+    if (entries.length > total) throw new ApiShapeError(`${context}: ${entries.length} entries but a total of ${total}`);
+    return Object.freeze({total, entries: frozen(entries), truncated: flag(raw.truncated, `${context} truncated`)});
+}
+
 /**
  * `POST /api/projections/run` (plan 28).
  *
@@ -2499,6 +2540,9 @@ export function decodeProjection(raw: unknown): Projection {
         incomeStatement: decodeIncomeStatementReport(projection.incomeStatement),
         cashFlow: decodeCashFlowStatement(projection.cashFlow),
         defaults: decodeForecastDefaults(projection.defaults),
+        // Null unless the run asked; ABSENT is still a broken contract.
+        accounts: decodeNullable(projection.accounts, "projection accounts", (value) => decodePeriodReport(value)),
+        journal: decodeNullable(projection.journal, "projection journal", decodeForecastJournal),
     });
 }
 

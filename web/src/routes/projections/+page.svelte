@@ -236,7 +236,16 @@
 
     // --- The projection ------------------------------------------------------
 
-    const projectionWindow = $derived<ProjectionWindow>({interval: params.interval, count: params.count, lookback: params.lookback, depth: params.depth});
+    // The Accounts and Journal readings ride on the run only while their tab
+    // is open: no other tab shows them, and every edit re-runs the projection.
+    const projectionWindow = $derived<ProjectionWindow>({
+        interval: params.interval,
+        count: params.count,
+        lookback: params.lookback,
+        depth: params.depth,
+        accounts: params.tab === "accounts" ? {mode: params.accounts, empty: params.empty} : null,
+        journal: params.tab === "journal",
+    });
     // `journal.changes`: projections start from the journal's balances, so a
     // refresh or a change on disk recomputes them.
     const loadKey = $derived({
@@ -514,7 +523,15 @@
                 onRetry={retry}
             >
                 {#snippet children(held)}
-                    <ProjectionReports bind:tab={params.tab} projection={held} interval={params.interval} {styles} fallbackCommodity={commodity} />
+                    <ProjectionReports
+                        bind:tab={params.tab}
+                        bind:accountsMode={params.accounts}
+                        bind:emptyAccounts={params.empty}
+                        projection={held}
+                        interval={params.interval}
+                        {styles}
+                        fallbackCommodity={commodity}
+                    />
                 {/snippet}
             </AsyncSection>
         </div>

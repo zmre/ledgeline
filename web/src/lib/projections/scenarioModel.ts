@@ -34,6 +34,7 @@ import {isAccountType, type AccountClasses, type AccountType} from "#lib/domain/
 import type {ISODate} from "#lib/domain/types.js";
 import {isIsoDate as isIsoDateExact} from "#lib/url/params.js";
 import type {
+    AccountsRequest,
     AddSection,
     Growth,
     HeldSection,
@@ -937,13 +938,19 @@ export function projectable(scenario: Scenario): Scenario {
  * from a balance sheet by a timezone. The start date the tab shows is
  * `Projection.start`, which the engine derives and returns.
  */
-export function runBody(scenario: Scenario, window: {interval: string; count: number; lookback: number; depth: number}): RunProjectionBody {
+export function runBody(
+    scenario: Scenario,
+    window: {interval: string; count: number; lookback: number; depth: number; accounts?: AccountsRequest | null; journal?: boolean}
+): RunProjectionBody {
     return {
         scenario: scenarioToWire(projectable(scenario)),
         interval: window.interval,
         count: window.count,
         lookback: window.lookback,
         depth: window.depth,
+        // Sent only when asked for, so a run for the other tabs is the body it always was.
+        ...(window.accounts != null ? {accounts: {mode: window.accounts.mode, empty: window.accounts.empty}} : {}),
+        ...(window.journal === true ? {journal: true} : {}),
     };
 }
 

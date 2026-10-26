@@ -11,8 +11,8 @@
 import {readFileSync} from "node:fs";
 import {decodeBalanceSheetReport, decodeIncomeStatementReport} from "#lib/api/nativeDecode.js";
 import {dec, type MixedAmount} from "#lib/domain/money.js";
-import type {Projection} from "#lib/projections/types.js";
-import type {BalanceSheetColumns, IsBucket} from "#lib/reports/types.js";
+import type {ForecastEntry, ForecastJournal, ForecastOrigin, Projection} from "#lib/projections/types.js";
+import type {BalanceSheetColumns, IsBucket, PeriodReport, PeriodRow} from "#lib/reports/types.js";
 import {asColumns} from "#lib/reports/ui/balanceSheetRows.js";
 import {GROUPED_BALANCE_SHEET} from "./balanceSheetFixture";
 import {CASH_FLOW} from "./cashFlowFixture";
@@ -69,6 +69,8 @@ export function projectionFixture(overrides: Partial<Projection> = {}): Projecti
         incomeStatement: MONTHLY_INCOME,
         cashFlow: CASH_FLOW,
         defaults: {cash: "assets:bank:checking", gains: "equity:unrealized gains", lines: new Map(), events: new Map()},
+        accounts: null,
+        journal: null,
         ...overrides,
     };
 }
@@ -105,5 +107,84 @@ export function rawProjectionRun(): Record<string, unknown> {
         incomeStatement: golden("incomestatement-grouped-monthly"),
         cashFlow: golden("cashflow"),
         defaults: {cash: "assets:bank:checking", gains: "equity:unrealized gains", lines: {}, events: {}},
+        // Asked for by neither: `null`, never absent.
+        accounts: null,
+        journal: null,
     };
+}
+
+const periodInfo = (key: string, label: string, start: string, end: string) => ({key, label, start, end});
+
+/**
+ * The Accounts reading over `PROJECTION_COLUMNS`, in Change mode: checking,
+ * rent and salary, plus a declared account with nothing in any column (what
+ * "Show empty accounts" adds). Balance mode is the same rows with no totals.
+ */
+export function accountsFixture(mode: "change" | "balance" = "change"): PeriodReport {
+    const change = mode === "change";
+    const row = (account: string, values: number[]): PeriodRow => ({
+        account,
+        depth: account.split(":").length,
+        values: values.map(usd),
+        ...(change ? {total: usd(values.reduce((a, b) => a + b, 0))} : {}),
+    });
+    return {
+        buckets: PROJECTION_COLUMNS.map((column) => column.key),
+        periods: [
+            periodInfo("2026-06", "Jun 2026", "2026-06-01", "2026-06-30"),
+            periodInfo("2026-07", "Jul 2026", "2026-07-01", "2026-07-31"),
+            periodInfo("2026-08", "Aug 2026", "2026-08-01", "2026-08-31"),
+            periodInfo("2026-09", "Sep 2026", "2026-09-01", "2026-09-30"),
+        ],
+        rows: [
+            row("assets", change ? [800, 800, 800, 800] : [10800, 11600, 12400, 13200]),
+            row("assets:checking", change ? [800, 800, 800, 800] : [10800, 11600, 12400, 13200]),
+            row("expenses", change ? [4200, 4200, 4200, 4200] : [4200, 8400, 12600, 16800]),
+            row("expenses:rent", change ? [4200, 4200, 4200, 4200] : [4200, 8400, 12600, 16800]),
+            row("expenses:shopping", [0, 0, 0, 0]),
+            row("income", change ? [-5000, -5000, -5000, -5000] : [-15000, -20000, -25000, -30000]),
+            row("income:salary", change ? [-5000, -5000, -5000, -5000] : [-15000, -20000, -25000, -30000]),
+        ],
+        totals: [usd(0), usd(0), usd(0), usd(0)],
+        ...(change ? {grandTotal: usd(0)} : {}),
+    };
+}
+
+/** One generated transaction, as the journal tab reads it. */
+export function forecastEntry(index: number, date: string, origin: ForecastOrigin, description = "projection", period = "~ monthly"): ForecastEntry {
+    const amount = (n: number) => ({
+        commodity: "$",
+        qty: dec(n * 100, 2),
+        style: {side: "L" as const, spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]] as [string, number[]]},
+    });
+    return {
+        origin,
+        txn: {
+            index,
+            date,
+            status: "unmarked",
+            description,
+            code: "",
+            comment: `generated-transaction: ${period}`,
+            tags: [
+                ["generated-transaction", period],
+                ["_generated-transaction", period],
+            ],
+            postings: [
+                {account: "expenses:rent", amounts: [amount(4200)], status: "unmarked", comment: "", tags: []},
+                {account: "assets:checking", amounts: [amount(-4200)], status: "unmarked", comment: "", tags: []},
+            ],
+        },
+    };
+}
+
+/** `n` monthly rent transactions from 2026-08, then one event. */
+export function journalFixture(n = 2): ForecastJournal {
+    const entries = Array.from({length: n}, (_, i) => {
+        const month = 8 + i;
+        const date = `${2026 + Math.floor((month - 1) / 12)}-${String(((month - 1) % 12) + 1).padStart(2, "0")}-01`;
+        return forecastEntry(100 + i, date, {kind: "rule", key: "rule:0"});
+    });
+    entries.push(forecastEntry(100 + n, "2026-08-20", {kind: "event", key: "laptop"}, "new laptop", "2026-08-20"));
+    return {total: entries.length, entries, truncated: false};
 }

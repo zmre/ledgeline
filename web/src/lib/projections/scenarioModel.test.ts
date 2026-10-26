@@ -531,6 +531,22 @@ describe("UNIT scenarioModel — putting a scenario on the wire", () => {
         expect(body.asOf).toBeUndefined();
         expect(body).toMatchObject({interval: "monthly", count: 24, lookback: 2, depth: 2});
     });
+
+    it("asks for the Accounts and Journal readings only when the window does", () => {
+        const plain = runBody(scenario([line()]), {interval: "monthly", count: 24, lookback: 2, depth: 2, accounts: null, journal: false});
+        expect("accounts" in plain).toBe(false);
+        expect("journal" in plain).toBe(false);
+        const asked = runBody(scenario([line()]), {
+            interval: "monthly",
+            count: 24,
+            lookback: 2,
+            depth: 2,
+            accounts: {mode: "balance", empty: true},
+            journal: true,
+        });
+        expect(asked.accounts).toEqual({mode: "balance", empty: true});
+        expect(asked.journal).toBe(true);
+    });
 });
 
 describe("UNIT scenarioModel — cloning", () => {

@@ -766,6 +766,10 @@ export interface RunProjectionBody {
     lookback?: number;
     depth?: number;
     valueIn?: string;
+    /** Ask for the Accounts reading (`accounts` is null in the answer otherwise). */
+    accounts?: {mode: "change" | "balance"; empty: boolean};
+    /** Ask for the generated transactions (`journal` is null in the answer otherwise). */
+    journal?: boolean;
 }
 
 /**

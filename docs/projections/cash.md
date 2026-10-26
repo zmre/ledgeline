@@ -184,3 +184,9 @@ their base, and it values a holding whose price a growth rate raises at its
 last real price. hledger's `cf` lists the change in each cash account. The
 tab's cash flow statement starts from net income instead, but its cash
 balances agree with hledger's account by account.
+
+The Accounts and Journal tabs use the same window. For **Accounts**, use
+`balance` instead of `bs`, and add `-H` for Balance or `-E --declared` for
+Show empty accounts. Leave out `--value`, because the tab shows amounts as
+written. For **Journal**, run
+`hledger -f main.journal -f projection-x.journal print --forecast=2026-10-01..2027-10-01 tag:generated`.
