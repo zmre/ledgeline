@@ -37,7 +37,7 @@
 //! surfaced through [`ReportError`].
 
 use super::ReportError;
-use super::account_types::{AccountType, is_account_type};
+use super::account_types::{AccountType, is_account_type, is_category, resolve_account_type};
 use super::aggregate::roll_up;
 use super::mixed_amount::MixedAmount;
 use super::periods::{
@@ -709,6 +709,34 @@ fn gap_rows(totals: BTreeMap<String, MixedAmount>) -> Result<Vec<GapRow>, Report
     Ok(keyed.into_iter().map(|(_, row)| row).collect())
 }
 
+/// `account` clipped to `depth`, unless that ancestor resolves to a type
+/// outside `category`; then the shallowest deeper ancestor that does not,
+/// falling back to `account` itself.
+///
+/// The clipped name is not only a label: [`crate::projections::seed_scenario`]
+/// books a projection line to it. `expenses:ga ; type: A` over
+/// `expenses:ga:rent ; type: X`, clipped to `expenses:ga`, turned a year of
+/// rent into a monthly line on an ASSET account, which the projected balance
+/// sheet then accumulated and the income statement never showed. An ancestor
+/// that resolves to no type at all (an untyped parent of mixed-type children)
+/// still clips, so such a name can still appear in both sections, as
+/// [`budget_gaps`] documents.
+fn clip_within_category<'a>(
+    account: &'a str,
+    depth: usize,
+    declared: &BTreeMap<String, AccountType>,
+    category: AccountType,
+) -> &'a str {
+    let segments = account.split(':').count();
+    (depth.max(1)..segments)
+        .map(|at| clip(account, at))
+        .find(|name| {
+            resolve_account_type(name, declared)
+                .is_none_or(|resolved| is_category(Some(resolved), category))
+        })
+        .unwrap_or(account)
+}
+
 /// The revenue and expense categories `rules` do not budget, over the same span
 /// [`budget_report`] would report for `opts`.
 ///
@@ -725,7 +753,9 @@ fn gap_rows(totals: BTreeMap<String, MixedAmount>) -> Result<Vec<GapRow>, Report
 ///    (it nets those legs against the spending and answers nothing).
 /// 4. Clip to `opts.depth` and accumulate, dropping zeros as `budget_report`
 ///    does — per account BEFORE the clip merges several onto one name, because
-///    merging pruned totals is not the same as merging raw postings.
+///    merging pruned totals is not the same as merging raw postings. The clip
+///    stops short of an ancestor typed outside the row's section
+///    ([`clip_within_category`]).
 ///
 /// Rows are not rolled up: each is a distinct subtree clipped to the same depth,
 /// so a section's rows sum to its total without double counting. A clipped name
@@ -788,16 +818,16 @@ pub fn budget_gaps(
         // `is_account_type`, not `resolve_account_type`: it folds the subtypes
         // into their parents, so a declared `type: G` (gain) account counts as
         // revenue instead of vanishing from both sections.
-        let section = if is_account_type(account, declared, AccountType::Revenue) {
-            &mut revenue
+        let (section, category) = if is_account_type(account, declared, AccountType::Revenue) {
+            (&mut revenue, AccountType::Revenue)
         } else if is_account_type(account, declared, AccountType::Expense) {
-            &mut expense
+            (&mut expense, AccountType::Expense)
         } else {
             continue;
         };
         let mut pruned = ma.clone();
         pruned.drop_zeros();
-        let name = clip(account, opts.depth).to_string();
+        let name = clip_within_category(account, opts.depth, declared, category).to_string();
         accumulate_into(section.entry(name).or_default(), &pruned)?;
     }
 
@@ -1595,6 +1625,58 @@ mod tests {
         // double-counted into a row and its parent.
         assert_eq!(rolled.expense[0].total, usd_ma(49_200));
         assert_eq!(rolled.expense[0].depth, 1);
+    }
+
+    /// The clip never lands on an ancestor typed as something else. A parent
+    /// declared `type: A` (a typo for `X`) over expense-typed children keeps
+    /// the children as their own rows, because the seed books a projection line
+    /// to the row's name, and a line on `expenses:ga` would be an asset.
+    #[test]
+    fn gaps_never_clip_onto_an_ancestor_of_another_type() {
+        let txns = vec![
+            txn(
+                1,
+                "2026-01-03",
+                vec![
+                    ("expenses:ga:rent", vec![usd(300_000)]),
+                    ("assets:checking", vec![usd(-300_000)]),
+                ],
+            ),
+            txn(
+                2,
+                "2026-01-05",
+                vec![
+                    ("expenses:ga:software", vec![usd(120_000)]),
+                    ("assets:checking", vec![usd(-120_000)]),
+                ],
+            ),
+            txn(
+                3,
+                "2026-01-09",
+                vec![
+                    ("expenses:food", vec![usd(10_000)]),
+                    ("assets:checking", vec![usd(-10_000)]),
+                ],
+            ),
+        ];
+        let types = declared(&[
+            ("expenses:ga", AccountType::Asset),
+            ("expenses:ga:rent", AccountType::Expense),
+            ("expenses:ga:software", AccountType::Expense),
+        ]);
+
+        let gaps = budget_gaps(&txns, &[], &types, &gap_opts("2026-01-31", 1, 2)).unwrap();
+        assert_eq!(
+            accounts(&gaps.expense),
+            ["expenses:ga:rent", "expenses:ga:software", "expenses:food"]
+        );
+        assert_eq!(gaps.expense[0].depth, 3);
+
+        // Correctly typed, the same journal clips to the parent as before.
+        let types = declared(&[("expenses:ga", AccountType::Expense)]);
+        let gaps = budget_gaps(&txns, &[], &types, &gap_opts("2026-01-31", 1, 2)).unwrap();
+        assert_eq!(accounts(&gaps.expense), ["expenses:ga", "expenses:food"]);
+        assert_eq!(gaps.expense[0].total, usd_ma(420_000));
     }
 
     /// Membership is decided by the DECLARED type, never by the name — the

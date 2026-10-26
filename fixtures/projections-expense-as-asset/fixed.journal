@@ -1,0 +1,259 @@
+; Repro: a parent expense account declared type:A (typo for type:X).
+; Real postings live on subaccounts that declare their own type:X, so the
+; umbrella has no balance of its own until a seeded projection posts to it.
+
+commodity $1,000.00
+
+account assets:mercury:checking   ; type:C
+account liabilities:current:cards ; type:L, cfgroup:Change in current liabilities
+account equity:opening            ; type:E
+account revenues:sales            ; type:R, issection:revenue
+account expenses:ga               ; type:X, issection:opex, isgroup:G&A
+account expenses:ga:rent          ; type:X
+account expenses:ga:software      ; type:X
+account expenses:ga:insurance     ; type:X
+
+2025-10-31 opening
+    assets:mercury:checking   $100,000.00
+    equity:opening
+
+2025-11-01 customer
+    assets:mercury:checking   $20,000.00
+    revenues:sales
+
+2025-11-03 landlord
+    expenses:ga:rent          $3,000.00
+    assets:mercury:checking
+
+2025-11-05 saas
+    expenses:ga:software      $1,200.00
+    liabilities:current:cards
+
+2025-11-15 insurer
+    expenses:ga:insurance     $1,000.00
+    assets:mercury:checking
+
+2025-11-20 card payment
+    liabilities:current:cards  $1,200.00
+    assets:mercury:checking
+
+2025-12-01 customer
+    assets:mercury:checking   $20,000.00
+    revenues:sales
+
+2025-12-03 landlord
+    expenses:ga:rent          $3,000.00
+    assets:mercury:checking
+
+2025-12-05 saas
+    expenses:ga:software      $1,200.00
+    liabilities:current:cards
+
+2025-12-15 insurer
+    expenses:ga:insurance     $1,000.00
+    assets:mercury:checking
+
+2025-12-20 card payment
+    liabilities:current:cards  $1,200.00
+    assets:mercury:checking
+
+2026-01-01 customer
+    assets:mercury:checking   $20,000.00
+    revenues:sales
+
+2026-01-03 landlord
+    expenses:ga:rent          $3,000.00
+    assets:mercury:checking
+
+2026-01-05 saas
+    expenses:ga:software      $1,200.00
+    liabilities:current:cards
+
+2026-01-15 insurer
+    expenses:ga:insurance     $1,000.00
+    assets:mercury:checking
+
+2026-01-20 card payment
+    liabilities:current:cards  $1,200.00
+    assets:mercury:checking
+
+2026-02-01 customer
+    assets:mercury:checking   $20,000.00
+    revenues:sales
+
+2026-02-03 landlord
+    expenses:ga:rent          $3,000.00
+    assets:mercury:checking
+
+2026-02-05 saas
+    expenses:ga:software      $1,200.00
+    liabilities:current:cards
+
+2026-02-15 insurer
+    expenses:ga:insurance     $1,000.00
+    assets:mercury:checking
+
+2026-02-20 card payment
+    liabilities:current:cards  $1,200.00
+    assets:mercury:checking
+
+2026-03-01 customer
+    assets:mercury:checking   $20,000.00
+    revenues:sales
+
+2026-03-03 landlord
+    expenses:ga:rent          $3,000.00
+    assets:mercury:checking
+
+2026-03-05 saas
+    expenses:ga:software      $1,200.00
+    liabilities:current:cards
+
+2026-03-15 insurer
+    expenses:ga:insurance     $1,000.00
+    assets:mercury:checking
+
+2026-03-20 card payment
+    liabilities:current:cards  $1,200.00
+    assets:mercury:checking
+
+2026-04-01 customer
+    assets:mercury:checking   $20,000.00
+    revenues:sales
+
+2026-04-03 landlord
+    expenses:ga:rent          $3,000.00
+    assets:mercury:checking
+
+2026-04-05 saas
+    expenses:ga:software      $1,200.00
+    liabilities:current:cards
+
+2026-04-15 insurer
+    expenses:ga:insurance     $1,000.00
+    assets:mercury:checking
+
+2026-04-20 card payment
+    liabilities:current:cards  $1,200.00
+    assets:mercury:checking
+
+2026-05-01 customer
+    assets:mercury:checking   $20,000.00
+    revenues:sales
+
+2026-05-03 landlord
+    expenses:ga:rent          $3,000.00
+    assets:mercury:checking
+
+2026-05-05 saas
+    expenses:ga:software      $1,200.00
+    liabilities:current:cards
+
+2026-05-15 insurer
+    expenses:ga:insurance     $1,000.00
+    assets:mercury:checking
+
+2026-05-20 card payment
+    liabilities:current:cards  $1,200.00
+    assets:mercury:checking
+
+2026-06-01 customer
+    assets:mercury:checking   $20,000.00
+    revenues:sales
+
+2026-06-03 landlord
+    expenses:ga:rent          $3,000.00
+    assets:mercury:checking
+
+2026-06-05 saas
+    expenses:ga:software      $1,200.00
+    liabilities:current:cards
+
+2026-06-15 insurer
+    expenses:ga:insurance     $1,000.00
+    assets:mercury:checking
+
+2026-06-20 card payment
+    liabilities:current:cards  $1,200.00
+    assets:mercury:checking
+
+2026-07-01 customer
+    assets:mercury:checking   $20,000.00
+    revenues:sales
+
+2026-07-03 landlord
+    expenses:ga:rent          $3,000.00
+    assets:mercury:checking
+
+2026-07-05 saas
+    expenses:ga:software      $1,200.00
+    liabilities:current:cards
+
+2026-07-15 insurer
+    expenses:ga:insurance     $1,000.00
+    assets:mercury:checking
+
+2026-07-20 card payment
+    liabilities:current:cards  $1,200.00
+    assets:mercury:checking
+
+2026-08-01 customer
+    assets:mercury:checking   $20,000.00
+    revenues:sales
+
+2026-08-03 landlord
+    expenses:ga:rent          $3,000.00
+    assets:mercury:checking
+
+2026-08-05 saas
+    expenses:ga:software      $1,200.00
+    liabilities:current:cards
+
+2026-08-15 insurer
+    expenses:ga:insurance     $1,000.00
+    assets:mercury:checking
+
+2026-08-20 card payment
+    liabilities:current:cards  $1,200.00
+    assets:mercury:checking
+
+2026-09-01 customer
+    assets:mercury:checking   $20,000.00
+    revenues:sales
+
+2026-09-03 landlord
+    expenses:ga:rent          $3,000.00
+    assets:mercury:checking
+
+2026-09-05 saas
+    expenses:ga:software      $1,200.00
+    liabilities:current:cards
+
+2026-09-15 insurer
+    expenses:ga:insurance     $1,000.00
+    assets:mercury:checking
+
+2026-09-20 card payment
+    liabilities:current:cards  $1,200.00
+    assets:mercury:checking
+
+2026-10-01 customer
+    assets:mercury:checking   $20,000.00
+    revenues:sales
+
+2026-10-03 landlord
+    expenses:ga:rent          $3,000.00
+    assets:mercury:checking
+
+2026-10-05 saas
+    expenses:ga:software      $1,200.00
+    liabilities:current:cards
+
+2026-10-15 insurer
+    expenses:ga:insurance     $1,000.00
+    assets:mercury:checking
+
+2026-10-20 card payment
+    liabilities:current:cards  $1,200.00
+    assets:mercury:checking
+

@@ -2069,3 +2069,91 @@ async fn a_save_writes_an_entry_signed_and_lines_carry_their_section() {
     );
     assert_eq!(doc["scenario"]["lines"][1]["section"], "income");
 }
+
+// ---------------------------------------------------------------------------
+// A parent mistyped as an asset over expense-typed children
+// ---------------------------------------------------------------------------
+
+/// `fixtures/projections-expense-as-asset/typo.journal`: `expenses:ga` is
+/// declared `type:A` (meant `X`) while its subaccounts declare `type:X`. The
+/// actual reports are right, because nothing posts to the parent. The seed
+/// used to clip the subaccounts' gaps onto `expenses:ga` at depth 2, so the
+/// projection booked $5,200 a month to an ASSET: it accumulated on the
+/// balance sheet, became a cash-flow operating line and left the P&L.
+#[tokio::test]
+async fn the_seed_never_books_an_expense_to_a_parent_typed_as_an_asset() {
+    let path = common::fixtures_dir().join("projections-expense-as-asset/typo.journal");
+    let text = std::fs::read_to_string(&path).expect("fixture readable");
+    let journal =
+        ledgeline_core::parse_journal(&text, &path.to_string_lossy()).expect("fixture parses");
+    let call = async |request: Request<Body>| {
+        let response = app(&journal)
+            .oneshot(request)
+            .await
+            .expect("router responds");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body collects")
+            .to_bytes();
+        serde_json::from_slice::<Value>(&body).expect("the body is JSON")
+    };
+
+    let seed = call(
+        Request::builder()
+            .uri("/api/projections/seed?count=12&depth=2&end=2026-10-22")
+            .body(Body::empty())
+            .expect("request builds"),
+    )
+    .await;
+    let accounts: Vec<&str> = seed["lines"]
+        .as_array()
+        .expect("lines")
+        .iter()
+        .map(|line| line["account"].as_str().expect("account"))
+        .collect();
+    assert_eq!(
+        accounts,
+        [
+            "revenues:sales",
+            "expenses:ga:rent",
+            "expenses:ga:software",
+            "expenses:ga:insurance"
+        ]
+    );
+
+    let body = json!({"scenario": seed, "asOf": "2026-10-26", "count": 3, "lookback": 2});
+    let run = call(
+        Request::builder()
+            .method("POST")
+            .uri("/api/projections/run")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("request builds"),
+    )
+    .await;
+    let sheet = run["balanceSheet"].to_string();
+    assert!(
+        !sheet.contains("expenses"),
+        "an expense on the balance sheet: {sheet}"
+    );
+    let flows = run["cashFlow"]["sections"].to_string();
+    assert!(
+        !flows.contains("expenses"),
+        "an expense as a cash-flow line: {flows}"
+    );
+    // The projected G&A is on the P&L: $5,200 a month across the three leaves.
+    let opex = run["incomeStatement"]["sections"]
+        .as_array()
+        .expect("sections")
+        .iter()
+        .find(|section| section["kind"] == "opex")
+        .expect("an opex section");
+    assert_eq!(
+        opex["total"]["values"][2]["$"],
+        json!({"mantissa": "520000", "places": 2}),
+        "{opex}"
+    );
+}
