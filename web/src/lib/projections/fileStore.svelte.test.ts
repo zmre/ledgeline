@@ -39,7 +39,7 @@ const fileBody = (revision: string, mantissa: string) => ({
                 role: "flow",
                 account: "expenses:rent",
                 amount: amount(mantissa),
-                period: {raw: "monthly", simple: "monthly", from: null, to: null},
+                period: {raw: "monthly", simple: "monthly", base: null, from: null, to: null},
                 growth: null,
                 opening: null,
                 note: "",
