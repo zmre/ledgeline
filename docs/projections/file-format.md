@@ -75,7 +75,7 @@ rest go on postings.
 | `projection: <name>` | a comment at the top of the file | the scenario's display name |
 | `cash: <account>` | a comment at the top of the file | the counter-account for a line your history says nothing about |
 | `growth: <rate>/<unit>` | a posting comment | the amount grows by `rate` per completed `unit`; on an asset-typed account it ALSO marks the row as a balance |
-| `line: <id>` | a posting comment | two bounded rules are two segments of ONE row |
+| `line: <id>` | a posting comment | two bounded rules are two segments of ONE row; written only for a step change |
 | `opening: <number>` | an asset row's posting comment | override the journal's balance for that account |
 | `gains: <account>` | an asset row's posting comment | where appreciation is booked; `equity:unrealized gains` when absent |
 
@@ -107,6 +107,39 @@ there, growing from the new base. That is two bounded `~` rules for the same
 account, and the shared `line:` tag is what tells the editor to show them as one
 row with a "from" on it rather than two unrelated lines. Without the tag they
 are still two perfectly good rules; they just appear separately.
+
+**Ledgeline writes `line:` only for a step change.** A row with one segment
+needs no tag, so a save writes none, and drops the `line: gap:…` tags older
+versions put on every seeded row. A step gets a short id made from its account's
+leaf (`expenses:payroll` becomes `payroll`, and a second one `payroll-2`), or
+keeps the id you wrote yourself. An id Ledgeline writes never contains a colon.
+Untagged rows get positional ids when the file loads, and a written id can never
+look like one of those, so reordering the rules can't join two unrelated rows.
+
+## Descriptions and order
+
+**A rule's description is the text after its period**, separated by two spaces:
+`~ monthly  unbudgeted — average over 2025-11-01 to 2026-10-22`. In the table it
+is the speech-bubble icon beside each row's account. Hover over or focus the
+icon to read the description, and click it to edit. Enter saves and Escape
+cancels. A description is one line and can't contain `;` or `#`, because hledger
+would read the rest of the line as a comment.
+
+The description belongs to the **rule**, not to the row. When several rows are
+postings of one rule, such as a budget rule listing rent and utilities, they
+share one header, and editing it from any of those rows changes it for all of
+them. The tooltip says when this applies.
+
+A seeded row's description says what the estimate was averaged over. If you
+change that row's amount, the icon gets a small dot and the tooltip says the
+description may be out of date. Ledgeline never rewrites a description itself.
+
+**The table's order is the file's order.** Move up and Move down in a row's
+menu, or dragging a row by its handle, reorder the rules in the file and the
+postings within a rule. Comments and transactions between rules stay where they
+were. A row that shares its rule with other rows moves with that rule, because
+the file can't put another rule between two postings of one rule. A step
+change's segments always move together.
 
 ## Growth is stepwise, not smoothly compounded
 

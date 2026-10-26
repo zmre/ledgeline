@@ -23,6 +23,8 @@ import {rawProjectionRun} from "#lib/testing/projectionFixture.js";
 import {scenarioStore, scenarioTableView, sameProjectionQuery, type ProjectionWindow} from "./scenarioStore.svelte";
 
 const SEED_ROUTE = "/api/projections/seed?count=12&depth=2";
+/** The same seed, asked for one level deeper — the page's depth slider at 3. */
+const DEEP_SEED_ROUTE = "/api/projections/seed?count=12&depth=3";
 const RUN_ROUTE = "/api/projections/run";
 
 const amount = (mantissa: string) => ({commodity: "$", quantity: {mantissa, places: 2}, precision: 2});
@@ -62,6 +64,10 @@ beforeEach(async () => {
     asked = [];
     await connectFakeEngine({
         [SEED_ROUTE]: SEED_BODY,
+        [DEEP_SEED_ROUTE]: {
+            ...SEED_BODY,
+            lines: [{...SEED_BODY.lines[0], id: "gap:expenses:housing:rent:$", group: "gap:expenses:housing:rent:$", account: "expenses:housing:rent"}],
+        },
         [RUN_ROUTE]: RUN_BODY,
     });
     // Wrap the stub so the calls can be counted without a second `fetch` shim.
@@ -83,46 +89,78 @@ afterEach(() => {
 
 describe("COMPONENT scenarioStore — the seed latch", () => {
     it("seeds the table and leaves it not-dirty: seeding is not an edit", async () => {
-        await scenarioStore.ensureSeeded(FAKE_ENGINE, 1);
+        await scenarioStore.ensureSeeded(FAKE_ENGINE, 1, 2);
         expect(scenarioStore.scenario.lines.map((l) => l.account)).toEqual(["expenses:housing"]);
         expect(scenarioStore.scenario.lines[0].source).toBe("unbudgeted");
         expect(scenarioStore.dirty).toBe(false);
     });
 
     it("adopts a MUTABLE copy — the decoder freezes what it returns", async () => {
-        await scenarioStore.ensureSeeded(FAKE_ENGINE, 2);
+        await scenarioStore.ensureSeeded(FAKE_ENGINE, 2, 2);
         scenarioStore.scenario.lines[0].account = "expenses:rent";
         expect(scenarioStore.scenario.lines[0].account).toBe("expenses:rent");
     });
 
     it("reads the journal once per (server, reconnect), not once per visit", async () => {
-        await scenarioStore.ensureSeeded(FAKE_ENGINE, 3);
+        await scenarioStore.ensureSeeded(FAKE_ENGINE, 3, 2);
         const first = asked.filter((url) => url.includes("/projections/seed")).length;
-        await scenarioStore.ensureSeeded(FAKE_ENGINE, 3);
+        await scenarioStore.ensureSeeded(FAKE_ENGINE, 3, 2);
         expect(asked.filter((url) => url.includes("/projections/seed")).length).toBe(first);
     });
 
     it("never seeds over unsaved work, even after a reconnect", async () => {
-        await scenarioStore.ensureSeeded(FAKE_ENGINE, 4);
+        await scenarioStore.ensureSeeded(FAKE_ENGINE, 4, 2);
         scenarioStore.scenario.lines[0].account = "expenses:rent";
         scenarioStore.touch();
         expect(scenarioStore.dirty).toBe(true);
 
         // A new nonce IS a reconnect: the request goes out, and the answer is
         // deliberately not adopted.
-        await scenarioStore.ensureSeeded(FAKE_ENGINE, 5);
+        await scenarioStore.ensureSeeded(FAKE_ENGINE, 5, 2);
         expect(scenarioStore.scenario.lines[0].account).toBe("expenses:rent");
         expect(scenarioStore.dirty).toBe(true);
     });
 
     it("an explicit reseed DOES replace the table, and clears the edited flag", async () => {
-        await scenarioStore.ensureSeeded(FAKE_ENGINE, 6);
+        await scenarioStore.ensureSeeded(FAKE_ENGINE, 6, 2);
         scenarioStore.scenario.lines[0].account = "expenses:rent";
         scenarioStore.touch();
 
-        await scenarioStore.reseed(FAKE_ENGINE);
+        await scenarioStore.reseed(FAKE_ENGINE, 2);
         expect(scenarioStore.scenario.lines[0].account).toBe("expenses:housing");
         expect(scenarioStore.dirty).toBe(false);
+    });
+});
+
+describe("COMPONENT scenarioStore — the seed's depth", () => {
+    it("seeds at the depth it is given, and remembers it", async () => {
+        await scenarioStore.ensureSeeded(FAKE_ENGINE, 20, 3);
+        expect(asked.some((url) => url.endsWith(DEEP_SEED_ROUTE))).toBe(true);
+        expect(scenarioStore.scenario.lines.map((l) => l.account)).toEqual(["expenses:housing:rent"]);
+        expect(scenarioStore.seedDepth).toBe(3);
+    });
+
+    it("a later depth is NOT a re-seed: the seed is only the starting point", async () => {
+        await scenarioStore.ensureSeeded(FAKE_ENGINE, 21, 2);
+        const seeds = asked.filter((url) => url.includes("/projections/seed")).length;
+        await scenarioStore.ensureSeeded(FAKE_ENGINE, 21, 3);
+        expect(asked.filter((url) => url.includes("/projections/seed")).length).toBe(seeds);
+        expect(scenarioStore.scenario.lines.map((l) => l.account)).toEqual(["expenses:housing"]);
+        expect(scenarioStore.seedDepth).toBe(2);
+    });
+
+    it("an explicit reseed at a new depth replaces the table at that depth", async () => {
+        await scenarioStore.ensureSeeded(FAKE_ENGINE, 22, 2);
+        await scenarioStore.reseed(FAKE_ENGINE, 3);
+        expect(scenarioStore.scenario.lines.map((l) => l.account)).toEqual(["expenses:housing:rent"]);
+        expect(scenarioStore.seedDepth).toBe(3);
+        expect(scenarioStore.dirty).toBe(false);
+    });
+
+    it("a scenario from a FILE has no seed depth", async () => {
+        await scenarioStore.ensureSeeded(FAKE_ENGINE, 23, 2);
+        scenarioStore.adopt({name: "From a file", created: null, updated: null, lines: [], events: [], cash: null});
+        expect(scenarioStore.seedDepth).toBe(null);
     });
 });
 
@@ -141,7 +179,7 @@ describe("COMPONENT scenarioStore — the debounced recompute", () => {
 
     it("sends the scenario as it stands when the debounce FIRES, not when it was scheduled", async () => {
         vi.useFakeTimers();
-        await scenarioStore.ensureSeeded(FAKE_ENGINE, 7);
+        await scenarioStore.ensureSeeded(FAKE_ENGINE, 7, 2);
         scenarioStore.schedule(FAKE_ENGINE, WINDOW);
         // The point of coalescing: only the last edit is sent.
         scenarioStore.scenario.lines[0].account = "expenses:rent";

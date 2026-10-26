@@ -11,10 +11,18 @@ import {
     duplicateRow,
     emptyScenario,
     freshId,
+    gatherRules,
     isRevenueAccount,
     logicalRows,
     magnitudeOf,
+    MAX_NOTE_BYTES,
     mergeStep,
+    moveEvent,
+    moveEventTo,
+    moveRow,
+    moveRowTo,
+    noteIsStale,
+    noteProblem,
     percentFromRate,
     periodRaw,
     projectable,
@@ -23,6 +31,7 @@ import {
     removeSegment,
     resolvedSection,
     rowNames,
+    ruleSize,
     runBody,
     scenarioToWire,
     sectionOfLine,
@@ -37,6 +46,7 @@ import {
     withMagnitude,
     withBounds,
     withInterval,
+    withNote,
 } from "./scenarioModel";
 import type {Scenario, ScenarioLine} from "./types";
 
@@ -705,5 +715,127 @@ describe("UNIT scenarioModel — counter-accounts, one per rule (plan 28)", () =
         expect(wire.lines[0].gains).toBeNull();
         expect(wire.cash).toBeNull();
         expect(wire.events[0].counter).toBeNull();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Order, and descriptions (plan 28, follow-ups 2026-10-26)
+// ---------------------------------------------------------------------------
+
+describe("UNIT scenarioModel — moving rows", () => {
+    const expense = (id: string, group: string, account = `expenses:${id}`) => line({id, group, account});
+    const accounts = (lines: readonly ScenarioLine[]) => logicalRows(lines, DECLARED, "expense").map((row) => row.segments[0].account);
+
+    it("swaps two single-rule rows, and the ends go nowhere", () => {
+        const lines = [expense("a", "g-a"), expense("b", "g-b"), expense("c", "g-c")];
+        expect(accounts(moveRow(lines, DECLARED, "expense", "b", -1))).toEqual(["expenses:b", "expenses:a", "expenses:c"]);
+        expect(accounts(moveRow(lines, DECLARED, "expense", "b", 1))).toEqual(["expenses:a", "expenses:c", "expenses:b"]);
+        expect(accounts(moveRow(lines, DECLARED, "expense", "a", -1))).toEqual(["expenses:a", "expenses:b", "expenses:c"]);
+        expect(accounts(moveRow(lines, DECLARED, "expense", "c", 1))).toEqual(["expenses:a", "expenses:b", "expenses:c"]);
+    });
+
+    it("two postings of ONE rule swap inside it — the posting order is what persists", () => {
+        const lines = [expense("a", "rule:0"), expense("b", "rule:0"), expense("c", "rule:1")];
+        const moved = moveRow(lines, DECLARED, "expense", "b", -1);
+        expect(moved.map((l) => [l.id, l.group])).toEqual([
+            ["b", "rule:0"],
+            ["a", "rule:0"],
+            ["c", "rule:1"],
+        ]);
+    });
+
+    it("past a row of another rule, a row carries its whole rule with it", () => {
+        // `a` and `b` are one budget rule; `c` is a seeded row of its own. Moving
+        // `c` above `b` can only be stored as `c`'s rule above `a`+`b`'s.
+        const lines = [expense("a", "rule:0"), expense("b", "rule:0"), expense("c", "gap:c")];
+        expect(accounts(moveRow(lines, DECLARED, "expense", "c", -1))).toEqual(["expenses:c", "expenses:a", "expenses:b"]);
+        // …and `b` moving down past `c` carries `a` along, for the same reason.
+        expect(accounts(moveRow(lines, DECLARED, "expense", "b", 1))).toEqual(["expenses:c", "expenses:a", "expenses:b"]);
+    });
+
+    it("a step change's segments move together, as one row", () => {
+        const lines = [
+            expense("a", "g-a"),
+            line({
+                id: "pay",
+                group: "g-1",
+                account: "expenses:pay",
+                period: {raw: "monthly to 2027-04-01", simple: "monthly", base: null, from: null, to: "2027-04-01"},
+            }),
+            line({
+                id: "pay",
+                group: "g-2",
+                account: "expenses:pay",
+                period: {raw: "monthly from 2027-04-01", simple: "monthly", base: null, from: "2027-04-01", to: null},
+            }),
+        ];
+        const moved = moveRow(lines, DECLARED, "expense", "pay", -1);
+        expect(moved.map((l) => l.group)).toEqual(["g-1", "g-2", "g-a"]);
+        expect(logicalRows(moved, DECLARED, "expense")[0].segments).toHaveLength(2);
+    });
+
+    it("moves only within the section: an income row in between is not a neighbour", () => {
+        const lines = [expense("a", "g-a"), line({id: "pay", group: "g-p", account: "income:salary"}), expense("b", "g-b")];
+        const moved = moveRow(lines, DECLARED, "expense", "b", -1);
+        expect(accounts(moved)).toEqual(["expenses:b", "expenses:a"]);
+        expect(logicalRows(moved, DECLARED, "income").map((row) => row.id)).toEqual(["pay"]);
+    });
+
+    it("never changes a row's section or its hold", () => {
+        const held = line({id: "x", group: "g-x", account: "income:half-typed", section: "expense"});
+        const lines = [expense("a", "g-a"), held];
+        const moved = moveRow(lines, DECLARED, "expense", "x", -1);
+        expect(moved[0]).toEqual(held);
+        expect(sectionOfLine(moved[0], DECLARED)).toBe("expense");
+    });
+
+    it("a drag lands the row where the target was, through the same moves", () => {
+        const lines = ["a", "b", "c", "d"].map((id) => expense(id, `g-${id}`));
+        expect(accounts(moveRowTo(lines, DECLARED, "expense", "d", "a"))).toEqual(["expenses:d", "expenses:a", "expenses:b", "expenses:c"]);
+        expect(accounts(moveRowTo(lines, DECLARED, "expense", "a", "c"))).toEqual(["expenses:b", "expenses:c", "expenses:a", "expenses:d"]);
+        expect(accounts(moveRowTo(lines, DECLARED, "expense", "b", "b"))).toEqual(["expenses:a", "expenses:b", "expenses:c", "expenses:d"]);
+    });
+
+    it("gathers a rule whose lines were apart, which is what the file would do", () => {
+        const lines = [expense("a", "rule:0"), expense("b", "rule:1"), expense("c", "rule:0")];
+        expect(gatherRules(lines).map((l) => l.id)).toEqual(["a", "c", "b"]);
+    });
+
+    it("events reorder freely", () => {
+        const ev = (id: string) => ({id, date: "2027-01-01", description: id, postings: [], counter: null});
+        const events = [ev("x"), ev("y"), ev("z")];
+        expect(moveEvent(events, "z", -1).map((e) => e.id)).toEqual(["x", "z", "y"]);
+        expect(moveEvent(events, "x", -1).map((e) => e.id)).toEqual(["x", "y", "z"]);
+        expect(moveEventTo(events, "z", "x").map((e) => e.id)).toEqual(["z", "x", "y"]);
+        expect(moveEventTo(events, "x", "z").map((e) => e.id)).toEqual(["y", "z", "x"]);
+    });
+});
+
+describe("UNIT scenarioModel — descriptions", () => {
+    it("a description belongs to the RULE: every line of it takes the edit", () => {
+        const lines = [line({id: "a", group: "rule:0"}), line({id: "b", group: "rule:0"}), line({id: "c", group: "rule:1", note: "kept"})];
+        const next = withNote(lines, "rule:0", "rent and utilities");
+        expect(next.map((l) => l.note)).toEqual(["rent and utilities", "rent and utilities", "kept"]);
+        expect(ruleSize(lines, "rule:0")).toBe(2);
+        expect(ruleSize(lines, "rule:1")).toBe(1);
+    });
+
+    it("refuses exactly what the file writer refuses", () => {
+        expect(noteProblem("rent, after the move")).toBeNull();
+        expect(noteProblem("")).toBeNull();
+        expect(noteProblem("rent ; utilities")).toMatch(/comment/);
+        expect(noteProblem("rent # 2")).toMatch(/comment/);
+        expect(noteProblem("two\nlines")).toMatch(/line break/);
+        expect(noteProblem("x".repeat(MAX_NOTE_BYTES))).toBeNull();
+        expect(noteProblem("é".repeat(MAX_NOTE_BYTES / 2 + 1))).toMatch(/at most/);
+    });
+
+    it("flags a seeded description as stale once the amount it describes changes", () => {
+        const seeded = line({source: "unbudgeted", note: "unbudgeted — average over 2025-11-01 to 2026-10-22"});
+        expect(noteIsStale(seeded)).toBe(false);
+        expect(noteIsStale(withMagnitude(seeded, dec(420000, 2)))).toBe(false);
+        expect(noteIsStale(withMagnitude(seeded, dec(5000, 0)))).toBe(true);
+        // A description the user wrote is theirs, whatever the amount does.
+        expect(noteIsStale(withMagnitude({...seeded, note: "rent"}, dec(5000, 0)))).toBe(false);
     });
 });

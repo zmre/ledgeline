@@ -95,6 +95,16 @@
      position when the account is blank (`rowName`), because "Delete row" you
      cannot address is not a delete.
 
+     # Descriptions and order (plan 28, follow-ups 2026-10-26)
+
+     Every row's account cell carries a description icon (`NoteButton`): the
+     `~` rule's header text, shown on hover AND focus and edited on click. A
+     rule has one header, so rows that are postings of one rule share it and
+     the icon says so. Rows reorder through the menu's Move up / Move down (the
+     keyboard path) or a drag handle (the mouse's); both go through
+     `moveRow`, which only makes moves the file can store, and neither touches
+     a row's section hold — so the rule below is unaffected by either.
+
      # Counter-accounts, gains accounts and the default cash account (plan 28)
 
      Every flow line, one-off and dated line names the account its money comes
@@ -131,12 +141,18 @@
         isIsoDate,
         magnitudeOf,
         mergeStep,
+        moveEvent,
+        moveEventTo,
+        moveRow,
+        moveRowTo,
+        noteIsStale,
         percentFromRate,
         rateFromPercent,
         removeRow,
         removeSegment,
         resolvedSection,
         rowNames,
+        ruleSize,
         sectionOfLine,
         sectionPrefix,
         splitStep,
@@ -147,6 +163,8 @@
         withGains,
         withInterval,
         withMagnitude,
+        withNote,
+        type LineSection,
         type LogicalRow,
     } from "../scenarioModel";
     import {
@@ -162,6 +180,7 @@
         type ScenarioEvent,
         type ScenarioLine,
     } from "../types";
+    import NoteButton from "./NoteButton.svelte";
     import RowMenu from "./RowMenu.svelte";
 
     let {
@@ -564,6 +583,78 @@
         onChange();
     }
 
+    // --- Descriptions --------------------------------------------------------
+
+    /** A rule's description is its HEADER, so every line of the rule takes the edit. */
+    function setNote(line: ScenarioLine, next: string): void {
+        scenario.lines = withNote(scenario.lines, line.group, next);
+        onChange();
+    }
+
+    // --- Order ---------------------------------------------------------------
+
+    /** Where a drag can land: one of the line sections, or the events. */
+    type DragZone = LineSection | "event";
+
+    function move(section: LineSection, id: string, delta: -1 | 1): void {
+        scenario.lines = moveRow(scenario.lines, declared, section, id, delta);
+        onChange();
+    }
+
+    function shiftEvent(id: string, delta: -1 | 1): void {
+        scenario.events = moveEvent(scenario.events, id, delta);
+        onChange();
+    }
+
+    /** "Move up" / "Move down" — each only where there is somewhere to go. */
+    function moveItems(at: number, count: number, onMove: (delta: -1 | 1) => void): {label: string; onSelect: () => void}[] {
+        return [
+            ...(at > 0 ? [{label: "Move up", onSelect: () => onMove(-1)}] : []),
+            ...(at < count - 1 ? [{label: "Move down", onSelect: () => onMove(1)}] : []),
+        ];
+    }
+
+    /**
+     * The row being dragged, and the row it is over.
+     *
+     * Held here rather than read from `dataTransfer`, which a page may only
+     * read on drop and so cannot use to decide whether a row accepts one. A
+     * drag never crosses sections: dropping an Income row among the Expenses
+     * would be a section change by position, and a row's section is its
+     * account type's business.
+     */
+    let dragging = $state<{zone: DragZone; id: string} | null>(null);
+    let dropOver = $state<string | null>(null);
+
+    function dragStart(event: DragEvent, zone: DragZone, id: string): void {
+        dragging = {zone, id};
+        // Firefox will not start a drag that carries no data.
+        event.dataTransfer?.setData("text/plain", id);
+        if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+    }
+
+    function dragOver(event: DragEvent, zone: DragZone, id: string): void {
+        if (dragging === null || dragging.zone !== zone) return;
+        event.preventDefault();
+        dropOver = id;
+    }
+
+    function drop(event: DragEvent, zone: DragZone, target: string): void {
+        const from = dragging;
+        dragEnd();
+        if (from === null || from.zone !== zone) return;
+        event.preventDefault();
+        if (from.id === target) return;
+        if (zone === "event") scenario.events = moveEventTo(scenario.events, from.id, target);
+        else scenario.lines = moveRowTo(scenario.lines, declared, zone, from.id, target);
+        onChange();
+    }
+
+    function dragEnd(): void {
+        dragging = null;
+        dropOver = null;
+    }
+
     /** The date a single-date line fires on lives in its `raw`, which IS the date. */
     function setDatedLine(line: ScenarioLine, value: string): void {
         if (!isIsoDate(value)) return;
@@ -583,19 +674,42 @@
     {/if}
 {/snippet}
 
-{#snippet rowMenu(row: LogicalRow, name: string)}
+{#snippet rowMenu(row: LogicalRow, name: string, section: LineSection, at: number, count: number)}
     <!-- Delete is here for EVERY row, whatever is in its account field — and
-         `name` is what makes a blank row's copy of it addressable. -->
+         `name` is what makes a blank row's copy of it addressable. Move up /
+         Move down are the KEYBOARD path for reordering; the drag handle is the
+         mouse's, and does nothing these two cannot. -->
     <RowMenu
         label="Row menu for {name}"
         items={[
             row.segments.length === 1
                 ? {label: `Add a step on ${stepDate}`, onSelect: () => addStep(row.id)}
                 : {label: "Remove the step", onSelect: () => dropStep(row.id)},
+            ...moveItems(at, count, (delta) => move(section, row.id, delta)),
             {label: "Duplicate", onSelect: () => duplicate(row.id)},
             {label: "Delete row", onSelect: () => dropRow(row.id), danger: true},
         ]}
     />
+{/snippet}
+
+<!-- The mouse's way to reorder. Not focusable and hidden from assistive tech:
+     the row menu's Move up / Move down are the accessible path, and a second,
+     half-working keyboard control would only be noise. -->
+{#snippet dragHandle(zone: DragZone, id: string)}
+    <span
+        class="cursor-grab px-0.5 text-base-content/30 select-none hover:text-base-content/70"
+        draggable="true"
+        aria-hidden="true"
+        title="Drag to reorder"
+        data-testid="drag-handle"
+        ondragstart={(e) => dragStart(e, zone, id)}
+        ondragend={dragEnd}>⠿</span
+    >
+{/snippet}
+
+<!-- The row's description (its rule's header), shared by every line of the rule. -->
+{#snippet noteButton(line: ScenarioLine, name: string)}
+    <NoteButton note={line.note} label={name} shared={ruleSize(scenario.lines, line.group)} stale={noteIsStale(line)} onSave={(next) => setNote(line, next)} />
 {/snippet}
 
 <!-- The cells the tables share.
@@ -609,11 +723,13 @@
      table calls a row "the assets:brokerage balance" (`balanceOf`) where the
      flow table calls it "assets:brokerage", and that choice belongs to the
      section, not to the box. -->
-{#snippet accountCell(line: ScenarioLine, at: number, showEstimate: boolean)}
+{#snippet accountCell(line: ScenarioLine, at: number, showEstimate: boolean, name: string, zone: DragZone | null)}
     <td>
         <div class="flex items-center gap-1">
             {#if at > 0}
                 <span class="text-base-content/40" title="A later segment of the row above">↳</span>
+            {:else if zone !== null}
+                {@render dragHandle(zone, line.id)}
             {/if}
             <AccountInput bind:value={line.account} {accountNames} size="xs" placeholder="account" onCommit={() => commitAccount(line)} />
             <!-- Not rendered in the Assets table: `estimated` is a seeded FLOW
@@ -623,6 +739,9 @@
             {#if showEstimate}
                 {@render estimated(line)}
             {/if}
+            <!-- Per SEGMENT: each segment of a step is a rule of its own, with a
+                 header of its own. -->
+            {@render noteButton(line, at > 0 ? `segment ${at + 1} of ${name}` : name)}
         </div>
     </td>
 {/snippet}
@@ -786,7 +905,7 @@
                     <table class="table table-xs">
                         <thead>
                             <tr>
-                                <th class="w-64">Account</th>
+                                <th class="w-72">Account</th>
                                 <th class="w-36">Amount</th>
                                 <th class="w-56" title="The account the money comes from or goes to">Counter-account</th>
                                 <th class="w-28">Per</th>
@@ -808,10 +927,13 @@
                                         data-testid="projection-line"
                                         data-line-id={line.id}
                                         data-line-group={line.group}
+                                        class={dropOver === row.id && dragging?.id !== row.id ? "border-t-2 border-t-primary" : ""}
                                         onfocusin={() => holdSection(line)}
                                         onfocusout={(e) => scheduleRelease(line, e.currentTarget)}
+                                        ondragover={(e) => dragOver(e, section.id, row.id)}
+                                        ondrop={(e) => drop(e, section.id, row.id)}
                                     >
-                                        {@render accountCell(line, at, true)}
+                                        {@render accountCell(line, at, true, name, section.id)}
                                         {@render amountCell(line, `Amount for ${name}`)}
                                         {@render counterCell(line, name)}
                                         {@render periodCell(line, `Period for ${name}`)}
@@ -820,7 +942,7 @@
                                         {@render boundCell(line, "to", name)}
                                         <td class="text-right">
                                             {#if at === 0}
-                                                {@render rowMenu(row, name)}
+                                                {@render rowMenu(row, name, section.id, rowAt, rows.length)}
                                             {:else}
                                                 {@render dropSegmentButton(line, `Delete this segment of ${name}`)}
                                             {/if}
@@ -856,7 +978,7 @@
                 <table class="table table-xs">
                     <thead>
                         <tr>
-                            <th class="w-64">Account</th>
+                            <th class="w-72">Account</th>
                             <th class="w-40">Balance</th>
                             <th class="w-36">Growth</th>
                             <th class="w-56" title="Where appreciation is booked. Equity by default, so it never reaches net income.">Gains account</th>
@@ -876,8 +998,15 @@
                                 <!-- No `onfocusin`/`onfocusout` hold: this row cannot change
                                      section, because only `role` decides it and no box here
                                      edits `role`. -->
-                                <tr data-testid="projection-asset-line" data-line-id={line.id} data-line-group={line.group}>
-                                    {@render accountCell(line, at, false)}
+                                <tr
+                                    data-testid="projection-asset-line"
+                                    data-line-id={line.id}
+                                    data-line-group={line.group}
+                                    class={dropOver === row.id && dragging?.id !== row.id ? "border-t-2 border-t-primary" : ""}
+                                    ondragover={(e) => dragOver(e, "asset", row.id)}
+                                    ondrop={(e) => drop(e, "asset", row.id)}
+                                >
+                                    {@render accountCell(line, at, false, balanceOf(name), "asset")}
                                     <td>
                                         <div class="flex flex-col gap-0.5">
                                             <!-- GREYED until typed over: the box is empty and the
@@ -940,6 +1069,7 @@
                                                 label="Row menu for {balanceOf(name)}"
                                                 items={[
                                                     ...(overridden ? [{label: "Use the journal's balance", onSelect: () => clearOpening(line)}] : []),
+                                                    ...moveItems(rowAt, assetRows.length, (delta) => move("asset", row.id, delta)),
                                                     {label: "Duplicate", onSelect: () => duplicate(row.id)},
                                                     {label: "Delete row", onSelect: () => dropRow(row.id), danger: true},
                                                 ]}
@@ -984,16 +1114,25 @@
                         {#each scenario.events as event, eventAt (event.id)}
                             {@const eventName = event.description.trim() === "" ? `the new event ${eventAt + 1}` : event.description}
                             {#each event.postings as posting, at (at)}
-                                <tr data-testid="projection-event" data-event-id={event.id}>
+                                <tr
+                                    data-testid="projection-event"
+                                    data-event-id={event.id}
+                                    class={at === 0 && dropOver === event.id && dragging?.id !== event.id ? "border-t-2 border-t-primary" : ""}
+                                    ondragover={(e) => dragOver(e, "event", event.id)}
+                                    ondrop={(e) => drop(e, "event", event.id)}
+                                >
                                     <td>
                                         {#if at === 0}
-                                            <input
-                                                type="date"
-                                                class="input w-full input-xs"
-                                                value={event.date}
-                                                aria-label="Date of {eventName}"
-                                                onchange={(e) => setEventDate(event, e.currentTarget.value)}
-                                            />
+                                            <div class="flex items-center gap-1">
+                                                {@render dragHandle("event", event.id)}
+                                                <input
+                                                    type="date"
+                                                    class="input w-full input-xs"
+                                                    value={event.date}
+                                                    aria-label="Date of {eventName}"
+                                                    onchange={(e) => setEventDate(event, e.currentTarget.value)}
+                                                />
+                                            </div>
                                         {/if}
                                     </td>
                                     <td>
@@ -1044,6 +1183,7 @@
                                                 label="Row menu for {eventName}"
                                                 items={[
                                                     {label: "Add a posting", onSelect: () => addPosting(event)},
+                                                    ...moveItems(eventAt, scenario.events.length, (delta) => shiftEvent(event.id, delta)),
                                                     {label: "Delete event", onSelect: () => dropEvent(event.id), danger: true},
                                                 ]}
                                             />
@@ -1078,8 +1218,10 @@
                                 </td>
                                 <td class="text-base-content/60">{line.note === "" ? "from the journal" : line.note}</td>
                                 <!-- `at` is 0: a dated line is shown flat, never as a segment of
-                                     the row above, so it never wears the continuation arrow. -->
-                                {@render accountCell(line, 0, true)}
+                                     the row above, so it never wears the continuation arrow. No
+                                     drag handle: dated lines are listed after the events in the
+                                     order the journal has them, and are not a list of their own. -->
+                                {@render accountCell(line, 0, true, `the one-off ${line.account}`, null)}
                                 {@render amountCell(line, `Amount for the one-off ${line.account}`)}
                                 {@render counterCell(line, `the one-off ${line.account}`)}
                                 <td class="text-right">

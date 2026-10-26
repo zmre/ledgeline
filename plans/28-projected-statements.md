@@ -1011,3 +1011,98 @@ All six phases shipped on `2026-10-23-projection-fixes`:
 - `merged_transactions` clones the journal on every run, and this has not
   been measured against the plan 26 baseline (amendments 20 and 24).
 - Docs screenshots were not regenerated (amendment 21).
+
+## Follow-ups (2026-10-26)
+
+### What-if table: descriptions, order, line tag, seed depth
+
+Four changes asked for after using the table. The decisions, and why:
+
+**1. Descriptions are visible and editable, per RULE.** A `~` rule's header
+text (`ScenarioLine.note`) used to reach the screen only as the "estimated"
+badge's `title`. Each row's account cell now has a speech-bubble icon
+(`NoteButton.svelte`). Hovering or focusing it shows the text in a portalled
+tooltip, and the same text is the button's `aria-describedby`, through an
+always-present `sr-only` copy. Clicking it opens a portalled editor. Enter
+saves, Escape and an outside click cancel (`keys/dismissible`, which also puts
+focus back on the icon). The icon is on asset rows and on one-off lines too,
+and on every segment of a step, because each segment is a rule with its own
+header. Events keep their existing Description column.
+
+- A rule has ONE header, and the writer takes it from the rule's first line.
+  So `withNote` sets the note on every line of the `group`. The tooltip and the
+  editor say "Shared by the N lines of this rule" whenever N > 1.
+- The editor refuses what `serialize::rule_header` refuses (`noteProblem`): a
+  line break or control character, `;` or `#`, more than 256 bytes. It says so
+  under the box and keeps Save disabled, so the save doesn't fail later.
+- **Stale, not rewritten.** A note that starts with the seed's
+  `unbudgeted — average over ` on a row whose typed `entry` differs from its
+  amount gets a warning dot and a tooltip sentence (`noteIsStale`). Nothing
+  rewrites user text. The flag lasts for the session only: after a reload the
+  edited amount *is* the amount, and nothing records what the average was.
+- `chunk_print` now trims a note, as `rule_header` writes it, so a trailing
+  space can't fail the round-trip check.
+
+**2. Order is the file's order.** Row menus gain Move up and Move down, offered
+only where there is somewhere to go. Event menus get them too. A drag handle
+(`⠿`, `aria-hidden`, not focusable) is the mouse path. The menu items are the
+keyboard path, and a drag is just a sequence of the same single moves
+(`moveRowTo` loops `moveRow`), so the two can't produce different orders.
+Drags never cross sections or zones.
+
+- **A move has to be one a file can state.** `moveRow` first gathers each rule's
+  lines together (`gatherRules`, which is exactly the order the writer emits).
+  Two rows that are postings of one rule swap their postings. Otherwise the
+  row's rules move past the neighbour's rules, so a row that shares a budget
+  rule with others carries them along. A file can't put a rule between two
+  postings of another rule. Step segments are one row and always move
+  together. A move touches no `section` hold and no account, so THE
+  SECTION-STABILITY RULE holds. A held, half-typed row moved through its menu
+  stays in its section (component test).
+- **The writer** (`serialize::assign_to`): the blocks the chunks claim are
+  SLOTS, and the chunks fill them in scenario order. Rules and events fill
+  separate slot sets, so a file that interleaves them keeps that
+  interleaving. Bytes between blocks stay where they were. A deleted block
+  still removes its own slot. A chunk that moved into another block's slot is
+  always re-rendered. Only an in-place, unchanged chunk keeps its bytes.
+- `confirm_round_trip` no longer compares claimed-then-appended prints. It
+  compares rules then events, each in the order the file states them, which
+  is the scenario's order on one side and the file's on the other.
+
+**3. `line:` is written only for a step change.** `line_tag_values`: an id on
+more than one line gets a tag, and no other id does. The value keeps an id that
+is already readable (`payroll`). An id that is a machine handle gets a slug of
+its account's leaf instead, de-duplicated with `-2`, `-3`. A machine handle is
+anything with a colon (`rule:K:N`, `gap:…`) or the table's
+`line-N`/`group-N`/`event-N`. This answers the caveat the investigation found.
+Untagged rows read back as `rule:K:N`, so a written tag must never be able to
+equal one after blocks move. **No written tag contains a colon.** What a block
+says now has two readings (`Tags`). `Literal` is what the file states: a
+tagged posting's id is its tag. It is used for existing blocks and for the
+read-back. `Assigned` is what this save writes. A block whose literal tags
+differ from the assigned ones is rewritten. That is how a legacy
+`line: gap:expenses:food:$` on a single row is dropped on the next save, and
+why the two segments of a step can never end up with different tags. Old files
+with `gap:` tags still load: the tag is read as the id, as before. An id that
+would not survive the tag grammar (`a,b`) is no longer a refusal. A single row
+never writes it, and a step writes a readable one instead.
+
+**4. The seed uses the page's depth.** `scenarioStore`'s seed resource is keyed
+by depth, and the page passes its slider's value on first seed. **Moving the
+slider does not re-seed by itself.** A seed is a starting point, and once rows
+exist they sit at whatever level the user put them. The page offers
+**Re-seed at depth N** only when the scenario on screen is an untouched seed
+(`seedDepth !== null`, not dirty, no file open) and the slider has moved off
+the depth it was seeded at. In any other state it would throw away work or a
+file. Mix-and-match needed no engine change, and is now pinned:
+`a_line_on_a_parent_account_is_its_own_row_beside_its_children` runs
+`expenses:food` $300 beside `expenses:food:groceries` $200. The income
+statement's Food group shows them as two rows (depth 2 and 3, $300 and $200),
+the group totals $500, and net income is −$500. The undeclared parent is
+classified as an expense from its declared root.
+`the_seed_names_its_categories_at_the_requested_depth` pins the seed route at
+depths 2 and 3.
+
+**Not done:** dated lines (single-date `~` rules shown among the one-offs) have
+no move controls. They are listed after the events in journal order and aren't
+a list of their own. Docs screenshots were not regenerated.

@@ -29,7 +29,7 @@
 import {encodeDec} from "#lib/api/editMapping.js";
 import type {RunProjectionBody, WireScenarioIn} from "#lib/api/native.js";
 import {absDec} from "#lib/format/amounts.js";
-import type {Dec} from "#lib/domain/money.js";
+import {cmp, type Dec} from "#lib/domain/money.js";
 import {isAccountType, type AccountClasses, type AccountType} from "#lib/domain/accountClass.js";
 import type {ISODate} from "#lib/domain/types.js";
 import {isIsoDate as isIsoDateExact} from "#lib/url/params.js";
@@ -596,6 +596,188 @@ export function duplicateRow(lines: readonly ScenarioLine[], id: string, taken: 
     });
     const last = lines.map((line) => line.id).lastIndexOf(id);
     return [...lines.slice(0, last + 1), ...copies, ...lines.slice(last + 1)];
+}
+
+// ---------------------------------------------------------------------------
+// Order (Move up / Move down, and drag)
+// ---------------------------------------------------------------------------
+
+/**
+ * The lines with every rule's postings gathered together, at the position of
+ * the rule's FIRST line, otherwise in order.
+ *
+ * This is the order the file writer produces — one `~` block per `group`, the
+ * blocks in first-appearance order, postings in line order — so after this
+ * the table shows exactly what a save and a reload would. It is not a no-op on
+ * every scenario: `withCounter` moves a line into a rule of its own without
+ * moving it, which can leave a rule's lines apart.
+ */
+export function gatherRules(lines: readonly ScenarioLine[]): ScenarioLine[] {
+    const byGroup = new Map<string, ScenarioLine[]>();
+    for (const line of lines) {
+        const run = byGroup.get(line.group);
+        if (run === undefined) byGroup.set(line.group, [line]);
+        else run.push(line);
+    }
+    return [...byGroup.values()].flat();
+}
+
+/**
+ * Move logical row `id` one place up (`-1`) or down (`+1`) within `section`.
+ *
+ * # A row moves as the file can store it
+ *
+ * The order persists as the order of the scenario file's `~` blocks and of the
+ * postings inside each one, so a move has to be one a file can state:
+ *
+ * - **Two rows that are postings of ONE rule** swap their postings within it.
+ * - **Otherwise** the row's whole rule — every segment's rule, for a step
+ *   change — moves past the neighbour's rule. A rule is one block, so a row
+ *   that shares its rule with other rows (a budget rule with several
+ *   postings) carries them along: the file has no way to put another rule
+ *   between two postings of one.
+ *
+ * Step-change segments always move together: they are one row. Nothing here
+ * touches a line's `section` hold or its account, so THE SECTION-STABILITY RULE
+ * is untouched — a move changes a row's place within its section, never which
+ * section it is in.
+ *
+ * Unchanged when there is nowhere to go (the first row moving up, the last
+ * moving down) or when the two rows share a rule in a way no single move can
+ * untangle (a step whose earlier segment shares a rule with the neighbour).
+ */
+export function moveRow(lines: readonly ScenarioLine[], declared: AccountClasses, section: LineSection, id: string, delta: -1 | 1): ScenarioLine[] {
+    const ordered = gatherRules(lines);
+    const rows = groupLines(ordered, declared)[section];
+    const at = rows.findIndex((row) => row.id === id);
+    const to = at + delta;
+    if (at < 0 || to < 0 || to >= rows.length) return [...lines];
+    const row = rows[at];
+    const other = rows[to];
+    const mine = new Set(row.segments.map((line) => line.group));
+    const theirs = new Set(other.segments.map((line) => line.group));
+
+    if ([...mine].some((group) => theirs.has(group))) {
+        if (mine.size !== 1 || theirs.size !== 1) return [...lines];
+        // One rule: swap the two rows' postings inside it. The later row's
+        // postings take the earlier positions.
+        const [earlier, later] = delta < 0 ? [other, row] : [row, other];
+        const isOf = (target: LogicalRow) => (line: ScenarioLine) => line.id === target.id && mine.has(line.group);
+        const slots = ordered.flatMap((line, index) => (isOf(earlier)(line) || isOf(later)(line) ? [index] : []));
+        const content = [...ordered.filter(isOf(later)), ...ordered.filter(isOf(earlier))];
+        const out = [...ordered];
+        slots.forEach((slot, n) => (out[slot] = content[n]));
+        return out;
+    }
+
+    // Different rules: lift every line of this row's rules out, and set them
+    // down just before the neighbour's first rule (up) or after its last (down).
+    const moving = ordered.filter((line) => mine.has(line.group));
+    const rest = ordered.filter((line) => !mine.has(line.group));
+    const anchor = delta < 0 ? rest.findIndex((line) => theirs.has(line.group)) : rest.findLastIndex((line) => theirs.has(line.group)) + 1;
+    return [...rest.slice(0, anchor), ...moving, ...rest.slice(anchor)];
+}
+
+/**
+ * Move logical row `id` to where row `target` is in `section` — a drag and
+ * drop, as the sequence of single moves the menu would make.
+ *
+ * Built on [`moveRow`] rather than beside it so a drag can never produce an
+ * order the menu could not, which is what keeps the two paths saving alike.
+ * Stops early if a step makes no progress (a move no file could state).
+ */
+export function moveRowTo(lines: readonly ScenarioLine[], declared: AccountClasses, section: LineSection, id: string, target: string): ScenarioLine[] {
+    const indexOf = (current: readonly ScenarioLine[], rowId: string) => groupLines(current, declared)[section].findIndex((row) => row.id === rowId);
+    let current = [...lines];
+    const goal = indexOf(current, target);
+    let at = indexOf(current, id);
+    if (goal < 0 || at < 0) return current;
+    while (at !== goal) {
+        const next = moveRow(current, declared, section, id, at < goal ? 1 : -1);
+        const moved = indexOf(next, id);
+        if (moved === at) break;
+        // A move that carried a whole rule can overshoot the target; stopping
+        // there is still the nearest order a file can store.
+        const overshot = at < goal ? moved > goal : moved < goal;
+        current = next;
+        at = moved;
+        if (overshot) break;
+    }
+    return current;
+}
+
+/** Move event `id` one place up or down. Events are one block each, so any order is storable. */
+export function moveEvent(events: readonly ScenarioEvent[], id: string, delta: -1 | 1): ScenarioEvent[] {
+    const at = events.findIndex((event) => event.id === id);
+    const to = at + delta;
+    if (at < 0 || to < 0 || to >= events.length) return [...events];
+    const out = [...events];
+    [out[at], out[to]] = [out[to], out[at]];
+    return out;
+}
+
+/** Move event `id` to where event `target` is — a drag and drop. */
+export function moveEventTo(events: readonly ScenarioEvent[], id: string, target: string): ScenarioEvent[] {
+    const at = events.findIndex((event) => event.id === id);
+    const to = events.findIndex((event) => event.id === target);
+    if (at < 0 || to < 0 || at === to) return [...events];
+    const out = events.filter((event) => event.id !== id);
+    out.splice(to, 0, events[at]);
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Descriptions (a `~` rule's header text)
+// ---------------------------------------------------------------------------
+
+/**
+ * Set the description of rule `group` — every line of it, because a rule has
+ * ONE header and the file writer takes it from the rule's first line. Setting
+ * it on one line alone would be a description the file silently drops.
+ */
+export function withNote(lines: readonly ScenarioLine[], group: string, note: string): ScenarioLine[] {
+    return lines.map((line) => (line.group === group ? {...line, note} : line));
+}
+
+/** How many lines share rule `group`, and so share its description. */
+export function ruleSize(lines: readonly ScenarioLine[], group: string): number {
+    return lines.reduce((n, line) => (line.group === group ? n + 1 : n), 0);
+}
+
+/** The engine's longest rule description (`periodic::MAX_DESCRIPTION_BYTES`). */
+export const MAX_NOTE_BYTES = 256;
+
+/**
+ * Why `note` cannot be a rule's description, or `null` when it can.
+ *
+ * A MIRROR of what the file writer refuses (`serialize::rule_header`), so the
+ * editor can say so while the user is typing rather than the save failing
+ * later. The header is `~ PERIOD  DESCRIPTION` on one line: a line break would
+ * end it, and `;` or `#` would start a comment that swallows the rest.
+ */
+export function noteProblem(note: string): string | null {
+    // eslint-disable-next-line no-control-regex -- control characters are exactly what is being refused
+    if (/[\u0000-\u001f\u007f]/.test(note)) return "A description can't contain a line break or a control character.";
+    if (note.includes(";") || note.includes("#")) return "A description can't contain “;” or “#”: the file would read the rest as a comment.";
+    const bytes = new TextEncoder().encode(note.trim()).length;
+    if (bytes > MAX_NOTE_BYTES) return `A description can be at most ${MAX_NOTE_BYTES} bytes; this one is ${bytes}.`;
+    return null;
+}
+
+/** The start of the description the seed writes on an estimated row (`projections::seed_scenario`). */
+const SEEDED_NOTE_PREFIX = "unbudgeted — average over ";
+
+/**
+ * Whether a line's description is the seed's automatic "average over …" text
+ * AND its amount has since been changed, so the text describes a figure the
+ * row no longer holds.
+ *
+ * Flagged, never rewritten: the description is the user's to edit, and a
+ * stale note is still a true statement about where the row started.
+ */
+export function noteIsStale(line: ScenarioLine): boolean {
+    if (!line.note.startsWith(SEEDED_NOTE_PREFIX) || line.entry === undefined) return false;
+    return cmp(absDec(line.entry), absDec(line.amount.quantity)) !== 0;
 }
 
 // ---------------------------------------------------------------------------

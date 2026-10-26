@@ -69,10 +69,11 @@ export const DEFAULT_PROJECTION_LOOKBACK = 2;
 /**
  * Depth 2, not the reports' 3.
  *
- * The seed writes its unbudgeted categories at depth 2 (`expenses:housing`), so
- * opening any deeper shows a tree whose leaves are exactly its depth-2 rows
- * restated — one row per row, indented. Depth 2 is the reading that matches the
- * table above it.
+ * The seed writes its unbudgeted categories at the page's depth (plan 28,
+ * follow-ups 2026-10-26), so this is also the depth a first visit SEEDS at:
+ * `expenses:housing`, one row per category, rather than every leaf of a deep
+ * chart of accounts. Depth 2 keeps a first table short enough to read, and a
+ * user who wants finer rows moves the slider and re-seeds.
  */
 export const DEFAULT_PROJECTION_DEPTH = 2;
 

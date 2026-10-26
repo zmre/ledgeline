@@ -916,3 +916,251 @@ describe("COMPONENT ProjectionsTable — counter-accounts, gains accounts and th
         expect(scenarioStore.dirty).toBe(true);
     });
 });
+
+// ---------------------------------------------------------------------------
+// Descriptions, and order (plan 28, follow-ups 2026-10-26)
+// ---------------------------------------------------------------------------
+
+/** The groups of a section's rows, top to bottom, as the DOM has them. */
+const groupsIn = (section: string): string[] =>
+    [...screen.getByTestId(`projection-section-${section}`).querySelectorAll<HTMLElement>("[data-line-group]")].map((row) => row.dataset.lineGroup ?? "");
+
+const HOUSING = "gap:expenses:housing:$";
+const TAXES = "gap:expenses:taxes:$";
+
+describe("COMPONENT ProjectionsTable — a row's description", () => {
+    it("every row has a description icon, and hovering or focusing it SHOWS the description", async () => {
+        mount();
+        const icon = screen.getByRole("button", {name: "Description for expenses:housing"});
+        expect(screen.queryByTestId("note-tooltip")).toBeNull();
+
+        await fireEvent.pointerEnter(icon);
+        expect(screen.getByTestId("note-tooltip").textContent).toContain(NOTE);
+        await fireEvent.pointerLeave(icon);
+        expect(screen.queryByTestId("note-tooltip")).toBeNull();
+
+        // Keyboard focus too — a `title` would never show for a keyboard user.
+        await fireEvent.focus(icon);
+        expect(screen.getByTestId("note-tooltip").textContent).toContain(NOTE);
+        await fireEvent.blur(icon);
+        expect(screen.queryByTestId("note-tooltip")).toBeNull();
+
+        // And the text is the button's DESCRIPTION, for a screen reader, always.
+        const describedBy = icon.getAttribute("aria-describedby") ?? "";
+        expect(document.getElementById(describedBy)?.textContent).toContain(NOTE);
+    });
+
+    it("click opens an editor; Enter saves the new text to the rule and marks the scenario edited", async () => {
+        mount();
+        const icon = screen.getByRole("button", {name: "Description for expenses:housing"});
+        await fireEvent.click(icon);
+        const editor = screen.getByRole("dialog", {name: "Edit the description for expenses:housing"});
+        const box = within(editor).getByRole("textbox");
+        expect(box).toHaveProperty("value", NOTE);
+
+        await fireEvent.input(box, {target: {value: "rent after the move"}});
+        await fireEvent.keyDown(box, {key: "Enter"});
+        await tick();
+
+        expect(screen.queryByTestId("note-editor")).toBeNull();
+        expect(scenarioStore.scenario.lines.find((l) => l.group === HOUSING)?.note).toBe("rent after the move");
+        expect(scenarioStore.dirty).toBe(true);
+    });
+
+    it("Escape cancels: nothing changes and nothing is edited", async () => {
+        mount();
+        await fireEvent.click(screen.getByRole("button", {name: "Description for expenses:housing"}));
+        const box = within(screen.getByTestId("note-editor")).getByRole("textbox");
+        await fireEvent.input(box, {target: {value: "never mind"}});
+        await fireEvent.keyDown(box, {key: "Escape"});
+        await tick();
+
+        expect(screen.queryByTestId("note-editor")).toBeNull();
+        expect(scenarioStore.scenario.lines.find((l) => l.group === HOUSING)?.note).toBe(NOTE);
+        expect(scenarioStore.dirty).toBe(false);
+    });
+
+    it("what the file would refuse is said in the editor, and Save stays shut", async () => {
+        mount();
+        await fireEvent.click(screen.getByRole("button", {name: "Description for expenses:housing"}));
+        const editor = screen.getByTestId("note-editor");
+        const box = within(editor).getByRole("textbox");
+        await fireEvent.input(box, {target: {value: "rent ; utilities"}});
+        await tick();
+
+        expect(within(editor).getByRole("alert").textContent).toMatch(/comment/);
+        expect(within(editor).getByRole("button", {name: "Save"})).toHaveProperty("disabled", true);
+        await fireEvent.keyDown(box, {key: "Enter"});
+        await tick();
+        expect(screen.getByTestId("note-editor")).toBeDefined();
+        expect(scenarioStore.dirty).toBe(false);
+    });
+
+    it("rows that share ONE rule share its description, and say so", async () => {
+        // A budget rule with two postings: one `~` header between them.
+        scenarioStore.adopt({
+            ...SEED,
+            lines: SEED.lines.map((line) => (line.account.startsWith("expenses:") ? {...line, group: "rule:0", note: "the budget"} : line)),
+        });
+        mount();
+        const icon = screen.getByRole("button", {name: "Description for expenses:taxes"});
+        await fireEvent.focus(icon);
+        expect(screen.getByTestId("note-tooltip").textContent).toContain("Shared by the 2 lines of this rule");
+        await fireEvent.blur(icon);
+
+        await fireEvent.click(icon);
+        const box = within(screen.getByTestId("note-editor")).getByRole("textbox");
+        await fireEvent.input(box, {target: {value: "household"}});
+        await fireEvent.keyDown(box, {key: "Enter"});
+        await tick();
+        const notes = scenarioStore.scenario.lines.filter((l) => l.group === "rule:0").map((l) => l.note);
+        expect(notes).toEqual(["household", "household"]);
+    });
+
+    it("marks the seed's average text as STALE once the row's amount changes — and never rewrites it", async () => {
+        mount();
+        expect(screen.queryAllByTestId("note-stale")).toHaveLength(0);
+        const amount = screen.getByLabelText("Amount for expenses:housing");
+        await fireEvent.change(amount, {target: {value: "2400"}});
+        await tick();
+
+        const icon = screen.getByRole("button", {name: "Description for expenses:housing"});
+        expect(within(icon).getByTestId("note-stale")).toBeDefined();
+        await fireEvent.focus(icon);
+        expect(screen.getByTestId("note-tooltip").textContent).toMatch(/out of date/);
+        expect(scenarioStore.scenario.lines.find((l) => l.group === HOUSING)?.note).toBe(NOTE);
+    });
+
+    it("an asset row and a one-off line have one too", () => {
+        scenarioStore.adopt(
+            decodeScenario({
+                name: "",
+                created: null,
+                updated: null,
+                lines: [
+                    assetLine("assets:brokerage", "rule:1"),
+                    {
+                        ...seedLine("expenses:housing", "500000"),
+                        id: "rule:2:0",
+                        group: "rule:2",
+                        period: {raw: "2027-03-01", simple: null, base: null, from: null, to: null},
+                        section: "oneoff",
+                    },
+                ],
+                events: [],
+                cash: null,
+            })
+        );
+        mount();
+        expect(screen.getByRole("button", {name: "Description for the assets:brokerage balance"})).toBeDefined();
+        expect(screen.getByRole("button", {name: "Description for the one-off expenses:housing"})).toBeDefined();
+    });
+});
+
+describe("COMPONENT ProjectionsTable — reordering rows", () => {
+    it("Move up and Move down reorder a section, and mark the scenario edited", async () => {
+        mount();
+        expect(groupsIn("expense")).toEqual([HOUSING, TAXES]);
+
+        await chooseInMenu("expenses:taxes", "Move up");
+        expect(groupsIn("expense")).toEqual([TAXES, HOUSING]);
+        expect(scenarioStore.dirty).toBe(true);
+
+        await chooseInMenu("expenses:taxes", "Move down");
+        expect(groupsIn("expense")).toEqual([HOUSING, TAXES]);
+    });
+
+    it("offers a move only where there is somewhere to go", async () => {
+        mount();
+        await fireEvent.click(screen.getByLabelText("Row menu for expenses:housing"));
+        const first = within(screen.getByTestId("row-menu"));
+        expect(first.queryByRole("menuitem", {name: "Move up"})).toBeNull();
+        expect(first.getByRole("menuitem", {name: "Move down"})).toBeDefined();
+        await fireEvent.keyDown(document.activeElement ?? document.body, {key: "Escape"});
+        await tick();
+
+        await fireEvent.click(screen.getByLabelText("Row menu for expenses:taxes"));
+        const last = within(screen.getByTestId("row-menu"));
+        expect(last.getByRole("menuitem", {name: "Move up"})).toBeDefined();
+        expect(last.queryByRole("menuitem", {name: "Move down"})).toBeNull();
+    });
+
+    it("a step change moves as ONE row, its segments together", async () => {
+        mount();
+        await chooseInMenu("expenses:housing", "Add a step on 2027-04-01");
+        const segments = scenarioStore.scenario.lines.filter((l) => l.account === "expenses:housing").map((l) => l.group);
+        expect(segments).toHaveLength(2);
+
+        await chooseInMenu("expenses:taxes", "Move up");
+        expect(groupsIn("expense")).toEqual([TAXES, ...segments]);
+    });
+
+    it("dragging a row by its handle onto another moves it there", async () => {
+        mount();
+        const handle = within(rowOf(TAXES) as HTMLElement).getByTestId("drag-handle");
+        const target = rowOf(HOUSING) as HTMLElement;
+        await fireEvent.dragStart(handle);
+        await fireEvent.dragOver(target);
+        await fireEvent.drop(target);
+        await fireEvent.dragEnd(handle);
+        await tick();
+
+        expect(groupsIn("expense")).toEqual([TAXES, HOUSING]);
+        expect(scenarioStore.dirty).toBe(true);
+    });
+
+    it("a drag never crosses sections: an income row dropped on an expense goes nowhere", async () => {
+        mount();
+        const handle = within(rowOf("gap:income:salary:$") as HTMLElement).getByTestId("drag-handle");
+        await fireEvent.dragStart(handle);
+        await fireEvent.drop(rowOf(HOUSING) as HTMLElement);
+        await tick();
+        expect(groupsIn("expense")).toEqual([HOUSING, TAXES]);
+        expect(groupsIn("income")).toEqual(["gap:income:salary:$", "gap:income:dividends:$"]);
+        expect(scenarioStore.dirty).toBe(false);
+    });
+
+    it("THE SECTION-STABILITY RULE holds across a move: a held, half-typed row moves within its section", async () => {
+        mount();
+        const added = await addLineIn("income");
+        const field = fieldOf(added.group);
+        await focus(field);
+        await fireEvent.input(field, {target: {value: "i"}});
+        await tick();
+
+        await chooseInMenu("i", "Move up");
+        expect(sectionOf(added.group)).toBe("projection-section-income");
+        expect(groupsIn("income")).toEqual(["gap:income:salary:$", added.group, "gap:income:dividends:$"]);
+    });
+
+    it("events reorder through their menu too", async () => {
+        scenarioStore.adopt(
+            decodeScenario({
+                name: "",
+                created: null,
+                updated: null,
+                lines: [],
+                events: [
+                    {
+                        id: "rule:0",
+                        date: "2027-01-01",
+                        description: "first",
+                        postings: [{account: "expenses:a", amount: {commodity: "$", quantity: {mantissa: "100", places: 2}, precision: 2}}],
+                        counter: null,
+                    },
+                    {
+                        id: "rule:1",
+                        date: "2027-02-01",
+                        description: "second",
+                        postings: [{account: "expenses:b", amount: {commodity: "$", quantity: {mantissa: "100", places: 2}, precision: 2}}],
+                        counter: null,
+                    },
+                ],
+                cash: null,
+            })
+        );
+        mount();
+        await chooseInMenu("second", "Move up");
+        expect(scenarioStore.scenario.events.map((e) => e.description)).toEqual(["second", "first"]);
+    });
+});

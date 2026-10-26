@@ -107,7 +107,10 @@
         await fileStore.ensureIndex(url, settings.serverNonce);
         const remembered = settings.lastProjectionId;
         if (fileStore.available && remembered !== null && (await openFile(url, remembered))) return;
-        await scenarioStore.ensureSeeded(url, settings.serverNonce);
+        // At the page's depth: the slider is where a user says how finely they
+        // plan, and the seed is where that plan starts. Only where it STARTS —
+        // see `canReseed`.
+        await scenarioStore.ensureSeeded(url, settings.serverNonce, params.depth);
     }
 
     /** Load one file into the table. `false` means it could not be opened. */
@@ -334,8 +337,23 @@
 
     function retrySeed(): void {
         const url = settings.serverUrl;
-        if (url !== null) void scenarioStore.reseed(url);
+        if (url !== null) void scenarioStore.reseed(url, params.depth);
     }
+
+    /**
+     * Whether to offer "Re-seed at depth N".
+     *
+     * The seed is a STARTING POINT, so moving the depth slider never re-seeds
+     * by itself: once rows exist they sit at whatever level the user put them,
+     * leaves beside parents, and the slider only changes how the statements
+     * below roll them up. But a user who has not touched the seed yet and moves
+     * the slider is very likely asking for a finer (or coarser) start, so it is
+     * offered — only then. Never over an edit, and never over a file, both of
+     * which it would silently discard.
+     */
+    const canReseed = $derived(
+        scenarioStore.seedDepth !== null && !scenarioStore.dirty && fileStore.currentId === null && scenarioStore.seedDepth !== params.depth
+    );
 </script>
 
 <svelte:head><title>Ledgeline — Projections</title></svelte:head>
@@ -461,6 +479,12 @@
         {#key maxDepth}
             <DepthSlider bind:depth={params.depth} max={maxDepth} />
         {/key}
+        {#if canReseed}
+            <div class="flex items-center gap-2 text-xs text-base-content/70" data-testid="projection-reseed">
+                <span>The starting rows were seeded at depth {scenarioStore.seedDepth}.</span>
+                <button type="button" class="btn btn-outline btn-xs" onclick={retrySeed}>Re-seed at depth {params.depth}</button>
+            </div>
+        {/if}
     </div>
 
     {#if warnings.length > 0}

@@ -54,6 +54,15 @@ exactly where.
 **Interval** and **Periods** set the columns for every reading. The depth
 slider rolls up the cash flow statement's account lines.
 
+The depth slider also sets how finely a **new** scenario is seeded. At depth 2
+you get `expenses:housing`, and at depth 3 you get `expenses:housing:rent`. Once
+the seed exists, it's only a starting point. You can put rows on any account
+you like, mixing a parent such as `expenses:food` with leaves such as
+`expenses:travel:flights`. The statements show a parent's own projected amount
+as its own row, next to its children. Moving the slider later doesn't re-seed
+the table. If you haven't edited the seed yet, and it didn't come from a file,
+a **Re-seed at depth N** button appears beside the slider.
+
 A link to an older `tab=net` or `tab=worth` reading opens Runway.
 
 ## Where the files live, and what Ledgeline will write
