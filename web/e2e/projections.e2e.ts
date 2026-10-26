@@ -24,8 +24,8 @@
 //
 // `fixtures/sample.journal` declares no `~` periodic rules, so EVERY revenue and
 // expense category in it is unbudgeted: the seed is entirely
-// `source: "unbudgeted"` rows, and the table should therefore be all "estimated"
-// badges. That is the same fact `budget.e2e.ts` relies on for its gaps section.
+// `source: "unbudgeted"` rows, each described as an average of its trailing
+// window. That is the same fact `budget.e2e.ts` relies on for its gaps section.
 //
 // Note the one thing this spec cannot pin: the engine takes opening balances as
 // of ITS today, and `page.clock` only moves the browser's. So nothing here
@@ -66,9 +66,9 @@ test("projections: seeds the what-if table from the journal, flagging what it es
     // sample.journal has no `~` rules, so every seeded row is an average of the
     // trailing twelve months — and says so, rather than reading as something the
     // user wrote.
-    const badge = page.getByTestId("estimated-badge").first();
-    await expect(badge).toBeVisible();
-    await expect(badge).toHaveAttribute("title", /average over/);
+    const note = page.getByLabel("Description for income:salary");
+    await note.hover();
+    await expect(page.getByTestId("note-tooltip")).toContainText("average over");
 
     // Income is a MAGNITUDE in the box, though the wire signs revenue negative.
     await expect(page.getByLabel("Amount for income:salary")).toHaveValue(/^\d/);

@@ -663,17 +663,6 @@
     }
 </script>
 
-{#snippet estimated(line: ScenarioLine)}
-    {#if line.source === "unbudgeted"}
-        <!-- The flag the seed sets. It says where the number came from, which is
-             the difference between a figure the user wrote and an average of
-             their last twelve months. -->
-        <span class="badge badge-ghost badge-xs" data-testid="estimated-badge" title={line.note === "" ? "Estimated from your history" : line.note}>
-            estimated
-        </span>
-    {/if}
-{/snippet}
-
 {#snippet rowMenu(row: LogicalRow, name: string, section: LineSection, at: number, count: number)}
     <!-- Delete is here for EVERY row, whatever is in its account field — and
          `name` is what makes a blank row's copy of it addressable. Move up /
@@ -723,7 +712,7 @@
      table calls a row "the assets:brokerage balance" (`balanceOf`) where the
      flow table calls it "assets:brokerage", and that choice belongs to the
      section, not to the box. -->
-{#snippet accountCell(line: ScenarioLine, at: number, showEstimate: boolean, name: string, zone: DragZone | null)}
+{#snippet accountCell(line: ScenarioLine, at: number, name: string, zone: DragZone | null)}
     <td>
         <div class="flex items-center gap-1">
             {#if at > 0}
@@ -731,14 +720,12 @@
             {:else if zone !== null}
                 {@render dragHandle(zone, line.id)}
             {/if}
-            <AccountInput bind:value={line.account} {accountNames} size="xs" placeholder="account" onCommit={() => commitAccount(line)} />
-            <!-- Not rendered in the Assets table: `estimated` is a seeded FLOW
-                 row's flag, and the seed says why — a gap is measured over
-                 revenue and expense accounts, so there is no such thing as a
-                 seeded asset row. -->
-            {#if showEstimate}
-                {@render estimated(line)}
-            {/if}
+            <!-- Grows into the cell: the account name is the widest thing in
+                 the row. Where a seeded number came from ("unbudgeted — average
+                 over …") is the row's description, in the bubble beside it. -->
+            <div class="min-w-0 grow">
+                <AccountInput bind:value={line.account} {accountNames} size="xs" placeholder="account" onCommit={() => commitAccount(line)} />
+            </div>
             <!-- Per SEGMENT: each segment of a step is a rule of its own, with a
                  header of its own. -->
             {@render noteButton(line, at > 0 ? `segment ${at + 1} of ${name}` : name)}
@@ -905,7 +892,7 @@
                     <table class="table table-xs">
                         <thead>
                             <tr>
-                                <th class="w-72">Account</th>
+                                <th class="w-60">Account</th>
                                 <th class="w-36">Amount</th>
                                 <th class="w-56" title="The account the money comes from or goes to">Counter-account</th>
                                 <th class="w-28">Per</th>
@@ -933,7 +920,7 @@
                                         ondragover={(e) => dragOver(e, section.id, row.id)}
                                         ondrop={(e) => drop(e, section.id, row.id)}
                                     >
-                                        {@render accountCell(line, at, true, name, section.id)}
+                                        {@render accountCell(line, at, name, section.id)}
                                         {@render amountCell(line, `Amount for ${name}`)}
                                         {@render counterCell(line, name)}
                                         {@render periodCell(line, `Period for ${name}`)}
@@ -978,7 +965,7 @@
                 <table class="table table-xs">
                     <thead>
                         <tr>
-                            <th class="w-72">Account</th>
+                            <th class="w-60">Account</th>
                             <th class="w-40">Balance</th>
                             <th class="w-36">Growth</th>
                             <th class="w-56" title="Where appreciation is booked. Equity by default, so it never reaches net income.">Gains account</th>
@@ -1006,7 +993,7 @@
                                     ondragover={(e) => dragOver(e, "asset", row.id)}
                                     ondrop={(e) => drop(e, "asset", row.id)}
                                 >
-                                    {@render accountCell(line, at, false, balanceOf(name), "asset")}
+                                    {@render accountCell(line, at, balanceOf(name), "asset")}
                                     <td>
                                         <div class="flex flex-col gap-0.5">
                                             <!-- GREYED until typed over: the box is empty and the
@@ -1221,7 +1208,7 @@
                                      the row above, so it never wears the continuation arrow. No
                                      drag handle: dated lines are listed after the events in the
                                      order the journal has them, and are not a list of their own. -->
-                                {@render accountCell(line, 0, true, `the one-off ${line.account}`, null)}
+                                {@render accountCell(line, 0, `the one-off ${line.account}`, null)}
                                 {@render amountCell(line, `Amount for the one-off ${line.account}`)}
                                 {@render counterCell(line, `the one-off ${line.account}`)}
                                 <td class="text-right">

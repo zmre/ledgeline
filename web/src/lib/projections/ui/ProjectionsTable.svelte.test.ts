@@ -219,18 +219,12 @@ describe("COMPONENT ProjectionsTable — a seeded scenario", () => {
         expect(screen.getByLabelText("Amount for expenses:housing")).toHaveProperty("value", "1875.00");
     });
 
-    it("FLAGS every unbudgeted row as estimated, with the window it was averaged over", () => {
-        mount();
-        const badges = screen.getAllByTestId("estimated-badge");
-        expect(badges.length).toBe(SEED.lines.filter((l) => l.source === "unbudgeted").length);
-        expect(badges.length).toBeGreaterThan(0);
-        expect(badges[0].getAttribute("title")).toContain("average over");
-    });
-
-    it("does NOT flag a row the user wrote", () => {
-        scenarioStore.adopt({...SEED, lines: SEED.lines.map((line) => ({...line, source: "journal" as const}))});
+    it("says where a seeded number came from in the row's description, not a badge", () => {
         mount();
         expect(screen.queryAllByTestId("estimated-badge")).toHaveLength(0);
+        const salary = screen.getByLabelText("Description for income:salary");
+        const described = document.getElementById(salary.getAttribute("aria-describedby") ?? "");
+        expect(described?.textContent).toContain("average over");
     });
 
     it("opens not-dirty: seeding is not an edit", () => {
