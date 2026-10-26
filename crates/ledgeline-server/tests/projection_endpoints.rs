@@ -2367,3 +2367,136 @@ async fn the_seed_never_books_an_expense_to_a_parent_typed_as_an_asset() {
         "{opex}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Mix-and-match depth (plan 28, follow-ups 2026-10-26)
+// ---------------------------------------------------------------------------
+
+/// One monthly `$` expense line on `account`, under a rule of its own.
+fn expense_line(id: &str, account: &str, mantissa: &str) -> Value {
+    json!({
+        "id": id,
+        "group": id,
+        "account": account,
+        "amount": {"commodity": "$", "quantity": {"mantissa": mantissa, "places": 2}, "precision": 2},
+        "period": {"raw": "monthly"},
+        "growth": null,
+        "note": "",
+        "source": "journal"
+    })
+}
+
+/// **A line on a PARENT beside lines on its leaves.** The seed starts at the
+/// page's depth, but after that a user may write a line at any level — here
+/// `expenses:food` itself, whose own history is empty, beside a line on its
+/// child `expenses:food:groceries`. The statements must show the parent's own
+/// projected amount as a row of its own under the Expenses group, apart from
+/// the child's, and classify both as expenses (the parent is undeclared, so its
+/// type is inferred from `expenses`'s declared `type: X`).
+#[tokio::test]
+async fn a_line_on_a_parent_account_is_its_own_row_beside_its_children() {
+    let projection = run(json!({
+        "scenario": scenario_with(vec![
+            expense_line("food", "expenses:food", "30000"),
+            expense_line("groceries", "expenses:food:groceries", "20000"),
+        ], vec![]),
+        "interval": "monthly",
+        "count": 2,
+        "lookback": 0,
+        "depth": 9
+    }))
+    .await;
+    let section = projection["incomeStatement"]["sections"]
+        .as_array()
+        .expect("sections")
+        .iter()
+        .find(|section| section["kind"] == "opex")
+        .expect("an Expenses section");
+    let food = section["groups"]
+        .as_array()
+        .expect("groups")
+        .iter()
+        .find(|group| group["name"] == "Food")
+        .unwrap_or_else(|| panic!("a Food group: {section}"));
+    let rows: Vec<(String, u64, Vec<i128>)> = food["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .map(|row| {
+            (
+                row["account"].as_str().expect("account").to_string(),
+                row["depth"].as_u64().expect("depth"),
+                row["amounts"]["values"]
+                    .as_array()
+                    .expect("values")
+                    .iter()
+                    .map(dollars)
+                    .collect(),
+            )
+        })
+        .collect();
+    // The parent's OWN $300 is its own row, and the child's $200 is beside it
+    // one level down — neither folded into the other nor lost.
+    assert_eq!(
+        rows,
+        [
+            ("expenses:food".to_string(), 2, vec![300, 300]),
+            ("expenses:food:groceries".to_string(), 3, vec![200, 200]),
+        ],
+        "{food}"
+    );
+    // The group total is both, and both are expenses: net income is -$500.
+    assert_eq!(series(&food["total"]), [500, 500]);
+    assert_eq!(net_income(&projection), [-500, -500]);
+}
+
+/// **The seed names its categories at the depth it is asked for.** The tab
+/// seeds at its depth slider's value (plan 28, follow-ups 2026-10-26), so the
+/// starting rows have to follow it: deeper asks for finer accounts, and no
+/// seeded row is ever deeper than the ask.
+#[tokio::test]
+async fn the_seed_names_its_categories_at_the_requested_depth() {
+    let accounts_at = |depth: usize| async move {
+        let (status, text) = get(&format!(
+            "/api/projections/seed?end=2026-07-08&count=12&depth={depth}"
+        ))
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let seed: Value = serde_json::from_str(&text).expect("the seed body is JSON");
+        seed["lines"]
+            .as_array()
+            .expect("lines")
+            .iter()
+            .filter(|line| line["source"] == "unbudgeted")
+            .map(|line| line["account"].as_str().expect("account").to_string())
+            .collect::<Vec<_>>()
+    };
+    let shallow = accounts_at(2).await;
+    let deep = accounts_at(3).await;
+    assert!(!shallow.is_empty() && !deep.is_empty());
+    assert!(
+        shallow
+            .iter()
+            .all(|account| account.split(':').count() <= 2),
+        "{shallow:?}"
+    );
+    assert!(
+        deep.iter().all(|account| account.split(':').count() <= 3),
+        "{deep:?}"
+    );
+    // sample.journal's food is `expenses:food:groceries` and
+    // `expenses:food:restaurants`: one row at depth 2, two at depth 3.
+    assert!(
+        shallow.iter().any(|account| account == "expenses:food"),
+        "{shallow:?}"
+    );
+    assert!(
+        deep.iter()
+            .any(|account| account == "expenses:food:groceries"),
+        "{deep:?}"
+    );
+    assert!(
+        !deep.iter().any(|account| account == "expenses:food"),
+        "{deep:?}"
+    );
+}

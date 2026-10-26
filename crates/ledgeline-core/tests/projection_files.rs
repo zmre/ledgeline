@@ -983,16 +983,34 @@ fn the_committed_asset_fixture_reads_and_rewrites_unchanged() {
     // The fixture predates plan 28, and its growing asset rows book
     // appreciation to `equity:unrealized gains`, which neither the main journal
     // nor the file declares. So the FIRST save declares it in the file
-    // (Decision 4), under the header — and changes nothing else.
+    // (Decision 4), under the header.
+    //
+    // And it drops the one `line:` tag the fixture carries: `line: savings` is
+    // on a row with a single segment, and `line:` is written only for a step
+    // change now (plan 28, follow-ups 2026-10-26). That block is re-rendered
+    // without it — in the writer's own alignment — and nothing else changes.
     assert_eq!(
         rewritten,
         text.replacen(
             "; updated: 2026-09-20\n\n",
             "; updated: 2026-09-20\n\naccount equity:unrealized gains  ; type: E\n\n",
             1,
+        )
+        .replacen(
+            "    (assets:broker:taxable:vti)     $0.00  ; growth: 7%/yr\n\
+             \x20   (assets:bank:savings)         $250.00  ; growth: 4%/yr, line: savings\n\
+             \x20   (assets:property:home)          $0.00  ; growth: 3%/yr, opening: 640000.00\n\
+             \x20   (expenses:housing:rent)      $1875.00  ; growth: 2%/yr\n",
+            "    (assets:broker:taxable:vti)  $0.00  ; growth: 7%/yr\n\
+             \x20   (assets:bank:savings)        $250.00  ; growth: 4%/yr\n\
+             \x20   (assets:property:home)       $0.00  ; growth: 3%/yr, opening: 640000.00\n\
+             \x20   (expenses:housing:rent)      $1875.00  ; growth: 2%/yr\n",
+            1,
         ),
-        "a save that changes nothing must change no byte but the gains declaration"
+        "a save that changes nothing must change no byte but the gains declaration and the \
+         unneeded `line:` tag"
     );
+    assert!(!rewritten.contains("line:"), "{rewritten}");
     let doc = ProjectionDoc::parse(&rewritten, &name, &declared()).expect("it parses");
     assert_eq!(
         write_scenario(&doc, &scenario, &name).expect("it writes"),
