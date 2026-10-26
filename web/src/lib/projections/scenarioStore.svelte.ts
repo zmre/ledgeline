@@ -32,6 +32,7 @@
 import {LedgelineApi} from "#lib/api/native.js";
 import {decodeProjection, decodeScenario} from "#lib/api/nativeDecode.js";
 import type {PeriodInterval} from "#lib/reports/ui/params.js";
+import {dataView, type DataView, type LoadStatus} from "#lib/stores/loadState.js";
 import {createResource} from "#lib/stores/resource.svelte.js";
 import {cloneScenario, emptyScenario, runBody} from "./scenarioModel";
 import type {Projection, Scenario} from "./types";
@@ -65,6 +66,21 @@ export interface ProjectionQuery extends ProjectionWindow {
     revision: number;
 }
 
+/**
+ * Which branch the what-if table renders.
+ *
+ * Gated on whether a scenario has been ADOPTED, not on the seed resource alone.
+ * Reopening the remembered file on mount (decision 10) deliberately never reads
+ * the seed, so a table gated on the seed's status saw it `idle` forever and
+ * drew a spinner over a loaded scenario — every reload of the tab with a file
+ * open, with no way out but a fresh origin (a relaunch, on the desktop's
+ * ephemeral port). Once anything is adopted the table is the user's, and a seed
+ * failure behind it is no reason to hide it.
+ */
+export function scenarioTableView(adoptedScenario: boolean, seedStatus: LoadStatus, hasSeed: boolean): DataView {
+    return adoptedScenario ? "data" : dataView(seedStatus, hasSeed);
+}
+
 /** Whether two queries ask for exactly the same projection (the FE-1 gate). */
 export function sameProjectionQuery(a: ProjectionQuery, b: ProjectionQuery): boolean {
     return a.revision === b.revision && a.interval === b.interval && a.count === b.count && a.lookback === b.lookback && a.depth === b.depth;
@@ -73,6 +89,8 @@ export function sameProjectionQuery(a: ProjectionQuery, b: ProjectionQuery): boo
 let scenario = $state<Scenario>(emptyScenario());
 let revision = $state(0);
 let dirty = $state(false);
+/** Whether ANY scenario — a seed or a file — has been adopted since the page loaded. */
+let adopted = $state(false);
 /** The last (nonce, server) a seed was requested for, so revisiting the tab does not re-read the journal. */
 let seedKey: string | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
@@ -100,6 +118,10 @@ export const scenarioStore = {
     /** Whether the scenario has been edited since it was loaded, seeded or saved. */
     get dirty(): boolean {
         return dirty;
+    },
+    /** Whether a scenario has been adopted, from a seed OR a file — the table's gate (see {@link scenarioTableView}). */
+    get adopted(): boolean {
+        return adopted;
     },
     /** The seeded starting scenario, for its status and its error. */
     get seed() {
@@ -133,6 +155,7 @@ export const scenarioStore = {
         scenario = cloneScenario(next);
         revision += 1;
         dirty = false;
+        adopted = true;
     },
 
     /** Phase 3: the scenario was written to disk unchanged, so there is no unsaved work. */

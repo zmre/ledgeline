@@ -20,7 +20,7 @@
 import {beforeEach, afterEach, describe, expect, it, vi} from "vitest";
 import {connectFakeEngine, FAKE_ENGINE} from "#lib/testing/fakeEngine.js";
 import {rawProjectionRun} from "#lib/testing/projectionFixture.js";
-import {scenarioStore, sameProjectionQuery, type ProjectionWindow} from "./scenarioStore.svelte";
+import {scenarioStore, scenarioTableView, sameProjectionQuery, type ProjectionWindow} from "./scenarioStore.svelte";
 
 const SEED_ROUTE = "/api/projections/seed?count=12&depth=2";
 const RUN_ROUTE = "/api/projections/run";
@@ -186,5 +186,29 @@ describe("COMPONENT scenarioStore — the payload and the question it answers", 
         expect(sameProjectionQuery(held!, {...WINDOW, count: 12, revision: scenarioStore.revision})).toBe(false);
         expect(sameProjectionQuery(held!, {...WINDOW, interval: "yearly", revision: scenarioStore.revision})).toBe(false);
         expect(sameProjectionQuery(held!, {...WINDOW, depth: 3, revision: scenarioStore.revision})).toBe(false);
+    });
+});
+
+describe("COMPONENT scenarioTableView — what gates the table", () => {
+    it("draws a scenario reopened from a file although the seed was never read", () => {
+        // The reload bug: reopening the remembered file skips the seed, whose
+        // status therefore stays `idle` — and a table gated on it span forever.
+        expect(scenarioTableView(true, "idle", false)).toBe("data");
+    });
+
+    it("waits for, and reports, the seed when nothing has been adopted yet", () => {
+        expect(scenarioTableView(false, "idle", false)).toBe("loading");
+        expect(scenarioTableView(false, "loading", false)).toBe("loading");
+        expect(scenarioTableView(false, "error", false)).toBe("error");
+        expect(scenarioTableView(false, "ready", true)).toBe("data");
+    });
+
+    it("does not hide an adopted table behind a failed seed", () => {
+        expect(scenarioTableView(true, "error", false)).toBe("data");
+    });
+
+    it("`adopted` is set by a load as well as by a seed", () => {
+        scenarioStore.adopt({name: "From a file", created: null, updated: null, lines: [], events: [], cash: null});
+        expect(scenarioStore.adopted).toBe(true);
     });
 });

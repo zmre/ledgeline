@@ -1741,6 +1741,78 @@ async fn a_malformed_id_is_a_400_and_a_missing_one_a_404_whatever_is_on_disk() {
     }
 }
 
+#[tokio::test]
+async fn an_edit_made_outside_ledgeline_is_read_by_the_next_get_with_a_new_revision() {
+    // The tab notices a file edited in another program by re-reading it and
+    // comparing revisions, so the engine must never answer from a cached parse:
+    // the second GET has to see the new bytes AND say they are new.
+    let tree = Tree::standard();
+    let (before, _) = open_plan(&tree.state).await;
+
+    let edited = tree
+        .read("plans/projection-plan.journal")
+        .replace("$4200.00", "$4300.00");
+    std::fs::write(tree.dir.join("plans/projection-plan.journal"), edited).expect("edit");
+
+    let (after, scenario) = open_plan(&tree.state).await;
+    assert_ne!(after, before, "an edited file must carry a new revision");
+    assert_eq!(
+        scenario["lines"][0]["amount"]["quantity"]["mantissa"],
+        json!("430000")
+    );
+}
+
+#[tokio::test]
+async fn a_save_from_before_an_outside_edit_is_refused_and_keeps_that_edit() {
+    // The protection the tab relies on when it holds unsaved work over a file
+    // somebody else changed: it keeps the OLD revision, so its save is a 409
+    // and the other program's edit survives byte for byte.
+    let tree = Tree::standard();
+    let (revision, scenario) = open_plan(&tree.state).await;
+    let edited = tree
+        .read("plans/projection-plan.journal")
+        .replace("$4200.00", "$4300.00");
+    std::fs::write(tree.dir.join("plans/projection-plan.journal"), &edited).expect("edit");
+
+    let (status, message) = file_text(
+        &tree.state,
+        "PUT",
+        PLAN_URI,
+        Some(json!({"revision": revision, "scenario": scenario})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{message}");
+    assert_eq!(tree.read("plans/projection-plan.journal"), edited);
+}
+
+#[tokio::test]
+async fn a_file_that_does_not_parse_is_a_400_about_reading_it_not_a_500_about_writing() {
+    // A hand edit with a typo in it is the user's to fix. It used to be a 500
+    // saying the file "was NOT written", which read as an engine fault and
+    // described a write nobody had attempted.
+    let tree = Tree::new(&[(
+        "projection-broken.journal",
+        "~ monthly  plan\n    (expenses:rent)  $4200.00 @@@ ((\n",
+    )]);
+    let (status, message) = file_text(
+        &tree.state,
+        "GET",
+        "/api/projections/projection-broken.journal",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{message}");
+    assert!(
+        message.contains("cannot be opened as a projection"),
+        "{message}"
+    );
+    assert!(message.contains("line 2"), "names where to look: {message}");
+    assert!(!message.contains("NOT written"), "{message}");
+    for secret in tree.secret_paths() {
+        assert!(!message.contains(&secret), "leaked a path: {message}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Saving: update
 // ---------------------------------------------------------------------------

@@ -37,7 +37,7 @@
     import {fileStore} from "#lib/projections/fileStore.svelte.js";
     import {defaultProjectionParams, projectionParamsToSearch, searchToProjectionParams, type ProjectionParams} from "#lib/projections/params.js";
     import {assetRowsByGroup} from "#lib/projections/projectionView.js";
-    import {sameProjectionQuery, scenarioStore, type ProjectionWindow} from "#lib/projections/scenarioStore.svelte.js";
+    import {sameProjectionQuery, scenarioStore, scenarioTableView, type ProjectionWindow} from "#lib/projections/scenarioStore.svelte.js";
     import ProjectionReports from "#lib/projections/ui/ProjectionReports.svelte";
     import ProjectionsTable from "#lib/projections/ui/ProjectionsTable.svelte";
     import SaveScenarioDialog from "#lib/projections/ui/SaveScenarioDialog.svelte";
@@ -48,6 +48,7 @@
     import {journal} from "#lib/stores/journal.svelte.js";
     import {loadJournalWhenReady, onServerReady} from "#lib/stores/serverWatch.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
+    import {pollWhileVisible} from "#lib/stores/visiblePoll.js";
     import {searchMirror} from "#lib/url/searchSync.js";
 
     let params = $state<ProjectionParams>(defaultProjectionParams());
@@ -56,7 +57,11 @@
     onMount(() => {
         if (window.location.search !== "") Object.assign(params, searchToProjectionParams(window.location.search, defaultProjectionParams()));
         restored = true;
+        // The open file is not part of the main journal, so the layout's
+        // journal poll never notices it change. Same cadence, its own check.
+        const stopDiskWatch = pollWhileVisible(() => void syncWithDisk(), DISK_POLL_MS);
         return () => {
+            stopDiskWatch();
             mirror.stop();
             scenarioStore.stop();
         };
@@ -85,7 +90,9 @@
 
     onServerReady((url) => void start(url));
     const seed = $derived(scenarioStore.seed);
-    const seedView = $derived(dataView(seed.status, seed.value !== null));
+    // Not the seed's own view: a scenario reopened from a file never reads the
+    // seed, and gating on it alone left a spinner over the table forever.
+    const tableView = $derived(scenarioTableView(scenarioStore.adopted, seed.status, seed.value !== null));
 
     /**
      * Reopen the last-loaded file, or seed.
@@ -115,8 +122,65 @@
             return false;
         }
         fileError = null;
+        diskNotice = null;
         scenarioStore.adopt(outcome.file.scenario);
         return true;
+    }
+
+    // --- Edits made outside Ledgeline -----------------------------------------
+
+    /** The journal poll's own cadence (`startPolling`). */
+    const DISK_POLL_MS = 5_000;
+
+    /**
+     * What the last disk check found that the user should hear about: the file
+     * changed under unsaved edits, or it can no longer be read. Null otherwise.
+     */
+    let diskNotice = $state<{kind: "changed"} | {kind: "failed"; message: string} | null>(null);
+
+    /**
+     * Pick up an edit made to the open file in another program.
+     *
+     * With no unsaved work the table simply follows the file — it is adopted
+     * like any load, and the projection below it stays on screen, labelled
+     * stale, until the recompute lands (amendment 23). With unsaved work NOTHING
+     * is replaced: the page says the file moved and offers to reload it, and
+     * the held revision stays the old one, so a Save is refused by the engine
+     * with a 409 rather than overwriting the other program's edit.
+     */
+    async function syncWithDisk(): Promise<void> {
+        const url = settings.serverUrl;
+        if (url === null) return;
+        const check = await fileStore.checkDisk(url);
+        switch (check.kind) {
+            case "skipped":
+                return;
+            case "unchanged":
+                diskNotice = null;
+                return;
+            case "changed":
+                if (scenarioStore.dirty) {
+                    diskNotice = {kind: "changed"};
+                    return;
+                }
+                fileStore.adopted(check.file);
+                scenarioStore.adopt(check.file.scenario);
+                diskNotice = null;
+                return;
+            case "failed":
+                // A dropped connection is the app bar's to report, not this
+                // file's; what is worth saying is that the FILE is now unreadable
+                // or gone, and that the table on screen is untouched by it.
+                if (check.failure.kind === "network" || check.failure.kind === "unavailable") return;
+                diskNotice = {kind: "failed", message: check.failure.message};
+                return;
+        }
+    }
+
+    function reloadFromDisk(): void {
+        const url = settings.serverUrl;
+        const id = fileStore.currentId;
+        if (url !== null && id !== null) void openFile(url, id);
     }
 
     // --- Saving --------------------------------------------------------------
@@ -142,6 +206,7 @@
             // discard a keystroke the user made while the request was in flight.
             scenarioStore.markSaved();
             fileError = null;
+            diskNotice = null;
         } else {
             fileError = outcome.failure.message;
         }
@@ -160,6 +225,7 @@
             scenarioStore.markSaved();
             saveAsOpen = false;
             fileError = null;
+            diskNotice = null;
         } else {
             fileError = outcome.failure.message;
         }
@@ -308,11 +374,27 @@
         <div class="alert items-start rounded-box px-3 py-2 text-sm alert-error" role="alert" data-testid="projection-file-error">{fileError}</div>
     {/if}
 
+    <!-- The open file was changed by another program. Never resolved by
+         replacing unsaved work: the user chooses. -->
+    {#if diskNotice !== null}
+        <div class="alert flex flex-col items-start gap-2 rounded-box px-3 py-2 text-sm alert-warning" role="alert" data-testid="projection-disk-notice">
+            {#if diskNotice.kind === "changed"}
+                <span>
+                    This scenario's file was changed outside Ledgeline since you opened it. Your edits here are not saved, and Save will refuse to overwrite the
+                    other change — reload the file to see it (discarding your edits), or use Save as to keep yours in a new file.
+                </span>
+                <button type="button" class="btn btn-sm" disabled={busy} onclick={reloadFromDisk} data-testid="projection-disk-reload">Reload from disk</button>
+            {:else}
+                <span>The scenario's file could not be re-read, so the table shows it as it was: {diskNotice.message}</span>
+            {/if}
+        </div>
+    {/if}
+
     <!-- The what-if. Seeded once from the journal: the budget's own `~` rules,
          plus one monthly line per category the budget does not mention. -->
     <AsyncSection
-        view={seedView}
-        value={seed.value}
+        view={tableView}
+        value={scenarioStore.adopted ? scenarioStore.scenario : seed.value}
         error={seed.error}
         testid="projections-seed-error"
         label="a starting scenario"

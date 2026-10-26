@@ -1473,6 +1473,25 @@ fn serialize_failed(id: &str, error: &SerializeError) -> AppError {
     }
 }
 
+/// A file on disk that does not read as a scenario, as a `400`.
+///
+/// Not [`serialize_failed`]: that one is about a WRITE, and on the read path it
+/// answered a hand-edited file with a typo in it as a `500` saying the file
+/// "was NOT written" — an engine fault, for a file nothing had tried to write.
+/// The file is the user's and so is the fix, which is what a `400` says; the
+/// engine's own sentence (a line number and what is wrong there, never a path)
+/// tells them where to look.
+fn unreadable_file(id: &str, error: &SerializeError) -> AppError {
+    let detail = match error {
+        SerializeError::Unreadable(message) | SerializeError::Invalid(message) => message.clone(),
+        other @ SerializeError::NotRoundTripped(_) => other.to_string(),
+    };
+    AppError::BadRequest(format!(
+        "{} cannot be opened as a projection: {detail}. Fix the file and open it again.",
+        quoted(id)
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // Reading a file
 // ---------------------------------------------------------------------------
@@ -1553,7 +1572,7 @@ fn open_file(
     // `; projection:` marker still opens with a name — "a file without it still
     // loads, and takes its name from its filename".
     let scenario = scenario_from_text(&text, &name, &found.label, declared)
-        .map_err(|error| serialize_failed(id, &error))?;
+        .map_err(|error| unreadable_file(id, &error))?;
     Ok(WireScenarioFile {
         id: id.to_string(),
         label: found.label.clone(),

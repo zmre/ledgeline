@@ -210,6 +210,30 @@ test("projections: editing the table marks it edited and recomputes", async ({pa
     await expect(page.getByTestId("projection-file-select")).toHaveValue("");
 });
 
+test("projections: a reload with a scenario file open shows its table, not a spinner", async ({page}) => {
+    // The remembered file (decision 10) is reopened on mount INSTEAD of
+    // seeding, and the table used to be gated on the seed alone — so with a
+    // file open every reload span over the table forever, with no request
+    // pending and nothing wrong in the engine. A read, never a write: this
+    // fixture belongs to the parity suite.
+    const id = "projections-parity/flows.journal";
+    await page.addInitScript(
+        ([url, token, remembered]) => {
+            localStorage.setItem("ledgeline.settings.v1", JSON.stringify({serverUrl: url, serverToken: token, lastProjectionId: remembered}));
+        },
+        [API_URL, API_TOKEN, id]
+    );
+
+    await page.goto("/projections");
+    for (const visit of ["first load", "reload"]) {
+        if (visit === "reload") await page.reload();
+        await expect(page.getByTestId("projection-file-select"), visit).toHaveValue(id);
+        await expect(page.getByTestId("projection-line").first(), visit).toBeVisible();
+        await expect(page.getByLabel("Loading a starting scenario"), visit).toHaveCount(0);
+        await expect(page.getByTestId("projection-cash"), visit).toBeVisible();
+    }
+});
+
 test("projections: changing the window re-asks the engine and mirrors to the URL", async ({page}) => {
     await page.goto("/projections");
     await expect(page.getByTestId("projection-cash")).toBeVisible();
