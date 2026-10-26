@@ -704,9 +704,17 @@ enum Chunk<'a> {
     Event(&'a ScenarioEvent),
 }
 
-impl Chunk<'_> {
+impl<'a> Chunk<'a> {
     /// The id this chunk was read under: a rule's group, or an event's id.
     fn key(&self) -> &str {
+        match self {
+            Chunk::Rule { key, .. } => key,
+            Chunk::Event(event) => &event.id,
+        }
+    }
+
+    /// [`Chunk::key`], borrowed from the scenario rather than the chunk.
+    fn into_key(self) -> &'a str {
         match self {
             Chunk::Rule { key, .. } => key,
             Chunk::Event(event) => &event.id,
@@ -773,6 +781,23 @@ fn assign_to<'a>(scenario: &'a Scenario, blocks: usize) -> Assignment<'a> {
         }
     }
     Assignment { slots, appended }
+}
+
+/// Each block's key (a rule's group, an event's id) in the order a save writes
+/// the blocks, which is the order hledger reads the rules in and so the order
+/// `hledger print --forecast` lists two same-day generated transactions in.
+///
+/// It is [`assign_to`]'s, with every `rule:K` key taken as a block the file
+/// has: true of any scenario read from its file, whose keys ARE the block
+/// indices. Keys with no slot follow, rules first, as a save appends them.
+pub(crate) fn block_order(scenario: &Scenario) -> Vec<&str> {
+    let Assignment { slots, appended } = assign_to(scenario, usize::MAX);
+    slots
+        .into_values()
+        .map(|(chunk, _)| chunk)
+        .chain(appended)
+        .map(Chunk::into_key)
+        .collect()
 }
 
 /// Which `line:` value each row of a chunk states.

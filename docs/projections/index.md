@@ -71,19 +71,21 @@ read negative.
   because adding up balances means nothing. This is `hledger balance -M -H`
   (`--historical`).
 - **Show empty accounts** adds the accounts nothing touches in these periods:
-  every account the journal declares or posts to, and every account the
-  scenario books to. They show as zero rows, which is how to see what the
-  projection leaves out. This is `-E --declared`. Without it, a row is shown
-  only if it, or an account under it, is non-zero in some column.
+  every account the journal declares or has ever posted to, and every account
+  the scenario books to. They show as zero rows, which is how to see what the
+  projection leaves out. This is `-E --declared`, plus any undeclared account
+  your journal used outside these periods, which hledger leaves out. Without
+  it, a row is shown only if it, or an account under it, is non-zero in some
+  column.
 
-The hledger command is the one in
-[What moves cash](cash.md#where-the-projection-starts), with `balance` instead of
-`bs` and without `--value`.
+[What moves cash](cash.md#where-the-projection-starts) gives the exact hledger
+commands for both modes and for the Journal, and the three ways they differ.
 
 ### Journal
 
 Only the generated transactions, never your real ones. This is
-`hledger print --forecast=<cutoff>..<end> tag:generated`. Each transaction shows
+`hledger print --forecast=<cutoff>..<end> tag:generated`, in hledger's order:
+by date, then by where each rule sits in the file. Each transaction shows
 its date, its description (the rule's note, or `projection`), and a badge for
 what produced it: the rule's period (`~ monthly`), `event` for a dated event,
 or `growth` for an asset row's appreciation. Every posting follows on its own

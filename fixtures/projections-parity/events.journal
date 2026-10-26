@@ -5,6 +5,9 @@
 
 ; Plan 22's residual table, restated with explicit counter-accounts: an
 ; accrual to a liability, its settlement from cash, and a one-off equity raise.
+; The monthly retainer comes AFTER the dated rules and fires on 2026-12-01 with
+; the raise, so the forecast journal must list the raise first, as hledger's
+; `print --forecast` does (rule position in the file breaks a same-day tie).
 
 ~ 2026-11-15  legal, net 60
     expenses:legal         $4500.00
@@ -17,3 +20,7 @@
 ~ 2026-12-01  series A
     assets:checking      $200000.00
     equity:preferred
+
+~ monthly  retainer
+    expenses:legal          $250.00
+    assets:checking

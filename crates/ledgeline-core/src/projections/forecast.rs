@@ -229,6 +229,17 @@ pub enum ForecastOrigin {
     Growth(String),
 }
 
+impl ForecastOrigin {
+    /// The scenario key it names: a rule's or asset row's group, or an
+    /// event's id.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        match self {
+            Self::Rule(key) | Self::Event(key) | Self::Growth(key) => key,
+        }
+    }
+}
+
 /// The accounts a forecast books to where the scenario names none
 /// (Decisions 4 and 7), so an editor can show the inferred default beside the
 /// blank it fills.
@@ -367,6 +378,39 @@ pub fn merged_prices(history: &[PriceDirective], forecast: &Forecast) -> Vec<Pri
                 .filter(|price| priced.contains(&price.commodity)),
         )
         .cloned()
+        .collect()
+}
+
+/// The accounts the Accounts reading's "Show empty accounts" lists even when
+/// every column is zero: every declared account, every account the journal
+/// posts to (before or after the cutoff), and every account the forecast
+/// books to. Sorted, without duplicates.
+///
+/// This is hledger's `-E --declared` plus one deliberate widening: hledger's
+/// `-E` adds only accounts with a posting INSIDE the report (and, with `-H`,
+/// before it), so an undeclared account last used before the lookback, or
+/// only in real data after the cutoff, is missing there and shown here. That
+/// is the account a projection forgot, which is what the toggle is for.
+#[must_use]
+pub fn known_accounts(journal: &crate::Journal, forecast: &Forecast) -> Vec<String> {
+    journal
+        .accounts
+        .iter()
+        .map(|decl| decl.name.0.as_str())
+        .chain(
+            journal
+                .transactions
+                .iter()
+                .chain(&forecast.txns)
+                .flat_map(|txn| {
+                    txn.postings
+                        .iter()
+                        .map(|posting| posting.account.0.as_str())
+                }),
+        )
+        .collect::<BTreeSet<&str>>()
+        .into_iter()
+        .map(str::to_string)
         .collect()
 }
 
@@ -872,10 +916,21 @@ pub(super) fn expand(
     super::warn_on_commodity_mismatch(&commodities, target.as_ref(), &db, &as_of, &mut warnings);
     let forecast_defaults = ForecastDefaults::of(scenario, &defaults);
 
-    // Ascending by date, stable, so a reader that walks them once is right.
-    // Sorted as pairs so each origin stays beside its transaction.
+    // Ascending by date, then by the block's place in the file, so two
+    // same-day transactions read as `hledger print --forecast` lists them: by
+    // rule position, a dated one-off between two rules included. Stable, so
+    // one group's own transactions keep their order. Sorted as pairs so each
+    // origin stays beside its transaction.
+    let position: BTreeMap<&str, usize> = super::serialize::block_order(scenario)
+        .into_iter()
+        .enumerate()
+        .map(|(index, key)| (key, index))
+        .collect();
+    let place = |origin: &ForecastOrigin| position.get(origin.key()).copied().unwrap_or(usize::MAX);
     let mut paired: Vec<(Transaction, ForecastOrigin)> = txns.into_iter().zip(origins).collect();
-    paired.sort_by(|(a, _), (b, _)| compare_iso(&a.date, &b.date));
+    paired.sort_by(|(a, a_origin), (b, b_origin)| {
+        compare_iso(&a.date, &b.date).then_with(|| place(a_origin).cmp(&place(b_origin)))
+    });
     let (mut txns, origins): (Vec<Transaction>, Vec<ForecastOrigin>) = paired.into_iter().unzip();
     let first_index = history
         .txns
@@ -1649,6 +1704,43 @@ mod tests {
                 ("2026-11-01", "projection", &rule),
             ]
         );
+    }
+
+    /// Two generated transactions on one day come out in the order of their
+    /// blocks in the file, as `hledger print --forecast` lists them: a dated
+    /// one-off written ABOVE a monthly rule comes first on the day both fire,
+    /// one written below comes second. Before the fix every rule came before
+    /// every event, whatever the file said (found by the Journal tab parity).
+    #[test]
+    fn same_day_transactions_follow_the_file_order_of_their_blocks() {
+        let rent = countered(
+            line("rule:1", "expenses:rent", usd(10_000), "monthly"),
+            "assets:checking",
+        );
+        let party = |id: &str| {
+            event(
+                id,
+                "2026-11-01",
+                &[("expenses:party", usd(5000))],
+                Some("assets:checking"),
+            )
+        };
+        // Which block each of the day's transactions came from, in order.
+        let on_the_day = |events: Vec<ScenarioEvent>| -> Vec<String> {
+            let forecast = expand_over(&scenario(vec![rent.clone()], events), &journal(), &[], 2);
+            forecast
+                .txns
+                .iter()
+                .zip(&forecast.origins)
+                .filter(|(txn, _)| txn.date == "2026-11-01")
+                .map(|(_, origin)| origin.key().to_string())
+                .collect()
+        };
+        assert_eq!(on_the_day(vec![party("rule:0")]), ["rule:0", "rule:1"]);
+        assert_eq!(on_the_day(vec![party("rule:2")]), ["rule:1", "rule:2"]);
+        // A key that names no block (a row not yet saved) goes where a save
+        // appends it: after the rules.
+        assert_eq!(on_the_day(vec![party("new")]), ["rule:1", "new"]);
     }
 
     /// Checking and savings, with salary always landing in checking and rent

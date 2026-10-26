@@ -1185,6 +1185,66 @@ account the forecast books to.
   flags, component tests (tabs, digits 1–6, band, toggles, paging, cap), live
   integration, and two e2e specs.
 
-**Not done.** No hledger parity test for `balance`/`print` was added to the
-gated `parity_*` suite. Both readings sit on the merged list and expansion
-those tests already pin. No keyboard row cursor on the Accounts table.
+**hledger parity (added 2026-10-26).** `tests/projection_files.rs`, the
+`tabs_parity_*` tests and `accounts_parity_empty_rows_beyond_declared`, are in
+the same opt-in suite and reuse its harness: the save-then-reread `Parity`, the
+documented command and the cutoff `expr:`. They run over every fixture and
+cadence the statement parity reads.
+
+- **Accounts.** `account_periods` (Change and Historical, with and without
+  `known_accounts`, depth 1, 2 and unclamped) must equal `hledger balance …
+  --tree --no-elide --depth N`, with `-T` for Change, `-H` for Balance and
+  `-E --declared` for empty accounts. It must agree per account (parents
+  included), per commodity, per column, on the Total column and on the
+  `Total:` row, AND list the same rows. Parsing note: hledger indents the
+  tree's CSV with two U+00A0 per level.
+- **Journal.** The forecast's transactions must equal `hledger print
+  --forecast=<cutoff>..<end> tag:generated -O json` in order: date,
+  description, the `generated-transaction` value (hledger exposes only the
+  hidden `_generated-transaction`, the same value), posting accounts in order
+  and amounts. Each `ForecastOrigin` must name a line group or an event, and
+  an event's origin must carry its own date as the rule (`~ 2026-12-20`).
+- **Growth** (`growth.journal`): the two accepted deviations and nothing else.
+  hledger books rent at its base, and checking takes exactly the difference.
+  hledger prints the asset rows' rule as a `$0` transaction each month, where
+  ours prints none and posts house→gains growth transactions. Accounts
+  deviates by exactly those amounts (per column for Change, cumulative for
+  Balance), the gains row is absent or zero in hledger, and the brokerage's
+  AAPL agrees, because the tab is unvalued.
+
+**Engine bug found and fixed: same-day order.** The expansion closed every
+rule group, then placed every event, then sorted by date (stable). So on a day
+a monthly rule and a dated one-off both fire, the rule always came first.
+hledger lists generated transactions by date, then by rule position in the
+file. `events.journal` gained a `~ monthly retainer` after the dated rules,
+colliding with the 2026-12-01 raise, and the Journal parity failed on it. Fix:
+`serialize::block_order(scenario)` is the writer's own `assign_to` slot order
+(rules and events interleaved by `rule:K` block index, unsaved keys appended
+rules-first, as a save writes them). `forecast_transactions` breaks a date tie
+by the origin's place in it (`ForecastOrigin::key`). For a scenario read from
+its file this is exactly hledger's order. Unit test
+`same_day_transactions_follow_the_file_order_of_their_blocks`. Nothing else
+moved: every other parity case and the goldens already agreed.
+
+**The deliberate difference: empty accounts.** hledger 1.52's `-E` adds a
+zero row only for an account with a posting inside the report (with `-H`,
+also before it). `--declared` adds every `account` directive in either file.
+`known_accounts` (moved from the server into core, so the test calls what the
+handler calls) is that plus every account the real journal ever posts to.
+Equal when every account is declared, which the fixtures assert. With
+undeclared accounts, ours is wider by exactly the accounts used only outside
+the report: before the lookback (Change only) or only in real data after the
+cutoff (hidden from hledger by the `expr:`). The pin test asserts exactly that
+set. It is kept, because those are the accounts "what I've missed" means. The
+docs say so.
+
+**Representational, not numeric (unchanged from amendment 26).** A legacy
+`(account)` line is virtual in hledger's print. Ours is a regular posting with
+the same account and amount. The Journal comparison reads the account names,
+which carry no marker in hledger's JSON.
+
+**Docs.** `cash.md` gives the exact Accounts (Change, Balance, empty) and
+Journal commands and the three differences. `index.md` points there and states
+the journal order and the empty-accounts widening.
+
+**Not done.** No keyboard row cursor on the Accounts table.

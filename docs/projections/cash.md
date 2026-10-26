@@ -185,8 +185,39 @@ last real price. hledger's `cf` lists the change in each cash account. The
 tab's cash flow statement starts from net income instead, but its cash
 balances agree with hledger's account by account.
 
-The Accounts and Journal tabs use the same window. For **Accounts**, use
-`balance` instead of `bs`, and add `-H` for Balance or `-E --declared` for
-Show empty accounts. Leave out `--value`, because the tab shows amounts as
-written. For **Journal**, run
-`hledger -f main.journal -f projection-x.journal print --forecast=2026-10-01..2027-10-01 tag:generated`.
+The Accounts and Journal tabs use the same window. **Accounts** is `balance`
+with the tab's tree and depth, and no `--value`, because the tab shows amounts
+as written. For Change:
+
+```console
+$ hledger -f main.journal -f projection-x.journal balance --forecast=2026-10-01..2027-10-01 \
+    -M -b 2026-08-01 -e 2027-10-01 expr:"NOT (date:2026-10-01.. AND NOT tag:generated)" \
+    --tree --no-elide --depth 2 -T
+```
+
+For Balance, use `-H` instead of `-T`. For Show empty accounts, add
+`-E --declared`. `--tree --no-elide` lists every parent as its own row, as the
+tab does, and `--depth` is the depth slider. **Journal** is:
+
+```console
+$ hledger -f main.journal -f projection-x.journal print --forecast=2026-10-01..2027-10-01 tag:generated
+```
+
+It lists the same transactions in the same order, with the same dates,
+descriptions, postings and amounts. Each one's `generated-transaction` tag is
+the rule the tab's badge shows. Three things differ:
+
+- **Growth.** hledger prints a grown rule at its base amount. It prints an
+  asset row's rule as a transaction of `$0` postings and never books the
+  appreciation, which the tab shows as separate **growth** transactions to the
+  gains account. Accounts shows the same differences. A grown price is not a
+  posting, so neither tab shows it.
+- **Old `(account)` lines.** A pre-plan line written as `(expenses:food)` stays
+  virtual in hledger, which prints the parentheses. The tab books it as an
+  ordinary posting. The amounts are the same.
+- **Show empty accounts.** hledger's `-E` adds an account only if it has a
+  posting inside the report, or before it with `-H`. The tab also lists every
+  account your journal has ever posted to. If every account is declared, the
+  two lists are the same. Otherwise the tab can list a few more zero rows: an
+  undeclared account last used before the first column (Change only), or one
+  used only in real transactions after the projection starts.

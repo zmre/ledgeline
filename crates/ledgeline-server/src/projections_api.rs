@@ -52,8 +52,8 @@ use ledgeline_core::projections::{
     DiscoveredProjection, Discovery, ForecastDefaults, ForecastOrigin, Growth, GrowthUnit, History,
     LineRole, LineSection, LineSource, Projection, ProjectionOpts, ProjectionPath, Runway,
     Scenario, ScenarioEvent, ScenarioLine, SeedOpts, discover_in, forecast_cutoff, is_journal_name,
-    label_for, latest_real_date, line_section, merged_prices, merged_transactions, project,
-    seed_scenario, upgrade_legacy_counters, virtual_posting,
+    known_accounts, label_for, latest_real_date, line_section, merged_prices, merged_transactions,
+    project, seed_scenario, upgrade_legacy_counters, virtual_posting,
 };
 use ledgeline_core::reports::account_types::{AccountType, AccountTypes};
 use ledgeline_core::reports::periods::MAX_BUCKETS;
@@ -656,9 +656,8 @@ impl Merged {
 /// (`hledger balance -M --forecast`, `-H` for balances, `-E --declared` for
 /// empty accounts), as written: no valuation, natural signs.
 ///
-/// With `empty`, the known accounts are every declared account, every account
-/// the journal posts to (before or after the cutoff), and every account the
-/// forecast books to.
+/// With `empty`, the known accounts are [`known_accounts`]: hledger's
+/// `-E --declared`, widened to every account the journal ever posts to.
 fn projected_accounts(
     journal: &ledgeline_core::Journal,
     projection: &Projection,
@@ -667,27 +666,9 @@ fn projected_accounts(
     depth: usize,
 ) -> Result<WirePeriodReport, AppError> {
     let window = &projection.forecast.window;
-    let known: Option<Vec<String>> = request.empty.then(|| {
-        journal
-            .accounts
-            .iter()
-            .map(|decl| decl.name.0.as_str())
-            .chain(
-                journal
-                    .transactions
-                    .iter()
-                    .chain(&projection.forecast.txns)
-                    .flat_map(|txn| {
-                        txn.postings
-                            .iter()
-                            .map(|posting| posting.account.0.as_str())
-                    }),
-            )
-            .collect::<std::collections::BTreeSet<&str>>()
-            .into_iter()
-            .map(str::to_string)
-            .collect()
-    });
+    let known: Option<Vec<String>> = request
+        .empty
+        .then(|| known_accounts(journal, &projection.forecast));
     let report = account_periods(
         &merged.txns,
         &AccountPeriodsOpts {
