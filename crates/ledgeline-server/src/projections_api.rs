@@ -49,20 +49,22 @@ use ledgeline_core::projections::serialize::{
 };
 use ledgeline_core::projections::{
     AssetRow, BalanceSeries, CounterDefaults, CreateRefusal, DEFAULT_LOOKBACK,
-    DiscoveredProjection, Discovery, ForecastDefaults, Growth, GrowthUnit, History, LineRole,
-    LineSection, LineSource, Projection, ProjectionOpts, ProjectionPath, Runway, Scenario,
-    ScenarioEvent, ScenarioLine, SeedOpts, discover_in, forecast_cutoff, is_journal_name,
+    DiscoveredProjection, Discovery, ForecastDefaults, ForecastOrigin, Growth, GrowthUnit, History,
+    LineRole, LineSection, LineSource, Projection, ProjectionOpts, ProjectionPath, Runway,
+    Scenario, ScenarioEvent, ScenarioLine, SeedOpts, discover_in, forecast_cutoff, is_journal_name,
     label_for, latest_real_date, line_section, merged_prices, merged_transactions, project,
     seed_scenario, upgrade_legacy_counters, virtual_posting,
 };
 use ledgeline_core::reports::account_types::{AccountType, AccountTypes};
 use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
-    BsOpts, BudgetOpts, CfOpts, CfTags, Interval, IsOpts, Valuation, account_decls,
-    balance_sheet_columns, cash_flow_statement, declared_types, income_statement_columns,
-    periods::bucket_label, pivot_balance_sheets, range_buckets, signed_entry,
+    AccountPeriodsOpts, BalanceMode, BsOpts, BudgetOpts, CfOpts, CfTags, Interval, IsOpts,
+    Valuation, account_decls, account_periods, balance_sheet_columns, cash_flow_statement,
+    declared_types, income_statement_columns, periods::bucket_label, pivot_balance_sheets,
+    range_buckets, signed_entry,
 };
 use ledgeline_core::vault::{Revision, VaultError};
+use ledgeline_core::view::rows::{Row, RowContext};
 use ledgeline_core::{Dec, Fingerprint};
 use serde::{Deserialize, Serialize};
 
@@ -70,7 +72,8 @@ use crate::edit_api::{WireDecIn, dec_from_wire, json_body};
 use crate::error::{AppError, editing_disabled};
 use crate::reports_api::{
     StatementShape, Window, WireBalanceSheetColumns, WireCashFlow, WireDec,
-    WireIncomeStatementReport, WireMixed, checked_date, compute, today_utc, wire_mixed,
+    WireIncomeStatementReport, WireMixed, WirePeriodReport, checked_date, compute, today_utc,
+    wire_mixed,
 };
 use crate::security::no_store_json as no_store;
 use crate::{AppState, JournalLocation, Snapshot};
@@ -100,6 +103,14 @@ const MAX_EVENTS: usize = 1000;
 /// hundred thousand postings is a single event. This is the third number the
 /// body limit would otherwise be the only guard for.
 const MAX_EVENT_POSTINGS: usize = 100;
+
+/// The most generated transactions one run's `journal` carries.
+///
+/// The count is otherwise bounded only by lines × occurrences: a thousand
+/// weekly lines over [`MAX_BUCKETS`] weeks is over a million. Five thousand is
+/// two years of two hundred monthly rules, and a few megabytes at most. Past
+/// it the earliest entries are kept and `truncated` says so.
+pub(crate) const MAX_JOURNAL_ENTRIES: usize = 5000;
 
 // ===========================================================================
 // Wire — outbound
@@ -449,6 +460,54 @@ impl From<&ForecastDefaults> for WireForecastDefaults {
     }
 }
 
+/// Which part of the scenario produced a generated transaction.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireOrigin {
+    /// `rule` (a `~` rule's lines), `event` (a dated event) or `growth` (an
+    /// asset row's appreciation).
+    kind: &'static str,
+    /// The rule's or asset row's `group`, or the event's `id`: keys the
+    /// scenario on the wire already carries.
+    key: String,
+}
+
+impl From<&ForecastOrigin> for WireOrigin {
+    fn from(origin: &ForecastOrigin) -> Self {
+        let (kind, key) = match origin {
+            ForecastOrigin::Rule(group) => ("rule", group),
+            ForecastOrigin::Event(id) => ("event", id),
+            ForecastOrigin::Growth(group) => ("growth", group),
+        };
+        Self {
+            kind,
+            key: key.clone(),
+        }
+    }
+}
+
+/// One generated transaction, in the journal view's own row shape: what
+/// `hledger print --forecast tag:generated` prints, including its
+/// `generated-transaction: ~ <period>` tag.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireForecastEntry {
+    origin: WireOrigin,
+    txn: Row<'static>,
+}
+
+/// The forecast journal: every generated transaction, date-ascending.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireForecastJournal {
+    /// How many the forecast generated, before any cap.
+    total: usize,
+    /// At most [`MAX_JOURNAL_ENTRIES`], the earliest first.
+    entries: Vec<WireForecastEntry>,
+    /// Whether `entries` stops short of `total`.
+    truncated: bool,
+}
+
 /// The answer (plan 28, Phase 4).
 ///
 /// Two kinds of column live here, and the difference is load-bearing:
@@ -492,6 +551,12 @@ pub(crate) struct WireProjection {
     /// The statement of cash flows over the same columns.
     cash_flow: WireCashFlow,
     defaults: WireForecastDefaults,
+    /// Every account per column (`hledger balance`), when the request asked
+    /// for it with `accounts`; `null` otherwise.
+    accounts: Option<WirePeriodReport>,
+    /// The generated transactions, when the request asked with `journal`;
+    /// `null` otherwise.
+    journal: Option<WireForecastJournal>,
 }
 
 /// The three official statements over `real ++ forecast`, built exactly as the
@@ -506,6 +571,7 @@ pub(crate) struct WireProjection {
 fn projected_statements(
     journal: &ledgeline_core::Journal,
     projection: &Projection,
+    merged: &Merged,
     shape: &StatementShape,
     depth: usize,
 ) -> Result<
@@ -518,15 +584,14 @@ fn projected_statements(
 > {
     let forecast = &projection.forecast;
     let window = &forecast.window;
-    let txns = merged_transactions(&journal.transactions, forecast);
-    let prices = merged_prices(&journal.prices, forecast);
+    let Merged { txns, prices } = merged;
     let spans = range_buckets(&window.from, &window.end, Some(window.interval))?;
     let ends: Vec<String> = spans.iter().map(|span| span.to.clone()).collect();
     let value_in = forecast.target.clone();
 
     let sheets = balance_sheet_columns(
-        &txns,
-        &prices,
+        txns,
+        prices,
         &BsOpts {
             as_of: &window.end,
             depth: None,
@@ -539,8 +604,8 @@ fn projected_statements(
         &shape.bs_terms,
     )?;
     let income = income_statement_columns(
-        &txns,
-        &prices,
+        txns,
+        prices,
         &IsOpts {
             from: &window.from,
             to: &window.end,
@@ -554,7 +619,7 @@ fn projected_statements(
         &shape.is_groups,
     )?;
     let cash_flow = cash_flow_statement(
-        &txns,
+        txns,
         &CfOpts {
             from: &window.from,
             to: &window.end,
@@ -568,6 +633,94 @@ fn projected_statements(
         WireIncomeStatementReport::columns(&income, "market"),
         WireCashFlow::from(&cash_flow),
     ))
+}
+
+/// `real ++ forecast`: the real journal before the cutoff and the generated
+/// transactions, with their prices. Built once per run and read by every
+/// reading over the merged columns.
+struct Merged {
+    txns: Vec<ledgeline_core::model::Transaction>,
+    prices: Vec<ledgeline_core::model::PriceDirective>,
+}
+
+impl Merged {
+    fn of(journal: &ledgeline_core::Journal, projection: &Projection) -> Self {
+        Self {
+            txns: merged_transactions(&journal.transactions, &projection.forecast),
+            prices: merged_prices(&journal.prices, &projection.forecast),
+        }
+    }
+}
+
+/// The Accounts reading: every account per column over `lookback ++ buckets`
+/// (`hledger balance -M --forecast`, `-H` for balances, `-E --declared` for
+/// empty accounts), as written: no valuation, natural signs.
+///
+/// With `empty`, the known accounts are every declared account, every account
+/// the journal posts to (before or after the cutoff), and every account the
+/// forecast books to.
+fn projected_accounts(
+    journal: &ledgeline_core::Journal,
+    projection: &Projection,
+    merged: &Merged,
+    request: &AccountsIn,
+    depth: usize,
+) -> Result<WirePeriodReport, AppError> {
+    let window = &projection.forecast.window;
+    let known: Option<Vec<String>> = request.empty.then(|| {
+        journal
+            .accounts
+            .iter()
+            .map(|decl| decl.name.0.as_str())
+            .chain(
+                journal
+                    .transactions
+                    .iter()
+                    .chain(&projection.forecast.txns)
+                    .flat_map(|txn| {
+                        txn.postings
+                            .iter()
+                            .map(|posting| posting.account.0.as_str())
+                    }),
+            )
+            .collect::<std::collections::BTreeSet<&str>>()
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    });
+    let report = account_periods(
+        &merged.txns,
+        &AccountPeriodsOpts {
+            from: &window.from,
+            to: &window.end,
+            interval: window.interval,
+            depth,
+            mode: request.mode,
+            known: known.as_deref(),
+        },
+    )?;
+    Ok(WirePeriodReport::from(&report))
+}
+
+/// The Journal reading: the generated transactions only, in the journal
+/// view's row shape, capped at [`MAX_JOURNAL_ENTRIES`].
+fn forecast_journal(projection: &Projection, context: &RowContext<'_>) -> WireForecastJournal {
+    let forecast = &projection.forecast;
+    let entries = forecast
+        .txns
+        .iter()
+        .zip(&forecast.origins)
+        .take(MAX_JOURNAL_ENTRIES)
+        .map(|(txn, origin)| WireForecastEntry {
+            origin: WireOrigin::from(origin),
+            txn: context.row(txn, Vec::new()),
+        })
+        .collect();
+    WireForecastJournal {
+        total: forecast.txns.len(),
+        entries,
+        truncated: forecast.txns.len() > MAX_JOURNAL_ENTRIES,
+    }
 }
 
 impl WireProjection {
@@ -595,6 +748,8 @@ impl WireProjection {
             income_statement,
             cash_flow,
             defaults: WireForecastDefaults::from(&projection.forecast.defaults),
+            accounts: None,
+            journal: None,
         }
     }
 }
@@ -765,6 +920,35 @@ pub(crate) struct RunRequest {
     depth: Option<usize>,
     #[serde(default)]
     value_in: Option<String>,
+    /// Ask for the Accounts reading. Absent, `accounts` answers `null`: a
+    /// reading only one tab shows is computed only while that tab is open.
+    #[serde(default)]
+    accounts: Option<AccountsIn>,
+    /// Ask for the generated transactions. Off by default for the same reason.
+    #[serde(default)]
+    journal: bool,
+}
+
+/// `accounts` in a run request: which reading of the columns, and whether
+/// accounts with nothing in any column are rows too.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AccountsIn {
+    #[serde(deserialize_with = "balance_mode")]
+    mode: BalanceMode,
+    #[serde(default)]
+    empty: bool,
+}
+
+/// `"change"` | `"balance"` → [`BalanceMode`]. Anything else is a `400`.
+fn balance_mode<'de, D: serde::Deserializer<'de>>(de: D) -> Result<BalanceMode, D::Error> {
+    match String::deserialize(de)?.as_str() {
+        "change" => Ok(BalanceMode::Change),
+        "balance" => Ok(BalanceMode::Historical),
+        other => Err(serde::de::Error::custom(format!(
+            "accounts mode must be \"change\" or \"balance\", not {other:?}"
+        ))),
+    }
 }
 
 /// `lookback`, defaulted and bounded: the statements carry `lookback + count`
@@ -1095,8 +1279,24 @@ pub(crate) async fn run(
                 value_in,
             },
         )?;
-        let statements = projected_statements(journal, &projection, &shape, window.depth)?;
-        Ok(WireProjection::new(&projection, statements))
+        let merged = Merged::of(journal, &projection);
+        let statements = projected_statements(journal, &projection, &merged, &shape, window.depth)?;
+        let accounts = request
+            .accounts
+            .as_ref()
+            .map(|accounts| {
+                projected_accounts(journal, &projection, &merged, accounts, window.depth)
+            })
+            .transpose()?;
+        let forecast_journal = request.journal.then(|| {
+            let declared = snapshot.view.declared(journal);
+            forecast_journal(&projection, &RowContext::new(journal, &declared))
+        });
+        Ok(WireProjection {
+            accounts,
+            journal: forecast_journal,
+            ..WireProjection::new(&projection, statements)
+        })
     })
     .await
 }

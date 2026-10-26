@@ -211,6 +211,22 @@ pub struct Forecast {
     /// The counter- and gains accounts the expansion picked for everything
     /// that names none — what a table shows greyed until the user overrides it.
     pub defaults: ForecastDefaults,
+    /// Which part of the scenario produced each of `txns`, index for index.
+    /// A [`Transaction`] has no slot for it, and a tag would travel into every
+    /// report over the merged list, so it rides alongside.
+    pub origins: Vec<ForecastOrigin>,
+}
+
+/// The part of a scenario one generated transaction came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForecastOrigin {
+    /// A `~` rule: the [`ScenarioLine::group`] of its lines.
+    Rule(String),
+    /// A dated event, by [`ScenarioEvent::id`].
+    Event(String),
+    /// An asset row's appreciation (or its opening adjustment), by the row's
+    /// [`ScenarioLine::group`].
+    Growth(String),
 }
 
 /// The accounts a forecast books to where the scenario names none
@@ -826,6 +842,7 @@ pub(super) fn expand(
         groups: BTreeMap::new(),
         group_order: Vec::new(),
         txns: Vec::new(),
+        origins: Vec::new(),
         prices: Vec::new(),
         price_owners: BTreeMap::new(),
         assets: Vec::new(),
@@ -844,7 +861,8 @@ pub(super) fn expand(
         expansion.revalue_priced_rows()?;
     }
     let Expansion {
-        mut txns,
+        txns,
+        origins,
         prices: forecast_prices,
         assets,
         commodities,
@@ -855,7 +873,10 @@ pub(super) fn expand(
     let forecast_defaults = ForecastDefaults::of(scenario, &defaults);
 
     // Ascending by date, stable, so a reader that walks them once is right.
-    txns.sort_by(|a, b| compare_iso(&a.date, &b.date));
+    // Sorted as pairs so each origin stays beside its transaction.
+    let mut paired: Vec<(Transaction, ForecastOrigin)> = txns.into_iter().zip(origins).collect();
+    paired.sort_by(|(a, _), (b, _)| compare_iso(&a.date, &b.date));
+    let (mut txns, origins): (Vec<Transaction>, Vec<ForecastOrigin>) = paired.into_iter().unzip();
     let first_index = history
         .txns
         .iter()
@@ -875,6 +896,7 @@ pub(super) fn expand(
             warnings,
             target,
             defaults: forecast_defaults,
+            origins,
         },
         prices,
     ))
@@ -933,6 +955,8 @@ struct Expansion<'a> {
     /// order the scenario states them.
     group_order: Vec<String>,
     txns: Vec<Transaction>,
+    /// `txns[i]`'s origin, pushed beside it.
+    origins: Vec<ForecastOrigin>,
     prices: Vec<PriceDirective>,
     /// commodity → (the rate that owns its trend, the owning row's label).
     price_owners: BTreeMap<Commodity, (Dec, String)>,
@@ -1091,6 +1115,7 @@ impl<'a> Expansion<'a> {
                 }
                 self.txns
                     .push(generated(&date, &legs.description, &legs.period, postings));
+                self.origins.push(ForecastOrigin::Rule(group.clone()));
             }
         }
         Ok(())
@@ -1133,6 +1158,7 @@ impl<'a> Expansion<'a> {
             &event.date,
             postings,
         ));
+        self.origins.push(ForecastOrigin::Event(event.id.clone()));
         Ok(())
     }
 
@@ -1229,6 +1255,7 @@ impl<'a> Expansion<'a> {
             let start = self.start.clone();
             self.gains_txn(
                 &start,
+                &line.group,
                 &line.account.0,
                 &gains,
                 &adjustment,
@@ -1287,6 +1314,7 @@ impl<'a> Expansion<'a> {
                         let step = grown.ma_add(&balance.ma_neg()?)?;
                         self.gains_txn(
                             &date,
+                            &line.group,
                             &line.account.0,
                             &gains,
                             &step,
@@ -1339,9 +1367,11 @@ impl<'a> Expansion<'a> {
 
     /// A balanced appreciation posting: the asset up by `step`, the gains
     /// account down by it. Zero is no transaction.
+    #[allow(clippy::too_many_arguments)]
     fn gains_txn(
         &mut self,
         date: &str,
+        group: &str,
         account: &str,
         gains: &str,
         step: &MixedAmount,
@@ -1362,6 +1392,7 @@ impl<'a> Expansion<'a> {
             .collect();
         self.txns
             .push(generated(date, description, "growth", postings));
+        self.origins.push(ForecastOrigin::Growth(group.to_string()));
     }
 
     /// Stepwise in-memory prices for each priced holding, at the row's growth
@@ -1584,6 +1615,40 @@ mod tests {
             events,
             ..Scenario::default()
         }
+    }
+
+    /// Each generated transaction names the part of the scenario it came
+    /// from, index for index, and the date sort keeps the pairs together.
+    #[test]
+    fn every_generated_transaction_names_its_origin() {
+        let rent = countered(
+            line("rule:rent", "expenses:rent", usd(10_000), "monthly"),
+            "assets:checking",
+        );
+        let party = event(
+            "party",
+            "2026-10-20",
+            &[("expenses:party", usd(5000))],
+            Some("assets:checking"),
+        );
+        let forecast = expand_over(&scenario(vec![rent], vec![party]), &journal(), &[], 2);
+        assert_eq!(forecast.origins.len(), forecast.txns.len());
+        let named: Vec<(&str, &str, &ForecastOrigin)> = forecast
+            .txns
+            .iter()
+            .zip(&forecast.origins)
+            .map(|(txn, origin)| (txn.date.as_str(), txn.description.as_str(), origin))
+            .collect();
+        let rule = ForecastOrigin::Rule("rule:rent".to_string());
+        let party = ForecastOrigin::Event("party".to_string());
+        assert_eq!(
+            named,
+            [
+                ("2026-10-01", "projection", &rule),
+                ("2026-10-20", "party", &party),
+                ("2026-11-01", "projection", &rule),
+            ]
+        );
     }
 
     /// Checking and savings, with salary always landing in checking and rent

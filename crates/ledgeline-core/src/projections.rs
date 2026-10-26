@@ -103,8 +103,9 @@ pub use discovery::{
 };
 pub use forecast::{
     CounterDefaults, DEFAULT_GAINS_ACCOUNT, DEFAULT_LOOKBACK, Forecast, ForecastDefaults,
-    ForecastOpts, ForecastWindow, GENERATED_TAG, History, forecast_cutoff, forecast_transactions,
-    is_generated, latest_real_date, merged_prices, merged_transactions, upgrade_legacy_counters,
+    ForecastOpts, ForecastOrigin, ForecastWindow, GENERATED_TAG, History, forecast_cutoff,
+    forecast_transactions, is_generated, latest_real_date, merged_prices, merged_transactions,
+    upgrade_legacy_counters,
 };
 
 use std::collections::{BTreeMap, BTreeSet};

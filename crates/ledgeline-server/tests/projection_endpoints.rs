@@ -139,6 +139,16 @@ fn exact(mixed: &Value) -> i128 {
     mantissa * 10_i128.pow(12 - places)
 }
 
+/// A row's `values`, each `$` figure exactly ([`exact`]).
+fn exact_series(node: &Value) -> Vec<i128> {
+    node["values"]
+        .as_array()
+        .expect("values is an array")
+        .iter()
+        .map(exact)
+        .collect()
+}
+
 fn series(node: &Value) -> Vec<i128> {
     node["values"]
         .as_array()
@@ -843,6 +853,270 @@ async fn the_actual_columns_are_the_reports_tabs_statements() {
     // July is projected: sample.journal's real July 1–3 postings are left
     // out (Decision 5), so July's net income is the scenario's rent alone.
     assert_eq!(net_income(&projection), [-4200]);
+}
+
+// ---------------------------------------------------------------------------
+// The Accounts and Journal readings (plan 28, follow-ups 2026-10-26)
+// ---------------------------------------------------------------------------
+
+/// A run asking for the Accounts reading in `mode`, over July and August with
+/// May and June as actuals, at depth 3.
+async fn accounts_run(mode: &str, empty: bool, events: Vec<Value>) -> Value {
+    run(json!({
+        "scenario": scenario_with(vec![rent_line()], events),
+        "asOf": "2026-07-08",
+        "count": 2,
+        "depth": 3,
+        "accounts": {"mode": mode, "empty": empty}
+    }))
+    .await
+}
+
+/// The Accounts report's row for `account`, if it has one.
+fn account_row<'a>(projection: &'a Value, account: &str) -> Option<&'a Value> {
+    projection["accounts"]["rows"]
+        .as_array()
+        .expect("accounts rows")
+        .iter()
+        .find(|row| row["account"] == account)
+}
+
+fn account_values(projection: &Value, account: &str) -> Vec<i128> {
+    series(account_row(projection, account).unwrap_or_else(|| panic!("no {account} row")))
+}
+
+/// The readings only one tab shows are computed only when asked for.
+#[tokio::test]
+async fn the_accounts_and_journal_readings_are_null_unless_asked_for() {
+    let projection = run(json!({
+        "scenario": scenario_with(vec![rent_line()], vec![]),
+        "asOf": "2026-07-08",
+        "count": 2
+    }))
+    .await;
+    assert_eq!(projection["accounts"], Value::Null);
+    assert_eq!(projection["journal"], Value::Null);
+}
+
+/// **Change is each period's movement; Balance is the running balance.** Over
+/// the same columns the statements use, `lookback ++ buckets`, with the real
+/// journal before the cutoff and the forecast after it.
+#[tokio::test]
+async fn accounts_change_is_movement_and_balance_is_the_running_total() {
+    let change = accounts_run("change", false, vec![]).await;
+    let balance = accounts_run("balance", false, vec![]).await;
+    let keys = json!(["2026-05", "2026-06", "2026-07", "2026-08"]);
+    assert_eq!(change["accounts"]["buckets"], keys);
+    assert_eq!(balance["accounts"]["buckets"], keys);
+    assert_eq!(change["accounts"]["periods"][2]["label"], "Jul 2026");
+
+    // The scenario's own account: nothing real, then $4,200 a month.
+    assert_eq!(account_values(&change, "expenses:rent"), [0, 0, 4200, 4200]);
+    assert_eq!(
+        account_values(&balance, "expenses:rent"),
+        [0, 0, 4200, 8400]
+    );
+    // Change rows carry a Total; balance rows are snapshots and do not.
+    let rent = account_row(&change, "expenses:rent").expect("rent");
+    assert_eq!(dollars(&rent["total"]), 8400);
+    assert!(
+        account_row(&balance, "expenses:rent")
+            .expect("rent")
+            .get("total")
+            .is_none()
+    );
+    assert!(change["accounts"].get("grandTotal").is_some());
+    assert!(balance["accounts"].get("grandTotal").is_none());
+
+    // Every row: balance[i] = balance[i - 1] + change[i], and the real May
+    // movement is the real journal's (the rent was never in May).
+    for row in change["accounts"]["rows"].as_array().expect("rows") {
+        let account = row["account"].as_str().expect("account");
+        let moved = exact_series(row);
+        let Some(held) = account_row(&balance, account).map(exact_series) else {
+            continue;
+        };
+        for at in 1..moved.len() {
+            assert_eq!(held[at], held[at - 1] + moved[at], "{account} column {at}");
+        }
+    }
+    // Real July 1–3 transactions are left out (Decision 5): July's checking
+    // movement is the rent alone.
+    assert_eq!(account_values(&change, "assets:bank:checking")[2], -4200);
+    // Natural signs, as `hledger balance` prints them: salary is negative.
+    assert!(account_values(&change, "income:salary")[0] < 0);
+}
+
+/// **Depth rolls the rows up** like every other report's slider, and never
+/// the per-column totals.
+#[tokio::test]
+async fn accounts_honour_the_depth() {
+    let projection = run(json!({
+        "scenario": scenario_with(vec![rent_line()], vec![]),
+        "asOf": "2026-07-08",
+        "count": 2,
+        "depth": 1,
+        "accounts": {"mode": "change"}
+    }))
+    .await;
+    let rows = projection["accounts"]["rows"].as_array().expect("rows");
+    assert!(rows.iter().all(|row| row["depth"] == 1), "{rows:?}");
+    assert_eq!(account_values(&projection, "expenses")[2..], [4200, 4200]);
+}
+
+/// **Show empty accounts** adds the declared and known accounts the window
+/// never touches — what a projection misses — as all-zero rows.
+#[tokio::test]
+async fn empty_accounts_are_shown_only_when_asked_for() {
+    let hidden = accounts_run("change", false, vec![]).await;
+    assert!(
+        account_row(&hidden, "expenses:shopping").is_none(),
+        "declared, never posted: hidden by default"
+    );
+    let shown = accounts_run("change", true, vec![]).await;
+    let shopping = account_row(&shown, "expenses:shopping").expect("the declared account is a row");
+    assert_eq!(series(shopping), [0, 0, 0, 0]);
+    // Every row the hidden reading had is still there, with the same figures.
+    for row in hidden["accounts"]["rows"].as_array().expect("rows") {
+        let account = row["account"].as_str().expect("account");
+        assert_eq!(account_values(&shown, account), series(row), "{account}");
+    }
+    let balance = accounts_run("balance", true, vec![]).await;
+    assert!(account_row(&balance, "expenses:shopping").is_some());
+}
+
+#[tokio::test]
+async fn an_unknown_accounts_mode_is_a_400() {
+    let (status, text) = post(json!({
+        "scenario": scenario_with(vec![rent_line()], vec![]),
+        "asOf": "2026-07-08",
+        "accounts": {"mode": "cumulative"}
+    }))
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    assert!(
+        text.contains("change") && text.contains("balance"),
+        "{text}"
+    );
+}
+
+/// **The journal is the generated transactions only**, date-ascending, in the
+/// journal view's row shape and with hledger's `generated-transaction` tag —
+/// what `hledger print --forecast tag:generated` prints — each naming the
+/// part of the scenario it came from.
+#[tokio::test]
+async fn the_journal_is_the_forecast_transactions_in_print_shape() {
+    let event = json!({
+        "id": "laptop",
+        "date": "2026-07-20",
+        "description": "new laptop",
+        "postings": [{
+            "account": "expenses:equipment",
+            "amount": {"commodity": "$", "quantity": {"mantissa": "2000", "places": 0}, "precision": 0}
+        }],
+        "counter": "liabilities:cc:visa"
+    });
+    let projection = run(json!({
+        "scenario": scenario_with(vec![rent_line()], vec![event]),
+        "asOf": "2026-07-08",
+        "count": 2,
+        "journal": true,
+        "accounts": {"mode": "change"}
+    }))
+    .await;
+    let journal = &projection["journal"];
+    assert_eq!(journal["total"], 3);
+    assert_eq!(journal["truncated"], false);
+    let entries = journal["entries"].as_array().expect("entries");
+    let dates: Vec<&str> = entries
+        .iter()
+        .map(|entry| entry["txn"]["date"].as_str().expect("date"))
+        .collect();
+    assert_eq!(dates, ["2026-07-01", "2026-07-20", "2026-08-01"]);
+
+    let rent = &entries[0];
+    assert_eq!(rent["origin"], json!({"kind": "rule", "key": "rule:0"}));
+    assert_eq!(rent["txn"]["description"], "projection");
+    assert!(
+        rent["txn"]["tags"]
+            .as_array()
+            .expect("tags")
+            .contains(&json!(["generated-transaction", "~ monthly"])),
+        "{}",
+        rent["txn"]["tags"]
+    );
+    let postings = rent["txn"]["postings"].as_array().expect("postings");
+    let accounts: Vec<&str> = postings
+        .iter()
+        .map(|posting| posting["account"].as_str().expect("account"))
+        .collect();
+    assert_eq!(accounts, ["expenses:rent", "assets:bank:checking"]);
+    let quantity = |posting: &Value| -> String {
+        posting["amounts"][0]["qty"]["m"]
+            .as_str()
+            .expect("mantissa")
+            .to_string()
+    };
+    assert_eq!(quantity(&postings[0]), "420000");
+    assert_eq!(quantity(&postings[1]), "-420000");
+
+    let laptop = &entries[1];
+    assert_eq!(laptop["origin"], json!({"kind": "event", "key": "laptop"}));
+    assert_eq!(laptop["txn"]["description"], "new laptop");
+    assert_eq!(
+        laptop["txn"]["postings"][1]["account"],
+        "liabilities:cc:visa"
+    );
+
+    // No real transaction is in it: none carries a source position or lacks
+    // the generated tag.
+    assert!(entries.iter().all(|entry| {
+        entry["txn"]["tags"]
+            .as_array()
+            .expect("tags")
+            .iter()
+            .any(|tag| tag[0] == "generated-transaction")
+    }));
+
+    // The two readings agree: the forecast columns of the Accounts report are
+    // the journal's postings, summed per account and month.
+    assert_eq!(
+        account_values(&projection, "expenses:equipment")[2..],
+        [2000, 0]
+    );
+    assert_eq!(
+        account_values(&projection, "expenses:rent")[2..],
+        [4200, 4200]
+    );
+}
+
+/// An asset row's appreciation is a `growth` entry naming the row.
+#[tokio::test]
+async fn an_asset_rows_growth_is_named_in_the_journal() {
+    let projection = run(json!({
+        "scenario": scenario_with(vec![asset_row("assets:vehicles:car", "12")], vec![]),
+        "asOf": "2026-07-08",
+        "interval": "yearly",
+        "lookback": 0,
+        "count": 3,
+        "journal": true
+    }))
+    .await;
+    let entries = projection["journal"]["entries"]
+        .as_array()
+        .expect("entries");
+    assert!(
+        !entries.is_empty(),
+        "the car grows: {}",
+        projection["warnings"]
+    );
+    for entry in entries {
+        assert_eq!(entry["origin"], json!({"kind": "growth", "key": "rule:1"}));
+        assert_eq!(
+            entry["txn"]["postings"][0]["account"],
+            "assets:vehicles:car"
+        );
+    }
 }
 
 /// **An UNPRICED asset's appreciation is a posting to a gains account**

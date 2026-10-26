@@ -183,7 +183,7 @@ impl ViewCache {
         entry
     }
 
-    fn declared(&self, journal: &Journal) -> Arc<DeclaredStyles> {
+    pub(crate) fn declared(&self, journal: &Journal) -> Arc<DeclaredStyles> {
         Arc::clone(
             self.declared
                 .get_or_init(|| Arc::new(DeclaredStyles::of(journal))),

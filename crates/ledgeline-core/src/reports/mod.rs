@@ -22,6 +22,7 @@
 
 pub mod account_class;
 pub mod account_groups;
+pub mod account_periods;
 pub mod account_types;
 pub mod accounts;
 pub mod aggregate;
@@ -58,6 +59,7 @@ pub use account_groups::{
     account_groups_from, bs_terms, declared_bs_terms, declared_groups, declared_groups_from,
     group_rank, parse_bs_term_tag, resolve_bs_term,
 };
+pub use account_periods::{AccountPeriodsOpts, BalanceMode, account_periods};
 pub use account_types::{
     ACCOUNT_TYPE_TAG, AccountDecl, AccountType, AccountTypes, accepted_type_tags, account_decls,
     account_decls_from, cash_predicate, declared_types, entered_negated, is_account_type,
