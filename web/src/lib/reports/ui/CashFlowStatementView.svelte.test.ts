@@ -6,7 +6,8 @@ import {fireEvent, render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {keymap} from "#lib/keys/keymap.svelte.js";
-import {CASH_FLOW, CASH_FLOW_TOTAL} from "#lib/testing/cashFlowFixture.js";
+import {CASH_FLOW, CASH_FLOW_TOTAL, flow} from "#lib/testing/cashFlowFixture.js";
+import {expectSharedGrid} from "#lib/testing/statementGrid.js";
 import CashFlowStatementView from "./CashFlowStatementView.svelte";
 
 const openJournal = vi.hoisted(() => vi.fn(() => Promise.resolve()));
@@ -93,6 +94,36 @@ describe("COMPONENT CashFlowStatementView", () => {
     it("leaves out the exchange-rate line when there is none", () => {
         mount();
         expect(screen.queryByTestId("cf-exchange")).toBeNull();
+    });
+
+    // The exchange-rate and net-change lines used to be bare one-row tables
+    // under the browser's auto layout: their figures sat wherever their own
+    // label width put them, under no heading.
+    it("puts every block, the ruled lines included, on one column template with its own headings", () => {
+        render(CashFlowStatementView, {props: {report: {...CASH_FLOW, exchange: flow([1, 0, 0])}, styles: STYLES, base: "$", projectedFrom: 2}});
+        const blocks = [
+            ...screen
+                .getByTestId("cf-scroller")
+                .querySelectorAll("[data-testid^='cf-section-'],[data-testid^='cf-cash-'],[data-testid='cf-exchange'],[data-testid='cf-net-change']"),
+        ];
+        expect(blocks.map((block) => block.getAttribute("data-testid"))).toEqual([
+            "cf-section-operating",
+            "cf-section-investing",
+            "cf-section-financing",
+            "cf-exchange",
+            "cf-net-change",
+            "cf-cash-beginning",
+            "cf-cash-ending",
+        ]);
+        expectSharedGrid(blocks, 4, true);
+        const heads = [...screen.getByTestId("cf-net-change").querySelectorAll("thead tr:not([data-testid]) th")].map((th) => th.textContent?.trim());
+        expect(heads.slice(1)).toEqual(["Jan 2026", "Feb 2026", "Mar 2026", "Total"]);
+    });
+
+    it("leaves Interval = Total on auto layout, the ruled lines without headings", () => {
+        mount(CASH_FLOW_TOTAL);
+        expect(screen.getByTestId("cash-flow-statement").querySelector("colgroup")).toBeNull();
+        expect(screen.getByTestId("cf-net-change").querySelector("thead")).toBeNull();
     });
 
     it("walks rows with j, opens a line with Enter, and drills an account into the journal for the report's dates", async () => {

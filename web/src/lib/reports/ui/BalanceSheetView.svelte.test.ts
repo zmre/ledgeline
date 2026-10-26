@@ -18,6 +18,7 @@ import type {AmountStyle} from "#lib/domain/types.js";
 import {keymap} from "#lib/keys/keymap.svelte.js";
 import {CLASSIFIED_BALANCE_SHEET, GROUPED_BALANCE_SHEET, STRADDLING_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "#lib/testing/balanceSheetFixture.js";
 import {PROJECTION_COLUMNS, widenSheet} from "#lib/testing/projectionFixture.js";
+import {expectSharedGrid} from "#lib/testing/statementGrid.js";
 import type {BalanceSheetColumns} from "#lib/reports/types.js";
 import {asColumns} from "./balanceSheetRows";
 import BalanceSheetView from "./BalanceSheetView.svelte";
@@ -588,8 +589,17 @@ describe("COMPONENT BalanceSheetView — columns side by side (plan 28)", () => 
         mountColumns();
         const firstGroup = screen.getByTestId("bs-section-assets").querySelector("tbody tr");
         expect(firstGroup?.querySelectorAll("td")).toHaveLength(4);
-        // Four figures and the one verdict.
-        expect(screen.getByTestId("bs-tie-out").querySelectorAll("td")).toHaveLength(5);
+        // Four figures, and the verdict in the label cell: a fifth column on the
+        // tie-out alone would push its periods out from under the boxes'.
+        expect(screen.getByTestId("bs-tie-out").querySelectorAll("td")).toHaveLength(4);
+        expect(screen.getByTestId("bs-tie-out").querySelector("th")?.textContent).toContain("Balanced");
+    });
+
+    it("puts every box and the tie-out on one column template, inside one scroller", () => {
+        mountColumns();
+        const blocks = ["bs-section-assets", "bs-section-liabilities", "bs-section-equity", "bs-summary"].map((id) => screen.getByTestId(id));
+        expectSharedGrid(blocks, 4, true);
+        expect(screen.getByTestId("bs-scroller").classList.contains("overflow-x-auto")).toBe(true);
     });
 
     it("draws no actual/projected band when nothing is projected", () => {
@@ -609,5 +619,12 @@ describe("COMPONENT BalanceSheetView — columns side by side (plan 28)", () => 
         expect([...(head?.querySelectorAll("th") ?? [])].map((th) => th.textContent?.trim())).toEqual([expect.stringContaining("line"), "Amount"]);
         expect(screen.queryByTestId("projected-band")).toBeNull();
         expect(screen.getByTestId("balance-sheet").textContent).toContain(`as of ${REPORT.asOf}`);
+    });
+
+    it("the single-date sheet keeps auto layout and its verdict column", () => {
+        mount();
+        expect(screen.getByTestId("balance-sheet").querySelector("colgroup")).toBeNull();
+        expect(screen.getByTestId("bs-summary").querySelector("table")?.classList.contains("table-fixed")).toBe(false);
+        expect(screen.getByTestId("bs-tie-out").querySelectorAll("td")).toHaveLength(2);
     });
 });

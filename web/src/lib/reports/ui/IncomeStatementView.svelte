@@ -26,8 +26,12 @@
      Two column layouts (plans/24). Interval = Total: Amount, Prior and % change
      ((current − prior) / |prior|, `—` when the prior is zero). Any other
      interval: one column per bucket and a Total that sums them, with no prior
-     and no percentage. Each box is still its own table, so the bucket columns
-     are pinned to one width exactly as the Total-mode ones are.
+     and no percentage. There every box, ladder line and the net income row
+     share ONE column template (statementGrid.ts): the same colgroup under
+     fixed layout, the same width, inside one horizontal scroller. Auto layout
+     gave each table its own label width once the buckets overflowed, so the
+     ladder lines' figures sat under no heading at all. Each ladder line also
+     carries the period headings (and the Actual/Projected band) itself.
 
      Keyboard: j/k walk every VISIBLE row — group headings included, so `j` does
      something on first load rather than nothing — and Enter either opens the
@@ -41,10 +45,12 @@
     import {settings} from "#lib/stores/settings.svelte.js";
     import {listCursor} from "#lib/ui/listCursor.svelte.js";
     import {amountCell, fmtPct, isCursorRows, isDisplayModel, type AmountCell, type IsDisplayRow} from "./incomeStatementRows";
+    import FigureColgroup from "./FigureColgroup.svelte";
     import ProjectedHeadRow from "./ProjectedHeadRow.svelte";
     import {projectedEdge} from "./projectedColumns";
     import SankeyPanel from "./SankeyPanel.svelte";
     import {type FlowsPanel} from "./sankeyModel";
+    import {statementMinWidth} from "./statementGrid";
 
     // `flows` is OPTIONAL with a null default deliberately: it keeps
     // IncomeStatementView.svelte.test.ts scoped exactly as it was written, and
@@ -143,6 +149,13 @@
     const summary = $derived(model.summary);
     const comparing = $derived(model.comparing);
     const buckets = $derived(model.buckets);
+    /**
+     * Interval mode: every table is on the shared column template, so the
+     * line-name column takes its width from the colgroup (and truncates) rather
+     * than claiming the whole row with `w-full`.
+     */
+    const grid = $derived(buckets !== null);
+    const label = $derived(grid ? "truncate" : "w-full");
     /** How many figure cells a line has — for the empty-box row's colspan. */
     const figureColumns = $derived(buckets !== null ? buckets.length + 1 : comparing ? 3 : 1);
 
@@ -191,6 +204,10 @@
 {/snippet}
 
 <!-- The column headings for those figures, in the same order. -->
+{#snippet template()}
+    {#if buckets !== null}<FigureColgroup periods={buckets.length} total={true} />{/if}
+{/snippet}
+
 {#snippet figureHeads()}
     {#if buckets !== null}
         {#each buckets as bucket, i (bucket.key)}
@@ -213,15 +230,25 @@
      data does. Each panel has its OWN persisted flag; one flag made both arrows
      move together. -->
 {#snippet flowPanel(panel: FlowsPanel, title: string, caption: string, inbound: boolean)}
-    <SankeyPanel
-        {title}
-        {caption}
-        {panel}
-        {inbound}
-        {styles}
-        open={inbound ? settings.flowsInOpen : settings.flowsOutOpen}
-        onToggle={(next) => (inbound ? (settings.flowsInOpen = next) : (settings.flowsOutOpen = next))}
-    />
+    {#snippet sankey()}
+        <SankeyPanel
+            {title}
+            {caption}
+            {panel}
+            {inbound}
+            {styles}
+            open={inbound ? settings.flowsInOpen : settings.flowsOutOpen}
+            onToggle={(next) => (inbound ? (settings.flowsInOpen = next) : (settings.flowsOutOpen = next))}
+        />
+    {/snippet}
+    {#if grid}
+        <!-- Inside the interval-mode scroller, so pinned to its left edge at the
+             scroller's own width (`100cqw`): the diagram stays on screen while
+             the tables under it scroll sideways. -->
+        <div class="sticky left-0 w-[100cqw]">{@render sankey()}</div>
+    {:else}
+        {@render sankey()}
+    {/if}
 {/snippet}
 
 <div class="flex flex-col gap-4" data-testid="income-statement">
@@ -229,107 +256,132 @@
         {valuationLabel} for {report.from} to {report.to}{#if report.prior !== null}, against {report.prior.from} to {report.prior.to}{/if}
     </p>
 
-    {#each model.boxes as box (box.kind)}
-        {#if flows !== null && box.kind === "revenue"}
-            {@render flowPanel(flows, "Money in", "Where the period's income came from, and which accounts it landed in.", true)}
-        {/if}
-        {#if flows !== null && box.kind === firstCost}
-            {@render flowPanel(flows, "Money out", "Which accounts paid, and what the period spent it on.", false)}
-        {/if}
-        <!-- Scrolls sideways rather than clipping once a long interval run is
-             wider than the page. -->
-        <section class="overflow-x-auto rounded-box border border-base-content/10" data-testid="is-section-{box.kind}">
-            <h3 class="bg-base-200 {ACCENT[box.kind].rule} border-b-2 px-4 py-2.5 text-sm font-semibold tracking-wide uppercase {ACCENT[box.kind].text}">
-                {box.title}
-            </h3>
-            <table class="table table-sm">
-                <!-- Repeated per box rather than printed once above them: each box
+    <!-- Interval mode: ONE sideways scroller around the whole stack, held to one
+         width, so every block keeps the same column edges and they all scroll
+         together. Total mode: both wrappers are `contents`, so the boxes stay
+         direct flex children and the page is exactly as it was. -->
+    <div class={grid ? "@container overflow-x-auto" : "contents"} data-testid="is-scroller">
+        <div class={grid ? "flex flex-col gap-4" : "contents"} style:min-width={buckets !== null ? statementMinWidth(buckets.length, true) : undefined}>
+            {#each model.boxes as box (box.kind)}
+                {#if flows !== null && box.kind === "revenue"}
+                    {@render flowPanel(flows, "Money in", "Where the period's income came from, and which accounts it landed in.", true)}
+                {/if}
+                {#if flows !== null && box.kind === firstCost}
+                    {@render flowPanel(flows, "Money out", "Which accounts paid, and what the period spent it on.", false)}
+                {/if}
+                <!-- Total mode scrolls sideways rather than clipping; in interval mode the
+             shared scroller around the stack does that. -->
+                <section class="{grid ? 'overflow-hidden' : 'overflow-x-auto'} rounded-box border border-base-content/10" data-testid="is-section-{box.kind}">
+                    <h3
+                        class="bg-base-200 {ACCENT[box.kind].rule} border-b-2 px-4 py-2.5 text-sm font-semibold tracking-wide uppercase {ACCENT[box.kind].text}"
+                    >
+                        {box.title}
+                    </h3>
+                    <table class="table table-sm {grid ? 'table-fixed' : ''}">
+                        {@render template()}
+                        <!-- Repeated per box rather than printed once above them: each box
                      is a separate table, so a single heading strip could not stay
                      aligned with the columns under it, and a table with no column
                      headers is a table a screen reader cannot narrate. -->
-                <thead>
-                    <ProjectedHeadRow columns={buckets?.length ?? 0} {projectedFrom} trailing={1} />
-                    <tr class="text-[0.65rem] text-base-content/40">
-                        <th class="w-full font-normal"><span class="sr-only">{box.title} line</span></th>
-                        {@render figureHeads()}
-                    </tr>
-                </thead>
-                <tbody>
-                    {#each box.rows as row (row.key)}
-                        <tr
-                            class="scroll-mt-10 {cursor.key === row.key ? 'bg-primary/25' : ''} {row.kind === 'group' ? 'font-medium' : ''}"
-                            aria-current={cursor.key === row.key ? "true" : undefined}
-                            data-is-row={row.key}
-                            data-account={row.account ?? undefined}
-                        >
-                            <th class="w-full font-normal">
-                                {#if row.kind === "group"}
-                                    {#if row.expandable}
-                                        <button
-                                            type="button"
-                                            class="flex cursor-pointer items-center gap-1.5 text-left font-medium hover:text-primary"
-                                            aria-expanded={row.expanded}
-                                            onclick={() => toggle(row.key)}
-                                        >
-                                            <span
-                                                class="inline-block w-3 shrink-0 text-[0.65rem] text-base-content/40 transition-transform {row.expanded
-                                                    ? 'rotate-90'
-                                                    : ''}"
-                                                aria-hidden="true">▶</span
-                                            >
-                                            {row.label}
-                                        </button>
-                                    {:else}
-                                        <!-- A group the engine sent no accounts for. The spacer keeps its
+                        <thead>
+                            <ProjectedHeadRow columns={buckets?.length ?? 0} {projectedFrom} trailing={1} fixed={grid} />
+                            <tr class="text-[0.65rem] text-base-content/40">
+                                <th class="{label} font-normal"><span class="sr-only">{box.title} line</span></th>
+                                {@render figureHeads()}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {#each box.rows as row (row.key)}
+                                <tr
+                                    class="scroll-mt-10 {cursor.key === row.key ? 'bg-primary/25' : ''} {row.kind === 'group' ? 'font-medium' : ''}"
+                                    aria-current={cursor.key === row.key ? "true" : undefined}
+                                    data-is-row={row.key}
+                                    data-account={row.account ?? undefined}
+                                >
+                                    <th class="{label} font-normal">
+                                        {#if row.kind === "group"}
+                                            {#if row.expandable}
+                                                <button
+                                                    type="button"
+                                                    class="flex cursor-pointer items-center gap-1.5 text-left font-medium hover:text-primary"
+                                                    aria-expanded={row.expanded}
+                                                    onclick={() => toggle(row.key)}
+                                                >
+                                                    <span
+                                                        class="inline-block w-3 shrink-0 text-[0.65rem] text-base-content/40 transition-transform {row.expanded
+                                                            ? 'rotate-90'
+                                                            : ''}"
+                                                        aria-hidden="true">▶</span
+                                                    >
+                                                    {row.label}
+                                                </button>
+                                            {:else}
+                                                <!-- A group the engine sent no accounts for. The spacer keeps its
                                              label on the same left edge as the groups that do. -->
-                                        <span class="flex items-center gap-1.5 font-medium">
-                                            <span class="inline-block w-3 shrink-0" aria-hidden="true"></span>{row.label}
-                                        </span>
-                                    {/if}
-                                {:else}
-                                    <!-- Inline padding, not a class: the depth is data, and `ReportTable`
+                                                <span class="flex items-center gap-1.5 font-medium">
+                                                    <span class="inline-block w-3 shrink-0" aria-hidden="true"></span>{row.label}
+                                                </span>
+                                            {/if}
+                                        {:else}
+                                            <!-- Inline padding, not a class: the depth is data, and `ReportTable`
                                          indents its own rows the same way (1rem per level). -->
-                                    <span class="whitespace-nowrap text-base-content/70" style="padding-left: {row.indent}rem" title={row.account}
-                                        >{row.label}</span
-                                    >
-                                {/if}
-                            </th>
-                            {@render figures(row.amounts, row.pct, row.kind === "group" ? "font-medium" : "text-base-content/70")}
-                        </tr>
-                    {/each}
-                    {#if box.rows.length === 0}
-                        <tr>
-                            <th class="w-full font-normal text-base-content/50">No {box.title.toLowerCase()}</th>
-                            <td colspan={figureColumns}></td>
-                        </tr>
-                    {/if}
-                </tbody>
-                <tfoot>
-                    <tr class="border-t-2 border-base-content/20 bg-base-200 text-sm font-bold text-base-content">
-                        <th class="w-full font-bold">Total {box.title}</th>
-                        {@render figures(box.total, box.totalPct, "font-bold")}
-                    </tr>
-                </tfoot>
-            </table>
-        </section>
+                                            <span class="whitespace-nowrap text-base-content/70" style="padding-left: {row.indent}rem" title={row.account}
+                                                >{row.label}</span
+                                            >
+                                        {/if}
+                                    </th>
+                                    {@render figures(row.amounts, row.pct, row.kind === "group" ? "font-medium" : "text-base-content/70")}
+                                </tr>
+                            {/each}
+                            {#if box.rows.length === 0}
+                                <tr>
+                                    <th class="{label} font-normal text-base-content/50">No {box.title.toLowerCase()}</th>
+                                    <td colspan={figureColumns}></td>
+                                </tr>
+                            {/if}
+                        </tbody>
+                        <tfoot>
+                            <tr class="border-t-2 border-base-content/20 bg-base-200 text-sm font-bold text-base-content">
+                                <th class="{label} font-bold">Total {box.title}</th>
+                                {@render figures(box.total, box.totalPct, "font-bold")}
+                            </tr>
+                        </tfoot>
+                    </table>
+                </section>
 
-        <!-- The ladder. Between the boxes, ruled top and bottom, and outside every
-             box's border precisely so it cannot be read as part of one. -->
-        {#each box.trailing as subtotal (subtotal.kind)}
-            <div class="-my-1 overflow-x-auto border-y-2 border-base-content/30" data-testid="is-subtotal-{subtotal.kind}">
-                <table class="table table-sm">
-                    <tbody>
-                        <tr>
-                            <th class="w-full text-sm font-semibold">{subtotal.label}</th>
-                            {@render figures(subtotal.amounts, subtotal.pct, "font-semibold")}
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        {/each}
-    {/each}
+                <!-- The ladder. Between the boxes, ruled top and bottom, and outside every
+             box's border precisely so it cannot be read as part of one. In
+             interval mode it is its own block on the shared template, so it
+             names its columns (and the projected band) like every box does:
+             a row of bare figures is not readable on its own. -->
+                {#each box.trailing as subtotal (subtotal.kind)}
+                    <div
+                        class="-my-1 {grid ? 'border-x border-x-transparent' : 'overflow-x-auto'} border-y-2 border-base-content/30"
+                        data-testid="is-subtotal-{subtotal.kind}"
+                    >
+                        <table class="table table-sm {grid ? 'table-fixed' : ''}">
+                            {@render template()}
+                            {#if grid}
+                                <thead>
+                                    <ProjectedHeadRow columns={buckets?.length ?? 0} {projectedFrom} trailing={1} fixed />
+                                    <tr class="text-[0.65rem] text-base-content/40">
+                                        <th class="{label} font-normal"><span class="sr-only">{subtotal.label} line</span></th>
+                                        {@render figureHeads()}
+                                    </tr>
+                                </thead>
+                            {/if}
+                            <tbody>
+                                <tr>
+                                    <th class="{label} text-sm font-semibold">{subtotal.label}</th>
+                                    {@render figures(subtotal.amounts, subtotal.pct, "font-semibold")}
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                {/each}
+            {/each}
 
-    <!-- The summary: net income, and nothing else.
+            <!-- The summary: net income, and nothing else.
 
          A condensed "Total Revenue / Less: Cost of revenue / …" table stood here
          and has been removed. It was modelled on the balance sheet's tie-out,
@@ -344,54 +396,59 @@
          In interval mode it is a ruled ROW instead, aligned under the bucket
          columns like the ladder lines: net income per month is the one figure a
          reader most wants there, and a single Total would hide it. -->
-    {#if buckets !== null}
-        <div class="overflow-x-auto rounded-box border border-base-content/20 bg-base-200" data-testid="is-net-income">
-            <table class="table table-sm">
-                <thead>
-                    <ProjectedHeadRow columns={buckets.length} {projectedFrom} trailing={1} />
-                    <tr class="text-[0.65rem] text-base-content/40">
-                        <th class="w-full font-normal"><span class="sr-only">Net income</span></th>
-                        {@render figureHeads()}
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr>
-                        <th class="w-full text-sm font-semibold tracking-wide uppercase">
-                            Net income
-                            <span class="ml-1 text-xs font-normal tracking-normal text-base-content/50 normal-case">(revenue − expenses)</span>
-                        </th>
-                        {@render figures(summary.netIncome, null, "font-semibold")}
-                    </tr>
-                </tbody>
-            </table>
-        </div>
-    {:else}
-        <div
-            class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 rounded-box border border-base-content/20 bg-base-200 px-4 py-3"
-            data-testid="is-net-income"
-        >
-            <span class="text-sm font-semibold tracking-wide uppercase">
-                Net income
-                <span class="ml-1 text-xs font-normal tracking-normal text-base-content/50 normal-case">(revenue − expenses)</span>
-            </span>
-            <!-- Current, THEN prior, then the percentage — the same left-to-right order
+            {#if buckets !== null}
+                <div class="overflow-hidden rounded-box border border-base-content/20 bg-base-200" data-testid="is-net-income">
+                    <table class="table table-fixed table-sm">
+                        {@render template()}
+                        <thead>
+                            <ProjectedHeadRow columns={buckets.length} {projectedFrom} trailing={1} fixed />
+                            <tr class="text-[0.65rem] text-base-content/40">
+                                <th class="{label} font-normal"><span class="sr-only">Net income</span></th>
+                                {@render figureHeads()}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <th class="{label} text-sm font-semibold tracking-wide uppercase">
+                                    Net income
+                                    <span class="ml-1 text-xs font-normal tracking-normal text-base-content/50 normal-case">(revenue − expenses)</span>
+                                </th>
+                                {@render figures(summary.netIncome, null, "font-semibold")}
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            {:else}
+                <div
+                    class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 rounded-box border border-base-content/20 bg-base-200 px-4 py-3"
+                    data-testid="is-net-income"
+                >
+                    <span class="text-sm font-semibold tracking-wide uppercase">
+                        Net income
+                        <span class="ml-1 text-xs font-normal tracking-normal text-base-content/50 normal-case">(revenue − expenses)</span>
+                    </span>
+                    <!-- Current, THEN prior, then the percentage — the same left-to-right order
              as the Amount / Prior / % change columns in every box above, and
              the order `setIsAmounts` writes to the workbook. This panel is the one
              place on the page where the figures carry no column header, so it is
              the one place a reader has nothing but the established order to go on:
              rendered prior-first it read as though net income were $14,880.79 when
              the period actually earned $8,883.52. -->
-            <span class="flex flex-wrap items-baseline justify-end gap-x-4">
-                <span class="text-right font-mono text-xl font-semibold tabular-nums">
-                    {@render amount(cell(summary.netIncome.current), "")}
-                </span>
-                {#if comparing}
-                    <span class="text-right font-mono text-base-content/60 tabular-nums" data-testid="is-net-income-prior">
-                        {@render amount(cell(summary.netIncome.prior), "")}
+                    <span class="flex flex-wrap items-baseline justify-end gap-x-4">
+                        <span class="text-right font-mono text-xl font-semibold tabular-nums">
+                            {@render amount(cell(summary.netIncome.current), "")}
+                        </span>
+                        {#if comparing}
+                            <span class="text-right font-mono text-base-content/60 tabular-nums" data-testid="is-net-income-prior">
+                                {@render amount(cell(summary.netIncome.prior), "")}
+                            </span>
+                            <span class="w-20 text-right font-mono text-base-content/60 tabular-nums" data-testid="is-net-income-pct"
+                                >{fmtPct(summary.netPct)}</span
+                            >
+                        {/if}
                     </span>
-                    <span class="w-20 text-right font-mono text-base-content/60 tabular-nums" data-testid="is-net-income-pct">{fmtPct(summary.netPct)}</span>
-                {/if}
-            </span>
+                </div>
+            {/if}
         </div>
-    {/if}
+    </div>
 </div>

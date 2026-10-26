@@ -3,10 +3,12 @@
      financing, then the net change in cash and the cash balances either side of
      it.
 
-     Laid out like IncomeStatementView: each section is its own table with the
-     figure columns pinned to one width, so the ruled lines between sections line
-     up with the columns above and below them. One column per period plus a
-     Total, or a single Amount column when Interval is Total.
+     Laid out like IncomeStatementView: each section is its own table, and with
+     one column per period plus a Total every block (sections, the ruled lines,
+     the cash balances) shares ONE column template (statementGrid.ts) inside one
+     horizontal scroller, so their columns line up and scroll together; the
+     ruled lines carry the period headings themselves. A single Amount column
+     when Interval is Total.
 
      Every line reads as its effect on cash: an asset that grew is negative (cash
      went into it), a liability that grew is positive. The engine guarantees the
@@ -27,8 +29,10 @@
     import {listCursor} from "#lib/ui/listCursor.svelte.js";
     import {amountCell, type AmountCell} from "./amountCell";
     import {cfCursorRows, cfDisplayModel, cfFoldKey, type CfDisplayRow} from "./cashFlowRows";
+    import FigureColgroup from "./FigureColgroup.svelte";
     import ProjectedHeadRow from "./ProjectedHeadRow.svelte";
     import {projectedEdge} from "./projectedColumns";
+    import {statementMinWidth} from "./statementGrid";
 
     // `projectedFrom` (plans/28): the first FORECAST column on the Projections
     // tab, drawn as a divider under "Projected". Null changes nothing.
@@ -89,6 +93,9 @@
 
     const cell = (ma: MixedAmount): AmountCell => amountCell(ma, base, styles);
     const buckets = $derived(model.buckets);
+    /** Interval mode: every block on the shared fixed column template (statementGrid.ts). */
+    const grid = $derived(buckets !== null);
+    const label = $derived(grid ? "truncate" : "w-full");
 
     /** Static literals so Tailwind's scanner sees every class. */
     const ACCENT: Record<CfSectionKind, {text: string; rule: string}> = {
@@ -120,8 +127,12 @@
     {/if}
 {/snippet}
 
-{#snippet figureHeads(label: string)}
-    <th class="w-full font-normal"><span class="sr-only">{label}</span></th>
+{#snippet template()}
+    {#if buckets !== null}<FigureColgroup periods={buckets.length} total={true} />{/if}
+{/snippet}
+
+{#snippet figureHeads(name: string)}
+    <th class="{label} font-normal"><span class="sr-only">{name}</span></th>
     {#if buckets !== null}
         {#each buckets as bucket, i (bucket.key)}
             <th class="w-28 min-w-28 {projectedEdge(i, projectedFrom)} text-right font-normal" title="{bucket.from} to {bucket.to}">{bucket.label}</th>
@@ -139,7 +150,7 @@
         data-cf-row={row.key}
         data-account={row.account ?? undefined}
     >
-        <th class="w-full font-normal">
+        <th class="{label} font-normal">
             {#if row.expandable}
                 <button
                     type="button"
@@ -165,12 +176,21 @@
     </tr>
 {/snippet}
 
-{#snippet ruled(label: string, columns: CfColumns, testid: string)}
-    <div class="-my-1 overflow-x-auto border-y-2 border-base-content/30" data-testid={testid}>
-        <table class="table table-sm">
+{#snippet ruled(title: string, columns: CfColumns, testid: string)}
+    <div class="-my-1 {grid ? 'border-x border-x-transparent' : 'overflow-x-auto'} border-y-2 border-base-content/30" data-testid={testid}>
+        <table class="table table-sm {grid ? 'table-fixed' : ''}">
+            {@render template()}
+            <!-- In interval mode a ruled line is a row of bare figures between
+                 two blocks, so it names its own columns. -->
+            {#if grid}
+                <thead>
+                    <ProjectedHeadRow columns={buckets?.length ?? 0} {projectedFrom} trailing={1} fixed />
+                    <tr class="text-[0.65rem] text-base-content/40">{@render figureHeads(`${title} line`)}</tr>
+                </thead>
+            {/if}
             <tbody>
                 <tr>
-                    <th class="w-full text-sm font-semibold">{label}</th>
+                    <th class="{label} text-sm font-semibold">{title}</th>
                     {@render figures(columns, "font-semibold")}
                 </tr>
             </tbody>
@@ -181,55 +201,68 @@
 <div class="flex flex-col gap-4" data-testid="cash-flow-statement">
     <p class="-mb-1 text-xs text-base-content/50">At cost, for {report.from} to {report.to}</p>
 
-    {#each model.boxes as box (box.kind)}
-        <section class="overflow-x-auto rounded-box border border-base-content/10" data-testid="cf-section-{box.kind}">
-            <h3 class="bg-base-200 {ACCENT[box.kind].rule} border-b-2 px-4 py-2.5 text-sm font-semibold tracking-wide uppercase {ACCENT[box.kind].text}">
-                {box.title}
-            </h3>
-            <table class="table table-sm">
-                <thead>
-                    <ProjectedHeadRow columns={buckets?.length ?? 0} {projectedFrom} trailing={1} />
-                    <tr class="text-[0.65rem] text-base-content/40">{@render figureHeads(`${box.title} line`)}</tr>
-                </thead>
-                <tbody>
-                    {#each box.rows as row (row.key)}
-                        {@render rowCells(row)}
-                    {/each}
-                </tbody>
-                <tfoot>
-                    <tr class="border-t-2 border-base-content/20 bg-base-200 text-sm font-bold text-base-content">
-                        <th class="w-full font-bold">{box.totalLabel}</th>
-                        {@render figures(box.total, "font-bold")}
-                    </tr>
-                </tfoot>
-            </table>
-        </section>
-    {/each}
+    <!-- Interval mode: one sideways scroller, one width, so every block keeps
+         the same column edges. Total mode: `contents`, exactly as before. -->
+    <div class={grid ? "overflow-x-auto" : "contents"} data-testid="cf-scroller">
+        <div class={grid ? "flex flex-col gap-4" : "contents"} style:min-width={buckets !== null ? statementMinWidth(buckets.length, true) : undefined}>
+            {#each model.boxes as box (box.kind)}
+                <section class="{grid ? 'overflow-hidden' : 'overflow-x-auto'} rounded-box border border-base-content/10" data-testid="cf-section-{box.kind}">
+                    <h3
+                        class="bg-base-200 {ACCENT[box.kind].rule} border-b-2 px-4 py-2.5 text-sm font-semibold tracking-wide uppercase {ACCENT[box.kind].text}"
+                    >
+                        {box.title}
+                    </h3>
+                    <table class="table table-sm {grid ? 'table-fixed' : ''}">
+                        {@render template()}
+                        <thead>
+                            <ProjectedHeadRow columns={buckets?.length ?? 0} {projectedFrom} trailing={1} fixed={grid} />
+                            <tr class="text-[0.65rem] text-base-content/40">{@render figureHeads(`${box.title} line`)}</tr>
+                        </thead>
+                        <tbody>
+                            {#each box.rows as row (row.key)}
+                                {@render rowCells(row)}
+                            {/each}
+                        </tbody>
+                        <tfoot>
+                            <tr class="border-t-2 border-base-content/20 bg-base-200 text-sm font-bold text-base-content">
+                                <th class="{label} font-bold">{box.totalLabel}</th>
+                                {@render figures(box.total, "font-bold")}
+                            </tr>
+                        </tfoot>
+                    </table>
+                </section>
+            {/each}
 
-    {#if model.exchange !== null}
-        {@render ruled("Effect of exchange rates on cash", model.exchange, "cf-exchange")}
-    {/if}
-    {@render ruled("Net change in cash", model.netChange, "cf-net-change")}
+            {#if model.exchange !== null}
+                {@render ruled("Effect of exchange rates on cash", model.exchange, "cf-exchange")}
+            {/if}
+            {@render ruled("Net change in cash", model.netChange, "cf-net-change")}
 
-    {#each [model.beginning, model.ending] as block (block.kind)}
-        <section class="overflow-x-auto rounded-box border border-base-content/20 bg-base-200/40" data-testid="cf-cash-{block.kind}">
-            <table class="table table-sm">
-                <thead>
-                    <ProjectedHeadRow columns={buckets?.length ?? 0} {projectedFrom} trailing={1} />
-                    <tr class="text-[0.65rem] text-base-content/40">{@render figureHeads(block.title)}</tr>
-                </thead>
-                <tbody>
-                    <tr class="text-sm">
-                        <th class="w-full font-semibold tracking-wide uppercase">{block.title}</th>
-                        {@render figures(block.total, "font-semibold")}
-                    </tr>
-                    {#each block.rows as row (row.key)}
-                        {@render rowCells(row)}
-                    {/each}
-                </tbody>
-            </table>
-        </section>
-    {/each}
+            {#each [model.beginning, model.ending] as block (block.kind)}
+                <section
+                    class="{grid ? 'overflow-hidden' : 'overflow-x-auto'} rounded-box border border-base-content/20 bg-base-200/40"
+                    data-testid="cf-cash-{block.kind}"
+                >
+                    <table class="table table-sm {grid ? 'table-fixed' : ''}">
+                        {@render template()}
+                        <thead>
+                            <ProjectedHeadRow columns={buckets?.length ?? 0} {projectedFrom} trailing={1} fixed={grid} />
+                            <tr class="text-[0.65rem] text-base-content/40">{@render figureHeads(block.title)}</tr>
+                        </thead>
+                        <tbody>
+                            <tr class="text-sm">
+                                <th class="{label} font-semibold tracking-wide uppercase">{block.title}</th>
+                                {@render figures(block.total, "font-semibold")}
+                            </tr>
+                            {#each block.rows as row (row.key)}
+                                {@render rowCells(row)}
+                            {/each}
+                        </tbody>
+                    </table>
+                </section>
+            {/each}
+        </div>
+    </div>
 
     <!-- A footnote, not a warning: it is almost always a posting date putting
          one side of a transaction in the next period, the Total column still
