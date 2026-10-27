@@ -37,7 +37,7 @@
 //! surfaced through [`ReportError`].
 
 use super::ReportError;
-use super::account_types::{AccountType, is_account_type};
+use super::account_types::{AccountType, is_account_type, is_category, resolve_account_type};
 use super::aggregate::roll_up;
 use super::mixed_amount::MixedAmount;
 use super::periods::{
@@ -237,6 +237,41 @@ pub(crate) fn occurrences(
                     .is_none_or(|to| compare_iso(date, to) == Ordering::Less)
         })
         .collect())
+}
+
+/// The dates `spec` fires on under `hledger --forecast=<start>..`, within the
+/// inclusive span `[start, end]`.
+///
+/// One difference from [`occurrences`], and it is hledger's: a fixed-interval
+/// rule with NO `from` (`~ weekly`, `~ every 2 weeks`, `~ yearly`) is phased
+/// from the FORECAST START itself, not from the start of the unit period that
+/// contains it. With `--forecast=2026-10-01..` hledger 1.52 fires `~ weekly`
+/// on Thursday 10-01, 10-08, … (where `balance --budget` reports Mondays),
+/// `~ yearly` on 2026-10-01 and 2027-10-01 (not January 1st), and, from
+/// 2026-10-05, `~ monthly` on the 5th of every month. Everything else
+/// reads the same both ways and goes to [`occurrences`] unchanged: a rule with
+/// `from` keeps its own phase, the anchored forms (`every 15th day of month`,
+/// `every tuesday`) are a lower bound, and a dated one-off and the exclusive
+/// `to` are as before. Verified by
+/// driving `hledger print --forecast` with forecast starts on, and off, every
+/// unit's boundary; pinned per rule by the plan 28 parity tests in
+/// `tests/projection_files.rs`.
+pub(crate) fn forecast_occurrences(
+    start: &str,
+    end: &str,
+    spec: &PeriodSpec,
+) -> Result<Vec<String>, ReportError> {
+    match (spec.kind, &spec.start) {
+        (PeriodKind::Every { .. }, None) => occurrences(
+            start,
+            end,
+            &PeriodSpec {
+                start: Some(start.to_string()),
+                ..spec.clone()
+            },
+        ),
+        _ => occurrences(start, end, spec),
+    }
 }
 
 /// `daily` … `yearly`, with or without a multiplier.
@@ -674,6 +709,34 @@ fn gap_rows(totals: BTreeMap<String, MixedAmount>) -> Result<Vec<GapRow>, Report
     Ok(keyed.into_iter().map(|(_, row)| row).collect())
 }
 
+/// `account` clipped to `depth`, unless that ancestor resolves to a type
+/// outside `category`; then the shallowest deeper ancestor that does not,
+/// falling back to `account` itself.
+///
+/// The clipped name is not only a label: [`crate::projections::seed_scenario`]
+/// books a projection line to it. `expenses:ga ; type: A` over
+/// `expenses:ga:rent ; type: X`, clipped to `expenses:ga`, turned a year of
+/// rent into a monthly line on an ASSET account, which the projected balance
+/// sheet then accumulated and the income statement never showed. An ancestor
+/// that resolves to no type at all (an untyped parent of mixed-type children)
+/// still clips, so such a name can still appear in both sections, as
+/// [`budget_gaps`] documents.
+fn clip_within_category<'a>(
+    account: &'a str,
+    depth: usize,
+    declared: &BTreeMap<String, AccountType>,
+    category: AccountType,
+) -> &'a str {
+    let segments = account.split(':').count();
+    (depth.max(1)..segments)
+        .map(|at| clip(account, at))
+        .find(|name| {
+            resolve_account_type(name, declared)
+                .is_none_or(|resolved| is_category(Some(resolved), category))
+        })
+        .unwrap_or(account)
+}
+
 /// The revenue and expense categories `rules` do not budget, over the same span
 /// [`budget_report`] would report for `opts`.
 ///
@@ -690,7 +753,9 @@ fn gap_rows(totals: BTreeMap<String, MixedAmount>) -> Result<Vec<GapRow>, Report
 ///    (it nets those legs against the spending and answers nothing).
 /// 4. Clip to `opts.depth` and accumulate, dropping zeros as `budget_report`
 ///    does — per account BEFORE the clip merges several onto one name, because
-///    merging pruned totals is not the same as merging raw postings.
+///    merging pruned totals is not the same as merging raw postings. The clip
+///    stops short of an ancestor typed outside the row's section
+///    ([`clip_within_category`]).
 ///
 /// Rows are not rolled up: each is a distinct subtree clipped to the same depth,
 /// so a section's rows sum to its total without double counting. A clipped name
@@ -753,16 +818,16 @@ pub fn budget_gaps(
         // `is_account_type`, not `resolve_account_type`: it folds the subtypes
         // into their parents, so a declared `type: G` (gain) account counts as
         // revenue instead of vanishing from both sections.
-        let section = if is_account_type(account, declared, AccountType::Revenue) {
-            &mut revenue
+        let (section, category) = if is_account_type(account, declared, AccountType::Revenue) {
+            (&mut revenue, AccountType::Revenue)
         } else if is_account_type(account, declared, AccountType::Expense) {
-            &mut expense
+            (&mut expense, AccountType::Expense)
         } else {
             continue;
         };
         let mut pruned = ma.clone();
         pruned.drop_zeros();
-        let name = clip(account, opts.depth).to_string();
+        let name = clip_within_category(account, opts.depth, declared, category).to_string();
         accumulate_into(section.entry(name).or_default(), &pruned)?;
     }
 
@@ -843,6 +908,7 @@ mod tests {
         postings: Vec<Posting>,
     ) -> PeriodicTransaction {
         PeriodicTransaction {
+            elided: None,
             period,
             description: description.to_string(),
             comment: String::new(),
@@ -1296,6 +1362,73 @@ mod tests {
         );
     }
 
+    /// `hledger print --forecast=<start>..` (1.52), transcribed: a rule with no
+    /// `from` is phased from the forecast start itself; a rule with `from`, an
+    /// anchored rule and a dated one-off are read exactly as the budget reads
+    /// them.
+    #[test]
+    fn a_forecast_phases_a_bare_interval_from_its_own_start() {
+        let every = |unit, multiplier, from: Option<&str>| {
+            spec(PeriodKind::Every { unit, multiplier }, from, None)
+        };
+        let first = |start: &str, spec: &PeriodSpec, n: usize| -> Vec<String> {
+            forecast_occurrences(start, "2028-12-31", spec)
+                .unwrap()
+                .into_iter()
+                .take(n)
+                .collect()
+        };
+        // 2026-10-01 is a Thursday: no snapping back to Monday.
+        let weekly = every(PeriodExpr::Weekly, 1, None);
+        assert_eq!(
+            first("2026-10-01", &weekly, 3),
+            ["2026-10-01", "2026-10-08", "2026-10-15"]
+        );
+        assert_eq!(
+            first("2026-10-01", &every(PeriodExpr::Weekly, 2, None), 3),
+            ["2026-10-01", "2026-10-15", "2026-10-29"]
+        );
+        // Not January 1st, and not the 1st of the month either.
+        assert_eq!(
+            first("2026-10-01", &every(PeriodExpr::Yearly, 1, None), 2),
+            ["2026-10-01", "2027-10-01"]
+        );
+        assert_eq!(
+            first("2026-10-05", &every(PeriodExpr::Monthly, 1, None), 3),
+            ["2026-10-05", "2026-11-05", "2026-12-05"]
+        );
+        assert_eq!(
+            first("2026-10-17", &every(PeriodExpr::Quarterly, 1, None), 2),
+            ["2026-10-17", "2027-01-17"]
+        );
+        // `from` is the rule's own phase, in both readings.
+        let from = every(PeriodExpr::Weekly, 2, Some("2026-09-03"));
+        assert_eq!(first("2026-10-05", &from, 2), ["2026-10-15", "2026-10-29"]);
+        let monthly_from = every(PeriodExpr::Monthly, 1, Some("2026-01-15"));
+        assert_eq!(
+            first("2026-10-17", &monthly_from, 2),
+            ["2026-11-15", "2026-12-15"]
+        );
+        // Anchored forms are a lower bound, unchanged.
+        let fifteenth = spec(
+            PeriodKind::Anchored {
+                unit: PeriodExpr::Monthly,
+                anchor: Anchor::DayOfMonth(15),
+            },
+            None,
+            None,
+        );
+        assert_eq!(
+            first("2026-10-17", &fifteenth, 2),
+            occurrences("2026-10-17", "2028-12-31", &fifteenth).unwrap()[..2]
+        );
+        // And the budget reading itself does not move.
+        assert_eq!(
+            occurrences("2026-10-01", "2026-10-31", &weekly).unwrap(),
+            ["2026-10-05", "2026-10-12", "2026-10-19", "2026-10-26"]
+        );
+    }
+
     /// The regression that matters most: a bare fixed interval must produce the
     /// dates the pre-grammar bucket walk produced, or every committed golden
     /// moves. Asserted directly on `occurrences` for all five units.
@@ -1492,6 +1625,58 @@ mod tests {
         // double-counted into a row and its parent.
         assert_eq!(rolled.expense[0].total, usd_ma(49_200));
         assert_eq!(rolled.expense[0].depth, 1);
+    }
+
+    /// The clip never lands on an ancestor typed as something else. A parent
+    /// declared `type: A` (a typo for `X`) over expense-typed children keeps
+    /// the children as their own rows, because the seed books a projection line
+    /// to the row's name, and a line on `expenses:ga` would be an asset.
+    #[test]
+    fn gaps_never_clip_onto_an_ancestor_of_another_type() {
+        let txns = vec![
+            txn(
+                1,
+                "2026-01-03",
+                vec![
+                    ("expenses:ga:rent", vec![usd(300_000)]),
+                    ("assets:checking", vec![usd(-300_000)]),
+                ],
+            ),
+            txn(
+                2,
+                "2026-01-05",
+                vec![
+                    ("expenses:ga:software", vec![usd(120_000)]),
+                    ("assets:checking", vec![usd(-120_000)]),
+                ],
+            ),
+            txn(
+                3,
+                "2026-01-09",
+                vec![
+                    ("expenses:food", vec![usd(10_000)]),
+                    ("assets:checking", vec![usd(-10_000)]),
+                ],
+            ),
+        ];
+        let types = declared(&[
+            ("expenses:ga", AccountType::Asset),
+            ("expenses:ga:rent", AccountType::Expense),
+            ("expenses:ga:software", AccountType::Expense),
+        ]);
+
+        let gaps = budget_gaps(&txns, &[], &types, &gap_opts("2026-01-31", 1, 2)).unwrap();
+        assert_eq!(
+            accounts(&gaps.expense),
+            ["expenses:ga:rent", "expenses:ga:software", "expenses:food"]
+        );
+        assert_eq!(gaps.expense[0].depth, 3);
+
+        // Correctly typed, the same journal clips to the parent as before.
+        let types = declared(&[("expenses:ga", AccountType::Expense)]);
+        let gaps = budget_gaps(&txns, &[], &types, &gap_opts("2026-01-31", 1, 2)).unwrap();
+        assert_eq!(accounts(&gaps.expense), ["expenses:ga", "expenses:food"]);
+        assert_eq!(gaps.expense[0].total, usd_ma(420_000));
     }
 
     /// Membership is decided by the DECLARED type, never by the name — the

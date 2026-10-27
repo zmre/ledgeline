@@ -53,6 +53,19 @@ let indexKey: string | null = null;
 /** A load or a save either lands, or fails with a classified reason the page can explain. */
 export type FileOutcome = {ok: true; file: ScenarioFile} | {ok: false; failure: EditFailure};
 
+/**
+ * What re-reading the open file found ({@link fileStore.checkDisk}).
+ *
+ * `skipped` covers every case with no answer worth acting on: no file is open,
+ * a check is already running, or a load or save moved the file's identity while
+ * this one was in flight — in which case what it read describes a revision the
+ * page no longer holds.
+ */
+export type DiskCheck = {kind: "skipped"} | {kind: "unchanged"} | {kind: "changed"; file: ScenarioFile} | {kind: "failed"; failure: EditFailure};
+
+/** Set while a {@link fileStore.checkDisk} is in flight, so a poll tick and a focus event do not both read the file. */
+let checking = false;
+
 export const fileStore = {
     /** False once the engine has answered 404 for `/api/projections` — an older engine, so hide the file controls. */
     get available(): boolean {
@@ -111,6 +124,39 @@ export const fileStore = {
             return {ok: false, failure: classify(error)};
         } finally {
             loading = false;
+        }
+    },
+
+    /**
+     * Re-read the open file and say whether it changed on disk.
+     *
+     * A scenario file is one the main journal does not include, so the engine's
+     * journal watcher never sees it change and `journal.changes` never moves
+     * for it. This is the tab's own check, run on the same poll-and-focus
+     * cadence (`visiblePoll.ts`): the engine reads the file fresh on every
+     * `GET`, and a different revision is a change.
+     *
+     * Adopts NOTHING, for `open`'s reason — whether to replace the table is a
+     * decision about unsaved work. In particular the held `revision` is left
+     * alone, so a save from a table edited before the change is refused with a
+     * `409` by the engine instead of silently overwriting the other program's
+     * edit.
+     */
+    async checkDisk(serverUrl: string): Promise<DiskCheck> {
+        const id = currentId;
+        const held = revision;
+        if (id === null || checking || saving || loading) return {kind: "skipped"};
+        checking = true;
+        // Whether a load or save moved the identity while the read was in flight.
+        const superseded = (): boolean => currentId !== id || revision !== held || saving || loading;
+        try {
+            const file = decodeScenarioFile(await new LedgelineApi(serverUrl).getProjection(id));
+            if (superseded()) return {kind: "skipped"};
+            return file.revision === held ? {kind: "unchanged"} : {kind: "changed", file};
+        } catch (error) {
+            return superseded() ? {kind: "skipped"} : {kind: "failed", failure: classify(error)};
+        } finally {
+            checking = false;
         }
     },
 

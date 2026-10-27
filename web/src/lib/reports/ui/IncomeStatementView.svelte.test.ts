@@ -18,6 +18,7 @@ import {decodeIncomeStatementReport} from "#lib/api/nativeDecode.js";
 import type {AmountStyle} from "#lib/domain/types.js";
 import {keymap} from "#lib/keys/keymap.svelte.js";
 import {GROUPED_INCOME_STATEMENT, MULTI_STEP_INCOME_STATEMENT, UNCOMPARED_INCOME_STATEMENT} from "#lib/testing/incomeStatementFixture.js";
+import {expectSharedGrid} from "#lib/testing/statementGrid.js";
 import IncomeStatementView from "./IncomeStatementView.svelte";
 
 // The drill-down navigates, and a router is neither available nor the subject
@@ -462,6 +463,64 @@ describe("COMPONENT IncomeStatementView", () => {
             expect([...net.querySelectorAll("thead th")].map((th) => th.textContent?.trim()).slice(1)).toEqual([...MONTHS, "Total"]);
             expect(net.querySelector("[data-column='total']")?.textContent).toContain("$5,383.52");
             expect(net.querySelectorAll("tbody td")).toHaveLength(MONTHS.length + 1);
+        });
+
+        // The reported bug: a ladder line was a bare one-row table under the
+        // browser's auto layout, so once the months overflowed its figures sat
+        // wherever its own label width put them, under no heading at all.
+        describe("ladder lines in interval mode", () => {
+            // The engine's monthly bytes, given a multi-step ladder after the
+            // first box: the layout, not the arithmetic, is under test.
+            const LADDERED = {
+                ...MONTHLY,
+                sections: MONTHLY.sections.map((section, at) =>
+                    at === 0
+                        ? {
+                              ...section,
+                              trailing: [
+                                  {kind: "grossProfit" as const, label: "Gross profit", total: section.total},
+                                  {kind: "operatingIncome" as const, label: "Operating income", total: section.total},
+                              ],
+                          }
+                        : section
+                ),
+            };
+            const blocks = (): Element[] => [
+                ...screen
+                    .getByTestId("is-scroller")
+                    .querySelectorAll("[data-testid^='is-section-'],[data-testid^='is-subtotal-'],[data-testid='is-net-income']"),
+            ];
+
+            it("puts every box, ladder line and net income on one column template, each with its own headings", () => {
+                render(IncomeStatementView, {report: LADDERED, styles: STYLES});
+                expect(blocks().map((block) => block.getAttribute("data-testid"))).toEqual([
+                    "is-section-revenue",
+                    "is-subtotal-grossProfit",
+                    "is-subtotal-operatingIncome",
+                    "is-section-opex",
+                    "is-net-income",
+                ]);
+                expectSharedGrid(blocks(), MONTHS.length + 1, false);
+                for (const kind of ["grossProfit", "operatingIncome"]) {
+                    expect(heads(`is-subtotal-${kind}`)).toEqual([...MONTHS, "Total"]);
+                }
+                // One sideways scroller for the stack, not one per box.
+                expect(screen.getByTestId("is-scroller").classList.contains("overflow-x-auto")).toBe(true);
+                expect(screen.getByTestId("is-section-revenue").classList.contains("overflow-x-auto")).toBe(false);
+            });
+
+            it("carries the Actual/Projected band onto every ladder line on the Projections tab", () => {
+                render(IncomeStatementView, {report: LADDERED, styles: STYLES, projectedFrom: 4});
+                expectSharedGrid(blocks(), MONTHS.length + 1, true);
+                expect(screen.getByTestId("is-subtotal-grossProfit").querySelector("[data-testid='projected-label']")?.textContent).toBe("Projected");
+            });
+
+            it("leaves Interval = Total unchanged: auto layout, no headings on a ladder line", () => {
+                mount(MULTI);
+                expect(screen.getByTestId("income-statement").querySelector("colgroup")).toBeNull();
+                expect(screen.getByTestId("is-subtotal-grossProfit").querySelector("thead")).toBeNull();
+                expect(screen.getByTestId("is-scroller").className).toBe("contents");
+            });
         });
     });
 });

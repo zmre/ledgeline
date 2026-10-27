@@ -8,7 +8,7 @@ tags: [reports, account-tags, prices]
 # The balance sheet, and the `bsgroup:` / `bsterm:` tags
 
 The balance sheet is three boxes — **Assets**, **Liabilities**, **Equity** — whose
-lines are *groups* rather than raw accounts, valued into a single currency so
+lines are _groups_ rather than raw accounts, valued into a single currency so
 every line is one number. Under the boxes is a spreadsheet tie-out that proves the
 statement balances. There is no separate net-worth line: net worth is assets
 minus liabilities, which is Total Equity, so it would print the same number twice.
@@ -26,7 +26,7 @@ Design notes and the reasoning behind each decision live in
 ## Why groups instead of accounts
 
 A chart of accounts is organised for bookkeeping; a balance sheet is organised for
-reading. You want to know what you hold in *cash* and in *investments* — not how
+reading. You want to know what you hold in _cash_ and in _investments_ — not how
 much is in bank account A versus bank account B, nor how many shares of each
 ticker. So each line is a group, collapsed by default. Expand one to see the
 accounts behind it, at full depth.
@@ -34,6 +34,42 @@ accounts behind it, at full depth.
 There is no depth control on this tab. Depth stopped meaning anything useful once
 groups became the reading: a group's roots are shown whatever their depth, and the
 drill-down shows everything below them.
+
+## One date, or one column per period
+
+The sheet opens on a single date: **As of**, with the **Interval** set to
+**Single date**. That is one Amount column, the balances at the end of that day.
+
+Set the Interval to **Monthly**, **Quarterly** or **Yearly** and the sheet gets
+one column per period. A **From** date appears before As of, and it defaults
+to the first of the month eleven months back, so Monthly shows twelve months.
+Each column is the sheet at the **end** of its period. The last column ends at
+the As of date, so with As of 2026-07-08 and Quarterly, the columns end
+2025-09-30, 2025-12-31, 2026-03-31, 2026-06-30 and 2026-07-08. Every column is
+exactly the single-date sheet as of that day, valued with the prices in effect
+on that day. Nothing is added up across columns, because balances at two dates
+don't sum to anything, so there is no Total column.
+
+![The balance sheet with Interval set to Quarterly: From 2025-08-01, As of 2026-07-08, and the Assets section with one column per quarter from Q3 2025 to Q3 2026](images/balance-sheet-quarterly.png)
+
+The multi-period sheet keeps everything else the single-date one has. Groups
+open and close across all the columns. <kbd>j</kbd>/<kbd>k</kbd> and
+<kbd>Enter</kbd> work the same. Each column has its own current and non-current
+subtotals. The ✓/✗ verdict covers every column, and if one doesn't balance, the
+warning names the first column that fails. A long run of months scrolls sideways.
+
+The URL records the mode. A single date is `?tab=bs&asof=2026-07-08`, the same
+as before this existed, so old links still open a single date. Multi-period
+adds `from` and `interval`:
+`?tab=bs&asof=2026-07-08&from=2025-08-01&interval=quarterly`. Switching to
+another tab and back returns to Single date, the way the P&L returns to Total.
+
+The hledger equivalent, for a From on a period boundary, is
+`hledger bs -V -Q -b 2025-07-01 -e 2026-07-09`. `-e` is exclusive, so it is As
+of plus one day. hledger heads its last column with the period's end
+(2026-09-30), but the figures are as of 2026-07-08 and agree with ours. With a
+From in the middle of a period, hledger starts its periods at `-b`, while
+Ledgeline keeps calendar periods and clamps only the first one.
 
 ## The `bsgroup:` tag
 
@@ -86,6 +122,10 @@ account assets:art   ; type: A, bsgroup: Art and antiques  ; ✓ group is "Art a
 **The tag name is the last word before the colon**, so don't put a space inside
 it — `; balance sheet group: Cash` declares a tag called `group`, not `bsgroup`.
 
+**Revenue and expense accounts never appear here**, so a `bsgroup:` or `bsterm:`
+on one is ignored, and
+[Problems](../journal/problems.md#unknown-account-tag-value) warns about it.
+
 ## Current vs non-current (`bsterm:`)
 
 Tag an account `bsterm: noncurrent` and the Assets and Liabilities boxes split
@@ -124,10 +164,10 @@ is the same rule the income statement's GAAP ladder follows.
 
 **Defaults, once it is on.** You tag the long-term things and leave the rest:
 
-| Group                            | Default        |
-|----------------------------------|----------------|
-| `Investments` (the built-in)      | non-current    |
-| everything else untagged          | current        |
+| Group                        | Default     |
+| ---------------------------- | ----------- |
+| `Investments` (the built-in) | non-current |
+| everything else untagged     | current     |
 
 So the brokerage above needed no tag. Only three accounts in that example carry
 one.
@@ -139,9 +179,9 @@ looking fine. The canonical spellings are `current` and `noncurrent` — the two
 the error message names — and these synonyms are also accepted, matched
 case-insensitively:
 
-| Term        | Accepted spellings                              |
-|-------------|-------------------------------------------------|
-| current     | `current`, `short`, `shortterm`, `short-term`   |
+| Term        | Accepted spellings                                           |
+| ----------- | ------------------------------------------------------------ |
+| current     | `current`, `short`, `shortterm`, `short-term`                |
 | non-current | `noncurrent`, `non-current`, `long`, `longterm`, `long-term` |
 
 **Equity is never split.** The question the split asks — when does this become
@@ -172,11 +212,11 @@ or off the Cash line by an explicit `bsgroup:` rather than by its `type:`.
 It is a third tag rather than a value of `bsgroup:` because they answer different
 questions, and one tag cannot answer two:
 
-| Tag        | Question                          |
-|------------|-----------------------------------|
-| `type:`    | Which box?                        |
-| `bsterm:`  | Which half of the box?            |
-| `bsgroup:` | Which line within that half?      |
+| Tag        | Question                     |
+| ---------- | ---------------------------- |
+| `type:`    | Which box?                   |
+| `bsterm:`  | Which half of the box?       |
+| `bsgroup:` | Which line within that half? |
 
 One consequence worth knowing: a group is keyed by (term, line), so a single
 `bsgroup:` whose accounts straddle the halves prints as **two lines** under two
@@ -187,13 +227,13 @@ five really are two lines on a real statement.
 
 Untagged accounts still get sensible lines. Resolution stops at the first match:
 
-| # | Rule | Line | `source` |
-|---|--------------------------------------------------|--------------------------------|-------------|
-| 1 | `bsgroup:` on the account itself | the tag's value | `tag` |
-| 2 | `bsgroup:` on the nearest declared ancestor | the tag's value | `tag` |
-| 3 | Effective account type is `C` (cash) | **Cash and cash equivalents** | `type` |
-| 4 | An asset holding a non-base commodity | **Investments** | `commodity` |
-| 5 | Otherwise: the account's second path segment | e.g. `assets:bank:…` → **Bank** | `segment` |
+| #   | Rule                                         | Line                            | `source`    |
+| --- | -------------------------------------------- | ------------------------------- | ----------- |
+| 1   | `bsgroup:` on the account itself             | the tag's value                 | `tag`       |
+| 2   | `bsgroup:` on the nearest declared ancestor  | the tag's value                 | `tag`       |
+| 3   | Effective account type is `C` (cash)         | **Cash and cash equivalents**   | `type`      |
+| 4   | An asset holding a non-base commodity        | **Investments**                 | `commodity` |
+| 5   | Otherwise: the account's second path segment | e.g. `assets:bank:…` → **Bank** | `segment`   |
 
 Step 5 is what makes an untagged journal read well: `assets:bank:chase` and
 `assets:bank:ally` both land on one **Bank** line, which is the "not bank account A
@@ -204,7 +244,7 @@ gets a line.
 Three conventional abbreviations get prettier labels at step 5 — `cc` → Credit
 cards, `ar` → Accounts receivable, `ap` → Accounts payable.
 
-### Why grouping never matches account *names*
+### Why grouping never matches account _names_
 
 Steps 3 and 4 are driven by the declared `type:` and by which commodities an
 account actually holds. Step 5 is driven by position in the account tree. None of
@@ -213,7 +253,7 @@ may use roots like `cogs:` — and when name-matching classification goes wrong,
 symptom is a report that reads **zero**, not one that merely looks odd.
 
 The alias table above is the single exception, and it is deliberately cosmetic: it
-runs *after* membership is decided and can only rename a line, never move an
+runs _after_ membership is decided and can only rename a line, never move an
 account onto a different one.
 
 ### Ordering
@@ -248,7 +288,7 @@ what makes `assets = liabilities + equity` actually hold:
   accounts at cost. At `value=cost` it is zero and disappears; at market it is the
   unbooked revaluation.
 
-The second line is *not* called "unrealized gains" on purpose. The same
+The second line is _not_ called "unrealized gains" on purpose. The same
 subtraction also absorbs currency revaluation and unpriced holdings, so it can
 legitimately carry several commodities at once — and "933,25 EUR of unrealized
 gains" is not a sentence a balance sheet can say.
@@ -280,7 +320,7 @@ decimal places than the cash paying for it can be written to:
 26.2690 VTI @ $289.7713   =  $7,612.00227970    settled with   $-7,612.00
 ```
 
-That entry is *legal* — hledger 1.52 accepts it without complaint — yet it leaves
+That entry is _legal_ — hledger 1.52 accepts it without complaint — yet it leaves
 `$0.00227970` behind. Over a real journal that dust accumulates, and holding the
 sum to exact zero would have meant flagging journals that no ledger could ever
 satisfy. There is no way to write $0.0022797 into a bank account.
@@ -302,7 +342,7 @@ stop. Without it the tolerance was a function of the most finely written posting
 anywhere in your journal, which has nothing to do with how large a rounding
 residue can get: one line of brokerage interest written as `$0.0327` dropped the
 threshold to `$0.0001` and the dust above was flagged all over again. The floor
-only ever *loosens* the rule — a commodity written in whole units keeps its
+only ever _loosens_ the rule — a commodity written in whole units keeps its
 tolerance of one unit.
 
 ### What the floor still catches, and what it gives up
@@ -313,14 +353,14 @@ genuinely worth less than a cent. A transaction that doesn't balance is caught
 too whenever it is worth catching — being out by `$10.00` is a thousand times the
 floor.
 
-What the floor gives up is this report noticing a *sub-cent* transaction
+What the floor gives up is this report noticing a _sub-cent_ transaction
 imbalance in a journal that writes finer than cents. That one isn't lost: every
 entry is separately checked against hledger's own much tighter rule — half a unit
 at the precision that entry was written at — and shows up in Problems as an
 unbalanced transaction. The balance sheet is the second line of defence there,
 never the only one.
 
-One caveat worth stating: the floor is one hundredth *of the commodity*, not of a
+One caveat worth stating: the floor is one hundredth _of the commodity_, not of a
 dollar. On a book denominated in something with a high unit value, 0.01 units is
 not a negligible sum. The exact residual is always reported, whatever the
 verdict, so the number is there to look at.
@@ -335,6 +375,11 @@ can build on. Anything unpriced goes in its own column rather than being dropped
 Groups are written expanded regardless of what is collapsed on screen — an
 exported statement shouldn't depend on which disclosures happened to be open.
 
+A multi-period sheet exports one figure column per period. The unpriced column
+holds the last column's leftovers (as of the As of date), the way the P&L's
+monthly export holds its Total's. The file name includes the range and the
+interval, for example `balance-sheet-2025-08-01-to-2026-07-08-quarterly.xlsx`.
+
 ## API
 
 ```
@@ -343,7 +388,20 @@ GET /api/reports/balancesheet/grouped
       &depth=N                (optional; omit for full depth, 0 for totals only)
       &value=market|cost|none (default: market)
       &valueIn=$              (default: the journal's base commodity)
+
+GET /api/reports/balancesheet/columns
+      ?from=YYYY-MM-DD        (default: the 1st of the month 11 months before `to`)
+      &to=YYYY-MM-DD          (default: today; the last column's end, the tab's As of)
+      &interval=total|monthly|quarterly|yearly   (default: monthly; total = one column at `to`)
+      &depth, &value, &valueIn                   (as above, applied to every column)
 ```
+
+`/columns` returns one tree with a figure per column, the same shape the
+[projection run](../projections/index.md) returns for its balance sheet. It
+has `columns: [{key, label, from, to}]`, and each column is the sheet as of
+its `to`. A `valueIn` that prices nothing the sheet shows in any column is a
+`400`, the same refusal the single-date endpoint gives. A backwards range is a
+`400`, and so is one that splits into more than 1,200 columns.
 
 The older `GET /api/reports/balancesheet` returns the flat, unvalued,
 `hledger bs`-shaped report and is unchanged — it backs the hledger parity golden.

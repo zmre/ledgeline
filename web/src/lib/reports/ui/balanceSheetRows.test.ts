@@ -12,7 +12,17 @@ import {dec, type MixedAmount} from "#lib/domain/money.js";
 import type {AmountStyle} from "#lib/domain/types.js";
 import type {BsSection} from "#lib/reports/types.js";
 import {CLASSIFIED_BALANCE_SHEET, GROUPED_BALANCE_SHEET, STRADDLING_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "#lib/testing/balanceSheetFixture.js";
-import {amountCell, bsCursorRows, bsGroupKey, bsSummary, sectionDisplayRows, type BsDisplayRow} from "./balanceSheetRows";
+import {
+    asColumns,
+    amountCell,
+    bsColumnSummaries,
+    bsCursorRows,
+    bsGroupKey,
+    bsSummary,
+    columnSectionRows,
+    sectionDisplayRows,
+    type BsDisplayRow,
+} from "./balanceSheetRows";
 
 const REPORT = decodeBalanceSheetReport(GROUPED_BALANCE_SHEET);
 const [ASSETS, , EQUITY] = REPORT.sections;
@@ -548,5 +558,60 @@ describe("UNIT reports/ui/balanceSheetRows — bsSummary", () => {
 
         expect(summary.equity).toEqual(new Map());
         expect(summary.liabilitiesPlusEquity).toEqual(summary.liabilities);
+    });
+});
+
+describe("UNIT balanceSheetRows — columns (plan 28)", () => {
+    const SHEET = asColumns(REPORT);
+
+    it("a single-date sheet is a one-column sheet labelled Amount, figure for figure", () => {
+        expect(SHEET.columns.map((column) => column.label)).toEqual(["Amount"]);
+        expect(SHEET.sections[0].total).toEqual([ASSETS.total]);
+        expect(SHEET.balanced).toEqual([REPORT.balanced]);
+        expect(bsColumnSummaries(SHEET)).toEqual([bsSummary(REPORT)]);
+    });
+
+    it("lays a multi-column section out with the SAME rows and keys as the single-date walk", () => {
+        for (const section of REPORT.sections) {
+            const columns = SHEET.sections.find((s) => s.kind === section.kind)!;
+            const single = sectionDisplayRows(section, ALL);
+            const multi = columnSectionRows(columns, ALL);
+            expect(multi.map((row) => [row.kind, row.key, row.label, row.indent])).toEqual(single.map((row) => [row.kind, row.key, row.label, row.indent]));
+            // …each figure the single-date one, as a one-element column.
+            expect(multi.map((row) => row.amount)).toEqual(single.map((row) => (row.kind === "subsection" ? [] : [row.amount])));
+        }
+    });
+
+    it("does not fold a parent that has postings of its own in ANY column", () => {
+        // `assets` → `assets:bank` is a chain only while the parent is empty in
+        // every column; with money of its own in the second column, folding it
+        // would drop that money from that column.
+        const usd = (n: number): MixedAmount => new Map([["$", dec(n, 0)]]);
+        const chain = (parentOwn: MixedAmount[]) =>
+            columnSectionRows(
+                {
+                    kind: "assets",
+                    title: "Assets",
+                    subsections: [],
+                    total: [usd(1), usd(2)],
+                    groups: [
+                        {
+                            name: "Cash",
+                            source: "type",
+                            term: null,
+                            total: [usd(1), usd(2)],
+                            rows: [
+                                {account: "assets", depth: 1, own: parentOwn, inclusive: [usd(1), usd(2)]},
+                                {account: "assets:bank", depth: 2, own: [usd(1), usd(1)], inclusive: [usd(1), usd(1)]},
+                            ],
+                        },
+                    ],
+                },
+                ALL
+            )
+                .filter((row) => row.kind === "account")
+                .map((row) => row.label);
+        expect(chain([new Map(), new Map()])).toEqual(["assets:bank"]);
+        expect(chain([new Map(), usd(1)])).toEqual(["assets", "bank"]);
     });
 });

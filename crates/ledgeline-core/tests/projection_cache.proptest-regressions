@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 6d371b58849815018c84a7ad234c6af138367ead9285fdc3aad5c72efa8f91f9 # shrinks to txns = [Flow { day: 0, from: 0, to: 0, cents: 1, posting_day: Some(360) }, Flow { day: 90, from: 0, to: 0, cents: 0, posting_day: None }], lines = [], today = 540, interval = 3, lookback = 0, count = 4, value_in = None
+cc 798bf8a9351d1619e747ea96b1fd49f5226b47aea2928a20259a12266e0007e9 # shrinks to txns = [Virtual { day: 0, cents: 1 }, Flow { day: 360, from: 0, to: 0, cents: 0, posting_day: None }], lines = [], today = 540, interval = 0, lookback = 0, count = 1, value_in = None

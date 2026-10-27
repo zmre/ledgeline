@@ -33,7 +33,7 @@ import {beforeEach, describe, expect, it} from "vitest";
 import {decodeScenario} from "#lib/api/nativeDecode.js";
 import {classesOf} from "#lib/domain/accountClassFixtures.js";
 import {scenarioStore} from "../scenarioStore.svelte";
-import type {AssetRow, Scenario} from "../types";
+import type {AssetRow, ForecastDefaults, Scenario} from "../types";
 import ProjectionsTable from "./ProjectionsTable.svelte";
 
 const NOTE = "unbudgeted — average over 2025-08-01 to 2026-07-08";
@@ -48,10 +48,12 @@ const seedLine = (account: string, mantissa: string) => ({
     role: "flow",
     account,
     amount: {commodity: "$", quantity: {mantissa, places: 2}, precision: 2},
-    period: {raw: "monthly", simple: "monthly", from: null, to: null},
+    period: {raw: "monthly", simple: "monthly", base: null, from: null, to: null},
     growth: null,
     opening: null,
     note: NOTE,
+    counter: null,
+    gains: null,
     source: "unbudgeted",
     // The engine's placement (plan 26 B6), as the seed sends it.
     section: account.startsWith("income:") ? "income" : "expense",
@@ -69,6 +71,7 @@ const SEED = decodeScenario({
         seedLine("expenses:taxes", "133833"),
     ],
     events: [],
+    cash: null,
 });
 
 /**
@@ -81,10 +84,12 @@ const assetLine = (account: string, group: string, contribution = "0") => ({
     role: "asset",
     account,
     amount: {commodity: "$", quantity: {mantissa: contribution, places: 2}, precision: 2},
-    period: {raw: "monthly", simple: "monthly", from: null, to: null},
+    period: {raw: "monthly", simple: "monthly", base: null, from: null, to: null},
     growth: {rate: {mantissa: "7", places: 2}, unit: "year"},
     opening: null,
     note: "",
+    counter: null,
+    gains: null,
     source: "journal",
     section: "asset",
 });
@@ -103,7 +108,11 @@ const attributed = (group: string, account: string, held: bigint): AssetRow => (
     growth: new Map([["$", {m: 0n, p: 2}]]),
 });
 
-function mount(scenario: Scenario = scenarioStore.scenario, assetBalances: ReadonlyMap<string, AssetRow> = new Map()) {
+function mount(
+    scenario: Scenario = scenarioStore.scenario,
+    assetBalances: ReadonlyMap<string, AssetRow> = new Map(),
+    defaults: ForecastDefaults | null = null
+) {
     return render(ProjectionsTable, {
         scenario,
         accountNames: ACCOUNT_NAMES,
@@ -111,6 +120,7 @@ function mount(scenario: Scenario = scenarioStore.scenario, assetBalances: Reado
         commodity: "$",
         stepDate: "2027-04-01",
         assetBalances,
+        defaults,
         styles: STYLES,
         onChange: () => scenarioStore.touch(),
     });
@@ -209,18 +219,12 @@ describe("COMPONENT ProjectionsTable — a seeded scenario", () => {
         expect(screen.getByLabelText("Amount for expenses:housing")).toHaveProperty("value", "1875.00");
     });
 
-    it("FLAGS every unbudgeted row as estimated, with the window it was averaged over", () => {
-        mount();
-        const badges = screen.getAllByTestId("estimated-badge");
-        expect(badges.length).toBe(SEED.lines.filter((l) => l.source === "unbudgeted").length);
-        expect(badges.length).toBeGreaterThan(0);
-        expect(badges[0].getAttribute("title")).toContain("average over");
-    });
-
-    it("does NOT flag a row the user wrote", () => {
-        scenarioStore.adopt({...SEED, lines: SEED.lines.map((line) => ({...line, source: "journal" as const}))});
+    it("says where a seeded number came from in the row's description, not a badge", () => {
         mount();
         expect(screen.queryAllByTestId("estimated-badge")).toHaveLength(0);
+        const salary = screen.getByLabelText("Description for income:salary");
+        const described = document.getElementById(salary.getAttribute("aria-describedby") ?? "");
+        expect(described?.textContent).toContain("average over");
     });
 
     it("opens not-dirty: seeding is not an edit", () => {
@@ -274,6 +278,7 @@ describe("COMPONENT ProjectionsTable — editing marks the scenario dirty", () =
         expect(scenarioStore.scenario.lines.find((l) => l.account === "expenses:housing")?.period).toEqual({
             raw: "quarterly",
             simple: "quarterly",
+            base: null,
             from: null,
             to: null,
         });
@@ -283,6 +288,113 @@ describe("COMPONENT ProjectionsTable — editing marks the scenario dirty", () =
         mount();
         await fireEvent.change(screen.getByLabelText("To date for expenses:housing (exclusive)"), {target: {value: "2028-01-01"}});
         expect(scenarioStore.scenario.lines.find((l) => l.account === "expenses:housing")?.period.raw).toBe("monthly to 2028-01-01");
+    });
+
+    it("REGRESSION: an UNSET bound wears a placeholder hint, not WebKit's today", async () => {
+        mount();
+        const cellOf = (label: string) => screen.getByLabelText(label).closest("td") as HTMLElement;
+        const to = "To date for expenses:housing (exclusive)";
+        // WebKit paints today into an empty date input; the hint must cover it.
+        expect(within(cellOf(to)).queryByTestId("date-unset")).not.toBeNull();
+        expect(screen.getByLabelText(to).className).toContain("opacity-0");
+
+        await fireEvent.change(screen.getByLabelText(to), {target: {value: "2028-01-01"}});
+        await tick();
+        expect(within(cellOf(to)).queryByTestId("date-unset")).toBeNull();
+        expect(screen.getByLabelText(to).className).not.toContain("opacity-0");
+    });
+});
+
+// REGRESSION: `~ monthly from 2026-11-01  <description>` showed its whole `raw`
+// in the Per column and locked From/To, because the engine answered `simple`
+// only for an UNBOUNDED interval. The periods below are what the engine now
+// sends for each form (`projection_endpoints.rs` pins that side).
+const periodLine = (account: string, period: Record<string, string | null>, note: string) => ({
+    ...seedLine(account, "10000"),
+    id: account,
+    group: account,
+    period,
+    note,
+    source: "journal",
+    section: "expense",
+});
+
+const BOUNDED = decodeScenario({
+    name: "",
+    created: null,
+    updated: null,
+    lines: [
+        periodLine("expenses:a", {raw: "monthly from 2026-11-01", simple: "monthly", base: null, from: "2026-11-01", to: null}, NOTE),
+        periodLine("expenses:b", {raw: "monthly to 2027-06-01", simple: "monthly", base: null, from: null, to: "2027-06-01"}, ""),
+        periodLine("expenses:c", {raw: "yearly from 2026-11-01 to 2030-01-01", simple: "yearly", base: null, from: "2026-11-01", to: "2030-01-01"}, "ends"),
+        periodLine("expenses:d", {raw: "every 3 months from 2026-11-01", simple: null, base: "every 3 months", from: "2026-11-01", to: null}, ""),
+        periodLine(
+            "expenses:e",
+            {raw: "every 15th day of month from 2026-11-01", simple: null, base: "every 15th day of month", from: "2026-11-01", to: null},
+            "mid-month"
+        ),
+        periodLine("expenses:f", {raw: "every weekday", simple: null, base: null, from: null, to: null}, "workdays"),
+    ],
+    events: [],
+    cash: null,
+});
+
+describe("COMPONENT ProjectionsTable — REGRESSION: bounded periods stay editable", () => {
+    beforeEach(() => scenarioStore.adopt(BOUNDED));
+
+    const periodOf = (account: string) => scenarioStore.scenario.lines.find((l) => l.account === account)?.period;
+    const from = (account: string) => screen.getByLabelText(`From date for ${account}`) as HTMLInputElement;
+    const to = (account: string) => screen.getByLabelText(`To date for ${account} (exclusive)`) as HTMLInputElement;
+
+    it.each([
+        ["expenses:a", "monthly", "2026-11-01", ""],
+        ["expenses:b", "monthly", "", "2027-06-01"],
+        ["expenses:c", "yearly", "2026-11-01", "2030-01-01"],
+    ])("%s selects %s in Per and shows editable bounds", (account, interval, start, end) => {
+        mount();
+        expect((screen.getByLabelText(`Period for ${account}`) as HTMLSelectElement).value).toBe(interval);
+        expect(from(account).disabled).toBe(false);
+        expect(to(account).disabled).toBe(false);
+        expect(from(account).value).toBe(start);
+        expect(to(account).value).toBe(end);
+    });
+
+    it("moving a bounded rule's `from` rewrites `raw` and keeps the description", async () => {
+        mount();
+        await fireEvent.change(from("expenses:a"), {target: {value: "2026-12-01"}});
+        expect(periodOf("expenses:a")?.raw).toBe("monthly from 2026-12-01");
+        expect(scenarioStore.scenario.lines.find((l) => l.account === "expenses:a")?.note).toBe(NOTE);
+        await fireEvent.change(from("expenses:a"), {target: {value: ""}});
+        expect(periodOf("expenses:a")?.raw).toBe("monthly");
+    });
+
+    it("changing a bounded rule's interval keeps both bounds", async () => {
+        mount();
+        await fireEvent.change(screen.getByLabelText("Period for expenses:c"), {target: {value: "quarterly"}});
+        expect(periodOf("expenses:c")?.raw).toBe("quarterly from 2026-11-01 to 2030-01-01");
+    });
+
+    it.each([
+        ["expenses:d", "every 3 months"],
+        ["expenses:e", "every 15th day of month"],
+    ])("%s shows its words as written and still re-bounds around them", async (account, words) => {
+        mount();
+        const cell = rowOf(account)?.querySelector('[data-testid="period-as-written"]');
+        expect(cell?.textContent?.trim()).toBe(words);
+        expect(from(account).value).toBe("2026-11-01");
+        await fireEvent.change(to(account), {target: {value: "2027-06-01"}});
+        expect(periodOf(account)?.raw).toBe(`${words} from 2026-11-01 to 2027-06-01`);
+    });
+
+    it("a recurrence the engine cannot rebuild locks its bounds and says why", () => {
+        mount();
+        const cell = rowOf("expenses:f")?.querySelector('[data-testid="period-as-written"]');
+        expect(cell?.textContent?.trim()).toBe("every weekday");
+        for (const box of [from("expenses:f"), to("expenses:f")]) {
+            expect(box.disabled).toBe(true);
+            expect(box.title).toContain("can't be edited here");
+            expect(box.closest("td")?.title).toContain("every weekday");
+        }
     });
 });
 
@@ -485,6 +597,7 @@ function withAssets(...lines: ReturnType<typeof assetLine>[]): Scenario {
         updated: null,
         lines: [seedLine("expenses:housing", "187500"), ...lines],
         events: [],
+        cash: null,
     });
 }
 
@@ -518,6 +631,7 @@ describe("COMPONENT ProjectionsTable — the Assets and balances section", () =>
                 updated: null,
                 lines: [seedLine("assets:checking", "50000")],
                 events: [],
+                cash: null,
             })
         );
         mount();
@@ -558,6 +672,7 @@ describe("COMPONENT ProjectionsTable — the Assets and balances section", () =>
                 updated: null,
                 lines: [seedLine("assets:checking", "50000"), assetLine("assets:checking", "brok")],
                 events: [],
+                cash: null,
             })
         );
         mount();
@@ -699,12 +814,347 @@ describe("COMPONENT ProjectionsTable — one-off events", () => {
         const dated = SEED.lines[0];
         scenarioStore.adopt({
             ...SEED,
-            lines: [{...dated, id: "buy", group: "buy", account: "expenses:housing", period: {raw: "2027-03-01", simple: null, from: null, to: null}}],
+            lines: [
+                {...dated, id: "buy", group: "buy", account: "expenses:housing", period: {raw: "2027-03-01", simple: null, base: null, from: null, to: null}},
+            ],
         });
         mount();
         const oneoff = within(screen.getByTestId("projection-section-oneoff"));
         expect(oneoff.getByLabelText("Amount for the one-off expenses:housing")).toBeDefined();
         expect(within(screen.getByTestId("projection-section-expense")).queryByTestId("projection-line")).toBeNull();
         expect(oneoff.getByLabelText("Date of the one-off expenses:housing")).toHaveProperty("value", "2027-03-01");
+    });
+});
+
+describe("COMPONENT ProjectionsTable — counter-accounts, gains accounts and the cash default (plan 28)", () => {
+    const DEFAULTS: ForecastDefaults = {
+        cash: "assets:checking",
+        gains: "equity:unrealized gains",
+        lines: new Map([["gap:income:salary:$", "assets:checking"]]),
+        events: new Map(),
+    };
+
+    /** Type into an account combobox and leave it, which is what commits it. */
+    async function typeAccount(field: HTMLElement, value: string): Promise<void> {
+        await fireEvent.input(field, {target: {value}});
+        await fireEvent.blur(field);
+        await tick();
+    }
+
+    it("shows the engine's inferred counter-account GREYED, with the box left empty", () => {
+        mount(scenarioStore.scenario, new Map(), DEFAULTS);
+        const box = screen.getByLabelText("Counter-account for income:salary") as HTMLInputElement;
+        expect(box.value).toBe("");
+        expect(box.placeholder).toBe("assets:checking");
+        // Nothing overridden, so nothing is stated.
+        expect(scenarioStore.scenario.lines.find((l) => l.account === "income:salary")?.counter).toBeNull();
+        // A rule the engine has not answered for yet says so rather than guessing.
+        expect((screen.getByLabelText("Counter-account for expenses:housing") as HTMLInputElement).placeholder).toBe("default");
+    });
+
+    it("typing one names it, marks the scenario edited, and clearing goes back to the default", async () => {
+        mount(scenarioStore.scenario, new Map(), DEFAULTS);
+        const box = screen.getByLabelText("Counter-account for income:salary");
+        await typeAccount(box, "assets:savings");
+        expect(scenarioStore.scenario.lines.find((l) => l.account === "income:salary")?.counter).toBe("assets:savings");
+        expect(scenarioStore.dirty).toBe(true);
+
+        await typeAccount(screen.getByLabelText("Counter-account for income:salary"), "");
+        expect(scenarioStore.scenario.lines.find((l) => l.account === "income:salary")?.counter).toBeNull();
+    });
+
+    it("SPLITS a line out of a shared rule when its counter differs, so the file can still be written", async () => {
+        const [salary, dividends] = SEED.lines;
+        scenarioStore.adopt({
+            ...SEED,
+            lines: [
+                {...salary, group: "rule:0", counter: "assets:checking"},
+                {...dividends, group: "rule:0", counter: "assets:checking"},
+            ],
+        });
+        mount();
+        await typeAccount(screen.getByLabelText("Counter-account for income:dividends"), "assets:brokerage");
+
+        const lines = scenarioStore.scenario.lines;
+        const moved = lines.find((l) => l.account === "income:dividends");
+        expect(moved?.counter).toBe("assets:brokerage");
+        expect(moved?.group).not.toBe("rule:0");
+        expect(lines.find((l) => l.account === "income:salary")).toMatchObject({group: "rule:0", counter: "assets:checking"});
+    });
+
+    it("an asset row's gains account is greyed with the default, and typing one sets it", async () => {
+        scenarioStore.adopt(withAssets(assetLine("assets:house", "house")));
+        mount(scenarioStore.scenario, new Map(), DEFAULTS);
+        const box = screen.getByLabelText("Gains account for the assets:house balance") as HTMLInputElement;
+        expect(box.value).toBe("");
+        expect(box.placeholder).toBe("equity:unrealized gains");
+        await typeAccount(box, "equity:home gains");
+        expect(scenarioStore.scenario.lines.find((l) => l.group === "house")?.gains).toBe("equity:home gains");
+    });
+
+    it("an event takes ONE counter-account, on its first posting", async () => {
+        mount(scenarioStore.scenario, new Map(), DEFAULTS);
+        await fireEvent.click(screen.getByRole("button", {name: "+ Add an event"}));
+        await tick();
+        await typeAccount(screen.getByLabelText("Counter-account for the new event 1"), "assets:checking");
+        expect(scenarioStore.scenario.events[0].counter).toBe("assets:checking");
+    });
+
+    it("the scenario's default cash account is greyed with the journal's fallback, and settable", async () => {
+        mount(scenarioStore.scenario, new Map(), DEFAULTS);
+        const box = screen.getByLabelText("Default cash account") as HTMLInputElement;
+        expect(box.value).toBe("");
+        expect(box.placeholder).toBe("assets:checking");
+        await typeAccount(box, "  assets:savings ");
+        expect(scenarioStore.scenario.cash).toBe("assets:savings");
+        expect(scenarioStore.dirty).toBe(true);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Descriptions, and order (plan 28, follow-ups 2026-10-26)
+// ---------------------------------------------------------------------------
+
+/** The groups of a section's rows, top to bottom, as the DOM has them. */
+const groupsIn = (section: string): string[] =>
+    [...screen.getByTestId(`projection-section-${section}`).querySelectorAll<HTMLElement>("[data-line-group]")].map((row) => row.dataset.lineGroup ?? "");
+
+const HOUSING = "gap:expenses:housing:$";
+const TAXES = "gap:expenses:taxes:$";
+
+describe("COMPONENT ProjectionsTable — a row's description", () => {
+    it("every row has a description icon, and hovering or focusing it SHOWS the description", async () => {
+        mount();
+        const icon = screen.getByRole("button", {name: "Description for expenses:housing"});
+        expect(screen.queryByTestId("note-tooltip")).toBeNull();
+
+        await fireEvent.pointerEnter(icon);
+        expect(screen.getByTestId("note-tooltip").textContent).toContain(NOTE);
+        await fireEvent.pointerLeave(icon);
+        expect(screen.queryByTestId("note-tooltip")).toBeNull();
+
+        // Keyboard focus too — a `title` would never show for a keyboard user.
+        await fireEvent.focus(icon);
+        expect(screen.getByTestId("note-tooltip").textContent).toContain(NOTE);
+        await fireEvent.blur(icon);
+        expect(screen.queryByTestId("note-tooltip")).toBeNull();
+
+        // And the text is the button's DESCRIPTION, for a screen reader, always.
+        const describedBy = icon.getAttribute("aria-describedby") ?? "";
+        expect(document.getElementById(describedBy)?.textContent).toContain(NOTE);
+    });
+
+    it("click opens an editor; Enter saves the new text to the rule and marks the scenario edited", async () => {
+        mount();
+        const icon = screen.getByRole("button", {name: "Description for expenses:housing"});
+        await fireEvent.click(icon);
+        const editor = screen.getByRole("dialog", {name: "Edit the description for expenses:housing"});
+        const box = within(editor).getByRole("textbox");
+        expect(box).toHaveProperty("value", NOTE);
+
+        await fireEvent.input(box, {target: {value: "rent after the move"}});
+        await fireEvent.keyDown(box, {key: "Enter"});
+        await tick();
+
+        expect(screen.queryByTestId("note-editor")).toBeNull();
+        expect(scenarioStore.scenario.lines.find((l) => l.group === HOUSING)?.note).toBe("rent after the move");
+        expect(scenarioStore.dirty).toBe(true);
+    });
+
+    it("Escape cancels: nothing changes and nothing is edited", async () => {
+        mount();
+        await fireEvent.click(screen.getByRole("button", {name: "Description for expenses:housing"}));
+        const box = within(screen.getByTestId("note-editor")).getByRole("textbox");
+        await fireEvent.input(box, {target: {value: "never mind"}});
+        await fireEvent.keyDown(box, {key: "Escape"});
+        await tick();
+
+        expect(screen.queryByTestId("note-editor")).toBeNull();
+        expect(scenarioStore.scenario.lines.find((l) => l.group === HOUSING)?.note).toBe(NOTE);
+        expect(scenarioStore.dirty).toBe(false);
+    });
+
+    it("what the file would refuse is said in the editor, and Save stays shut", async () => {
+        mount();
+        await fireEvent.click(screen.getByRole("button", {name: "Description for expenses:housing"}));
+        const editor = screen.getByTestId("note-editor");
+        const box = within(editor).getByRole("textbox");
+        await fireEvent.input(box, {target: {value: "rent ; utilities"}});
+        await tick();
+
+        expect(within(editor).getByRole("alert").textContent).toMatch(/comment/);
+        expect(within(editor).getByRole("button", {name: "Save"})).toHaveProperty("disabled", true);
+        await fireEvent.keyDown(box, {key: "Enter"});
+        await tick();
+        expect(screen.getByTestId("note-editor")).toBeDefined();
+        expect(scenarioStore.dirty).toBe(false);
+    });
+
+    it("rows that share ONE rule share its description, and say so", async () => {
+        // A budget rule with two postings: one `~` header between them.
+        scenarioStore.adopt({
+            ...SEED,
+            lines: SEED.lines.map((line) => (line.account.startsWith("expenses:") ? {...line, group: "rule:0", note: "the budget"} : line)),
+        });
+        mount();
+        const icon = screen.getByRole("button", {name: "Description for expenses:taxes"});
+        await fireEvent.focus(icon);
+        expect(screen.getByTestId("note-tooltip").textContent).toContain("Shared by the 2 lines of this rule");
+        await fireEvent.blur(icon);
+
+        await fireEvent.click(icon);
+        const box = within(screen.getByTestId("note-editor")).getByRole("textbox");
+        await fireEvent.input(box, {target: {value: "household"}});
+        await fireEvent.keyDown(box, {key: "Enter"});
+        await tick();
+        const notes = scenarioStore.scenario.lines.filter((l) => l.group === "rule:0").map((l) => l.note);
+        expect(notes).toEqual(["household", "household"]);
+    });
+
+    it("marks the seed's average text as STALE once the row's amount changes — and never rewrites it", async () => {
+        mount();
+        expect(screen.queryAllByTestId("note-stale")).toHaveLength(0);
+        const amount = screen.getByLabelText("Amount for expenses:housing");
+        await fireEvent.change(amount, {target: {value: "2400"}});
+        await tick();
+
+        const icon = screen.getByRole("button", {name: "Description for expenses:housing"});
+        expect(within(icon).getByTestId("note-stale")).toBeDefined();
+        await fireEvent.focus(icon);
+        expect(screen.getByTestId("note-tooltip").textContent).toMatch(/out of date/);
+        expect(scenarioStore.scenario.lines.find((l) => l.group === HOUSING)?.note).toBe(NOTE);
+    });
+
+    it("an asset row and a one-off line have one too", () => {
+        scenarioStore.adopt(
+            decodeScenario({
+                name: "",
+                created: null,
+                updated: null,
+                lines: [
+                    assetLine("assets:brokerage", "rule:1"),
+                    {
+                        ...seedLine("expenses:housing", "500000"),
+                        id: "rule:2:0",
+                        group: "rule:2",
+                        period: {raw: "2027-03-01", simple: null, base: null, from: null, to: null},
+                        section: "oneoff",
+                    },
+                ],
+                events: [],
+                cash: null,
+            })
+        );
+        mount();
+        expect(screen.getByRole("button", {name: "Description for the assets:brokerage balance"})).toBeDefined();
+        expect(screen.getByRole("button", {name: "Description for the one-off expenses:housing"})).toBeDefined();
+    });
+});
+
+describe("COMPONENT ProjectionsTable — reordering rows", () => {
+    it("Move up and Move down reorder a section, and mark the scenario edited", async () => {
+        mount();
+        expect(groupsIn("expense")).toEqual([HOUSING, TAXES]);
+
+        await chooseInMenu("expenses:taxes", "Move up");
+        expect(groupsIn("expense")).toEqual([TAXES, HOUSING]);
+        expect(scenarioStore.dirty).toBe(true);
+
+        await chooseInMenu("expenses:taxes", "Move down");
+        expect(groupsIn("expense")).toEqual([HOUSING, TAXES]);
+    });
+
+    it("offers a move only where there is somewhere to go", async () => {
+        mount();
+        await fireEvent.click(screen.getByLabelText("Row menu for expenses:housing"));
+        const first = within(screen.getByTestId("row-menu"));
+        expect(first.queryByRole("menuitem", {name: "Move up"})).toBeNull();
+        expect(first.getByRole("menuitem", {name: "Move down"})).toBeDefined();
+        await fireEvent.keyDown(document.activeElement ?? document.body, {key: "Escape"});
+        await tick();
+
+        await fireEvent.click(screen.getByLabelText("Row menu for expenses:taxes"));
+        const last = within(screen.getByTestId("row-menu"));
+        expect(last.getByRole("menuitem", {name: "Move up"})).toBeDefined();
+        expect(last.queryByRole("menuitem", {name: "Move down"})).toBeNull();
+    });
+
+    it("a step change moves as ONE row, its segments together", async () => {
+        mount();
+        await chooseInMenu("expenses:housing", "Add a step on 2027-04-01");
+        const segments = scenarioStore.scenario.lines.filter((l) => l.account === "expenses:housing").map((l) => l.group);
+        expect(segments).toHaveLength(2);
+
+        await chooseInMenu("expenses:taxes", "Move up");
+        expect(groupsIn("expense")).toEqual([TAXES, ...segments]);
+    });
+
+    it("dragging a row by its handle onto another moves it there", async () => {
+        mount();
+        const handle = within(rowOf(TAXES) as HTMLElement).getByTestId("drag-handle");
+        const target = rowOf(HOUSING) as HTMLElement;
+        await fireEvent.dragStart(handle);
+        await fireEvent.dragOver(target);
+        await fireEvent.drop(target);
+        await fireEvent.dragEnd(handle);
+        await tick();
+
+        expect(groupsIn("expense")).toEqual([TAXES, HOUSING]);
+        expect(scenarioStore.dirty).toBe(true);
+    });
+
+    it("a drag never crosses sections: an income row dropped on an expense goes nowhere", async () => {
+        mount();
+        const handle = within(rowOf("gap:income:salary:$") as HTMLElement).getByTestId("drag-handle");
+        await fireEvent.dragStart(handle);
+        await fireEvent.drop(rowOf(HOUSING) as HTMLElement);
+        await tick();
+        expect(groupsIn("expense")).toEqual([HOUSING, TAXES]);
+        expect(groupsIn("income")).toEqual(["gap:income:salary:$", "gap:income:dividends:$"]);
+        expect(scenarioStore.dirty).toBe(false);
+    });
+
+    it("THE SECTION-STABILITY RULE holds across a move: a held, half-typed row moves within its section", async () => {
+        mount();
+        const added = await addLineIn("income");
+        const field = fieldOf(added.group);
+        await focus(field);
+        await fireEvent.input(field, {target: {value: "i"}});
+        await tick();
+
+        await chooseInMenu("i", "Move up");
+        expect(sectionOf(added.group)).toBe("projection-section-income");
+        expect(groupsIn("income")).toEqual(["gap:income:salary:$", added.group, "gap:income:dividends:$"]);
+    });
+
+    it("events reorder through their menu too", async () => {
+        scenarioStore.adopt(
+            decodeScenario({
+                name: "",
+                created: null,
+                updated: null,
+                lines: [],
+                events: [
+                    {
+                        id: "rule:0",
+                        date: "2027-01-01",
+                        description: "first",
+                        postings: [{account: "expenses:a", amount: {commodity: "$", quantity: {mantissa: "100", places: 2}, precision: 2}}],
+                        counter: null,
+                    },
+                    {
+                        id: "rule:1",
+                        date: "2027-02-01",
+                        description: "second",
+                        postings: [{account: "expenses:b", amount: {commodity: "$", quantity: {mantissa: "100", places: 2}, precision: 2}}],
+                        counter: null,
+                    },
+                ],
+                cash: null,
+            })
+        );
+        mount();
+        await chooseInMenu("second", "Move up");
+        expect(scenarioStore.scenario.events.map((e) => e.description)).toEqual(["second", "first"]);
     });
 });

@@ -35,7 +35,8 @@ use ledgeline_core::model::{Commodity, Journal};
 use ledgeline_core::reports::periods;
 use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
-    Amounts, BalanceSheetReport, BarLabel, BsGroup, BsOpts, BsSection, BsSectionKind, BsSubsection,
+    Amounts, BalanceSheetColumns, BalanceSheetReport, BarLabel, BsColumnGroup, BsColumnRow,
+    BsColumnSection, BsColumnSubsection, BsGroup, BsOpts, BsSection, BsSectionKind, BsSubsection,
     BsTerm, BucketSpan, BudgetBar, BudgetCell, BudgetGaps, BudgetHealth, BudgetOpts, BudgetReport,
     BudgetRow, BudgetSection, BudgetSectionKind, BudgetSummary, Cadence, CashFlowStatement,
     CfLineSource, CfOpts, CfTags, ChangeKind, ChangeRow, Columns, CostOfLiving,
@@ -45,11 +46,12 @@ use ledgeline_core::reports::{
     IsSubtotal, IsSubtotalKind, LabelKind, MetricDelta, MixedAmount, MoverRow, NetWorthOpts,
     PerfPoint, PeriodReport, PeriodRow, ReportError, ReportMeta, ReportRow, RowKind, Section,
     SectionedReport, Subscription, SubscriptionOpts, SubscriptionsReport, TopTxn, Valuation,
-    account_decls, account_groups, account_sections, balance_sheet, balance_sheet_grouped,
-    bs_terms, budget_gaps, budget_report, budget_summary, cash_flow_statement, compared_windows,
+    account_decls, account_sections, balance_sheet, balance_sheet_columns, balance_sheet_grouped,
+    budget_gaps, budget_report, budget_summary, cash_flow_statement, compared_windows,
     declared_groups, declared_types, detect_subscriptions, gap_totals, income_statement,
     income_statement_columns, income_statement_flows, income_statement_grouped, insights,
-    interval_windows, net_worth, prices_any_on_sheet, prices_any_on_statement,
+    interval_windows, net_worth, pivot_balance_sheets, prices_any_on_sheet, prices_any_on_sheets,
+    prices_any_on_statement, range_buckets,
 };
 use serde::{Deserialize, Serialize};
 
@@ -272,11 +274,7 @@ struct WireBsSection {
 impl From<&BsSection> for WireBsSection {
     fn from(section: &BsSection) -> Self {
         Self {
-            kind: match section.kind {
-                BsSectionKind::Assets => "assets",
-                BsSectionKind::Liabilities => "liabilities",
-                BsSectionKind::Equity => "equity",
-            },
+            kind: bs_section_kind(section.kind),
             title: section.title.clone(),
             groups: section.groups.iter().map(WireBsGroup::from).collect(),
             subsections: section
@@ -286,6 +284,16 @@ impl From<&BsSection> for WireBsSection {
                 .collect(),
             total: wire_mixed(&section.total),
         }
+    }
+}
+
+/// The one `BsSectionKind` → wire spelling, shared by the single-date and the
+/// multi-column balance sheet.
+fn bs_section_kind(kind: BsSectionKind) -> &'static str {
+    match kind {
+        BsSectionKind::Assets => "assets",
+        BsSectionKind::Liabilities => "liabilities",
+        BsSectionKind::Equity => "equity",
     }
 }
 
@@ -328,6 +336,149 @@ impl WireBalanceSheetReport {
             net_worth: wire_mixed(&report.net_worth),
             check: wire_mixed(&report.check),
             balanced: report.balanced,
+            meta: WireReportMeta::from(&report.meta),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Multi-column balance sheet (plans/28-projected-statements.md, Phase 4)
+// ---------------------------------------------------------------------------
+//
+// The SAME tree as `WireBalanceSheetReport` — same keys at every level — with
+// every figure (and `balanced`) an ARRAY, one entry per column. Pivoted once
+// in the engine (`pivot_balance_sheets`), so a group that appears only in
+// later columns reads `{}` in the earlier ones rather than being missing, and
+// every client shows the same rows in the same order.
+
+/// One account row: `own` and `inclusive` per column.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireBsColumnRow {
+    account: String,
+    depth: usize,
+    own: Vec<WireMixed>,
+    inclusive: Vec<WireMixed>,
+}
+
+impl From<&BsColumnRow> for WireBsColumnRow {
+    fn from(row: &BsColumnRow) -> Self {
+        Self {
+            account: row.account.clone(),
+            depth: row.depth,
+            own: row.own.iter().map(wire_mixed).collect(),
+            inclusive: row.inclusive.iter().map(wire_mixed).collect(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireBsColumnGroup {
+    name: String,
+    source: &'static str,
+    term: Option<&'static str>,
+    rows: Vec<WireBsColumnRow>,
+    total: Vec<WireMixed>,
+}
+
+impl From<&BsColumnGroup> for WireBsColumnGroup {
+    fn from(group: &BsColumnGroup) -> Self {
+        Self {
+            name: group.name.clone(),
+            source: group_source(group.source),
+            term: group.term.map(BsTerm::code),
+            rows: group.rows.iter().map(WireBsColumnRow::from).collect(),
+            total: group.total.iter().map(wire_mixed).collect(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireBsColumnSubsection {
+    term: &'static str,
+    heading: String,
+    label: String,
+    total: Vec<WireMixed>,
+}
+
+impl From<&BsColumnSubsection> for WireBsColumnSubsection {
+    fn from(sub: &BsColumnSubsection) -> Self {
+        Self {
+            term: sub.term.code(),
+            heading: sub.heading.clone(),
+            label: sub.label.clone(),
+            total: sub.total.iter().map(wire_mixed).collect(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireBsColumnSection {
+    kind: &'static str,
+    title: String,
+    groups: Vec<WireBsColumnGroup>,
+    subsections: Vec<WireBsColumnSubsection>,
+    total: Vec<WireMixed>,
+}
+
+impl From<&BsColumnSection> for WireBsColumnSection {
+    fn from(section: &BsColumnSection) -> Self {
+        Self {
+            kind: bs_section_kind(section.kind),
+            title: section.title.clone(),
+            groups: section.groups.iter().map(WireBsColumnGroup::from).collect(),
+            subsections: section
+                .subsections
+                .iter()
+                .map(WireBsColumnSubsection::from)
+                .collect(),
+            total: section.total.iter().map(wire_mixed).collect(),
+        }
+    }
+}
+
+/// A balance sheet at the end of each of several periods, side by side.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WireBalanceSheetColumns {
+    /// One per column, oldest → newest; each column is the sheet as of its
+    /// `to`. The same spans the income statement and cash flow statement
+    /// beside it carry, so the three line up column for column.
+    columns: Vec<WireBucketSpan>,
+    base: Option<String>,
+    value: &'static str,
+    sections: Vec<WireBsColumnSection>,
+    net_worth: Vec<WireMixed>,
+    check: Vec<WireMixed>,
+    /// The engine's verdict, per column.
+    balanced: Vec<bool>,
+    meta: WireReportMeta,
+}
+
+impl WireBalanceSheetColumns {
+    /// `spans` are the periods whose ends the columns were built at, in the
+    /// same order.
+    pub(crate) fn new(
+        report: &BalanceSheetColumns,
+        spans: &[BucketSpan],
+        value: &'static str,
+    ) -> Self {
+        debug_assert_eq!(report.as_of.len(), spans.len());
+        Self {
+            columns: spans.iter().map(WireBucketSpan::from).collect(),
+            base: report.base.as_ref().map(|base| base.0.clone()),
+            value,
+            sections: report
+                .sections
+                .iter()
+                .map(WireBsColumnSection::from)
+                .collect(),
+            net_worth: report.net_worth.iter().map(wire_mixed).collect(),
+            check: report.check.iter().map(wire_mixed).collect(),
+            balanced: report.balanced.clone(),
             meta: WireReportMeta::from(&report.meta),
         }
     }
@@ -623,6 +774,12 @@ impl WireIncomeStatementReport {
             net_income: WireAmounts::from(&report.net_income),
             meta: WireReportMeta::from(&report.meta),
         }
+    }
+
+    /// An interval-mode statement, for a caller outside this module (the
+    /// projected statements, plan 28 Phase 4).
+    pub(crate) fn columns(report: &IncomeStatementReport<Columns>, value: &'static str) -> Self {
+        Self::new(report, value)
     }
 }
 
@@ -2307,6 +2464,10 @@ impl Window {
     }
 }
 
+/// The journal's statement declarations, read by the Reports handlers and the
+/// projected statements alike (see [`StatementShape`]'s own docs in core).
+pub(crate) use ledgeline_core::reports::StatementShape;
+
 /// `?asOf=&depth=` — balance sheet.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2327,6 +2488,20 @@ pub(crate) struct BalanceSheetGroupedQuery {
     /// rows (a value pricing nothing there is a `400`), defaulting to the
     /// journal's `D` commodity when that prices something, else the price
     /// table's base commodity. See [`resolve_grouped_value_in`].
+    value_in: Option<String>,
+}
+
+/// `?from=&to=&interval=&depth=&value=&valueIn=` — the grouped balance sheet
+/// at the end of each period (see [`balancesheet_columns`]).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BalanceSheetColumnsQuery {
+    from: Option<String>,
+    to: Option<String>,
+    /// `total` | `monthly` (default) | `quarterly` | `yearly` (also daily/weekly).
+    interval: Option<String>,
+    depth: Option<usize>,
+    value: Option<String>,
     value_in: Option<String>,
 }
 
@@ -2615,7 +2790,7 @@ pub(crate) async fn balancesheet_grouped(
 
     compute(move || {
         let journal = &snapshot.journal;
-        let declared = declared_types(&account_decls(journal));
+        let shape = StatementShape::of(journal);
         // Like `holdings_scope`, admitting `valueIn` scans the whole journal
         // for a price route, so it belongs on the blocking side with the
         // report.
@@ -2628,7 +2803,7 @@ pub(crate) async fn balancesheet_grouped(
                     &journal.transactions,
                     &journal.prices,
                     &as_of,
-                    &declared,
+                    &shape.declared,
                     target,
                 )
             },
@@ -2642,13 +2817,102 @@ pub(crate) async fn balancesheet_grouped(
                 value,
                 value_in,
             },
-            &declared,
-            &account_groups(journal),
-            &bs_terms(journal),
+            &shape.declared,
+            &shape.bs_groups,
+            &shape.bs_terms,
         )?;
         Ok(WireBalanceSheetReport::new(&report, label))
     })
     .await
+}
+
+/// `GET /api/reports/balancesheet/columns` — the grouped balance sheet at the
+/// end of each period across `[from, to]`, pivoted into one tree with a figure
+/// per column (`WireBalanceSheetColumns`, the shape the projection run's
+/// `balanceSheet` already has).
+///
+/// - `from=YYYY-MM-DD` (default: the first of the month eleven months before
+///   `to`, so twelve monthly columns) and `to=YYYY-MM-DD` (default: today),
+///   both INCLUSIVE. The columns are [`range_buckets`] over the range, and
+///   each column is the sheet as of its span's `to`: every bucket's own end,
+///   the last one clamped to `to`, so the newest column IS the single-date
+///   sheet as of `to`.
+/// - `interval=total|monthly|quarterly|yearly` (also `daily`/`weekly`;
+///   default `monthly`). `total` is ONE column, at `to`.
+/// - `depth`, `value`, `valueIn`: exactly as on
+///   [`balancesheet_grouped`], applied to every column. `valueIn` is admitted
+///   if it prices something the sheet displays in ANY column, each measured at
+///   its own end ([`prices_any_on_sheets`]), and is otherwise a `400`.
+///
+/// A backwards range, or one splitting into more than `MAX_BUCKETS` columns,
+/// is a `400`, as on the other ranged reports.
+pub(crate) async fn balancesheet_columns(
+    State(state): State<AppState>,
+    Query(query): Query<BalanceSheetColumnsQuery>,
+) -> Result<Json<WireBalanceSheetColumns>, AppError> {
+    let snapshot = state.snapshot();
+    let to = parse_date("to", query.to, today_utc)?;
+    let from = match query.from {
+        Some(raw) => checked_date("from", &raw)?,
+        None => trailing_year_start(&to)?,
+    };
+    let depth = parse_depth(query.depth)?;
+    let (value, label) = parse_valuation(query.value.as_deref())?;
+    let grain = parse_grain(query.interval.as_deref(), Some(Interval::Monthly))?;
+    check_range(&from, &to, grain)?;
+    let raw_value_in = query.value_in;
+
+    compute(move || {
+        let journal = &snapshot.journal;
+        let shape = StatementShape::of(journal);
+        let spans = range_buckets(&from, &to, grain)?;
+        let ends: Vec<String> = spans.iter().map(|span| span.to.clone()).collect();
+        let value_in = resolve_grouped_value_in(
+            journal,
+            "this balance sheet",
+            raw_value_in.as_deref(),
+            |target| {
+                prices_any_on_sheets(
+                    &journal.transactions,
+                    &journal.prices,
+                    &ends,
+                    &shape.declared,
+                    target,
+                )
+            },
+        )?;
+        let sheets = balance_sheet_columns(
+            &journal.transactions,
+            &journal.prices,
+            &BsOpts {
+                as_of: &to,
+                depth,
+                value,
+                value_in,
+            },
+            &ends,
+            &shape.declared,
+            &shape.bs_groups,
+            &shape.bs_terms,
+        )?;
+        Ok(WireBalanceSheetColumns::new(
+            &pivot_balance_sheets(&sheets),
+            &spans,
+            label,
+        ))
+    })
+    .await
+}
+
+/// The first day of the month eleven months before `to`'s: the start of the
+/// twelve monthly columns ending with `to`'s month — the SPA's own default
+/// (`trailingYear` in `params.ts`) and cash flow's.
+fn trailing_year_start(to: &str) -> Result<String, AppError> {
+    let keys = periods::last_n_buckets(to, Interval::Monthly, DEFAULT_COUNT)?;
+    // `last_n_buckets` returns exactly `DEFAULT_COUNT` keys for any count up
+    // to `MAX_BUCKETS`, so the first is always there.
+    let first = keys.first().map_or(to, String::as_str);
+    Ok(periods::bucket_start(first)?)
 }
 
 /// `GET /api/reports/incomestatement` — revenues + expenses over a range.
@@ -2738,8 +3002,12 @@ pub(crate) async fn incomestatement_grouped(
 
     compute(move || {
         let journal = &snapshot.journal;
-        let declared = declared_types(&account_decls(journal));
-        let sections = account_sections(journal);
+        let StatementShape {
+            declared,
+            is_sections: sections,
+            is_groups: groups,
+            ..
+        } = StatementShape::of(journal);
         // The admission test asks about exactly the windows the statement will
         // value, so a `valueIn` is refused or admitted for the report it is for.
         let windows = match grain {
@@ -2774,7 +3042,6 @@ pub(crate) async fn incomestatement_grouped(
             value_in,
             compare,
         };
-        let groups = declared_groups(journal, IS_GROUP_TAG);
         Ok(match grain {
             None => WireIncomeStatementReport::new(
                 &income_statement_grouped(
@@ -2974,7 +3241,6 @@ pub(crate) async fn cashflow(
                 (from, window.end, Some(window.interval), window.depth)
             }
         };
-        let tags = CfTags::from_journal(&snapshot.journal);
         let report = cash_flow_statement(
             &snapshot.journal.transactions,
             &CfOpts {
@@ -2983,7 +3249,7 @@ pub(crate) async fn cashflow(
                 interval,
                 depth,
             },
-            &tags,
+            &CfTags::from_journal(&snapshot.journal),
         )?;
         Ok(WireCashFlow::from(&report))
     })

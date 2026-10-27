@@ -1,5 +1,6 @@
-// Reading a `Projection`: the numbers the three charts plot, and the runway
-// sentence stated in words.
+// Reading a `Projection`: the numbers the runway chart plots, and the runway
+// sentence stated in words. The three statements need nothing from here: they
+// render through the Reports tab's own views.
 //
 // Pure module — no Svelte, no DOM, no clock. The sentence in particular is a
 // function rather than markup because "cash turns negative in March 2028 — 18
@@ -16,7 +17,6 @@
 
 import type {Dec} from "#lib/domain/money.js";
 import {rankCommodities, toNumber, type MixedAmount} from "#lib/domain/money.js";
-import type {PeriodReport} from "#lib/reports/types.js";
 import type {PeriodInterval} from "#lib/reports/ui/params.js";
 import type {AssetRow, BalanceSeries, Projection} from "./types";
 
@@ -37,19 +37,15 @@ export function balanceNumbers(series: BalanceSeries, commodity: string): {openi
 }
 
 /**
- * Every figure a chart on this tab would draw, in one pass.
+ * Every figure the runway chart would draw, in one pass.
  *
  * The two questions below — what to plot, and what that leaves out — are asked
- * of the same five series, and each used to name all five itself. A generator
- * rather than an array so neither materialises a copy of the projection to
- * count it; adding a sixth charted series means adding it here once.
+ * of the same series. A generator rather than an array so neither materialises
+ * a copy of the projection to count it.
  */
 function* projectionAmounts(projection: Projection): Generator<MixedAmount> {
     yield projection.cash.opening;
-    yield projection.netWorth.opening;
     yield* projection.cash.values;
-    yield* projection.netWorth.values;
-    yield* projection.netIncome.totals;
 }
 
 /**
@@ -80,38 +76,6 @@ export function otherCommodities(projection: Projection, charted: string): strin
     }
     all.delete(charted);
     return [...all].sort();
-}
-
-/**
- * The three columns `PeriodFlowChart` takes, off a net-income `PeriodReport`.
- *
- * Read from the DEPTH-1 rows only. The report is a depth-clamped tree — a
- * parent row and its children both appear — so summing every row would count an
- * `expenses:rent` twice, once under `expenses`. The depth-1 rows are the ones
- * whose sum IS `totals`, which is the `PeriodReport` contract the engine pins.
- *
- * `inflows` and `outflows` come back as MAGNITUDES, because that is what
- * `PeriodFlowChart` takes: it owns the sign. `net` is `totals`, the engine's own
- * figure, rather than `inflow − outflow` — they agree here, and handing over the
- * authoritative one means a future row that is in neither column cannot make the
- * line disagree with the table above it.
- */
-export function flowSeries(report: PeriodReport, commodity: string): {inflows: number[]; outflows: number[]; net: number[]} {
-    const top = report.rows.filter((row) => row.depth === 1);
-    const inflows = report.buckets.map(() => 0);
-    const outflows = report.buckets.map(() => 0);
-    for (const row of top) {
-        row.values.forEach((value, i) => {
-            if (i >= inflows.length) return;
-            const n = amountIn(value, commodity);
-            // Cash-flow orientation: positive IS an inflow. The engine already
-            // flipped revenue; flipping again here is the bug this comment exists
-            // to stop (plan 22, amendment 3).
-            if (n > 0) inflows[i] += n;
-            else outflows[i] += -n;
-        });
-    }
-    return {inflows, outflows, net: seriesOf(report.totals, commodity)};
 }
 
 // ---------------------------------------------------------------------------
@@ -157,38 +121,6 @@ export function journalBalanceFor(rows: ReadonlyMap<string, AssetRow>, group: st
     const row = rows.get(group);
     if (row === undefined || row.account !== account.trim()) return null;
     return row.journalOpening.get(commodity) ?? {m: 0n, p: 0};
-}
-
-/** One line of the net-worth tab's growth breakdown. */
-export interface AssetContribution {
-    account: string;
-    /** What the row compounded from — the override when there is one. */
-    opening: number;
-    /** Total appreciation over the window. */
-    growth: number;
-}
-
-/**
- * Which assets contributed the net-worth growth, largest first.
- *
- * Rows sharing an account are SUMMED: two rules can name one account, and a
- * breakdown that listed it twice would read as two assets. Ties break by account
- * name so the order is stable across recomputes rather than dependent on the
- * scenario's row order.
- *
- * A row with no growth is kept, not filtered: a $0 line in this list is the
- * answer to "why did nothing happen", and dropping it would leave the user
- * looking for a row that is in the table above.
- */
-export function assetContributions(projection: Projection, commodity: string): AssetContribution[] {
-    const byAccount = new Map<string, AssetContribution>();
-    for (const row of projection.assets) {
-        const found = byAccount.get(row.account) ?? {account: row.account, opening: 0, growth: 0};
-        found.opening += amountIn(row.opening, commodity);
-        found.growth += amountIn(row.growth, commodity);
-        byAccount.set(row.account, found);
-    }
-    return [...byAccount.values()].sort((a, b) => b.growth - a.growth || (a.account < b.account ? -1 : a.account > b.account ? 1 : 0));
 }
 
 // ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ import {decodeJournalInfo} from "#lib/api/nativeDecode.js";
 import type {CommodityStyles} from "#lib/api/normalize.js";
 import {NO_ACCOUNT_CLASSES, type AccountClasses} from "#lib/domain/accountClass.js";
 import {settings} from "#lib/stores/settings.svelte.js";
+import {pollWhileVisible} from "#lib/stores/visiblePoll.js";
 
 type JournalStatus = "idle" | "loading" | "ready" | "error";
 
@@ -206,32 +207,9 @@ export const journal = {
  * Live-update polling loop (WP-08). Refreshes every `intervalMs` (default 5s)
  * via `journal.refresh()`, which dedups concurrent calls; a changed generation
  * is what makes the views refetch. Pauses while the document is hidden; on
- * becoming visible again it refreshes immediately and resumes. Returns a stop
- * function.
+ * becoming visible or regaining focus it refreshes immediately (see
+ * `visiblePoll.ts`). Returns a stop function.
  */
 export function startPolling(intervalMs = 5_000): () => void {
-    let timer: ReturnType<typeof setInterval> | null = null;
-    const start = (): void => {
-        timer ??= setInterval(() => void journal.refresh(), intervalMs);
-    };
-    const stop = (): void => {
-        if (timer !== null) {
-            clearInterval(timer);
-            timer = null;
-        }
-    };
-    const onVisibilityChange = (): void => {
-        if (document.visibilityState === "hidden") {
-            stop();
-        } else {
-            void journal.refresh();
-            start();
-        }
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    start();
-    return () => {
-        stop();
-        document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
+    return pollWhileVisible(() => void journal.refresh(), intervalMs);
 }

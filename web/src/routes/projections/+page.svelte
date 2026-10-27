@@ -2,8 +2,9 @@
     // The Projections tab: a what-if you can edit, and the runway it implies.
     //
     // Top half is the editable scenario table, bottom half is that scenario read
-    // forward as net income, cash and net worth. They are one subject read two
-    // ways, so they share a page and a recompute: every edit bumps the store's
+    // forward as the runway and the three official statements (plan 28). They
+    // are one subject read two ways, so they share a page and a recompute: every
+    // edit bumps the store's
     // revision and schedules one debounced `POST /api/projections/run`, and the
     // charts below say so while it is in flight rather than showing a projection
     // of a table that is no longer on screen.
@@ -36,7 +37,7 @@
     import {fileStore} from "#lib/projections/fileStore.svelte.js";
     import {defaultProjectionParams, projectionParamsToSearch, searchToProjectionParams, type ProjectionParams} from "#lib/projections/params.js";
     import {assetRowsByGroup} from "#lib/projections/projectionView.js";
-    import {sameProjectionQuery, scenarioStore, type ProjectionWindow} from "#lib/projections/scenarioStore.svelte.js";
+    import {sameProjectionQuery, scenarioStore, scenarioTableView, type ProjectionWindow} from "#lib/projections/scenarioStore.svelte.js";
     import ProjectionReports from "#lib/projections/ui/ProjectionReports.svelte";
     import ProjectionsTable from "#lib/projections/ui/ProjectionsTable.svelte";
     import SaveScenarioDialog from "#lib/projections/ui/SaveScenarioDialog.svelte";
@@ -47,6 +48,7 @@
     import {journal} from "#lib/stores/journal.svelte.js";
     import {loadJournalWhenReady, onServerReady} from "#lib/stores/serverWatch.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
+    import {pollWhileVisible} from "#lib/stores/visiblePoll.js";
     import {searchMirror} from "#lib/url/searchSync.js";
 
     let params = $state<ProjectionParams>(defaultProjectionParams());
@@ -55,7 +57,11 @@
     onMount(() => {
         if (window.location.search !== "") Object.assign(params, searchToProjectionParams(window.location.search, defaultProjectionParams()));
         restored = true;
+        // The open file is not part of the main journal, so the layout's
+        // journal poll never notices it change. Same cadence, its own check.
+        const stopDiskWatch = pollWhileVisible(() => void syncWithDisk(), DISK_POLL_MS);
         return () => {
+            stopDiskWatch();
             mirror.stop();
             scenarioStore.stop();
         };
@@ -84,7 +90,9 @@
 
     onServerReady((url) => void start(url));
     const seed = $derived(scenarioStore.seed);
-    const seedView = $derived(dataView(seed.status, seed.value !== null));
+    // Not the seed's own view: a scenario reopened from a file never reads the
+    // seed, and gating on it alone left a spinner over the table forever.
+    const tableView = $derived(scenarioTableView(scenarioStore.adopted, seed.status, seed.value !== null));
 
     /**
      * Reopen the last-loaded file, or seed.
@@ -99,7 +107,10 @@
         await fileStore.ensureIndex(url, settings.serverNonce);
         const remembered = settings.lastProjectionId;
         if (fileStore.available && remembered !== null && (await openFile(url, remembered))) return;
-        await scenarioStore.ensureSeeded(url, settings.serverNonce);
+        // At the page's depth: the slider is where a user says how finely they
+        // plan, and the seed is where that plan starts. Only where it STARTS —
+        // see `canReseed`.
+        await scenarioStore.ensureSeeded(url, settings.serverNonce, params.depth);
     }
 
     /** Load one file into the table. `false` means it could not be opened. */
@@ -114,8 +125,65 @@
             return false;
         }
         fileError = null;
+        diskNotice = null;
         scenarioStore.adopt(outcome.file.scenario);
         return true;
+    }
+
+    // --- Edits made outside Ledgeline -----------------------------------------
+
+    /** The journal poll's own cadence (`startPolling`). */
+    const DISK_POLL_MS = 5_000;
+
+    /**
+     * What the last disk check found that the user should hear about: the file
+     * changed under unsaved edits, or it can no longer be read. Null otherwise.
+     */
+    let diskNotice = $state<{kind: "changed"} | {kind: "failed"; message: string} | null>(null);
+
+    /**
+     * Pick up an edit made to the open file in another program.
+     *
+     * With no unsaved work the table simply follows the file — it is adopted
+     * like any load, and the projection below it stays on screen, labelled
+     * stale, until the recompute lands (amendment 23). With unsaved work NOTHING
+     * is replaced: the page says the file moved and offers to reload it, and
+     * the held revision stays the old one, so a Save is refused by the engine
+     * with a 409 rather than overwriting the other program's edit.
+     */
+    async function syncWithDisk(): Promise<void> {
+        const url = settings.serverUrl;
+        if (url === null) return;
+        const check = await fileStore.checkDisk(url);
+        switch (check.kind) {
+            case "skipped":
+                return;
+            case "unchanged":
+                diskNotice = null;
+                return;
+            case "changed":
+                if (scenarioStore.dirty) {
+                    diskNotice = {kind: "changed"};
+                    return;
+                }
+                fileStore.adopted(check.file);
+                scenarioStore.adopt(check.file.scenario);
+                diskNotice = null;
+                return;
+            case "failed":
+                // A dropped connection is the app bar's to report, not this
+                // file's; what is worth saying is that the FILE is now unreadable
+                // or gone, and that the table on screen is untouched by it.
+                if (check.failure.kind === "network" || check.failure.kind === "unavailable") return;
+                diskNotice = {kind: "failed", message: check.failure.message};
+                return;
+        }
+    }
+
+    function reloadFromDisk(): void {
+        const url = settings.serverUrl;
+        const id = fileStore.currentId;
+        if (url !== null && id !== null) void openFile(url, id);
     }
 
     // --- Saving --------------------------------------------------------------
@@ -141,6 +209,7 @@
             // discard a keystroke the user made while the request was in flight.
             scenarioStore.markSaved();
             fileError = null;
+            diskNotice = null;
         } else {
             fileError = outcome.failure.message;
         }
@@ -159,6 +228,7 @@
             scenarioStore.markSaved();
             saveAsOpen = false;
             fileError = null;
+            diskNotice = null;
         } else {
             fileError = outcome.failure.message;
         }
@@ -166,7 +236,16 @@
 
     // --- The projection ------------------------------------------------------
 
-    const projectionWindow = $derived<ProjectionWindow>({interval: params.interval, count: params.count, depth: params.depth});
+    // The Accounts and Journal readings ride on the run only while their tab
+    // is open: no other tab shows them, and every edit re-runs the projection.
+    const projectionWindow = $derived<ProjectionWindow>({
+        interval: params.interval,
+        count: params.count,
+        lookback: params.lookback,
+        depth: params.depth,
+        accounts: params.tab === "accounts" ? {mode: params.accounts, empty: params.empty} : null,
+        journal: params.tab === "journal",
+    });
     // `journal.changes`: projections start from the journal's balances, so a
     // refresh or a change on disk recomputes them.
     const loadKey = $derived({
@@ -242,10 +321,22 @@
      * `journalBalanceFor` refuses an entry whose account no longer matches.
      */
     const assetBalances = $derived(assetRowsByGroup(projection.value));
+    /**
+     * The engine's inferred counter, gains and cash accounts, greyed in the
+     * table — off the last good answer for `assetBalances`' reason. A row whose
+     * rule was just split has no entry until the next answer lands, and shows
+     * "default" meanwhile rather than another rule's account.
+     */
+    const forecastDefaults = $derived(projection.value?.defaults ?? null);
 
     function setCount(value: string): void {
         const n = Number(value);
         if (Number.isInteger(n)) params.count = Math.min(MAX_COUNT, Math.max(1, n));
+    }
+
+    function setLookback(value: string): void {
+        const n = Number(value);
+        if (Number.isInteger(n)) params.lookback = Math.min(MAX_COUNT, Math.max(0, n));
     }
 
     function retry(): void {
@@ -255,8 +346,23 @@
 
     function retrySeed(): void {
         const url = settings.serverUrl;
-        if (url !== null) void scenarioStore.reseed(url);
+        if (url !== null) void scenarioStore.reseed(url, params.depth);
     }
+
+    /**
+     * Whether to offer "Re-seed at depth N".
+     *
+     * The seed is a STARTING POINT, so moving the depth slider never re-seeds
+     * by itself: once rows exist they sit at whatever level the user put them,
+     * leaves beside parents, and the slider only changes how the statements
+     * below roll them up. But a user who has not touched the seed yet and moves
+     * the slider is very likely asking for a finer (or coarser) start, so it is
+     * offered — only then. Never over an edit, and never over a file, both of
+     * which it would silently discard.
+     */
+    const canReseed = $derived(
+        scenarioStore.seedDepth !== null && !scenarioStore.dirty && fileStore.currentId === null && scenarioStore.seedDepth !== params.depth
+    );
 </script>
 
 <svelte:head><title>Ledgeline — Projections</title></svelte:head>
@@ -266,7 +372,7 @@
         <h1 class="text-lg font-semibold">Projections</h1>
         {#if current !== null}
             <p class="text-sm text-base-content/60">
-                Opening balances as of today; the first projected period starts {current.start}.
+                Actuals run to the last complete period; the first projected period starts {current.actualsEnd}.
             </p>
         {/if}
     </div>
@@ -295,11 +401,27 @@
         <div class="alert items-start rounded-box px-3 py-2 text-sm alert-error" role="alert" data-testid="projection-file-error">{fileError}</div>
     {/if}
 
+    <!-- The open file was changed by another program. Never resolved by
+         replacing unsaved work: the user chooses. -->
+    {#if diskNotice !== null}
+        <div class="alert flex flex-col items-start gap-2 rounded-box px-3 py-2 text-sm alert-warning" role="alert" data-testid="projection-disk-notice">
+            {#if diskNotice.kind === "changed"}
+                <span>
+                    This scenario's file was changed outside Ledgeline since you opened it. Your edits here are not saved, and Save will refuse to overwrite the
+                    other change — reload the file to see it (discarding your edits), or use Save as to keep yours in a new file.
+                </span>
+                <button type="button" class="btn btn-sm" disabled={busy} onclick={reloadFromDisk} data-testid="projection-disk-reload">Reload from disk</button>
+            {:else}
+                <span>The scenario's file could not be re-read, so the table shows it as it was: {diskNotice.message}</span>
+            {/if}
+        </div>
+    {/if}
+
     <!-- The what-if. Seeded once from the journal: the budget's own `~` rules,
          plus one monthly line per category the budget does not mention. -->
     <AsyncSection
-        view={seedView}
-        value={seed.value}
+        view={tableView}
+        value={scenarioStore.adopted ? scenarioStore.scenario : seed.value}
         error={seed.error}
         testid="projections-seed-error"
         label="a starting scenario"
@@ -317,6 +439,7 @@
             {commodity}
             {stepDate}
             {assetBalances}
+            defaults={forecastDefaults}
             {styles}
             onChange={() => scenarioStore.touch()}
         />
@@ -345,12 +468,32 @@
                 aria-label="Number of periods"
             />
         </label>
+        <!-- How many full ACTUAL periods the statements show before the
+             forecast (plan 28 Decision 6). Zero is allowed: forecast only. -->
+        <label class="form-control">
+            <span class="label-text mb-1 block text-xs text-base-content/70">Actuals</span>
+            <input
+                type="number"
+                class="input w-20 input-sm"
+                min="0"
+                max={MAX_COUNT}
+                value={params.lookback}
+                onchange={(e) => setLookback(e.currentTarget.value)}
+                aria-label="Actual periods before the projection"
+            />
+        </label>
         <!-- Keyed on maxDepth for the reason the reports bar keys it: the slider
              can mount while accounts are still loading (max=1), and the browser
              clamps the input's value to that max without updating bound state. -->
         {#key maxDepth}
             <DepthSlider bind:depth={params.depth} max={maxDepth} />
         {/key}
+        {#if canReseed}
+            <div class="flex items-center gap-2 text-xs text-base-content/70" data-testid="projection-reseed">
+                <span>The starting rows were seeded at depth {scenarioStore.seedDepth}.</span>
+                <button type="button" class="btn btn-outline btn-xs" onclick={retrySeed}>Re-seed at depth {params.depth}</button>
+            </div>
+        {/if}
     </div>
 
     {#if warnings.length > 0}
@@ -380,7 +523,15 @@
                 onRetry={retry}
             >
                 {#snippet children(held)}
-                    <ProjectionReports bind:tab={params.tab} projection={held} interval={params.interval} {styles} fallbackCommodity={commodity} />
+                    <ProjectionReports
+                        bind:tab={params.tab}
+                        bind:accountsMode={params.accounts}
+                        bind:emptyAccounts={params.empty}
+                        projection={held}
+                        interval={params.interval}
+                        {styles}
+                        fallbackCommodity={commodity}
+                    />
                 {/snippet}
             </AsyncSection>
         </div>

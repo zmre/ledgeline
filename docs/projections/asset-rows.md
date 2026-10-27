@@ -39,15 +39,27 @@ your real journal, and your brokerage account is in there. An asset row adds its
 rate and no contribution changes not one number on the page — which is the
 correct behaviour and is exactly what the engine's own regression test asserts.
 
-**2. Appreciation moves net worth and only net worth.** It never reaches cash
-and never reaches net income. Paper gains do not pay salaries, and a runway that
-counted them would be worse than one that ignored them. The consequence worth
+**2. Appreciation moves net worth and only net worth.** On an account held in
+your own currency (a house, a private stake) each growth step is a posting from
+the asset to the row's gains account, `equity:unrealized gains` unless you name
+another with `gains:`. Equity is neither income nor cash, so paper gains do not
+reach net income or the runway. Point `gains:` at an income account if you
+want them counted as income. On an account holding **priced** commodities (a
+brokerage of stocks or funds), the rate grows those commodities' **prices**
+instead, starting from each one's latest price, and the holding is revalued.
+Those prices exist only in memory: nothing is written to your journal or the
+scenario file, so hledger values the holding at its last real price. If two
+rows grow the same commodity at different rates, the first row's rate is used
+and you are warned, because a price belongs to the commodity, not the account.
+The one exception to "never cash": a growing row on an account that IS cash (a
+savings account declared `type: C`) is interest in that account, and the
+runway counts it. The consequence worth
 stating out loud: **a growing asset cannot hide a burn.** The cash chart and the
 runway date are exactly what they would be with the asset row deleted.
 
 **3. A contribution is net-worth neutral, and it pays for itself.** `$2,000` a
-month into a brokerage is a posting like any other, so the [residual rule](cash.md)
-already implies the cash leg: cash −2,000, asset +2,000, net worth unchanged.
+month into a brokerage is a posting like any other, balanced against the row's
+[counter-account](cash.md): cash −2,000, asset +2,000, net worth unchanged.
 There is no separate "funding" setting and none is wanted. (If the destination
 is itself a cash account — a savings account you have declared `type: C` — then
 neither series moves, which is also right: the money did not leave your cash.)
@@ -115,6 +127,7 @@ Expenses and before One-off events:
 | **Account** | the account whose balance this row carries |
 | **Balance** | **the journal's own figure**, greyed, until you type over it |
 | **Growth** | the rate the balance compounds at, and the unit it steps on |
+| **Gains account** | where the growth is booked; `equity:unrealized gains`, greyed, until you name another |
 | **Contribution** | what you add each period. `0` is normal — see below |
 | **Per** | how often the contribution happens |
 | **From** / **To** | optional bounds, `To` exclusive as hledger writes it |
@@ -133,8 +146,9 @@ fixed amount each period.
 into — and it is what the file writes as a `$0` posting.
 
 **Growth here is unrealised.** It moves net worth and nothing else: not cash,
-not net income, not your runway date. The Net worth tab breaks the growth down
-per asset underneath its chart, so you can see which row produced it.
+not net income, not your runway date. On the Balance sheet tab it is visible
+as equity: the gains account's line for an unpriced asset, and the valuation
+adjustment for priced holdings, whose grown prices revalue them.
 
 ## The opening tag restates the balance and says so
 
@@ -203,6 +217,6 @@ contribution *is* the amount, and zero is what "no contribution" is worth.
   distribution over outcomes (Monte Carlo and friends).
 
 The engine tells you when it could not do something: a period it cannot
-enumerate, a growth rate that overflows, a commodity your opening balances are
-not valued in. A projection that quietly drops a line is worse than one that
+enumerate, a growth rate that overflows, a commodity no price converts into
+the one your opening balances are valued in. A projection that quietly drops a line is worse than one that
 says so, so every one of those appears in the warnings above the charts.

@@ -56,6 +56,7 @@ mod location;
 mod prefs;
 mod prices_api;
 mod profiles_api;
+mod projection_cache;
 mod projections_api;
 mod qb_journal_api;
 pub mod recents;
@@ -173,6 +174,10 @@ pub(crate) struct Snapshot {
     /// Lazily-built derivations for the journal-view routes ([`journal_api`]):
     /// computed at most once per snapshot, and dropped with it.
     pub(crate) view: Arc<journal_api::ViewCache>,
+    /// The projection run's real side, built on first use and dropped with
+    /// the snapshot, so a new journal can never be served a stale one
+    /// (plan 29).
+    pub(crate) projections: projection_cache::ProjectionCache,
 }
 
 impl Snapshot {
@@ -253,6 +258,7 @@ impl Snapshot {
             accounts,
             journal_info,
             view: journal_api::ViewCache::warmed(&journal),
+            projections: projection_cache::ProjectionCache::default(),
             journal,
             location,
         }
@@ -882,6 +888,12 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         .route(
             "/api/reports/balancesheet/grouped",
             get(reports_api::balancesheet_grouped),
+        )
+        // The same grouped sheet at the end of each period: the Reports tab's
+        // multi-period mode, in the pivoted shape the projection run returns.
+        .route(
+            "/api/reports/balancesheet/columns",
+            get(reports_api::balancesheet_columns),
         )
         .route(
             "/api/reports/incomestatement",

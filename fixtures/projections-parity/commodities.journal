@@ -1,0 +1,17 @@
+; Ledgeline projection
+; projection: Parity commodities
+; created: 2026-10-20
+; updated: 2026-10-20
+
+; Multi-commodity lines: a EUR rule against the EUR account, and one rule
+; mixing EUR and dollars against a dollar account, whose amountless counter
+; posting hledger infers as two amounts.
+
+~ monthly  euro travel
+    expenses:travel       300.00 EUR
+    assets:wise:eur
+
+~ monthly  mixed
+    expenses:travel        50.00 EUR
+    expenses:rent          $100.00
+    assets:checking

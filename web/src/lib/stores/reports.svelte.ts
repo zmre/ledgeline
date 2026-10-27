@@ -6,9 +6,15 @@
 // the very first load shows a spinner).
 
 import {LedgelineApi} from "#lib/api/native.js";
-import {decodeBalanceSheetReport, decodeCashFlowStatement, decodeIncomeStatementReport, decodePeriodReport} from "#lib/api/nativeDecode.js";
-import type {BalanceSheetReport, CashFlowStatement, IncomeStatementReport, PeriodReport, SectionedReport} from "#lib/reports/types.js";
-import type {ReportInterval, ReportParams} from "#lib/reports/ui/params.js";
+import {
+    decodeBalanceSheetColumns,
+    decodeBalanceSheetReport,
+    decodeCashFlowStatement,
+    decodeIncomeStatementReport,
+    decodePeriodReport,
+} from "#lib/api/nativeDecode.js";
+import type {BalanceSheetColumns, BalanceSheetReport, CashFlowStatement, IncomeStatementReport, PeriodReport, SectionedReport} from "#lib/reports/types.js";
+import type {PeriodInterval, ReportInterval, ReportParams} from "#lib/reports/ui/params.js";
 import type {LoadStatus} from "./loadState";
 import {createResource} from "./resource.svelte";
 
@@ -20,7 +26,7 @@ import {createResource} from "./resource.svelte";
  * goldens decode into, and removing it from the union would make the page's
  * `"kind" in current` narrowing vacuous rather than meaningful.
  */
-export type AnyReport = SectionedReport | PeriodReport | BalanceSheetReport | IncomeStatementReport | CashFlowStatement;
+export type AnyReport = SectionedReport | PeriodReport | BalanceSheetReport | BalanceSheetColumns | IncomeStatementReport | CashFlowStatement;
 
 /** The exact query for one tab — only the fields that endpoint honors, so the fetch effect refires minimally. */
 export type ReportQuery =
@@ -30,6 +36,10 @@ export type ReportQuery =
     | {tab: "insights"}
     | {tab: "subs"}
     | {tab: "bs"; asOf: string}
+    // The multi-period sheet: one column per period end from `from`, the last
+    // at `asOf`. A separate variant, not optional keys, so a single-date query
+    // never changes identity when the (inert) start moves.
+    | {tab: "bs"; asOf: string; from: string; interval: PeriodInterval}
     // No `depth`: the grouped income statement has no such control and its
     // endpoint takes no such param (plans/13), exactly as `bs` dropped it.
     | {tab: "is"; from: string; to: string; interval: ReportInterval}
@@ -45,7 +55,9 @@ export function buildReportQuery(params: ReportParams): ReportQuery {
         case "subs":
             return {tab: "subs"};
         case "bs":
-            return {tab: "bs", asOf: params.asOf};
+            return params.interval !== "total"
+                ? {tab: "bs", asOf: params.asOf, from: params.bsFrom, interval: params.interval}
+                : {tab: "bs", asOf: params.asOf};
         case "is":
             return {tab: "is", from: params.from, to: params.to, interval: params.interval};
         case "cf":
@@ -86,6 +98,12 @@ async function fetchReport(api: LedgelineApi, query: ReportQuery): Promise<AnyRe
             // No `depth`: absent means UNCLAMPED on this endpoint, which is what
             // expanding a group has to show. It cannot be spelled as a number —
             // `depth=0` is already hledger's totals-only.
+            //
+            // Multi-period: the same sheet at each period end, pivoted by the
+            // engine into one tree with a figure per column.
+            if ("interval" in query) {
+                return decodeBalanceSheetColumns(await api.balanceSheetColumns({from: query.from, to: query.asOf, interval: query.interval}));
+            }
             return decodeBalanceSheetReport(await api.balanceSheetGrouped({asOf: query.asOf}));
         case "is":
             // The GROUPED endpoint (plans/13): ladder-ordered boxes, market-valued,

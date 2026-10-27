@@ -198,6 +198,63 @@ export interface BalanceSheetReport {
     meta?: ReportMeta;
 }
 
+// --- Multi-column balance sheet (plans/28-projected-statements.md) -----------
+// The SAME tree as `BalanceSheetReport` — same keys at every level — with every
+// figure an array, one entry per column. The engine pivots the columns
+// (`pivot_balance_sheets`), so a group that has a balance only in later columns
+// reads as an empty amount in the earlier ones rather than being missing, and
+// every consumer shows the same rows in the same order.
+
+/** One account row across every column. */
+export interface BsColumnRow {
+    account: string;
+    depth: number;
+    own: MixedAmount[];
+    inclusive: MixedAmount[];
+}
+
+/** One group across every column. Keyed, like `BsGroup`, by section, term and name. */
+export interface BsColumnGroup {
+    name: string;
+    source: GroupSource;
+    term: BsTerm | null;
+    rows: BsColumnRow[];
+    total: MixedAmount[];
+}
+
+/** One current/non-current band across every column. */
+export interface BsColumnSubsection {
+    term: BsTerm;
+    heading: string;
+    label: string;
+    total: MixedAmount[];
+}
+
+/** One of the three boxes across every column. */
+export interface BsColumnSection {
+    kind: BsSectionKind;
+    title: string;
+    groups: BsColumnGroup[];
+    subsections: BsColumnSubsection[];
+    total: MixedAmount[];
+}
+
+/** A balance sheet at the end of each of several periods, side by side. */
+export interface BalanceSheetColumns {
+    /** Decoder-applied discriminator, as on `BalanceSheetReport`; never on the wire. */
+    kind: "balanceSheetColumns";
+    /** One per column, oldest → newest. Each column is the sheet as of its `to`. */
+    columns: IsBucket[];
+    base: string | null;
+    value: BsValuation;
+    sections: BsColumnSection[];
+    netWorth: MixedAmount[];
+    check: MixedAmount[];
+    /** The engine's verdict per column — never re-derived from `check`. */
+    balanced: boolean[];
+    meta?: ReportMeta;
+}
+
 // --- Grouped income statement (plans/13-income-statement-redesign.md) --------
 // The market-valued, adaptive-GAAP income statement. Same redesign as the
 // balance sheet one section up, and deliberately the same shapes where they

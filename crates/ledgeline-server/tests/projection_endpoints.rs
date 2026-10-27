@@ -125,6 +125,30 @@ fn dollars(mixed: &Value) -> i128 {
     mantissa / 10_i128.pow(places)
 }
 
+/// The `$` figure exactly, at twelve decimal places.
+fn exact(mixed: &Value) -> i128 {
+    let Some(dec) = mixed.get("$") else {
+        return 0;
+    };
+    let mantissa: i128 = dec["mantissa"]
+        .as_str()
+        .expect("mantissa")
+        .parse()
+        .expect("parses");
+    let places = dec["places"].as_u64().expect("places") as u32;
+    mantissa * 10_i128.pow(12 - places)
+}
+
+/// A row's `values`, each `$` figure exactly ([`exact`]).
+fn exact_series(node: &Value) -> Vec<i128> {
+    node["values"]
+        .as_array()
+        .expect("values is an array")
+        .iter()
+        .map(exact)
+        .collect()
+}
+
 fn series(node: &Value) -> Vec<i128> {
     node["values"]
         .as_array()
@@ -132,6 +156,86 @@ fn series(node: &Value) -> Vec<i128> {
         .iter()
         .map(dollars)
         .collect()
+}
+
+/// The index of the first forecast column in the statements.
+fn projected_from(projection: &Value) -> usize {
+    projection["projectedFrom"]
+        .as_u64()
+        .expect("projectedFrom is a number") as usize
+}
+
+/// The FORECAST columns of a statement array: everything from the run's
+/// `projectedFrom` on.
+fn projected<'a>(projection: &Value, columns: &'a Value) -> &'a [Value] {
+    &columns.as_array().expect("a column array")[projected_from(projection)..]
+}
+
+/// Projected net income per forecast period, whole dollars — the income
+/// statement's own `netIncome` row.
+fn net_income(projection: &Value) -> Vec<i128> {
+    projected(
+        projection,
+        &projection["incomeStatement"]["netIncome"]["values"],
+    )
+    .iter()
+    .map(dollars)
+    .collect()
+}
+
+/// Net worth at the end of each forecast period, EXACT — the balance sheet's
+/// own `netWorth`.
+fn net_worth(projection: &Value) -> Vec<i128> {
+    projected(projection, &projection["balanceSheet"]["netWorth"])
+        .iter()
+        .map(exact)
+        .collect()
+}
+
+/// Every account the income statement shows a row or a group for.
+fn income_accounts(projection: &Value) -> Vec<String> {
+    projection["incomeStatement"]["sections"]
+        .as_array()
+        .expect("sections")
+        .iter()
+        .flat_map(|section| section["groups"].as_array().expect("groups").clone())
+        .flat_map(|group| {
+            let mut names = vec![group["name"].as_str().unwrap_or_default().to_string()];
+            names.extend(
+                group["rows"]
+                    .as_array()
+                    .expect("rows")
+                    .iter()
+                    .map(|row| row["account"].as_str().unwrap_or_default().to_string()),
+            );
+            names
+        })
+        .collect()
+}
+
+/// One balance-sheet group's total per column (EXACT), by section and name.
+fn bs_group(projection: &Value, kind: &str, name: &str) -> Vec<i128> {
+    projection["balanceSheet"]["sections"]
+        .as_array()
+        .expect("sections")
+        .iter()
+        .find(|section| section["kind"] == kind)
+        .and_then(|section| {
+            section["groups"]
+                .as_array()
+                .expect("groups")
+                .iter()
+                .find(|group| group["name"] == name)
+        })
+        .map(|group| {
+            group["total"]
+                .as_array()
+                .expect("total")
+                .iter()
+                .map(exact)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
@@ -151,28 +255,38 @@ async fn run_projects_the_scenario_in_the_body() {
     }))
     .await;
 
-    // The first projected bucket is the next WHOLE one after `asOf`.
+    // Plan 28 Decision 5: the projection starts at the first INCOMPLETE
+    // period. sample.journal's last transaction is 2026-07-03, so July is
+    // projected (and July 1–3 are left out of the openings).
     assert_eq!(
         projection["buckets"],
-        json!(["2026-08", "2026-09", "2026-10"])
+        json!(["2026-07", "2026-08", "2026-09"])
     );
-    assert_eq!(projection["start"], "2026-08-01");
+    assert_eq!(projection["actualsEnd"], "2026-07-01");
+    // The default lookback is two FULL actual periods (Decision 6), and the
+    // statements run across both of them and then the forecast.
+    assert_eq!(projection["lookback"], json!(["2026-05", "2026-06"]));
+    assert_eq!(projection["projectedFrom"], 2);
+    let keys = |columns: &Value| -> Vec<Value> {
+        columns
+            .as_array()
+            .expect("columns")
+            .iter()
+            .map(|column| column["key"].clone())
+            .collect()
+    };
+    let all = json!(["2026-05", "2026-06", "2026-07", "2026-08", "2026-09"]);
+    assert_eq!(json!(keys(&projection["balanceSheet"]["columns"])), all);
+    assert_eq!(json!(keys(&projection["incomeStatement"]["buckets"])), all);
+    assert_eq!(json!(keys(&projection["cashFlow"]["buckets"])), all);
 
-    // Net income is a `PeriodReport`, so `ReportTable` renders it unchanged —
-    // in cash-flow orientation, so an expense reads negative.
-    let net_income = &projection["netIncome"];
-    assert_eq!(net_income["buckets"], projection["buckets"]);
-    let totals: Vec<i128> = net_income["totals"]
-        .as_array()
-        .expect("totals is an array")
-        .iter()
-        .map(dollars)
-        .collect();
-    assert_eq!(totals, [-4200, -4200, -4200]);
-    let rows = net_income["rows"].as_array().expect("rows is an array");
+    // Net income is the income statement's own, in the statement's sign: an
+    // expense reads negative.
+    assert_eq!(net_income(&projection), [-4200, -4200, -4200]);
+    let accounts = income_accounts(&projection);
     assert!(
-        rows.iter().any(|row| row["account"] == "expenses:rent"),
-        "the scenario's own account must be a row: {rows:?}"
+        accounts.iter().any(|account| account == "expenses:rent"),
+        "the scenario's own account must be a row: {accounts:?}"
     );
 
     // Opening balances come from the REAL journal, so they are not zero…
@@ -183,7 +297,21 @@ async fn run_projects_the_scenario_in_the_body() {
         series(&projection["cash"]),
         [opening - 4200, opening - 8400, opening - 12_600]
     );
-    assert!(dollars(&projection["netWorth"]["opening"]) > 0);
+    // The balance sheet balances in every column, actuals and forecast alike.
+    assert_eq!(
+        projection["balanceSheet"]["balanced"],
+        json!([true, true, true, true, true])
+    );
+    // The cash flow statement's net change in cash is the scenario's rent,
+    // period by period. (Its balances are as held, at cost, where the runway
+    // series is valued, so only the CHANGE is comparable in `$`.)
+    assert_eq!(
+        projected(&projection, &projection["cashFlow"]["netChange"]["values"])
+            .iter()
+            .map(dollars)
+            .collect::<Vec<_>>(),
+        [-4200, -4200, -4200]
+    );
 
     // Nothing was dropped, so nothing is warned about.
     assert_eq!(projection["warnings"], json!([]));
@@ -220,14 +348,18 @@ async fn an_asset_row_grows_net_worth_and_leaves_cash_alone() {
     // Cash, net income and the runway are IDENTICAL: appreciation is not money
     // in the bank and is not a P&L event.
     assert_eq!(with["cash"], without["cash"]);
-    assert_eq!(with["netIncome"], without["netIncome"]);
+    assert_eq!(with["incomeStatement"], without["incomeStatement"]);
+    // The cash flow statement shows the non-cash movement (the brokerage's
+    // cash part compounds through a gains posting: an investing line against a
+    // financing one), but not one cent of it reaches cash.
+    for line in ["netChange", "endingCash"] {
+        assert_eq!(with["cashFlow"][line], without["cashFlow"][line], "{line}");
+    }
     assert_eq!(with["runway"], without["runway"]);
-    // The openings are the journal's, and the asset row does not restate them.
-    assert_eq!(with["netWorth"]["opening"], without["netWorth"]["opening"]);
 
     // Net worth, though, pulls away — by the growth alone, and only from the
     // first anniversary of the projection's start (2027-01-01).
-    let (grew, flat) = (series(&with["netWorth"]), series(&without["netWorth"]));
+    let (grew, flat) = (net_worth(&with), net_worth(&without));
     assert_eq!(grew[0], flat[0], "the first year holds no anniversary");
     assert!(
         grew[1] > flat[1] && grew[2] > flat[2],
@@ -258,8 +390,48 @@ async fn an_asset_row_grows_net_worth_and_leaves_cash_alone() {
     assert!(held > 0, "sample.journal holds a taxable brokerage: {held}");
     // No override, so the row compounded exactly the journal's figure…
     assert_eq!(rows[0]["opening"], rows[0]["journalOpening"]);
-    // …and its attributed growth IS the gap the net-worth series opened up.
-    assert_eq!(dollars(&rows[0]["growth"]), grew[2] - flat[2]);
+    // The brokerage holds PRICED shares (AAPL, VTI), so the row grows their
+    // prices in memory (Decision 3) and the balance sheet revalues them
+    // through its valuation adjustment. Its `$` cash compounds through gains
+    // postings to `equity:unrealized gains` instead. Both are equity, so the
+    // whole gap is equity and every column still balances.
+    let forecast = |projection: &Value, name: &str| {
+        bs_group(projection, "equity", name)[projected_from(projection)..].to_vec()
+    };
+    let (revalued, plain) = (
+        forecast(&with, "Valuation adjustment"),
+        forecast(&without, "Valuation adjustment"),
+    );
+    assert!(revalued[2] > plain[2], "{revalued:?} vs {plain:?}");
+    let gains = forecast(&with, "Unrealized gains");
+    assert!(
+        gains.first() == Some(&0) && gains.get(2).is_some_and(|gain| *gain > gains[1]),
+        "the gains account is a real equity line that grows from the first \
+         anniversary: {gains:?}"
+    );
+    let equity = |projection: &Value| {
+        projected(
+            projection,
+            &projection["balanceSheet"]["sections"][2]["total"],
+        )
+        .iter()
+        .map(exact)
+        .collect::<Vec<_>>()
+    };
+    let (equity_with, equity_without) = (equity(&with), equity(&without));
+    assert_eq!(
+        equity_with[2] - equity_without[2],
+        grew[2] - flat[2],
+        "the appreciation is all equity"
+    );
+    assert!(
+        with["balanceSheet"]["balanced"]
+            .as_array()
+            .expect("balanced")
+            .iter()
+            .all(|verdict| verdict == true)
+    );
+    assert!(dollars(&rows[0]["growth"]) > 0);
 }
 
 /// A CONTRIBUTION on an asset row implies its cash outflow through the same
@@ -280,8 +452,8 @@ async fn an_asset_contribution_moves_cash_and_not_net_worth() {
         "a $1000 monthly contribution leaves cash at $1000 a month"
     );
     // …and net worth does not move at all: the money changed accounts.
-    assert_eq!(with["netWorth"], without["netWorth"]);
-    assert_eq!(with["netIncome"]["rows"], json!([]));
+    assert_eq!(net_worth(&with), net_worth(&without));
+    assert_eq!(with["incomeStatement"], without["incomeStatement"]);
 }
 
 /// **A non-asset account is a WARNING, not a silent model.** Liabilities are
@@ -306,9 +478,9 @@ async fn an_asset_row_on_a_non_asset_account_is_warned_about() {
                 .is_some_and(|w| w.contains(account) && w.contains("asset"))),
             "{account}: {warnings:?}"
         );
-        // …and it contributes nothing: every bucket is the opening balance.
-        let opening = dollars(&projection["netWorth"]["opening"]);
-        assert_eq!(series(&projection["netWorth"]), [opening; 3]);
+        // …and it contributes nothing: every period is the last actual one.
+        let worth = net_worth(&projection);
+        assert!(worth.iter().all(|figure| *figure == worth[0]), "{worth:?}");
     }
 }
 
@@ -324,11 +496,12 @@ async fn an_opening_override_adjusts_once_and_says_so() {
     let without = run(body(vec![])).await;
     let with = run(body(vec![row])).await;
 
-    // The OPENING figure itself is the journal's — an override restates the
-    // row's balance, not the report's starting point.
-    assert_eq!(with["netWorth"]["opening"], without["netWorth"]["opening"]);
-    // Every bucket is shifted by the same one-off difference…
-    let (adjusted, plain) = (series(&with["netWorth"]), series(&without["netWorth"]));
+    // The ACTUAL columns are the journal's — an override restates the row's
+    // balance from the cutoff, not history.
+    let actual = |projection: &Value| projection["balanceSheet"]["netWorth"][1].clone();
+    assert_eq!(actual(&with), actual(&without));
+    // Every forecast period is shifted by the same one-off difference…
+    let (adjusted, plain) = (net_worth(&with), net_worth(&without));
     let shift = adjusted[0] - plain[0];
     assert_eq!(
         adjusted[1] - plain[1],
@@ -393,7 +566,7 @@ async fn an_empty_scenario_projects_the_openings_forward() {
     .await;
     let opening = dollars(&projection["cash"]["opening"]);
     assert_eq!(series(&projection["cash"]), [opening, opening]);
-    assert_eq!(projection["netIncome"]["rows"], json!([]));
+    assert_eq!(net_income(&projection), [0, 0]);
     assert_eq!(projection["runway"], Value::Null);
 }
 
@@ -417,10 +590,11 @@ async fn a_large_event_produces_a_runway_naming_its_bucket() {
     }))
     .await;
     let runway = &projection["runway"];
-    assert_eq!(runway["bucket"], 1);
+    // July, August, September: the cutoff is 2026-07-01 (plan 28 Decision 5).
+    assert_eq!(runway["bucket"], 2);
     assert_eq!(runway["label"], "Sep 2026");
     assert_eq!(runway["date"], "2026-09-30");
-    assert_eq!(runway["periods"], 2);
+    assert_eq!(runway["periods"], 3);
 }
 
 /// A period the engine cannot enumerate is a WARNING and a zero contribution —
@@ -445,7 +619,7 @@ async fn an_unsupported_period_is_warned_about_rather_than_failing() {
             .is_some_and(|w| w.contains("every weekday")),
         "the warning must quote what the user wrote: {warnings:?}"
     );
-    assert_eq!(projection["netIncome"]["rows"], json!([]));
+    assert_eq!(net_income(&projection), [0, 0]);
 }
 
 /// `period.raw` is re-parsed through the JOURNAL's grammar, and the derived
@@ -462,13 +636,8 @@ async fn a_bounded_period_round_trips_through_the_journals_grammar() {
     }))
     .await;
     // `to` is EXCLUSIVE, so only September fires.
-    let totals: Vec<i128> = projection["netIncome"]["totals"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(dollars)
-        .collect();
-    assert_eq!(totals, [0, -4200, 0]);
+    // July, August, September (plan 28 Decision 5).
+    assert_eq!(net_income(&projection), [0, 0, -4200]);
 }
 
 /// The derived period fields go OUT beside `raw`, and a client may hand the
@@ -499,19 +668,64 @@ async fn the_seed_emits_derived_period_fields_that_a_run_accepts_back() {
     assert_eq!(projection["buckets"].as_array().unwrap().len(), 3);
     assert!(dollars(&projection["cash"]["opening"]) > 0);
 
-    // sample.journal spends in EUR as well as `$`, so the seed does too — and
-    // the projection SAYS so rather than quietly adding the two together. This
-    // is the warning working, not a defect in the round trip.
+    // sample.journal spends in EUR as well as `$`, so the seed does too. EUR
+    // has a `P` price, so it is converted where figures are read, and nothing
+    // is carried unconverted to warn about.
     let warnings = projection["warnings"]
         .as_array()
         .expect("warnings is an array");
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
-    assert!(
-        warnings[0]
-            .as_str()
-            .is_some_and(|w| w.contains("EUR") && w.contains("without conversion")),
-        "{warnings:?}"
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+/// The sample.journal false alarm (plan 28 amendment 22). The seeded scenario
+/// builds cash, yet the runway used to read "Cash turns negative in Jul 2026":
+/// the EUR seed lines were added unvalued against a dollar-valued opening, and
+/// the `$` food line defaulted to the EUR-only Wise account. And projected
+/// depreciation drained checking.
+#[tokio::test]
+async fn the_sample_seed_raises_no_false_runway_and_infers_counters_per_commodity() {
+    let (status, text) = get("/api/projections/seed?end=2026-07-08&count=12&depth=2").await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let seed: Value = serde_json::from_str(&text).expect("the seed body is JSON");
+    let projection = run(json!({"scenario": seed, "asOf": "2026-07-08", "count": 12})).await;
+
+    // Total cash never closes below zero in any commodity, so no runway.
+    assert_eq!(projection["runway"], Value::Null, "{}", projection["cash"]);
+    for (index, value) in projection["cash"]["values"]
+        .as_array()
+        .expect("cash values")
+        .iter()
+        .enumerate()
+    {
+        for (commodity, qty) in value.as_object().expect("a mixed amount") {
+            assert!(
+                !qty["mantissa"].as_str().unwrap_or("").starts_with('-'),
+                "cash is negative in {commodity} in bucket {index}: {value}"
+            );
+        }
+    }
+
+    let defaults = &projection["defaults"]["lines"];
+    let default_of = |group: &str| defaults[group].as_str().unwrap_or_default().to_string();
+    // `$` food went on the visa, paid from checking: one hop, to checking —
+    // never the EUR-only Wise account.
+    assert_eq!(default_of("gap:expenses:food:$"), "assets:bank:checking");
+    assert_eq!(default_of("gap:expenses:food:EUR"), "assets:bank:wise:eur");
+    assert_eq!(
+        default_of("gap:expenses:travel:$"),
+        "assets:bank:checking",
+        "{defaults}"
     );
+    // Depreciation books against its contra-asset, which is not cash.
+    assert_eq!(
+        default_of("gap:expenses:depreciation:$"),
+        "assets:vehicles:car:depreciation"
+    );
+    // Salary still lands where it always landed.
+    assert_eq!(default_of("gap:income:salary:$"), "assets:bank:checking");
+    // Withheld tax pairs only with the salary, which is not where money sits,
+    // so it comes out of cash.
+    assert_eq!(default_of("gap:expenses:taxes:$"), "assets:bank:checking");
 }
 
 /// A date is NORMALIZED, not merely validated — `2026-9-1` is what hledger's
@@ -535,16 +749,465 @@ async fn an_unpadded_event_date_is_normalized_rather_than_refused() {
     .await;
     assert_eq!(
         projection["buckets"],
-        json!(["2026-08", "2026-09", "2026-10"])
+        json!(["2026-07", "2026-08", "2026-09"])
     );
-    let totals: Vec<i128> = projection["netIncome"]["totals"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(dollars)
-        .collect();
     // September, not a garbage `2026-00` bucket and not nothing at all.
-    assert_eq!(totals, [0, -45_000, 0]);
+    assert_eq!(net_income(&projection), [0, 0, -45_000]);
+}
+
+// ---------------------------------------------------------------------------
+// The projected statements (plan 28, Phase 4)
+// ---------------------------------------------------------------------------
+
+/// `lookback` is how many full ACTUAL periods precede the forecast in the
+/// statements, `0` included; `projectedFrom` is where they end. The cash
+/// series and the runway count from the cutoff whatever it is.
+#[tokio::test]
+async fn lookback_sets_the_actual_columns_and_where_projection_starts() {
+    for (lookback, keys) in [
+        (0, vec!["2026-07", "2026-08"]),
+        (
+            3,
+            vec!["2026-04", "2026-05", "2026-06", "2026-07", "2026-08"],
+        ),
+    ] {
+        let projection = run(json!({
+            "scenario": scenario_with(vec![rent_line()], vec![]),
+            "asOf": "2026-07-08",
+            "count": 2,
+            "lookback": lookback
+        }))
+        .await;
+        assert_eq!(projection["projectedFrom"], lookback);
+        assert_eq!(
+            projection["lookback"].as_array().expect("lookback").len(),
+            lookback
+        );
+        let columns: Vec<&str> = projection["balanceSheet"]["columns"]
+            .as_array()
+            .expect("columns")
+            .iter()
+            .map(|column| column["key"].as_str().expect("key"))
+            .collect();
+        assert_eq!(columns, keys, "lookback {lookback}");
+        assert_eq!(projection["buckets"], json!(["2026-07", "2026-08"]));
+        assert_eq!(series(&projection["cash"]).len(), 2);
+        // Each balance-sheet column is the sheet as of its period's LAST day.
+        assert_eq!(
+            projection["balanceSheet"]["columns"][lookback]["to"],
+            "2026-07-31"
+        );
+    }
+}
+
+/// The ACTUAL columns are the Reports tab's own statements for those periods
+/// — the same code, the same groups, the same valuation — and a real
+/// transaction dated on or after the cutoff is in no column at all.
+#[tokio::test]
+async fn the_actual_columns_are_the_reports_tabs_statements() {
+    let projection = run(json!({
+        "scenario": scenario_with(vec![rent_line()], vec![]),
+        "asOf": "2026-07-08",
+        "count": 1
+    }))
+    .await;
+    assert_eq!(projection["lookback"], json!(["2026-05", "2026-06"]));
+
+    // The balance sheet at the end of June, column for column.
+    let (status, text) = get("/api/reports/balancesheet/grouped?asOf=2026-06-30").await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let june: Value = serde_json::from_str(&text).expect("JSON");
+    let sheet = &projection["balanceSheet"];
+    assert_eq!(sheet["base"], june["base"]);
+    for (section, reports) in sheet["sections"]
+        .as_array()
+        .expect("sections")
+        .iter()
+        .zip(june["sections"].as_array().expect("sections"))
+    {
+        assert_eq!(section["kind"], reports["kind"]);
+        assert_eq!(section["total"][1], reports["total"], "{}", section["kind"]);
+        for group in reports["groups"].as_array().expect("groups") {
+            let pivoted = section["groups"]
+                .as_array()
+                .expect("groups")
+                .iter()
+                .find(|g| g["name"] == group["name"] && g["term"] == group["term"])
+                .unwrap_or_else(|| panic!("{} is in the pivot", group["name"]));
+            assert_eq!(pivoted["total"][1], group["total"], "{}", group["name"]);
+        }
+    }
+    assert_eq!(sheet["netWorth"][1], june["netWorth"]);
+
+    // The income statement's two actual months.
+    let (status, text) = get(
+        "/api/reports/incomestatement/grouped?from=2026-05-01&to=2026-06-30&interval=monthly&compare=none",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let months: Value = serde_json::from_str(&text).expect("JSON");
+    let actual = &projection["incomeStatement"]["netIncome"]["values"];
+    assert_eq!(actual[0], months["netIncome"]["values"][0]);
+    assert_eq!(actual[1], months["netIncome"]["values"][1]);
+
+    // July is projected: sample.journal's real July 1–3 postings are left
+    // out (Decision 5), so July's net income is the scenario's rent alone.
+    assert_eq!(net_income(&projection), [-4200]);
+}
+
+// ---------------------------------------------------------------------------
+// The Accounts and Journal readings (plan 28, follow-ups 2026-10-26)
+// ---------------------------------------------------------------------------
+
+/// A run asking for the Accounts reading in `mode`, over July and August with
+/// May and June as actuals, at depth 3.
+async fn accounts_run(mode: &str, empty: bool, events: Vec<Value>) -> Value {
+    run(json!({
+        "scenario": scenario_with(vec![rent_line()], events),
+        "asOf": "2026-07-08",
+        "count": 2,
+        "depth": 3,
+        "accounts": {"mode": mode, "empty": empty}
+    }))
+    .await
+}
+
+/// The Accounts report's row for `account`, if it has one.
+fn account_row<'a>(projection: &'a Value, account: &str) -> Option<&'a Value> {
+    projection["accounts"]["rows"]
+        .as_array()
+        .expect("accounts rows")
+        .iter()
+        .find(|row| row["account"] == account)
+}
+
+fn account_values(projection: &Value, account: &str) -> Vec<i128> {
+    series(account_row(projection, account).unwrap_or_else(|| panic!("no {account} row")))
+}
+
+/// The readings only one tab shows are computed only when asked for.
+#[tokio::test]
+async fn the_accounts_and_journal_readings_are_null_unless_asked_for() {
+    let projection = run(json!({
+        "scenario": scenario_with(vec![rent_line()], vec![]),
+        "asOf": "2026-07-08",
+        "count": 2
+    }))
+    .await;
+    assert_eq!(projection["accounts"], Value::Null);
+    assert_eq!(projection["journal"], Value::Null);
+}
+
+/// **Change is each period's movement; Balance is the running balance.** Over
+/// the same columns the statements use, `lookback ++ buckets`, with the real
+/// journal before the cutoff and the forecast after it.
+#[tokio::test]
+async fn accounts_change_is_movement_and_balance_is_the_running_total() {
+    let change = accounts_run("change", false, vec![]).await;
+    let balance = accounts_run("balance", false, vec![]).await;
+    let keys = json!(["2026-05", "2026-06", "2026-07", "2026-08"]);
+    assert_eq!(change["accounts"]["buckets"], keys);
+    assert_eq!(balance["accounts"]["buckets"], keys);
+    assert_eq!(change["accounts"]["periods"][2]["label"], "Jul 2026");
+
+    // The scenario's own account: nothing real, then $4,200 a month.
+    assert_eq!(account_values(&change, "expenses:rent"), [0, 0, 4200, 4200]);
+    assert_eq!(
+        account_values(&balance, "expenses:rent"),
+        [0, 0, 4200, 8400]
+    );
+    // Change rows carry a Total; balance rows are snapshots and do not.
+    let rent = account_row(&change, "expenses:rent").expect("rent");
+    assert_eq!(dollars(&rent["total"]), 8400);
+    assert!(
+        account_row(&balance, "expenses:rent")
+            .expect("rent")
+            .get("total")
+            .is_none()
+    );
+    assert!(change["accounts"].get("grandTotal").is_some());
+    assert!(balance["accounts"].get("grandTotal").is_none());
+
+    // Every row: balance[i] = balance[i - 1] + change[i], and the real May
+    // movement is the real journal's (the rent was never in May).
+    for row in change["accounts"]["rows"].as_array().expect("rows") {
+        let account = row["account"].as_str().expect("account");
+        let moved = exact_series(row);
+        let Some(held) = account_row(&balance, account).map(exact_series) else {
+            continue;
+        };
+        for at in 1..moved.len() {
+            assert_eq!(held[at], held[at - 1] + moved[at], "{account} column {at}");
+        }
+    }
+    // Real July 1–3 transactions are left out (Decision 5): July's checking
+    // movement is the rent alone.
+    assert_eq!(account_values(&change, "assets:bank:checking")[2], -4200);
+    // Natural signs, as `hledger balance` prints them: salary is negative.
+    assert!(account_values(&change, "income:salary")[0] < 0);
+}
+
+/// **Depth rolls the rows up** like every other report's slider, and never
+/// the per-column totals.
+#[tokio::test]
+async fn accounts_honour_the_depth() {
+    let projection = run(json!({
+        "scenario": scenario_with(vec![rent_line()], vec![]),
+        "asOf": "2026-07-08",
+        "count": 2,
+        "depth": 1,
+        "accounts": {"mode": "change"}
+    }))
+    .await;
+    let rows = projection["accounts"]["rows"].as_array().expect("rows");
+    assert!(rows.iter().all(|row| row["depth"] == 1), "{rows:?}");
+    assert_eq!(account_values(&projection, "expenses")[2..], [4200, 4200]);
+}
+
+/// **Show empty accounts** adds the declared and known accounts the window
+/// never touches — what a projection misses — as all-zero rows.
+#[tokio::test]
+async fn empty_accounts_are_shown_only_when_asked_for() {
+    let hidden = accounts_run("change", false, vec![]).await;
+    assert!(
+        account_row(&hidden, "expenses:shopping").is_none(),
+        "declared, never posted: hidden by default"
+    );
+    let shown = accounts_run("change", true, vec![]).await;
+    let shopping = account_row(&shown, "expenses:shopping").expect("the declared account is a row");
+    assert_eq!(series(shopping), [0, 0, 0, 0]);
+    // Every row the hidden reading had is still there, with the same figures.
+    for row in hidden["accounts"]["rows"].as_array().expect("rows") {
+        let account = row["account"].as_str().expect("account");
+        assert_eq!(account_values(&shown, account), series(row), "{account}");
+    }
+    let balance = accounts_run("balance", true, vec![]).await;
+    assert!(account_row(&balance, "expenses:shopping").is_some());
+}
+
+#[tokio::test]
+async fn an_unknown_accounts_mode_is_a_400() {
+    let (status, text) = post(json!({
+        "scenario": scenario_with(vec![rent_line()], vec![]),
+        "asOf": "2026-07-08",
+        "accounts": {"mode": "cumulative"}
+    }))
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    assert!(
+        text.contains("change") && text.contains("balance"),
+        "{text}"
+    );
+}
+
+/// **The journal is the generated transactions only**, date-ascending, in the
+/// journal view's row shape and with hledger's `generated-transaction` tag —
+/// what `hledger print --forecast tag:generated` prints — each naming the
+/// part of the scenario it came from.
+#[tokio::test]
+async fn the_journal_is_the_forecast_transactions_in_print_shape() {
+    let event = json!({
+        "id": "laptop",
+        "date": "2026-07-20",
+        "description": "new laptop",
+        "postings": [{
+            "account": "expenses:equipment",
+            "amount": {"commodity": "$", "quantity": {"mantissa": "2000", "places": 0}, "precision": 0}
+        }],
+        "counter": "liabilities:cc:visa"
+    });
+    let projection = run(json!({
+        "scenario": scenario_with(vec![rent_line()], vec![event]),
+        "asOf": "2026-07-08",
+        "count": 2,
+        "journal": true,
+        "accounts": {"mode": "change"}
+    }))
+    .await;
+    let journal = &projection["journal"];
+    assert_eq!(journal["total"], 3);
+    assert_eq!(journal["truncated"], false);
+    let entries = journal["entries"].as_array().expect("entries");
+    let dates: Vec<&str> = entries
+        .iter()
+        .map(|entry| entry["txn"]["date"].as_str().expect("date"))
+        .collect();
+    assert_eq!(dates, ["2026-07-01", "2026-07-20", "2026-08-01"]);
+
+    let rent = &entries[0];
+    assert_eq!(rent["origin"], json!({"kind": "rule", "key": "rule:0"}));
+    assert_eq!(rent["txn"]["description"], "projection");
+    assert!(
+        rent["txn"]["tags"]
+            .as_array()
+            .expect("tags")
+            .contains(&json!(["generated-transaction", "~ monthly"])),
+        "{}",
+        rent["txn"]["tags"]
+    );
+    let postings = rent["txn"]["postings"].as_array().expect("postings");
+    let accounts: Vec<&str> = postings
+        .iter()
+        .map(|posting| posting["account"].as_str().expect("account"))
+        .collect();
+    assert_eq!(accounts, ["expenses:rent", "assets:bank:checking"]);
+    let quantity = |posting: &Value| -> String {
+        posting["amounts"][0]["qty"]["m"]
+            .as_str()
+            .expect("mantissa")
+            .to_string()
+    };
+    assert_eq!(quantity(&postings[0]), "420000");
+    assert_eq!(quantity(&postings[1]), "-420000");
+
+    let laptop = &entries[1];
+    assert_eq!(laptop["origin"], json!({"kind": "event", "key": "laptop"}));
+    assert_eq!(laptop["txn"]["description"], "new laptop");
+    assert_eq!(
+        laptop["txn"]["postings"][1]["account"],
+        "liabilities:cc:visa"
+    );
+
+    // No real transaction is in it: none carries a source position or lacks
+    // the generated tag.
+    assert!(entries.iter().all(|entry| {
+        entry["txn"]["tags"]
+            .as_array()
+            .expect("tags")
+            .iter()
+            .any(|tag| tag[0] == "generated-transaction")
+    }));
+
+    // The two readings agree: the forecast columns of the Accounts report are
+    // the journal's postings, summed per account and month.
+    assert_eq!(
+        account_values(&projection, "expenses:equipment")[2..],
+        [2000, 0]
+    );
+    assert_eq!(
+        account_values(&projection, "expenses:rent")[2..],
+        [4200, 4200]
+    );
+}
+
+/// An asset row's appreciation is a `growth` entry naming the row.
+#[tokio::test]
+async fn an_asset_rows_growth_is_named_in_the_journal() {
+    let projection = run(json!({
+        "scenario": scenario_with(vec![asset_row("assets:vehicles:car", "12")], vec![]),
+        "asOf": "2026-07-08",
+        "interval": "yearly",
+        "lookback": 0,
+        "count": 3,
+        "journal": true
+    }))
+    .await;
+    let entries = projection["journal"]["entries"]
+        .as_array()
+        .expect("entries");
+    assert!(
+        !entries.is_empty(),
+        "the car grows: {}",
+        projection["warnings"]
+    );
+    for entry in entries {
+        assert_eq!(entry["origin"], json!({"kind": "growth", "key": "rule:1"}));
+        assert_eq!(
+            entry["txn"]["postings"][0]["account"],
+            "assets:vehicles:car"
+        );
+    }
+}
+
+/// **An UNPRICED asset's appreciation is a posting to a gains account**
+/// (Decisions 3 and 4): the asset rises, `equity:unrealized gains` rises with
+/// it, the sheet balances, and neither net income nor cash moves.
+#[tokio::test]
+async fn an_unpriced_asset_row_grows_into_the_gains_account() {
+    let body = |lines: Vec<Value>| {
+        json!({
+            "scenario": scenario_with(lines, vec![]),
+            "asOf": "2026-07-08",
+            "interval": "yearly",
+            "count": 3,
+            "lookback": 0
+        })
+    };
+    let without = run(body(vec![])).await;
+    let with = run(body(vec![asset_row("assets:vehicles:car", "10")])).await;
+
+    let gains = bs_group(&with, "equity", "Unrealized gains");
+    assert_eq!(gains.len(), 3, "a gains line in every column: {gains:?}");
+    assert_eq!(gains[0], 0, "no anniversary inside the first year");
+    assert!(gains[1] > 0 && gains[2] > gains[1], "{gains:?}");
+    assert!(bs_group(&without, "equity", "Unrealized gains").is_empty());
+
+    // The asset side moved by exactly the gains: A = L + E, by construction.
+    let (grew, flat) = (net_worth(&with), net_worth(&without));
+    for column in 0..3 {
+        assert_eq!(
+            grew[column] - flat[column],
+            gains[column],
+            "column {column}"
+        );
+    }
+    assert!(
+        with["balanceSheet"]["balanced"]
+            .as_array()
+            .expect("balanced")
+            .iter()
+            .all(|verdict| verdict == true)
+    );
+    // Paper gains are not income and not cash.
+    assert_eq!(with["incomeStatement"], without["incomeStatement"]);
+    assert_eq!(with["cash"], without["cash"]);
+    // The default gains account is on the wire for the table to grey out.
+    assert_eq!(with["defaults"]["gains"], "equity:unrealized gains");
+}
+
+/// **What the table greys out.** A line or event with no counter-account gets
+/// the engine's inferred default, keyed by rule (or event id); one that names
+/// its own gets nothing, because it needs no default.
+#[tokio::test]
+async fn the_inferred_defaults_are_on_the_wire() {
+    let mut paid = rent_line();
+    paid["id"] = json!("paid");
+    paid["group"] = json!("rule:9");
+    paid["counter"] = json!("assets:bank:savings");
+    let event = json!({
+        "id": "legal",
+        "date": "2026-08-15",
+        "description": "lawyer",
+        "postings": [{
+            "account": "expenses:legal",
+            "amount": {"commodity": "$", "quantity": {"mantissa": "500", "places": 0}, "precision": 0}
+        }]
+    });
+    let projection = run(json!({
+        "scenario": scenario_with(vec![rent_line(), paid], vec![event]),
+        "asOf": "2026-07-08",
+        "count": 2
+    }))
+    .await;
+    let defaults = &projection["defaults"];
+    // sample.journal pays its rent from checking, so history picks it.
+    assert_eq!(defaults["lines"], json!({"rule:0": "assets:bank:checking"}));
+    assert_eq!(defaults["events"]["legal"], "assets:bank:checking");
+    assert!(defaults["cash"].is_string());
+    assert_eq!(defaults["gains"], "equity:unrealized gains");
+
+    // And the explicit counter is honoured: the paid line's rent comes out of
+    // savings, which is cash too, so cash drops by both rents (and the lawyer
+    // in August) while the balance sheet still balances.
+    let opening = dollars(&projection["cash"]["opening"]);
+    assert_eq!(
+        series(&projection["cash"]),
+        [opening - 8400, opening - 17_300]
+    );
+    assert_eq!(
+        projection["balanceSheet"]["balanced"],
+        json!([true, true, true, true])
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -765,6 +1428,12 @@ async fn window_params_are_refused_exactly_as_the_other_reports_refuse_them() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _) = post(with(json!({"count": 100_000}))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    // The statements carry `lookback + count` columns, held to the same cap.
+    let (status, body) = post(with(json!({"count": 1200, "lookback": 1}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("lookback"), "{body}");
+    let (status, _) = post(with(json!({"count": 1198, "lookback": 2}))).await;
+    assert_eq!(status, StatusCode::OK);
 
     // The date error names `asOf`, which is what the caller sent — not `end`.
     let (status, body) = post(with(json!({"asOf": "nonsense"}))).await;
@@ -1153,6 +1822,144 @@ async fn a_projection_file_reads_back_as_the_scenario_it_states() {
     assert_eq!(scenario["events"], json!([]));
 }
 
+/// One rule per period form the what-if table must edit, with and without a
+/// two-space description.
+const BOUNDED: &str = "\
+; Ledgeline projection
+; projection: Bounded
+; created: 2026-01-01
+; updated: 2026-01-01
+
+~ monthly from 2026-11-01  unbudgeted — average over 2025-11-01 to 2026-10-22
+    (expenses:a)  $1.00
+
+~ monthly from 2026-11-01
+    (expenses:b)  $1.00
+
+~ monthly to 2027-06-01  ends
+    (expenses:c)  $1.00
+
+~ yearly from 2026-11-01 to 2030-01-01
+    (expenses:d)  $1.00
+
+~ every 3 months from 2026-11-01  quarterly-ish
+    (expenses:e)  $1.00
+
+~ every 15th day of month from 2026-11-01  mid-month
+    (expenses:f)  $1.00
+
+~ every weekday  workdays
+    (expenses:g)  $1.00
+";
+
+/// The report: `~ monthly from 2026-11-01  …` showed its whole `raw` in the
+/// Per column and locked From/To, because `simple` was answered by
+/// `PeriodSpec::interval`, which is `None` for ANY bounded rule. A bounded
+/// rule on one of the five words is `simple` now; one the editor cannot spell
+/// still names the words its bounds can be rewritten around (`base`); and a
+/// save of an edited bound writes hledger's syntax with the description kept.
+#[tokio::test]
+async fn a_bounded_rule_reads_as_its_interval_and_saves_an_edited_bound() {
+    let uri = "/api/projections/projection-bounded.journal";
+    let tree = Tree::new(&[("projection-bounded.journal", BOUNDED)]);
+    let (status, doc) = file_json(&tree.state, "GET", uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let periods: Vec<Value> = doc["scenario"]["lines"]
+        .as_array()
+        .expect("lines")
+        .iter()
+        .map(|line| line["period"].clone())
+        .collect();
+    let expect = |raw: &str, simple: Value, base: Value, from: Value, to: Value| json!({"raw": raw, "simple": simple, "base": base, "from": from, "to": to});
+    let null = Value::Null;
+    assert_eq!(
+        periods,
+        vec![
+            expect(
+                "monthly from 2026-11-01",
+                json!("monthly"),
+                null.clone(),
+                json!("2026-11-01"),
+                null.clone()
+            ),
+            expect(
+                "monthly from 2026-11-01",
+                json!("monthly"),
+                null.clone(),
+                json!("2026-11-01"),
+                null.clone()
+            ),
+            expect(
+                "monthly to 2027-06-01",
+                json!("monthly"),
+                null.clone(),
+                null.clone(),
+                json!("2027-06-01")
+            ),
+            expect(
+                "yearly from 2026-11-01 to 2030-01-01",
+                json!("yearly"),
+                null.clone(),
+                json!("2026-11-01"),
+                json!("2030-01-01")
+            ),
+            expect(
+                "every 3 months from 2026-11-01",
+                null.clone(),
+                json!("every 3 months"),
+                json!("2026-11-01"),
+                null.clone()
+            ),
+            expect(
+                "every 15th day of month from 2026-11-01",
+                null.clone(),
+                json!("every 15th day of month"),
+                json!("2026-11-01"),
+                null.clone()
+            ),
+            expect(
+                "every weekday",
+                null.clone(),
+                null.clone(),
+                null.clone(),
+                null
+            ),
+        ]
+    );
+
+    // Edit two bounds the way the table does — `raw` rebuilt from the derived
+    // fields — and hand everything else back untouched.
+    let revision = doc["revision"].clone();
+    let mut scenario = doc["scenario"].clone();
+    scenario["lines"][0]["period"]["raw"] = json!("monthly from 2026-12-01 to 2027-12-01");
+    scenario["lines"][5]["period"]["raw"] = json!("every 15th day of month from 2027-01-01");
+    let (status, saved) = file_json(
+        &tree.state,
+        "PUT",
+        uri,
+        Some(json!({"revision": revision, "scenario": scenario})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let written = tree.read("projection-bounded.journal");
+    for header in [
+        "~ monthly from 2026-12-01 to 2027-12-01  unbudgeted — average over 2025-11-01 to 2026-10-22\n",
+        "~ monthly from 2026-11-01\n",
+        "~ monthly to 2027-06-01  ends\n",
+        "~ every 15th day of month from 2027-01-01  mid-month\n",
+        "~ every weekday  workdays\n",
+    ] {
+        assert!(
+            written.contains(header),
+            "missing {header:?} in:\n{written}"
+        );
+    }
+    assert_eq!(
+        saved["scenario"]["lines"][0]["period"]["to"],
+        json!("2027-12-01")
+    );
+}
+
 #[tokio::test]
 async fn a_journal_the_main_one_includes_can_be_read_but_never_written() {
     // The ask: "We should default to showing the last loaded and if there isn't
@@ -1208,6 +2015,78 @@ async fn a_malformed_id_is_a_400_and_a_missing_one_a_404_whatever_is_on_disk() {
     }
 }
 
+#[tokio::test]
+async fn an_edit_made_outside_ledgeline_is_read_by_the_next_get_with_a_new_revision() {
+    // The tab notices a file edited in another program by re-reading it and
+    // comparing revisions, so the engine must never answer from a cached parse:
+    // the second GET has to see the new bytes AND say they are new.
+    let tree = Tree::standard();
+    let (before, _) = open_plan(&tree.state).await;
+
+    let edited = tree
+        .read("plans/projection-plan.journal")
+        .replace("$4200.00", "$4300.00");
+    std::fs::write(tree.dir.join("plans/projection-plan.journal"), edited).expect("edit");
+
+    let (after, scenario) = open_plan(&tree.state).await;
+    assert_ne!(after, before, "an edited file must carry a new revision");
+    assert_eq!(
+        scenario["lines"][0]["amount"]["quantity"]["mantissa"],
+        json!("430000")
+    );
+}
+
+#[tokio::test]
+async fn a_save_from_before_an_outside_edit_is_refused_and_keeps_that_edit() {
+    // The protection the tab relies on when it holds unsaved work over a file
+    // somebody else changed: it keeps the OLD revision, so its save is a 409
+    // and the other program's edit survives byte for byte.
+    let tree = Tree::standard();
+    let (revision, scenario) = open_plan(&tree.state).await;
+    let edited = tree
+        .read("plans/projection-plan.journal")
+        .replace("$4200.00", "$4300.00");
+    std::fs::write(tree.dir.join("plans/projection-plan.journal"), &edited).expect("edit");
+
+    let (status, message) = file_text(
+        &tree.state,
+        "PUT",
+        PLAN_URI,
+        Some(json!({"revision": revision, "scenario": scenario})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{message}");
+    assert_eq!(tree.read("plans/projection-plan.journal"), edited);
+}
+
+#[tokio::test]
+async fn a_file_that_does_not_parse_is_a_400_about_reading_it_not_a_500_about_writing() {
+    // A hand edit with a typo in it is the user's to fix. It used to be a 500
+    // saying the file "was NOT written", which read as an engine fault and
+    // described a write nobody had attempted.
+    let tree = Tree::new(&[(
+        "projection-broken.journal",
+        "~ monthly  plan\n    (expenses:rent)  $4200.00 @@@ ((\n",
+    )]);
+    let (status, message) = file_text(
+        &tree.state,
+        "GET",
+        "/api/projections/projection-broken.journal",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{message}");
+    assert!(
+        message.contains("cannot be opened as a projection"),
+        "{message}"
+    );
+    assert!(message.contains("line 2"), "names where to look: {message}");
+    assert!(!message.contains("NOT written"), "{message}");
+    for secret in tree.secret_paths() {
+        assert!(!message.contains(&secret), "leaked a path: {message}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Saving: update
 // ---------------------------------------------------------------------------
@@ -1236,11 +2115,11 @@ async fn a_save_rewrites_only_the_rule_it_changed() {
     );
     assert!(after.contains("; created: 2026-01-01\n"), "{after}");
     // Within one block the amounts land in one column, so the two lines of
-    // this rule are laid out against the longer of the two accounts.
-    assert!(
-        after.contains("    (expenses:rent)    $4500.00\n"),
-        "{after}"
-    );
+    // this rule are laid out against the longer of the two accounts. The rule
+    // did not balance, so the save also UPGRADED it (plan 28): plain postings
+    // and the amountless default counter-account hledger balances them with.
+    assert!(after.contains("    expenses:rent    $4500.00\n"), "{after}");
+    assert!(after.contains("    assets:cash\n"), "{after}");
     // `updated:` is the SERVER's today, never the client's — a timestamp a
     // caller supplies is a timestamp that can say anything.
     assert!(
@@ -1249,7 +2128,7 @@ async fn a_save_rewrites_only_the_rule_it_changed() {
     );
     // The other line of the same rule is untouched in content.
     assert!(
-        after.contains("    (revenues:salary)  $-12000.00\n"),
+        after.contains("    revenues:salary  $-12000.00\n"),
         "{after}"
     );
 }
@@ -1409,7 +2288,7 @@ async fn an_empty_revision_creates_a_new_file() {
         "{written}"
     );
     assert!(
-        written.contains("    (expenses:rent)    $4200.00\n"),
+        written.contains("    expenses:rent    $4200.00\n"),
         "{written}"
     );
 
@@ -1624,34 +2503,23 @@ async fn an_entry_is_signed_by_the_accounts_type() {
     // entry is still a magnitude.
     let from_entry = run(window(income("0", Some("500000")))).await;
     let from_negative_entry = run(window(income("123", Some("-500000")))).await;
+    assert_eq!(signed["incomeStatement"], from_entry["incomeStatement"]);
     assert_eq!(
-        signed["netIncome"]["totals"],
-        from_entry["netIncome"]["totals"]
+        signed["incomeStatement"],
+        from_negative_entry["incomeStatement"]
     );
     assert_eq!(
-        signed["netIncome"]["totals"],
-        from_negative_entry["netIncome"]["totals"]
+        net_income(&signed),
+        [5000, 5000],
+        "income projects as income"
     );
-    let totals: Vec<i128> = signed["netIncome"]["totals"]
-        .as_array()
-        .expect("totals")
-        .iter()
-        .map(dollars)
-        .collect();
-    assert_eq!(totals, [5000, 5000], "income projects as income");
 
     // An expense entry stays positive.
     let mut rent = rent_line();
     rent["amount"]["quantity"]["mantissa"] = json!("-1");
     rent["entry"] = json!({"mantissa": "420000", "places": 2});
     let projection = run(window(rent)).await;
-    let totals: Vec<i128> = projection["netIncome"]["totals"]
-        .as_array()
-        .expect("totals")
-        .iter()
-        .map(dollars)
-        .collect();
-    assert_eq!(totals, [-4200, -4200]);
+    assert_eq!(net_income(&projection), [-4200, -4200]);
 }
 
 /// A saved entry is WRITTEN with the journal's sign, every outbound line says
@@ -1679,6 +2547,230 @@ async fn a_save_writes_an_entry_signed_and_lines_carry_their_section() {
     .await;
     assert_eq!(status, StatusCode::OK, "{doc}");
     let after = tree.read("plans/projection-plan.journal");
-    assert!(after.contains("(revenues:salary)  $-13000.00\n"), "{after}");
+    assert!(
+        after.contains("    revenues:salary  $-13000.00\n"),
+        "{after}"
+    );
     assert_eq!(doc["scenario"]["lines"][1]["section"], "income");
+}
+
+// ---------------------------------------------------------------------------
+// A parent mistyped as an asset over expense-typed children
+// ---------------------------------------------------------------------------
+
+/// `fixtures/projections-expense-as-asset/typo.journal`: `expenses:ga` is
+/// declared `type:A` (meant `X`) while its subaccounts declare `type:X`. The
+/// actual reports are right, because nothing posts to the parent. The seed
+/// used to clip the subaccounts' gaps onto `expenses:ga` at depth 2, so the
+/// projection booked $5,200 a month to an ASSET: it accumulated on the
+/// balance sheet, became a cash-flow operating line and left the P&L.
+#[tokio::test]
+async fn the_seed_never_books_an_expense_to_a_parent_typed_as_an_asset() {
+    let path = common::fixtures_dir().join("projections-expense-as-asset/typo.journal");
+    let text = std::fs::read_to_string(&path).expect("fixture readable");
+    let journal =
+        ledgeline_core::parse_journal(&text, &path.to_string_lossy()).expect("fixture parses");
+    let call = async |request: Request<Body>| {
+        let response = app(&journal)
+            .oneshot(request)
+            .await
+            .expect("router responds");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body collects")
+            .to_bytes();
+        serde_json::from_slice::<Value>(&body).expect("the body is JSON")
+    };
+
+    let seed = call(
+        Request::builder()
+            .uri("/api/projections/seed?count=12&depth=2&end=2026-10-22")
+            .body(Body::empty())
+            .expect("request builds"),
+    )
+    .await;
+    let accounts: Vec<&str> = seed["lines"]
+        .as_array()
+        .expect("lines")
+        .iter()
+        .map(|line| line["account"].as_str().expect("account"))
+        .collect();
+    assert_eq!(
+        accounts,
+        [
+            "revenues:sales",
+            "expenses:ga:rent",
+            "expenses:ga:software",
+            "expenses:ga:insurance"
+        ]
+    );
+
+    let body = json!({"scenario": seed, "asOf": "2026-10-26", "count": 3, "lookback": 2});
+    let run = call(
+        Request::builder()
+            .method("POST")
+            .uri("/api/projections/run")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("request builds"),
+    )
+    .await;
+    let sheet = run["balanceSheet"].to_string();
+    assert!(
+        !sheet.contains("expenses"),
+        "an expense on the balance sheet: {sheet}"
+    );
+    let flows = run["cashFlow"]["sections"].to_string();
+    assert!(
+        !flows.contains("expenses"),
+        "an expense as a cash-flow line: {flows}"
+    );
+    // The projected G&A is on the P&L: $5,200 a month across the three leaves.
+    let opex = run["incomeStatement"]["sections"]
+        .as_array()
+        .expect("sections")
+        .iter()
+        .find(|section| section["kind"] == "opex")
+        .expect("an opex section");
+    assert_eq!(
+        opex["total"]["values"][2]["$"],
+        json!({"mantissa": "520000", "places": 2}),
+        "{opex}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Mix-and-match depth (plan 28, follow-ups 2026-10-26)
+// ---------------------------------------------------------------------------
+
+/// One monthly `$` expense line on `account`, under a rule of its own.
+fn expense_line(id: &str, account: &str, mantissa: &str) -> Value {
+    json!({
+        "id": id,
+        "group": id,
+        "account": account,
+        "amount": {"commodity": "$", "quantity": {"mantissa": mantissa, "places": 2}, "precision": 2},
+        "period": {"raw": "monthly"},
+        "growth": null,
+        "note": "",
+        "source": "journal"
+    })
+}
+
+/// **A line on a PARENT beside lines on its leaves.** The seed starts at the
+/// page's depth, but after that a user may write a line at any level — here
+/// `expenses:food` itself, whose own history is empty, beside a line on its
+/// child `expenses:food:groceries`. The statements must show the parent's own
+/// projected amount as a row of its own under the Expenses group, apart from
+/// the child's, and classify both as expenses (the parent is undeclared, so its
+/// type is inferred from `expenses`'s declared `type: X`).
+#[tokio::test]
+async fn a_line_on_a_parent_account_is_its_own_row_beside_its_children() {
+    let projection = run(json!({
+        "scenario": scenario_with(vec![
+            expense_line("food", "expenses:food", "30000"),
+            expense_line("groceries", "expenses:food:groceries", "20000"),
+        ], vec![]),
+        "interval": "monthly",
+        "count": 2,
+        "lookback": 0,
+        "depth": 9
+    }))
+    .await;
+    let section = projection["incomeStatement"]["sections"]
+        .as_array()
+        .expect("sections")
+        .iter()
+        .find(|section| section["kind"] == "opex")
+        .expect("an Expenses section");
+    let food = section["groups"]
+        .as_array()
+        .expect("groups")
+        .iter()
+        .find(|group| group["name"] == "Food")
+        .unwrap_or_else(|| panic!("a Food group: {section}"));
+    let rows: Vec<(String, u64, Vec<i128>)> = food["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .map(|row| {
+            (
+                row["account"].as_str().expect("account").to_string(),
+                row["depth"].as_u64().expect("depth"),
+                row["amounts"]["values"]
+                    .as_array()
+                    .expect("values")
+                    .iter()
+                    .map(dollars)
+                    .collect(),
+            )
+        })
+        .collect();
+    // The parent's OWN $300 is its own row, and the child's $200 is beside it
+    // one level down — neither folded into the other nor lost.
+    assert_eq!(
+        rows,
+        [
+            ("expenses:food".to_string(), 2, vec![300, 300]),
+            ("expenses:food:groceries".to_string(), 3, vec![200, 200]),
+        ],
+        "{food}"
+    );
+    // The group total is both, and both are expenses: net income is -$500.
+    assert_eq!(series(&food["total"]), [500, 500]);
+    assert_eq!(net_income(&projection), [-500, -500]);
+}
+
+/// **The seed names its categories at the depth it is asked for.** The tab
+/// seeds at its depth slider's value (plan 28, follow-ups 2026-10-26), so the
+/// starting rows have to follow it: deeper asks for finer accounts, and no
+/// seeded row is ever deeper than the ask.
+#[tokio::test]
+async fn the_seed_names_its_categories_at_the_requested_depth() {
+    let accounts_at = |depth: usize| async move {
+        let (status, text) = get(&format!(
+            "/api/projections/seed?end=2026-07-08&count=12&depth={depth}"
+        ))
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let seed: Value = serde_json::from_str(&text).expect("the seed body is JSON");
+        seed["lines"]
+            .as_array()
+            .expect("lines")
+            .iter()
+            .filter(|line| line["source"] == "unbudgeted")
+            .map(|line| line["account"].as_str().expect("account").to_string())
+            .collect::<Vec<_>>()
+    };
+    let shallow = accounts_at(2).await;
+    let deep = accounts_at(3).await;
+    assert!(!shallow.is_empty() && !deep.is_empty());
+    assert!(
+        shallow
+            .iter()
+            .all(|account| account.split(':').count() <= 2),
+        "{shallow:?}"
+    );
+    assert!(
+        deep.iter().all(|account| account.split(':').count() <= 3),
+        "{deep:?}"
+    );
+    // sample.journal's food is `expenses:food:groceries` and
+    // `expenses:food:restaurants`: one row at depth 2, two at depth 3.
+    assert!(
+        shallow.iter().any(|account| account == "expenses:food"),
+        "{shallow:?}"
+    );
+    assert!(
+        deep.iter()
+            .any(|account| account == "expenses:food:groceries"),
+        "{deep:?}"
+    );
+    assert!(
+        !deep.iter().any(|account| account == "expenses:food"),
+        "{deep:?}"
+    );
 }

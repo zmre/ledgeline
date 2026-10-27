@@ -110,6 +110,25 @@ test.describe("global keys", () => {
 
         await expect(page.getByRole("tab", {name: "Balance Sheet"})).toHaveAttribute("aria-selected", "true");
     });
+
+    test("g then p navigates to projections, where digits switch its readings", async ({page}) => {
+        await page.goto("/");
+        await journalReady(page);
+
+        await page.keyboard.press("g");
+        await page.keyboard.press("p");
+
+        await expect(page).toHaveURL(/\/projections/);
+        const runway = page.getByRole("tab", {name: "Runway"});
+        await expect(runway).toBeVisible();
+
+        await page.keyboard.press("2");
+        await expect(page.getByRole("tab", {name: "Balance sheet"})).toHaveAttribute("aria-selected", "true");
+        await page.keyboard.press("4");
+        await expect(page.getByRole("tab", {name: "Cash flow"})).toHaveAttribute("aria-selected", "true");
+        await page.keyboard.press("1");
+        await expect(runway).toHaveAttribute("aria-selected", "true");
+    });
 });
 
 test.describe("the typing guard", () => {

@@ -44,11 +44,19 @@ use ledgeline_core::decimal::Dec;
 use ledgeline_core::holdings::SeriesWindow;
 use ledgeline_core::holdings::{HoldingsScope, ScopeMode, compute_holdings, holdings_series};
 use ledgeline_core::model::{Commodity, Journal, PriceDirective};
+use ledgeline_core::projections::{
+    AccountsOpts, JournalFacts, ProjectionOpts, RealKey, RealSide, Scenario, StatementOpts,
+    merged_prices, merged_transactions, project, project_cached, projected_accounts,
+    projected_statements, serialize,
+};
 use ledgeline_core::reports::{
-    AccountDecl, AccountType, BudgetOpts, InsightsOpts, Interval, MixedAmount, NetWorthOpts,
-    PostingFilter, PriceDb, SubscriptionOpts, account_decls, account_totals, balance_sheet,
-    budget_report, cash_flow, cash_predicate, declared_types, detect_subscriptions,
-    income_statement, infer_market_prices, insights, net_worth, resolve_account_type, roll_up,
+    AccountDecl, AccountPeriodsOpts, AccountType, BalanceMode, BsOpts, BudgetOpts, CfOpts, CfTags,
+    IS_GROUP_TAG, InsightsOpts, Interval, IsOpts, MixedAmount, NetWorthOpts, PostingFilter,
+    PriceDb, SubscriptionOpts, Valuation, account_decls, account_groups, account_periods,
+    account_sections, account_totals, balance_sheet, balance_sheet_columns, balance_sheet_grouped,
+    bs_terms, budget_report, cash_flow, cash_flow_statement, cash_predicate, declared_groups,
+    declared_types, detect_subscriptions, income_statement, income_statement_columns,
+    infer_market_prices, insights, net_worth, range_buckets, resolve_account_type, roll_up,
 };
 use ledgeline_core::{parse_journal, wire};
 use std::collections::{BTreeMap, BTreeSet};
@@ -60,6 +68,8 @@ use std::time::Duration;
 const AS_OF: &str = "2025-12-31";
 /// Insights compares two halves of this span (the corpus's last two years).
 const INSIGHTS_START: &str = "2024-01-01";
+/// First month of the periodic balance-sheet bench: 30 month ends up to `AS_OF`.
+const BS_COLUMNS_FROM: &str = "2023-07-01";
 /// A date near the START of the 30-year price series: `PriceDb::latest`'s
 /// reverse scan has to walk the whole list to reach it (PERF-5d).
 const EARLY_DATE: &str = "1996-06-30";
@@ -406,6 +416,65 @@ fn bench_reports(c: &mut Criterion, fixtures: &[Fixture]) {
             },
         );
 
+        // Plan 28 Phase 3: a periodic grouped balance sheet. `n_calls` is the
+        // fallback (one `balance_sheet_grouped` per column, O(columns × txns));
+        // `one_pass` is `balance_sheet_columns`. Same 30 month ends, same output.
+        let ends: Vec<String> = range_buckets(BS_COLUMNS_FROM, AS_OF, Some(Interval::Monthly))
+            .unwrap()
+            .into_iter()
+            .map(|span| span.to)
+            .collect();
+        let bs_groups = account_groups(&fixture.journal);
+        let bs_terms_map = bs_terms(&fixture.journal);
+        let bs_opts = BsOpts {
+            as_of: AS_OF,
+            depth: None,
+            value: Valuation::Market,
+            value_in: None,
+        };
+        group.bench_with_input(
+            BenchmarkId::new("balance_sheet_columns/one_pass_30", &id),
+            fixture,
+            |b, fixture| {
+                b.iter(|| {
+                    balance_sheet_columns(
+                        black_box(&fixture.journal.transactions),
+                        &fixture.journal.prices,
+                        &bs_opts,
+                        &ends,
+                        &fixture.declared,
+                        &bs_groups,
+                        &bs_terms_map,
+                    )
+                    .unwrap()
+                });
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("balance_sheet_columns/n_calls_30", &id),
+            fixture,
+            |b, fixture| {
+                b.iter(|| {
+                    ends.iter()
+                        .map(|as_of| {
+                            balance_sheet_grouped(
+                                black_box(&fixture.journal.transactions),
+                                &fixture.journal.prices,
+                                &BsOpts {
+                                    as_of,
+                                    ..bs_opts.clone()
+                                },
+                                &fixture.declared,
+                                &bs_groups,
+                                &bs_terms_map,
+                            )
+                            .unwrap()
+                        })
+                        .collect::<Vec<_>>()
+                });
+            },
+        );
+
         group.bench_with_input(
             BenchmarkId::new("income_statement", &id),
             fixture,
@@ -640,6 +709,250 @@ fn bench_aggregate(c: &mut Criterion, fixtures: &[Fixture]) {
 
 // ---------------------------------------------------------------------------
 
+/// A small balanced scenario over the corpus's own accounts: what a seeded
+/// projection looks like to the engine (a handful of monthly rules, each with
+/// its counter-account), so the run is dominated by the journal, not the rules.
+const PROJECTION_SCENARIO: &str = "; projection: bench
+~ monthly  projection
+    revenues:salary          $-9000.00
+    assets:bank:chase:checking
+
+~ monthly  projection
+    expenses:housing:rent     $2500.00
+    assets:bank:chase:checking
+
+~ monthly  projection
+    expenses:food:groceries    $800.00
+    assets:bank:chase:checking
+
+~ monthly  projection
+    expenses:utilities:power   $150.00
+    assets:bank:chase:checking
+";
+/// After the corpus's last transaction, so the cutoff is 2026-01-01 and the
+/// whole history is "real before the cutoff" — the case the merge copies most.
+const PROJECTION_TODAY: &str = "2026-01-10";
+
+/// The projection run's cost, and how much of it is copying the journal.
+///
+/// - `clone_history`: `journal.transactions` deep-cloned into a new `Vec`,
+///   which is what `merged_transactions` does with every real transaction
+///   before the cutoff on every run.
+/// - `merged_transactions`: the real function, over a 24-month forecast.
+/// - `project_24m`: the whole `project()` call (forecast expansion, openings,
+///   lookback, series, runway) — not the three statements the server then
+///   builds over the merged list.
+/// - `run_reference` / `run_cold` / `run_warm`: the SERVER-EQUIVALENT run
+///   (plan 29): the projection plus the balance sheet columns, the income
+///   statement columns, the cash flow statement and the Accounts reading
+///   (Change). `run_reference` is the full scan the handler made before plan
+///   29 (`project` and every reading over `merged_transactions`); `run_cold`
+///   is a first request (`JournalFacts::new`, `RealSide::build`, then the
+///   run); `run_warm` is every edit after it (the run against a built
+///   `RealSide`). The `before` baseline recorded both cold and warm as the
+///   full scan, which is what they were then.
+fn bench_projections(c: &mut Criterion, fixtures: &[Fixture]) {
+    let mut group = c.benchmark_group("projections");
+    heavy(&mut group);
+    for fx in fixtures {
+        let scenario = serialize::scenario_from_text(
+            PROJECTION_SCENARIO,
+            "bench.journal",
+            "bench",
+            &fx.declared,
+        )
+        .expect("bench scenario must read");
+        let opts = ProjectionOpts {
+            today: PROJECTION_TODAY,
+            interval: Interval::Monthly,
+            count: 24,
+            lookback: 2,
+            depth: DEPTH,
+            declared: &fx.declared,
+            value_in: None,
+        };
+        let projection = project(
+            &scenario,
+            &fx.journal.transactions,
+            &fx.journal.prices,
+            &opts,
+        )
+        .expect("bench projection must run");
+        group.throughput(Throughput::Elements(fx.txns as u64));
+        group.bench_with_input(BenchmarkId::new("clone_history", fx.id()), fx, |b, fx| {
+            b.iter(|| black_box(fx.journal.transactions.clone()));
+        });
+        group.bench_with_input(
+            BenchmarkId::new("merged_transactions", fx.id()),
+            fx,
+            |b, fx| {
+                b.iter(|| {
+                    black_box(merged_transactions(
+                        &fx.journal.transactions,
+                        &projection.forecast,
+                    ))
+                });
+            },
+        );
+        group.bench_with_input(BenchmarkId::new("project_24m", fx.id()), fx, |b, fx| {
+            b.iter(|| {
+                black_box(
+                    project(
+                        &scenario,
+                        &fx.journal.transactions,
+                        &fx.journal.prices,
+                        &opts,
+                    )
+                    .expect("run"),
+                )
+            });
+        });
+        group.bench_with_input(BenchmarkId::new("run_reference", fx.id()), fx, |b, fx| {
+            b.iter(|| black_box(full_scan_run(fx, &scenario)));
+        });
+        group.bench_with_input(BenchmarkId::new("run_cold", fx.id()), fx, |b, fx| {
+            b.iter(|| {
+                let facts = JournalFacts::new(&fx.journal).expect("facts");
+                let real = RealSide::build(&fx.journal, &facts, &run_key(&facts)).expect("real");
+                black_box(cached_run(&facts, &real, &scenario))
+            });
+        });
+        let facts = JournalFacts::new(&fx.journal).expect("facts");
+        let real = RealSide::build(&fx.journal, &facts, &run_key(&facts)).expect("real");
+        group.bench_with_input(BenchmarkId::new("run_warm", fx.id()), fx, |b, _| {
+            b.iter(|| black_box(cached_run(&facts, &real, &scenario)));
+        });
+    }
+    group.finish();
+}
+
+/// The run's real-side key: the server's default request.
+fn run_key(facts: &JournalFacts) -> RealKey {
+    facts
+        .key(PROJECTION_TODAY, Interval::Monthly, 2, None)
+        .expect("key")
+}
+
+/// The run handler after plan 29: the forecast against a cached real side.
+fn cached_run(facts: &JournalFacts, real: &RealSide, scenario: &Scenario) -> usize {
+    let projection = project_cached(scenario, real, 24, DEPTH).expect("run");
+    let statements = projected_statements(
+        real,
+        facts,
+        &projection.forecast,
+        &StatementOpts {
+            valuation: Valuation::Market,
+            bs_depth: None,
+            cf_depth: DEPTH,
+        },
+    )
+    .expect("statements");
+    let accounts = projected_accounts(
+        real,
+        facts,
+        &projection.forecast,
+        &AccountsOpts {
+            mode: BalanceMode::Change,
+            depth: DEPTH,
+            empty: false,
+        },
+    )
+    .expect("accounts");
+    statements.balance_sheet.len()
+        + statements.income_statement.sections.len()
+        + statements.cash_flow.sections.len()
+        + accounts.rows.len()
+}
+
+/// The run handler before plan 29: `project`, the merged lists, and every
+/// reading over them, each a full scan.
+fn full_scan_run(fx: &Fixture, scenario: &Scenario) -> usize {
+    let journal = &fx.journal;
+    let declared = declared_types(&account_decls(journal));
+    let bs_groups = account_groups(journal);
+    let terms = bs_terms(journal);
+    let sections = account_sections(journal);
+    let is_groups = declared_groups(journal, IS_GROUP_TAG);
+    let projection = project(
+        scenario,
+        &journal.transactions,
+        &journal.prices,
+        &ProjectionOpts {
+            today: PROJECTION_TODAY,
+            interval: Interval::Monthly,
+            count: 24,
+            lookback: 2,
+            depth: DEPTH,
+            declared: &declared,
+            value_in: None,
+        },
+    )
+    .expect("run");
+    let forecast = &projection.forecast;
+    let window = &forecast.window;
+    let txns = merged_transactions(&journal.transactions, forecast);
+    let prices = merged_prices(&journal.prices, forecast);
+    let spans = range_buckets(&window.from, &window.end, Some(window.interval)).expect("spans");
+    let ends: Vec<String> = spans.iter().map(|span| span.to.clone()).collect();
+    let sheets = balance_sheet_columns(
+        &txns,
+        &prices,
+        &BsOpts {
+            as_of: &window.end,
+            depth: None,
+            value: Valuation::Market,
+            value_in: forecast.target.clone(),
+        },
+        &ends,
+        &declared,
+        &bs_groups,
+        &terms,
+    )
+    .expect("bs");
+    let income = income_statement_columns(
+        &txns,
+        &prices,
+        &IsOpts {
+            from: &window.from,
+            to: &window.end,
+            value: Valuation::Market,
+            value_in: forecast.target.clone(),
+            compare: false,
+        },
+        window.interval,
+        &declared,
+        &sections,
+        &is_groups,
+    )
+    .expect("is");
+    let cash_flow = cash_flow_statement(
+        &txns,
+        &CfOpts {
+            from: &window.from,
+            to: &window.end,
+            interval: Some(window.interval),
+            depth: DEPTH,
+        },
+        &CfTags::from_journal(journal),
+    )
+    .expect("cf");
+    let accounts = account_periods(
+        &txns,
+        &AccountPeriodsOpts {
+            from: &window.from,
+            to: &window.end,
+            interval: window.interval,
+            depth: DEPTH,
+            mode: BalanceMode::Change,
+            known: None,
+        },
+    )
+    .expect("accounts");
+    sheets.len() + income.sections.len() + cash_flow.sections.len() + accounts.rows.len()
+}
+
+// ---------------------------------------------------------------------------
+
 fn all(c: &mut Criterion) {
     let fixtures = fixtures();
     bench_parse(c, &fixtures);
@@ -648,6 +961,7 @@ fn all(c: &mut Criterion) {
     bench_prices(c, &fixtures);
     bench_reports(c, &fixtures);
     bench_holdings(c, &fixtures);
+    bench_projections(c, &fixtures);
 }
 
 criterion_group!(benches, all);

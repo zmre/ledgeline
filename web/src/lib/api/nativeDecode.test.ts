@@ -6,6 +6,7 @@ import {ApiShapeError} from "./client";
 import {periodsOf} from "#lib/reports/test-helpers.js";
 import {
     decodeAccountReference,
+    decodeBalanceSheetColumns,
     decodeBalanceSheetReport,
     decodeBudgetGaps,
     decodeBudgetListing,
@@ -1927,25 +1928,82 @@ describe("UNIT nativeDecode — QuickBooks Journal commit result", () => {
 // the DECODERS entry below gives — the route carries its scenario in a request
 // body and so cannot be replayed from the URI manifest.
 //
-// The figures are the shape `projection_endpoints.rs` asserts against
-// `fixtures/sample.journal`: one $4200 monthly rent line, in CASH-FLOW
-// ORIENTATION so the expense reads NEGATIVE. A runway and a warning are present
-// deliberately — both are nullable/empty in the common case, and a sweep over a
-// body where they were absent would prove nothing about them.
+// One $4200 monthly rent line over `fixtures/sample.journal`, with a runway and
+// a warning present deliberately — both are nullable/empty in the common case,
+// and a sweep over a body where they were absent would prove nothing about them.
+//
+// The income statement and cash flow statement ARE the Reports tab's wire types
+// (plan 28), so they are the real goldens of those types rather than literals:
+// the sweep then reaches every key of them through this decoder too. The
+// balance sheet's columns are the one new shape, and are written out.
+const month = (key: string, from: string, to: string, label: string) => ({key, label, from, to});
 const PROJECTION_RUN = {
-    buckets: ["2026-08", "2026-09", "2026-10"],
-    start: "2026-08-01",
-    netIncome: {
-        buckets: ["2026-08", "2026-09", "2026-10"],
-        periods: periodsOf(["2026-08", "2026-09", "2026-10"]),
-        rows: [
-            {account: "expenses", depth: 1, values: [{$: dec(-420000, 2)}, {$: dec(-420000, 2)}, {$: dec(-420000, 2)}]},
-            {account: "expenses:rent", depth: 2, values: [{$: dec(-420000, 2)}, {$: dec(-420000, 2)}, {$: dec(-420000, 2)}]},
+    buckets: ["2026-08", "2026-09"],
+    lookback: ["2026-07"],
+    actualsEnd: "2026-08-01",
+    projectedFrom: 1,
+    balanceSheet: {
+        columns: [
+            month("2026-07", "2026-07-01", "2026-07-31", "Jul 2026"),
+            month("2026-08", "2026-08-01", "2026-08-31", "Aug 2026"),
+            month("2026-09", "2026-09-01", "2026-09-30", "Sep 2026"),
         ],
-        totals: [{$: dec(-420000, 2)}, {$: dec(-420000, 2)}, {$: dec(-420000, 2)}],
+        base: "$",
+        value: "market",
+        sections: [
+            {
+                kind: "assets",
+                title: "Assets",
+                groups: [
+                    {
+                        name: "Cash and cash equivalents",
+                        source: "type",
+                        term: "current",
+                        rows: [
+                            {
+                                account: "assets:bank:checking",
+                                depth: 3,
+                                own: [{$: dec(500000, 2)}, {$: dec(80000, 2)}, {}],
+                                inclusive: [{$: dec(500000, 2)}, {$: dec(80000, 2)}, {}],
+                            },
+                        ],
+                        total: [{$: dec(500000, 2)}, {$: dec(80000, 2)}, {}],
+                    },
+                ],
+                subsections: [{term: "current", heading: "Current", label: "Total current assets", total: [{$: dec(500000, 2)}, {$: dec(80000, 2)}, {}]}],
+                total: [{$: dec(500000, 2)}, {$: dec(80000, 2)}, {}],
+            },
+            {kind: "liabilities", title: "Liabilities", groups: [], subsections: [], total: [{}, {}, {$: dec(340000, 2)}]},
+            {
+                kind: "equity",
+                title: "Equity",
+                groups: [
+                    {
+                        name: "Retained earnings",
+                        source: "computed",
+                        term: null,
+                        rows: [],
+                        total: [{$: dec(500000, 2)}, {$: dec(80000, 2)}, {$: dec(-340000, 2)}],
+                    },
+                ],
+                subsections: [],
+                total: [{$: dec(500000, 2)}, {$: dec(80000, 2)}, {$: dec(-340000, 2)}],
+            },
+        ],
+        netWorth: [{$: dec(500000, 2)}, {$: dec(80000, 2)}, {$: dec(-340000, 2)}],
+        check: [{}, {}, {}],
+        balanced: [true, true, false],
+        meta: {unpriced: ["GLD"]},
     },
-    cash: {opening: {$: dec(500000, 2)}, values: [{$: dec(80000, 2)}, {$: dec(-340000, 2)}, {$: dec(-760000, 2)}]},
-    netWorth: {opening: {$: dec(900000, 2)}, values: [{$: dec(480000, 2)}, {$: dec(60000, 2)}, {$: dec(-360000, 2)}]},
+    incomeStatement: golden("incomestatement-grouped-monthly"),
+    cashFlow: golden("cashflow"),
+    defaults: {
+        cash: "assets:bank:checking",
+        gains: "equity:unrealized gains",
+        lines: {"rule:0": "assets:bank:checking"},
+        events: {legal: "assets:bank:savings"},
+    },
+    cash: {opening: {$: dec(500000, 2)}, values: [{$: dec(80000, 2)}, {$: dec(-340000, 2)}]},
     runway: {bucket: 1, label: "Sep 2026", date: "2026-09-30", periods: 2},
     // The per-row asset attribution (plan 23, Phase 3), which the Balance
     // column and the net-worth breakdown read. Two rows, and the second is
@@ -1969,6 +2027,64 @@ const PROJECTION_RUN = {
         },
     ],
     warnings: ["'every weekday' is not a recurrence this projection can enumerate"],
+    // Both present (a run asked for them), so the sweep reaches their keys.
+    // `accounts` is a period report in Change mode: row totals and a grand total.
+    accounts: {
+        buckets: ["2026-07", "2026-08", "2026-09"],
+        periods: [
+            {key: "2026-07", label: "Jul 2026", start: "2026-07-01", end: "2026-07-31"},
+            {key: "2026-08", label: "Aug 2026", start: "2026-08-01", end: "2026-08-31"},
+            {key: "2026-09", label: "Sep 2026", start: "2026-09-01", end: "2026-09-30"},
+        ],
+        rows: [
+            {
+                account: "expenses:rent",
+                depth: 2,
+                values: [{}, {$: dec(420000, 2)}, {$: dec(420000, 2)}],
+                total: {$: dec(840000, 2)},
+            },
+        ],
+        totals: [{}, {}, {}],
+        grandTotal: {},
+    },
+    // One generated transaction, in the journal view's own row shape.
+    journal: {
+        total: 1,
+        truncated: false,
+        entries: [
+            {
+                origin: {kind: "rule", key: "rule:0"},
+                txn: {
+                    index: 401,
+                    date: "2026-08-01",
+                    status: "unmarked",
+                    code: "",
+                    description: "projection",
+                    comment: "generated-transaction: ~ monthly",
+                    tags: [
+                        ["generated-transaction", "~ monthly"],
+                        ["_generated-transaction", "~ monthly"],
+                    ],
+                    postings: [
+                        {
+                            account: "expenses:rent",
+                            amounts: [
+                                {
+                                    commodity: "$",
+                                    qty: {m: "420000", p: 2},
+                                    style: {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]},
+                                },
+                            ],
+                            status: "unmarked",
+                            comment: "",
+                            tags: [],
+                        },
+                    ],
+                    flags: [],
+                },
+            },
+        ],
+    },
 };
 
 /**
@@ -2022,10 +2138,12 @@ const SCENARIO_FILE = {
                 role: "flow",
                 account: "expenses:rent",
                 amount: {commodity: "$", quantity: {mantissa: "420000", places: 2}, precision: 2},
-                period: {raw: "monthly", simple: "monthly", from: null, to: null},
+                period: {raw: "monthly", simple: "monthly", base: null, from: null, to: null},
                 growth: {rate: {mantissa: "2", places: 2}, unit: "year"},
                 opening: null,
                 note: "projection",
+                counter: null,
+                gains: null,
                 source: "journal",
             },
         ],
@@ -2035,8 +2153,10 @@ const SCENARIO_FILE = {
                 date: "2027-03-01",
                 description: "Series A",
                 postings: [{account: "assets:cash", amount: {commodity: "$", quantity: {mantissa: "200000000", places: 2}, precision: 2}}],
+                counter: null,
             },
         ],
+        cash: null,
     },
 };
 
@@ -2059,7 +2179,7 @@ describe("UNIT nativeDecode — the projection seed over its golden", () => {
         expect(salary?.amount.precision).toBe(2);
         expect(salary?.source).toBe("unbudgeted");
         expect(salary?.growth).toBeNull();
-        expect(salary?.period).toEqual({raw: "monthly", simple: "monthly", from: null, to: null});
+        expect(salary?.period).toEqual({raw: "monthly", simple: "monthly", base: null, from: null, to: null});
 
         const housing = scenario.lines.find((l) => l.account === "expenses:housing");
         expect(housing?.amount.quantity).toEqual({m: 187500n, p: 2});
@@ -2164,18 +2284,50 @@ describe("UNIT nativeDecode — one scenario file", () => {
 });
 
 describe("UNIT nativeDecode — a projection run", () => {
-    it("decodes the three series, the start, the runway and the warnings", () => {
+    it("decodes the cutoff, the lookback, the cash series, the runway and the warnings", () => {
         const projection = decodeProjection(PROJECTION_RUN);
-        expect(projection.buckets).toEqual(["2026-08", "2026-09", "2026-10"]);
-        expect(projection.start).toBe("2026-08-01");
-        // Cash-flow orientation: an expense reads negative, and nothing here flips it again.
-        expect(projection.netIncome.totals[0].get("$")).toEqual({m: -420000n, p: 2});
+        expect(projection.buckets).toEqual(["2026-08", "2026-09"]);
+        expect(projection.lookback).toEqual(["2026-07"]);
+        expect(projection.actualsEnd).toBe("2026-08-01");
+        expect(projection.projectedFrom).toBe(1);
         // The opening balance is a real figure from the journal, not values[-1] of an earlier window.
         expect(projection.cash.opening.get("$")).toEqual({m: 500000n, p: 2});
-        expect(projection.cash.values).toHaveLength(3);
-        expect(projection.netWorth.opening.get("$")).toEqual({m: 900000n, p: 2});
+        expect(projection.cash.values).toHaveLength(2);
         expect(projection.runway).toEqual({bucket: 1, label: "Sep 2026", date: "2026-09-30", periods: 2});
         expect(projection.warnings).toHaveLength(1);
+    });
+
+    it("decodes the three statements through the Reports tab's own decoders", () => {
+        const projection = decodeProjection(PROJECTION_RUN);
+        expect(projection.incomeStatement).toEqual(decodeIncomeStatementReport(golden("incomestatement-grouped-monthly")));
+        expect(projection.cashFlow).toEqual(decodeCashFlowStatement(golden("cashflow")));
+        const sheet = projection.balanceSheet;
+        expect(sheet.kind).toBe("balanceSheetColumns");
+        expect(sheet.columns.map((column) => column.label)).toEqual(["Jul 2026", "Aug 2026", "Sep 2026"]);
+        // A group with no balance in a column reads EMPTY there, not missing.
+        const cash = sheet.sections[0].groups[0];
+        expect(cash.total.map((figure) => figure.get("$") ?? null)).toEqual([{m: 500000n, p: 2}, {m: 80000n, p: 2}, null]);
+        expect(cash.rows[0].inclusive).toHaveLength(3);
+        expect(sheet.balanced).toEqual([true, true, false]);
+        expect(sheet.meta?.unpriced).toEqual(["GLD"]);
+    });
+
+    it("decodes the inferred defaults the table greys out", () => {
+        const {defaults} = decodeProjection(PROJECTION_RUN);
+        expect(defaults.cash).toBe("assets:bank:checking");
+        expect(defaults.gains).toBe("equity:unrealized gains");
+        expect(defaults.lines.get("rule:0")).toBe("assets:bank:checking");
+        expect(defaults.events.get("legal")).toBe("assets:bank:savings");
+    });
+
+    it("a column array of the wrong length is refused, never shifted under the wrong date", () => {
+        const sheet = PROJECTION_RUN.balanceSheet;
+        expect(() => decodeProjection({...PROJECTION_RUN, balanceSheet: {...sheet, netWorth: sheet.netWorth.slice(1)}})).toThrow(ApiShapeError);
+        expect(() => decodeProjection({...PROJECTION_RUN, balanceSheet: {...sheet, balanced: [true]}})).toThrow(ApiShapeError);
+    });
+
+    it("a divider past the last statement column is refused", () => {
+        expect(() => decodeProjection({...PROJECTION_RUN, projectedFrom: 4})).toThrow(ApiShapeError);
     });
 
     it("a null runway is a real answer — the cash never crosses zero", () => {
@@ -2208,11 +2360,47 @@ describe("UNIT nativeDecode — a projection run", () => {
         expect(decodeProjection({...PROJECTION_RUN, assets: []}).assets).toEqual([]);
     });
 
+    it("decodes the Accounts reading through the period report's own decoder", () => {
+        const accounts = decodeProjection(PROJECTION_RUN).accounts;
+        expect(accounts?.periods.map((period) => period.label)).toEqual(["Jul 2026", "Aug 2026", "Sep 2026"]);
+        expect(accounts?.rows[0]?.total?.get("$")).toEqual({m: 840000n, p: 2});
+        expect(accounts?.grandTotal).toBeDefined();
+    });
+
+    it("decodes the generated transactions as journal rows, each with its origin", () => {
+        const journal = decodeProjection(PROJECTION_RUN).journal;
+        expect(journal?.total).toBe(1);
+        expect(journal?.truncated).toBe(false);
+        expect(journal?.entries[0]?.origin).toEqual({kind: "rule", key: "rule:0"});
+        const txn = journal?.entries[0]?.txn;
+        expect(txn?.date).toBe("2026-08-01");
+        expect(txn?.tags).toContainEqual(["generated-transaction", "~ monthly"]);
+        expect(txn?.postings[0]?.amounts[0]?.qty).toEqual({m: 420000n, p: 2});
+    });
+
+    it("null Accounts and Journal readings are real answers; ABSENT ones are broken contracts", () => {
+        const none = decodeProjection({...PROJECTION_RUN, accounts: null, journal: null});
+        expect(none.accounts).toBeNull();
+        expect(none.journal).toBeNull();
+        expect(() => decodeProjection(without(PROJECTION_RUN, "accounts"))).toThrow(ApiShapeError);
+        expect(() => decodeProjection(without(PROJECTION_RUN, "journal"))).toThrow(ApiShapeError);
+    });
+
+    it("refuses an origin of an unknown kind, and more entries than the total", () => {
+        const entry = PROJECTION_RUN.journal.entries[0]!;
+        const odd = {...PROJECTION_RUN, journal: {...PROJECTION_RUN.journal, entries: [{...entry, origin: {kind: "budget", key: "x"}}]}};
+        expect(() => decodeProjection(odd)).toThrow(ApiShapeError);
+        expect(() => decodeProjection({...PROJECTION_RUN, journal: {...PROJECTION_RUN.journal, total: 0}})).toThrow(ApiShapeError);
+    });
+
     it("an absent series or opening balance throws rather than charting zeros", () => {
         expect(() => decodeProjection(without(PROJECTION_RUN, "cash"))).toThrow(ApiShapeError);
         expect(() => decodeProjection({...PROJECTION_RUN, cash: without(PROJECTION_RUN.cash, "opening")})).toThrow(ApiShapeError);
-        expect(() => decodeProjection(without(PROJECTION_RUN, "netIncome"))).toThrow(ApiShapeError);
-        expect(() => decodeProjection(without(PROJECTION_RUN, "start"))).toThrow(ApiShapeError);
+        expect(() => decodeProjection(without(PROJECTION_RUN, "balanceSheet"))).toThrow(ApiShapeError);
+        expect(() => decodeProjection(without(PROJECTION_RUN, "incomeStatement"))).toThrow(ApiShapeError);
+        expect(() => decodeProjection(without(PROJECTION_RUN, "lookback"))).toThrow(ApiShapeError);
+        expect(() => decodeProjection(without(PROJECTION_RUN, "actualsEnd"))).toThrow(ApiShapeError);
+        expect(() => decodeProjection(without(PROJECTION_RUN, "defaults"))).toThrow(ApiShapeError);
         expect(() => decodeProjection(without(PROJECTION_RUN, "warnings"))).toThrow(ApiShapeError);
     });
 
@@ -2229,6 +2417,7 @@ describe("UNIT nativeDecode — renaming any wire key is detected, not absorbed"
     const DECODERS: [string, (raw: unknown) => unknown, unknown][] = [
         ["balancesheet", decodeSectionedReport, golden("balancesheet")],
         ["balancesheet-grouped", decodeBalanceSheetReport, golden("balancesheet-grouped")],
+        ["balancesheet-columns", decodeBalanceSheetColumns, golden("balancesheet-columns")],
         ["incomestatement", decodeSectionedReport, golden("incomestatement")],
         ["incomestatement-grouped", decodeIncomeStatementReport, golden("incomestatement-grouped")],
         ["incomestatement-flows", decodeFlowReport, golden("incomestatement-flows")],

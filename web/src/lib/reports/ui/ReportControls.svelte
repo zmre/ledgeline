@@ -3,7 +3,7 @@
      the input holds a full valid ISO date (type=date emits "" while clearing). -->
 <script lang="ts">
     import DepthSlider from "#lib/insights/DepthSlider.svelte";
-    import {INTERVAL_LABELS, MAX_COUNT, rangeKeys, TAB_CONTROLS, type ReportParams} from "./params";
+    import {bsMultiPeriod, intervalLabel, MAX_COUNT, rangeKeys, TAB_CONTROLS, type ReportParams} from "./params";
 
     let {params = $bindable(), maxDepth}: {params: ReportParams; maxDepth: number} = $props();
 
@@ -11,7 +11,7 @@
     // The P&L and cash flow each edit their own range (see `rangeKeys`).
     const range = $derived(rangeKeys(params.tab));
 
-    type DateKey = "asOf" | "from" | "to" | "cfFrom" | "cfTo" | "end";
+    type DateKey = "asOf" | "bsFrom" | "from" | "to" | "cfFrom" | "cfTo" | "end";
     const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
     function setDate(key: DateKey, value: string): void {
         if (ISO_DATE.test(value)) params[key] = value;
@@ -22,14 +22,19 @@
     }
 </script>
 
-{#snippet dateField(label: string, key: DateKey)}
+{#snippet dateField(label: string, key: DateKey, max?: string)}
     <label class="form-control">
         <span class="label-text mb-1 block text-xs text-base-content/70">{label}</span>
-        <input type="date" class="input w-40 input-sm" value={params[key]} onchange={(e) => setDate(key, e.currentTarget.value)} aria-label={label} />
+        <input type="date" class="input w-40 input-sm" value={params[key]} {max} onchange={(e) => setDate(key, e.currentTarget.value)} aria-label={label} />
     </label>
 {/snippet}
 
 <div class="flex flex-wrap items-end gap-x-4 gap-y-2 rounded-box bg-base-200 px-3 py-2">
+    <!-- The balance sheet's multi-period mode: From, then As of, the last
+         column's end. Single date (Total) shows As of alone, as it always did. -->
+    {#if config.asOfFrom && bsMultiPeriod(params)}
+        {@render dateField("From", "bsFrom", params.asOf)}
+    {/if}
     {#if config.asOf}
         {@render dateField("As of", "asOf")}
     {/if}
@@ -42,12 +47,13 @@
     {/if}
     {#if config.intervals.length > 0}
         <!-- Options per tab: Total only where a column can be summed (P&L, cash
-             flow) — net worth's snapshot columns cannot. -->
+             flow) — net worth's snapshot columns cannot — or, on the balance
+             sheet, where one column is the sheet itself ("Single date"). -->
         <label class="form-control">
             <span class="label-text mb-1 block text-xs text-base-content/70">Interval</span>
             <select class="select w-32 select-sm" bind:value={params.interval} aria-label="Interval">
                 {#each config.intervals as interval (interval)}
-                    <option value={interval}>{INTERVAL_LABELS[interval]}</option>
+                    <option value={interval}>{intervalLabel(params.tab, interval)}</option>
                 {/each}
             </select>
         </label>

@@ -22,6 +22,7 @@
 
 pub mod account_class;
 pub mod account_groups;
+pub mod account_periods;
 pub mod account_types;
 pub mod accounts;
 pub mod aggregate;
@@ -39,6 +40,7 @@ pub mod periods;
 pub mod prices;
 pub mod reference;
 mod sections;
+mod statement_shape;
 pub mod subscriptions;
 pub mod types;
 
@@ -58,6 +60,7 @@ pub use account_groups::{
     account_groups_from, bs_terms, declared_bs_terms, declared_groups, declared_groups_from,
     group_rank, parse_bs_term_tag, resolve_bs_term,
 };
+pub use account_periods::{AccountPeriodsOpts, BalanceMode, account_periods};
 pub use account_types::{
     ACCOUNT_TYPE_TAG, AccountDecl, AccountType, AccountTypes, accepted_type_tags, account_decls,
     account_decls_from, cash_predicate, declared_types, entered_negated, is_account_type,
@@ -66,8 +69,10 @@ pub use account_types::{
 pub use accounts::{RootCategory, account_matches, categorize};
 pub use aggregate::{PostingFilter, account_totals, at_depth, roll_up};
 pub use balance_sheet::{
-    BalanceSheetReport, BsGroup, BsOpts, BsSection, BsSectionKind, BsSubsection, Valuation,
-    balance_sheet, balance_sheet_grouped, prices_any_on_sheet,
+    BalanceSheetColumns, BalanceSheetReport, BsColumnGroup, BsColumnRow, BsColumnSection,
+    BsColumnSubsection, BsGroup, BsOpts, BsSection, BsSectionKind, BsSubsection, Valuation,
+    balance_sheet, balance_sheet_columns, balance_sheet_grouped, pivot_balance_sheets,
+    prices_any_on_sheet, prices_any_on_sheets,
 };
 pub use budget::{
     BudgetCell, BudgetGaps, BudgetOpts, BudgetReport, BudgetRow, GapRow, UNBUDGETED, budget_gaps,
@@ -105,6 +110,7 @@ pub use periods::{
 };
 pub use prices::{PriceDb, ValuationMeta, infer_market_prices, value_at};
 pub use reference::{AccountHistory, ReferenceOpts, ReferencePeriod, account_reference};
+pub use statement_shape::StatementShape;
 pub use subscriptions::{
     Cadence, DEFAULT_EXCLUDE_DESC, Subscription, SubscriptionOpts, SubscriptionsReport,
     detect_subscriptions,

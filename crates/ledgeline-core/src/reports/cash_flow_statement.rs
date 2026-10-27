@@ -384,215 +384,356 @@ pub fn cash_flow_statement(
     tags: &CfTags,
 ) -> Result<CashFlowStatement, ReportError> {
     let buckets = range_buckets(opts.from, opts.to, opts.interval)?;
-    let columns = buckets.len();
-    let types = AccountTypes::from_declared(tags.types.clone());
-    let investments = investments(txns, opts.to, tags.base.as_ref());
-    let resolve = cf_role_resolver(tags, &types, &investments);
-    let mut roles: HashMap<String, CfRole> = HashMap::new();
+    let classify = CfClassifier::new(tags);
+    let mut sums = CfAccumulator::new(buckets, opts.to, tags.base.clone());
+    for txn in txns {
+        sums.add(txn, classify.is_closing(txn), &classify)?;
+    }
+    sums.finish(tags, opts)
+}
 
-    let mut net_income = vec![MixedAmount::new(); columns];
-    // Contribution (−Δ) per non-cash account per column, and its section.
-    let mut lines: BTreeMap<String, (CfSectionKind, Vec<MixedAmount>)> = BTreeMap::new();
-    // Cash: balance before the range, then the change per column.
-    let mut opening: BTreeMap<String, MixedAmount> = BTreeMap::new();
-    let mut cash_delta: BTreeMap<String, Vec<MixedAmount>> = BTreeMap::new();
-    // As-held minus at-cost, for cash postings that carry a cost.
-    let mut exchange = vec![MixedAmount::new(); columns];
+/// What an account is while postings are summed: its [`CfRole`] without the
+/// section of a [`CfRole::Line`], which the `investments` set decides once
+/// every posting is in (see [`CfAccumulator::finish`]). The role resolver
+/// consults `investments` only to choose that section, so nothing summed here
+/// depends on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CfClass {
+    NetIncome,
+    Cash,
+    Line,
+}
 
-    for txn in txns.iter().filter(|txn| !is_closing_entry(txn, &types)) {
+/// The account classifier and closing-entry test a [`CfAccumulator`] reads,
+/// over one journal's tags.
+pub(crate) struct CfClassifier<'a> {
+    tags: &'a CfTags,
+    types: AccountTypes,
+    none: BTreeSet<String>,
+}
+
+impl<'a> CfClassifier<'a> {
+    pub(crate) fn new(tags: &'a CfTags) -> Self {
+        Self {
+            tags,
+            types: AccountTypes::from_declared(tags.types.clone()),
+            none: BTreeSet::new(),
+        }
+    }
+
+    /// [`is_closing_entry`] under this journal's declared types.
+    pub(crate) fn is_closing(&self, txn: &Transaction) -> bool {
+        is_closing_entry(txn, &self.types)
+    }
+
+    fn class(&self, account: &str) -> CfClass {
+        match cf_role_resolver(self.tags, &self.types, &self.none)(account) {
+            CfRole::NetIncome => CfClass::NetIncome,
+            CfRole::Cash => CfClass::Cash,
+            CfRole::Line(_) => CfClass::Line,
+        }
+    }
+}
+
+/// The posting pass of [`cash_flow_statement`], kept apart from the
+/// presentation so a projection can seed it with its real history once and
+/// add only the forecast per run (plan 29). Summing is order-free (exact
+/// decimals into ordered maps), so a seeded accumulator that is then given the
+/// remaining transactions finishes into the same statement as one pass over
+/// all of them.
+#[derive(Debug, Clone)]
+pub(crate) struct CfAccumulator {
+    buckets: Vec<BucketSpan>,
+    to: String,
+    base: Option<Commodity>,
+    net_income: Vec<MixedAmount>,
+    /// Contribution (−Δ) per non-cash account per column.
+    lines: BTreeMap<String, Vec<MixedAmount>>,
+    /// Cash: balance before the range, then the change per column.
+    opening: BTreeMap<String, MixedAmount>,
+    cash_delta: BTreeMap<String, Vec<MixedAmount>>,
+    /// As-held minus at-cost, for cash postings that carry a cost.
+    exchange: Vec<MixedAmount>,
+    /// Every account that has held a commodity other than `base` on or before
+    /// `to`: the balance sheet's Investments signal, read off postings rather
+    /// than one closing balance so a position sold during the range still
+    /// counts. Empty when there is no base commodity, as on the balance sheet.
+    investments: BTreeSet<String>,
+    classes: HashMap<String, CfClass>,
+}
+
+impl CfAccumulator {
+    /// An empty pass over `buckets`, counting postings dated on or before `to`.
+    pub(crate) fn new(buckets: Vec<BucketSpan>, to: &str, base: Option<Commodity>) -> Self {
+        let columns = buckets.len();
+        Self {
+            buckets,
+            to: to.to_string(),
+            base,
+            net_income: vec![MixedAmount::new(); columns],
+            lines: BTreeMap::new(),
+            opening: BTreeMap::new(),
+            cash_delta: BTreeMap::new(),
+            exchange: vec![MixedAmount::new(); columns],
+            investments: BTreeSet::new(),
+            classes: HashMap::new(),
+        }
+    }
+
+    /// Continue over more columns: `buckets` must START with the columns this
+    /// pass already has, and `to` must not drop a posting already counted.
+    /// The new columns start empty, which is exact when nothing summed so far
+    /// falls in them.
+    pub(crate) fn extend(&mut self, buckets: Vec<BucketSpan>, to: &str) {
+        let columns = buckets.len();
+        self.buckets = buckets;
+        self.to = to.to_string();
+        self.net_income.resize(columns, MixedAmount::new());
+        self.exchange.resize(columns, MixedAmount::new());
+        for values in self.lines.values_mut().chain(self.cash_delta.values_mut()) {
+            values.resize(columns, MixedAmount::new());
+        }
+    }
+
+    /// Sum one transaction. `closing` is [`is_closing_entry`] of the WHOLE
+    /// transaction, so a caller may pass a transaction holding only some of
+    /// its postings (the rest summed earlier) and still judge it entire.
+    ///
+    /// # Errors
+    /// Returns [`ReportError`] on decimal overflow.
+    pub(crate) fn add(
+        &mut self,
+        txn: &Transaction,
+        closing: bool,
+        classify: &CfClassifier<'_>,
+    ) -> Result<(), ReportError> {
+        let columns = self.buckets.len();
         for posting in &txn.postings {
-            if posting.ptype == PostingType::Virtual {
-                continue;
-            }
             let date = posting.date.as_deref().unwrap_or(&txn.date);
-            if date > opts.to {
+            if date > self.to.as_str() {
                 continue;
             }
             let account = posting.account.0.as_str();
-            let role = *roles
-                .entry(account.to_string())
-                .or_insert_with(|| resolve(account));
-            let column = bucket_of(&buckets, date);
+            if let Some(base) = &self.base
+                && !self.investments.contains(account)
+                && posting
+                    .amounts
+                    .iter()
+                    .any(|amount| &amount.commodity != base)
+            {
+                self.investments.insert(account.to_string());
+            }
+            if closing || posting.ptype == PostingType::Virtual {
+                continue;
+            }
+            let class = match self.classes.get(account) {
+                Some(class) => *class,
+                None => {
+                    let class = classify.class(account);
+                    self.classes.insert(account.to_string(), class);
+                    class
+                }
+            };
+            let column = bucket_of(&self.buckets, date);
             for amount in &posting.amounts {
                 let (commodity, quantity) = amount.at_cost()?;
-                match (role, column) {
-                    (CfRole::Cash, None) => opening
+                match (class, column) {
+                    (CfClass::Cash, None) => self
+                        .opening
                         .entry(account.to_string())
                         .or_default()
                         .accumulate(&amount.commodity, amount.quantity)?,
-                    (CfRole::Cash, Some(column)) => {
-                        cash_delta
+                    (CfClass::Cash, Some(column)) => {
+                        self.cash_delta
                             .entry(account.to_string())
                             .or_insert_with(|| vec![MixedAmount::new(); columns])[column]
                             .accumulate(&amount.commodity, amount.quantity)?;
                         if amount.cost.is_some() {
-                            exchange[column].accumulate(&amount.commodity, amount.quantity)?;
-                            exchange[column].accumulate(commodity, quantity.neg()?)?;
+                            self.exchange[column].accumulate(&amount.commodity, amount.quantity)?;
+                            self.exchange[column].accumulate(commodity, quantity.neg()?)?;
                         }
                     }
-                    (CfRole::NetIncome, Some(column)) => {
-                        net_income[column].accumulate(commodity, quantity.neg()?)?;
+                    (CfClass::NetIncome, Some(column)) => {
+                        self.net_income[column].accumulate(commodity, quantity.neg()?)?;
                     }
-                    (CfRole::Line(kind), Some(column)) => lines
+                    (CfClass::Line, Some(column)) => self
+                        .lines
                         .entry(account.to_string())
-                        .or_insert_with(|| (kind, vec![MixedAmount::new(); columns]))
-                        .1[column]
+                        .or_insert_with(|| vec![MixedAmount::new(); columns])[column]
                         .accumulate(commodity, quantity.neg()?)?,
-                    (CfRole::NetIncome | CfRole::Line(_), None) => {}
+                    (CfClass::NetIncome | CfClass::Line, None) => {}
                 }
             }
         }
+        Ok(())
     }
 
-    let line_key = |account: &str| match nearest_declared(&tags.groups, account) {
-        Some(group) => (group.clone(), CfLineSource::Group),
-        None => (clamp(account, opts.depth), CfLineSource::Account),
-    };
+    /// The statement over everything summed: sections resolved now, with the
+    /// complete `investments` set, then the same presentation every caller
+    /// gets.
+    ///
+    /// # Errors
+    /// Returns [`ReportError`] on decimal overflow.
+    pub(crate) fn finish(
+        &self,
+        tags: &CfTags,
+        opts: &CfOpts,
+    ) -> Result<CashFlowStatement, ReportError> {
+        let columns = self.buckets.len();
+        let types = AccountTypes::from_declared(tags.types.clone());
+        let resolve = cf_role_resolver(tags, &types, &self.investments);
+        let line_key = |account: &str| match nearest_declared(&tags.groups, account) {
+            Some(group) => (group.clone(), CfLineSource::Group),
+            None => (clamp(account, opts.depth), CfLineSource::Account),
+        };
+        let kinds: BTreeMap<&str, CfSectionKind> = self
+            .lines
+            .keys()
+            .map(|account| {
+                let kind = match resolve(account) {
+                    CfRole::Line(kind) => kind,
+                    // Summed as a line, so it resolves to one; the arm only
+                    // exists because the resolver's type has three.
+                    CfRole::NetIncome | CfRole::Cash => CfSectionKind::Operating,
+                };
+                (account.as_str(), kind)
+            })
+            .collect();
 
-    let net_income = flow(net_income)?;
-    let mut sections = Vec::new();
-    for (kind, title) in [
-        (CfSectionKind::Operating, "Operating activities"),
-        (CfSectionKind::Investing, "Investing activities"),
-        (CfSectionKind::Financing, "Financing activities"),
-    ] {
-        let mut by_line: BTreeMap<(String, CfLineSource), Vec<CfRow>> = BTreeMap::new();
-        for (account, (_, values)) in lines.iter().filter(|(_, (k, _))| *k == kind) {
-            if values.iter().all(MixedAmount::is_zero) {
+        let net_income = flow(self.net_income.clone())?;
+        let mut sections = Vec::new();
+        for (kind, title) in [
+            (CfSectionKind::Operating, "Operating activities"),
+            (CfSectionKind::Investing, "Investing activities"),
+            (CfSectionKind::Financing, "Financing activities"),
+        ] {
+            let mut by_line: BTreeMap<(String, CfLineSource), Vec<CfRow>> = BTreeMap::new();
+            for (account, values) in self
+                .lines
+                .iter()
+                .filter(|(account, _)| kinds.get(account.as_str()) == Some(&kind))
+            {
+                if values.iter().all(MixedAmount::is_zero) {
+                    continue;
+                }
+                let (name, source) = line_key(account);
+                by_line.entry((name, source)).or_default().push(CfRow {
+                    account: account.clone(),
+                    amounts: flow(values.clone())?,
+                });
+            }
+            let lines: Vec<CfLine> = by_line
+                .into_iter()
+                .map(|((name, source), rows)| {
+                    let total = sum_columns(rows.iter().map(|row| &row.amounts), columns)?;
+                    Ok(CfLine {
+                        name,
+                        source,
+                        rows,
+                        total,
+                    })
+                })
+                .collect::<Result<_, ReportError>>()?;
+            if kind != CfSectionKind::Operating && lines.is_empty() {
+                continue;
+            }
+            let lines_total = sum_columns(lines.iter().map(|line| &line.total), columns)?;
+            let total = if kind == CfSectionKind::Operating {
+                add_columns(&lines_total, &net_income)?
+            } else {
+                lines_total
+            };
+            sections.push(CfSection {
+                kind,
+                title: title.to_string(),
+                lines,
+                total,
+            });
+        }
+        let exchange = flow(self.exchange.clone())?;
+        let net_change = add_columns(
+            &sum_columns(sections.iter().map(|section| &section.total), columns)?,
+            &exchange,
+        )?;
+
+        // Every cash account with a balance or a movement anywhere in the range.
+        let cash_accounts: Vec<&String> = {
+            let mut names: Vec<&String> =
+                self.opening.keys().chain(self.cash_delta.keys()).collect();
+            names.sort();
+            names.dedup();
+            names
+        };
+        let mut by_cash_line: BTreeMap<(String, CfLineSource), Vec<CfCashRow>> = BTreeMap::new();
+        for account in cash_accounts {
+            let mut balance = self.opening.get(account).cloned().unwrap_or_default();
+            let mut beginning = Vec::with_capacity(columns);
+            let mut ending = Vec::with_capacity(columns);
+            for column in 0..columns {
+                beginning.push(tidy(balance.clone()));
+                if let Some(delta) = self.cash_delta.get(account) {
+                    balance = balance.ma_add(&delta[column])?;
+                }
+                ending.push(tidy(balance.clone()));
+            }
+            if beginning.iter().chain(&ending).all(MixedAmount::is_zero) {
                 continue;
             }
             let (name, source) = line_key(account);
-            by_line.entry((name, source)).or_default().push(CfRow {
-                account: account.clone(),
-                amounts: flow(values.clone())?,
-            });
+            by_cash_line
+                .entry((name, source))
+                .or_default()
+                .push(CfCashRow {
+                    account: account.clone(),
+                    beginning: point(beginning, Edge::First),
+                    ending: point(ending, Edge::Last),
+                });
         }
-        let lines: Vec<CfLine> = by_line
+        let cash: Vec<CfCashLine> = by_cash_line
             .into_iter()
             .map(|((name, source), rows)| {
-                let total = sum_columns(rows.iter().map(|row| &row.amounts), columns)?;
-                Ok(CfLine {
+                Ok(CfCashLine {
+                    beginning: sum_points(
+                        rows.iter().map(|row| &row.beginning),
+                        columns,
+                        Edge::First,
+                    )?,
+                    ending: sum_points(rows.iter().map(|row| &row.ending), columns, Edge::Last)?,
                     name,
                     source,
                     rows,
-                    total,
                 })
             })
             .collect::<Result<_, ReportError>>()?;
-        if kind != CfSectionKind::Operating && lines.is_empty() {
-            continue;
-        }
-        let lines_total = sum_columns(lines.iter().map(|line| &line.total), columns)?;
-        let total = if kind == CfSectionKind::Operating {
-            add_columns(&lines_total, &net_income)?
-        } else {
-            lines_total
-        };
-        sections.push(CfSection {
-            kind,
-            title: title.to_string(),
-            lines,
-            total,
-        });
-    }
-    let exchange = flow(exchange)?;
-    let net_change = add_columns(
-        &sum_columns(sections.iter().map(|section| &section.total), columns)?,
-        &exchange,
-    )?;
+        let beginning_cash = sum_points(
+            cash.iter().map(|line| &line.beginning),
+            columns,
+            Edge::First,
+        )?;
+        let ending_cash = sum_points(cash.iter().map(|line| &line.ending), columns, Edge::Last)?;
 
-    // Every cash account with a balance or a movement anywhere in the range.
-    let cash_accounts: Vec<&String> = {
-        let mut names: Vec<&String> = opening.keys().chain(cash_delta.keys()).collect();
-        names.sort();
-        names.dedup();
-        names
-    };
-    let mut by_cash_line: BTreeMap<(String, CfLineSource), Vec<CfCashRow>> = BTreeMap::new();
-    for account in cash_accounts {
-        let mut balance = opening.get(account).cloned().unwrap_or_default();
-        let mut beginning = Vec::with_capacity(columns);
-        let mut ending = Vec::with_capacity(columns);
+        let mut reconciles = true;
         for column in 0..columns {
-            beginning.push(tidy(balance.clone()));
-            if let Some(delta) = cash_delta.get(account) {
-                balance = balance.ma_add(&delta[column])?;
-            }
-            ending.push(tidy(balance.clone()));
+            let moved =
+                ending_cash.values[column].ma_add(&beginning_cash.values[column].ma_neg()?)?;
+            let gap = moved.ma_add(&net_change.values[column].ma_neg()?)?;
+            reconciles &= gap.is_zero();
         }
-        if beginning.iter().chain(&ending).all(MixedAmount::is_zero) {
-            continue;
-        }
-        let (name, source) = line_key(account);
-        by_cash_line
-            .entry((name, source))
-            .or_default()
-            .push(CfCashRow {
-                account: account.clone(),
-                beginning: point(beginning, Edge::First),
-                ending: point(ending, Edge::Last),
-            });
-    }
-    let cash: Vec<CfCashLine> = by_cash_line
-        .into_iter()
-        .map(|((name, source), rows)| {
-            Ok(CfCashLine {
-                beginning: sum_points(rows.iter().map(|row| &row.beginning), columns, Edge::First)?,
-                ending: sum_points(rows.iter().map(|row| &row.ending), columns, Edge::Last)?,
-                name,
-                source,
-                rows,
-            })
+
+        Ok(CashFlowStatement {
+            from: opts.from.to_string(),
+            to: opts.to.to_string(),
+            buckets: self.buckets.clone(),
+            net_income,
+            sections,
+            exchange,
+            net_change,
+            cash,
+            beginning_cash,
+            ending_cash,
+            reconciles,
         })
-        .collect::<Result<_, ReportError>>()?;
-    let beginning_cash = sum_points(
-        cash.iter().map(|line| &line.beginning),
-        columns,
-        Edge::First,
-    )?;
-    let ending_cash = sum_points(cash.iter().map(|line| &line.ending), columns, Edge::Last)?;
-
-    let mut reconciles = true;
-    for column in 0..columns {
-        let moved = ending_cash.values[column].ma_add(&beginning_cash.values[column].ma_neg()?)?;
-        let gap = moved.ma_add(&net_change.values[column].ma_neg()?)?;
-        reconciles &= gap.is_zero();
     }
-
-    Ok(CashFlowStatement {
-        from: opts.from.to_string(),
-        to: opts.to.to_string(),
-        buckets,
-        net_income,
-        sections,
-        exchange,
-        net_change,
-        cash,
-        beginning_cash,
-        ending_cash,
-        reconciles,
-    })
-}
-
-/// Every account that has held a commodity other than `base` on or before
-/// `to`: the balance sheet's Investments signal, read off postings rather
-/// than one closing balance so a position sold during the range still counts.
-/// Empty when there is no base commodity, as on the balance sheet.
-fn investments(txns: &[Transaction], to: &str, base: Option<&Commodity>) -> BTreeSet<String> {
-    let Some(base) = base else {
-        return BTreeSet::new();
-    };
-    txns.iter()
-        .flat_map(|txn| txn.postings.iter().map(move |posting| (txn, posting)))
-        .filter(|(txn, posting)| posting.date.as_deref().unwrap_or(&txn.date) <= to)
-        .filter(|(_, posting)| {
-            posting
-                .amounts
-                .iter()
-                .any(|amount| &amount.commodity != base)
-        })
-        .map(|(_, posting)| posting.account.0.clone())
-        .collect()
 }
 
 /// The column `date` falls in, or `None` before the range (callers have

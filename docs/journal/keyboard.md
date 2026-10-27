@@ -23,34 +23,35 @@ A sequence such as <kbd>g</kbd> <kbd>j</kbd> means press <kbd>g</kbd>, release i
 
 ## Everywhere
 
-| Keys | Action |
-| --- | --- |
-| <kbd>?</kbd> | Show or hide keyboard shortcuts |
-| <kbd>g</kbd> <kbd>j</kbd> | Go to Journal |
-| <kbd>g</kbd> <kbd>h</kbd> | Go to Holdings |
-| <kbd>g</kbd> <kbd>b</kbd> | Go to Budget |
-| <kbd>g</kbd> <kbd>r</kbd> | Go to Reports |
+| Keys                      | Action                                           |
+| ------------------------- | ------------------------------------------------ |
+| <kbd>?</kbd>              | Show or hide keyboard shortcuts                  |
+| <kbd>g</kbd> <kbd>j</kbd> | Go to Journal                                    |
+| <kbd>g</kbd> <kbd>h</kbd> | Go to Holdings                                   |
+| <kbd>g</kbd> <kbd>b</kbd> | Go to Budget                                     |
+| <kbd>g</kbd> <kbd>p</kbd> | Go to Projections                                |
+| <kbd>g</kbd> <kbd>r</kbd> | Go to Reports                                    |
 | <kbd>g</kbd> <kbd>i</kbd> | Go to Imports (when the engine supports imports) |
 
 ## Journal
 
 These need a cursor row. <kbd>j</kbd> or <kbd>k</kbd> puts one on the table, and clicking a row moves it there.
 
-| Keys | Action |
-| --- | --- |
-| <kbd>j</kbd> or <kbd>↓</kbd> | Next transaction |
-| <kbd>k</kbd> or <kbd>↑</kbd> | Previous transaction |
-| <kbd>Ctrl</kbd>+<kbd>d</kbd> or <kbd>Page Down</kbd> | Half a page down |
-| <kbd>Ctrl</kbd>+<kbd>u</kbd> or <kbd>Page Up</kbd> | Half a page up |
-| <kbd>g</kbd> <kbd>g</kbd> | First transaction |
-| <kbd>G</kbd> | Last transaction |
-| <kbd>Esc</kbd> | Cancel a pending delete, or clear the cursor |
-| <kbd>Enter</kbd> | Edit the whole transaction |
-| <kbd>e</kbd> | Edit the description |
-| <kbd>c</kbd> | Edit the category (account) |
-| <kbd>s</kbd> | Cycle status: unmarked, pending, cleared |
-| <kbd>x</kbd> | Delete. Press <kbd>x</kbd> again to confirm. |
-| <kbd>n</kbd> | Add a transaction |
+| Keys                                                 | Action                                       |
+| ---------------------------------------------------- | -------------------------------------------- |
+| <kbd>j</kbd> or <kbd>↓</kbd>                         | Next transaction                             |
+| <kbd>k</kbd> or <kbd>↑</kbd>                         | Previous transaction                         |
+| <kbd>Ctrl</kbd>+<kbd>d</kbd> or <kbd>Page Down</kbd> | Half a page down                             |
+| <kbd>Ctrl</kbd>+<kbd>u</kbd> or <kbd>Page Up</kbd>   | Half a page up                               |
+| <kbd>g</kbd> <kbd>g</kbd>                            | First transaction                            |
+| <kbd>G</kbd>                                         | Last transaction                             |
+| <kbd>Esc</kbd>                                       | Cancel a pending delete, or clear the cursor |
+| <kbd>Enter</kbd>                                     | Edit the whole transaction                   |
+| <kbd>e</kbd>                                         | Edit the description                         |
+| <kbd>c</kbd>                                         | Edit the category (account)                  |
+| <kbd>s</kbd>                                         | Cycle status: unmarked, pending, cleared     |
+| <kbd>x</kbd>                                         | Delete. Press <kbd>x</kbd> again to confirm. |
+| <kbd>n</kbd>                                         | Add a transaction                            |
 
 The editing keys (<kbd>Enter</kbd>, <kbd>e</kbd>, <kbd>c</kbd>, <kbd>s</kbd>, <kbd>x</kbd>, <kbd>n</kbd>) only work when the journal can be edited. See [The journal](index.md#editing-transactions).
 
@@ -58,73 +59,81 @@ In the transaction dialog, <kbd>Enter</kbd> or <kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+<k
 
 ## Filters
 
-| Keys | Action |
-| --- | --- |
-| <kbd>/</kbd> | Focus the journal search box |
+| Keys         | Action                            |
+| ------------ | --------------------------------- |
+| <kbd>/</kbd> | Focus the journal search box      |
 | <kbd>a</kbd> | Open the journal's account picker |
 
 On the Holdings page, which has no search box, <kbd>/</kbd> opens the account picker instead.
 
 ## Holdings
 
-| Keys | Action |
-| --- | --- |
-| <kbd>1</kbd>, <kbd>2</kbd> | Switch to the Stocks or Other tab |
-| <kbd>j</kbd> or <kbd>↓</kbd> | Next holding |
-| <kbd>k</kbd> or <kbd>↑</kbd> | Previous holding |
-| <kbd>g</kbd> <kbd>g</kbd> | First holding |
-| <kbd>G</kbd> | Last holding |
-| <kbd>Esc</kbd> | Clear the cursor |
-| <kbd>Enter</kbd> | Show this holding's transactions in the journal |
+| Keys                         | Action                                          |
+| ---------------------------- | ----------------------------------------------- |
+| <kbd>1</kbd>, <kbd>2</kbd>   | Switch to the Stocks or Other tab               |
+| <kbd>j</kbd> or <kbd>↓</kbd> | Next holding                                    |
+| <kbd>k</kbd> or <kbd>↑</kbd> | Previous holding                                |
+| <kbd>g</kbd> <kbd>g</kbd>    | First holding                                   |
+| <kbd>G</kbd>                 | Last holding                                    |
+| <kbd>Esc</kbd>               | Clear the cursor                                |
+| <kbd>Enter</kbd>             | Show this holding's transactions in the journal |
+
+## Projections
+
+| Keys                         | Action                                                                    |
+| ---------------------------- | ------------------------------------------------------------------------- |
+| <kbd>1</kbd> to <kbd>6</kbd> | Runway, Balance sheet, Income statement, Cash flow, Accounts, Journal     |
+
+Like every shortcut, these are ignored while you're typing in the what-if table. Click outside the field first.
 
 ## Reports
 
-| Keys | Action |
-| --- | --- |
+| Keys                         | Action                                                            |
+| ---------------------------- | ----------------------------------------------------------------- |
 | <kbd>1</kbd> to <kbd>6</kbd> | Insights, Balance Sheet, P&L, Cash Flow, Net Worth, Subscriptions |
-| <kbd>j</kbd> or <kbd>↓</kbd> | Next row |
-| <kbd>k</kbd> or <kbd>↑</kbd> | Previous row |
-| <kbd>g</kbd> <kbd>g</kbd> | First row |
-| <kbd>G</kbd> | Last row |
-| <kbd>Esc</kbd> | Clear the cursor |
-| <kbd>Enter</kbd> | Expand a group, or show the account in the journal |
+| <kbd>j</kbd> or <kbd>↓</kbd> | Next row                                                          |
+| <kbd>k</kbd> or <kbd>↑</kbd> | Previous row                                                      |
+| <kbd>g</kbd> <kbd>g</kbd>    | First row                                                         |
+| <kbd>G</kbd>                 | Last row                                                          |
+| <kbd>Esc</kbd>               | Clear the cursor                                                  |
+| <kbd>Enter</kbd>             | Expand a group, or show the account in the journal                |
 
 On the Balance Sheet and P&L, <kbd>Enter</kbd> on a group row expands it and on an account row opens the journal. On the other tables, it opens the journal filtered to that account.
 
 ## Imports
 
-| Keys | Action |
-| --- | --- |
-| <kbd>1</kbd>, <kbd>2</kbd> | New Transactions, Edit Rules |
-| <kbd>j</kbd> or <kbd>↓</kbd> | Next rule |
-| <kbd>k</kbd> or <kbd>↑</kbd> | Previous rule |
-| <kbd>g</kbd> <kbd>g</kbd> | First rule |
-| <kbd>G</kbd> | Last rule |
-| <kbd>J</kbd> | Move the rule down |
-| <kbd>K</kbd> | Move the rule up |
-| <kbd>Enter</kbd> | Open or close the rule |
-| <kbd>Esc</kbd> | Close the open rule, or clear the cursor |
+| Keys                         | Action                                   |
+| ---------------------------- | ---------------------------------------- |
+| <kbd>1</kbd>, <kbd>2</kbd>   | New Transactions, Edit Rules             |
+| <kbd>j</kbd> or <kbd>↓</kbd> | Next rule                                |
+| <kbd>k</kbd> or <kbd>↑</kbd> | Previous rule                            |
+| <kbd>g</kbd> <kbd>g</kbd>    | First rule                               |
+| <kbd>G</kbd>                 | Last rule                                |
+| <kbd>J</kbd>                 | Move the rule down                       |
+| <kbd>K</kbd>                 | Move the rule up                         |
+| <kbd>Enter</kbd>             | Open or close the rule                   |
+| <kbd>Esc</kbd>               | Close the open rule, or clear the cursor |
 
 The rule keys work in the rules list on the Edit Rules tab.
 
 ## Settings
 
-| Keys | Action |
-| --- | --- |
+| Keys                       | Action                    |
+| -------------------------- | ------------------------- |
 | <kbd>1</kbd>, <kbd>2</kbd> | Accounts, Account Aliases |
 
 ## Desktop app menus
 
 The desktop window adds menu shortcuts. <kbd>Cmd</kbd> on macOS is <kbd>Ctrl</kbd> on Linux.
 
-| Keys | Action |
-| --- | --- |
-| <kbd>Cmd</kbd>+<kbd>O</kbd> | Open a journal |
-| <kbd>Cmd</kbd>+<kbd>R</kbd> | Reload |
-| <kbd>Cmd</kbd>+<kbd>[</kbd> / <kbd>Cmd</kbd>+<kbd>]</kbd> | Back / forward (macOS) |
-| <kbd>Alt</kbd>+<kbd>←</kbd> / <kbd>Alt</kbd>+<kbd>→</kbd> | Back / forward (Linux) |
-| <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Quit (Linux) |
-| <kbd>F10</kbd> | Show or hide the title bar and menu bar (Linux) |
+| Keys                                                      | Action                                          |
+| --------------------------------------------------------- | ----------------------------------------------- |
+| <kbd>Cmd</kbd>+<kbd>O</kbd>                               | Open a journal                                  |
+| <kbd>Cmd</kbd>+<kbd>R</kbd>                               | Reload                                          |
+| <kbd>Cmd</kbd>+<kbd>[</kbd> / <kbd>Cmd</kbd>+<kbd>]</kbd> | Back / forward (macOS)                          |
+| <kbd>Alt</kbd>+<kbd>←</kbd> / <kbd>Alt</kbd>+<kbd>→</kbd> | Back / forward (Linux)                          |
+| <kbd>Ctrl</kbd>+<kbd>Q</kbd>                              | Quit (Linux)                                    |
+| <kbd>F10</kbd>                                            | Show or hide the title bar and menu bar (Linux) |
 
 ## Related pages
 

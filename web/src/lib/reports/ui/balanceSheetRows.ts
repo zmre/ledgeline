@@ -18,9 +18,9 @@
 // that promise is kept — and it is kept by an explicit early return, not by an
 // accident of the walk.
 
-import {maAdd, type MixedAmount} from "#lib/domain/money.js";
-import type {BalanceSheetReport, BsGroup, BsSection, BsSectionKind, BsSubsection, BsTerm} from "#lib/reports/types.js";
-import {compressSectionRows} from "./displayRows";
+import {maAdd, maIsZero, type MixedAmount} from "#lib/domain/money.js";
+import type {BalanceSheetColumns, BalanceSheetReport, BsColumnSection, BsSection, BsSectionKind, BsTerm} from "#lib/reports/types.js";
+import {compressRows} from "./displayRows";
 
 // `amountCell` lives in its own module now that the income statement renders
 // its figures the same way; re-exported so the balance sheet's view and tests
@@ -38,7 +38,12 @@ export {amountCell, type AmountCell} from "./amountCell";
  */
 export type BsRowKind = "group" | "account" | "subsection" | "subtotal";
 
-export interface BsDisplayRow {
+/**
+ * A row's figure: one `MixedAmount` on a single-date sheet, one per column on
+ * a multi-column one (`BalanceSheetColumns`). The layout below never reads a
+ * figure, so ONE walk serves both and the two cannot lay out differently.
+ */
+export interface BsDisplayRow<A = MixedAmount> {
     kind: BsRowKind;
     /**
      * Stable identity, unique across the whole report. Used for three things at
@@ -64,7 +69,7 @@ export interface BsDisplayRow {
      * subtotal row that closes it, and printing it twice would invite the reader
      * to look for a difference between them.
      */
-    amount: MixedAmount;
+    amount: A;
     /**
      * The band this row belongs to, or null when the journal classifies nothing.
      *
@@ -116,18 +121,58 @@ export interface BsSummary {
 
 /** Build the tie-out. Shared by the view and the xlsx export so they cannot drift. */
 export function bsSummary(report: BalanceSheetReport): BsSummary {
+    return bsColumnSummaries(asColumns(report))[0];
+}
+
+/** One tie-out per column of a multi-column sheet, in column order. */
+export function bsColumnSummaries(sheet: BalanceSheetColumns): BsSummary[] {
     // By kind, not by index: the engine always emits three sections in order,
     // and looking them up by name means a change to that order would move the
     // labels and the figures together rather than silently mislabelling one.
-    const total = (kind: BsSectionKind): MixedAmount => report.sections.find((section) => section.kind === kind)?.total ?? new Map();
-    const liabilities = total("liabilities");
-    const equity = total("equity");
+    const totals = (kind: BsSectionKind): readonly MixedAmount[] => sheet.sections.find((section) => section.kind === kind)?.total ?? [];
+    return sheet.columns.map((_, at) => {
+        const figure = (kind: BsSectionKind): MixedAmount => totals(kind)[at] ?? new Map();
+        const liabilities = figure("liabilities");
+        const equity = figure("equity");
+        return {
+            assets: figure("assets"),
+            liabilities,
+            equity,
+            liabilitiesPlusEquity: maAdd(liabilities, equity),
+            balanced: sheet.balanced[at] ?? false,
+        };
+    });
+}
+
+/**
+ * A single-date sheet as a ONE-column `BalanceSheetColumns`, so the view has
+ * one shape to render. The column is labelled "Amount", which is the heading
+ * the single-date sheet has always had.
+ */
+export function asColumns(report: BalanceSheetReport): BalanceSheetColumns {
+    const one = <T>(value: T): T[] => [value];
     return {
-        assets: total("assets"),
-        liabilities,
-        equity,
-        liabilitiesPlusEquity: maAdd(liabilities, equity),
-        balanced: report.balanced,
+        kind: "balanceSheetColumns",
+        columns: [{key: report.asOf, label: "Amount", from: report.asOf, to: report.asOf}],
+        base: report.base,
+        value: report.value,
+        sections: report.sections.map((section) => ({
+            kind: section.kind,
+            title: section.title,
+            groups: section.groups.map((group) => ({
+                name: group.name,
+                source: group.source,
+                term: group.term,
+                rows: group.rows.map((row) => ({account: row.account, depth: row.depth, own: one(row.own), inclusive: one(row.inclusive)})),
+                total: one(group.total),
+            })),
+            subsections: section.subsections.map((band) => ({term: band.term, heading: band.heading, label: band.label, total: one(band.total)})),
+            total: one(section.total),
+        })),
+        netWorth: one(report.netWorth),
+        check: one(report.check),
+        balanced: one(report.balanced),
+        ...(report.meta === undefined ? {} : {meta: report.meta}),
     };
 }
 
@@ -184,12 +229,23 @@ export function bsSubtotalKey(sectionKind: string, term: BsTerm, occurrence = 1)
  * boundaries fall*, and a workbook that split its bands one group earlier than
  * the screen is a subtler wrong than a mislabelled one.
  */
-export interface BsSectionBlock {
+export interface BsSectionBlock<S extends SheetSection = BsSection> {
     /** The band whose subheading prints above this group, or null when the group continues one. */
-    opens: BsSubsection | null;
-    group: BsGroup;
+    opens: S["subsections"][number] | null;
+    group: S["groups"][number];
     /** The band whose subtotal prints below this group, or null when the band runs on. */
-    closes: BsSubsection | null;
+    closes: S["subsections"][number] | null;
+}
+
+/**
+ * What the layout reads off a section — the structure, never a figure — so a
+ * single-date `BsSection` and a multi-column `BsColumnSection` are laid out by
+ * the very same walk.
+ */
+interface SheetSection {
+    kind: BsSectionKind;
+    groups: readonly {name: string; term: BsTerm | null; rows: readonly {account: string}[]}[];
+    subsections: readonly {term: BsTerm; heading: string; label: string}[];
 }
 
 /**
@@ -220,13 +276,13 @@ export interface BsSectionBlock {
  * A band with no groups is never emitted, so a subheading can never stand over
  * nothing.
  */
-export function bsSectionBlocks(section: BsSection): BsSectionBlock[] {
-    const groups = section.groups;
+export function bsSectionBlocks<S extends SheetSection>(section: S): BsSectionBlock<S>[] {
+    type Band = S["subsections"][number];
+    const groups: readonly S["groups"][number][] = section.groups;
     if (section.subsections.length === 0) return groups.map((group) => ({opens: null, group, closes: null}));
 
-    const byTerm = new Map(section.subsections.map((subsection) => [subsection.term, subsection]));
-    const edge = (term: BsTerm | null, neighbour: BsTerm | null): BsSubsection | null =>
-        term === null || term === neighbour ? null : (byTerm.get(term) ?? null);
+    const byTerm = new Map<BsTerm, Band>(section.subsections.map((subsection: Band) => [subsection.term, subsection]));
+    const edge = (term: BsTerm | null, neighbour: BsTerm | null): Band | null => (term === null || term === neighbour ? null : (byTerm.get(term) ?? null));
 
     return groups.map((group, i) => ({
         opens: edge(group.term, i === 0 ? null : groups[i - 1].term),
@@ -249,7 +305,40 @@ export function bsSectionBlocks(section: BsSection): BsSectionBlock[] {
  * printed above the accounts it contains would read as excluding them.
  */
 export function sectionDisplayRows(section: BsSection, isExpanded: (key: string) => boolean): BsDisplayRow[] {
-    const out: BsDisplayRow[] = [];
+    return displayRows(section, isExpanded, SINGLE);
+}
+
+/**
+ * [`sectionDisplayRows`] for a multi-column sheet: the same rows, keys and
+ * order, each carrying one figure per column.
+ */
+export function columnSectionRows(section: BsColumnSection, isExpanded: (key: string) => boolean): BsDisplayRow<MixedAmount[]>[] {
+    return displayRows(section, isExpanded, COLUMNS);
+}
+
+/** How the walk reads the one thing about a figure it needs: is it nothing, and what is nothing. */
+interface Figures<A> {
+    empty: () => A;
+    isZero: (figure: A) => boolean;
+}
+
+const SINGLE: Figures<MixedAmount> = {empty: () => new Map(), isZero: maIsZero};
+/**
+ * A multi-column figure is zero only when it is zero in EVERY column — so a
+ * parent with postings of its own in any one column is never folded into its
+ * child, which would silently drop them from that column.
+ */
+const COLUMNS: Figures<MixedAmount[]> = {empty: () => [], isZero: (figures) => figures.every(maIsZero)};
+
+/** The section shape `displayRows` walks, over figures of type `A`. */
+interface FigureSection<A> {
+    kind: BsSectionKind;
+    groups: readonly {name: string; term: BsTerm | null; rows: readonly {account: string; own: A; inclusive: A}[]; total: A}[];
+    subsections: readonly {term: BsTerm; heading: string; label: string; total: A}[];
+}
+
+function displayRows<A>(section: FigureSection<A>, isExpanded: (key: string) => boolean, figures: Figures<A>): BsDisplayRow<A>[] {
+    const out: BsDisplayRow<A>[] = [];
     // Which opening of each band we are inside. Stays at 1 for any section the
     // engine's contiguity contract holds for; it passes 1 only on the
     // non-contiguity break (see `bsSectionBlocks`), where the occurrence number
@@ -266,7 +355,7 @@ export function sectionDisplayRows(section: BsSection, isExpanded: (key: string)
                 label: opens.heading,
                 indent: 0,
                 account: null,
-                amount: new Map(),
+                amount: figures.empty(),
                 term: opens.term,
                 expanded: false,
                 expandable: false,
@@ -278,7 +367,13 @@ export function sectionDisplayRows(section: BsSection, isExpanded: (key: string)
         const expanded = expandable && isExpanded(key);
         out.push({kind: "group", key, label: group.name, indent: 0, account: null, amount: group.total, term: group.term, expanded, expandable});
         if (expanded) {
-            for (const display of compressSectionRows(group.rows)) {
+            // `compressSectionRows`' rule (a parent with nothing of its own is
+            // boring), asked of whichever figure type this sheet carries.
+            for (const display of compressRows(
+                group.rows,
+                (row) => row.account,
+                (parent) => figures.isZero(parent.own)
+            )) {
                 out.push({
                     kind: "account",
                     key: `${key}/${display.row.account}`,
@@ -330,6 +425,6 @@ export function sectionDisplayRows(section: BsSection, isExpanded: (key: string)
  * subtotal can be expanded or drilled into, so landing on one is a stop where
  * Enter does nothing.
  */
-export function bsCursorRows(rows: readonly BsDisplayRow[]): BsDisplayRow[] {
+export function bsCursorRows<A>(rows: readonly BsDisplayRow<A>[]): BsDisplayRow<A>[] {
     return rows.filter((row) => row.kind === "group" || row.kind === "account");
 }

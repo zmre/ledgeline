@@ -10,17 +10,17 @@
 //     NEGATIVE (`(income:salary) $-5188.33`) and an expense line is positive,
 //     exactly as the postings are written. The table shows magnitudes; the flip
 //     lives in `scenarioModel.ts` and nowhere else.
-//  2. `Projection.netIncome` IS THE OTHER WAY UP — cash-flow orientation,
-//     revenue positive and expenses negative, so `totals` is the sum of the
-//     depth-1 rows and IS net income. A `$4200` rent line arrives as `-4200`.
-//     Do not flip it again.
+//  2. The projection's STATEMENTS are the Reports tab's own (plan 28): the
+//     balance sheet, income statement and cash flow statement over the real
+//     journal before the cutoff plus the scenario's generated transactions
+//     after it, in the Reports tab's signs. Nothing here re-signs them.
 //
 // Pure module: no Svelte, no DOM, so every helper over these is unit-testable
 // under node.
 
 import type {Dec, MixedAmount} from "#lib/domain/money.js";
-import type {ISODate} from "#lib/domain/types.js";
-import type {PeriodReport} from "#lib/reports/types.js";
+import type {ISODate, Transaction} from "#lib/domain/types.js";
+import type {BalanceSheetColumns, CashFlowStatement, IncomeStatementReport, PeriodReport} from "#lib/reports/types.js";
 
 /** The unit a growth rate steps on. */
 export type GrowthUnit = "week" | "month" | "year";
@@ -47,10 +47,9 @@ export type LineRole = "flow" | "asset";
 export const LINE_ROLES: readonly LineRole[] = ["flow", "asset"];
 
 /**
- * A BARE fixed interval, when the line's period is one.
+ * One of the five fixed intervals a line's period can step by, bounds aside.
  *
- * `null` on a bounded-but-irregular or single-date rule, in which case `raw` is
- * the only reading — the engine re-parses `raw` and ignores everything else.
+ * The engine re-parses `raw` and ignores everything else.
  */
 export type ScenarioInterval = "daily" | "weekly" | "monthly" | "quarterly" | "yearly";
 export const SCENARIO_INTERVALS: readonly ScenarioInterval[] = ["daily", "weekly", "monthly", "quarterly", "yearly"];
@@ -72,8 +71,20 @@ export interface ScenarioAmount {
 export interface ScenarioPeriod {
     /** The period expression as it would be written in a journal. The round-trip field. */
     raw: string;
-    /** `daily`…`yearly` when `raw` is a bare fixed interval, else null. */
+    /**
+     * `daily`…`yearly` when `raw` steps by one of the five intervals, BOUNDED
+     * OR NOT (`monthly from 2026-11-01` is `monthly`), else null. `raw` is
+     * rebuilt as `simple [from D] [to D]`.
+     */
     simple: ScenarioInterval | null;
+    /**
+     * When `simple` is null but the bounds can still be rewritten: the interval
+     * words as written (`every 15th day of month`), which `raw` is rebuilt
+     * around. Null when `simple` is set, and when the bounds cannot be
+     * rewritten at all (a one-off, or a recurrence the engine does not
+     * understand) — `raw` is then the only reading of the period.
+     */
+    base: string | null;
     /** Inclusive start, or null. */
     from: ISODate | null;
     /** EXCLUSIVE end, as hledger writes `to`, or null. */
@@ -134,6 +145,19 @@ export interface ScenarioLine {
      */
     opening: ScenarioAmount | null;
     note: string;
+    /**
+     * The account this line balances against (plan 28 Decision 1). `null` is a
+     * pre-plan-28 line: the engine books it to the default counter-account and
+     * a save writes that default. The table shows that default greyed
+     * (`ForecastDefaults.lines`, keyed by `group`).
+     *
+     * ONE PER RULE: every line of one `group` that names a counter must name
+     * the same one, or the file cannot be written. `withCounter` keeps that
+     * true by moving a line whose counter differs into a rule of its own.
+     */
+    counter: string | null;
+    /** `asset` rows only: the gains account; `null` is `equity:unrealized gains`. */
+    gains: string | null;
     source: LineSource;
     /**
      * The section the table is HOLDING this row in, or absent for "wherever its
@@ -183,6 +207,8 @@ export interface ScenarioEvent {
     date: ISODate;
     description: string;
     postings: EventPosting[];
+    /** The account the event balances against (plan 28), or `null`. */
+    counter: string | null;
 }
 
 /** A whole what-if. `name` is empty on a seed: naming it is Phase 3's Save As dialog's job. */
@@ -192,6 +218,8 @@ export interface Scenario {
     updated: ISODate | null;
     lines: ScenarioLine[];
     events: ScenarioEvent[];
+    /** `; cash:` — the scenario's default counter-account, or `null`. */
+    cash: string | null;
 }
 
 /** An opening balance and each bucket's closing balance. `opening` is a real figure from the journal. */
@@ -237,20 +265,91 @@ export interface AssetRow {
     growth: MixedAmount;
 }
 
-/** The answer. */
+/**
+ * The accounts the engine books to where the scenario names none — what the
+ * table shows GREYED until the user types over it (plan 28, Decisions 4 and 7).
+ */
+export interface ForecastDefaults {
+    /** What a scenario with no `cash:` header falls back to: the cash control's greyed value. */
+    cash: string;
+    /** The gains account of an asset row that names none. */
+    gains: string;
+    /** `ScenarioLine.group` → the default counter-account of that rule's counter-less lines. */
+    lines: ReadonlyMap<string, string>;
+    /** `ScenarioEvent.id` → its default counter-account, for events that name none. */
+    events: ReadonlyMap<string, string>;
+}
+
+/**
+ * The answer.
+ *
+ * Two kinds of column: `buckets`, `cash` and `runway` cover the FORECAST
+ * periods only, while the three statements cover the lookback's full actual
+ * periods and then the forecast. `projectedFrom` is the first forecast column's
+ * index in the statements — where the actuals/projected divider is drawn.
+ */
 export interface Projection {
+    /** Forecast bucket keys, oldest → newest. */
     buckets: string[];
-    /** The first day of the first bucket — the next WHOLE bucket after `asOf`. */
-    start: ISODate;
-    /** CASH-FLOW ORIENTATION — see fact (2) at the top of this file. */
-    netIncome: PeriodReport;
+    /** The full ACTUAL periods the statements show before the forecast. */
+    lookback: string[];
+    /** The cutoff: the first projected day. Actuals are strictly before it. */
+    actualsEnd: ISODate;
+    /** The first forecast column's index in the statements (`lookback.length`). */
+    projectedFrom: number;
     cash: BalanceSeries;
-    netWorth: BalanceSeries;
     runway: Runway | null;
     /** One entry per asset row the engine modelled, in scenario order. `[]` when there are none. */
     assets: AssetRow[];
     /** Everything the projection could not do. A dropped line always says so here. */
     warnings: string[];
+    balanceSheet: BalanceSheetColumns;
+    /** Interval mode: one column per lookback and forecast period, plus the Total. */
+    incomeStatement: IncomeStatementReport;
+    cashFlow: CashFlowStatement;
+    defaults: ForecastDefaults;
+    /** Every account per column (`hledger balance`), when the run asked for it; null otherwise. */
+    accounts: PeriodReport | null;
+    /** The generated transactions, when the run asked for them; null otherwise. */
+    journal: ForecastJournal | null;
+}
+
+/**
+ * The Accounts tab's two readings of one set of columns: each period's
+ * movement (`hledger balance`, the default) or the balance at its end
+ * (`hledger balance -H`).
+ */
+export type AccountsMode = "change" | "balance";
+export const ACCOUNTS_MODES: readonly AccountsMode[] = ["change", "balance"];
+
+/** What the run is asked to compute beyond the four readings every run carries. */
+export interface AccountsRequest {
+    mode: AccountsMode;
+    /** Rows for declared and known accounts with nothing in any column (`-E --declared`). */
+    empty: boolean;
+}
+
+/** The part of a scenario one generated transaction came from: a rule's `group`, an event's `id`, or an asset row's `group`. */
+export interface ForecastOrigin {
+    kind: "rule" | "event" | "growth";
+    key: string;
+}
+
+export const FORECAST_ORIGIN_KINDS: readonly ForecastOrigin["kind"][] = ["rule", "event", "growth"];
+
+/** One generated transaction, in the journal view's own domain shape. */
+export interface ForecastEntry {
+    origin: ForecastOrigin;
+    txn: Transaction;
+}
+
+/** The forecast journal: generated transactions only, date-ascending, capped by the engine. */
+export interface ForecastJournal {
+    /** How many the forecast generated, before the cap. */
+    total: number;
+    entries: ForecastEntry[];
+    /** Whether `entries` stops short of `total`. */
+    truncated: boolean;
 }
 
 // ---------------------------------------------------------------------------

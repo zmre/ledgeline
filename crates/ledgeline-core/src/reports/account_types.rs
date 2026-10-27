@@ -70,6 +70,19 @@ fn unify(a: AccountType, b: AccountType) -> Option<AccountType> {
     }
 }
 
+/// `ty` with its subtype folded into the root type it belongs to: `Cash` →
+/// `Asset`, `Gain` → `Revenue`, `Conversion` → `Equity`; the five roots are
+/// themselves. Two types with the same root never contradict each other.
+#[must_use]
+pub(crate) fn root_type(ty: AccountType) -> AccountType {
+    match ty {
+        AccountType::Cash => AccountType::Asset,
+        AccountType::Gain => AccountType::Revenue,
+        AccountType::Conversion => AccountType::Equity,
+        root => root,
+    }
+}
+
 /// One account's declared type as read from `account` directives (`None` when
 /// no `type:` tag).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -256,24 +269,34 @@ pub fn resolve_account_type(
         }
     }
     infer_account_type(account).or_else(|| {
-        // Declared descendants are contiguous in the BTreeMap under `account:`.
-        // Seeking past `account` itself and taking while the name is still
-        // prefixed by it spans that block; the `:` test then rejects the
-        // siblings that merely share the same opening letters (`activos:banco`
-        // for `activo`) and would otherwise sort in among them. Same set, same
-        // order, without the `format!("{account}:")` key this allocated on every
-        // untyped account (PERF-5e).
-        declared
-            .range::<str, _>((Bound::Excluded(account), Bound::Unbounded))
-            .take_while(|(declared_name, _)| declared_name.starts_with(account))
-            .filter(|(declared_name, _)| declared_name.as_bytes().get(account.len()) == Some(&b':'))
-            .map(|(_, ty)| *ty)
+        declared_descendant_types(account, declared)
             .try_fold(None::<AccountType>, |acc, ty| match acc {
                 None => Some(Some(ty)),
                 Some(seen) => unify(seen, ty).map(Some),
             })
             .flatten()
     })
+}
+
+/// The types DECLARED on `account`'s strict descendants, in name order.
+///
+/// Declared descendants are contiguous in the `BTreeMap` under `account:`.
+/// Seeking past `account` itself and taking while the name is still prefixed by
+/// it spans that block; the `:` test then rejects the siblings that merely share
+/// the same opening letters (`activos:banco` for `activo`) and would otherwise
+/// sort in among them. Same set, same order, without the `format!("{account}:")`
+/// key this used to allocate on every untyped account (PERF-5e).
+pub(crate) fn declared_descendant_types<'a>(
+    account: &'a str,
+    declared: &'a BTreeMap<String, AccountType>,
+) -> impl Iterator<Item = AccountType> + 'a {
+    declared
+        .range::<str, _>((Bound::Excluded(account), Bound::Unbounded))
+        .take_while(move |(declared_name, _)| declared_name.starts_with(account))
+        .filter(move |(declared_name, _)| {
+            declared_name.as_bytes().get(account.len()) == Some(&b':')
+        })
+        .map(|(_, ty)| *ty)
 }
 
 /// True when `account`'s effective type belongs to `category`.

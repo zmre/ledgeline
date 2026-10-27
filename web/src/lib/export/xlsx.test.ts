@@ -5,7 +5,7 @@
 import {readFileSync} from "node:fs";
 import {describe, expect, it} from "vitest";
 import {Workbook, type Worksheet} from "exceljs";
-import {decodeBalanceSheetReport, decodeIncomeStatementReport} from "#lib/api/nativeDecode.js";
+import {decodeBalanceSheetColumns, decodeBalanceSheetReport, decodeIncomeStatementReport} from "#lib/api/nativeDecode.js";
 import {dec, type MixedAmount} from "#lib/domain/money.js";
 import type {Holding, HoldingsReport} from "#lib/holdings/types.js";
 import type {BudgetBar, BudgetReport, PeriodReport, SectionedReport} from "#lib/reports/types.js";
@@ -498,6 +498,40 @@ describe("UNIT export/xlsx", () => {
 
             expect(ws.getCell("A34").value).toBe("Balanced");
             expect(ws.getCell("B34").value).toBeNull();
+        });
+    });
+
+    // The Reports tab's multi-period sheet (plan 28 follow-ups): the same
+    // template with one figure column per period end, from the engine's own
+    // golden, so the column count and order are the wire's.
+    describe("multi-period balance-sheet workbook", () => {
+        const sheet = decodeBalanceSheetColumns(
+            JSON.parse(readFileSync(new URL("../../../../fixtures/native/v1/balancesheet-columns.json", import.meta.url), "utf8"))
+        );
+        const build = () => buildBalanceSheetWorkbook(sheet, {title: "Balance Sheet", params: "2026-04-15 to 2026-07-08, monthly"});
+
+        it("heads one figure column per period, then the newest column's leftovers", async () => {
+            const ws = await readBack(await build(), "Balance Sheet");
+            const heads = Array.from({length: 6}, (_, i) => ws.getCell(4, i + 1).value);
+            expect(heads).toEqual(["Account", "Apr 2026 ($)", "May 2026 ($)", "Jun 2026 ($)", "Jul 2026 ($)", "Other commodities (Jul 2026)"]);
+            // The section header's fill spans every column.
+            expect(ws.getCell(5, 6).fill).toMatchObject({type: "pattern", fgColor: {argb: "FF14532D"}});
+        });
+
+        it("writes each column's figure under its own period, and the tie-out per column", async () => {
+            const ws = await readBack(await build(), "Balance Sheet");
+            const rowOf = (label: string): number => {
+                for (let row = 5; row < 200; row += 1) if (ws.getCell(row, 1).value === label) return row;
+                throw new Error(`no ${label} row`);
+            };
+            const total = rowOf("Total Assets");
+            // $525,834.01 at the end of April … $548,112.615 as of July 8, rounded as the screen rounds.
+            expect([2, 3, 4, 5].map((col) => ws.getCell(total, col).value)).toEqual([525834.01, 527772.79, 549987.62, 548112.62]);
+            // GLD and TSLA could not be valued: the NEWEST column's leftovers.
+            expect(ws.getCell(total, 6).value).toBe("5 GLD, -2 TSLA");
+            // Every column balances, so the verdict row says so once.
+            const verdict = rowOf("Balanced");
+            expect(ws.getCell(verdict, 2).value).toBeNull();
         });
     });
 

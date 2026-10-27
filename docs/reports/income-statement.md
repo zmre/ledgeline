@@ -90,22 +90,21 @@ tree.
 
 **Balance-sheet accounts never appear here**, whatever they are tagged. An
 account whose type is asset, liability or equity (declared or inferred from its
-name) is left off the income statement even with an `issection:` tag, and
-[Problems](../journal/problems.md#unknown-account-tag-value) warns about the tag.
+name) is left off the income statement even with an `issection:` or `isgroup:`
+tag, and [Problems](../journal/problems.md#unknown-account-tag-value) warns about
+each tag. If the account's name says expense or revenue and only its `type:`
+says otherwise, the type is probably the typo, and Problems
+[says that instead](../journal/problems.md#a-type-that-looks-like-a-typo).
 The usual case is a contra-asset such as accumulated depreciation. Its credits
 mirror the depreciation expense, so showing it in the same box would cancel that
 expense out of net income. Tag the expense account; the balance sheet shows the
 contra-asset.
 
-An `issection:` value that isn't one of the seven codes is an **error**: the
-report fails, naming the account, the value you wrote and the seven codes it
-could have been. It is not silently ignored — a mistyped classification tag is
-how an account goes missing from a report entirely, and a report that quietly
-reads zero is worse than one that refuses to draw.
-
-(Today that surfaces as a failed request on this tab rather than as an entry in
-Problems, because Problems entries are anchored to a transaction and an `account`
-directive has none. Routing it there instead is a known follow-up.)
+An `issection:` value that isn't one of the seven codes is ignored, and the
+account falls to its default section. It is not ignored silently:
+[Problems](../journal/problems.md#unknown-account-tag-value) names the account,
+the value you wrote and the seven codes it could have been, because a mistyped
+classification tag is how an account ends up in the wrong box.
 
 ### Two gotchas, both inherited from hledger's tag syntax
 

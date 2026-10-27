@@ -560,6 +560,17 @@ export interface GroupedBalanceSheetQuery {
     value?: "market" | "cost" | "none";
     valueIn?: string;
 }
+/**
+ * The grouped balance sheet at the end of each period across `[from, to]`
+ * (`/api/reports/balancesheet/columns`): one column per `interval` bucket,
+ * each the sheet as of its bucket's end, the last as of `to`. `total` is one
+ * column at `to`. Everything else is `GroupedBalanceSheetQuery`'s.
+ */
+export interface BalanceSheetColumnsQuery extends Omit<GroupedBalanceSheetQuery, "asOf"> {
+    from?: string;
+    to?: string;
+    interval?: "total" | "monthly" | "quarterly" | "yearly";
+}
 export interface IncomeStatementQuery {
     from?: string;
     to?: string;
@@ -723,6 +734,10 @@ export interface WireScenarioLineIn {
      */
     opening: WireAmountIn | null;
     note: string;
+    /** The account the line balances against (plan 28); `null` lets the engine pick its default. */
+    counter: string | null;
+    /** Asset rows only: the gains account; `null` is `equity:unrealized gains`. */
+    gains: string | null;
     /** `journal` | `unbudgeted`. An unrecognized value is a 400, not a silent fallback. */
     source: string;
 }
@@ -737,6 +752,8 @@ export interface WireScenarioEventIn {
     date: string;
     description: string;
     postings: WireEventPostingIn[];
+    /** The account the event balances against (plan 28), or `null`. */
+    counter: string | null;
 }
 
 export interface WireScenarioIn {
@@ -745,17 +762,25 @@ export interface WireScenarioIn {
     updated: string | null;
     lines: WireScenarioLineIn[];
     events: WireScenarioEventIn[];
+    /** `; cash:` — the scenario's default counter-account, or `null`. */
+    cash: string | null;
 }
 
 /** The whole `POST /api/projections/run` body. */
 export interface RunProjectionBody {
     scenario: WireScenarioIn;
-    /** Opening balances are taken here; the first projected bucket is the next WHOLE one after it. */
+    /** The caller's today; the projection starts at the first incomplete period (plan 28 Decision 5). */
     asOf?: string;
     interval?: string;
     count?: number;
+    /** Full actual periods the statements show before the forecast (default 2, `0` allowed). */
+    lookback?: number;
     depth?: number;
     valueIn?: string;
+    /** Ask for the Accounts reading (`accounts` is null in the answer otherwise). */
+    accounts?: {mode: "change" | "balance"; empty: boolean};
+    /** Ask for the generated transactions (`journal` is null in the answer otherwise). */
+    journal?: boolean;
 }
 
 /**
@@ -987,6 +1012,20 @@ export class LedgelineApi {
     balanceSheetGrouped(query: GroupedBalanceSheetQuery = {}): Promise<unknown> {
         return this.getJson(
             `/api/reports/balancesheet/grouped${queryString({asOf: query.asOf, depth: query.depth, value: query.value, valueIn: query.valueIn})}`
+        );
+    }
+
+    /** The multi-period grouped balance sheet, pivoted (decode with `decodeBalanceSheetColumns`). */
+    balanceSheetColumns(query: BalanceSheetColumnsQuery = {}): Promise<unknown> {
+        return this.getJson(
+            `/api/reports/balancesheet/columns${queryString({
+                from: query.from,
+                to: query.to,
+                interval: query.interval,
+                depth: query.depth,
+                value: query.value,
+                valueIn: query.valueIn,
+            })}`
         );
     }
 

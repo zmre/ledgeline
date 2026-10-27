@@ -915,6 +915,288 @@ async fn the_flat_balancesheet_is_unchanged_by_the_grouped_one() {
 }
 
 // ===========================================================================
+// Multi-period balance sheet — /api/reports/balancesheet/columns
+// ===========================================================================
+
+/// The `{key, to}` of every column, oldest first.
+fn column_ends(body: &Value) -> Vec<(String, String)> {
+    body["columns"]
+        .as_array()
+        .expect("columns")
+        .iter()
+        .map(|column| {
+            (
+                column["key"].as_str().expect("key").to_string(),
+                column["to"].as_str().expect("to").to_string(),
+            )
+        })
+        .collect()
+}
+
+/// Column `at` of a pivoted sheet set against the single-date sheet at that
+/// column's end: every section total, every group the single-date sheet
+/// lists (total and each account row's `own`/`inclusive`, in order), every
+/// band subtotal, net worth, the residual and the verdict. A group the pivot
+/// carries that the single-date sheet does not list must read `{}` there.
+fn assert_column_is_the_sheet(pivot: &Value, at: usize, single: &Value) {
+    let ctx = |what: &str| format!("column {at}, {what}");
+    assert_eq!(pivot["base"], single["base"], "{}", ctx("base"));
+    assert_eq!(pivot["value"], single["value"], "{}", ctx("value"));
+    assert_eq!(
+        pivot["netWorth"][at],
+        single["netWorth"],
+        "{}",
+        ctx("net worth")
+    );
+    assert_eq!(pivot["check"][at], single["check"], "{}", ctx("check"));
+    assert_eq!(
+        pivot["balanced"][at],
+        single["balanced"],
+        "{}",
+        ctx("verdict")
+    );
+    let sections = pivot["sections"].as_array().expect("sections");
+    let singles = single["sections"].as_array().expect("sections");
+    assert_eq!(sections.len(), singles.len(), "{}", ctx("section count"));
+    for (section, one) in sections.iter().zip(singles) {
+        let kind = one["kind"].as_str().expect("kind");
+        assert_eq!(section["kind"], one["kind"]);
+        assert_eq!(section["total"][at], one["total"], "{}", ctx(kind));
+        let groups = section["groups"].as_array().expect("groups");
+        for group in one["groups"].as_array().expect("groups") {
+            let name = group["name"].as_str().expect("name");
+            let pivoted = groups
+                .iter()
+                .find(|g| g["name"] == group["name"] && g["term"] == group["term"])
+                .unwrap_or_else(|| panic!("{}", ctx(&format!("{kind}/{name} is in the pivot"))));
+            assert_eq!(pivoted["source"], group["source"], "{}", ctx(name));
+            assert_eq!(pivoted["total"][at], group["total"], "{}", ctx(name));
+            for row in group["rows"].as_array().expect("rows") {
+                let account = row["account"].as_str().expect("account");
+                let pivot_row = pivoted["rows"]
+                    .as_array()
+                    .expect("rows")
+                    .iter()
+                    .find(|r| r["account"] == row["account"])
+                    .unwrap_or_else(|| panic!("{}", ctx(&format!("{account} is in the pivot"))));
+                assert_eq!(pivot_row["depth"], row["depth"], "{}", ctx(account));
+                assert_eq!(pivot_row["own"][at], row["own"], "{}", ctx(account));
+                assert_eq!(
+                    pivot_row["inclusive"][at],
+                    row["inclusive"],
+                    "{}",
+                    ctx(account)
+                );
+            }
+        }
+        for group in groups {
+            let listed = one["groups"]
+                .as_array()
+                .expect("groups")
+                .iter()
+                .any(|g| g["name"] == group["name"] && g["term"] == group["term"]);
+            if !listed {
+                assert_eq!(
+                    group["total"][at],
+                    serde_json::json!({}),
+                    "{}",
+                    ctx("absent group")
+                );
+            }
+        }
+        for sub in one["subsections"].as_array().expect("subsections") {
+            let pivoted = section["subsections"]
+                .as_array()
+                .expect("subsections")
+                .iter()
+                .find(|s| s["term"] == sub["term"])
+                .unwrap_or_else(|| panic!("{}", ctx("band is in the pivot")));
+            assert_eq!(pivoted["label"], sub["label"]);
+            assert_eq!(pivoted["total"][at], sub["total"], "{}", ctx("band"));
+        }
+    }
+}
+
+/// Each column ends at its bucket's end, and the last at `to`, whatever the
+/// grain: the newest column is the single-date sheet as of the As of date.
+#[tokio::test]
+async fn balancesheet_columns_end_at_each_period_end_and_the_last_at_to() {
+    let journal = sample_journal();
+    let ends = |pairs: &[(&str, &str)]| {
+        pairs
+            .iter()
+            .map(|(key, to)| ((*key).to_string(), (*to).to_string()))
+            .collect::<Vec<_>>()
+    };
+    let monthly = body_ok(
+        &journal,
+        "/api/reports/balancesheet/columns?from=2026-03-15&to=2026-07-08&interval=monthly",
+    )
+    .await;
+    assert_eq!(
+        column_ends(&monthly),
+        ends(&[
+            ("2026-03", "2026-03-31"),
+            ("2026-04", "2026-04-30"),
+            ("2026-05", "2026-05-31"),
+            ("2026-06", "2026-06-30"),
+            ("2026-07", "2026-07-08"),
+        ])
+    );
+    assert_eq!(monthly["columns"][0]["label"], "Mar 2026");
+    let quarterly = body_ok(
+        &journal,
+        "/api/reports/balancesheet/columns?from=2025-07-08&to=2026-07-08&interval=quarterly",
+    )
+    .await;
+    assert_eq!(
+        column_ends(&quarterly),
+        ends(&[
+            ("2025-Q3", "2025-09-30"),
+            ("2025-Q4", "2025-12-31"),
+            ("2026-Q1", "2026-03-31"),
+            ("2026-Q2", "2026-06-30"),
+            ("2026-Q3", "2026-07-08"),
+        ])
+    );
+    let total = body_ok(
+        &journal,
+        "/api/reports/balancesheet/columns?from=2026-01-01&to=2026-07-08&interval=total",
+    )
+    .await;
+    assert_eq!(
+        column_ends(&total),
+        ends(&[("2026-01-01..2026-07-08", "2026-07-08")])
+    );
+
+    // Absent: monthly, over the twelve months ending with `to`'s.
+    let defaulted = body_ok(&journal, "/api/reports/balancesheet/columns?to=2026-07-08").await;
+    let keys: Vec<String> = column_ends(&defaulted)
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    assert_eq!(keys.len(), 12);
+    assert_eq!(keys.first().map(String::as_str), Some("2025-08"));
+    assert_eq!(keys.last().map(String::as_str), Some("2026-07"));
+}
+
+/// Every column is the single-date grouped sheet at that column's end, on
+/// every basis: the columns are the same sheets, valued at their own dates.
+#[tokio::test]
+async fn every_balancesheet_column_is_the_single_date_sheet_at_its_end() {
+    let journal = sample_journal();
+    for (interval, value) in [
+        ("monthly", "market"),
+        ("quarterly", "market"),
+        ("quarterly", "cost"),
+        ("quarterly", "none"),
+        ("yearly", "market"),
+    ] {
+        let pivot = body_ok(
+            &journal,
+            &format!(
+                "/api/reports/balancesheet/columns?from=2024-06-01&to=2026-07-08&interval={interval}&value={value}"
+            ),
+        )
+        .await;
+        let columns = column_ends(&pivot);
+        assert!(columns.len() > 1, "{interval}: several columns");
+        // sample.journal's `bsterm:` tags band Assets, so the bands are compared too.
+        assert!(
+            !pivot["sections"][0]["subsections"]
+                .as_array()
+                .expect("subsections")
+                .is_empty(),
+            "the current/non-current bands are on the pivot"
+        );
+        assert_eq!(
+            pivot["balanced"].as_array().map(Vec::len),
+            Some(columns.len())
+        );
+        for (at, (_, to)) in columns.iter().enumerate() {
+            let single = body_ok(
+                &journal,
+                &format!("/api/reports/balancesheet/grouped?asOf={to}&value={value}"),
+            )
+            .await;
+            assert_column_is_the_sheet(&pivot, at, &single);
+        }
+    }
+}
+
+/// The ranged reports' window rules: backwards is a `400`, and so is a range
+/// splitting into more than `MAX_BUCKETS` columns. A bad grain, basis or date
+/// is a `400` naming what was wrong.
+#[tokio::test]
+async fn balancesheet_columns_validates_its_window() {
+    let journal = sample_journal();
+    let (status, message) = get_error(
+        &journal,
+        "/api/reports/balancesheet/columns?from=1900-01-01&to=2026-07-08&interval=daily",
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(message.contains("at most 1200"), "{message}");
+
+    let (status, message) = get_error(
+        &journal,
+        "/api/reports/balancesheet/columns?from=2026-07-09&to=2026-07-08",
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(message.contains("is after"), "{message}");
+
+    for uri in [
+        "/api/reports/balancesheet/columns?interval=fortnightly",
+        "/api/reports/balancesheet/columns?value=fair",
+        "/api/reports/balancesheet/columns?from=someday",
+        "/api/reports/balancesheet/columns?depth=1000000",
+    ] {
+        let (status, _) = get_error(&journal, uri).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "GET {uri}");
+    }
+    // Exactly MAX_BUCKETS columns is still served.
+    let (status, _, body) = get_on(
+        &journal,
+        "/api/reports/balancesheet/columns?from=1927-08-01&to=2027-07-31&interval=monthly",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["columns"].as_array().map(Vec::len), Some(1200));
+}
+
+/// `valueIn` is admitted the way the single-date sheet admits it, asked of
+/// every column: a typo prices nothing in any column and is a `400` naming
+/// it, a priceable target serves and is echoed as the base, and the same
+/// target spelled with padding is the same request.
+#[tokio::test]
+async fn balancesheet_columns_admits_value_in_per_column() {
+    let journal = sample_journal();
+    let range =
+        "/api/reports/balancesheet/columns?from=2026-01-01&to=2026-07-08&interval=quarterly";
+    let (status, message) = get_error(&journal, &format!("{range}&valueIn=USDD")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(message.contains("'USDD'"), "{message}");
+    assert!(message.contains("no price directive"), "{message}");
+
+    let eur = body_ok(&journal, &format!("{range}&valueIn=EUR")).await;
+    assert_eq!(eur["base"], "EUR");
+    let single = body_ok(
+        &journal,
+        "/api/reports/balancesheet/grouped?asOf=2026-07-08&valueIn=EUR",
+    )
+    .await;
+    assert_column_is_the_sheet(&eur, 2, &single);
+
+    let padded = body_ok(&journal, &format!("{range}&valueIn=%20%24%20")).await;
+    assert_eq!(
+        padded,
+        body_ok(&journal, &format!("{range}&valueIn=%24")).await
+    );
+    assert_eq!(padded["base"], "$");
+}
+
+// ===========================================================================
 // Income statement — vs fixtures/golden/is-d2.json
 // ===========================================================================
 

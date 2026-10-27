@@ -17,17 +17,31 @@
 //! `rules_hledger_render.rs` and `budget_golden.rs` use.
 
 use ledgeline_core::decimal::Dec;
-use ledgeline_core::model::{AccountName, Amount, AmountStyle, Commodity, CommoditySide};
+use ledgeline_core::model::{
+    AccountName, Amount, AmountStyle, Commodity, CommoditySide, PriceDirective, Transaction,
+};
 use ledgeline_core::parse::parse_period_spec;
 use ledgeline_core::projections::serialize::{
     ProjectionDoc, new_file, scenario_from_text, write_scenario,
+};
+use ledgeline_core::projections::{
+    CounterDefaults, Forecast, ForecastOpts, ForecastOrigin, ForecastWindow, GENERATED_TAG,
+    History, forecast_cutoff, forecast_transactions, known_accounts, latest_real_date,
+    merged_prices, merged_transactions, upgrade_legacy_counters,
 };
 use ledgeline_core::projections::{
     CreateRefusal, Growth, GrowthUnit, LineRole, LineSource, Scenario, ScenarioEvent, ScenarioLine,
     discover, slug_filename, virtual_posting,
 };
 use ledgeline_core::reports::account_types::AccountType;
-use std::collections::BTreeMap;
+use ledgeline_core::reports::{
+    AccountPeriodsOpts, AccountTypes, BalanceMode, BsOpts, BsSectionKind, BucketSpan, CfOpts,
+    CfTags, IS_GROUP_TAG, Interval, IsOpts, MixedAmount, Valuation, account_decls, account_groups,
+    account_periods, account_sections, add_days, balance_sheet_columns, bs_terms,
+    cash_flow_statement, declared_groups, declared_types, income_statement_columns, range_buckets,
+};
+use ledgeline_core::{Journal, parse_journal};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -110,6 +124,8 @@ fn usd(mantissa: i128, places: u32, precision: u32) -> Amount {
 
 fn line(group: &str, id: &str, account: &str, amount: Amount, period: &str) -> ScenarioLine {
     ScenarioLine {
+        counter: None,
+        gains: None,
         id: id.to_string(),
         group: group.to_string(),
         role: LineRole::Flow,
@@ -517,6 +533,7 @@ fn a_save_that_changes_nothing_produces_the_same_bytes() {
 /// apply and which is asserted about separately below.
 fn cross_check_scenario() -> Scenario {
     Scenario {
+        cash: None,
         name: "Cross check".to_string(),
         created: Some("2026-01-01".to_string()),
         updated: Some("2026-01-02".to_string()),
@@ -569,6 +586,7 @@ fn cross_check_scenario() -> Scenario {
             },
         ],
         events: vec![ScenarioEvent {
+            counter: None,
             id: "rule:3".to_string(),
             date: "2027-03-01".to_string(),
             description: "Series A".to_string(),
@@ -962,8 +980,1622 @@ fn the_committed_asset_fixture_reads_and_rewrites_unchanged() {
 
     let doc = ProjectionDoc::parse(&text, &name, &declared()).expect("it parses");
     let rewritten = write_scenario(&doc, &scenario, &name).expect("it writes");
+    // The fixture predates plan 28, and its growing asset rows book
+    // appreciation to `equity:unrealized gains`, which neither the main journal
+    // nor the file declares. So the FIRST save declares it in the file
+    // (Decision 4), under the header.
+    //
+    // And it drops the one `line:` tag the fixture carries: `line: savings` is
+    // on a row with a single segment, and `line:` is written only for a step
+    // change now (plan 28, follow-ups 2026-10-26). That block is re-rendered
+    // without it — in the writer's own alignment — and nothing else changes.
     assert_eq!(
-        rewritten, text,
-        "a save that changes nothing must change no byte of the fixture"
+        rewritten,
+        text.replacen(
+            "; updated: 2026-09-20\n\n",
+            "; updated: 2026-09-20\n\naccount equity:unrealized gains  ; type: E\n\n",
+            1,
+        )
+        .replacen(
+            "    (assets:broker:taxable:vti)     $0.00  ; growth: 7%/yr\n\
+             \x20   (assets:bank:savings)         $250.00  ; growth: 4%/yr, line: savings\n\
+             \x20   (assets:property:home)          $0.00  ; growth: 3%/yr, opening: 640000.00\n\
+             \x20   (expenses:housing:rent)      $1875.00  ; growth: 2%/yr\n",
+            "    (assets:broker:taxable:vti)  $0.00  ; growth: 7%/yr\n\
+             \x20   (assets:bank:savings)        $250.00  ; growth: 4%/yr\n\
+             \x20   (assets:property:home)       $0.00  ; growth: 3%/yr, opening: 640000.00\n\
+             \x20   (expenses:housing:rent)      $1875.00  ; growth: 2%/yr\n",
+            1,
+        ),
+        "a save that changes nothing must change no byte but the gains declaration and the \
+         unneeded `line:` tag"
+    );
+    assert!(!rewritten.contains("line:"), "{rewritten}");
+    let doc = ProjectionDoc::parse(&rewritten, &name, &declared()).expect("it parses");
+    assert_eq!(
+        write_scenario(&doc, &scenario, &name).expect("it writes"),
+        rewritten,
+        "a save of the upgraded file must change no byte at all"
+    );
+}
+
+/// Plan 28: a scenario with counter-accounts is ordinary BALANCED hledger.
+/// The complaint the plan opens with — `hledger bs --forecast` showed salary in
+/// the P&L and never in any bank account — is what this pins: forecast over the
+/// written file, checking moves by the net of the rule, and the file's own
+/// gains declaration passes `check`.
+#[test]
+fn hledger_forecasts_a_balanced_scenario_into_the_counter_account() {
+    let Some(_) = hledger(&["--version"]) else {
+        eprintln!("skipped: set {OPT_IN}=1 (see `just hledger-checks`)");
+        return;
+    };
+    let scratch = Scratch::new("hledger-balanced");
+    let counter = Some(AccountName("assets:checking".to_string()));
+    let scenario = Scenario {
+        name: "Balanced".to_string(),
+        cash: counter.clone(),
+        lines: vec![
+            ScenarioLine {
+                counter: counter.clone(),
+                ..line(
+                    "rule:0",
+                    "rule:0:0",
+                    "revenues:salary",
+                    usd(-1_200_000, 2, 2),
+                    "monthly",
+                )
+            },
+            ScenarioLine {
+                counter: counter.clone(),
+                ..line(
+                    "rule:0",
+                    "rule:0:1",
+                    "expenses:rent",
+                    usd(420_000, 2, 2),
+                    "monthly",
+                )
+            },
+            ScenarioLine {
+                role: LineRole::Asset,
+                growth: Some(Growth {
+                    rate: Dec::new(4, 2),
+                    unit: GrowthUnit::Year,
+                }),
+                ..line(
+                    "rule:1",
+                    "rule:1:0",
+                    "assets:house",
+                    usd(0, 2, 2),
+                    "monthly",
+                )
+            },
+        ],
+        ..Scenario::default()
+    };
+    let path = scratch.path().join("projection-balanced.journal");
+    let text = new_file(&scenario, &path.to_string_lossy(), &declared()).expect("it writes");
+    assert!(
+        text.contains("account equity:unrealized gains  ; type: E"),
+        "{text}"
+    );
+    std::fs::write(&path, &text).expect("write");
+    let file = path.to_string_lossy().to_string();
+
+    let checked = hledger(&["-f", &file, "check"]).expect("hledger runs");
+    assert!(
+        checked.status.success(),
+        "hledger check refused the file:\n{}\n--- the file ---\n{text}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+    let balance = hledger(&[
+        "-f",
+        &file,
+        "balance",
+        "--forecast=2027-01-01..2027-03-01",
+        "assets:checking",
+        "--layout=bare",
+        "-N",
+    ])
+    .expect("hledger runs");
+    assert!(
+        balance.status.success(),
+        "{}",
+        String::from_utf8_lossy(&balance.stderr)
+    );
+    let report = String::from_utf8_lossy(&balance.stdout);
+    // Two months of $12,000 in and $4,200 out.
+    assert!(
+        report.contains("15600.00"),
+        "the forecast did not land in checking:\n{report}\n--- the file ---\n{text}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Plan 28, Phase 6: per-account, per-period parity with hledger
+// ---------------------------------------------------------------------------
+//
+// For every scenario under `fixtures/projections-parity/` WITHOUT growth, the
+// three statements Ledgeline computes over `merged_transactions` (the same
+// core calls `projections_api::projected_statements` makes) must equal what
+// the documented hledger command prints over `main.journal` plus the file our
+// serializer wrote, account by account and column by column. With growth, the
+// two accepted deviations (Decisions 2 and 3) are asserted as exactly what
+// they are and nothing more.
+
+/// "Today" for every parity run. The main journal's latest transaction is
+/// 2026-10-05, so the monthly and quarterly cutoff is 2026-10-01 and the
+/// October transaction is real data AFTER it that both tools must leave out.
+const PARITY_TODAY: &str = "2026-10-20";
+
+/// One forecast shape: the interval, hledger's flag for it, and the columns.
+#[derive(Clone, Copy, Debug)]
+struct Cadence {
+    interval: Interval,
+    flag: &'static str,
+    count: usize,
+    lookback: usize,
+}
+
+const MONTHLY: Cadence = Cadence {
+    interval: Interval::Monthly,
+    flag: "-M",
+    count: 9,
+    lookback: 2,
+};
+const QUARTERLY: Cadence = Cadence {
+    interval: Interval::Quarterly,
+    flag: "-Q",
+    count: 3,
+    lookback: 2,
+};
+const WEEKLY: Cadence = Cadence {
+    interval: Interval::Weekly,
+    flag: "-W",
+    count: 8,
+    lookback: 2,
+};
+
+/// `(account, commodity)` → one figure per column.
+type Table = BTreeMap<(String, String), Vec<Dec>>;
+
+/// One scenario fixture, saved through the serializer exactly as the server's
+/// save handler saves it, then expanded exactly as its run handler expands it.
+struct Parity {
+    /// Held for its `Drop`: the written scenario file lives in it.
+    _scratch: Scratch,
+    file: &'static str,
+    main: String,
+    scenario: String,
+    text: String,
+    journal: Journal,
+    declared: BTreeMap<String, AccountType>,
+    forecast: Forecast,
+    txns: Vec<Transaction>,
+    prices: Vec<PriceDirective>,
+    cadence: Cadence,
+}
+
+fn parity_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/projections-parity")
+        .canonicalize()
+        .expect("the parity fixtures resolve")
+}
+
+impl Parity {
+    fn new(file: &'static str, cadence: Cadence) -> Self {
+        Self::over(None, file, cadence)
+    }
+
+    /// [`Parity::new`] over `main` written to the scratch tree instead of the
+    /// fixture's `main.journal`.
+    fn over(main: Option<&str>, file: &'static str, cadence: Cadence) -> Self {
+        let scratch = Scratch::new("parity");
+        let main_path = main.map_or_else(
+            || parity_dir().join("main.journal"),
+            |text| scratch.write("main.journal", text),
+        );
+        let main = main_path.to_string_lossy().to_string();
+        let journal = parse_journal(
+            &std::fs::read_to_string(&main_path).expect("main reads"),
+            &main,
+        )
+        .expect("main parses");
+        let declared = declared_types(&account_decls(&journal));
+        let types = AccountTypes::from_declared(declared.clone());
+        let history = History {
+            txns: &journal.transactions,
+            prices: &journal.prices,
+        };
+
+        // The SAVE: `projections_api::save` upgrades legacy rules with defaults
+        // at a monthly cutoff, then writes through the byte-preserving writer.
+        let source = std::fs::read_to_string(parity_dir().join(file)).expect("scenario reads");
+        let path = scratch.path().join(format!("projection-{file}"));
+        let scenario = path.to_string_lossy().to_string();
+        let doc = ProjectionDoc::parse(&source, &scenario, &declared).expect("it parses");
+        let read = scenario_from_text(&source, &scenario, "parity", &declared).expect("it reads");
+        let cutoff = forecast_cutoff(
+            PARITY_TODAY,
+            latest_real_date(&journal.transactions),
+            Interval::Monthly,
+        )
+        .expect("cutoff");
+        let defaults = CounterDefaults::new(&history, &types, &cutoff, read.cash.as_ref(), None)
+            .expect("defaults");
+        let upgraded = upgrade_legacy_counters(&read, &defaults);
+        let text = write_scenario(&doc, &upgraded, &scenario).expect("it writes");
+        std::fs::write(&path, &text).expect("write");
+
+        // The RUN, over what the next load of that file reads.
+        let reread = scenario_from_text(&text, &scenario, "parity", &declared).expect("re-reads");
+        let forecast = forecast_transactions(
+            &reread,
+            &ForecastOpts {
+                today: PARITY_TODAY,
+                interval: cadence.interval,
+                count: cadence.count,
+                lookback: cadence.lookback,
+                value_in: None,
+            },
+            &types,
+            &history,
+        )
+        .expect("it expands");
+        let txns = merged_transactions(&journal.transactions, &forecast);
+        let prices = merged_prices(&journal.prices, &forecast);
+        Self {
+            _scratch: scratch,
+            file,
+            main,
+            scenario,
+            text,
+            journal,
+            declared,
+            forecast,
+            txns,
+            prices,
+            cadence,
+        }
+    }
+
+    fn window(&self) -> &ForecastWindow {
+        &self.forecast.window
+    }
+
+    /// hledger's `-e` and the `--forecast=` end are exclusive; ours is the
+    /// last day.
+    fn end_exclusive(&self) -> String {
+        add_days(&self.window().end, 1)
+    }
+
+    fn spans(&self) -> Vec<BucketSpan> {
+        range_buckets(
+            &self.window().from,
+            &self.window().end,
+            Some(self.cadence.interval),
+        )
+        .expect("spans")
+    }
+
+    /// The command `docs/projections/cash.md` documents, verbatim in shape:
+    /// `hledger -f <main> -f <scenario> <cmd> --forecast=<cutoff>..<end>
+    /// -b <lookback start> -e <end> -<interval> expr:"NOT (date:<cutoff>.. AND
+    /// NOT tag:generated)"`.
+    fn documented(&self, command: &str) -> Vec<String> {
+        let cutoff = &self.window().cutoff;
+        let end = self.end_exclusive();
+        [
+            "-f",
+            &self.main,
+            "-f",
+            &self.scenario,
+            command,
+            &format!("--forecast={cutoff}..{end}"),
+            "-b",
+            &self.window().from,
+            "-e",
+            &end,
+            self.cadence.flag,
+            &format!("expr:NOT (date:{cutoff}.. AND NOT tag:generated)"),
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect()
+    }
+
+    fn run(&self, args: &[String]) -> String {
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        let out = hledger(&argv).expect("hledger runs");
+        assert!(
+            out.status.success(),
+            "{}: hledger {argv:?} refused:\n{}\n--- the scenario file ---\n{}",
+            self.file,
+            String::from_utf8_lossy(&out.stderr),
+            self.text
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    }
+
+    /// The documented command as CSV, one row per account and commodity.
+    /// `value` adds `--value=end,$`: market value at each column's end, which
+    /// is what Ledgeline's `Valuation::Market` statements are.
+    fn hledger_table(&self, command: &str, value: bool) -> Table {
+        let mut args = self.documented(command);
+        args.extend(["-O", "csv", "--layout=bare"].map(String::from));
+        if value {
+            args.push("--value=end,$".to_string());
+        }
+        let csv = self.run(&args);
+        let columns = self.spans().len();
+        let mut table = Table::new();
+        // Line 1 is the title, line 2 the header.
+        for fields in csv.lines().skip(2).map(csv_fields) {
+            let [account, commodity, values @ ..] = fields.as_slice() else {
+                continue;
+            };
+            if account.ends_with(':') && (account == "Total:" || account == "Net:") {
+                continue;
+            }
+            if values.iter().all(String::is_empty) {
+                continue; // a section heading
+            }
+            assert_eq!(values.len(), columns, "{}: {csv}", self.file);
+            let figures: Vec<Dec> = values
+                .iter()
+                .map(|v| Dec::parse(v, '.').unwrap_or_else(|e| panic!("{v}: {e:?}")))
+                .collect();
+            if commodity.is_empty() && figures.iter().all(Dec::is_zero) {
+                continue;
+            }
+            table.insert((account.clone(), commodity.clone()), figures);
+        }
+        table
+    }
+
+    /// Ledgeline's balance sheet rows, split into (assets + liabilities,
+    /// equity): `balance_sheet_columns` at each span's end, market-valued into
+    /// the forecast's target, exactly as `projected_statements` calls it.
+    /// Computed groups (retained earnings, the valuation adjustment) have no
+    /// rows and hledger has no such accounts, so only rows are compared.
+    fn ledgeline_bs(&self) -> (Table, Table) {
+        let ends: Vec<String> = self.spans().into_iter().map(|span| span.to).collect();
+        let sheets = balance_sheet_columns(
+            &self.txns,
+            &self.prices,
+            &BsOpts {
+                as_of: &self.window().end,
+                depth: None,
+                value: Valuation::Market,
+                value_in: self.forecast.target.clone(),
+            },
+            &ends,
+            &self.declared,
+            &account_groups(&self.journal),
+            &bs_terms(&self.journal),
+        )
+        .expect("balance sheet columns");
+        let (mut sheet, mut equity) = (Table::new(), Table::new());
+        for (column, report) in sheets.iter().enumerate() {
+            assert!(report.balanced, "{}: column {column} unbalanced", self.file);
+            for section in &report.sections {
+                let table = if section.kind == BsSectionKind::Equity {
+                    &mut equity
+                } else {
+                    &mut sheet
+                };
+                for row in section.groups.iter().flat_map(|group| &group.rows) {
+                    put(table, &row.account, &row.own, column, ends.len());
+                }
+            }
+        }
+        (sheet, equity)
+    }
+
+    /// Ledgeline's income statement rows, one figure per column.
+    fn ledgeline_is(&self) -> Table {
+        let report = income_statement_columns(
+            &self.txns,
+            &self.prices,
+            &IsOpts {
+                from: &self.window().from,
+                to: &self.window().end,
+                value: Valuation::Market,
+                value_in: self.forecast.target.clone(),
+                compare: false,
+            },
+            self.cadence.interval,
+            &self.declared,
+            &account_sections(&self.journal),
+            &declared_groups(&self.journal, IS_GROUP_TAG),
+        )
+        .expect("income statement");
+        let columns = report.buckets.len();
+        let mut table = Table::new();
+        for row in report
+            .sections
+            .iter()
+            .flat_map(|section| &section.groups)
+            .flat_map(|group| &group.rows)
+        {
+            for (column, figure) in row.amounts.values.iter().enumerate() {
+                put(&mut table, &row.account, figure, column, columns);
+            }
+        }
+        table
+    }
+
+    /// Ledgeline's cash flow statement, reduced to what hledger's `cf` is:
+    /// the change in each cash account per period (ending − beginning).
+    /// hledger's `cf` is a direct list of cash-account changes, not our
+    /// indirect statement (net income, adjustments, investing, financing), so
+    /// the per-cash-account change is the comparable part. The rest of our
+    /// statement reconciles to exactly this (`reconciles`).
+    fn ledgeline_cf(&self) -> Table {
+        let statement = cash_flow_statement(
+            &self.txns,
+            &CfOpts {
+                from: &self.window().from,
+                to: &self.window().end,
+                interval: Some(self.cadence.interval),
+                depth: 99,
+            },
+            &CfTags::from_journal(&self.journal),
+        )
+        .expect("cash flow statement");
+        assert!(statement.reconciles, "{}: cf does not reconcile", self.file);
+        let columns = statement.buckets.len();
+        let mut table = Table::new();
+        for row in statement.cash.iter().flat_map(|line| &line.rows) {
+            for column in 0..columns {
+                let change = row.ending.values[column]
+                    .ma_add(&row.beginning.values[column].ma_neg().expect("neg"))
+                    .expect("change");
+                put(&mut table, &row.account, &change, column, columns);
+            }
+        }
+        table
+    }
+
+    /// Every generated posting, as hledger generates it from the file we wrote.
+    fn hledger_generated(&self) -> Vec<String> {
+        let cutoff = &self.window().cutoff;
+        let end = self.end_exclusive();
+        let csv = self.run(
+            &[
+                "-f",
+                &self.main,
+                "-f",
+                &self.scenario,
+                "print",
+                &format!("--forecast={cutoff}..{end}"),
+                "tag:generated",
+                "-O",
+                "csv",
+            ]
+            .map(String::from),
+        );
+        let mut lines = csv.lines().map(csv_fields);
+        let header = lines.next().expect("a header row");
+        let at = |name: &str| {
+            header
+                .iter()
+                .position(|field| field == name)
+                .unwrap_or_else(|| panic!("no `{name}` column in {header:?}"))
+        };
+        let (date, account, amount, commodity) =
+            (at("date"), at("account"), at("amount"), at("commodity"));
+        let mut postings: Vec<String> = lines
+            .filter_map(|fields| {
+                let quantity = Dec::parse(&fields[amount], '.').expect("amount");
+                // A legacy `(account)` line stays virtual in hledger, which still
+                // counts it in every report run without `-R`. The expansion books
+                // it as a REGULAR posting, because the cash flow statement drops
+                // virtual ones. Same account, same amount, same reports: the marker
+                // is compared away.
+                let name = fields[account].trim_start_matches(['(', '[']);
+                let name = name.trim_end_matches([')', ']']);
+                (!quantity.is_zero())
+                    .then(|| posting_key(&fields[date], name, &fields[commodity], quantity))
+            })
+            .collect();
+        postings.sort();
+        postings
+    }
+
+    /// Every generated posting, as Ledgeline expands the same file.
+    fn ledgeline_generated(&self) -> Vec<String> {
+        let mut postings: Vec<String> = self
+            .forecast
+            .txns
+            .iter()
+            .flat_map(|txn| {
+                txn.postings.iter().flat_map(move |posting| {
+                    posting
+                        .amounts
+                        .iter()
+                        .filter(|amount| !amount.quantity.is_zero())
+                        .map(move |amount| {
+                            posting_key(
+                                &txn.date,
+                                &posting.account.0,
+                                &amount.commodity.0,
+                                amount.quantity,
+                            )
+                        })
+                })
+            })
+            .collect();
+        postings.sort();
+        postings
+    }
+
+    /// `hledger check` with every check this fixture can satisfy: the default
+    /// ones (parseable, balanced, assertions), `--strict` (every account and
+    /// commodity declared) and `ordereddates`.
+    fn assert_hledger_checks(&self) {
+        self.run(
+            &[
+                "-f",
+                &self.main,
+                "-f",
+                &self.scenario,
+                "check",
+                "--strict",
+                "ordereddates",
+            ]
+            .map(String::from),
+        );
+    }
+
+    fn assert_agree(&self, what: &str, hledger: &Table, ours: &Table, skip: &dyn Fn(&str) -> bool) {
+        assert!(
+            !hledger.is_empty() && !ours.is_empty(),
+            "{}: {what} compared nothing (hledger {hledger:?}, ours {ours:?})",
+            self.file
+        );
+        let columns: Vec<String> = self.spans().into_iter().map(|span| span.key).collect();
+        let zeros = vec![Dec::zero(); columns.len()];
+        let keys: BTreeSet<&(String, String)> = hledger.keys().chain(ours.keys()).collect();
+        let mismatches: Vec<String> = keys
+            .into_iter()
+            .filter(|(account, _)| !skip(account))
+            .flat_map(|key| {
+                let theirs = hledger.get(key).unwrap_or(&zeros);
+                let mine = ours.get(key).unwrap_or(&zeros);
+                columns
+                    .iter()
+                    .enumerate()
+                    .filter(|&(column, _)| cents(theirs[column]) != cents(mine[column]))
+                    .map(|(column, label)| {
+                        format!(
+                            "{} {} @ {label}: hledger {} ledgeline {} (cents)",
+                            key.0,
+                            key.1,
+                            cents(theirs[column]),
+                            cents(mine[column])
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert!(
+            mismatches.is_empty(),
+            "{} ({:?}) {what} disagrees with hledger:\n{}\n--- the scenario file ---\n{}",
+            self.file,
+            self.cadence,
+            mismatches.join("\n"),
+            self.text
+        );
+    }
+
+    /// The full parity claim for a scenario without growth.
+    fn assert_parity(&self) {
+        let none = |_: &str| false;
+        self.assert_hledger_checks();
+        assert_eq!(
+            self.hledger_generated(),
+            self.ledgeline_generated(),
+            "{} ({:?}): the generated postings differ (date account commodity amount)\n--- \
+             the scenario file ---\n{}",
+            self.file,
+            self.cadence,
+            self.text
+        );
+        let (sheet, equity) = self.ledgeline_bs();
+        self.assert_agree("bs", &self.hledger_table("bs", true), &sheet, &none);
+        let hledger_equity: Table = self
+            .hledger_table("bse", true)
+            .into_iter()
+            .filter(|((account, _), _)| account.starts_with("equity"))
+            .collect();
+        self.assert_agree("bse equity", &hledger_equity, &equity, &none);
+        self.assert_agree(
+            "is",
+            &self.hledger_table("is", true),
+            &self.ledgeline_is(),
+            &none,
+        );
+        self.assert_agree(
+            "cf",
+            &self.hledger_table("cf", false),
+            &self.ledgeline_cf(),
+            &none,
+        );
+    }
+}
+
+/// Whole cents, the precision both tools display every fixture commodity at
+/// or above.
+fn cents(dec: Dec) -> i128 {
+    dec.rounded(2).expect("cents fit").mantissa
+}
+
+fn posting_key(date: &str, account: &str, commodity: &str, quantity: Dec) -> String {
+    format!("{date} {account} {commodity} {}", cents(quantity))
+}
+
+/// Add `amount` into `table` at `column`, one row per commodity.
+fn put(table: &mut Table, account: &str, amount: &MixedAmount, column: usize, columns: usize) {
+    for (commodity, quantity) in amount.iter() {
+        let row = table
+            .entry((account.to_string(), commodity.0.clone()))
+            .or_insert_with(|| vec![Dec::zero(); columns]);
+        row[column] = row[column].add(*quantity).expect("no overflow");
+    }
+}
+
+/// One line of hledger's CSV: every field is double-quoted and none of the
+/// fixture's values contains a quote or a comma.
+fn csv_fields(line: &str) -> Vec<String> {
+    let line = line.trim();
+    let inner = line.strip_prefix('"').unwrap_or(line);
+    inner
+        .strip_suffix('"')
+        .unwrap_or(inner)
+        .split("\",\"")
+        .map(ToString::to_string)
+        .collect()
+}
+
+/// Run the parity claim for each fixture × cadence, skipping without the
+/// opt-in.
+fn parity(files: &[&'static str], cadences: &[Cadence]) {
+    if hledger(&["--version"]).is_none() {
+        eprintln!("skipped: set {OPT_IN}=1 (see `just hledger-checks`)");
+        return;
+    }
+    for file in files {
+        for cadence in cadences {
+            Parity::new(file, *cadence).assert_parity();
+        }
+    }
+}
+
+#[test]
+fn parity_flows_with_explicit_counters() {
+    parity(&["flows.journal"], &[MONTHLY, QUARTERLY, WEEKLY]);
+}
+
+#[test]
+fn parity_accrual_settlement_and_equity_raise() {
+    parity(&["events.journal"], &[MONTHLY, QUARTERLY]);
+}
+
+#[test]
+fn parity_legacy_rules_once_upgraded_on_save() {
+    if hledger(&["--version"]).is_none() {
+        eprintln!("skipped: set {OPT_IN}=1 (see `just hledger-checks`)");
+        return;
+    }
+    let run = Parity::new("legacy.journal", MONTHLY);
+    // The upgrade did happen: the unbalanced rules gained an amountless
+    // counter posting, the balanced ones did not.
+    assert!(
+        run.text.contains("    assets:checking\n"),
+        "the legacy rule was not upgraded:\n{}",
+        run.text
+    );
+    assert!(
+        run.text.contains("    (assets:checking)     $-300.00\n"),
+        "{}",
+        run.text
+    );
+    run.assert_parity();
+    parity(&["legacy.journal"], &[QUARTERLY]);
+}
+
+#[test]
+fn parity_asset_row_without_growth_and_its_gains_account() {
+    parity(&["assets.journal"], &[MONTHLY]);
+}
+
+#[test]
+fn parity_step_change_with_from_and_to_bounds() {
+    parity(&["step.journal"], &[MONTHLY, QUARTERLY]);
+}
+
+#[test]
+fn parity_multi_commodity_lines() {
+    parity(&["commodities.journal"], &[MONTHLY]);
+}
+
+/// The fixture really does hold real data AFTER the cutoff, and it is the
+/// documented `expr:` that leaves it out: without it, hledger's October food
+/// carries the real 2026-10-05 $77 on top of the forecast. So the parity above
+/// is a test of the documented command, not of a journal that happens to end
+/// before the cutoff.
+#[test]
+fn parity_needs_the_documented_expr_to_leave_out_real_data_after_the_cutoff() {
+    if hledger(&["--version"]).is_none() {
+        eprintln!("skipped: set {OPT_IN}=1 (see `just hledger-checks`)");
+        return;
+    }
+    let run = Parity::new("flows.journal", MONTHLY);
+    let october = run.cadence.lookback;
+    let key = ("expenses:food".to_string(), "$".to_string());
+    let filtered = run.hledger_table("is", true)[&key][october];
+    let mut args = run.documented("is");
+    args.pop(); // the expr
+    args.extend(["-O", "csv", "--layout=bare"].map(String::from));
+    let unfiltered = run
+        .run(&args)
+        .lines()
+        .map(csv_fields)
+        .find(|fields| fields.first() == Some(&key.0))
+        .map(|fields| Dec::parse(&fields[2 + october], '.').expect("amount"))
+        .expect("an expenses:food row");
+    assert_eq!(cents(unfiltered) - cents(filtered), 7_700);
+    assert_eq!(cents(run.ledgeline_is()[&key][october]), cents(filtered));
+}
+
+/// WITH growth, hledger and Ledgeline differ by exactly the two accepted
+/// deviations (plan 28 Decisions 2 and 3) and by nothing else:
+///
+/// 1. `growth:` on a flow: hledger books the BASE amount in every period; we
+///    book the grown one. The difference reaches the counter-account (cash)
+///    and nowhere else.
+/// 2. `growth:` on an unpriced asset row: we post appreciation from the asset
+///    to `equity:unrealized gains`; hledger posts nothing, so the house is
+///    flat and the gains account is absent.
+/// 3. `growth:` on a priced holding: we grow AAPL's price in memory; hledger
+///    values the holding at its last real `P`, flat.
+///
+/// Every other account agrees per column. The day hledger gains arithmetic or
+/// we stop deviating, this fails and `docs/projections/` must change.
+#[test]
+fn parity_with_growth_differs_only_by_the_accepted_deviations() {
+    if hledger(&["--version"]).is_none() {
+        eprintln!("skipped: set {OPT_IN}=1 (see `just hledger-checks`)");
+        return;
+    }
+    let run = Parity::new("growth.journal", MONTHLY);
+    // Decision 4: the gains account the main journal lacks is declared in the
+    // scenario, so `check --strict` passes over both files.
+    assert!(
+        run.text
+            .contains("account equity:unrealized gains  ; type: E"),
+        "{}",
+        run.text
+    );
+    run.assert_hledger_checks();
+
+    let columns = run.spans().len();
+    let forecast = run.cadence.lookback..columns;
+    let usd = |table: &Table, account: &str| -> Vec<i128> {
+        table
+            .get(&(account.to_string(), "$".to_string()))
+            .map_or_else(
+                || vec![0; columns],
+                |row| row.iter().map(|d| cents(*d)).collect(),
+            )
+    };
+    let grown = [
+        "expenses:rent",
+        "assets:checking",
+        "assets:house",
+        "assets:brokerage",
+    ];
+    let gains = "equity:unrealized gains";
+
+    // 1. The flow: hledger's rent is the base in every column; ours grows
+    //    from the second forecast month on (2%/mo, anchored at the cutoff).
+    let (their_is, our_is) = (run.hledger_table("is", true), run.ledgeline_is());
+    let (their_rent, our_rent) = (
+        usd(&their_is, "expenses:rent"),
+        usd(&our_is, "expenses:rent"),
+    );
+    assert!(their_rent.iter().all(|&c| c == 200_000), "{their_rent:?}");
+    assert_eq!(our_rent[forecast.start], 200_000, "{our_rent:?}");
+    assert!(
+        our_rent[forecast.start + 1..]
+            .windows(2)
+            .all(|pair| pair[0] > 200_000 && pair[1] > pair[0]),
+        "{our_rent:?}"
+    );
+    run.assert_agree("is (outside growth)", &their_is, &our_is, &|a| {
+        grown.contains(&a)
+    });
+
+    // …and the extra rent is exactly what cash is short by, per period.
+    let extra: Vec<i128> = our_rent
+        .iter()
+        .zip(&their_rent)
+        .map(|(o, t)| o - t)
+        .collect();
+    let (their_cf, our_cf) = (run.hledger_table("cf", false), run.ledgeline_cf());
+    let (their_cash, our_cash) = (
+        usd(&their_cf, "assets:checking"),
+        usd(&our_cf, "assets:checking"),
+    );
+    for column in 0..columns {
+        assert_eq!(
+            their_cash[column] - our_cash[column],
+            extra[column],
+            "column {column}"
+        );
+    }
+    run.assert_agree("cf (outside growth)", &their_cf, &our_cf, &|a| {
+        grown.contains(&a)
+    });
+
+    // 2 and 3. The balance sheet: hledger's house and brokerage are flat; ours
+    // rise every forecast month. Checking differs by the cumulative extra rent.
+    let (their_bs, (our_bs, our_equity)) = (run.hledger_table("bs", true), run.ledgeline_bs());
+    for account in ["assets:house", "assets:brokerage"] {
+        let (theirs, ours) = (usd(&their_bs, account), usd(&our_bs, account));
+        assert!(
+            theirs.windows(2).all(|pair| pair[0] == pair[1]),
+            "{account} {theirs:?}"
+        );
+        assert!(
+            ours[forecast.start..]
+                .windows(2)
+                .all(|pair| pair[1] > pair[0]),
+            "{account} {ours:?}"
+        );
+        assert_eq!(
+            ours[..forecast.start],
+            theirs[..forecast.start],
+            "{account}: actuals"
+        );
+    }
+    let (their_checking, our_checking) = (
+        usd(&their_bs, "assets:checking"),
+        usd(&our_bs, "assets:checking"),
+    );
+    let mut shortfall = 0;
+    for column in 0..columns {
+        shortfall += extra[column];
+        assert_eq!(
+            their_checking[column] - our_checking[column],
+            shortfall,
+            "column {column}"
+        );
+    }
+    run.assert_agree("bs (outside growth)", &their_bs, &our_bs, &|a| {
+        grown.contains(&a)
+    });
+
+    // The house's appreciation sits in the gains account, which hledger never
+    // sees; every other equity account agrees.
+    let their_equity: Table = run
+        .hledger_table("bse", true)
+        .into_iter()
+        .filter(|((account, _), _)| account.starts_with("equity"))
+        .collect();
+    assert!(!their_equity.keys().any(|(account, _)| account == gains));
+    let house = usd(&our_bs, "assets:house");
+    let booked = usd(&our_equity, gains);
+    for column in 0..columns {
+        assert_eq!(booked[column], house[column] - house[0], "column {column}");
+    }
+    run.assert_agree(
+        "bse equity (outside gains)",
+        &their_equity,
+        &our_equity,
+        &|a| a == gains,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The Accounts and Journal tabs (plan 28, follow-ups of 2026-10-26)
+// ---------------------------------------------------------------------------
+//
+// The two raw readings beside the statements: `reports::account_periods`
+// (the Accounts tab) and the forecast's transactions with their origins (the
+// Journal tab), computed with the calls the server's run handler makes, over
+// the same saved-and-reread scenario. hledger's equivalents are
+//
+//   hledger -f <main> -f <scenario> balance --forecast=<cutoff>..<end> \
+//     -b <lookback start> -e <end> -<interval> \
+//     expr:"NOT (date:<cutoff>.. AND NOT tag:generated)" \
+//     --tree --no-elide [-H] [-E --declared] [--depth N]
+//   hledger -f <main> -f <scenario> print --forecast=<cutoff>..<end> tag:generated
+//
+// `--tree --no-elide` because our rows are a tree: every ancestor is a row and
+// holds its subtree's total. hledger's default flat list has the same leaves.
+//
+// **Empty accounts: what agrees, and the one deliberate difference.** hledger
+// 1.52's `-E` adds a zero row for every account with a posting INSIDE the
+// report (with `-H`, also before it), and `--declared` adds every `account`
+// directive in either file. Our "Show empty accounts" adds every declared
+// account, every account the forecast books to, AND every account the real
+// journal ever posts to (`projections::known_accounts`). The two lists are
+// equal whenever every account is declared, as in these fixtures, and the
+// test asserts that. With an undeclared account, ours is wider by exactly the
+// accounts last used outside the report: before the lookback (Change mode
+// only; `-H` shows them too) or only in real data after the cutoff (which the
+// `expr:` hides from hledger). `accounts_parity_empty_rows_beyond_declared`
+// pins exactly that.
+
+/// The depths the Accounts parity reads: the top level, the server's default
+/// (2), and unclamped. The fixtures' deepest account (`assets:wise:eur`) is 3.
+const DEPTHS: [usize; 3] = [1, 2, 99];
+
+/// The figures of one Accounts reading, plus the accounts it lists as rows.
+struct AccountsReading {
+    table: Table,
+    accounts: BTreeSet<String>,
+}
+
+/// One generated transaction, in the fields `hledger print` and the Journal
+/// tab both show.
+#[derive(Debug, PartialEq, Eq)]
+struct Entry {
+    date: String,
+    description: String,
+    /// The `generated-transaction` tag's value: `~ monthly`, `~ 2026-12-20`.
+    rule: String,
+    /// `(account, [(commodity, cents)])` in posting order, each posting's
+    /// amounts sorted by commodity.
+    postings: Vec<(String, Vec<(String, i128)>)>,
+}
+
+impl Entry {
+    fn amount(&self, account: &str, commodity: &str) -> i128 {
+        self.postings
+            .iter()
+            .filter(|(name, _)| name == account)
+            .flat_map(|(_, amounts)| amounts)
+            .filter(|(c, _)| c == commodity)
+            .map(|(_, cents)| cents)
+            .sum()
+    }
+}
+
+impl Parity {
+    /// The Accounts tab, as `projections_api::projected_accounts` computes it:
+    /// `account_periods` over the merged list, on the window, with
+    /// `known_accounts` when empty accounts are asked for.
+    fn ledgeline_accounts(&self, mode: BalanceMode, empty: bool, depth: usize) -> AccountsReading {
+        let known = empty.then(|| known_accounts(&self.journal, &self.forecast));
+        let report = account_periods(
+            &self.txns,
+            &AccountPeriodsOpts {
+                from: &self.window().from,
+                to: &self.window().end,
+                interval: self.cadence.interval,
+                depth,
+                mode,
+                known: known.as_deref(),
+            },
+        )
+        .expect("account periods");
+        let keys: Vec<String> = self.spans().into_iter().map(|span| span.key).collect();
+        assert_eq!(report.buckets, keys, "{}: the columns", self.file);
+        let columns = keys.len();
+        let mut table = Table::new();
+        for row in &report.rows {
+            for (column, figure) in row.values.iter().enumerate() {
+                put(&mut table, &row.account, figure, column, columns + 1);
+            }
+            // Change rows carry a Total (hledger's `-T` column); balances none.
+            match (&row.total, mode) {
+                (Some(total), BalanceMode::Change) => {
+                    put(&mut table, &row.account, total, columns, columns + 1);
+                }
+                (None, BalanceMode::Historical) => {}
+                (total, _) => panic!("{}: {} total {total:?} in {mode:?}", self.file, row.account),
+            }
+        }
+        for (column, figure) in report.totals.iter().enumerate() {
+            put(&mut table, "Total:", figure, column, columns + 1);
+        }
+        if let Some(grand) = &report.grand_total {
+            put(&mut table, "Total:", grand, columns, columns + 1);
+        }
+        AccountsReading {
+            table,
+            accounts: report.rows.iter().map(|row| row.account.clone()).collect(),
+        }
+    }
+
+    /// The documented `balance` command for the Accounts tab.
+    fn accounts_command(&self, mode: BalanceMode, empty: bool, depth: usize) -> Vec<String> {
+        let mut args = self.documented("balance");
+        args.extend(["--tree", "--no-elide", "-O", "csv", "--layout=bare"].map(String::from));
+        args.extend(match mode {
+            BalanceMode::Change => vec!["-T".to_string()],
+            BalanceMode::Historical => vec!["-H".to_string()],
+        });
+        if empty {
+            args.extend(["-E", "--declared"].map(String::from));
+        }
+        args.extend(["--depth".to_string(), depth.to_string()]);
+        args
+    }
+
+    /// hledger's reading of the same: the tree's indentation (two no-break
+    /// spaces per level, every level a row under `--no-elide`) rebuilt into full names.
+    /// Change mode's `-T` column lands at index `columns`, like ours.
+    fn hledger_accounts(&self, mode: BalanceMode, empty: bool, depth: usize) -> AccountsReading {
+        let csv = self.run(&self.accounts_command(mode, empty, depth));
+        let columns = self.spans().len();
+        let width = match mode {
+            BalanceMode::Change => columns + 1,
+            BalanceMode::Historical => columns,
+        };
+        let mut lines = csv.lines().map(csv_fields);
+        let header = lines.next().expect("a header row");
+        assert_eq!(header.len(), 2 + width, "{}: {csv}", self.file);
+        let (mut table, mut accounts, mut path) =
+            (Table::new(), BTreeSet::new(), Vec::<String>::new());
+        for fields in lines {
+            let [label, commodity, values @ ..] = fields.as_slice() else {
+                continue;
+            };
+            assert_eq!(values.len(), width, "{}: {csv}", self.file);
+            // hledger indents with two NO-BREAK SPACEs (U+00A0) per level.
+            let name = label.trim_start_matches(['\u{a0}', ' ']);
+            let account = if name == "Total:" {
+                name.to_string()
+            } else {
+                let level = (label.chars().count() - name.chars().count()) / 2;
+                path.truncate(level);
+                path.push(name.to_string());
+                let account = path.join(":");
+                accounts.insert(account.clone());
+                account
+            };
+            let mut row = vec![Dec::zero(); columns + 1];
+            for (column, value) in values.iter().enumerate() {
+                row[column] = Dec::parse(value, '.').unwrap_or_else(|e| panic!("{value}: {e:?}"));
+            }
+            if !(commodity.is_empty() && row.iter().all(Dec::is_zero)) {
+                table.insert((account, commodity.clone()), row);
+            }
+        }
+        AccountsReading { table, accounts }
+    }
+
+    /// Our reading against hledger's, per account, per commodity, per column
+    /// (and the Total column in Change mode); `skip` names accounts compared
+    /// elsewhere.
+    fn assert_accounts_agree(
+        &self,
+        mode: BalanceMode,
+        empty: bool,
+        depth: usize,
+        skip: &dyn Fn(&str) -> bool,
+    ) -> (AccountsReading, AccountsReading) {
+        let what = format!("balance {mode:?} empty={empty} depth={depth}");
+        let theirs = self.hledger_accounts(mode, empty, depth);
+        let ours = self.ledgeline_accounts(mode, empty, depth);
+        let columns = self.spans().len();
+        let zeros = vec![Dec::zero(); columns + 1];
+        let width = match mode {
+            BalanceMode::Change => columns + 1,
+            BalanceMode::Historical => columns,
+        };
+        let keys: BTreeSet<&(String, String)> =
+            theirs.table.keys().chain(ours.table.keys()).collect();
+        let mismatches: Vec<String> = keys
+            .into_iter()
+            .filter(|(account, _)| !skip(account))
+            .flat_map(|key| {
+                let (t, o) = (
+                    theirs.table.get(key).unwrap_or(&zeros),
+                    ours.table.get(key).unwrap_or(&zeros),
+                );
+                (0..width)
+                    .filter(|&c| cents(t[c]) != cents(o[c]))
+                    .map(|c| {
+                        format!(
+                            "{} {} @ column {c}: hledger {} ledgeline {} (cents)",
+                            key.0,
+                            key.1,
+                            cents(t[c]),
+                            cents(o[c])
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert!(
+            !theirs.table.is_empty() && mismatches.is_empty(),
+            "{} ({:?}) {what} disagrees with hledger:\n{}\n--- the scenario file ---\n{}",
+            self.file,
+            self.cadence,
+            mismatches.join("\n"),
+            self.text
+        );
+        (theirs, ours)
+    }
+
+    /// The full Accounts claim: every mode × empty × depth agrees in figures
+    /// AND in which rows are listed.
+    fn assert_accounts_parity(&self) {
+        for mode in [BalanceMode::Change, BalanceMode::Historical] {
+            for empty in [false, true] {
+                for depth in DEPTHS {
+                    let (theirs, ours) = self.assert_accounts_agree(mode, empty, depth, &|_| false);
+                    assert_eq!(
+                        theirs.accounts, ours.accounts,
+                        "{} ({:?}) balance {mode:?} empty={empty} depth={depth}: the rows \
+                         listed differ",
+                        self.file, self.cadence
+                    );
+                }
+            }
+        }
+    }
+
+    /// `hledger print --forecast tag:generated -O json`, in hledger's order.
+    fn hledger_journal(&self) -> Vec<Entry> {
+        let cutoff = &self.window().cutoff;
+        let end = self.end_exclusive();
+        let json = self.run(
+            &[
+                "-f",
+                &self.main,
+                "-f",
+                &self.scenario,
+                "print",
+                &format!("--forecast={cutoff}..{end}"),
+                "tag:generated",
+                "-O",
+                "json",
+            ]
+            .map(String::from),
+        );
+        let txns: Vec<serde_json::Value> = serde_json::from_str(&json).expect("print -O json");
+        let text = |value: &serde_json::Value| value.as_str().expect("a string").to_string();
+        txns.iter()
+            .map(|txn| {
+                let rule = txn["ttags"]
+                    .as_array()
+                    .expect("ttags")
+                    .iter()
+                    .find(|tag| {
+                        tag[0] == "_generated-transaction" || tag[0] == "generated-transaction"
+                    })
+                    .map(|tag| text(&tag[1]))
+                    .expect("a generated-transaction tag");
+                let postings = txn["tpostings"]
+                    .as_array()
+                    .expect("tpostings")
+                    .iter()
+                    .map(|posting| {
+                        let mut amounts: Vec<(String, i128)> = posting["pamount"]
+                            .as_array()
+                            .expect("pamount")
+                            .iter()
+                            .map(|amount| {
+                                let quantity = &amount["aquantity"];
+                                let dec = Dec::new(
+                                    quantity["decimalMantissa"]
+                                        .as_i64()
+                                        .expect("mantissa")
+                                        .into(),
+                                    u32::try_from(
+                                        quantity["decimalPlaces"].as_u64().expect("places"),
+                                    )
+                                    .expect("places fit"),
+                                );
+                                (text(&amount["acommodity"]), cents(dec))
+                            })
+                            .collect();
+                        amounts.sort();
+                        (text(&posting["paccount"]), amounts)
+                    })
+                    .collect();
+                Entry {
+                    date: text(&txn["tdate"]),
+                    description: text(&txn["tdescription"]),
+                    rule,
+                    postings,
+                }
+            })
+            .collect()
+    }
+
+    /// The Journal tab: the forecast's transactions in the order the server
+    /// sends them (`projections_api::forecast_journal`), with each one's
+    /// origin.
+    fn ledgeline_journal(&self) -> Vec<(Entry, &ForecastOrigin)> {
+        assert_eq!(self.forecast.origins.len(), self.forecast.txns.len());
+        self.forecast
+            .txns
+            .iter()
+            .zip(&self.forecast.origins)
+            .map(|(txn, origin)| {
+                let tag = |name: &str| {
+                    txn.tags
+                        .iter()
+                        .find(|(tag, _)| tag == name)
+                        .map(|(_, value)| value.clone())
+                };
+                let rule = tag(GENERATED_TAG).expect("a generated-transaction tag");
+                assert_eq!(tag("_generated-transaction").as_ref(), Some(&rule));
+                let postings = txn
+                    .postings
+                    .iter()
+                    .map(|posting| {
+                        // Every generated posting is regular, a legacy
+                        // `(account)` line too (amendment 26): hledger keeps
+                        // that one virtual, which its JSON says in `ptype`, not
+                        // in `paccount`, so account names compare as they are.
+                        assert_eq!(posting.ptype, ledgeline_core::model::PostingType::Regular);
+                        let mut amounts: Vec<(String, i128)> = posting
+                            .amounts
+                            .iter()
+                            .map(|amount| (amount.commodity.0.clone(), cents(amount.quantity)))
+                            .collect();
+                        amounts.sort();
+                        (posting.account.0.clone(), amounts)
+                    })
+                    .collect();
+                (
+                    Entry {
+                        date: txn.date.clone(),
+                        description: txn.description.clone(),
+                        rule,
+                        postings,
+                    },
+                    origin,
+                )
+            })
+            .collect()
+    }
+
+    /// Each origin names the scenario part that generated it, and agrees with
+    /// the rule hledger reports for the transaction.
+    fn assert_origin(&self, entry: &Entry, origin: &ForecastOrigin, reread: &Scenario) {
+        match origin {
+            ForecastOrigin::Rule(group) => {
+                assert!(
+                    reread.lines.iter().any(|line| &line.group == group),
+                    "{}: no line in group {group}",
+                    self.file
+                );
+                assert!(
+                    !reread
+                        .events
+                        .iter()
+                        .any(|event| format!("~ {}", event.date) == entry.rule
+                            && event.description == entry.description),
+                    "{}: {entry:?} is an event's, not rule {group}'s",
+                    self.file
+                );
+            }
+            ForecastOrigin::Event(id) => {
+                let event = reread
+                    .events
+                    .iter()
+                    .find(|event| &event.id == id)
+                    .unwrap_or_else(|| panic!("{}: no event {id}", self.file));
+                assert_eq!(event.date, entry.date, "{}", self.file);
+                assert_eq!(entry.rule, format!("~ {}", event.date), "{}", self.file);
+            }
+            ForecastOrigin::Growth(group) => {
+                panic!(
+                    "{}: a growth transaction in a scenario without growth: {group}",
+                    self.file
+                )
+            }
+        }
+    }
+
+    /// The scenario as the next load reads it (the run's input).
+    fn reread(&self) -> Scenario {
+        scenario_from_text(&self.text, &self.scenario, "parity", &self.declared).expect("re-reads")
+    }
+
+    /// The full Journal claim: same transactions, in hledger's order, with the
+    /// same dates, descriptions, rule labels, posting accounts and amounts.
+    fn assert_journal_parity(&self) {
+        let theirs = self.hledger_journal();
+        let ours = self.ledgeline_journal();
+        assert!(
+            !theirs.is_empty(),
+            "{}: hledger generated nothing",
+            self.file
+        );
+        let reread = self.reread();
+        for (entry, origin) in &ours {
+            self.assert_origin(entry, origin, &reread);
+        }
+        let ours: Vec<&Entry> = ours.iter().map(|(entry, _)| entry).collect();
+        let theirs: Vec<&Entry> = theirs.iter().collect();
+        if theirs != ours {
+            let first = theirs
+                .iter()
+                .zip(&ours)
+                .position(|(t, o)| t != o)
+                .unwrap_or(theirs.len().min(ours.len()));
+            panic!(
+                "{} ({:?}): the forecast journal differs from hledger print ({} vs {} \
+                 transactions); first difference at #{first}:\nhledger   {:?}\nledgeline {:?}\n--- \
+                 the scenario file ---\n{}",
+                self.file,
+                self.cadence,
+                theirs.len(),
+                ours.len(),
+                theirs.get(first),
+                ours.get(first),
+                self.text
+            );
+        }
+    }
+}
+
+/// Run the Accounts and Journal claims for each fixture × cadence the
+/// statement parity reads, skipping without the opt-in.
+fn tabs_parity(files: &[&'static str], cadences: &[Cadence]) {
+    if hledger(&["--version"]).is_none() {
+        eprintln!("skipped: set {OPT_IN}=1 (see `just hledger-checks`)");
+        return;
+    }
+    for file in files {
+        for cadence in cadences {
+            let run = Parity::new(file, *cadence);
+            run.assert_journal_parity();
+            run.assert_accounts_parity();
+        }
+    }
+}
+
+#[test]
+fn tabs_parity_flows_with_explicit_counters() {
+    tabs_parity(&["flows.journal"], &[MONTHLY, QUARTERLY, WEEKLY]);
+}
+
+#[test]
+fn tabs_parity_accrual_settlement_and_equity_raise() {
+    tabs_parity(&["events.journal"], &[MONTHLY, QUARTERLY]);
+}
+
+#[test]
+fn tabs_parity_legacy_rules_once_upgraded_on_save() {
+    tabs_parity(&["legacy.journal"], &[MONTHLY, QUARTERLY]);
+}
+
+#[test]
+fn tabs_parity_asset_row_without_growth() {
+    tabs_parity(&["assets.journal"], &[MONTHLY]);
+}
+
+#[test]
+fn tabs_parity_step_change_with_from_and_to_bounds() {
+    tabs_parity(&["step.journal"], &[MONTHLY, QUARTERLY]);
+}
+
+#[test]
+fn tabs_parity_multi_commodity_lines() {
+    tabs_parity(&["commodities.journal"], &[MONTHLY]);
+}
+
+/// WITH growth, both tabs differ from hledger by the accepted deviations and
+/// by nothing else (the statements' version is
+/// `parity_with_growth_differs_only_by_the_accepted_deviations`):
+///
+/// - **Journal.** hledger generates the rent at its BASE amount every month;
+///   ours grows (2%/mo), and its counter (checking) takes exactly the
+///   difference. hledger generates the asset rows' `~ monthly holdings` rule as
+///   a transaction of `$0` postings; ours generates no such rule transaction,
+///   and books the unpriced house's appreciation as growth transactions from
+///   the house to the gains account instead. The priced brokerage grows a
+///   price, which is no posting in either. Everything else (salary) is equal,
+///   transaction for transaction, in hledger's order.
+/// - **Accounts.** Unvalued, so the brokerage's 10 AAPL agree (the grown price
+///   shows on the balance sheet only). Rent, checking, the house and the gains
+///   account deviate by exactly the journal's differences; every other row,
+///   in both modes, with and without empty accounts, agrees.
+#[test]
+fn tabs_parity_with_growth_differs_only_by_the_accepted_deviations() {
+    if hledger(&["--version"]).is_none() {
+        eprintln!("skipped: set {OPT_IN}=1 (see `just hledger-checks`)");
+        return;
+    }
+    let run = Parity::new("growth.journal", MONTHLY);
+    let (house, gains, checking, rent) = (
+        "assets:house",
+        "equity:unrealized gains",
+        "assets:checking",
+        "expenses:rent",
+    );
+
+    // The Journal tab.
+    let (holdings, theirs): (Vec<Entry>, Vec<Entry>) = run
+        .hledger_journal()
+        .into_iter()
+        .partition(|entry| entry.description == "holdings");
+    assert_eq!(holdings.len(), MONTHLY.count, "{holdings:?}");
+    assert!(
+        holdings
+            .iter()
+            .flat_map(|entry| &entry.postings)
+            .flat_map(|(_, amounts)| amounts)
+            .all(|(_, cents)| *cents == 0),
+        "{holdings:?}"
+    );
+    let (growth, ours): (Vec<_>, Vec<_>) = run
+        .ledgeline_journal()
+        .into_iter()
+        .partition(|(_, origin)| matches!(origin, ForecastOrigin::Growth(_)));
+    assert!(!growth.is_empty());
+    for (entry, _) in &growth {
+        let accounts: BTreeSet<&str> = entry.postings.iter().map(|(a, _)| a.as_str()).collect();
+        assert_eq!(accounts, BTreeSet::from([house, gains]), "{entry:?}");
+        assert!(entry.amount(house, "$") > 0, "{entry:?}");
+        assert_eq!(
+            entry.amount(house, "$"),
+            -entry.amount(gains, "$"),
+            "{entry:?}"
+        );
+    }
+    assert_eq!(theirs.len(), ours.len());
+    let mut extra = vec![0_i128; run.spans().len()];
+    let forecast_start = run.cadence.lookback;
+    for (their, (our, _)) in theirs.iter().zip(&ours) {
+        let same = (&their.date, &their.description, &their.rule);
+        assert_eq!(same, (&our.date, &our.description, &our.rule));
+        let accounts = |entry: &Entry| -> Vec<String> {
+            entry.postings.iter().map(|(a, _)| a.clone()).collect()
+        };
+        assert_eq!(accounts(their), accounts(our), "{their:?} {our:?}");
+        if their.description == "rent" {
+            assert_eq!(their.amount(rent, "$"), 200_000, "{their:?}");
+            assert!(our.amount(rent, "$") >= 200_000, "{our:?}");
+            assert_eq!(our.amount(checking, "$"), -our.amount(rent, "$"), "{our:?}");
+            let column = run
+                .spans()
+                .iter()
+                .position(|span| span.from <= our.date && our.date <= span.to)
+                .expect("a column");
+            extra[column] += our.amount(rent, "$") - their.amount(rent, "$");
+        } else {
+            assert_eq!(their, our);
+        }
+    }
+    assert_eq!(
+        extra[forecast_start], 0,
+        "the first forecast month is the base"
+    );
+    assert!(
+        extra[forecast_start + 1..].iter().all(|&cents| cents > 0),
+        "{extra:?}"
+    );
+
+    // The Accounts tab.
+    let deviating = [rent, checking, house, gains];
+    let skip = |account: &str| {
+        deviating
+            .iter()
+            .any(|grown| *grown == account || grown.starts_with(&format!("{account}:")))
+    };
+    let usd = |reading: &AccountsReading, account: &str| -> Vec<i128> {
+        reading
+            .table
+            .get(&(account.to_string(), "$".to_string()))
+            .map_or_else(
+                || vec![0; extra.len()],
+                |row| row[..extra.len()].iter().map(|d| cents(*d)).collect(),
+            )
+    };
+    let growth_by_column: Vec<i128> = run
+        .spans()
+        .iter()
+        .map(|span| {
+            growth
+                .iter()
+                .filter(|(entry, _)| span.from <= entry.date && entry.date <= span.to)
+                .map(|(entry, _)| entry.amount(house, "$"))
+                .sum()
+        })
+        .collect();
+    for mode in [BalanceMode::Change, BalanceMode::Historical] {
+        // A column's figure, or the running sum of figures in Historical mode.
+        let cumulate = |per_column: &[i128]| -> Vec<i128> {
+            match mode {
+                BalanceMode::Change => per_column.to_vec(),
+                BalanceMode::Historical => per_column
+                    .iter()
+                    .scan(0, |sum, cents| {
+                        *sum += cents;
+                        Some(*sum)
+                    })
+                    .collect(),
+            }
+        };
+        for empty in [false, true] {
+            for depth in DEPTHS {
+                let (theirs, ours) = run.assert_accounts_agree(mode, empty, depth, &skip);
+                let unshared: BTreeSet<&String> =
+                    ours.accounts.difference(&theirs.accounts).collect();
+                assert!(
+                    theirs.accounts.is_subset(&ours.accounts)
+                        && unshared.iter().all(|account| skip(account)),
+                    "{mode:?} empty={empty} depth={depth}: {unshared:?}"
+                );
+                if depth < 3 {
+                    continue;
+                }
+                let deviation = |account: &str| -> Vec<i128> {
+                    usd(&ours, account)
+                        .iter()
+                        .zip(usd(&theirs, account))
+                        .map(|(o, t)| o - t)
+                        .collect()
+                };
+                let extra_rent = cumulate(&extra);
+                let negated: Vec<i128> = extra_rent.iter().map(|cents| -cents).collect();
+                let appreciation = cumulate(&growth_by_column);
+                let lost: Vec<i128> = appreciation.iter().map(|cents| -cents).collect();
+                assert_eq!(deviation(rent), extra_rent, "{mode:?} rent");
+                assert_eq!(deviation(checking), negated, "{mode:?} checking");
+                assert_eq!(deviation(house), appreciation, "{mode:?} house");
+                assert_eq!(usd(&theirs, gains), vec![0; extra.len()], "{mode:?} gains");
+                assert_eq!(usd(&ours, gains), lost, "{mode:?} gains");
+            }
+        }
+    }
+}
+
+/// "Show empty accounts" against `-E --declared` when an account is NOT
+/// declared: ours is wider by exactly the accounts used only outside the
+/// report, and every figure still agrees. `assets:old:jar` nets to zero
+/// before the lookback (listed by hledger with `-H -E`, not in Change mode);
+/// `expenses:late` is used only in real data after the cutoff, which the
+/// `expr:` hides from hledger in both modes. Everything declared agrees.
+#[test]
+fn accounts_parity_empty_rows_beyond_declared() {
+    if hledger(&["--version"]).is_none() {
+        eprintln!("skipped: set {OPT_IN}=1 (see `just hledger-checks`)");
+        return;
+    }
+    let main = std::fs::read_to_string(parity_dir().join("main.journal")).expect("main reads");
+    let main = format!(
+        "{main}\n2026-02-01 undeclared, before the lookback\n    assets:old:jar     $10.00\n    \
+         assets:checking\n\n2026-03-01 and back\n    assets:checking    $10.00\n    \
+         assets:old:jar\n\n2026-10-06 undeclared, real, after the cutoff\n    expenses:late       \
+         $5.00\n    assets:checking\n"
+    );
+    let run = Parity::over(Some(&main), "flows.journal", MONTHLY);
+    assert_eq!(run.window().cutoff, "2026-10-01");
+    let wider = |mode: BalanceMode, empty: bool| -> BTreeSet<String> {
+        let (theirs, ours) = run.assert_accounts_agree(mode, empty, 99, &|_| false);
+        assert!(
+            theirs.accounts.is_subset(&ours.accounts),
+            "{mode:?} empty={empty}"
+        );
+        ours.accounts
+            .difference(&theirs.accounts)
+            .cloned()
+            .collect()
+    };
+    let names =
+        |names: &[&str]| -> BTreeSet<String> { names.iter().map(ToString::to_string).collect() };
+    assert_eq!(wider(BalanceMode::Change, false), names(&[]));
+    assert_eq!(wider(BalanceMode::Historical, false), names(&[]));
+    assert_eq!(
+        wider(BalanceMode::Change, true),
+        names(&["assets:old", "assets:old:jar", "expenses:late"])
+    );
+    assert_eq!(
+        wider(BalanceMode::Historical, true),
+        names(&["expenses:late"])
     );
 }

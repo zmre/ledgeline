@@ -48,23 +48,29 @@ use ledgeline_core::projections::serialize::{
     ProjectionDoc, SerializeError, new_file, scenario_from_text, write_scenario,
 };
 use ledgeline_core::projections::{
-    AssetRow, BalanceSeries, CreateRefusal, DiscoveredProjection, Discovery, Growth, GrowthUnit,
-    LineRole, LineSection, LineSource, Projection, ProjectionOpts, ProjectionPath, Runway,
-    Scenario, ScenarioEvent, ScenarioLine, SeedOpts, discover_in, is_journal_name, label_for,
-    line_section, project, seed_scenario, virtual_posting,
+    AccountsOpts, AssetRow, BalanceSeries, CounterDefaults, CreateRefusal, DEFAULT_LOOKBACK,
+    DiscoveredProjection, Discovery, ForecastDefaults, ForecastOrigin, Growth, GrowthUnit, History,
+    LineRole, LineSection, LineSource, ProjectedStatements, Projection, ProjectionPath, Runway,
+    Scenario, ScenarioEvent, ScenarioLine, SeedOpts, StatementOpts, discover_in, forecast_cutoff,
+    is_journal_name, label_for, latest_real_date, line_section, project_cached, projected_accounts,
+    projected_statements, seed_scenario, upgrade_legacy_counters, virtual_posting,
 };
-use ledgeline_core::reports::account_types::AccountType;
+use ledgeline_core::reports::account_types::{AccountType, AccountTypes};
+use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
-    BudgetOpts, Interval, account_decls, declared_types, periods::bucket_label, signed_entry,
+    BalanceMode, BudgetOpts, Interval, Valuation, account_decls, declared_types,
+    periods::bucket_label, pivot_balance_sheets, signed_entry,
 };
 use ledgeline_core::vault::{Revision, VaultError};
+use ledgeline_core::view::rows::{Row, RowContext};
 use ledgeline_core::{Dec, Fingerprint};
 use serde::{Deserialize, Serialize};
 
 use crate::edit_api::{WireDecIn, dec_from_wire, json_body};
 use crate::error::{AppError, editing_disabled};
 use crate::reports_api::{
-    Window, WireDec, WireMixed, WirePeriodReport, checked_date, compute, today_utc, wire_mixed,
+    Window, WireBalanceSheetColumns, WireCashFlow, WireDec, WireIncomeStatementReport, WireMixed,
+    WirePeriodReport, checked_date, compute, today_utc, wire_mixed,
 };
 use crate::security::no_store_json as no_store;
 use crate::{AppState, JournalLocation, Snapshot};
@@ -94,6 +100,14 @@ const MAX_EVENTS: usize = 1000;
 /// hundred thousand postings is a single event. This is the third number the
 /// body limit would otherwise be the only guard for.
 const MAX_EVENT_POSTINGS: usize = 100;
+
+/// The most generated transactions one run's `journal` carries.
+///
+/// The count is otherwise bounded only by lines × occurrences: a thousand
+/// weekly lines over [`MAX_BUCKETS`] weeks is over a million. Five thousand is
+/// two years of two hundred monthly rules, and a few megabytes at most. Past
+/// it the earliest entries are kept and `truncated` says so.
+pub(crate) const MAX_JOURNAL_ENTRIES: usize = 5000;
 
 // ===========================================================================
 // Wire — outbound
@@ -126,18 +140,27 @@ impl From<&Amount> for WireAmount {
     }
 }
 
-/// A recurrence, in the three readings a client needs.
+/// A recurrence, in the readings a client needs.
 ///
 /// `raw` is the round-trip field and the only one the server reads back;
-/// `simple`, `from` and `to` are derived, and are here so the table can show a
-/// period without re-implementing hledger's grammar in TypeScript.
+/// `simple`, `base`, `from` and `to` are derived, and are here so the table can
+/// show and re-bound a period without re-implementing hledger's grammar in
+/// TypeScript.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WireScenarioPeriod {
     /// The period expression exactly as it would be written in a journal.
     raw: String,
-    /// `daily`…`yearly` when this is a BARE fixed interval, else `null`.
+    /// `daily`…`yearly` when this steps by one of the five intervals, BOUNDED OR
+    /// NOT (`monthly from 2026-11-01` is `monthly`), else `null`. The client
+    /// rebuilds `raw` as `WORD [from D] [to D]`, so the bounds are not lost.
     simple: Option<&'static str>,
+    /// When `simple` is `null` but the bounds can still be rewritten: the
+    /// interval words as written (`every 15th day of month`), which the client
+    /// rebuilds `raw` around. `null` when `simple` is set, and when the bounds
+    /// cannot be rewritten (a one-off, or a recurrence this engine does not
+    /// understand).
+    base: Option<String>,
     /// The `from` date, ISO, or `null`.
     from: Option<String>,
     /// The `to` date, ISO and EXCLUSIVE as hledger writes it, or `null`.
@@ -146,9 +169,13 @@ struct WireScenarioPeriod {
 
 impl From<&PeriodSpec> for WireScenarioPeriod {
     fn from(period: &PeriodSpec) -> Self {
+        let simple = period
+            .bounded_interval()
+            .map(ledgeline_core::periodic::period_word);
         Self {
             raw: period.raw.clone(),
-            simple: period.interval().map(ledgeline_core::periodic::period_word),
+            simple,
+            base: simple.is_none().then(|| period.interval_words()).flatten(),
             from: period.start.clone(),
             to: period.end.clone(),
         }
@@ -205,6 +232,11 @@ struct WireScenarioLine {
     /// table shows the journal's real figure greyed.
     opening: Option<WireAmount>,
     note: String,
+    /// The account the line balances against (plan 28), or `null` for a
+    /// pre-plan-28 line whose default the engine picks and a save writes.
+    counter: Option<String>,
+    /// Asset rows only: the gains account, or `null` for the default.
+    gains: Option<String>,
     /// `journal` (authored) | `unbudgeted` (estimated from history).
     source: &'static str,
     /// `income` | `expense` | `asset` | `oneoff` — the table section the
@@ -228,6 +260,8 @@ impl WireScenarioLine {
             growth: line.growth.as_ref().map(WireGrowth::from),
             opening: line.opening.as_ref().map(WireAmount::from),
             note: line.note.clone(),
+            counter: line.counter.as_ref().map(|account| account.0.clone()),
+            gains: line.gains.as_ref().map(|account| account.0.clone()),
             source: line.source.as_str(),
         }
     }
@@ -255,6 +289,8 @@ struct WireScenarioEvent {
     date: String,
     description: String,
     postings: Vec<WireEventPosting>,
+    /// The account the event balances against, or `null`.
+    counter: Option<String>,
 }
 
 impl From<&ScenarioEvent> for WireScenarioEvent {
@@ -273,6 +309,7 @@ impl From<&ScenarioEvent> for WireScenarioEvent {
                     })
                 })
                 .collect(),
+            counter: event.counter.as_ref().map(|account| account.0.clone()),
         }
     }
 }
@@ -288,6 +325,8 @@ pub(crate) struct WireScenario {
     updated: Option<String>,
     lines: Vec<WireScenarioLine>,
     events: Vec<WireScenarioEvent>,
+    /// `; cash:` — the scenario's default counter-account, or `null`.
+    cash: Option<String>,
 }
 
 impl WireScenario {
@@ -306,6 +345,7 @@ impl WireScenario {
                 .iter()
                 .map(WireScenarioEvent::from)
                 .collect(),
+            cash: scenario.cash.as_ref().map(|account| account.0.clone()),
         }
     }
 }
@@ -314,7 +354,7 @@ impl WireScenario {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WireBalanceSeries {
-    /// The balance as of the request's `asOf`, before any projected flow.
+    /// The real balance the day before the cutoff, before any projected flow.
     opening: WireMixed,
     /// One closing balance per bucket, oldest → newest.
     values: Vec<WireMixed>,
@@ -383,22 +423,116 @@ impl From<&AssetRow> for WireAssetRow {
     }
 }
 
-/// The answer.
+/// The accounts the expansion books to where the scenario names none — what
+/// the what-if table shows greyed until the user overrides it (plan 28,
+/// Decisions 4 and 7).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireForecastDefaults {
+    /// The journal's own default counter-account: what a scenario with no
+    /// `; cash:` header falls back to. The `cash` control's greyed value.
+    cash: String,
+    /// The gains account of an asset row that names none.
+    gains: String,
+    /// `group` → the default counter-account of that rule's counter-less
+    /// lines. Only rules with at least one such line appear.
+    lines: BTreeMap<String, String>,
+    /// Event `id` → its default counter-account, for events that name none.
+    events: BTreeMap<String, String>,
+}
+
+impl From<&ForecastDefaults> for WireForecastDefaults {
+    fn from(defaults: &ForecastDefaults) -> Self {
+        let names = |map: &BTreeMap<String, AccountName>| {
+            map.iter()
+                .map(|(key, account)| (key.clone(), account.0.clone()))
+                .collect()
+        };
+        Self {
+            cash: defaults.cash.0.clone(),
+            gains: defaults.gains.0.clone(),
+            lines: names(&defaults.lines),
+            events: names(&defaults.events),
+        }
+    }
+}
+
+/// Which part of the scenario produced a generated transaction.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireOrigin {
+    /// `rule` (a `~` rule's lines), `event` (a dated event) or `growth` (an
+    /// asset row's appreciation).
+    kind: &'static str,
+    /// The rule's or asset row's `group`, or the event's `id`: keys the
+    /// scenario on the wire already carries.
+    key: String,
+}
+
+impl From<&ForecastOrigin> for WireOrigin {
+    fn from(origin: &ForecastOrigin) -> Self {
+        let (kind, key) = match origin {
+            ForecastOrigin::Rule(group) => ("rule", group),
+            ForecastOrigin::Event(id) => ("event", id),
+            ForecastOrigin::Growth(group) => ("growth", group),
+        };
+        Self {
+            kind,
+            key: key.clone(),
+        }
+    }
+}
+
+/// One generated transaction, in the journal view's own row shape: what
+/// `hledger print --forecast tag:generated` prints, including its
+/// `generated-transaction: ~ <period>` tag.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireForecastEntry {
+    origin: WireOrigin,
+    txn: Row<'static>,
+}
+
+/// The forecast journal: every generated transaction, date-ascending.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireForecastJournal {
+    /// How many the forecast generated, before any cap.
+    total: usize,
+    /// At most [`MAX_JOURNAL_ENTRIES`], the earliest first.
+    entries: Vec<WireForecastEntry>,
+    /// Whether `entries` stops short of `total`.
+    truncated: bool,
+}
+
+/// The answer (plan 28, Phase 4).
+///
+/// Two kinds of column live here, and the difference is load-bearing:
+///
+/// - `buckets`, `cash` and `runway` cover the FORECAST periods only — the
+///   runway counts from the cutoff;
+/// - the three statements cover `lookback ++ buckets`: the full actual periods
+///   before the cutoff, then the forecast. `projectedFrom` is the index of the
+///   first forecast column in them (`lookback.len()`), which is where a client
+///   draws the actuals/projected divider.
+///
+/// Net income and net worth are not series here any more: the income
+/// statement's `netIncome` and the balance sheet's `netWorth` are, computed by
+/// the same code as on the Reports tab.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WireProjection {
-    /// Bucket keys, oldest → newest.
+    /// Forecast bucket keys, oldest → newest. The first starts at `actualsEnd`.
     buckets: Vec<String>,
-    /// The first day of the first bucket — the next WHOLE bucket after `asOf`.
-    start: String,
-    /// Projected revenue and expenses, in CASH-FLOW ORIENTATION: revenue
-    /// positive (an inflow), expenses negative (an outflow), so `totals` is the
-    /// sum of `rows` and IS net income. This is the opposite sign convention to
-    /// `/api/reports/incomestatement`, deliberately — see
-    /// `projections::Projection::net_income`.
-    net_income: WirePeriodReport,
+    /// The full ACTUAL periods shown before the forecast, oldest → newest.
+    lookback: Vec<String>,
+    /// The cutoff (Decision 5): the first projected day. Actuals are
+    /// everything strictly before it, and no real transaction on or after it
+    /// is in any figure here.
+    actuals_end: String,
+    /// The index of the first forecast column in the statements' columns.
+    projected_from: usize,
     cash: WireBalanceSeries,
-    net_worth: WireBalanceSeries,
     runway: Option<WireRunway>,
     /// One entry per asset row the walk modelled, in scenario order. `[]` for a
     /// scenario with no asset rows, and always present.
@@ -406,22 +540,106 @@ pub(crate) struct WireProjection {
     /// Everything the projection could not do. Never empty silently: a dropped
     /// line always says so here.
     warnings: Vec<String>,
+    /// The balance sheet at the end of every column, market-valued at its own
+    /// end with the forecast's in-memory prices.
+    balance_sheet: WireBalanceSheetColumns,
+    /// The grouped income statement, one column per period plus the Total.
+    income_statement: WireIncomeStatementReport,
+    /// The statement of cash flows over the same columns.
+    cash_flow: WireCashFlow,
+    defaults: WireForecastDefaults,
+    /// Every account per column (`hledger balance`), when the request asked
+    /// for it with `accounts`; `null` otherwise.
+    accounts: Option<WirePeriodReport>,
+    /// The generated transactions, when the request asked with `journal`;
+    /// `null` otherwise.
+    journal: Option<WireForecastJournal>,
 }
 
-impl From<&Projection> for WireProjection {
-    fn from(projection: &Projection) -> Self {
+/// The three official statements over `real ++ forecast`, on the wire.
+///
+/// Built by core's [`projected_statements`] from the snapshot's cached real
+/// side plus this run's forecast (plan 29) — the same reports, figure for
+/// figure and scale for scale, as the Reports tab's builders run over
+/// `merged_transactions` / `merged_prices` ([`reference_statements`] is that
+/// full scan, kept as the definition). The declarations are the journal's
+/// [`StatementShape`] and [`CfTags::from_journal`], as the Reports handlers
+/// read them.
+///
+/// Valued (balance sheet, income statement) at market in the projection's own
+/// valuation commodity, each column at its own end, so a column past the last
+/// real price reads the forecast's in-memory prices (Decision 3) and the
+/// balance sheet's valuation adjustment keeps it balanced.
+///
+/// [`reference_statements`]: ledgeline_core::projections::reference_statements
+/// [`StatementShape`]: ledgeline_core::reports::StatementShape
+/// [`CfTags::from_journal`]: ledgeline_core::reports::CfTags::from_journal
+fn wire_statements(
+    statements: &ProjectedStatements,
+) -> (
+    WireBalanceSheetColumns,
+    WireIncomeStatementReport,
+    WireCashFlow,
+) {
+    (
+        WireBalanceSheetColumns::new(
+            &pivot_balance_sheets(&statements.balance_sheet),
+            &statements.spans,
+            "market",
+        ),
+        WireIncomeStatementReport::columns(&statements.income_statement, "market"),
+        WireCashFlow::from(&statements.cash_flow),
+    )
+}
+
+/// The Journal reading: the generated transactions only, in the journal
+/// view's row shape, capped at [`MAX_JOURNAL_ENTRIES`].
+fn forecast_journal(projection: &Projection, context: &RowContext<'_>) -> WireForecastJournal {
+    let forecast = &projection.forecast;
+    let entries = forecast
+        .txns
+        .iter()
+        .zip(&forecast.origins)
+        .take(MAX_JOURNAL_ENTRIES)
+        .map(|(txn, origin)| WireForecastEntry {
+            origin: WireOrigin::from(origin),
+            txn: context.row(txn, Vec::new()),
+        })
+        .collect();
+    WireForecastJournal {
+        total: forecast.txns.len(),
+        entries,
+        truncated: forecast.txns.len() > MAX_JOURNAL_ENTRIES,
+    }
+}
+
+impl WireProjection {
+    fn new(
+        projection: &Projection,
+        (balance_sheet, income_statement, cash_flow): (
+            WireBalanceSheetColumns,
+            WireIncomeStatementReport,
+            WireCashFlow,
+        ),
+    ) -> Self {
         Self {
             buckets: projection.buckets.clone(),
-            start: projection.start.clone(),
-            net_income: WirePeriodReport::from(&projection.net_income),
+            lookback: projection.lookback.clone(),
+            actuals_end: projection.start.clone(),
+            projected_from: projection.lookback.len(),
             cash: WireBalanceSeries::from(&projection.cash),
-            net_worth: WireBalanceSeries::from(&projection.net_worth),
             runway: projection
                 .runway
                 .as_ref()
                 .map(|runway| wire_runway(runway, &projection.buckets)),
             assets: projection.assets.iter().map(WireAssetRow::from).collect(),
             warnings: projection.warnings.clone(),
+            balance_sheet,
+            income_statement,
+            cash_flow,
+            defaults: WireForecastDefaults::from(&projection.forecast.defaults),
+            accounts: None,
+            journal: None,
         }
     }
 }
@@ -455,9 +673,9 @@ struct AmountIn {
 /// A recurrence on the way in: `{"raw": "monthly from 2027-04-01"}`.
 ///
 /// **The one type here without `deny_unknown_fields`, deliberately.**
-/// [`WireScenarioPeriod`] goes out with three DERIVED fields beside `raw`, and a
+/// [`WireScenarioPeriod`] goes out with four DERIVED fields beside `raw`, and a
 /// client should be able to hand the object straight back rather than stripping
-/// it first — so `simple`, `from` and `to` are accepted and dropped. Declaring
+/// it first — so `simple`, `base`, `from` and `to` are accepted and dropped. Declaring
 /// them as ignored fields would be the same contract spelled as dead code.
 ///
 /// The server re-parses `raw` through the JOURNAL's own grammar
@@ -517,6 +735,12 @@ struct ScenarioLineIn {
     opening: Option<AmountIn>,
     #[serde(default)]
     note: String,
+    /// The counter-account. Absent or `null` is a pre-plan-28 line.
+    #[serde(default)]
+    counter: Option<String>,
+    /// Asset rows only; a flow line that carries one is a `400`.
+    #[serde(default)]
+    gains: Option<String>,
     /// `journal` | `unbudgeted`. Absent reads as `journal`; an unrecognized
     /// value is a `400` rather than a silent fallback.
     #[serde(default)]
@@ -544,6 +768,8 @@ struct ScenarioEventIn {
     #[serde(default)]
     description: String,
     postings: Vec<EventPostingIn>,
+    #[serde(default)]
+    counter: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -559,6 +785,8 @@ struct ScenarioIn {
     lines: Vec<ScenarioLineIn>,
     #[serde(default)]
     events: Vec<ScenarioEventIn>,
+    #[serde(default)]
+    cash: Option<String>,
 }
 
 /// `POST /api/projections/run`.
@@ -574,10 +802,56 @@ pub(crate) struct RunRequest {
     interval: Option<String>,
     #[serde(default)]
     count: Option<usize>,
+    /// How many full ACTUAL periods the statements show before the forecast
+    /// (Decision 6). Default [`DEFAULT_LOOKBACK`]; `0` is allowed.
+    #[serde(default)]
+    lookback: Option<usize>,
     #[serde(default)]
     depth: Option<usize>,
     #[serde(default)]
     value_in: Option<String>,
+    /// Ask for the Accounts reading. Absent, `accounts` answers `null`: a
+    /// reading only one tab shows is computed only while that tab is open.
+    #[serde(default)]
+    accounts: Option<AccountsIn>,
+    /// Ask for the generated transactions. Off by default for the same reason.
+    #[serde(default)]
+    journal: bool,
+}
+
+/// `accounts` in a run request: which reading of the columns, and whether
+/// accounts with nothing in any column are rows too.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AccountsIn {
+    #[serde(deserialize_with = "balance_mode")]
+    mode: BalanceMode,
+    #[serde(default)]
+    empty: bool,
+}
+
+/// `"change"` | `"balance"` → [`BalanceMode`]. Anything else is a `400`.
+fn balance_mode<'de, D: serde::Deserializer<'de>>(de: D) -> Result<BalanceMode, D::Error> {
+    match String::deserialize(de)?.as_str() {
+        "change" => Ok(BalanceMode::Change),
+        "balance" => Ok(BalanceMode::Historical),
+        other => Err(serde::de::Error::custom(format!(
+            "accounts mode must be \"change\" or \"balance\", not {other:?}"
+        ))),
+    }
+}
+
+/// `lookback`, defaulted and bounded: the statements carry `lookback + count`
+/// columns, so together they are held to the same [`MAX_BUCKETS`] every
+/// other report's columns are.
+fn checked_lookback(lookback: Option<usize>, count: usize) -> Result<usize, AppError> {
+    let lookback = lookback.unwrap_or(DEFAULT_LOOKBACK);
+    match lookback.checked_add(count) {
+        Some(columns) if columns <= MAX_BUCKETS => Ok(lookback),
+        _ => Err(AppError::BadRequest(format!(
+            "lookback {lookback} plus count {count} is more than {MAX_BUCKETS} columns"
+        ))),
+    }
 }
 
 /// `?end=&count=&depth=` — the seed window.
@@ -641,6 +915,14 @@ fn account_from_wire(account: &str) -> Result<AccountName, AppError> {
         ));
     }
     Ok(AccountName(trimmed.to_string()))
+}
+
+/// An optional account: absent, `null` and blank all mean "none".
+fn optional_account(account: Option<&String>) -> Result<Option<AccountName>, AppError> {
+    match account.map(|account| account.trim()) {
+        None | Some("") => Ok(None),
+        Some(account) => account_from_wire(account).map(Some),
+    }
 }
 
 fn growth_from_wire(growth: &GrowthIn) -> Result<Growth, AppError> {
@@ -744,13 +1026,22 @@ fn scenario_from_wire(scenario: &ScenarioIn) -> Result<DecodedScenario, AppError
                     line.id
                 )));
             }
+            let gains = optional_account(line.gains.as_ref())?;
+            if role == LineRole::Flow && gains.is_some() {
+                return Err(AppError::BadRequest(format!(
+                    "line '{}' names a gains account, which only an asset row has",
+                    line.id
+                )));
+            }
             Ok(ScenarioLine {
+                counter: optional_account(line.counter.as_ref())?,
+                gains,
                 id: line.id.clone(),
                 group: line.group.clone(),
                 role,
                 account: account_from_wire(&line.account)?,
                 amount: amount_from_wire(&line.amount)?,
-                // `simple`/`from`/`to` are echoes; `raw` is the fact.
+                // `simple`/`base`/`from`/`to` are echoes; `raw` is the fact.
                 period: parse_period_spec(&line.period.raw),
                 growth: line.growth.as_ref().map(growth_from_wire).transpose()?,
                 opening: line.opening.as_ref().map(amount_from_wire).transpose()?,
@@ -789,6 +1080,7 @@ fn scenario_from_wire(scenario: &ScenarioIn) -> Result<DecodedScenario, AppError
                 date: checked_date("event date", &event.date)?,
                 description: event.description.clone(),
                 postings,
+                counter: optional_account(event.counter.as_ref())?,
             })
         })
         .collect::<Result<Vec<_>, AppError>>()?;
@@ -806,6 +1098,7 @@ fn scenario_from_wire(scenario: &ScenarioIn) -> Result<DecodedScenario, AppError
             updated: scenario.updated.clone(),
             lines,
             events,
+            cash: optional_account(scenario.cash.as_ref())?,
         },
         entries,
     })
@@ -817,17 +1110,21 @@ fn scenario_from_wire(scenario: &ScenarioIn) -> Result<DecodedScenario, AppError
 
 /// `POST /api/projections/run` — project a scenario forward.
 ///
-/// Body: `{scenario, asOf?, interval?, count?, depth?, valueIn?}`. The scenario
-/// travels in the body precisely so that UNSAVED edits project; nothing here
-/// touches the filesystem.
+/// Body: `{scenario, asOf?, interval?, count?, lookback?, depth?, valueIn?}`.
+/// The scenario travels in the body precisely so that UNSAVED edits project;
+/// nothing here touches the filesystem.
 ///
-/// - `asOf=YYYY-MM-DD` (default: today) — opening balances are taken here, and
-///   the first projected bucket is the next WHOLE one after it.
+/// - `asOf=YYYY-MM-DD` (default: today) — the caller's today. The projection
+///   starts at the CUTOFF (plan 28 Decision 5): the start of the period
+///   containing the earlier of this and the day after the latest real
+///   transaction. It comes back as `actualsEnd`.
 /// - `interval`, `count`, `depth` — as `/api/reports/cashflow`, through the same
-///   [`Window`].
-/// - `valueIn=$` — the commodity opening balances are valued into. The projected
-///   FLOWS are never valued (there are no market prices for a future date), so a
-///   scenario in another commodity comes back with a warning saying so.
+///   [`Window`]. `depth` rolls up the cash flow statement's account lines.
+/// - `lookback` (default 2) — full actual periods the statements show before
+///   the forecast; `lookback + count` is held to `MAX_BUCKETS`.
+/// - `valueIn=$` — the commodity balances are valued into. The cash series
+///   adds generated flows unvalued, and warns about a scenario in another
+///   commodity; the statements value every column as the Reports tab does.
 pub(crate) async fn run(
     State(state): State<AppState>,
     payload: Result<Json<RunRequest>, JsonRejection>,
@@ -841,6 +1138,7 @@ pub(crate) async fn run(
         request.count,
         request.depth,
     )?;
+    let lookback = checked_lookback(request.lookback, window.count)?;
     let value_in = request
         .value_in
         .map(|symbol| symbol.trim().to_string())
@@ -852,22 +1150,61 @@ pub(crate) async fn run(
 
     compute(move || {
         let journal = &snapshot.journal;
-        let declared = declared_types(&account_decls(journal));
-        let scenario = decoded.signed(&declared)?;
-        let projection = project(
-            &scenario,
-            &journal.transactions,
-            &journal.prices,
-            &ProjectionOpts {
-                as_of: &window.end,
-                interval: window.interval,
-                count: window.count,
-                depth: window.depth,
-                declared: &declared,
-                value_in,
+        // The real side is the snapshot's (plan 29): built on the first run
+        // for this key, then reused by every edit until the journal, the
+        // period `today` falls in, the interval, the lookback or `valueIn`
+        // changes.
+        let cache = &snapshot.projections;
+        let facts = cache.facts(journal)?;
+        let scenario = decoded.signed(&facts.shape().declared)?;
+        let key = facts.key(&window.end, window.interval, lookback, value_in)?;
+        let real = cache.side(journal, &facts, &key)?;
+        // ONE expansion serves every reading: the cash series and runway are
+        // read off it inside `project_cached`, and the statements below are
+        // built over the same generated transactions and prices.
+        let projection = project_cached(&scenario, &real, window.count, window.depth)?;
+        let statements = projected_statements(
+            &real,
+            &facts,
+            &projection.forecast,
+            &StatementOpts {
+                valuation: Valuation::Market,
+                bs_depth: None,
+                cf_depth: window.depth,
             },
         )?;
-        Ok(WireProjection::from(&projection))
+        // The Accounts reading: every account per column over `lookback ++
+        // buckets` (`hledger balance -M --forecast`, `-H` for balances,
+        // `-E --declared` for empty accounts), as written: no valuation,
+        // natural signs. With `empty`, the known accounts are
+        // `known_accounts`: hledger's `-E --declared`, widened to every
+        // account the journal ever posts to.
+        let accounts = request
+            .accounts
+            .as_ref()
+            .map(|accounts| {
+                projected_accounts(
+                    &real,
+                    &facts,
+                    &projection.forecast,
+                    &AccountsOpts {
+                        mode: accounts.mode,
+                        depth: window.depth,
+                        empty: accounts.empty,
+                    },
+                )
+                .map(|report| WirePeriodReport::from(&report))
+            })
+            .transpose()?;
+        let forecast_journal = request.journal.then(|| {
+            let declared = snapshot.view.declared(journal);
+            forecast_journal(&projection, &RowContext::new(journal, &declared))
+        });
+        Ok(WireProjection {
+            accounts,
+            journal: forecast_journal,
+            ..WireProjection::new(&projection, wire_statements(&statements))
+        })
     })
     .await
 }
@@ -1244,6 +1581,25 @@ fn serialize_failed(id: &str, error: &SerializeError) -> AppError {
     }
 }
 
+/// A file on disk that does not read as a scenario, as a `400`.
+///
+/// Not [`serialize_failed`]: that one is about a WRITE, and on the read path it
+/// answered a hand-edited file with a typo in it as a `500` saying the file
+/// "was NOT written" — an engine fault, for a file nothing had tried to write.
+/// The file is the user's and so is the fix, which is what a `400` says; the
+/// engine's own sentence (a line number and what is wrong there, never a path)
+/// tells them where to look.
+fn unreadable_file(id: &str, error: &SerializeError) -> AppError {
+    let detail = match error {
+        SerializeError::Unreadable(message) | SerializeError::Invalid(message) => message.clone(),
+        other @ SerializeError::NotRoundTripped(_) => other.to_string(),
+    };
+    AppError::BadRequest(format!(
+        "{} cannot be opened as a projection: {detail}. Fix the file and open it again.",
+        quoted(id)
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // Reading a file
 // ---------------------------------------------------------------------------
@@ -1324,7 +1680,7 @@ fn open_file(
     // `; projection:` marker still opens with a name — "a file without it still
     // loads, and takes its name from its filename".
     let scenario = scenario_from_text(&text, &name, &found.label, declared)
-        .map_err(|error| serialize_failed(id, &error))?;
+        .map_err(|error| unreadable_file(id, &error))?;
     Ok(WireScenarioFile {
         id: id.to_string(),
         label: found.label.clone(),
@@ -1641,6 +1997,26 @@ pub(crate) async fn save(
         // the whole application.
         let declared = declared_types(&account_decls(&snapshot.journal));
         let scenario = decoded.signed(&declared)?;
+        // Plan 28: a pre-plan-28 group that does not balance is written with
+        // the default counter-account the engine already books it to, so the
+        // file becomes plain balanced hledger and no number moves.
+        let history = History {
+            txns: &snapshot.journal.transactions,
+            prices: &snapshot.journal.prices,
+        };
+        let cutoff = forecast_cutoff(
+            &today_utc(),
+            latest_real_date(history.txns),
+            Interval::Monthly,
+        )?;
+        let defaults = CounterDefaults::new(
+            &history,
+            &AccountTypes::from_declared(declared.clone()),
+            &cutoff,
+            scenario.cash.as_ref(),
+            None,
+        )?;
+        let scenario = upgrade_legacy_counters(&scenario, &defaults);
         // Scanned in THIS request, never cached. That is the whole of security
         // layer 2: an id resolves against a set built from `read_dir` names
         // moments ago, so a cached set would be one that no longer describes

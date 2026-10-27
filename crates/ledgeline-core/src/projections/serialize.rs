@@ -75,19 +75,22 @@
 //! The engine treats the two identically, and the tab shows both in the same
 //! section, so nothing a user can see moves.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use crate::decimal::Dec;
 use crate::edit::render_amount;
-use crate::model::{Amount, PeriodKind, PeriodicTransaction, Posting};
+use crate::model::{AccountName, Amount, PeriodKind, PeriodicTransaction, Posting};
 use crate::parse::{self, ParseError};
 use crate::periodic::{MAX_ACCOUNT_BYTES, MAX_DESCRIPTION_BYTES, PeriodicDoc};
 use crate::projections::discovery::{Header, parse_header};
 use crate::projections::{
-    Growth, GrowthUnit, LineRole, Scenario, ScenarioEvent, ScenarioLine, virtual_posting,
+    DEFAULT_GAINS_ACCOUNT, Growth, GrowthUnit, LineRole, Scenario, ScenarioEvent, ScenarioLine,
+    rule_counter, virtual_posting,
 };
-use crate::reports::account_types::{AccountTypes, account_decls_from, declared_types};
+use crate::reports::account_types::{
+    AccountType, AccountTypes, account_decls_from, declared_types,
+};
 use crate::rules::Newline;
 
 /// The indent a posting line gets. Four spaces, which is what hledger's own
@@ -162,6 +165,17 @@ pub fn scenario_from_text(
     fallback_name: &str,
     declared: &BTreeMap<String, crate::reports::account_types::AccountType>,
 ) -> Result<Scenario, SerializeError> {
+    read_scenario(text, source_name, fallback_name, declared).map(|(scenario, _)| scenario)
+}
+
+/// [`scenario_from_text`], plus every account the text itself declares — what
+/// the writer needs to know before it declares a gains account (Decision 4).
+fn read_scenario(
+    text: &str,
+    source_name: &str,
+    fallback_name: &str,
+    declared: &BTreeMap<String, crate::reports::account_types::AccountType>,
+) -> Result<(Scenario, BTreeSet<String>), SerializeError> {
     let journal = parse::parse_journal(text, source_name)
         .map_err(|error| SerializeError::Unreadable(parse_message(&error)))?;
     // Only the rules this FILE wrote. A journal that includes another would
@@ -194,11 +208,19 @@ pub fn scenario_from_text(
     types.extend(declared_types(&account_decls_from(&journal.accounts)));
 
     let header = parse_header(text);
-    Ok(scenario_from_rules(
-        &rules,
-        &header,
-        fallback_name,
-        &AccountTypes::from_declared(types),
+    let own_accounts = journal
+        .accounts
+        .iter()
+        .map(|account| account.name.0.clone())
+        .collect();
+    Ok((
+        scenario_from_rules(
+            &rules,
+            &header,
+            fallback_name,
+            &AccountTypes::from_declared(types),
+        ),
+        own_accounts,
     ))
 }
 
@@ -225,13 +247,18 @@ fn scenario_from_rules(
                 postings: rule
                     .postings
                     .iter()
-                    .flat_map(|posting| {
+                    .enumerate()
+                    // The elided posting is the counter, not a stated leg.
+                    .filter(|(index, _)| Some(*index) != rule.elided)
+                    .flat_map(|(_, posting)| {
                         posting
                             .amounts
                             .iter()
                             .map(|amount| virtual_posting(posting.account.clone(), amount.clone()))
                     })
                     .collect(),
+                // The block's amountless posting, as for a recurring rule.
+                counter: rule_counter(rule),
             }),
             None => lines.extend(super::lines_from_rule(&key, rule, types)),
         }
@@ -245,6 +272,7 @@ fn scenario_from_rules(
         updated: header.updated.clone(),
         lines,
         events,
+        cash: header.cash.clone().map(AccountName),
     }
 }
 
@@ -331,6 +359,9 @@ pub struct ProjectionDoc {
     /// the result under a different classification would compare an asset row
     /// against the flow line it was not.
     declared: BTreeMap<String, crate::reports::account_types::AccountType>,
+    /// Every account the FILE itself declares, so a gains account it already
+    /// declares is not declared twice.
+    own_accounts: BTreeSet<String>,
 }
 
 impl ProjectionDoc {
@@ -352,7 +383,7 @@ impl ProjectionDoc {
             .iter()
             .map(|block| block.full.clone())
             .collect();
-        let scenario = scenario_from_text(text, source_name, "", declared)?;
+        let (scenario, own_accounts) = read_scenario(text, source_name, "", declared)?;
 
         // The blocks this module located, against the rules the journal parser
         // read. When they line up, each block's print is known and an unedited
@@ -361,8 +392,10 @@ impl ProjectionDoc {
         let mut current = vec![None; blocks.len()];
         let assignment = assign_to(&scenario, blocks.len());
         if assignment.appended.is_empty() {
-            for (index, chunk) in &assignment.claimed {
-                current[*index] = chunk_print(chunk).ok();
+            for (index, (chunk, in_place)) in &assignment.slots {
+                if *in_place {
+                    current[*index] = chunk_print(chunk, &Tags::Literal).ok();
+                }
             }
         }
 
@@ -373,6 +406,7 @@ impl ProjectionDoc {
             current,
             text: text.to_string(),
             declared: declared.clone(),
+            own_accounts,
         })
     }
 
@@ -386,6 +420,7 @@ impl ProjectionDoc {
             blocks: Vec::new(),
             current: Vec::new(),
             declared: declared.clone(),
+            own_accounts: BTreeSet::new(),
         }
     }
 
@@ -396,6 +431,8 @@ impl ProjectionDoc {
     /// [`SerializeError::Invalid`] for a field that cannot be written.
     pub fn apply(&self, scenario: &Scenario) -> Result<String, SerializeError> {
         let chunks = self.assign(scenario);
+        let values = line_tag_values(scenario);
+        let tags = Tags::Assigned(&values);
         let nl = self.newline.as_str();
 
         // Splices, in file order: the header first (it is at offset 0), then
@@ -407,17 +444,21 @@ impl ProjectionDoc {
             splices.push((self.header.clone(), header));
         }
         for (index, span) in self.blocks.iter().enumerate() {
-            match chunks.claimed.get(&index) {
-                Some(chunk) => {
+            match chunks.slots.get(&index) {
+                Some((chunk, in_place)) => {
                     // The one comparison that keeps an untouched rule's own
                     // bytes: what the scenario says about this block, against
                     // what the block already says. Equal means no splice at
                     // all, so the user's own layout survives an edit to a
-                    // different rule.
-                    if self.current[index].as_ref() == Some(&chunk_print(chunk)?) {
+                    // different rule. A chunk MOVED into this slot by a
+                    // reorder is always rendered: these bytes are another
+                    // rule's.
+                    if *in_place
+                        && self.current[index].as_ref() == Some(&chunk_print(chunk, &tags)?)
+                    {
                         continue;
                     }
-                    splices.push((span.clone(), self.render_chunk(chunk)?));
+                    splices.push((span.clone(), self.render_chunk(chunk, &tags)?));
                 }
                 // The scenario no longer has this block: it goes.
                 None => splices.push((span.clone(), String::new())),
@@ -448,7 +489,7 @@ impl ProjectionDoc {
                 if !out.is_empty() && !out.ends_with(&format!("{nl}{nl}")) {
                     out.push_str(nl);
                 }
-                out.push_str(&self.render_chunk(chunk)?);
+                out.push_str(&self.render_chunk(chunk, &tags)?);
             }
         }
         Ok(out)
@@ -483,6 +524,23 @@ impl ProjectionDoc {
             out.push_str(&header_line("updated", updated)?);
             out.push_str(nl);
         }
+        if let Some(cash) = &scenario.cash {
+            check_account(&cash.0)?;
+            out.push_str(&header_line("cash", &cash.0)?);
+            out.push_str(nl);
+        }
+        // Gains accounts the main journal does not declare, declared HERE
+        // (Decision 4), so hledger and Ledgeline classify them alike without
+        // the main journal being touched. Set off by a blank line so the next
+        // read's header span ends before them and a re-save is byte-identical.
+        let declarations = self.gains_declarations(scenario)?;
+        if !declarations.is_empty() {
+            out.push_str(nl);
+            for declaration in declarations {
+                out.push_str(&declaration);
+                out.push_str(nl);
+            }
+        }
         // A blank line, unless the header is the whole file. `trim_start` on
         // the remainder rather than a length test: a file that already begins
         // its body with a blank line must not gain a second one on every save.
@@ -493,8 +551,44 @@ impl ProjectionDoc {
         Ok(out)
     }
 
+    /// `account NAME  ; type: X` for each gains account an asset row books
+    /// appreciation against that neither the main journal nor this file
+    /// declares. Only rows that GROW produce gains postings, so only they
+    /// count.
+    fn gains_declarations(&self, scenario: &Scenario) -> Result<Vec<String>, SerializeError> {
+        let types = AccountTypes::from_declared(self.declared.clone());
+        let needed: BTreeSet<&str> = scenario
+            .lines
+            .iter()
+            .filter(|line| line.role == LineRole::Asset)
+            .filter(|line| {
+                line.growth
+                    .as_ref()
+                    .is_some_and(|growth| !growth.rate.is_zero())
+            })
+            .map(|line| {
+                line.gains
+                    .as_ref()
+                    .map_or(DEFAULT_GAINS_ACCOUNT, |gains| gains.0.as_str())
+            })
+            .filter(|gains| {
+                !self.declared.contains_key(*gains) && !self.own_accounts.contains(*gains)
+            })
+            .collect();
+        needed
+            .into_iter()
+            .map(|gains| {
+                check_account(gains)?;
+                // Equity unless the account already resolves to something else
+                // (a user who points gains at income means income).
+                let code = type_letter(types.resolve(gains).unwrap_or(AccountType::Equity));
+                Ok(format!("account {gains}  ; type: {code}"))
+            })
+            .collect()
+    }
+
     /// One `~` block, header line and postings, terminated.
-    fn render_chunk(&self, chunk: &Chunk<'_>) -> Result<String, SerializeError> {
+    fn render_chunk(&self, chunk: &Chunk<'_>, tags: &Tags<'_>) -> Result<String, SerializeError> {
         let nl = self.newline.as_str();
         let (period, description, rows) = match chunk {
             Chunk::Rule { key, lines } => {
@@ -512,33 +606,45 @@ impl ProjectionDoc {
                     ));
                 }
                 let description = lines.first().map_or("", |line| line.note.as_str());
-                let rows = lines
+                let counter = block_counter(lines)?;
+                let mut rows = lines
                     .iter()
                     .enumerate()
                     .map(|(at, line)| {
                         Ok(Row {
                             account: &line.account.0,
-                            amount: &line.amount,
-                            tags: line_tags(key, at, line)?,
+                            amount: Some(&line.amount),
+                            tags: line_tags(tags.of(key, at, line), line)?,
+                            // A line with a counter is a REGULAR posting the
+                            // amountless one balances; one without is the
+                            // legacy virtual form, outside balancing.
+                            virtual_: line.counter.is_none(),
                         })
                     })
                     .collect::<Result<Vec<_>, SerializeError>>()?;
+                if let Some(counter) = counter {
+                    rows.push(Row::counter(&counter.0));
+                }
                 (period, description, rows)
             }
             Chunk::Event(event) => {
-                let rows = event
+                let mut rows = event
                     .postings
                     .iter()
                     .flat_map(|posting: &Posting| {
                         posting.amounts.iter().map(move |amount| Row {
                             account: &posting.account.0,
-                            amount,
+                            amount: Some(amount),
                             // An event's postings carry no `line:` — the event
                             // IS the row, and its id is its block's index.
                             tags: String::new(),
+                            virtual_: event.counter.is_none(),
                         })
                     })
                     .collect::<Vec<_>>();
+                if let Some(counter) = &event.counter {
+                    rows.push(Row::counter(&counter.0));
+                }
                 (event.date.as_str(), event.description.as_str(), rows)
             }
         };
@@ -551,7 +657,8 @@ impl ProjectionDoc {
         // a scenario written twice produces identical bytes.
         let width = rows
             .iter()
-            .map(|row| wrapped(row.account).chars().count())
+            .filter(|row| row.amount.is_some())
+            .map(|row| row.rendered_account().chars().count())
             .max()
             .unwrap_or(0);
         for row in &rows {
@@ -563,10 +670,26 @@ impl ProjectionDoc {
 }
 
 /// Where each chunk of a scenario goes.
+///
+/// # Order is the scenario's (the what-if table's Move up / Move down)
+///
+/// The scenario's order — recurring rules by the FIRST APPEARANCE of their
+/// group in `lines`, events in `events` order — is the order the file states
+/// them in. The block a chunk claims (by its `rule:K` key) is not necessarily
+/// where it is written: the claimed blocks are SLOTS, and the chunks fill them
+/// in scenario order. So reordering two rows reorders their blocks while every
+/// byte between blocks (a comment, a transaction) stays where it was, and a
+/// deleted block still removes its own slot rather than shifting every later
+/// block's bytes.
+///
+/// Rules and events fill separate slot sets. A file that interleaves the two —
+/// a rule, a dated one-off, another rule — keeps that interleaving, because the
+/// table orders each kind only among its own.
 struct Assignment<'a> {
-    /// Block index → the chunk that rewrites it.
-    claimed: BTreeMap<usize, Chunk<'a>>,
-    /// Chunks with no block of their own, in scenario order.
+    /// Block index → the chunk written there, and whether that chunk CLAIMED
+    /// this very block. Only an in-place chunk may keep the block's own bytes.
+    slots: BTreeMap<usize, (Chunk<'a>, bool)>,
+    /// Chunks with no slot, in scenario order: rules first, then events.
     appended: Vec<Chunk<'a>>,
 }
 
@@ -581,19 +704,30 @@ enum Chunk<'a> {
     Event(&'a ScenarioEvent),
 }
 
-/// Work out which of `blocks` existing `~` blocks each chunk of `scenario`
-/// rewrites, and which chunks have no block yet.
-///
-/// A chunk claims block K when its key is `rule:K` and K is a block the file
-/// has. First claimant wins — two chunks cannot share one block's bytes — and
-/// the loser is appended, which is visible rather than lost.
-fn assign_to<'a>(scenario: &'a Scenario, blocks: usize) -> Assignment<'a> {
-    let mut claimed: BTreeMap<usize, Chunk<'a>> = BTreeMap::new();
-    let mut appended: Vec<Chunk<'a>> = Vec::new();
+impl<'a> Chunk<'a> {
+    /// The id this chunk was read under: a rule's group, or an event's id.
+    fn key(&self) -> &str {
+        match self {
+            Chunk::Rule { key, .. } => key,
+            Chunk::Event(event) => &event.id,
+        }
+    }
 
-    // Recurring lines, grouped by `group` in FIRST-APPEARANCE order. Iterating
-    // a `BTreeMap` instead would put `rule:10` before `rule:2`, and the order
-    // chunks are appended in is the order the table shows them.
+    /// [`Chunk::key`], borrowed from the scenario rather than the chunk.
+    fn into_key(self) -> &'a str {
+        match self {
+            Chunk::Rule { key, .. } => key,
+            Chunk::Event(event) => &event.id,
+        }
+    }
+}
+
+/// Every chunk of `scenario` in the order the file states them: recurring
+/// rules by the first appearance of their group in `lines`, and events.
+///
+/// Iterating a `BTreeMap` of groups instead would put `rule:10` before
+/// `rule:2`, and this is the order the table shows them in.
+fn chunks_of(scenario: &Scenario) -> (Vec<Chunk<'_>>, Vec<Chunk<'_>>) {
     let mut order: Vec<&str> = Vec::new();
     let mut groups: BTreeMap<&str, Vec<&ScenarioLine>> = BTreeMap::new();
     for line in &scenario.lines {
@@ -602,27 +736,87 @@ fn assign_to<'a>(scenario: &'a Scenario, blocks: usize) -> Assignment<'a> {
         }
         groups.entry(&line.group).or_default().push(line);
     }
-
-    let mut place =
-        |key: &str, chunk: Chunk<'a>| match block_of(key).filter(|index| *index < blocks) {
-            Some(index) if !claimed.contains_key(&index) => {
-                claimed.insert(index, chunk);
-            }
-            _ => appended.push(chunk),
-        };
-    for key in order {
-        place(
+    let rules = order
+        .into_iter()
+        .map(|key| Chunk::Rule {
             key,
-            Chunk::Rule {
-                key,
-                lines: groups.remove(key).unwrap_or_default(),
-            },
-        );
+            lines: groups.remove(key).unwrap_or_default(),
+        })
+        .collect();
+    let events = scenario.events.iter().map(Chunk::Event).collect();
+    (rules, events)
+}
+
+/// Work out which of `blocks` existing `~` blocks each chunk of `scenario` is
+/// written into, and which chunks go at EOF — see [`Assignment`].
+///
+/// A chunk CLAIMS block K when its key is `rule:K` and K is a block the file
+/// has. First claimant wins, so two chunks can never both keep one block's
+/// bytes. The claimed blocks of each kind are that kind's slots, and a block
+/// nothing claims is removed.
+fn assign_to<'a>(scenario: &'a Scenario, blocks: usize) -> Assignment<'a> {
+    let (rules, events) = chunks_of(scenario);
+    let mut claimed: BTreeSet<usize> = BTreeSet::new();
+    let mut slots: BTreeMap<usize, (Chunk<'a>, bool)> = BTreeMap::new();
+    let mut appended: Vec<Chunk<'a>> = Vec::new();
+    for kind in [rules, events] {
+        let claims: Vec<Option<usize>> = kind
+            .iter()
+            .map(|chunk| {
+                block_of(chunk.key())
+                    .filter(|index| *index < blocks)
+                    .filter(|index| claimed.insert(*index))
+            })
+            .collect();
+        let mut free: Vec<usize> = claims.iter().flatten().copied().collect();
+        free.sort_unstable();
+        let mut free = free.into_iter();
+        for (chunk, claim) in kind.into_iter().zip(claims) {
+            match free.next() {
+                Some(slot) => {
+                    slots.insert(slot, (chunk, claim == Some(slot)));
+                }
+                None => appended.push(chunk),
+            }
+        }
     }
-    for event in &scenario.events {
-        place(&event.id, Chunk::Event(event));
+    Assignment { slots, appended }
+}
+
+/// Each block's key (a rule's group, an event's id) in the order a save writes
+/// the blocks, which is the order hledger reads the rules in and so the order
+/// `hledger print --forecast` lists two same-day generated transactions in.
+///
+/// It is [`assign_to`]'s, with every `rule:K` key taken as a block the file
+/// has: true of any scenario read from its file, whose keys ARE the block
+/// indices. Keys with no slot follow, rules first, as a save appends them.
+pub(crate) fn block_order(scenario: &Scenario) -> Vec<&str> {
+    let Assignment { slots, appended } = assign_to(scenario, usize::MAX);
+    slots
+        .into_values()
+        .map(|(chunk, _)| chunk)
+        .chain(appended)
+        .map(Chunk::into_key)
+        .collect()
+}
+
+/// Which `line:` value each row of a chunk states.
+enum Tags<'a> {
+    /// What a FILE states, which is all a reader can know: a tagged posting's
+    /// id is its tag, and an untagged one's is derived (`rule:K:N`). Used for
+    /// what an existing block says, and for what a written file reads back as.
+    Literal,
+    /// What a save writes: [`line_tag_values`] for the scenario being saved.
+    Assigned(&'a BTreeMap<String, String>),
+}
+
+impl Tags<'_> {
+    fn of<'b>(&'b self, key: &str, at: usize, line: &'b ScenarioLine) -> Option<&'b str> {
+        match self {
+            Tags::Literal => row_id_tag(key, at, &line.id),
+            Tags::Assigned(values) => values.get(&line.id).map(String::as_str),
+        }
     }
-    Assignment { claimed, appended }
 }
 
 /// What one chunk SAYS, as a list of strings — one per row, headed by the
@@ -640,22 +834,24 @@ fn assign_to<'a>(scenario: &'a Scenario, blocks: usize) -> Assignment<'a> {
 ///
 /// # Errors
 /// [`SerializeError::Invalid`] when a field cannot be rendered.
-fn chunk_print(chunk: &Chunk<'_>) -> Result<Vec<String>, SerializeError> {
+fn chunk_print(chunk: &Chunk<'_>, tags: &Tags<'_>) -> Result<Vec<String>, SerializeError> {
     let mut rows = Vec::new();
     match chunk {
         Chunk::Rule { key, lines } => {
             let period = lines
                 .first()
                 .map_or("monthly", |line| line.period.raw.as_str());
-            let note = lines.first().map_or("", |line| line.note.as_str());
+            // Trimmed, as `rule_header` writes it: a description typed with a
+            // trailing space is the same description.
+            let note = lines.first().map_or("", |line| line.note.trim());
             rows.push(format!("~ {period} | {note}"));
             for (at, line) in lines.iter().enumerate() {
                 rows.push(format!(
-                    "{} {} | {} | line {} | growth {} | opening {} | every {}",
+                    "{} {} | {} | line {} | growth {} | opening {} | every {} | counter {} | gains {}",
                     line.account.0,
                     render_scenario_amount(&line.amount)?,
                     line.role.as_str(),
-                    row_id_tag(key, at, &line.id).unwrap_or("-"),
+                    tags.of(key, at, line).unwrap_or("-"),
                     line.growth
                         .as_ref()
                         .map_or_else(|| "-".to_string(), render_growth),
@@ -665,11 +861,21 @@ fn chunk_print(chunk: &Chunk<'_>) -> Result<Vec<String>, SerializeError> {
                         .transpose()?
                         .unwrap_or_else(|| "-".to_string()),
                     line.period.raw,
+                    line.counter.as_ref().map_or("-", |counter| counter.0.as_str()),
+                    line.gains.as_ref().map_or("-", |gains| gains.0.as_str()),
                 ));
             }
         }
         Chunk::Event(event) => {
-            rows.push(format!("~ {} | {}", event.date, event.description));
+            rows.push(format!(
+                "~ {} | {} | counter {}",
+                event.date,
+                event.description.trim(),
+                event
+                    .counter
+                    .as_ref()
+                    .map_or("-", |counter| counter.0.as_str())
+            ));
             for posting in &event.postings {
                 for amount in &posting.amounts {
                     rows.push(format!(
@@ -684,37 +890,200 @@ fn chunk_print(chunk: &Chunk<'_>) -> Result<Vec<String>, SerializeError> {
     Ok(rows)
 }
 
-/// The `line:` tag value a row needs, or `None` when the id is the one a reader
-/// derives from the block: `rule:K:N` for the Nth posting of block K.
-///
-/// Writing the tag always would put a machine handle on every line of every
-/// file for the sake of the few that need one — and the few that need one are
-/// exactly the step changes the tag exists for. Both sides of a round-trip
-/// comparison ask this about their OWN key, which is what makes the answer
-/// stable when a block's index has moved.
+/// The `line:` tag a posting in a FILE states, read back off its id: `None`
+/// when the id is the one a reader derives from the block, `rule:K:N` for the
+/// Nth posting of block K. Asked about a chunk's OWN key, so the answer does
+/// not depend on where the block sits.
 fn row_id_tag<'a>(key: &str, at: usize, id: &'a str) -> Option<&'a str> {
     (id != format!("{key}:{at}")).then_some(id)
+}
+
+/// The `line:` value each logical row WRITES, keyed by the row's model id.
+///
+/// # A tag only where one is needed
+///
+/// The tag exists to tie the segments of a STEP CHANGE — one logical row
+/// spread over two or more `~` blocks — back into one row. A row with one
+/// segment needs none: the reader derives its id from its position
+/// (`rule:K:N`), and that id only has to be stable for as long as one load
+/// lasts. So a row is tagged iff its id is on more than one line, and no other
+/// row writes one — which also drops, on the next save, the `line: gap:…` tag
+/// earlier versions put on every seeded row.
+///
+/// # Which value
+///
+/// An id that is already a readable value a person or an earlier save chose
+/// (`payroll`) is kept, so a hand-written file is not churned. An id that is
+/// a machine handle gets a short readable one instead, from its account's leaf
+/// (`expenses:payroll` → `payroll`), de-duplicated with a suffix
+/// (`payroll-2`). A machine handle is anything with a colon — the reader's
+/// positional `rule:K:N`, the seed's `gap:<account>:<commodity>` — or the
+/// table's own `line-N`/`group-N`/`event-N`.
+///
+/// **No written tag ever contains a colon**, so none can equal a derived
+/// `rule:K:N`. That is what keeps reading stable across a reorder: a single
+/// segment whose derived id happens to become `rule:3:0` after a move can never
+/// be mistaken for one half of a step whose tag was written in another block.
+fn line_tag_values(scenario: &Scenario) -> BTreeMap<String, String> {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut order: Vec<&ScenarioLine> = Vec::new();
+    for line in &scenario.lines {
+        let count = counts.entry(line.id.as_str()).or_default();
+        if *count == 0 {
+            order.push(line);
+        }
+        *count += 1;
+    }
+    let steps: Vec<&ScenarioLine> = order
+        .into_iter()
+        .filter(|line| counts.get(line.id.as_str()).is_some_and(|count| *count > 1))
+        .collect();
+
+    // Kept values first, so a derived one can never take a name a kept one has.
+    let mut taken: BTreeSet<String> = steps
+        .iter()
+        .filter(|line| keeps_its_id(&line.id))
+        .map(|line| line.id.clone())
+        .collect();
+    steps
+        .into_iter()
+        .map(|line| {
+            if keeps_its_id(&line.id) {
+                return (line.id.clone(), line.id.clone());
+            }
+            let base = readable_id(&line.account.0);
+            let value = std::iter::once(base.clone())
+                .chain((2..).map(|n| format!("{base}-{n}")))
+                .find(|candidate| !taken.contains(candidate))
+                .unwrap_or(base);
+            taken.insert(value.clone());
+            (line.id.clone(), value)
+        })
+        .collect()
+}
+
+/// Whether a model id is already a readable `line:` value worth keeping — see
+/// [`line_tag_values`].
+fn keeps_its_id(id: &str) -> bool {
+    let machine = id.contains(':')
+        || ["line-", "group-", "event-"].iter().any(|prefix| {
+            id.strip_prefix(prefix)
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        });
+    !machine && id.len() <= MAX_ID_BYTES && check_tag_value(id, "a line id").is_ok()
+}
+
+/// The longest id [`readable_id`] makes. Short on purpose: it is a handle a
+/// person reads in the file, not a name.
+const MAX_READABLE_ID: usize = 40;
+
+/// `expenses:Team Payroll` → `team-payroll`: the account's leaf, lowercased,
+/// ASCII alphanumerics only, every other run one `-`. `step` when nothing
+/// survives (a leaf in another script).
+fn readable_id(account: &str) -> String {
+    let leaf = account.rsplit(':').next().unwrap_or_default();
+    let mut slug = String::new();
+    for c in leaf.chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c.to_ascii_lowercase());
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let clipped: String = slug.chars().take(MAX_READABLE_ID).collect();
+    match clipped.trim_end_matches('-') {
+        "" => "step".to_string(),
+        readable => readable.to_string(),
+    }
 }
 
 /// One posting line, before it is laid out.
 struct Row<'a> {
     account: &'a str,
-    amount: &'a Amount,
+    /// `None` for the block's amountless counter posting.
+    amount: Option<&'a Amount>,
     tags: String,
+    /// Written `(account)`: a pre-plan-28 line with no counter-account.
+    virtual_: bool,
 }
 
-/// `(account)` — every projection posting is an unbalanced virtual one, exactly
-/// as budget goals are. There is no funding leg and none is wanted; the
-/// engine's residual rule says how the cash effect is derived.
+impl<'a> Row<'a> {
+    /// The block's counter-account: a regular posting with no amount, which
+    /// hledger infers to balance every regular posting above it.
+    fn counter(account: &'a str) -> Self {
+        Self {
+            account,
+            amount: None,
+            tags: String::new(),
+            virtual_: false,
+        }
+    }
+
+    /// The account as the line writes it.
+    fn rendered_account(&self) -> String {
+        if self.virtual_ {
+            wrapped(self.account)
+        } else {
+            self.account.to_string()
+        }
+    }
+}
+
+/// `(account)` — the pre-plan-28 form: an unbalanced virtual posting, as budget
+/// goals are, whose cash effect the engine's legacy residual rule derives. A
+/// line WITH a counter-account is written plain, and the block ends with the
+/// amountless counter posting, so the rule is ordinary balanced hledger.
 fn wrapped(account: &str) -> String {
     format!("({account})")
+}
+
+/// The ONE counter-account a block's lines share, if any.
+///
+/// A block has one amountless posting at most (hledger can infer only one), so
+/// two lines of one rule with two different counter-accounts cannot be written
+/// as one rule. Refused rather than silently picking one — the other line's
+/// money would land somewhere else — exactly as two recurrences are.
+fn block_counter<'a>(
+    lines: &[&'a ScenarioLine],
+) -> Result<Option<&'a AccountName>, SerializeError> {
+    let mut found: Option<&AccountName> = None;
+    for counter in lines.iter().filter_map(|line| line.counter.as_ref()) {
+        match found {
+            Some(seen) if seen != counter => {
+                return Err(invalid(
+                    "every line of one rule must share its counter-account; split them into \
+                     separate rules to give them different ones",
+                ));
+            }
+            _ => found = Some(counter),
+        }
+    }
+    Ok(found)
+}
+
+/// hledger's one-letter `type:` code.
+const fn type_letter(ty: AccountType) -> &'static str {
+    match ty {
+        AccountType::Asset => "A",
+        AccountType::Liability => "L",
+        AccountType::Equity => "E",
+        AccountType::Revenue => "R",
+        AccountType::Expense => "X",
+        AccountType::Cash => "C",
+        AccountType::Conversion => "V",
+        AccountType::Gain => "G",
+    }
 }
 
 /// `    (account)   $1,200.00  ; growth: 3%/yr`
 fn render_row(row: &Row<'_>, width: usize) -> Result<String, SerializeError> {
     check_account(row.account)?;
-    let account = wrapped(row.account);
-    let amount = render_scenario_amount(row.amount)?;
+    let account = row.rendered_account();
+    let Some(amount) = row.amount else {
+        // The amountless counter posting: the account and nothing else.
+        return Ok(format!("{INDENT}{account}"));
+    };
+    let amount = render_scenario_amount(amount)?;
     // `chars`, not `len`: a padding computed in bytes puts a multi-byte account
     // name's amount in the wrong column. Two spaces minimum, because that is
     // what separates an account from an amount.
@@ -762,9 +1131,9 @@ fn rule_header(period: &str, description: &str) -> Result<String, SerializeError
 /// A [`LineRole::Flow`] row writes `growth:` only when it HAS one, exactly as
 /// before — which is what makes every scenario file written before asset rows
 /// existed keep its meaning byte for byte.
-fn line_tags(key: &str, at: usize, line: &ScenarioLine) -> Result<String, SerializeError> {
+fn line_tags(tag: Option<&str>, line: &ScenarioLine) -> Result<String, SerializeError> {
     let mut parts = Vec::new();
-    if let Some(id) = row_id_tag(key, at, &line.id) {
+    if let Some(id) = tag {
         check_tag_value(id, "a line id")?;
         if id.len() > MAX_ID_BYTES {
             return Err(invalid(&format!(
@@ -781,6 +1150,16 @@ fn line_tags(key: &str, at: usize, line: &ScenarioLine) -> Result<String, Serial
     }
     if let Some(opening) = &line.opening {
         parts.push(format!("opening: {}", render_opening(line, opening)?));
+    }
+    if let Some(gains) = &line.gains {
+        if line.role != LineRole::Asset {
+            return Err(invalid(
+                "only an asset row may name a gains account: a flow line does not appreciate",
+            ));
+        }
+        check_account(&gains.0)?;
+        check_tag_value(&gains.0, "a gains account")?;
+        parts.push(format!("gains: {}", gains.0));
     }
     Ok(parts.join(", "))
 }
@@ -1030,7 +1409,7 @@ fn is_header_comment(comment: &str) -> bool {
     comment.split_once(':').is_some_and(|(key, _)| {
         matches!(
             key.trim().to_ascii_lowercase().as_str(),
-            "projection" | "created" | "updated"
+            "projection" | "created" | "updated" | "cash"
         )
     })
 }
@@ -1075,11 +1454,13 @@ fn confirm_round_trip(
     scenario: &Scenario,
     source_name: &str,
 ) -> Result<(), SerializeError> {
-    let want = prints(&doc.assign(scenario))?;
+    let values = line_tag_values(scenario);
+    let want = prints(scenario, &Tags::Assigned(&values))?;
     let written = scenario_from_text(text, source_name, "", &doc.declared)?;
-    // Against a document with NO blocks, so every chunk of the re-read scenario
-    // is printed in file order — the order `want` is already in.
-    let got = prints(&assign_to(&written, 0))?;
+    // What the FILE states, read back with nothing assigned: a row whose tag
+    // was written reads back with that tag as its id, and one with none reads
+    // back with the id its position derives.
+    let got = prints(&written, &Tags::Literal)?;
     if want == got {
         return Ok(());
     }
@@ -1098,16 +1479,18 @@ fn confirm_round_trip(
     Err(SerializeError::NotRoundTripped(detail))
 }
 
-/// Every chunk of an assignment, printed, in the order they land in the file:
-/// the claimed blocks by index, then the appended ones.
-fn prints(assignment: &Assignment<'_>) -> Result<Vec<String>, SerializeError> {
+/// Every chunk of a scenario, printed: its rules in order, then its events in
+/// order.
+///
+/// Each kind in the order the FILE states it, which is the scenario's order
+/// ([`Assignment`]) — so a written scenario and the same file re-read print
+/// alike, whatever order its blocks held before the save and however a file
+/// interleaves rules with events.
+fn prints(scenario: &Scenario, tags: &Tags<'_>) -> Result<Vec<String>, SerializeError> {
+    let (rules, events) = chunks_of(scenario);
     let mut out = Vec::new();
-    for chunk in assignment
-        .claimed
-        .values()
-        .chain(assignment.appended.iter())
-    {
-        out.extend(chunk_print(chunk)?);
+    for chunk in rules.iter().chain(&events) {
+        out.extend(chunk_print(chunk, tags)?);
     }
     Ok(out)
 }
@@ -1192,6 +1575,8 @@ mod tests {
 
     fn line(group: &str, id: &str, account: &str, amount: Amount, period: &str) -> ScenarioLine {
         ScenarioLine {
+            counter: None,
+            gains: None,
             id: id.to_string(),
             group: group.to_string(),
             role: LineRole::Flow,
@@ -1344,6 +1729,7 @@ mod tests {
     #[test]
     fn a_new_file_round_trips_and_states_its_header() {
         let scenario = Scenario {
+            cash: None,
             name: "Plan B".to_string(),
             created: Some("2026-01-01".to_string()),
             updated: Some("2026-09-20".to_string()),
@@ -1370,6 +1756,7 @@ mod tests {
                 ),
             ],
             events: vec![ScenarioEvent {
+                counter: None,
                 id: "rule:1".to_string(),
                 date: "2027-03-01".to_string(),
                 description: "Series A".to_string(),
@@ -1476,8 +1863,25 @@ mod tests {
             "p.journal",
         )
         .expect("it writes");
-        assert_eq!(text, ASSETS, "an unchanged scenario rewrites no byte");
+        // The one byte change an unchanged pre-plan-28 file gets on save: its
+        // growing asset rows book appreciation to `equity:unrealized gains`,
+        // which the main journal does not declare, so the FILE declares it
+        // (plan 28 Decision 4) — under the header, set off by a blank line.
+        let upgraded = ASSETS.replacen(
+            "\n\n~ monthly",
+            "\n\naccount equity:unrealized gains  ; type: E\n\n~ monthly",
+            1,
+        );
+        assert_eq!(text, upgraded);
         assert_eq!(read(&text), scenario);
+        // …and only once: the second save of the same scenario rewrites no byte.
+        let again = write_scenario(
+            &ProjectionDoc::parse(&text, "p.journal", &declared()).unwrap(),
+            &scenario,
+            "p.journal",
+        )
+        .expect("it writes again");
+        assert_eq!(again, text, "an unchanged scenario rewrites no byte");
     }
 
     /// **The compatibility pin.** A posting with no `growth:` stays a flow line
@@ -1850,9 +2254,12 @@ account expenses:rent    ; type: X
     }
 
     #[test]
-    fn an_id_that_would_not_survive_the_tag_grammar_is_refused() {
+    fn an_id_that_would_not_survive_the_tag_grammar_is_never_written() {
+        // An id is only written for a step change now, and a step whose id
+        // would not survive the tag grammar is written under a readable one
+        // instead — so neither shape can produce an unreadable `line:` tag.
         for id in ["a,b", "a;b", " a", ""] {
-            let scenario = Scenario {
+            let single = Scenario {
                 lines: vec![line(
                     "rule:0",
                     id,
@@ -1862,43 +2269,384 @@ account expenses:rent    ; type: X
                 )],
                 ..Scenario::default()
             };
-            assert!(
-                matches!(
-                    new_file(&scenario, "p.journal", &declared()),
-                    Err(SerializeError::Invalid(_))
-                ),
-                "accepted `{id}`"
-            );
+            let text = new_file(&single, "p.journal", &declared()).expect("a single row writes");
+            assert!(!text.contains("line:"), "{text}");
+
+            let step = Scenario {
+                lines: vec![
+                    line(
+                        "rule:0",
+                        id,
+                        "expenses:a",
+                        usd(Dec::new(1, 0), 0),
+                        "monthly to 2027-04-01",
+                    ),
+                    line(
+                        "rule:1",
+                        id,
+                        "expenses:a",
+                        usd(Dec::new(2, 0), 0),
+                        "monthly from 2027-04-01",
+                    ),
+                ],
+                ..Scenario::default()
+            };
+            let text = new_file(&step, "p.journal", &declared()).expect("a step writes");
+            assert_eq!(text.matches("; line: a\n").count(), 2, "`{id}`: {text}");
         }
     }
 
+    /// Two segments of one logical row, in blocks `first` and `second`.
+    fn step(first: &str, second: &str, id: &str, account: &str) -> [ScenarioLine; 2] {
+        [
+            line(
+                first,
+                id,
+                account,
+                usd(Dec::new(50, 0), 0),
+                "monthly to 2027-04-01",
+            ),
+            line(
+                second,
+                id,
+                account,
+                usd(Dec::new(120, 0), 0),
+                "monthly from 2027-04-01",
+            ),
+        ]
+    }
+
     #[test]
-    fn the_line_tag_is_written_only_when_the_id_is_not_derivable() {
+    fn the_line_tag_is_written_only_for_a_step_change() {
+        let mut lines = vec![
+            // A single segment, whatever its id, writes no tag.
+            line(
+                "rule:0",
+                "rule:0:0",
+                "expenses:a",
+                usd(Dec::new(1, 0), 0),
+                "monthly",
+            ),
+            line(
+                "rule:0",
+                "payroll",
+                "expenses:b",
+                usd(Dec::new(2, 0), 0),
+                "monthly",
+            ),
+            line(
+                "gap:x",
+                "gap:expenses:c:$",
+                "expenses:c",
+                usd(Dec::new(3, 0), 0),
+                "monthly",
+            ),
+        ];
+        // A step under a machine id gets a readable one from its account leaf…
+        lines.extend(step(
+            "rule:1",
+            "group-1",
+            "rule:1:0",
+            "expenses:team:Payroll",
+        ));
+        // …a second step on a same-named leaf is de-duplicated…
+        lines.extend(step(
+            "rule:2",
+            "group-2",
+            "line-4",
+            "expenses:contractors:payroll",
+        ));
+        // …and a readable id somebody chose is kept as it is.
+        lines.extend(step("rule:3", "group-3", "hiring", "expenses:recruiting"));
         let scenario = Scenario {
-            lines: vec![
-                line(
-                    "rule:0",
-                    "rule:0:0",
-                    "expenses:a",
-                    usd(Dec::new(1, 0), 0),
-                    "monthly",
-                ),
-                line(
-                    "rule:0",
-                    "payroll",
-                    "expenses:b",
-                    usd(Dec::new(2, 0), 0),
-                    "monthly",
-                ),
-            ],
+            lines,
             ..Scenario::default()
         };
         let text = new_file(&scenario, "p.journal", &declared()).unwrap();
         assert!(text.contains("(expenses:a)  $1\n"), "{text}");
-        assert!(
-            text.contains("(expenses:b)  $2  ; line: payroll\n"),
+        assert!(text.contains("(expenses:b)  $2\n"), "{text}");
+        assert!(text.contains("(expenses:c)  $3\n"), "{text}");
+        assert_eq!(text.matches("; line: payroll\n").count(), 2, "{text}");
+        assert_eq!(text.matches("; line: payroll-2\n").count(), 2, "{text}");
+        assert_eq!(text.matches("; line: hiring\n").count(), 2, "{text}");
+        assert_eq!(text.matches("line:").count(), 6, "{text}");
+
+        // And it reads back as three single rows and three two-segment ones.
+        let reread = read(&text);
+        let ids: BTreeSet<&str> = reread.lines.iter().map(|line| line.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            BTreeSet::from([
+                "rule:0:0",
+                "rule:0:1",
+                "rule:1:0",
+                "payroll",
+                "payroll-2",
+                "hiring"
+            ])
+        );
+    }
+
+    #[test]
+    fn a_legacy_gap_tag_still_loads_and_is_dropped_on_the_next_save() {
+        // Every seeded row used to be saved with `; line: gap:<account>:<commodity>`.
+        const LEGACY: &str = "\
+; Ledgeline projection
+; projection: Old
+
+~ monthly  unbudgeted — average over 2025-11-01 to 2026-10-22
+    (expenses:food)  $450  ; line: gap:expenses:food:$
+
+~ monthly  unbudgeted — average over 2025-11-01 to 2026-10-22
+    (expenses:fuel)  $80  ; line: gap:expenses:fuel:$
+";
+        let scenario = read(LEGACY);
+        assert_eq!(scenario.lines.len(), 2);
+        assert_eq!(scenario.lines[0].id, "gap:expenses:food:$");
+        assert_eq!(scenario.lines[1].id, "gap:expenses:fuel:$");
+
+        let doc = ProjectionDoc::parse(LEGACY, "p.journal", &declared()).unwrap();
+        let text = write_scenario(&doc, &scenario, "p.journal").expect("it writes");
+        assert!(!text.contains("line:"), "{text}");
+        assert!(text.contains("(expenses:food)  $450\n"), "{text}");
+        let reread = read(&text);
+        assert_eq!(reread.lines.len(), 2);
+        assert_eq!(reread.lines[0].id, "rule:0:0");
+        assert_eq!(reread.lines[1].id, "rule:1:0");
+        // A fixed point from here on.
+        let again = write_scenario(
+            &ProjectionDoc::parse(&text, "p.journal", &declared()).unwrap(),
+            &reread,
+            "p.journal",
+        )
+        .unwrap();
+        assert_eq!(text, again);
+    }
+
+    /// Rules, a comment between two of them, an event between two others.
+    const ORDERED: &str = "\
+; Ledgeline projection
+; projection: Ordered
+
+~ monthly  a
+    (expenses:a)  $1
+
+; about b
+~ monthly  b
+    (expenses:b)  $2
+
+~ 2027-03-01  windfall
+    (revenues:gift)  $-100
+
+~ monthly  c
+    (expenses:c)  $3
+    (expenses:d)  $4
+";
+
+    /// The accounts of `text`'s postings, in file order.
+    fn accounts_in(text: &str) -> Vec<String> {
+        text.lines()
+            .filter_map(|line| line.trim_start().strip_prefix('('))
+            .filter_map(|rest| rest.split_once(')'))
+            .map(|(account, _)| account.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn rows_are_written_in_scenario_order_and_the_bytes_between_blocks_stay() {
+        let mut scenario = read(ORDERED);
+        // Move `c`'s rule to the top, and swap its two postings.
+        let (c, rest): (Vec<_>, Vec<_>) = scenario
+            .lines
+            .into_iter()
+            .partition(|line| line.group == "rule:3");
+        scenario.lines = c.into_iter().rev().chain(rest).collect();
+
+        let doc = ProjectionDoc::parse(ORDERED, "p.journal", &declared()).unwrap();
+        let text = write_scenario(&doc, &scenario, "p.journal").expect("it writes");
+        assert_eq!(
+            accounts_in(&text),
+            [
+                "expenses:d",
+                "expenses:c",
+                "expenses:a",
+                "revenues:gift",
+                "expenses:b"
+            ],
             "{text}"
         );
+        // The comment and the event did not move: the RULES filled the rule
+        // slots in their new order, around them.
+        assert!(
+            text.contains("; about b\n~ monthly  a\n    (expenses:a)  $1\n"),
+            "{text}"
+        );
+        assert!(text.contains("~ 2027-03-01  windfall\n"), "{text}");
+        let windfall = text.find("windfall").unwrap();
+        assert!(text.find("(expenses:a)").unwrap() < windfall, "{text}");
+        assert!(windfall < text.find("(expenses:b)").unwrap(), "{text}");
+
+        // The order is what the next load shows, and the result is a fixed point.
+        let reread = read(&text);
+        let order: Vec<&str> = reread
+            .lines
+            .iter()
+            .map(|line| line.account.0.as_str())
+            .collect();
+        assert_eq!(
+            order,
+            ["expenses:d", "expenses:c", "expenses:a", "expenses:b"]
+        );
+        let again = write_scenario(
+            &ProjectionDoc::parse(&text, "p.journal", &declared()).unwrap(),
+            &reread,
+            "p.journal",
+        )
+        .unwrap();
+        assert_eq!(text, again);
+    }
+
+    #[test]
+    fn an_unmoved_scenario_rewrites_nothing() {
+        let scenario = read(ORDERED);
+        let doc = ProjectionDoc::parse(ORDERED, "p.journal", &declared()).unwrap();
+        assert_eq!(
+            write_scenario(&doc, &scenario, "p.journal").unwrap(),
+            ORDERED
+        );
+    }
+
+    #[test]
+    fn a_reordered_step_still_reads_back_as_one_row() {
+        // The caveat the tag rule answers: a single segment saved untagged
+        // reads back as `rule:K:N` for wherever its block lands, so if a step's
+        // tag could ever spell one of those, moving blocks around could weld
+        // an unrelated row onto the step.
+        let mut lines = vec![line(
+            "rule:0",
+            "rule:0:0",
+            "expenses:solo",
+            usd(Dec::new(7, 0), 0),
+            "monthly",
+        )];
+        // A step whose model id is itself a `rule:K:N` — what splitting a
+        // loaded single row produces.
+        lines.extend(step("rule:1", "group-1", "rule:1:0", "expenses:payroll"));
+        let first = new_file(
+            &Scenario {
+                lines,
+                ..Scenario::default()
+            },
+            "p.journal",
+            &declared(),
+        )
+        .unwrap();
+
+        // Move the solo row below the step, and save over the file.
+        let mut scenario = read(&first);
+        scenario.lines.rotate_left(1);
+        let text = write_scenario(
+            &ProjectionDoc::parse(&first, "p.journal", &declared()).unwrap(),
+            &scenario,
+            "p.journal",
+        )
+        .unwrap();
+        let reread = read(&text);
+        assert_eq!(
+            accounts_in(&text),
+            ["expenses:payroll", "expenses:payroll", "expenses:solo"]
+        );
+        let payroll: Vec<&ScenarioLine> = reread
+            .lines
+            .iter()
+            .filter(|line| line.account.0 == "expenses:payroll")
+            .collect();
+        assert_eq!(payroll.len(), 2);
+        assert_eq!(payroll[0].id, "payroll");
+        assert_eq!(payroll[1].id, "payroll");
+        assert_ne!(payroll[0].group, payroll[1].group);
+        let solo = reread
+            .lines
+            .iter()
+            .find(|line| line.account.0 == "expenses:solo")
+            .unwrap();
+        assert_eq!(solo.id, "rule:2:0");
+    }
+
+    #[test]
+    fn a_description_is_the_rule_header_and_survives_a_round_trip() {
+        const SOURCE: &str = "~ monthly  old words\n    (expenses:a)  $1\n    (expenses:b)  $2\n";
+        let mut scenario = read(SOURCE);
+        for line in &mut scenario.lines {
+            line.note = "  rent, after the move  ".to_string();
+        }
+        let text = write_scenario(
+            &ProjectionDoc::parse(SOURCE, "p.journal", &declared()).unwrap(),
+            &scenario,
+            "p.journal",
+        )
+        .unwrap();
+        // ONE header for the rule, two spaces after the period, trimmed.
+        assert!(
+            text.contains("~ monthly  rent, after the move\n    (expenses:a)  $1\n"),
+            "{text}"
+        );
+        let reread = read(&text);
+        assert!(
+            reread
+                .lines
+                .iter()
+                .all(|line| line.note == "rent, after the move")
+        );
+
+        // Cleared, the header is the period alone.
+        for line in &mut scenario.lines {
+            line.note = String::new();
+        }
+        let text = write_scenario(
+            &ProjectionDoc::parse(SOURCE, "p.journal", &declared()).unwrap(),
+            &scenario,
+            "p.journal",
+        )
+        .unwrap();
+        assert!(text.contains("~ monthly\n"), "{text}");
+
+        // And one that would read back as a comment is refused, not truncated.
+        scenario.lines[0].note = "rent ; utilities".to_string();
+        assert!(matches!(
+            write_scenario(
+                &ProjectionDoc::parse(SOURCE, "p.journal", &declared()).unwrap(),
+                &scenario,
+                "p.journal",
+            ),
+            Err(SerializeError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn readable_ids_are_short_ascii_slugs_of_the_leaf() {
+        assert_eq!(readable_id("expenses:Team Payroll"), "team-payroll");
+        assert_eq!(readable_id("expenses:café"), "caf");
+        assert_eq!(readable_id("expenses:日本"), "step");
+        assert_eq!(readable_id("payroll"), "payroll");
+        assert_eq!(
+            readable_id(&format!("x:{}", "a".repeat(80))).len(),
+            MAX_READABLE_ID
+        );
+        assert!(keeps_its_id("payroll"));
+        assert!(keeps_its_id("payroll-2"));
+        for machine in [
+            "rule:3:0",
+            "gap:expenses:food:$",
+            "line-4",
+            "group-12",
+            "event-1",
+            "a,b",
+            "",
+        ] {
+            assert!(!keeps_its_id(machine), "{machine}");
+        }
+        assert!(keeps_its_id("line-up"));
     }
 
     #[test]
@@ -2008,5 +2756,169 @@ account expenses:rent    ; type: X
         let reread =
             scenario_from_text(&text, "p.journal", "fallback", &declared()).expect("it re-reads");
         assert_eq!(reread.lines[0].source, LineSource::Journal);
+    }
+
+    // -----------------------------------------------------------------------
+    // Plan 28: counter-accounts, gains accounts and the `; cash:` header
+    // -----------------------------------------------------------------------
+
+    /// The plan-28 format: a rule whose lines name a counter-account is plain
+    /// balanced hledger — regular postings and ONE amountless counter posting —
+    /// an asset row's gains account rides in a `gains:` tag, an event balances
+    /// against its own amountless posting, and the header names the scenario's
+    /// default cash account. All of it reads back field for field.
+    const BALANCED: &str = "\
+; Ledgeline projection
+; projection: Balanced
+; cash: assets:checking
+
+account equity:unrealized gains  ; type: E
+
+~ monthly  projection
+    revenues:salary   $-12000.00  ; growth: 3%/yr
+    expenses:rent       $4200.00
+    assets:checking
+
+~ monthly  house
+    assets:house           $0.00  ; growth: 4%/yr, gains: equity:home gains
+    assets:checking
+
+~ 2027-03-01  Series A
+    assets:checking  $2000000.00
+    equity:preferred
+";
+
+    #[test]
+    fn a_balanced_file_reads_its_counters_gains_and_cash_header() {
+        let scenario = read(BALANCED);
+        assert_eq!(
+            scenario.cash,
+            Some(AccountName("assets:checking".to_string()))
+        );
+        let counters: Vec<(&str, Option<&str>)> = scenario
+            .lines
+            .iter()
+            .map(|line| {
+                (
+                    line.account.0.as_str(),
+                    line.counter.as_ref().map(|c| c.0.as_str()),
+                )
+            })
+            .collect();
+        // The amountless posting is the counter, never a line of its own.
+        assert_eq!(
+            counters,
+            [
+                ("revenues:salary", Some("assets:checking")),
+                ("expenses:rent", Some("assets:checking")),
+                ("assets:house", Some("assets:checking")),
+            ]
+        );
+        assert_eq!(scenario.lines[2].role, LineRole::Asset);
+        assert_eq!(
+            scenario.lines[2].gains,
+            Some(AccountName("equity:home gains".to_string()))
+        );
+        assert_eq!(scenario.events.len(), 1);
+        assert_eq!(
+            scenario.events[0].counter,
+            Some(AccountName("equity:preferred".to_string()))
+        );
+        assert_eq!(
+            scenario.events[0].postings.len(),
+            1,
+            "the counter is not a posting"
+        );
+
+        // Unchanged, it rewrites no byte; read back, it is the same scenario.
+        let text = write_scenario(
+            &ProjectionDoc::parse(BALANCED, "p.journal", &declared()).unwrap(),
+            &scenario,
+            "p.journal",
+        )
+        .expect("it writes");
+        assert_eq!(read(&text), scenario);
+    }
+
+    /// Written fresh, the counter is the block's last, amountless posting, the
+    /// header carries `; cash:`, and a gains account nobody declares is
+    /// declared in the scenario file (Decision 4) — the main journal untouched.
+    #[test]
+    fn a_new_file_writes_counters_gains_declarations_and_cash() {
+        let mut scenario = read(BALANCED);
+        scenario.lines[2].gains = None; // the default gains account
+        let text = new_file(&scenario, "p.journal", &declared()).expect("it writes");
+        assert!(text.contains("; cash: assets:checking\n"), "{text}");
+        assert!(
+            text.contains("\naccount equity:unrealized gains  ; type: E\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "~ monthly  projection\n    revenues:salary  $-12000.00  ; growth: 3%/yr\n    \
+                 expenses:rent    $4200.00\n    assets:checking\n"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("    assets:checking  $2000000.00\n    equity:preferred\n"),
+            "{text}"
+        );
+        assert_eq!(read(&text), scenario);
+
+        // A gains account the MAIN journal declares is not declared again.
+        let mut main = declared();
+        main.insert(
+            DEFAULT_GAINS_ACCOUNT.to_string(),
+            crate::reports::account_types::AccountType::Equity,
+        );
+        let again = new_file(&scenario, "p.journal", &main).expect("it writes");
+        assert!(
+            !again.contains("account equity:unrealized gains"),
+            "{again}"
+        );
+    }
+
+    /// A pre-plan-28 file keeps its virtual form until a counter is set; then
+    /// its lines become plain postings with the counter beneath them. A line
+    /// with no counter in a rule that has one stays virtual, outside balancing,
+    /// exactly as hledger treats it.
+    #[test]
+    fn a_counter_upgrades_a_legacy_block_and_mixed_lines_stay_virtual() {
+        let legacy = "~ monthly  plan\n    (expenses:rent)      $4200.00\n    (revenues:salary)  $-12000.00\n";
+        let mut scenario = read(legacy);
+        assert!(scenario.lines.iter().all(|line| line.counter.is_none()));
+        scenario.lines[0].counter = Some(AccountName("assets:checking".to_string()));
+        let doc = ProjectionDoc::parse(legacy, "p.journal", &declared()).unwrap();
+        let text = write_scenario(&doc, &scenario, "p.journal").expect("it writes");
+        assert!(
+            text.contains(
+                "    expenses:rent      $4200.00\n    (revenues:salary)  $-12000.00\n    assets:checking\n"
+            ),
+            "{text}"
+        );
+        let reread = read(&text);
+        assert_eq!(reread.lines[0].counter, scenario.lines[0].counter);
+        assert_eq!(reread.lines[1].counter, None);
+    }
+
+    /// One rule cannot carry two counter-accounts — hledger infers only one
+    /// amountless posting — so a save that asks for it is refused, as two
+    /// recurrences in one rule are.
+    #[test]
+    fn two_counters_in_one_rule_are_refused() {
+        let mut scenario = read(BALANCED);
+        scenario.lines[1].counter = Some(AccountName("assets:savings".to_string()));
+        let error = new_file(&scenario, "p.journal", &declared()).unwrap_err();
+        assert!(error.to_string().contains("counter-account"), "{error}");
+    }
+
+    /// A gains account belongs to an asset row only.
+    #[test]
+    fn a_gains_account_on_a_flow_line_is_refused() {
+        let mut scenario = read(BALANCED);
+        scenario.lines[0].gains = Some(AccountName("equity:gains".to_string()));
+        let error = new_file(&scenario, "p.journal", &declared()).unwrap_err();
+        assert!(error.to_string().contains("gains"), "{error}");
     }
 }

@@ -9,6 +9,7 @@
     import {tick} from "svelte";
     import {decToInput, formToBody, txnToForm, validateForm, blankForm, emptyPosting, type TxnForm} from "#lib/api/editMapping.js";
     import type {WireBalanceAssertion, WirePostingType} from "#lib/api/native.js";
+    import DateInput from "#lib/components/DateInput.svelte";
     import {dismissible} from "#lib/keys/dismissible.js";
     import {localToday} from "#lib/stores/filters.svelte.js";
     import {editing} from "#lib/stores/editing.svelte.js";
@@ -183,7 +184,7 @@
                 </label>
                 <label class="form-control sm:col-span-1">
                     <span class="label-text text-xs">Secondary date</span>
-                    <input type="date" class="input w-full input-sm" bind:value={form.date2} disabled={submitting} aria-label="Secondary date" />
+                    <DateInput class="w-full" bind:value={form.date2} disabled={submitting} aria-label="Secondary date" />
                 </label>
                 <label class="form-control sm:col-span-1">
                     <span class="label-text text-xs">Status</span>

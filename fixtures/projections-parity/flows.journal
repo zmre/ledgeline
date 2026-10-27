@@ -1,0 +1,49 @@
+; Ledgeline projection
+; projection: Parity flows
+; created: 2026-10-20
+; updated: 2026-10-20
+; cash: assets:checking
+
+; Flows with EXPLICIT counter-accounts (plan 28 Decision 1): every rule is
+; ordinary balanced hledger, so `hledger bs|is|cf --forecast` over the main
+; journal plus this file must agree with Ledgeline per account, per period.
+; Interval-less recurrences (weekly, every 2 weeks, quarterly, yearly) with no
+; start pin where each tool puts the first occurrence; a bounded rule pins
+; `from` (inclusive) and `to` (exclusive); a dated rule fires once.
+
+~ monthly  salary and rent
+    revenues:salary      $-6000.00
+    expenses:rent         $2000.00
+    assets:checking
+
+~ monthly  card spending
+    expenses:food          $600.00
+    liabilities:card
+
+~ monthly  card payment
+    liabilities:card       $600.00
+    assets:checking
+
+~ quarterly  insurance
+    expenses:insurance     $900.00
+    assets:savings
+
+~ weekly  coffee
+    expenses:food           $25.00
+    assets:checking
+
+~ every 2 weeks  allowance
+    expenses:food           $40.00
+    assets:checking
+
+~ yearly  subscription
+    expenses:insurance     $120.00
+    assets:checking
+
+~ monthly from 2026-11-15 to 2027-03-15  consulting, bounded
+    expenses:consulting   $1000.00
+    assets:checking
+
+~ 2026-12-20  year-end bonus
+    revenues:bonus       $-5000.00
+    assets:checking

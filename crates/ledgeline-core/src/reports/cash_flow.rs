@@ -39,7 +39,7 @@ fn bucket_of(ranges: &[(String, String)], date: &str) -> Option<usize> {
 }
 
 /// Commodity-wise sum of `amounts`.
-fn sum(amounts: &[MixedAmount]) -> Result<MixedAmount, ReportError> {
+pub(super) fn sum(amounts: &[MixedAmount]) -> Result<MixedAmount, ReportError> {
     Ok(amounts
         .iter()
         .try_fold(MixedAmount::new(), |acc, ma| acc.ma_add(ma))?)
@@ -49,7 +49,7 @@ fn sum(amounts: &[MixedAmount]) -> Result<MixedAmount, ReportError> {
 /// pivot into rows (the union of accounts across buckets, sorted), each with its
 /// Total across the buckets. Also returns each bucket's total, summed over the
 /// UNCLAMPED accounts so it does not move with `depth` (RPT-4).
-fn pivot(
+pub(super) fn pivot(
     direct: &[BTreeMap<String, MixedAmount>],
     depth: usize,
 ) -> Result<(Vec<PeriodRow>, Vec<MixedAmount>), ReportError> {
@@ -146,6 +146,44 @@ pub fn cash_flow_range(
     cash_flow_over(txns, buckets, &ranges, depth, is_cash)
 }
 
+/// ONE pass over every posting whose account `include` admits, summing per
+/// FULL account name into its own bucket — i.e. exactly what
+/// `account_totals(from, to)` would have produced for that bucket, and in the
+/// same transaction order, so no number can move. `ranges[i]` is the inclusive
+/// span of bucket `i`, contiguous and ascending. An account with postings that
+/// net to zero keeps its (empty) slot.
+///
+/// `include` must be a pure function of the account name: it is consulted
+/// once per DISTINCT account.
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow.
+pub(crate) fn bucket_totals(
+    txns: &[Transaction],
+    ranges: &[(String, String)],
+    include: &dyn Fn(&str) -> bool,
+) -> Result<Vec<BTreeMap<String, MixedAmount>>, ReportError> {
+    let mut direct: Vec<BTreeMap<&str, MixedAmount>> = vec![BTreeMap::new(); ranges.len()];
+    let mut admitted: HashMap<&str, bool> = HashMap::new();
+    for txn in txns {
+        for posting in &txn.postings {
+            let date = posting.date.as_deref().unwrap_or(&txn.date);
+            let Some(index) = bucket_of(ranges, date) else {
+                continue;
+            };
+            let account = posting.account.0.as_str();
+            if !*admitted.entry(account).or_insert_with(|| include(account)) {
+                continue;
+            }
+            let entry = direct[index].entry(account).or_default();
+            for amount in &posting.amounts {
+                entry.accumulate(&amount.commodity, amount.quantity)?;
+            }
+        }
+    }
+    Ok(direct.into_iter().map(pruned).collect())
+}
+
 /// The one cash-flow pass both windows share: `ranges[i]` is the inclusive
 /// span of `buckets[i]`, contiguous and ascending.
 fn cash_flow_over(
@@ -156,30 +194,7 @@ fn cash_flow_over(
     is_cash: Option<&dyn Fn(&str) -> bool>,
 ) -> Result<PeriodReport, ReportError> {
     let is_cash = is_cash.unwrap_or(&is_cash_like);
-
-    // ONE pass over every posting, summing per FULL account name into its own
-    // bucket — i.e. exactly what `account_totals(from, to)` would have produced
-    // for that bucket, and in the same transaction order, so no number can move.
-    let mut direct: Vec<BTreeMap<&str, MixedAmount>> = vec![BTreeMap::new(); ranges.len()];
-    let mut cash_like: HashMap<&str, bool> = HashMap::new();
-    for txn in txns {
-        for posting in &txn.postings {
-            let date = posting.date.as_deref().unwrap_or(&txn.date);
-            let Some(index) = bucket_of(ranges, date) else {
-                continue;
-            };
-            let account = posting.account.0.as_str();
-            if !*cash_like.entry(account).or_insert_with(|| is_cash(account)) {
-                continue;
-            }
-            let entry = direct[index].entry(account).or_default();
-            for amount in &posting.amounts {
-                entry.accumulate(&amount.commodity, amount.quantity)?;
-            }
-        }
-    }
-
-    let direct: Vec<BTreeMap<String, MixedAmount>> = direct.into_iter().map(pruned).collect();
+    let direct = bucket_totals(txns, ranges, is_cash)?;
     let (rows, totals) = pivot(&direct, depth)?;
     Ok(PeriodReport {
         buckets,
