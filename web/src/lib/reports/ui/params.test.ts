@@ -3,6 +3,7 @@ import {
     alignToEnd,
     budgetRedirect,
     defaultReportParams,
+    intervalLabel,
     MAX_COUNT,
     paramsToSearch,
     rangeKeys,
@@ -25,6 +26,9 @@ describe("UNIT reports/ui/params", () => {
                 // (24 complete months ending with the last full month).
                 tab: "insights",
                 asOf: "2026-07-08",
+                // The balance sheet's multi-period start: the trailing twelve
+                // months to As of, inert while the sheet is on a single date.
+                bsFrom: "2025-08-01",
                 from: "2026-01-01",
                 to: "2026-12-31",
                 // Cash flow's own range: the first of the month eleven months
@@ -51,7 +55,11 @@ describe("UNIT reports/ui/params", () => {
             // and each requests an unclamped report, so the URL has nothing to
             // say about depth. The P&L keeps its RANGE — that is the one thing a
             // report about a period cannot infer.
-            expect(paramsToSearch({...DFLT, tab: "bs"})).toBe("tab=bs&asof=2026-07-08");
+            expect(paramsToSearch({...DFLT, tab: "bs", interval: "total"})).toBe("tab=bs&asof=2026-07-08");
+            // Multi-period adds its start and grain, and nothing else.
+            expect(paramsToSearch({...DFLT, tab: "bs", interval: "quarterly", bsFrom: "2025-01-01"})).toBe(
+                "tab=bs&asof=2026-07-08&from=2025-01-01&interval=quarterly"
+            );
             expect(paramsToSearch({...DFLT, tab: "is", interval: "total"})).toBe("tab=is&from=2026-01-01&to=2026-12-31&interval=total");
             // Cash flow writes ITS OWN range as from/to, and no end or count.
             expect(paramsToSearch({...DFLT, tab: "cf"})).toBe("tab=cf&from=2025-08-01&to=2026-07-08&interval=monthly&depth=3");
@@ -68,6 +76,7 @@ describe("UNIT reports/ui/params", () => {
                     ...DFLT,
                     tab,
                     asOf: "2025-03-31",
+                    bsFrom: "2024-04-15",
                     from: "2025-01-01",
                     to: "2025-06-30",
                     cfFrom: "2024-10-15",
@@ -81,6 +90,7 @@ describe("UNIT reports/ui/params", () => {
                 const config = TAB_CONTROLS[tab];
                 expect(parsed.tab).toBe(tab);
                 if (config.asOf) expect(parsed.asOf).toBe(params.asOf);
+                if (config.asOfFrom) expect(parsed.bsFrom).toBe(params.bsFrom);
                 const keys = rangeKeys(tab);
                 if (config.range) expect([parsed[keys.from], parsed[keys.to]]).toEqual([params[keys.from], params[keys.to]]);
                 if (config.end) expect(parsed.end).toBe(params.end);
@@ -109,6 +119,26 @@ describe("UNIT reports/ui/params", () => {
             expect(parsed.asOf).toBe("2026-07-08");
             expect(parsed.depth).toBe(3);
             expect(paramsToSearch(parsed)).toBe("tab=bs&asof=2026-07-08");
+        });
+
+        it("reads a balance-sheet link with no interval as the single-date sheet it always was", () => {
+            const old = searchToParams("tab=bs&asof=2026-03-31", DFLT);
+            expect([old.interval, old.asOf]).toEqual(["total", "2026-03-31"]);
+            expect(paramsToSearch(old)).toBe("tab=bs&asof=2026-03-31");
+            // An unknown grain is the single date too, not the shared monthly default.
+            expect(searchToParams("tab=bs&interval=hourly", DFLT).interval).toBe("total");
+            expect(searchToParams("tab=bs&interval=total", DFLT).interval).toBe("total");
+        });
+
+        it("reads a multi-period balance sheet's start and grain, defaulting the start to the trailing year", () => {
+            const multi = searchToParams("tab=bs&asof=2026-03-31&from=2025-01-01&interval=monthly", DFLT);
+            expect([multi.bsFrom, multi.asOf, multi.interval]).toEqual(["2025-01-01", "2026-03-31", "monthly"]);
+            // `from` on the bs tab is the sheet's own start: the P&L's range is untouched.
+            expect([multi.from, multi.to]).toEqual([DFLT.from, DFLT.to]);
+            // No `from`: twelve monthly columns ending with THIS link's As of.
+            expect(searchToParams("tab=bs&asof=2026-03-31&interval=yearly", DFLT).bsFrom).toBe("2025-04-01");
+            // And the P&L's own `from` never lands in the sheet's.
+            expect(searchToParams("tab=is&from=2025-01-01&to=2025-06-30", DFLT).bsFrom).toBe(DFLT.bsFrom);
         });
 
         it("still loads a bookmarked ?tab=is&depth=N, keeping the range it does honor", () => {
@@ -172,6 +202,16 @@ describe("UNIT reports/ui/params", () => {
             const is = searchToParams("tab=is&from=2026-02-01&to=2026-03-31", DFLT);
             expect([is.from, is.to]).toEqual(["2026-02-01", "2026-03-31"]);
             expect([is.cfFrom, is.cfTo]).toEqual([DFLT.cfFrom, DFLT.cfTo]);
+        });
+
+        it("offers the balance sheet a single date first, labelled as one, and opens on it", () => {
+            expect(TAB_CONTROLS.bs.intervals).toEqual(["total", "monthly", "quarterly", "yearly"]);
+            expect(TAB_DEFAULTS.bs.interval).toBe("total");
+            expect([TAB_CONTROLS.bs.asOf, TAB_CONTROLS.bs.asOfFrom, TAB_CONTROLS.bs.range]).toEqual([true, true, false]);
+            expect(TAB_ORDER.filter((tab) => TAB_CONTROLS[tab].asOfFrom)).toEqual(["bs"]);
+            expect(intervalLabel("bs", "total")).toBe("Single date");
+            expect(intervalLabel("bs", "monthly")).toBe("Monthly");
+            expect(intervalLabel("is", "total")).toBe("Total");
         });
 
         it("offers Total on the ranged reports only, first, and opens the P&L on it", () => {
@@ -259,9 +299,18 @@ describe("UNIT reports/ui/params — the end date shared across tabs", () => {
             expect(alignToEnd(chosen, "cf", "2026-03-31")).toEqual({cfFrom: "2025-04-01", cfTo: "2026-03-31"});
         });
 
-        it("moves only the end on the single-date tabs", () => {
-            expect(alignToEnd(on("bs"), "bs", "2026-03-31")).toEqual({asOf: "2026-03-31"});
+        it("moves only the end on net worth", () => {
             expect(alignToEnd(on("nw"), "nw", "2026-03-31")).toEqual({end: "2026-03-31"});
+        });
+
+        it("keeps the balance sheet's multi-period start in step with As of", () => {
+            // The default start is the trailing year, and it follows As of.
+            expect(alignToEnd(on("bs"), "bs", "2026-03-31")).toEqual({asOf: "2026-03-31", bsFrom: "2025-04-01"});
+            // A chosen start stays while it is on or before the new As of, and
+            // falls back to the trailing year when it would invert the range.
+            const chosen = on("bs", {bsFrom: "2024-01-01"});
+            expect(alignToEnd(chosen, "bs", "2026-03-31")).toEqual({asOf: "2026-03-31"});
+            expect(alignToEnd(chosen, "bs", "2023-06-30")).toEqual({asOf: "2023-06-30", bsFrom: "2022-07-01"});
         });
 
         it("re-anchors an Insights preset span on the new end", () => {
@@ -278,10 +327,10 @@ describe("UNIT reports/ui/params — the end date shared across tabs", () => {
         });
 
         it("never leaves a range inverted", () => {
-            for (const tab of ["is", "cf", "insights"] as const) {
+            for (const tab of ["is", "cf", "bs", "insights"] as const) {
                 for (const end of ["2020-02-29", "2026-01-01", "2026-07-08", "2031-12-31"]) {
                     const next = {...on(tab), ...alignToEnd(on(tab), tab, end)};
-                    const start = tab === "is" ? next.from : tab === "cf" ? next.cfFrom : next.insStart;
+                    const start = tab === "is" ? next.from : tab === "cf" ? next.cfFrom : tab === "bs" ? next.bsFrom : next.insStart;
                     expect(start <= end, `${tab} ${end}`).toBe(true);
                     expect(tabEnd(next, tab)).toBe(end);
                 }

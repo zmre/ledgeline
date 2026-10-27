@@ -16,6 +16,7 @@ import type {HoldingsReport} from "#lib/holdings/types.js";
 import {primaryValue} from "#lib/reports/budgetSummary.js";
 import type {
     Amounts,
+    BalanceSheetColumns,
     BalanceSheetReport,
     BsSectionKind,
     BudgetBar,
@@ -27,7 +28,7 @@ import type {
     PeriodReport,
     SectionedReport,
 } from "#lib/reports/types.js";
-import {bsSectionBlocks, bsSummary} from "#lib/reports/ui/balanceSheetRows.js";
+import {asColumns, bsColumnSummaries, columnSectionRows} from "#lib/reports/ui/balanceSheetRows.js";
 import {compressIsRows, compressPeriodRows, compressSectionRows} from "#lib/reports/ui/displayRows.js";
 import {cfDisplayModel, type CfDisplayRow} from "#lib/reports/ui/cashFlowRows.js";
 import {amountsPct, isSummary} from "#lib/reports/ui/incomeStatementRows.js";
@@ -173,7 +174,8 @@ const BS_SECTION_ARGB: Record<BsSectionKind, string> = {
 const ZERO_MONEY: Dec = dec(0n, 2);
 
 /**
- * One balance-sheet figure across the Amount and "Other commodities" columns.
+ * One balance-sheet line: a figure per column (one, "Amount", on a single-date
+ * sheet), then the "Other commodities" column.
  *
  * The whole report is valued into `base`, so the Amount column is finally a REAL
  * NUMBER with a number format rather than the comma-joined text `setAmount`
@@ -185,23 +187,30 @@ const ZERO_MONEY: Dec = dec(0n, 2);
  * `base === null` (a journal with no base commodity) has no figure to promote,
  * so it degrades to `setAmount`'s existing behaviour.
  */
-function setBsAmount(ws: Worksheet, rowIx: number, ma: MixedAmount, base: string | null, bold: boolean): void {
-    const cell = ws.getCell(rowIx, 2);
-    if (base === null) setAmount(cell, ma);
-    else setDec(cell, base, ma.get(base) ?? ZERO_MONEY);
-    if (bold) cell.font = {bold: true};
+function setBsAmounts(ws: Worksheet, rowIx: number, figures: readonly MixedAmount[], base: string | null, bold: boolean): void {
+    figures.forEach((ma, at) => {
+        const cell = ws.getCell(rowIx, at + 2);
+        if (base === null) setAmount(cell, ma);
+        else setDec(cell, base, ma.get(base) ?? ZERO_MONEY);
+        if (bold) cell.font = {bold: true};
+    });
 
-    const others = sortedEntries(ma).filter(([commodity, qty]) => commodity !== base && qty.m !== 0n);
+    // The NEWEST column's leftovers, as the income statement's interval export
+    // writes its Total's: a pair of columns per period would double the sheet's
+    // width for commodities the as-of column already names. One column, so
+    // this is exactly the single-date sheet's extras.
+    const last = figures.at(-1) ?? new Map<string, Dec>();
+    const others = sortedEntries(last).filter(([commodity, qty]) => commodity !== base && qty.m !== 0n);
     if (others.length === 0 || base === null) return;
-    const extras = ws.getCell(rowIx, 3);
+    const extras = ws.getCell(rowIx, figures.length + 2);
     extras.value = amountsText(others);
     extras.alignment = {...extras.alignment, horizontal: "right"};
     if (bold) extras.font = {bold: true};
 }
 
 /** A full-width rule above a totals row (the workbook's answer to the screen's `<tfoot>` border). */
-function ruleAbove(ws: Worksheet, rowIx: number, style: "thin" | "medium"): void {
-    for (const col of [1, 2, 3]) {
+function ruleAbove(ws: Worksheet, rowIx: number, style: "thin" | "medium", width = 3): void {
+    for (let col = 1; col <= width; col += 1) {
         const cell = ws.getCell(rowIx, col);
         cell.border = {...cell.border, top: {style}};
     }
@@ -215,25 +224,32 @@ function ruleAbove(ws: Worksheet, rowIx: number, style: "thin" | "medium"): void
  * its own figure below.
  *
  * Assets and Liabilities may be banded CURRENT / NON-CURRENT: a subheading row
- * above the band's first group, a ruled subtotal below its last. `bsSectionBlocks`
- * is shared with the view, so the workbook cannot split its bands at a different
- * group from the page — and the heading and subtotal prose is the engine's, so it
+ * above the band's first group, a ruled subtotal below its last. The rows are
+ * the view's own (`columnSectionRows`), so the workbook cannot split its bands at
+ * a different group from the page — and the heading and subtotal prose is the engine's, so it
  * cannot word them differently either. A journal that tags nothing produces
  * neither row, exactly as it produces neither on screen.
  *
- * `bsSummary` is shared with the view precisely so a workbook cannot claim a
- * different `Liabilities + equity` (or a different verdict) from the page it was
- * exported from.
+ * `bsColumnSummaries` is shared with the view precisely so a workbook cannot
+ * claim a different `Liabilities + equity` (or a different verdict) from the
+ * page it was exported from.
+ *
+ * One template for both shapes, as on screen: a single-date sheet is a
+ * one-column `BalanceSheetColumns` (`asColumns`), and lays out exactly as it
+ * always did. A multi-period sheet gets one figure column per period end.
  *
  * Deliberately UNLIKE the screen in exactly one way: every group is written out
  * in full, whatever is collapsed in the UI. A disclosure triangle is a way to
  * read a long statement on a screen; an exported statement missing the accounts
  * the reader happened to have closed is just an incomplete document.
  */
-function addBalanceSheet(ws: Worksheet, report: BalanceSheetReport): void {
+function addBalanceSheet(ws: Worksheet, sheet: BalanceSheetColumns): void {
+    // Label, one figure per column, then the extras column.
+    const width = sheet.columns.length + 2;
+    const put = (rowIx: number, figures: readonly MixedAmount[], bold: boolean): void => setBsAmounts(ws, rowIx, figures, sheet.base, bold);
     let rowIx = 5;
-    for (const section of report.sections) {
-        for (const col of [1, 2, 3]) {
+    for (const section of sheet.sections) {
+        for (let col = 1; col <= width; col += 1) {
             const cell = ws.getCell(rowIx, col);
             cell.font = {bold: true, color: {argb: "FFFFFFFF"}};
             cell.fill = {type: "pattern", pattern: "solid", fgColor: {argb: BS_SECTION_ARGB[section.kind]}};
@@ -247,69 +263,80 @@ function addBalanceSheet(ws: Worksheet, report: BalanceSheetReport): void {
         // untouched, and its groups stay exactly where they have always been.
         const groupIndent = section.subsections.length > 0 ? 2 : 1;
 
-        for (const {opens, group, closes} of bsSectionBlocks(section)) {
-            if (opens !== null) {
-                labelCell(ws, rowIx, opens.heading, 1, true);
-                rowIx += 1;
+        // The screen's own rows with EVERY group open (see above): the same
+        // bands, the same single-child compression, the same engine subtotals.
+        for (const row of columnSectionRows(section, () => true)) {
+            switch (row.kind) {
+                case "subsection":
+                    labelCell(ws, rowIx, row.label, 1, true);
+                    break;
+                case "group":
+                    labelCell(ws, rowIx, row.label, groupIndent, true);
+                    put(rowIx, row.amount, true);
+                    break;
+                case "account":
+                    // `row.indent` is the compression indent plus one, below its group.
+                    labelCell(ws, rowIx, row.label, row.indent + groupIndent);
+                    put(rowIx, row.amount, false);
+                    break;
+                case "subtotal":
+                    ruleAbove(ws, rowIx, "thin", width);
+                    // The engine's subtotal, at the subheading's own indent so the
+                    // band reads as opened and closed by the same level.
+                    labelCell(ws, rowIx, row.label, 1, true);
+                    put(rowIx, row.amount, true);
+                    break;
             }
-            labelCell(ws, rowIx, group.name, groupIndent, true);
-            setBsAmount(ws, rowIx, group.total, report.base, true);
             rowIx += 1;
-            // Same compression the screen applies, so a single-child chain is one
-            // row in both places.
-            for (const {label, indent, row} of compressSectionRows(group.rows)) {
-                labelCell(ws, rowIx, label, indent + groupIndent + 1);
-                setBsAmount(ws, rowIx, row.inclusive, report.base, false);
-                rowIx += 1;
-            }
-            if (closes !== null) {
-                ruleAbove(ws, rowIx, "thin");
-                // The engine's subtotal, at the subheading's own indent so the
-                // band reads as opened and closed by the same level.
-                labelCell(ws, rowIx, closes.label, 1, true);
-                setBsAmount(ws, rowIx, closes.total, report.base, true);
-                rowIx += 1;
-            }
         }
 
-        ruleAbove(ws, rowIx, "thin");
+        ruleAbove(ws, rowIx, "thin", width);
         labelCell(ws, rowIx, `Total ${section.title}`, 0, true);
-        setBsAmount(ws, rowIx, section.total, report.base, true);
+        put(rowIx, section.total, true);
         rowIx += 2; // a blank row between boxes, as the screen puts a gap between them
     }
 
-    const summary = bsSummary(report);
-    ruleAbove(ws, rowIx, "medium");
-    for (const [label, ma] of [
-        ["Total Assets", summary.assets],
-        ["Total Liabilities", summary.liabilities],
-        ["Total Equity", summary.equity],
+    const summaries = bsColumnSummaries(sheet);
+    const across = (pick: (summary: (typeof summaries)[number]) => MixedAmount): MixedAmount[] => summaries.map(pick);
+    ruleAbove(ws, rowIx, "medium", width);
+    for (const [label, figures] of [
+        ["Total Assets", across((summary) => summary.assets)],
+        ["Total Liabilities", across((summary) => summary.liabilities)],
+        ["Total Equity", across((summary) => summary.equity)],
     ] as const) {
         labelCell(ws, rowIx, label, 0);
-        setBsAmount(ws, rowIx, ma, report.base, false);
+        put(rowIx, figures, false);
         rowIx += 1;
     }
 
     // The tie-out proper. `Liabilities + equity` is summed from the exact Decs
-    // by `bsSummary`, never by re-adding the rounded cells above it.
-    ruleAbove(ws, rowIx, "thin");
+    // by `bsColumnSummaries`, never by re-adding the rounded cells above it.
+    ruleAbove(ws, rowIx, "thin", width);
     labelCell(ws, rowIx, "Liabilities + Equity", 0, true);
-    setBsAmount(ws, rowIx, summary.liabilitiesPlusEquity, report.base, true);
+    put(
+        rowIx,
+        across((summary) => summary.liabilitiesPlusEquity),
+        true
+    );
     rowIx += 1;
     labelCell(ws, rowIx, "Total Assets", 0, true);
-    setBsAmount(ws, rowIx, summary.assets, report.base, true);
+    put(
+        rowIx,
+        across((summary) => summary.assets),
+        true
+    );
     rowIx += 1;
 
-    // The engine's verdict, taken as given (`bsSummary` — the same one the
-    // screen renders). When it fails, the row carries the exact residue so the
-    // reader can go looking for it.
-    if (summary.balanced) {
+    // The engine's verdict per column, taken as given (the same summaries the
+    // screen renders). When any column fails, the row carries every column's
+    // exact residue so the reader can go looking for it.
+    if (summaries.every((summary) => summary.balanced)) {
         labelCell(ws, rowIx, "Balanced", 0, true);
         ws.getCell(rowIx, 1).font = {bold: true, color: {argb: "FF15803D"}};
     } else {
         labelCell(ws, rowIx, "Out of balance (assets − liabilities − equity)", 0, true);
-        setBsAmount(ws, rowIx, report.check, report.base, true);
-        for (const col of [1, 2, 3]) ws.getCell(rowIx, col).font = {bold: true, color: {argb: "FFB45309"}};
+        put(rowIx, sheet.check, true);
+        for (let col = 1; col <= width; col += 1) ws.getCell(rowIx, col).font = {bold: true, color: {argb: "FFB45309"}};
     }
 }
 
@@ -644,14 +671,24 @@ export async function buildWorkbook(report: SectionedReport | PeriodReport, meta
  * through the sections and the column headings are what say which number is
  * which.
  */
-export async function buildBalanceSheetWorkbook(report: BalanceSheetReport, meta: {title: string; params: string}): Promise<Workbook> {
+export async function buildBalanceSheetWorkbook(report: BalanceSheetReport | BalanceSheetColumns, meta: {title: string; params: string}): Promise<Workbook> {
     const {Workbook: ExcelWorkbook} = await import("exceljs");
     const workbook = new ExcelWorkbook();
     const ws = workbook.addWorksheet(meta.title);
-    addTitleRows(ws, meta, ["Account", report.base === null ? "Amount" : `Amount (${report.base})`, "Other commodities"]);
-    ws.getColumn(3).width = 24; // "5 GLD, -2 TSLA" needs more room than a money column
+    const sheet = report.kind === "balanceSheet" ? asColumns(report) : report;
+    const inBase = sheet.base === null ? "" : ` (${sheet.base})`;
+    // A single-date sheet keeps its one "Amount" column. A multi-period one is
+    // headed by each period, and its extras column says which column's
+    // leftovers it holds (see `setBsAmounts`).
+    const last = sheet.columns.at(-1)?.label ?? "";
+    const headers =
+        report.kind === "balanceSheet"
+            ? ["Account", `Amount${inBase}`, "Other commodities"]
+            : ["Account", ...sheet.columns.map((column) => `${column.label}${inBase}`), `Other commodities (${last})`];
+    addTitleRows(ws, meta, headers);
+    ws.getColumn(headers.length).width = 24; // "5 GLD, -2 TSLA" needs more room than a money column
     ws.views = [{state: "frozen", ySplit: 4}];
-    addBalanceSheet(ws, report);
+    addBalanceSheet(ws, sheet);
     return workbook;
 }
 
@@ -837,7 +874,11 @@ export async function exportXlsx(report: SectionedReport | PeriodReport, meta: {
 }
 
 /** Build the grouped balance-sheet .xlsx and trigger a browser download. */
-export async function exportBalanceSheetXlsx(report: BalanceSheetReport, meta: {title: string; params: string}, filename: string): Promise<void> {
+export async function exportBalanceSheetXlsx(
+    report: BalanceSheetReport | BalanceSheetColumns,
+    meta: {title: string; params: string},
+    filename: string
+): Promise<void> {
     await downloadWorkbook(await buildBalanceSheetWorkbook(report, meta), filename);
 }
 

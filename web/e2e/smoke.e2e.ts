@@ -498,6 +498,50 @@ test("reports: balance-sheet groups start collapsed and open to their accounts",
     await expect(page.locator('[data-account="assets:bank:wise"]')).toHaveCount(0);
 });
 
+test("reports: the balance sheet switches between a single date and one column per period", async ({page}) => {
+    await page.goto("/");
+    await page.getByRole("link", {name: "Reports"}).click();
+    await page.getByRole("tab", {name: "Balance Sheet"}).click();
+
+    // A single date by default, under its old URL, with no From.
+    const interval = page.getByLabel("Interval");
+    await expect(interval).toHaveValue("total");
+    await expect(interval.locator("option:checked")).toHaveText("Single date");
+    await expect(page).toHaveURL(/tab=bs&asof=2026-07-08$/);
+    await expect(page.getByLabel("From")).toHaveCount(0);
+    const assetsHead = page.getByTestId("bs-section-assets").locator("thead tr").last().locator("th");
+    await expect(assetsHead.nth(1)).toHaveText("Amount");
+
+    // Quarterly: From appears (the trailing year to As of), and each column is
+    // the sheet at a quarter's end, the last at As of. These are the figures
+    // `/api/reports/balancesheet/grouped?asOf=<that date>` serves.
+    await interval.selectOption("quarterly");
+    await expect(page).toHaveURL(/tab=bs&asof=2026-07-08&from=2025-08-01&interval=quarterly/);
+    await expect(page.getByLabel("From")).toHaveValue("2025-08-01");
+    await expect(assetsHead.nth(1)).toHaveText("Q3 2025");
+    await expect(assetsHead.last()).toHaveText("Q3 2026");
+    await expect(assetsHead.last()).toHaveAttribute("title", "as of 2026-07-08");
+    const total = page.getByTestId("bs-section-assets").locator("tfoot td");
+    await expect(total).toHaveCount(5);
+    await expect(total.last()).toContainText("$548,112.62");
+    await expect(page.getByTestId("bs-tie-out")).toContainText("Balanced");
+
+    // Groups still open, across every column.
+    const cash = page.getByTestId("bs-section-assets").getByRole("button", {name: "Cash and cash equivalents"});
+    await cash.click();
+    await expect(page.locator('[data-account="assets:bank:checking"] td')).toHaveCount(5);
+    await expect(page.locator('[data-account="assets:bank:checking"] td').last()).toContainText("$28,292.81");
+
+    // A shared link reproduces the mode, and Single date goes back to the old sheet and URL.
+    await page.reload();
+    await expect(interval).toHaveValue("quarterly");
+    await expect(total).toHaveCount(5);
+    await interval.selectOption("total");
+    await expect(page).toHaveURL(/tab=bs&asof=2026-07-08$/);
+    await expect(total).toHaveCount(1);
+    await expect(total).toContainText("$548,112.62");
+});
+
 // UNRUN in the sandbox this was written in — no browser could be launched — so
 // every figure below comes from `fixtures/native/v1/balancesheet-grouped.json`,
 // the bytes the engine actually produced for this journal, rather than from our

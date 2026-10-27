@@ -38,11 +38,11 @@
      real journal-integrity failure and never a rounding artefact.
 
      COLUMNS (plans/28). The same view renders a multi-column sheet — the
-     Projections tab's balance sheet at the end of every period — from the
-     engine's pivoted `BalanceSheetColumns`. A single-date report is turned into
-     a ONE-column one (`asColumns`), so there is one template, and on the Reports
-     tab it reads exactly as before: one "Amount" column. `projectedFrom` marks
-     where actuals end.
+     Projections tab's balance sheet at the end of every period, and the Reports
+     tab's multi-period mode — from the engine's pivoted `BalanceSheetColumns`. A
+     single-date report is turned into a ONE-column one (`asColumns`), so there
+     is one template, and the Reports tab's single date reads exactly as before:
+     one "Amount" column. `projectedFrom` marks where actuals end.
 
      A multi-column sheet puts every box and the tie-out on ONE column template
      (statementGrid.ts) inside one horizontal scroller, so their period columns

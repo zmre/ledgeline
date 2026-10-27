@@ -21,6 +21,7 @@ import {dec} from "#lib/domain/money.js";
 import {LedgelineApi} from "./native";
 import {
     decodeCashFlowStatement,
+    decodeBalanceSheetColumns,
     decodeBalanceSheetReport,
     decodeHoldingsReport,
     decodeHoldingsSeries,
@@ -80,6 +81,17 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         expect(report.balanced).toBe(true);
         // GLD and TSLA have no `P` directive at any date — the genuinely unpriced path.
         expect(report.meta?.unpriced).toEqual(["GLD", "TSLA"]);
+    });
+
+    it("multi-period balance sheet ends a column at each quarter's end and the last at As of", async () => {
+        const api = new LedgelineApi(url);
+        const sheet = decodeBalanceSheetColumns(await api.balanceSheetColumns({from: "2025-07-01", to: AS_OF, interval: "quarterly"}));
+        expect(sheet.kind).toBe("balanceSheetColumns");
+        expect(sheet.columns.map((column) => column.to)).toEqual(["2025-09-30", "2025-12-31", "2026-03-31", "2026-06-30", AS_OF]);
+        expect(sheet.balanced).toEqual([true, true, true, true, true]);
+        // The newest column IS the single-date sheet as of AS_OF.
+        const single = decodeBalanceSheetReport(await api.balanceSheetGrouped({asOf: AS_OF}));
+        expect(sheet.sections.map((section) => section.total.at(-1))).toEqual(single.sections.map((section) => section.total));
     });
 
     it("grouped P&L groups by segment, valued, against the prior equal-length window", async () => {

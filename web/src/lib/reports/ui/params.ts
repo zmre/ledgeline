@@ -10,6 +10,8 @@
 // Two older URL shapes are still read (plans/24): a P&L link with no
 // `interval` predates that control and means Total, and a cash-flow link with
 // `end`/`count` but no `from` is translated to the from/to range it showed.
+// A balance-sheet link with no `interval` is the single-date sheet it always
+// was; its multi-period mode adds `interval` and `from` (plans/28 follow-ups).
 
 import type {ISODate} from "#lib/domain/types.js";
 import {bucketEnd, bucketStart, lastNBuckets, today} from "#lib/reports/periods.js";
@@ -32,6 +34,20 @@ export const INTERVAL_LABELS: Record<ReportInterval, string> = {
     quarterly: "Quarterly",
     yearly: "Yearly",
 };
+
+/**
+ * The Interval option's label on `tab`. The balance sheet's one-column grain
+ * is the sheet as of a single date, and nothing is totalled on it, so it says
+ * so rather than "Total". Every other tab reads `INTERVAL_LABELS`.
+ */
+export function intervalLabel(tab: ReportTab, interval: ReportInterval): string {
+    return tab === "bs" && interval === "total" ? "Single date" : INTERVAL_LABELS[interval];
+}
+
+/** Whether the balance sheet is in its multi-period mode (one column per period end). */
+export function bsMultiPeriod(p: Pick<ReportParams, "interval">): boolean {
+    return p.interval !== "total";
+}
 
 /** Every grain, in the order the Interval select lists them. */
 const ALL_INTERVALS: readonly ReportInterval[] = ["total", "monthly", "quarterly", "yearly"];
@@ -56,8 +72,15 @@ export const TAB_LABELS: Record<ReportTab, string> = {
 /** One flat parameter set shared by all tabs, so switching tabs keeps settings. */
 export interface ReportParams {
     tab: ReportTab;
-    /** Balance sheet: point-in-time date (INCLUSIVE, engine semantics). */
+    /** Balance sheet: point-in-time date (INCLUSIVE, engine semantics); the last column's end in multi-period mode. */
     asOf: ISODate;
+    /**
+     * Balance sheet, multi-period mode only: the first period's start (INCLUSIVE).
+     * Its own field, like `cfFrom`, so the sheet's default (the trailing twelve
+     * months) and its last-used start survive a tab switch. Written to the URL as
+     * `from`, and only while the Interval is not Total.
+     */
+    bsFrom: ISODate;
     /** Income statement range (both INCLUSIVE). */
     from: ISODate;
     to: ISODate;
@@ -85,6 +108,12 @@ export interface ReportParams {
 /** Which controls each tab shows (drives ReportControls) and which params it serializes. */
 export interface ControlsConfig {
     asOf: boolean;
+    /**
+     * A From date before As of, shown only while the Interval is not Total: the
+     * balance sheet's multi-period mode, whose columns end at each period's end
+     * and the last at As of. Total (labelled "Single date") is the one-column sheet.
+     */
+    asOfFrom: boolean;
     range: boolean;
     end: boolean;
     /** The Interval select's options, in order; empty = no Interval control. */
@@ -96,27 +125,32 @@ export interface ControlsConfig {
 export const TAB_CONTROLS: Record<ReportTab, ControlsConfig> = {
     // Insights owns its own period control (PeriodControl), so the shared
     // ReportControls bar shows nothing for it.
-    insights: {asOf: false, range: false, end: false, intervals: [], count: false, depth: false},
+    insights: {asOf: false, asOfFrom: false, range: false, end: false, intervals: [], count: false, depth: false},
     // No depth on the balance sheet: groups ARE the reading and the accounts
     // inside one are a drill-down, so a clamp had almost nothing left to move —
     // and what it did move it moved wrongly, hiding accounts with no control on
     // screen to ask for them back. Expanding a group now shows all of it (the
     // engine is asked for an unclamped report), single-child chains still
     // compressed by `compressSectionRows`.
-    bs: {asOf: true, range: false, end: false, intervals: [], count: false, depth: false},
+    //
+    // The Interval defaults to Total, shown as "Single date": the sheet as of
+    // one day, exactly as before. Monthly, Quarterly or Yearly turn it into one
+    // column per period end from a From date, the last column at As of: the
+    // P&L's range-and-grain parameterisation (plans/24), anchored on As of.
+    bs: {asOf: true, asOfFrom: true, range: false, end: false, intervals: ALL_INTERVALS, count: false, depth: false},
     // The income statement dropped its depth slider for the same reason (plans/13):
     // it is grouped now, and a clamp that hid accounts with no control on screen
     // to ask for them back was the worst of both. The range stays — a P&L is a
     // report ABOUT a period, and that is the one thing it cannot infer. The
     // Interval is Total (one column, compared with the prior window) or one
     // column per bucket plus a Total (plans/24).
-    is: {asOf: false, range: true, end: false, intervals: ALL_INTERVALS, count: false, depth: false},
+    is: {asOf: false, asOfFrom: false, range: true, end: false, intervals: ALL_INTERVALS, count: false, depth: false},
     // Cash flow is a report about a period too (plans/24): From/To replaced
     // End + Periods, so the range is named rather than counted backwards.
-    cf: {asOf: false, range: true, end: false, intervals: ALL_INTERVALS, count: false, depth: true},
-    nw: {asOf: false, range: false, end: true, intervals: PERIODIC_INTERVALS, count: true, depth: true},
+    cf: {asOf: false, asOfFrom: false, range: true, end: false, intervals: ALL_INTERVALS, count: false, depth: true},
+    nw: {asOf: false, asOfFrom: false, range: false, end: true, intervals: PERIODIC_INTERVALS, count: true, depth: true},
     // Subscriptions scan a fixed trailing window, so they expose no controls.
-    subs: {asOf: false, range: false, end: false, intervals: [], count: false, depth: false},
+    subs: {asOf: false, asOfFrom: false, range: false, end: false, intervals: [], count: false, depth: false},
 };
 
 /**
@@ -132,7 +166,7 @@ export function rangeKeys(tab: ReportTab): {from: "from" | "cfFrom"; to: "to" | 
  *  its Total statement, cash flow monthly, net worth yearly/5). Depth is shared. */
 export const TAB_DEFAULTS: Record<ReportTab, {interval: ReportInterval; count: number}> = {
     insights: {interval: "monthly", count: 12}, // inert (insights ignores interval/count)
-    bs: {interval: "monthly", count: 12},
+    bs: {interval: "total", count: 12}, // the single-date sheet; count inert (a range, not a lookback)
     is: {interval: "total", count: 12}, // count inert: the P&L has a range, not a lookback
     cf: {interval: "monthly", count: 12},
     nw: {interval: "yearly", count: 5},
@@ -196,6 +230,7 @@ export function defaultReportParams(now: ISODate = today()): ReportParams {
     return {
         tab: "insights",
         asOf: now,
+        bsFrom: trailingYear(now),
         from: yearStart(now),
         to: `${year}-12-31`,
         // The first of the month eleven months back through today: the same
@@ -225,7 +260,7 @@ export function defaultReportParams(now: ISODate = today()): ReportParams {
 // Only the END is shared; a tab's start follows the rule in `alignToEnd`.
 
 type EndKey = "asOf" | "to" | "cfTo" | "end" | "insEnd";
-type StartKey = "from" | "cfFrom" | "insStart";
+type StartKey = "from" | "cfFrom" | "bsFrom" | "insStart";
 
 /** Each tab's end-date param, or `null` for a tab with no date control (Subscriptions). */
 const END_KEYS: Record<ReportTab, EndKey | null> = {
@@ -255,6 +290,9 @@ const END_URL_PARAMS: Record<ReportTab, readonly string[]> = {
  */
 const START_RULES: Partial<Record<ReportTab, {key: StartKey; rules: readonly ((end: ISODate) => ISODate)[]}>> = {
     is: {key: "from", rules: [yearStart]},
+    // The balance sheet's multi-period start, kept in step with As of whether or
+    // not the mode is on, so switching it on reads the trailing year to As of.
+    bs: {key: "bsFrom", rules: [trailingYear]},
     cf: {key: "cfFrom", rules: [trailingYear]},
     insights: {
         key: "insStart",
@@ -322,6 +360,14 @@ export function paramsToSearch(p: ReportParams): string {
     }
     const c = TAB_CONTROLS[p.tab];
     if (c.asOf) q.set("asof", p.asOf);
+    if (c.asOfFrom) {
+        // Single date writes nothing more, so its URL is the one it always was.
+        if (bsMultiPeriod(p)) {
+            q.set("from", p.bsFrom);
+            q.set("interval", p.interval);
+        }
+        return q.toString();
+    }
     if (c.range) {
         const keys = rangeKeys(p.tab);
         q.set("from", p[keys.from]);
@@ -354,7 +400,9 @@ function parseDate(v: string | null, fallback: ISODate): ISODate {
 function parseInterval(raw: string | null, tab: ReportTab, dflt: ReportParams): ReportInterval {
     const offered = TAB_CONTROLS[tab].intervals;
     if (raw !== null && isInterval(raw) && (offered.length === 0 || offered.includes(raw))) return raw;
-    if (tab === "is") return "total";
+    // The P&L and the balance sheet both predate their Interval control, and
+    // what an older link showed was the one-column report.
+    if (tab === "is" || tab === "bs") return "total";
     return offered.length === 0 || offered.includes(dflt.interval) ? dflt.interval : TAB_DEFAULTS[tab].interval;
 }
 
@@ -381,13 +429,19 @@ export function searchToParams(search: string, dflt: ReportParams): ReportParams
     const tab = rawTab !== null && isTab(rawTab) ? rawTab : dflt.tab;
     const interval = parseInterval(q.get("interval"), tab, dflt);
     // `from`/`to` name the ACTIVE tab's range: cash flow's own pair on the cf
-    // tab, the P&L's everywhere else (where, as before, they are not gated).
+    // tab, the balance sheet's multi-period start on bs, the P&L's everywhere
+    // else (where, as before, they are not gated).
     const cf = tab === "cf";
+    const bs = tab === "bs";
+    const asOf = parseDate(q.get("asof"), dflt.asOf);
     return {
         tab,
-        asOf: parseDate(q.get("asof"), dflt.asOf),
-        from: cf ? dflt.from : parseDate(q.get("from"), dflt.from),
-        to: cf ? dflt.to : parseDate(q.get("to"), dflt.to),
+        asOf,
+        // Absent: the trailing year to THIS link's As of, as the controls would
+        // have set it, rather than to today's.
+        bsFrom: bs ? parseDate(q.get("from"), trailingYear(asOf)) : dflt.bsFrom,
+        from: cf || bs ? dflt.from : parseDate(q.get("from"), dflt.from),
+        to: cf || bs ? dflt.to : parseDate(q.get("to"), dflt.to),
         ...(cf ? cashFlowRange(q, interval, dflt) : {cfFrom: dflt.cfFrom, cfTo: dflt.cfTo}),
         end: parseDate(q.get("end"), dflt.end),
         interval,

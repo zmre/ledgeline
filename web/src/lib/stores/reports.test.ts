@@ -1,3 +1,4 @@
+import {readFileSync} from "node:fs";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {defaultReportParams} from "#lib/reports/ui/params.js";
 import {GROUPED_BALANCE_SHEET} from "#lib/testing/balanceSheetFixture.js";
@@ -22,9 +23,18 @@ function serve(handler: (url: string) => unknown): void {
     );
 }
 
+/** The engine's own multi-period sheet (`fixtures/native/v1`, replayed by the Rust golden suite). */
+const BALANCE_SHEET_COLUMNS: unknown = JSON.parse(readFileSync(new URL("../../../../fixtures/native/v1/balancesheet-columns.json", import.meta.url), "utf8"));
+
 /** The body each report route expects, keyed off the requested path. */
 const engine = (url: string): unknown =>
-    url.includes("/balancesheet/grouped") ? GROUPED_BALANCE_SHEET : url.includes("/incomestatement/grouped") ? GROUPED_INCOME_STATEMENT : period();
+    url.includes("/balancesheet/grouped")
+        ? GROUPED_BALANCE_SHEET
+        : url.includes("/balancesheet/columns")
+          ? BALANCE_SHEET_COLUMNS
+          : url.includes("/incomestatement/grouped")
+            ? GROUPED_INCOME_STATEMENT
+            : period();
 
 const BS: ReportQuery = {tab: "bs", asOf: "2025-12-31"};
 const IS: ReportQuery = {tab: "is", from: "2026-01-01", to: "2026-12-31", interval: "total"};
@@ -112,8 +122,18 @@ describe("UNIT sameReportQuery gates the export on an exact match", () => {
 
     it("builds the bs and is queries from the params each tab actually shows", () => {
         const params = defaultReportParams();
-        expect(buildReportQuery({...params, tab: "bs"})).toEqual({tab: "bs", asOf: params.asOf});
+        expect(buildReportQuery({...params, tab: "bs", interval: "total"})).toEqual({tab: "bs", asOf: params.asOf});
         expect(buildReportQuery({...params, tab: "is", interval: "quarterly"})).toEqual({tab: "is", from: params.from, to: params.to, interval: "quarterly"});
+    });
+
+    it("builds the multi-period balance sheet query from its own start, As of and grain", () => {
+        const params = {...defaultReportParams("2026-07-08"), tab: "bs" as const};
+        expect(buildReportQuery({...params, interval: "quarterly"})).toEqual({tab: "bs", asOf: "2026-07-08", from: "2025-08-01", interval: "quarterly"});
+        // A single-date query does not move when the inert start does.
+        const single = buildReportQuery({...params, interval: "total"});
+        expect(sameReportQuery(single, buildReportQuery({...params, interval: "total", bsFrom: "2020-01-01"}))).toBe(true);
+        // A single date and the same As of in columns are different documents.
+        expect(sameReportQuery(single, buildReportQuery({...params, interval: "monthly"}))).toBe(false);
     });
 
     it("builds the cash-flow query from ITS OWN range, with no end or count", () => {
@@ -122,6 +142,27 @@ describe("UNIT sameReportQuery gates the export on an exact match", () => {
         // must not travel either.
         const params = {...defaultReportParams("2026-07-08"), tab: "cf" as const, interval: "total" as const};
         expect(buildReportQuery(params)).toEqual({tab: "cf", from: "2025-08-01", to: "2026-07-08", interval: "total", depth: params.depth});
+    });
+
+    it("fetches a multi-period balance sheet from the COLUMNS endpoint, As of as its `to`", async () => {
+        const seen: string[] = [];
+        serve((url) => {
+            seen.push(url);
+            return engine(url);
+        });
+        await reports.load("http://engine", {tab: "bs", asOf: "2026-07-08", from: "2026-04-15", interval: "monthly"});
+
+        const url = seen.find((candidate) => candidate.includes("/api/reports/balancesheet/columns"));
+        expect(url).toBeDefined();
+        expect(url).toContain("from=2026-04-15");
+        expect(url).toContain("to=2026-07-08");
+        expect(url).toContain("interval=monthly");
+        expect(reports.report).toMatchObject({kind: "balanceSheetColumns"});
+
+        // The single date still goes to the grouped endpoint.
+        await reports.load("http://engine", {tab: "bs", asOf: "2026-07-08"});
+        expect(seen.at(-1)).toContain("/api/reports/balancesheet/grouped");
+        expect(reports.report).toMatchObject({kind: "balanceSheet"});
     });
 
     it("fetches the P&L from the GROUPED endpoint, whose decoder refuses the flat body", async () => {

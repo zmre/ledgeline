@@ -6,6 +6,7 @@ import {ApiShapeError} from "./client";
 import {periodsOf} from "#lib/reports/test-helpers.js";
 import {
     decodeAccountReference,
+    decodeBalanceSheetColumns,
     decodeBalanceSheetReport,
     decodeBudgetGaps,
     decodeBudgetListing,
@@ -2416,6 +2417,7 @@ describe("UNIT nativeDecode — renaming any wire key is detected, not absorbed"
     const DECODERS: [string, (raw: unknown) => unknown, unknown][] = [
         ["balancesheet", decodeSectionedReport, golden("balancesheet")],
         ["balancesheet-grouped", decodeBalanceSheetReport, golden("balancesheet-grouped")],
+        ["balancesheet-columns", decodeBalanceSheetColumns, golden("balancesheet-columns")],
         ["incomestatement", decodeSectionedReport, golden("incomestatement")],
         ["incomestatement-grouped", decodeIncomeStatementReport, golden("incomestatement-grouped")],
         ["incomestatement-flows", decodeFlowReport, golden("incomestatement-flows")],

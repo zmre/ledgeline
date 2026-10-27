@@ -10,10 +10,11 @@
 // jsdom has no layout engine, so nothing here asks how anything LOOKS. It asks
 // what is in the document, what `aria-expanded` says, and what Enter dispatches.
 
-import {render, screen, within} from "@testing-library/svelte";
+import {readFileSync} from "node:fs";
+import {fireEvent, render, screen, within} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
-import {decodeBalanceSheetReport} from "#lib/api/nativeDecode.js";
+import {decodeBalanceSheetColumns, decodeBalanceSheetReport} from "#lib/api/nativeDecode.js";
 import type {AmountStyle} from "#lib/domain/types.js";
 import {keymap} from "#lib/keys/keymap.svelte.js";
 import {CLASSIFIED_BALANCE_SHEET, GROUPED_BALANCE_SHEET, STRADDLING_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "#lib/testing/balanceSheetFixture.js";
@@ -626,5 +627,57 @@ describe("COMPONENT BalanceSheetView — columns side by side (plan 28)", () => 
         expect(screen.getByTestId("balance-sheet").querySelector("colgroup")).toBeNull();
         expect(screen.getByTestId("bs-summary").querySelector("table")?.classList.contains("table-fixed")).toBe(false);
         expect(screen.getByTestId("bs-tie-out").querySelectorAll("td")).toHaveLength(2);
+    });
+});
+
+// The Reports tab's multi-period mode (plan 28 follow-ups): the engine's own
+// pivoted sheet, from the golden `/api/reports/balancesheet/columns` answer.
+// Everything the single-date sheet does (disclosures, the cursor and Enter,
+// the bands, the verdict) has to work across the columns too.
+describe("COMPONENT BalanceSheetView — the Reports tab's multi-period sheet", () => {
+    const SHEET = decodeBalanceSheetColumns(JSON.parse(readFileSync("../fixtures/native/v1/balancesheet-columns.json", "utf8")));
+    const mountSheet = () => render(BalanceSheetView, {report: SHEET, styles: STYLES});
+
+    it("heads the columns with the periods, the last ending at As of, under no projected band", () => {
+        mountSheet();
+        const head = screen.getByTestId("bs-section-assets").querySelector("thead tr:not([data-testid])");
+        const cells = [...(head?.querySelectorAll("th") ?? [])].slice(1);
+        expect(cells.map((th) => th.textContent?.trim())).toEqual(["Apr 2026", "May 2026", "Jun 2026", "Jul 2026"]);
+        expect(cells.map((th) => th.getAttribute("title"))).toEqual(["as of 2026-04-30", "as of 2026-05-31", "as of 2026-06-30", "as of 2026-07-08"]);
+        expect(screen.queryByTestId("projected-band")).toBeNull();
+    });
+
+    it("expands and collapses a group, its accounts carrying a figure per column", async () => {
+        const {container} = mountSheet();
+        const cash = disclosure("Cash and cash equivalents");
+        expect(cash.getAttribute("aria-expanded")).toBe("false");
+        await fireEvent.click(cash);
+        expect(cash.getAttribute("aria-expanded")).toBe("true");
+        const checking = container.querySelector('[data-account="assets:bank:checking"]');
+        expect(checking?.querySelectorAll("td")).toHaveLength(4);
+        await fireEvent.click(cash);
+        expect(container.querySelector('[data-account="assets:bank:checking"]')).toBeNull();
+    });
+
+    it("walks the cursor and drills an account into the journal on Enter", async () => {
+        mountSheet();
+        await press("j");
+        await press("Enter"); // expand the cash group
+        await press("j"); // onto its first account
+        await press("Enter");
+        expect(openJournal).toHaveBeenCalledWith({accounts: ["assets:bank"], preset: "all"});
+    });
+
+    it("keeps the current / non-current bands, each with a subtotal per column", () => {
+        mountSheet();
+        expect(screen.getByTestId("bs-subtotal-assets-noncurrent").querySelectorAll("td")).toHaveLength(4);
+        expect(screen.getByTestId("bs-subsection-assets-noncurrent")).toBeDefined();
+    });
+
+    it("says Balanced once, on the tie-out, when every column balances", () => {
+        mountSheet();
+        expect(screen.getAllByTestId("bs-verdict")).toHaveLength(1);
+        expect(screen.getByTestId("bs-verdict").textContent).toContain("Balanced");
+        expect(screen.queryByTestId("bs-check")).toBeNull();
     });
 });

@@ -560,6 +560,17 @@ export interface GroupedBalanceSheetQuery {
     value?: "market" | "cost" | "none";
     valueIn?: string;
 }
+/**
+ * The grouped balance sheet at the end of each period across `[from, to]`
+ * (`/api/reports/balancesheet/columns`): one column per `interval` bucket,
+ * each the sheet as of its bucket's end, the last as of `to`. `total` is one
+ * column at `to`. Everything else is `GroupedBalanceSheetQuery`'s.
+ */
+export interface BalanceSheetColumnsQuery extends Omit<GroupedBalanceSheetQuery, "asOf"> {
+    from?: string;
+    to?: string;
+    interval?: "total" | "monthly" | "quarterly" | "yearly";
+}
 export interface IncomeStatementQuery {
     from?: string;
     to?: string;
@@ -1001,6 +1012,20 @@ export class LedgelineApi {
     balanceSheetGrouped(query: GroupedBalanceSheetQuery = {}): Promise<unknown> {
         return this.getJson(
             `/api/reports/balancesheet/grouped${queryString({asOf: query.asOf, depth: query.depth, value: query.value, valueIn: query.valueIn})}`
+        );
+    }
+
+    /** The multi-period grouped balance sheet, pivoted (decode with `decodeBalanceSheetColumns`). */
+    balanceSheetColumns(query: BalanceSheetColumnsQuery = {}): Promise<unknown> {
+        return this.getJson(
+            `/api/reports/balancesheet/columns${queryString({
+                from: query.from,
+                to: query.to,
+                interval: query.interval,
+                depth: query.depth,
+                value: query.value,
+                valueIn: query.valueIn,
+            })}`
         );
     }
 

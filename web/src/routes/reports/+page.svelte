@@ -27,6 +27,7 @@
     import {createEndSync} from "#lib/reports/ui/endSync.js";
     import {
         budgetRedirect,
+        bsMultiPeriod,
         defaultReportParams,
         INTERVAL_LABELS,
         paramsToSearch,
@@ -73,7 +74,7 @@
     });
 
     // Each tab seeds its own defaults on activation (the P&L opens on Total,
-    // cash flow monthly, net worth yearly/5; bs ignores interval/count).
+    // cash flow monthly, net worth yearly/5, the balance sheet on its single date).
     $effect(() => {
         const tab = params.tab;
         if (!restored || tab === activeTab) return;
@@ -218,7 +219,15 @@
                 // No depth: the tab has no such control and asks the engine for
                 // an unclamped report, so stamping one on the workbook would
                 // advertise a setting the reader cannot see or reproduce.
-                return {title: "Balance Sheet", params: `as of ${params.asOf}`, filename: `balance-sheet-${params.asOf}.xlsx`};
+                // Multi-period names its range and grain, as the P&L does, so two
+                // exports to one date at different grains cannot collide.
+                return bsMultiPeriod(params)
+                    ? {
+                          title: "Balance Sheet",
+                          params: `${params.bsFrom} to ${params.asOf}, ${grain}`,
+                          filename: `balance-sheet-${params.bsFrom}-to-${params.asOf}-${params.interval}.xlsx`,
+                      }
+                    : {title: "Balance Sheet", params: `as of ${params.asOf}`, filename: `balance-sheet-${params.asOf}.xlsx`};
             case "is":
                 // No depth, for the reason `bs` has none: the tab dropped that
                 // control and asks the engine for an unclamped report, so stamping
@@ -246,6 +255,7 @@
         if (!("kind" in current)) return exportXlsx(current, meta, exportInfo.filename);
         switch (current.kind) {
             case "balanceSheet":
+            case "balanceSheetColumns":
                 return exportBalanceSheetXlsx(current, meta, exportInfo.filename);
             case "incomeStatement":
                 return exportIncomeStatementXlsx(current, meta, exportInfo.filename);
@@ -298,7 +308,7 @@
         >
             {#snippet children(current)}
                 {#if "kind" in current}
-                    {#if current.kind === "balanceSheet"}
+                    {#if current.kind === "balanceSheet" || current.kind === "balanceSheetColumns"}
                         <BalanceSheetView report={current} {styles} />
                     {:else if current.kind === "incomeStatement"}
                         <IncomeStatementView report={current} {styles} flows={flowsPanel} />

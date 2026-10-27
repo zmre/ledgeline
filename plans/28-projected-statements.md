@@ -1248,3 +1248,79 @@ Journal commands and the three differences. `index.md` points there and states
 the journal order and the empty-accounts widening.
 
 **Not done.** No keyboard row cursor on the Accounts table.
+
+### Reports tab: multi-period balance sheet
+
+Patrick: "make the balance sheet default to just a single date, but have the
+ability to do a multi-period report". Phase 3 promised the Reports tab a
+periodic balance sheet from `balance_sheet_columns`. This delivers it.
+
+**Parameterisation: the P&L's, anchored on As of.** The P&L (plans/24) is a
+range plus a grain. Net worth is an end plus a count. The balance sheet takes the
+P&L's shape so the two statements read alike: **From**, **As of** (the range's
+`to`) and the shared Interval select. `total` is the single date and is labelled
+**Single date** on this tab (`intervalLabel`), because nothing is totalled.
+Monthly, Quarterly and Yearly give one column per `range_buckets(from, asOf)`
+span, each the sheet as of the span's `to`, so the last column ends at As of.
+There is no Total column, since balances at two dates don't sum. A count was
+rejected: it would make the balance sheet the only statement counted backwards,
+and From is what the P&L and cash flow already use.
+
+**URL.** `bsFrom` is the sheet's own start field, as `cfFrom` is cash flow's.
+`paramsToSearch` writes `from` and `interval` only in multi-period mode, so the
+default URL is still `?tab=bs&asof=…`. A link with no `interval`, or an unknown
+one, reads as Single date (as the P&L reads its old links as Total). A link with
+`interval` but no `from` gets the trailing year to its own `asof`. `alignToEnd`
+keeps `bsFrom` in a trailing-year relation to As of (`START_RULES.bs`), so moving
+As of moves an untouched start too. `TAB_DEFAULTS.bs.interval` became `total`,
+so switching tabs lands on Single date, as the P&L lands on Total.
+
+**Wire: a sibling route,** `GET /api/reports/balancesheet/columns?from&to&
+interval&depth&value&valueIn`, which returns `WireBalanceSheetColumns`, the
+projection run's pivoted type, unchanged. A mode on `/grouped` was rejected
+because it would give one route two response types. `interval` defaults to
+monthly and accepts `total` (one column at `to`). `from` defaults to the
+trailing twelve months. `check_range` gives the same `400`s as the other ranged
+reports (backwards, more than `MAX_BUCKETS` columns). `value` is echoed, so the
+cost and unvalued bases work per column. Pinned in `fixtures/native/v1` as
+`balancesheet-columns` (monthly, from mid-April, so the first column is clamped).
+
+**Admission: `prices_any_on_sheets`.** It is the per-column counterpart of
+`prices_any_on_sheet`: admitted when the target prices a displayed commodity in
+ANY column, each measured at its own end, and vacuous when every column is
+empty. Any column rather than every column, as `prices_any_on_statement` does
+over its windows, because a target that prices only the columns after a holding
+was bought is still a real answer. It makes one pass, sharing `column_dates` and
+`arrivals` (extracted from `balance_sheet_columns`), and the single-date function
+now delegates to it with one end. A core test pins it as "OR of the single-date
+answers" over several column sets and targets.
+
+**SPA.** The store's bs query has two variants: `{asOf}` and `{asOf, from,
+interval}`. A single date's identity, and so its export gate, doesn't change
+when the inert start moves. `BalanceSheetView` needed no change, because it
+already rendered the pivot. Expand and collapse, the cursor and Enter, bands,
+the verdict and the first-failing-column warning all carry over. The export
+moved onto the same template. `addBalanceSheet` takes `BalanceSheetColumns`,
+with a single date as `asColumns`, and walks `columnSectionRows(…, () => true)`
+instead of re-walking `bsSectionBlocks`. A single date's workbook is
+cell-for-cell what it was (the existing tests are unchanged). A multi-period
+one has a column per period and the last column's leftovers in "Other
+commodities (…)".
+
+**hledger.** `hledger bs -V -Q -b 2025-07-01 -e 2026-07-09` agrees on every
+column total for sample.journal. hledger heads its last column 2026-09-30 but
+values it at the report end. With a mid-period `-b`, hledger aligns periods to
+`-b`, while we keep calendar buckets with only the first clamped. The docs say
+so.
+
+**Tests.** Core: `prices_any_on_sheets_is_any_column_admitting`. Server
+(`report_endpoints.rs`): column ends per grain and the defaults; every column
+equals `/grouped?asOf=<end>` on market, cost and none (sections, groups, rows,
+bands, net worth, check, verdict); window `400`s, with exactly 1200 columns
+still served; `valueIn` refusal, admission and trimming. Web: params codec and
+alignment, store query and fetch routing, decoder sweep over the new golden, the
+Controls mode switch (a `$state` mount), the view on the golden pivot, the xlsx
+layout, and an e2e that switches Single date → Quarterly → reload → Single date.
+
+**Not done.** The Interval doesn't persist across a tab switch (no tab's does).
+Weekly and daily columns are served by the API but not offered in the UI.

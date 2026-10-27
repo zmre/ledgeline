@@ -35,6 +35,40 @@ There is no depth control on this tab. Depth stopped meaning anything useful onc
 groups became the reading: a group's roots are shown whatever their depth, and the
 drill-down shows everything below them.
 
+## One date, or one column per period
+
+The sheet opens on a single date: **As of**, with the **Interval** set to
+**Single date**. That is one Amount column, the balances at the end of that day.
+
+Set the Interval to **Monthly**, **Quarterly** or **Yearly** and the sheet gets
+one column per period. A **From** date appears before As of, and it defaults
+to the first of the month eleven months back, so Monthly shows twelve months.
+Each column is the sheet at the **end** of its period. The last column ends at
+the As of date, so with As of 2026-07-08 and Quarterly, the columns end
+2025-09-30, 2025-12-31, 2026-03-31, 2026-06-30 and 2026-07-08. Every column is
+exactly the single-date sheet as of that day, valued with the prices in effect
+on that day. Nothing is added up across columns, because balances at two dates
+don't sum to anything, so there is no Total column.
+
+The multi-period sheet keeps everything else the single-date one has. Groups
+open and close across all the columns. <kbd>j</kbd>/<kbd>k</kbd> and
+<kbd>Enter</kbd> work the same. Each column has its own current and non-current
+subtotals. The ✓/✗ verdict covers every column, and if one doesn't balance, the
+warning names the first column that fails. A long run of months scrolls sideways.
+
+The URL records the mode. A single date is `?tab=bs&asof=2026-07-08`, the same
+as before this existed, so old links still open a single date. Multi-period
+adds `from` and `interval`:
+`?tab=bs&asof=2026-07-08&from=2025-08-01&interval=quarterly`. Switching to
+another tab and back returns to Single date, the way the P&L returns to Total.
+
+The hledger equivalent, for a From on a period boundary, is
+`hledger bs -V -Q -b 2025-07-01 -e 2026-07-09`. `-e` is exclusive, so it is As
+of plus one day. hledger heads its last column with the period's end
+(2026-09-30), but the figures are as of 2026-07-08 and agree with ours. With a
+From in the middle of a period, hledger starts its periods at `-b`, while
+Ledgeline keeps calendar periods and clamps only the first one.
+
 ## The `bsgroup:` tag
 
 Tag any account declaration with `bsgroup:` and it becomes a line on the balance
@@ -339,6 +373,11 @@ can build on. Anything unpriced goes in its own column rather than being dropped
 Groups are written expanded regardless of what is collapsed on screen — an
 exported statement shouldn't depend on which disclosures happened to be open.
 
+A multi-period sheet exports one figure column per period. The unpriced column
+holds the last column's leftovers (as of the As of date), the way the P&L's
+monthly export holds its Total's. The file name includes the range and the
+interval, for example `balance-sheet-2025-08-01-to-2026-07-08-quarterly.xlsx`.
+
 ## API
 
 ```
@@ -347,7 +386,20 @@ GET /api/reports/balancesheet/grouped
       &depth=N                (optional; omit for full depth, 0 for totals only)
       &value=market|cost|none (default: market)
       &valueIn=$              (default: the journal's base commodity)
+
+GET /api/reports/balancesheet/columns
+      ?from=YYYY-MM-DD        (default: the 1st of the month 11 months before `to`)
+      &to=YYYY-MM-DD          (default: today; the last column's end, the tab's As of)
+      &interval=total|monthly|quarterly|yearly   (default: monthly; total = one column at `to`)
+      &depth, &value, &valueIn                   (as above, applied to every column)
 ```
+
+`/columns` returns one tree with a figure per column, the same shape the
+[projection run](../projections/index.md) returns for its balance sheet. It
+has `columns: [{key, label, from, to}]`, and each column is the sheet as of
+its `to`. A `valueIn` that prices nothing the sheet shows in any column is a
+`400`, the same refusal the single-date endpoint gives. A backwards range is a
+`400`, and so is one that splits into more than 1,200 columns.
 
 The older `GET /api/reports/balancesheet` returns the flat, unvalued,
 `hledger bs`-shaped report and is unchanged — it backs the hledger parity golden.
