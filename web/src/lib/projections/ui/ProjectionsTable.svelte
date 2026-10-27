@@ -965,7 +965,7 @@
                 <table class="table table-xs">
                     <thead>
                         <tr>
-                            <th class="w-60">Account</th>
+                            <th class="w-72">Account</th>
                             <th class="w-40">Balance</th>
                             <th class="w-36">Growth</th>
                             <th class="w-56" title="Where appreciation is booked. Equity by default, so it never reaches net income.">Gains account</th>

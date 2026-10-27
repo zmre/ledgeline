@@ -176,7 +176,10 @@
                 brush={false}
                 {yDomain}
                 yNice={includeZero}
-                padding={{top: 8, right: 8, bottom: 24, left: 56}}
+                // `right` is half a period label ("Jun 2028" at text-xs): the
+                // x-axis centres each label on its point, so the LAST one would
+                // otherwise hang off the edge and be clipped.
+                padding={{top: 8, right: 28, bottom: 24, left: 56}}
                 props={{
                     xAxis: {format: labelOf, ticks: xTicks},
                     yAxis: {format: axisFormat},
