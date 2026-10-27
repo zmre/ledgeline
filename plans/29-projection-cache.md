@@ -319,9 +319,80 @@ length; cold no slower than today.
 
 ## Open questions
 
-None at the start. Product questions that come up are recorded here with the
-conservative choice.
+None came up. One choice was made conservatively, and could be revisited:
+
+- **No prewarm.** The real side is built on the first run after a journal
+  change, not in the background when the snapshot is published. That keeps
+  edits cheap for users who never open Projections. The first run after an
+  edit pays the cold cost below.
 
 ## Results
 
-To be filled in after Phase 6.
+### Status: built
+
+All six phases landed on `2026-10-23-projection-fixes`: `22fedeb` (plan),
+`85c39d0` (before-bench), `1c83c1a` (builder split), `71a8392` (core values),
+`1a45588` + `b3c4229` (equivalence suite and its shrunk seeds), `7683817`
+(server cache). The wire is unchanged. Every native golden, the live
+integration suite and the e2e specs pass untouched.
+
+### Numbers
+
+`projections` group, 24 monthly buckets, lookback 2, 4 rules: the
+server-equivalent run (projection + balance sheet columns + income statement
+columns + cash flow + Accounts in Change mode). Apple M-series, criterion
+means. `before` is the full scan at `85c39d0`.
+
+| corpus | before (cold = warm) | `run_cold` | `run_warm` | warm vs before |
+|---|---|---|---|---|
+| 5k | 18.8 ms | 11.3 ms | **4.3 ms** | −78% |
+| 50k | 144 ms | 68.4 ms | **5.0 ms** | −96.5% |
+| 200k | 716 ms | 319 ms | **5.5 ms** | −99.2% |
+
+Warm is flat in history length (4.3 → 5.5 ms over a 40× larger journal); what
+remains is per-account work over 26 columns plus the forecast. Cold is about
+twice as fast as the old run, because it scans the journal once per reading
+instead of once per reading per column (the income statement used to make one
+`account_totals` pass per column).
+
+The full-scan reference got faster too (`run_reference`: 12 / 95 / 420 ms;
+`project_24m`: 5.3 → 3.0, 55 → 31, 352 → 170 ms). Phase 2's split stopped
+`project()` from computing `account_balances_at` twice and from rebuilding the
+real price table.
+
+### Memory
+
+Max RSS with N real sides held (`/usr/bin/time -l`, throwaway probe):
+about 9 MB per side at 50k and 16–25 MB per side at 200k. That is the real price list
+(inferred + `P`), the trailing-year counter-pairing table and the per-account
+seeds. The cap of 4 per snapshot bounds it at about 100 MB at 200k in the
+worst case. A single side is the steady state.
+
+### Equivalence coverage
+
+`tests/projection_cache.rs` compares by `Debug`: every parity scenario, plus
+`sample.journal` with the asset-growth fixture and a mixed EUR/`$` scenario
+with legacy, explicit counters and events. It also covers the expense-as-asset
+pair, an edge journal (late and early posting dates, a real transaction after
+the cutoff, a closing entry, a virtual posting, costed cash and stock, a
+zero-netting commodity), an empty scenario and an empty journal. Each runs at 5
+intervals × lookback 0/2/7 × depth 1/2/unclamped × market/cost/none ×
+accounts Change/Balance × empty, with `valueIn` none/`$`/`EUR`. A proptest
+(48 cases) runs over generated journals and scenarios. Seeded mutations
+(dropping the late replay, dropping the late cash-flow pass, dropping the
+precision merge) each fail the suite.
+
+### Gates
+
+All pass: `just engine-test`, `just engine-check`,
+`LEDGELINE_HLEDGER_PROJECTION_CHECK=1 cargo test -p ledgeline-core --test
+projection_files` (36), `just test`, `just check`, `just lint`,
+`just test-integration` (2,576), `just e2e` (106).
+
+### Not done
+
+- No prewarm (above).
+- A forecast with grown prices for `P`-priced commodities rebuilds the
+  statements' price table per run (one `PriceDb::build` over the real `P`
+  directives). It is only a cost when priced growth is in use. A
+  `PriceDb::extended` would remove it if it ever shows up.
