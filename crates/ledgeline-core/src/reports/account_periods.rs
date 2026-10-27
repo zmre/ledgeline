@@ -67,15 +67,53 @@ pub fn account_periods(
     txns: &[Transaction],
     opts: &AccountPeriodsOpts<'_>,
 ) -> Result<PeriodReport, ReportError> {
-    let (buckets, ranges): (Vec<String>, Vec<(String, String)>) =
-        range_buckets(opts.from, opts.to, Some(opts.interval))?
-            .into_iter()
-            .map(|span| (span.key, (span.from, span.to)))
-            .unzip();
+    let ranges: Vec<(String, String)> = range_buckets(opts.from, opts.to, Some(opts.interval))?
+        .into_iter()
+        .map(|span| (span.from, span.to))
+        .collect();
     let direct = bucket_totals(txns, &ranges, &|_| true)?;
+    account_periods_from(direct, || before(txns, opts.from), opts)
+}
+
+/// Every account's balance strictly before `from`: what Balance mode opens
+/// on. A projection's real side keeps it (plan 29).
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow.
+pub(crate) fn before(
+    txns: &[Transaction],
+    from: &str,
+) -> Result<BTreeMap<String, MixedAmount>, ReportError> {
+    let before = add_days(from, -1);
+    Ok(account_totals(
+        txns,
+        &PostingFilter {
+            to: Some(&before),
+            ..PostingFilter::default()
+        },
+    )?)
+}
+
+/// [`account_periods`] from each column's direct totals (`direct[i]` is the
+/// cash flow pass's [`bucket_totals`] for the `i`-th [`range_buckets`] span of
+/// `[opts.from, opts.to]`) and, asked for only in Balance mode, the balances
+/// before `opts.from` ([`before`]). Everything after the posting pass is this
+/// one function, so a seeded caller cannot present the columns differently.
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow or bad bucket math.
+pub(crate) fn account_periods_from(
+    direct: Vec<BTreeMap<String, MixedAmount>>,
+    opening: impl FnOnce() -> Result<BTreeMap<String, MixedAmount>, ReportError>,
+    opts: &AccountPeriodsOpts<'_>,
+) -> Result<PeriodReport, ReportError> {
+    let buckets: Vec<String> = range_buckets(opts.from, opts.to, Some(opts.interval))?
+        .into_iter()
+        .map(|span| span.key)
+        .collect();
     let columns = match opts.mode {
         BalanceMode::Change => direct,
-        BalanceMode::Historical => cumulative(txns, opts.from, direct)?,
+        BalanceMode::Historical => cumulative(opening()?, direct)?,
     };
     let (rows, totals) = pivot(&columns, opts.depth)?;
     let rows = shown(rows, opts.known, opts.depth, buckets.len());
@@ -97,21 +135,12 @@ pub fn account_periods(
     })
 }
 
-/// Each column's closing balance: everything before `from`, plus every
-/// column's movement up to and including it.
+/// Each column's closing balance: everything before `from` (`running`), plus
+/// every column's movement up to and including it.
 fn cumulative(
-    txns: &[Transaction],
-    from: &str,
+    mut running: BTreeMap<String, MixedAmount>,
     direct: Vec<BTreeMap<String, MixedAmount>>,
 ) -> Result<Vec<BTreeMap<String, MixedAmount>>, ReportError> {
-    let before = add_days(from, -1);
-    let mut running = account_totals(
-        txns,
-        &PostingFilter {
-            to: Some(&before),
-            ..PostingFilter::default()
-        },
-    )?;
     direct
         .into_iter()
         .map(|column| {

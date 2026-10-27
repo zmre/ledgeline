@@ -158,7 +158,26 @@ impl ForecastWindow {
         lookback: usize,
         count: usize,
     ) -> Result<Self, ReportError> {
-        let cutoff = forecast_cutoff(today, latest_real, interval)?;
+        Self::from_cutoff(
+            forecast_cutoff(today, latest_real, interval)?,
+            interval,
+            lookback,
+            count,
+        )
+    }
+
+    /// The window around an already-resolved `cutoff` (a period start on
+    /// `interval`): what [`ForecastWindow::resolve`] builds once it has the
+    /// cutoff.
+    ///
+    /// # Errors
+    /// [`ReportError::InvalidBucketKey`] from the bucket math.
+    pub fn from_cutoff(
+        cutoff: String,
+        interval: Interval,
+        lookback: usize,
+        count: usize,
+    ) -> Result<Self, ReportError> {
         let lookback_keys = if lookback == 0 {
             Vec::new()
         } else {
@@ -265,6 +284,16 @@ impl ForecastDefaults {
     /// The defaults `scenario` would get from `defaults`.
     #[must_use]
     pub fn of(scenario: &Scenario, defaults: &CounterDefaults) -> Self {
+        Self::of_under(scenario, defaults, defaults.header.as_ref())
+    }
+
+    /// [`ForecastDefaults::of`] with `header` as the `; cash:` fallback in
+    /// place of the one `defaults` was built with.
+    pub(super) fn of_under(
+        scenario: &Scenario,
+        defaults: &CounterDefaults,
+        header: Option<&AccountName>,
+    ) -> Self {
         let mut grouped: BTreeMap<&str, Vec<(&str, &Commodity)>> = BTreeMap::new();
         for line in scenario.lines.iter().filter(|line| line.counter.is_none()) {
             grouped
@@ -275,13 +304,18 @@ impl ForecastDefaults {
         Self {
             lines: grouped
                 .into_iter()
-                .map(|(group, lines)| (group.to_string(), defaults.for_lines(lines)))
+                .map(|(group, lines)| (group.to_string(), defaults.for_lines_under(lines, header)))
                 .collect(),
             events: scenario
                 .events
                 .iter()
                 .filter(|event| event.counter.is_none())
-                .map(|event| (event.id.clone(), defaults.for_lines(event_lines(event))))
+                .map(|event| {
+                    (
+                        event.id.clone(),
+                        defaults.for_lines_under(event_lines(event), header),
+                    )
+                })
                 .collect(),
             cash: defaults.cash_fallback(),
             gains: AccountName(DEFAULT_GAINS_ACCOUNT.to_string()),
@@ -517,12 +551,12 @@ impl CounterDefaults {
         )
     }
 
-    fn from_parts(
+    pub(super) fn from_parts(
         txns: &[Transaction],
         types: &AccountTypes,
         cutoff: &str,
         header: Option<&AccountName>,
-        balances: &AccountBalances<'_>,
+        balances: &AccountBalances,
         target: Option<&Commodity>,
         db: &PriceDb,
     ) -> Result<Self, ReportError> {
@@ -656,11 +690,23 @@ impl CounterDefaults {
         &self,
         lines: impl IntoIterator<Item = (&'x str, &'x Commodity)>,
     ) -> AccountName {
+        self.for_lines_under(lines, self.header.as_ref())
+    }
+
+    /// [`CounterDefaults::for_lines`] with `header` as the scenario's `; cash:`
+    /// in place of the one these defaults were built with. Everything else
+    /// here is read from the journal, so one set of defaults serves every
+    /// scenario over it (plan 29).
+    pub(super) fn for_lines_under<'x>(
+        &self,
+        lines: impl IntoIterator<Item = (&'x str, &'x Commodity)>,
+        header: Option<&AccountName>,
+    ) -> AccountName {
         let lines: Vec<(&str, &Commodity)> = lines.into_iter().collect();
         let commodities: BTreeSet<&Commodity> = lines.iter().map(|(_, c)| *c).collect();
         let roots: Vec<&str> = lines.iter().map(|(account, _)| *account).collect();
         let Some(best) = self.vote(&roots, &commodities, None) else {
-            return self.fallback(&commodities, self.header.as_ref());
+            return self.fallback(&commodities, header);
         };
         if self.liabilities.contains(best) {
             // The card's settlement: the postings that pay it down.
@@ -837,7 +883,7 @@ pub fn forecast_transactions(
     types: &AccountTypes,
     history: &History<'_>,
 ) -> Result<Forecast, ReportError> {
-    expand(scenario, opts, types, history).map(|(forecast, _)| forecast)
+    expand(scenario, opts, types, history).map(|(forecast, _, _)| forecast)
 }
 
 /// [`forecast_transactions`], plus the real price directives it valued with,
@@ -847,7 +893,7 @@ pub(super) fn expand(
     opts: &ForecastOpts<'_>,
     types: &AccountTypes,
     history: &History<'_>,
-) -> Result<(Forecast, Vec<PriceDirective>), ReportError> {
+) -> Result<(Forecast, Vec<PriceDirective>, AccountBalances), ReportError> {
     let window = ForecastWindow::resolve(
         opts.today,
         latest_real_date(history.txns),
@@ -872,17 +918,81 @@ pub(super) fn expand(
         target.as_ref(),
         &db,
     )?;
+    let forecast = expand_from(
+        scenario,
+        types,
+        RealInputs {
+            window,
+            prices: &prices,
+            db: &db,
+            target,
+            balances: &balances,
+            defaults: &defaults,
+            first_index: next_index(history.txns),
+        },
+    )?;
+    Ok((forecast, prices, balances))
+}
+
+/// The first `Tindex` a forecast numbers its transactions from: one past the
+/// journal's highest.
+pub(super) fn next_index(txns: &[Transaction]) -> u32 {
+    txns.iter()
+        .map(|txn| txn.index.0)
+        .max()
+        .map_or(0, |max| max.saturating_add(1))
+}
+
+/// Everything an expansion reads from the real journal. [`expand`] builds it
+/// by scanning the journal; a cached run reads it off a
+/// [`super::RealSide`] (plan 29). Either way the expansion itself is
+/// [`expand_from`], so the two cannot generate different transactions.
+pub(super) struct RealInputs<'a> {
+    pub(super) window: ForecastWindow,
+    /// Every real price before the cutoff ([`real_prices`]).
+    pub(super) prices: &'a [PriceDirective],
+    /// `prices`' table.
+    pub(super) db: &'a PriceDb,
+    /// The valuation commodity.
+    pub(super) target: Option<Commodity>,
+    /// Every account's balance the day before the cutoff.
+    pub(super) balances: &'a AccountBalances,
+    /// The default counter-accounts; the scenario's own `; cash:` header is
+    /// applied on top of them.
+    pub(super) defaults: &'a CounterDefaults,
+    /// [`next_index`].
+    pub(super) first_index: u32,
+}
+
+/// Expand `scenario` against already-read real inputs.
+pub(super) fn expand_from(
+    scenario: &Scenario,
+    types: &AccountTypes,
+    real: RealInputs<'_>,
+) -> Result<Forecast, ReportError> {
+    let RealInputs {
+        window,
+        prices,
+        db,
+        target,
+        balances,
+        defaults,
+        first_index,
+    } = real;
+    let as_of = window.actuals_as_of();
+    let header = scenario.cash.as_ref();
 
     let mut expansion = Expansion {
         start: window.cutoff.clone(),
         end: window.end.clone(),
         as_of: &as_of,
         types,
-        balances: &balances,
-        db: &db,
-        real_prices: &prices,
+        balances,
+        db,
+        real_prices: prices,
         target: target.as_ref(),
-        defaults: &defaults,
+        defaults,
+        header,
         groups: BTreeMap::new(),
         group_order: Vec::new(),
         txns: Vec::new(),
@@ -913,8 +1023,8 @@ pub(super) fn expand(
         mut warnings,
         ..
     } = expansion;
-    super::warn_on_commodity_mismatch(&commodities, target.as_ref(), &db, &as_of, &mut warnings);
-    let forecast_defaults = ForecastDefaults::of(scenario, &defaults);
+    super::warn_on_commodity_mismatch(&commodities, target.as_ref(), db, &as_of, &mut warnings);
+    let forecast_defaults = ForecastDefaults::of_under(scenario, defaults, header);
 
     // Ascending by date, then by the block's place in the file, so two
     // same-day transactions read as `hledger print --forecast` lists them: by
@@ -932,34 +1042,28 @@ pub(super) fn expand(
         compare_iso(&a.date, &b.date).then_with(|| place(a_origin).cmp(&place(b_origin)))
     });
     let (mut txns, origins): (Vec<Transaction>, Vec<ForecastOrigin>) = paired.into_iter().unzip();
-    let first_index = history
-        .txns
-        .iter()
-        .map(|txn| txn.index.0)
-        .max()
-        .map_or(0, |max| max.saturating_add(1));
     for (offset, txn) in txns.iter_mut().enumerate() {
         txn.index = Tindex(first_index.saturating_add(u32::try_from(offset).unwrap_or(u32::MAX)));
     }
 
-    Ok((
-        Forecast {
-            window,
-            txns,
-            prices: forecast_prices,
-            assets,
-            warnings,
-            target,
-            defaults: forecast_defaults,
-            origins,
-        },
-        prices,
-    ))
+    Ok(Forecast {
+        window,
+        txns,
+        prices: forecast_prices,
+        assets,
+        warnings,
+        target,
+        defaults: forecast_defaults,
+        origins,
+    })
 }
 
 /// Every real price in effect before `cutoff`: the inferred cost prices, then
 /// the explicit directives, the order `net_worth` builds them in.
-fn real_prices(history: &History<'_>, cutoff: &str) -> Result<Vec<PriceDirective>, ReportError> {
+pub(super) fn real_prices(
+    history: &History<'_>,
+    cutoff: &str,
+) -> Result<Vec<PriceDirective>, ReportError> {
     let mut prices = infer_market_prices(history.txns)?;
     prices.extend_from_slice(history.prices);
     prices.retain(|price| before(&price.date, cutoff));
@@ -998,12 +1102,14 @@ struct Expansion<'a> {
     end: String,
     as_of: &'a str,
     types: &'a AccountTypes,
-    balances: &'a AccountBalances<'a>,
+    balances: &'a AccountBalances,
     db: &'a PriceDb,
     /// The real directives `db` was built from, for the grown database.
     real_prices: &'a [PriceDirective],
     target: Option<&'a Commodity>,
     defaults: &'a CounterDefaults,
+    /// The scenario's `; cash:`, applied over `defaults`.
+    header: Option<&'a AccountName>,
     /// group → date → legs.
     groups: BTreeMap<String, BTreeMap<String, DatedLegs>>,
     /// Groups in first-appearance order, so transactions are built in the
@@ -1161,10 +1267,11 @@ impl<'a> Expansion<'a> {
                 let mut residual = legs.unbalanced.clone();
                 residual.drop_zeros();
                 if !residual.is_empty() {
-                    let counter = self.defaults.for_lines(
+                    let counter = self.defaults.for_lines_under(
                         legs.unbalanced_accounts
                             .iter()
                             .map(|(a, c)| (a.as_str(), c)),
+                        self.header,
                     );
                     postings.extend(posting(&counter.0, &residual.ma_neg()?, &plain_style()));
                 }
@@ -1198,10 +1305,10 @@ impl<'a> Expansion<'a> {
         }
         sum.drop_zeros();
         if !sum.is_empty() {
-            let counter = event
-                .counter
-                .clone()
-                .unwrap_or_else(|| self.defaults.for_lines(event_lines(event)));
+            let counter = event.counter.clone().unwrap_or_else(|| {
+                self.defaults
+                    .for_lines_under(event_lines(event), self.header)
+            });
             postings.extend(posting(&counter.0, &sum.ma_neg()?, &plain_style()));
         }
         if postings.is_empty() {

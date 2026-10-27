@@ -158,7 +158,7 @@ pub fn cash_flow_range(
 ///
 /// # Errors
 /// Returns [`ReportError`] on decimal overflow.
-pub(super) fn bucket_totals(
+pub(crate) fn bucket_totals(
     txns: &[Transaction],
     ranges: &[(String, String)],
     include: &dyn Fn(&str) -> bool,

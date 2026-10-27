@@ -631,7 +631,7 @@ pub fn project(
     opts: &ProjectionOpts,
 ) -> Result<Projection, ReportError> {
     let types = AccountTypes::from_declared(opts.declared.clone());
-    let (forecast, real_prices) = forecast::expand(
+    let (forecast, real_prices, balances) = forecast::expand(
         scenario,
         &ForecastOpts {
             today: opts.today,
@@ -643,80 +643,176 @@ pub fn project(
         &types,
         &History { txns, prices },
     )?;
+    let db = PriceDb::build(&real_prices);
+    let openings = Openings::scan(
+        txns,
+        &real_prices,
+        &db,
+        &balances,
+        &forecast.window,
+        forecast.target.as_ref(),
+        &types,
+        opts.declared,
+    )?;
+    roll_forward(
+        forecast,
+        &RealRead {
+            openings: &openings,
+            balances: &balances,
+            prices: &real_prices,
+            db: &db,
+        },
+        &types,
+        opts.depth,
+    )
+}
+
+/// The real figures a projection opens on, all strictly before the cutoff:
+/// what [`project`] scans the journal for and a [`RealSide`] keeps (plan 29).
+#[derive(Debug, Clone)]
+pub(crate) struct Openings {
+    /// Cash RAW, per commodity, summed over every cash account. Valued only
+    /// when a figure is read off it ([`cash_total`]). Valuing the opening but
+    /// not the generated postings is how a EUR scenario line used to read as
+    /// negative EUR against a dollar-valued opening (amendment 22).
+    raw_cash: MixedAmount,
+    /// `raw_cash`, valued the day before the cutoff.
+    cash: MixedAmount,
+    /// Net worth the day before the cutoff.
+    net_worth: MixedAmount,
+    /// The lookback: actual closing cash per full period.
+    cash_history: Vec<MixedAmount>,
+    /// The lookback: actual net worth per full period.
+    net_worth_history: Vec<MixedAmount>,
+}
+
+impl Openings {
+    /// Read the openings off the real journal.
+    ///
+    /// `real_prices` are the real prices before the cutoff and `db` their
+    /// table. A forecast's grown prices are never needed here: every one is
+    /// dated on or after the cutoff, and every figure here is valued before it,
+    /// where a price table only reads directives already in effect.
+    ///
+    /// # Errors
+    /// Returns [`ReportError`] on decimal overflow or bucket math.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn scan(
+        txns: &[Transaction],
+        real_prices: &[PriceDirective],
+        db: &PriceDb,
+        balances: &AccountBalances,
+        window: &ForecastWindow,
+        target: Option<&Commodity>,
+        types: &AccountTypes,
+        declared: &BTreeMap<String, AccountType>,
+    ) -> Result<Self, ReportError> {
+        let as_of = window.actuals_as_of();
+        let net_worth_opts = |end, count| NetWorthOpts {
+            end,
+            interval: window.interval,
+            count,
+            // The total is summed over every asset/liability ACCOUNT, so it is
+            // depth-independent; 1 is simply the cheapest rows to build.
+            depth: 1,
+            value_in: target.cloned(),
+            declared,
+        };
+        let raw_cash = cash_balance(balances, types)?;
+        let cash = cash_total(&raw_cash, target, db, &as_of)?;
+        let net_worth = net_worth_priced(txns, real_prices, &net_worth_opts(as_of.as_str(), 1))?
+            .totals
+            .first()
+            .cloned()
+            .unwrap_or_default();
+        let lookback_ends: Vec<String> = window
+            .lookback
+            .iter()
+            .map(|key| bucket_end(key))
+            .collect::<Result<_, ReportError>>()?;
+        let cash_history = closing_cash(txns, &lookback_ends, types)?
+            .iter()
+            .zip(&lookback_ends)
+            .map(|(cash, end)| cash_total(cash, target, db, end))
+            .collect::<Result<Vec<_>, ReportError>>()?;
+        let net_worth_history = if window.lookback.is_empty() {
+            Vec::new()
+        } else {
+            net_worth_priced(
+                txns,
+                real_prices,
+                &net_worth_opts(as_of.as_str(), window.lookback.len()),
+            )?
+            .totals
+        };
+        Ok(Self {
+            raw_cash,
+            cash,
+            net_worth,
+            cash_history,
+            net_worth_history,
+        })
+    }
+}
+
+/// What [`roll_forward`] reads from the real side, however it was obtained.
+pub(crate) struct RealRead<'a> {
+    pub(crate) openings: &'a Openings,
+    pub(crate) balances: &'a AccountBalances,
+    /// Every real price before the cutoff, and their table.
+    pub(crate) prices: &'a [PriceDirective],
+    pub(crate) db: &'a PriceDb,
+}
+
+/// Every series of a [`Projection`], read off `forecast`'s generated
+/// transactions beside the real openings. Shared by [`project`] and the
+/// cached run, so the two cannot roll forward differently.
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow or bucket math.
+pub(crate) fn roll_forward(
+    forecast: Forecast,
+    real: &RealRead<'_>,
+    types: &AccountTypes,
+    depth: usize,
+) -> Result<Projection, ReportError> {
     let window = &forecast.window;
     let generated = &forecast.txns;
     let grown = &forecast.prices;
     let target = forecast.target.clone();
     let as_of = window.actuals_as_of();
-    let mut all_prices = real_prices;
-    all_prices.extend(grown.iter().cloned());
-    let db = PriceDb::build(&all_prices);
-    let net_worth_opts = |end, count| NetWorthOpts {
-        end,
-        interval: opts.interval,
-        count,
-        // The total is summed over every asset/liability ACCOUNT, so it is
-        // depth-independent; 1 is simply the cheapest rows to build.
-        depth: 1,
-        value_in: target.clone(),
-        declared: opts.declared,
-    };
-
-    // --- Opening balances: REAL only, the day before the cutoff. ---
-    let balances = account_balances_at(txns, &as_of)?;
-    // Cash is carried RAW, per commodity, summed over every cash account, and
-    // valued only when a figure is read off it (`cash_total`). Valuing the
-    // opening but not the generated postings is how a EUR scenario line used to
-    // read as negative EUR against a dollar-valued opening (amendment 22).
-    let raw_opening_cash = cash_balance(&balances, &types)?;
-    let opening_cash = cash_total(&raw_opening_cash, target.as_ref(), &db, &as_of)?;
-    // `net_worth_priced` with the combined price set: it values at `as_of`, so
-    // no forecast price (every one dated after the cutoff) can reach it.
-    let opening_net_worth =
-        net_worth_priced(txns, &all_prices, &net_worth_opts(as_of.as_str(), 1))?
-            .totals
-            .first()
-            .cloned()
-            .unwrap_or_default();
-
-    // --- The lookback: actuals, closing balance per full period. ---
-    let lookback_ends: Vec<String> = window
-        .lookback
-        .iter()
-        .map(|key| bucket_end(key))
-        .collect::<Result<_, ReportError>>()?;
-    let cash_history = closing_cash(txns, &lookback_ends, &types)?
-        .iter()
-        .zip(&lookback_ends)
-        .map(|(cash, end)| cash_total(cash, target.as_ref(), &db, end))
-        .collect::<Result<Vec<_>, ReportError>>()?;
-    let net_worth_history = if window.lookback.is_empty() {
-        Vec::new()
+    // The real table, plus the forecast's grown prices when there are any.
+    // Building it from `real ++ []` would give the same table, so a forecast
+    // with no growth reads the real one as it is.
+    let grown_db;
+    let db: &PriceDb = if grown.is_empty() {
+        real.db
     } else {
-        net_worth_priced(
-            txns,
-            &all_prices,
-            &net_worth_opts(as_of.as_str(), window.lookback.len()),
-        )?
-        .totals
+        let mut all_prices = real.prices.to_vec();
+        all_prices.extend(grown.iter().cloned());
+        grown_db = PriceDb::build(&all_prices);
+        &grown_db
     };
+    let openings = real.openings;
 
     // --- The real holdings whose PRICES a row grows, for their revaluation. ---
     let grown_commodities: BTreeSet<&Commodity> =
         grown.iter().map(|price| &price.commodity).collect();
     let mut held = MixedAmount::new();
-    for (account, ma) in &balances {
-        if !is_balance_sheet_side(&types, account) {
-            continue;
-        }
-        for (commodity, qty) in ma.iter() {
-            if grown_commodities.contains(commodity) {
-                held.accumulate(commodity, *qty)?;
+    if !grown_commodities.is_empty() {
+        for (account, ma) in real.balances {
+            if !is_balance_sheet_side(types, account) {
+                continue;
+            }
+            for (commodity, qty) in ma.iter() {
+                if grown_commodities.contains(commodity) {
+                    held.accumulate(commodity, *qty)?;
+                }
             }
         }
     }
     held.drop_zeros();
-    let held_at_open = valued(&held, target.as_ref(), &db, &as_of, None)?;
+    let held_at_open = valued(&held, target.as_ref(), db, &as_of, None)?;
 
     // --- Roll forward over the generated transactions, bucket by bucket. ---
     let spans: Vec<(String, String)> = window
@@ -728,8 +824,8 @@ pub fn project(
     let mut income_totals: Vec<MixedAmount> = Vec::with_capacity(spans.len());
     let mut cash_values: Vec<MixedAmount> = Vec::with_capacity(spans.len());
     let mut net_worth_values: Vec<MixedAmount> = Vec::with_capacity(spans.len());
-    let mut cash_running = raw_opening_cash;
-    let mut net_worth_running = opening_net_worth.clone();
+    let mut cash_running = openings.raw_cash.clone();
+    let mut net_worth_running = openings.net_worth.clone();
     let mut cursor = 0usize;
     for (_, end) in &spans {
         // `generated` is ascending and starts at the cutoff, so each bucket is
@@ -745,7 +841,7 @@ pub fn project(
             if types.is_cash(account) {
                 cash_running.ma_add_assign(ma)?;
             }
-            if is_balance_sheet_side(&types, account) {
+            if is_balance_sheet_side(types, account) {
                 net_worth_running.ma_add_assign(ma)?;
             }
             if types.is_type(account, AccountType::Revenue)
@@ -762,14 +858,14 @@ pub fn project(
             total.ma_add_assign(ma)?;
         }
         income_totals.push(total);
-        income_rows.push(at_depth(&roll_up(&income_own)?, opts.depth));
+        income_rows.push(at_depth(&roll_up(&income_own)?, depth));
 
         let mut net_worth = net_worth_running.clone();
         if !held.is_empty() {
-            let revalued = valued(&held, target.as_ref(), &db, end, None)?;
+            let revalued = valued(&held, target.as_ref(), db, end, None)?;
             net_worth.ma_add_assign(&revalued.ma_add(&held_at_open.ma_neg()?)?)?;
         }
-        cash_values.push(cash_total(&cash_running, target.as_ref(), &db, end)?);
+        cash_values.push(cash_total(&cash_running, target.as_ref(), db, end)?);
         net_worth_values.push(net_worth);
     }
 
@@ -817,14 +913,14 @@ pub fn project(
             meta: None,
         },
         cash: BalanceSeries {
-            opening: opening_cash,
+            opening: openings.cash.clone(),
             values: cash_values,
-            history: cash_history,
+            history: openings.cash_history.clone(),
         },
         net_worth: BalanceSeries {
-            opening: opening_net_worth,
+            opening: openings.net_worth.clone(),
             values: net_worth_values,
-            history: net_worth_history,
+            history: openings.net_worth_history.clone(),
         },
         runway,
         assets: forecast.assets.clone(),
@@ -977,7 +1073,7 @@ fn whole_months(anchor: &str, date: &str) -> i64 {
 ///
 /// Keys borrow the journal: the map is built and read inside one [`project`]
 /// call, over transactions that outlive it.
-type AccountBalances<'a> = BTreeMap<&'a str, MixedAmount>;
+type AccountBalances = BTreeMap<String, MixedAmount>;
 
 /// Sum every posting dated on or before `as_of` into its own account's total.
 ///
@@ -1003,11 +1099,10 @@ type AccountBalances<'a> = BTreeMap<&'a str, MixedAmount>;
 ///
 /// # Errors
 /// Returns [`ReportError`] on decimal overflow.
-fn account_balances_at<'a>(
-    txns: &'a [Transaction],
-    as_of: &str,
-) -> Result<AccountBalances<'a>, ReportError> {
-    let mut balances = AccountBalances::new();
+fn account_balances_at(txns: &[Transaction], as_of: &str) -> Result<AccountBalances, ReportError> {
+    // Keyed by borrowed names while summing (no allocation per posting), owned
+    // once at the end so the map can outlive the journal (plan 29's cache).
+    let mut balances: BTreeMap<&str, MixedAmount> = BTreeMap::new();
     for txn in txns {
         for posting in &txn.postings {
             let date = posting.date.as_deref().unwrap_or(&txn.date);
@@ -1020,7 +1115,10 @@ fn account_balances_at<'a>(
             }
         }
     }
-    Ok(balances)
+    Ok(balances
+        .into_iter()
+        .map(|(account, ma)| (account.to_string(), ma))
+        .collect())
 }
 
 /// Cumulative balance of every cash-like account.
@@ -1056,7 +1154,7 @@ fn cash_total(
 }
 
 fn cash_balance(
-    balances: &AccountBalances<'_>,
+    balances: &AccountBalances,
     types: &AccountTypes,
 ) -> Result<MixedAmount, ReportError> {
     let mut total = MixedAmount::new();
@@ -1089,9 +1187,11 @@ fn cash_balance(
 ///
 /// # Errors
 /// Returns [`ReportError`] on decimal overflow.
-fn subtree_balance(balances: &AccountBalances<'_>, root: &str) -> Result<MixedAmount, ReportError> {
+fn subtree_balance(balances: &AccountBalances, root: &str) -> Result<MixedAmount, ReportError> {
     let mut total = MixedAmount::new();
-    for (account, ma) in balances.range(root..) {
+    for (account, ma) in
+        balances.range::<str, _>((std::ops::Bound::Included(root), std::ops::Bound::Unbounded))
+    {
         if !account.starts_with(root) {
             break;
         }

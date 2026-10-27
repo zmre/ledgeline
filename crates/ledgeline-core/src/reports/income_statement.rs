@@ -402,7 +402,7 @@ pub fn account_sections_from(accounts: &[AccountDeclaration]) -> BTreeMap<String
 }
 
 /// One window's per-account figures on the display basis.
-type Totals = BTreeMap<String, MixedAmount>;
+pub(crate) type Totals = BTreeMap<String, MixedAmount>;
 
 /// How a statement hands its per-window [`Figures`] out: [`Amounts::shaped`]
 /// (Total mode) or [`Columns::shaped`] (interval mode).
@@ -629,7 +629,7 @@ impl From<&BucketSpan> for DateRange {
 /// the report's `to` would make a cleaner change column and a prior column that
 /// disagrees with the report it is being compared against; parity wins.
 fn window_totals(
-    txns: &[Transaction],
+    direct: Totals,
     window: &DateRange,
     opts: &IsOpts,
     prices: &PriceDb,
@@ -637,15 +637,6 @@ fn window_totals(
     on_statement: &impl Fn(&str) -> bool,
     meta: &mut ValuationMeta,
 ) -> Result<Totals, ReportError> {
-    let direct = account_totals(
-        txns,
-        &PostingFilter {
-            from: Some(&window.from),
-            to: Some(&window.to),
-            at_cost: opts.value == Valuation::Cost,
-            ..PostingFilter::default()
-        },
-    )?;
     // RPT-2: membership is decided on the DIRECT totals, before anything is
     // valued or summed. Narrowing here also keeps `meta.unpriced` to commodities
     // the reader can actually see on this statement.
@@ -663,6 +654,29 @@ fn window_totals(
             .collect(),
         _ => Ok(on_sheet.collect()),
     }
+}
+
+/// One window's DIRECT per-account totals: every posting dated inside it,
+/// summed as written, or at cost when `at_cost`. What [`window_totals`] narrows
+/// and values; a projection's real side keeps them for its lookback windows
+/// (plan 29).
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow.
+pub(crate) fn window_direct(
+    txns: &[Transaction],
+    window: &DateRange,
+    at_cost: bool,
+) -> Result<Totals, ReportError> {
+    Ok(account_totals(
+        txns,
+        &PostingFilter {
+            from: Some(&window.from),
+            to: Some(&window.to),
+            at_cost,
+            ..PostingFilter::default()
+        },
+    )?)
 }
 
 /// The segment index the untagged fallback names a group from: the first
@@ -943,6 +957,41 @@ pub fn income_statement_columns(
     })
 }
 
+/// [`income_statement_columns`] from each column's DIRECT totals
+/// ([`window_direct`], at cost exactly when `opts.value` is
+/// [`Valuation::Cost`]), one per [`range_buckets`] span of `[opts.from,
+/// opts.to]`, and an already-built price table. Everything after the posting
+/// pass is the same code, so the two cannot disagree (plan 29).
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow or bad bucket math.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn income_statement_columns_from(
+    direct: Vec<Totals>,
+    prices: &PriceDb,
+    opts: &IsOpts,
+    interval: Interval,
+    declared: &BTreeMap<String, AccountType>,
+    sections: &BTreeMap<String, IsSectionKind>,
+    groups: &BTreeMap<String, String>,
+) -> Result<IncomeStatementReport<Columns>, ReportError> {
+    let buckets = range_buckets(opts.from, opts.to, Some(interval))?;
+    let windows: Vec<DateRange> = buckets.iter().map(DateRange::from).collect();
+    Ok(IncomeStatementReport {
+        buckets,
+        ..statement_from(
+            direct,
+            prices,
+            opts,
+            &windows,
+            declared,
+            sections,
+            groups,
+            Columns::shaped,
+        )?
+    })
+}
+
 /// The statement over `windows`, every figure handed out through `shape`. The
 /// caller fills in which windows those were (`prior` or `buckets`).
 #[allow(clippy::too_many_arguments)]
@@ -956,11 +1005,39 @@ fn statement<A>(
     groups: &BTreeMap<String, String>,
     shape: Shape<A>,
 ) -> Result<IncomeStatementReport<A>, ReportError> {
+    let direct = windows
+        .iter()
+        .map(|window| window_direct(txns, window, opts.value == Valuation::Cost))
+        .collect::<Result<Vec<_>, ReportError>>()?;
+    statement_from(
+        direct,
+        &PriceDb::build(explicit_prices),
+        opts,
+        windows,
+        declared,
+        sections,
+        groups,
+        shape,
+    )
+}
+
+/// [`statement`] from each window's direct totals: `direct[i]` is
+/// [`window_direct`] over `windows[i]`.
+#[allow(clippy::too_many_arguments)]
+fn statement_from<A>(
+    direct: Vec<Totals>,
+    prices: &PriceDb,
+    opts: &IsOpts,
+    windows: &[DateRange],
+    declared: &BTreeMap<String, AccountType>,
+    sections: &BTreeMap<String, IsSectionKind>,
+    groups: &BTreeMap<String, String>,
+    shape: Shape<A>,
+) -> Result<IncomeStatementReport<A>, ReportError> {
     let types = AccountTypes::from_declared(declared.clone());
     let resolve_section = section_resolver(sections, &types);
     let on_statement = |account: &str| resolve_section(account).is_some();
 
-    let prices = PriceDb::build(explicit_prices);
     let target: Option<Commodity> = opts
         .value_in
         .clone()
@@ -968,14 +1045,15 @@ fn statement<A>(
 
     let mut meta = ValuationMeta::default();
     let windows = Windows {
-        totals: windows
-            .iter()
-            .map(|window| {
+        totals: direct
+            .into_iter()
+            .zip(windows)
+            .map(|(direct, window)| {
                 window_totals(
-                    txns,
+                    direct,
                     window,
                     opts,
-                    &prices,
+                    prices,
                     target.as_ref(),
                     &on_statement,
                     &mut meta,

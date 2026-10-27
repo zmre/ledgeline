@@ -315,7 +315,8 @@ pub fn balance_sheet_grouped(
             },
         )
     };
-    SheetBuilder::new(explicit_prices, opts, declared, groups, terms).report(
+    let prices = PriceDb::build(explicit_prices);
+    SheetBuilder::new(&prices, opts, declared, groups, terms).report(
         opts.as_of,
         &totals(false)?,
         &totals(true)?,
@@ -368,25 +369,75 @@ pub fn balance_sheet_columns(
     groups: &BTreeMap<String, String>,
     terms: &BTreeMap<String, BsTerm>,
 ) -> Result<Vec<BalanceSheetReport>, ReportError> {
-    let builder = SheetBuilder::new(explicit_prices, opts, declared, groups, terms);
-    let dates = column_dates(ends);
+    balance_sheet_columns_seeded(
+        &[],
+        &RunningTotals::default(),
+        txns,
+        &PriceDb::build(explicit_prices),
+        opts,
+        ends,
+        declared,
+        groups,
+        terms,
+    )
+}
 
-    let mut running = RunningTotals::default();
-    let by_date: Vec<BalanceSheetReport> = dates
-        .iter()
-        .zip(arrivals(txns, &dates))
-        .map(|(end, postings)| {
-            for posting in postings {
-                running.add(posting)?;
-            }
-            builder.report(
-                end,
-                &pruned(&running.written),
-                &pruned(&running.at_cost),
-                || running.precision.clone(),
-            )
-        })
-        .collect::<Result<_, ReportError>>()?;
+/// [`balance_sheet_columns`] continued from a seed (plan 29): the sheet state
+/// at some column ends already known (`seeded`, ascending), the cumulative
+/// totals of every posting before `tail`'s (`running`), and only the remaining
+/// postings (`tail`) to place.
+///
+/// With an empty seed this IS [`balance_sheet_columns`]. With a seed it gives
+/// the same reports as the full scan over `seed postings ++ tail` provided every
+/// `tail` posting, and every end not in `seeded`, is later than every seeded
+/// end — which is how a projection's real side is split at its cutoff.
+///
+/// # Errors
+/// [`ReportError::InvalidBucketKey`] when an end that the seed should hold is
+/// missing from it (a seed built for different columns); [`ReportError`] on
+/// decimal overflow.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn balance_sheet_columns_seeded(
+    seeded: &[(String, SheetState)],
+    running: &RunningTotals,
+    tail: &[Transaction],
+    prices: &PriceDb,
+    opts: &BsOpts,
+    ends: &[String],
+    declared: &BTreeMap<String, AccountType>,
+    groups: &BTreeMap<String, String>,
+    terms: &BTreeMap<String, BsTerm>,
+) -> Result<Vec<BalanceSheetReport>, ReportError> {
+    let builder = SheetBuilder::new(prices, opts, declared, groups, terms);
+    let dates = column_dates(ends);
+    let last_seeded = seeded.last().map(|(end, _)| end.as_str());
+    // The seeded dates come first: every one is earlier than every tail date.
+    let split = dates.partition_point(|date| last_seeded.is_some_and(|last| *date <= last));
+    let (early, late) = dates.split_at(split);
+
+    let mut by_date: Vec<BalanceSheetReport> = Vec::with_capacity(dates.len());
+    for end in early {
+        let Some((_, state)) = seeded.iter().find(|(seed_end, _)| seed_end == end) else {
+            return Err(ReportError::InvalidBucketKey(format!(
+                "balance sheet column {end} is not in the seed"
+            )));
+        };
+        by_date.push(builder.report(end, &state.written, &state.at_cost, || {
+            state.precision.clone()
+        })?);
+    }
+    let mut running = running.clone();
+    for (end, postings) in late.iter().zip(arrivals(tail, late)) {
+        for posting in postings {
+            running.add(posting)?;
+        }
+        by_date.push(builder.report(
+            end,
+            &pruned(&running.written),
+            &pruned(&running.at_cost),
+            || running.precision.clone(),
+        )?);
+    }
 
     // Every `end` is in `dates` by construction, so `partition_point` lands on
     // it exactly and the index is in bounds.
@@ -424,15 +475,18 @@ fn arrivals<'t>(txns: &'t [Transaction], dates: &[&str]) -> Vec<Vec<&'t Posting>
 /// The cumulative state [`balance_sheet_columns`] carries from one column to
 /// the next: the two [`account_totals`] maps `balance_sheet_grouped` builds,
 /// and the [`WrittenPrecision`] its verdict reads, all over the same postings.
-#[derive(Debug, Default)]
-struct RunningTotals {
+///
+/// Unpruned: a commodity at zero now keeps the scale a later addition aligns
+/// to, exactly as `account_totals` keeps it until its final sweep.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct RunningTotals {
     written: BTreeMap<String, MixedAmount>,
     at_cost: BTreeMap<String, MixedAmount>,
     precision: WrittenPrecision,
 }
 
 impl RunningTotals {
-    fn add(&mut self, posting: &Posting) -> Result<(), ReportError> {
+    pub(crate) fn add(&mut self, posting: &Posting) -> Result<(), ReportError> {
         add_posting(&mut self.written, posting, false)?;
         add_posting(&mut self.at_cost, posting, true)?;
         posting
@@ -441,6 +495,45 @@ impl RunningTotals {
             .for_each(|amount| self.precision.note(amount));
         Ok(())
     }
+
+    /// Fold `other` in, exactly as if its postings had been added here: every
+    /// account slot it has (empty ones included), every unpruned quantity, and
+    /// every precision it noted.
+    pub(crate) fn absorb(&mut self, other: &Self) -> Result<(), ReportError> {
+        for (into, from) in [
+            (&mut self.written, &other.written),
+            (&mut self.at_cost, &other.at_cost),
+        ] {
+            for (account, ma) in from {
+                let entry = into.entry(account.clone()).or_default();
+                for (commodity, qty) in ma.iter() {
+                    entry.accumulate(commodity, *qty)?;
+                }
+            }
+        }
+        self.precision.absorb(&other.precision);
+        Ok(())
+    }
+
+    /// The sheet state a column at this point reads.
+    pub(crate) fn state(&self) -> SheetState {
+        SheetState {
+            written: pruned(&self.written),
+            at_cost: pruned(&self.at_cost),
+            precision: self.precision.clone(),
+        }
+    }
+}
+
+/// What one balance-sheet column is built from: the cumulative totals through
+/// its end, as written and at cost, zero commodities dropped, and the written
+/// precision its verdict reads. A projection's real side keeps one per
+/// lookback column (plan 29).
+#[derive(Debug, Clone)]
+pub(crate) struct SheetState {
+    written: BTreeMap<String, MixedAmount>,
+    at_cost: BTreeMap<String, MixedAmount>,
+    precision: WrittenPrecision,
 }
 
 /// A snapshot of running totals with zero commodities dropped — the final sweep
@@ -463,7 +556,7 @@ fn pruned(totals: &BTreeMap<String, MixedAmount>) -> BTreeMap<String, MixedAmoun
 /// ([`balance_sheet_grouped`]) or many ([`balance_sheet_columns`]), so the two
 /// cannot assemble a sheet differently.
 struct SheetBuilder<'a> {
-    prices: PriceDb,
+    prices: &'a PriceDb,
     target: Option<Commodity>,
     types: AccountTypes,
     groups: &'a BTreeMap<String, String>,
@@ -474,13 +567,12 @@ struct SheetBuilder<'a> {
 
 impl<'a> SheetBuilder<'a> {
     fn new(
-        explicit_prices: &[PriceDirective],
+        prices: &'a PriceDb,
         opts: &BsOpts,
         declared: &BTreeMap<String, AccountType>,
         groups: &'a BTreeMap<String, String>,
         terms: &'a BTreeMap<String, BsTerm>,
     ) -> Self {
-        let prices = PriceDb::build(explicit_prices);
         let target = opts
             .value_in
             .clone()
@@ -539,7 +631,7 @@ impl<'a> SheetBuilder<'a> {
                 .map(|(account, ma)| {
                     Ok((
                         account.clone(),
-                        valued_keeping_unpriced(ma, base, &self.prices, as_of, &mut meta)?,
+                        valued_keeping_unpriced(ma, base, self.prices, as_of, &mut meta)?,
                     ))
                 })
                 .collect::<Result<_, ReportError>>()?,
@@ -888,6 +980,16 @@ impl WrittenPrecision {
                 &cost.amount.commodity,
                 cost.amount.quantity.places,
             );
+        }
+    }
+
+    /// Widen by everything `other` noted, as if its amounts were noted here.
+    fn absorb(&mut self, other: &Self) {
+        for (commodity, places) in &other.posted {
+            widen(&mut self.posted, commodity, *places);
+        }
+        for (commodity, places) in &other.costed {
+            widen(&mut self.costed, commodity, *places);
         }
     }
 
