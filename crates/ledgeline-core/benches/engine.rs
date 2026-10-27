@@ -45,7 +45,9 @@ use ledgeline_core::holdings::SeriesWindow;
 use ledgeline_core::holdings::{HoldingsScope, ScopeMode, compute_holdings, holdings_series};
 use ledgeline_core::model::{Commodity, Journal, PriceDirective};
 use ledgeline_core::projections::{
-    ProjectionOpts, Scenario, merged_prices, merged_transactions, project, serialize,
+    AccountsOpts, JournalFacts, ProjectionOpts, RealKey, RealSide, Scenario, StatementOpts,
+    merged_prices, merged_transactions, project, project_cached, projected_accounts,
+    projected_statements, serialize,
 };
 use ledgeline_core::reports::{
     AccountDecl, AccountPeriodsOpts, AccountType, BalanceMode, BsOpts, BudgetOpts, CfOpts, CfTags,
@@ -740,11 +742,15 @@ const PROJECTION_TODAY: &str = "2026-01-10";
 /// - `project_24m`: the whole `project()` call (forecast expansion, openings,
 ///   lookback, series, runway) — not the three statements the server then
 ///   builds over the merged list.
-/// - `run_cold` / `run_warm`: the SERVER-EQUIVALENT run (plan 29): `project`
-///   plus the balance sheet columns, the income statement columns, the cash
-///   flow statement and the Accounts reading (Change), with the declarations
-///   the handler reads. Cold is a first request; warm is every edit after it.
-///   Before plan 29 there is no cache, so both are the full-scan run.
+/// - `run_reference` / `run_cold` / `run_warm`: the SERVER-EQUIVALENT run
+///   (plan 29): the projection plus the balance sheet columns, the income
+///   statement columns, the cash flow statement and the Accounts reading
+///   (Change). `run_reference` is the full scan the handler made before plan
+///   29 (`project` and every reading over `merged_transactions`); `run_cold`
+///   is a first request (`JournalFacts::new`, `RealSide::build`, then the
+///   run); `run_warm` is every edit after it (the run against a built
+///   `RealSide`). The `before` baseline recorded both cold and warm as the
+///   full scan, which is what they were then.
 fn bench_projections(c: &mut Criterion, fixtures: &[Fixture]) {
     let mut group = c.benchmark_group("projections");
     heavy(&mut group);
@@ -801,14 +807,61 @@ fn bench_projections(c: &mut Criterion, fixtures: &[Fixture]) {
                 )
             });
         });
-        group.bench_with_input(BenchmarkId::new("run_cold", fx.id()), fx, |b, fx| {
+        group.bench_with_input(BenchmarkId::new("run_reference", fx.id()), fx, |b, fx| {
             b.iter(|| black_box(full_scan_run(fx, &scenario)));
         });
-        group.bench_with_input(BenchmarkId::new("run_warm", fx.id()), fx, |b, fx| {
-            b.iter(|| black_box(full_scan_run(fx, &scenario)));
+        group.bench_with_input(BenchmarkId::new("run_cold", fx.id()), fx, |b, fx| {
+            b.iter(|| {
+                let facts = JournalFacts::new(&fx.journal).expect("facts");
+                let real = RealSide::build(&fx.journal, &facts, &run_key(&facts)).expect("real");
+                black_box(cached_run(&facts, &real, &scenario))
+            });
+        });
+        let facts = JournalFacts::new(&fx.journal).expect("facts");
+        let real = RealSide::build(&fx.journal, &facts, &run_key(&facts)).expect("real");
+        group.bench_with_input(BenchmarkId::new("run_warm", fx.id()), fx, |b, _| {
+            b.iter(|| black_box(cached_run(&facts, &real, &scenario)));
         });
     }
     group.finish();
+}
+
+/// The run's real-side key: the server's default request.
+fn run_key(facts: &JournalFacts) -> RealKey {
+    facts
+        .key(PROJECTION_TODAY, Interval::Monthly, 2, None)
+        .expect("key")
+}
+
+/// The run handler after plan 29: the forecast against a cached real side.
+fn cached_run(facts: &JournalFacts, real: &RealSide, scenario: &Scenario) -> usize {
+    let projection = project_cached(scenario, real, 24, DEPTH).expect("run");
+    let statements = projected_statements(
+        real,
+        facts,
+        &projection.forecast,
+        &StatementOpts {
+            valuation: Valuation::Market,
+            bs_depth: None,
+            cf_depth: DEPTH,
+        },
+    )
+    .expect("statements");
+    let accounts = projected_accounts(
+        real,
+        facts,
+        &projection.forecast,
+        &AccountsOpts {
+            mode: BalanceMode::Change,
+            depth: DEPTH,
+            empty: false,
+        },
+    )
+    .expect("accounts");
+    statements.balance_sheet.len()
+        + statements.income_statement.sections.len()
+        + statements.cash_flow.sections.len()
+        + accounts.rows.len()
 }
 
 /// The run handler before plan 29: `project`, the merged lists, and every

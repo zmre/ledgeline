@@ -48,20 +48,18 @@ use ledgeline_core::projections::serialize::{
     ProjectionDoc, SerializeError, new_file, scenario_from_text, write_scenario,
 };
 use ledgeline_core::projections::{
-    AssetRow, BalanceSeries, CounterDefaults, CreateRefusal, DEFAULT_LOOKBACK,
+    AccountsOpts, AssetRow, BalanceSeries, CounterDefaults, CreateRefusal, DEFAULT_LOOKBACK,
     DiscoveredProjection, Discovery, ForecastDefaults, ForecastOrigin, Growth, GrowthUnit, History,
-    LineRole, LineSection, LineSource, Projection, ProjectionOpts, ProjectionPath, Runway,
-    Scenario, ScenarioEvent, ScenarioLine, SeedOpts, discover_in, forecast_cutoff, is_journal_name,
-    known_accounts, label_for, latest_real_date, line_section, merged_prices, merged_transactions,
-    project, seed_scenario, upgrade_legacy_counters, virtual_posting,
+    LineRole, LineSection, LineSource, ProjectedStatements, Projection, ProjectionPath, Runway,
+    Scenario, ScenarioEvent, ScenarioLine, SeedOpts, StatementOpts, discover_in, forecast_cutoff,
+    is_journal_name, label_for, latest_real_date, line_section, project_cached, projected_accounts,
+    projected_statements, seed_scenario, upgrade_legacy_counters, virtual_posting,
 };
 use ledgeline_core::reports::account_types::{AccountType, AccountTypes};
 use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
-    AccountPeriodsOpts, BalanceMode, BsOpts, BudgetOpts, CfOpts, CfTags, Interval, IsOpts,
-    Valuation, account_decls, account_periods, balance_sheet_columns, cash_flow_statement,
-    declared_types, income_statement_columns, periods::bucket_label, pivot_balance_sheets,
-    range_buckets, signed_entry,
+    BalanceMode, BudgetOpts, Interval, Valuation, account_decls, declared_types,
+    periods::bucket_label, pivot_balance_sheets, signed_entry,
 };
 use ledgeline_core::vault::{Revision, VaultError};
 use ledgeline_core::view::rows::{Row, RowContext};
@@ -71,9 +69,8 @@ use serde::{Deserialize, Serialize};
 use crate::edit_api::{WireDecIn, dec_from_wire, json_body};
 use crate::error::{AppError, editing_disabled};
 use crate::reports_api::{
-    StatementShape, Window, WireBalanceSheetColumns, WireCashFlow, WireDec,
-    WireIncomeStatementReport, WireMixed, WirePeriodReport, checked_date, compute, today_utc,
-    wire_mixed,
+    Window, WireBalanceSheetColumns, WireCashFlow, WireDec, WireIncomeStatementReport, WireMixed,
+    WirePeriodReport, checked_date, compute, today_utc, wire_mixed,
 };
 use crate::security::no_store_json as no_store;
 use crate::{AppState, JournalLocation, Snapshot};
@@ -559,128 +556,40 @@ pub(crate) struct WireProjection {
     journal: Option<WireForecastJournal>,
 }
 
-/// The three official statements over `real ++ forecast`, built exactly as the
-/// Reports tab builds them — the same [`StatementShape`], the same
-/// [`CfTags::from_journal`], the same functions — over the merged transactions
-/// and prices, across `lookback ++ buckets`.
+/// The three official statements over `real ++ forecast`, on the wire.
+///
+/// Built by core's [`projected_statements`] from the snapshot's cached real
+/// side plus this run's forecast (plan 29) — the same reports, figure for
+/// figure and scale for scale, as the Reports tab's builders run over
+/// `merged_transactions` / `merged_prices` ([`reference_statements`] is that
+/// full scan, kept as the definition). The declarations are the journal's
+/// [`StatementShape`] and [`CfTags::from_journal`], as the Reports handlers
+/// read them.
 ///
 /// Valued (balance sheet, income statement) at market in the projection's own
 /// valuation commodity, each column at its own end, so a column past the last
 /// real price reads the forecast's in-memory prices (Decision 3) and the
 /// balance sheet's valuation adjustment keeps it balanced.
-fn projected_statements(
-    journal: &ledgeline_core::Journal,
-    projection: &Projection,
-    merged: &Merged,
-    shape: &StatementShape,
-    depth: usize,
-) -> Result<
-    (
-        WireBalanceSheetColumns,
-        WireIncomeStatementReport,
-        WireCashFlow,
-    ),
-    AppError,
-> {
-    let forecast = &projection.forecast;
-    let window = &forecast.window;
-    let Merged { txns, prices } = merged;
-    let spans = range_buckets(&window.from, &window.end, Some(window.interval))?;
-    let ends: Vec<String> = spans.iter().map(|span| span.to.clone()).collect();
-    let value_in = forecast.target.clone();
-
-    let sheets = balance_sheet_columns(
-        txns,
-        prices,
-        &BsOpts {
-            as_of: &window.end,
-            depth: None,
-            value: Valuation::Market,
-            value_in: value_in.clone(),
-        },
-        &ends,
-        &shape.declared,
-        &shape.bs_groups,
-        &shape.bs_terms,
-    )?;
-    let income = income_statement_columns(
-        txns,
-        prices,
-        &IsOpts {
-            from: &window.from,
-            to: &window.end,
-            value: Valuation::Market,
-            value_in,
-            compare: false,
-        },
-        window.interval,
-        &shape.declared,
-        &shape.is_sections,
-        &shape.is_groups,
-    )?;
-    let cash_flow = cash_flow_statement(
-        txns,
-        &CfOpts {
-            from: &window.from,
-            to: &window.end,
-            interval: Some(window.interval),
-            depth,
-        },
-        &CfTags::from_journal(journal),
-    )?;
-    Ok((
-        WireBalanceSheetColumns::new(&pivot_balance_sheets(&sheets), &spans, "market"),
-        WireIncomeStatementReport::columns(&income, "market"),
-        WireCashFlow::from(&cash_flow),
-    ))
-}
-
-/// `real ++ forecast`: the real journal before the cutoff and the generated
-/// transactions, with their prices. Built once per run and read by every
-/// reading over the merged columns.
-struct Merged {
-    txns: Vec<ledgeline_core::model::Transaction>,
-    prices: Vec<ledgeline_core::model::PriceDirective>,
-}
-
-impl Merged {
-    fn of(journal: &ledgeline_core::Journal, projection: &Projection) -> Self {
-        Self {
-            txns: merged_transactions(&journal.transactions, &projection.forecast),
-            prices: merged_prices(&journal.prices, &projection.forecast),
-        }
-    }
-}
-
-/// The Accounts reading: every account per column over `lookback ++ buckets`
-/// (`hledger balance -M --forecast`, `-H` for balances, `-E --declared` for
-/// empty accounts), as written: no valuation, natural signs.
 ///
-/// With `empty`, the known accounts are [`known_accounts`]: hledger's
-/// `-E --declared`, widened to every account the journal ever posts to.
-fn projected_accounts(
-    journal: &ledgeline_core::Journal,
-    projection: &Projection,
-    merged: &Merged,
-    request: &AccountsIn,
-    depth: usize,
-) -> Result<WirePeriodReport, AppError> {
-    let window = &projection.forecast.window;
-    let known: Option<Vec<String>> = request
-        .empty
-        .then(|| known_accounts(journal, &projection.forecast));
-    let report = account_periods(
-        &merged.txns,
-        &AccountPeriodsOpts {
-            from: &window.from,
-            to: &window.end,
-            interval: window.interval,
-            depth,
-            mode: request.mode,
-            known: known.as_deref(),
-        },
-    )?;
-    Ok(WirePeriodReport::from(&report))
+/// [`reference_statements`]: ledgeline_core::projections::reference_statements
+/// [`StatementShape`]: ledgeline_core::reports::StatementShape
+/// [`CfTags::from_journal`]: ledgeline_core::reports::CfTags::from_journal
+fn wire_statements(
+    statements: &ProjectedStatements,
+) -> (
+    WireBalanceSheetColumns,
+    WireIncomeStatementReport,
+    WireCashFlow,
+) {
+    (
+        WireBalanceSheetColumns::new(
+            &pivot_balance_sheets(&statements.balance_sheet),
+            &statements.spans,
+            "market",
+        ),
+        WireIncomeStatementReport::columns(&statements.income_statement, "market"),
+        WireCashFlow::from(&statements.cash_flow),
+    )
 }
 
 /// The Journal reading: the generated transactions only, in the journal
@@ -1241,32 +1150,50 @@ pub(crate) async fn run(
 
     compute(move || {
         let journal = &snapshot.journal;
-        let shape = StatementShape::of(journal);
-        let scenario = decoded.signed(&shape.declared)?;
+        // The real side is the snapshot's (plan 29): built on the first run
+        // for this key, then reused by every edit until the journal, the
+        // period `today` falls in, the interval, the lookback or `valueIn`
+        // changes.
+        let cache = &snapshot.projections;
+        let facts = cache.facts(journal)?;
+        let scenario = decoded.signed(&facts.shape().declared)?;
+        let key = facts.key(&window.end, window.interval, lookback, value_in)?;
+        let real = cache.side(journal, &facts, &key)?;
         // ONE expansion serves every reading: the cash series and runway are
-        // read off it inside `project`, and the statements below are built
-        // over the same generated transactions and prices.
-        let projection = project(
-            &scenario,
-            &journal.transactions,
-            &journal.prices,
-            &ProjectionOpts {
-                today: &window.end,
-                lookback,
-                interval: window.interval,
-                count: window.count,
-                depth: window.depth,
-                declared: &shape.declared,
-                value_in,
+        // read off it inside `project_cached`, and the statements below are
+        // built over the same generated transactions and prices.
+        let projection = project_cached(&scenario, &real, window.count, window.depth)?;
+        let statements = projected_statements(
+            &real,
+            &facts,
+            &projection.forecast,
+            &StatementOpts {
+                valuation: Valuation::Market,
+                bs_depth: None,
+                cf_depth: window.depth,
             },
         )?;
-        let merged = Merged::of(journal, &projection);
-        let statements = projected_statements(journal, &projection, &merged, &shape, window.depth)?;
+        // The Accounts reading: every account per column over `lookback ++
+        // buckets` (`hledger balance -M --forecast`, `-H` for balances,
+        // `-E --declared` for empty accounts), as written: no valuation,
+        // natural signs. With `empty`, the known accounts are
+        // `known_accounts`: hledger's `-E --declared`, widened to every
+        // account the journal ever posts to.
         let accounts = request
             .accounts
             .as_ref()
             .map(|accounts| {
-                projected_accounts(journal, &projection, &merged, accounts, window.depth)
+                projected_accounts(
+                    &real,
+                    &facts,
+                    &projection.forecast,
+                    &AccountsOpts {
+                        mode: accounts.mode,
+                        depth: window.depth,
+                        empty: accounts.empty,
+                    },
+                )
+                .map(|report| WirePeriodReport::from(&report))
             })
             .transpose()?;
         let forecast_journal = request.journal.then(|| {
@@ -1276,7 +1203,7 @@ pub(crate) async fn run(
         Ok(WireProjection {
             accounts,
             journal: forecast_journal,
-            ..WireProjection::new(&projection, statements)
+            ..WireProjection::new(&projection, wire_statements(&statements))
         })
     })
     .await

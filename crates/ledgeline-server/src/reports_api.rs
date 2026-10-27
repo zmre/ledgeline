@@ -35,23 +35,23 @@ use ledgeline_core::model::{Commodity, Journal};
 use ledgeline_core::reports::periods;
 use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
-    AccountType, Amounts, BalanceSheetColumns, BalanceSheetReport, BarLabel, BsColumnGroup,
-    BsColumnRow, BsColumnSection, BsColumnSubsection, BsGroup, BsOpts, BsSection, BsSectionKind,
-    BsSubsection, BsTerm, BucketSpan, BudgetBar, BudgetCell, BudgetGaps, BudgetHealth, BudgetOpts,
-    BudgetReport, BudgetRow, BudgetSection, BudgetSectionKind, BudgetSummary, Cadence,
-    CashFlowStatement, CfLineSource, CfOpts, CfTags, ChangeKind, ChangeRow, Columns, CostOfLiving,
+    Amounts, BalanceSheetColumns, BalanceSheetReport, BarLabel, BsColumnGroup, BsColumnRow,
+    BsColumnSection, BsColumnSubsection, BsGroup, BsOpts, BsSection, BsSectionKind, BsSubsection,
+    BsTerm, BucketSpan, BudgetBar, BudgetCell, BudgetGaps, BudgetHealth, BudgetOpts, BudgetReport,
+    BudgetRow, BudgetSection, BudgetSectionKind, BudgetSummary, Cadence, CashFlowStatement,
+    CfLineSource, CfOpts, CfTags, ChangeKind, ChangeRow, Columns, CostOfLiving,
     DEFAULT_EXCLUDE_DESC, DateRange, FlowGraph, FlowLink, FlowNode, FlowOpts, FlowReport, FlowSide,
     GapRow, GroupSource, IS_GROUP_TAG, IncomeStatementReport, InsightsOpts, InsightsPeriod,
     InsightsReport, Interval, InvestmentPerf, IsGroup, IsOpts, IsRow, IsSection, IsSectionKind,
     IsSubtotal, IsSubtotalKind, LabelKind, MetricDelta, MixedAmount, MoverRow, NetWorthOpts,
     PerfPoint, PeriodReport, PeriodRow, ReportError, ReportMeta, ReportRow, RowKind, Section,
     SectionedReport, Subscription, SubscriptionOpts, SubscriptionsReport, TopTxn, Valuation,
-    account_decls, account_groups, account_sections, balance_sheet, balance_sheet_columns,
-    balance_sheet_grouped, bs_terms, budget_gaps, budget_report, budget_summary,
-    cash_flow_statement, compared_windows, declared_groups, declared_types, detect_subscriptions,
-    gap_totals, income_statement, income_statement_columns, income_statement_flows,
-    income_statement_grouped, insights, interval_windows, net_worth, pivot_balance_sheets,
-    prices_any_on_sheet, prices_any_on_sheets, prices_any_on_statement, range_buckets,
+    account_decls, account_sections, balance_sheet, balance_sheet_columns, balance_sheet_grouped,
+    budget_gaps, budget_report, budget_summary, cash_flow_statement, compared_windows,
+    declared_groups, declared_types, detect_subscriptions, gap_totals, income_statement,
+    income_statement_columns, income_statement_flows, income_statement_grouped, insights,
+    interval_windows, net_worth, pivot_balance_sheets, prices_any_on_sheet, prices_any_on_sheets,
+    prices_any_on_statement, range_buckets,
 };
 use serde::{Deserialize, Serialize};
 
@@ -2464,35 +2464,9 @@ impl Window {
     }
 }
 
-/// Everything a journal's `account` directives say about how the balance
-/// sheet and the income statement are laid out: declared types,
-/// `bsgroup:`/`bsterm:` and `issection:`/`isgroup:`. (The cash flow statement
-/// reads its own, [`CfTags::from_journal`], and both callers call exactly that.)
-///
-/// ONE constructor, read by the Reports handlers and by the projected
-/// statements (`projections_api`, plan 28 Phase 4), so a projected balance
-/// sheet cannot be grouped, banded or typed differently from the one on the
-/// Reports tab. Every field is a walk over the `account` directives, so the
-/// handlers that need only some of them pay nothing worth measuring.
-pub(crate) struct StatementShape {
-    pub(crate) declared: BTreeMap<String, AccountType>,
-    pub(crate) bs_groups: BTreeMap<String, String>,
-    pub(crate) bs_terms: BTreeMap<String, BsTerm>,
-    pub(crate) is_sections: BTreeMap<String, IsSectionKind>,
-    pub(crate) is_groups: BTreeMap<String, String>,
-}
-
-impl StatementShape {
-    pub(crate) fn of(journal: &Journal) -> Self {
-        Self {
-            declared: declared_types(&account_decls(journal)),
-            bs_groups: account_groups(journal),
-            bs_terms: bs_terms(journal),
-            is_sections: account_sections(journal),
-            is_groups: declared_groups(journal, IS_GROUP_TAG),
-        }
-    }
-}
+/// The journal's statement declarations, read by the Reports handlers and the
+/// projected statements alike (see [`StatementShape`]'s own docs in core).
+pub(crate) use ledgeline_core::reports::StatementShape;
 
 /// `?asOf=&depth=` — balance sheet.
 #[derive(Deserialize)]
