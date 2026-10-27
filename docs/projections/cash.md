@@ -91,6 +91,8 @@ The scenario's own default, the `; cash:` header, is the **Default cash
 account** box above the table. It starts greyed with the account Ledgeline
 falls back to (steps 3 and 4 above).
 
+![The Default cash account box boxed above the Income section, and the Counter-account column boxed, showing the greyed defaults assets:bank:checking and assets:broker:taxable:cash](images/counter-account.png)
+
 A rule has exactly one counter-account. When you give one line of a
 multi-line rule a different counter-account from the rest, Ledgeline moves that
 line into a rule of its own, so the file can still be written as hledger reads

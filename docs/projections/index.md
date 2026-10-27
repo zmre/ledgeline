@@ -13,14 +13,14 @@ editable what-if table, seeded from your budget plus whatever your budget does
 not cover. The bottom half is that table read forward in time: the runway, and
 the same balance sheet, income statement and cash flow statement the Reports
 tab shows, run forward. Press <kbd>g</kbd> <kbd>p</kbd> to get here from
-anywhere, and <kbd>1</kbd> to <kbd>4</kbd> to switch between those readings
+anywhere, and <kbd>1</kbd> to <kbd>6</kbd> to switch between those readings
 (see [Keyboard shortcuts](../journal/keyboard.md)).
 
 A scenario is **an ordinary hledger journal file that nothing includes**, so it
 can be edited in your own editor, diffed, committed, and read by `hledger`
 itself. Playing with a what-if can never damage a plan of record.
 
-![The Projections tab seeded from the journal, with its income and expense lines](images/seeded.png)
+![The Projections tab seeded from the journal: the scenario picker, the Default cash account box, and the income and expense lines with their counter-accounts](images/seeded.png)
 
 This section has four pages:
 
@@ -56,6 +56,10 @@ exactly where.
 **Interval** and **Periods** set the columns for every reading. The depth
 slider rolls up the cash flow statement's lines and the Accounts rows.
 
+![The Runway reading over the default 24 months: the controls bar, the six reading tabs, the sentence saying cash never turns negative, and the projected cash chart](images/runway.png)
+
+![The projected balance sheet's Assets section over two actual and four projected months, with Actual and Projected labels above the columns and a rule before July 2026](images/balance-sheet.png)
+
 ### Accounts
 
 The plain ledger the statements are built from, over the same columns, with
@@ -81,6 +85,8 @@ read negative.
 [What moves cash](cash.md#where-the-projection-starts) gives the exact hledger
 commands for both modes and for the Journal, and the three ways they differ.
 
+![The Accounts reading in Change mode: the Change/Balance and Show empty accounts controls boxed, then one row per account with two actual months, four projected months and a Total column](images/accounts.png)
+
 ### Journal
 
 Only the generated transactions, never your real ones. This is
@@ -92,6 +98,8 @@ or `growth` for an asset row's appreciation. Every posting follows on its own
 line with its account and amount. The list is read-only and shows 100
 transactions per page. Over a very long horizon it stops at the first 5,000 and
 says so.
+
+![The Journal reading: "Generated transactions 1–48 of 48", then each generated transaction's date, description and ~ monthly badge above its postings](images/journal.png)
 
 The Accounts and Journal readings are computed only while their tab is open.
 Switching to one runs the projection again.

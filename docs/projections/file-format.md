@@ -125,6 +125,8 @@ icon to read the description, and click it to edit. Enter saves and Escape
 cancels. A description is one line and can't contain `;` or `#`, because hledger
 would read the rest of the line as a comment.
 
+![The description tooltip open under the speech-bubble icon of the expenses:housing row: "unbudgeted — average over 2025-08-01 to 2026-07-08"](images/description.png)
+
 The description belongs to the **rule**, not to the row. When several rows are
 postings of one rule, such as a budget rule listing rent and utilities, they
 share one header, and editing it from any of those rows changes it for all of
