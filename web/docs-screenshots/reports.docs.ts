@@ -28,6 +28,17 @@ test("balance sheet", async ({page}) => {
     await shot(page, SECTION, "balance-sheet");
 });
 
+// The multi-period mode: the controls bar and the Assets box, one column per
+// quarter ending at As of.
+test("balance sheet, quarterly", async ({page}) => {
+    await page.goto("/reports?tab=bs&asof=2026-07-08&from=2025-08-01&interval=quarterly");
+    const assets = page.getByTestId("bs-section-assets");
+    await expect(assets).toBeVisible();
+    await expect(assets).toContainText("Q3 2025");
+    const controls = page.getByLabel("Interval").locator("xpath=ancestor::div[contains(@class,'rounded-box')][1]");
+    await shot(page, SECTION, "balance-sheet-quarterly", {clip: [controls, assets], padding: 8});
+});
+
 test.describe("subscriptions", () => {
     test.use({journal: "subscriptions"});
 
