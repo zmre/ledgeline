@@ -369,26 +369,12 @@ pub fn balance_sheet_columns(
     terms: &BTreeMap<String, BsTerm>,
 ) -> Result<Vec<BalanceSheetReport>, ReportError> {
     let builder = SheetBuilder::new(explicit_prices, opts, declared, groups, terms);
-    let mut dates: Vec<&str> = ends.iter().map(String::as_str).collect();
-    dates.sort_unstable();
-    dates.dedup();
-
-    // The column each posting first counts in. A posting dated after the last
-    // column lands at `dates.len()`, which has no slot, and is never read.
-    let mut arrivals: Vec<Vec<&Posting>> = vec![Vec::new(); dates.len()];
-    for txn in txns {
-        for posting in &txn.postings {
-            let date = posting.date.as_deref().unwrap_or(&txn.date);
-            if let Some(slot) = arrivals.get_mut(dates.partition_point(|end| *end < date)) {
-                slot.push(posting);
-            }
-        }
-    }
+    let dates = column_dates(ends);
 
     let mut running = RunningTotals::default();
     let by_date: Vec<BalanceSheetReport> = dates
         .iter()
-        .zip(arrivals)
+        .zip(arrivals(txns, &dates))
         .map(|(end, postings)| {
             for posting in postings {
                 running.add(posting)?;
@@ -408,6 +394,31 @@ pub fn balance_sheet_columns(
         .iter()
         .map(|end| by_date[dates.partition_point(|date| *date < end.as_str())].clone())
         .collect())
+}
+
+/// The distinct column ends, ascending: the order the one-pass column walks
+/// ([`balance_sheet_columns`], [`prices_any_on_sheets`]) visit them in.
+fn column_dates(ends: &[String]) -> Vec<&str> {
+    let mut dates: Vec<&str> = ends.iter().map(String::as_str).collect();
+    dates.sort_unstable();
+    dates.dedup();
+    dates
+}
+
+/// Every posting placed in the first of `dates` (ascending, distinct) it falls
+/// on or before: the column it first counts in. A posting dated after the last
+/// column lands at `dates.len()`, which has no slot, and is never read.
+fn arrivals<'t>(txns: &'t [Transaction], dates: &[&str]) -> Vec<Vec<&'t Posting>> {
+    let mut slots: Vec<Vec<&Posting>> = vec![Vec::new(); dates.len()];
+    for txn in txns {
+        for posting in &txn.postings {
+            let date = posting.date.as_deref().unwrap_or(&txn.date);
+            if let Some(slot) = slots.get_mut(dates.partition_point(|end| *end < date)) {
+                slot.push(posting);
+            }
+        }
+    }
+    slots
 }
 
 /// The cumulative state [`balance_sheet_columns`] carries from one column to
@@ -652,27 +663,71 @@ pub fn prices_any_on_sheet(
     declared: &BTreeMap<String, AccountType>,
     target: &Commodity,
 ) -> Result<bool, ReportError> {
-    let types = AccountTypes::from_declared(declared.clone());
-    let written = account_totals(
+    prices_any_on_sheets(
         txns,
-        &PostingFilter {
-            to: Some(as_of),
-            ..PostingFilter::default()
-        },
-    )?;
-    let held: BTreeSet<Commodity> = written
-        .iter()
-        .filter(|(account, _)| {
-            SECTIONS
-                .iter()
-                .any(|(_, _, category, _)| types.is_type(account, *category))
-        })
-        .flat_map(|(_, ma)| ma.iter().map(|(commodity, _)| commodity.clone()))
-        .collect();
-    Ok(
-        held.is_empty()
-            || priced_count(&held, target, &PriceDb::build(explicit_prices), as_of)? > 0,
+        explicit_prices,
+        &[as_of.to_string()],
+        declared,
+        target,
     )
+}
+
+/// [`prices_any_on_sheet`] for a multi-column sheet
+/// ([`balance_sheet_columns`]): true when valuing it in `target` prices at
+/// least one commodity it would display in ANY column, each column measured
+/// at its own end through the same explicit-`P`-only [`PriceDb`] — the way the
+/// columns themselves are valued. Vacuously true when no column displays
+/// anything.
+///
+/// Any column rather than every column, as [`super::prices_any_on_statement`]
+/// admits over its windows: a `valueIn` that prices the newest column but not
+/// an old one before the holding existed is a real answer, not a typo. With
+/// ONE end this is exactly [`prices_any_on_sheet`], which delegates here.
+///
+/// One pass over the postings, as [`balance_sheet_columns`] makes, so admission
+/// costs no more than the report it admits.
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow.
+pub fn prices_any_on_sheets(
+    txns: &[Transaction],
+    explicit_prices: &[PriceDirective],
+    ends: &[String],
+    declared: &BTreeMap<String, AccountType>,
+    target: &Commodity,
+) -> Result<bool, ReportError> {
+    let types = AccountTypes::from_declared(declared.clone());
+    let on_sheet = |account: &str| {
+        SECTIONS
+            .iter()
+            .any(|(_, _, category, _)| types.is_type(account, *category))
+    };
+    let db = PriceDb::build(explicit_prices);
+    let dates = column_dates(ends);
+    let mut written: BTreeMap<String, MixedAmount> = BTreeMap::new();
+    let mut held_any = false;
+    for (end, postings) in dates.iter().zip(arrivals(txns, &dates)) {
+        for posting in postings {
+            add_posting(&mut written, posting, false)?;
+        }
+        let held: BTreeSet<Commodity> = pruned(&written)
+            .into_iter()
+            .filter(|(account, _)| on_sheet(account))
+            .flat_map(|(_, ma)| {
+                ma.iter()
+                    .map(|(commodity, _)| commodity.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        if held.is_empty() {
+            continue;
+        }
+        held_any = true;
+        if priced_count(&held, target, &db, end)? > 0 {
+            return Ok(true);
+        }
+    }
+    Ok(!held_any)
 }
 
 // ---------------------------------------------------------------------------
@@ -1618,6 +1673,53 @@ mod tests {
             prices_any_on_sheet(&[], &prices, "2026-07-01", &BTreeMap::new(), &c("USDD"))
                 .expect("no overflow"),
             "an empty sheet admits vacuously — there is nothing to misvalue"
+        );
+    }
+
+    /// The multi-column admission is the single-date one asked of every column
+    /// and OR-ed: a target admitted at any column's end admits the sheet, one
+    /// admitted at none is refused, and a sheet empty in every column admits
+    /// vacuously. Before February only dollars are held, so some column sets
+    /// below hold STK in a later column only.
+    #[test]
+    fn prices_any_on_sheets_is_any_column_admitting() {
+        let txns = grouped_sample();
+        let prices = stk_prices();
+        let ends = |dates: &[&str]| dates.iter().map(|d| (*d).to_string()).collect::<Vec<_>>();
+        let admits = |set: &[String], target: &str| {
+            prices_any_on_sheets(&txns, &prices, set, &BTreeMap::new(), &c(target))
+                .expect("no overflow")
+        };
+        let sets = [
+            ends(&["2026-01-15"]),
+            ends(&["2026-01-15", "2026-03-15"]),
+            ends(&["2026-03-15", "2026-01-15", "2026-03-15"]),
+            ends(&["2026-01-31", "2026-02-28", "2026-07-01"]),
+        ];
+        for set in &sets {
+            for target in ["$", "STK", "USDD", "EUR"] {
+                let single = set.iter().any(|end| {
+                    prices_any_on_sheet(&txns, &prices, end, &BTreeMap::new(), &c(target))
+                        .expect("no overflow")
+                });
+                assert_eq!(admits(set, target), single, "{target} over {set:?}");
+            }
+        }
+        assert!(
+            admits(&ends(&["2026-01-15", "2026-03-15"]), "STK"),
+            "STK is held at the March column only, and that admits it"
+        );
+        assert!(
+            !admits(&ends(&["2026-01-15", "2026-07-01"]), "USDD"),
+            "a typo prices nothing in any column"
+        );
+        assert!(
+            admits(&ends(&["2025-06-30", "2025-12-31"]), "USDD"),
+            "every column is empty, so there is nothing to misvalue"
+        );
+        assert!(
+            admits(&[], "USDD"),
+            "no columns at all admits vacuously too"
         );
     }
 

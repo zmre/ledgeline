@@ -13,6 +13,9 @@
 # or the committed bytes would change tomorrow.
 balancesheet	/api/reports/balancesheet?asOf=2026-07-08&depth=2
 balancesheet-grouped	/api/reports/balancesheet/grouped?asOf=2026-07-08
+# The multi-period sheet the Reports tab draws: one column per period end, the
+# last at `to`, in the pivoted shape the projection run also returns.
+balancesheet-columns	/api/reports/balancesheet/columns?from=2026-04-15&to=2026-07-08&interval=monthly
 incomestatement	/api/reports/incomestatement?from=2026-01-01&to=2026-07-08&depth=2
 incomestatement-grouped	/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08
 incomestatement-flows	/api/reports/incomestatement/flows?from=2026-01-01&to=2026-07-08

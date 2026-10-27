@@ -71,7 +71,7 @@ pub use balance_sheet::{
     BalanceSheetColumns, BalanceSheetReport, BsColumnGroup, BsColumnRow, BsColumnSection,
     BsColumnSubsection, BsGroup, BsOpts, BsSection, BsSectionKind, BsSubsection, Valuation,
     balance_sheet, balance_sheet_columns, balance_sheet_grouped, pivot_balance_sheets,
-    prices_any_on_sheet,
+    prices_any_on_sheet, prices_any_on_sheets,
 };
 pub use budget::{
     BudgetCell, BudgetGaps, BudgetOpts, BudgetReport, BudgetRow, GapRow, UNBUDGETED, budget_gaps,

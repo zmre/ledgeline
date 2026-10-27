@@ -883,6 +883,12 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
             "/api/reports/balancesheet/grouped",
             get(reports_api::balancesheet_grouped),
         )
+        // The same grouped sheet at the end of each period: the Reports tab's
+        // multi-period mode, in the pivoted shape the projection run returns.
+        .route(
+            "/api/reports/balancesheet/columns",
+            get(reports_api::balancesheet_columns),
+        )
         .route(
             "/api/reports/incomestatement",
             get(reports_api::incomestatement),

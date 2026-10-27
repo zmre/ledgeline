@@ -46,11 +46,12 @@ use ledgeline_core::reports::{
     IsSubtotal, IsSubtotalKind, LabelKind, MetricDelta, MixedAmount, MoverRow, NetWorthOpts,
     PerfPoint, PeriodReport, PeriodRow, ReportError, ReportMeta, ReportRow, RowKind, Section,
     SectionedReport, Subscription, SubscriptionOpts, SubscriptionsReport, TopTxn, Valuation,
-    account_decls, account_groups, account_sections, balance_sheet, balance_sheet_grouped,
-    bs_terms, budget_gaps, budget_report, budget_summary, cash_flow_statement, compared_windows,
-    declared_groups, declared_types, detect_subscriptions, gap_totals, income_statement,
-    income_statement_columns, income_statement_flows, income_statement_grouped, insights,
-    interval_windows, net_worth, prices_any_on_sheet, prices_any_on_statement,
+    account_decls, account_groups, account_sections, balance_sheet, balance_sheet_columns,
+    balance_sheet_grouped, bs_terms, budget_gaps, budget_report, budget_summary,
+    cash_flow_statement, compared_windows, declared_groups, declared_types, detect_subscriptions,
+    gap_totals, income_statement, income_statement_columns, income_statement_flows,
+    income_statement_grouped, insights, interval_windows, net_worth, pivot_balance_sheets,
+    prices_any_on_sheet, prices_any_on_sheets, prices_any_on_statement, range_buckets,
 };
 use serde::{Deserialize, Serialize};
 
@@ -2516,6 +2517,20 @@ pub(crate) struct BalanceSheetGroupedQuery {
     value_in: Option<String>,
 }
 
+/// `?from=&to=&interval=&depth=&value=&valueIn=` — the grouped balance sheet
+/// at the end of each period (see [`balancesheet_columns`]).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BalanceSheetColumnsQuery {
+    from: Option<String>,
+    to: Option<String>,
+    /// `total` | `monthly` (default) | `quarterly` | `yearly` (also daily/weekly).
+    interval: Option<String>,
+    depth: Option<usize>,
+    value: Option<String>,
+    value_in: Option<String>,
+}
+
 /// `?from=&to=&depth=` — income statement.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2835,6 +2850,95 @@ pub(crate) async fn balancesheet_grouped(
         Ok(WireBalanceSheetReport::new(&report, label))
     })
     .await
+}
+
+/// `GET /api/reports/balancesheet/columns` — the grouped balance sheet at the
+/// end of each period across `[from, to]`, pivoted into one tree with a figure
+/// per column (`WireBalanceSheetColumns`, the shape the projection run's
+/// `balanceSheet` already has).
+///
+/// - `from=YYYY-MM-DD` (default: the first of the month eleven months before
+///   `to`, so twelve monthly columns) and `to=YYYY-MM-DD` (default: today),
+///   both INCLUSIVE. The columns are [`range_buckets`] over the range, and
+///   each column is the sheet as of its span's `to`: every bucket's own end,
+///   the last one clamped to `to`, so the newest column IS the single-date
+///   sheet as of `to`.
+/// - `interval=total|monthly|quarterly|yearly` (also `daily`/`weekly`;
+///   default `monthly`). `total` is ONE column, at `to`.
+/// - `depth`, `value`, `valueIn`: exactly as on
+///   [`balancesheet_grouped`], applied to every column. `valueIn` is admitted
+///   if it prices something the sheet displays in ANY column, each measured at
+///   its own end ([`prices_any_on_sheets`]), and is otherwise a `400`.
+///
+/// A backwards range, or one splitting into more than `MAX_BUCKETS` columns,
+/// is a `400`, as on the other ranged reports.
+pub(crate) async fn balancesheet_columns(
+    State(state): State<AppState>,
+    Query(query): Query<BalanceSheetColumnsQuery>,
+) -> Result<Json<WireBalanceSheetColumns>, AppError> {
+    let snapshot = state.snapshot();
+    let to = parse_date("to", query.to, today_utc)?;
+    let from = match query.from {
+        Some(raw) => checked_date("from", &raw)?,
+        None => trailing_year_start(&to)?,
+    };
+    let depth = parse_depth(query.depth)?;
+    let (value, label) = parse_valuation(query.value.as_deref())?;
+    let grain = parse_grain(query.interval.as_deref(), Some(Interval::Monthly))?;
+    check_range(&from, &to, grain)?;
+    let raw_value_in = query.value_in;
+
+    compute(move || {
+        let journal = &snapshot.journal;
+        let shape = StatementShape::of(journal);
+        let spans = range_buckets(&from, &to, grain)?;
+        let ends: Vec<String> = spans.iter().map(|span| span.to.clone()).collect();
+        let value_in = resolve_grouped_value_in(
+            journal,
+            "this balance sheet",
+            raw_value_in.as_deref(),
+            |target| {
+                prices_any_on_sheets(
+                    &journal.transactions,
+                    &journal.prices,
+                    &ends,
+                    &shape.declared,
+                    target,
+                )
+            },
+        )?;
+        let sheets = balance_sheet_columns(
+            &journal.transactions,
+            &journal.prices,
+            &BsOpts {
+                as_of: &to,
+                depth,
+                value,
+                value_in,
+            },
+            &ends,
+            &shape.declared,
+            &shape.bs_groups,
+            &shape.bs_terms,
+        )?;
+        Ok(WireBalanceSheetColumns::new(
+            &pivot_balance_sheets(&sheets),
+            &spans,
+            label,
+        ))
+    })
+    .await
+}
+
+/// The first day of the month eleven months before `to`'s: the start of the
+/// twelve monthly columns ending with `to`'s month — the SPA's own default
+/// (`trailingYear` in `params.ts`) and cash flow's.
+fn trailing_year_start(to: &str) -> Result<String, AppError> {
+    let keys = periods::last_n_buckets(to, Interval::Monthly, DEFAULT_COUNT)?;
+    // `last_n_buckets` returns exactly `DEFAULT_COUNT` keys for any count up
+    // to `MAX_BUCKETS`, so the first is always there.
+    let first = keys.first().map_or(to, String::as_str);
+    Ok(periods::bucket_start(first)?)
 }
 
 /// `GET /api/reports/incomestatement` — revenues + expenses over a range.
