@@ -44,6 +44,7 @@ use ledgeline_core::decimal::Dec;
 use ledgeline_core::holdings::SeriesWindow;
 use ledgeline_core::holdings::{HoldingsScope, ScopeMode, compute_holdings, holdings_series};
 use ledgeline_core::model::{Commodity, Journal, PriceDirective};
+use ledgeline_core::projections::{ProjectionOpts, merged_transactions, project, serialize};
 use ledgeline_core::reports::{
     AccountDecl, AccountType, BsOpts, BudgetOpts, InsightsOpts, Interval, MixedAmount,
     NetWorthOpts, PostingFilter, PriceDb, SubscriptionOpts, Valuation, account_decls,
@@ -703,6 +704,101 @@ fn bench_aggregate(c: &mut Criterion, fixtures: &[Fixture]) {
 
 // ---------------------------------------------------------------------------
 
+/// A small balanced scenario over the corpus's own accounts: what a seeded
+/// projection looks like to the engine (a handful of monthly rules, each with
+/// its counter-account), so the run is dominated by the journal, not the rules.
+const PROJECTION_SCENARIO: &str = "; projection: bench
+~ monthly  projection
+    revenues:salary          $-9000.00
+    assets:bank:chase:checking
+
+~ monthly  projection
+    expenses:housing:rent     $2500.00
+    assets:bank:chase:checking
+
+~ monthly  projection
+    expenses:food:groceries    $800.00
+    assets:bank:chase:checking
+
+~ monthly  projection
+    expenses:utilities:power   $150.00
+    assets:bank:chase:checking
+";
+/// After the corpus's last transaction, so the cutoff is 2026-01-01 and the
+/// whole history is "real before the cutoff" — the case the merge copies most.
+const PROJECTION_TODAY: &str = "2026-01-10";
+
+/// The projection run's cost, and how much of it is copying the journal.
+///
+/// - `clone_history`: `journal.transactions` deep-cloned into a new `Vec`,
+///   which is what `merged_transactions` does with every real transaction
+///   before the cutoff on every run.
+/// - `merged_transactions`: the real function, over a 24-month forecast.
+/// - `project_24m`: the whole `project()` call (forecast expansion, openings,
+///   lookback, series, runway) — not the three statements the server then
+///   builds over the merged list.
+fn bench_projections(c: &mut Criterion, fixtures: &[Fixture]) {
+    let mut group = c.benchmark_group("projections");
+    heavy(&mut group);
+    for fx in fixtures {
+        let scenario = serialize::scenario_from_text(
+            PROJECTION_SCENARIO,
+            "bench.journal",
+            "bench",
+            &fx.declared,
+        )
+        .expect("bench scenario must read");
+        let opts = ProjectionOpts {
+            today: PROJECTION_TODAY,
+            interval: Interval::Monthly,
+            count: 24,
+            lookback: 2,
+            depth: DEPTH,
+            declared: &fx.declared,
+            value_in: None,
+        };
+        let projection = project(
+            &scenario,
+            &fx.journal.transactions,
+            &fx.journal.prices,
+            &opts,
+        )
+        .expect("bench projection must run");
+        group.throughput(Throughput::Elements(fx.txns as u64));
+        group.bench_with_input(BenchmarkId::new("clone_history", fx.id()), fx, |b, fx| {
+            b.iter(|| black_box(fx.journal.transactions.clone()));
+        });
+        group.bench_with_input(
+            BenchmarkId::new("merged_transactions", fx.id()),
+            fx,
+            |b, fx| {
+                b.iter(|| {
+                    black_box(merged_transactions(
+                        &fx.journal.transactions,
+                        &projection.forecast,
+                    ))
+                });
+            },
+        );
+        group.bench_with_input(BenchmarkId::new("project_24m", fx.id()), fx, |b, fx| {
+            b.iter(|| {
+                black_box(
+                    project(
+                        &scenario,
+                        &fx.journal.transactions,
+                        &fx.journal.prices,
+                        &opts,
+                    )
+                    .expect("run"),
+                )
+            });
+        });
+    }
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
+
 fn all(c: &mut Criterion) {
     let fixtures = fixtures();
     bench_parse(c, &fixtures);
@@ -711,6 +807,7 @@ fn all(c: &mut Criterion) {
     bench_prices(c, &fixtures);
     bench_reports(c, &fixtures);
     bench_holdings(c, &fixtures);
+    bench_projections(c, &fixtures);
 }
 
 criterion_group!(benches, all);
