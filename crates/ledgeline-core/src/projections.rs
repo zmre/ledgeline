@@ -95,6 +95,7 @@
 /// re-exports, and nothing else.
 mod discovery;
 mod forecast;
+mod real_side;
 pub mod serialize;
 
 pub use discovery::{
@@ -106,6 +107,11 @@ pub use forecast::{
     ForecastOpts, ForecastOrigin, ForecastWindow, GENERATED_TAG, History, forecast_cutoff,
     forecast_transactions, is_generated, known_accounts, latest_real_date, merged_prices,
     merged_transactions, upgrade_legacy_counters,
+};
+pub use real_side::{
+    AccountsOpts, JournalFacts, ProjectedStatements, RealKey, RealSide, StatementOpts,
+    project_cached, projected_accounts, projected_statements, reference_accounts,
+    reference_statements,
 };
 
 use std::collections::{BTreeMap, BTreeSet};

@@ -93,7 +93,7 @@ pub fn account_totals(
 ///
 /// # Errors
 /// Returns [`DecError`] on decimal overflow.
-pub(super) fn add_posting(
+pub(crate) fn add_posting(
     totals: &mut BTreeMap<String, MixedAmount>,
     posting: &Posting,
     at_cost: bool,
