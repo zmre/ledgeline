@@ -44,14 +44,17 @@ use ledgeline_core::decimal::Dec;
 use ledgeline_core::holdings::SeriesWindow;
 use ledgeline_core::holdings::{HoldingsScope, ScopeMode, compute_holdings, holdings_series};
 use ledgeline_core::model::{Commodity, Journal, PriceDirective};
-use ledgeline_core::projections::{ProjectionOpts, merged_transactions, project, serialize};
+use ledgeline_core::projections::{
+    ProjectionOpts, Scenario, merged_prices, merged_transactions, project, serialize,
+};
 use ledgeline_core::reports::{
-    AccountDecl, AccountType, BsOpts, BudgetOpts, InsightsOpts, Interval, MixedAmount,
-    NetWorthOpts, PostingFilter, PriceDb, SubscriptionOpts, Valuation, account_decls,
-    account_groups, account_totals, balance_sheet, balance_sheet_columns, balance_sheet_grouped,
-    bs_terms, budget_report, cash_flow, cash_predicate, declared_types, detect_subscriptions,
-    income_statement, infer_market_prices, insights, net_worth, range_buckets,
-    resolve_account_type, roll_up,
+    AccountDecl, AccountPeriodsOpts, AccountType, BalanceMode, BsOpts, BudgetOpts, CfOpts, CfTags,
+    IS_GROUP_TAG, InsightsOpts, Interval, IsOpts, MixedAmount, NetWorthOpts, PostingFilter,
+    PriceDb, SubscriptionOpts, Valuation, account_decls, account_groups, account_periods,
+    account_sections, account_totals, balance_sheet, balance_sheet_columns, balance_sheet_grouped,
+    bs_terms, budget_report, cash_flow, cash_flow_statement, cash_predicate, declared_groups,
+    declared_types, detect_subscriptions, income_statement, income_statement_columns,
+    infer_market_prices, insights, net_worth, range_buckets, resolve_account_type, roll_up,
 };
 use ledgeline_core::{parse_journal, wire};
 use std::collections::{BTreeMap, BTreeSet};
@@ -737,6 +740,11 @@ const PROJECTION_TODAY: &str = "2026-01-10";
 /// - `project_24m`: the whole `project()` call (forecast expansion, openings,
 ///   lookback, series, runway) — not the three statements the server then
 ///   builds over the merged list.
+/// - `run_cold` / `run_warm`: the SERVER-EQUIVALENT run (plan 29): `project`
+///   plus the balance sheet columns, the income statement columns, the cash
+///   flow statement and the Accounts reading (Change), with the declarations
+///   the handler reads. Cold is a first request; warm is every edit after it.
+///   Before plan 29 there is no cache, so both are the full-scan run.
 fn bench_projections(c: &mut Criterion, fixtures: &[Fixture]) {
     let mut group = c.benchmark_group("projections");
     heavy(&mut group);
@@ -793,8 +801,101 @@ fn bench_projections(c: &mut Criterion, fixtures: &[Fixture]) {
                 )
             });
         });
+        group.bench_with_input(BenchmarkId::new("run_cold", fx.id()), fx, |b, fx| {
+            b.iter(|| black_box(full_scan_run(fx, &scenario)));
+        });
+        group.bench_with_input(BenchmarkId::new("run_warm", fx.id()), fx, |b, fx| {
+            b.iter(|| black_box(full_scan_run(fx, &scenario)));
+        });
     }
     group.finish();
+}
+
+/// The run handler before plan 29: `project`, the merged lists, and every
+/// reading over them, each a full scan.
+fn full_scan_run(fx: &Fixture, scenario: &Scenario) -> usize {
+    let journal = &fx.journal;
+    let declared = declared_types(&account_decls(journal));
+    let bs_groups = account_groups(journal);
+    let terms = bs_terms(journal);
+    let sections = account_sections(journal);
+    let is_groups = declared_groups(journal, IS_GROUP_TAG);
+    let projection = project(
+        scenario,
+        &journal.transactions,
+        &journal.prices,
+        &ProjectionOpts {
+            today: PROJECTION_TODAY,
+            interval: Interval::Monthly,
+            count: 24,
+            lookback: 2,
+            depth: DEPTH,
+            declared: &declared,
+            value_in: None,
+        },
+    )
+    .expect("run");
+    let forecast = &projection.forecast;
+    let window = &forecast.window;
+    let txns = merged_transactions(&journal.transactions, forecast);
+    let prices = merged_prices(&journal.prices, forecast);
+    let spans = range_buckets(&window.from, &window.end, Some(window.interval)).expect("spans");
+    let ends: Vec<String> = spans.iter().map(|span| span.to.clone()).collect();
+    let sheets = balance_sheet_columns(
+        &txns,
+        &prices,
+        &BsOpts {
+            as_of: &window.end,
+            depth: None,
+            value: Valuation::Market,
+            value_in: forecast.target.clone(),
+        },
+        &ends,
+        &declared,
+        &bs_groups,
+        &terms,
+    )
+    .expect("bs");
+    let income = income_statement_columns(
+        &txns,
+        &prices,
+        &IsOpts {
+            from: &window.from,
+            to: &window.end,
+            value: Valuation::Market,
+            value_in: forecast.target.clone(),
+            compare: false,
+        },
+        window.interval,
+        &declared,
+        &sections,
+        &is_groups,
+    )
+    .expect("is");
+    let cash_flow = cash_flow_statement(
+        &txns,
+        &CfOpts {
+            from: &window.from,
+            to: &window.end,
+            interval: Some(window.interval),
+            depth: DEPTH,
+        },
+        &CfTags::from_journal(journal),
+    )
+    .expect("cf");
+    let accounts = account_periods(
+        &txns,
+        &AccountPeriodsOpts {
+            from: &window.from,
+            to: &window.end,
+            interval: window.interval,
+            depth: DEPTH,
+            mode: BalanceMode::Change,
+            known: None,
+        },
+    )
+    .expect("accounts");
+    sheets.len() + income.sections.len() + cash_flow.sections.len() + accounts.rows.len()
 }
 
 // ---------------------------------------------------------------------------
