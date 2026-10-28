@@ -61,7 +61,8 @@ export function projectionFixture(overrides: Partial<Projection> = {}): Projecti
         lookback: ["2026-06", "2026-07"],
         actualsEnd: "2026-08-01",
         projectedFrom: 2,
-        cash: {opening: usd(10000), values: [usd(14800), usd(19600)]},
+        // Two actual months (Jun, Jul) closing at $8,000 and $10,000, then the forecast.
+        cash: {opening: usd(10000), values: [usd(14800), usd(19600)], history: [usd(8000), usd(10000)]},
         runway: null,
         assets: [],
         warnings: [],
@@ -88,7 +89,7 @@ export function rawProjectionRun(): Record<string, unknown> {
         lookback: [],
         actualsEnd: "2026-08-01",
         projectedFrom: 0,
-        cash: {opening: {$: {mantissa: "500000", places: 2}}, values: [{$: {mantissa: "500000", places: 2}}]},
+        cash: {opening: {$: {mantissa: "500000", places: 2}}, values: [{$: {mantissa: "500000", places: 2}}], history: []},
         runway: null,
         // `[]` is a real answer and the key is never absent — this scenario holds
         // no asset rows. `decodeProjection` refuses a missing one.

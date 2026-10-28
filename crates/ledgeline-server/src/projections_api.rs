@@ -481,6 +481,10 @@ struct WireBalanceSeries {
     opening: WireMixed,
     /// One closing balance per bucket, oldest → newest.
     values: Vec<WireMixed>,
+    /// The REAL closing balance at the end of each lookback period, oldest →
+    /// newest — the actuals a chart draws before the forecast. Empty with no
+    /// lookback.
+    history: Vec<WireMixed>,
 }
 
 impl From<&BalanceSeries> for WireBalanceSeries {
@@ -488,6 +492,7 @@ impl From<&BalanceSeries> for WireBalanceSeries {
         Self {
             opening: wire_mixed(&series.opening),
             values: series.values.iter().map(wire_mixed).collect(),
+            history: series.history.iter().map(wire_mixed).collect(),
         }
     }
 }

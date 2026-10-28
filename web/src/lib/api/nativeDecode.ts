@@ -587,6 +587,7 @@ interface RawScenarioFile {
 interface RawBalanceSeries {
     opening?: RawMixed;
     values?: RawMixed[];
+    history?: RawMixed[];
 }
 
 interface RawRunway {
@@ -2562,10 +2563,13 @@ function decodeAutoRuleForm(raw: RawAutoRuleForm, context: string): AutoRuleForm
 
 function decodeBalanceSeries(raw: RawBalanceSeries | undefined, context: string): BalanceSeries {
     if (raw === undefined || raw === null || !Array.isArray(raw.values)) throw new ApiShapeError(`${context}: missing opening/values`);
+    // The actuals before the forecast: always an array, so an absent one is a broken contract.
+    if (!Array.isArray(raw.history)) throw new ApiShapeError(`${context}: missing history`);
     return Object.freeze({
         // A real figure from the journal, not `values[-1]` of an earlier window.
         opening: decodeMixed(raw.opening, `${context} opening`),
         values: frozen(raw.values.map((value, i) => decodeMixed(value, `${context} values[${i}]`))),
+        history: frozen(raw.history.map((value, i) => decodeMixed(value, `${context} history[${i}]`))),
     });
 }
 

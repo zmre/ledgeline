@@ -171,6 +171,23 @@ test("projections: the runway and statements render, the runway in words and the
     // "Cash turns negative in Jul 2026" off unvalued EUR seed lines).
     await expect(page.getByTestId("projection-runway")).toContainText("Cash never turns negative");
     await expect(page.getByTestId("projection-cash-chart")).toBeVisible();
+    // The Actuals control's months come first, then the forecast, with the
+    // statements' divider between the last actual tick and the first forecast one.
+    const chart = page.getByTestId("projection-cash-chart");
+    const divider = chart.locator('[data-rule="projected"]');
+    await expect(divider).toHaveCount(1);
+    // One point per period (the chart draws them up to 31 periods): their
+    // centres, left to right, are where each period's closing balance sits.
+    const points = await chart
+        .locator("svg circle")
+        .evaluateAll((circles) =>
+            [...new Set(circles.map((circle) => Math.round(circle.getBoundingClientRect().x + circle.getBoundingClientRect().width / 2)))].sort((a, b) => a - b)
+        );
+    const rule = await divider.evaluate((line) => line.getBoundingClientRect().x);
+    // Two actual months by default: the rule sits between the 2nd and 3rd points.
+    expect(points.length).toBeGreaterThan(3);
+    expect(rule).toBeGreaterThan(points[1]!);
+    expect(rule).toBeLessThan(points[2]!);
 
     // The Reports tab's own statements, over actuals and then the forecast.
     await page.getByRole("tab", {name: "Balance sheet"}).click();

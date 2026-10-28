@@ -69,10 +69,20 @@ describe("COMPONENT ProjectionReports — the runway", () => {
         expect(screen.getByTestId("projection-cash").textContent).toContain("from 2026-08-01");
     });
 
-    it("labels the chart with the FORECAST periods only — the runway counts from the cutoff", () => {
+    it("charts the actual months first, then the forecast, with the statements' divider between them", () => {
         const {container} = mount("cash");
         const ticks = [...container.querySelectorAll('[data-placement="bottom"] .lc-axis-tick-label')].map((t) => t.textContent?.trim());
-        expect(ticks).toEqual(["Aug 2026", "Sep 2026"]);
+        expect(ticks).toEqual(["Jun 2026", "Jul 2026", "Aug 2026", "Sep 2026"]);
+        expect(container.querySelectorAll('[data-rule="projected"]')).toHaveLength(1);
+        expect(screen.getByTestId("projection-cash").textContent).toContain("2 actual, then projected from 2026-08-01");
+    });
+
+    it("draws no divider when the Actuals control asks for none", () => {
+        const {container} = mount(
+            "cash",
+            projection({lookback: [], projectedFrom: 0, cash: {opening: usd(10000), values: [usd(14800), usd(19600)], history: []}})
+        );
+        expect(container.querySelectorAll('[data-rule="projected"]')).toHaveLength(0);
     });
 });
 
@@ -243,6 +253,7 @@ describe("COMPONENT ProjectionReports — a scenario in more than one commodity"
                         ["EUR", dec(50, 0)],
                     ]),
                     values: [usd(14800), usd(19600)],
+                    history: [],
                 },
             })
         );

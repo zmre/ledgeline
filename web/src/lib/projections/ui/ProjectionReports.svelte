@@ -3,8 +3,10 @@
 
      - RUNWAY answers the question only this tab asks, and answers it in WORDS
        above the chart: a crossing point a reader has to find by eye on a line
-       is not an answer to "when do I run out". Cash only (Decision 8), over the
-       forecast periods only — the runway counts from the cutoff.
+       is not an answer to "when do I run out". Cash only (Decision 8). The
+       chart draws the Actuals control's real periods first, then the
+       forecast, with the statements' divider between them; the sentence still
+       counts from the cutoff.
      - BALANCE SHEET, INCOME STATEMENT and CASH FLOW are the Reports tab's own
        statements, rendered by the Reports tab's own views, over the real
        journal before the cutoff and the scenario's generated transactions
@@ -68,8 +70,12 @@
     const format = $derived((n: number) => formatChartValue(n, commodity, style));
     const formatAxis = $derived((n: number) => formatCompactChartValue(n, commodity, style));
 
-    /** The forecast periods' labels: the engine's own, off the statements' columns past the divider. */
-    const labels = $derived(projection.balanceSheet.columns.slice(projection.projectedFrom).map((column) => column.label));
+    /**
+     * The chart's columns: the actual periods (the Actuals control's lookback),
+     * then the forecast — the statements' own columns and labels, so the
+     * divider falls where theirs does.
+     */
+    const labels = $derived(projection.balanceSheet.columns.map((column) => column.label));
     const cash = $derived(balanceNumbers(projection.cash, commodity));
     const statement = $derived(runwayStatement(projection, interval, commodity, format));
     const unchartedCommodities = $derived(otherCommodities(projection, commodity));
@@ -152,14 +158,17 @@
                 </span>
             </div>
             <PeriodLineChart
-                heading="Projected cash"
-                note="opening {format(cash.opening)} · from {projection.actualsEnd}"
+                heading="Cash"
+                note="{cash.history.length > 0 ? `${cash.history.length} actual, then ` : ''}projected from {projection.actualsEnd} · opening {format(
+                    cash.opening
+                )}"
                 {labels}
-                series={[{name: "Cash", values: cash.values}]}
+                series={[{name: "Cash", values: [...cash.history, ...cash.values]}]}
                 formatValue={format}
                 {formatAxis}
                 includeZero
-                markAt={projection.runway?.bucket ?? null}
+                projectedFrom={cash.history.length > 0 ? cash.history.length : null}
+                markAt={projection.runway === null ? null : cash.history.length + projection.runway.bucket}
                 empty="Add a line above to project cash."
                 testid="projection-cash-chart"
             />

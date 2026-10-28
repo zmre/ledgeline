@@ -61,6 +61,7 @@
         formatAxis,
         includeZero = false,
         markAt = null,
+        projectedFrom = null,
         empty = "Nothing to chart in this range.",
         height = "h-56 sm:h-64",
         testid,
@@ -81,6 +82,12 @@
         includeZero?: boolean;
         /** Bucket index to mark with a vertical rule, or null. What it means is the caller's to say in words. */
         markAt?: number | null;
+        /**
+         * The first FORECAST bucket, or null when every bucket is actual. A rule
+         * is drawn between it and the bucket before — the same divider, in the
+         * same colour, as the projected statements' first projected column.
+         */
+        projectedFrom?: number | null;
         /** Shown instead of the plot when there is nothing to draw. */
         empty?: string;
         /** Height utilities for the plot box. */
@@ -130,6 +137,11 @@
 
     /** Only a marker that lands on a real bucket is drawn. */
     const marker = $derived(markAt !== null && Number.isInteger(markAt) && markAt >= 0 && markAt < rows.length ? markAt : null);
+
+    /** Only a divider with an actual bucket before it and a forecast one after it is drawn. */
+    const divider = $derived(
+        projectedFrom !== null && Number.isInteger(projectedFrom) && projectedFrom > 0 && projectedFrom < rows.length ? projectedFrom - 0.5 : null
+    );
 
     const LINE_CLASS = "stroke-2";
     /** Override `props.spline` for the one series, since a series' own props are spread last. */
@@ -196,6 +208,9 @@
                          tell our zero rule from its axis. -->
                     {#if includeZero}
                         <Rule y={0} class="stroke-base-content/40" data-rule="zero" />
+                    {/if}
+                    {#if divider !== null}
+                        <Rule x={divider} class="stroke-primary/50 stroke-2" data-rule="projected" />
                     {/if}
                     {#if marker !== null}
                         <Rule x={marker} stroke={chartColors.flowOut} data-rule="mark" />

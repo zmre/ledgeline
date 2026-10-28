@@ -2003,7 +2003,7 @@ const PROJECTION_RUN = {
         lines: {"rule:0": "assets:bank:checking"},
         events: {legal: "assets:bank:savings"},
     },
-    cash: {opening: {$: dec(500000, 2)}, values: [{$: dec(80000, 2)}, {$: dec(-340000, 2)}]},
+    cash: {opening: {$: dec(500000, 2)}, values: [{$: dec(80000, 2)}, {$: dec(-340000, 2)}], history: [{$: dec(450000, 2)}]},
     runway: {bucket: 1, label: "Sep 2026", date: "2026-09-30", periods: 2},
     // The per-row asset attribution (plan 23, Phase 3), which the Balance
     // column and the net-worth breakdown read. Two rows, and the second is

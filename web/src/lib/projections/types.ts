@@ -252,6 +252,8 @@ export interface AutoRule {
 export interface BalanceSeries {
     opening: MixedAmount;
     values: MixedAmount[];
+    /** The REAL closing balance at the end of each lookback period, oldest → newest; empty with no lookback. */
+    history: MixedAmount[];
 }
 
 /** Where the cash crosses zero. `label` is the engine's, so a sentence never has to index back into `buckets`. */
