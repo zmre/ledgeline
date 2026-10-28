@@ -22,7 +22,9 @@ export default defineConfig({
             // $LEDGELINE_BIN overrides that path: CI has no cargo target dir, it
             // runs the Nix-built binary (`nix build .#ledgeline` → result/bin/ledgeline).
             command: `${process.env.LEDGELINE_BIN ?? "../target/debug/ledgeline"} --server ../fixtures/sample.journal --port 5099 --allow-origin http://localhost:4173`,
-            env: {LEDGELINE_TOKEN: API_TOKEN},
+            // LEDGELINE_IGNORE_USER_HLEDGER_CONF: never read the developer's own
+            // ~/.hledger.conf (Settings › hledger config would show it).
+            env: {LEDGELINE_TOKEN: API_TOKEN, LEDGELINE_IGNORE_USER_HLEDGER_CONF: "1"},
             // The SPA shell, not /version: every wire route now needs the token.
             url: "http://127.0.0.1:5099/",
             reuseExistingServer: false,

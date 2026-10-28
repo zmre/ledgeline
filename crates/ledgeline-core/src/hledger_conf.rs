@@ -903,9 +903,10 @@ pub fn with_aliases(text: &str, arguments: &[String]) -> String {
 /// is bytes they did not ask for.
 #[must_use]
 pub fn new_file_header() -> String {
-    "# Written by Ledgeline so that `hledger import` run from a terminal maps the\n\
-     # same account names the Ledgeline import screen does. An `alias` directive in\n\
-     # a journal is NOT applied to an imported CSV; an --alias option here is.\n"
+    "# hledger's config file: every hledger command run for these books reads it.\n\
+     # Created by Ledgeline, which changes only the lines you edit from its\n\
+     # Settings › hledger config tab or its import screen's alias fix. (An `alias`\n\
+     # directive in a journal is NOT applied to an imported CSV; an --alias here is.)\n"
         .to_string()
 }
 
@@ -1509,7 +1510,15 @@ fn target_of(lines: &[Line<'_>], section: &Section) -> Option<SectionAt> {
 fn insert_line(text: &str, lines: &[Line<'_>], section: &Section, option_line: &str) -> String {
     let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
     let at = match (section, target_of(lines, section)) {
-        (Section::General, _) => general_section_end(text),
+        // After the general section's last option, so a new one joins its
+        // peers rather than the blank line before the first heading; with no
+        // option yet, just before that heading (never at EOF — see
+        // `general_section_end`).
+        (Section::General, Some(target)) => lines
+            .iter()
+            .rfind(|line| line.section == target && !line.body.trim().is_empty())
+            .map_or_else(|| general_section_end(text), |line| line.end),
+        (Section::General, None) => general_section_end(text),
         (Section::Command(_), Some(target)) => lines
             .iter()
             .rfind(|line| line.section == target && (line.heading || !line.body.trim().is_empty()))
@@ -1902,7 +1911,7 @@ mod tests {
         let text = "--depth 3\n\n[balance]\n--no-total\n";
         assert_eq!(
             with_aliases(text, &["a=b".to_string()]),
-            "--depth 3\n\n--alias=a=b\n[balance]\n--no-total\n"
+            "--depth 3\n--alias=a=b\n\n[balance]\n--no-total\n"
         );
     }
 
@@ -2188,7 +2197,12 @@ mod tests {
                 &ManagedOption::Auto
             )
             .unwrap(),
-            "--depth 3\n\n--auto\n[balance]\n--no-total\n"
+            "--depth 3\n--auto\n\n[balance]\n--no-total\n"
+        );
+        // No option in it yet: just before the first heading.
+        assert_eq!(
+            with_option("# notes\n\n[balance]\n", &general(), &ManagedOption::Auto).unwrap(),
+            "# notes\n\n--auto\n[balance]\n"
         );
         assert_eq!(
             with_option("", &general(), &ManagedOption::Auto).unwrap(),

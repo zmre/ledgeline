@@ -371,6 +371,8 @@ fn mobile_dirs(cache_dir: Option<&str>) -> AppDirs {
             .map_or_else(std::env::temp_dir, |dir| dir.join("tmp")),
         cache_dir: cache,
         hledger_bin: None,
+        // A phone has no home directory that is the user's: no `~/.hledger.conf`.
+        hledger_conf: ledgeline_core::hledger_conf::UserConfDirs::default(),
     }
 }
 
