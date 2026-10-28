@@ -251,6 +251,14 @@ function decodePosting(raw: unknown, context: string): Posting {
         if (!POSTING_TYPES.has(type)) throw new ApiShapeError(`${context}: unknown posting type ${JSON.stringify(type)}`);
         posting.type = type as PostingType;
     }
+    if (value.generated !== undefined) {
+        const generated = obj(value.generated, `${context}.generated`);
+        const rule = generated.rule;
+        if (typeof rule !== "number" || !Number.isInteger(rule) || rule < 0) {
+            throw new ApiShapeError(`${context}.generated.rule: expected a rule index`);
+        }
+        posting.generated = Object.freeze({rule, query: str(generated.query, `${context}.generated.query`)});
+    }
     if (value.balanceAssertion !== undefined) {
         const assertion = obj(value.balanceAssertion, `${context}.balanceAssertion`);
         posting.balanceAssertion = Object.freeze({

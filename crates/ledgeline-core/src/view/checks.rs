@@ -95,6 +95,7 @@ pub fn engine_findings(journal: &Journal) -> Vec<Finding> {
     let all = std::thread::scope(|scope| {
         let stock = scope.spawn(|| wire::journal_to_stock_diagnostics(journal));
         let mut all = wire::journal_to_diagnostics(journal);
+        all.extend(wire::journal_to_auto_diagnostics(journal));
         all.extend(wire::journal_to_tag_diagnostics(journal));
         // A join fails only on a panic in the pass, which would have failed
         // the request anyway; resume it here so it surfaces as one.

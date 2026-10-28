@@ -111,6 +111,7 @@ fn leg(account: &str, amount: Option<Amount>) -> Posting {
         date2: None,
         comment: String::new(),
         tags: vec![],
+        generated: None,
     }
 }
 

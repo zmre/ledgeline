@@ -5,13 +5,15 @@
     // its store are unchanged, only the tab that hosts it moved) and "hledger
     // config" (the `hledger.conf` in force: --auto and report depths). The tab
     // lives in the query string via the same three pieces the Imports route
-    // uses — `searchToParams` once on mount behind a `restored` latch, a
-    // debounced `replaceState` mirror the other way.
+    // uses — `searchToParams` after each navigation behind a `restored` latch,
+    // a debounced `replaceState` mirror the other way.
     import {onMount} from "svelte";
+    import {afterNavigate} from "$app/navigation";
     import ErrorToast from "#lib/components/ErrorToast.svelte";
     import AccountsPanel from "#lib/accounts/ui/AccountsPanel.svelte";
     import AliasPanel from "#lib/imports/ui/AliasPanel.svelte";
     import HledgerConfPanel from "#lib/settings/ui/HledgerConfPanel.svelte";
+    import AutoRulesPanel from "#lib/autoRules/ui/AutoRulesPanel.svelte";
     import {defaultSettingsParams, paramsToSearch, searchToParams, type SettingsParams} from "#lib/settings/params.js";
     import SettingsTabs from "#lib/settings/ui/SettingsTabs.svelte";
     import {journal} from "#lib/stores/journal.svelte.js";
@@ -27,11 +29,17 @@
     let params = $state<SettingsParams>(defaultSettingsParams());
     let restored = $state(false);
 
-    onMount(() => {
-        if (window.location.search !== "") Object.assign(params, searchToParams(window.location.search, defaultSettingsParams()));
+    // Read the tab from the address after EVERY navigation, not once on mount:
+    // a link from one Settings tab to another (the Automatic postings notice
+    // to hledger config, a generated posting's "open its rule") stays on this
+    // route, so a mount-only read left the old tab showing under the new URL.
+    // The mirror below writes with shallow `replaceState`, which is not a
+    // navigation, so this never echoes our own writes back.
+    afterNavigate(() => {
+        Object.assign(params, searchToParams(window.location.search, defaultSettingsParams()));
         restored = true;
-        return () => mirror.stop();
     });
+    onMount(() => () => mirror.stop());
 
     const mirror = searchMirror();
     $effect(() => {
@@ -50,6 +58,9 @@
         <AliasPanel />
     {:else if params.tab === "hledgerConf"}
         <HledgerConfPanel />
+    {:else if params.tab === "auto"}
+        <!-- Plan 30 Phase 5; `rule` is the rule a generated posting linked to. -->
+        <AutoRulesPanel focus={params.rule} />
     {:else}
         <AccountsPanel accountNames={journal.accountNames} />
     {/if}

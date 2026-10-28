@@ -1255,6 +1255,14 @@ export class LedgelineApi {
     }
 
     /**
+     * The main journal's `=` auto-posting rules and whether `--auto` is in
+     * force (plan 30 Phase 5) → decode with `decodeAutoRules`.
+     */
+    listAutoRules(): Promise<unknown> {
+        return this.getJson("/api/auto-rules");
+    }
+
+    /**
      * Rewrite one journal file's alias lines. → 200, that file at its new
      * revision (decode with `decodeAliasFileResponse`); 409 when the file moved
      * underneath the editor.

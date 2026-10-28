@@ -3068,6 +3068,7 @@ fn finalize_posting(raw: RawPosting, sums: &[CommoditySum]) -> Result<Posting, P
         date2: raw.date2,
         comment: raw.comment,
         tags: raw.tags,
+        generated: None,
     })
 }
 
@@ -3192,14 +3193,43 @@ const BALANCED_GROUPS: [PostingType; 2] = [PostingType::Regular, PostingType::Ba
 ///
 /// # Errors
 /// Returns [`ParseError::Decimal`] only if summing a group overflows `i128`.
+///
+/// # Generated postings are not part of this check
+///
+/// Postings an `=` rule generated ([`Posting::generated`]) are left out, which
+/// is hledger's order: it checks a transaction balances BEFORE auto postings
+/// are added. Whether a rule's own postings balance is a separate finding,
+/// naming the rule — [`check_generated_balances`].
 pub fn check_transaction_balances(
     journal: &Journal,
+) -> Result<Vec<UnbalancedTransaction>, ParseError> {
+    unbalanced_where(journal, &|posting| posting.generated.is_none())
+}
+
+/// The transactions whose `=`-rule-generated postings, taken on their own, do
+/// not balance — what hledger 1.52 refuses a journal for under `--auto`
+/// ("A regular posting left unbalanced is a hard load error", plan 30). A
+/// transaction's own postings balance (or [`check_transaction_balances`]
+/// says otherwise), so these are exactly the transactions the rules unbalanced.
+///
+/// # Errors
+/// As [`check_transaction_balances`].
+pub fn check_generated_balances(
+    journal: &Journal,
+) -> Result<Vec<UnbalancedTransaction>, ParseError> {
+    unbalanced_where(journal, &|posting| posting.generated.is_some())
+}
+
+/// [`check_transaction_balances`] over only the postings `keep` accepts.
+fn unbalanced_where(
+    journal: &Journal,
+    keep: &dyn Fn(&Posting) -> bool,
 ) -> Result<Vec<UnbalancedTransaction>, ParseError> {
     let styles = crate::assertions::display_styles(journal);
     let mut failures = Vec::new();
     for (transaction_index, transaction) in journal.transactions.iter().enumerate() {
         for group in BALANCED_GROUPS {
-            let sums = group_residual(transaction, group)?;
+            let sums = group_residual(transaction, group, keep)?;
             let residual: Vec<Amount> = sums
                 .iter()
                 .filter(|(_, entry)| !looks_zero(entry.total, entry.tolerance_precision()))
@@ -3267,11 +3297,12 @@ impl Residual<'_> {
 fn group_residual<'a>(
     transaction: &'a Transaction,
     group: PostingType,
+    keep: &dyn Fn(&Posting) -> bool,
 ) -> Result<BTreeMap<&'a Commodity, Residual<'a>>, ParseError> {
     transaction
         .postings
         .iter()
-        .filter(|posting| posting.ptype == group)
+        .filter(|posting| posting.ptype == group && keep(posting))
         .flat_map(|posting| &posting.amounts)
         .try_fold(BTreeMap::new(), |mut sums, amount| {
             // The value a priced amount contributes is its COST, exactly as the

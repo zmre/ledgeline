@@ -33,6 +33,8 @@ The checks run on the whole journal, whatever the filter bar says.
 | --- | --- | --- |
 | [Unbalanced](#unbalanced) | error | transaction |
 | [Balance assertion](#balance-assertion) | error | transaction |
+| [Automatic posting rule](#automatic-posting-rule) | error | transaction |
+| [Unknown account in a rule](#unknown-account-in-a-rule) | warning | account |
 | [Unknown account tag value](#unknown-account-tag-value) | warning | account |
 | [Stock checks](#stock-checks) | warning | transaction |
 | [Pending](#pending) | warning | transaction |
@@ -41,7 +43,7 @@ The checks run on the whole journal, whatever the filter bar says.
 | [Missing description](#missing-description) | info | transaction |
 | [Future date](#future-date) | info | transaction |
 
-The first four come from Ledgeline's engine. If you point the app at a plain `hledger-web` server instead, those engine checks are missing, and Ledgeline runs a simpler balance check of its own.
+The first six come from Ledgeline's engine. If you point the app at a plain `hledger-web` server instead, those engine checks are missing, and Ledgeline runs a simpler balance check of its own.
 
 ### Unbalanced
 
@@ -56,6 +58,14 @@ To fix it, correct the amount that is wrong, or leave one posting's amount blank
 A posting asserts a balance (`assets:checking  $-20 = $880`) and the account's running balance at that point is different. The message shows the asserted balance, the calculated balance and the difference.
 
 Usually a transaction is missing, duplicated or entered with the wrong amount before that date. Find the difference, then fix the transaction that causes it. Change the assertion only if the assertion itself was wrong.
+
+### Automatic posting rule
+
+With `--auto` on, an `=` rule would make hledger refuse the journal at this transaction. Either the rule's postings don't balance, or a rule with an amountless posting fired more than once here. The message names the rule and its file and line. See [Automatic postings](automatic-postings.md#problems-a-rule-can-cause) for how to fix each.
+
+### Unknown account in a rule
+
+An `=` rule posts to an account that no `account` directive declares and no transaction uses. It is usually a typo. Correct the rule, or declare the account if it is new on purpose. See [Automatic postings](automatic-postings.md).
 
 ### Unknown account tag value
 

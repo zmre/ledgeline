@@ -70,3 +70,20 @@ test("settings: the hledger config tab shows the file in force and its controls,
     }
     await expect(page.getByTestId("settings-hledger-conf-save")).toBeDisabled();
 });
+
+test("settings: the Automatic postings tab says whether --auto is in force", async ({page}) => {
+    // Read-only, like the rest of this spec. `fixtures/sample.journal` has no
+    // `=` rules and no hledger.conf, so the tab says the rules are not applied
+    // and that there are none; the applied case is pinned over
+    // fixtures/auto-postings by crates/ledgeline-server/tests/auto_endpoints.rs
+    // and the component tests.
+    await page.goto("/settings");
+    await page.getByRole("tab", {name: "Automatic postings"}).click();
+    await expect(page).toHaveURL(/\/settings\?tab=auto/);
+    await expect(page.getByTestId("settings-auto-off")).toContainText("--auto");
+    await expect(page.getByTestId("settings-auto-empty")).toBeVisible();
+    // The switch lives on the hledger config tab, and the notice links there.
+    await page.getByTestId("settings-auto-conf-link").click();
+    await expect(page).toHaveURL(/\/settings\?tab=hledgerConf/);
+    await expect(page.getByTestId("settings-hledger-conf-auto")).toBeVisible();
+});

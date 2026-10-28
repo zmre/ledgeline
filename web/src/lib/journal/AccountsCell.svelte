@@ -8,7 +8,13 @@
     // is a button; clicking it swaps the cell for an autocomplete input that
     // recategorizes EVERY posting on that account (usually one) via a surgical
     // PATCH {postings:[{index, account}]}. Enter/blur commits, Escape cancels.
+    //
+    // Postings an `=` rule generated (`--auto`, plan 30) are not chips: the
+    // flow reads only the written postings, and a muted "+N auto" badge says
+    // how many more the rules added. It links to the rule — the only place a
+    // generated posting can be changed.
     import {accountPatch} from "#lib/api/editMapping.js";
+    import {openAutoRule} from "#lib/autoRules/openRule.js";
     import AccountLabel from "#lib/components/AccountLabel.svelte";
     import {chipMeasurer} from "#lib/components/textWidth.js";
     import type {Transaction} from "#lib/domain/types.js";
@@ -18,11 +24,18 @@
     import {flowChipRooms, splitChipRooms} from "./chipGeometry";
     import AccountInput from "./edit/AccountInput.svelte";
     import {rowActions} from "./rowAction.svelte";
-    import {accountFlow} from "./rowModel";
+    import {accountFlow, generatedPostings, generatingRules} from "./rowModel";
 
     let {txn}: {txn: Transaction} = $props();
 
+    /** Room the "+N auto" badge takes from the chips: its text at `badge-sm` plus the flex gap. */
+    const AUTO_BADGE_PX = 60;
     const flow = $derived(accountFlow(txn));
+    const autoCount = $derived(generatedPostings(txn).length);
+    const autoRules = $derived(generatingRules(txn));
+    const autoTitle = $derived(
+        `${autoCount} ${autoCount === 1 ? "posting" : "postings"} added by ${autoRules.map((rule) => `= ${rule.query}`).join(", ")} — open the rule`
+    );
     const canEdit = $derived(editing.canEdit);
 
     // Room in px for each chip's text, or null when nothing has measured the
@@ -32,7 +45,8 @@
     // does the laying out.
     const chipRooms = $derived.by(() => {
         const measure = chipMeasurer();
-        const cell = accountColumn.width;
+        // The "+N auto" badge takes its share of the cell before the chips do.
+        const cell = accountColumn.width - (autoCount > 0 ? AUTO_BADGE_PX : 0);
         if (measure === null || cell <= 0) return null;
         if (flow.kind === "flow") return flowChipRooms([flow.source, flow.dest], cell, measure);
         return splitChipRooms(flow.accounts, cell);
@@ -77,6 +91,19 @@
     });
 </script>
 
+{#snippet autoBadge()}
+    {#if autoCount > 0}
+        <button
+            type="button"
+            class="badge shrink-0 cursor-pointer border-dashed badge-ghost badge-sm font-normal text-base-content/55 italic hover:badge-outline"
+            title={autoTitle}
+            aria-label={autoTitle}
+            data-testid="auto-badge"
+            onclick={() => void openAutoRule(autoRules[0]?.rule ?? 0)}>+{autoCount} auto</button
+        >
+    {/if}
+{/snippet}
+
 {#if editingAccount !== null}
     <AccountInput bind:value={draft} accountNames={journal.accountNames} size="xs" autofocus onCommit={commit} onCancel={cancel} />
 {:else if flow.kind === "flow"}
@@ -105,6 +132,7 @@
             <span class="shrink-0 text-base-content/50" aria-label="to">&rarr;</span>
             <span class="badge min-w-0 badge-ghost badge-sm" title={flow.dest}><AccountLabel name={flow.dest} maxWidth={chipRooms?.[1]} /></span>
         {/if}
+        {@render autoBadge()}
     </div>
 {:else}
     <!-- `max-w-full` rather than the old `max-w-44` (176px): this list wraps, so
@@ -123,5 +151,6 @@
                 <span class="badge max-w-full min-w-0 badge-ghost badge-sm" title={account}><AccountLabel name={account} maxWidth={chipRooms?.[index]} /></span>
             {/if}
         {/each}
+        {@render autoBadge()}
     </div>
 {/if}

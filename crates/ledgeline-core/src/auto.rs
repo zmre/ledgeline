@@ -29,10 +29,11 @@
 
 use crate::decimal::{Dec, DecError};
 use crate::model::{
-    AccountName, Amount, AutoAmount, AutoPosting, AutoPostingRule, CostKind, Posting, PostingType,
-    Transaction,
+    AccountName, Amount, AutoAmount, AutoPosting, AutoPostingRule, CostKind, Journal, Posting,
+    PostingType, RuleRef, Transaction,
 };
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// The tag a generated posting carries, valued `= QUERY` (hledger's own).
 pub const GENERATED_POSTING_TAG: &str = "generated-posting";
@@ -61,17 +62,33 @@ pub fn apply_counted(
     rules: &[AutoPostingRule],
     txn: &Transaction,
 ) -> Result<(Transaction, Vec<usize>), DecError> {
+    apply_counted_with(rules, txn, &|_| Vec::new())
+}
+
+/// [`apply_counted`], a `tag:` term also seeing the tags each posting
+/// inherits from its account's declaration (and its ancestors') — as hledger
+/// 1.52 matches them (`= tag:taxable` fires on `expenses:food:lunch` under
+/// `account expenses:food ; taxable:yes`; a COMMODITY directive's tags do not
+/// reach a rule, verified 2026-10-28).
+fn apply_counted_with(
+    rules: &[AutoPostingRule],
+    txn: &Transaction,
+    inherited: &dyn Fn(&Posting) -> Vec<(String, String)>,
+) -> Result<(Transaction, Vec<usize>), DecError> {
     let mut postings = txn.postings.clone();
     let mut fired = vec![0; rules.len()];
     for (index, rule) in rules.iter().enumerate() {
-        if rule.query.unsupported().is_some() {
+        // A rule that matches nothing here (the common case, over a whole
+        // journal) costs one scan and no copy.
+        let matches = |posting: &Posting| rule.query.matches(txn, posting, &inherited(posting));
+        if rule.query.unsupported().is_some() || !postings.iter().any(matches) {
             continue;
         }
         let mut out = Vec::with_capacity(postings.len());
         for posting in &postings {
             out.push(posting.clone());
-            if rule.query.matches(txn, posting, &[]) {
-                out.extend(generate(rule, posting)?);
+            if matches(posting) {
+                out.extend(generate(rule, index, posting)?);
                 fired[index] += 1;
             }
         }
@@ -96,6 +113,131 @@ pub fn apply_counted(
     ))
 }
 
+/// `journal` with its own `=` rules applied to every transaction — what
+/// `hledger --auto` reads (plan 30 Decision 7). Rules come from the whole
+/// journal, `include`d files too, in file order; periodic (`~`) rules are
+/// untouched, so a budget's goals never gain auto postings while its actuals
+/// do (`bal --budget --auto`, verified 2026-10-28).
+///
+/// Each generated posting carries [`Posting::generated`] naming its rule's
+/// position in `journal.auto_rules`. A transaction whose arithmetic overflows
+/// keeps its own postings; nothing realistic reaches that.
+#[must_use]
+pub fn apply_journal(journal: &Journal) -> Journal {
+    // Destructured so a new `Journal` field is a compile error here rather
+    // than a silently dropped one.
+    let Journal {
+        source_name,
+        source_files,
+        transactions,
+        periodic_transactions,
+        auto_rules,
+        accounts,
+        aliases,
+        commodity_styles,
+        commodity_tags,
+        prices,
+        default_commodity,
+        leading_comment,
+    } = journal;
+    let account_tags = crate::wire::account_tag_map(accounts);
+    let inherited =
+        |posting: &Posting| crate::wire::inherited_account_tags(&posting.account, &account_tags);
+    let transactions = transactions
+        .iter()
+        .map(|txn| {
+            // Idempotent: a journal handed back in after an earlier
+            // application has its generated postings dropped first, so a rule
+            // never fires on its own output a second time.
+            let written;
+            let txn = if txn
+                .postings
+                .iter()
+                .any(|posting| posting.generated.is_some())
+            {
+                written = Transaction {
+                    postings: txn
+                        .postings
+                        .iter()
+                        .filter(|posting| posting.generated.is_none())
+                        .cloned()
+                        .collect(),
+                    ..txn.clone()
+                };
+                &written
+            } else {
+                txn
+            };
+            apply_counted_with(auto_rules, txn, &inherited)
+                .map_or_else(|_| txn.clone(), |(applied, _)| applied)
+        })
+        .collect();
+    Journal {
+        source_name: source_name.clone(),
+        source_files: source_files.clone(),
+        transactions,
+        periodic_transactions: periodic_transactions.clone(),
+        auto_rules: auto_rules.clone(),
+        accounts: accounts.clone(),
+        aliases: aliases.clone(),
+        commodity_styles: commodity_styles.clone(),
+        commodity_tags: commodity_tags.clone(),
+        prices: prices.clone(),
+        default_commodity: default_commodity.clone(),
+        leading_comment: leading_comment.clone(),
+    }
+}
+
+/// `txn` (one of `journal`'s) as [`apply_journal`] serves it — what the edit
+/// path maps a served posting position back to a written one with.
+///
+/// # Errors
+/// As [`apply`].
+pub fn apply_in(journal: &Journal, txn: &Transaction) -> Result<Transaction, DecError> {
+    let account_tags = crate::wire::account_tag_map(&journal.accounts);
+    let inherited =
+        |posting: &Posting| crate::wire::inherited_account_tags(&posting.account, &account_tags);
+    apply_counted_with(&journal.auto_rules, txn, &inherited).map(|(applied, _)| applied)
+}
+
+/// How many postings each of `journal.auto_rules` generated across its
+/// transactions (all zeros for a journal [`apply_journal`] never touched).
+#[must_use]
+pub fn generated_counts(journal: &Journal) -> Vec<usize> {
+    let mut counts = vec![0; journal.auto_rules.len()];
+    for posting in journal.transactions.iter().flat_map(|txn| &txn.postings) {
+        if let Some(slot) = posting
+            .generated
+            .as_ref()
+            .and_then(|origin| counts.get_mut(origin.rule))
+        {
+            *slot += 1;
+        }
+    }
+    counts
+}
+
+/// How many times each of `rules` fired on `txn`, read back from its
+/// generated postings: a firing adds one posting per rule posting.
+#[must_use]
+pub fn firings(rules: &[AutoPostingRule], txn: &Transaction) -> Vec<usize> {
+    let mut counts: Vec<usize> = vec![0; rules.len()];
+    for posting in &txn.postings {
+        if let Some(slot) = posting
+            .generated
+            .as_ref()
+            .and_then(|origin| counts.get_mut(origin.rule))
+        {
+            *slot += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .zip(rules)
+        .map(|(count, rule)| count.checked_div(rule.postings.len()).unwrap_or(0))
+        .collect()
+}
+
 /// Whether hledger 1.52 refuses a transaction on which `rule` fired `fired`
 /// times. hledger infers an amountless auto posting at the TRANSACTION level,
 /// so a rule with an amountless regular (or balanced-virtual) posting that
@@ -111,9 +253,202 @@ pub fn hledger_refuses(rule: &AutoPostingRule, fired: usize) -> bool {
         })
 }
 
-/// The postings `rule` adds below `matched`.
-fn generate(rule: &AutoPostingRule, matched: &Posting) -> Result<Vec<Posting>, DecError> {
+/// Something wrong with one `=` rule of a journal — what the Problems drawer
+/// and Settings › Automatic postings show (plan 30 Decisions 9 and 11).
+/// Never a refused journal: hledger refuses the first two, Ledgeline reads on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuleProblem {
+    /// The rule fired `fired` times in the transaction at `position` with an
+    /// amountless leg, which hledger 1.52 refuses ([`hledger_refuses`]).
+    Refused {
+        /// 0-based position in [`Journal::transactions`].
+        position: usize,
+        /// Its firings there.
+        fired: usize,
+    },
+    /// The rule's postings leave the transaction at `position` unbalanced by
+    /// `residual` (rendered), which hledger refuses under `--auto`.
+    Unbalanced {
+        /// 0-based position in [`Journal::transactions`].
+        position: usize,
+        /// What the generated postings sum to, as hledger would print it.
+        residual: String,
+    },
+    /// The rule posts to `account`, which no `account` directive declares and
+    /// no transaction or periodic rule uses — very likely a typo. hledger
+    /// accepts it, so this is a warning.
+    UnknownAccount {
+        /// The account as the rule writes it.
+        account: String,
+    },
+}
+
+/// One [`RuleProblem`] of rule number `rule` in [`Journal::auto_rules`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleFinding {
+    /// The rule's position in [`Journal::auto_rules`].
+    pub rule: usize,
+    /// What is wrong.
+    pub problem: RuleProblem,
+}
+
+impl RuleFinding {
+    /// The sentence the Problems drawer shows, naming the rule.
+    #[must_use]
+    pub fn message(&self, journal: &Journal) -> String {
+        let rule = journal.auto_rules.get(self.rule).map_or_else(
+            || "an automatic posting rule".to_string(),
+            |rule| {
+                let file = rule
+                    .source_file
+                    .file_name()
+                    .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+                format!(
+                    "the automatic posting rule `= {}` ({file}:{})",
+                    rule.query.raw(),
+                    rule.source_span.0.line
+                )
+            },
+        );
+        match &self.problem {
+            RuleProblem::Refused { fired, .. } => format!(
+                "Under --auto, {rule} fires {fired} times in this transaction with an \
+                 amountless posting, which hledger refuses (\"there can't be more than one \
+                 real posting with no amount\"). Ledgeline balances each firing on its own; \
+                 give that posting an explicit `*-N` amount to read the same in hledger."
+            ),
+            RuleProblem::Unbalanced { residual, .. } => format!(
+                "Under --auto, {rule} leaves this transaction unbalanced: its postings sum \
+                 to {residual}, and hledger refuses the journal. Balance the rule's postings, \
+                 or leave one of them without an amount."
+            ),
+            RuleProblem::UnknownAccount { account } => format!(
+                "{} posts to {account}, which no account directive declares and no \
+                 transaction uses. Is it a typo?",
+                capitalized(&rule)
+            ),
+        }
+    }
+}
+
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
+/// Every [`RuleFinding`] in `journal` — an [`apply_journal`] result, or a raw
+/// journal, which can only have [`RuleProblem::UnknownAccount`] findings
+/// since no rule fired in it. In rule order, then transaction order.
+#[must_use]
+pub fn rule_findings(journal: &Journal) -> Vec<RuleFinding> {
+    let mut findings = Vec::new();
+    for (position, txn) in journal.transactions.iter().enumerate() {
+        for (rule, fired) in firings(&journal.auto_rules, txn).into_iter().enumerate() {
+            if hledger_refuses(&journal.auto_rules[rule], fired) {
+                findings.push(RuleFinding {
+                    rule,
+                    problem: RuleProblem::Refused { position, fired },
+                });
+            }
+        }
+    }
+    for failure in crate::parse::check_generated_balances(journal).unwrap_or_default() {
+        let txn = &journal.transactions[failure.transaction_index];
+        let mut rules: Vec<usize> = txn
+            .postings
+            .iter()
+            .filter(|posting| posting.ptype == failure.group)
+            .filter_map(|posting| posting.generated.as_ref().map(|origin| origin.rule))
+            .collect();
+        rules.sort_unstable();
+        rules.dedup();
+        let residual = failure
+            .residual
+            .iter()
+            .map(|amount| {
+                crate::assertions::render_amount(amount.quantity, &amount.commodity, &amount.style)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        findings.extend(rules.into_iter().map(|rule| RuleFinding {
+            rule,
+            problem: RuleProblem::Unbalanced {
+                position: failure.transaction_index,
+                residual: residual.clone(),
+            },
+        }));
+    }
+    let known = known_accounts(journal);
+    for (rule, auto_rule) in journal.auto_rules.iter().enumerate() {
+        let mut seen: Vec<&str> = Vec::new();
+        for posting in &auto_rule.postings {
+            let account = posting.account.as_str();
+            if account.contains("%account") || known.contains(account) || seen.contains(&account) {
+                continue;
+            }
+            seen.push(account);
+            findings.push(RuleFinding {
+                rule,
+                problem: RuleProblem::UnknownAccount {
+                    account: account.to_string(),
+                },
+            });
+        }
+    }
+    findings.sort_by_key(|finding| finding.rule);
+    findings
+}
+
+/// Every account the journal names outside its `=` rules — declared, posted
+/// to by a written posting, or by a periodic rule — with every ancestor of
+/// each, since `expenses` exists wherever `expenses:food` does.
+fn known_accounts(journal: &Journal) -> std::collections::HashSet<&str> {
+    let names = journal
+        .accounts
+        .iter()
+        .map(|decl| decl.name.0.as_str())
+        .chain(
+            journal
+                .transactions
+                .iter()
+                .flat_map(|txn| &txn.postings)
+                .filter(|posting| posting.generated.is_none())
+                .map(|posting| posting.account.0.as_str()),
+        )
+        .chain(
+            journal
+                .periodic_transactions
+                .iter()
+                .flat_map(|periodic| &periodic.postings)
+                .map(|posting| posting.account.0.as_str()),
+        );
+    let mut known = std::collections::HashSet::new();
+    for name in names {
+        let mut at = name.len();
+        known.insert(name);
+        while let Some(colon) = name[..at].rfind(':') {
+            known.insert(&name[..colon]);
+            at = colon;
+        }
+    }
+    known
+}
+
+/// The postings `rule` (number `index` of its list) adds below `matched`.
+fn generate(
+    rule: &AutoPostingRule,
+    index: usize,
+    matched: &Posting,
+) -> Result<Vec<Posting>, DecError> {
     let marker = format!("= {}", rule.query.raw());
+    let origin = Arc::new(RuleRef {
+        rule: index,
+        source_file: rule.source_file.clone(),
+        line: rule.source_span.0.line,
+        query: rule.query.raw().to_string(),
+    });
     let mut generated = rule
         .postings
         .iter()
@@ -131,6 +466,7 @@ fn generate(rule: &AutoPostingRule, matched: &Posting) -> Result<Vec<Posting>, D
                 date2: matched.date2.clone(),
                 comment: auto.comment.clone(),
                 tags,
+                generated: Some(Arc::clone(&origin)),
             })
         })
         .collect::<Result<Vec<_>, DecError>>()?;

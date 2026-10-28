@@ -962,6 +962,15 @@ fn no_shipped_fixture_has_a_failing_assertion() {
             .filter(|posting| posting.balance_assertion.is_some())
             .count();
         asserting += count;
+        // A fixture whose `hledger.conf` says `--auto` is checked the way
+        // hledger checks it: after its `=` rules applied (plan 30).
+        let applied;
+        let journal = if auto_in_force(path) {
+            applied = ledgeline_core::auto::apply_journal(journal);
+            &applied
+        } else {
+            journal
+        };
         match check_balance_assertions(journal) {
             Ok(found) if found.is_empty() => {}
             Ok(found) => problems.push(format!("{}:\n{}", path.display(), rendered(&found))),
@@ -1032,4 +1041,35 @@ fn collect_journals(dir: &Path, out: &mut Vec<PathBuf>) {
             out.push(path);
         }
     }
+}
+
+/// Whether the `hledger.conf` beside `journal` puts `--auto` in force.
+fn auto_in_force(journal: &Path) -> bool {
+    use ledgeline_core::hledger_conf::{self, Section};
+    journal
+        .parent()
+        .and_then(|dir| std::fs::read_to_string(dir.join(hledger_conf::CONF_NAME)).ok())
+        .is_some_and(|text| {
+            hledger_conf::parse(&text)
+                .iter()
+                .any(|option| option.section == Section::General && option.name == "--auto")
+        })
+}
+
+/// hledger evaluates balance assertions AFTER auto postings (plan 30):
+/// `= $90` holds only once the rule's `$-10` reached `assets:checking`.
+#[test]
+fn assertions_see_auto_postings_once_the_rules_are_applied() {
+    let text = "= expenses:fees\n    expenses:tax  *0.1\n    assets:checking\n\n\
+                2026-01-01 open\n    assets:checking  $200\n    equity:opening\n\n\
+                2026-01-02 fee\n    expenses:fees  $100\n    assets:checking\n\n\
+                2026-01-03 check\n    assets:checking  $0 = $90\n";
+    let raw = ledgeline_core::parse_journal(text, "/a.journal").expect("parses");
+    assert_eq!(check_balance_assertions(&raw).expect("checks").len(), 1);
+    let applied = ledgeline_core::auto::apply_journal(&raw);
+    assert!(
+        check_balance_assertions(&applied)
+            .expect("checks")
+            .is_empty()
+    );
 }

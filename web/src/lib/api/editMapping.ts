@@ -177,7 +177,11 @@ export function txnToForm(txn: Transaction): TxnForm {
         code: txn.code,
         description: txn.description,
         comment: txn.comment,
-        postings: txn.postings.map(postingToForm),
+        // Only the postings the file writes. A posting an `=` rule generated is
+        // the rule's output, re-made on every read; writing it back would make
+        // it a real posting the rule then adds to a second time (plan 30). The
+        // modal lists them read-only below the form instead.
+        postings: txn.postings.filter((posting) => posting.generated === undefined).map(postingToForm),
     };
 }
 
@@ -276,11 +280,19 @@ export function statusPatch(status: TxnStatus): PatchTransactionBody {
     return {status};
 }
 
-/** 0-based positions of the postings whose account equals `account`. */
+/**
+ * 0-based positions of the WRITTEN postings whose account equals `account`.
+ *
+ * Positions count every posting as served — generated ones included — because
+ * that is what the engine's PATCH addresses: it maps a served position to the
+ * file's line itself, and refuses (409) one that lands on a generated posting
+ * (plan 30). So a generated posting on the same account is skipped here, never
+ * renumbered around.
+ */
 export function postingIndicesForAccount(txn: Transaction, account: string): number[] {
     const indices: number[] = [];
     txn.postings.forEach((posting, index) => {
-        if (posting.account === account) indices.push(index);
+        if (posting.account === account && posting.generated === undefined) indices.push(index);
     });
     return indices;
 }

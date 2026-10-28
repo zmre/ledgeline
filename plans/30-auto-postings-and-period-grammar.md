@@ -684,7 +684,14 @@ Worktree agents branch from `main`, so after merging, re-run the full suite
 - **Phase 4b (`hledger.conf` tab): built 2026-10-28.** Core locator and
   settings, `GET`/`PUT /api/hledger-conf`, Settings › hledger config, the
   report defaults, and `docs/settings/hledger-config.md`. See amendment 4b.
-- Phase 5 (the main journal): in progress on `2026-10-28-auto-journal`.
+- **Phase 5 (the main journal): built 2026-10-28**, minus rule EDITING in
+  Settings (amendments 16–21). Covers the `Posting.generated` marker,
+  `auto::apply_journal` in the snapshot under `--auto` (read from Phase 4b's
+  `ConfSettings`), rows and the SPA marking generated postings, the 409s,
+  served-to-written PATCH mapping, the consumers (styles, subscriptions,
+  assertions, budget actuals), the `auto-rule` / `auto-account` diagnostics,
+  `GET /api/auto-rules` and a read-only Settings › Automatic postings tab
+  whose `editor` snippet prop is where the shared rule editor plugs in.
 
 ## Contract amendments made during implementation
 
@@ -942,3 +949,51 @@ Decisions made while building:
   locator. `alias_arguments` still merges every `[import]` heading,
   case-insensitively, where hledger reads only the last exact one. That is a
   small parity gap, left for a follow-up.
+
+### 16. PATCH positions are the SERVED ones; the engine maps them (2026-10-28)
+
+The plan had `accountPatch` map UI positions to file positions in the SPA.
+Instead `PATCH /api/transactions/{index}` takes the position in the
+transaction as served (generated postings included), and
+`edit_api::written_positions` maps it under the editor lock, from the
+editor's own transaction re-applied with `auto::apply_in`. A position landing
+on a generated posting is a 409 naming the rule. One mapping, next to the
+file it describes, for every client (the SPA and the FFI alike); the SPA's
+`accountPatch` only skips generated postings. With `--auto` off the two
+coincide. A POST/PUT posting carrying `generated` is refused the same way.
+
+### 17. `RowPosting.generated` is `{rule, query}` — no file
+
+A row never carries a path. `rule` is the position in `Journal::auto_rules`;
+`GET /api/auto-rules` gives each rule's file relative to the journal and its
+line. `Posting.generated` (the model) is `Arc<RuleRef { rule, source_file,
+line, query }>`.
+
+### 18. "Unbalanced" reads written postings; a rule's imbalance is `auto-rule`
+
+`check_transaction_balances` skips generated postings (hledger checks balance
+before auto postings), and `check_generated_balances` checks the generated
+ones on their own. A rule that unbalances a transaction is therefore reported
+once, as an `auto-rule` error naming the rule, not twice. An amountless leg
+firing twice (`hledger_refuses`) is also `auto-rule`; a rule account nothing
+else declares or uses is an `auto-account` warning on that account (Decision
+11). Verified 2026-10-28: hledger refuses `= revenue:sales / liabilities:tax
+$10` with "The real postings' sum should be 0 but is: $10".
+
+### 19. `tag:` sees account-inherited tags; commodity tags do not reach rules
+
+Verified 2026-10-28 with `hledger print --auto`: `= tag:taxable` fires on
+`expenses:food:lunch` under `account expenses:food ; taxable: yes`, while
+`= tag:kind=cash` does not fire through `commodity $1.00 ; kind: cash`.
+`apply_journal` passes the account tags (ancestors included); the projection
+path keeps passing none.
+
+### 20. Only the GENERAL section's `--auto` counts
+
+`[balance] --auto` would apply to `hledger balance` alone; Ledgeline has one
+journal for every report, so only a general-section `--auto` turns rules on.
+A hijacked conf (first word not a flag) turns them off, as it does in hledger.
+
+### 21. The fixture is `fixtures/auto-postings/`
+
+The global `*-journal` git ignore hides a directory named `auto-journal`.
