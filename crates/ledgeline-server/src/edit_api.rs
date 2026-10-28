@@ -1181,6 +1181,7 @@ fn build_posting(journal: &Journal, input: &PostingIn) -> Result<Posting, AppErr
         date2: None,
         comment: comment_string(input.comment.as_deref()),
         tags: Vec::new(),
+        generated: None,
     })
 }
 
@@ -1569,6 +1570,7 @@ mod tests {
             date2: None,
             comment: String::new(),
             tags: vec![],
+            generated: None,
         }
     }
 

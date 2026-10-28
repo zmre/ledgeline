@@ -1630,6 +1630,7 @@ pub fn virtual_posting(account: AccountName, amount: Amount) -> Posting {
         date2: None,
         comment: String::new(),
         tags: Vec::new(),
+        generated: None,
     }
 }
 

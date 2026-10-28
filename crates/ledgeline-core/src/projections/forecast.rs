@@ -1778,6 +1778,7 @@ fn posting(account: &str, amount: &MixedAmount, style: &AmountStyle) -> Option<P
         date2: None,
         comment: String::new(),
         tags: Vec::new(),
+        generated: None,
     })
 }
 

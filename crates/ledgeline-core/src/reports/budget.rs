@@ -913,6 +913,7 @@ mod tests {
             date2: None,
             comment: String::new(),
             tags: Vec::new(),
+            generated: None,
         }
     }
 

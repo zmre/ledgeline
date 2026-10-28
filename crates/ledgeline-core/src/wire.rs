@@ -442,15 +442,19 @@ const DIAGNOSTIC_ERROR: &str = "error";
 const DIAGNOSTIC_WARNING: &str = "warning";
 
 /// Every ENGINE `rule` value, in the order the drawer groups them. The first
-/// two are hledger-level errors; `account-tag` is the journal's own `account`
-/// directives; the last three are the stock findings from the holdings engine.
+/// two are hledger-level errors; `auto-rule` is an `=` rule hledger `--auto`
+/// would refuse the journal over and `auto-account` one posting to an account
+/// nothing else names ([`journal_to_auto_diagnostics`]); `account-tag` is the
+/// journal's own `account` directives; the last three are the stock findings from the holdings engine.
 ///
 /// `/api/diagnostics` follows these with the five local check rules
 /// (`crate::view::checks`). The SPA no longer allow-lists rule ids (plan 26
 /// B4): the engine is the only producer of every rule.
-pub const DIAGNOSTIC_RULES: [&str; 6] = [
+pub const DIAGNOSTIC_RULES: [&str; 8] = [
     "unbalanced",
     "assertion",
+    "auto-rule",
+    "auto-account",
     "account-tag",
     "stock-missing-basis",
     "stock-negative",
@@ -488,6 +492,39 @@ pub fn journal_to_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
             message: failure.message(),
         });
     unbalanced.chain(assertions).collect()
+}
+
+/// The `=` rule findings ([`crate::auto::rule_findings`]) as diagnostics
+/// (plan 30 Decisions 9 and 11): `auto-rule` errors on the transaction a rule
+/// would make hledger `--auto` refuse — which can only happen on a journal the
+/// rules were applied to — and `auto-account` warnings on an account only a
+/// rule names. Neither ever refuses the journal.
+#[must_use]
+pub fn journal_to_auto_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
+    use crate::auto::RuleProblem;
+    crate::auto::rule_findings(journal)
+        .into_iter()
+        .map(|finding| {
+            let message = finding.message(journal);
+            match finding.problem {
+                RuleProblem::Refused { position, .. }
+                | RuleProblem::Unbalanced { position, .. } => WireDiagnostic {
+                    txn_index: Some(position),
+                    account: None,
+                    rule: "auto-rule",
+                    severity: DIAGNOSTIC_ERROR,
+                    message,
+                },
+                RuleProblem::UnknownAccount { account } => WireDiagnostic {
+                    txn_index: None,
+                    account: Some(account),
+                    rule: "auto-account",
+                    severity: DIAGNOSTIC_WARNING,
+                    message,
+                },
+            }
+        })
+        .collect()
 }
 
 /// One `account`-directive tag whose values are a CLOSED vocabulary, paired
@@ -1211,6 +1248,7 @@ pub fn journal_to_stock_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
 #[must_use]
 pub fn journal_to_all_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
     let mut all = journal_to_diagnostics(journal);
+    all.extend(journal_to_auto_diagnostics(journal));
     all.extend(journal_to_tag_diagnostics(journal));
     all.extend(journal_to_stock_diagnostics(journal));
     all

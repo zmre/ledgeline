@@ -479,7 +479,16 @@ fn the_whole_fixtures_tree_is_diagnostic_free() {
             continue;
         };
         checked += 1;
-        let found = wire::journal_to_diagnostics(&parsed);
+        // A fixture whose `hledger.conf` says `--auto` is the journal hledger
+        // checks with its `=` rules applied (plan 30), and must be clean
+        // under the rule checks too.
+        let parsed = if auto_in_force(path) {
+            ledgeline_core::auto::apply_journal(&parsed)
+        } else {
+            parsed
+        };
+        let mut found = wire::journal_to_diagnostics(&parsed);
+        found.extend(wire::journal_to_auto_diagnostics(&parsed));
         if !found.is_empty() {
             noisy.push(format!("{}: {found:#?}", path.display()));
         }
@@ -494,4 +503,17 @@ fn the_whole_fixtures_tree_is_diagnostic_free() {
         "fixtures hledger accepts must produce NO diagnostics:\n{}",
         noisy.join("\n")
     );
+}
+
+/// Whether the `hledger.conf` beside `journal` puts `--auto` in force.
+fn auto_in_force(journal: &std::path::Path) -> bool {
+    use ledgeline_core::hledger_conf::{self, Section};
+    journal
+        .parent()
+        .and_then(|dir| std::fs::read_to_string(dir.join(hledger_conf::CONF_NAME)).ok())
+        .is_some_and(|text| {
+            hledger_conf::parse(&text)
+                .iter()
+                .any(|option| option.section == Section::General && option.name == "--auto")
+        })
 }

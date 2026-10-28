@@ -227,6 +227,31 @@ pub struct Posting {
     pub comment: String,
     /// The posting's **own** comment tags (not account-inherited ones).
     pub tags: Vec<(String, String)>,
+    /// `Some` when an `= QUERY` auto-posting rule generated this posting
+    /// ([`crate::auto::apply`]); `None` for every posting written in a file.
+    ///
+    /// The ONE marker the edit path keys off (plan 30 Decision 5): a generated
+    /// posting is never written back, never counted in a position the editor
+    /// maps to a line, and never read for display-style inference. hledger's
+    /// `generated-posting` tag rides along in [`Self::tags`] for parity, but
+    /// tag text is a user-writable comment and is never trusted for this.
+    /// Behind an [`Arc`] so a cloned posting costs one pointer, not a copy.
+    pub generated: Option<Arc<RuleRef>>,
+}
+
+/// Which `= QUERY` rule generated a posting ([`Posting::generated`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleRef {
+    /// The rule's position in the rule list it was applied from — for the
+    /// main journal, [`Journal::auto_rules`]; for a projection scenario, its
+    /// own rules. Stable for one parse of the journal.
+    pub rule: usize,
+    /// The file the rule was read from, as [`AutoPostingRule::source_file`].
+    pub source_file: PathBuf,
+    /// The rule's `=` line, 1-based, in [`Self::source_file`].
+    pub line: u32,
+    /// The rule's query as written (`revenue:sales tag:_generated-transaction`).
+    pub query: String,
 }
 
 /// A journal transaction.

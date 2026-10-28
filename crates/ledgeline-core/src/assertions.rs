@@ -254,6 +254,9 @@ pub(crate) fn display_styles(journal: &Journal) -> BTreeMap<&Commodity, &AmountS
         .transactions
         .iter()
         .flat_map(|transaction| &transaction.postings)
+        // An `=` rule's exact products are not written precisions (as
+        // `journal_meta::report_styles`).
+        .filter(|posting| posting.generated.is_none())
         .flat_map(|posting| {
             posting.amounts.iter().chain(
                 posting

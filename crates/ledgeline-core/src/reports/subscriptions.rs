@@ -34,7 +34,7 @@ use super::account_types::{AccountType, account_decls, declared_types, resolve_a
 use super::periods::{add_months, days_between, parts};
 use super::prices::base_target;
 use crate::decimal::Dec;
-use crate::model::{Commodity, Journal, Transaction};
+use crate::model::{Commodity, Journal, Posting, Transaction};
 use std::collections::BTreeMap;
 
 /// How often a detected subscription recurs.
@@ -64,13 +64,23 @@ enum Override {
     Exclude,
 }
 
+/// The postings a transaction's file actually holds. A posting an `=` rule
+/// generated (`hledger --auto`, plan 30) is not a charge anyone made: a 10%
+/// tax rule on every subscription must not turn into a recurring "tax"
+/// subscription of its own, nor its balancing leg into a funding account.
+fn written(txn: &Transaction) -> impl Iterator<Item = &Posting> {
+    txn.postings
+        .iter()
+        .filter(|posting| posting.generated.is_none())
+}
+
 /// Read a transaction's subscription verdict from its own tags or its postings'.
 /// Unrecognized values are ignored rather than guessed at.
 fn subscription_override(txn: &Transaction) -> Option<Override> {
     let tags = txn
         .tags
         .iter()
-        .chain(txn.postings.iter().flat_map(|posting| posting.tags.iter()));
+        .chain(written(txn).flat_map(|posting| posting.tags.iter()));
     for (key, value) in tags {
         if !key.eq_ignore_ascii_case(OVERRIDE_TAG) {
             continue;
@@ -247,17 +257,13 @@ fn expense_charge(
     declared: &BTreeMap<String, AccountType>,
 ) -> Result<Option<Charge>, ReportError> {
     let type_of = |account: &str| resolve_account_type(account, declared);
-    if txn
-        .postings
-        .iter()
-        .any(|posting| type_of(&posting.account.0) == Some(AccountType::Revenue))
-    {
+    if written(txn).any(|posting| type_of(&posting.account.0) == Some(AccountType::Revenue)) {
         return Ok(None);
     }
     let mut total = Dec::zero();
     let mut accounts: Vec<String> = Vec::new();
     let mut funding: Vec<String> = Vec::new();
-    for posting in &txn.postings {
+    for posting in written(txn) {
         if type_of(&posting.account.0) != Some(AccountType::Expense) {
             funding.push(posting.account.0.clone());
             continue;
@@ -411,7 +417,7 @@ fn account_horizons(txns: &[Transaction], as_of: &str) -> BTreeMap<String, Strin
         if txn.date.as_str() > as_of {
             continue;
         }
-        for posting in &txn.postings {
+        for posting in written(txn) {
             latest
                 .entry(posting.account.0.clone())
                 .and_modify(|current| {

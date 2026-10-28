@@ -64,6 +64,21 @@ pub struct RowPosting {
     posting_type: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     balance_assertion: Option<RowAssertion>,
+    /// The `=` rule that generated this posting ([`Posting::generated`]);
+    /// absent for a posting written in the file — the common case, so it
+    /// costs nothing on the wire unless `--auto` is in force.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generated: Option<RowRuleRef>,
+}
+
+/// Which `=` rule generated a posting: its position in the journal's rule list
+/// (what Settings › Automatic postings focuses by) and its query as written.
+/// The file is left out — the rule list names it, relative to the journal —
+/// so a row never carries a path.
+#[derive(Debug, Serialize)]
+pub struct RowRuleRef {
+    rule: usize,
+    query: String,
 }
 
 /// One transaction, with the check findings anchored to it embedded as
@@ -152,6 +167,10 @@ impl<'a> RowContext<'a> {
                     inclusive: assertion.inclusive,
                     total: assertion.total,
                 }),
+            generated: posting.generated.as_ref().map(|origin| RowRuleRef {
+                rule: origin.rule,
+                query: origin.query.clone(),
+            }),
         }
     }
 

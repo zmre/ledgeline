@@ -1,0 +1,59 @@
+; Auto postings fixture (plan 30 Phase 5): the main journal's `=` rules,
+; applied because hledger.conf beside this file says `--auto`.
+; Every figure the tests pin was captured from `hledger --auto --no-conf`.
+
+account assets:checking          ; type: C
+account liabilities:tax:sales    ; type: L
+account equity:opening           ; type: E
+account revenue:sales            ; type: R
+account expenses:food            ; type: X, taxable: yes
+account expenses:subscriptions   ; type: X
+account expenses:tax             ; type: X
+account budget:tax-reserve
+
+commodity $1,000.00
+
+include rules.journal
+
+~ monthly from 2026-01 to 2026-04
+    expenses:food        $100.00
+    expenses:tax           $5.00
+    assets:checking
+
+2026-01-01 opening
+    assets:checking      $5,000.00
+    equity:opening
+
+2026-01-05 Streamy
+    expenses:subscriptions    $15.00
+    assets:checking
+
+; Holds only with the subscription rule's $1.20 applied: hledger checks
+; balance assertions AFTER auto postings.
+2026-01-09 * balance check
+    assets:checking         $0.00 = $4,983.80
+
+2026-01-10 Acme | sale
+    revenue:sales           $-333.33
+    assets:checking
+
+2026-01-15 Deli | lunch
+    expenses:food:lunch       $12.50
+    assets:checking
+
+2026-02-05 Streamy
+    expenses:subscriptions    $15.00
+    assets:checking
+
+2026-02-12 Acme | sale
+    assets:checking
+    revenue:sales           $-1,200.00
+
+2026-03-05 Streamy
+    expenses:subscriptions    $15.00
+    assets:checking
+
+2026-03-20 Grocer | groceries
+    expenses:food:groceries   $80.00
+    assets:checking
+
