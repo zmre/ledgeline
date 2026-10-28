@@ -528,6 +528,9 @@ pub struct StatementOpts {
     pub valuation: Valuation,
     /// The balance sheet's row depth (`None`: unclamped).
     pub bs_depth: Option<usize>,
+    /// The income statement's row depth, as `hledger is --depth` (`None`:
+    /// every account).
+    pub is_depth: Option<usize>,
     /// The cash flow statement's line depth.
     pub cf_depth: usize,
 }
@@ -608,6 +611,7 @@ pub fn projected_statements(
             value: opts.valuation,
             value_in: forecast.target.clone(),
             compare: false,
+            depth: opts.is_depth,
         },
         window.interval,
         &shape.declared,
@@ -746,6 +750,7 @@ pub fn reference_statements(
             value: opts.valuation,
             value_in: forecast.target.clone(),
             compare: false,
+            depth: opts.is_depth,
         },
         window.interval,
         &shape.declared,

@@ -272,6 +272,7 @@ fn statement_side_labels_are_the_statements_own_lines() {
                 value: Valuation::Market,
                 value_in: None,
                 compare: true,
+                depth: None,
             },
             &declared_types(&account_decls(&journal)),
             &account_sections(&journal),

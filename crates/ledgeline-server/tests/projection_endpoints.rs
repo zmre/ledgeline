@@ -2663,9 +2663,9 @@ fn expense_line(id: &str, account: &str, mantissa: &str) -> Value {
 /// **A line on a PARENT beside lines on its leaves.** The seed starts at the
 /// page's depth, but after that a user may write a line at any level — here
 /// `expenses:food` itself, whose own history is empty, beside a line on its
-/// child `expenses:food:groceries`. The statements must show the parent's own
-/// projected amount as a row of its own under the Expenses group, apart from
-/// the child's, and classify both as expenses (the parent is undeclared, so its
+/// child `expenses:food:groceries`. The statements must show the parent as a
+/// row of its own under the Expenses group, reading as its subtree, with the
+/// child's row beneath it, and classify both as expenses (the parent is undeclared, so its
 /// type is inferred from `expenses`'s declared `type: X`).
 #[tokio::test]
 async fn a_line_on_a_parent_account_is_its_own_row_beside_its_children() {
@@ -2709,12 +2709,16 @@ async fn a_line_on_a_parent_account_is_its_own_row_beside_its_children() {
             )
         })
         .collect();
-    // The parent's OWN $300 is its own row, and the child's $200 is beside it
-    // one level down — neither folded into the other nor lost.
+    // The parent keeps a row of its own, and the child's $200 sits beneath it
+    // one level down — neither folded into the other nor lost. The parent's row
+    // reads as its whole SUBTREE, its own $300 plus the $200 beneath it, as
+    // `hledger is --tree` and the balance sheet both print a parent (2026-10-28:
+    // per-person wage lines under `wages-salaries` left that row at zero when
+    // a row held only its own postings).
     assert_eq!(
         rows,
         [
-            ("expenses:food".to_string(), 2, vec![300, 300]),
+            ("expenses:food".to_string(), 2, vec![500, 500]),
             ("expenses:food:groceries".to_string(), 3, vec![200, 200]),
         ],
         "{food}"
@@ -2722,6 +2726,64 @@ async fn a_line_on_a_parent_account_is_its_own_row_beside_its_children() {
     // The group total is both, and both are expenses: net income is -$500.
     assert_eq!(series(&food["total"]), [500, 500]);
     assert_eq!(net_income(&projection), [-500, -500]);
+}
+
+/// **The page's depth slider reaches the income statement** (2026-10-28: it
+/// changed nothing there). At depth 2 the child folds into its parent, as
+/// `hledger is --depth 2` prints it; at depth 3 it is its own row again. The
+/// group total is the same either way.
+#[tokio::test]
+async fn the_depth_slider_clips_the_income_statement_rows() {
+    let food_rows = |depth: u64| async move {
+        let projection = run(json!({
+            "scenario": scenario_with(vec![
+                expense_line("food", "expenses:food", "30000"),
+                expense_line("groceries", "expenses:food:groceries", "20000"),
+            ], vec![]),
+            "interval": "monthly",
+            "count": 2,
+            "lookback": 0,
+            "depth": depth
+        }))
+        .await;
+        let food = projection["incomeStatement"]["sections"]
+            .as_array()
+            .expect("sections")
+            .iter()
+            .find(|section| section["kind"] == "opex")
+            .and_then(|section| {
+                section["groups"]
+                    .as_array()
+                    .expect("groups")
+                    .iter()
+                    .find(|group| group["name"] == "Food")
+                    .cloned()
+            })
+            .expect("a Food group");
+        assert_eq!(series(&food["total"]), [500, 500], "depth {depth}");
+        food["rows"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .map(|row| {
+                (
+                    row["account"].as_str().expect("account").to_string(),
+                    series(&row["amounts"]),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        food_rows(2).await,
+        [("expenses:food".to_string(), vec![500, 500])]
+    );
+    assert_eq!(
+        food_rows(3).await,
+        [
+            ("expenses:food".to_string(), vec![500, 500]),
+            ("expenses:food:groceries".to_string(), vec![200, 200]),
+        ]
+    );
 }
 
 /// **The seed names its categories at the depth it is asked for.** The tab

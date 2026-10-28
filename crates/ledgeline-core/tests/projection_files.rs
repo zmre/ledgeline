@@ -1322,7 +1322,25 @@ impl Parity {
     /// `value` adds `--value=end,$`: market value at each column's end, which
     /// is what Ledgeline's `Valuation::Market` statements are.
     fn hledger_table(&self, command: &str, value: bool) -> Table {
+        self.hledger_table_with(command, value, &[])
+    }
+
+    /// hledger's income statement as Ledgeline's rows read it: each account
+    /// with postings of its own (the rows of the flat report), at its whole
+    /// SUBTREE's figure (`--tree`), because a Ledgeline row stands for its
+    /// subtree (2026-10-28). An ancestor only `--tree` lists has no row here,
+    /// so it is not compared.
+    fn hledger_is_rows(&self) -> Table {
+        let flat = self.hledger_table("is", true);
+        self.hledger_table_with("is", true, &["--tree"])
+            .into_iter()
+            .filter(|(key, _)| flat.contains_key(key))
+            .collect()
+    }
+
+    fn hledger_table_with(&self, command: &str, value: bool, extra: &[&str]) -> Table {
         let mut args = self.documented(command);
+        args.extend(extra.iter().map(ToString::to_string));
         args.extend(["-O", "csv", "--layout=bare"].map(String::from));
         if value {
             args.push("--value=end,$".to_string());
@@ -1330,11 +1348,22 @@ impl Parity {
         let csv = self.run(&args);
         let columns = self.spans().len();
         let mut table = Table::new();
+        // `--tree` writes each name relative to its parent, two spaces of
+        // indent per level, a single-child chain folded (`office:rent`); the
+        // full name is the stack of names above it.
+        let mut stack: Vec<(usize, String)> = Vec::new();
         // Line 1 is the title, line 2 the header.
         for fields in csv.lines().skip(2).map(csv_fields) {
-            let [account, commodity, values @ ..] = fields.as_slice() else {
+            let [written, commodity, values @ ..] = fields.as_slice() else {
                 continue;
             };
+            let indent = written.len() - written.trim_start().len();
+            stack.retain(|(level, _)| *level < indent);
+            let account = &match stack.last() {
+                Some((_, parent)) if indent > 0 => format!("{parent}:{}", written.trim_start()),
+                _ => written.trim_start().to_string(),
+            };
+            stack.push((indent, account.clone()));
             if account.ends_with(':') && (account == "Total:" || account == "Net:") {
                 continue;
             }
@@ -1404,6 +1433,7 @@ impl Parity {
                 value: Valuation::Market,
                 value_in: self.forecast.target.clone(),
                 compare: false,
+                depth: None,
             },
             self.cadence.interval,
             &self.declared,
@@ -1611,12 +1641,7 @@ impl Parity {
             .filter(|((account, _), _)| account.starts_with("equity"))
             .collect();
         self.assert_agree("bse equity", &hledger_equity, &equity, &none);
-        self.assert_agree(
-            "is",
-            &self.hledger_table("is", true),
-            &self.ledgeline_is(),
-            &none,
-        );
+        self.assert_agree("is", &self.hledger_is_rows(), &self.ledgeline_is(), &none);
         self.assert_agree(
             "cf",
             &self.hledger_table("cf", false),
@@ -1809,7 +1834,7 @@ fn parity_with_growth_differs_only_by_the_accepted_deviations() {
 
     // 1. The flow: hledger's rent is the base in every column; ours grows
     //    from the second forecast month on (2%/mo, anchored at the cutoff).
-    let (their_is, our_is) = (run.hledger_table("is", true), run.ledgeline_is());
+    let (their_is, our_is) = (run.hledger_is_rows(), run.ledgeline_is());
     let (their_rent, our_rent) = (
         usd(&their_is, "expenses:rent"),
         usd(&our_is, "expenses:rent"),

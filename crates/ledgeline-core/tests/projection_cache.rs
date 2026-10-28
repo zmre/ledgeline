@@ -119,6 +119,7 @@ impl Run<'_> {
                     let opts = StatementOpts {
                         valuation,
                         bs_depth,
+                        is_depth: bs_depth,
                         cf_depth: depth,
                     };
                     let want =
@@ -451,6 +452,7 @@ fn a_forecast_of_another_window_is_refused_not_misread() {
     let opts = StatementOpts {
         valuation: Valuation::Market,
         bs_depth: None,
+        is_depth: None,
         cf_depth: 2,
     };
     assert!(projected_statements(&monthly, &facts, &projection.forecast, &opts).is_err());

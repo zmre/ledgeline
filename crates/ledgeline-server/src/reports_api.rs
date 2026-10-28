@@ -3041,6 +3041,7 @@ pub(crate) async fn incomestatement_grouped(
             value,
             value_in,
             compare,
+            depth: None,
         };
         Ok(match grain {
             None => WireIncomeStatementReport::new(

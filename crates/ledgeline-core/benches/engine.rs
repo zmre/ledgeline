@@ -843,6 +843,7 @@ fn cached_run(facts: &JournalFacts, real: &RealSide, scenario: &Scenario) -> usi
         &StatementOpts {
             valuation: Valuation::Market,
             bs_depth: None,
+            is_depth: None,
             cf_depth: DEPTH,
         },
     )
@@ -918,6 +919,7 @@ fn full_scan_run(fx: &Fixture, scenario: &Scenario) -> usize {
             value: Valuation::Market,
             value_in: forecast.target.clone(),
             compare: false,
+            depth: None,
         },
         window.interval,
         &declared,

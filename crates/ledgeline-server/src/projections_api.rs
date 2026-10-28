@@ -1170,6 +1170,8 @@ pub(crate) async fn run(
             &StatementOpts {
                 valuation: Valuation::Market,
                 bs_depth: None,
+                // The page's depth slider: `hledger is --depth N`.
+                is_depth: Some(window.depth),
                 cf_depth: window.depth,
             },
         )?;

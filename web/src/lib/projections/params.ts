@@ -56,7 +56,7 @@ export interface ProjectionParams {
     count: number;
     /** How many full ACTUAL periods the statements show before the forecast (plan 28 Decision 6). `0` is allowed. */
     lookback: number;
-    /** The roll-up depth of the cash flow statement's lines and the Accounts rows. Never clamps the totals. */
+    /** The roll-up depth of the income statement's rows, the cash flow statement's lines and the Accounts rows. Never clamps the totals. */
     depth: number;
     /** The Accounts tab: each period's movement, or the balance at its end. */
     accounts: AccountsMode;
