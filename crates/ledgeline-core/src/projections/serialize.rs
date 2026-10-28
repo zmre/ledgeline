@@ -1720,23 +1720,7 @@ fn with_newline(text: &str, nl: &str) -> String {
 /// Each `=` rule's block as a byte range of `text`, from the line span the
 /// parser recorded for it.
 fn auto_block_spans(text: &str, rules: &[ScenarioAutoRule]) -> Vec<Range<usize>> {
-    let mut starts: Vec<usize> = vec![0];
-    starts.extend(text.match_indices('\n').map(|(at, _)| at + 1));
-    let offset = |line: u32| {
-        let index = usize::try_from(line.saturating_sub(1)).unwrap_or(usize::MAX);
-        starts
-            .get(index)
-            .copied()
-            .unwrap_or(text.len())
-            .min(text.len())
-    };
-    rules
-        .iter()
-        .map(|rule| {
-            let (start, end) = &rule.rule.source_span;
-            offset(start.line)..offset(end.line)
-        })
-        .collect()
+    crate::auto_edit::block_spans(text, rules.iter().map(|rule| &rule.rule))
 }
 
 /// Require `text` to read back with exactly the scenario's `=` rules, in its

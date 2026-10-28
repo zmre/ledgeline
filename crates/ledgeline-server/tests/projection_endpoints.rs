@@ -3234,7 +3234,8 @@ async fn a_file_s_rules_carry_their_block_and_their_form() {
                 "amount": null
             }],
             "counter": "assets:cash",
-            "comment": "rent tax"
+            "comment": "rent tax",
+            "forecastOnly": true
         })
     );
     // A virtual posting is beyond the form: shown raw, locked.

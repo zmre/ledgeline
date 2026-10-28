@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode, header};
-use ledgeline::{AppState, router_with_state};
+use axum::http::{HeaderName, Request, StatusCode, header};
+use ledgeline::{AccessToken, AppState, Security, router_with_security, router_with_state};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -410,4 +410,258 @@ async fn a_home_hledger_conf_s_auto_applies_the_rules() {
     let listed = get(&state, "/api/auto-rules").await;
     assert_eq!(listed["inForce"], true);
     assert_eq!(listed["conf"], "~/.hledger.conf");
+}
+
+// ===========================================================================
+// Editing (plan 30 amendment 22): `PUT /api/auto-rules`
+// ===========================================================================
+
+async fn put(state: &AppState, body: Value) -> (StatusCode, Value) {
+    request(state, "PUT", "/api/auto-rules", Some(body)).await
+}
+
+fn read(dir: &Path, name: &str) -> String {
+    std::fs::read_to_string(dir.join(name)).expect("read")
+}
+
+/// The first rule of `rules.journal`, as listed.
+async fn sales_rule(state: &AppState) -> Value {
+    get(state, "/api/auto-rules").await["rules"][0].clone()
+}
+
+/// Each rule carries what its editor needs, and a new rule goes to the main
+/// file.
+#[tokio::test]
+async fn the_listing_carries_each_rule_s_file_block_revision_and_form() {
+    let dir = fixture_copy(true);
+    let state = state_in(&dir);
+    let listed = get(&state, "/api/auto-rules").await;
+    assert_eq!(listed["editable"], true);
+    assert_eq!(listed["newRule"]["journalId"], "main.journal");
+    assert!(listed["newRule"]["revision"].is_string());
+    let rules = listed["rules"].as_array().expect("rules");
+    let blocks: Vec<(Value, Value)> = rules
+        .iter()
+        .map(|rule| (rule["journalId"].clone(), rule["block"].clone()))
+        .collect();
+    assert_eq!(
+        blocks,
+        vec![
+            (json!("rules.journal"), json!(0)),
+            (json!("rules.journal"), json!(1)),
+            (json!("rules.journal"), json!(2)),
+        ]
+    );
+    // The sales-tax rule is a form: 10% of a sale, revenue into a liability,
+    // balanced against checking, for every transaction.
+    let form = &rules[0]["form"];
+    assert_eq!(form["matchAccount"], "revenue:sales");
+    assert_eq!(form["postings"][0]["account"], "liabilities:tax:sales");
+    assert_eq!(form["postings"][0]["kind"], "percent");
+    assert_eq!(form["counter"], "assets:checking");
+    assert_eq!(form["forecastOnly"], false);
+    // A tag query is not an account a form can match.
+    assert_eq!(rules[1]["form"], Value::Null);
+}
+
+/// A form edit rewrites its block alone: every other byte of the file, the
+/// comments above the block included, is as it was, and the rule applies at
+/// its new rate.
+#[tokio::test]
+async fn a_form_edit_rewrites_one_block_and_nothing_else() {
+    let dir = fixture_copy(true);
+    let state = state_in(&dir);
+    let before = read(&dir, "rules.journal");
+    let rule = sales_rule(&state).await;
+    // The listing's form as the editor sends it back: decimals inbound are
+    // `{mantissa, places}`, and a percent posting's amount is `null`.
+    let listed = &rule["form"];
+    let form = json!({
+        "matchAccount": listed["matchAccount"],
+        "extraQuery": listed["extraQuery"],
+        "postings": [{"account": "liabilities:tax:sales", "kind": "percent",
+                      "percent": {"mantissa": "8", "places": 0}, "amount": null}],
+        "counter": listed["counter"],
+        "comment": listed["comment"],
+        "forecastOnly": listed["forecastOnly"],
+    });
+    let (status, body) = put(
+        &state,
+        json!({
+            "journalId": "rules.journal",
+            "revision": rule["revision"],
+            "change": {"kind": "replace", "block": 0, "was": rule["raw"], "rule": {"form": form}},
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let after = read(&dir, "rules.journal");
+    let new_block = "= ^revenue:sales(:|$)\n    liabilities:tax:sales  *0.08\n    assets:checking        *-0.08\n";
+    assert_eq!(
+        after,
+        before.replace(rule["raw"].as_str().expect("raw"), new_block)
+    );
+    // The answer is the listing as it now is, and the journal served applies
+    // the new rate: 8% of the $-333.33 sale.
+    assert_eq!(body["rules"][0]["raw"], new_block);
+    let sale = january_sale(&state).await;
+    assert_eq!(
+        sale["postings"][1]["amounts"][0]["qty"],
+        json!({"m": "-266664", "p": 4}),
+        "{sale}"
+    );
+}
+
+/// A rule added as text is appended to the main journal after a blank line,
+/// and applies.
+#[tokio::test]
+async fn an_added_rule_is_appended_to_the_main_journal() {
+    let dir = fixture_copy(true);
+    let state = state_in(&dir);
+    let before = read(&dir, "main.journal");
+    let listed = get(&state, "/api/auto-rules").await;
+    let (status, body) = put(
+        &state,
+        json!({
+            "journalId": "main.journal",
+            "revision": listed["newRule"]["revision"],
+            "change": {"kind": "add", "rule": {"raw": "= expenses:food:groceries\n    (budget:tax-reserve)  *0.5"}},
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // The fixture already ends in a blank line, so none is added.
+    assert!(before.ends_with("\n\n"));
+    assert_eq!(
+        read(&dir, "main.journal"),
+        format!("{before}= expenses:food:groceries\n    (budget:tax-reserve)  *0.5\n")
+    );
+    let rules = body["rules"].as_array().expect("rules");
+    assert_eq!(rules.len(), 4);
+    assert_eq!(rules[3]["journalId"], "main.journal");
+    assert_eq!(rules[3]["block"], 0);
+    assert_eq!(rules[3]["generated"], 1);
+}
+
+#[tokio::test]
+async fn a_removed_rule_is_gone_and_stops_applying() {
+    let dir = fixture_copy(true);
+    let state = state_in(&dir);
+    let rule = sales_rule(&state).await;
+    let (status, body) = put(
+        &state,
+        json!({
+            "journalId": "rules.journal",
+            "revision": rule["revision"],
+            "change": {"kind": "remove", "block": 0, "was": rule["raw"]},
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!read(&dir, "rules.journal").contains("= revenue:sales"));
+    assert_eq!(body["rules"].as_array().expect("rules").len(), 2);
+    assert_eq!(accounts(&january_sale(&state).await).len(), 2);
+}
+
+/// A file changed since the listing, or a block that is no longer the one
+/// the client saw, is a `409`, and nothing is written.
+#[tokio::test]
+async fn a_stale_revision_or_block_is_a_409_and_writes_nothing() {
+    let dir = fixture_copy(true);
+    let state = state_in(&dir);
+    let rule = sales_rule(&state).await;
+    let before = read(&dir, "rules.journal");
+    for change in [
+        json!({"journalId": "rules.journal", "revision": "stale",
+               "change": {"kind": "remove", "block": 0, "was": rule["raw"]}}),
+        json!({"journalId": "rules.journal", "revision": rule["revision"],
+               "change": {"kind": "remove", "block": 1, "was": rule["raw"]}}),
+        json!({"journalId": "rules.journal", "revision": rule["revision"],
+               "change": {"kind": "remove", "block": 9, "was": rule["raw"]}}),
+    ] {
+        let (status, body) = put(&state, change.clone()).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{change}: {body}");
+    }
+    assert_eq!(read(&dir, "rules.journal"), before);
+}
+
+/// What a rule body may not be: a directive smuggled in after the block, an
+/// unparseable query, both kinds of rule at once, a file the journal does not
+/// read.
+#[tokio::test]
+async fn a_bad_rule_or_file_is_refused_and_writes_nothing() {
+    let dir = fixture_copy(true);
+    let state = state_in(&dir);
+    let main = read(&dir, "main.journal");
+    let revision = get(&state, "/api/auto-rules").await["newRule"]["revision"].clone();
+    for (rule, journal_id, want) in [
+        (
+            json!({"raw": "= a\n    (b)  *1\ninclude /etc/passwd"}),
+            "main.journal",
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({"raw": "= a\n    (b)  *1\n\n2026-01-01 x\n    a  1\n    b"}),
+            "main.journal",
+            StatusCode::BAD_REQUEST,
+        ),
+        (json!({}), "main.journal", StatusCode::BAD_REQUEST),
+        (
+            json!({"raw": "= a\n    (b)  *1"}),
+            "other.journal",
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            json!({"raw": "= a\n    (b)  *1"}),
+            "../main.journal",
+            StatusCode::BAD_REQUEST,
+        ),
+    ] {
+        let (status, body) = put(
+            &state,
+            json!({"journalId": journal_id, "revision": revision, "change": {"kind": "add", "rule": rule}}),
+        )
+        .await;
+        assert_eq!(status, want, "{rule} → {journal_id}: {body}");
+    }
+    assert_eq!(read(&dir, "main.journal"), main);
+}
+
+/// The write is token-gated with the read.
+#[tokio::test]
+async fn the_rule_routes_require_the_token() {
+    const PORT: u16 = 5097;
+    let dir = fixture_copy(true);
+    let state = state_in(&dir);
+    let token = AccessToken::parse("integration-test-token").expect("well-formed token");
+    for (method, auth, unauthorized) in [
+        ("GET", None, true),
+        ("PUT", None, true),
+        ("GET", Some("Bearer integration-test-token"), false),
+        ("PUT", Some("Bearer integration-test-token"), false),
+    ] {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri("/api/auto-rules")
+            .header(HeaderName::from_static("host"), format!("127.0.0.1:{PORT}"))
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(value) = auth {
+            builder = builder.header(header::AUTHORIZATION, value);
+        }
+        let request = builder
+            .body(Body::from(
+                r#"{"journalId":"main.journal","revision":"x","change":{"kind":"remove","block":0,"was":""}}"#,
+            ))
+            .expect("request builds");
+        let status = router_with_security(state.clone(), Security::local(token.clone(), PORT))
+            .oneshot(request)
+            .await
+            .expect("router responds")
+            .status();
+        assert_eq!(
+            status == StatusCode::UNAUTHORIZED,
+            unauthorized,
+            "{method} with {auth:?}: {status}"
+        );
+    }
 }

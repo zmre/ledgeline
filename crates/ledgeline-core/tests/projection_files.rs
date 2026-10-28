@@ -2873,6 +2873,7 @@ fn editing_rules_through_forms_rewrites_only_their_blocks() {
             }],
             counter: Some("assets:mercury:checking".to_string()),
             comment: String::new(),
+            forecast_only: true,
         },
         &types,
     )

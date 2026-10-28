@@ -44,6 +44,7 @@ mod account_api;
 mod alias_api;
 mod app_dirs;
 mod auto_api;
+mod auto_wire;
 mod benchmarks_api;
 mod budget_api;
 mod commodity_profile;
@@ -1054,8 +1055,11 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         // hledger-web's endpoint and has nowhere to carry a sibling field.
         .route("/api/diagnostics", get(journal_api::diagnostics))
         // Plan 30 Phase 5: the main journal's `=` rules and whether `--auto`
-        // is in force (Settings › Automatic postings).
-        .route("/api/auto-rules", get(auto_api::rules))
+        // is in force (Settings › Automatic postings), and (amendment 22) their
+        // editor's one write.
+        // `PUT` rewrites one of them in the user's journal, so it is token-gated
+        // with the GET (`auto_endpoints.rs` pins the 401).
+        .route("/api/auto-rules", get(auto_api::rules).put(auto_api::save))
         // Which journal is open: its derived title and its main file's bare
         // name. A NATIVE route for the same reason as `/api/diagnostics` — the
         // wire routes are byte-parity emulations of hledger-web's and have

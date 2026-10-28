@@ -1427,7 +1427,7 @@ fn journal_path(location: &JournalLocation, journal: &Journal, id: &str) -> Opti
 /// The same rules `alias_api::validate_journal_id` applies: no `..`, no leading
 /// `/`, no `\`, no `:`, no control character. A hostile handle never reaches the
 /// filesystem, and 400-vs-404 is decided on syntax rather than on existence.
-fn validate_journal_id(id: &str) -> Result<(), AppError> {
+pub(crate) fn validate_journal_id(id: &str) -> Result<(), AppError> {
     let refuse = |why: &str| {
         Err(AppError::BadRequest(format!(
             "{} is not a journal id: {why}",
@@ -1513,7 +1513,7 @@ fn checked_date(raw: &str) -> Result<String, AppError> {
 ///
 /// Never follows a symlink: the path is the real one the snapshot resolved, so
 /// a link there now was swapped in since, and that is a stale revision.
-fn read_journal(
+pub(crate) fn read_journal(
     location: &JournalLocation,
     path: &VaultPath,
     id: &str,
@@ -1549,14 +1549,14 @@ fn read_pinned_text(
 
 /// A `404` that quotes only the caller's own handle. Every resolution failure
 /// returns the same string, so the route is not an existence oracle.
-fn unresolved(id: &str) -> AppError {
+pub(crate) fn unresolved(id: &str) -> AppError {
     AppError::NotFound(format!("no journal file called {}", quoted(id)))
 }
 
 /// The one `409`. One message for every staleness check, deliberately: which
 /// check tripped is a function of *when* somebody else wrote, and that is not
 /// something to leak.
-fn stale(id: &str) -> AppError {
+pub(crate) fn stale(id: &str) -> AppError {
     AppError::Conflict(format!(
         "{} changed on disk since you opened it, so nothing was written. Reload it and re-apply \
          your edit.",
@@ -1565,7 +1565,7 @@ fn stale(id: &str) -> AppError {
 }
 
 /// A caller-supplied handle, escaped and clipped for an error body.
-fn quoted(value: &str) -> String {
+pub(crate) fn quoted(value: &str) -> String {
     /// Long enough to recognise your own id, short enough that a hostile one
     /// cannot make a large response.
     const MAX_CHARS: usize = 120;

@@ -22,10 +22,11 @@
 //! - **The query** is the match account as an anchored, escaped regex,
 //!   `^ACCOUNT(:|$)` — the account and its subtree, never a sibling such as
 //!   `revenue:sales2` (hledger's account terms are infix regexes, so a bare
-//!   `revenue:sales` matches that too) — then `tag:_generated-transaction`,
+//!   `revenue:sales` matches that too) — then, when the form is
+//!   [`forecast_only`](AutoRuleForm::forecast_only), `tag:_generated-transaction`,
 //!   which limits the rule to forecast transactions in stock hledger exactly
-//!   as Ledgeline applies it (Decision 6), then any extra terms as typed. An
-//!   account with a space is quoted.
+//!   as Ledgeline applies a scenario's rules (Decision 6), then any extra terms
+//!   as typed. An account with a space is quoted.
 //! - **A percentage** is a `*N` multiplier: `3.5` is `*0.035`, signed by
 //!   [`sign inference`](#sign-inference).
 //! - **A fixed amount** is written as an amount, signed by its account.
@@ -40,8 +41,8 @@
 //! Reading back, an amountless last posting is also a counter, so a
 //! hand-written rule in the manual's style is editable — and is written in the
 //! explicit form once edited. A plain account word (`revenue:sales`) is read as
-//! the match account too, and a missing forecast-only tag is tolerated; an
-//! edit writes both in the canonical form above. Anything else — virtual or
+//! the match account too (an edit writes it anchored), and the forecast-only
+//! tag, present or not, is [`AutoRuleForm::forecast_only`]. Anything else — virtual or
 //! status-marked postings, posting comments, `*N CUR` re-denomination, a cost,
 //! `%account`, a multi-line comment, a query whose account term is not one of
 //! those two shapes — is not representable.
@@ -92,7 +93,8 @@ use crate::query::Query;
 use crate::reports::account_types::{AccountType, AccountTypes};
 
 /// The query term that limits a rule to forecast transactions in stock hledger
-/// (plan 30 semantics 5). Every query [`render`] writes carries it.
+/// (plan 30 semantics 5). A [`forecast_only`](AutoRuleForm::forecast_only)
+/// form's query carries it.
 pub const FORECAST_ONLY_TERM: &str = "tag:_generated-transaction";
 
 /// Its visible twin, which hledger also honours; read back as the same thing.
@@ -135,6 +137,12 @@ pub struct AutoRuleForm {
     pub counter: Option<String>,
     /// The `=` line's comment, without the `;`. Empty for none.
     pub comment: String,
+    /// Whether the query carries [`FORECAST_ONLY_TERM`], so stock hledger
+    /// applies the rule to forecast transactions only. A scenario's rules
+    /// always do (Ledgeline applies them to nothing else); a main-journal
+    /// rule usually does not, since Ledgeline forecasts nothing there and a
+    /// forecast-only rule in it never fires.
+    pub forecast_only: bool,
 }
 
 /// One posting of a form.
@@ -251,7 +259,7 @@ fn render_unchecked(form: &AutoRuleForm, types: &AccountTypes) -> Result<String,
     if form.postings.is_empty() {
         return refuse("an automatic posting rule needs at least one posting");
     }
-    let query = query_text(&form.match_account, &form.extra_query)?;
+    let query = query_text(&form.match_account, &form.extra_query, form.forecast_only)?;
     let comment = form.comment.trim();
     if comment.chars().any(|c| c.is_control()) {
         return refuse("a rule's comment may not contain a line break or a control character");
@@ -388,12 +396,17 @@ fn check_account(account: &str) -> Result<(), FormError> {
     Ok(())
 }
 
-/// The query a form writes: `^ACCOUNT(:|$) tag:_generated-transaction EXTRA`.
+/// The query a form writes: `^ACCOUNT(:|$) tag:_generated-transaction EXTRA`,
+/// or without the tag when `forecast_only` is false.
 ///
 /// # Errors
 /// [`FormError`] for an account or term that cannot be written, or a query
 /// this engine cannot evaluate (it would be locked the moment it was saved).
-pub fn query_text(match_account: &str, extra_query: &str) -> Result<String, FormError> {
+pub fn query_text(
+    match_account: &str,
+    extra_query: &str,
+    forecast_only: bool,
+) -> Result<String, FormError> {
     let account = match_account.trim();
     check_account(account)?;
     let mut pattern = String::from("^");
@@ -415,7 +428,11 @@ pub fn query_text(match_account: &str, extra_query: &str) -> Result<String, Form
     } else {
         pattern
     };
-    let mut query = format!("{term} {FORECAST_ONLY_TERM}");
+    let mut query = if forecast_only {
+        format!("{term} {FORECAST_ONLY_TERM}")
+    } else {
+        term
+    };
     let extra = normalized_extra(extra_query)?;
     if !extra.is_empty() {
         query.push(' ');
@@ -427,8 +444,8 @@ pub fn query_text(match_account: &str, extra_query: &str) -> Result<String, Form
     Ok(query)
 }
 
-/// The extra terms, one space apart, without the forecast-only term (which the
-/// query always carries).
+/// The extra terms, one space apart, without the forecast-only term (which
+/// [`AutoRuleForm::forecast_only`] states).
 fn normalized_extra(extra: &str) -> Result<String, FormError> {
     if extra.contains([';', '#']) || extra.chars().any(char::is_control) {
         return refuse(
@@ -497,7 +514,7 @@ pub fn form_from_rule(rule: &AutoPostingRule, types: &AccountTypes) -> Option<Au
     if rule.query.unsupported().is_some() {
         return None;
     }
-    let (match_account, extra_query) = split_query(rule.query.raw())?;
+    let (match_account, extra_query, forecast_only) = split_query(rule.query.raw())?;
     // One comment line on the `=` line, or none.
     let comment = match rule.comment.strip_suffix('\n') {
         None if rule.comment.is_empty() => String::new(),
@@ -553,6 +570,7 @@ pub fn form_from_rule(rule: &AutoPostingRule, types: &AccountTypes) -> Option<Au
         postings,
         counter,
         comment,
+        forecast_only,
     })
 }
 
@@ -597,8 +615,8 @@ fn balances(last: &AutoAmount, legs: &[crate::model::AutoPosting]) -> bool {
     }
 }
 
-/// `(match account, extra terms)` of a query a form can state.
-fn split_query(query: &str) -> Option<(String, String)> {
+/// `(match account, extra terms, forecast-only)` of a query a form can state.
+fn split_query(query: &str) -> Option<(String, String, bool)> {
     let terms = raw_terms(query)?;
     let at = terms.iter().position(|term| account_term(term).is_some())?;
     let account = account_term(&terms[at])?;
@@ -609,7 +627,8 @@ fn split_query(query: &str) -> Option<(String, String)> {
         .map(|(_, term)| term.as_str())
         .collect::<Vec<_>>()
         .join(" ");
-    Some((account, extra))
+    let forecast_only = terms.iter().any(|term| is_forecast_only(term));
+    Some((account, extra, forecast_only))
 }
 
 /// The account a query term names, when it is `^ESCAPED(:|$)` or a plain
@@ -748,6 +767,7 @@ mod tests {
                 .collect(),
             counter: counter.map(str::to_string),
             comment: String::new(),
+            forecast_only: true,
         }
     }
 
@@ -982,6 +1002,41 @@ mod tests {
         let f = form_from_rule(&untagged, &types()).expect("representable");
         assert_eq!(f.counter, None);
         assert_eq!(f.postings[0].amount, pct(10, 0));
+        assert!(!f.forecast_only);
+    }
+
+    /// A main-journal rule applies to real transactions: without the tag the
+    /// form says so, and writes no tag back.
+    #[test]
+    fn a_rule_for_every_transaction_carries_no_forecast_tag() {
+        let f = AutoRuleForm {
+            forecast_only: false,
+            ..form("expenses:rent", &[("expenses:rent-tax", pct(10, 0))], None)
+        };
+        let text = render(&f, &types()).expect("renders");
+        assert_eq!(text, "= ^expenses:rent(:|$)\n    expenses:rent-tax  *0.1\n");
+        assert_eq!(form_from_rule(&rule_of(&text), &types()), Some(f.clone()));
+
+        let tagged = render(
+            &AutoRuleForm {
+                forecast_only: true,
+                ..f
+            },
+            &types(),
+        )
+        .expect("renders");
+        assert_eq!(
+            tagged.lines().next(),
+            Some("= ^expenses:rent(:|$) tag:_generated-transaction")
+        );
+        // The visible spelling hledger also honours reads as forecast-only too.
+        let visible =
+            rule_of("= expenses:rent tag:generated-transaction\n    expenses:rent-tax  *0.1\n");
+        assert!(
+            form_from_rule(&visible, &types())
+                .expect("representable")
+                .forecast_only
+        );
     }
 
     #[test]
@@ -1091,19 +1146,23 @@ mod tests {
                 proptest::collection::vec((account(), amount()), 1..4),
                 proptest::option::of(account()),
                 proptest::sample::select(&["", "commission", "tax: payroll"][..]),
+                any::<bool>(),
             )
-                .prop_map(|(match_account, extra, postings, counter, comment)| {
-                    AutoRuleForm {
-                        match_account,
-                        extra_query: extra.to_string(),
-                        postings: postings
-                            .into_iter()
-                            .map(|(account, amount)| FormPosting { account, amount })
-                            .collect(),
-                        counter,
-                        comment: comment.to_string(),
-                    }
-                })
+                .prop_map(
+                    |(match_account, extra, postings, counter, comment, forecast_only)| {
+                        AutoRuleForm {
+                            match_account,
+                            extra_query: extra.to_string(),
+                            postings: postings
+                                .into_iter()
+                                .map(|(account, amount)| FormPosting { account, amount })
+                                .collect(),
+                            counter,
+                            comment: comment.to_string(),
+                            forecast_only,
+                        }
+                    },
+                )
         }
 
         proptest! {
