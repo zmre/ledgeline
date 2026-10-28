@@ -14,6 +14,7 @@
 // was; its multi-period mode adds `interval` and `from` (plans/28 follow-ups).
 
 import type {ISODate} from "#lib/domain/types.js";
+import type {DepthCommand, DepthSpec} from "#lib/settings/hledgerConfTypes.js";
 import {bucketEnd, bucketStart, lastNBuckets, today} from "#lib/reports/periods.js";
 import {clampedInt, isIsoDate} from "#lib/url/params.js";
 
@@ -476,4 +477,33 @@ export function budgetRedirect(search: string): string | null {
     query.delete("tab");
     const carried = query.toString();
     return carried === "" ? "" : `?${carried}`;
+}
+
+// --- hledger.conf's `--depth` (plan 30, Decision 10) -------------------------
+
+/**
+ * The hledger command whose `--depth` seeds each tab's depth control: Cash
+ * Flow's `[cashflow]`, and Net Worth's `[balance]` — net worth is hledger's
+ * `balance --historical` over assets and liabilities. The other tabs have no
+ * depth control (the Balance Sheet and P&L use their section's depth to decide
+ * which groups start open instead — see `confDepth.ts`).
+ */
+const CONF_DEPTH_COMMAND: Partial<Record<ReportTab, DepthCommand>> = {cf: "cashflow", nw: "balance"};
+
+/**
+ * The depth control's default on `tab` from the config file in force: its
+ * command's plain `--depth N`, clamped to the control's range, or null when
+ * the tab has no such control or the file sets none. A `depth=` in the URL
+ * still wins; the page applies this only when the URL named none.
+ */
+export function confDepthDefault(tab: ReportTab, effective: Readonly<Record<DepthCommand, DepthSpec>> | null): number | null {
+    const command = CONF_DEPTH_COMMAND[tab];
+    const all = command === undefined || effective === null ? null : effective[command].all;
+    return all === null ? null : Math.min(Math.max(all, 1), 99);
+}
+
+/** Whether a reports URL names a depth. */
+export function searchNamesDepth(search: string): boolean {
+    const q = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
+    return q.get("depth") !== null;
 }
