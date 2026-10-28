@@ -1341,7 +1341,7 @@ fn check_tag_value(value: &str, what: &str) -> Result<(), SerializeError> {
 /// The same rules `periodic::check_account` applies, for the same reason: each
 /// one is a value that would make the written line read back as something other
 /// than what was asked for.
-fn check_account(account: &str) -> Result<(), SerializeError> {
+pub(crate) fn check_account(account: &str) -> Result<(), SerializeError> {
     let bad = |why: &str| Err(invalid(&format!("an account name {why}")));
     if account.is_empty() {
         return bad("may not be empty");
