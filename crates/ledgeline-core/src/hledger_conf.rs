@@ -1,5 +1,5 @@
-//! `hledger.conf` — reading the `--alias` options it declares, and writing one
-//! into it.
+//! `hledger.conf` — reading the `--alias` options it declares and the settings
+//! Ledgeline honours (`--auto`, `--depth`), and writing them back surgically.
 //!
 //! # Why this module exists: two homes for one mapping
 //!
@@ -61,9 +61,35 @@
 //!   and `--alias` options compose in order, so the first one to match an account
 //!   wins.
 //! * hledger searches for `hledger.conf` in the working directory and **every
-//!   directory above it**, nearest first, then `$HOME/.hledger.conf`, then the
-//!   XDG config dir — and uses exactly one file. [`locate`] implements only the
-//!   upward walk, and only from the journal's own directory; see its docs.
+//!   directory above it**, nearest first, then `$HOME/.hledger.conf`, then
+//!   `$XDG_CONFIG_HOME/hledger/hledger.conf` — and uses exactly one file.
+//!   [`locate_conf_for`] is that order; see "Deliberate differences" below.
+//! * **Section headings are case-sensitive FULL command names.** `[balancesheet]`
+//!   applies to `hledger bs`; `[bs]` and `[BalanceSheet]` are silently ignored.
+//!   When one heading appears twice, hledger reads only the **last** one.
+//!   (All verified.) [`ConfSettings`] reads the same way and warns about both.
+//! * `--depth N` and `--depth REGEX=N` combine; the last plain `N` wins, the last
+//!   value for one REGEX wins, `-N` means `--depth N`, and a command section's
+//!   options apply after the general section's. See [`DepthSpec`].
+//!
+//! # Deliberate differences from hledger
+//!
+//! Only one remains: **the search starts at the JOURNAL's directory**, not at
+//! the process's working directory. hledger searches from wherever it was
+//! launched, and where a user launches hledger for these books is beside these
+//! books; a server process's working directory is an accident of how it was
+//! started. (A sandboxed vault also has no "above" and no home directory, so
+//! its search ends at its root — not a difference in behaviour, just a smaller
+//! filesystem.) `$HOME` and `$XDG_CONFIG_HOME` are parameters
+//! ([`UserConfDirs`]), never read from the environment here.
+//!
+//! # Settings
+//!
+//! [`ConfSettings`] is the part of a config file Ledgeline itself honours:
+//! general-section `--auto` (plan 30, Decision 7) and `--depth` in the general,
+//! `[balancesheet]`, `[incomestatement]`, `[cashflow]` and `[balance]` sections.
+//! [`with_option`] and [`without_option`] write exactly one option into exactly
+//! one section and leave every other byte alone.
 //!
 //! # Writing: the escaping rule
 //!
@@ -298,21 +324,12 @@ pub fn forwarded(mut arguments: Vec<String>) -> (Vec<String>, usize) {
 }
 
 /// The nearest `hledger.conf` at or above `directory` **within the vault**, if
-/// there is one.
+/// there is one — the first part of hledger's lookup.
 ///
-/// # Three deliberate differences from what hledger itself does
-///
-/// 1. **The walk starts at the JOURNAL's directory**, not at this process's
-///    working directory. hledger searches from wherever it was launched, and
-///    where a user launches hledger for these books is beside these books. A
-///    server process's working directory is an accident of how it was started and
-///    describes nothing about the user's ledger.
-/// 2. **This walk stops at the vault root.** On a platform where the journal is
-///    a sandboxed folder there is no "above" to read. [`locate_conf`] continues
-///    above the root on a vault with a real directory behind it (the desktop),
-///    which is where a terminal `hledger` would also find one.
-/// 3. **`$HOME/.hledger.conf` and the XDG config dir are NOT consulted**, though
-///    hledger falls back to both, for the same reason.
+/// The walk starts at the JOURNAL's directory (the module docs' one deliberate
+/// difference) and stops at the vault root. [`locate_conf`] continues above the
+/// root on a vault with a real directory behind it, and [`locate_conf_for`]
+/// adds hledger's `$HOME` and XDG fallbacks after that.
 ///
 /// Only a regular file counts. A `hledger.conf` that is a directory or a FIFO is
 /// skipped rather than opened, because opening the second one never returns. A
@@ -417,6 +434,9 @@ pub enum ConfFile {
 ///
 /// Above the root only a regular file of at most [`MAX_CONF_BYTES`] counts, and
 /// the whole walk is bounded by [`MAX_ANCESTORS`].
+///
+/// The upward walk only: `~/.hledger.conf` and the XDG file are not consulted
+/// here. [`locate_conf_for`] is the full lookup, and what the server uses.
 #[must_use]
 pub fn locate_conf(vault: &dyn Vault, directory: &VaultPath) -> Option<ConfFile> {
     if let Some(found) = locate_in(vault, directory) {
@@ -435,6 +455,190 @@ pub fn locate_conf(vault: &dyn Vault, directory: &VaultPath) -> Option<ConfFile>
                 .is_ok_and(|meta| meta.is_file() && meta.len() <= MAX_CONF_BYTES)
         })
         .map(|(levels, path)| ConfFile::AboveVault { path, levels })
+}
+
+/// The user-level directories hledger falls back to when no `hledger.conf`
+/// sits at or above the journal: `$HOME` and `$XDG_CONFIG_HOME`.
+///
+/// **Passed in, never read from the environment here**, so core stays pure and
+/// a test can point both at a temp dir instead of somebody's real dotfiles. The
+/// desktop server fills it from its `AppDirs` seam; a sandboxed host leaves it
+/// empty, which is also [`Default`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UserConfDirs {
+    /// `$HOME`. `~/.hledger.conf` is looked for here, and the XDG default
+    /// (`~/.config`) derives from it.
+    pub home: Option<PathBuf>,
+    /// `$XDG_CONFIG_HOME` when it is set and non-empty. `None` means hledger's
+    /// default, `$HOME/.config`.
+    pub xdg_config_home: Option<PathBuf>,
+}
+
+impl UserConfDirs {
+    /// `~/.hledger.conf`, the second place hledger looks.
+    #[must_use]
+    pub fn home_conf(&self) -> Option<PathBuf> {
+        self.home.as_ref().map(|home| home.join(".hledger.conf"))
+    }
+
+    /// `$XDG_CONFIG_HOME/hledger/hledger.conf`, the third and last, with its
+    /// `~/.config` default.
+    #[must_use]
+    pub fn xdg_conf(&self) -> Option<PathBuf> {
+        self.xdg_base()
+            .map(|base| base.join("hledger").join(CONF_NAME))
+    }
+
+    fn xdg_base(&self) -> Option<PathBuf> {
+        self.xdg_config_home
+            .clone()
+            .or_else(|| self.home.as_ref().map(|home| home.join(".config")))
+    }
+
+    /// Whether the XDG directory is somewhere other than `~/.config`, which
+    /// decides how its handle is spelled.
+    fn custom_xdg(&self) -> bool {
+        match (&self.xdg_config_home, &self.home) {
+            (Some(xdg), Some(home)) => *xdg != home.join(".config"),
+            (Some(_), None) => true,
+            (None, _) => false,
+        }
+    }
+}
+
+/// Which tier of hledger's lookup order a config file was found in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfOrigin {
+    /// In the journal's directory (`levels == 0`) or `levels` directories above
+    /// it — the upward walk.
+    Ledger { levels: usize },
+    /// `~/.hledger.conf`.
+    Home,
+    /// `$XDG_CONFIG_HOME/hledger/hledger.conf`. `custom` when that is not the
+    /// `~/.config` default, so the handle names the variable instead.
+    Xdg { custom: bool },
+}
+
+impl ConfOrigin {
+    /// The handle a client is shown for a file from this tier: relative to the
+    /// journal's directory, or `~`-relative, and **never an absolute path**
+    /// (security layer 5, as [`ConfFile`]'s relative handle always was).
+    #[must_use]
+    pub fn handle(self) -> String {
+        match self {
+            Self::Ledger { levels } => format!("{}{CONF_NAME}", "../".repeat(levels)),
+            Self::Home => "~/.hledger.conf".to_string(),
+            Self::Xdg { custom: false } => format!("~/.config/hledger/{CONF_NAME}"),
+            Self::Xdg { custom: true } => format!("$XDG_CONFIG_HOME/hledger/{CONF_NAME}"),
+        }
+    }
+
+    /// A short machine-readable name for the wire.
+    #[must_use]
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Ledger { .. } => "ledger",
+            Self::Home => "home",
+            Self::Xdg { .. } => "xdg",
+        }
+    }
+}
+
+/// How a located config file is read and written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfSource {
+    /// Inside the journal's vault: [`read_in`].
+    InVault(VaultPath),
+    /// A real path outside it — above the vault root, or a user-level file:
+    /// [`read`].
+    Native(PathBuf),
+}
+
+/// The config file in force, from [`locate_conf_for`]: where it is, and which
+/// tier of the lookup found it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocatedConf {
+    pub source: ConfSource,
+    pub origin: ConfOrigin,
+}
+
+impl LocatedConf {
+    /// The client-safe handle; see [`ConfOrigin::handle`].
+    #[must_use]
+    pub fn handle(&self) -> String {
+        self.origin.handle()
+    }
+
+    /// Read it, through `vault` when it is inside it.
+    ///
+    /// # Errors
+    /// As [`read_in`] / [`read`].
+    pub fn read(&self, vault: &dyn Vault) -> std::io::Result<String> {
+        match &self.source {
+            ConfSource::InVault(path) => read_in(vault, path),
+            ConfSource::Native(path) => read(path),
+        }
+    }
+}
+
+/// The config file in force for `directory`, in hledger's own lookup order
+/// (Decision 10 of plan 30), nearest first and exactly one file:
+///
+/// 1. the journal's directory, then each parent upward ([`locate_conf`]: inside
+///    the vault, then above its root on a vault with a real directory);
+/// 2. `~/.hledger.conf`;
+/// 3. `$XDG_CONFIG_HOME/hledger/hledger.conf` (default
+///    `~/.config/hledger/hledger.conf`).
+///
+/// Tiers 2 and 3 are consulted **only on a vault with a real directory behind
+/// it** (the desktop), for the reason [`locate_conf`] stops at a sandboxed
+/// vault's root: such a host has no home directory that is the user's. Same
+/// file rules as above the root — a regular file (a symlink to one counts, as
+/// it does for hledger and for every dotfile manager) of at most
+/// [`MAX_CONF_BYTES`].
+#[must_use]
+pub fn locate_conf_for(
+    vault: &dyn Vault,
+    directory: &VaultPath,
+    user: &UserConfDirs,
+) -> Option<LocatedConf> {
+    if let Some(found) = locate_conf(vault, directory) {
+        return Some(match found {
+            ConfFile::InVault(path) => {
+                let below = path.parent().map_or(0, |parent| parent.segments().count());
+                LocatedConf {
+                    origin: ConfOrigin::Ledger {
+                        levels: directory.segments().count().saturating_sub(below),
+                    },
+                    source: ConfSource::InVault(path),
+                }
+            }
+            ConfFile::AboveVault { path, levels } => LocatedConf {
+                source: ConfSource::Native(path),
+                origin: ConfOrigin::Ledger { levels },
+            },
+        });
+    }
+    vault.local_path(&VaultPath::root())?;
+    [
+        (user.home_conf(), ConfOrigin::Home),
+        (
+            user.xdg_conf(),
+            ConfOrigin::Xdg {
+                custom: user.custom_xdg(),
+            },
+        ),
+    ]
+    .into_iter()
+    .find_map(|(candidate, origin)| {
+        let candidate = candidate?;
+        std::fs::metadata(&candidate)
+            .is_ok_and(|meta| meta.is_file() && meta.len() <= MAX_CONF_BYTES)
+            .then_some(LocatedConf {
+                source: ConfSource::Native(candidate),
+                origin,
+            })
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -684,18 +888,12 @@ pub fn with_aliases(text: &str, arguments: &[String]) -> String {
         return text.to_string();
     }
     let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
-    let at = general_section_end(text);
-    let head = &text[..at];
-    let lead = if head.is_empty() || head.ends_with('\n') {
-        String::new()
-    } else {
-        newline.to_string()
-    };
-    let body: String = wanted
+    let body = wanted
         .iter()
-        .map(|argument| format!("{}{newline}", conf_line(argument)))
-        .collect();
-    format!("{head}{lead}{body}{}", &text[at..])
+        .map(|argument| conf_line(argument))
+        .collect::<Vec<_>>()
+        .join(newline);
+    insert_line(text, &scan(text), &Section::General, &body)
 }
 
 /// The header a config file Ledgeline creates from scratch opens with.
@@ -709,6 +907,780 @@ pub fn new_file_header() -> String {
      # same account names the Ledgeline import screen does. An `alias` directive in\n\
      # a journal is NOT applied to an imported CSV; an --alias option here is.\n"
         .to_string()
+}
+
+/// The sentence explaining a hijacked config file, completing nothing: shown on
+/// its own beside the file, and as the reason a write was refused.
+#[must_use]
+pub fn hijack_sentence(word: &str) -> String {
+    format!(
+        "This config file starts with `{word}`, which hledger reads as the command to run: it \
+         replaces whatever command you type, so every hledger command is affected and none of the \
+         file's options reach anything. Ledgeline will not edit it until that first word is \
+         removed or turned into a `#` comment."
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Settings Ledgeline honours: `--auto` and `--depth`
+// ---------------------------------------------------------------------------
+
+/// The report commands whose `--depth` Ledgeline honours, each by hledger's
+/// FULL command name — the only spelling a section heading may use (verified,
+/// hledger 1.52: `[balancesheet]` applies, `[bs]` is silently ignored, and so
+/// is `[BalanceSheet]`, because heading names are case-sensitive).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DepthCommand {
+    /// `[balancesheet]` — the Balance Sheet tab's grouped tree.
+    BalanceSheet,
+    /// `[incomestatement]` — the P&L tab's grouped tree.
+    IncomeStatement,
+    /// `[cashflow]` — the Cash Flow tab's depth control.
+    CashFlow,
+    /// `[balance]` — the Net Worth tab's depth control (net worth is hledger's
+    /// `balance --historical` over assets and liabilities).
+    Balance,
+}
+
+impl DepthCommand {
+    /// Every one, in the order the settings screen lists them.
+    pub const ALL: [Self; 4] = [
+        Self::BalanceSheet,
+        Self::IncomeStatement,
+        Self::CashFlow,
+        Self::Balance,
+    ];
+
+    /// hledger's full command name, which is also the section heading.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::BalanceSheet => "balancesheet",
+            Self::IncomeStatement => "incomestatement",
+            Self::CashFlow => "cashflow",
+            Self::Balance => "balance",
+        }
+    }
+
+    /// The command a full name names, exactly as hledger matches it.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|command| command.name() == name)
+    }
+
+    /// The short names hledger accepts on the command line and ignores as a
+    /// section heading.
+    fn aliases(self) -> &'static [&'static str] {
+        match self {
+            Self::BalanceSheet => &["bs"],
+            Self::IncomeStatement => &["is"],
+            Self::CashFlow => &["cf"],
+            Self::Balance => &["bal", "b"],
+        }
+    }
+
+    /// The command a heading was probably MEANT to name — an alias, or the full
+    /// name in the wrong case — when it is not that name exactly.
+    fn intended_by(heading: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|command| {
+            heading != command.name()
+                && (heading.eq_ignore_ascii_case(command.name())
+                    || command
+                        .aliases()
+                        .iter()
+                        .any(|alias| heading.eq_ignore_ascii_case(alias)))
+        })
+    }
+}
+
+/// What one section's `--depth` options say: a plain limit and any per-account
+/// ones.
+///
+/// Verified against hledger 1.52, and the reason this is not one number:
+/// `--depth N` and `--depth REGEX=N` COMBINE (the plain one limits every
+/// account no regex matches); repeating either kind replaces it — the last
+/// plain `N` wins, and the last value for one REGEX wins; and `-N` is a plain
+/// `--depth N`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DepthSpec {
+    /// The plain limit, if one is set.
+    pub all: Option<u32>,
+    /// `(REGEX, N)` pairs, in the order first declared, one per regex.
+    pub per_regex: Vec<(String, u32)>,
+}
+
+impl DepthSpec {
+    /// Nothing set.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.all.is_none() && self.per_regex.is_empty()
+    }
+
+    fn apply(&mut self, value: &DepthValue) {
+        match value {
+            DepthValue::All(depth) => self.all = Some(*depth),
+            DepthValue::Regex(regex, depth) => {
+                match self.per_regex.iter_mut().find(|(known, _)| known == regex) {
+                    Some(slot) => slot.1 = *depth,
+                    None => self.per_regex.push((regex.clone(), *depth)),
+                }
+            }
+            DepthValue::Bad(_) => {}
+        }
+    }
+
+    /// `self` with `later`'s options applied after it — how hledger combines a
+    /// general section with a command's (general first, verified): a command
+    /// section's plain limit replaces the general one, and their per-regex
+    /// limits accumulate.
+    #[must_use]
+    pub fn then(&self, later: &Self) -> Self {
+        let mut out = self.clone();
+        if let Some(depth) = later.all {
+            out.apply(&DepthValue::All(depth));
+        }
+        for (regex, depth) in &later.per_regex {
+            out.apply(&DepthValue::Regex(regex.clone(), *depth));
+        }
+        out
+    }
+}
+
+/// One `--depth` value as written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DepthValue {
+    All(u32),
+    Regex(String, u32),
+    /// Unreadable — including a regex hledger would refuse, which makes it
+    /// refuse the whole file. Carried so it can be warned about.
+    Bad(String),
+}
+
+impl DepthValue {
+    fn parse(raw: &str) -> Self {
+        if let Ok(depth) = raw.parse::<u32>() {
+            return Self::All(depth);
+        }
+        match raw.rsplit_once('=') {
+            Some((regex, depth)) if !regex.is_empty() => match depth.parse::<u32>() {
+                Ok(depth) if regex_refusal(regex).is_none() => {
+                    Self::Regex(regex.to_string(), depth)
+                }
+                _ => Self::Bad(raw.to_string()),
+            },
+            _ => Self::Bad(raw.to_string()),
+        }
+    }
+}
+
+/// Something in a config file a reader should be told about, because hledger
+/// will not do what it looks like it does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfWarning {
+    /// `[bs]`, `[BalanceSheet]` …: hledger ignores a heading that is not a full
+    /// command name exactly, so every option under it does nothing.
+    AliasSection {
+        found: String,
+        command: DepthCommand,
+    },
+    /// The same command heading twice. hledger reads only the LAST one
+    /// (verified): options under the earlier ones do nothing.
+    DuplicateSection { command: DepthCommand },
+    /// A `--depth` value that is not `N` or `REGEX=N`, or whose regex is
+    /// invalid — which makes hledger refuse every command.
+    BadDepth { section: Section, value: String },
+}
+
+impl ConfWarning {
+    /// The machine-readable half, for the wire.
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::AliasSection { .. } => "aliasSection",
+            Self::DuplicateSection { .. } => "duplicateSection",
+            Self::BadDepth { .. } => "badDepth",
+        }
+    }
+
+    /// A sentence for the person reading the settings screen.
+    #[must_use]
+    pub fn message(&self) -> String {
+        match self {
+            Self::AliasSection { found, command } => format!(
+                "hledger ignores the `[{found}]` section: a section heading must be the full command \
+                 name, exactly, so its options do nothing. Rename it `[{}]`.",
+                command.name()
+            ),
+            Self::DuplicateSection { command } => format!(
+                "`[{0}]` appears more than once. hledger reads only the last `[{0}]` section, so \
+                 options in the earlier ones do nothing.",
+                command.name()
+            ),
+            Self::BadDepth { section, value } => {
+                let place = match section {
+                    Section::General => "the general section".to_string(),
+                    Section::Command(name) => format!("`[{name}]`"),
+                };
+                format!(
+                    "`--depth {value}` in {place} is not `N` or `ACCOUNTREGEX=N` with a regular \
+                     expression Ledgeline can read. If hledger cannot read it either, every \
+                     hledger command will fail until it is fixed."
+                )
+            }
+        }
+    }
+}
+
+/// The settings Ledgeline honours from a config file (plan 30, Decision 10):
+/// `--auto` in the general section, and `--depth` in the general section and
+/// the four report sections. Everything else in the file is left to hledger.
+///
+/// A pure reading of the text. A file whose first word hijacks the command
+/// ([`hijacks_command`]) reads as no settings at all, as [`alias_arguments`]
+/// does: hledger cannot run any command with it, so none of its options apply
+/// to anything.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConfSettings {
+    /// `--auto` in the general section: apply the journal's `=` rules to its
+    /// real transactions (plan 30, Decision 7).
+    pub auto: bool,
+    /// The general section's `--depth` options, as written there.
+    pub general: DepthSpec,
+    /// Each report section's own `--depth` options, as written in the LAST
+    /// heading of that name (the one hledger reads). Absent: no such section,
+    /// or nothing set in it.
+    pub sections: std::collections::BTreeMap<DepthCommand, DepthSpec>,
+    /// What hledger will not do as written; see [`ConfWarning`].
+    pub warnings: Vec<ConfWarning>,
+}
+
+impl ConfSettings {
+    /// Read the settings out of a config file's text.
+    #[must_use]
+    pub fn read(text: &str) -> Self {
+        if hijacks_command(text).is_some() {
+            return Self::default();
+        }
+        let lines = scan(text);
+        let last = last_occurrences(&lines);
+        let mut settings = Self::default();
+        for found in occurrences(text, &lines) {
+            let at = &lines[found.line].section;
+            let command = match &at.section {
+                Section::General => None,
+                Section::Command(name) => match DepthCommand::from_name(name) {
+                    Some(command) if last.get(name) == Some(&at.occurrence) => Some(command),
+                    _ => continue,
+                },
+            };
+            match (&found.what, command) {
+                (Found::Auto, None) => settings.auto = true,
+                (Found::Auto, Some(_)) => {}
+                (Found::Depth(value), command) => {
+                    if let DepthValue::Bad(raw) = value {
+                        settings.warnings.push(ConfWarning::BadDepth {
+                            section: at.section.clone(),
+                            value: raw.clone(),
+                        });
+                    }
+                    let spec = match command {
+                        None => &mut settings.general,
+                        Some(command) => settings.sections.entry(command).or_default(),
+                    };
+                    spec.apply(value);
+                }
+            }
+        }
+        settings.sections.retain(|_, spec| !spec.is_empty());
+        let mut headings: Vec<&str> = Vec::new();
+        for line in lines.iter().filter(|line| line.heading) {
+            let Section::Command(name) = &line.section.section else {
+                continue;
+            };
+            if headings.contains(&name.as_str()) {
+                continue;
+            }
+            headings.push(name);
+            if let Some(command) = DepthCommand::intended_by(name) {
+                settings.warnings.push(ConfWarning::AliasSection {
+                    found: name.clone(),
+                    command,
+                });
+            }
+            if let Some(command) = DepthCommand::from_name(name)
+                && last.get(name).is_some_and(|count| *count > 1)
+            {
+                settings
+                    .warnings
+                    .push(ConfWarning::DuplicateSection { command });
+            }
+        }
+        settings
+    }
+
+    /// The `--depth` hledger applies to `command`: the general section's
+    /// options, then that command's section's.
+    #[must_use]
+    pub fn depth(&self, command: DepthCommand) -> DepthSpec {
+        self.sections
+            .get(&command)
+            .map_or_else(|| self.general.clone(), |own| self.general.then(own))
+    }
+
+    /// The options written in `section`, when it is the general section or one
+    /// of the four this module reads.
+    #[must_use]
+    pub fn written(&self, section: Option<DepthCommand>) -> DepthSpec {
+        match section {
+            None => self.general.clone(),
+            Some(command) => self.sections.get(&command).cloned().unwrap_or_default(),
+        }
+    }
+}
+
+/// Is `--auto` in force in this config file? The one question Phase 5 of plan
+/// 30 asks of it.
+#[must_use]
+pub fn auto_enabled(text: &str) -> bool {
+    ConfSettings::read(text).auto
+}
+
+/// Why a regex cannot be written as a `--depth REGEX=N` value, or `None` when
+/// it can.
+///
+/// A config file has no quoting, so whitespace and `#` cannot be written; a
+/// leading `-` would read as another option; an `=` makes the split ambiguous;
+/// and a regex hledger cannot compile makes it refuse every command — so one
+/// the `regex` crate rejects is refused here too.
+#[must_use]
+pub fn regex_refusal(regex: &str) -> Option<&'static str> {
+    if regex.is_empty() {
+        return Some("the account pattern is empty");
+    }
+    if regex.chars().any(char::is_whitespace) {
+        return Some(
+            "the account pattern contains a space, and a config file has no quoting for one — use `.` to match it",
+        );
+    }
+    if regex.contains('#') {
+        return Some("the account pattern contains a `#`, which starts a comment in a config file");
+    }
+    if regex.starts_with('-') {
+        return Some("the account pattern starts with `-`, which hledger would read as an option");
+    }
+    if regex.contains('=') {
+        return Some("the account pattern contains `=`, which separates it from the depth");
+    }
+    if regex::RegexBuilder::new(regex)
+        .case_insensitive(true)
+        .build()
+        .is_err()
+    {
+        return Some("the account pattern is not a valid regular expression");
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Surgical writes: one option, in one section
+// ---------------------------------------------------------------------------
+
+/// An option Ledgeline knows how to find, write and remove.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManagedOption {
+    /// `--auto`.
+    Auto,
+    /// `--depth N`.
+    Depth(u32),
+    /// `--depth REGEX=N`.
+    DepthFor { regex: String, depth: u32 },
+}
+
+/// Which occurrence an option replaces: its identity, without its value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfSlot {
+    /// `--auto`.
+    Auto,
+    /// The plain `--depth N` (also `--depth=N` and `-N`).
+    Depth,
+    /// `--depth REGEX=N` for this REGEX, compared exactly.
+    DepthFor(String),
+}
+
+impl ManagedOption {
+    /// The slot this option fills.
+    #[must_use]
+    pub fn slot(&self) -> ConfSlot {
+        match self {
+            Self::Auto => ConfSlot::Auto,
+            Self::Depth(_) => ConfSlot::Depth,
+            Self::DepthFor { regex, .. } => ConfSlot::DepthFor(regex.clone()),
+        }
+    }
+
+    /// The option as Ledgeline writes it: two tokens for a valued option, the
+    /// spelling hledger's own manual uses.
+    #[must_use]
+    pub fn render(&self) -> String {
+        match self {
+            Self::Auto => "--auto".to_string(),
+            Self::Depth(depth) => format!("--depth {depth}"),
+            Self::DepthFor { regex, depth } => format!("--depth {regex}={depth}"),
+        }
+    }
+
+    fn is(&self, found: &Found) -> bool {
+        match (self, found) {
+            (Self::Auto, Found::Auto) => true,
+            (Self::Depth(depth), Found::Depth(DepthValue::All(other))) => depth == other,
+            (Self::DepthFor { regex, depth }, Found::Depth(DepthValue::Regex(r, d))) => {
+                regex == r && depth == d
+            }
+            _ => false,
+        }
+    }
+}
+
+impl ConfSlot {
+    fn holds(&self, found: &Found) -> bool {
+        match (self, found) {
+            (Self::Auto, Found::Auto) => true,
+            (Self::Depth, Found::Depth(DepthValue::All(_))) => true,
+            (Self::DepthFor(regex), Found::Depth(DepthValue::Regex(r, _))) => regex == r,
+            _ => false,
+        }
+    }
+}
+
+/// Why an option cannot be written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfWriteError {
+    /// The file's first word replaces the command; see [`hijack_sentence`].
+    Hijacked(String),
+    /// A section name that is not a plain lower-case command name.
+    BadSection(String),
+    /// A value a config file cannot hold as written; the reason completes "it
+    /// cannot be written because …".
+    Inexpressible(&'static str),
+}
+
+impl std::fmt::Display for ConfWriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Hijacked(word) => f.write_str(&hijack_sentence(word)),
+            Self::BadSection(name) => {
+                write!(f, "`[{name}]` is not a command name Ledgeline writes")
+            }
+            Self::Inexpressible(reason) => write!(f, "that setting cannot be written: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for ConfWriteError {}
+
+/// `text` with `option` set in `section`: the last occurrence of its slot
+/// there rewritten in place, or a new line inserted — at the end of the general
+/// section (never at EOF, see [`general_section_end`]), after the last option of
+/// a command section, or under a new `[command]` heading appended at EOF.
+///
+/// A command section means its LAST heading, the one hledger reads. Every byte
+/// outside the rewritten or inserted run comes out unchanged — comments,
+/// unknown options, blank lines, CRLF line endings — and a value that is
+/// already in force returns `text` byte-identical, so a caller can compare and
+/// skip the write.
+///
+/// # Errors
+/// [`ConfWriteError`]: a hijacked file, a bad section name, or a regex a config
+/// file cannot hold ([`regex_refusal`]).
+pub fn with_option(
+    text: &str,
+    section: &Section,
+    option: &ManagedOption,
+) -> Result<String, ConfWriteError> {
+    guard(text, section)?;
+    if let ManagedOption::DepthFor { regex, .. } = option
+        && let Some(reason) = regex_refusal(regex)
+    {
+        return Err(ConfWriteError::Inexpressible(reason));
+    }
+    let lines = scan(text);
+    let slot = option.slot();
+    let present = in_section(text, &lines, section)
+        .into_iter()
+        .rfind(|found| slot.holds(&found.what));
+    Ok(match present {
+        Some(found) if option.is(&found.what) => text.to_string(),
+        Some(found) => format!(
+            "{}{}{}",
+            &text[..found.span.start],
+            option.render(),
+            &text[found.span.end..]
+        ),
+        None => insert_line(text, &lines, section, &option.render()),
+    })
+}
+
+/// `text` with every occurrence of `slot` removed from `section` (its last
+/// heading, for a command). A line left with nothing but whitespace is removed
+/// whole, its trailing comment with it; otherwise only the option's tokens go.
+/// Nothing to remove returns `text` byte-identical.
+///
+/// # Errors
+/// [`ConfWriteError::Hijacked`] or [`ConfWriteError::BadSection`].
+pub fn without_option(
+    text: &str,
+    section: &Section,
+    slot: &ConfSlot,
+) -> Result<String, ConfWriteError> {
+    guard(text, section)?;
+    let lines = scan(text);
+    let mut out = text.to_string();
+    // Back to front, so every earlier span is still where it was.
+    for found in in_section(text, &lines, section)
+        .into_iter()
+        .filter(|found| slot.holds(&found.what))
+        .rev()
+    {
+        let line = &lines[found.line];
+        let body_end = line.start + line.body.len();
+        let rest_blank = text[line.start..found.span.start].trim().is_empty()
+            && text[found.span.end..body_end].trim().is_empty();
+        let range = if rest_blank {
+            line.start..line.end
+        } else {
+            // The option and the whitespace after it — or, at the end of the
+            // body, the whitespace before it.
+            let after = text[found.span.end..body_end].len()
+                - text[found.span.end..body_end].trim_start().len();
+            if after > 0 && found.span.end + after < body_end {
+                found.span.start..found.span.end + after
+            } else {
+                let before = text[line.start..found.span.start].len()
+                    - text[line.start..found.span.start].trim_end().len();
+                found.span.start - before..found.span.end
+            }
+        };
+        out.replace_range(range, "");
+    }
+    Ok(out)
+}
+
+fn guard(text: &str, section: &Section) -> Result<(), ConfWriteError> {
+    if let Some(word) = hijacks_command(text) {
+        return Err(ConfWriteError::Hijacked(word));
+    }
+    if let Section::Command(name) = section
+        && (name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'))
+    {
+        return Err(ConfWriteError::BadSection(name.clone()));
+    }
+    Ok(())
+}
+
+/// The options found in `section` as hledger reads it: the general section, or
+/// the last heading of a command's name.
+fn in_section(text: &str, lines: &[Line<'_>], section: &Section) -> Vec<Occurrence> {
+    let target = target_of(lines, section);
+    occurrences(text, lines)
+        .into_iter()
+        .filter(|found| Some(&lines[found.line].section) == target.as_ref())
+        .collect()
+}
+
+fn target_of(lines: &[Line<'_>], section: &Section) -> Option<SectionAt> {
+    match section {
+        Section::General => Some(SectionAt {
+            section: Section::General,
+            occurrence: 0,
+        }),
+        Section::Command(name) => last_occurrences(lines)
+            .get(name)
+            .map(|occurrence| SectionAt {
+                section: section.clone(),
+                occurrence: *occurrence,
+            }),
+    }
+}
+
+/// `text` with `option_line` inserted into `section` (see [`with_option`]).
+fn insert_line(text: &str, lines: &[Line<'_>], section: &Section, option_line: &str) -> String {
+    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let at = match (section, target_of(lines, section)) {
+        (Section::General, _) => general_section_end(text),
+        (Section::Command(_), Some(target)) => lines
+            .iter()
+            .rfind(|line| line.section == target && (line.heading || !line.body.trim().is_empty()))
+            .map_or(text.len(), |line| line.end),
+        (Section::Command(name), None) => {
+            let mut out = text.to_string();
+            if !out.is_empty() && !out.ends_with('\n') {
+                out.push_str(newline);
+            }
+            if !out.is_empty() && !out.ends_with(&format!("{newline}{newline}")) {
+                out.push_str(newline);
+            }
+            return format!("{out}[{name}]{newline}{option_line}{newline}");
+        }
+    };
+    let head = &text[..at];
+    let lead = if head.is_empty() || head.ends_with('\n') {
+        ""
+    } else {
+        newline
+    };
+    format!("{head}{lead}{option_line}{newline}{}", &text[at..])
+}
+
+/// Which heading a line sits under: the section, and which occurrence of that
+/// heading (1 for the first `[balance]`, 2 for a second …; 0 for general).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SectionAt {
+    section: Section,
+    occurrence: usize,
+}
+
+/// One line of a config file, by byte offsets into the text.
+struct Line<'a> {
+    /// Offset of the line's first byte.
+    start: usize,
+    /// Offset just past its terminator (the text's length for an unterminated
+    /// last line).
+    end: usize,
+    /// The part before any `#` comment, without the terminator.
+    body: &'a str,
+    section: SectionAt,
+    /// It is a `[heading]` (and belongs to the section it opens).
+    heading: bool,
+}
+
+fn scan(text: &str) -> Vec<Line<'_>> {
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut current = SectionAt {
+        section: Section::General,
+        occurrence: 0,
+    };
+    let mut offset = 0;
+    text.split_inclusive('\n')
+        .map(|chunk| {
+            let start = offset;
+            offset += chunk.len();
+            let raw = chunk.strip_suffix('\n').unwrap_or(chunk);
+            let raw = raw.strip_suffix('\r').unwrap_or(raw);
+            let body = raw.split('#').next().unwrap_or_default();
+            let opened = heading(body.trim());
+            if let Some(name) = &opened {
+                let count = seen.entry(name.clone()).or_insert(0);
+                *count += 1;
+                current = SectionAt {
+                    section: Section::Command(name.clone()),
+                    occurrence: *count,
+                };
+            }
+            Line {
+                start,
+                end: offset,
+                body,
+                section: current.clone(),
+                heading: opened.is_some(),
+            }
+        })
+        .collect()
+}
+
+/// How many times each heading appears, which is also the occurrence number
+/// of its last one — the one hledger reads.
+fn last_occurrences(lines: &[Line<'_>]) -> std::collections::HashMap<String, usize> {
+    lines
+        .iter()
+        .filter(|line| line.heading)
+        .filter_map(|line| match &line.section.section {
+            Section::Command(name) => Some((name.clone(), line.section.occurrence)),
+            Section::General => None,
+        })
+        .collect()
+}
+
+/// An option this module manages, as found in the text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Found {
+    Auto,
+    Depth(DepthValue),
+}
+
+struct Occurrence {
+    /// Index into the scanned lines.
+    line: usize,
+    /// The bytes of its token, or of both tokens for `--depth N`.
+    span: std::ops::Range<usize>,
+    what: Found,
+}
+
+/// Every `--auto` and `--depth` in the file, in order, with its bytes.
+///
+/// Tokenised as hledger does — whitespace-separated, no quoting — with one
+/// narrowing: a `--depth` whose value is on the NEXT line (hledger reads one;
+/// nobody writes one) is reported as unreadable rather than followed.
+fn occurrences(text: &str, lines: &[Line<'_>]) -> Vec<Occurrence> {
+    let mut out = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if line.heading {
+            continue;
+        }
+        let tokens: Vec<(usize, &str)> = line
+            .body
+            .split_whitespace()
+            .map(|token| (token.as_ptr() as usize - text.as_ptr() as usize, token))
+            .collect();
+        let mut at = 0;
+        while at < tokens.len() {
+            let (start, token) = tokens[at];
+            at += 1;
+            let mut end = start + token.len();
+            let what = if token == "--auto" {
+                Some(Found::Auto)
+            } else if let Some(value) = token.strip_prefix("--depth=") {
+                Some(Found::Depth(DepthValue::parse(value)))
+            } else if token == "--depth" {
+                match tokens.get(at).filter(|(_, next)| !next.starts_with('-')) {
+                    Some((next_start, next)) => {
+                        at += 1;
+                        end = next_start + next.len();
+                        Some(Found::Depth(DepthValue::parse(next)))
+                    }
+                    None => Some(Found::Depth(DepthValue::Bad(String::new()))),
+                }
+            } else if let Some(depth) = token
+                .strip_prefix('-')
+                .filter(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
+                .and_then(|digits| digits.parse::<u32>().ok())
+            {
+                Some(Found::Depth(DepthValue::All(depth)))
+            } else {
+                // Another option: a following non-flag token is its value, as
+                // `options` reads it.
+                if token.starts_with('-')
+                    && !token.contains('=')
+                    && tokens
+                        .get(at)
+                        .is_some_and(|(_, next)| !next.starts_with('-'))
+                {
+                    at += 1;
+                }
+                None
+            };
+            if let Some(what) = what {
+                out.push(Occurrence {
+                    line: index,
+                    span: start..end,
+                    what,
+                });
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -959,5 +1931,476 @@ mod tests {
     #[test]
     fn an_empty_file_is_written_without_a_leading_blank_line() {
         assert_eq!(with_aliases("", &["a=b".to_string()]), "--alias=a=b\n");
+    }
+
+    // -----------------------------------------------------------------------
+    // The full lookup: upward walk, then ~/.hledger.conf, then XDG
+    // -----------------------------------------------------------------------
+
+    /// A fresh directory under the OS temp dir, removed on drop. Never the real
+    /// `$HOME`: every user-level path these tests use is inside one of these.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "ledgeline-conf-{tag}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos())
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn the_lookup_runs_ledger_then_home_then_xdg_and_uses_one_file() {
+        let scratch = Scratch::new("tiers");
+        let books = scratch.0.join("books");
+        let home = scratch.0.join("home");
+        std::fs::create_dir_all(&books).unwrap();
+        std::fs::create_dir_all(home.join(".config/hledger")).unwrap();
+        let user = UserConfDirs {
+            home: Some(home.clone()),
+            xdg_config_home: None,
+        };
+        let vault = LocalVault::new(&books);
+        let root = VaultPath::root();
+        assert_eq!(locate_conf_for(&vault, &root, &user), None);
+
+        // Tier 3: the XDG default under ~/.config.
+        std::fs::write(home.join(".config/hledger").join(CONF_NAME), "--auto\n").unwrap();
+        let found = locate_conf_for(&vault, &root, &user).unwrap();
+        assert_eq!(found.origin, ConfOrigin::Xdg { custom: false });
+        assert_eq!(found.handle(), "~/.config/hledger/hledger.conf");
+        assert_eq!(found.read(&vault).unwrap(), "--auto\n");
+
+        // Tier 2 beats it.
+        std::fs::write(home.join(".hledger.conf"), "--depth 2\n").unwrap();
+        let found = locate_conf_for(&vault, &root, &user).unwrap();
+        assert_eq!(found.origin, ConfOrigin::Home);
+        assert_eq!(found.handle(), "~/.hledger.conf");
+
+        // Tier 1 — beside the journal — beats both.
+        std::fs::write(books.join(CONF_NAME), "").unwrap();
+        let found = locate_conf_for(&vault, &root, &user).unwrap();
+        assert_eq!(found.origin, ConfOrigin::Ledger { levels: 0 });
+        assert_eq!(found.handle(), "hledger.conf");
+        assert_eq!(
+            found.source,
+            ConfSource::InVault(VaultPath::new(CONF_NAME).unwrap())
+        );
+    }
+
+    #[test]
+    fn a_custom_xdg_dir_is_named_by_its_variable_and_never_by_its_path() {
+        let scratch = Scratch::new("xdg");
+        let books = scratch.0.join("books");
+        let xdg = scratch.0.join("xdg");
+        std::fs::create_dir_all(&books).unwrap();
+        std::fs::create_dir_all(xdg.join("hledger")).unwrap();
+        std::fs::write(xdg.join("hledger").join(CONF_NAME), "").unwrap();
+        let user = UserConfDirs {
+            home: Some(scratch.0.join("home")),
+            xdg_config_home: Some(xdg),
+        };
+        let found = locate_conf_for(&LocalVault::new(&books), &VaultPath::root(), &user).unwrap();
+        assert_eq!(found.handle(), "$XDG_CONFIG_HOME/hledger/hledger.conf");
+        assert!(!found.handle().contains(&*scratch.0.to_string_lossy()));
+    }
+
+    #[test]
+    fn a_vault_without_a_local_path_never_reads_the_user_files() {
+        let scratch = Scratch::new("sandboxed");
+        std::fs::write(scratch.0.join(".hledger.conf"), "--auto\n").unwrap();
+        let user = UserConfDirs {
+            home: Some(scratch.0.clone()),
+            xdg_config_home: None,
+        };
+        let vault = crate::vault::MemVault::new().with_file("main.journal", "");
+        assert_eq!(locate_conf_for(&vault, &VaultPath::root(), &user), None);
+    }
+
+    #[test]
+    fn an_above_root_file_reports_its_levels_as_a_relative_handle() {
+        let scratch = Scratch::new("levels");
+        let books = scratch.0.join("books");
+        std::fs::create_dir_all(&books).unwrap();
+        std::fs::write(scratch.0.join(CONF_NAME), "").unwrap();
+        let found = locate_conf_for(
+            &LocalVault::new(&books),
+            &VaultPath::root(),
+            &UserConfDirs::default(),
+        )
+        .unwrap();
+        assert_eq!(found.handle(), "../hledger.conf");
+    }
+
+    // -----------------------------------------------------------------------
+    // Reading settings
+    // -----------------------------------------------------------------------
+
+    fn spec(all: Option<u32>, per_regex: &[(&str, u32)]) -> DepthSpec {
+        DepthSpec {
+            all,
+            per_regex: per_regex
+                .iter()
+                .map(|(regex, depth)| ((*regex).to_string(), *depth))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn auto_counts_only_in_the_general_section() {
+        assert!(auto_enabled("--auto\n"));
+        assert!(auto_enabled("# rules\n--depth 2 --auto # on\n[balance]\n"));
+        assert!(!auto_enabled("[balance]\n--auto\n"));
+        assert!(!auto_enabled("# --auto\n"));
+        // A hijacked file applies nothing at all.
+        assert!(!auto_enabled("print\n--auto\n"));
+    }
+
+    #[test]
+    fn a_command_section_overrides_the_general_depth_and_regexes_accumulate() {
+        // Each case below was run through hledger 1.52 first.
+        let settings = ConfSettings::read(
+            "--depth 2\n--depth assets:inv=3\n\n[balancesheet]\n--depth 1\n--depth cash=4\n",
+        );
+        assert_eq!(settings.general, spec(Some(2), &[("assets:inv", 3)]));
+        assert_eq!(
+            settings.depth(DepthCommand::BalanceSheet),
+            spec(Some(1), &[("assets:inv", 3), ("cash", 4)])
+        );
+        // A command with no section of its own gets the general one.
+        assert_eq!(
+            settings.depth(DepthCommand::CashFlow),
+            spec(Some(2), &[("assets:inv", 3)])
+        );
+    }
+
+    #[test]
+    fn every_spelling_of_a_plain_depth_is_read_and_the_last_wins() {
+        for (text, expected) in [
+            ("--depth 3\n", 3),
+            ("--depth=3\n", 3),
+            ("-3\n", 3),
+            ("--depth 1 -2\n", 2),
+            ("--depth 2\n--depth 1\n", 1),
+        ] {
+            assert_eq!(
+                ConfSettings::read(text).general.all,
+                Some(expected),
+                "{text:?}"
+            );
+        }
+        assert_eq!(
+            ConfSettings::read("--depth inv=3\n--depth inv=4\n").general,
+            spec(None, &[("inv", 4)])
+        );
+    }
+
+    #[test]
+    fn an_alias_named_section_is_ignored_and_warned_about() {
+        let settings = ConfSettings::read("[bs]\n--depth 1\n[BalanceSheet]\n--depth 2\n[bal]\n");
+        assert_eq!(
+            settings.depth(DepthCommand::BalanceSheet),
+            DepthSpec::default()
+        );
+        assert_eq!(
+            settings.warnings,
+            vec![
+                ConfWarning::AliasSection {
+                    found: "bs".to_string(),
+                    command: DepthCommand::BalanceSheet
+                },
+                ConfWarning::AliasSection {
+                    found: "BalanceSheet".to_string(),
+                    command: DepthCommand::BalanceSheet
+                },
+                ConfWarning::AliasSection {
+                    found: "bal".to_string(),
+                    command: DepthCommand::Balance
+                },
+            ]
+        );
+        assert!(settings.warnings[0].message().contains("[balancesheet]"));
+    }
+
+    #[test]
+    fn only_the_last_heading_of_a_name_is_read() {
+        // Verified: `[balance]\n--depth 3\n[balance]\n--no-total` applies no
+        // depth to `hledger balance`.
+        let settings = ConfSettings::read("[balance]\n--depth 3\n\n[balance]\n--no-total\n");
+        assert_eq!(settings.depth(DepthCommand::Balance), DepthSpec::default());
+        assert_eq!(
+            settings.warnings,
+            vec![ConfWarning::DuplicateSection {
+                command: DepthCommand::Balance
+            }]
+        );
+    }
+
+    #[test]
+    fn an_unreadable_depth_is_warned_and_ignored() {
+        let settings = ConfSettings::read("--depth (=2\n--depth x\n--depth 2\n");
+        assert_eq!(settings.general, spec(Some(2), &[]));
+        assert_eq!(settings.warnings.len(), 2);
+        assert!(
+            settings
+                .warnings
+                .iter()
+                .all(|warning| warning.code() == "badDepth")
+        );
+    }
+
+    #[test]
+    fn options_of_other_kinds_and_their_values_are_not_mistaken_for_depth() {
+        let settings = ConfSettings::read("--alias -2=x --begin 2026 --forecast\n");
+        assert_eq!(settings, ConfSettings::default());
+    }
+
+    // -----------------------------------------------------------------------
+    // Writing
+    // -----------------------------------------------------------------------
+
+    fn general() -> Section {
+        Section::General
+    }
+
+    fn command(name: &str) -> Section {
+        Section::Command(name.to_string())
+    }
+
+    #[test]
+    fn setting_auto_inserts_into_the_general_section_not_at_eof() {
+        assert_eq!(
+            with_option(
+                "--depth 3\n\n[balance]\n--no-total\n",
+                &general(),
+                &ManagedOption::Auto
+            )
+            .unwrap(),
+            "--depth 3\n\n--auto\n[balance]\n--no-total\n"
+        );
+        assert_eq!(
+            with_option("", &general(), &ManagedOption::Auto).unwrap(),
+            "--auto\n"
+        );
+    }
+
+    #[test]
+    fn a_value_already_in_force_is_a_byte_identical_no_op() {
+        for text in [
+            "--auto\n",
+            "# c\r\n--depth=2   # mine\r\n",
+            "[balancesheet]\n-2\n",
+        ] {
+            let section = if text.contains("[balancesheet]") {
+                command("balancesheet")
+            } else {
+                general()
+            };
+            let option = if text.contains("auto") {
+                ManagedOption::Auto
+            } else {
+                ManagedOption::Depth(2)
+            };
+            assert_eq!(with_option(text, &section, &option).unwrap(), text);
+        }
+        assert_eq!(
+            without_option("--depth 2\n", &general(), &ConfSlot::Auto).unwrap(),
+            "--depth 2\n"
+        );
+    }
+
+    #[test]
+    fn an_existing_option_is_replaced_in_place_and_nothing_else_moves() {
+        let text = "# my settings\r\n--forecast --depth=4 # deep\r\n--unknown thing\r\n";
+        assert_eq!(
+            with_option(text, &general(), &ManagedOption::Depth(2)).unwrap(),
+            "# my settings\r\n--forecast --depth 2 # deep\r\n--unknown thing\r\n"
+        );
+        // `-N` and the two-token form are replaced too; the LAST is the one in force.
+        assert_eq!(
+            with_option("-1\n--depth 5\n", &general(), &ManagedOption::Depth(2)).unwrap(),
+            "-1\n--depth 2\n"
+        );
+        // A regex slot is matched by its regex, not by its value.
+        assert_eq!(
+            with_option(
+                "--depth cash=1 --depth inv=2\n",
+                &general(),
+                &ManagedOption::DepthFor {
+                    regex: "inv".into(),
+                    depth: 3
+                }
+            )
+            .unwrap(),
+            "--depth cash=1 --depth inv=3\n"
+        );
+    }
+
+    #[test]
+    fn a_missing_command_section_is_created_at_eof_under_its_full_name() {
+        assert_eq!(
+            with_option(
+                "--auto\n",
+                &command("balancesheet"),
+                &ManagedOption::Depth(2)
+            )
+            .unwrap(),
+            "--auto\n\n[balancesheet]\n--depth 2\n"
+        );
+        assert_eq!(
+            with_option("--auto", &command("cashflow"), &ManagedOption::Depth(2)).unwrap(),
+            "--auto\n\n[cashflow]\n--depth 2\n"
+        );
+        assert_eq!(
+            with_option(
+                "--auto\r\n\r\n",
+                &command("cashflow"),
+                &ManagedOption::Depth(2)
+            )
+            .unwrap(),
+            "--auto\r\n\r\n[cashflow]\r\n--depth 2\r\n"
+        );
+        assert_eq!(
+            with_option("", &command("balance"), &ManagedOption::Depth(2)).unwrap(),
+            "[balance]\n--depth 2\n"
+        );
+    }
+
+    #[test]
+    fn an_insert_into_an_existing_section_lands_after_its_last_option() {
+        let text = "[balance]\n--no-total\n# about register\n\n[register]\n--wide\n";
+        assert_eq!(
+            with_option(text, &command("balance"), &ManagedOption::Depth(2)).unwrap(),
+            "[balance]\n--no-total\n--depth 2\n# about register\n\n[register]\n--wide\n"
+        );
+        // Into the LAST heading of that name — the one hledger reads.
+        assert_eq!(
+            with_option(
+                "[balance]\n\n[balance]\n",
+                &command("balance"),
+                &ManagedOption::Depth(2)
+            )
+            .unwrap(),
+            "[balance]\n\n[balance]\n--depth 2\n"
+        );
+        // An empty section with no newline after its heading.
+        assert_eq!(
+            with_option("[balance]", &command("balance"), &ManagedOption::Depth(2)).unwrap(),
+            "[balance]\n--depth 2\n"
+        );
+    }
+
+    #[test]
+    fn removing_takes_the_whole_line_only_when_nothing_else_is_on_it() {
+        assert_eq!(
+            without_option(
+                "# keep\n--auto # on\n--depth 2\n",
+                &general(),
+                &ConfSlot::Auto
+            )
+            .unwrap(),
+            "# keep\n--depth 2\n"
+        );
+        assert_eq!(
+            without_option("--auto --depth 2\n", &general(), &ConfSlot::Auto).unwrap(),
+            "--depth 2\n"
+        );
+        assert_eq!(
+            without_option("--depth 2 --auto  # c\n", &general(), &ConfSlot::Auto).unwrap(),
+            "--depth 2  # c\n"
+        );
+        // Every occurrence goes, or an earlier one would come into force.
+        assert_eq!(
+            without_option("-1\n--depth 3 --depth x=1\n", &general(), &ConfSlot::Depth).unwrap(),
+            "--depth x=1\n"
+        );
+        // Only from the section asked about.
+        assert_eq!(
+            without_option(
+                "--auto\n[balance]\n--auto\n",
+                &command("balance"),
+                &ConfSlot::Auto
+            )
+            .unwrap(),
+            "--auto\n[balance]\n"
+        );
+        assert_eq!(
+            without_option("--auto\r\n--depth 2\r\n", &general(), &ConfSlot::Auto).unwrap(),
+            "--depth 2\r\n"
+        );
+    }
+
+    #[test]
+    fn a_hijacked_file_and_inexpressible_values_are_refused() {
+        assert_eq!(
+            with_option("balance\n", &general(), &ManagedOption::Auto),
+            Err(ConfWriteError::Hijacked("balance".into()))
+        );
+        assert!(matches!(
+            without_option("print\n--auto\n", &general(), &ConfSlot::Auto),
+            Err(ConfWriteError::Hijacked(_))
+        ));
+        for regex in ["", "a b", "a#b", "-a", "a=b", "("] {
+            assert!(
+                matches!(
+                    with_option(
+                        "",
+                        &general(),
+                        &ManagedOption::DepthFor {
+                            regex: regex.into(),
+                            depth: 1
+                        }
+                    ),
+                    Err(ConfWriteError::Inexpressible(_))
+                ),
+                "{regex:?}"
+            );
+        }
+        assert!(matches!(
+            with_option("", &command("Balance"), &ManagedOption::Auto),
+            Err(ConfWriteError::BadSection(_))
+        ));
+    }
+
+    #[test]
+    fn every_write_reads_back_as_what_was_written() {
+        let mut text = "# hand-written\n--forecast\n[register]\n--wide\n".to_string();
+        let edits: [(Section, ManagedOption); 4] = [
+            (general(), ManagedOption::Auto),
+            (general(), ManagedOption::Depth(3)),
+            (command("balancesheet"), ManagedOption::Depth(1)),
+            (
+                command("balancesheet"),
+                ManagedOption::DepthFor {
+                    regex: "^assets:inv".into(),
+                    depth: 3,
+                },
+            ),
+        ];
+        for (section, option) in &edits {
+            text = with_option(&text, section, option).unwrap();
+        }
+        let settings = ConfSettings::read(&text);
+        assert!(settings.auto);
+        assert_eq!(settings.general, spec(Some(3), &[]));
+        assert_eq!(
+            settings.written(Some(DepthCommand::BalanceSheet)),
+            spec(Some(1), &[("^assets:inv", 3)])
+        );
+        assert!(text.starts_with("# hand-written\n--forecast\n"));
+        assert!(text.contains("[register]\n--wide\n"));
+        assert!(settings.warnings.is_empty());
     }
 }
