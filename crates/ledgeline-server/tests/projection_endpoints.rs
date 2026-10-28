@@ -2903,12 +2903,139 @@ async fn a_scenario_s_auto_rule_generates_its_postings_in_the_run() {
             "{tax}"
         );
     }
-    // A tagged rule draws no warning.
+    // A tagged rule draws no hledger-parity warning. (Its accounts are new
+    // to the sample journal, so Decision 11's typo check does speak.)
+    let warnings = projection["warnings"].to_string();
+    assert!(!warnings.contains("would also apply"), "{warnings}");
+    assert!(!warnings.contains("refuses the file"), "{warnings}");
+}
+
+/// A percentage form, as the rule editor sends an edited rule.
+fn percent_form(match_account: &str, target: &str, percent: &str, counter: Option<&str>) -> Value {
+    json!({
+        "matchAccount": match_account,
+        "extraQuery": "",
+        "postings": [{
+            "account": target,
+            "kind": "percent",
+            "percent": {"mantissa": percent, "places": 0},
+            "amount": null
+        }],
+        "counter": counter,
+        "comment": ""
+    })
+}
+
+/// An edited rule travels as its FORM: the engine renders it — anchored,
+/// forecast-only, the counter as the opposite multiplier — signs it by the
+/// accounts' types, and applies it like any other rule.
+#[tokio::test]
+async fn a_rule_sent_as_a_form_is_rendered_and_applied() {
+    let mut scenario = scenario_with(vec![rent_line()], vec![]);
+    scenario["autoRules"] = json!([{
+        "block": null,
+        "form": percent_form("expenses:rent", "expenses:rent-tax", "10", Some("assets:bank:checking"))
+    }]);
+    let projection = run(json!({
+        "scenario": scenario,
+        "interval": "monthly",
+        "count": 2,
+        "lookback": 0,
+        "journal": true
+    }))
+    .await;
+    let entries = projection["journal"]["entries"]
+        .as_array()
+        .expect("entries");
+    assert!(!entries.is_empty());
+    for entry in entries {
+        let postings = entry["txn"]["postings"].as_array().expect("postings");
+        let at = postings
+            .iter()
+            .position(|posting| posting["account"] == "expenses:rent")
+            .expect("the rent posting");
+        let (tax, cash) = (&postings[at + 1], &postings[at + 2]);
+        assert_eq!(tax["account"], "expenses:rent-tax", "{entry}");
+        assert_eq!(cash["account"], "assets:bank:checking", "{entry}");
+        let whole = |posting: &Value| {
+            let qty = &posting["amounts"][0]["qty"];
+            let mantissa: i128 = qty["m"].as_str().expect("m").parse().expect("m parses");
+            let places = u32::try_from(qty["p"].as_u64().expect("p")).expect("p fits");
+            mantissa / 10_i128.pow(places)
+        };
+        assert_eq!((whole(tax), whole(cash)), (420, -420), "{entry}");
+    }
+    // Rendered forecast-only, so no parity warning; `expenses:rent-tax` is
+    // new, which Decision 11 names.
+    let warnings = projection["warnings"].to_string();
+    assert!(!warnings.contains("would also apply"), "{warnings}");
+    assert!(warnings.contains("`expenses:rent-tax`"), "{warnings}");
+    assert!(!warnings.contains("`assets:bank:checking`"), "{warnings}");
+}
+
+/// Decision 11: a rule posting to an account the journal neither declares nor
+/// uses — the user's real typo — is warned about, by name, and still runs.
+#[tokio::test]
+async fn a_rule_posting_to_an_unknown_account_is_warned_about() {
+    let projection = run(json!({
+        "scenario": with_rules(&[
+            "= expenses:rent tag:_generated-transaction\n    expesnses:people-costs:payroll-tax  *0.1\n    assets:bank:checking  *-0.1\n",
+        ]),
+        "interval": "monthly",
+        "count": 2,
+        "lookback": 0
+    }))
+    .await;
+    let warnings = projection["warnings"].to_string();
     assert!(
-        !projection["warnings"].to_string().contains("auto rule"),
-        "{}",
-        projection["warnings"]
+        warnings.contains("`expesnses:people-costs:payroll-tax`")
+            && warnings.contains("check the spelling"),
+        "{warnings}"
     );
+    assert!(!warnings.contains("`assets:bank:checking`"), "{warnings}");
+}
+
+/// A rule carries exactly one of its text and its form, and a form's fields
+/// are checked before anything is rendered.
+#[tokio::test]
+async fn a_malformed_rule_form_is_a_400_naming_the_problem() {
+    let form = percent_form("expenses:rent", "expenses:rent-tax", "10", None);
+    let mut too_many = form.clone();
+    too_many["postings"] = json!(vec![form["postings"][0].clone(); 51]);
+    let mut wrong_kind = form.clone();
+    wrong_kind["postings"][0]["kind"] = json!("share");
+    let mut mixed = form.clone();
+    mixed["postings"] = json!([
+        form["postings"][0].clone(),
+        {"account": "expenses:fee", "kind": "fixed", "percent": null,
+         "amount": {"commodity": "$", "quantity": {"mantissa": "5", "places": 0}, "precision": 0}}
+    ]);
+    mixed["counter"] = json!("assets:bank:checking");
+    let mut blank = form.clone();
+    blank["matchAccount"] = json!("  ");
+    for (rule, says) in [
+        (
+            json!({"raw": "= food\n    (x)  1\n", "form": form.clone()}),
+            "exactly one of",
+        ),
+        (json!({"block": 0}), "exactly one of"),
+        (json!({"form": too_many}), "at most 50 postings"),
+        (json!({"form": wrong_kind}), "kind 'share'"),
+        (json!({"form": mixed}), "not a mix"),
+        (json!({"form": blank}), "needs an account to match"),
+    ] {
+        let mut scenario = scenario_with(vec![rent_line()], vec![]);
+        scenario["autoRules"] = json!([rule]);
+        let (status, text) = post(json!({
+            "scenario": scenario,
+            "interval": "monthly",
+            "count": 2,
+            "lookback": 0
+        }))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{rule}: {text}");
+        assert!(text.contains(says), "{rule}: {text}");
+    }
 }
 
 /// A rule with no `tag:_generated-transaction` still applies only to the
@@ -3047,4 +3174,132 @@ async fn a_parent_account_rule_taxes_each_child_and_warns_when_hledger_would_ref
             .contains("refuses the file");
         assert_eq!(says, warned, "shared {shared}: {}", projection["warnings"]);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Rule forms and blocks in scenario FILES (plan 30 Phase 4)
+// ---------------------------------------------------------------------------
+
+const RULED: &str = "\
+; Ledgeline projection
+; projection: Ruled
+; created: 2026-01-01
+; updated: 2026-01-01
+
+= expenses:rent tag:_generated-transaction  ; rent tax
+    expenses:rent-tax   *0.1
+    assets:cash
+
+~ monthly  plan
+    expenses:rent    $4200.00
+    assets:cash
+
+=revenues:salary
+    (liabilities:tax)  *0.05
+";
+
+const RULED_URI: &str = "/api/projections/plans/projection-ruled.journal";
+
+/// A file's rules arrive with their block and, where the editor can state
+/// one, their form — percentages positive, as the user types them.
+#[tokio::test]
+async fn a_file_s_rules_carry_their_block_and_their_form() {
+    let tree = Tree::new(&[("plans/projection-ruled.journal", RULED)]);
+    let (status, doc) = file_json(&tree.state, "GET", RULED_URI, None).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let rules = doc["scenario"]["autoRules"].as_array().expect("rules");
+    assert_eq!(rules.len(), 2);
+    assert_eq!(rules[0]["block"], json!(0));
+    assert_eq!(rules[1]["block"], json!(1));
+    assert_eq!(
+        rules[0]["form"],
+        json!({
+            "matchAccount": "expenses:rent",
+            "extraQuery": "",
+            "postings": [{
+                "account": "expenses:rent-tax",
+                "kind": "percent",
+                "percent": {"mantissa": "10", "places": 0},
+                "amount": null
+            }],
+            "counter": "assets:cash",
+            "comment": "rent tax"
+        })
+    );
+    // A virtual posting is beyond the form: shown raw, locked.
+    assert_eq!(rules[1]["form"], Value::Null);
+}
+
+/// Saving an edited form rewrites that rule's block alone; the untouched rule,
+/// sent back as its text, keeps every byte, and so does the `~` block between.
+#[tokio::test]
+async fn a_save_with_an_edited_form_rewrites_only_that_rule_s_block() {
+    let tree = Tree::new(&[("plans/projection-ruled.journal", RULED)]);
+    let (status, doc) = file_json(&tree.state, "GET", RULED_URI, None).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let mut scenario = doc["scenario"].clone();
+    let mut form = scenario["autoRules"][0]["form"].clone();
+    form["postings"][0]["percent"] = json!({"mantissa": "12", "places": 0});
+    scenario["autoRules"][0] = json!({"block": 0, "form": form});
+    let raw = scenario["autoRules"][1]["raw"].clone();
+    scenario["autoRules"][1] = json!({"block": 1, "raw": raw});
+
+    let (status, saved) = file_json(
+        &tree.state,
+        "PUT",
+        RULED_URI,
+        Some(json!({"revision": doc["revision"], "scenario": scenario})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let after = tree.read("plans/projection-ruled.journal");
+    let body = |text: &str| {
+        text.split_once("\n\n")
+            .map(|(_, rest)| rest.to_string())
+            .unwrap()
+    };
+    assert_eq!(
+        body(&after),
+        body(RULED).replace(
+            "= expenses:rent tag:_generated-transaction  ; rent tax\n    expenses:rent-tax   *0.1\n    assets:cash\n",
+            "= ^expenses:rent(:|$) tag:_generated-transaction  ; rent tax\n    expenses:rent-tax  *0.12\n    assets:cash        *-0.12\n",
+        )
+    );
+    // The answer states the rule as written, block and all.
+    assert_eq!(saved["scenario"]["autoRules"][0]["block"], json!(0));
+    assert!(
+        saved["scenario"]["autoRules"][0]["raw"]
+            .as_str()
+            .is_some_and(|raw| raw.contains("*0.12")),
+        "{saved}"
+    );
+}
+
+/// Deleting a rule removes its block; a rule with no block is appended.
+#[tokio::test]
+async fn a_save_deletes_and_appends_rules_by_block() {
+    let tree = Tree::new(&[("plans/projection-ruled.journal", RULED)]);
+    let (_, doc) = file_json(&tree.state, "GET", RULED_URI, None).await;
+    let mut scenario = doc["scenario"].clone();
+    let first = scenario["autoRules"][0]["raw"].clone();
+    scenario["autoRules"] = json!([
+        {"block": 0, "raw": first},
+        {"block": null, "form": percent_form("expenses:rent", "expenses:rent-fee", "1", Some("assets:cash"))}
+    ]);
+    let (status, saved) = file_json(
+        &tree.state,
+        "PUT",
+        RULED_URI,
+        Some(json!({"revision": doc["revision"], "scenario": scenario})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let after = tree.read("plans/projection-ruled.journal");
+    assert!(!after.contains("=revenues:salary"), "{after}");
+    assert!(
+        after.ends_with(
+            "    assets:cash\n\n= ^expenses:rent(:|$) tag:_generated-transaction\n    expenses:rent-fee  *0.01\n    assets:cash        *-0.01\n"
+        ),
+        "{after}"
+    );
 }

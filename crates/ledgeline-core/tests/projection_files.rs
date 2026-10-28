@@ -16,6 +16,7 @@
 //! (via `just hledger-checks`) opts in — the same pattern
 //! `rules_hledger_render.rs` and `budget_golden.rs` use.
 
+use ledgeline_core::auto_form::{AutoRuleForm, FormAmount, FormPosting, form_from_rule, render};
 use ledgeline_core::decimal::Dec;
 use ledgeline_core::model::{
     AccountName, Amount, AmountStyle, Commodity, CommoditySide, PriceDirective, Transaction,
@@ -30,8 +31,8 @@ use ledgeline_core::projections::{
     merged_prices, merged_transactions, upgrade_legacy_counters,
 };
 use ledgeline_core::projections::{
-    CreateRefusal, Growth, GrowthUnit, LineRole, LineSource, Scenario, ScenarioEvent, ScenarioLine,
-    discover, slug_filename, virtual_posting,
+    CreateRefusal, Growth, GrowthUnit, LineRole, LineSource, Scenario, ScenarioAutoRule,
+    ScenarioEvent, ScenarioLine, discover, slug_filename, virtual_posting,
 };
 use ledgeline_core::reports::account_types::AccountType;
 use ledgeline_core::reports::{
@@ -2530,6 +2531,148 @@ fn parity_auto_posting_rules_on_the_forecast() {
 #[test]
 fn tabs_parity_auto_posting_rules_on_the_forecast() {
     tabs_parity(&["auto.journal"], &[MONTHLY]);
+}
+
+/// Plan 30 Phase 4: rules exactly as the rule editor writes them — anchored
+/// subtree queries, forecast-only, and the counter-account as the opposite
+/// multiplier — including two people in one `~` block, where each rule fires
+/// twice in one transaction (hledger would refuse an amountless counter
+/// there), a liability accrual, and a fixed amount gated by `amt:`.
+#[test]
+fn parity_rules_as_the_rule_editor_writes_them() {
+    parity(&["auto-form.journal"], &[MONTHLY, QUARTERLY]);
+}
+
+#[test]
+fn tabs_parity_rules_as_the_rule_editor_writes_them() {
+    tabs_parity(&["auto-form.journal"], &[MONTHLY]);
+}
+
+/// The parity fixture above holds what the editor renders, byte for byte:
+/// each rule read as a form and rendered again is its own text. So the
+/// parity run is a run over the editor's real output, not a hand-made
+/// approximation of it.
+#[test]
+fn the_rule_editor_parity_fixture_is_the_editor_s_own_output() {
+    let path = parity_dir().join("auto-form.journal");
+    let text = std::fs::read_to_string(&path).expect("reads");
+    let journal = parse_journal(&text, &path.to_string_lossy()).expect("parses");
+    let types = AccountTypes::new(&account_decls(&journal));
+    assert_eq!(journal.auto_rules.len(), 4);
+    for rule in &journal.auto_rules {
+        let form = form_from_rule(rule, &types).expect("an editor rule is a form");
+        assert_eq!(render(&form, &types).expect("renders"), rule.raw);
+    }
+}
+
+/// Editing a scenario file's rules through forms, as the Projections tab
+/// does: the edited rule's block alone is rewritten, a deleted one goes with
+/// its blank line, a new one is appended, and everything else — the `~`
+/// blocks, the comments, a hand-aligned rule nobody touched — keeps its bytes.
+/// With the opt-in, hledger then loads the result under `--auto --forecast`.
+#[test]
+fn editing_rules_through_forms_rewrites_only_their_blocks() {
+    let scratch = Scratch::new("rule-editor");
+    let before = concat!(
+        "; Ledgeline projection\n",
+        "; projection: Plan\n",
+        "; created: 2026-01-01\n",
+        "; updated: 2026-01-01\n",
+        "\n",
+        "; payroll, by hand\n",
+        "= expenses:people-costs:wages-salaries tag:_generated-transaction\n",
+        "    expenses:people-costs:payroll-tax  *0.1\n",
+        "    assets:mercury:checking\n",
+        "\n",
+        "~ monthly  payroll\n",
+        "    expenses:people-costs:wages-salaries      $9000.00\n",
+        "    assets:mercury:checking\n",
+        "\n",
+        "= revenue:sales tag:_generated-transaction\n",
+        "    expenses:people-costs:sales-commission  *-0.035\n",
+        "    assets:mercury:checking\n",
+        "\n",
+        "=revenue:other\n",
+        "    (liabilities:tax)  *0.05\n",
+        "\n",
+        "~ every 1st Apr from 2027  Lucid Software\n",
+        "    revenue:sales            $-40000.00\n",
+        "    assets:mercury:checking\n",
+    );
+    let path = scratch.write("projection-plan.journal", before);
+    let name = path.to_string_lossy().to_string();
+    let types = AccountTypes::from_declared(declared());
+
+    let doc = ProjectionDoc::parse(before, &name, &declared()).expect("it parses");
+    let mut scenario = scenario_from_text(before, &name, "plan", &declared()).expect("it reads");
+    assert_eq!(scenario.auto_rules.len(), 3);
+
+    // The commission goes from 3.5% to 4%, through its form.
+    let mut commission = form_from_rule(&scenario.auto_rules[1].rule, &types)
+        .expect("a hand-written rule is a form");
+    commission.postings[0].amount = FormAmount::Percent(Dec::new(4, 0));
+    let rendered = render(&commission, &types).expect("renders");
+    scenario.auto_rules[1].rule = rule_from(&rendered);
+    // The untagged virtual rule is deleted, and a new one added.
+    scenario.auto_rules.remove(2);
+    let added = render(
+        &AutoRuleForm {
+            match_account: "expenses:rent".to_string(),
+            extra_query: String::new(),
+            postings: vec![FormPosting {
+                account: "expenses:rent-tax".to_string(),
+                amount: FormAmount::Percent(Dec::new(5, 0)),
+            }],
+            counter: Some("assets:mercury:checking".to_string()),
+            comment: String::new(),
+        },
+        &types,
+    )
+    .expect("renders");
+    scenario.auto_rules.push(ScenarioAutoRule {
+        block: None,
+        rule: rule_from(&added),
+    });
+
+    let after = write_scenario(&doc, &scenario, &name).expect("it writes");
+    let want = before
+        .replace(
+            "= revenue:sales tag:_generated-transaction\n    expenses:people-costs:sales-commission  *-0.035\n    assets:mercury:checking\n",
+            "= ^revenue:sales(:|$) tag:_generated-transaction\n    expenses:people-costs:sales-commission  *-0.04\n    assets:mercury:checking                 *0.04\n",
+        )
+        .replace("=revenue:other\n    (liabilities:tax)  *0.05\n\n", "")
+        + "\n"
+        + &added;
+    assert_eq!(after, want);
+
+    let Some(_) = hledger(&["--version"]) else {
+        eprintln!("skipped the hledger half: set {OPT_IN}=1");
+        return;
+    };
+    std::fs::write(&path, &after).expect("write");
+    let printed = hledger(&[
+        "-f",
+        &name,
+        "print",
+        "--auto",
+        "--forecast=2027-04-01..2027-05-01",
+    ])
+    .expect("hledger runs");
+    assert!(
+        printed.status.success(),
+        "hledger refused the edited file:\n{}\n--- the file ---\n{after}",
+        String::from_utf8_lossy(&printed.stderr)
+    );
+    let out = String::from_utf8_lossy(&printed.stdout);
+    assert!(out.contains("$1600"), "4% of the $40000 sale:\n{out}");
+}
+
+/// One `=` block's text as the rule it parses to.
+fn rule_from(text: &str) -> ledgeline_core::model::AutoPostingRule {
+    parse_journal(text, "rule.journal")
+        .expect("a rule")
+        .auto_rules
+        .remove(0)
 }
 
 #[test]

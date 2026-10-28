@@ -1030,18 +1030,17 @@ pub(super) fn expand_from(
     let txns = if scenario.auto_rules.is_empty() {
         txns
     } else {
-        warnings.extend(auto_rule_warnings(&scenario.auto_rules));
-        let mut refused = vec![false; scenario.auto_rules.len()];
+        let rules = scenario.auto_posting_rules();
+        warnings.extend(auto_rule_warnings(&rules));
+        let mut refused = vec![false; rules.len()];
         let applied = txns
             .into_iter()
             .zip(&origins)
             .map(|(txn, origin)| match origin {
                 ForecastOrigin::Growth(_) => Ok(txn),
                 ForecastOrigin::Rule(_) | ForecastOrigin::Event(_) => {
-                    let (txn, fired) = crate::auto::apply_counted(&scenario.auto_rules, &txn)?;
-                    for ((rule, count), flag) in
-                        scenario.auto_rules.iter().zip(fired).zip(&mut refused)
-                    {
+                    let (txn, fired) = crate::auto::apply_counted(&rules, &txn)?;
+                    for ((rule, count), flag) in rules.iter().zip(fired).zip(&mut refused) {
                         *flag |= crate::auto::hledger_refuses(rule, count);
                     }
                     Ok(txn)
@@ -1049,8 +1048,7 @@ pub(super) fn expand_from(
             })
             .collect::<Result<Vec<_>, ReportError>>()?;
         warnings.extend(
-            scenario
-                .auto_rules
+            rules
                 .iter()
                 .zip(refused)
                 .filter(|(_, refused)| *refused)

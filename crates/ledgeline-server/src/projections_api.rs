@@ -39,6 +39,7 @@ use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::response::Response;
+use ledgeline_core::auto_form::{AutoRuleForm, FormAmount, FormPosting, form_from_rule, render};
 use ledgeline_core::decimal::MAX_PARSE_PLACES;
 use ledgeline_core::model::AutoPostingRule;
 use ledgeline_core::model::{
@@ -52,9 +53,10 @@ use ledgeline_core::projections::{
     AccountsOpts, AssetRow, BalanceSeries, CounterDefaults, CreateRefusal, DEFAULT_LOOKBACK,
     DiscoveredProjection, Discovery, ForecastDefaults, ForecastOrigin, Growth, GrowthUnit, History,
     LineRole, LineSection, LineSource, ProjectedStatements, Projection, ProjectionPath, Runway,
-    Scenario, ScenarioEvent, ScenarioLine, SeedOpts, StatementOpts, discover_in, forecast_cutoff,
-    is_journal_name, label_for, latest_real_date, line_section, project_cached, projected_accounts,
-    projected_statements, seed_scenario, upgrade_legacy_counters, virtual_posting,
+    Scenario, ScenarioAutoRule, ScenarioEvent, ScenarioLine, SeedOpts, StatementOpts,
+    auto_rule_account_warnings, discover_in, forecast_cutoff, is_journal_name, label_for,
+    latest_real_date, line_section, project_cached, projected_accounts, projected_statements,
+    seed_scenario, upgrade_legacy_counters, virtual_posting,
 };
 use ledgeline_core::reports::account_types::{AccountType, AccountTypes};
 use ledgeline_core::reports::periods::MAX_BUCKETS;
@@ -99,8 +101,12 @@ const MAX_EVENTS: usize = 1000;
 /// The most `=` auto-posting rules one scenario may carry.
 const MAX_AUTO_RULES: usize = 200;
 /// The longest one rule's text may be, in bytes. A rule is a query and a few
-/// posting lines; this is fifty times that.
+/// posting lines; this is fifty times that. Also the cap on a form's extra
+/// query and its comment.
 const MAX_AUTO_RULE_BYTES: usize = 16 * 1024;
+/// The most postings one rule FORM may carry. A rule text is bounded by its
+/// bytes; a form's postings are counted before any is decoded.
+const MAX_AUTO_POSTINGS: usize = 50;
 /// The most postings one event may carry.
 ///
 /// The line and event counts alone do not bound the work: one event with a
@@ -340,9 +346,11 @@ pub(crate) struct WireScenario {
 
 /// One `= QUERY` auto-posting rule, as the file writes it.
 ///
-/// `raw` is the fact and the only field read back; `query` and `unsupported`
-/// are here so a client can list the rule without re-implementing hledger's
-/// query grammar.
+/// `raw` is the fact. `query` and `unsupported` are here so a client can list
+/// the rule without re-implementing hledger's query grammar, `form` so it can
+/// edit one (plan 30 Phase 4), and `block` so a save rewrites the block the
+/// rule came from (amendment 12). Every field is present; the optional ones
+/// are `null`.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WireAutoRule {
@@ -353,14 +361,84 @@ struct WireAutoRule {
     query: String,
     /// Why the rule never fires, or `null` when it does.
     unsupported: Option<String>,
+    /// The rule as the editor's form, or `null` when the form cannot state it
+    /// — the client then shows `raw`, locked.
+    form: Option<WireAutoRuleForm>,
+    /// Its position among the scenario file's own `=` blocks, or `null` for a
+    /// rule the file does not hold yet (a seed's).
+    block: Option<usize>,
 }
 
-impl From<&AutoPostingRule> for WireAutoRule {
-    fn from(rule: &AutoPostingRule) -> Self {
+/// [`AutoRuleForm`] on the wire. Percentages and amounts are as the user
+/// enters them: POSITIVE for "the account grows" (the sign inference is the
+/// engine's, `auto_form`'s module docs).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireAutoRuleForm {
+    match_account: String,
+    extra_query: String,
+    postings: Vec<WireFormPosting>,
+    counter: Option<String>,
+    comment: String,
+}
+
+/// One posting of a form: `kind` is `percent` (with `percent` set, `3.5` for
+/// 3.5%) or `fixed` (with `amount` set); the other field is `null`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireFormPosting {
+    account: String,
+    kind: &'static str,
+    percent: Option<WireDec>,
+    amount: Option<WireAmount>,
+}
+
+impl From<&AutoRuleForm> for WireAutoRuleForm {
+    fn from(form: &AutoRuleForm) -> Self {
         Self {
-            raw: rule.raw.clone(),
-            query: rule.query.raw().to_string(),
-            unsupported: rule.query.unsupported().map(ToString::to_string),
+            match_account: form.match_account.clone(),
+            extra_query: form.extra_query.clone(),
+            postings: form
+                .postings
+                .iter()
+                .map(|posting| match &posting.amount {
+                    FormAmount::Percent(percent) => WireFormPosting {
+                        account: posting.account.clone(),
+                        kind: "percent",
+                        percent: Some(WireDec::from(*percent)),
+                        amount: None,
+                    },
+                    FormAmount::Fixed {
+                        commodity,
+                        quantity,
+                    } => WireFormPosting {
+                        account: posting.account.clone(),
+                        kind: "fixed",
+                        percent: None,
+                        amount: Some(WireAmount {
+                            commodity: commodity.clone(),
+                            quantity: WireDec::from(*quantity),
+                            precision: quantity.places,
+                        }),
+                    },
+                })
+                .collect(),
+            counter: form.counter.clone(),
+            comment: form.comment.clone(),
+        }
+    }
+}
+
+impl WireAutoRule {
+    fn new(rule: &ScenarioAutoRule, types: &AccountTypes) -> Self {
+        Self {
+            raw: rule.rule.raw.clone(),
+            query: rule.rule.query.raw().to_string(),
+            unsupported: rule.rule.query.unsupported().map(ToString::to_string),
+            form: form_from_rule(&rule.rule, types)
+                .as_ref()
+                .map(WireAutoRuleForm::from),
+            block: rule.block,
         }
     }
 }
@@ -382,7 +460,14 @@ impl WireScenario {
                 .map(WireScenarioEvent::from)
                 .collect(),
             cash: scenario.cash.as_ref().map(|account| account.0.clone()),
-            auto_rules: scenario.auto_rules.iter().map(WireAutoRule::from).collect(),
+            auto_rules: {
+                let types = AccountTypes::from_declared(declared.clone());
+                scenario
+                    .auto_rules
+                    .iter()
+                    .map(|rule| WireAutoRule::new(rule, &types))
+                    .collect()
+            },
         }
     }
 }
@@ -838,12 +923,23 @@ struct ScenarioIn {
     auto_rules: Vec<AutoRuleIn>,
 }
 
-/// One `= QUERY` rule, inbound: its text alone. Everything else the outbound
-/// shape says is derived from it.
+/// One `= QUERY` rule, inbound: its text (`raw`) or its form (`form`) —
+/// exactly one of them — and the block it came from.
+///
+/// A body from before forms and blocks travelled (`{raw}` alone) still
+/// decodes: an unchanged rule then claims the block holding its text.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AutoRuleIn {
-    raw: String,
+    #[serde(default)]
+    raw: Option<String>,
+    /// An edited rule, which the engine renders ([`render`]) and then
+    /// validates exactly as it validates `raw`.
+    #[serde(default)]
+    form: Option<AutoRuleFormIn>,
+    /// [`WireAutoRule::block`], handed back.
+    #[serde(default)]
+    block: Option<usize>,
     /// The derived echoes a client hands back unchanged; ignored.
     #[serde(default)]
     #[allow(dead_code)]
@@ -851,6 +947,45 @@ struct AutoRuleIn {
     #[serde(default)]
     #[allow(dead_code)]
     unsupported: Option<String>,
+}
+
+/// [`WireAutoRuleForm`], inbound.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AutoRuleFormIn {
+    match_account: String,
+    #[serde(default)]
+    extra_query: String,
+    postings: Vec<FormPostingIn>,
+    #[serde(default)]
+    counter: Option<String>,
+    #[serde(default)]
+    comment: String,
+}
+
+/// [`WireFormPosting`], inbound.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FormPostingIn {
+    account: String,
+    kind: String,
+    #[serde(default)]
+    percent: Option<WireDecIn>,
+    #[serde(default)]
+    amount: Option<FormAmountIn>,
+}
+
+/// A form's fixed amount. Unlike [`AmountIn`] the commodity may be empty: a
+/// bare number in a rule is a commodity-less amount, as hledger writes it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FormAmountIn {
+    commodity: String,
+    quantity: WireDecIn,
+    /// Echoed back; the quantity's own places are what is written.
+    #[serde(default)]
+    #[allow(dead_code)]
+    precision: Option<u32>,
 }
 
 /// `POST /api/projections/run`.
@@ -1034,6 +1169,16 @@ struct DecodedScenario {
     /// One per line, in order: the typed magnitude, or `None` for a line whose
     /// `amount.quantity` is already signed.
     entries: Vec<Option<Dec>>,
+    /// The `=` rules, in order, with the block each came from. `scenario`'s
+    /// own `auto_rules` stay empty until [`Self::signed`] renders the forms.
+    rules: Vec<(DecodedRule, Option<usize>)>,
+}
+
+/// A rule after decoding: read from its text, or a form whose rendering waits
+/// for the account types its signs are inferred from.
+enum DecodedRule {
+    Raw(AutoPostingRule),
+    Form(AutoRuleForm),
 }
 
 impl DecodedScenario {
@@ -1042,7 +1187,26 @@ impl DecodedScenario {
         let Self {
             mut scenario,
             entries,
+            rules,
         } = self;
+        // Each edited rule rendered under the same types the outbound `form`
+        // was read with, then validated exactly as a rule sent as text is.
+        let types = AccountTypes::from_declared(declared.clone());
+        scenario.auto_rules = rules
+            .into_iter()
+            .map(|(decoded, block)| {
+                let rule = match decoded {
+                    DecodedRule::Raw(rule) => rule,
+                    DecodedRule::Form(form) => {
+                        let text = render(&form, &types).map_err(|error| {
+                            AppError::BadRequest(format!("an auto rule cannot be written: {error}"))
+                        })?;
+                        rule_from_text(&text)?
+                    }
+                };
+                Ok(ScenarioAutoRule { block, rule })
+            })
+            .collect::<Result<_, AppError>>()?;
         for (line, entry) in scenario.lines.iter_mut().zip(entries) {
             if let Some(entry) = entry {
                 line.amount.quantity =
@@ -1155,11 +1319,12 @@ fn scenario_from_wire(scenario: &ScenarioIn) -> Result<DecodedScenario, AppError
         .map(|line| line.entry.as_ref().map(dec_from_wire).transpose())
         .collect::<Result<Vec<_>, AppError>>()?;
 
-    let auto_rules = auto_rules_from_wire(&scenario.auto_rules)?;
+    let rules = auto_rules_from_wire(&scenario.auto_rules)?;
 
     Ok(DecodedScenario {
+        rules,
         scenario: Scenario {
-            auto_rules,
+            auto_rules: Vec::new(),
             name: scenario.name.clone(),
             created: scenario.created.clone(),
             updated: scenario.updated.clone(),
@@ -1171,13 +1336,12 @@ fn scenario_from_wire(scenario: &ScenarioIn) -> Result<DecodedScenario, AppError
     })
 }
 
-/// Each rule's text, read back as exactly one `=` block.
-///
-/// The shape is checked BEFORE the text reaches the journal parser: an `=`
-/// line, then only indented or blank lines. That is what keeps a rule body
-/// from smuggling in a directive — `include`, `alias`, a transaction — that
-/// the parser would otherwise act on.
-fn auto_rules_from_wire(rules: &[AutoRuleIn]) -> Result<Vec<AutoPostingRule>, AppError> {
+/// Each rule, decoded: its text read back as exactly one `=` block, or its
+/// form checked for shape (the render waits for the account types), with
+/// the block each came from.
+fn auto_rules_from_wire(
+    rules: &[AutoRuleIn],
+) -> Result<Vec<(DecodedRule, Option<usize>)>, AppError> {
     if rules.len() > MAX_AUTO_RULES {
         return Err(AppError::BadRequest(format!(
             "a scenario may have at most {MAX_AUTO_RULES} auto rules (received {})",
@@ -1187,32 +1351,117 @@ fn auto_rules_from_wire(rules: &[AutoRuleIn]) -> Result<Vec<AutoPostingRule>, Ap
     rules
         .iter()
         .map(|rule| {
-            let refuse = |why: &str| AppError::BadRequest(format!("an auto rule {why}"));
-            if rule.raw.len() > MAX_AUTO_RULE_BYTES {
-                return Err(refuse(&format!("may be at most {MAX_AUTO_RULE_BYTES} bytes")));
-            }
-            // A blank line ends a block, so none may appear inside one.
-            let body = rule.raw.trim_matches('\n');
-            let mut lines = body.lines();
-            let header = lines.next().unwrap_or("");
-            if !header.starts_with('=')
-                || !lines.all(|line| !line.trim().is_empty() && line.starts_with([' ', '\t']))
-            {
-                return Err(refuse(
-                    "must be one `= QUERY` line followed by indented posting lines, with no blank line between",
-                ));
-            }
-            let text = format!("{body}\n");
-            let journal = ledgeline_core::parse_journal(&text, "auto-rule.journal")
-                .map_err(|error| refuse(&format!("could not be read: {error}")))?;
-            match journal.auto_rules.as_slice() {
-                [only] if journal.transactions.is_empty() && journal.periodic_transactions.is_empty() => {
-                    Ok(only.clone())
+            let decoded = match (&rule.raw, &rule.form) {
+                (Some(raw), None) => DecodedRule::Raw(rule_from_text(raw)?),
+                (None, Some(form)) => DecodedRule::Form(form_from_wire(form)?),
+                _ => {
+                    return Err(AppError::BadRequest(
+                        "an auto rule must carry exactly one of `raw` and `form`".to_string(),
+                    ));
                 }
-                _ => Err(refuse("must be exactly one `= QUERY` block")),
-            }
+            };
+            Ok((decoded, rule.block))
         })
         .collect()
+}
+
+/// One rule's text, read back as exactly one `=` block.
+///
+/// The shape is checked BEFORE the text reaches the journal parser: an `=`
+/// line, then only indented lines. That is what keeps a rule body from
+/// smuggling in a directive — `include`, `alias`, a transaction — that the
+/// parser would otherwise act on. A rendered form goes through here too.
+fn rule_from_text(raw: &str) -> Result<AutoPostingRule, AppError> {
+    let refuse = |why: &str| AppError::BadRequest(format!("an auto rule {why}"));
+    if raw.len() > MAX_AUTO_RULE_BYTES {
+        return Err(refuse(&format!(
+            "may be at most {MAX_AUTO_RULE_BYTES} bytes"
+        )));
+    }
+    // A blank line ends a block, so none may appear inside one.
+    let body = raw.trim_matches('\n');
+    let mut lines = body.lines();
+    let header = lines.next().unwrap_or("");
+    if !header.starts_with('=')
+        || !lines.all(|line| !line.trim().is_empty() && line.starts_with([' ', '\t']))
+    {
+        return Err(refuse(
+            "must be one `= QUERY` line followed by indented posting lines, with no blank line between",
+        ));
+    }
+    let text = format!("{body}\n");
+    let journal = ledgeline_core::parse_journal(&text, "auto-rule.journal")
+        .map_err(|error| refuse(&format!("could not be read: {error}")))?;
+    match journal.auto_rules.as_slice() {
+        [only] if journal.transactions.is_empty() && journal.periodic_transactions.is_empty() => {
+            Ok(only.clone())
+        }
+        _ => Err(refuse("must be exactly one `= QUERY` block")),
+    }
+}
+
+/// A form's fields, bounded and decoded. Accounts are trimmed; whether each
+/// can be written is [`render`]'s to say.
+fn form_from_wire(form: &AutoRuleFormIn) -> Result<AutoRuleForm, AppError> {
+    let refuse = |why: String| AppError::BadRequest(format!("an auto rule {why}"));
+    if form.postings.len() > MAX_AUTO_POSTINGS {
+        return Err(refuse(format!(
+            "may have at most {MAX_AUTO_POSTINGS} postings (received {})",
+            form.postings.len()
+        )));
+    }
+    for (what, text) in [
+        ("match account", &form.match_account),
+        ("extra query", &form.extra_query),
+        ("comment", &form.comment),
+    ] {
+        if text.len() > MAX_AUTO_RULE_BYTES {
+            return Err(refuse(format!(
+                "{what} may be at most {MAX_AUTO_RULE_BYTES} bytes"
+            )));
+        }
+    }
+    if form.match_account.trim().is_empty() {
+        return Err(refuse("needs an account to match".to_string()));
+    }
+    let postings = form
+        .postings
+        .iter()
+        .map(|posting| {
+            if posting.account.trim().is_empty() {
+                return Err(refuse("posting needs an account".to_string()));
+            }
+            let amount = match (posting.kind.as_str(), &posting.percent, &posting.amount) {
+                ("percent", Some(percent), None) => FormAmount::Percent(dec_from_wire(percent)?),
+                ("fixed", None, Some(amount)) => FormAmount::Fixed {
+                    commodity: amount.commodity.trim().to_string(),
+                    quantity: dec_from_wire(&amount.quantity)?,
+                },
+                (kind, _, _) => {
+                    return Err(refuse(format!(
+                        "posting of kind '{kind}' must be `percent` with a percent, or `fixed` \
+                         with an amount"
+                    )));
+                }
+            };
+            Ok(FormPosting {
+                account: posting.account.trim().to_string(),
+                amount,
+            })
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
+    Ok(AutoRuleForm {
+        match_account: form.match_account.trim().to_string(),
+        extra_query: form.extra_query.clone(),
+        postings,
+        counter: form
+            .counter
+            .as_deref()
+            .map(str::trim)
+            .filter(|counter| !counter.is_empty())
+            .map(str::to_string),
+        comment: form.comment.trim().to_string(),
+    })
 }
 
 // ===========================================================================
@@ -1273,7 +1522,13 @@ pub(crate) async fn run(
         // ONE expansion serves every reading: the cash series and runway are
         // read off it inside `project_cached`, and the statements below are
         // built over the same generated transactions and prices.
-        let projection = project_cached(&scenario, &real, window.count, window.depth)?;
+        let mut projection = project_cached(&scenario, &real, window.count, window.depth)?;
+        // Decision 11: a rule posting to an account nothing knows is a typo
+        // more often than not. hledger accepts it, so it is a warning.
+        projection.warnings.extend(auto_rule_account_warnings(
+            &scenario,
+            facts.known_accounts(),
+        ));
         let statements = projected_statements(
             &real,
             &facts,
