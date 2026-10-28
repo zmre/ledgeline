@@ -602,7 +602,7 @@ async fn a_large_event_produces_a_runway_naming_its_bucket() {
 #[tokio::test]
 async fn an_unsupported_period_is_warned_about_rather_than_failing() {
     let mut line = rent_line();
-    line["period"] = json!({"raw": "every weekday"});
+    line["period"] = json!({"raw": "every last day of month"});
     let projection = run(json!({
         "scenario": scenario_with(vec![line], vec![]),
         "asOf": "2026-07-08",
@@ -616,7 +616,7 @@ async fn an_unsupported_period_is_warned_about_rather_than_failing() {
     assert!(
         warnings[0]
             .as_str()
-            .is_some_and(|w| w.contains("every weekday")),
+            .is_some_and(|w| w.contains("every last day of month")),
         "the warning must quote what the user wrote: {warnings:?}"
     );
     assert_eq!(net_income(&projection), [0, 0]);
@@ -1848,7 +1848,7 @@ const BOUNDED: &str = "\
 ~ every 15th day of month from 2026-11-01  mid-month
     (expenses:f)  $1.00
 
-~ every weekday  workdays
+~ every last day of month  workdays
     (expenses:g)  $1.00
 ";
 
@@ -1918,7 +1918,7 @@ async fn a_bounded_rule_reads_as_its_interval_and_saves_an_edited_bound() {
                 null.clone()
             ),
             expect(
-                "every weekday",
+                "every last day of month",
                 null.clone(),
                 null.clone(),
                 null.clone(),
@@ -1947,7 +1947,7 @@ async fn a_bounded_rule_reads_as_its_interval_and_saves_an_edited_bound() {
         "~ monthly from 2026-11-01\n",
         "~ monthly to 2027-06-01  ends\n",
         "~ every 15th day of month from 2027-01-01  mid-month\n",
-        "~ every weekday  workdays\n",
+        "~ every last day of month  workdays\n",
     ] {
         assert!(
             written.contains(header),

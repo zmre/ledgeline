@@ -3478,7 +3478,12 @@ mod tests {
     #[test]
     fn an_asset_row_with_an_unsupported_period_warns() {
         let odd = growing(
-            asset("brok", "assets:brokerage", usd(200_000), "every weekday"),
+            asset(
+                "brok",
+                "assets:brokerage",
+                usd(200_000),
+                "every last day of month",
+            ),
             Dec::new(10, 2),
             GrowthUnit::Year,
         );
@@ -3492,7 +3497,7 @@ mod tests {
         assert_eq!(series_units(&projection.net_worth), [210_000; 3]);
         assert_eq!(series_units(&projection.cash), [10_000; 3]);
         assert_eq!(projection.warnings.len(), 1);
-        assert!(projection.warnings[0].contains("every weekday"));
+        assert!(projection.warnings[0].contains("every last day of month"));
     }
 
     // -----------------------------------------------------------------------
@@ -3692,7 +3697,12 @@ mod tests {
     /// projection — not an error, and not a silent zero.
     #[test]
     fn an_unsupported_period_warns_and_contributes_nothing() {
-        let unsupported = line("odd", "expenses:odd", usd(100_000), "every weekday");
+        let unsupported = line(
+            "odd",
+            "expenses:odd",
+            usd(100_000),
+            "every last day of month",
+        );
         assert_eq!(unsupported.period.kind, PeriodKind::Unsupported);
 
         let projection = run(
@@ -3707,7 +3717,7 @@ mod tests {
         assert_eq!(series_units(&projection.cash), [0, 0, 0]);
         assert_eq!(projection.warnings.len(), 1);
         assert!(
-            projection.warnings[0].contains("every weekday"),
+            projection.warnings[0].contains("every last day of month"),
             "the warning must quote what the user wrote: {:?}",
             projection.warnings
         );

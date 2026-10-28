@@ -365,6 +365,9 @@ pub enum Anchor {
     },
     /// `every tuesday` / `every 2nd day of week`: one weekday each week.
     Weekday(u32),
+    /// `every weekday`, `every weekendday`, `every mon,wed,fri`: several
+    /// weekdays each week. A bit per ISO weekday, bit 0 = Monday; never zero.
+    Weekdays(u8),
 }
 
 /// The shape of a period expression, once its words are understood.
@@ -502,7 +505,7 @@ impl PeriodSpec {
     }
 
     /// The interval words of [`raw`](Self::raw) — everything before its
-    /// `from`/`to` clause, as written — when the rule's bounds can be rewritten
+    /// bounds clause, as written — when the rule's bounds can be rewritten
     /// around them; `None` when they cannot.
     ///
     /// They can whenever the words are a recurrence this engine understands:
@@ -519,14 +522,11 @@ impl PeriodSpec {
     pub fn interval_words(&self) -> Option<String> {
         match self.kind {
             PeriodKind::Every { .. } | PeriodKind::Anchored { .. } | PeriodKind::Annual { .. } => {
-                let is_bound = |word: &&str| {
-                    word.eq_ignore_ascii_case("from") || word.eq_ignore_ascii_case("to")
-                };
-                let words: Vec<&str> = self
-                    .raw
-                    .split_whitespace()
-                    .take_while(|word| !is_bound(word))
-                    .collect();
+                // The parser's own cut, not a scan for `from`/`to`: a bounds
+                // clause can also be `in 2027`, `since D` or a bare
+                // `2027-01..2027-04`.
+                let head = crate::parse::period_head_len(&self.raw)?;
+                let words: Vec<&str> = self.raw.split_whitespace().take(head).collect();
                 Some(words.join(" "))
             }
             PeriodKind::Once | PeriodKind::Unsupported => None,

@@ -169,7 +169,10 @@ On the days `hledger --forecast` fires it, from the first projected day:
   day of the month.
 - `to` is exclusive: `~ monthly to 2027-04-01` last fires in March.
 - `every 15th day of month` and `every tuesday` fire on that day.
-- A dated rule, `~ 2027-03-01`, fires once.
+- `every weekday`, `every mon,wed,fri` and `every 1st Apr` fire on those
+  days. `monthly in 2027q1` and `monthly 2027-01..2027-04` are bounded. The
+  full list of forms is in [Budget](../budget.md).
+- A dated rule, `~ 2027-03-01` or `~ 2027q2`, fires once.
 
 `hledger balance --budget` places a bare `~ weekly` goal on Mondays instead.
 The Budget tab follows that report, and the Projections tab follows

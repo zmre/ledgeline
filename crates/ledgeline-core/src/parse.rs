@@ -1643,9 +1643,12 @@ const MAX_PERIOD_MULTIPLIER: u32 = 1000;
 /// point: a period expression is one line of one rule, and a journal that
 /// hledger opens must open here too.
 ///
-/// Resolution order mirrors hledger's: the interval words first, then an
-/// optional `from DATE`, then an optional `to DATE`. A bare date is a single
-/// occurrence.
+/// The shape is hledger's `[INTERVAL] [in] [PERIOD]` — see [`read_period`] for
+/// how the two halves are told apart and [`parse_bounds`] for every PERIOD
+/// form. With no interval words the expression is a single occurrence. The
+/// forms added after plan 21 (`every 1st apr`, `every weekday`,
+/// `monthly in 2027`, `2027q2`, …) are tabled in
+/// `plans/30-auto-postings-and-period-grammar.md`.
 ///
 /// Shared, rather than copied, for [`crate::periodic`], whose scan must reach the
 /// *same* verdict about a header as this parse does — a block's ordinal is joined
@@ -1665,115 +1668,245 @@ const MAX_PERIOD_MULTIPLIER: u32 = 1000;
 #[must_use]
 pub fn parse_period_spec(raw: &str) -> PeriodSpec {
     let raw = raw.trim();
-    let build = |kind, start, end| PeriodSpec {
-        raw: raw.to_string(),
-        kind,
-        start,
-        end,
-    };
-    let unsupported = || build(PeriodKind::Unsupported, None, None);
-
     // Case is not significant to hledger, but `raw` keeps the original bytes.
     let lower = raw.to_ascii_lowercase();
     let tokens: Vec<&str> = lower.split_whitespace().collect();
-    let Some((head, start, end)) = split_period_bounds(&tokens) else {
-        return unsupported();
-    };
+    let (kind, bounds) = read_period(&tokens).map_or(
+        (PeriodKind::Unsupported, Bounds::default()),
+        |(_, kind, bounds)| (kind, bounds),
+    );
+    PeriodSpec {
+        raw: raw.to_string(),
+        kind,
+        start: bounds.start,
+        end: bounds.end,
+    }
+}
 
-    // `~ 2027-03-01` / `~ 2027-03` / `~ 2027`: one occurrence, and the date is
-    // its own anchor. A `from` beside a bare date is not a form hledger
-    // produces, so it is refused rather than silently preferred.
-    if let [only] = head
-        && let Some(date) = parse_period_date(only)
-    {
-        return if start.is_some() {
-            unsupported()
+/// How many leading whitespace-separated words of `raw` are its INTERVAL
+/// words — everything before the bounds clause — or `None` when the
+/// expression is not one [`parse_period_spec`] understands.
+///
+/// The same cut [`parse_period_spec`] makes, exposed so
+/// [`PeriodSpec::interval_words`] can slice the original text at exactly the
+/// place the parser did. A bounds clause no longer always starts with
+/// `from`/`to` (`monthly in 2027`, `monthly 2027-01..2027-04`), so a scan for
+/// those two words would cut in the wrong place.
+#[must_use]
+pub(crate) fn period_head_len(raw: &str) -> Option<usize> {
+    let lower = raw.to_ascii_lowercase();
+    let tokens: Vec<&str> = lower.split_whitespace().collect();
+    read_period(&tokens).map(|(head, ..)| head)
+}
+
+/// A period expression's bounds, ISO `YYYY-MM-DD`. `end` is EXCLUSIVE.
+#[derive(Debug, Default)]
+struct Bounds {
+    start: Option<String>,
+    end: Option<String>,
+}
+
+/// Split `tokens` into interval words and a bounds clause, and read both.
+///
+/// hledger's grammar is `[INTERVAL] [in] [PERIOD]`, but nothing marks where
+/// the interval ends: `monthly 2027` is "monthly, during 2027", while
+/// `every 1000 days` is all interval. So every cut is tried, LONGEST interval
+/// first, and the first one under which both halves read is the answer. The
+/// two grammars barely overlap — a bound's date always has a four-digit
+/// year, an interval's numbers are multipliers and ordinals — so in practice
+/// exactly one cut reads.
+///
+/// With no interval words at all the expression is a single occurrence
+/// ([`PeriodKind::Once`]): `~ 2027-03-01`, `~ from D to D2`, `~ 2027q2`.
+fn read_period(tokens: &[&str]) -> Option<(usize, PeriodKind, Bounds)> {
+    (0..=tokens.len()).rev().find_map(|cut| {
+        let (head, tail) = tokens.split_at(cut);
+        let bounds = parse_bounds(tail, !head.is_empty())?;
+        let kind = if head.is_empty() {
+            PeriodKind::Once
         } else {
-            build(PeriodKind::Once, Some(date), end)
+            parse_interval_words(head)?
         };
-    }
-    // `~ from D to D2` / `~ to D`: no interval words at all is one period, so
-    // one occurrence.
-    if head.is_empty() {
-        return build(PeriodKind::Once, start, end);
-    }
-    match parse_interval_words(head) {
-        Some(kind) => build(kind, start, end),
-        None => unsupported(),
-    }
+        Some((cut, kind, bounds))
+    })
 }
 
-/// Split a tokenized period expression into its interval words and its
-/// `from`/`to` dates.
+/// The bounds clause, in the forms hledger 1.52 accepts (each verified with
+/// `print --forecast` on 2026-10-27):
 ///
-/// `None` — i.e. the whole expression is unsupported — when a bound is
-/// malformed: a missing or unreadable date, more than one token where a date
-/// belongs, or `to` written before `from`. Refusing the expression is the safe
-/// reading: a bound we misread would silently change which buckets a goal lands
-/// in, which is worse than locking the rule.
-fn split_period_bounds<'t>(
-    tokens: &'t [&'t str],
-) -> Option<(&'t [&'t str], Option<String>, Option<String>)> {
-    let from_at = tokens.iter().position(|token| *token == "from");
-    let to_at = tokens.iter().position(|token| *token == "to");
-    let head_len = match (from_at, to_at) {
-        (Some(from), Some(to)) if to < from => return None,
-        (Some(from), _) => from,
-        (None, Some(to)) => to,
-        (None, None) => tokens.len(),
+/// - a single `D`, meaning the whole span that date names: `2027` is the
+///   year, `2027-03` the month, `2027q2` the quarter. `in D` is the same;
+/// - `D1..D2` or `D1-D2` as one token, or `D1 to D2`, `D1 .. D2`, `D1 - D2`;
+/// - `from D` / `since D`, where `D` may itself be a joined range, or
+///   `from D1 to D2` (or `..`, `-` for `to`);
+/// - `to D`, `until D`, `.. D` or `- D`: an end with no start.
+///
+/// `until` is ONLY the last form: hledger rejects `from D until D2` and
+/// `D until D2`. And `in` takes only a single date — `in D1..D2` is an error
+/// there too.
+///
+/// Every `to` is EXCLUSIVE and uses its date's START (`to 2027q3` ends on
+/// 2027-07-01).
+///
+/// `bounded_span` says whether a single `D` sets an end too. Under an
+/// interval it must — `monthly 2027-03` fires once, in March — but a bare
+/// `~ 2027-03` is a one-off whose date is its own start, and has always
+/// been read with no end.
+///
+/// `None` — the whole expression is unsupported — for anything else,
+/// including a bound with an unreadable date. Refusing is the safe reading:
+/// a bound we misread would silently move every occurrence.
+fn parse_bounds(tokens: &[&str], bounded_span: bool) -> Option<Bounds> {
+    // `to` between two dates; `until` is not one of them.
+    let is_to = |token: &str| matches!(token, "to" | ".." | "-");
+    let bounds = |start: Option<&SmartDate>, end: Option<&SmartDate>| Bounds {
+        start: start.map(|date| date.start.clone()),
+        end: end.map(|date| date.start.clone()),
     };
-    // Exactly one token between a bound keyword and the next keyword / the end.
-    let one_date = |at: usize, stop: usize| match tokens.get(at + 1..stop) {
-        Some([date]) => parse_period_date(date),
+    let span = |date: SmartDate| Bounds {
+        start: Some(date.start),
+        end: bounded_span.then_some(date.end),
+    };
+    match tokens {
+        [] => Some(Bounds::default()),
+        ["in", only] => smart_date(only).map(span),
+        [only] => match period_range(only)? {
+            (date, Some(to)) => Some(bounds(Some(&date), Some(&to))),
+            (date, None) => Some(span(date)),
+        },
+        ["from" | "since", from] => {
+            let (date, to) = period_range(from)?;
+            Some(bounds(Some(&date), to.as_ref()))
+        }
+        ["from" | "since", from, to_word, to] if is_to(to_word) => {
+            Some(bounds(Some(&smart_date(from)?), Some(&smart_date(to)?)))
+        }
+        ["to" | "until" | ".." | "-", to] => Some(bounds(None, Some(&smart_date(to)?))),
+        [from, to_word, to] if is_to(to_word) => {
+            Some(bounds(Some(&smart_date(from)?), Some(&smart_date(to)?)))
+        }
         _ => None,
-    };
-    let start = match from_at {
-        Some(from) => Some(one_date(from, to_at.unwrap_or(tokens.len()))?),
-        None => None,
-    };
-    let end = match to_at {
-        Some(to) => Some(one_date(to, tokens.len())?),
-        None => None,
-    };
-    Some((&tokens[..head_len], start, end))
+    }
 }
 
-/// A date as a period bound writes it: `YYYY`, `YYYY-MM` or `YYYY-MM-DD`, with
-/// `-`, `/` or `.` separators. A missing month or day is the first of its unit,
-/// which is how hledger expands `from 2027` to `2027-01-01` and `to 2027-06` to
-/// `2027-06-01` (both verified).
+/// One date as a period bound writes it: where it starts, and where the span
+/// it names ends (exclusive).
+#[derive(Debug)]
+struct SmartDate {
+    start: String,
+    end: String,
+}
+
+/// A token holding one date, or two joined by `..` or `-` (`2027-01..2027-04`,
+/// `2027-01-2027-04` — hledger reads both, verified).
 ///
-/// Deliberately **not** [`normalize_date`]. That function reads a two-component
-/// token as a yearless `MM-DD` against the `Y` default year — the right reading
-/// for a transaction date and the wrong one here, because hledger reads
-/// `from 2027-01` as January 2027, not as the 1st of some other year. The year
-/// must therefore be written in full, which is also what disambiguates the two.
-fn parse_period_date(token: &str) -> Option<String> {
+/// A whole-token date is tried first, so `2027-01-15` is a day and never
+/// `2027-01` to `15`; a dash split also needs a full four-digit year on its
+/// right, which is what keeps the two readings apart.
+fn period_range(token: &str) -> Option<(SmartDate, Option<SmartDate>)> {
+    if let Some(date) = smart_date(token) {
+        return Some((date, None));
+    }
+    if let Some((from, to)) = token.split_once("..") {
+        return Some((smart_date(from)?, Some(smart_date(to)?)));
+    }
+    token.match_indices('-').find_map(|(at, _)| {
+        Some((
+            smart_date(&token[..at])?,
+            Some(smart_date(&token[at + 1..])?),
+        ))
+    })
+}
+
+/// A date as a period bound writes it, with the span it names:
+///
+/// - `YYYY` — the year;
+/// - `YYYY-MM`, or six digits `YYYYMM` — the month;
+/// - `YYYY-MM-DD`, or eight digits `YYYYMMDD` — the day;
+/// - `YYYYqN` — the quarter.
+///
+/// `-`, `/` and `.` all separate. hledger expands `from 2027` to `2027-01-01`
+/// and `to 2027-06` to `2027-06-01` (both verified), i.e. a bound is its
+/// span's first day.
+///
+/// Deliberately **not** [`normalize_date`]. That function reads a
+/// two-component token as a yearless `MM-DD` against the `Y` default year —
+/// the right reading for a transaction date and the wrong one here, because
+/// hledger reads `from 2027-01` as January 2027, not as the 1st of some other
+/// year. The year must therefore be written in full, which is also what
+/// disambiguates the two. Relative dates (`jan`, `this year`, `q4`) are
+/// refused: a projection must not change meaning overnight.
+fn smart_date(token: &str) -> Option<SmartDate> {
     fn number(text: &str) -> Option<i32> {
         text.parse::<i32>().ok()
     }
-    let components: Vec<&str> = token.split(['-', '/', '.']).collect();
-    // Four digits, always: it is what tells `2027-01` (a month) apart from a
-    // yearless `MM-DD`, and it is what hledger's own period grammar requires.
-    if components.first()?.len() != 4 {
+    let all_digits = token.bytes().all(|byte| byte.is_ascii_digit());
+    let (year, month, day, months) = if let Some((year, quarter)) = token.split_once('q') {
+        let quarter = number(quarter).filter(|q| (1..=4).contains(q))?;
+        (four_digit_year(year)?, quarter * 3 - 2, None, 3)
+    } else if all_digits && token.len() == 6 {
+        (four_digit_year(&token[..4])?, number(&token[4..])?, None, 1)
+    } else if all_digits && token.len() == 8 {
+        let day = number(&token[6..])?;
+        (
+            four_digit_year(&token[..4])?,
+            number(&token[4..6])?,
+            Some(day),
+            0,
+        )
+    } else {
+        let components: Vec<&str> = token.split(['-', '/', '.']).collect();
+        match components.as_slice() {
+            [year] => (four_digit_year(year)?, 1, None, 12),
+            [year, month] => (four_digit_year(year)?, number(month)?, None, 1),
+            [year, month, day] => (
+                four_digit_year(year)?,
+                number(month)?,
+                Some(number(day)?),
+                0,
+            ),
+            _ => return None,
+        }
+    };
+    if !(1..=12).contains(&month) {
         return None;
     }
-    let (year, month, day) = match components.as_slice() {
-        [year] => (number(year)?, 1, 1),
-        [year, month] => (number(year)?, number(month)?, 1),
-        [year, month, day] => (number(year)?, number(month)?, number(day)?),
-        _ => return None,
-    };
-    if !(1..=9999).contains(&year)
-        || !(1..=12).contains(&month)
-        || !(1..=days_in_month(year, month)).contains(&day)
+    if let Some(day) = day
+        && !(1..=days_in_month(year, month)).contains(&day)
     {
         return None;
     }
-    Some(format!("{year:04}-{month:02}-{day:02}"))
+    let iso = |(year, month, day): (i32, i32, i32)| format!("{year:04}-{month:02}-{day:02}");
+    let start = (year, month, day.unwrap_or(1));
+    let end = match day {
+        // A day's span ends on the next day.
+        Some(day) if day < days_in_month(year, month) => (year, month, day + 1),
+        Some(_) => add_months(year, month, 1),
+        None => add_months(year, month, months),
+    };
+    Some(SmartDate {
+        start: iso(start),
+        end: iso(end),
+    })
 }
 
-/// The interval half of a period expression — everything before `from`/`to`.
+/// Four ASCII digits, as a year in `1..=9999`. Four, always: it is what tells
+/// `2027-01` (a month) apart from a yearless `MM-DD`, and it is what hledger's
+/// own period grammar requires.
+fn four_digit_year(text: &str) -> Option<i32> {
+    (text.len() == 4 && text.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| text.parse::<i32>().ok())
+        .flatten()
+        .filter(|year| (1..=9999).contains(year))
+}
+
+/// The first day of the month `months` after `year`-`month`.
+fn add_months(year: i32, month: i32, months: i32) -> (i32, i32, i32) {
+    let index = year * 12 + (month - 1) + months;
+    (index.div_euclid(12), index.rem_euclid(12) + 1, 1)
+}
+
+/// The interval half of a period expression — everything before the bounds.
 fn parse_interval_words(tokens: &[&str]) -> Option<PeriodKind> {
     let every = |unit, multiplier| Some(PeriodKind::Every { unit, multiplier });
     match tokens {
@@ -1790,53 +1923,110 @@ fn parse_interval_words(tokens: &[&str]) -> Option<PeriodKind> {
     }
 }
 
-/// The words after `every`.
+/// The words after `every`: the forms of hledger's "More complex report
+/// intervals" and "Multiple weekday intervals", each verified against 1.52.
 ///
-/// `every weekday` and `every weekendday` are real hledger expressions and are
-/// deliberately absent: neither is one occurrence per unit, so neither can be
-/// expressed as a step, and modelling them wrongly would be worse than locking
-/// the rule.
+/// `of month` / `of year` are optional where hledger makes them optional
+/// (`every 15th day`, `every 3rd mon`, `every 1st apr`), and required nowhere.
 fn parse_every(tokens: &[&str]) -> Option<PeriodKind> {
     match tokens {
-        [word] => {
-            if let Some(unit) = period_unit(word) {
-                return Some(PeriodKind::Every {
-                    unit,
-                    multiplier: 1,
-                });
-            }
-            if let Some(weekday) = weekday_number(word) {
-                return Some(PeriodKind::Anchored {
-                    unit: PeriodExpr::Weekly,
-                    anchor: Anchor::Weekday(weekday),
-                });
-            }
-            // `every 12/25`: one occurrence a year on a fixed month/day.
-            month_day(word).map(|(month, day)| PeriodKind::Annual { month, day })
-        }
-        [count, unit] => {
-            let multiplier = period_multiplier(count)?;
-            period_unit(unit).map(|unit| PeriodKind::Every { unit, multiplier })
-        }
-        [nth, "day", "of", "month"] => ordinal(nth, 31).map(|day| PeriodKind::Anchored {
-            unit: PeriodExpr::Monthly,
-            anchor: Anchor::DayOfMonth(day),
-        }),
+        [word] => every_word(word),
+        [first, second] => every_pair(first, second),
         [nth, "day", "of", "week"] => ordinal(nth, 7).map(|weekday| PeriodKind::Anchored {
             unit: PeriodExpr::Weekly,
             anchor: Anchor::Weekday(weekday),
         }),
-        // Must follow the two literal arms above, which are more specific.
-        [nth, weekday, "of", "month"] => {
-            // Five is the most any weekday can occur in a month.
-            let nth = ordinal(nth, 5)?;
-            weekday_number(weekday).map(|weekday| PeriodKind::Anchored {
-                unit: PeriodExpr::Monthly,
-                anchor: Anchor::NthWeekday { nth, weekday },
-            })
+        [nth, what, "of", "month"] => monthly_anchor(nth, what),
+        [first, second, "of", "year"] => annual(first, second),
+        [month_and_day, "of", "year"] => {
+            month_day(month_and_day).map(|(month, day)| PeriodKind::Annual { month, day })
         }
         _ => None,
     }
+}
+
+/// `every UNIT`, `every WEEKDAY`, `every weekday` / `every weekendday`,
+/// `every mon,wed,fri`, `every MM/DD`.
+fn every_word(word: &str) -> Option<PeriodKind> {
+    if let Some(unit) = period_unit(word) {
+        return Some(PeriodKind::Every {
+            unit,
+            multiplier: 1,
+        });
+    }
+    let weekly = |anchor| {
+        Some(PeriodKind::Anchored {
+            unit: PeriodExpr::Weekly,
+            anchor,
+        })
+    };
+    if let Some(weekday) = weekday_number(word) {
+        return weekly(Anchor::Weekday(weekday));
+    }
+    match word {
+        // hledger's documented shorthands for `mon,tue,wed,thu,fri` and
+        // `sat,sun`.
+        "weekday" => return weekly(Anchor::Weekdays(0b001_1111)),
+        "weekendday" => return weekly(Anchor::Weekdays(0b110_0000)),
+        _ => {}
+    }
+    if word.contains(',') {
+        let mask = word
+            .split(',')
+            .map(|day| weekday_number(day).map(|weekday| 1u8 << (weekday - 1)))
+            .try_fold(0u8, |mask, bit| bit.map(|bit| mask | bit))?;
+        return weekly(Anchor::Weekdays(mask));
+    }
+    // `every 12/25`: one occurrence a year on a fixed month/day.
+    month_day(word).map(|(month, day)| PeriodKind::Annual { month, day })
+}
+
+/// Two words after `every`: a multiplied unit (`every 2 weeks`), a monthly
+/// anchor without its optional `of month` (`every 15th day`, `every 3rd mon`),
+/// or a yearly one without `of year` (`every 1st apr`, `every apr 1st`).
+fn every_pair(first: &str, second: &str) -> Option<PeriodKind> {
+    if let Some(multiplier) = period_multiplier(first) {
+        // `every 2 weeks`, never `every 2 weekly`: hledger rejects the adverb
+        // after a count (verified).
+        return period_unit(second)
+            .filter(|_| !second.ends_with("ly"))
+            .map(|unit| PeriodKind::Every { unit, multiplier });
+    }
+    monthly_anchor(first, second).or_else(|| annual(first, second))
+}
+
+/// `Nth day` or `Nth WEEKDAY`, of each month.
+fn monthly_anchor(nth: &str, what: &str) -> Option<PeriodKind> {
+    let monthly = |anchor| {
+        Some(PeriodKind::Anchored {
+            unit: PeriodExpr::Monthly,
+            anchor,
+        })
+    };
+    if what == "day" {
+        return monthly(Anchor::DayOfMonth(ordinal(nth, 31)?));
+    }
+    let weekday = weekday_number(what)?;
+    // Five is the most any weekday can occur in a month.
+    monthly(Anchor::NthWeekday {
+        nth: ordinal(nth, 5)?,
+        weekday,
+    })
+}
+
+/// `Nth MONTHNAME` or `MONTHNAME Nth`: once a year.
+///
+/// The ordinal suffix is REQUIRED here — hledger rejects `every 1 apr` and
+/// `every apr 1` (verified) — and a day past the month's end is accepted, as
+/// hledger accepts it: `every 30th feb` fires on the date February 1st plus
+/// 29 days lands on. [`crate::reports::budget`] reproduces that.
+fn annual(first: &str, second: &str) -> Option<PeriodKind> {
+    let (nth, month) = match month_number(second) {
+        Some(month) => (first, month),
+        None => (second, month_number(first)?),
+    };
+    let day = ordinal_with_suffix(nth, 31)?;
+    Some(PeriodKind::Annual { month, day })
 }
 
 /// One of the five units, singular or plural (`week`, `weeks`, `weekly`).
@@ -1860,11 +2050,19 @@ fn period_multiplier(word: &str) -> Option<u32> {
 
 /// An ordinal (`15th`, `3rd`, `1st`, or a bare integer), bounded by `max`.
 fn ordinal(word: &str, max: u32) -> Option<u32> {
-    let digits = ["st", "nd", "rd", "th"]
+    let digits = strip_ordinal_suffix(word).unwrap_or(word);
+    digits.parse::<u32>().ok().filter(|n| (1..=max).contains(n))
+}
+
+/// An ordinal that MUST carry its `st`/`nd`/`rd`/`th` suffix.
+fn ordinal_with_suffix(word: &str, max: u32) -> Option<u32> {
+    strip_ordinal_suffix(word).and_then(|digits| ordinal(digits, max))
+}
+
+fn strip_ordinal_suffix(word: &str) -> Option<&str> {
+    ["st", "nd", "rd", "th"]
         .iter()
         .find_map(|suffix| word.strip_suffix(*suffix))
-        .unwrap_or(word);
-    digits.parse::<u32>().ok().filter(|n| (1..=max).contains(n))
 }
 
 /// A weekday name or its three-letter abbreviation, as an ISO number
@@ -1882,14 +2080,38 @@ fn weekday_number(word: &str) -> Option<u32> {
     })
 }
 
-/// The `12/25` of `every 12/25` — a month and a day, with no year.
-fn month_day(token: &str) -> Option<(u32, u32)> {
-    let (month, day) = token.split_once(['/', '-', '.'])?;
-    let month = month.parse::<u32>().ok()?;
-    let day = day.parse::<u32>().ok()?;
-    ((1..=12).contains(&month) && (1..=31).contains(&day)).then_some((month, day))
+/// A month name or its three-letter abbreviation, as 1-12.
+fn month_number(word: &str) -> Option<u32> {
+    Some(match word {
+        "jan" | "january" => 1,
+        "feb" | "february" => 2,
+        "mar" | "march" => 3,
+        "apr" | "april" => 4,
+        "may" => 5,
+        "jun" | "june" => 6,
+        "jul" | "july" => 7,
+        "aug" | "august" => 8,
+        "sep" | "september" => 9,
+        "oct" | "october" => 10,
+        "nov" | "november" => 11,
+        "dec" | "december" => 12,
+        _ => return None,
+    })
 }
 
+/// The `12/25` of `every 12/25` — a month and a day, with no year.
+///
+/// The day must exist in that month in SOME year: hledger rejects
+/// `every 2/30` and `every 4/31` but takes `every 2/29` (all verified), which
+/// it fires on March 1st in a non-leap year.
+fn month_day(token: &str) -> Option<(u32, u32)> {
+    let (month, day) = token.split_once(['/', '-', '.'])?;
+    let month = month.parse::<u32>().ok().filter(|m| (1..=12).contains(m))?;
+    let day = day.parse::<u32>().ok()?;
+    // 2000 is a leap year, so February admits its 29th.
+    let longest = u32::try_from(days_in_month(2000, i32::try_from(month).ok()?)).ok()?;
+    (1..=longest).contains(&day).then_some((month, day))
+}
 // ---------------------------------------------------------------------------
 // Transactions
 // ---------------------------------------------------------------------------
@@ -3801,6 +4023,255 @@ mod tests {
         }
     }
 
+    /// Every form plan 30 added, each verified against `hledger 1.52 print
+    /// --forecast` on 2026-10-27 before it was written down here. The first
+    /// three are the lines that reported "not a recurrence this engine can
+    /// enumerate".
+    #[test]
+    fn periodic_rule_accepts_the_forms_plan_30_added() {
+        let annual = |month, day| PeriodKind::Annual { month, day };
+        let monthly = |anchor| PeriodKind::Anchored {
+            unit: PeriodExpr::Monthly,
+            anchor,
+        };
+        let weekly = |anchor| PeriodKind::Anchored {
+            unit: PeriodExpr::Weekly,
+            anchor,
+        };
+        let every = |unit, multiplier| PeriodKind::Every { unit, multiplier };
+        let month = every(PeriodExpr::Monthly, 1);
+        let mon_wed_fri = Anchor::Weekdays(0b001_0101);
+
+        for (expr, kind, start, end) in [
+            (
+                "every 1st Apr from 2027",
+                annual(4, 1),
+                Some("2027-01-01"),
+                None,
+            ),
+            (
+                "every 15th Nov from 2026 to 2026-12-31",
+                annual(11, 15),
+                Some("2026-01-01"),
+                Some("2026-12-31"),
+            ),
+            (
+                "every 1st July from 2027",
+                annual(7, 1),
+                Some("2027-01-01"),
+                None,
+            ),
+            // Month name first, `of year`, full and short names, a
+            // zero-padded ordinal, and a day past the month's end.
+            ("every Nov 15th", annual(11, 15), None, None),
+            ("every 15th Nov of year", annual(11, 15), None, None),
+            ("every Nov 15th of year", annual(11, 15), None, None),
+            ("every 11/15 of year", annual(11, 15), None, None),
+            ("every 01st april", annual(4, 1), None, None),
+            ("every 30th feb", annual(2, 30), None, None),
+            ("every 2/29", annual(2, 29), None, None),
+            // `of month` is optional.
+            ("every 2nd day", monthly(Anchor::DayOfMonth(2)), None, None),
+            (
+                "every 15th day from 2027-03",
+                monthly(Anchor::DayOfMonth(15)),
+                Some("2027-03-01"),
+                None,
+            ),
+            (
+                "every 3rd mon",
+                monthly(Anchor::NthWeekday { nth: 3, weekday: 1 }),
+                None,
+                None,
+            ),
+            (
+                "every 2nd Monday",
+                monthly(Anchor::NthWeekday { nth: 2, weekday: 1 }),
+                None,
+                None,
+            ),
+            // Several weekdays a week.
+            (
+                "every weekday",
+                weekly(Anchor::Weekdays(0b001_1111)),
+                None,
+                None,
+            ),
+            (
+                "every weekendday",
+                weekly(Anchor::Weekdays(0b110_0000)),
+                None,
+                None,
+            ),
+            ("every mon,wed,fri", weekly(mon_wed_fri), None, None),
+            ("every fri,mon,wed", weekly(mon_wed_fri), None, None),
+            (
+                "every mon,wed,fri to 2027-01-20",
+                weekly(mon_wed_fri),
+                None,
+                Some("2027-01-20"),
+            ),
+            // `in`, `since`, `until`, `..`, `-`, and a lone date naming a span.
+            (
+                "monthly in 2027",
+                month,
+                Some("2027-01-01"),
+                Some("2028-01-01"),
+            ),
+            (
+                "monthly 2027",
+                month,
+                Some("2027-01-01"),
+                Some("2028-01-01"),
+            ),
+            (
+                "monthly 2027-03",
+                month,
+                Some("2027-03-01"),
+                Some("2027-04-01"),
+            ),
+            (
+                "monthly 20270301",
+                month,
+                Some("2027-03-01"),
+                Some("2027-03-02"),
+            ),
+            ("monthly from 202703", month, Some("2027-03-01"), None),
+            (
+                "monthly in 2027q2",
+                month,
+                Some("2027-04-01"),
+                Some("2027-07-01"),
+            ),
+            ("monthly from 2027q2", month, Some("2027-04-01"), None),
+            (
+                "monthly from 2027 to 2027q3",
+                month,
+                Some("2027-01-01"),
+                Some("2027-07-01"),
+            ),
+            ("monthly since 2027-03", month, Some("2027-03-01"), None),
+            ("monthly until 2027-04", month, None, Some("2027-04-01")),
+            (
+                "monthly since 2027-03 to 2027-06",
+                month,
+                Some("2027-03-01"),
+                Some("2027-06-01"),
+            ),
+            (
+                "monthly since 2027-03..2027-06",
+                month,
+                Some("2027-03-01"),
+                Some("2027-06-01"),
+            ),
+            (
+                "monthly 2027-03 to 2027-06",
+                month,
+                Some("2027-03-01"),
+                Some("2027-06-01"),
+            ),
+            ("monthly .. 2027-06", month, None, Some("2027-06-01")),
+            ("monthly - 2027-06", month, None, Some("2027-06-01")),
+            (
+                "monthly 2027-01..2027-04",
+                month,
+                Some("2027-01-01"),
+                Some("2027-04-01"),
+            ),
+            (
+                "monthly from 2027-01 .. 2027-04",
+                month,
+                Some("2027-01-01"),
+                Some("2027-04-01"),
+            ),
+            (
+                "monthly from 2027-01 - 2027-04",
+                month,
+                Some("2027-01-01"),
+                Some("2027-04-01"),
+            ),
+            (
+                "monthly from 2027-01-2027-04",
+                month,
+                Some("2027-01-01"),
+                Some("2027-04-01"),
+            ),
+            (
+                "monthly 2027-02-15..2027-05",
+                month,
+                Some("2027-02-15"),
+                Some("2027-05-01"),
+            ),
+            (
+                "every 2 weeks in 2027-03",
+                every(PeriodExpr::Weekly, 2),
+                Some("2027-03-01"),
+                Some("2027-04-01"),
+            ),
+            (
+                "every 1st apr in 2027",
+                annual(4, 1),
+                Some("2027-01-01"),
+                Some("2028-01-01"),
+            ),
+            // A multiplier that looks like a year is still a multiplier.
+            (
+                "every 1000 days",
+                every(PeriodExpr::Daily, 1000),
+                None,
+                None,
+            ),
+            // One-offs: a quarter, a range, `in`.
+            ("2027q2", PeriodKind::Once, Some("2027-04-01"), None),
+            ("2027Q3", PeriodKind::Once, Some("2027-07-01"), None),
+            ("in 2027-03", PeriodKind::Once, Some("2027-03-01"), None),
+            (
+                "2027-03..2027-06",
+                PeriodKind::Once,
+                Some("2027-03-01"),
+                Some("2027-06-01"),
+            ),
+            (
+                "2027-03 to 2027-06",
+                PeriodKind::Once,
+                Some("2027-03-01"),
+                Some("2027-06-01"),
+            ),
+        ] {
+            let spec = period_spec(expr);
+            assert_eq!(spec.kind, kind, "kind of `{expr}`");
+            assert_eq!(spec.start.as_deref(), start, "start of `{expr}`");
+            assert_eq!(spec.end.as_deref(), end, "end of `{expr}`");
+            assert_eq!(spec.raw, expr, "raw of `{expr}`");
+        }
+    }
+
+    /// The interval words are cut where the PARSER cut them, whatever the
+    /// bounds clause looks like — which is what lets the projections table
+    /// rewrite a bound without eating part of the interval.
+    #[test]
+    fn interval_words_stop_where_the_bounds_start() {
+        for (expr, words) in [
+            ("every 1st Apr from 2027", Some("every 1st Apr")),
+            ("every 1st apr in 2027", Some("every 1st apr")),
+            (
+                "every 15th Nov of year to 2028",
+                Some("every 15th Nov of year"),
+            ),
+            ("every 2 weeks 2027-01..2027-04", Some("every 2 weeks")),
+            ("every 3rd mon since 2027-02", Some("every 3rd mon")),
+            ("every mon,wed,fri until 2027-06", Some("every mon,wed,fri")),
+            ("every 1000 days", Some("every 1000 days")),
+            ("2027q2", None),
+        ] {
+            assert_eq!(
+                period_spec(expr).interval_words().as_deref(),
+                words,
+                "words of `{expr}`"
+            );
+        }
+    }
+
     /// Only a BARE fixed interval answers `interval()`. The single word it
     /// returns cannot express a multiplier, an anchor or a bound, so a caller
     /// that wrote it back would drop the rest of the rule.
@@ -3904,8 +4375,14 @@ mod tests {
                 Some("2027-01-01"),
                 Some("2027-02-01"),
             ),
-            // Never understood, so never rewritten.
-            ("every weekday from 2026-11-01", None, None, None, None),
+            // Bounds beside a weekday set are rewritten around its words.
+            (
+                "every weekday from 2026-11-01",
+                None,
+                Some("every weekday"),
+                Some("2026-11-01"),
+                None,
+            ),
         ];
         for (expr, interval, words, start, end) in cases {
             for header in [
@@ -3926,9 +4403,9 @@ mod tests {
         }
     }
 
-    /// The three forms hledger ITSELF rejects, plus a single-space description
-    /// (which hledger reads as part of the period expression, and errors on).
-    /// All four degrade to a locked rule with `raw` intact — **the journal still
+    /// Forms hledger ITSELF rejects, a single-space description (which hledger
+    /// reads as part of the period expression, and errors on), and relative
+    /// dates. All degrade to a locked rule with `raw` intact — **the journal still
     /// opens**, which is the whole point of this change.
     #[test]
     fn hledger_rejects_degrade_rather_than_failing_the_journal() {
@@ -3941,10 +4418,29 @@ mod tests {
             // expression, which is what makes this unreadable rather than a rule
             // named "budget".
             "monthly budget",
-            // Real hledger expressions we decline to model: neither is one
-            // occurrence per unit, so neither is a step.
-            "every weekday",
-            "every weekendday",
+            // Rejected by hledger 1.52 too (verified 2026-10-27): a month-name
+            // day needs its ordinal suffix, a quarter has no ordinal form, an
+            // interval word takes no multiplier, `MM/DD` must be a real day,
+            // two bare dates need a `to` between them, `until` only opens a
+            // range with no start, and `in` takes one date, not a range.
+            "every nov 15",
+            "every 15 nov",
+            "every 1 apr",
+            "every 2nd quarter",
+            "every 2 weekly",
+            "every 2/30",
+            "every 4/31",
+            "every 32nd day",
+            "monthly 2027-01 2027-04",
+            "monthly since 2027-03 until 2027-06",
+            "monthly from 2027-01-15 until 2027-05",
+            "monthly 2027-03 until 2027-06",
+            "monthly in 2027-03..2027-06",
+            "monthly in from 2027-03",
+            // Relative dates: hledger reads them against today, and a rule
+            // must not change meaning overnight.
+            "monthly from jan to apr",
+            "monthly in this year",
         ] {
             let spec = period_spec(expr);
             assert_eq!(

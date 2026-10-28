@@ -1721,6 +1721,14 @@ fn parity_multi_commodity_lines() {
     parity(&["commodities.journal"], &[MONTHLY]);
 }
 
+/// Plan 30: the period forms Ledgeline used to warn about — `every 1st Apr`,
+/// `every 3rd mon`, `every weekday`, `every 2/29`, `monthly in 2027q1`,
+/// `monthly D..D` — fire on hledger's dates.
+#[test]
+fn parity_every_period_form_plan_30_added() {
+    parity(&["periods.journal"], &[MONTHLY, QUARTERLY, WEEKLY]);
+}
+
 /// The fixture really does hold real data AFTER the cutoff, and it is the
 /// documented `expr:` that leaves it out: without it, hledger's October food
 /// carries the real 2026-10-05 $77 on top of the forecast. So the parity above
