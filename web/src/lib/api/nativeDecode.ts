@@ -612,6 +612,7 @@ interface RawForecastJournal {
 interface RawForecastEntry {
     origin?: {kind?: string; key?: string};
     txn?: unknown;
+    haystack?: unknown;
 }
 
 interface RawHoldingPrice {
@@ -2493,7 +2494,11 @@ function decodeForecastJournal(raw: RawForecastJournal, context: string): Foreca
         const entry = value as RawForecastEntry;
         const at = `${context} entries[${i}]`;
         if (typeof entry !== "object" || entry === null) throw new ApiShapeError(`${at}: expected an object`);
-        return Object.freeze({origin: decodeForecastOrigin(entry.origin, `${at} origin`), txn: decodeRow(entry.txn, `${at} txn`).txn});
+        return Object.freeze({
+            origin: decodeForecastOrigin(entry.origin, `${at} origin`),
+            txn: decodeRow(entry.txn, `${at} txn`).txn,
+            haystack: str(entry.haystack, `${at} haystack`),
+        });
     });
     const total = decodeCount(raw.total, `${context} total`);
     if (entries.length > total) throw new ApiShapeError(`${context}: ${entries.length} entries but a total of ${total}`);

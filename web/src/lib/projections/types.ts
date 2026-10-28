@@ -341,6 +341,8 @@ export const FORECAST_ORIGIN_KINDS: readonly ForecastOrigin["kind"][] = ["rule",
 export interface ForecastEntry {
     origin: ForecastOrigin;
     txn: Transaction;
+    /** Lowercase search text from the engine (core's `haystack`), the same text the Journal tab's free-text filter searches. */
+    haystack: string;
 }
 
 /** The forecast journal: generated transactions only, date-ascending, capped by the engine. */

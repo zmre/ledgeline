@@ -159,6 +159,11 @@ export function forecastEntry(index: number, date: string, origin: ForecastOrigi
     });
     return {
         origin,
+        // What core's `haystack` builds for this transaction: description,
+        // comment, then each posting's account and its amount as displayed.
+        haystack: [description, `generated-transaction: ${period}`, "expenses:rent", "$4,200.00", "$", "assets:checking", "$-4,200.00", "$"]
+            .join("\n")
+            .toLowerCase(),
         txn: {
             index,
             date,

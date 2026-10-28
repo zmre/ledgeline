@@ -315,6 +315,37 @@ describe("COMPONENT ProjectionReports — journal", () => {
         expect(screen.getByTestId("forecast-journal-count").textContent).toContain("the first 3 are listed");
     });
 
+    it("filters by text across descriptions and accounts, case-insensitively", async () => {
+        mount("journal", projection({journal: journalFixture(2)}));
+        const box = screen.getByTestId("forecast-journal-search");
+        await fireEvent.input(box, {target: {value: "  New LAPTOP "}});
+        expect(screen.getAllByTestId("forecast-entry").map((entry) => entry.getAttribute("data-origin"))).toEqual(["event"]);
+        expect(screen.getByTestId("forecast-journal-count").textContent).toContain("Matching 1–1 of 1");
+        // An account matches too — every entry posts to `expenses:rent`.
+        await fireEvent.input(box, {target: {value: "rent"}});
+        expect(screen.getAllByTestId("forecast-entry")).toHaveLength(3);
+        await fireEvent.input(box, {target: {value: "no such thing"}});
+        expect(screen.queryAllByTestId("forecast-entry")).toHaveLength(0);
+        expect(screen.getByTestId("forecast-journal-count").textContent).toContain("No generated transaction matches “no such thing”");
+        await fireEvent.input(box, {target: {value: ""}});
+        expect(screen.getAllByTestId("forecast-entry")).toHaveLength(3);
+    });
+
+    it("starts a new search on its first page", async () => {
+        mount("journal", projection({journal: journalFixture(150)}));
+        await fireEvent.click(screen.getAllByRole("button", {name: "Next page"})[0]!);
+        expect(screen.getByTestId("forecast-journal-count").textContent).toContain("101–151 of 151");
+        await fireEvent.input(screen.getByTestId("forecast-journal-search"), {target: {value: "projection"}});
+        expect(screen.getByTestId("forecast-journal-count").textContent).toContain("Matching 1–100 of 150");
+    });
+
+    it("says a search of a capped list covers only what was listed", async () => {
+        const journal = {...journalFixture(2), total: 9000, truncated: true};
+        mount("journal", projection({journal}));
+        await fireEvent.input(screen.getByTestId("forecast-journal-search"), {target: {value: "rent"}});
+        expect(screen.getByTestId("forecast-journal-count").textContent).toContain("searching the first 3 of 9000 listed");
+    });
+
     it("says it is listing while a projection held from another tab has no journal yet", () => {
         mount("journal");
         expect(screen.getByTestId("projection-journal-pending")).toBeDefined();

@@ -2054,6 +2054,7 @@ const PROJECTION_RUN = {
         entries: [
             {
                 origin: {kind: "rule", key: "rule:0"},
+                haystack: "projection\ngenerated-transaction: ~ monthly\nexpenses:rent\n$4,200.00\n$",
                 txn: {
                     index: 401,
                     date: "2026-08-01",
@@ -2384,6 +2385,13 @@ describe("UNIT nativeDecode — a projection run", () => {
         expect(none.journal).toBeNull();
         expect(() => decodeProjection(without(PROJECTION_RUN, "accounts"))).toThrow(ApiShapeError);
         expect(() => decodeProjection(without(PROJECTION_RUN, "journal"))).toThrow(ApiShapeError);
+    });
+
+    it("carries each entry's search text, and refuses an entry without one", () => {
+        expect(decodeProjection(PROJECTION_RUN).journal?.entries[0]?.haystack).toContain("expenses:rent");
+        const entry = PROJECTION_RUN.journal.entries[0]!;
+        const bare = {...PROJECTION_RUN, journal: {...PROJECTION_RUN.journal, entries: [without(entry, "haystack")]}};
+        expect(() => decodeProjection(bare)).toThrow(ApiShapeError);
     });
 
     it("refuses an origin of an unknown kind, and more entries than the total", () => {

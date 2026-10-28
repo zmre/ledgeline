@@ -62,7 +62,8 @@ use ledgeline_core::reports::{
     periods::bucket_label, pivot_balance_sheets, signed_entry,
 };
 use ledgeline_core::vault::{Revision, VaultError};
-use ledgeline_core::view::rows::{Row, RowContext};
+use ledgeline_core::view::rows::{Row, RowContext, haystack};
+use ledgeline_core::view::wire::DeclaredStyles;
 use ledgeline_core::{Dec, Fingerprint};
 use serde::{Deserialize, Serialize};
 
@@ -491,6 +492,10 @@ impl From<&ForecastOrigin> for WireOrigin {
 struct WireForecastEntry {
     origin: WireOrigin,
     txn: Row<'static>,
+    /// The lowercase text the Journal tab's search box matches against —
+    /// [`haystack`], the same text the main journal's free-text filter
+    /// searches, so a query finds the same things on both tabs.
+    haystack: String,
 }
 
 /// The forecast journal: every generated transaction, date-ascending.
@@ -594,7 +599,11 @@ fn wire_statements(
 
 /// The Journal reading: the generated transactions only, in the journal
 /// view's row shape, capped at [`MAX_JOURNAL_ENTRIES`].
-fn forecast_journal(projection: &Projection, context: &RowContext<'_>) -> WireForecastJournal {
+fn forecast_journal(
+    projection: &Projection,
+    context: &RowContext<'_>,
+    declared: &DeclaredStyles,
+) -> WireForecastJournal {
     let forecast = &projection.forecast;
     let entries = forecast
         .txns
@@ -604,6 +613,7 @@ fn forecast_journal(projection: &Projection, context: &RowContext<'_>) -> WireFo
         .map(|(txn, origin)| WireForecastEntry {
             origin: WireOrigin::from(origin),
             txn: context.row(txn, Vec::new()),
+            haystack: haystack(txn, declared),
         })
         .collect();
     WireForecastJournal {
@@ -1200,7 +1210,7 @@ pub(crate) async fn run(
             .transpose()?;
         let forecast_journal = request.journal.then(|| {
             let declared = snapshot.view.declared(journal);
-            forecast_journal(&projection, &RowContext::new(journal, &declared))
+            forecast_journal(&projection, &RowContext::new(journal, &declared), &declared)
         });
         Ok(WireProjection {
             accounts,

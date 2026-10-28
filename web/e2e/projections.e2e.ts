@@ -232,6 +232,26 @@ test("projections: the Journal tab lists the generated transactions only, each n
     // The seed is monthly rules, marked as hledger marks them.
     await expect(first).toContainText("~ monthly");
     await expect(journal.getByTestId("forecast-journal-count")).toContainText("Generated transactions 1–");
+
+    // The search box narrows by the engine's own search text: an account the
+    // first entry posts to finds it, and nonsense finds nothing.
+    const account = (await first.locator("td[title]").first().getAttribute("title")) ?? "";
+    expect(account).not.toBe("");
+    const search = journal.getByTestId("forecast-journal-search");
+    await search.fill(account.toUpperCase());
+    await expect(journal.getByTestId("forecast-journal-count")).toContainText("Matching 1–");
+    // Every entry still listed posts to an account containing the query.
+    const accounts = await journal
+        .getByTestId("forecast-entry")
+        .evaluateAll((entries) => entries.map((entry) => [...entry.querySelectorAll("td[title]")].map((cell) => cell.getAttribute("title") ?? "")));
+    expect(accounts.length).toBeGreaterThan(0);
+    for (const names of accounts) expect(names.some((name) => name.includes(account))).toBe(true);
+    await search.fill("zzz-no-such-text");
+    await expect(journal.getByTestId("forecast-entry")).toHaveCount(0);
+    await expect(journal.getByTestId("forecast-journal-count")).toContainText("No generated transaction matches");
+    await search.fill("");
+    await expect(journal.getByTestId("forecast-journal-count")).toContainText("Generated transactions 1–");
+    await page.locator("h1").click();
     await page.keyboard.press("5");
     await expect(page.getByRole("tab", {name: "Accounts"})).toHaveAttribute("aria-selected", "true");
 });

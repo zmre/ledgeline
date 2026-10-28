@@ -1116,6 +1116,16 @@ async fn an_asset_rows_growth_is_named_in_the_journal() {
             entry["txn"]["postings"][0]["account"],
             "assets:vehicles:car"
         );
+        // The search text the Journal tab filters on: the journal's own
+        // haystack, lowercase, holding the description and every account.
+        let haystack = entry["haystack"].as_str().expect("a haystack");
+        assert_eq!(haystack, haystack.to_lowercase());
+        assert!(haystack.contains("assets:vehicles:car"), "{haystack:?}");
+        let description = entry["txn"]["description"].as_str().expect("description");
+        assert!(
+            haystack.contains(&description.to_lowercase()),
+            "{haystack:?}"
+        );
     }
 }
 
