@@ -45,7 +45,7 @@ When `--auto` is on, Ledgeline uses the transactions with the rules' postings ad
 - In the [budget](../budget.md), rules add to the actual amounts and never to the goals.
 - [Subscription detection](../reports/subscriptions.md) ignores the postings rules add, so a tax rule doesn't make a new subscription.
 
-Your journal files never change. The added postings exist only while Ledgeline reads the journal.
+Applying the rules never changes your journal files. The added postings exist only while Ledgeline reads the journal. The rules themselves are text in your journal, and you can edit them in [Settings › Automatic postings](#editing-a-rule).
 
 ## In the journal
 
@@ -64,7 +64,27 @@ This tab lists every rule in your journal and its included files. For each rule 
 - A lock if Ledgeline can't read its query, such as a complex `expr:`. A locked rule never applies here, so Ledgeline and hledger can disagree about it.
 - Any problem it causes, listed below.
 
-The tab also says whether `--auto` is on, and which config file says so. Change that in the config file.
+The tab also says whether `--auto` is on, and which config file says so. Change that on the [hledger config](../settings/hledger-config.md) tab or in the file.
+
+### Editing a rule
+
+**Edit** on a rule's card opens it in a form: the account it matches, the postings it adds, and the account that balances them. Type percentages and amounts as positive numbers meaning "this account grows by". Ledgeline works out each sign from the accounts' types, the same way the [projections rule editor](../projections/index.md) does. For example, 10% sales tax on a sale (a negative revenue amount) is written `*0.1` to the liability. A form edit is saved in a standard shape:
+
+```journal
+= ^revenue:sales(:|$)
+    liabilities:tax:sales  *0.08
+    assets:checking        *-0.08
+```
+
+The `^…(:|$)` query matches the account and its subaccounts, but not a sibling such as `revenue:sales2`. The balancing posting gets an explicit amount, because hledger refuses a blank one that fires twice in one transaction.
+
+Leave **forecasts only** unticked for a rule about your recorded transactions. Ticked, the query gains `tag:_generated-transaction`, so hledger applies the rule only to `--forecast` transactions. Ledgeline doesn't forecast your main journal, so such a rule never adds anything here.
+
+Some rules can't be shown as a form: a `tag:` or `desc:` query with no account, virtual postings, posting comments. These open as text instead, and so does **Edit as text** on any rule. What you type is written exactly as typed.
+
+**+ Add a rule** appends a new rule to the end of your main journal file. hledger applies a rule to every transaction, wherever the rule sits in the file. **Delete** asks once more, then removes the rule and the blank line above it.
+
+Each save rewrites only that rule's lines. The rest of the file, including your comments and alignment, is left byte for byte as it was. Nothing is written if the file changed on disk since the list was read, or if the journal would no longer read. A rule in a file Ledgeline can't write, such as a symlink, has no Edit button.
 
 ## Problems a rule can cause
 

@@ -692,6 +692,10 @@ Worktree agents branch from `main`, so after merging, re-run the full suite
   assertions, budget actuals), the `auto-rule` / `auto-account` diagnostics,
   `GET /api/auto-rules` and a read-only Settings › Automatic postings tab
   whose `editor` snippet prop is where the shared rule editor plugs in.
+- **Rule editing in Settings: built 2026-10-28** (amendment 22).
+  `auto_edit.rs`, `PUT /api/auto-rules`, `AutoRuleForm::forecast_only`, and
+  add/edit/delete on the Settings tab (the `editor` seam is gone; the panel
+  edits).
 
 ## Contract amendments made during implementation
 
@@ -997,3 +1001,38 @@ A hijacked conf (first word not a flag) turns them off, as it does in hledger.
 ### 21. The fixture is `fixtures/auto-postings/`
 
 The global `*-journal` git ignore hides a directory named `auto-journal`.
+
+### 22. Settings edits the main journal's rules; the form says whether it is forecast-only
+
+Built 2026-10-28.
+
+- **Forecast-only is a form field.** `AutoRuleForm::forecast_only` replaces
+  the always-written `tag:_generated-transaction`. A main-journal rule usually
+  fires on recorded transactions. Ledgeline forecasts nothing in the main
+  journal, and main-journal rules never reach a scenario (hledger #1212), so
+  a forecast-only rule there never fires in Ledgeline. Reading back, the tag
+  (or its visible twin) sets the field. A scenario's rules stay forecast-only
+  whatever the client sends: `projections_api` forces the field before it
+  renders.
+- **`auto_edit`** (core) is the span editor: `block_spans` from the parser's
+  `source_span`, which the scenario writer now shares, and `apply` for
+  replace, remove (taking one now-doubled blank line with it) and append
+  (after a blank line). `expected_raws` is what the re-parse must read back.
+  Verified 2026-10-28 that hledger applies a rule to transactions above it
+  in the file, so appending to the main file is safe.
+- **`PUT /api/auto-rules`** follows the budget writer's pipeline, reusing
+  its helpers. The body is `{journalId, revision, change}`, where `change`
+  is one of `add {rule}`, `replace {block, was, rule}` or
+  `remove {block, was}`, and `rule` is `{form}` or `{raw}`. `was` catches a
+  moved block even under a matching revision. The spans come from a parse of
+  exactly the bytes read, never the snapshot's. The answer is the new
+  listing.
+- **The listing** gains `editable`, `newRule` (the main file and its
+  revision), and per rule `journalId`, `block`, `revision` and `form`. The
+  form wire types and `rule_from_text` / `form_from_wire` moved from
+  `projections_api` to `auto_wire`, shared by both endpoints.
+- **The panel** edits one rule at a time and saves only on Save, never per
+  keystroke: a half-typed rule in the journal would change every report.
+  `AutoRuleEditor` takes `scope: "journal"`, which shows a forecasts-only
+  checkbox instead of the badge.
+
