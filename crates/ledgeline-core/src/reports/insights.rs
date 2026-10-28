@@ -1092,6 +1092,7 @@ mod tests {
             source_files: Vec::new(),
             transactions,
             periodic_transactions: Vec::new(),
+            auto_rules: Vec::new(),
             accounts: Vec::new(),
             aliases: Vec::new(),
             commodity_styles: Vec::new(),

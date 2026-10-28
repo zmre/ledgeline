@@ -31,6 +31,13 @@ itertools = "0.15"
 # `scripts/release.sh check` (a CI job) fails if it ever drifts.
 ledgeline-core = { path = "crates/ledgeline-core", version = "0.2.1" }
 
+# Plan 30: hledger queries (`= QUERY` auto-posting rules) are case-insensitive
+# infix regular expressions. `regex` is BurntSushi's, pure Rust (so it builds
+# for the FFI/iOS target), linear-time by construction — no catastrophic
+# backtracking on a hostile pattern — and already in the lockfile through
+# criterion. Default features off: no Unicode tables beyond case folding.
+regex = { version = "1.13", default-features = false, features = ["std", "perf", "unicode-case", "unicode-perl"] }
+
 # Phase 5 write path: `ropey` is the text-rope over the journal file. Pinned to
 # the stable 1.6 line — 1.6.1 (2023-10-18) is the latest stable release and the
 # project's recommended LTS; 2.0 is still alpha/beta (2.0.0-beta.1, 2025-08-02)

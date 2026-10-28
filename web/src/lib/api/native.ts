@@ -764,6 +764,8 @@ export interface WireScenarioIn {
     events: WireScenarioEventIn[];
     /** `; cash:` — the scenario's default counter-account, or `null`. */
     cash: string | null;
+    /** Each `= QUERY` rule's text, handed back as it came; the engine re-reads it. */
+    autoRules: {raw: string}[];
 }
 
 /** The whole `POST /api/projections/run` body. */

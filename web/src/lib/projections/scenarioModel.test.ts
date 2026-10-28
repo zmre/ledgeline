@@ -566,12 +566,22 @@ describe("UNIT scenarioModel — cloning", () => {
                     ]),
                 }),
             ]),
+            autoRules: Object.freeze([Object.freeze({raw: "= expenses:rent\n    (budget:rent)  *-1\n", query: "expenses:rent", unsupported: null})]),
         }) as Scenario;
 
         const clone = cloneScenario(decoded);
         expect(clone).toEqual(decoded);
         // Every level is writable, which is what the editor's `$state` needs.
-        for (const target of [clone, clone.lines[0], clone.lines[0].amount, clone.lines[0].amount.quantity, clone.events[0], clone.events[0].postings[0]]) {
+        for (const target of [
+            clone,
+            clone.lines[0],
+            clone.lines[0].amount,
+            clone.lines[0].amount.quantity,
+            clone.events[0],
+            clone.events[0].postings[0],
+            clone.autoRules,
+            clone.autoRules[0],
+        ]) {
             expect(Object.isFrozen(target)).toBe(false);
         }
         clone.lines[0].account = "expenses:other";

@@ -220,6 +220,18 @@ export interface Scenario {
     events: ScenarioEvent[];
     /** `; cash:` — the scenario's default counter-account, or `null`. */
     cash: string | null;
+    /** The scenario file's `= QUERY` auto-posting rules, applied to every projected transaction (plan 30). Carried, never edited here yet. */
+    autoRules: AutoRule[];
+}
+
+/** One `= QUERY` auto-posting rule. `raw` is the fact the engine reads back; the rest is derived for display. */
+export interface AutoRule {
+    /** The whole block as the file writes it, each line ending in a newline. */
+    raw: string;
+    /** The query, as written. */
+    query: string;
+    /** Why the rule never fires, or `null` when it does. */
+    unsupported: string | null;
 }
 
 /** An opening balance and each bucket's closing balance. `opening` is a real figure from the journal. */

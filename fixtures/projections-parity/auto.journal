@@ -1,0 +1,51 @@
+; Ledgeline projection
+; projection: Parity auto rules
+; created: 2026-10-28
+; updated: 2026-10-28
+
+; Plan 30: `= QUERY` auto-posting rules on the forecast. The two rules are the
+; user's own, verbatim; `tag:_generated-transaction` keeps them off recorded
+; transactions in hledger too.
+
+account revenue:sales                                    ; type: R
+account expenses:people-costs:wages-salaries             ; type: X
+account expenses:people-costs:wages-salaries:george      ; type: X
+account expenses:people-costs:wages-salaries:john        ; type: X
+account expenses:people-costs:payroll-tax                ; type: X
+account expenses:people-costs:sales-commission:residual  ; type: X
+account assets:mercury:checking                          ; type: C
+
+= expenses:people-costs:wages-salaries tag:_generated-transaction
+    expenses:people-costs:payroll-tax  *0.1
+    assets:mercury:checking
+
+= revenue:sales tag:_generated-transaction
+    expenses:people-costs:sales-commission:residual  *-0.03
+    assets:mercury:checking
+
+~ monthly  payroll
+    expenses:people-costs:wages-salaries     $9000.00
+    assets:mercury:checking
+
+; Per-person wages on CHILD accounts of the rule's account: the rule fires for
+; each. One person per `~` block, which is the form hledger loads (with two in
+; one block, hledger refuses the amountless leg added twice).
+~ monthly  george
+    expenses:people-costs:wages-salaries:george   $6000.00
+    assets:mercury:checking
+
+~ monthly  john
+    expenses:people-costs:wages-salaries:john     $5000.00
+    assets:mercury:checking
+
+~ every 1st Apr from 2027  Lucid Software
+    revenue:sales            $-40000.00
+    assets:mercury:checking
+
+~ every 15th Nov from 2026 to 2026-12-31  AT&T
+    revenue:sales           $-250000.00
+    assets:mercury:checking
+
+~ monthly from 2027-02  subscriptions
+    revenue:sales             $-1234.56
+    assets:mercury:checking

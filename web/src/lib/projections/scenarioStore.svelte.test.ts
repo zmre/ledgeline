@@ -51,6 +51,7 @@ const SEED_BODY = {
     ],
     events: [],
     cash: null,
+    autoRules: [],
 };
 
 const RUN_BODY = rawProjectionRun();
@@ -78,7 +79,7 @@ beforeEach(async () => {
     });
     // Back to a known, not-dirty state: the store is a module singleton shared
     // by every test in this file.
-    scenarioStore.adopt({name: "", created: null, updated: null, lines: [], events: [], cash: null});
+    scenarioStore.adopt({name: "", created: null, updated: null, lines: [], events: [], cash: null, autoRules: []});
 });
 
 afterEach(() => {
@@ -159,7 +160,7 @@ describe("COMPONENT scenarioStore — the seed's depth", () => {
 
     it("a scenario from a FILE has no seed depth", async () => {
         await scenarioStore.ensureSeeded(FAKE_ENGINE, 23, 2);
-        scenarioStore.adopt({name: "From a file", created: null, updated: null, lines: [], events: [], cash: null});
+        scenarioStore.adopt({name: "From a file", created: null, updated: null, lines: [], events: [], cash: null, autoRules: []});
         expect(scenarioStore.seedDepth).toBe(null);
     });
 });
@@ -258,7 +259,7 @@ describe("COMPONENT scenarioTableView — what gates the table", () => {
     });
 
     it("`adopted` is set by a load as well as by a seed", () => {
-        scenarioStore.adopt({name: "From a file", created: null, updated: null, lines: [], events: [], cash: null});
+        scenarioStore.adopt({name: "From a file", created: null, updated: null, lines: [], events: [], cash: null, autoRules: []});
         expect(scenarioStore.adopted).toBe(true);
     });
 });

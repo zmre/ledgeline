@@ -820,7 +820,7 @@ export const GROWTH_UNIT_ABBREV: Record<Growth["unit"], string> = {week: "wk", m
 
 /** An empty, unnamed scenario — what the tab holds before a seed answers. */
 export function emptyScenario(): Scenario {
-    return {name: "", created: null, updated: null, lines: [], events: [], cash: null};
+    return {name: "", created: null, updated: null, lines: [], events: [], cash: null, autoRules: []};
 }
 
 /**
@@ -852,6 +852,7 @@ export function cloneScenario(scenario: Scenario): Scenario {
             postings: event.postings.map((posting) => ({account: posting.account, amount: cloneAmount(posting.amount)})),
         })),
         cash: scenario.cash,
+        autoRules: scenario.autoRules.map((rule) => ({...rule})),
     };
 }
 
@@ -907,6 +908,8 @@ export function scenarioToWire(scenario: Scenario): WireScenarioIn {
             counter: accountOrNull(event.counter),
         })),
         cash: accountOrNull(scenario.cash),
+        // Read-only here: the text goes back exactly as the engine sent it.
+        autoRules: scenario.autoRules.map((rule) => ({raw: rule.raw})),
     };
 }
 

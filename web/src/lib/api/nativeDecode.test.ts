@@ -2158,6 +2158,7 @@ const SCENARIO_FILE = {
             },
         ],
         cash: null,
+        autoRules: [],
     },
 };
 

@@ -178,6 +178,55 @@ On the days `hledger --forecast` fires it, from the first projected day:
 The Budget tab follows that report, and the Projections tab follows
 `--forecast`.
 
+## Automatic postings (`=` rules)
+
+A projection file can hold hledger's auto-posting rules, so a cost can follow a
+revenue or a wage line as a percentage:
+
+```journal
+= revenue:sales tag:_generated-transaction
+    expenses:people-costs:sales-commission  *-0.03
+    assets:mercury:checking
+
+= expenses:people-costs:wages-salaries tag:_generated-transaction
+    expenses:people-costs:payroll-tax  *0.1
+    assets:mercury:checking
+```
+
+Wherever a rule's query matches a posting of a projected transaction, its
+postings are added right below that posting. `*0.1` is 10% of the matched
+amount, and the posting with no amount balances the others. Ledgeline applies
+a projection file's rules to every projected transaction, always, whatever your
+`hledger.conf` says about `--auto`. It never applies them to recorded
+transactions.
+
+- **`tag:_generated-transaction`** in the query is what tells *hledger* to do
+  the same. Without it, `hledger --auto` would also apply the rule to your
+  recorded transactions. Ledgeline still keeps the rule to the projection, and
+  its warnings say so.
+- **A rule on an account also fires for that account's children.**
+  `expenses:people-costs:wages-salaries` matches `…:wages-salaries:george`, and
+  each child posting gets its own 10%. hledger's queries match anywhere in the
+  name, so it also matches a sibling such as `…:wages-salaries2`. To keep to
+  the subtree, write `^expenses:people-costs:wages-salaries(:|$)`.
+- **If one projected transaction has several matching postings** (two people
+  in the same `~` rule), the amountless posting is added once per match.
+  Ledgeline balances each one, but `hledger --auto` refuses the file. Write
+  that posting with the opposite multiplier, `assets:mercury:checking  *-0.1`,
+  and hledger reads it the same way. Putting each person in a `~` rule of
+  their own works too. The Projections page warns when this applies.
+- A bare number, such as `2`, is written with no commodity, as hledger 1.52
+  writes it.
+- Queries Ledgeline does not evaluate yet (`expr:`, `type:`, `date2:`) keep the
+  rule in the file but it never fires, and the page says why.
+
+The Projections page lists the rules read-only under **Automatic postings**. To
+change one, edit the file. Its generated postings are marked **auto** in the
+Journal tab. Saving keeps every rule byte for byte, and Save As copies them to
+the new file.
+
+To check a projection with hledger, add `--auto` to the commands below.
+
 ## What hledger does, and does not, do with this
 
 `hledger` reads these files. Both of these work:

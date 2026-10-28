@@ -234,7 +234,10 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         const styles = decodeJournalInfo(await new LedgelineApi(url).journalInfo()).reportStyles;
         const rent = {...withMagnitude({...blankLine("rent", "$"), account: "expenses:rent"}, dec(420000, 2)), group: "rule:0"};
         const body = {
-            ...runBody({name: "", created: null, updated: null, lines: [rent], events: [], cash: null}, {interval: "monthly", count: 3, lookback: 2, depth: 2}),
+            ...runBody(
+                {name: "", created: null, updated: null, lines: [rent], events: [], cash: null, autoRules: []},
+                {interval: "monthly", count: 3, lookback: 2, depth: 2}
+            ),
             asOf: AS_OF,
         };
         const projection = decodeProjection(await new LedgelineApi(url).runProjection(body));
@@ -259,7 +262,7 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         // Asked for, the Accounts and Journal readings decode the real engine's bytes.
         const rent3 = {
             ...runBody(
-                {name: "", created: null, updated: null, lines: [rent], events: [], cash: null},
+                {name: "", created: null, updated: null, lines: [rent], events: [], cash: null, autoRules: []},
                 {interval: "monthly", count: 3, lookback: 2, depth: 2, accounts: {mode: "balance", empty: true}, journal: true}
             ),
             asOf: AS_OF,
@@ -272,6 +275,41 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         expect(full.accounts?.rows.some((row) => row.account === "expenses:shopping")).toBe(true);
         expect(full.journal?.entries.map((entry) => entry.txn.date)).toEqual(["2026-07-01", "2026-08-01", "2026-09-01"]);
         expect(full.journal?.entries[0]?.origin).toEqual({kind: "rule", key: "rule:0"});
+
+        // Plan 30: a scenario's `= QUERY` rule rides on the body and the real
+        // engine applies it to every projected transaction — 10% of each
+        // $4,200 rent, right below the rent posting, tagged as generated.
+        const taxed = {
+            ...runBody(
+                {
+                    name: "",
+                    created: null,
+                    updated: null,
+                    lines: [rent],
+                    events: [],
+                    cash: null,
+                    autoRules: [
+                        {
+                            raw: "= expenses:rent tag:_generated-transaction\n    expenses:rent-tax  *0.1\n    assets:bank:checking\n",
+                            query: "",
+                            unsupported: null,
+                        },
+                    ],
+                },
+                {interval: "monthly", count: 3, lookback: 2, depth: 2, journal: true}
+            ),
+            asOf: AS_OF,
+        };
+        const withTax = decodeProjection(await new LedgelineApi(url).runProjection(taxed));
+        for (const entry of withTax.journal?.entries ?? []) {
+            const at = entry.txn.postings.findIndex((posting) => posting.account === "expenses:rent");
+            const tax = entry.txn.postings[at + 1];
+            expect(tax?.account).toBe("expenses:rent-tax");
+            expect(dollarLine(new Map(tax!.amounts.map((amount) => [amount.commodity, amount.qty])), styles)).toBe("$420.00");
+            expect(tax?.tags.some(([name]) => name === "generated-posting")).toBe(true);
+        }
+        expect(withTax.journal?.entries).toHaveLength(3);
+        expect(withTax.warnings.some((warning) => warning.includes("auto rule"))).toBe(false);
     });
 
     it("journal info falls back to the fixture folder's name", async () => {

@@ -213,13 +213,27 @@ fn read_scenario(
         .iter()
         .map(|account| account.name.0.clone())
         .collect();
+    // The file's own `=` rules, by the same rule and the same fallback as its
+    // `~` rules above: never an includee's.
+    let mine = |rule: &&crate::model::AutoPostingRule| {
+        rule.source_file.as_os_str() == std::ffi::OsStr::new(source_name)
+    };
+    let auto_rules =
+        if !journal.auto_rules.iter().any(|rule| mine(&rule)) && journal.source_files.len() <= 1 {
+            journal.auto_rules.clone()
+        } else {
+            journal.auto_rules.iter().filter(mine).cloned().collect()
+        };
     Ok((
-        scenario_from_rules(
-            &rules,
-            &header,
-            fallback_name,
-            &AccountTypes::from_declared(types),
-        ),
+        Scenario {
+            auto_rules,
+            ..scenario_from_rules(
+                &rules,
+                &header,
+                fallback_name,
+                &AccountTypes::from_declared(types),
+            )
+        },
         own_accounts,
     ))
 }
@@ -264,6 +278,7 @@ fn scenario_from_rules(
         }
     }
     Scenario {
+        auto_rules: Vec::new(),
         name: header
             .name
             .clone()
@@ -1442,9 +1457,53 @@ pub fn write_scenario(
     scenario: &Scenario,
     source_name: &str,
 ) -> Result<String, SerializeError> {
-    let text = doc.apply(scenario)?;
+    let text = with_auto_rules(doc.apply(scenario)?, scenario);
     confirm_round_trip(doc, &text, scenario, source_name)?;
+    confirm_auto_rules(&text, scenario, source_name, &doc.declared)?;
     Ok(text)
+}
+
+/// `text` with every one of the scenario's `=` rules the file does not
+/// already hold appended at its end, each as its own block.
+///
+/// A rule already in the file is left where it is, byte for byte: the splicer
+/// never touches an `=` block, so an in-place save keeps every rule exactly as
+/// written. What this adds is the Save As case, where the document is empty
+/// and the rules arrive only in the model.
+fn with_auto_rules(mut text: String, scenario: &Scenario) -> String {
+    for rule in &scenario.auto_rules {
+        if text.contains(rule.raw.as_str()) {
+            continue;
+        }
+        if !text.is_empty() && !text.ends_with("\n\n") {
+            text.push_str(if text.ends_with('\n') { "\n" } else { "\n\n" });
+        }
+        text.push_str(&rule.raw);
+    }
+    text
+}
+
+/// Require `text` to read back with exactly the scenario's `=` rules, so a save
+/// can never drop or garble one.
+fn confirm_auto_rules(
+    text: &str,
+    scenario: &Scenario,
+    source_name: &str,
+    declared: &BTreeMap<String, crate::reports::account_types::AccountType>,
+) -> Result<(), SerializeError> {
+    let written = scenario_from_text(text, source_name, "", declared)?;
+    let raws = |rules: &[crate::model::AutoPostingRule]| -> Vec<String> {
+        rules.iter().map(|rule| rule.raw.clone()).collect()
+    };
+    let (want, got) = (raws(&scenario.auto_rules), raws(&written.auto_rules));
+    if want.iter().all(|rule| got.contains(rule)) {
+        return Ok(());
+    }
+    Err(SerializeError::NotRoundTripped(format!(
+        "{} auto rules were to be kept and {} read back",
+        want.len(),
+        got.len()
+    )))
 }
 
 /// Re-read `text` and require its blocks to state `scenario`.
@@ -1729,6 +1788,7 @@ mod tests {
     #[test]
     fn a_new_file_round_trips_and_states_its_header() {
         let scenario = Scenario {
+            auto_rules: Vec::new(),
             cash: None,
             name: "Plan B".to_string(),
             created: Some("2026-01-01".to_string()),
@@ -1951,6 +2011,7 @@ mod tests {
     #[test]
     fn an_asset_row_with_no_rate_still_writes_the_marker_tag() {
         let scenario = Scenario {
+            auto_rules: Vec::new(),
             name: "Flat".to_string(),
             lines: vec![asset(
                 "rule:0",
@@ -2023,6 +2084,7 @@ account activo:inversiones  ; type: A
             ..usd(Dec::new(100_000, 2), 2)
         });
         let cross_commodity = Scenario {
+            auto_rules: Vec::new(),
             lines: vec![row.clone()],
             ..Scenario::default()
         };
@@ -2037,6 +2099,7 @@ account activo:inversiones  ; type: A
         );
 
         let on_a_flow = Scenario {
+            auto_rules: Vec::new(),
             lines: vec![ScenarioLine {
                 role: LineRole::Flow,
                 opening: Some(usd(Dec::new(100_000, 2), 2)),
@@ -2193,6 +2256,7 @@ account expenses:rent    ; type: X
             "",
         ] {
             let scenario = Scenario {
+                auto_rules: Vec::new(),
                 lines: vec![line(
                     "rule:0",
                     "rule:0:0",
@@ -2217,6 +2281,7 @@ account expenses:rent    ; type: X
         // hledger ends a tag's value at a comma, so `; projection: Plan B,
         // revised` reads back as `Plan B` — and the name is also the filename.
         let scenario = Scenario {
+            auto_rules: Vec::new(),
             name: "Plan B, revised".to_string(),
             ..Scenario::default()
         };
@@ -2229,6 +2294,7 @@ account expenses:rent    ; type: X
     #[test]
     fn a_group_whose_lines_disagree_about_the_recurrence_is_refused() {
         let scenario = Scenario {
+            auto_rules: Vec::new(),
             lines: vec![
                 line(
                     "rule:0",
@@ -2260,6 +2326,7 @@ account expenses:rent    ; type: X
         // instead — so neither shape can produce an unreadable `line:` tag.
         for id in ["a,b", "a;b", " a", ""] {
             let single = Scenario {
+                auto_rules: Vec::new(),
                 lines: vec![line(
                     "rule:0",
                     id,
@@ -2273,6 +2340,7 @@ account expenses:rent    ; type: X
             assert!(!text.contains("line:"), "{text}");
 
             let step = Scenario {
+                auto_rules: Vec::new(),
                 lines: vec![
                     line(
                         "rule:0",
@@ -2359,6 +2427,7 @@ account expenses:rent    ; type: X
         // …and a readable id somebody chose is kept as it is.
         lines.extend(step("rule:3", "group-3", "hiring", "expenses:recruiting"));
         let scenario = Scenario {
+            auto_rules: Vec::new(),
             lines,
             ..Scenario::default()
         };
@@ -2534,6 +2603,7 @@ account expenses:rent    ; type: X
         lines.extend(step("rule:1", "group-1", "rule:1:0", "expenses:payroll"));
         let first = new_file(
             &Scenario {
+                auto_rules: Vec::new(),
                 lines,
                 ..Scenario::default()
             },
@@ -2655,6 +2725,7 @@ account expenses:rent    ; type: X
         // every step, so a `$1,875.00` line written as `$1875` would grow on
         // whole dollars from then on.
         let scenario = Scenario {
+            auto_rules: Vec::new(),
             lines: vec![line(
                 "rule:0",
                 "rule:0:0",
@@ -2672,6 +2743,7 @@ account expenses:rent    ; type: X
     #[test]
     fn amounts_are_aligned_within_a_block_and_only_within_it() {
         let scenario = Scenario {
+            auto_rules: Vec::new(),
             lines: vec![
                 line(
                     "rule:0",
@@ -2737,6 +2809,7 @@ account expenses:rent    ; type: X
         // that could come back as `Unbudgeted` — which is why the flip is two
         // lines here and not a function.
         let scenario = Scenario {
+            auto_rules: Vec::new(),
             lines: vec![ScenarioLine {
                 source: LineSource::Unbudgeted,
                 ..line(

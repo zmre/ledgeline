@@ -2164,6 +2164,7 @@ dependencies = [
  "itertools 0.15.0",
  "proptest",
  "proptest-derive",
+ "regex",
  "ropey",
  "rustix",
  "serde",

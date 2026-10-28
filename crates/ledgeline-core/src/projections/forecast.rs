@@ -1019,10 +1019,59 @@ pub(super) fn expand_from(
         origins,
         prices: forecast_prices,
         assets,
-        commodities,
+        mut commodities,
         mut warnings,
         ..
     } = expansion;
+    // The scenario's `=` rules, on every transaction its rules and events
+    // generated — always, whatever `--auto` says for the main journal (plan 30
+    // Decision 6). Not on an asset row's growth: hledger never generates
+    // those, so a rule there would have no hledger reading to agree with.
+    let txns = if scenario.auto_rules.is_empty() {
+        txns
+    } else {
+        warnings.extend(auto_rule_warnings(&scenario.auto_rules));
+        let mut refused = vec![false; scenario.auto_rules.len()];
+        let applied = txns
+            .into_iter()
+            .zip(&origins)
+            .map(|(txn, origin)| match origin {
+                ForecastOrigin::Growth(_) => Ok(txn),
+                ForecastOrigin::Rule(_) | ForecastOrigin::Event(_) => {
+                    let (txn, fired) = crate::auto::apply_counted(&scenario.auto_rules, &txn)?;
+                    for ((rule, count), flag) in
+                        scenario.auto_rules.iter().zip(fired).zip(&mut refused)
+                    {
+                        *flag |= crate::auto::hledger_refuses(rule, count);
+                    }
+                    Ok(txn)
+                }
+            })
+            .collect::<Result<Vec<_>, ReportError>>()?;
+        warnings.extend(
+            scenario
+                .auto_rules
+                .iter()
+                .zip(refused)
+                .filter(|(_, refused)| *refused)
+                .map(|(rule, _)| {
+                    format!(
+                        "auto rule `= {}` matches more than one posting of a projected transaction, so \
+                         its amountless posting is added once per match; Ledgeline balances each one, \
+                         but `hledger --auto` refuses the file. Give that posting the opposite \
+                         multiplier (for example `assets:checking  *-0.1`) and hledger reads it the same way",
+                        rule.query.raw()
+                    )
+                }),
+        );
+        applied
+    };
+    commodities.extend(
+        txns.iter()
+            .flat_map(|txn| &txn.postings)
+            .flat_map(|posting| &posting.amounts)
+            .map(|amount| amount.commodity.clone()),
+    );
     super::warn_on_commodity_mismatch(&commodities, target.as_ref(), db, &as_of, &mut warnings);
     let forecast_defaults = ForecastDefaults::of_under(scenario, defaults, header);
 
@@ -1669,6 +1718,30 @@ fn generated(date: &str, description: &str, period: &str, postings: Vec<Posting>
     }
 }
 
+/// What a scenario's `=` rules need said about them: one that can never fire,
+/// and one that applies here to the forecast only but that stock
+/// `hledger --auto` would apply to recorded transactions too.
+fn auto_rule_warnings(rules: &[crate::model::AutoPostingRule]) -> Vec<String> {
+    rules
+        .iter()
+        .filter_map(|rule| {
+            let query = rule.query.raw();
+            if let Some(why) = rule.query.unsupported() {
+                return Some(format!(
+                    "auto rule `= {query}`: {why}, so it generates nothing"
+                ));
+            }
+            (!query.contains("_generated-transaction") && !query.contains("tag:generated-transaction")).then(|| {
+                format!(
+                    "auto rule `= {query}` applies only to projected transactions here, but `hledger --auto` \
+                     would also apply it to recorded ones; add `tag:_generated-transaction` to its query \
+                     to make the file say so"
+                )
+            })
+        })
+        .collect()
+}
+
 /// A plain display style, for a posting with no line amount to borrow one from.
 fn plain_style() -> AmountStyle {
     AmountStyle {
@@ -1773,6 +1846,7 @@ mod tests {
 
     fn scenario(lines: Vec<ScenarioLine>, events: Vec<ScenarioEvent>) -> Scenario {
         Scenario {
+            auto_rules: Vec::new(),
             lines,
             events,
             ..Scenario::default()

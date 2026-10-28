@@ -47,6 +47,11 @@
         page = 0;
     }
 
+    /** The `= QUERY` rule that added a posting (hledger's `generated-posting` tag), or `null` for one the scenario wrote. */
+    function generatedBy(tags: readonly (readonly [string, string])[]): string | null {
+        return tags.find(([name]) => name === "generated-posting")?.[1] ?? null;
+    }
+
     /** The rule's period as hledger marks it (`~ monthly`), else what kind of entry this is. */
     function originLabel(entry: ForecastEntry): string {
         if (entry.origin.kind === "event") return "event";
@@ -116,9 +121,18 @@
                             </td>
                         </tr>
                         {#each entry.txn.postings as posting, p (p)}
-                            <tr class="text-base-content/80 [&>td]:py-0.5">
+                            {@const rule = generatedBy(posting.tags)}
+                            <tr
+                                class="[&>td]:py-0.5 {rule === null ? 'text-base-content/80' : 'text-base-content/55 italic'}"
+                                data-generated={rule === null ? undefined : "auto"}
+                            >
                                 <td></td>
-                                <td class="pl-6" title={posting.account}><AccountLabel name={posting.account} maxWidth={480} /></td>
+                                <td class="pl-6" title={posting.account}>
+                                    <AccountLabel name={posting.account} maxWidth={480} />
+                                    {#if rule !== null}
+                                        <span class="ml-1 badge badge-ghost badge-xs not-italic" title="Added by the automatic posting rule {rule}">auto</span>
+                                    {/if}
+                                </td>
                                 <td><AmountCell amounts={posting.amounts} /></td>
                             </tr>
                         {/each}

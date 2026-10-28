@@ -315,6 +315,27 @@ describe("COMPONENT ProjectionReports — journal", () => {
         expect(screen.getByTestId("forecast-journal-count").textContent).toContain("the first 3 are listed");
     });
 
+    it("marks a posting an automatic rule added, naming the rule", () => {
+        const journal = journalFixture(1);
+        const first = journal.entries[0]!;
+        const added = {
+            ...first.txn.postings[0]!,
+            account: "expenses:rent-tax",
+            tags: [
+                ["generated-posting", "= expenses:rent tag:_generated-transaction"],
+                ["_generated-posting", "= expenses:rent tag:_generated-transaction"],
+            ] as [string, string][],
+        };
+        const entries = [{...first, txn: {...first.txn, postings: [first.txn.postings[0]!, added, first.txn.postings[1]!]}}, ...journal.entries.slice(1)];
+        mount("journal", projection({journal: {...journal, entries}}));
+        const rows = screen.getAllByTestId("forecast-entry")[0]!.querySelectorAll("tr[data-generated]");
+        expect(rows).toHaveLength(1);
+        expect(rows[0]!.textContent).toContain("expenses:rent-tax");
+        expect(rows[0]!.querySelector("[title]")?.getAttribute("title")).toBe("expenses:rent-tax");
+        expect(rows[0]!.textContent).toContain("auto");
+        expect(rows[0]!.innerHTML).toContain("= expenses:rent tag:_generated-transaction");
+    });
+
     it("filters by text across descriptions and accounts, case-insensitively", async () => {
         mount("journal", projection({journal: journalFixture(2)}));
         const box = screen.getByTestId("forecast-journal-search");

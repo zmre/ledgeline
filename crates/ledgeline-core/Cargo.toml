@@ -27,6 +27,7 @@ thiserror = { workspace = true }
 itertools = { workspace = true }
 ropey = { workspace = true }
 csv = { workspace = true }
+regex = { workspace = true }
 # Statement preprocessors (WP-11) — see the workspace Cargo.toml for why each.
 calamine = { workspace = true }
 encoding_rs = { workspace = true }

@@ -506,6 +506,58 @@ fn a_save_that_changes_one_amount_changes_only_that_line_s_bytes() {
     assert_eq!(reread.lines[1].amount.quantity, Dec::new(65_000, 2));
 }
 
+/// `=` auto-posting rules in a scenario file survive every save byte for
+/// byte, wherever they sit — between `~` blocks, after the last one, and with
+/// the rule just above them edited. Ledgeline does not model them yet (plan 30
+/// Phases 2–4), so a save that dropped them would silently delete the user's
+/// commission and payroll-tax rules.
+#[test]
+fn a_save_keeps_every_auto_posting_rule_byte_for_byte() {
+    let scratch = Scratch::new("auto-rules");
+    let before = concat!(
+        "; Ledgeline projection\n",
+        "; projection: Plan\n",
+        "; created: 2026-01-01\n",
+        "; updated: 2026-01-01\n",
+        "\n",
+        "= expenses:people-costs:wages-salaries tag:_generated-transaction\n",
+        "    expenses:people-costs:payroll-tax  *0.1\n",
+        "    assets:mercury:checking\n",
+        "\n",
+        "~ monthly  payroll\n",
+        "    expenses:people-costs:wages-salaries      $9000.00\n",
+        "    assets:mercury:checking\n",
+        "\n",
+        "= revenue:sales tag:_generated-transaction\n",
+        "    expenses:people-costs:sales-commission  *-0.035\n",
+        "    assets:mercury:checking\n",
+        "\n",
+        "~ every 1st Apr from 2027  Lucid Software\n",
+        "    revenue:sales            $-40000.00\n",
+        "    assets:mercury:checking\n",
+        "\n",
+        "=revenue:other\n",
+        "    (liabilities:tax)  *0.05\n",
+    );
+    let path = scratch.write("projection-plan.journal", before);
+    let name = path.to_string_lossy().to_string();
+
+    let doc = ProjectionDoc::parse(before, &name, &declared()).expect("it parses");
+    let mut scenario = scenario_from_text(before, &name, "plan", &declared()).expect("it reads");
+    assert_eq!(scenario.lines.len(), 2, "the auto rules are not lines");
+    scenario.lines[0].amount = usd(950_000, 2, 2);
+    let after = write_scenario(&doc, &scenario, &name).expect("it writes");
+
+    for rule in [
+        "= expenses:people-costs:wages-salaries tag:_generated-transaction\n    expenses:people-costs:payroll-tax  *0.1\n    assets:mercury:checking\n",
+        "= revenue:sales tag:_generated-transaction\n    expenses:people-costs:sales-commission  *-0.035\n    assets:mercury:checking\n",
+        "=revenue:other\n    (liabilities:tax)  *0.05\n",
+    ] {
+        assert!(after.contains(rule), "lost {rule:?} from:\n{after}");
+    }
+    assert!(after.contains("$9500.00"), "the edit landed:\n{after}");
+}
+
 #[test]
 fn a_save_that_changes_nothing_produces_the_same_bytes() {
     // The no-op short-circuit every writer here has: a byte-identical result
@@ -533,6 +585,7 @@ fn a_save_that_changes_nothing_produces_the_same_bytes() {
 /// apply and which is asserted about separately below.
 fn cross_check_scenario() -> Scenario {
     Scenario {
+        auto_rules: Vec::new(),
         cash: None,
         name: "Cross check".to_string(),
         created: Some("2026-01-01".to_string()),
@@ -613,6 +666,7 @@ fn asset_scenario() -> Scenario {
         unit: GrowthUnit::Year,
     };
     Scenario {
+        auto_rules: Vec::new(),
         name: "Asset cross check".to_string(),
         lines: vec![
             // A balance that only compounds: the contribution is `$0`.
@@ -777,6 +831,7 @@ fn hledger_reads_the_growth_tag_as_a_tag_and_not_as_arithmetic() {
     };
     let scratch = Scratch::new("growth");
     let scenario = Scenario {
+        auto_rules: Vec::new(),
         name: "Growth".to_string(),
         lines: vec![ScenarioLine {
             note: "plan".to_string(),
@@ -1033,6 +1088,7 @@ fn hledger_forecasts_a_balanced_scenario_into_the_counter_account() {
     let scratch = Scratch::new("hledger-balanced");
     let counter = Some(AccountName("assets:checking".to_string()));
     let scenario = Scenario {
+        auto_rules: Vec::new(),
         name: "Balanced".to_string(),
         cash: counter.clone(),
         lines: vec![
@@ -1293,6 +1349,9 @@ impl Parity {
             &self.scenario,
             command,
             &format!("--forecast={cutoff}..{end}"),
+            // Plan 30: the scenario's `=` rules. Ledgeline applies them to the
+            // forecast always; hledger only under `--auto`.
+            "--auto",
             "-b",
             &self.window().from,
             "-e",
@@ -1500,6 +1559,7 @@ impl Parity {
                 &self.scenario,
                 "print",
                 &format!("--forecast={cutoff}..{end}"),
+                "--auto",
                 "tag:generated",
                 "-O",
                 "csv",
@@ -2187,6 +2247,7 @@ impl Parity {
                 &self.scenario,
                 "print",
                 &format!("--forecast={cutoff}..{end}"),
+                "--auto",
                 "tag:generated",
                 "-O",
                 "json",
@@ -2418,6 +2479,62 @@ fn tabs_parity_step_change_with_from_and_to_bounds() {
 #[test]
 fn tabs_parity_multi_commodity_lines() {
     tabs_parity(&["commodities.journal"], &[MONTHLY]);
+}
+
+/// Plan 30: a scenario's `= QUERY` auto-posting rules — the user's own
+/// commission and payroll-tax rules, verbatim — generate the postings
+/// `hledger --auto --forecast` generates, in every statement.
+#[test]
+fn parity_auto_posting_rules_on_the_forecast() {
+    parity(&["auto.journal"], &[MONTHLY, QUARTERLY]);
+    // And not vacuously: Ledgeline's own forecast holds the generated
+    // postings — 10% payroll tax on each $9000 payroll, 3% commission on the
+    // Lucid sale — right below the posting each rule matched.
+    let run = Parity::new("auto.journal", MONTHLY);
+    let below = |account: &str, matched: &str| -> Vec<String> {
+        run.forecast
+            .txns
+            .iter()
+            .filter_map(|txn| {
+                let at = txn.postings.iter().position(|p| p.account.0 == account)?;
+                (at > 0 && txn.postings[at - 1].account.0 == matched)
+                    .then(|| format!("{} {:?}", txn.date, txn.postings[at].amounts[0].quantity))
+            })
+            .collect()
+    };
+    for (wages, cut) in [
+        ("expenses:people-costs:wages-salaries", 900),
+        // CHILD accounts of the rule's account fire it too (2026-10-28).
+        ("expenses:people-costs:wages-salaries:george", 600),
+        ("expenses:people-costs:wages-salaries:john", 500),
+    ] {
+        let tax = below("expenses:people-costs:payroll-tax", wages);
+        assert!(!tax.is_empty(), "no payroll tax under {wages}");
+        assert!(
+            tax.iter()
+                .all(|line| line.ends_with(&format!("{:?}", Dec::new(cut, 0)))),
+            "{wages}: {tax:?}"
+        );
+    }
+    let commission = below(
+        "expenses:people-costs:sales-commission:residual",
+        "revenue:sales",
+    );
+    assert!(
+        commission.iter().any(|line| line.starts_with("2027-04-01")
+            && line.ends_with(&format!("{:?}", Dec::new(1200, 0)))),
+        "{commission:?}"
+    );
+}
+
+#[test]
+fn tabs_parity_auto_posting_rules_on_the_forecast() {
+    tabs_parity(&["auto.journal"], &[MONTHLY]);
+}
+
+#[test]
+fn tabs_parity_every_period_form_plan_30_added() {
+    tabs_parity(&["periods.journal"], &[MONTHLY, WEEKLY]);
 }
 
 /// WITH growth, both tabs differ from hledger by the accepted deviations and

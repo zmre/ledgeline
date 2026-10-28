@@ -605,6 +605,73 @@ pub struct PriceDirective {
     pub source_file: PathBuf,
 }
 
+/// What one posting of an `=` auto-posting rule writes, relative to the
+/// posting the rule matched (hledger's "Auto postings").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutoAmount {
+    /// `$2`, or `2` — used exactly as written. A bare number stays
+    /// commodity-less: hledger 1.52's manual says it takes the matched
+    /// posting's commodity, but the binary prints `2` beside a `$5` posting
+    /// (verified 2026-10-28), and the binary is what users run.
+    Fixed(Amount),
+    /// `*0.1` — the matched amount multiplied, exactly (no rounding), its cost
+    /// annotation with it. `*$0.1` / `*0.1 USD` also re-denominates the
+    /// product in `commodity`, whose style it borrows.
+    Scale {
+        /// The multiplier.
+        factor: Dec,
+        /// The written commodity and its style, as a template; `None` keeps
+        /// the matched posting's commodity.
+        commodity: Option<Amount>,
+    },
+    /// No amount: it balances the rule's other generated postings of its own
+    /// balance group (regular, or balanced-virtual), as hledger infers it.
+    Inferred,
+}
+
+/// One posting line of an `=` rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoPosting {
+    /// Its `*`/`!` marker.
+    pub status: Status,
+    /// Regular, `(virtual)` or `[balanced virtual]`.
+    pub ptype: PostingType,
+    /// The account as written. `%account` stands for the matched posting's.
+    pub account: String,
+    /// What it writes.
+    pub amount: AutoAmount,
+    /// Raw comment text, as [`Posting::comment`].
+    pub comment: String,
+    /// Its own tags.
+    pub tags: Vec<(String, String)>,
+}
+
+/// An `= QUERY` auto-posting rule (hledger's "Auto postings"): wherever
+/// `query` matches a posting, `postings` are added to that transaction right
+/// below it. hledger applies rules only under `--auto`; Ledgeline applies a
+/// projection scenario's rules to its forecast transactions always (plan 30
+/// Decision 6), and the main journal's not yet (plan 30 Phase 5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoPostingRule {
+    /// The query, as written and as understood. An unsupported one keeps the
+    /// rule in the journal but never fires.
+    pub query: crate::query::Query,
+    /// Its postings, in file order.
+    pub postings: Vec<AutoPosting>,
+    /// Raw header comment text, as [`PeriodicTransaction::comment`].
+    pub comment: String,
+    /// The header comment's tags.
+    pub tags: Vec<(String, String)>,
+    /// The whole block exactly as written — the `=` line through its last
+    /// posting or comment line, each ending in `\n`. What a projection
+    /// scenario carries over the wire and writes back unchanged.
+    pub raw: String,
+    /// Header line to the line after the last one, as [`Transaction::source_span`].
+    pub source_span: (SourcePos, SourcePos),
+    /// The resolved file this rule was read from.
+    pub source_file: PathBuf,
+}
+
 /// A fully-parsed, balanced journal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Journal {
@@ -623,6 +690,9 @@ pub struct Journal {
     /// `transactions` (and thus the wire `/transactions` view); consumed only by
     /// the budget report.
     pub periodic_transactions: Vec<PeriodicTransaction>,
+    /// `= QUERY` auto-posting rules in file order. Parsed, carried and shown;
+    /// applied only where [`AutoPostingRule`] says.
+    pub auto_rules: Vec<AutoPostingRule>,
     /// Account declarations in file order.
     pub accounts: Vec<AccountDeclaration>,
     /// `alias` directives in file order. Recorded, never applied — see

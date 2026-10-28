@@ -1221,4 +1221,40 @@
             </div>
         {/if}
     </section>
+
+    <!-- The scenario file's `= QUERY` rules (plan 30): applied to every
+         projected transaction, always. Listed read-only until the rule editor
+         lands; edit them in the file. Shown only when the file has some. -->
+    {#if scenario.autoRules.length > 0}
+        <section class="flex flex-col gap-1" data-testid="projection-section-auto">
+            <h2 class="text-sm font-semibold">
+                Automatic postings
+                <span class="ml-1 font-normal text-base-content/50">
+                    Rules from the scenario file, applied to every projected transaction they match. Edit them in the file.
+                </span>
+            </h2>
+            <ul class="flex flex-col gap-2">
+                {#each scenario.autoRules as rule, at (at)}
+                    <li class="rounded-box border border-base-content/10 px-3 py-2" data-testid="projection-auto-rule">
+                        <div class="flex flex-wrap items-center gap-2 text-xs">
+                            <span class="font-mono">= {rule.query}</span>
+                            {#if rule.unsupported !== null}
+                                <span class="badge badge-xs badge-warning" title={rule.unsupported}>🔒 never fires</span>
+                            {:else if !rule.query.includes("generated-transaction")}
+                                <span
+                                    class="badge badge-ghost badge-xs"
+                                    title="Applied here to projected transactions only. Stock `hledger --auto` would also apply it to recorded ones; add tag:_generated-transaction to its query to make the file say so."
+                                    >projections only here</span
+                                >
+                            {/if}
+                        </div>
+                        {#if rule.unsupported !== null}
+                            <p class="text-xs text-warning">{rule.unsupported}, so it generates nothing.</p>
+                        {/if}
+                        <pre class="mt-1 overflow-x-auto font-mono text-xs text-base-content/70">{rule.raw.trimEnd()}</pre>
+                    </li>
+                {/each}
+            </ul>
+        </section>
+    {/if}
 </div>

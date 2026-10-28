@@ -1069,6 +1069,7 @@ mod tests {
             source_files: vec![],
             transactions: vec![],
             periodic_transactions: vec![],
+            auto_rules: vec![],
             accounts: vec![],
             aliases: vec![],
             commodity_styles: vec![],

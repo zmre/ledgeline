@@ -109,6 +109,7 @@ import type {
 import {FORECAST_ORIGIN_KINDS, GROWTH_UNITS, LINE_ROLES, LINE_SOURCES, SCENARIO_INTERVALS} from "#lib/projections/types.js";
 import type {
     AssetRow,
+    AutoRule,
     BalanceSeries,
     EventPosting,
     ForecastDefaults,
@@ -529,6 +530,7 @@ interface RawScenario {
     lines?: RawScenarioLine[];
     events?: RawScenarioEvent[];
     cash?: string | null;
+    autoRules?: {raw?: unknown; query?: unknown; unsupported?: string | null}[];
 }
 
 interface RawProjectionFile {
@@ -2416,7 +2418,24 @@ export function decodeScenario(raw: unknown): Scenario {
         lines: frozen(scenario.lines.map((line, i) => decodeScenarioLine(line, `scenario line #${i}`))),
         events: frozen(scenario.events.map((event, i) => decodeScenarioEvent(event, `scenario event #${i}`))),
         cash: decodeNullableStr(scenario.cash, "scenario cash"),
+        autoRules: decodeAutoRules(scenario.autoRules),
     });
+}
+
+/** A scenario's `= QUERY` rules — always an array on the wire, so an absent one is a broken contract. */
+function decodeAutoRules(raw: RawScenario["autoRules"]): AutoRule[] {
+    if (!Array.isArray(raw)) throw new ApiShapeError("scenario autoRules: expected an array");
+    return frozen(
+        raw.map((rule, i) => {
+            const at = `scenario autoRules[${i}]`;
+            if (typeof rule !== "object" || rule === null) throw new ApiShapeError(`${at}: expected an object`);
+            return Object.freeze({
+                raw: str(rule.raw, `${at} raw`),
+                query: str(rule.query, `${at} query`),
+                unsupported: decodeNullableStr(rule.unsupported, `${at} unsupported`),
+            });
+        })
+    );
 }
 
 function decodeBalanceSeries(raw: RawBalanceSeries | undefined, context: string): BalanceSeries {

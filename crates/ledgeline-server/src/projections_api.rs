@@ -40,6 +40,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::response::Response;
 use ledgeline_core::decimal::MAX_PARSE_PLACES;
+use ledgeline_core::model::AutoPostingRule;
 use ledgeline_core::model::{
     AccountName, Amount, AmountStyle, Commodity, CommoditySide, PeriodSpec, Posting,
 };
@@ -95,6 +96,11 @@ pub(crate) const MAX_BODY_BYTES: usize = 256 * 1024;
 const MAX_LINES: usize = 1000;
 /// The most dated events one scenario may carry.
 const MAX_EVENTS: usize = 1000;
+/// The most `=` auto-posting rules one scenario may carry.
+const MAX_AUTO_RULES: usize = 200;
+/// The longest one rule's text may be, in bytes. A rule is a query and a few
+/// posting lines; this is fifty times that.
+const MAX_AUTO_RULE_BYTES: usize = 16 * 1024;
 /// The most postings one event may carry.
 ///
 /// The line and event counts alone do not bound the work: one event with a
@@ -328,6 +334,35 @@ pub(crate) struct WireScenario {
     events: Vec<WireScenarioEvent>,
     /// `; cash:` — the scenario's default counter-account, or `null`.
     cash: Option<String>,
+    /// The scenario file's `= QUERY` auto-posting rules, in file order.
+    auto_rules: Vec<WireAutoRule>,
+}
+
+/// One `= QUERY` auto-posting rule, as the file writes it.
+///
+/// `raw` is the fact and the only field read back; `query` and `unsupported`
+/// are here so a client can list the rule without re-implementing hledger's
+/// query grammar.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireAutoRule {
+    /// The whole block, `=` line through its last posting, each line ending
+    /// in `\n`.
+    raw: String,
+    /// The query, as written.
+    query: String,
+    /// Why the rule never fires, or `null` when it does.
+    unsupported: Option<String>,
+}
+
+impl From<&AutoPostingRule> for WireAutoRule {
+    fn from(rule: &AutoPostingRule) -> Self {
+        Self {
+            raw: rule.raw.clone(),
+            query: rule.query.raw().to_string(),
+            unsupported: rule.query.unsupported().map(ToString::to_string),
+        }
+    }
 }
 
 impl WireScenario {
@@ -347,6 +382,7 @@ impl WireScenario {
                 .map(WireScenarioEvent::from)
                 .collect(),
             cash: scenario.cash.as_ref().map(|account| account.0.clone()),
+            auto_rules: scenario.auto_rules.iter().map(WireAutoRule::from).collect(),
         }
     }
 }
@@ -797,6 +833,24 @@ struct ScenarioIn {
     events: Vec<ScenarioEventIn>,
     #[serde(default)]
     cash: Option<String>,
+    /// Optional, so a body written before rules travelled still decodes.
+    #[serde(default)]
+    auto_rules: Vec<AutoRuleIn>,
+}
+
+/// One `= QUERY` rule, inbound: its text alone. Everything else the outbound
+/// shape says is derived from it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AutoRuleIn {
+    raw: String,
+    /// The derived echoes a client hands back unchanged; ignored.
+    #[serde(default)]
+    #[allow(dead_code)]
+    query: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    unsupported: Option<String>,
 }
 
 /// `POST /api/projections/run`.
@@ -1101,8 +1155,11 @@ fn scenario_from_wire(scenario: &ScenarioIn) -> Result<DecodedScenario, AppError
         .map(|line| line.entry.as_ref().map(dec_from_wire).transpose())
         .collect::<Result<Vec<_>, AppError>>()?;
 
+    let auto_rules = auto_rules_from_wire(&scenario.auto_rules)?;
+
     Ok(DecodedScenario {
         scenario: Scenario {
+            auto_rules,
             name: scenario.name.clone(),
             created: scenario.created.clone(),
             updated: scenario.updated.clone(),
@@ -1112,6 +1169,50 @@ fn scenario_from_wire(scenario: &ScenarioIn) -> Result<DecodedScenario, AppError
         },
         entries,
     })
+}
+
+/// Each rule's text, read back as exactly one `=` block.
+///
+/// The shape is checked BEFORE the text reaches the journal parser: an `=`
+/// line, then only indented or blank lines. That is what keeps a rule body
+/// from smuggling in a directive — `include`, `alias`, a transaction — that
+/// the parser would otherwise act on.
+fn auto_rules_from_wire(rules: &[AutoRuleIn]) -> Result<Vec<AutoPostingRule>, AppError> {
+    if rules.len() > MAX_AUTO_RULES {
+        return Err(AppError::BadRequest(format!(
+            "a scenario may have at most {MAX_AUTO_RULES} auto rules (received {})",
+            rules.len()
+        )));
+    }
+    rules
+        .iter()
+        .map(|rule| {
+            let refuse = |why: &str| AppError::BadRequest(format!("an auto rule {why}"));
+            if rule.raw.len() > MAX_AUTO_RULE_BYTES {
+                return Err(refuse(&format!("may be at most {MAX_AUTO_RULE_BYTES} bytes")));
+            }
+            // A blank line ends a block, so none may appear inside one.
+            let body = rule.raw.trim_matches('\n');
+            let mut lines = body.lines();
+            let header = lines.next().unwrap_or("");
+            if !header.starts_with('=')
+                || !lines.all(|line| !line.trim().is_empty() && line.starts_with([' ', '\t']))
+            {
+                return Err(refuse(
+                    "must be one `= QUERY` line followed by indented posting lines, with no blank line between",
+                ));
+            }
+            let text = format!("{body}\n");
+            let journal = ledgeline_core::parse_journal(&text, "auto-rule.journal")
+                .map_err(|error| refuse(&format!("could not be read: {error}")))?;
+            match journal.auto_rules.as_slice() {
+                [only] if journal.transactions.is_empty() && journal.periodic_transactions.is_empty() => {
+                    Ok(only.clone())
+                }
+                _ => Err(refuse("must be exactly one `= QUERY` block")),
+            }
+        })
+        .collect()
 }
 
 // ===========================================================================

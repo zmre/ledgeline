@@ -449,6 +449,10 @@ pub struct Scenario {
     /// `; cash: <account>` from the header: the default counter-account when
     /// history names none (Decision 7, step 2).
     pub cash: Option<AccountName>,
+    /// The scenario file's `= QUERY` auto-posting rules, in file order. Applied
+    /// to every rule- and event-generated forecast transaction, ALWAYS —
+    /// whatever `--auto` says for the main journal (plan 30 Decision 6).
+    pub auto_rules: Vec<crate::model::AutoPostingRule>,
 }
 
 // ===========================================================================
@@ -1402,6 +1406,7 @@ pub fn seed_scenario(
     }
 
     Ok(Scenario {
+        auto_rules: Vec::new(),
         // A seed has no name: naming it is what the Save As dialog is for, and a
         // placeholder here would be a name the user never chose showing up in a
         // filename.
@@ -1690,6 +1695,7 @@ mod tests {
 
     fn scenario(lines: Vec<ScenarioLine>, events: Vec<ScenarioEvent>) -> Scenario {
         Scenario {
+            auto_rules: Vec::new(),
             cash: None,
             name: "test".to_string(),
             created: None,

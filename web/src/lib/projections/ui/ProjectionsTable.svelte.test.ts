@@ -72,6 +72,7 @@ const SEED = decodeScenario({
     ],
     events: [],
     cash: null,
+    autoRules: [],
 });
 
 /**
@@ -337,6 +338,7 @@ const BOUNDED = decodeScenario({
     ],
     events: [],
     cash: null,
+    autoRules: [],
 });
 
 describe("COMPONENT ProjectionsTable — REGRESSION: bounded periods stay editable", () => {
@@ -598,6 +600,7 @@ function withAssets(...lines: ReturnType<typeof assetLine>[]): Scenario {
         lines: [seedLine("expenses:housing", "187500"), ...lines],
         events: [],
         cash: null,
+        autoRules: [],
     });
 }
 
@@ -632,6 +635,7 @@ describe("COMPONENT ProjectionsTable — the Assets and balances section", () =>
                 lines: [seedLine("assets:checking", "50000")],
                 events: [],
                 cash: null,
+                autoRules: [],
             })
         );
         mount();
@@ -673,6 +677,7 @@ describe("COMPONENT ProjectionsTable — the Assets and balances section", () =>
                 lines: [seedLine("assets:checking", "50000"), assetLine("assets:checking", "brok")],
                 events: [],
                 cash: null,
+                autoRules: [],
             })
         );
         mount();
@@ -1043,6 +1048,7 @@ describe("COMPONENT ProjectionsTable — a row's description", () => {
                 ],
                 events: [],
                 cash: null,
+                autoRules: [],
             })
         );
         mount();
@@ -1151,10 +1157,43 @@ describe("COMPONENT ProjectionsTable — reordering rows", () => {
                     },
                 ],
                 cash: null,
+                autoRules: [],
             })
         );
         mount();
         await chooseInMenu("second", "Move up");
         expect(scenarioStore.scenario.events.map((e) => e.description)).toEqual(["second", "first"]);
+    });
+});
+
+describe("COMPONENT ProjectionsTable — automatic postings (plan 30)", () => {
+    const rule = (raw: string, query: string, unsupported: string | null = null) => ({raw, query, unsupported});
+
+    it("is absent while the scenario file has no rules", () => {
+        mount();
+        expect(screen.queryByTestId("projection-section-auto")).toBeNull();
+    });
+
+    it("lists each rule read-only, with its text, and says which never fire and which hledger would read more widely", () => {
+        mount({
+            ...SEED,
+            autoRules: [
+                rule(
+                    "= revenue:sales tag:_generated-transaction\n    expenses:commission  *-0.03\n    assets:checking\n",
+                    "revenue:sales tag:_generated-transaction"
+                ),
+                rule("= expenses:rent\n    (budget:rent)  *-1\n", "expenses:rent"),
+                rule("= expr:'a and b'\n    (x)  1\n", "expr:'a and b'", "`expr:` queries are not supported yet"),
+            ],
+        });
+        const rules = within(screen.getByTestId("projection-section-auto")).getAllByTestId("projection-auto-rule");
+        expect(rules).toHaveLength(3);
+        expect(rules[0]!.textContent).toContain("expenses:commission  *-0.03");
+        expect(rules[0]!.textContent).not.toContain("projections only here");
+        expect(rules[1]!.textContent).toContain("projections only here");
+        expect(rules[2]!.textContent).toContain("never fires");
+        expect(rules[2]!.textContent).toContain("`expr:` queries are not supported yet, so it generates nothing.");
+        // Read-only: nothing in the section is a field.
+        expect(within(screen.getByTestId("projection-section-auto")).queryAllByRole("textbox")).toHaveLength(0);
     });
 });

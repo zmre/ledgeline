@@ -75,10 +75,10 @@
 
 use crate::decimal::{Dec, DecError, MAX_PARSE_PLACES};
 use crate::model::{
-    AccountDeclaration, AccountName, AliasDirective, Amount, AmountStyle, Anchor, BalanceAssertion,
-    Commodity, CommoditySide, Cost, CostKind, DigitGroups, Journal, PeriodExpr, PeriodKind,
-    PeriodSpec, PeriodicTransaction, Posting, PostingType, PriceDirective, SourcePos, Status,
-    Tindex, Transaction,
+    AccountDeclaration, AccountName, AliasDirective, Amount, AmountStyle, Anchor, AutoAmount,
+    AutoPosting, AutoPostingRule, BalanceAssertion, Commodity, CommoditySide, Cost, CostKind,
+    DigitGroups, Journal, PeriodExpr, PeriodKind, PeriodSpec, PeriodicTransaction, Posting,
+    PostingType, PriceDirective, SourcePos, Status, Tindex, Transaction,
 };
 use crate::vault::{LocalVault, MemVault, Revision, Vault, VaultError, VaultPath};
 use std::collections::btree_map::Entry;
@@ -208,6 +208,7 @@ struct Ctx<'v> {
     prices: Vec<PriceDirective>,
     transactions: Vec<Transaction>,
     periodic_transactions: Vec<PeriodicTransaction>,
+    auto_rules: Vec<AutoPostingRule>,
     /// Every source file read so far (main + `include`s), in first-read order and
     /// deduplicated, as resolved absolute paths. Feeds [`Journal::source_files`].
     source_files: Vec<PathBuf>,
@@ -256,6 +257,7 @@ impl<'v> Ctx<'v> {
             prices: Vec::new(),
             transactions: Vec::new(),
             periodic_transactions: Vec::new(),
+            auto_rules: Vec::new(),
             source_files: Vec::new(),
             include_stack: Vec::new(),
             includes_admitted: 0,
@@ -270,6 +272,7 @@ impl<'v> Ctx<'v> {
             source_files: self.source_files,
             transactions: self.transactions,
             periodic_transactions: self.periodic_transactions,
+            auto_rules: self.auto_rules,
             accounts: self.accounts,
             aliases: self.aliases,
             commodity_styles: self.commodity_styles,
@@ -564,7 +567,15 @@ fn parse_source(
             continue;
         }
 
-        let keyword = trimmed.split_whitespace().next().unwrap_or("");
+        // `=QUERY` with no space is an auto-posting rule too: hledger reads
+        // `=revenue:other` exactly as `= revenue:other` (verified, 1.52), so
+        // it must not fall through to "unsupported directive" and refuse the
+        // whole file.
+        let keyword = if trimmed.starts_with('=') {
+            "="
+        } else {
+            trimmed.split_whitespace().next().unwrap_or("")
+        };
         match keyword {
             "account" => {
                 let decl = parse_account_directive(trimmed, line_no, &source_file)
@@ -699,10 +710,19 @@ fn parse_source(
                 i = next;
                 continue;
             }
-            // Auto-posting (`=`) rule blocks: still skipped (excluded from
-            // `jtxns`, like hledger-web's `/transactions`).
+            // An `= QUERY` auto-posting rule: parsed into `auto_rules`, never
+            // into `transactions` (hledger-web's `/transactions` omits them
+            // too). Where a rule applies is the caller's business — see
+            // `AutoPostingRule`.
             "=" => {
-                i = skip_indented_block(&lines, i);
+                let amt = AmountCtx {
+                    styles: &ctx.styles,
+                    default_mark: ctx.default_decimal_mark,
+                    default_commodity: ctx.default_commodity.as_ref(),
+                };
+                let (rule, next) = parse_auto_rule(&lines, i, amt, source_name, &source_file)?;
+                ctx.auto_rules.push(rule);
+                i = next;
                 continue;
             }
             "comment" => {
@@ -1483,20 +1503,6 @@ fn parse_date_part(part: &str, token: &str) -> Result<i32, ParseError> {
         .map_err(|_| ParseError::MalformedDate(format!("'{token}'")))
 }
 
-/// Advance past a block directive's indented body (`~`/`=` rules), returning the
-/// index of the first following non-indented line.
-fn skip_indented_block(lines: &[&str], start: usize) -> usize {
-    let mut j = start + 1;
-    while j < lines.len() {
-        let line = lines[j];
-        if line.trim().is_empty() || !line.starts_with([' ', '\t']) {
-            break;
-        }
-        j += 1;
-    }
-    j
-}
-
 /// Advance past a `comment` ... `end comment` block, returning the index after
 /// the terminating line (or end of input).
 ///
@@ -1620,6 +1626,126 @@ fn parse_periodic_transaction(
     ))
 }
 
+/// Parse an `= QUERY` auto-posting rule and its indented postings, returning
+/// the rule and the index of the first following line.
+///
+/// Unlike a `~` rule, the postings are NOT balanced here: an amount may be a
+/// multiplier of a posting that does not exist yet, so balancing is
+/// [`crate::auto`]'s job, per matched posting. A comment-only line belongs to
+/// the preceding posting, or to the rule while no posting has been seen, as in
+/// a transaction.
+fn parse_auto_rule(
+    lines: &[&str],
+    start: usize,
+    amt: AmountCtx,
+    source_name: &str,
+    source_file: &Path,
+) -> Result<(AutoPostingRule, usize), ParseError> {
+    let header_no = to_u32(start + 1);
+    let header = lines[start].trim_start();
+    // `=QUERY` and `= QUERY` alike (hledger reads both).
+    let (query_text, header_comment) = split_comment(header.strip_prefix('=').unwrap_or(""));
+    let (mut comment, mut tags) = build_comment(header_comment);
+    let mut postings: Vec<AutoPosting> = Vec::new();
+    let mut j = start + 1;
+    while j < lines.len() {
+        let line = lines[j];
+        if line.trim().is_empty() || !line.starts_with([' ', '\t']) {
+            break;
+        }
+        if let Some(content) = comment_line_content(line) {
+            match postings.last_mut() {
+                Some(posting) => {
+                    append_comment_line(&mut posting.comment, &mut posting.tags, content)
+                }
+                None => append_comment_line(&mut comment, &mut tags, content),
+            }
+            j += 1;
+            continue;
+        }
+        let line_no = to_u32(j + 1);
+        postings.push(
+            parse_auto_posting(line, line_no, amt)
+                .map_err(|e| locate(source_name, line_no, line, e))?,
+        );
+        j += 1;
+    }
+    let raw: String = lines[start..j]
+        .iter()
+        .map(|line| format!("{line}\n"))
+        .collect();
+    Ok((
+        AutoPostingRule {
+            query: crate::query::Query::parse(query_text),
+            postings,
+            comment,
+            tags,
+            raw,
+            source_span: (
+                SourcePos {
+                    line: header_no,
+                    column: 1,
+                },
+                SourcePos {
+                    line: to_u32(j + 1),
+                    column: 1,
+                },
+            ),
+            source_file: source_file.to_path_buf(),
+        },
+        j,
+    ))
+}
+
+/// One posting line of an `=` rule: the posting grammar of
+/// [`parse_posting`], with the amount read as an [`AutoAmount`].
+fn parse_auto_posting(line: &str, line_no: u32, amt: AmountCtx) -> Result<AutoPosting, ParseError> {
+    let (main, comment) = split_comment(line);
+    let (comment, tags) = build_comment(comment);
+    let trimmed = main.trim_start();
+    let (status, after_status) = if let Some(r) = trimmed.strip_prefix('*') {
+        (Status::Cleared, r.trim_start())
+    } else if let Some(r) = trimmed.strip_prefix('!') {
+        (Status::Pending, r.trim_start())
+    } else {
+        (Status::Unmarked, trimmed)
+    };
+    let (account_part, amount_part) = split_account_amount(after_status);
+    let (ptype, account) = posting_type_and_account(account_part.trim());
+    let expr = amount_part.trim();
+    // Whether a multiplier names a commodity to re-denominate in: anything
+    // beyond a signed number.
+    let bare = |text: &str| {
+        text.chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, '.' | ',' | '-' | '+' | ' '))
+    };
+    let read = |text: &str| -> Result<Amount, ParseError> {
+        parse_amount_and_assertion(text, main, line_no, amt)?
+            .0
+            .ok_or_else(|| ParseError::MalformedAmount(text.to_string()))
+    };
+    let amount = if expr.is_empty() {
+        AutoAmount::Inferred
+    } else if let Some(factor) = expr.strip_prefix('*') {
+        let factor = factor.trim();
+        let parsed = read(factor)?;
+        AutoAmount::Scale {
+            factor: parsed.quantity,
+            commodity: (!bare(factor)).then_some(parsed),
+        }
+    } else {
+        AutoAmount::Fixed(read(expr)?)
+    };
+    Ok(AutoPosting {
+        status,
+        ptype,
+        account,
+        amount,
+        comment,
+        tags,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Period expressions
 // ---------------------------------------------------------------------------
@@ -1697,6 +1823,17 @@ pub(crate) fn period_head_len(raw: &str) -> Option<usize> {
     let lower = raw.to_ascii_lowercase();
     let tokens: Vec<&str> = lower.split_whitespace().collect();
     read_period(&tokens).map(|(head, ..)| head)
+}
+
+/// The `[start, end)` a `date:` query names (`date:2026`, `date:2026-01-02`,
+/// `date:2026-01..2026-04`, `date:from 2026-03`) — the bounds grammar of a
+/// period expression with no interval words, where a single date covers its
+/// whole span. `None` when it is not one this engine reads.
+pub(crate) fn date_query_bounds(text: &str) -> Option<(Option<String>, Option<String>)> {
+    let lower = text.to_ascii_lowercase();
+    let tokens: Vec<&str> = lower.split_whitespace().collect();
+    let bounds = parse_bounds(&tokens, true)?;
+    (bounds.start.is_some() || bounds.end.is_some()).then_some((bounds.start, bounds.end))
 }
 
 /// A period expression's bounds, ISO `YYYY-MM-DD`. `end` is EXCLUSIVE.
@@ -3833,6 +3970,24 @@ mod tests {
         );
         let counter = &postings[1].amounts[0];
         assert_eq!(counter.quantity, Dec::new(-123450, 2));
+    }
+
+    #[test]
+    fn an_auto_rule_with_no_space_after_the_equals_sign_does_not_refuse_the_journal() {
+        // hledger 1.52 reads `=revenue:other` exactly as `= revenue:other`.
+        // Before 2026-10-28 it fell through to "unsupported directive" and
+        // refused the whole file.
+        let text = concat!(
+            "=revenue:other\n",
+            "    (liabilities:tax)  *0.05\n",
+            "\n",
+            "2026-01-01 real\n",
+            "    revenue:other  $-100\n",
+            "    assets:checking\n",
+        );
+        let journal = parse_journal(text, "t.journal").expect("the journal opens");
+        assert_eq!(journal.transactions.len(), 1);
+        assert_eq!(journal.transactions[0].postings.len(), 2);
     }
 
     #[test]
