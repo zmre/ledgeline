@@ -672,7 +672,9 @@ fn watch_dir(source: &Path) -> PathBuf {
 /// (e.g. read-only state with an empty snapshot).
 #[cfg(feature = "watcher")]
 fn current_sources(state: &AppState, main: &Path) -> Vec<PathBuf> {
-    let mut sources = state.source_files();
+    // `watched_files`, not `source_files`: the `hledger.conf` in force (and the
+    // one a first settings write would create) changes what reports read too.
+    let mut sources = state.watched_files();
     if !sources.iter().any(|s| s == main) {
         sources.push(main.to_path_buf());
     }

@@ -19,10 +19,11 @@
 //!   ([`AppDirs::under`], or the fields directly) and hands it to
 //!   [`AppState::with_app_dirs`](crate::AppState::with_app_dirs).
 //!
-//! This file depends on nothing in the crate but the standard library and
-//! `dirs`, because `tests/prefs.rs` compiles it in by `#[path]` alongside
-//! `prefs.rs` and `hledger.rs`.
+//! This file depends on nothing in the crate but the standard library, `dirs`
+//! and `ledgeline_core`, because `tests/prefs.rs` compiles it in by `#[path]`
+//! alongside `prefs.rs` and `hledger.rs`.
 
+use ledgeline_core::hledger_conf::UserConfDirs;
 use std::path::{Path, PathBuf};
 
 /// Env override for the directory holding `prefs.json` and `recent.json`. One
@@ -30,6 +31,11 @@ use std::path::{Path, PathBuf};
 pub const CONFIG_DIR_ENV: &str = "LEDGELINE_CONFIG_DIR";
 /// Env override naming an `hledger` binary.
 pub const HLEDGER_ENV: &str = "LEDGELINE_HLEDGER";
+/// Env switch that keeps the desktop from reading `~/.hledger.conf` and the XDG
+/// `hledger.conf`, the user-level tiers of hledger's config lookup. Set by the
+/// live integration and e2e harnesses, whose server must never pick up the
+/// developer's own dotfiles. Any non-empty value turns the tiers off.
+pub const IGNORE_USER_CONF_ENV: &str = "LEDGELINE_IGNORE_USER_HLEDGER_CONF";
 /// Application subdirectory under the OS config and cache dirs.
 const APP_DIR: &str = "ledgeline";
 
@@ -54,6 +60,11 @@ pub struct AppDirs {
     /// preference. `None` to skip that step. Meaningless in a build without the
     /// `external-tools` feature, where hledger never runs.
     pub hledger_bin: Option<PathBuf>,
+    /// `$HOME` and `$XDG_CONFIG_HOME`, for the last two tiers of hledger's
+    /// `hledger.conf` lookup (`~/.hledger.conf`, then the XDG file). Empty —
+    /// no user-level config is read — anywhere but the desktop binary, which
+    /// is the only place those directories are the user's.
+    pub hledger_conf: UserConfDirs,
 }
 
 impl AppDirs {
@@ -64,7 +75,9 @@ impl AppDirs {
     ///   `dirs::config_dir()/ledgeline`;
     /// * `cache_dir`: `dirs::cache_dir()/ledgeline`;
     /// * `temp_dir`: [`std::env::temp_dir`];
-    /// * `hledger_bin`: `$LEDGELINE_HLEDGER`, if set and non-empty.
+    /// * `hledger_bin`: `$LEDGELINE_HLEDGER`, if set and non-empty;
+    /// * `hledger_conf`: `dirs::home_dir()` and `$XDG_CONFIG_HOME` (if set and
+    ///   non-empty), unless `$LEDGELINE_IGNORE_USER_HLEDGER_CONF` is set.
     #[must_use]
     pub fn from_env() -> Self {
         Self {
@@ -73,6 +86,14 @@ impl AppDirs {
             cache_dir: dirs::cache_dir().map(|base| base.join(APP_DIR)),
             temp_dir: std::env::temp_dir(),
             hledger_bin: non_empty_env(HLEDGER_ENV),
+            hledger_conf: if non_empty_env(IGNORE_USER_CONF_ENV).is_some() {
+                UserConfDirs::default()
+            } else {
+                UserConfDirs {
+                    home: dirs::home_dir(),
+                    xdg_config_home: non_empty_env("XDG_CONFIG_HOME"),
+                }
+            },
         }
     }
 
@@ -87,6 +108,7 @@ impl AppDirs {
             cache_dir: Some(root.join("cache")),
             temp_dir: root.join("tmp"),
             hledger_bin: None,
+            hledger_conf: UserConfDirs::default(),
         }
     }
 
@@ -137,6 +159,7 @@ mod tests {
         );
         assert_eq!(dirs.temp_dir, Path::new("/container/Library/tmp"));
         assert_eq!(dirs.hledger_bin, None);
+        assert_eq!(dirs.hledger_conf, UserConfDirs::default());
         assert_eq!(
             dirs.config_file("prefs.json").as_deref(),
             Some(Path::new("/container/Library/config/prefs.json"))

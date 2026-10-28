@@ -46,6 +46,7 @@ mod app_dirs;
 mod benchmarks_api;
 mod budget_api;
 mod commodity_profile;
+mod conf_api;
 mod edit_api;
 mod error;
 mod git;
@@ -93,7 +94,7 @@ use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::compression::CompressionLayer;
 use tower_http::set_header::SetResponseHeaderLayer;
 
-pub use app_dirs::{AppDirs, CONFIG_DIR_ENV, HLEDGER_ENV};
+pub use app_dirs::{AppDirs, CONFIG_DIR_ENV, HLEDGER_ENV, IGNORE_USER_CONF_ENV};
 pub use location::JournalLocation;
 pub use security::{
     AccessToken, ProcessToken, Security, SecurityError, TOKEN_ENV, token_from_env_or_random,
@@ -178,6 +179,13 @@ pub(crate) struct Snapshot {
     /// the snapshot, so a new journal can never be served a stale one
     /// (plan 29).
     pub(crate) projections: projection_cache::ProjectionCache,
+    /// The `hledger.conf` in force for this journal and what Ledgeline honours
+    /// from it (plan 30, Decision 10): read on first use through
+    /// [`AppState::conf`], or handed in by the write that republished this
+    /// snapshot. A new snapshot — a reload, an edit, a config write — reads it
+    /// afresh, so it can never outlive the file it describes by more than one
+    /// generation.
+    pub(crate) conf: std::sync::OnceLock<Arc<conf_api::ConfState>>,
 }
 
 impl Snapshot {
@@ -259,9 +267,22 @@ impl Snapshot {
             journal_info,
             view: journal_api::ViewCache::warmed(&journal),
             projections: projection_cache::ProjectionCache::default(),
+            conf: std::sync::OnceLock::new(),
             journal,
             location,
         }
+    }
+}
+
+/// The app directories an [`AppState`] starts with: [`AppDirs::from_env`]
+/// without the user-level `hledger.conf` tiers. Only the desktop binary hands a
+/// state `from_env()` itself ([`AppState::with_app_dirs`]), so a library caller
+/// — every in-process test included — never reads somebody's
+/// `~/.hledger.conf` by accident.
+fn default_app_dirs() -> AppDirs {
+    AppDirs {
+        hledger_conf: ledgeline_core::hledger_conf::UserConfDirs::default(),
+        ..AppDirs::from_env()
     }
 }
 
@@ -374,8 +395,9 @@ pub struct AppState {
     benchmark_cache: Arc<sidecar::SidecarCache<benchmarks_api::BenchmarkCache>>,
     /// Where the app keeps its OWN state — preferences, the staging area's
     /// parent, the `hledger` override. Not journal content, so not the vault.
-    /// Defaults to [`AppDirs::from_env`] (the desktop's lookups); a sandboxed
-    /// host replaces it with [`AppState::with_app_dirs`].
+    /// Defaults to [`default_app_dirs`] (the desktop's
+    /// lookups, minus `~/.hledger.conf`); the desktop binary and a sandboxed
+    /// host replace it with [`AppState::with_app_dirs`].
     app_dirs: Arc<AppDirs>,
 }
 
@@ -421,7 +443,7 @@ impl AppState {
     #[must_use]
     pub fn from_journal(journal: &Journal) -> Self {
         let yahoo = YahooFeeds::new();
-        let app_dirs = Arc::new(AppDirs::from_env());
+        let app_dirs = Arc::new(default_app_dirs());
         Self {
             inner: Arc::new(ArcSwap::from_pointee(Snapshot::from_journal(
                 Arc::new(journal.clone()),
@@ -473,7 +495,7 @@ impl AppState {
         let snapshot =
             Snapshot::from_journal(Arc::clone(editor.journal()), Some(location_of(&editor)));
         let yahoo = YahooFeeds::new();
-        let app_dirs = Arc::new(AppDirs::from_env());
+        let app_dirs = Arc::new(default_app_dirs());
         Self {
             inner: Arc::new(ArcSwap::from_pointee(snapshot)),
             editor: Arc::new(Mutex::new(Some(editor))),
@@ -583,6 +605,83 @@ impl AppState {
         self.editor.clear_poison();
     }
 
+    /// The `hledger.conf` in force and what Ledgeline honours from it, as this
+    /// snapshot holds it (read on first use). Reports and the `--auto`
+    /// application read it from here; the settings screen reads it fresh
+    /// ([`Self::refresh_conf`]).
+    pub(crate) fn conf(&self) -> Arc<conf_api::ConfState> {
+        let snapshot = self.snapshot();
+        Arc::clone(snapshot.conf.get_or_init(|| {
+            Arc::new(conf_api::ConfState::read(
+                snapshot.storage().as_deref(),
+                &self.app_dirs.hledger_conf,
+            ))
+        }))
+    }
+
+    /// What Ledgeline honours from the `hledger.conf` in force — general
+    /// `--auto` and per-report `--depth` — for a host or another crate that
+    /// needs it (the FFI, plan 30's Phase 5).
+    #[must_use]
+    pub fn conf_settings(&self) -> ledgeline_core::hledger_conf::ConfSettings {
+        self.conf().settings.clone()
+    }
+
+    /// Read the config file afresh and, when it is not what the published
+    /// snapshot holds, republish so every report sees it. Returns the fresh
+    /// reading.
+    ///
+    /// The poll half of "an external change refreshes": the watcher covers
+    /// the journal's directory, and this covers the rest (`~/.hledger.conf`, a
+    /// parent directory, a host with no watcher).
+    pub(crate) fn refresh_conf(&self) -> Arc<conf_api::ConfState> {
+        let snapshot = self.snapshot();
+        let fresh =
+            conf_api::ConfState::read(snapshot.storage().as_deref(), &self.app_dirs.hledger_conf);
+        match snapshot.conf.get() {
+            Some(held) if held.differs_from(&fresh) => {
+                self.republish_with_conf(fresh);
+                self.conf()
+            }
+            Some(held) => Arc::clone(held),
+            None => Arc::clone(snapshot.conf.get_or_init(|| Arc::new(fresh))),
+        }
+    }
+
+    /// Publish a new snapshot of the CURRENT journal — the editor's when one is
+    /// bound — carrying `conf`, so the generation changes and every client
+    /// re-reads. Holding the editor lock means an edit landing meanwhile cannot
+    /// be overwritten by the journal from before it.
+    pub(crate) fn republish_with_conf(&self, conf: conf_api::ConfState) {
+        let guard = self.editor.lock().unwrap_or_else(PoisonError::into_inner);
+        let (journal, location) = match guard.as_ref() {
+            Some(editor) => (Arc::clone(editor.journal()), Some(location_of(editor))),
+            None => {
+                let snapshot = self.snapshot();
+                (Arc::clone(&snapshot.journal), snapshot.location.clone())
+            }
+        };
+        let snapshot = Snapshot::from_journal(journal, location);
+        let _ = snapshot.conf.set(Arc::new(conf));
+        self.inner.store(Arc::new(snapshot));
+    }
+
+    /// Every file a live-reload watcher should watch: the journal's sources
+    /// ([`Self::source_files`]) plus the `hledger.conf` in force and the one a
+    /// first settings write would create beside the journal — a change to
+    /// either changes what the reports read.
+    #[must_use]
+    pub fn watched_files(&self) -> Vec<PathBuf> {
+        let mut files = self.source_files();
+        let location = self.snapshot().storage();
+        for path in self.conf().watch_paths(location.as_deref()) {
+            if !files.contains(&path) {
+                files.push(path);
+            }
+        }
+        files
+    }
+
     /// Re-read the journal from its vault and republish it: re-open the bound
     /// editor, or — when none is bound — reparse through the vault the snapshot
     /// came from. The one reload path, used by the file watcher on a settled
@@ -626,7 +725,16 @@ impl AppState {
                 .map(|editor| editor.changed_sources().is_empty())
         };
         match unchanged {
-            Some(true) => Ok(Refreshed::Unchanged),
+            // The journal is as it was; its config file may not be.
+            Some(true) => {
+                let before = self.snapshot().etag.clone();
+                self.refresh_conf();
+                Ok(if self.snapshot().etag == before {
+                    Refreshed::Unchanged
+                } else {
+                    Refreshed::Reloaded
+                })
+            }
             _ => self.reload(),
         }
     }
@@ -1096,6 +1204,13 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
             "/api/prefs",
             get(import_api::prefs_get).put(import_api::prefs_put),
         )
+        // Settings › hledger config (plan 30, Decision 10): the config file in
+        // force, and `--auto` / `--depth` written into it. THE SAME PLACEMENT
+        // TRAP as the routes above: the `PUT` rewrites a file every hledger
+        // command the user runs reads — possibly `~/.hledger.conf`. Below the
+        // `route_layer` it would do that unauthenticated.
+        // `conf_endpoints.rs::every_conf_route_requires_the_token` pins the 401.
+        .route("/api/hledger-conf", get(conf_api::get).put(conf_api::put))
         // Account aliases (enhanced imports): the mapping table an import
         // forwards to `hledger --alias`, listed and edited in place.
         //

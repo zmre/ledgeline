@@ -2,11 +2,13 @@ import {describe, expect, it} from "vitest";
 import {
     alignToEnd,
     budgetRedirect,
+    confDepthDefault,
     defaultReportParams,
     intervalLabel,
     MAX_COUNT,
     paramsToSearch,
     rangeKeys,
+    searchNamesDepth,
     searchNamesEnd,
     searchToParams,
     TAB_CONTROLS,
@@ -355,5 +357,26 @@ describe("UNIT reports/ui/params — the end date shared across tabs", () => {
             expect(searchNamesEnd("?tab=subs")).toBe(false);
             expect(searchNamesEnd("")).toBe(false);
         });
+    });
+});
+
+describe("UNIT hledger.conf depth defaults", () => {
+    const none = {all: null, perRegex: []};
+    const effective = {balancesheet: {all: 1, perRegex: []}, incomestatement: none, cashflow: {all: 4, perRegex: []}, balance: {all: 0, perRegex: []}};
+
+    it("seeds Cash Flow from [cashflow] and Net Worth from [balance], clamped to the control", () => {
+        expect(confDepthDefault("cf", effective)).toBe(4);
+        expect(confDepthDefault("nw", effective)).toBe(1);
+        expect(confDepthDefault("cf", {...effective, cashflow: none})).toBeNull();
+    });
+
+    it("leaves the tabs with no depth control alone", () => {
+        for (const tab of ["bs", "is", "insights", "subs"] as const) expect(confDepthDefault(tab, effective)).toBeNull();
+        expect(confDepthDefault("cf", null)).toBeNull();
+    });
+
+    it("knows when a URL names its own depth", () => {
+        expect(searchNamesDepth("?tab=cf&depth=2")).toBe(true);
+        expect(searchNamesDepth("tab=cf")).toBe(false);
     });
 });

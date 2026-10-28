@@ -681,7 +681,10 @@ Worktree agents branch from `main`, so after merging, re-run the full suite
   `auto_form.rs`, in-place `=` block writes, `form`/`block` on the wire,
   Decision 11's warning in projection runs, and `lib/autoRules/
   AutoRuleEditor.svelte` in the Projections table.
-- Phase 4b (`hledger.conf` tab) and Phase 5 (the main journal): not started.
+- **Phase 4b (`hledger.conf` tab): built 2026-10-28.** Core locator and
+  settings, `GET`/`PUT /api/hledger-conf`, Settings › hledger config, the
+  report defaults, and `docs/settings/hledger-config.md`. See amendment 4b.
+- Phase 5 (the main journal): in progress on `2026-10-28-auto-journal`.
 
 ## Contract amendments made during implementation
 
@@ -869,3 +872,73 @@ real transaction uses) plus every account the scenario itself names
 (`Scenario::named_accounts`). `%account` is skipped. It is a warning in the
 run, not a refusal. The Settings and Problems-drawer halves of Decision 11
 belong to Phase 5.
+
+
+### 4b. Phase 4b as built (2026-10-28)
+
+Verified against hledger 1.52 with scratch journals and scratch config files
+before any of this was written:
+
+- **Section headings are case-sensitive.** `[BalanceSheet]` is ignored like
+  `[bs]`. The "alias section" warning covers both.
+- **Only the LAST heading of a name is read.** `[balance]\n--depth 3\n[balance]\n--no-total`
+  applies no depth. `ConfSettings` reads, and `with_option` writes, the last
+  one, and a duplicate is warned about.
+- **Plain and per-regex depths combine.** The last plain `N` wins, and the last
+  value for one REGEX wins. `-N` means `--depth N`. General options apply first,
+  then the command section's; that is what "command section overrides general"
+  means for depth.
+- **Which of several matching REGEXes wins** is the one matching furthest right
+  in the account name, regardless of order. `broker=3` beats `inv=4` for
+  `assets:inv:broker:fund`, and `fund=4` beats `assets=2`. A REGEX is matched
+  case-insensitively against the FULL name: `inv$` does not match
+  `assets:inv:broker`. `reports/ui/confDepth.ts` implements this for the
+  initial expansion.
+- **An invalid REGEX makes hledger refuse every command**, so writes refuse any
+  pattern the `regex` crate rejects, and reads warn about it.
+- **A `--depth` with its value on the next line** is read by hledger. We report
+  it as unreadable rather than following it, a deliberate narrowing nobody
+  should hit.
+
+Decisions made while building:
+
+- **API.** `locate_conf_for(vault, dir, &UserConfDirs) -> LocatedConf { source,
+  origin }` is the full lookup. `locate_conf`, `parse`, `read` and `read_in` are
+  unchanged and source-compatible, so `locate_conf` alone still skips the home
+  and XDG tiers. Phase 5 should read `AppState::conf_settings()`, or
+  `locate_conf_for` with `AppDirs::hledger_conf`, rather than `locate_conf`.
+  `auto_enabled(text)` and `ConfSettings::auto` are its flag.
+- **Where the user tiers come from.** `AppDirs::hledger_conf` (`$HOME`,
+  `$XDG_CONFIG_HOME`) is filled only by `AppDirs::from_env()`, which only the
+  desktop binary hands to `AppState::with_app_dirs`. A library caller, including
+  every in-process test, starts with it empty. `LEDGELINE_IGNORE_USER_HLEDGER_CONF`
+  keeps the live-integration, snapshot and e2e servers, and the CLI import
+  tests, off the developer's own dotfiles.
+- **Net Worth reads `[balance]`.** Net worth is hledger's `balance
+  --historical` over assets and liabilities. Cash Flow reads `[cashflow]`. Their
+  single depth control uses the plain depth only. Per-regex depths there are
+  written for the terminal and noted on the tab.
+- **BS/IS initial expansion.** A group opens when hledger at that depth would
+  show its accounts as more than one line. With no depth configured, every
+  group starts collapsed, as before. A section with only REGEX depths leaves
+  unmatched accounts unlimited, as hledger does, so their groups open. Each group
+  is decided once per spec, so a collapse sticks across refetches.
+- **The snapshot holds the conf lazily** (`Snapshot.conf: OnceLock`), read
+  through `AppState::conf()`. A PUT republishes with the written conf. A GET
+  reads fresh, and republishes when the file differs from what the snapshot
+  holds; this catches `~/.hledger.conf` and parent folders, which no watcher
+  covers. `refresh()` does the same check, and the file watcher now watches the
+  conf in force and `<root>/hledger.conf`.
+- **Writes.** They go to the located file wherever it is, or create
+  `<root>/hledger.conf` with `new_file_header()`, whose wording now covers both
+  writers. A file outside the vault is written through a `LocalVault` rooted at
+  its own folder, so the pinned read and replace are the same as for every other
+  write. A symlinked dotfile is shown read-only, never written through.
+  General-section inserts now go after the last general option, not after the
+  blank line before the first heading. The alias fix's insert changes the same
+  way.
+- **Not done:** the alias fix (`POST /api/import/hledger-conf`) still writes
+  only `<root>/hledger.conf`, as before. Only its READ moved to the shared
+  locator. `alias_arguments` still merges every `[import]` heading,
+  case-insensitively, where hledger reads only the last exact one. That is a
+  small parity gap, left for a follow-up.

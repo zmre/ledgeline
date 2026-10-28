@@ -98,6 +98,21 @@ let seen: string[] = [];
 /** Set by the test that takes one resource away mid-session. */
 let aliasesUnreachable = false;
 
+const NO_DEPTH = {all: null, perRegex: []};
+const HLEDGER_CONF = {
+    handle: null,
+    origin: null,
+    createHandle: "hledger.conf",
+    editable: true,
+    readOnlyReason: null,
+    hijacked: null,
+    revision: "",
+    auto: false,
+    depth: {general: NO_DEPTH, balancesheet: NO_DEPTH, incomestatement: NO_DEPTH, cashflow: NO_DEPTH, balance: NO_DEPTH},
+    effectiveDepth: {balancesheet: NO_DEPTH, incomestatement: NO_DEPTH, cashflow: NO_DEPTH, balance: NO_DEPTH},
+    warnings: [],
+};
+
 const json = (body: unknown): Response => new Response(JSON.stringify(body), {status: 200, headers: {"Content-Type": "application/json"}});
 
 function respond(url: string): Response {
@@ -115,6 +130,7 @@ function respond(url: string): Response {
     // Ahead of the bare `/accounts` case below (the hledger-compat account-tree
     // route), which would otherwise swallow this one too.
     if (url.endsWith("/api/accounts")) return json(ACCOUNT_LISTING);
+    if (url.endsWith("/api/hledger-conf")) return json(HLEDGER_CONF);
     if (url.endsWith("/api/rules")) return json(RULES_INDEX);
     // The preview is decoration and `loadPreview` swallows its failure, so it is
     // deliberately left to 404 — a document that loaded must not be lost with it.
@@ -167,11 +183,21 @@ describe("UNIT refreshAll — the plan", () => {
         expect(refreshPlan({openRulesId: "a.rules", unsaved: []})).toEqual([...REFRESH_TARGETS]);
     });
 
-    it("names the journal, the rules index, the open document, the aliases, the accounts, the capabilities, the prices and the holdings", () => {
+    it("names the journal, the rules index, the open document, the aliases, the accounts, the hledger config, the capabilities, the prices and the holdings", () => {
         // The list IS the definition of "everything". Pinning it is what makes
         // dropping one a failing test rather than a quiet regression — the exact
         // shape of the bug this module was written for.
-        expect([...REFRESH_TARGETS].sort()).toEqual(["accounts", "aliases", "holdings", "importCapabilities", "journal", "openRules", "prices", "rulesIndex"]);
+        expect([...REFRESH_TARGETS].sort()).toEqual([
+            "accounts",
+            "aliases",
+            "hledgerConf",
+            "holdings",
+            "importCapabilities",
+            "journal",
+            "openRules",
+            "prices",
+            "rulesIndex",
+        ]);
     });
 
     it("skips the open document when the editor has none open", () => {
@@ -233,6 +259,7 @@ describe("UNIT refreshAll — a press, against an app that has already loaded", 
         expect(hits(`/api/rules/${OPEN_ID.split("/").map(encodeURIComponent).join("/")}`)).toBe(1);
         expect(hits("/api/aliases")).toBe(1);
         expect(hits("/api/accounts")).toBe(1);
+        expect(hits("/api/hledger-conf")).toBe(1);
         expect(hits("/api/import/capabilities")).toBe(1);
         expect(hits("/api/journal")).toBe(1);
     });

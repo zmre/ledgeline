@@ -168,6 +168,9 @@ impl Tree {
             .args(args)
             .current_dir(self.dir.path())
             .env("LEDGELINE_CONFIG_DIR", self.config.path())
+            // Never the developer's own `~/.hledger.conf`: its aliases would
+            // reach these imports.
+            .env("LEDGELINE_IGNORE_USER_HLEDGER_CONF", "1")
             .output()
             .expect("the ledgeline binary runs")
     }

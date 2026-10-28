@@ -2,10 +2,10 @@
 // its own subnav: `?tab=`, restored once on mount and mirrored back with
 // debounced replaceState by the route itself.
 
-export type SettingsTab = "accounts" | "aliases";
+export type SettingsTab = "accounts" | "aliases" | "hledgerConf";
 
 /** "Accounts" is the first (default) tab. */
-export const TAB_ORDER: SettingsTab[] = ["accounts", "aliases"];
+export const TAB_ORDER: SettingsTab[] = ["accounts", "aliases", "hledgerConf"];
 
 export const TAB_LABELS: Record<SettingsTab, string> = {
     accounts: "Accounts",
@@ -13,6 +13,8 @@ export const TAB_LABELS: Record<SettingsTab, string> = {
     // `imports/params.ts` gives: the word alone means nothing to someone who
     // has not read hledger's manual.
     aliases: "Account Aliases",
+    // Lower-case on purpose: it is the name of hledger's own file.
+    hledgerConf: "hledger config",
 };
 
 export interface SettingsParams {

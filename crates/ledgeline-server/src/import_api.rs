@@ -1379,19 +1379,20 @@ fn resolve_stage(state: &AppState, raw: &str) -> Result<std::sync::Arc<Stage>, A
 
 /// The `hledger.conf` in force for this journal, if there is one.
 ///
-/// "In force" is hledger's own answer, narrowed: it searches the working
-/// directory and every directory above it, and Ledgeline searches upward from the
-/// **journal's** directory instead, because a server process's working directory
-/// is an accident of how it was launched while the journal's directory is where a
-/// user runs hledger for these books. `$HOME/.hledger.conf` and the XDG config
-/// dir, which hledger falls back to, are deliberately not consulted — see
-/// [`hledger_conf::locate`].
+/// "In force" is hledger's own answer ([`hledger_conf::locate_conf_for`]), with
+/// one narrowing: the search starts at the **journal's** directory rather than
+/// the process's working directory, because a server process's working
+/// directory is an accident of how it was launched while the journal's
+/// directory is where a user runs hledger for these books. Then each parent,
+/// then `~/.hledger.conf`, then the XDG file — the same locator Settings ›
+/// hledger config reads, so the two always agree about which file this is.
 struct ConfInForce {
-    /// A relative handle for the wire: `hledger.conf`, or `../hledger.conf`
-    /// repeated per level when it sits above the journal's directory.
+    /// A client-safe handle for the wire: `hledger.conf`, `../hledger.conf`
+    /// repeated per level above the journal's directory, `~/.hledger.conf`, or
+    /// the XDG file's `~`-relative name. Never an absolute path.
     id: String,
-    /// It is above the journal's own directory, so Ledgeline reads it and will
-    /// not write it.
+    /// It is not the journal's own `hledger.conf`, so this alias fix reads it
+    /// and will not write it (Settings › hledger config does).
     outside: bool,
     /// The `--alias` values it gives an import, general section then `[import]`,
     /// up to [`hledger_conf::MAX_CONF_ALIASES`].
@@ -1406,49 +1407,32 @@ struct ConfInForce {
 /// Find and read the config file in force, if any. Never an error: a config file
 /// that cannot be read is a config file we do not have.
 ///
-/// The search ([`hledger_conf::locate_conf`]) looks inside the vault, then —
+/// The search ([`hledger_conf::locate_conf_for`]) looks inside the vault, then —
 /// on the desktop, where the vault has a real directory — upward from the
-/// journal's directory as a terminal `hledger` would. A vault with no local
-/// path stops at its root.
-fn conf_in_force(location: &JournalLocation) -> Option<ConfInForce> {
-    let vault = location.vault();
-    let root = location.root_dir();
-    // Inside the vault first; above its root only on a vault with a real
-    // directory behind it (the desktop), read there with plain fs as before.
-    let (text, levels) = match hledger_conf::locate_conf(&**vault, &root)? {
-        hledger_conf::ConfFile::InVault(path) => {
-            let text = hledger_conf::read_in(&**vault, &path).ok()?;
-            let levels = root
-                .segments()
-                .count()
-                .saturating_sub(path.parent()?.segments().count());
-            (text, levels)
-        }
-        hledger_conf::ConfFile::AboveVault { path, levels } => {
-            (hledger_conf::read(&path).ok()?, levels)
-        }
-    };
+/// journal's directory and on to the user-level files, as a terminal `hledger`
+/// would. A vault with no local path stops at its root.
+///
+/// Security layer 5: the handle is `../hledger.conf` or `~/.hledger.conf`, never
+/// `/Users/someone/hledger.conf`. The number of `../` levels is real
+/// information — it is how the user finds the file — and it discloses nothing a
+/// relative rules id does not.
+fn conf_in_force(
+    location: &JournalLocation,
+    user: &hledger_conf::UserConfDirs,
+) -> Option<ConfInForce> {
+    let located = hledger_conf::locate_conf_for(&**location.vault(), &location.root_dir(), user)?;
+    let text = located.read(&**location.vault()).ok()?;
     let (aliases, unforwarded) = hledger_conf::forwarded(hledger_conf::alias_arguments(
         &text,
         hledger_conf::IMPORT_COMMAND,
     ));
     Some(ConfInForce {
-        id: conf_id(levels),
-        outside: levels > 0,
+        id: located.handle(),
+        outside: located.origin != (hledger_conf::ConfOrigin::Ledger { levels: 0 }),
         aliases,
         unforwarded,
         hijacked_by: hledger_conf::hijacks_command(&text),
     })
-}
-
-/// A relative handle for a config file's location, from the journal's directory.
-///
-/// Security layer 5: the client is told `../hledger.conf`, never
-/// `/Users/someone/hledger.conf`. The number of `../` levels is real
-/// information — it is how the user finds the file — and it discloses nothing
-/// a relative rules id does not.
-fn conf_id(levels: usize) -> String {
-    format!("{}{}", "../".repeat(levels), hledger_conf::CONF_NAME)
 }
 
 /// The config file this server may write: `hledger.conf` in the journal's **own**
@@ -2470,7 +2454,7 @@ fn stage_upload(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireStage,
         .map(|location| {
             AliasArguments::merge(
                 aliases::arguments(&snapshot.journal),
-                conf_in_force(location)
+                conf_in_force(location, &state.app_dirs().hledger_conf)
                     .map(|conf| conf.aliases)
                     .unwrap_or_default(),
             )
@@ -2976,7 +2960,7 @@ impl Plan {
         let hledger = resolve_hledger(state.app_dirs())?;
         // Both homes an account alias can live in — see `AliasArguments::merge`
         // for why the config's come first.
-        let conf = conf_in_force(&location);
+        let conf = conf_in_force(&location, &state.app_dirs().hledger_conf);
         let declared = aliases::forward(&state.snapshot().journal);
         let aliases = AliasArguments::merge(
             declared

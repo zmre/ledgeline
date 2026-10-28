@@ -6,6 +6,7 @@
 
 import type {WireAutoRuleFormIn} from "#lib/autoRules/ruleForm.js";
 import type {BudgetPeriod} from "#lib/budget/types.js";
+import type {SaveHledgerConfBody} from "#lib/settings/hledgerConfTypes.js";
 import {ApiUnreachableError, authHeaders, REQUEST_TIMEOUT_MS, withDeadline} from "./client";
 
 /** The configured server answered, but has no /api/* routes (it is not the Ledgeline engine, or predates the route). */
@@ -1264,6 +1265,22 @@ export class LedgelineApi {
      */
     saveAliases(journalId: string, body: SaveAliasesBody): Promise<unknown> {
         return this.mutate<unknown>("PUT", `/api/aliases/${encodeRulesId(journalId)}`, 200, body);
+    }
+
+    /** The `hledger.conf` in force and what Ledgeline reads from it (decode with `decodeHledgerConf`). */
+    hledgerConf(): Promise<unknown> {
+        return this.getJson("/api/hledger-conf");
+    }
+
+    /**
+     * Set or clear general `--auto` and per-section `--depth` in the config
+     * file in force — or create `hledger.conf` beside the journal when there is
+     * none. → 200, the file as written (decode with `decodeHledgerConf`); 409
+     * when it changed on disk since `revision`; 400 for a hijacked file or a
+     * value a config file cannot hold.
+     */
+    saveHledgerConf(body: SaveHledgerConfBody): Promise<unknown> {
+        return this.mutate<unknown>("PUT", "/api/hledger-conf", 200, body);
     }
 
     /** Every account the journal declares (decode with `decodeAccountListing`). */

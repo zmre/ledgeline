@@ -1,8 +1,9 @@
 <script lang="ts">
     // Settings route: an outer subnav, same shape as Imports (WP-11) and
-    // Reports. Two screens live under it — "Accounts" (the chart-of-accounts
-    // editor) and "Account Aliases" (moved here from Imports; the panel and
-    // its store are unchanged, only the tab that hosts it moved). The tab
+    // Reports. Three screens live under it — "Accounts" (the chart-of-accounts
+    // editor), "Account Aliases" (moved here from Imports; the panel and
+    // its store are unchanged, only the tab that hosts it moved) and "hledger
+    // config" (the `hledger.conf` in force: --auto and report depths). The tab
     // lives in the query string via the same three pieces the Imports route
     // uses — `searchToParams` once on mount behind a `restored` latch, a
     // debounced `replaceState` mirror the other way.
@@ -10,6 +11,7 @@
     import ErrorToast from "#lib/components/ErrorToast.svelte";
     import AccountsPanel from "#lib/accounts/ui/AccountsPanel.svelte";
     import AliasPanel from "#lib/imports/ui/AliasPanel.svelte";
+    import HledgerConfPanel from "#lib/settings/ui/HledgerConfPanel.svelte";
     import {defaultSettingsParams, paramsToSearch, searchToParams, type SettingsParams} from "#lib/settings/params.js";
     import SettingsTabs from "#lib/settings/ui/SettingsTabs.svelte";
     import {journal} from "#lib/stores/journal.svelte.js";
@@ -46,6 +48,8 @@
 
     {#if params.tab === "aliases"}
         <AliasPanel />
+    {:else if params.tab === "hledgerConf"}
+        <HledgerConfPanel />
     {:else}
         <AccountsPanel accountNames={journal.accountNames} />
     {/if}

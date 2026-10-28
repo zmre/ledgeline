@@ -56,3 +56,17 @@ test("settings: a bookmarked /imports?tab=aliases URL is forwarded", async ({pag
     await page.goto("/imports");
     await expect(page.getByRole("tab", {name: "Account Aliases"})).toHaveCount(0);
 });
+
+test("settings: the hledger config tab shows the file in force and its controls, read-only here", async ({page}) => {
+    // Nothing is saved: a save would create fixtures/hledger.conf (the engine
+    // is told to ignore the developer's ~/.hledger.conf). The write path is
+    // pinned on the bytes by crates/ledgeline-server/tests/conf_endpoints.rs.
+    await page.goto("/settings?tab=hledgerConf");
+    await expect(page.getByRole("tab", {name: "hledger config"})).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByTestId("settings-hledger-conf-handle")).toBeVisible();
+    await expect(page.getByTestId("settings-hledger-conf-auto")).toBeVisible();
+    for (const section of ["general", "balancesheet", "incomestatement", "cashflow", "balance"]) {
+        await expect(page.getByTestId(`settings-hledger-conf-depth-${section}`)).toBeVisible();
+    }
+    await expect(page.getByTestId("settings-hledger-conf-save")).toBeDisabled();
+});
