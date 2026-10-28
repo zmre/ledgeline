@@ -26,6 +26,8 @@
 
 import type {AccountEntry, AccountFile, AccountListing, AccountTag, CreatedAccountsFile} from "#lib/accounts/types.js";
 import {isBudgetPeriod} from "#lib/budget/types.js";
+import {CONF_SECTIONS, DEPTH_COMMANDS} from "#lib/settings/hledgerConfTypes.js";
+import type {ConfOrigin, ConfSection, DepthCommand, DepthSpec, HledgerConf} from "#lib/settings/hledgerConfTypes.js";
 import type {AccountReference, BudgetFile, BudgetGoal, BudgetListing, BudgetRule, CreatedBudgetFile, RulePeriod} from "#lib/budget/types.js";
 import type {AccountClass, AccountClasses, AccountType} from "#lib/domain/accountClass.js";
 import type {Dec, MixedAmount} from "#lib/domain/money.js";
@@ -4618,5 +4620,81 @@ export function decodeBudgetGaps(raw: unknown): BudgetGaps {
         revenueTotal: decodeMixed(gaps.revenueTotal, "budget gaps revenueTotal"),
         expenseTotal: decodeMixed(gaps.expenseTotal, "budget gaps expenseTotal"),
         headline: decodeMixed(gaps.headline, "budget gaps headline"),
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Settings › hledger config (`/api/hledger-conf`)
+// ---------------------------------------------------------------------------
+
+interface RawDepthSpec {
+    all?: number | null;
+    perRegex?: {regex?: string; depth?: number}[];
+}
+
+interface RawHledgerConf {
+    handle?: string | null;
+    origin?: string | null;
+    createHandle?: string | null;
+    editable?: boolean;
+    readOnlyReason?: string | null;
+    hijacked?: string | null;
+    revision?: string;
+    auto?: boolean;
+    depth?: Record<string, RawDepthSpec>;
+    effectiveDepth?: Record<string, RawDepthSpec>;
+    warnings?: {code?: string; message?: string}[];
+}
+
+const CONF_ORIGINS: readonly ConfOrigin[] = ["ledger", "home", "xdg"];
+
+function decodeDepthSpec(raw: RawDepthSpec | undefined, context: string): DepthSpec {
+    if (typeof raw !== "object" || raw === null) throw new ApiShapeError(`${context}: expected a depth object`);
+    return Object.freeze({
+        all: optNum(raw.all, `${context} all`),
+        perRegex: frozen(
+            (raw.perRegex ?? []).map((entry, i) =>
+                Object.freeze({regex: str(entry.regex, `${context} perRegex[${i}] regex`), depth: num(entry.depth, `${context} perRegex[${i}] depth`)})
+            )
+        ),
+    });
+}
+
+/** Every key of `keys` decoded out of `raw` — REQUIRED, so a renamed section fails loudly rather than reading as "unset". */
+function decodeDepthTable<K extends string>(
+    raw: Record<string, RawDepthSpec> | undefined,
+    keys: readonly K[],
+    context: string
+): Readonly<Record<K, DepthSpec>> {
+    if (typeof raw !== "object" || raw === null) throw new ApiShapeError(`${context}: expected an object`);
+    return Object.freeze(Object.fromEntries(keys.map((key) => [key, decodeDepthSpec(raw[key], `${context} ${key}`)])) as Record<K, DepthSpec>);
+}
+
+/** `GET`/`PUT /api/hledger-conf` → the config file in force and what Ledgeline reads from it. */
+export function decodeHledgerConf(raw: unknown): HledgerConf {
+    const conf = raw as RawHledgerConf;
+    if (typeof conf !== "object" || conf === null) throw new ApiShapeError("hledger conf: expected an object");
+    const origin = optStr(conf.origin, "hledger conf origin");
+    if (origin !== null && !(CONF_ORIGINS as string[]).includes(origin)) throw new ApiShapeError(`hledger conf origin: unknown ${JSON.stringify(origin)}`);
+    if (typeof conf.editable !== "boolean" || typeof conf.auto !== "boolean") throw new ApiShapeError("hledger conf: expected editable and auto booleans");
+    return Object.freeze({
+        handle: optStr(conf.handle, "hledger conf handle"),
+        origin: origin as ConfOrigin | null,
+        createHandle: optStr(conf.createHandle, "hledger conf createHandle"),
+        editable: conf.editable,
+        readOnlyReason: optStr(conf.readOnlyReason, "hledger conf readOnlyReason"),
+        hijacked: optStr(conf.hijacked, "hledger conf hijacked"),
+        revision: str(conf.revision, "hledger conf revision"),
+        auto: conf.auto,
+        depth: decodeDepthTable<ConfSection>(conf.depth, CONF_SECTIONS, "hledger conf depth"),
+        effectiveDepth: decodeDepthTable<DepthCommand>(conf.effectiveDepth, DEPTH_COMMANDS, "hledger conf effectiveDepth"),
+        warnings: frozen(
+            (conf.warnings ?? []).map((warning, i) =>
+                Object.freeze({
+                    code: str(warning.code, `hledger conf warnings[${i}] code`),
+                    message: str(warning.message, `hledger conf warnings[${i}] message`),
+                })
+            )
+        ),
     });
 }
