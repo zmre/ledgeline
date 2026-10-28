@@ -232,11 +232,10 @@ describe("COMPONENT scenarioStore — the payload and the question it answers", 
         const held = scenarioStore.projection.query!;
         const revision = scenarioStore.revision;
         expect(sameProjectionQuery(held, {...WINDOW, journal: true, revision})).toBe(false);
-        expect(sameProjectionQuery(held, {...WINDOW, accounts: {mode: "change", empty: false}, revision})).toBe(false);
-        const accounts = {...held, accounts: {mode: "change" as const, empty: false}};
-        expect(sameProjectionQuery(accounts, {...WINDOW, accounts: {mode: "change", empty: false}, revision})).toBe(true);
-        expect(sameProjectionQuery(accounts, {...WINDOW, accounts: {mode: "balance", empty: false}, revision})).toBe(false);
-        expect(sameProjectionQuery(accounts, {...WINDOW, accounts: {mode: "change", empty: true}, revision})).toBe(false);
+        expect(sameProjectionQuery(held, {...WINDOW, accounts: {empty: false}, revision})).toBe(false);
+        const accounts = {...held, accounts: {empty: false}};
+        expect(sameProjectionQuery(accounts, {...WINDOW, accounts: {empty: false}, revision})).toBe(true);
+        expect(sameProjectionQuery(accounts, {...WINDOW, accounts: {empty: true}, revision})).toBe(false);
     });
 });
 

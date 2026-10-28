@@ -225,24 +225,28 @@ test("the header stays pinned at the top of the window while the page scrolls", 
     await expect(header.getByRole("link", {name: "Projections"})).toBeVisible();
 });
 
-test("projections: the Accounts tab lists every account per period, Change or Balance, with empty accounts on request", async ({page}) => {
+test("projections: the Accounts tab reads assets as balances with a Δ and flows as changes, with empty accounts on request", async ({page}) => {
     await page.goto("/projections?tab=accounts");
     await expect(page.getByRole("tab", {name: "Accounts"})).toHaveAttribute("aria-selected", "true");
     const view = page.getByTestId("projection-accounts");
     const table = view.getByTestId("accounts-table");
     await expect(table).toBeVisible();
     await expect(table.getByTestId("projected-label")).toHaveText("Projected");
-    await expect(table.locator("thead tr:not([data-testid]) th").last()).toHaveText("Total");
-    await expect(page).toHaveURL(/accounts=change&empty=0/);
+    await expect(page).toHaveURL(/empty=0/);
+    // Each section says how it reads, and its last column follows.
+    const assets = table.locator('[data-testid="account-section"][data-section="assets"]');
+    await expect(assets).toHaveAttribute("data-reading", "balance");
+    await expect(assets.locator('[data-column="summary-heading"]')).toHaveText("Δ over the period");
+    await expect(assets.locator('[data-testid="account-section-total"] [data-column="summary"]')).toContainText("Δ");
+    const expenses = table.locator('[data-testid="account-section"][data-section="expenses"]');
+    await expect(expenses).toHaveAttribute("data-reading", "change");
+    await expect(expenses.locator('[data-column="summary-heading"]')).toHaveText("Total");
+    // The help text says it in words.
+    await expect(view.getByTestId("account-report-help")).toContainText("balance at the end of each period");
+    // No Change/Balance switch any more.
+    await expect(view.getByRole("button", {name: "Balance"})).toHaveCount(0);
     // `expenses:shopping` is declared in sample.journal and never posted to.
     await expect(table.locator('[data-account="expenses:shopping"]')).toHaveCount(0);
-
-    await view.getByRole("button", {name: "Balance"}).click();
-    await expect(page).toHaveURL(/accounts=balance/);
-    await expect(view.getByRole("button", {name: "Balance"})).toHaveAttribute("aria-pressed", "true");
-    // Balances are snapshots: no Total column once the re-run lands.
-    await expect(table.locator("thead tr:not([data-testid]) th").last()).not.toHaveText("Total");
-
     await view.getByRole("checkbox", {name: "Show empty accounts"}).check();
     await expect(page).toHaveURL(/empty=1/);
     await expect(table.locator('[data-account="expenses:shopping"]')).toHaveCount(1);

@@ -1101,6 +1101,7 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
             get(reports_api::incomestatement_flows),
         )
         .route("/api/reports/cashflow", get(reports_api::cashflow))
+        .route("/api/reports/accounts", get(reports_api::accounts))
         .route("/api/reports/networth", get(reports_api::networth))
         .route("/api/insights", get(reports_api::insights_report))
         .route("/api/subscriptions", get(reports_api::subscriptions))

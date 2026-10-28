@@ -18,12 +18,12 @@ import {
     buildBalanceSheetWorkbook,
     buildCashFlowWorkbook,
     buildIncomeStatementWorkbook,
+    buildAccountReportWorkbook,
     buildRunwayWorkbook,
-    buildWorkbook,
     downloadWorkbook,
 } from "#lib/export/xlsx.js";
 import type {ProjectionTab} from "./params";
-import type {AccountsMode, ForecastEntry, Projection} from "./types";
+import type {ForecastEntry, Projection} from "./types";
 
 /** The suffix a forecast column's heading carries in a workbook. */
 export const PROJECTED_SUFFIX = " (projected)";
@@ -63,8 +63,6 @@ export interface ExportContext {
     runwaySentence: string;
     /** The commodity the statements are valued in, for the money headings. */
     base: string | null;
-    /** The Accounts tab's reading. */
-    accountsMode: AccountsMode;
     /** The Journal tab's search, so the workbook holds what the screen lists. */
     journalQuery: string;
     /** The display style of a commodity, as the journal workbook writes amounts. */
@@ -165,8 +163,9 @@ export function projectionExport(tab: ProjectionTab, projection: Projection, con
         case "accounts": {
             const accounts = projection.accounts;
             if (accounts === null) return null;
-            const params = `${context.accountsMode === "balance" ? "Closing balance" : "Change"} per period; ${window}`;
-            return finish(params, () => buildWorkbook({...accounts, periods: markProjected(accounts.periods, actuals)}, meta(params)));
+            const params = `Assets and liabilities: balance at each period's end, then Δ; the rest: change in each period, then Total. ${window}`;
+            const labels = markProjected(accounts.periods, actuals).map((period) => period.label);
+            return finish(params, () => buildAccountReportWorkbook(accounts, meta(params), labels));
         }
         case "journal": {
             const journal = projection.journal;

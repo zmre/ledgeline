@@ -12,7 +12,8 @@
     import {resolve} from "$app/paths";
     import AsyncSection from "#lib/components/AsyncSection.svelte";
     import ErrorToast from "#lib/components/ErrorToast.svelte";
-    import {exportBalanceSheetXlsx, exportCashFlowXlsx, exportIncomeStatementXlsx, exportXlsx} from "#lib/export/xlsx.js";
+    import {exportAccountReportXlsx, exportBalanceSheetXlsx, exportCashFlowXlsx, exportIncomeStatementXlsx, exportXlsx} from "#lib/export/xlsx.js";
+    import AccountReportView from "#lib/reports/ui/AccountReportView.svelte";
     import InsightsDashboard from "#lib/reports/ui/insights/InsightsDashboard.svelte";
     import BalanceSheetView from "#lib/reports/ui/BalanceSheetView.svelte";
     import CashFlowChart from "#lib/reports/ui/CashFlowChart.svelte";
@@ -280,6 +281,12 @@
                 };
             case "nw":
                 return {title: "Net Worth", params: `${span}, depth ${params.depth}`, filename: `net-worth-${params.end}.xlsx`};
+            case "accounts":
+                return {
+                    title: "Accounts",
+                    params: `${params.cfFrom} to ${params.cfTo}, ${grain}, depth ${params.depth}${params.empty ? ", empty accounts shown" : ""}`,
+                    filename: `accounts-${params.cfFrom}-to-${params.cfTo}-${params.interval}.xlsx`,
+                };
         }
     });
 
@@ -295,6 +302,8 @@
                 return exportIncomeStatementXlsx(current, meta, exportInfo.filename);
             case "cashFlow":
                 return exportCashFlowXlsx(current, meta, exportInfo.filename, journal.dominantCommodity);
+            case "accounts":
+                return exportAccountReportXlsx(current, meta, exportInfo.filename);
         }
     }
 </script>
@@ -344,6 +353,12 @@
                 {#if "kind" in current}
                     {#if current.kind === "balanceSheet" || current.kind === "balanceSheetColumns"}
                         <BalanceSheetView report={current} {styles} depthSpec={conf?.effectiveDepth.balancesheet ?? null} />
+                    {:else if current.kind === "accounts"}
+                        <label class="label mb-2 cursor-pointer gap-2 text-sm">
+                            <input type="checkbox" class="checkbox checkbox-sm" bind:checked={params.empty} data-testid="accounts-empty" />
+                            Show empty accounts
+                        </label>
+                        <AccountReportView report={current} {styles} />
                     {:else if current.kind === "incomeStatement"}
                         <IncomeStatementView report={current} {styles} flows={flowsPanel} depthSpec={conf?.effectiveDepth.incomestatement ?? null} />
                     {:else}

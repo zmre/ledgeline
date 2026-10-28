@@ -95,7 +95,6 @@ export function sameProjectionQuery(a: ProjectionQuery, b: ProjectionQuery): boo
         a.lookback === b.lookback &&
         a.depth === b.depth &&
         a.journal === b.journal &&
-        a.accounts?.mode === b.accounts?.mode &&
         a.accounts?.empty === b.accounts?.empty
     );
 }

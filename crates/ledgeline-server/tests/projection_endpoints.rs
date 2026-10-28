@@ -859,26 +859,31 @@ async fn the_actual_columns_are_the_reports_tabs_statements() {
 // The Accounts and Journal readings (plan 28, follow-ups 2026-10-26)
 // ---------------------------------------------------------------------------
 
-/// A run asking for the Accounts reading in `mode`, over July and August with
-/// May and June as actuals, at depth 3.
-async fn accounts_run(mode: &str, empty: bool, events: Vec<Value>) -> Value {
+/// A run asking for the Accounts reading, over July and August with May and
+/// June as actuals, at depth 3.
+async fn accounts_run(empty: bool, events: Vec<Value>) -> Value {
     run(json!({
         "scenario": scenario_with(vec![rent_line()], events),
         "asOf": "2026-07-08",
         "count": 2,
         "depth": 3,
-        "accounts": {"mode": mode, "empty": empty}
+        "accounts": {"empty": empty}
     }))
     .await
 }
 
-/// The Accounts report's row for `account`, if it has one.
+/// The Accounts report's row for `account` and its section, if it has one.
 fn account_row<'a>(projection: &'a Value, account: &str) -> Option<&'a Value> {
-    projection["accounts"]["rows"]
-        .as_array()
-        .expect("accounts rows")
+    account_sections(projection)
         .iter()
+        .flat_map(|section| section["rows"].as_array().expect("rows"))
         .find(|row| row["account"] == account)
+}
+
+fn account_sections(projection: &Value) -> &Vec<Value> {
+    projection["accounts"]["sections"]
+        .as_array()
+        .expect("accounts sections")
 }
 
 fn account_values(projection: &Value, account: &str) -> Vec<i128> {
@@ -898,57 +903,59 @@ async fn the_accounts_and_journal_readings_are_null_unless_asked_for() {
     assert_eq!(projection["journal"], Value::Null);
 }
 
-/// **Change is each period's movement; Balance is the running balance.** Over
-/// the same columns the statements use, `lookback ++ buckets`, with the real
-/// journal before the cutoff and the forecast after it.
+/// **Each section reads its own way** (2026-10-28): assets and liabilities
+/// are each period's BALANCE with the window's Δ last, everything else each
+/// period's net CHANGE with a Total last — over `lookback ++ buckets`, the
+/// real journal before the cutoff and the forecast after it.
 #[tokio::test]
-async fn accounts_change_is_movement_and_balance_is_the_running_total() {
-    let change = accounts_run("change", false, vec![]).await;
-    let balance = accounts_run("balance", false, vec![]).await;
+async fn assets_are_balances_and_flows_are_changes() {
+    let projection = accounts_run(false, vec![]).await;
     let keys = json!(["2026-05", "2026-06", "2026-07", "2026-08"]);
-    assert_eq!(change["accounts"]["buckets"], keys);
-    assert_eq!(balance["accounts"]["buckets"], keys);
-    assert_eq!(change["accounts"]["periods"][2]["label"], "Jul 2026");
-
-    // The scenario's own account: nothing real, then $4,200 a month.
-    assert_eq!(account_values(&change, "expenses:rent"), [0, 0, 4200, 4200]);
-    assert_eq!(
-        account_values(&balance, "expenses:rent"),
-        [0, 0, 4200, 8400]
-    );
-    // Change rows carry a Total; balance rows are snapshots and do not.
-    let rent = account_row(&change, "expenses:rent").expect("rent");
-    assert_eq!(dollars(&rent["total"]), 8400);
-    assert!(
-        account_row(&balance, "expenses:rent")
-            .expect("rent")
-            .get("total")
-            .is_none()
-    );
-    assert!(change["accounts"].get("grandTotal").is_some());
-    assert!(balance["accounts"].get("grandTotal").is_none());
-
-    // Every row: balance[i] = balance[i - 1] + change[i], and the real May
-    // movement is the real journal's (the rent was never in May).
-    for row in change["accounts"]["rows"].as_array().expect("rows") {
-        let account = row["account"].as_str().expect("account");
-        let moved = exact_series(row);
-        let Some(held) = account_row(&balance, account).map(exact_series) else {
-            continue;
+    assert_eq!(projection["accounts"]["buckets"], keys);
+    assert_eq!(projection["accounts"]["periods"][2]["label"], "Jul 2026");
+    let shape: Vec<(String, String)> = account_sections(&projection)
+        .iter()
+        .map(|section| {
+            (
+                section["section"].as_str().expect("section").to_string(),
+                section["reading"].as_str().expect("reading").to_string(),
+            )
+        })
+        .collect();
+    for (section, reading) in &shape {
+        let want = if matches!(section.as_str(), "assets" | "liabilities") {
+            "balance"
+        } else {
+            "change"
         };
-        for at in 1..moved.len() {
-            assert_eq!(held[at], held[at - 1] + moved[at], "{account} column {at}");
-        }
+        assert_eq!(reading, want, "{section}");
     }
-    // Real July 1–3 transactions are left out (Decision 5): July's checking
-    // movement is the rent alone.
-    assert_eq!(account_values(&change, "assets:bank:checking")[2], -4200);
+    assert_eq!(shape[0].0, "assets", "{shape:?}");
+
+    // A flow: nothing real, then $4,200 a month, and a Total.
+    assert_eq!(
+        account_values(&projection, "expenses:rent"),
+        [0, 0, 4200, 4200]
+    );
+    let rent = account_row(&projection, "expenses:rent").expect("rent");
+    assert_eq!(dollars(&rent["summary"]), 8400);
+
+    // Cash is a BALANCE: each column the previous plus that period's
+    // movement, and the forecast's rent comes out of it — July's balance is
+    // June's less $4,200 (real July 1–3 postings are left out, Decision 5).
+    let checking =
+        exact_series(account_row(&projection, "assets:bank:checking").expect("checking"));
+    assert!(checking[0] > 0, "a balance, not a movement: {checking:?}");
+    assert_eq!(checking[2], checking[1] - 4_200_000_000_000_000);
+    assert_eq!(checking[3], checking[2] - 4_200_000_000_000_000);
+    // (Its last column, the Δ over the window, is pinned against hledger's
+    // `balance -T` in `projection_files.rs`.)
     // Natural signs, as `hledger balance` prints them: salary is negative.
-    assert!(account_values(&change, "income:salary")[0] < 0);
+    assert!(account_values(&projection, "income:salary")[0] < 0);
 }
 
-/// **Depth rolls the rows up** like every other report's slider, and never
-/// the per-column totals.
+/// **Depth rolls the rows up** like every other report's slider, within each
+/// section, and never the section totals.
 #[tokio::test]
 async fn accounts_honour_the_depth() {
     let projection = run(json!({
@@ -956,11 +963,13 @@ async fn accounts_honour_the_depth() {
         "asOf": "2026-07-08",
         "count": 2,
         "depth": 1,
-        "accounts": {"mode": "change"}
+        "accounts": {"empty": false}
     }))
     .await;
-    let rows = projection["accounts"]["rows"].as_array().expect("rows");
-    assert!(rows.iter().all(|row| row["depth"] == 1), "{rows:?}");
+    for section in account_sections(&projection) {
+        let rows = section["rows"].as_array().expect("rows");
+        assert!(rows.iter().all(|row| row["depth"] == 1), "{rows:?}");
+    }
     assert_eq!(account_values(&projection, "expenses")[2..], [4200, 4200]);
 }
 
@@ -968,35 +977,37 @@ async fn accounts_honour_the_depth() {
 /// never touches — what a projection misses — as all-zero rows.
 #[tokio::test]
 async fn empty_accounts_are_shown_only_when_asked_for() {
-    let hidden = accounts_run("change", false, vec![]).await;
+    let hidden = accounts_run(false, vec![]).await;
     assert!(
         account_row(&hidden, "expenses:shopping").is_none(),
         "declared, never posted: hidden by default"
     );
-    let shown = accounts_run("change", true, vec![]).await;
+    let shown = accounts_run(true, vec![]).await;
     let shopping = account_row(&shown, "expenses:shopping").expect("the declared account is a row");
     assert_eq!(series(shopping), [0, 0, 0, 0]);
-    // Every row the hidden reading had is still there, with the same figures.
-    for row in hidden["accounts"]["rows"].as_array().expect("rows") {
-        let account = row["account"].as_str().expect("account");
-        assert_eq!(account_values(&shown, account), series(row), "{account}");
+    for section in account_sections(&hidden) {
+        for row in section["rows"].as_array().expect("rows") {
+            let account = row["account"].as_str().expect("account");
+            assert_eq!(account_values(&shown, account), series(row), "{account}");
+        }
     }
-    let balance = accounts_run("balance", true, vec![]).await;
-    assert!(account_row(&balance, "expenses:shopping").is_some());
 }
 
+/// A page from before 2026-10-28 still sends the old Change/Balance `mode`;
+/// it is accepted and ignored.
 #[tokio::test]
-async fn an_unknown_accounts_mode_is_a_400() {
-    let (status, text) = post(json!({
+async fn an_old_page_s_accounts_mode_is_ignored() {
+    let old = run(json!({
         "scenario": scenario_with(vec![rent_line()], vec![]),
         "asOf": "2026-07-08",
-        "accounts": {"mode": "cumulative"}
+        "count": 2,
+        "depth": 3,
+        "accounts": {"mode": "change", "empty": false}
     }))
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
-    assert!(
-        text.contains("change") && text.contains("balance"),
-        "{text}"
+    assert_eq!(
+        old["accounts"],
+        accounts_run(false, vec![]).await["accounts"]
     );
 }
 

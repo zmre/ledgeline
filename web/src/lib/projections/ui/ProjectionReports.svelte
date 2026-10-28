@@ -37,13 +37,12 @@
     import type {PeriodInterval} from "#lib/reports/ui/params.js";
     import {PROJECTION_TABS, PROJECTION_TAB_LABELS, type ProjectionTab} from "../params";
     import {balanceNumbers, chartCommodity, otherCommodities, runwayStatement} from "../projectionView";
-    import type {AccountsMode, Projection} from "../types";
+    import type {Projection} from "../types";
     import ForecastJournalView from "./ForecastJournalView.svelte";
-    import ProjectedAccountsView from "./ProjectedAccountsView.svelte";
+    import AccountReportView from "#lib/reports/ui/AccountReportView.svelte";
 
     let {
         tab = $bindable(),
-        accountsMode = $bindable("change"),
         emptyAccounts = $bindable(false),
         projection,
         interval,
@@ -52,8 +51,6 @@
         scenarioName = "",
     }: {
         tab: ProjectionTab;
-        /** The Accounts tab: each period's movement or its closing balance. */
-        accountsMode?: AccountsMode;
         /** The Accounts tab: whether accounts with nothing in any column are rows too. */
         emptyAccounts?: boolean;
         projection: Projection;
@@ -87,7 +84,6 @@
             scenarioName,
             runwaySentence: [statement.headline, statement.detail].filter((part) => part !== null).join(" "),
             base: projection.balanceSheet.base ?? commodity,
-            accountsMode,
             journalQuery,
             styleOf: (symbol) => styleOf(styles, symbol),
         })
@@ -188,32 +184,15 @@
     {:else if tab === "accounts"}
         <div class="flex flex-col gap-3" data-testid="projection-accounts">
             <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
-                <div class="join" role="group" aria-label="Accounts reading">
-                    <button
-                        type="button"
-                        class="btn join-item btn-sm {accountsMode === 'change' ? 'btn-active' : ''}"
-                        aria-pressed={accountsMode === "change"}
-                        title="What moved in each period (hledger balance)"
-                        onclick={() => (accountsMode = "change")}>Change</button
-                    >
-                    <button
-                        type="button"
-                        class="btn join-item btn-sm {accountsMode === 'balance' ? 'btn-active' : ''}"
-                        aria-pressed={accountsMode === "balance"}
-                        title="The balance at each period's end (hledger balance --historical)"
-                        onclick={() => (accountsMode = "balance")}>Balance</button
-                    >
-                </div>
                 <label class="label cursor-pointer gap-2 text-sm">
                     <input type="checkbox" class="checkbox checkbox-sm" bind:checked={emptyAccounts} />
                     Show empty accounts
                 </label>
-                <p class="text-xs text-base-content/50">As written, not valued; revenue reads negative, as in hledger.</p>
             </div>
             {#if projection.accounts === null}
                 <p class="text-sm text-base-content/60" role="status" data-testid="projection-accounts-pending">Reading every account…</p>
             {:else}
-                <ProjectedAccountsView report={projection.accounts} {styles} projectedFrom={projection.projectedFrom} />
+                <AccountReportView report={projection.accounts} {styles} projectedFrom={projection.projectedFrom} />
             {/if}
         </div>
     {:else}

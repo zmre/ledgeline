@@ -13,6 +13,7 @@ import {
     searchToParams,
     TAB_CONTROLS,
     TAB_DEFAULTS,
+    TAB_LABELS,
     TAB_ORDER,
     tabEnd,
     type ReportParams,
@@ -44,6 +45,7 @@ describe("UNIT reports/ui/params", () => {
                 // Shared by cf and nw. Neither statement reads it: both tabs
                 // ask the engine for an unclamped report.
                 depth: 3,
+                empty: false,
                 insStart: "2024-07-01",
                 insEnd: "2026-06-30",
             });
@@ -378,5 +380,30 @@ describe("UNIT hledger.conf depth defaults", () => {
     it("knows when a URL names its own depth", () => {
         expect(searchNamesDepth("?tab=cf&depth=2")).toBe(true);
         expect(searchNamesDepth("tab=cf")).toBe(false);
+    });
+});
+
+describe("UNIT reports/ui/params — the Accounts tab (2026-10-28)", () => {
+    const now = "2026-10-28";
+    const dflt = defaultReportParams(now);
+
+    it("is a tab after Net Worth, with cash flow's range-and-grain controls and a depth", () => {
+        expect(TAB_ORDER).toEqual(["insights", "bs", "is", "cf", "nw", "accounts", "subs"]);
+        expect(TAB_LABELS.accounts).toBe("Accounts");
+        expect(TAB_CONTROLS.accounts).toEqual(TAB_CONTROLS.cf);
+    });
+
+    it("shares cash flow's range, so switching between the two keeps it", () => {
+        expect(rangeKeys("accounts")).toEqual(rangeKeys("cf"));
+        const params = {...dflt, tab: "accounts" as const, cfFrom: "2026-01-01", cfTo: "2026-06-30", interval: "quarterly" as const, depth: 2, empty: true};
+        const search = paramsToSearch(params);
+        expect(search).toContain("from=2026-01-01");
+        expect(search).toContain("empty=1");
+        expect(searchToParams(search, dflt)).toEqual(params);
+    });
+
+    it("writes `empty` only on its own tab", () => {
+        expect(paramsToSearch({...dflt, tab: "cf", empty: true})).not.toContain("empty");
+        expect(searchToParams("tab=cf&empty=1", dflt).empty).toBe(false);
     });
 });

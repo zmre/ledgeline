@@ -20,6 +20,7 @@ import {blankLine, runBody, withMagnitude} from "#lib/projections/scenarioModel.
 import {dec} from "#lib/domain/money.js";
 import {LedgelineApi} from "./native";
 import {
+    decodeAccountReport,
     decodeCashFlowStatement,
     decodeBalanceSheetColumns,
     decodeBalanceSheetReport,
@@ -150,6 +151,19 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         expect(report.reconciles).toBe(true);
     });
 
+    it("Reports › Accounts decodes: assets as balances, the rest as changes, every row a figure per period", async () => {
+        const report = decodeAccountReport(await new LedgelineApi(url).accounts({from: "2026-01-01", to: "2026-06-30", interval: "monthly", depth: 3}));
+        expect(report.buckets).toEqual(["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06"]);
+        const readings = Object.fromEntries(report.sections.map((section) => [section.section, section.reading]));
+        expect(readings.assets).toBe("balance");
+        expect(readings.expenses).toBe("change");
+        for (const section of report.sections) for (const row of section.rows) expect(row.values).toHaveLength(6);
+        const empty = decodeAccountReport(
+            await new LedgelineApi(url).accounts({from: "2026-01-01", to: "2026-06-30", interval: "monthly", depth: 3, empty: true})
+        );
+        expect(empty.sections.flatMap((s) => s.rows).some((row) => row.account === "expenses:shopping")).toBe(true);
+    });
+
     it("holdings render AAPL/VTI values, GLD tainted, NVDA absent, TSLA short-and-hidden, partial totals", async () => {
         const styles = decodeJournalInfo(await new LedgelineApi(url).journalInfo()).reportStyles;
         const report = decodeHoldingsReport(await new LedgelineApi(url).holdings({asOf: AS_OF, accounts: "", mode: "include"}));
@@ -263,16 +277,20 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         const rent3 = {
             ...runBody(
                 {name: "", created: null, updated: null, lines: [rent], events: [], cash: null, autoRules: []},
-                {interval: "monthly", count: 3, lookback: 2, depth: 2, accounts: {mode: "balance", empty: true}, journal: true}
+                {interval: "monthly", count: 3, lookback: 2, depth: 2, accounts: {empty: true}, journal: true}
             ),
             asOf: AS_OF,
         };
         const full = decodeProjection(await new LedgelineApi(url).runProjection(rent3));
         expect(full.accounts?.periods.map((p) => p.label)).toEqual(["May 2026", "Jun 2026", "Jul 2026", "Aug 2026", "Sep 2026"]);
-        const rentRow = full.accounts?.rows.find((row) => row.account === "expenses:rent");
-        expect(rentRow?.values.map((ma) => dollarLine(ma, styles))).toEqual([undefined, undefined, "$4,200.00", "$8,400.00", "$12,600.00"]);
+        const rows = full.accounts?.sections.flatMap((section) => section.rows) ?? [];
+        // Rent is a flow: each month's change, and the Total last.
+        const rentRow = rows.find((row) => row.account === "expenses:rent");
+        expect(rentRow?.values.map((ma) => dollarLine(ma, styles))).toEqual([undefined, undefined, "$4,200.00", "$4,200.00", "$4,200.00"]);
+        expect(dollarLine(rentRow!.summary, styles)).toBe("$12,600.00");
+        expect(full.accounts?.sections.find((section) => section.section === "assets")?.reading).toBe("balance");
         // `empty`: a declared account nothing posts to is still a row.
-        expect(full.accounts?.rows.some((row) => row.account === "expenses:shopping")).toBe(true);
+        expect(rows.some((row) => row.account === "expenses:shopping")).toBe(true);
         expect(full.journal?.entries.map((entry) => entry.txn.date)).toEqual(["2026-07-01", "2026-08-01", "2026-09-01"]);
         expect(full.journal?.entries[0]?.origin).toEqual({kind: "rule", key: "rule:0"});
 

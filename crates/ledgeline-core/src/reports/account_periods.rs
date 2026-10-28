@@ -137,7 +137,7 @@ pub(crate) fn account_periods_from(
 
 /// Each column's closing balance: everything before `from` (`running`), plus
 /// every column's movement up to and including it.
-fn cumulative(
+pub(super) fn cumulative(
     mut running: BTreeMap<String, MixedAmount>,
     direct: Vec<BTreeMap<String, MixedAmount>>,
 ) -> Result<Vec<BTreeMap<String, MixedAmount>>, ReportError> {
@@ -162,7 +162,7 @@ fn cumulative(
 /// The rows a reader sees: those with a non-zero figure somewhere in their
 /// subtree, plus — when `known` is given — every known account, clamped to
 /// `depth` with its ancestors, as an all-zero row where nothing else put one.
-fn shown(
+pub(super) fn shown(
     rows: Vec<PeriodRow>,
     known: Option<&[String]>,
     depth: usize,

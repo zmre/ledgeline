@@ -39,7 +39,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::model::{Commodity, Journal, PriceDirective, Transaction};
 use crate::reports::ReportError;
-use crate::reports::account_periods::{AccountPeriodsOpts, BalanceMode, account_periods_from};
+use crate::reports::account_report::{
+    AccountReport, AccountReportOpts, account_report, account_report_from,
+};
 use crate::reports::account_types::{AccountType, AccountTypes};
 use crate::reports::aggregate::add_posting;
 use crate::reports::balance_sheet::{
@@ -55,11 +57,10 @@ use crate::reports::income_statement::{
 };
 use crate::reports::periods::{BucketSpan, Interval, add_days, range_buckets};
 use crate::reports::prices::PriceDb;
-use crate::reports::types::PeriodReport;
 use crate::reports::{
-    StatementShape, account_periods, balance_sheet_columns, cash_flow_statement,
-    income_statement_columns,
+    StatementShape, balance_sheet_columns, cash_flow_statement, income_statement_columns,
 };
+use crate::reports::{account_decls, declared_types};
 
 use super::forecast::{self, RealInputs};
 use super::{
@@ -557,7 +558,6 @@ pub struct ProjectedStatements {
 /// The Accounts reading's options.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AccountsOpts {
-    pub mode: BalanceMode,
     pub depth: usize,
     /// List every known account, zero or not ([`super::known_accounts`]).
     pub empty: bool,
@@ -664,7 +664,7 @@ pub fn projected_accounts(
     facts: &JournalFacts,
     forecast: &Forecast,
     opts: &AccountsOpts,
-) -> Result<PeriodReport, ReportError> {
+) -> Result<AccountReport, ReportError> {
     let window = &forecast.window;
     let spans = real.columns(forecast)?;
     let tail = real.tail(forecast);
@@ -678,16 +678,17 @@ pub fn projected_accounts(
         .map(|(index, tail)| real.written.get(index).cloned().unwrap_or(tail))
         .collect();
     let known = opts.empty.then(|| known_with(&facts.known, forecast));
-    account_periods_from(
+    let types = AccountTypes::from_declared(facts.shape.declared.clone());
+    account_report_from(
         direct,
         || Ok(real.before_from.clone()),
-        &AccountPeriodsOpts {
+        &AccountReportOpts {
             from: &window.from,
             to: &window.end,
-            interval: window.interval,
+            interval: Some(window.interval),
             depth: opts.depth,
-            mode: opts.mode,
             known: known.as_deref(),
+            types: &types,
         },
     )
 }
@@ -784,7 +785,7 @@ pub fn reference_statements(
 }
 
 /// The Accounts reading as the run endpoint built it before plan 29:
-/// `account_periods` over [`merged_transactions`], with
+/// [`account_report`] over [`merged_transactions`], with
 /// [`super::known_accounts`]. The definition of what [`projected_accounts`]
 /// must return.
 ///
@@ -794,19 +795,20 @@ pub fn reference_accounts(
     journal: &Journal,
     forecast: &Forecast,
     opts: &AccountsOpts,
-) -> Result<PeriodReport, ReportError> {
+) -> Result<AccountReport, ReportError> {
     let window = &forecast.window;
     let txns = merged_transactions(&journal.transactions, forecast);
     let known = opts.empty.then(|| super::known_accounts(journal, forecast));
-    account_periods(
+    let types = AccountTypes::from_declared(declared_types(&account_decls(journal)));
+    account_report(
         &txns,
-        &AccountPeriodsOpts {
+        &AccountReportOpts {
             from: &window.from,
             to: &window.end,
-            interval: window.interval,
+            interval: Some(window.interval),
             depth: opts.depth,
-            mode: opts.mode,
             known: known.as_deref(),
+            types: &types,
         },
     )
 }

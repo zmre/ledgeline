@@ -990,7 +990,7 @@ export function runBody(
         lookback: window.lookback,
         depth: window.depth,
         // Sent only when asked for, so a run for the other tabs is the body it always was.
-        ...(window.accounts != null ? {accounts: {mode: window.accounts.mode, empty: window.accounts.empty}} : {}),
+        ...(window.accounts != null ? {accounts: {empty: window.accounts.empty}} : {}),
         ...(window.journal === true ? {journal: true} : {}),
     };
 }

@@ -15,6 +15,7 @@ import type {AmountStyle} from "#lib/domain/types.js";
 import type {HoldingsReport} from "#lib/holdings/types.js";
 import {primaryValue} from "#lib/reports/budgetSummary.js";
 import type {
+    AccountReport,
     Amounts,
     BalanceSheetColumns,
     BalanceSheetReport,
@@ -33,6 +34,7 @@ import {compressIsRows, compressPeriodRows, compressSectionRows} from "#lib/repo
 import {cfDisplayModel, type CfDisplayRow} from "#lib/reports/ui/cashFlowRows.js";
 import {amountsPct, isSummary} from "#lib/reports/ui/incomeStatementRows.js";
 import {periodTable} from "#lib/reports/ui/periodTable.js";
+import {accountDisplaySections, DELTA, summaryHeading} from "#lib/reports/ui/accountReportRows.js";
 import type {Workbook, Worksheet} from "exceljs"; // type-only: erased at build time
 
 const HEADER_ARGB = "FF1E293B";
@@ -873,6 +875,57 @@ export async function buildRunwayWorkbook(
         setAmount(ws.getCell(6 + i, 2), runway.closing[i] ?? new Map());
     });
     return workbook;
+}
+
+/**
+ * The Accounts report as a workbook (2026-10-28): the screen's sections, rows
+ * and folded chains (`accountDisplaySections`), one money column per period
+ * and a last column per section — the Δ over the window for assets and
+ * liabilities, every figure in it prefixed "Δ" in its number format (so it
+ * stays a real number), and the Total for the rest. Each section's heading
+ * row says how its columns read.
+ */
+export async function buildAccountReportWorkbook(
+    report: AccountReport,
+    meta: {title: string; params: string},
+    columnLabels: readonly string[] = report.periods.map((period) => period.label)
+): Promise<Workbook> {
+    const {Workbook: ExcelWorkbook} = await import("exceljs");
+    const workbook = new ExcelWorkbook();
+    const ws = workbook.addWorksheet(meta.title);
+    addTitleRows(ws, meta, ["Account", ...columnLabels, `${DELTA} or Total`]);
+    ws.views = [{state: "frozen", ySplit: 4}];
+    const last = columnLabels.length + 2;
+    const delta = (cell: Cell, ma: MixedAmount): void => {
+        setAmount(cell, ma);
+        if (typeof cell.value === "number") cell.numFmt = `"${DELTA} "${cell.numFmt}`;
+        else cell.value = `${DELTA} ${String(cell.value)}`;
+    };
+    let rowIx = 5;
+    for (const section of accountDisplaySections(report)) {
+        labelCell(ws, rowIx, `${section.title} — ${section.reading === "balance" ? "balance at period end" : "change in period"}`, 0, true);
+        const heading = ws.getCell(rowIx, last);
+        heading.value = summaryHeading(section.reading);
+        heading.font = {bold: true};
+        heading.alignment = {horizontal: "right"};
+        rowIx += 1;
+        const write = (label: string, indent: number, values: readonly MixedAmount[], summary: MixedAmount, bold: boolean): void => {
+            labelCell(ws, rowIx, label, indent, bold);
+            values.forEach((value, i) => setAmount(ws.getCell(rowIx, i + 2), value));
+            if (section.reading === "balance") delta(ws.getCell(rowIx, last), summary);
+            else setAmount(ws.getCell(rowIx, last), summary);
+            if (bold) for (let col = 2; col <= last; col += 1) ws.getCell(rowIx, col).font = {bold: true};
+            rowIx += 1;
+        };
+        for (const {label, indent, row} of section.rows) write(label, indent + 1, row.values, row.summary, false);
+        write(`Total ${section.title.toLowerCase()}`, 0, section.totals, section.summary, true);
+        rowIx += 1;
+    }
+    return workbook;
+}
+
+export async function exportAccountReportXlsx(report: AccountReport, meta: {title: string; params: string}, filename: string): Promise<void> {
+    await downloadWorkbook(await buildAccountReportWorkbook(report, meta), filename);
 }
 
 /** Serialize the workbook and trigger a browser download (Blob + anchor). */

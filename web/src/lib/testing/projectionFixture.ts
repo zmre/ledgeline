@@ -12,7 +12,7 @@ import {readFileSync} from "node:fs";
 import {decodeBalanceSheetReport, decodeIncomeStatementReport} from "#lib/api/nativeDecode.js";
 import {dec, type MixedAmount} from "#lib/domain/money.js";
 import type {ForecastEntry, ForecastJournal, ForecastOrigin, Projection} from "#lib/projections/types.js";
-import type {BalanceSheetColumns, IsBucket, PeriodReport, PeriodRow} from "#lib/reports/types.js";
+import type {AccountReport, AccountReportRow, BalanceSheetColumns, IsBucket} from "#lib/reports/types.js";
 import {asColumns} from "#lib/reports/ui/balanceSheetRows.js";
 import {GROUPED_BALANCE_SHEET} from "./balanceSheetFixture";
 import {CASH_FLOW} from "./cashFlowFixture";
@@ -120,15 +120,27 @@ const periodInfo = (key: string, label: string, start: string, end: string) => (
  * rent and salary, plus a declared account with nothing in any column (what
  * "Show empty accounts" adds). Balance mode is the same rows with no totals.
  */
-export function accountsFixture(mode: "change" | "balance" = "change"): PeriodReport {
-    const change = mode === "change";
-    const row = (account: string, values: number[]): PeriodRow => ({
+/**
+ * A projection's Accounts reading: checking as a BALANCE (opening $10,000,
+ * then +$800 a month) with its Δ over the window, rent, shopping and salary
+ * as each month's CHANGE with a Total — the shape the engine sends since
+ * 2026-10-28.
+ */
+export function accountsFixture(): AccountReport {
+    const row = (account: string, values: number[], summary: number): AccountReportRow => ({
         account,
         depth: account.split(":").length,
         values: values.map(usd),
-        ...(change ? {total: usd(values.reduce((a, b) => a + b, 0))} : {}),
+        summary: usd(summary),
     });
+    const changes = (account: string, values: number[]) =>
+        row(
+            account,
+            values,
+            values.reduce((a, b) => a + b, 0)
+        );
     return {
+        kind: "accounts",
         buckets: PROJECTION_COLUMNS.map((column) => column.key),
         periods: [
             periodInfo("2026-06", "Jun 2026", "2026-06-01", "2026-06-30"),
@@ -136,17 +148,33 @@ export function accountsFixture(mode: "change" | "balance" = "change"): PeriodRe
             periodInfo("2026-08", "Aug 2026", "2026-08-01", "2026-08-31"),
             periodInfo("2026-09", "Sep 2026", "2026-09-01", "2026-09-30"),
         ],
-        rows: [
-            row("assets", change ? [800, 800, 800, 800] : [10800, 11600, 12400, 13200]),
-            row("assets:checking", change ? [800, 800, 800, 800] : [10800, 11600, 12400, 13200]),
-            row("expenses", change ? [4200, 4200, 4200, 4200] : [4200, 8400, 12600, 16800]),
-            row("expenses:rent", change ? [4200, 4200, 4200, 4200] : [4200, 8400, 12600, 16800]),
-            row("expenses:shopping", [0, 0, 0, 0]),
-            row("income", change ? [-5000, -5000, -5000, -5000] : [-15000, -20000, -25000, -30000]),
-            row("income:salary", change ? [-5000, -5000, -5000, -5000] : [-15000, -20000, -25000, -30000]),
+        sections: [
+            {
+                section: "assets",
+                reading: "balance",
+                rows: [row("assets", [10800, 11600, 12400, 13200], 3200), row("assets:checking", [10800, 11600, 12400, 13200], 3200)],
+                totals: [usd(10800), usd(11600), usd(12400), usd(13200)],
+                summary: usd(3200),
+            },
+            {
+                section: "revenue",
+                reading: "change",
+                rows: [changes("income", [-5000, -5000, -5000, -5000]), changes("income:salary", [-5000, -5000, -5000, -5000])],
+                totals: [usd(-5000), usd(-5000), usd(-5000), usd(-5000)],
+                summary: usd(-20000),
+            },
+            {
+                section: "expenses",
+                reading: "change",
+                rows: [
+                    changes("expenses", [4200, 4200, 4200, 4200]),
+                    changes("expenses:rent", [4200, 4200, 4200, 4200]),
+                    changes("expenses:shopping", [0, 0, 0, 0]),
+                ],
+                totals: [usd(4200), usd(4200), usd(4200), usd(4200)],
+                summary: usd(16800),
+            },
         ],
-        totals: [usd(0), usd(0), usd(0), usd(0)],
-        ...(change ? {grandTotal: usd(0)} : {}),
     };
 }
 

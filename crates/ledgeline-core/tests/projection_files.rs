@@ -36,10 +36,11 @@ use ledgeline_core::projections::{
 };
 use ledgeline_core::reports::account_types::AccountType;
 use ledgeline_core::reports::{
-    AccountPeriodsOpts, AccountTypes, BalanceMode, BsOpts, BsSectionKind, BucketSpan, CfOpts,
-    CfTags, IS_GROUP_TAG, Interval, IsOpts, MixedAmount, Valuation, account_decls, account_groups,
-    account_periods, account_sections, add_days, balance_sheet_columns, bs_terms,
-    cash_flow_statement, declared_groups, declared_types, income_statement_columns, range_buckets,
+    AccountPeriodsOpts, AccountReportOpts, AccountSection, AccountTypes, BalanceMode, BsOpts,
+    BsSectionKind, BucketSpan, CfOpts, CfTags, IS_GROUP_TAG, Interval, IsOpts, MixedAmount,
+    Reading, Valuation, account_decls, account_groups, account_periods, account_report,
+    account_sections, add_days, balance_sheet_columns, bs_terms, cash_flow_statement,
+    declared_groups, declared_types, income_statement_columns, range_buckets,
 };
 use ledgeline_core::{Journal, parse_journal};
 use std::collections::{BTreeMap, BTreeSet};
@@ -2353,6 +2354,135 @@ impl Parity {
         }
     }
 
+    /// The sectioned Accounts report (2026-10-28) against hledger: every
+    /// asset and liability row against `balance -H`, every other row against
+    /// `balance`, and every row's last column (a Δ or a Total — the same sum)
+    /// against `balance -T`'s Total. The rows listed must be the ones hledger
+    /// lists: `-H`'s for the balance sections, plain `balance`'s for the rest.
+    fn assert_account_report_parity(&self) {
+        let types = AccountTypes::from_declared(self.declared.clone());
+        let columns = self.spans().len();
+        for empty in [false, true] {
+            for depth in DEPTHS {
+                let known = empty.then(|| known_accounts(&self.journal, &self.forecast));
+                let report = account_report(
+                    &self.txns,
+                    &AccountReportOpts {
+                        from: &self.window().from,
+                        to: &self.window().end,
+                        interval: Some(self.cadence.interval),
+                        depth,
+                        known: known.as_deref(),
+                        types: &types,
+                    },
+                )
+                .expect("account report");
+                let change = self.hledger_accounts(BalanceMode::Change, empty, depth);
+                let balance = self.hledger_accounts(BalanceMode::Historical, empty, depth);
+                let is_balance = |account: &str| {
+                    AccountSection::of(account, &types).reading() == Reading::Balance
+                };
+                let (mut ours_balance, mut ours_change) = (Table::new(), Table::new());
+                for section in &report.sections {
+                    for row in &section.rows {
+                        let table = match section.reading {
+                            Reading::Balance => &mut ours_balance,
+                            Reading::Change => &mut ours_change,
+                        };
+                        for (column, figure) in row.values.iter().enumerate() {
+                            put(table, &row.account, figure, column, columns + 1);
+                        }
+                        // The last column is hledger's `-T` Total in both
+                        // readings: a balance's Δ is its changes' sum.
+                        put(
+                            &mut ours_change,
+                            &row.account,
+                            &row.summary,
+                            columns,
+                            columns + 1,
+                        );
+                    }
+                }
+                let mut mismatches = Vec::new();
+                let mut compare =
+                    |what: &str,
+                     theirs: &Table,
+                     ours: &Table,
+                     keep: &dyn Fn(&str) -> bool,
+                     width: std::ops::Range<usize>| {
+                        let zeros = vec![Dec::zero(); columns + 1];
+                        let keys: BTreeSet<&(String, String)> = theirs
+                            .keys()
+                            .chain(ours.keys())
+                            .filter(|(account, _)| account != "Total:" && keep(account))
+                            .collect();
+                        for key in keys {
+                            let (t, o) = (
+                                theirs.get(key).unwrap_or(&zeros),
+                                ours.get(key).unwrap_or(&zeros),
+                            );
+                            for column in width.clone() {
+                                if cents(t[column]) != cents(o[column]) {
+                                    mismatches.push(format!(
+                                        "{what} {} {} @ column {column}: hledger {} ledgeline {}",
+                                        key.0,
+                                        key.1,
+                                        cents(t[column]),
+                                        cents(o[column])
+                                    ));
+                                }
+                            }
+                        }
+                    };
+                compare(
+                    "balance",
+                    &balance.table,
+                    &ours_balance,
+                    &is_balance,
+                    0..columns,
+                );
+                compare(
+                    "change",
+                    &change.table,
+                    &ours_change,
+                    &|a| !is_balance(a),
+                    0..columns,
+                );
+                compare(
+                    "last column",
+                    &change.table,
+                    &ours_change,
+                    &|_| true,
+                    columns..columns + 1,
+                );
+                assert!(
+                    mismatches.is_empty(),
+                    "{} ({:?}) account report empty={empty} depth={depth} disagrees with hledger:\n{}",
+                    self.file,
+                    self.cadence,
+                    mismatches.join("\n")
+                );
+                let listed: BTreeSet<String> = report
+                    .sections
+                    .iter()
+                    .flat_map(|section| section.rows.iter().map(|row| row.account.clone()))
+                    .collect();
+                let want: BTreeSet<String> = balance
+                    .accounts
+                    .iter()
+                    .filter(|a| is_balance(a))
+                    .chain(change.accounts.iter().filter(|a| !is_balance(a)))
+                    .cloned()
+                    .collect();
+                assert_eq!(
+                    listed, want,
+                    "{} ({:?}) empty={empty} depth={depth}: rows listed",
+                    self.file, self.cadence
+                );
+            }
+        }
+    }
+
     /// `hledger print --forecast tag:generated -O json`, in hledger's order.
     fn hledger_journal(&self) -> Vec<Entry> {
         let cutoff = &self.window().cutoff;
@@ -2565,6 +2695,7 @@ fn tabs_parity(files: &[&'static str], cadences: &[Cadence]) {
             let run = Parity::new(file, *cadence);
             run.assert_journal_parity();
             run.assert_accounts_parity();
+            run.assert_account_report_parity();
         }
     }
 }

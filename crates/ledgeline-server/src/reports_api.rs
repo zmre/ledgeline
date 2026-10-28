@@ -972,6 +972,73 @@ impl From<&PeriodReport> for WirePeriodReport {
     }
 }
 
+/// The sectioned Accounts report (2026-10-28): Reports › Accounts and the
+/// Projections Accounts tab. Assets and liabilities carry each period's
+/// BALANCE and a Δ over the window as `summary`; equity, revenue, expenses
+/// and other carry each period's net CHANGE and their Total as `summary`.
+/// `reading` says which, so a client never infers it from the section name.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WireAccountReport {
+    buckets: Vec<String>,
+    /// One entry per `buckets` key: its label and bounds.
+    periods: Vec<WirePeriodInfo>,
+    sections: Vec<WireAccountSection>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireAccountSection {
+    /// `assets` | `liabilities` | `equity` | `revenue` | `expenses` | `other`.
+    section: &'static str,
+    /// `balance` | `change`.
+    reading: &'static str,
+    rows: Vec<WireAccountRow>,
+    totals: Vec<WireMixed>,
+    summary: WireMixed,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireAccountRow {
+    account: String,
+    depth: usize,
+    values: Vec<WireMixed>,
+    summary: WireMixed,
+}
+
+impl From<&ledgeline_core::reports::AccountReport> for WireAccountReport {
+    fn from(report: &ledgeline_core::reports::AccountReport) -> Self {
+        Self {
+            buckets: report.buckets.clone(),
+            periods: WirePeriodInfo::all(&report.buckets),
+            sections: report
+                .sections
+                .iter()
+                .map(|section| WireAccountSection {
+                    section: section.section.code(),
+                    reading: match section.reading {
+                        ledgeline_core::reports::Reading::Balance => "balance",
+                        ledgeline_core::reports::Reading::Change => "change",
+                    },
+                    rows: section
+                        .rows
+                        .iter()
+                        .map(|row| WireAccountRow {
+                            account: row.account.clone(),
+                            depth: row.depth,
+                            values: row.values.iter().map(wire_mixed).collect(),
+                            summary: wire_mixed(&row.summary),
+                        })
+                        .collect(),
+                    totals: section.totals.iter().map(wire_mixed).collect(),
+                    summary: wire_mixed(&section.summary),
+                })
+                .collect(),
+        }
+    }
+}
+
 /// One account × bucket budget cell. `goal` is `null` when the account has no
 /// goal (e.g. `<unbudgeted>`); an empty object `{}` is a budgeted account with no
 /// goal in that bucket.
@@ -3199,6 +3266,94 @@ impl CashFlowWindow {
             depth: query.depth.unwrap_or(DEFAULT_DEPTH),
         })
     }
+}
+
+/// `?from=&to=&interval=&depth=&empty=` — Reports › Accounts. The window is
+/// the cash flow statement's ([`CashFlowWindow`]).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AccountsQuery {
+    from: Option<String>,
+    to: Option<String>,
+    end: Option<String>,
+    interval: Option<String>,
+    count: Option<usize>,
+    depth: Option<usize>,
+    /// `1`/`true`: every declared and posted-to account is a row, even an
+    /// all-zero one (hledger's `-E --declared`).
+    #[serde(default)]
+    empty: Option<String>,
+}
+
+/// `GET /api/reports/accounts` — every account per period, each section read
+/// its own way (see [`WireAccountReport`]), as written: no valuation, natural
+/// signs. Window parameters as `/api/reports/cashflow`.
+pub(crate) async fn accounts(
+    State(state): State<AppState>,
+    Query(query): Query<AccountsQuery>,
+) -> Result<Json<WireAccountReport>, AppError> {
+    let snapshot = state.snapshot();
+    let empty = matches!(query.empty.as_deref(), Some("1" | "true"));
+    let window = CashFlowWindow::resolve(CashFlowQuery {
+        from: query.from,
+        to: query.to,
+        end: query.end,
+        interval: query.interval,
+        count: query.count,
+        depth: query.depth,
+    })?;
+    compute(move || {
+        let (from, to, interval, depth) = match window {
+            CashFlowWindow::Range {
+                from,
+                to,
+                interval,
+                depth,
+            } => (from, to, interval, depth),
+            CashFlowWindow::Trailing(window) => {
+                let buckets = ledgeline_core::reports::last_n_buckets(
+                    &window.end,
+                    window.interval,
+                    window.count,
+                )?;
+                let first = buckets.first().cloned().unwrap_or_default();
+                let (from, _) = ledgeline_core::reports::bucket_span(&first, &window.end)?;
+                (from, window.end, Some(window.interval), window.depth)
+            }
+        };
+        let journal = &snapshot.journal;
+        let types = ledgeline_core::reports::AccountTypes::from_declared(declared_types(
+            &account_decls(journal),
+        ));
+        // hledger's `-E --declared`: every declared account and every account
+        // a transaction posts to.
+        let known: Option<Vec<String>> =
+            empty.then(|| {
+                journal
+                    .accounts
+                    .iter()
+                    .map(|declared| declared.name.0.clone())
+                    .chain(journal.transactions.iter().flat_map(|txn| {
+                        txn.postings.iter().map(|posting| posting.account.0.clone())
+                    }))
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect()
+            });
+        let report = ledgeline_core::reports::account_report(
+            &journal.transactions,
+            &ledgeline_core::reports::AccountReportOpts {
+                from: &from,
+                to: &to,
+                interval,
+                depth,
+                known: known.as_deref(),
+                types: &types,
+            },
+        )?;
+        Ok(WireAccountReport::from(&report))
+    })
+    .await
 }
 
 /// `GET /api/reports/cashflow` — the statement of cash flows, indirect method

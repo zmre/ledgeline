@@ -21,7 +21,7 @@
 import type {Dec, MixedAmount} from "#lib/domain/money.js";
 import type {ISODate, Transaction} from "#lib/domain/types.js";
 import type {AutoRuleForm} from "#lib/autoRules/ruleForm.js";
-import type {BalanceSheetColumns, CashFlowStatement, IncomeStatementReport, PeriodReport} from "#lib/reports/types.js";
+import type {AccountReport, BalanceSheetColumns, CashFlowStatement, IncomeStatementReport} from "#lib/reports/types.js";
 
 /** The unit a growth rate steps on. */
 export type GrowthUnit = "week" | "month" | "year";
@@ -334,23 +334,14 @@ export interface Projection {
     incomeStatement: IncomeStatementReport;
     cashFlow: CashFlowStatement;
     defaults: ForecastDefaults;
-    /** Every account per column (`hledger balance`), when the run asked for it; null otherwise. */
-    accounts: PeriodReport | null;
+    /** Every account per column, each section read its own way, when the run asked for it; null otherwise. */
+    accounts: AccountReport | null;
     /** The generated transactions, when the run asked for them; null otherwise. */
     journal: ForecastJournal | null;
 }
 
-/**
- * The Accounts tab's two readings of one set of columns: each period's
- * movement (`hledger balance`, the default) or the balance at its end
- * (`hledger balance -H`).
- */
-export type AccountsMode = "change" | "balance";
-export const ACCOUNTS_MODES: readonly AccountsMode[] = ["change", "balance"];
-
 /** What the run is asked to compute beyond the four readings every run carries. */
 export interface AccountsRequest {
-    mode: AccountsMode;
     /** Rows for declared and known accounts with nothing in any column (`-E --declared`). */
     empty: boolean;
 }

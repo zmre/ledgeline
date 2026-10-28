@@ -22,7 +22,7 @@ use ledgeline_core::projections::{
     project_cached, projected_accounts, projected_statements, reference_accounts,
     reference_statements,
 };
-use ledgeline_core::reports::{BalanceMode, Interval, Valuation};
+use ledgeline_core::reports::{Interval, Valuation};
 use proptest::prelude::*;
 
 fn exact<T: std::fmt::Debug>(value: &T) -> String {
@@ -130,15 +130,13 @@ impl Run<'_> {
                     assert_eq!(exact(&got), exact(&want), "{label} {opts:?}: statements");
                 }
             }
-            for mode in [BalanceMode::Change, BalanceMode::Historical] {
-                for empty in [false, true] {
-                    let opts = AccountsOpts { mode, depth, empty };
-                    let want = reference_accounts(self.journal, &reference.forecast, &opts)
-                        .unwrap_or_else(|e| panic!("{label}: reference accounts: {e}"));
-                    let got = projected_accounts(self.real, self.facts, &cached.forecast, &opts)
-                        .unwrap_or_else(|e| panic!("{label}: cached accounts: {e}"));
-                    assert_eq!(exact(&got), exact(&want), "{label} {opts:?}: accounts");
-                }
+            for empty in [false, true] {
+                let opts = AccountsOpts { depth, empty };
+                let want = reference_accounts(self.journal, &reference.forecast, &opts)
+                    .unwrap_or_else(|e| panic!("{label}: reference accounts: {e}"));
+                let got = projected_accounts(self.real, self.facts, &cached.forecast, &opts)
+                    .unwrap_or_else(|e| panic!("{label}: cached accounts: {e}"));
+                assert_eq!(exact(&got), exact(&want), "{label} {opts:?}: accounts");
             }
         }
     }

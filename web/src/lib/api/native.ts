@@ -786,7 +786,7 @@ export interface RunProjectionBody {
     depth?: number;
     valueIn?: string;
     /** Ask for the Accounts reading (`accounts` is null in the answer otherwise). */
-    accounts?: {mode: "change" | "balance"; empty: boolean};
+    accounts?: {empty: boolean};
     /** Ask for the generated transactions (`journal` is null in the answer otherwise). */
     journal?: boolean;
 }
@@ -1063,6 +1063,13 @@ export class LedgelineApi {
     /** The two money-flow graphs the P&L tab draws above its boxes (decode with `decodeFlowReport`). */
     incomeStatementFlows(query: IncomeStatementFlowsQuery = {}): Promise<unknown> {
         return this.getJson(`/api/reports/incomestatement/flows${queryString({from: query.from, to: query.to, valueIn: query.valueIn})}`);
+    }
+
+    /** `GET /api/reports/accounts` — every account per period, each section read its own way (2026-10-28). Cash flow's window, plus `empty`. */
+    accounts(query: CashFlowQuery & {empty?: boolean} = {}): Promise<unknown> {
+        return this.getJson(
+            `/api/reports/accounts${queryString({from: query.from, to: query.to, interval: query.interval, depth: query.depth, empty: query.empty === true ? "1" : undefined})}`
+        );
     }
 
     cashFlow(query: CashFlowQuery = {}): Promise<unknown> {

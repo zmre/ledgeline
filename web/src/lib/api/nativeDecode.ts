@@ -195,11 +195,15 @@ import type {
     PeriodReport,
     PeriodRow,
     PeriodRowKind,
+    AccountReading,
+    AccountReport,
+    AccountSectionKind,
     ReportMeta,
     ReportRow,
     Section,
     SectionedReport,
 } from "#lib/reports/types.js";
+import {ACCOUNT_READINGS, ACCOUNT_SECTION_KINDS} from "#lib/reports/types.js";
 import {ApiShapeError} from "./client";
 import {decodeRow} from "./journalViewDecode";
 import {type CommodityStyles, normalizeCommodityStyles} from "./normalize";
@@ -2211,6 +2215,78 @@ export function decodePeriodReport(raw: unknown): PeriodReport {
 }
 
 // ---------------------------------------------------------------------------
+// AccountReport (Reports › Accounts and the Projections Accounts tab)
+// ---------------------------------------------------------------------------
+
+interface RawAccountReport {
+    buckets?: unknown;
+    periods?: unknown;
+    sections?: unknown;
+}
+
+interface RawAccountSection {
+    section?: unknown;
+    reading?: unknown;
+    rows?: unknown;
+    totals?: unknown;
+    summary?: unknown;
+}
+
+interface RawAccountRow {
+    account?: unknown;
+    depth?: unknown;
+    values?: unknown;
+    summary?: unknown;
+}
+
+/** Every per-period array must hold one figure per bucket — a short one would shift every column after it. */
+function decodeColumns(raw: unknown, width: number, context: string): MixedAmount[] {
+    if (!Array.isArray(raw) || raw.length !== width) throw new ApiShapeError(`${context}: expected ${width} figures`);
+    return frozen(raw.map((value, i) => decodeMixed(value as RawMixed, `${context}[${i}]`)));
+}
+
+export function decodeAccountReport(raw: unknown): AccountReport {
+    const report = raw as RawAccountReport;
+    if (typeof report !== "object" || report === null || !Array.isArray(report.buckets) || !Array.isArray(report.sections)) {
+        throw new ApiShapeError("account report: expected buckets and sections arrays");
+    }
+    const width = report.buckets.length;
+    return Object.freeze({
+        kind: "accounts" as const,
+        buckets: frozen(decodeStrings(report.buckets, "account report buckets")),
+        periods: decodePeriods(report.periods as RawPeriodReport["periods"], width, "account report periods"),
+        sections: frozen(
+            (report.sections as RawAccountSection[]).map((section, s) => {
+                const at = `account report section #${s}`;
+                if (typeof section !== "object" || section === null || !Array.isArray(section.rows)) throw new ApiShapeError(`${at}: expected rows`);
+                const kind = str(section.section, `${at} section`);
+                if (!(ACCOUNT_SECTION_KINDS as readonly string[]).includes(kind)) throw new ApiShapeError(`${at}: unknown section ${kind}`);
+                const reading = str(section.reading, `${at} reading`);
+                if (!(ACCOUNT_READINGS as readonly string[]).includes(reading)) throw new ApiShapeError(`${at}: unknown reading ${reading}`);
+                return Object.freeze({
+                    section: kind as AccountSectionKind,
+                    reading: reading as AccountReading,
+                    rows: frozen(
+                        (section.rows as RawAccountRow[]).map((row, r) => {
+                            const where = `${at} row #${r}`;
+                            if (typeof row !== "object" || row === null) throw new ApiShapeError(`${where}: expected an object`);
+                            return Object.freeze({
+                                account: str(row.account, `${where} account`),
+                                depth: decodeCount(row.depth as number, `${where} depth`),
+                                values: decodeColumns(row.values, width, `${where} values`),
+                                summary: decodeMixed(row.summary as RawMixed, `${where} summary`),
+                            });
+                        })
+                    ),
+                    totals: decodeColumns(section.totals, width, `${at} totals`),
+                    summary: decodeMixed(section.summary as RawMixed, `${at} summary`),
+                });
+            })
+        ),
+    });
+}
+
+// ---------------------------------------------------------------------------
 // BudgetReport (actuals vs. periodic-rule goals)
 // ---------------------------------------------------------------------------
 
@@ -2611,7 +2687,7 @@ export function decodeProjection(raw: unknown): Projection {
         cashFlow: decodeCashFlowStatement(projection.cashFlow),
         defaults: decodeForecastDefaults(projection.defaults),
         // Null unless the run asked; ABSENT is still a broken contract.
-        accounts: decodeNullable(projection.accounts, "projection accounts", (value) => decodePeriodReport(value)),
+        accounts: decodeNullable(projection.accounts, "projection accounts", (value) => decodeAccountReport(value)),
         journal: decodeNullable(projection.journal, "projection journal", decodeForecastJournal),
     });
 }

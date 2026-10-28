@@ -18,7 +18,7 @@ import type {DepthCommand, DepthSpec} from "#lib/settings/hledgerConfTypes.js";
 import {bucketEnd, bucketStart, lastNBuckets, today} from "#lib/reports/periods.js";
 import {clampedInt, isIsoDate} from "#lib/url/params.js";
 
-export type ReportTab = "insights" | "bs" | "is" | "cf" | "nw" | "subs";
+export type ReportTab = "insights" | "bs" | "is" | "cf" | "nw" | "accounts" | "subs";
 /** A bucketing grain: one column per month, quarter or year. */
 export type PeriodInterval = "monthly" | "quarterly" | "yearly";
 
@@ -59,7 +59,7 @@ const ALL_INTERVALS: readonly ReportInterval[] = ["total", "monthly", "quarterly
 const PERIODIC_INTERVALS: readonly ReportInterval[] = ["monthly", "quarterly", "yearly"];
 
 // Insights is the first (default) tab — the dashboard shown when Reports opens.
-export const TAB_ORDER: ReportTab[] = ["insights", "bs", "is", "cf", "nw", "subs"];
+export const TAB_ORDER: ReportTab[] = ["insights", "bs", "is", "cf", "nw", "accounts", "subs"];
 
 export const TAB_LABELS: Record<ReportTab, string> = {
     insights: "Insights",
@@ -67,6 +67,7 @@ export const TAB_LABELS: Record<ReportTab, string> = {
     is: "P&L",
     cf: "Cash Flow",
     nw: "Net Worth",
+    accounts: "Accounts",
     subs: "Subscriptions",
 };
 
@@ -100,6 +101,8 @@ export interface ReportParams {
     count: number;
     /** Account depth clamp. */
     depth: number;
+    /** Accounts: whether declared and known accounts with nothing in any column are rows too. */
+    empty: boolean;
     /** Insights: inclusive comparison-span start (split at its midpoint by the engine). */
     insStart: ISODate;
     /** Insights: inclusive comparison-span end. */
@@ -150,6 +153,9 @@ export const TAB_CONTROLS: Record<ReportTab, ControlsConfig> = {
     // End + Periods, so the range is named rather than counted backwards.
     cf: {asOf: false, asOfFrom: false, range: true, end: false, intervals: ALL_INTERVALS, count: false, depth: true},
     nw: {asOf: false, asOfFrom: false, range: false, end: true, intervals: PERIODIC_INTERVALS, count: true, depth: true},
+    // Every account per period (2026-10-28): a report about a period, like
+    // cash flow, whose window it shares.
+    accounts: {asOf: false, asOfFrom: false, range: true, end: false, intervals: ALL_INTERVALS, count: false, depth: true},
     // Subscriptions scan a fixed trailing window, so they expose no controls.
     subs: {asOf: false, asOfFrom: false, range: false, end: false, intervals: [], count: false, depth: false},
 };
@@ -160,7 +166,14 @@ export const TAB_CONTROLS: Record<ReportTab, ControlsConfig> = {
  * controls, the query builder and the export title alike.
  */
 export function rangeKeys(tab: ReportTab): {from: "from" | "cfFrom"; to: "to" | "cfTo"} {
-    return tab === "cf" ? {from: "cfFrom", to: "cfTo"} : {from: "from", to: "to"};
+    // Accounts shares cash flow's window: the same trailing-year default, and
+    // switching between the two keeps the range on screen.
+    return sharesCashFlowRange(tab) ? {from: "cfFrom", to: "cfTo"} : {from: "from", to: "to"};
+}
+
+/** Cash flow and Accounts read one range (`cfFrom`/`cfTo`). */
+export function sharesCashFlowRange(tab: ReportTab): boolean {
+    return tab === "cf" || tab === "accounts";
 }
 
 /** Per-tab default interval/count, applied on tab activation (the P&L opens on
@@ -171,6 +184,7 @@ export const TAB_DEFAULTS: Record<ReportTab, {interval: ReportInterval; count: n
     is: {interval: "total", count: 12}, // count inert: the P&L has a range, not a lookback
     cf: {interval: "monthly", count: 12},
     nw: {interval: "yearly", count: 5},
+    accounts: {interval: "monthly", count: 12},
     subs: {interval: "monthly", count: 12}, // inert (subscriptions ignore interval/count)
 };
 
@@ -248,6 +262,7 @@ export function defaultReportParams(now: ISODate = today()): ReportParams {
         // moving it back would change what the period reports show, which is a
         // separate decision from removing a control from two tabs.
         depth: 3,
+        empty: false,
         insStart: ins.start,
         insEnd: ins.end,
     };
@@ -270,6 +285,7 @@ const END_KEYS: Record<ReportTab, EndKey | null> = {
     is: "to",
     cf: "cfTo",
     nw: "end",
+    accounts: "cfTo",
     subs: null,
 };
 
@@ -280,6 +296,7 @@ const END_URL_PARAMS: Record<ReportTab, readonly string[]> = {
     is: ["to"],
     cf: ["to", "end"],
     nw: ["end"],
+    accounts: ["to"],
     subs: [],
 };
 
@@ -295,6 +312,7 @@ const START_RULES: Partial<Record<ReportTab, {key: StartKey; rules: readonly ((e
     // not the mode is on, so switching it on reads the trailing year to As of.
     bs: {key: "bsFrom", rules: [trailingYear]},
     cf: {key: "cfFrom", rules: [trailingYear]},
+    accounts: {key: "cfFrom", rules: [trailingYear]},
     insights: {
         key: "insStart",
         // INSIGHTS_PRESETS lists the default (year over year) first.
@@ -378,6 +396,7 @@ export function paramsToSearch(p: ReportParams): string {
     if (c.intervals.length > 0) q.set("interval", p.interval);
     if (c.count) q.set("count", String(p.count));
     if (c.depth) q.set("depth", String(p.depth));
+    if (p.tab === "accounts") q.set("empty", p.empty ? "1" : "0");
     return q.toString();
 }
 
@@ -432,7 +451,7 @@ export function searchToParams(search: string, dflt: ReportParams): ReportParams
     // `from`/`to` name the ACTIVE tab's range: cash flow's own pair on the cf
     // tab, the balance sheet's multi-period start on bs, the P&L's everywhere
     // else (where, as before, they are not gated).
-    const cf = tab === "cf";
+    const cf = sharesCashFlowRange(tab);
     const bs = tab === "bs";
     const asOf = parseDate(q.get("asof"), dflt.asOf);
     return {
@@ -448,6 +467,7 @@ export function searchToParams(search: string, dflt: ReportParams): ReportParams
         interval,
         count: clampedInt(q.get("count"), 1, MAX_COUNT, dflt.count),
         depth: clampedInt(q.get("depth"), 1, 99, dflt.depth),
+        empty: tab === "accounts" ? q.get("empty") === "1" : dflt.empty,
         insStart: parseDate(q.get("istart"), dflt.insStart),
         insEnd: parseDate(q.get("iend"), dflt.insEnd),
     };

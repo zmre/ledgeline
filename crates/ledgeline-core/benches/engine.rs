@@ -853,7 +853,6 @@ fn cached_run(facts: &JournalFacts, real: &RealSide, scenario: &Scenario) -> usi
         facts,
         &projection.forecast,
         &AccountsOpts {
-            mode: BalanceMode::Change,
             depth: DEPTH,
             empty: false,
         },
@@ -862,7 +861,11 @@ fn cached_run(facts: &JournalFacts, real: &RealSide, scenario: &Scenario) -> usi
     statements.balance_sheet.len()
         + statements.income_statement.sections.len()
         + statements.cash_flow.sections.len()
-        + accounts.rows.len()
+        + accounts
+            .sections
+            .iter()
+            .map(|section| section.rows.len())
+            .sum::<usize>()
 }
 
 /// The run handler before plan 29: `project`, the merged lists, and every

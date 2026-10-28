@@ -243,7 +243,7 @@
         count: params.count,
         lookback: params.lookback,
         depth: params.depth,
-        accounts: params.tab === "accounts" ? {mode: params.accounts, empty: params.empty} : null,
+        accounts: params.tab === "accounts" ? {empty: params.empty} : null,
         journal: params.tab === "journal",
     });
     // `journal.changes`: projections start from the journal's balances, so a
@@ -525,7 +525,6 @@
                 {#snippet children(held)}
                     <ProjectionReports
                         bind:tab={params.tab}
-                        bind:accountsMode={params.accounts}
                         bind:emptyAccounts={params.empty}
                         projection={held}
                         interval={params.interval}

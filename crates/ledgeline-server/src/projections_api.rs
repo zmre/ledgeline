@@ -62,8 +62,8 @@ use ledgeline_core::projections::{
 use ledgeline_core::reports::account_types::{AccountType, AccountTypes};
 use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
-    BalanceMode, BudgetOpts, Interval, Valuation, account_decls, declared_types,
-    periods::bucket_label, pivot_balance_sheets, signed_entry,
+    BudgetOpts, Interval, Valuation, account_decls, declared_types, periods::bucket_label,
+    pivot_balance_sheets, signed_entry,
 };
 use ledgeline_core::vault::{Revision, VaultError};
 use ledgeline_core::view::rows::{Row, RowContext, haystack};
@@ -74,8 +74,8 @@ use serde::{Deserialize, Serialize};
 use crate::edit_api::{WireDecIn, dec_from_wire, json_body};
 use crate::error::{AppError, editing_disabled};
 use crate::reports_api::{
-    Window, WireBalanceSheetColumns, WireCashFlow, WireDec, WireIncomeStatementReport, WireMixed,
-    WirePeriodReport, checked_date, compute, today_utc, wire_mixed,
+    Window, WireAccountReport, WireBalanceSheetColumns, WireCashFlow, WireDec,
+    WireIncomeStatementReport, WireMixed, checked_date, compute, today_utc, wire_mixed,
 };
 use crate::security::no_store_json as no_store;
 use crate::{AppState, JournalLocation, Snapshot};
@@ -677,7 +677,7 @@ pub(crate) struct WireProjection {
     defaults: WireForecastDefaults,
     /// Every account per column (`hledger balance`), when the request asked
     /// for it with `accounts`; `null` otherwise.
-    accounts: Option<WirePeriodReport>,
+    accounts: Option<WireAccountReport>,
     /// The generated transactions, when the request asked with `journal`;
     /// `null` otherwise.
     journal: Option<WireForecastJournal>,
@@ -1024,21 +1024,13 @@ pub(crate) struct RunRequest {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AccountsIn {
-    #[serde(deserialize_with = "balance_mode")]
-    mode: BalanceMode,
+    /// Before 2026-10-28 the tab had a Change/Balance switch; each section now
+    /// reads its own way. Still accepted from an older page, and ignored.
+    #[serde(default)]
+    #[allow(dead_code)]
+    mode: Option<String>,
     #[serde(default)]
     empty: bool,
-}
-
-/// `"change"` | `"balance"` → [`BalanceMode`]. Anything else is a `400`.
-fn balance_mode<'de, D: serde::Deserializer<'de>>(de: D) -> Result<BalanceMode, D::Error> {
-    match String::deserialize(de)?.as_str() {
-        "change" => Ok(BalanceMode::Change),
-        "balance" => Ok(BalanceMode::Historical),
-        other => Err(serde::de::Error::custom(format!(
-            "accounts mode must be \"change\" or \"balance\", not {other:?}"
-        ))),
-    }
 }
 
 /// `lookback`, defaulted and bounded: the statements carry `lookback + count`
@@ -1557,12 +1549,11 @@ pub(crate) async fn run(
                     &facts,
                     &projection.forecast,
                     &AccountsOpts {
-                        mode: accounts.mode,
                         depth: window.depth,
                         empty: accounts.empty,
                     },
                 )
-                .map(|report| WirePeriodReport::from(&report))
+                .map(|report| WireAccountReport::from(&report))
             })
             .transpose()?;
         let forecast_journal = request.journal.then(|| {

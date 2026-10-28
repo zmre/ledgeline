@@ -13,7 +13,6 @@ const CONTEXT: ExportContext = {
     scenarioName: "Series A, hiring ramp",
     runwaySentence: "Cash never turns negative over the 2 months projected.",
     base: "$",
-    accountsMode: "change",
     journalQuery: "",
     styleOf: () => DEFAULT_AMOUNT_STYLE,
 };
@@ -93,10 +92,18 @@ describe("UNIT projections/export", () => {
         expect([ws.getCell("A7").value, ws.getCell("B7").value]).toEqual(["2026-09", 19600]);
     });
 
-    it("writes the accounts, saying which reading they are", async () => {
-        const {workbook, download} = await built("accounts", {...CONTEXT, accountsMode: "balance"}, {accounts: accountsFixture("balance")});
-        expect(download.params).toMatch(/^Closing balance per period/);
-        expect(headers(workbook.worksheets[0]!).some((h) => h.includes(PROJECTED_SUFFIX))).toBe(true);
+    it("writes the accounts, each section read its own way, the Δ a number", async () => {
+        const {workbook, download} = await built("accounts", CONTEXT, {accounts: accountsFixture()});
+        expect(download.params).toMatch(/^Assets and liabilities: balance at each period's end, then Δ/);
+        const ws = workbook.worksheets[0]!;
+        expect(headers(ws).some((h) => h.includes(PROJECTED_SUFFIX))).toBe(true);
+        expect(headers(ws).at(-1)).toBe("Δ or Total");
+        // The Δ stays a real number; the "Δ" is in its number format.
+        const cells: {value: unknown; numFmt: string}[] = [];
+        ws.eachRow((row) => row.eachCell((cell) => cells.push({value: cell.value, numFmt: cell.numFmt})));
+        const delta = cells.find((cell) => cell.value === 3200 && cell.numFmt.startsWith('"Δ "'));
+        expect(delta, "the checking Δ").toBeDefined();
+        expect(cells.some((cell) => cell.value === "Assets — balance at period end")).toBe(true);
     });
 
     it("writes the journal exactly as the search lists it", async () => {

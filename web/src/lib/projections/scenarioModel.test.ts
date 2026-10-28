@@ -543,10 +543,10 @@ describe("UNIT scenarioModel — putting a scenario on the wire", () => {
             count: 24,
             lookback: 2,
             depth: 2,
-            accounts: {mode: "balance", empty: true},
+            accounts: {empty: true},
             journal: true,
         });
-        expect(asked.accounts).toEqual({mode: "balance", empty: true});
+        expect(asked.accounts).toEqual({empty: true});
         expect(asked.journal).toBe(true);
     });
 });

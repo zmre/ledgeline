@@ -523,6 +523,45 @@ export interface PeriodRow {
     total?: MixedAmount;
 }
 
+/** A section of the Accounts report, in display order (plans/30 follow-up, 2026-10-28). */
+export type AccountSectionKind = "assets" | "liabilities" | "equity" | "revenue" | "expenses" | "other";
+export const ACCOUNT_SECTION_KINDS: readonly AccountSectionKind[] = ["assets", "liabilities", "equity", "revenue", "expenses", "other"];
+
+/** What a section's columns hold: each period's closing balance (last column Δ), or its net change (last column Total). */
+export type AccountReading = "balance" | "change";
+export const ACCOUNT_READINGS: readonly AccountReading[] = ["balance", "change"];
+
+/** One account's row. `summary` is the last column: the window's Δ for a balance, the Total for a change. */
+export interface AccountReportRow {
+    account: string;
+    depth: number;
+    values: MixedAmount[];
+    summary: MixedAmount;
+}
+
+export interface AccountReportSection {
+    section: AccountSectionKind;
+    reading: AccountReading;
+    rows: AccountReportRow[];
+    /** The section's figure per period, over its unclamped accounts. */
+    totals: MixedAmount[];
+    summary: MixedAmount;
+}
+
+/**
+ * Every account per period, each section read its own way: assets and
+ * liabilities as balances with a Δ over the window, equity, revenue, expenses
+ * (and anything untyped) as each period's change with a Total. As written: no
+ * valuation, natural signs.
+ */
+export interface AccountReport {
+    /** Decoder-applied discriminator; never on the wire. */
+    kind: "accounts";
+    buckets: string[];
+    periods: PeriodInfo[];
+    sections: AccountReportSection[];
+}
+
 /** Net worth, projections, and the cash-flow chart's input: one column per bucket, oldest → newest. */
 export interface PeriodReport {
     buckets: string[];

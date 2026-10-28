@@ -7,13 +7,22 @@
 
 import {LedgelineApi} from "#lib/api/native.js";
 import {
+    decodeAccountReport,
     decodeBalanceSheetColumns,
     decodeBalanceSheetReport,
     decodeCashFlowStatement,
     decodeIncomeStatementReport,
     decodePeriodReport,
 } from "#lib/api/nativeDecode.js";
-import type {BalanceSheetColumns, BalanceSheetReport, CashFlowStatement, IncomeStatementReport, PeriodReport, SectionedReport} from "#lib/reports/types.js";
+import type {
+    AccountReport,
+    BalanceSheetColumns,
+    BalanceSheetReport,
+    CashFlowStatement,
+    IncomeStatementReport,
+    PeriodReport,
+    SectionedReport,
+} from "#lib/reports/types.js";
 import type {PeriodInterval, ReportInterval, ReportParams} from "#lib/reports/ui/params.js";
 import type {LoadStatus} from "./loadState";
 import {createResource} from "./resource.svelte";
@@ -26,7 +35,7 @@ import {createResource} from "./resource.svelte";
  * goldens decode into, and removing it from the union would make the page's
  * `"kind" in current` narrowing vacuous rather than meaningful.
  */
-export type AnyReport = SectionedReport | PeriodReport | BalanceSheetReport | BalanceSheetColumns | IncomeStatementReport | CashFlowStatement;
+export type AnyReport = SectionedReport | PeriodReport | BalanceSheetReport | BalanceSheetColumns | IncomeStatementReport | CashFlowStatement | AccountReport;
 
 /** The exact query for one tab — only the fields that endpoint honors, so the fetch effect refires minimally. */
 export type ReportQuery =
@@ -45,7 +54,9 @@ export type ReportQuery =
     | {tab: "is"; from: string; to: string; interval: ReportInterval}
     // From/To, not End + Periods (plans/24): only the range and its grain.
     | {tab: "cf"; from: string; to: string; interval: ReportInterval; depth: number}
-    | {tab: "nw"; end: string; interval: ReportInterval; count: number; depth: number};
+    | {tab: "nw"; end: string; interval: ReportInterval; count: number; depth: number}
+    // Cash flow's window, plus whether empty accounts are rows.
+    | {tab: "accounts"; from: string; to: string; interval: ReportInterval; depth: number; empty: boolean};
 
 /** Map ReportParams → the active tab's endpoint query (drives both the fetch and the refetch key). */
 export function buildReportQuery(params: ReportParams): ReportQuery {
@@ -64,6 +75,8 @@ export function buildReportQuery(params: ReportParams): ReportQuery {
             return {tab: "cf", from: params.cfFrom, to: params.cfTo, interval: params.interval, depth: params.depth};
         case "nw":
             return {tab: "nw", end: params.end, interval: params.interval, count: params.count, depth: params.depth};
+        case "accounts":
+            return {tab: "accounts", from: params.cfFrom, to: params.cfTo, interval: params.interval, depth: params.depth, empty: params.empty};
     }
 }
 
@@ -129,6 +142,8 @@ async function fetchReport(api: LedgelineApi, query: ReportQuery): Promise<AnyRe
             return decodeCashFlowStatement(await api.cashFlow({from: query.from, to: query.to, interval: query.interval, depth: query.depth}));
         case "nw":
             return decodePeriodReport(await api.netWorth({end: query.end, interval: query.interval, count: query.count, depth: query.depth}));
+        case "accounts":
+            return decodeAccountReport(await api.accounts({from: query.from, to: query.to, interval: query.interval, depth: query.depth, empty: query.empty}));
     }
 }
 

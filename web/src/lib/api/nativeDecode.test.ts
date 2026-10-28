@@ -2036,16 +2036,22 @@ const PROJECTION_RUN = {
             {key: "2026-08", label: "Aug 2026", start: "2026-08-01", end: "2026-08-31"},
             {key: "2026-09", label: "Sep 2026", start: "2026-09-01", end: "2026-09-30"},
         ],
-        rows: [
+        sections: [
             {
-                account: "expenses:rent",
-                depth: 2,
-                values: [{}, {$: dec(420000, 2)}, {$: dec(420000, 2)}],
-                total: {$: dec(840000, 2)},
+                section: "expenses",
+                reading: "change",
+                rows: [
+                    {
+                        account: "expenses:rent",
+                        depth: 2,
+                        values: [{}, {$: dec(420000, 2)}, {$: dec(420000, 2)}],
+                        summary: {$: dec(840000, 2)},
+                    },
+                ],
+                totals: [{}, {$: dec(420000, 2)}, {$: dec(420000, 2)}],
+                summary: {$: dec(840000, 2)},
             },
         ],
-        totals: [{}, {}, {}],
-        grandTotal: {},
     },
     // One generated transaction, in the journal view's own row shape.
     journal: {
@@ -2408,11 +2414,22 @@ describe("UNIT nativeDecode — a projection run", () => {
         expect(decodeProjection({...PROJECTION_RUN, assets: []}).assets).toEqual([]);
     });
 
-    it("decodes the Accounts reading through the period report's own decoder", () => {
+    it("decodes the Accounts reading: sections, each saying how it reads", () => {
         const accounts = decodeProjection(PROJECTION_RUN).accounts;
         expect(accounts?.periods.map((period) => period.label)).toEqual(["Jul 2026", "Aug 2026", "Sep 2026"]);
-        expect(accounts?.rows[0]?.total?.get("$")).toEqual({m: 840000n, p: 2});
-        expect(accounts?.grandTotal).toBeDefined();
+        expect([accounts?.sections[0]?.section, accounts?.sections[0]?.reading]).toEqual(["expenses", "change"]);
+        expect(accounts?.sections[0]?.rows[0]?.summary.get("$")).toEqual({m: 840000n, p: 2});
+    });
+
+    it("refuses an Accounts section it does not know, a reading it does not know, or a short column array", () => {
+        const section = PROJECTION_RUN.accounts.sections[0]!;
+        const withSection = (patch: Record<string, unknown>) => ({
+            ...PROJECTION_RUN,
+            accounts: {...PROJECTION_RUN.accounts, sections: [{...section, ...patch}]},
+        });
+        expect(() => decodeProjection(withSection({section: "income"}))).toThrow(ApiShapeError);
+        expect(() => decodeProjection(withSection({reading: "historical"}))).toThrow(ApiShapeError);
+        expect(() => decodeProjection(withSection({totals: [{}, {}]}))).toThrow(ApiShapeError);
     });
 
     it("decodes the generated transactions as journal rows, each with its origin", () => {

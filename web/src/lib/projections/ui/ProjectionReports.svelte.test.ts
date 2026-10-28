@@ -32,7 +32,7 @@ const STYLES: ReadonlyMap<string, AmountStyle> = new Map([["$", DEFAULT_AMOUNT_S
 
 const projection = (overrides: Partial<Projection> = {}): Projection => projectionFixture(overrides);
 
-function mount(tab: ProjectionTab, value: Projection = projection(), extra: {accountsMode?: "change" | "balance"; emptyAccounts?: boolean} = {}) {
+function mount(tab: ProjectionTab, value: Projection = projection(), extra: {emptyAccounts?: boolean} = {}) {
     return render(ProjectionReports, {tab, projection: value, interval: "monthly" as const, styles: STYLES, fallbackCommodity: "$", ...extra});
 }
 
@@ -258,45 +258,58 @@ describe("COMPONENT ProjectionReports — a scenario in more than one commodity"
 describe("COMPONENT ProjectionReports — accounts", () => {
     const rowsOf = (): string[] =>
         [...screen.getByTestId("accounts-table").querySelectorAll("tbody tr[data-account]")].map((tr) => tr.getAttribute("data-account") ?? "");
+    const cellsOf = (account: string): string[] =>
+        [...(screen.getByTestId("accounts-table").querySelector(`tbody tr[data-account="${account}"]`)?.querySelectorAll("td") ?? [])].map(
+            (td) => td.textContent?.trim() ?? ""
+        );
 
-    it("renders every account per period on the statements' column template, with the band and a Total", () => {
-        mount("accounts", projection({accounts: accountsFixture("change")}));
+    it("reads assets as balances with a Δ, and flows as changes with a Total, on the statements' template", () => {
+        mount("accounts", projection({accounts: accountsFixture()}));
         const table = screen.getByTestId("accounts-table");
-        expect(headings("accounts-table")).toEqual(["Account", "Jun 2026", "Jul 2026", "Aug 2026", "Sep 2026", "Total"]);
+        expect(headings("accounts-table")).toEqual(["Account", "Jun 2026", "Jul 2026", "Aug 2026", "Sep 2026", ""]);
         expect(table.querySelector('[data-testid="projected-label"]')?.getAttribute("colspan")).toBe("2");
-        const cells = [...(table.querySelector('tbody tr[data-account="expenses:rent"]')?.querySelectorAll("td") ?? [])];
-        expect(cells.map((td) => td.textContent?.trim())).toEqual(["$4,200.00", "$4,200.00", "$4,200.00", "$4,200.00", "$16,800.00"]);
+        // A balance, and its last column the Δ over the window, marked as one.
+        expect(cellsOf("assets:checking")).toEqual(["$10,800.00", "$11,600.00", "$12,400.00", "$13,200.00", "Δ $3,200.00"]);
+        // A flow: each month's movement, then the Total — no Δ.
+        expect(cellsOf("expenses:rent")).toEqual(["$4,200.00", "$4,200.00", "$4,200.00", "$4,200.00", "$16,800.00"]);
+        const sections = [...table.querySelectorAll('[data-testid="account-section"]')];
+        expect(sections.map((s) => [s.getAttribute("data-section"), s.getAttribute("data-reading")])).toEqual([
+            ["assets", "balance"],
+            ["revenue", "change"],
+            ["expenses", "change"],
+        ]);
+        expect(sections.map((s) => s.querySelector('[data-column="summary-heading"]')?.textContent?.trim())).toEqual(["Δ over the period", "Total", "Total"]);
+        // The section total row carries the Δ too.
+        expect(sections[0]!.querySelector('[data-testid="account-section-total"] [data-column="summary"]')?.textContent?.trim()).toBe("Δ $3,200.00");
         // The divider down the first projected column, and nowhere else.
-        expect(cells.map((td) => td.className.includes("border-l-2"))).toEqual([false, false, true, false, false]);
-        // One fixed template, every row filling it: the shared-grid assertion,
-        // over a stack of one (plus the same table again so the helper's
-        // "more than one block" holds).
+        const rent = [...(table.querySelector('tbody tr[data-account="expenses:rent"]')?.querySelectorAll("td") ?? [])];
+        expect(rent.map((td) => td.className.includes("border-l-2"))).toEqual([false, false, true, false, false]);
+        // One fixed template, every row filling it: the statements' own grid.
         expectSharedGrid([table, table], 5, true);
     });
 
-    it("draws Balance without a Total column — snapshots mean nothing summed", () => {
-        mount("accounts", projection({accounts: accountsFixture("balance")}), {accountsMode: "balance"});
-        expect(headings("accounts-table")).toEqual(["Account", "Jun 2026", "Jul 2026", "Aug 2026", "Sep 2026"]);
-        expect(screen.getByRole("button", {name: "Balance"}).getAttribute("aria-pressed")).toBe("true");
-        expect(screen.getByRole("button", {name: "Change"}).getAttribute("aria-pressed")).toBe("false");
+    it("says in words how each kind of account reads", () => {
+        mount("accounts", projection({accounts: accountsFixture()}));
+        const help = screen.getByTestId("account-report-help").textContent ?? "";
+        expect(help).toContain("balance at the end of each period");
+        expect(help).toContain("Δ");
+        expect(help).toContain("what moved in each period");
     });
 
     it("indents the tree and folds a parent into its only child", () => {
-        mount("accounts", projection({accounts: accountsFixture("change")}));
-        // `assets` equals `assets:checking` in every column, so the chain folds.
+        mount("accounts", projection({accounts: accountsFixture()}));
+        // `assets` equals `assets:checking` in every column and its Δ, so the chain folds.
         expect(rowsOf()).toContain("assets:checking");
         expect(rowsOf()).not.toContain("assets");
     });
 
-    it("toggles Change/Balance and Show empty accounts through its bindings", async () => {
-        const view = mount("accounts", projection({accounts: accountsFixture("change")}));
+    it("has no Change/Balance switch any more, and keeps Show empty accounts", async () => {
+        mount("accounts", projection({accounts: accountsFixture()}));
+        expect(screen.queryByRole("button", {name: "Balance"})).toBeNull();
         const checkbox = screen.getByRole("checkbox", {name: "Show empty accounts"}) as HTMLInputElement;
         expect(checkbox.checked).toBe(false);
-        await fireEvent.click(screen.getByRole("button", {name: "Balance"}));
-        expect(screen.getByRole("button", {name: "Balance"}).getAttribute("aria-pressed")).toBe("true");
         await fireEvent.click(checkbox);
         expect(checkbox.checked).toBe(true);
-        view.unmount();
     });
 
     it("says it is reading while a projection held from another tab has no accounts yet", () => {
