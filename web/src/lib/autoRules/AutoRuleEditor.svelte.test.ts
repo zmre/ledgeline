@@ -28,6 +28,7 @@ const commission = (): AutoRuleForm => ({
     postings: [{account: "expenses:commission", kind: "percent", percent: {m: 3n, p: 0}, amount: null}],
     counter: "assets:checking",
     comment: "",
+    forecastOnly: true,
 });
 
 async function commit(label: string, value: string): Promise<void> {

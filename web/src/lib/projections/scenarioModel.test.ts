@@ -583,6 +583,7 @@ describe("UNIT scenarioModel — cloning", () => {
                         ]),
                         counter: null,
                         comment: "",
+                        forecastOnly: true,
                     }),
                 }),
             ]),
@@ -895,6 +896,7 @@ describe("UNIT scenarioModel — automatic posting rules (plan 30 Phase 4)", () 
         postings: [{account: "expenses:rent-tax", kind: "percent" as const, percent: dec(10, 0), amount: null}],
         counter: "assets:checking",
         comment: "",
+        forecastOnly: true,
     });
     const read = (block: number) => ({
         raw: `= expenses:rent\n    expenses:rent-tax  *0.${block + 1}\n`,
@@ -917,6 +919,7 @@ describe("UNIT scenarioModel — automatic posting rules (plan 30 Phase 4)", () 
                     postings: [{account: "expenses:rent-tax", kind: "percent", percent: {mantissa: "10", places: 0}, amount: null}],
                     counter: "assets:checking",
                     comment: "",
+                    forecastOnly: true,
                 },
             },
             {
@@ -927,6 +930,7 @@ describe("UNIT scenarioModel — automatic posting rules (plan 30 Phase 4)", () 
                     postings: [{account: "", kind: "percent", percent: null, amount: null}],
                     counter: "assets:cash",
                     comment: "",
+                    forecastOnly: true,
                 },
             },
             // A rule the form cannot state always goes back as its text.

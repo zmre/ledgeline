@@ -71,7 +71,7 @@ test("settings: the hledger config tab shows the file in force and its controls,
     await expect(page.getByTestId("settings-hledger-conf-save")).toBeDisabled();
 });
 
-test("settings: the Automatic postings tab says whether --auto is in force", async ({page}) => {
+test("settings: the Automatic postings tab says whether --auto is in force, and offers a new rule", async ({page}) => {
     // Read-only, like the rest of this spec. `fixtures/sample.journal` has no
     // `=` rules and no hledger.conf, so the tab says the rules are not applied
     // and that there are none; the applied case is pinned over
@@ -82,6 +82,13 @@ test("settings: the Automatic postings tab says whether --auto is in force", asy
     await expect(page).toHaveURL(/\/settings\?tab=auto/);
     await expect(page.getByTestId("settings-auto-off")).toContainText("--auto");
     await expect(page.getByTestId("settings-auto-empty")).toBeVisible();
+    // A rule can be added to the main journal. Opened and cancelled, never
+    // saved: the write is pinned byte-for-byte by auto_endpoints.rs.
+    await page.getByTestId("settings-auto-add").click();
+    await expect(page.getByTestId("settings-auto-editor")).toBeVisible();
+    await expect(page.getByLabel("Forecast transactions only for the new rule")).not.toBeChecked();
+    await page.getByRole("button", {name: "Cancel"}).click();
+    await expect(page.getByTestId("settings-auto-editor")).toHaveCount(0);
     // The switch lives on the hledger config tab, and the notice links there.
     await page.getByTestId("settings-auto-conf-link").click();
     await expect(page).toHaveURL(/\/settings\?tab=hledgerConf/);

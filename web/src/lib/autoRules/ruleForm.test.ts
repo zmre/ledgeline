@@ -13,6 +13,7 @@ const commission = (): AutoRuleForm => ({
     postings: [{account: "expenses:commission", kind: "percent", percent: {m: 3n, p: 0}, amount: null}],
     counter: "assets:checking",
     comment: "",
+    forecastOnly: true,
 });
 
 describe("ruleForm", () => {
@@ -24,6 +25,7 @@ describe("ruleForm", () => {
             postings: [{account: "", kind: "percent", percent: null, amount: null}],
             counter: "assets:checking",
             comment: "",
+            forecastOnly: true,
         });
         expect(ruleFormComplete(form)).toBe(false);
     });
@@ -74,6 +76,7 @@ describe("ruleForm", () => {
             ],
             counter: null,
             comment: "",
+            forecastOnly: true,
         });
     });
 

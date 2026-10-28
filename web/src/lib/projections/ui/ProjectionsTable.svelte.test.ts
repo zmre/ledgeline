@@ -1175,6 +1175,7 @@ describe("COMPONENT ProjectionsTable — automatic postings (plan 30)", () => {
         postings: [{account: "expenses:taxes", kind: "percent", percent: {mantissa: "3", places: 0}, amount: null}],
         counter: "assets:checking",
         comment: "",
+        forecastOnly: true,
     };
     const COMMISSION = "= ^income:salary(:|$) tag:_generated-transaction\n    expenses:taxes   *-0.03\n    assets:checking  *0.03\n";
     const editable = (raw = COMMISSION, query = "^income:salary(:|$) tag:_generated-transaction", block = 0) => ({

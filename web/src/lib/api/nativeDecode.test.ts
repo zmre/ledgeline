@@ -2179,6 +2179,7 @@ describe("UNIT nativeDecode — a scenario's auto rules (plan 30 Phase 4)", () =
         ],
         counter: "assets:checking",
         comment: "sales",
+        forecastOnly: true,
     };
     const rule = {
         raw: "= ^revenue:sales(:|$) tag:_generated-transaction\n",

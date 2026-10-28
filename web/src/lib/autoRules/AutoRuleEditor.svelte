@@ -9,9 +9,13 @@
      grows by". The one-line preview under the form says what that comes to.
 
      Reusable on purpose: it edits a bare `AutoRuleForm` and knows nothing of
-     any store. The Projections table hosts one per scenario rule; Settings ›
-     Automatic postings will host one per journal rule. The host owns
-     persistence and is told of every committed edit through `onChange`.
+     any store. The Projections table hosts one per scenario rule (`scope`
+     "forecast": the rule fires on projected transactions, and the engine
+     always writes it forecast-only); Settings › Automatic postings hosts one
+     per journal rule (`scope` "journal": it fires on recorded transactions,
+     and a checkbox says whether stock hledger should limit it to forecasts).
+     The host owns persistence and is told of every committed edit through
+     `onChange`.
 
      Edits mutate `form` in place (it is the host's `$state`), and `onChange`
      fires on COMMIT — a change event, an account chosen — never per keystroke,
@@ -29,6 +33,7 @@
         commodity,
         sample = null,
         styles,
+        scope = "forecast",
         onChange,
     }: {
         /** The rule being edited. Mutated in place. */
@@ -41,6 +46,8 @@
         /** A typical amount on the matched account, for the preview; null when the host knows none. */
         sample?: RuleAmount | null;
         styles: ReadonlyMap<string, AmountStyle>;
+        /** Which transactions the rule is edited for: a scenario's projected ones, or the main journal's. */
+        scope?: "forecast" | "journal";
         /** Called after every committed edit. */
         onChange: () => void;
     } = $props();
@@ -125,12 +132,28 @@
                 onCommit={onChange}
             />
         </div>
-        <span class="text-base-content/70">or one of its subaccounts is projected</span>
-        <span
-            class="badge badge-ghost badge-xs"
-            title="The rule is written with tag:_generated-transaction, so `hledger --auto --forecast` applies it to forecast transactions only, as Ledgeline does."
-            >forecasts only</span
-        >
+        <span class="text-base-content/70">or one of its subaccounts is {scope === "journal" ? "posted" : "projected"}</span>
+        {#if scope === "journal"}
+            <label
+                class="flex items-center gap-1 text-base-content/70"
+                title="Adds tag:_generated-transaction to the query, so stock hledger applies the rule only to `--forecast` transactions. Ledgeline forecasts nothing in the main journal, so such a rule never fires here."
+            >
+                <input
+                    type="checkbox"
+                    class="checkbox checkbox-xs"
+                    bind:checked={form.forecastOnly}
+                    aria-label="Forecast transactions only for {name}"
+                    onchange={onChange}
+                />
+                forecasts only
+            </label>
+        {:else}
+            <span
+                class="badge badge-ghost badge-xs"
+                title="The rule is written with tag:_generated-transaction, so `hledger --auto --forecast` applies it to forecast transactions only, as Ledgeline does."
+                >forecasts only</span
+            >
+        {/if}
         {#if !showAdvanced}
             <button type="button" class="btn btn-ghost btn-xs" onclick={() => (advanced = true)}>+ query terms</button>
         {/if}

@@ -357,6 +357,7 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
                                 postings: [{account: "expenses:rent-tax", kind: "percent", percent: {m: 10n, p: 0}, amount: null}],
                                 counter: "assets:bank:checking",
                                 comment: "",
+                                forecastOnly: true,
                             },
                         },
                     ],

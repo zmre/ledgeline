@@ -3,7 +3,8 @@
 // loudly when the shape drifts rather than rendering an empty list.
 
 import {ApiShapeError} from "#lib/api/client.js";
-import type {AutoRule, AutoRuleProblem, AutoRulesListing} from "./types";
+import {decodeAutoRuleForm, type RawAutoRuleForm} from "#lib/api/nativeDecode.js";
+import type {AutoRule, AutoRuleProblem, AutoRulesListing, FileRevision} from "./types";
 
 type Raw = Record<string, unknown>;
 
@@ -61,7 +62,17 @@ function decodeRule(raw: unknown, context: string): AutoRule {
         unsupported: nullableStr(value.unsupported, `${context}.unsupported`),
         generated: count(value.generated, `${context}.generated`),
         problems: Object.freeze(arr(value.problems, `${context}.problems`).map((p, i) => decodeProblem(p, `${context}.problems[${i}]`))) as AutoRuleProblem[],
+        journalId: nullableStr(value.journalId, `${context}.journalId`),
+        block: count(value.block, `${context}.block`),
+        revision: nullableStr(value.revision, `${context}.revision`),
+        form: value.form === null ? null : decodeAutoRuleForm(obj(value.form, `${context}.form`) as RawAutoRuleForm, `${context}.form`),
     });
+}
+
+function decodeFileRevision(raw: unknown, context: string): FileRevision | null {
+    if (raw === null) return null;
+    const value = obj(raw, context);
+    return Object.freeze({journalId: str(value.journalId, `${context}.journalId`), revision: str(value.revision, `${context}.revision`)});
 }
 
 export function decodeAutoRules(raw: unknown): AutoRulesListing {
@@ -70,6 +81,8 @@ export function decodeAutoRules(raw: unknown): AutoRulesListing {
         inForce: bool(value.inForce, "auto rules.inForce"),
         conf: nullableStr(value.conf, "auto rules.conf"),
         confHijacked: bool(value.confHijacked, "auto rules.confHijacked"),
+        editable: bool(value.editable, "auto rules.editable"),
+        newRule: decodeFileRevision(value.newRule, "auto rules.newRule"),
         rules: Object.freeze(arr(value.rules, "auto rules.rules").map((r, i) => decodeRule(r, `auto rules.rules[${i}]`))) as AutoRule[],
     });
 }

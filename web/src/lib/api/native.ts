@@ -5,6 +5,7 @@
 // requires the native API; there is no plain-hledger-web fallback.
 
 import type {WireAutoRuleFormIn} from "#lib/autoRules/ruleForm.js";
+import type {SaveAutoRuleBody} from "#lib/autoRules/types.js";
 import type {BudgetPeriod} from "#lib/budget/types.js";
 import type {SaveHledgerConfBody} from "#lib/settings/hledgerConfTypes.js";
 import {ApiUnreachableError, authHeaders, REQUEST_TIMEOUT_MS, withDeadline} from "./client";
@@ -1267,6 +1268,16 @@ export class LedgelineApi {
      */
     listAutoRules(): Promise<unknown> {
         return this.getJson("/api/auto-rules");
+    }
+
+    /**
+     * One change to one journal file's `=` rules (plan 30 amendment 22). → 200,
+     * the listing as it now is (decode with `decodeAutoRules`); 409 when the
+     * file or the rule moved underneath the editor; 400 for a rule that cannot
+     * be written, with the server's sentence.
+     */
+    saveAutoRule(body: SaveAutoRuleBody): Promise<unknown> {
+        return this.mutate<unknown>("PUT", "/api/auto-rules", 200, body);
     }
 
     /**

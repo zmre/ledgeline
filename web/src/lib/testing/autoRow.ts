@@ -50,6 +50,8 @@ export const AUTO_RULES_LISTING = {
     inForce: true,
     conf: "hledger.conf",
     confHijacked: false,
+    editable: true,
+    newRule: {journalId: "main.journal", revision: "rev-main"},
     rules: [
         {
             index: 0,
@@ -67,6 +69,17 @@ export const AUTO_RULES_LISTING = {
                     account: "liabilities:tax:sales",
                 },
             ],
+            journalId: "rules.journal",
+            block: 0,
+            revision: "rev-rules",
+            form: {
+                matchAccount: "revenue:sales",
+                extraQuery: "",
+                postings: [{account: "liabilities:tax:sales", kind: "percent", percent: {mantissa: "10", places: 0}, amount: null}],
+                counter: "assets:checking",
+                comment: "",
+                forecastOnly: false,
+            },
         },
         {
             index: 1,
@@ -77,6 +90,10 @@ export const AUTO_RULES_LISTING = {
             unsupported: "expr: with a nested boolean is not supported",
             generated: 0,
             problems: [],
+            journalId: "rules.journal",
+            block: 1,
+            revision: "rev-rules",
+            form: null,
         },
         {
             index: 2,
@@ -92,6 +109,11 @@ export const AUTO_RULES_LISTING = {
                 txnIndex,
                 account: null,
             })),
+            // A file that cannot be written: listed, never editable.
+            journalId: null,
+            block: 0,
+            revision: null,
+            form: null,
         },
     ],
 };

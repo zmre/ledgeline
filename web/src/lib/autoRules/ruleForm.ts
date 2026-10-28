@@ -46,6 +46,13 @@ export interface AutoRuleForm {
     counter: string | null;
     /** The `=` line's comment; empty for none. */
     comment: string;
+    /**
+     * Whether the query carries `tag:_generated-transaction`, so stock hledger
+     * applies the rule to forecast transactions only. A scenario's rules always
+     * do (the engine writes the tag whatever this says); a main-journal rule
+     * usually does not.
+     */
+    forecastOnly: boolean;
 }
 
 /** `AutoRuleFormIn` on the wire. */
@@ -60,11 +67,16 @@ export interface WireAutoRuleFormIn {
     }[];
     counter: string | null;
     comment: string;
+    forecastOnly: boolean;
 }
 
-/** A new rule: nothing matched yet, one percentage posting, balanced against `counter`. */
-export function blankRuleForm(counter: string | null): AutoRuleForm {
-    return {matchAccount: "", extraQuery: "", postings: [blankPosting()], counter, comment: ""};
+/**
+ * A new rule: nothing matched yet, one percentage posting, balanced against
+ * `counter`. Forecast-only unless said otherwise — a scenario's rules always
+ * are; Settings passes `false` for the main journal's.
+ */
+export function blankRuleForm(counter: string | null, forecastOnly = true): AutoRuleForm {
+    return {matchAccount: "", extraQuery: "", postings: [blankPosting()], counter, comment: "", forecastOnly};
 }
 
 /** A new percentage posting. */
@@ -92,6 +104,7 @@ export function cloneRuleForm(form: AutoRuleForm): AutoRuleForm {
         })),
         counter: form.counter,
         comment: form.comment,
+        forecastOnly: form.forecastOnly,
     };
 }
 
@@ -125,6 +138,7 @@ export function ruleFormToWire(form: AutoRuleForm): WireAutoRuleFormIn {
         })),
         counter: counter === "" ? null : counter,
         comment: form.comment,
+        forecastOnly: form.forecastOnly,
     };
 }
 

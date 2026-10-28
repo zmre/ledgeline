@@ -548,12 +548,13 @@ interface RawAutoRule {
     block?: unknown;
 }
 
-interface RawAutoRuleForm {
+export interface RawAutoRuleForm {
     matchAccount?: unknown;
     extraQuery?: unknown;
     postings?: {account?: unknown; kind?: string; percent?: RawDec | null; amount?: RawScenarioAmount | null}[];
     counter?: string | null;
     comment?: unknown;
+    forecastOnly?: boolean;
 }
 
 interface RawProjectionFile {
@@ -2538,8 +2539,8 @@ function decodeAutoRules(raw: RawScenario["autoRules"]): AutoRule[] {
 
 const RULE_POSTING_KINDS = ["percent", "fixed"] as const;
 
-/** A rule's form: every field present, the posting's unused number `null`. */
-function decodeAutoRuleForm(raw: RawAutoRuleForm, context: string): AutoRuleForm {
+/** A rule's form: every field present, the posting's unused number `null`. Shared with Settings › Automatic postings. */
+export function decodeAutoRuleForm(raw: RawAutoRuleForm, context: string): AutoRuleForm {
     if (typeof raw !== "object" || !Array.isArray(raw.postings)) throw new ApiShapeError(`${context}: expected postings`);
     return Object.freeze({
         matchAccount: str(raw.matchAccount, `${context} matchAccount`),
@@ -2558,6 +2559,7 @@ function decodeAutoRuleForm(raw: RawAutoRuleForm, context: string): AutoRuleForm
         ),
         counter: decodeNullableStr(raw.counter, `${context} counter`),
         comment: str(raw.comment, `${context} comment`),
+        forecastOnly: decodeBoolean(raw.forecastOnly, `${context} forecastOnly`),
     });
 }
 
