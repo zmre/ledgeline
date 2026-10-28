@@ -677,8 +677,11 @@ Worktree agents branch from `main`, so after merging, re-run the full suite
   application, writer preservation and Save As, `autoRules` on the API, a
   read-only list on the Projections page, and the "auto" marker in the Journal
   tab.
-- Phase 4's rule EDITOR, Phase 4b (`hledger.conf` tab) and Phase 5 (the main
-  journal): not started.
+- **Phase 4's rule EDITOR: built 2026-10-28** (amendments 12–15):
+  `auto_form.rs`, in-place `=` block writes, `form`/`block` on the wire,
+  Decision 11's warning in projection runs, and `lib/autoRules/
+  AutoRuleEditor.svelte` in the Projections table.
+- Phase 4b (`hledger.conf` tab) and Phase 5 (the main journal): not started.
 
 ## Contract amendments made during implementation
 
@@ -781,3 +784,88 @@ requires identical dates (more than 2,000 compared), or a refusal on both
 sides. It is wired into `just hledger-checks`. `fixtures/projections-parity/
 periods.journal` adds statement, Accounts and Journal parity for your three
 reported lines.
+
+### 12. A rule's identity is its block, and a save edits `=` blocks in place (2026-10-28)
+
+`Scenario.auto_rules` is `Vec<ScenarioAutoRule { block, rule }>`, where `block`
+is the rule's position among the scenario FILE's own `=` blocks when it was
+read (the Phase 3 plan's "carrying the block index for splicing"). The wire
+carries it both ways. `ProjectionDoc::apply` now splices `=` blocks the way it
+splices `~` blocks:
+
+- A rule claims a block in three passes, most certain first: its own block if
+  that block still holds exactly its text; else any unclaimed block holding
+  exactly its text; else (an edited rule) the block it names, if free. The
+  second pass is what keeps bytes in place for a body with no blocks (a client
+  from before this amendment) and for STALE block numbers: the page keeps its
+  own scenario across a save (`markSaved`, never `adopt`), so after deleting
+  the first rule the others still carry their old numbers.
+- Claimed blocks are slots filled in the scenario's order (hledger applies
+  rules in file order, and later rules see earlier output); leftovers are
+  appended; unclaimed blocks are removed with one blank line (the following
+  one, or the preceding one at EOF).
+- A slot whose bytes already state its rule is not spliced, so untouched rules
+  keep their layout, comments and CRLF.
+- `confirm_auto_rules` now requires EXACTLY the scenario's rules, in order.
+  It used to require only that each was present somewhere.
+
+### 13. Sign inference relates two accounts by their normal side (2026-10-28)
+
+The rule editor takes positive percentages meaning "the target account grows".
+`factor = percent / 100 × side(matched) × side(target)`, with side `+1` for
+asset, expense and untyped accounts and `−1` for liability, equity and revenue
+(gains and conversion included), from `AccountTypes::resolve`. A fixed amount
+takes `side(target)` alone.
+
+This deliberately differs from the table's own entry rule (`signed_entry`,
+which negates revenue only). A table line is one account's movement; a rule
+relates two, and "grows" is the only reading under which the same typed `3`
+means the same thing whichever way round they are. Pinned: revenue→expense
+`*-0.03`, expense→expense `*0.1`, expense→liability `*-0.1`
+(`auto_form::tests`).
+
+The types used are the MAIN journal's declarations, on both the outbound
+`form` and the inbound render, so they always agree with each other. A type a
+scenario file declares for itself that the main journal does not (and that
+name inference does not give either) is not seen by sign inference. That case
+is rare and is not handled.
+
+### 14. What the form can state, and how it is written (2026-10-28)
+
+`AutoRuleForm { match_account, extra_query, postings: [{account,
+Percent | Fixed{commodity, quantity}}], counter, comment }`. `render` writes
+`= ^ACCOUNT(:|$) tag:_generated-transaction EXTRA  ; COMMENT`, with the account
+regex-escaped and quoted when it holds a space. Both forms were verified to
+match literally in hledger 1.52. Percent legs are `*N`. The counter is the
+OPPOSITE multiplier (or negated fixed sum in one commodity), never amountless
+(amendment 8). A mix of percentages and fixed amounts with a counter is
+refused. `render` re-parses its own output and requires it to read back as a
+form rendering to the same text. A proptest pins
+`form_from_rule(parse(render(f))) == f`.
+
+`form_from_rule` also accepts a plain account word and an amountless last
+posting, and tolerates a missing forecast tag, so the user's hand-written
+rules open as forms. Editing one rewrites it canonically: anchored and tagged.
+The anchoring is a real change for a sibling such as `revenue:sales2`, which
+the infix query matched. The UI says nothing about that edge. Everything else
+(virtual or status-marked postings, posting comments, `*N CUR`, a cost,
+`%account`, multi-line comments, other account-term shapes, an unsupported
+query) is `None`: shown raw, locked, still carried and applied.
+
+Wire: `WireAutoRule` is `{raw, query, unsupported, form, block}` (all
+present). `AutoRuleIn` takes exactly one of `raw` and `form`, plus `block`. A
+form is decoded at request time (`MAX_AUTO_POSTINGS = 50`, byte caps on its
+text fields) and rendered in `DecodedScenario::signed` under the declared
+types, then validated exactly as raw text is. The client sends a rule's form
+only once it is edited (`AutoRule.edited`, UI-only) or new. An untouched rule
+goes back as its raw text, so its bytes never move.
+
+### 15. Decision 11 in projection runs (2026-10-28)
+
+`auto_form::unknown_account_warnings` names each rule account that is neither
+in `known` nor a parent of something in it. For a run, `known` is
+`JournalFacts::known_accounts()` (every declared account and every account a
+real transaction uses) plus every account the scenario itself names
+(`Scenario::named_accounts`). `%account` is skipped. It is a warning in the
+run, not a refusal. The Settings and Problems-drawer halves of Decision 11
+belong to Phase 5.

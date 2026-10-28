@@ -220,10 +220,61 @@ transactions.
 - Queries Ledgeline does not evaluate yet (`expr:`, `type:`, `date2:`) keep the
   rule in the file but it never fires, and the page says why.
 
-The Projections page lists the rules read-only under **Automatic postings**. To
-change one, edit the file. Its generated postings are marked **auto** in the
-Journal tab. Saving keeps every rule byte for byte, and Save As copies them to
-the new file.
+### Editing rules on the Projections page
+
+The **Automatic postings** section edits a rule as a form: *when a posting to
+this account (or one of its subaccounts) is projected, add these postings*.
+Each posting is a percentage of the matched amount or a fixed amount, and a
+counter-account (the scenario's cash account by default) takes the balance.
+A line under the rule shows what it comes to on an amount the scenario already
+posts there, such as "≈ $1,200.00 to expenses:people-costs:sales-commission
+on each $40,000.00 to revenue:sales".
+
+**Type positive figures.** A percentage means "this account grows by this
+share of the matched amount", and Ledgeline works out the sign from the two
+accounts' types. Asset and expense accounts grow with a positive amount;
+liability, equity and revenue accounts grow with a negative one. So 3%
+commission on a sale (revenue into an expense) is written `*-0.03`, 10%
+payroll tax on wages (an expense into an expense) is `*0.1`, and 10% of wages
+owed as a tax liability (an expense into a liability) is `*-0.1`. A fixed amount
+takes its own account's sign: `$50` into an expense, `$-50` into a liability.
+
+A rule edited here is saved in this form:
+
+```journal
+= ^revenue:sales(:|$) tag:_generated-transaction  ; sales commission
+    expenses:people-costs:sales-commission  *-0.03
+    assets:mercury:checking                 *0.03
+```
+
+- The query matches the account and its subtree only, never a sibling such
+  as `revenue:sales2`, and it is limited to forecasts in hledger as well. Any
+  extra query terms you add (**+ query terms**, for example `desc:acme` or
+  `amt:>1000`) follow it.
+- The counter-account gets the **opposite multiplier** rather than no amount,
+  so hledger loads the file even when a rule fires twice in one transaction.
+  For that reason a counter-account balances percentages, or fixed amounts in
+  one commodity, but not a mix of the two.
+- Only the rule you edited is rewritten. The others keep their text, comments
+  and layout exactly. A deleted rule's block is removed, a new rule is added at
+  the end of the file, and moving a rule up or down moves its text, because
+  hledger applies rules in file order and a later rule sees the postings an
+  earlier one added.
+- A hand-written rule in the style above (a plain account name, an amountless
+  last posting, with or without the tag) opens as a form too. Once you edit it
+  it is saved in the form shown. An untagged rule shows **projections only
+  here** and a button that adds the tag.
+- A rule the form cannot show is listed as its text with a lock: virtual
+  `(account)` postings, `*N CUR`, `%account`, posting comments, or an
+  unsupported query. It is still applied and saved byte for byte. Edit it in
+  the file.
+- A rule that posts to an account no `account` directive declares and no
+  transaction uses, such as `expesnses:people-costs:payroll-tax`, gets a
+  warning naming the account. hledger accepts it, so Ledgeline does too, but it
+  is almost always a typo.
+
+Generated postings are marked **auto** in the Journal tab. Save As copies every
+rule to the new file.
 
 To check a projection with hledger, add `--auto` to the commands below.
 
