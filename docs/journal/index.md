@@ -29,7 +29,7 @@ Each row is one transaction. The columns are:
 | Date | The transaction's primary date. |
 | Status | `*` for cleared, `!` for pending, a dot for unmarked. |
 | Description | The description, a comment marker when the transaction or a posting carries a comment, and a coloured dot when the [problems checks](problems.md) flagged it. |
-| Accounts | The accounts involved. A simple two-account transaction reads `source → destination`. A split shows every account as a chip. |
+| Accounts | The accounts involved. A simple two-account transaction reads `source → destination`. A split shows every account as a chip. A **+N auto** badge counts postings that [automatic posting rules](automatic-postings.md) added. |
 | Amount | The size of the transaction: the sum of its positive postings, per commodity. |
 
 Hover the comment marker to read the comments. Hover a problem dot to read what the check found.
