@@ -2162,6 +2162,52 @@ const SCENARIO_FILE = {
     },
 };
 
+describe("UNIT nativeDecode — a scenario's auto rules (plan 30 Phase 4)", () => {
+    const base = golden("projections-seed") as Record<string, unknown>;
+    const form = {
+        matchAccount: "revenue:sales",
+        extraQuery: "",
+        postings: [
+            {account: "expenses:commission", kind: "percent", percent: {mantissa: "35", places: 1}, amount: null},
+            {account: "expenses:fee", kind: "fixed", percent: null, amount: {commodity: "$", quantity: {mantissa: "25", places: 0}, precision: 0}},
+        ],
+        counter: "assets:checking",
+        comment: "sales",
+    };
+    const rule = {
+        raw: "= ^revenue:sales(:|$) tag:_generated-transaction\n",
+        query: "^revenue:sales(:|$) tag:_generated-transaction",
+        unsupported: null,
+        form,
+        block: 3,
+    };
+
+    it("decodes a rule's form and block, and a locked rule's null form", () => {
+        const scenario = decodeScenario({...base, autoRules: [rule, {...rule, form: null, block: null}]});
+        expect(scenario.autoRules[0]).toEqual({
+            ...rule,
+            form: {
+                ...form,
+                postings: [
+                    {account: "expenses:commission", kind: "percent", percent: {m: 35n, p: 1}, amount: null},
+                    {account: "expenses:fee", kind: "fixed", percent: null, amount: {commodity: "$", quantity: {m: 25n, p: 0}, precision: 0}},
+                ],
+            },
+        });
+        expect(scenario.autoRules[1]).toMatchObject({form: null, block: null});
+    });
+
+    it("refuses a rule missing its form or block, or a posting carrying the other kind's number", () => {
+        expect(() => decodeScenario({...base, autoRules: [without(rule, "form")]})).toThrow(ApiShapeError);
+        expect(() => decodeScenario({...base, autoRules: [without(rule, "block")]})).toThrow(ApiShapeError);
+        const crossed = {...form, postings: [{...form.postings[0], kind: "fixed"}]};
+        expect(() => decodeScenario({...base, autoRules: [{...rule, form: crossed}]})).toThrow(ApiShapeError);
+        expect(() => decodeScenario({...base, autoRules: [{...rule, form: {...form, postings: [{...form.postings[0], kind: "share"}]}}]})).toThrow(
+            ApiShapeError
+        );
+    });
+});
+
 describe("UNIT nativeDecode — the projection seed over its golden", () => {
     const raw = golden("projections-seed");
 

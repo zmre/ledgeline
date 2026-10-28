@@ -1,0 +1,51 @@
+; Ledgeline projection
+; projection: Parity rule editor
+; created: 2026-10-28
+; updated: 2026-10-28
+
+; Plan 30 Phase 4: `= QUERY` rules exactly as the rule editor writes them
+; (auto_form::render) — anchored subtree queries, forecast-only, and an
+; explicit opposite multiplier on the counter-account instead of an
+; amountless posting. The payroll block holds TWO people, so each rule fires
+; twice in one transaction: hledger refuses that with an amountless leg and
+; reads it fine in this form.
+
+account revenue:sales                                    ; type: R
+account expenses:people-costs:wages-salaries             ; type: X
+account expenses:people-costs:wages-salaries:george      ; type: X
+account expenses:people-costs:wages-salaries:john        ; type: X
+account expenses:people-costs:payroll-tax                ; type: X
+account expenses:people-costs:employer-tax               ; type: X
+account expenses:people-costs:sales-commission:residual  ; type: X
+account expenses:bank-fees                               ; type: X
+account liabilities:payroll-tax-payable                  ; type: L
+account assets:mercury:checking                          ; type: C
+
+= ^expenses:people-costs:wages-salaries(:|$) tag:_generated-transaction  ; payroll tax
+    expenses:people-costs:payroll-tax  *0.1
+    assets:mercury:checking            *-0.1
+
+= ^expenses:people-costs:wages-salaries(:|$) tag:_generated-transaction
+    liabilities:payroll-tax-payable     *-0.0765
+    expenses:people-costs:employer-tax  *0.0765
+
+= ^revenue:sales(:|$) tag:_generated-transaction  ; sales commission
+    expenses:people-costs:sales-commission:residual  *-0.03
+    assets:mercury:checking                          *0.03
+
+= ^revenue:sales(:|$) tag:_generated-transaction amt:>1000
+    expenses:bank-fees       $25
+    assets:mercury:checking  $-25
+
+~ monthly  payroll
+    expenses:people-costs:wages-salaries:george   $6000.00
+    expenses:people-costs:wages-salaries:john     $5000.00
+    assets:mercury:checking
+
+~ every 1st Apr from 2027  Lucid Software
+    revenue:sales            $-40000.00
+    assets:mercury:checking
+
+~ monthly from 2027-02  subscriptions
+    revenue:sales               $-900.00
+    assets:mercury:checking

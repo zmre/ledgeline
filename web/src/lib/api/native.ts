@@ -4,6 +4,7 @@
 // Ledgeline engine (no native routes) from one that is unreachable. The SPA
 // requires the native API; there is no plain-hledger-web fallback.
 
+import type {WireAutoRuleFormIn} from "#lib/autoRules/ruleForm.js";
 import type {BudgetPeriod} from "#lib/budget/types.js";
 import {ApiUnreachableError, authHeaders, REQUEST_TIMEOUT_MS, withDeadline} from "./client";
 
@@ -764,8 +765,12 @@ export interface WireScenarioIn {
     events: WireScenarioEventIn[];
     /** `; cash:` — the scenario's default counter-account, or `null`. */
     cash: string | null;
-    /** Each `= QUERY` rule's text, handed back as it came; the engine re-reads it. */
-    autoRules: {raw: string}[];
+    /**
+     * Each `= QUERY` rule with the block it came from: its text handed back as
+     * it came (the engine re-reads it), or — once edited — its form, which the
+     * engine renders. Exactly one of the two.
+     */
+    autoRules: ({block: number | null; raw: string} | {block: number | null; form: WireAutoRuleFormIn})[];
 }
 
 /** The whole `POST /api/projections/run` body. */

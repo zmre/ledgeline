@@ -20,6 +20,7 @@
 
 import type {Dec, MixedAmount} from "#lib/domain/money.js";
 import type {ISODate, Transaction} from "#lib/domain/types.js";
+import type {AutoRuleForm} from "#lib/autoRules/ruleForm.js";
 import type {BalanceSheetColumns, CashFlowStatement, IncomeStatementReport, PeriodReport} from "#lib/reports/types.js";
 
 /** The unit a growth rate steps on. */
@@ -220,18 +221,31 @@ export interface Scenario {
     events: ScenarioEvent[];
     /** `; cash:` — the scenario's default counter-account, or `null`. */
     cash: string | null;
-    /** The scenario file's `= QUERY` auto-posting rules, applied to every projected transaction (plan 30). Carried, never edited here yet. */
+    /** The scenario file's `= QUERY` auto-posting rules, applied to every projected transaction (plan 30). */
     autoRules: AutoRule[];
 }
 
-/** One `= QUERY` auto-posting rule. `raw` is the fact the engine reads back; the rest is derived for display. */
+/**
+ * One `= QUERY` auto-posting rule.
+ *
+ * `raw` is the fact for a rule nobody has touched: it goes back as it came, so
+ * the file keeps its bytes. Once `edited`, the FORM is what is sent, and the
+ * engine renders it. `form` is `null` for a rule the editor cannot state —
+ * shown raw and locked (plan 21's contract).
+ */
 export interface AutoRule {
-    /** The whole block as the file writes it, each line ending in a newline. */
+    /** The whole block as the file writes it, each line ending in a newline. Empty for a rule added here. */
     raw: string;
     /** The query, as written. */
     query: string;
     /** Why the rule never fires, or `null` when it does. */
     unsupported: string | null;
+    /** The rule as a form, or `null` when the form cannot state it. */
+    form: AutoRuleForm | null;
+    /** Its position among the file's `=` blocks, or `null` for a rule the file does not hold yet. A save rewrites that block. */
+    block: number | null;
+    /** UI-only: the form was edited (or the rule added) here, so the form, not `raw`, is sent. Never on the wire. */
+    edited?: boolean;
 }
 
 /** An opening balance and each bucket's closing balance. `opening` is a real figure from the journal. */

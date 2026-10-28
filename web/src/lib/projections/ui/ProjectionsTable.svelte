@@ -131,6 +131,7 @@
     import {
         accountOrNull,
         blankAssetLine,
+        blankAutoRule,
         blankEvent,
         blankLine,
         boundsLockedReason,
@@ -152,6 +153,7 @@
         removeSegment,
         resolvedSection,
         rowNames,
+        ruleSample,
         ruleSize,
         sectionOfLine,
         sectionPrefix,
@@ -172,6 +174,7 @@
         SCENARIO_INTERVALS,
         type AddSection,
         type AssetRow,
+        type AutoRule,
         type ForecastDefaults,
         type GrowthUnit,
         type HeldSection,
@@ -180,6 +183,7 @@
         type ScenarioEvent,
         type ScenarioLine,
     } from "../types";
+    import AutoRuleEditor from "#lib/autoRules/AutoRuleEditor.svelte";
     import NoteButton from "./NoteButton.svelte";
     import RowMenu from "./RowMenu.svelte";
 
@@ -607,6 +611,35 @@
     }
 
     /** "Move up" / "Move down" — each only where there is somewhere to go. */
+    // --- Automatic postings (plan 30) ------------------------------------------
+
+    /** An edit to a rule's form: from now on the form, not the text it was read as, is what a save sends. */
+    function editRule(rule: AutoRule): void {
+        rule.edited = true;
+        onChange();
+    }
+
+    /** A new rule at the end — hledger applies rules in order, and a new one usually comes last. Balanced against the scenario's cash account. */
+    function addRule(): void {
+        scenario.autoRules.push(blankAutoRule(scenario.cash ?? defaults?.cash ?? null));
+        onChange();
+    }
+
+    function dropRule(at: number): void {
+        scenario.autoRules.splice(at, 1);
+        onChange();
+    }
+
+    /** Order is meaning here: a later rule sees the postings an earlier one added. */
+    function shiftRule(at: number, delta: -1 | 1): void {
+        const to = at + delta;
+        if (to < 0 || to >= scenario.autoRules.length) return;
+        const [rule] = scenario.autoRules.splice(at, 1);
+        if (rule === undefined) return;
+        scenario.autoRules.splice(to, 0, rule);
+        onChange();
+    }
+
     function moveItems(at: number, count: number, onMove: (delta: -1 | 1) => void): {label: string; onSelect: () => void}[] {
         return [
             ...(at > 0 ? [{label: "Move up", onSelect: () => onMove(-1)}] : []),
@@ -1222,39 +1255,76 @@
         {/if}
     </section>
 
-    <!-- The scenario file's `= QUERY` rules (plan 30): applied to every
-         projected transaction, always. Listed read-only until the rule editor
-         lands; edit them in the file. Shown only when the file has some. -->
-    {#if scenario.autoRules.length > 0}
-        <section class="flex flex-col gap-1" data-testid="projection-section-auto">
+    <!-- The scenario's `= QUERY` rules (plan 30): applied to every projected
+         transaction they match, always. A rule the editor can state is a form
+         (`AutoRuleEditor`); one it cannot — a virtual posting, `expr:`, a
+         re-denominating multiplier — is shown as its text, locked, and still
+         carried and still applied (plan 21's contract). An edit marks the rule
+         `edited`, which makes the save send its FORM for the engine to render;
+         an untouched rule goes back as its text, so its bytes never move. -->
+    <section class="flex flex-col gap-1" data-testid="projection-section-auto">
+        <div class="flex items-center justify-between">
             <h2 class="text-sm font-semibold">
                 Automatic postings
-                <span class="ml-1 font-normal text-base-content/50">
-                    Rules from the scenario file, applied to every projected transaction they match. Edit them in the file.
-                </span>
+                <span class="ml-1 font-normal text-base-content/50"> A share of a projected amount, posted alongside it: sales commission, payroll tax. </span>
             </h2>
+            <button type="button" class="btn btn-ghost btn-xs" onclick={addRule}>+ Add a rule</button>
+        </div>
+        {#if scenario.autoRules.length === 0}
+            <p class="py-2 text-sm text-base-content/60">Nothing here yet. A 3% commission on every sale, 10% payroll tax on wages.</p>
+        {:else}
             <ul class="flex flex-col gap-2">
                 {#each scenario.autoRules as rule, at (at)}
+                    {@const ruleLabel = `rule ${at + 1}`}
                     <li class="rounded-box border border-base-content/10 px-3 py-2" data-testid="projection-auto-rule">
                         <div class="flex flex-wrap items-center gap-2 text-xs">
-                            <span class="font-mono">= {rule.query}</span>
-                            {#if rule.unsupported !== null}
-                                <span class="badge badge-xs badge-warning" title={rule.unsupported}>🔒 never fires</span>
-                            {:else if !rule.query.includes("generated-transaction")}
+                            <span class="font-semibold">Rule {at + 1}</span>
+                            {#if rule.form === null}
+                                <span class="font-mono">= {rule.query}</span>
+                                <span
+                                    class="badge badge-xs badge-warning"
+                                    title="This rule says something the editor cannot show as a form. It is kept, applied and saved exactly as written; edit it in the file."
+                                    >🔒 {rule.unsupported === null ? "edit in the file" : "never fires"}</span
+                                >
+                            {/if}
+                            {#if !rule.edited && rule.unsupported === null && !rule.query.includes("generated-transaction")}
                                 <span
                                     class="badge badge-ghost badge-xs"
                                     title="Applied here to projected transactions only. Stock `hledger --auto` would also apply it to recorded ones; add tag:_generated-transaction to its query to make the file say so."
                                     >projections only here</span
                                 >
+                                {#if rule.form !== null}
+                                    <button type="button" class="btn btn-ghost btn-xs" onclick={() => editRule(rule)}>Limit to forecasts in the file</button>
+                                {/if}
                             {/if}
+                            <span class="grow"></span>
+                            <RowMenu
+                                label="Row menu for {ruleLabel}"
+                                items={[
+                                    ...moveItems(at, scenario.autoRules.length, (delta) => shiftRule(at, delta)),
+                                    {label: "Delete rule", onSelect: () => dropRule(at), danger: true},
+                                ]}
+                            />
                         </div>
-                        {#if rule.unsupported !== null}
-                            <p class="text-xs text-warning">{rule.unsupported}, so it generates nothing.</p>
+                        {#if rule.form !== null}
+                            <AutoRuleEditor
+                                form={rule.form}
+                                {accountNames}
+                                name={ruleLabel}
+                                {commodity}
+                                sample={ruleSample(scenario, rule.form.matchAccount)}
+                                {styles}
+                                onChange={() => editRule(rule)}
+                            />
+                        {:else}
+                            {#if rule.unsupported !== null}
+                                <p class="text-xs text-warning">{rule.unsupported}, so it generates nothing.</p>
+                            {/if}
+                            <pre class="mt-1 overflow-x-auto font-mono text-xs text-base-content/70">{rule.raw.trimEnd()}</pre>
                         {/if}
-                        <pre class="mt-1 overflow-x-auto font-mono text-xs text-base-content/70">{rule.raw.trimEnd()}</pre>
                     </li>
                 {/each}
             </ul>
-        </section>
-    {/if}
+        {/if}
+    </section>
 </div>

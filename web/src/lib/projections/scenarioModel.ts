@@ -29,13 +29,15 @@
 import {encodeDec} from "#lib/api/editMapping.js";
 import type {RunProjectionBody, WireScenarioIn} from "#lib/api/native.js";
 import {absDec} from "#lib/format/amounts.js";
-import {cmp, type Dec} from "#lib/domain/money.js";
+import {cmp, isZero, type Dec} from "#lib/domain/money.js";
+import {blankRuleForm, cloneRuleForm, ruleFormComplete, ruleFormToWire, type AutoRuleForm, type RuleAmount} from "#lib/autoRules/ruleForm.js";
 import {isAccountType, type AccountClasses, type AccountType} from "#lib/domain/accountClass.js";
 import type {ISODate} from "#lib/domain/types.js";
 import {isIsoDate as isIsoDateExact} from "#lib/url/params.js";
 import type {
     AccountsRequest,
     AddSection,
+    AutoRule,
     Growth,
     HeldSection,
     LineSection,
@@ -852,7 +854,7 @@ export function cloneScenario(scenario: Scenario): Scenario {
             postings: event.postings.map((posting) => ({account: posting.account, amount: cloneAmount(posting.amount)})),
         })),
         cash: scenario.cash,
-        autoRules: scenario.autoRules.map((rule) => ({...rule})),
+        autoRules: scenario.autoRules.map((rule) => ({...rule, form: rule.form === null ? null : cloneRuleForm(rule.form)})),
     };
 }
 
@@ -908,9 +910,43 @@ export function scenarioToWire(scenario: Scenario): WireScenarioIn {
             counter: accountOrNull(event.counter),
         })),
         cash: accountOrNull(scenario.cash),
-        // Read-only here: the text goes back exactly as the engine sent it.
-        autoRules: scenario.autoRules.map((rule) => ({raw: rule.raw})),
+        // An untouched rule's text goes back exactly as the engine sent it, so
+        // the file keeps its bytes; an edited one goes as its form.
+        autoRules: scenario.autoRules.map((rule) =>
+            sendsForm(rule) ? {block: rule.block, form: ruleFormToWire(rule.form)} : {block: rule.block, raw: rule.raw}
+        ),
     };
+}
+
+/** Whether `rule` travels as its form: edited (or added) here, and expressible as one. */
+function sendsForm(rule: AutoRule): rule is AutoRule & {form: AutoRuleForm} {
+    return rule.form !== null && (rule.edited === true || rule.raw === "");
+}
+
+/**
+ * A new, empty rule, balanced against `counter` (the scenario's cash account
+ * by default, as every other counter-account here is).
+ */
+export function blankAutoRule(counter: string | null): AutoRule {
+    return {raw: "", query: "", unsupported: null, form: blankRuleForm(counter), block: null, edited: true};
+}
+
+/**
+ * A typical amount posted to `account` or under it by the scenario — the first
+ * flow line's, else the first event posting's — for a rule's preview. `null`
+ * when the scenario posts nothing there.
+ */
+export function ruleSample(scenario: Scenario, account: string): RuleAmount | null {
+    const match = account.trim();
+    if (match === "") return null;
+    const under = (name: string): boolean => name === match || name.startsWith(`${match}:`);
+    const line = scenario.lines.find((candidate) => candidate.role === "flow" && under(candidate.account) && !isZero(candidate.amount.quantity));
+    if (line !== undefined) return line.amount;
+    for (const event of scenario.events) {
+        const posting = event.postings.find((candidate) => under(candidate.account) && !isZero(candidate.amount.quantity));
+        if (posting !== undefined) return posting.amount;
+    }
+    return null;
 }
 
 /**
@@ -924,6 +960,8 @@ export function scenarioToWire(scenario: Scenario): WireScenarioIn {
 export function projectable(scenario: Scenario): Scenario {
     return {
         ...scenario,
+        // A rule still being typed is left out, as a line with no account is.
+        autoRules: scenario.autoRules.filter((rule) => !sendsForm(rule) || ruleFormComplete(rule.form)),
         lines: scenario.lines.filter((line) => line.account.trim() !== ""),
         events: scenario.events
             .filter((event) => isIsoDate(event.date))

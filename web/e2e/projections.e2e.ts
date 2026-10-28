@@ -90,6 +90,37 @@ test("projections: the Assets and balances section is there, empty, on a seeded 
     await expect(page.getByTestId("projection-asset-line")).toHaveCount(0);
 });
 
+// UNVERIFIED: written against the markup, never executed — Playwright cannot
+// run beside the other agents this was added alongside (plan 30 Phase 4).
+// Read-only like the rest of this file: a rule added in the table makes the
+// scenario dirty and re-runs it; nothing is saved. No figure is asserted.
+test("projections: an automatic posting rule is added and edited as a form", async ({page}) => {
+    await page.goto("/projections");
+    await expect(page.getByTestId("projection-cash")).toBeVisible();
+
+    const section = page.getByTestId("projection-section-auto");
+    await expect(section).toContainText("Nothing here yet");
+    await section.getByRole("button", {name: "+ Add a rule"}).click();
+    await expect(section.getByTestId("projection-auto-rule")).toHaveCount(1);
+    await expect(section.getByText("forecasts only")).toBeVisible();
+
+    await page.getByLabel("Matched account for rule 1").fill("income:salary");
+    await page.getByLabel("Matched account for rule 1").press("Enter");
+    await page.getByLabel("Account for posting 1 of rule 1").fill("expenses:taxes");
+    await page.getByLabel("Account for posting 1 of rule 1").press("Enter");
+    await page.getByLabel("Percent for posting 1 of rule 1").fill("10");
+    await page.getByLabel("Percent for posting 1 of rule 1").blur();
+
+    // The preview reads the seeded salary line; the projection re-runs with the
+    // rule and still renders.
+    await expect(section.getByTestId("auto-rule-preview")).toContainText("to expenses:taxes on each");
+    await expect(page.getByTestId("projection-runway")).toBeVisible();
+
+    await section.getByLabel("Row menu for rule 1").click();
+    await page.getByTestId("row-menu").getByRole("menuitem", {name: "Delete rule"}).click();
+    await expect(section.getByTestId("projection-auto-rule")).toHaveCount(0);
+});
+
 // UNVERIFIED, as above.
 test("projections: adding an asset row shows the ledger's own balance, greyed", async ({page}) => {
     await page.goto("/projections");

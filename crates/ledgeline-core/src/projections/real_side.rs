@@ -112,6 +112,14 @@ impl JournalFacts {
         })
     }
 
+    /// Every declared account and every account a real transaction posts to —
+    /// what a scenario rule's accounts are checked against (plan 30
+    /// Decision 11).
+    #[must_use]
+    pub fn known_accounts(&self) -> &BTreeSet<String> {
+        &self.known
+    }
+
     /// The journal's statement declarations ([`StatementShape::of`]).
     #[must_use]
     pub fn shape(&self) -> &StatementShape {
