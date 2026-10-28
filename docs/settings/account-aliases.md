@@ -87,7 +87,7 @@ Because Ledgeline passes your aliases to hledger and a plain `hledger import` in
 
 The fix is an `hledger.conf` file beside your journal. hledger reads `--alias` options from that file on every command, including `import`. The notice shows the exact lines it would add, and a button installs them. The button reads "Create hledger.conf beside your journal" when there is no config yet, or "Add these to …" when there is one. Ledgeline:
 
-- only writes `hledger.conf` in your journal's own directory. It never writes the one in your home directory or the XDG config directory
+- only writes `hledger.conf` in your journal's own directory. This button never writes the one in your home directory or the XDG config directory. [Settings → hledger config](hledger-config.md) edits whichever file is in force, wherever it is
 - adds the lines to the file's general section, before any `[command]` section, so they apply to every command
 - warns you when a config above your journal's directory is in force. hledger uses only the nearest file, so a new one beside your journal will stop the outer one from applying
 - refuses when something at `hledger.conf` is not an ordinary file
