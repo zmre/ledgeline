@@ -22,7 +22,7 @@ use ledgeline_core::model::{
 };
 use ledgeline_core::parse::parse_period_spec;
 use ledgeline_core::projections::serialize::{
-    ProjectionDoc, new_file, scenario_from_text, write_scenario,
+    ProjectionDoc, new_file, scenario_from_text, scenario_from_text_with_styles, write_scenario,
 };
 use ledgeline_core::projections::{
     CounterDefaults, Forecast, ForecastOpts, ForecastOrigin, ForecastWindow, GENERATED_TAG,
@@ -562,6 +562,117 @@ fn a_save_keeps_every_auto_posting_rule_byte_for_byte() {
         assert!(after.contains(rule), "lost {rule:?} from:\n{after}");
     }
     assert!(after.contains("$9500.00"), "the edit landed:\n{after}");
+}
+
+/// The main journal's declared commodity styles, as the server hands them to
+/// a scenario: here `commodity $1,000.00`.
+fn main_styles() -> Vec<(
+    ledgeline_core::model::Commodity,
+    ledgeline_core::model::AmountStyle,
+)> {
+    parse_journal("commodity $1,000.00\n", "main.journal")
+        .expect("parses")
+        .commodity_styles
+}
+
+/// A scenario line typed by hand as `$11,344`.
+const HAND_TYPED: &str = concat!(
+    "; Ledgeline projection\n",
+    "; projection: Plan\n",
+    "\n",
+    "~ monthly  payroll\n",
+    "    expenses:payroll      $11,344\n",
+    "    assets:checking\n",
+);
+
+/// 2026-10-28: `$11,344` in a projection file read as $11.344. A lone comma
+/// before three digits is a decimal mark to hledger in a file that declares
+/// no style for `$` (verified: `hledger -f scenario` and even
+/// `hledger -f main -f scenario` read 11.344 — sibling files lend no
+/// directives — while `include main.journal` reads 11,344). The scenario is
+/// read the way the user means it, the `include` way: under the main
+/// journal's `commodity $1,000.00`.
+#[test]
+fn a_scenario_reads_its_amounts_under_the_main_journal_s_commodity_styles() {
+    let amount = |text: &str, inherited: &[_]| {
+        scenario_from_text_with_styles(text, "s.journal", "plan", &declared(), inherited)
+            .expect("reads")
+            .lines[0]
+            .amount
+            .quantity
+    };
+    assert_eq!(amount(HAND_TYPED, &main_styles()), Dec::new(11_344, 0));
+    // Alone, it is hledger's reading of the file by itself.
+    assert_eq!(amount(HAND_TYPED, &[]), Dec::new(11_344, 3));
+    // The scenario's own declaration wins over the main journal's.
+    let european = HAND_TYPED.replace(
+        "; projection: Plan\n",
+        "; projection: Plan\n\ncommodity $1.000,00\n",
+    );
+    assert_eq!(amount(&european, &main_styles()), Dec::new(11_344, 3));
+    // And so does its own `decimal-mark`.
+    let marked = HAND_TYPED.replace(
+        "; projection: Plan\n",
+        "; projection: Plan\n\ndecimal-mark ,\n",
+    );
+    assert_eq!(amount(&marked, &main_styles()), Dec::new(11_344, 3));
+}
+
+/// A save declares the main journal's style in the scenario file for every
+/// commodity it uses and does not declare — once — so stock hledger reads the
+/// file as Ledgeline does in every mode, `-f main -f scenario` included.
+#[test]
+fn a_save_declares_the_main_journal_s_commodity_style_once() {
+    let scratch = Scratch::new("commodity-styles");
+    let path = scratch.write("projection-plan.journal", HAND_TYPED);
+    let name = path.to_string_lossy().to_string();
+    let styles = main_styles();
+
+    let doc =
+        ProjectionDoc::parse_with_styles(HAND_TYPED, &name, &declared(), &styles).expect("parses");
+    let scenario = scenario_from_text_with_styles(HAND_TYPED, &name, "plan", &declared(), &styles)
+        .expect("reads");
+    let saved = write_scenario(&doc, &scenario, &name).expect("writes");
+    assert_eq!(saved.matches("commodity $1,000.00\n").count(), 1, "{saved}");
+    // The hand-typed line is untouched: the block did not change.
+    assert!(
+        saved.contains("    expenses:payroll      $11,344\n"),
+        "{saved}"
+    );
+
+    // A second save over the saved text changes nothing.
+    let doc =
+        ProjectionDoc::parse_with_styles(&saved, &name, &declared(), &styles).expect("parses");
+    let again =
+        scenario_from_text_with_styles(&saved, &name, "plan", &declared(), &styles).expect("reads");
+    assert_eq!(write_scenario(&doc, &again, &name).expect("writes"), saved);
+    // And the saved file means $11,344 even read on its own.
+    assert_eq!(
+        scenario_from_text(&saved, &name, "plan", &declared())
+            .expect("reads")
+            .lines[0]
+            .amount
+            .quantity,
+        Dec::new(11_344, 0)
+    );
+
+    // hledger agrees, in the documented `-f main -f scenario` mode.
+    std::fs::write(&path, &saved).expect("write");
+    let main = scratch.write("main.journal", "commodity $1,000.00\n");
+    if let Some(output) = hledger(&[
+        "-f",
+        &main.to_string_lossy(),
+        "-f",
+        &path.to_string_lossy(),
+        "bal",
+        "expenses",
+        "--forecast=2027-01-01..2027-02-01",
+        "-O",
+        "csv",
+    ]) {
+        let csv = String::from_utf8_lossy(&output.stdout);
+        assert!(csv.contains("\"expenses:payroll\",\"$11344.00\""), "{csv}");
+    }
 }
 
 #[test]

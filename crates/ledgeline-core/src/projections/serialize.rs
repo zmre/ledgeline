@@ -165,7 +165,33 @@ pub fn scenario_from_text(
     fallback_name: &str,
     declared: &BTreeMap<String, crate::reports::account_types::AccountType>,
 ) -> Result<Scenario, SerializeError> {
-    read_scenario(text, source_name, fallback_name, declared).map(|(scenario, _)| scenario)
+    scenario_from_text_with_styles(text, source_name, fallback_name, declared, &[])
+}
+
+/// [`scenario_from_text`], reading amounts under the main journal's declared
+/// commodity styles (see [`parse::parse_journal_with_styles`]): `$11,344` in a
+/// scenario is eleven thousand dollars when the main journal declares
+/// `commodity $1,000.00`, as it would be were the scenario `include`d.
+///
+/// # Errors
+/// As [`scenario_from_text`].
+pub fn scenario_from_text_with_styles(
+    text: &str,
+    source_name: &str,
+    fallback_name: &str,
+    declared: &BTreeMap<String, crate::reports::account_types::AccountType>,
+    inherited: &[(crate::model::Commodity, crate::model::AmountStyle)],
+) -> Result<Scenario, SerializeError> {
+    read_scenario(text, source_name, fallback_name, declared, inherited).map(|read| read.scenario)
+}
+
+/// What [`read_scenario`] learns from a file.
+struct Read {
+    scenario: Scenario,
+    /// Every account the file itself declares.
+    own_accounts: BTreeSet<String>,
+    /// Every commodity the file itself declares a style for.
+    own_commodities: BTreeSet<String>,
 }
 
 /// [`scenario_from_text`], plus every account the text itself declares — what
@@ -175,8 +201,9 @@ fn read_scenario(
     source_name: &str,
     fallback_name: &str,
     declared: &BTreeMap<String, crate::reports::account_types::AccountType>,
-) -> Result<(Scenario, BTreeSet<String>), SerializeError> {
-    let journal = parse::parse_journal(text, source_name)
+    inherited: &[(crate::model::Commodity, crate::model::AmountStyle)],
+) -> Result<Read, SerializeError> {
+    let journal = parse::parse_journal_with_styles(text, source_name, inherited)
         .map_err(|error| SerializeError::Unreadable(parse_message(&error)))?;
     // Only the rules this FILE wrote. A journal that includes another would
     // otherwise hand back the includee's rules as rows the save path would then
@@ -224,8 +251,8 @@ fn read_scenario(
         } else {
             journal.auto_rules.iter().filter(mine).cloned().collect()
         };
-    Ok((
-        Scenario {
+    Ok(Read {
+        scenario: Scenario {
             auto_rules,
             ..scenario_from_rules(
                 &rules,
@@ -235,7 +262,12 @@ fn read_scenario(
             )
         },
         own_accounts,
-    ))
+        own_commodities: journal
+            .commodity_styles
+            .iter()
+            .map(|(commodity, _)| commodity.0.clone())
+            .collect(),
+    })
 }
 
 /// Build the model from a file's `~` rules and its header.
@@ -377,6 +409,13 @@ pub struct ProjectionDoc {
     /// Every account the FILE itself declares, so a gains account it already
     /// declares is not declared twice.
     own_accounts: BTreeSet<String>,
+    /// The main journal's declared commodity styles, which this file's amounts
+    /// are read under (see [`scenario_from_text_with_styles`]), and which a
+    /// save declares in the file for every commodity it uses but does not
+    /// declare itself — so `hledger -f main -f this` reads it the same way.
+    inherited: Vec<(crate::model::Commodity, crate::model::AmountStyle)>,
+    /// Every commodity the FILE itself declares.
+    own_commodities: BTreeSet<String>,
 }
 
 impl ProjectionDoc {
@@ -392,13 +431,31 @@ impl ProjectionDoc {
         source_name: &str,
         declared: &BTreeMap<String, crate::reports::account_types::AccountType>,
     ) -> Result<Self, SerializeError> {
+        Self::parse_with_styles(text, source_name, declared, &[])
+    }
+
+    /// [`parse`](Self::parse), under the main journal's declared commodity
+    /// styles (see [`scenario_from_text_with_styles`]).
+    ///
+    /// # Errors
+    /// As [`parse`](Self::parse).
+    pub fn parse_with_styles(
+        text: &str,
+        source_name: &str,
+        declared: &BTreeMap<String, crate::reports::account_types::AccountType>,
+        inherited: &[(crate::model::Commodity, crate::model::AmountStyle)],
+    ) -> Result<Self, SerializeError> {
         let doc = PeriodicDoc::parse(text);
         let blocks: Vec<Range<usize>> = doc
             .blocks()
             .iter()
             .map(|block| block.full.clone())
             .collect();
-        let (scenario, own_accounts) = read_scenario(text, source_name, "", declared)?;
+        let Read {
+            scenario,
+            own_accounts,
+            own_commodities,
+        } = read_scenario(text, source_name, "", declared, inherited)?;
 
         // The blocks this module located, against the rules the journal parser
         // read. When they line up, each block's print is known and an unedited
@@ -422,6 +479,8 @@ impl ProjectionDoc {
             text: text.to_string(),
             declared: declared.clone(),
             own_accounts,
+            inherited: inherited.to_vec(),
+            own_commodities,
         })
     }
 
@@ -436,7 +495,20 @@ impl ProjectionDoc {
             current: Vec::new(),
             declared: declared.clone(),
             own_accounts: BTreeSet::new(),
+            inherited: Vec::new(),
+            own_commodities: BTreeSet::new(),
         }
+    }
+
+    /// This document, reading and declaring under `inherited` — what a create
+    /// needs, since an empty document has nothing of its own to parse.
+    #[must_use]
+    pub fn inheriting(
+        mut self,
+        inherited: &[(crate::model::Commodity, crate::model::AmountStyle)],
+    ) -> Self {
+        self.inherited = inherited.to_vec();
+        self
     }
 
     /// Render `scenario` into this document, rewriting only the header span and
@@ -548,7 +620,8 @@ impl ProjectionDoc {
         // (Decision 4), so hledger and Ledgeline classify them alike without
         // the main journal being touched. Set off by a blank line so the next
         // read's header span ends before them and a re-save is byte-identical.
-        let declarations = self.gains_declarations(scenario)?;
+        let mut declarations = self.commodity_declarations(scenario);
+        declarations.extend(self.gains_declarations(scenario)?);
         if !declarations.is_empty() {
             out.push_str(nl);
             for declaration in declarations {
@@ -564,6 +637,39 @@ impl ProjectionDoc {
             out.push_str(nl);
         }
         Ok(out)
+    }
+
+    /// `commodity $1,000.00` for each commodity the scenario's amounts use that
+    /// the main journal declares and this file does not: hledger lends no
+    /// directive across sibling `-f` files, so without it `hledger -f main -f
+    /// this` would read a hand-typed `$11,344` as 11.344 (verified, 1.52).
+    fn commodity_declarations(&self, scenario: &Scenario) -> Vec<String> {
+        let used: BTreeSet<&str> = scenario
+            .lines
+            .iter()
+            .flat_map(|line| std::iter::once(&line.amount).chain(line.opening.as_ref()))
+            .chain(
+                scenario
+                    .events
+                    .iter()
+                    .flat_map(|event| event.postings.iter().flat_map(|posting| &posting.amounts)),
+            )
+            .map(|amount| amount.commodity.0.as_str())
+            .filter(|commodity| !commodity.is_empty())
+            .collect();
+        self.inherited
+            .iter()
+            .filter(|(commodity, _)| {
+                used.contains(commodity.0.as_str()) && !self.own_commodities.contains(&commodity.0)
+            })
+            .map(|(commodity, style)| {
+                let thousand = Dec::new(1000 * 10_i128.pow(style.precision), style.precision);
+                format!(
+                    "commodity {}",
+                    crate::display::format_amount(&commodity.0, thousand, style, style.precision)
+                )
+            })
+            .collect()
     }
 
     /// `account NAME  ; type: X` for each gains account an asset row books
@@ -1515,7 +1621,8 @@ fn confirm_round_trip(
 ) -> Result<(), SerializeError> {
     let values = line_tag_values(scenario);
     let want = prints(scenario, &Tags::Assigned(&values))?;
-    let written = scenario_from_text(text, source_name, "", &doc.declared)?;
+    let written =
+        scenario_from_text_with_styles(text, source_name, "", &doc.declared, &doc.inherited)?;
     // What the FILE states, read back with nothing assigned: a row whose tag
     // was written reads back with that tag as its id, and one with none reads
     // back with the id its position derives.
@@ -1563,7 +1670,25 @@ pub fn new_file(
     source_name: &str,
     declared: &BTreeMap<String, crate::reports::account_types::AccountType>,
 ) -> Result<String, SerializeError> {
-    write_scenario(&ProjectionDoc::empty(declared), scenario, source_name)
+    new_file_with_styles(scenario, source_name, declared, &[])
+}
+
+/// [`new_file`], declaring the main journal's styles for the commodities the
+/// scenario uses (see [`ProjectionDoc::inheriting`]).
+///
+/// # Errors
+/// As [`new_file`].
+pub fn new_file_with_styles(
+    scenario: &Scenario,
+    source_name: &str,
+    declared: &BTreeMap<String, crate::reports::account_types::AccountType>,
+    inherited: &[(crate::model::Commodity, crate::model::AmountStyle)],
+) -> Result<String, SerializeError> {
+    write_scenario(
+        &ProjectionDoc::empty(declared).inheriting(inherited),
+        scenario,
+        source_name,
+    )
 }
 
 #[cfg(test)]

@@ -171,6 +171,11 @@ struct AmountCtx<'a> {
     styles: &'a Styles,
     default_mark: Option<char>,
     default_commodity: Option<&'a (Commodity, AmountStyle)>,
+    /// Styles declared OUTSIDE this text — a projection scenario reads its
+    /// main journal's `commodity` directives through this — consulted only
+    /// after the text's own declarations and only when it sets no
+    /// `decimal-mark` of its own. See [`parse_journal_with_styles`].
+    inherited: &'a Styles,
 }
 
 /// Mutable accumulators shared across the top-level file and any `include`d
@@ -190,6 +195,8 @@ struct Ctx<'v> {
     /// with exactly the bytes parsed and their [`Revision`].
     sources: Vec<ParsedSource>,
     styles: Styles,
+    /// See [`AmountCtx::inherited`].
+    inherited: Styles,
     default_decimal_mark: Option<char>,
     default_commodity: Option<(Commodity, AmountStyle)>,
     default_year: Option<i32>,
@@ -246,6 +253,7 @@ impl<'v> Ctx<'v> {
             main_key,
             sources: Vec::new(),
             styles: HashMap::new(),
+            inherited: HashMap::new(),
             default_decimal_mark: None,
             default_commodity: None,
             default_year: None,
@@ -446,6 +454,32 @@ pub fn parse_journal(text: &str, source_name: &str) -> Result<Journal, ParseErro
     Ok(ctx.into_journal(source_name))
 }
 
+/// [`parse_journal`], with `inherited` commodity styles in force as though a
+/// file that included this one had declared them first.
+///
+/// What a projection scenario needs from its main journal: hledger reads
+/// `$11,344` as 11.344 in a file with no `commodity $1,000.00` of its own
+/// (a lone comma followed by three digits is a decimal mark to it), and a
+/// sibling `-f main.journal` does NOT lend its directives. Read as the user
+/// means it — the way `include main.journal` would — a scenario's amounts
+/// follow the main journal's declared styles. The scenario's own `commodity`
+/// and `decimal-mark` directives still win. Verified against hledger 1.52,
+/// 2026-10-28.
+///
+/// # Errors
+/// As [`parse_journal`].
+pub fn parse_journal_with_styles(
+    text: &str,
+    source_name: &str,
+    inherited: &[(Commodity, AmountStyle)],
+) -> Result<Journal, ParseError> {
+    let (vault, main) = vault_for_source_name(source_name);
+    let mut ctx = Ctx::new(&*vault, &main, resolve_source_file(source_name), None);
+    ctx.inherited = inherited.iter().cloned().collect();
+    parse_source(text, source_name, &main, &mut ctx)?;
+    Ok(ctx.into_journal(source_name))
+}
+
 /// Parse the journal rooted at `main_source_name`, resolving `include`s from an
 /// in-memory `overrides` map before falling back to disk.
 ///
@@ -552,6 +586,7 @@ fn parse_source(
                 styles: &ctx.styles,
                 default_mark: ctx.default_decimal_mark,
                 default_commodity: ctx.default_commodity.as_ref(),
+                inherited: &ctx.inherited,
             };
             let (txn, next) = parse_transaction(
                 &lines,
@@ -606,6 +641,7 @@ fn parse_source(
                     styles: &ctx.styles,
                     default_mark: ctx.default_decimal_mark,
                     default_commodity: ctx.default_commodity.as_ref(),
+                    inherited: &ctx.inherited,
                 };
                 let price = parse_price_directive(trimmed, amt, ctx.default_year, &source_file)
                     .map_err(|e| locate(source_name, line_no, line, e))?;
@@ -697,6 +733,7 @@ fn parse_source(
                     styles: &ctx.styles,
                     default_mark: ctx.default_decimal_mark,
                     default_commodity: ctx.default_commodity.as_ref(),
+                    inherited: &ctx.inherited,
                 };
                 let (periodic, next) = parse_periodic_transaction(
                     &lines,
@@ -719,6 +756,7 @@ fn parse_source(
                     styles: &ctx.styles,
                     default_mark: ctx.default_decimal_mark,
                     default_commodity: ctx.default_commodity.as_ref(),
+                    inherited: &ctx.inherited,
                 };
                 let (rule, next) = parse_auto_rule(&lines, i, amt, source_name, &source_file)?;
                 ctx.auto_rules.push(rule);
@@ -2818,7 +2856,15 @@ fn parse_amount(token: &str, amt: AmountCtx) -> Result<Amount, ParseError> {
     }
 
     let commodity = Commodity(symbol);
-    let canonical = amt.styles.get(&commodity);
+    // The text's own declaration first; then one inherited from outside it,
+    // unless the text set its own `decimal-mark` (which then outranks a style
+    // it never saw).
+    let canonical = amt.styles.get(&commodity).or_else(|| {
+        amt.default_mark
+            .is_none()
+            .then(|| amt.inherited.get(&commodity))
+            .flatten()
+    });
     // Infer the literal's own mark/groups first: it is both the last resort for
     // the decimal mark and (for an undeclared commodity) the display style.
     // PARSE-3 — this inference used to be computed only for the style and then
@@ -3823,6 +3869,7 @@ mod tests {
             styles,
             default_mark: None,
             default_commodity: None,
+            inherited: Box::leak(Box::default()),
         }
     }
 

@@ -46,7 +46,8 @@ use ledgeline_core::model::{
 };
 use ledgeline_core::parse::parse_period_spec;
 use ledgeline_core::projections::serialize::{
-    ProjectionDoc, SerializeError, new_file, scenario_from_text, write_scenario,
+    ProjectionDoc, SerializeError, new_file_with_styles, scenario_from_text_with_styles,
+    write_scenario,
 };
 use ledgeline_core::projections::{
     AccountsOpts, AssetRow, BalanceSeries, CounterDefaults, CreateRefusal, DEFAULT_LOOKBACK,
@@ -1786,13 +1787,16 @@ fn open_file(
     id: &str,
     writable: bool,
     declared: &BTreeMap<String, AccountType>,
+    // The main journal's declared commodity styles: a scenario's amounts are
+    // read under them (`$11,344` is eleven thousand under `commodity $1,000.00`).
+    inherited: &[(Commodity, AmountStyle)],
 ) -> Result<WireScenarioFile, AppError> {
     let (text, fingerprint) = read_file(found.path(), id)?;
     let name = found.path().as_path().to_string_lossy().to_string();
     // The FALLBACK display name is the filename's label, so a file with no
     // `; projection:` marker still opens with a name — "a file without it still
     // loads, and takes its name from its filename".
-    let scenario = scenario_from_text(&text, &name, &found.label, declared)
+    let scenario = scenario_from_text_with_styles(&text, &name, &found.label, declared, inherited)
         .map_err(|error| unreadable_file(id, &error))?;
     Ok(WireScenarioFile {
         id: id.to_string(),
@@ -1831,6 +1835,9 @@ fn create_scenario(
     id: &str,
     scenario: &Scenario,
     declared: &BTreeMap<String, AccountType>,
+    // The main journal's declared commodity styles: a scenario's amounts are
+    // read under them (`$11,344` is eleven thousand under `commodity $1,000.00`).
+    inherited: &[(Commodity, AmountStyle)],
 ) -> Result<WireScenarioFile, AppError> {
     // `resolve_new`, since no scan can have found a file that is not there. It
     // is the only place in either crate that joins a caller's string onto the
@@ -1839,7 +1846,8 @@ fn create_scenario(
         .resolve_new(id)
         .map_err(|refusal| create_refused(id, refusal))?;
     let name = path.as_path().to_string_lossy().to_string();
-    let text = new_file(scenario, &name, declared).map_err(|error| serialize_failed(id, &error))?;
+    let text = new_file_with_styles(scenario, &name, declared, inherited)
+        .map_err(|error| serialize_failed(id, &error))?;
 
     // A brand-new file, refusing to touch one that is already there:
     // `Vault::create_new` is `O_CREAT | O_EXCL | O_NOFOLLOW` under a
@@ -1869,7 +1877,7 @@ fn create_scenario(
         })?;
 
     let label = label_for(id);
-    let written = scenario_from_text(&text, &name, &label, declared)
+    let written = scenario_from_text_with_styles(&text, &name, &label, declared, inherited)
         .map_err(|error| serialize_failed(id, &error))?;
     // The revision comes from what we WROTE, never from a re-read: a re-read
     // could pick up somebody else's write and hand this client a token for
@@ -1896,6 +1904,9 @@ fn update_scenario(
     revision: &str,
     scenario: &Scenario,
     declared: &BTreeMap<String, AccountType>,
+    // The main journal's declared commodity styles: a scenario's amounts are
+    // read under them (`$11,344` is eleven thousand under `commodity $1,000.00`).
+    inherited: &[(Commodity, AmountStyle)],
 ) -> Result<WireScenarioFile, AppError> {
     // Security layer 2: a set scanned in THIS request, matched by exact string
     // equality. `root.join(id)` is unreachable from here.
@@ -1920,7 +1931,7 @@ fn update_scenario(
         return Err(stale(id));
     }
 
-    let doc = ProjectionDoc::parse(&text, &name, declared)
+    let doc = ProjectionDoc::parse_with_styles(&text, &name, declared, inherited)
         .map_err(|error| serialize_failed(id, &error))?;
     // The engine's own second opinion: splice, re-parse the whole result as a
     // journal, and require the scenario to read back as the numbers asked for.
@@ -1940,8 +1951,9 @@ fn update_scenario(
         // the more honest answer: the revision returned is the one that was
         // just checked against `revision`, over the very bytes this scenario
         // was rendered from.
-        let unchanged = scenario_from_text(&text, &name, &found.label, declared)
-            .map_err(|error| serialize_failed(id, &error))?;
+        let unchanged =
+            scenario_from_text_with_styles(&text, &name, &found.label, declared, inherited)
+                .map_err(|error| serialize_failed(id, &error))?;
         return Ok(WireScenarioFile {
             id: id.to_string(),
             label: found.label.clone(),
@@ -1975,8 +1987,9 @@ fn update_scenario(
 
     // Deliberately NO `state.reopen_editor()`: it re-opens the main journal,
     // which a file the main journal does not include cannot have changed.
-    let written = scenario_from_text(&new_text, &name, &found.label, declared)
-        .map_err(|error| serialize_failed(id, &error))?;
+    let written =
+        scenario_from_text_with_styles(&new_text, &name, &found.label, declared, inherited)
+            .map_err(|error| serialize_failed(id, &error))?;
     Ok(WireScenarioFile {
         id: id.to_string(),
         label: found.label.clone(),
@@ -2052,7 +2065,13 @@ pub(crate) async fn document(
         let discovery = Discovery::without_headers_in(Arc::clone(main.vault()), main.main());
         let found = discovery.resolve(&id).ok_or_else(|| unresolved(&id))?;
         let writable = writable_path(&sources, found.path().as_path());
-        open_file(found, &id, writable, &declared)
+        open_file(
+            found,
+            &id,
+            writable,
+            &declared,
+            &snapshot.journal.commodity_styles,
+        )
     })
     .await?;
     Ok(no_store(body))
@@ -2142,9 +2161,23 @@ pub(crate) async fn save(
         // 200 pointless opens while holding that lock.
         let discovery = Discovery::without_headers_in(Arc::clone(main.vault()), main.main());
         if revision == NEW_FILE_REVISION {
-            create_scenario(&discovery, &id, &scenario, &declared)
+            create_scenario(
+                &discovery,
+                &id,
+                &scenario,
+                &declared,
+                &snapshot.journal.commodity_styles,
+            )
         } else {
-            update_scenario(&sources, &discovery, &id, &revision, &scenario, &declared)
+            update_scenario(
+                &sources,
+                &discovery,
+                &id,
+                &revision,
+                &scenario,
+                &declared,
+                &snapshot.journal.commodity_styles,
+            )
         }
     })
     .await?;

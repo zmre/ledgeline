@@ -178,6 +178,21 @@ On the days `hledger --forecast` fires it, from the first projected day:
 The Budget tab follows that report, and the Projections tab follows
 `--forecast`.
 
+## Amounts follow your main journal's commodity styles
+
+A projection file reads its amounts under the main journal's `commodity`
+directives, as though it were `include`d. With `commodity $1,000.00` in the
+main journal, a hand-typed `$11,344` in a projection file is eleven thousand
+dollars. A `commodity` or `decimal-mark` directive in the projection file
+itself takes precedence.
+
+hledger does not lend a `commodity` directive across sibling files, so
+`hledger -f main.journal -f projection.journal` would read that same
+`$11,344` as `$11.344`. When you save, Ledgeline therefore adds the main
+journal's directive to the projection file (`commodity $1,000.00`) for each
+commodity the file uses but doesn't declare. After that, hledger reads the
+file the same way however it's opened.
+
 ## Automatic postings (`=` rules)
 
 A projection file can hold hledger's auto-posting rules, so a cost can follow a
