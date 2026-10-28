@@ -24,16 +24,17 @@
 <script lang="ts">
     import AccountLabel from "#lib/components/AccountLabel.svelte";
     import AmountCell from "#lib/journal/AmountCell.svelte";
-    import type {ForecastEntry, ForecastJournal} from "../types";
+    import {generatedBy, matchingEntries, originLabel} from "../export";
+    import type {ForecastJournal} from "../types";
 
-    let {journal}: {journal: ForecastJournal} = $props();
+    // `query` is bindable so the reports' Export button downloads exactly what
+    // this list shows.
+    let {journal, query = $bindable("")}: {journal: ForecastJournal; query?: string} = $props();
 
     const PAGE_SIZE = 100;
     let page = $state(0);
-    let query = $state("");
-
     const needle = $derived(query.trim().toLowerCase());
-    const matching = $derived(needle === "" ? journal.entries : journal.entries.filter((entry) => entry.haystack.includes(needle)));
+    const matching = $derived(matchingEntries(journal.entries, query));
     const pages = $derived(Math.max(1, Math.ceil(matching.length / PAGE_SIZE)));
     // A shorter forecast (fewer periods, a deleted rule) can leave the page past the end.
     const at = $derived(Math.min(page, pages - 1));
@@ -45,18 +46,6 @@
     function search(value: string): void {
         query = value;
         page = 0;
-    }
-
-    /** The `= QUERY` rule that added a posting (hledger's `generated-posting` tag), or `null` for one the scenario wrote. */
-    function generatedBy(tags: readonly (readonly [string, string])[]): string | null {
-        return tags.find(([name]) => name === "generated-posting")?.[1] ?? null;
-    }
-
-    /** The rule's period as hledger marks it (`~ monthly`), else what kind of entry this is. */
-    function originLabel(entry: ForecastEntry): string {
-        if (entry.origin.kind === "event") return "event";
-        if (entry.origin.kind === "growth") return "growth";
-        return entry.txn.tags.find(([name]) => name === "generated-transaction")?.[1] ?? "rule";
     }
 </script>
 

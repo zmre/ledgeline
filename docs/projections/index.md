@@ -54,7 +54,15 @@ not yet complete; [What moves cash](cash.md#where-the-projection-starts) says
 exactly where.
 
 **Interval** and **Periods** set the columns for every reading. The depth
-slider rolls up the cash flow statement's lines and the Accounts rows.
+slider rolls up the income statement's and cash flow statement's lines and the
+Accounts rows.
+
+**Export .xlsx**, beside the tabs, downloads the reading you're looking at as an
+Excel workbook. In the statements and Accounts, every projected column's heading
+says **(projected)**, so the file can't pass a forecast off as an actual. The
+Runway workbook starts from the real opening balance. The Journal downloads in
+the same accountant-ready layout as the Journal tab's own export, holding exactly
+the transactions your search lists.
 
 ![The Runway reading over the default 24 months: the controls bar, the six reading tabs, the sentence saying cash never turns negative, and the projected cash chart](images/runway.png)
 

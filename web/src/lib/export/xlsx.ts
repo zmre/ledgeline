@@ -850,6 +850,30 @@ export async function buildBudgetWorkbook(report: BudgetReport, meta: {title: st
     addBudget(ws, report);
     return workbook;
 }
+/**
+ * The Projections runway as a workbook (plans/30 follow-up): the cash the
+ * scenario leaves at the end of each FORECAST period, after the real opening
+ * balance it starts from. The runway sentence the page shows above the chart
+ * travels in the title row's params, where a reader of the file looks first.
+ */
+export async function buildRunwayWorkbook(
+    runway: {buckets: readonly string[]; opening: MixedAmount; closing: readonly MixedAmount[]; openingLabel: string},
+    meta: {title: string; params: string},
+    base: string | null
+): Promise<Workbook> {
+    const {Workbook: ExcelWorkbook} = await import("exceljs");
+    const workbook = new ExcelWorkbook();
+    const ws = workbook.addWorksheet(meta.title);
+    addTitleRows(ws, meta, ["Period", base === null ? "Cash" : `Cash (${base})`]);
+    ws.views = [{state: "frozen", ySplit: 4}];
+    labelCell(ws, 5, runway.openingLabel, 0, true);
+    setAmount(ws.getCell(5, 2), runway.opening);
+    runway.buckets.forEach((label, i) => {
+        labelCell(ws, 6 + i, label, 0);
+        setAmount(ws.getCell(6 + i, 2), runway.closing[i] ?? new Map());
+    });
+    return workbook;
+}
 
 /** Serialize the workbook and trigger a browser download (Blob + anchor). */
 export async function downloadWorkbook(workbook: Workbook, filename: string): Promise<void> {

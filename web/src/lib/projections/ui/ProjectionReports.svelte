@@ -24,6 +24,8 @@
      are valued into one base commodity by the engine, as on the Reports tab. -->
 <script lang="ts">
     import PeriodLineChart from "#lib/components/PeriodLineChart.svelte";
+    import ExportButton from "#lib/reports/ui/ExportButton.svelte";
+    import {projectionExport} from "../export";
     import type {AmountStyle} from "#lib/domain/types.js";
     import {styleOf} from "#lib/format/amounts.js";
     import {formatChartValue, formatCompactChartValue} from "#lib/insights/series.js";
@@ -47,6 +49,7 @@
         interval,
         styles,
         fallbackCommodity,
+        scenarioName = "",
     }: {
         tab: ProjectionTab;
         /** The Accounts tab: each period's movement or its closing balance. */
@@ -59,6 +62,8 @@
         styles: ReadonlyMap<string, AmountStyle>;
         /** Used only when the projection names no commodity at all (an empty scenario over an empty journal). */
         fallbackCommodity: string;
+        /** The scenario's display name, for the downloaded workbook's title and filename. */
+        scenarioName?: string;
     } = $props();
 
     const commodity = $derived(chartCommodity(projection, fallbackCommodity));
@@ -73,6 +78,20 @@
     const unchartedCommodities = $derived(otherCommodities(projection, commodity));
 
     let strip: HTMLDivElement | undefined = $state();
+
+    /** The Journal tab's search, held here so the download matches the list. */
+    let journalQuery = $state("");
+    /** The open reading's download; null while it is not on hand (Accounts/Journal before their run). */
+    const download = $derived(
+        projectionExport(tab, projection, {
+            scenarioName,
+            runwaySentence: [statement.headline, statement.detail].filter((part) => part !== null).join(" "),
+            base: projection.balanceSheet.base ?? commodity,
+            accountsMode,
+            journalQuery,
+            styleOf: (symbol) => styleOf(styles, symbol),
+        })
+    );
 
     /**
      * Open a report and bring its tab strip to the top of the window, so the
@@ -103,12 +122,24 @@
 </script>
 
 <div class="flex min-h-dvh flex-col gap-3">
-    <div bind:this={strip} role="tablist" class="tabs tabs-border" aria-label="Projection report">
-        {#each PROJECTION_TABS as t (t)}
-            <button type="button" role="tab" class="tab whitespace-nowrap {t === tab ? 'tab-active' : ''}" aria-selected={t === tab} onclick={() => select(t)}>
-                {PROJECTION_TAB_LABELS[t]}
-            </button>
-        {/each}
+    <div bind:this={strip} class="flex flex-wrap items-end justify-between gap-2">
+        <div role="tablist" class="tabs tabs-border" aria-label="Projection report">
+            {#each PROJECTION_TABS as t (t)}
+                <button
+                    type="button"
+                    role="tab"
+                    class="tab whitespace-nowrap {t === tab ? 'tab-active' : ''}"
+                    aria-selected={t === tab}
+                    onclick={() => select(t)}
+                >
+                    {PROJECTION_TAB_LABELS[t]}
+                </button>
+            {/each}
+        </div>
+        {#if download !== null}
+            {@const current = download}
+            <ExportButton run={current.run} label="Export {PROJECTION_TAB_LABELS[tab]} as xlsx" />
+        {/if}
     </div>
 
     {#if tab === "cash"}
@@ -190,7 +221,7 @@
             {#if projection.journal === null}
                 <p class="text-sm text-base-content/60" role="status" data-testid="projection-journal-pending">Listing the generated transactions…</p>
             {:else}
-                <ForecastJournalView journal={projection.journal} />
+                <ForecastJournalView journal={projection.journal} bind:query={journalQuery} />
             {/if}
         </div>
     {/if}

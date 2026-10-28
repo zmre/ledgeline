@@ -531,6 +531,7 @@
                         interval={params.interval}
                         {styles}
                         fallbackCommodity={commodity}
+                        scenarioName={scenarioStore.scenario.name}
                     />
                 {/snippet}
             </AsyncSection>

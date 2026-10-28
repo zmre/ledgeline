@@ -183,7 +183,8 @@ describe("COMPONENT ProjectionReports — the tab strip", () => {
         };
         try {
             mount("cash");
-            const strip = screen.getByRole("tablist");
+            // The strip's row (tabs + the Export button) is what scrolls to the top.
+            const strip = screen.getByRole("tablist").parentElement!;
             await fireEvent.click(screen.getByRole("tab", {name: "Journal"}));
             keymap.handle(new KeyboardEvent("keydown", {key: "2", cancelable: true}));
             await tick();
@@ -198,13 +199,36 @@ describe("COMPONENT ProjectionReports — the tab strip", () => {
 
     it("is at least a window tall, so a short panel cannot pull the strip back down", () => {
         mount("journal");
-        expect(screen.getByRole("tablist").parentElement?.classList.contains("min-h-dvh")).toBe(true);
+        expect(screen.getByRole("tablist").closest(".min-h-dvh")).not.toBeNull();
     });
 
     it("marks the active tab for a screen reader, not only with a class", () => {
         mount("is");
         expect(screen.getByRole("tab", {name: "Income statement"}).getAttribute("aria-selected")).toBe("true");
         expect(screen.getByRole("tab", {name: "Runway"}).getAttribute("aria-selected")).toBe("false");
+    });
+});
+
+describe("COMPONENT ProjectionReports — downloads", () => {
+    it("offers an XLSX download on every reading, named for it", () => {
+        const ready = projection({accounts: accountsFixture(), journal: journalFixture()});
+        for (const [tab, label] of [
+            ["cash", "Runway"],
+            ["bs", "Balance sheet"],
+            ["is", "Income statement"],
+            ["cf", "Cash flow"],
+            ["accounts", "Accounts"],
+            ["journal", "Journal"],
+        ] as const) {
+            const {unmount} = mount(tab, ready);
+            expect(screen.getByRole("button", {name: `Export ${label} as xlsx`}), tab).toBeDefined();
+            unmount();
+        }
+    });
+
+    it("offers none while a reading is still being listed", () => {
+        mount("journal");
+        expect(screen.queryByRole("button", {name: /Export .* as xlsx/})).toBeNull();
     });
 });
 

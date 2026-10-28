@@ -408,3 +408,29 @@ test("projections: Save as shows the path it would write, and cancels without wr
     await page.getByTestId("projection-save-cancel").click();
     await expect(page.getByTestId("projection-save-dialog")).toHaveCount(0);
 });
+
+test("projections: every reading downloads as an xlsx workbook", async ({page}) => {
+    await page.goto("/projections");
+    await expect(page.getByTestId("projection-cash")).toBeVisible();
+    for (const [name, slug] of [
+        ["Runway", "runway"],
+        ["Balance sheet", "balance-sheet"],
+        ["Income statement", "income-statement"],
+        ["Cash flow", "cash-flow"],
+        ["Accounts", "accounts"],
+        ["Journal", "journal"],
+    ] as const) {
+        await page.getByRole("tab", {name}).click();
+        const button = page.getByRole("button", {name: `Export ${name} as xlsx`});
+        // Accounts and Journal appear once their run lands.
+        await expect(button).toBeVisible();
+        const [download] = await Promise.all([page.waitForEvent("download"), button.click()]);
+        expect(download.suggestedFilename()).toMatch(new RegExp(`^projection-scenario-${slug}-\\d{4}-\\d{2}-\\d{2}-to-\\d{4}-\\d{2}-\\d{2}\\.xlsx$`));
+        const path = await download.path();
+        const {size} = await import("node:fs").then((fs) => fs.promises.stat(path));
+        // An xlsx is a zip: never empty, and starts "PK".
+        expect(size).toBeGreaterThan(1000);
+        const head = await import("node:fs").then((fs) => fs.promises.readFile(path).then((bytes) => bytes.subarray(0, 2).toString()));
+        expect(head).toBe("PK");
+    }
+});
