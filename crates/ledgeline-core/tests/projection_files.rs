@@ -57,9 +57,15 @@ struct Scratch(PathBuf);
 
 impl Scratch {
     fn new(name: &str) -> Self {
+        // A per-process counter, not only the clock: macOS's clock ticks in
+        // MICROseconds, so two tests running in parallel could create the same
+        // directory within one tick, and the first one's `remove_dir_all`
+        // deleted the other's files mid-test ("data file … was not found").
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "ledgeline-projections-{name}-{}-{}",
+            "ledgeline-projections-{name}-{}-{}-{}",
             std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_nanos())
