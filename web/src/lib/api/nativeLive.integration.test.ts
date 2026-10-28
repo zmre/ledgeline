@@ -293,6 +293,8 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
                             raw: "= expenses:rent tag:_generated-transaction\n    expenses:rent-tax  *0.1\n    assets:bank:checking\n",
                             query: "",
                             unsupported: null,
+                            form: null,
+                            block: null,
                         },
                     ],
                 },
@@ -309,7 +311,50 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
             expect(tax?.tags.some(([name]) => name === "generated-posting")).toBe(true);
         }
         expect(withTax.journal?.entries).toHaveLength(3);
-        expect(withTax.warnings.some((warning) => warning.includes("auto rule"))).toBe(false);
+        expect(withTax.warnings.some((warning) => warning.includes("would also apply"))).toBe(false);
+        // `expenses:rent-tax` is new to the journal: Decision 11 names it.
+        expect(withTax.warnings.some((warning) => warning.includes("`expenses:rent-tax`"))).toBe(true);
+
+        // The same rule EDITED in the table travels as its form; the engine
+        // renders it (forecast-only, the counter as `*-0.1`) and applies it.
+        const asForm = {
+            ...runBody(
+                {
+                    name: "",
+                    created: null,
+                    updated: null,
+                    lines: [rent],
+                    events: [],
+                    cash: null,
+                    autoRules: [
+                        {
+                            raw: "",
+                            query: "",
+                            unsupported: null,
+                            block: null,
+                            edited: true,
+                            form: {
+                                matchAccount: "expenses:rent",
+                                extraQuery: "",
+                                postings: [{account: "expenses:rent-tax", kind: "percent", percent: {m: 10n, p: 0}, amount: null}],
+                                counter: "assets:bank:checking",
+                                comment: "",
+                            },
+                        },
+                    ],
+                },
+                {interval: "monthly", count: 3, lookback: 2, depth: 2, journal: true}
+            ),
+            asOf: AS_OF,
+        };
+        const viaForm = decodeProjection(await new LedgelineApi(url).runProjection(asForm));
+        for (const entry of viaForm.journal?.entries ?? []) {
+            const at = entry.txn.postings.findIndex((posting) => posting.account === "expenses:rent");
+            expect(entry.txn.postings[at + 1]?.account).toBe("expenses:rent-tax");
+            expect(entry.txn.postings[at + 2]?.account).toBe("assets:bank:checking");
+        }
+        expect(viaForm.journal?.entries).toHaveLength(3);
+        expect(viaForm.warnings.some((warning) => warning.includes("would also apply"))).toBe(false);
     });
 
     it("journal info falls back to the fixture folder's name", async () => {

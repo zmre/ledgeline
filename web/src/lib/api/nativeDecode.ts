@@ -106,6 +106,7 @@ import type {
     RulesSourcePref,
     RulesWarning,
 } from "#lib/imports/types.js";
+import type {AutoRuleForm} from "#lib/autoRules/ruleForm.js";
 import {FORECAST_ORIGIN_KINDS, GROWTH_UNITS, LINE_ROLES, LINE_SOURCES, SCENARIO_INTERVALS} from "#lib/projections/types.js";
 import type {
     AssetRow,
@@ -530,7 +531,23 @@ interface RawScenario {
     lines?: RawScenarioLine[];
     events?: RawScenarioEvent[];
     cash?: string | null;
-    autoRules?: {raw?: unknown; query?: unknown; unsupported?: string | null}[];
+    autoRules?: RawAutoRule[];
+}
+
+interface RawAutoRule {
+    raw?: unknown;
+    query?: unknown;
+    unsupported?: string | null;
+    form?: RawAutoRuleForm | null;
+    block?: unknown;
+}
+
+interface RawAutoRuleForm {
+    matchAccount?: unknown;
+    extraQuery?: unknown;
+    postings?: {account?: unknown; kind?: string; percent?: RawDec | null; amount?: RawScenarioAmount | null}[];
+    counter?: string | null;
+    comment?: unknown;
 }
 
 interface RawProjectionFile {
@@ -2433,9 +2450,36 @@ function decodeAutoRules(raw: RawScenario["autoRules"]): AutoRule[] {
                 raw: str(rule.raw, `${at} raw`),
                 query: str(rule.query, `${at} query`),
                 unsupported: decodeNullableStr(rule.unsupported, `${at} unsupported`),
+                form: decodeNullable(rule.form, `${at} form`, decodeAutoRuleForm),
+                block: rule.block === null ? null : decodeCount(rule.block, `${at} block`),
             });
         })
     );
+}
+
+const RULE_POSTING_KINDS = ["percent", "fixed"] as const;
+
+/** A rule's form: every field present, the posting's unused number `null`. */
+function decodeAutoRuleForm(raw: RawAutoRuleForm, context: string): AutoRuleForm {
+    if (typeof raw !== "object" || !Array.isArray(raw.postings)) throw new ApiShapeError(`${context}: expected postings`);
+    return Object.freeze({
+        matchAccount: str(raw.matchAccount, `${context} matchAccount`),
+        extraQuery: str(raw.extraQuery, `${context} extraQuery`),
+        postings: frozen(
+            raw.postings.map((posting, i) => {
+                const where = `${context} postings[${i}]`;
+                const kind = decodeEnum(RULE_POSTING_KINDS, posting.kind, `${where} kind`);
+                const percent = decodeNullable(posting.percent, `${where} percent`, decodeDec);
+                const amount = decodeNullable(posting.amount, `${where} amount`, decodeScenarioAmount);
+                if ((kind === "percent") !== (percent !== null) || (kind === "fixed") !== (amount !== null)) {
+                    throw new ApiShapeError(`${where}: a ${kind} posting carries exactly its own number`);
+                }
+                return Object.freeze({account: str(posting.account, `${where} account`), kind, percent, amount});
+            })
+        ),
+        counter: decodeNullableStr(raw.counter, `${context} counter`),
+        comment: str(raw.comment, `${context} comment`),
+    });
 }
 
 function decodeBalanceSeries(raw: RawBalanceSeries | undefined, context: string): BalanceSeries {
