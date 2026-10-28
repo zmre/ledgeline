@@ -43,6 +43,7 @@
 mod account_api;
 mod alias_api;
 mod app_dirs;
+mod auto_api;
 mod benchmarks_api;
 mod budget_api;
 mod commodity_profile;
@@ -141,8 +142,17 @@ pub use yahoo_history::HistoryFeed;
 /// it (691 ms) and re-walked it through serde (242 ms). Serialized bytes are
 /// serialized once at build time, and `Bytes::clone` is a refcount bump.
 pub(crate) struct Snapshot {
-    /// The parsed journal, shared with the per-request report handlers.
+    /// The journal every READ serves — reports, views, insights, holdings,
+    /// checks. With `--auto` in force ([`Self::auto`]) it is the journal with
+    /// its `=` rules applied ([`ledgeline_core::auto::apply_journal`]);
+    /// otherwise it is [`Self::raw`] itself, the same `Arc`.
     pub(crate) journal: Arc<Journal>,
+    /// The journal as its files spell it, without generated postings — what
+    /// the [`JournalEditor`] holds. Read it for anything that maps a posting
+    /// back to a line of a file.
+    pub(crate) raw: Arc<Journal>,
+    /// Whether `--auto` is in force, and where that was read (plan 30).
+    pub(crate) auto: auto_api::AutoSetting,
     /// Where `journal` was read from: the vault every journal-tree read and
     /// write goes through. `None` for a state built from a journal with no
     /// backing storage ([`AppState::from_journal`]). Carried in the snapshot so
@@ -233,9 +243,25 @@ impl Snapshot {
     /// on the client's date, so it is computed per request and memoized in the
     /// snapshot's [`journal_api::ViewCache`] — which also takes its 270 ms of
     /// whole-journal passes off every startup and republish.
-    fn from_journal(journal: Arc<Journal>, location: Option<Arc<JournalLocation>>) -> Self {
+    ///
+    /// `journal` is the RAW journal. Whether `--auto` is in force is read here,
+    /// from the `hledger.conf` in force ([`auto_api::auto_setting`]), so every
+    /// republish — an edit, a reload, a config write — picks up a change, and
+    /// its new generation refreshes the clients (plan 30 Decision 7).
+    fn from_journal(raw: Arc<Journal>, location: Option<Arc<JournalLocation>>) -> Self {
         // Minted FIRST, because `/api/journal` carries it as `generation`.
         let etag = next_etag();
+        let auto = auto_api::auto_setting(
+            location
+                .clone()
+                .or_else(|| JournalLocation::of_parsed(&raw).map(Arc::new))
+                .as_deref(),
+        );
+        let journal = if auto.in_force && !raw.auto_rules.is_empty() {
+            Arc::new(ledgeline_core::auto::apply_journal(&raw))
+        } else {
+            Arc::clone(&raw)
+        };
         let rest = (
             json_bytes(&wire::version_value()),
             json_bytes(&wire::journal_to_accountnames(&journal)),
@@ -260,6 +286,8 @@ impl Snapshot {
             view: journal_api::ViewCache::warmed(&journal),
             projections: projection_cache::ProjectionCache::default(),
             journal,
+            raw,
+            auto,
             location,
         }
     }
@@ -492,6 +520,10 @@ impl AppState {
     /// Atomically replace the served journal (and its precomputed payloads).
     /// In-flight requests keep their snapshot; subsequent ones see the new data.
     ///
+    /// `journal` is the journal AS WRITTEN — an editor's, or a fresh parse.
+    /// The snapshot applies `=` rules itself when `--auto` is in force; to
+    /// rebuild from what is already served, call [`Self::republish`].
+    ///
     /// Takes the shared `Arc` — the shape [`JournalEditor::journal`] hands back —
     /// so republishing after an edit shares the editor's journal rather than
     /// deep-cloning it (PERF-1b).
@@ -500,6 +532,27 @@ impl AppState {
         self.inner.store(Arc::new(Snapshot::from_journal(
             Arc::clone(journal),
             location,
+        )));
+    }
+
+    /// Rebuild the snapshot from the journal it already holds — the RAW one,
+    /// so `=` rules are applied afresh and never twice — and publish it under
+    /// a new generation. What a change that is not in the journal's own files
+    /// calls: `--auto` turned on or off in `hledger.conf` (plan 30 Decision
+    /// 7) re-reads the setting here and refreshes every client.
+    ///
+    /// Holds the editor lock across the rebuild, as every edit's publish does,
+    /// so it can never store a journal older than one an edit just published.
+    pub fn republish(&self) {
+        let guard = self.editor.lock().unwrap_or_else(PoisonError::into_inner);
+        let snapshot = self.snapshot();
+        let raw = guard.as_ref().map_or_else(
+            || Arc::clone(&snapshot.raw),
+            |editor| Arc::clone(editor.journal()),
+        );
+        self.inner.store(Arc::new(Snapshot::from_journal(
+            raw,
+            snapshot.location.clone(),
         )));
     }
 
@@ -868,6 +921,9 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         // route, not a wire one: `/transactions` is a byte-parity emulation of
         // hledger-web's endpoint and has nowhere to carry a sibling field.
         .route("/api/diagnostics", get(journal_api::diagnostics))
+        // Plan 30 Phase 5: the main journal's `=` rules and whether `--auto`
+        // is in force (Settings › Automatic postings).
+        .route("/api/auto-rules", get(auto_api::rules))
         // Which journal is open: its derived title and its main file's bare
         // name. A NATIVE route for the same reason as `/api/diagnostics` — the
         // wire routes are byte-parity emulations of hledger-web's and have
