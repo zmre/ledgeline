@@ -72,6 +72,21 @@
     const statement = $derived(runwayStatement(projection, interval, commodity, format));
     const unchartedCommodities = $derived(otherCommodities(projection, commodity));
 
+    let strip: HTMLDivElement | undefined = $state();
+
+    /**
+     * Open a report and bring its tab strip to the top of the window, so the
+     * reading fills the screen. The panels differ a lot in height (Journal and
+     * Accounts are a one-line placeholder until their run lands), and without
+     * this a shorter panel clamped the page's scroll and left the strip at the
+     * bottom of the viewport. `min-h-dvh` on the wrapper below is what lets the
+     * strip reach the top even under the shortest panel.
+     */
+    function select(next: ProjectionTab): void {
+        tab = next;
+        strip?.scrollIntoView({block: "start", behavior: "smooth"});
+    }
+
     // Digits, as on the Reports and Holdings strips: page-local, so they appear
     // in `?` only while this strip is mounted. Like every key they are ignored
     // while focus is in a field, and most of this page is fields.
@@ -82,15 +97,15 @@
             keys: String(at + 1),
             label: PROJECTION_TAB_LABELS[t],
             group: "Projections" as const,
-            run: () => (tab = t),
+            run: () => select(t),
         })),
     });
 </script>
 
-<div class="flex flex-col gap-3">
-    <div role="tablist" class="tabs tabs-border" aria-label="Projection report">
+<div class="flex min-h-dvh flex-col gap-3">
+    <div bind:this={strip} role="tablist" class="tabs tabs-border" aria-label="Projection report">
         {#each PROJECTION_TABS as t (t)}
-            <button type="button" role="tab" class="tab whitespace-nowrap {t === tab ? 'tab-active' : ''}" aria-selected={t === tab} onclick={() => (tab = t)}>
+            <button type="button" role="tab" class="tab whitespace-nowrap {t === tab ? 'tab-active' : ''}" aria-selected={t === tab} onclick={() => select(t)}>
                 {PROJECTION_TAB_LABELS[t]}
             </button>
         {/each}

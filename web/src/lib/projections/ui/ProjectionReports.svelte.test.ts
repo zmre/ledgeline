@@ -175,6 +175,32 @@ describe("COMPONENT ProjectionReports — the tab strip", () => {
         ]);
     });
 
+    it("brings the strip to the top of the window when a reading is picked, by click or by digit", async () => {
+        const calls: {strip: Element; options: unknown}[] = [];
+        const original = Element.prototype.scrollIntoView;
+        Element.prototype.scrollIntoView = function (this: Element, options?: unknown): void {
+            calls.push({strip: this, options});
+        };
+        try {
+            mount("cash");
+            const strip = screen.getByRole("tablist");
+            await fireEvent.click(screen.getByRole("tab", {name: "Journal"}));
+            keymap.handle(new KeyboardEvent("keydown", {key: "2", cancelable: true}));
+            await tick();
+            expect(calls).toEqual([
+                {strip, options: {block: "start", behavior: "smooth"}},
+                {strip, options: {block: "start", behavior: "smooth"}},
+            ]);
+        } finally {
+            Element.prototype.scrollIntoView = original;
+        }
+    });
+
+    it("is at least a window tall, so a short panel cannot pull the strip back down", () => {
+        mount("journal");
+        expect(screen.getByRole("tablist").parentElement?.classList.contains("min-h-dvh")).toBe(true);
+    });
+
     it("marks the active tab for a screen reader, not only with a class", () => {
         mount("is");
         expect(screen.getByRole("tab", {name: "Income statement"}).getAttribute("aria-selected")).toBe("true");

@@ -21,6 +21,16 @@
 
     let {children} = $props();
 
+    // The header stays pinned at the top so the ledger name and the section
+    // tabs are always in view. Its height is the page's scroll padding, so
+    // every `scrollIntoView` and anchor jump lands just below it rather than
+    // underneath it — measured, not hard-coded, because the tabs wrap on a
+    // narrow window.
+    let headerHeight = $state(0);
+    $effect(() => {
+        document.documentElement.style.scrollPaddingTop = `${headerHeight}px`;
+    });
+
     // The Imports nav item is hidden on an engine that has no `/api/rules` route
     // at all (it 404s, which the client reports as `NativeApiUnavailableError`).
     // `available` starts TRUE, so the item does not blink out of existence
@@ -100,7 +110,7 @@
     <input id="problems-drawer" type="checkbox" class="drawer-toggle" bind:checked={problems.drawerOpen} />
     <div class="drawer-content">
         <div class="flex min-h-screen flex-col bg-base-100 text-base-content">
-            <header class="navbar min-h-12 bg-base-200 shadow-sm">
+            <header class="navbar sticky top-0 z-30 min-h-12 bg-base-200 shadow-sm" bind:clientHeight={headerHeight} data-testid="app-header">
                 <div class="navbar-start">
                     <a href={resolve("/")} class="btn gap-2 btn-ghost px-2 text-lg font-semibold tracking-tight">
                         <img src="/ledgeline-icon.png" alt="Ledgeline" class="h-7 w-7 rounded" />

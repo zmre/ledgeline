@@ -157,6 +157,43 @@ test("projections: the runway and statements render, the runway in words and the
     await expect(page.getByTestId("projection-cf").getByTestId("projected-label").first()).toHaveText("Projected");
 });
 
+test("projections: picking a reading brings its tab strip to the top of the window, just under the pinned header", async ({page}) => {
+    await page.setViewportSize({width: 1280, height: 800});
+    await page.goto("/projections?tab=bs");
+    await expect(page.getByTestId("projection-bs").getByTestId("balance-sheet")).toBeVisible();
+    const strip = page.getByRole("tablist", {name: "Projection report"});
+    const header = page.getByTestId("app-header");
+    // From the bottom of a long balance sheet to Journal, whose panel is a
+    // one-line placeholder until its run lands: the page must not shrink out
+    // from under the strip and leave it at the bottom of the viewport.
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    for (const name of ["Journal", "Income statement", "Runway"]) {
+        await page.getByRole("tab", {name}).click();
+        await expect(page.getByRole("tab", {name})).toHaveAttribute("aria-selected", "true");
+        await expect
+            .poll(
+                async () => {
+                    const [s, h] = [await strip.boundingBox(), await header.boundingBox()];
+                    return s === null || h === null ? Infinity : Math.abs(Math.round(s.y - (h.y + h.height)));
+                },
+                {message: `${name}: strip just under the header`}
+            )
+            .toBeLessThanOrEqual(1);
+    }
+});
+
+test("the header stays pinned at the top of the window while the page scrolls", async ({page}) => {
+    await page.setViewportSize({width: 1280, height: 600});
+    await page.goto("/projections?tab=bs");
+    await expect(page.getByTestId("projection-bs").getByTestId("balance-sheet")).toBeVisible();
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(200);
+    const header = page.getByTestId("app-header");
+    await expect(header).toBeInViewport();
+    expect(Math.round((await header.boundingBox())?.y ?? -1)).toBe(0);
+    await expect(header.getByRole("link", {name: "Projections"})).toBeVisible();
+});
+
 test("projections: the Accounts tab lists every account per period, Change or Balance, with empty accounts on request", async ({page}) => {
     await page.goto("/projections?tab=accounts");
     await expect(page.getByRole("tab", {name: "Accounts"})).toHaveAttribute("aria-selected", "true");
