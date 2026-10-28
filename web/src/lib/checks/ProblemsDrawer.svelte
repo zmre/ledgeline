@@ -13,6 +13,11 @@
     const RULE_LABELS: Record<string, string> = {
         unbalanced: "Unbalanced",
         assertion: "Balance assertion",
+        // Plan 30: an `=` rule hledger --auto would refuse the journal over
+        // (anchored to the transaction it breaks), and one posting to an
+        // account nothing else names (anchored to that account, likely a typo).
+        "auto-rule": "Automatic posting rule",
+        "auto-account": "Unknown account in a rule",
         pending: "Pending",
         uncategorized: "Uncategorized",
         // Account-anchored like "account-tag" below: the running balance is at

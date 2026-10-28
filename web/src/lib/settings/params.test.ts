@@ -18,9 +18,9 @@ describe("UNIT settings/params", () => {
 
     describe("TAB_ORDER", () => {
         it("puts Accounts first and labels every tab", () => {
-            expect(TAB_ORDER).toEqual(["accounts", "aliases"]);
+            expect(TAB_ORDER).toEqual(["accounts", "aliases", "auto"]);
             expect(TAB_ORDER[0]).toBe(DFLT.tab);
-            expect(TAB_ORDER.map((t) => TAB_LABELS[t])).toEqual(["Accounts", "Account Aliases"]);
+            expect(TAB_ORDER.map((t) => TAB_LABELS[t])).toEqual(["Accounts", "Account Aliases", "Automatic postings"]);
         });
     });
 
@@ -44,6 +44,19 @@ describe("UNIT settings/params", () => {
         it("accepts a search with or without the leading '?'", () => {
             expect(searchToParams("?tab=aliases", DFLT)).toEqual({tab: "aliases"});
             expect(searchToParams("tab=aliases", DFLT)).toEqual({tab: "aliases"});
+        });
+
+        it("carries the focused rule on the Automatic postings tab only", () => {
+            expect(paramsToSearch({tab: "auto", rule: 2})).toBe("tab=auto&rule=2");
+            expect(searchToParams("?tab=auto&rule=2", DFLT)).toEqual({tab: "auto", rule: 2});
+            expect(searchToParams("?tab=aliases&rule=2", DFLT)).toEqual({tab: "aliases"});
+            expect(paramsToSearch({tab: "aliases", rule: 2})).toBe("tab=aliases");
+        });
+
+        it("ignores a rule that is not a plain index", () => {
+            for (const rule of ["-1", "1.5", "x", "", "1e3", "12345678"]) {
+                expect(searchToParams(`?tab=auto&rule=${rule}`, DFLT)).toEqual({tab: "auto"});
+            }
         });
 
         it("falls back for an absent, empty or unknown tab", () => {

@@ -10,6 +10,7 @@
     import ErrorToast from "#lib/components/ErrorToast.svelte";
     import AccountsPanel from "#lib/accounts/ui/AccountsPanel.svelte";
     import AliasPanel from "#lib/imports/ui/AliasPanel.svelte";
+    import AutoRulesPanel from "#lib/autoRules/ui/AutoRulesPanel.svelte";
     import {defaultSettingsParams, paramsToSearch, searchToParams, type SettingsParams} from "#lib/settings/params.js";
     import SettingsTabs from "#lib/settings/ui/SettingsTabs.svelte";
     import {journal} from "#lib/stores/journal.svelte.js";
@@ -46,6 +47,9 @@
 
     {#if params.tab === "aliases"}
         <AliasPanel />
+    {:else if params.tab === "auto"}
+        <!-- Plan 30 Phase 5; `rule` is the rule a generated posting linked to. -->
+        <AutoRulesPanel focus={params.rule} />
     {:else}
         <AccountsPanel accountNames={journal.accountNames} />
     {/if}

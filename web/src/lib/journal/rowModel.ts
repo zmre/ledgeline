@@ -32,6 +32,30 @@ function postingNetSign(posting: Posting): Sign | null {
 export type AccountFlow = {kind: "flow"; source: string; dest: string} | {kind: "list"; accounts: string[]};
 
 /**
+ * The postings the journal file WRITES — everything but what an `=` rule
+ * generated (`hledger --auto`, plan 30). The source→destination chips and the
+ * displayed amount read only these, so a two-leg sale with a sales-tax rule
+ * still reads `revenue:sales → assets:checking`, not a four-way split.
+ */
+export function writtenPostings(txn: Transaction): Posting[] {
+    return txn.postings.filter((posting) => posting.generated === undefined);
+}
+
+/** The postings `=` rules generated, in the order they are served. */
+export function generatedPostings(txn: Transaction): Posting[] {
+    return txn.postings.filter((posting) => posting.generated !== undefined);
+}
+
+/** The distinct rules behind a transaction's generated postings, first-seen order. */
+export function generatingRules(txn: Transaction): {rule: number; query: string}[] {
+    const seen = new Map<number, string>();
+    for (const posting of txn.postings) {
+        if (posting.generated !== undefined && !seen.has(posting.generated.rule)) seen.set(posting.generated.rule, posting.generated.query);
+    }
+    return [...seen.entries()].map(([rule, query]) => ({rule, query}));
+}
+
+/**
  * From→to arrow heuristic: postings with net-negative MixedAmount are sources,
  * net-positive are destinations. Renders as `source → dest` only for the simple
  * case of exactly one source and one destination account; N-way splits (>2
@@ -41,7 +65,8 @@ export function accountFlow(txn: Transaction): AccountFlow {
     const sources: string[] = [];
     const dests: string[] = [];
     let degrade = false;
-    for (const posting of txn.postings) {
+    const written = writtenPostings(txn);
+    for (const posting of written) {
         const sign = postingNetSign(posting);
         if (sign === null) {
             degrade = true;
@@ -54,7 +79,7 @@ export function accountFlow(txn: Transaction): AccountFlow {
         return {kind: "flow", source: sources[0], dest: dests[0]};
     }
     const accounts: string[] = [];
-    for (const posting of txn.postings) {
+    for (const posting of written) {
         if (!accounts.includes(posting.account)) accounts.push(posting.account);
     }
     return {kind: "list", accounts};
@@ -62,7 +87,7 @@ export function accountFlow(txn: Transaction): AccountFlow {
 
 function sumWhere(txn: Transaction, pick: (qty: Dec) => boolean, negate: boolean): Amount[] {
     const sums = new Map<string, {qty: Dec; style: AmountStyle}>();
-    for (const posting of txn.postings) {
+    for (const posting of writtenPostings(txn)) {
         for (const amount of posting.amounts) {
             if (!pick(amount.qty)) continue;
             const qty = negate ? neg(amount.qty) : amount.qty;
@@ -77,6 +102,8 @@ function sumWhere(txn: Transaction, pick: (qty: Dec) => boolean, negate: boolean
  * The transaction's displayed magnitude: per-commodity sum of the positive
  * (destination-side) amounts, styled from the txn's own amounts. Falls back to
  * |negatives| when no entry is positive; empty for zero-amount transactions.
+ * Generated postings are left out: a 10% tax rule must not make a $100 sale
+ * read $110.
  */
 export function txnFlowAmounts(txn: Transaction): Amount[] {
     const positive = sumWhere(txn, (qty) => qty.m > 0n, false);

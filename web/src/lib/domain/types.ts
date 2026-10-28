@@ -65,6 +65,19 @@ export interface Posting {
     type?: PostingType;
     /** Absent when the posting asserts nothing. */
     balanceAssertion?: BalanceAssertion;
+    /**
+     * Present only on a posting an `= QUERY` rule GENERATED (`hledger --auto`,
+     * plan 30) — never written in a file, never editable. Absent otherwise.
+     */
+    generated?: GeneratedBy;
+}
+
+/** The `=` auto-posting rule that generated a posting. */
+export interface GeneratedBy {
+    /** The rule's position in the journal's rule list (Settings › Automatic postings). */
+    rule: number;
+    /** Its query as written, e.g. `revenue:sales`. */
+    query: string;
 }
 
 export interface Transaction {
