@@ -32,7 +32,7 @@ const STYLES: ReadonlyMap<string, AmountStyle> = new Map([["$", DEFAULT_AMOUNT_S
 
 const projection = (overrides: Partial<Projection> = {}): Projection => projectionFixture(overrides);
 
-function mount(tab: ProjectionTab, value: Projection = projection(), extra: {accountsMode?: "change" | "balance"; emptyAccounts?: boolean} = {}) {
+function mount(tab: ProjectionTab, value: Projection = projection(), extra: {emptyAccounts?: boolean} = {}) {
     return render(ProjectionReports, {tab, projection: value, interval: "monthly" as const, styles: STYLES, fallbackCommodity: "$", ...extra});
 }
 
@@ -69,10 +69,20 @@ describe("COMPONENT ProjectionReports — the runway", () => {
         expect(screen.getByTestId("projection-cash").textContent).toContain("from 2026-08-01");
     });
 
-    it("labels the chart with the FORECAST periods only — the runway counts from the cutoff", () => {
+    it("charts the actual months first, then the forecast, with the statements' divider between them", () => {
         const {container} = mount("cash");
         const ticks = [...container.querySelectorAll('[data-placement="bottom"] .lc-axis-tick-label')].map((t) => t.textContent?.trim());
-        expect(ticks).toEqual(["Aug 2026", "Sep 2026"]);
+        expect(ticks).toEqual(["Jun 2026", "Jul 2026", "Aug 2026", "Sep 2026"]);
+        expect(container.querySelectorAll('[data-rule="projected"]')).toHaveLength(1);
+        expect(screen.getByTestId("projection-cash").textContent).toContain("2 actual, then projected from 2026-08-01");
+    });
+
+    it("draws no divider when the Actuals control asks for none", () => {
+        const {container} = mount(
+            "cash",
+            projection({lookback: [], projectedFrom: 0, cash: {opening: usd(10000), values: [usd(14800), usd(19600)], history: []}})
+        );
+        expect(container.querySelectorAll('[data-rule="projected"]')).toHaveLength(0);
     });
 });
 
@@ -175,10 +185,60 @@ describe("COMPONENT ProjectionReports — the tab strip", () => {
         ]);
     });
 
+    it("brings the strip to the top of the window when a reading is picked, by click or by digit", async () => {
+        const calls: {strip: Element; options: unknown}[] = [];
+        const original = Element.prototype.scrollIntoView;
+        Element.prototype.scrollIntoView = function (this: Element, options?: unknown): void {
+            calls.push({strip: this, options});
+        };
+        try {
+            mount("cash");
+            // The strip's row (tabs + the Export button) is what scrolls to the top.
+            const strip = screen.getByRole("tablist").parentElement!;
+            await fireEvent.click(screen.getByRole("tab", {name: "Journal"}));
+            keymap.handle(new KeyboardEvent("keydown", {key: "2", cancelable: true}));
+            await tick();
+            expect(calls).toEqual([
+                {strip, options: {block: "start", behavior: "smooth"}},
+                {strip, options: {block: "start", behavior: "smooth"}},
+            ]);
+        } finally {
+            Element.prototype.scrollIntoView = original;
+        }
+    });
+
+    it("is at least a window tall, so a short panel cannot pull the strip back down", () => {
+        mount("journal");
+        expect(screen.getByRole("tablist").closest(".min-h-dvh")).not.toBeNull();
+    });
+
     it("marks the active tab for a screen reader, not only with a class", () => {
         mount("is");
         expect(screen.getByRole("tab", {name: "Income statement"}).getAttribute("aria-selected")).toBe("true");
         expect(screen.getByRole("tab", {name: "Runway"}).getAttribute("aria-selected")).toBe("false");
+    });
+});
+
+describe("COMPONENT ProjectionReports — downloads", () => {
+    it("offers an XLSX download on every reading, named for it", () => {
+        const ready = projection({accounts: accountsFixture(), journal: journalFixture()});
+        for (const [tab, label] of [
+            ["cash", "Runway"],
+            ["bs", "Balance sheet"],
+            ["is", "Income statement"],
+            ["cf", "Cash flow"],
+            ["accounts", "Accounts"],
+            ["journal", "Journal"],
+        ] as const) {
+            const {unmount} = mount(tab, ready);
+            expect(screen.getByRole("button", {name: `Export ${label} as xlsx`}), tab).toBeDefined();
+            unmount();
+        }
+    });
+
+    it("offers none while a reading is still being listed", () => {
+        mount("journal");
+        expect(screen.queryByRole("button", {name: /Export .* as xlsx/})).toBeNull();
     });
 });
 
@@ -193,6 +253,7 @@ describe("COMPONENT ProjectionReports — a scenario in more than one commodity"
                         ["EUR", dec(50, 0)],
                     ]),
                     values: [usd(14800), usd(19600)],
+                    history: [],
                 },
             })
         );
@@ -208,45 +269,58 @@ describe("COMPONENT ProjectionReports — a scenario in more than one commodity"
 describe("COMPONENT ProjectionReports — accounts", () => {
     const rowsOf = (): string[] =>
         [...screen.getByTestId("accounts-table").querySelectorAll("tbody tr[data-account]")].map((tr) => tr.getAttribute("data-account") ?? "");
+    const cellsOf = (account: string): string[] =>
+        [...(screen.getByTestId("accounts-table").querySelector(`tbody tr[data-account="${account}"]`)?.querySelectorAll("td") ?? [])].map(
+            (td) => td.textContent?.trim() ?? ""
+        );
 
-    it("renders every account per period on the statements' column template, with the band and a Total", () => {
-        mount("accounts", projection({accounts: accountsFixture("change")}));
+    it("reads assets as balances with a Δ, and flows as changes with a Total, on the statements' template", () => {
+        mount("accounts", projection({accounts: accountsFixture()}));
         const table = screen.getByTestId("accounts-table");
-        expect(headings("accounts-table")).toEqual(["Account", "Jun 2026", "Jul 2026", "Aug 2026", "Sep 2026", "Total"]);
+        expect(headings("accounts-table")).toEqual(["Account", "Jun 2026", "Jul 2026", "Aug 2026", "Sep 2026", ""]);
         expect(table.querySelector('[data-testid="projected-label"]')?.getAttribute("colspan")).toBe("2");
-        const cells = [...(table.querySelector('tbody tr[data-account="expenses:rent"]')?.querySelectorAll("td") ?? [])];
-        expect(cells.map((td) => td.textContent?.trim())).toEqual(["$4,200.00", "$4,200.00", "$4,200.00", "$4,200.00", "$16,800.00"]);
+        // A balance, and its last column the Δ over the window, marked as one.
+        expect(cellsOf("assets:checking")).toEqual(["$10,800.00", "$11,600.00", "$12,400.00", "$13,200.00", "Δ $3,200.00"]);
+        // A flow: each month's movement, then the Total — no Δ.
+        expect(cellsOf("expenses:rent")).toEqual(["$4,200.00", "$4,200.00", "$4,200.00", "$4,200.00", "$16,800.00"]);
+        const sections = [...table.querySelectorAll('[data-testid="account-section"]')];
+        expect(sections.map((s) => [s.getAttribute("data-section"), s.getAttribute("data-reading")])).toEqual([
+            ["assets", "balance"],
+            ["revenue", "change"],
+            ["expenses", "change"],
+        ]);
+        expect(sections.map((s) => s.querySelector('[data-column="summary-heading"]')?.textContent?.trim())).toEqual(["Δ over the period", "Total", "Total"]);
+        // The section total row carries the Δ too.
+        expect(sections[0]!.querySelector('[data-testid="account-section-total"] [data-column="summary"]')?.textContent?.trim()).toBe("Δ $3,200.00");
         // The divider down the first projected column, and nowhere else.
-        expect(cells.map((td) => td.className.includes("border-l-2"))).toEqual([false, false, true, false, false]);
-        // One fixed template, every row filling it: the shared-grid assertion,
-        // over a stack of one (plus the same table again so the helper's
-        // "more than one block" holds).
+        const rent = [...(table.querySelector('tbody tr[data-account="expenses:rent"]')?.querySelectorAll("td") ?? [])];
+        expect(rent.map((td) => td.className.includes("border-l-2"))).toEqual([false, false, true, false, false]);
+        // One fixed template, every row filling it: the statements' own grid.
         expectSharedGrid([table, table], 5, true);
     });
 
-    it("draws Balance without a Total column — snapshots mean nothing summed", () => {
-        mount("accounts", projection({accounts: accountsFixture("balance")}), {accountsMode: "balance"});
-        expect(headings("accounts-table")).toEqual(["Account", "Jun 2026", "Jul 2026", "Aug 2026", "Sep 2026"]);
-        expect(screen.getByRole("button", {name: "Balance"}).getAttribute("aria-pressed")).toBe("true");
-        expect(screen.getByRole("button", {name: "Change"}).getAttribute("aria-pressed")).toBe("false");
+    it("says in words how each kind of account reads", () => {
+        mount("accounts", projection({accounts: accountsFixture()}));
+        const help = screen.getByTestId("account-report-help").textContent ?? "";
+        expect(help).toContain("balance at the end of each period");
+        expect(help).toContain("Δ");
+        expect(help).toContain("what moved in each period");
     });
 
     it("indents the tree and folds a parent into its only child", () => {
-        mount("accounts", projection({accounts: accountsFixture("change")}));
-        // `assets` equals `assets:checking` in every column, so the chain folds.
+        mount("accounts", projection({accounts: accountsFixture()}));
+        // `assets` equals `assets:checking` in every column and its Δ, so the chain folds.
         expect(rowsOf()).toContain("assets:checking");
         expect(rowsOf()).not.toContain("assets");
     });
 
-    it("toggles Change/Balance and Show empty accounts through its bindings", async () => {
-        const view = mount("accounts", projection({accounts: accountsFixture("change")}));
+    it("has no Change/Balance switch any more, and keeps Show empty accounts", async () => {
+        mount("accounts", projection({accounts: accountsFixture()}));
+        expect(screen.queryByRole("button", {name: "Balance"})).toBeNull();
         const checkbox = screen.getByRole("checkbox", {name: "Show empty accounts"}) as HTMLInputElement;
         expect(checkbox.checked).toBe(false);
-        await fireEvent.click(screen.getByRole("button", {name: "Balance"}));
-        expect(screen.getByRole("button", {name: "Balance"}).getAttribute("aria-pressed")).toBe("true");
         await fireEvent.click(checkbox);
         expect(checkbox.checked).toBe(true);
-        view.unmount();
     });
 
     it("says it is reading while a projection held from another tab has no accounts yet", () => {
@@ -287,6 +361,58 @@ describe("COMPONENT ProjectionReports — journal", () => {
         const journal = {...journalFixture(2), total: 9000, truncated: true};
         mount("journal", projection({journal}));
         expect(screen.getByTestId("forecast-journal-count").textContent).toContain("the first 3 are listed");
+    });
+
+    it("marks a posting an automatic rule added, naming the rule", () => {
+        const journal = journalFixture(1);
+        const first = journal.entries[0]!;
+        const added = {
+            ...first.txn.postings[0]!,
+            account: "expenses:rent-tax",
+            tags: [
+                ["generated-posting", "= expenses:rent tag:_generated-transaction"],
+                ["_generated-posting", "= expenses:rent tag:_generated-transaction"],
+            ] as [string, string][],
+        };
+        const entries = [{...first, txn: {...first.txn, postings: [first.txn.postings[0]!, added, first.txn.postings[1]!]}}, ...journal.entries.slice(1)];
+        mount("journal", projection({journal: {...journal, entries}}));
+        const rows = screen.getAllByTestId("forecast-entry")[0]!.querySelectorAll("tr[data-generated]");
+        expect(rows).toHaveLength(1);
+        expect(rows[0]!.textContent).toContain("expenses:rent-tax");
+        expect(rows[0]!.querySelector("[title]")?.getAttribute("title")).toBe("expenses:rent-tax");
+        expect(rows[0]!.textContent).toContain("auto");
+        expect(rows[0]!.innerHTML).toContain("= expenses:rent tag:_generated-transaction");
+    });
+
+    it("filters by text across descriptions and accounts, case-insensitively", async () => {
+        mount("journal", projection({journal: journalFixture(2)}));
+        const box = screen.getByTestId("forecast-journal-search");
+        await fireEvent.input(box, {target: {value: "  New LAPTOP "}});
+        expect(screen.getAllByTestId("forecast-entry").map((entry) => entry.getAttribute("data-origin"))).toEqual(["event"]);
+        expect(screen.getByTestId("forecast-journal-count").textContent).toContain("Matching 1–1 of 1");
+        // An account matches too — every entry posts to `expenses:rent`.
+        await fireEvent.input(box, {target: {value: "rent"}});
+        expect(screen.getAllByTestId("forecast-entry")).toHaveLength(3);
+        await fireEvent.input(box, {target: {value: "no such thing"}});
+        expect(screen.queryAllByTestId("forecast-entry")).toHaveLength(0);
+        expect(screen.getByTestId("forecast-journal-count").textContent).toContain("No generated transaction matches “no such thing”");
+        await fireEvent.input(box, {target: {value: ""}});
+        expect(screen.getAllByTestId("forecast-entry")).toHaveLength(3);
+    });
+
+    it("starts a new search on its first page", async () => {
+        mount("journal", projection({journal: journalFixture(150)}));
+        await fireEvent.click(screen.getAllByRole("button", {name: "Next page"})[0]!);
+        expect(screen.getByTestId("forecast-journal-count").textContent).toContain("101–151 of 151");
+        await fireEvent.input(screen.getByTestId("forecast-journal-search"), {target: {value: "projection"}});
+        expect(screen.getByTestId("forecast-journal-count").textContent).toContain("Matching 1–100 of 150");
+    });
+
+    it("says a search of a capped list covers only what was listed", async () => {
+        const journal = {...journalFixture(2), total: 9000, truncated: true};
+        mount("journal", projection({journal}));
+        await fireEvent.input(screen.getByTestId("forecast-journal-search"), {target: {value: "rent"}});
+        expect(screen.getByTestId("forecast-journal-count").textContent).toContain("searching the first 3 of 9000 listed");
     });
 
     it("says it is listing while a projection held from another tab has no journal yet", () => {

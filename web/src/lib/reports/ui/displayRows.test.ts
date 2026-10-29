@@ -1,7 +1,7 @@
 import {describe, expect, it} from "vitest";
 import {dec, type MixedAmount} from "#lib/domain/money.js";
-import type {ReportRow} from "#lib/reports/types.js";
-import {compressPeriodRows, compressSectionRows} from "./displayRows";
+import type {IsRow, ReportRow} from "#lib/reports/types.js";
+import {compressIsRows, compressPeriodRows, compressSectionRows} from "./displayRows";
 
 const usd = (cents: number): MixedAmount => new Map([["$", dec(cents, 2)]]);
 const zero = (): MixedAmount => new Map();
@@ -70,6 +70,37 @@ describe("UNIT reports/ui/displayRows", () => {
         it("keeps a parent that differs from its only child in any bucket", () => {
             const rows = [prow("assets", [usd(100), usd(250)]), prow("assets:bank", [usd(100), usd(200)])];
             expect(compressPeriodRows(rows).map((d) => d.label)).toEqual(["assets", "bank"]);
+        });
+    });
+
+    describe("compressIsRows — rows are each account's whole subtree", () => {
+        const isRow = (account: string, columns: number[]): IsRow => ({
+            account,
+            depth: account.split(":").length,
+            amounts: {current: usd(columns.reduce((a, b) => a + b, 0)), values: columns.map((cents) => (cents === 0 ? zero() : usd(cents)))},
+        });
+
+        it("folds a parent with nothing of its own into its only child", () => {
+            const rows = [isRow("expenses:people", [1100, 1100]), isRow("expenses:people:wages", [1100, 1100])];
+            expect(compressIsRows(rows).map((d) => [d.label, d.indent])).toEqual([["expenses:people:wages", 0]]);
+        });
+
+        it("keeps a parent whose subtree reads more than its child — its own postings stay on screen", () => {
+            // `expenses:food` $300 of its own + groceries $200, per column.
+            const rows = [isRow("expenses:food", [500, 500]), isRow("expenses:food:groceries", [200, 200])];
+            expect(compressIsRows(rows).map((d) => [d.label, d.indent])).toEqual([
+                ["expenses:food", 0],
+                ["groceries", 1],
+            ]);
+        });
+
+        it("keeps a parent whose own postings cancel in the Total but not column by column", () => {
+            // Own +$100 in March and −$100 in April: equal Totals, different columns.
+            const rows = [isRow("expenses:food", [300, 100]), isRow("expenses:food:groceries", [200, 200])];
+            expect(compressIsRows(rows).map((d) => [d.label, d.indent])).toEqual([
+                ["expenses:food", 0],
+                ["groceries", 1],
+            ]);
         });
     });
 });

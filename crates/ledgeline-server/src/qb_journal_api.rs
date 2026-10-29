@@ -692,6 +692,7 @@ fn build_posting(
         date2: None,
         comment: posting_comment(posting),
         tags: Vec::new(),
+        generated: None,
     }
 }
 
@@ -1270,6 +1271,7 @@ mod tests {
             date2: None,
             comment: comment.to_string(),
             tags: Vec::new(),
+            generated: None,
         }
     }
 

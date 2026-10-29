@@ -62,6 +62,7 @@
         asColumns,
         bsColumnSummaries,
         bsCursorRows,
+        bsGroupKey,
         columnSectionRows,
         type AmountCell,
         type BsDisplayRow,
@@ -71,17 +72,22 @@
     import ProjectedHeadRow from "./ProjectedHeadRow.svelte";
     import {projectedEdge} from "./projectedColumns";
     import {statementMinWidth} from "./statementGrid";
+    import {newOpenSeed, seedOpenGroups} from "./confDepth";
+    import type {DepthSpec} from "#lib/settings/hledgerConfTypes.js";
 
     let {
         report,
         styles,
         projectedFrom = null,
+        depthSpec = null,
     }: {
         /** A single-date sheet (the Reports tab) or a multi-column one (Projections). */
         report: BalanceSheetReport | BalanceSheetColumns;
         styles: ReadonlyMap<string, AmountStyle>;
         /** The first FORECAST column, drawn as a divider under "Projected"; null for none. */
         projectedFrom?: number | null;
+        /** hledger.conf's `--depth` for `[balancesheet]`: which groups start expanded. Null: all start collapsed. */
+        depthSpec?: DepthSpec | null;
     } = $props();
 
     /** Every sheet as columns: one template, whichever shape arrived. */
@@ -100,6 +106,22 @@
     let open = $state<Record<string, true>>({});
 
     const isExpanded = (key: string): boolean => open[key] === true;
+
+    // hledger.conf's depth opens groups on first sight (see `confDepth.ts`):
+    // each group is decided once per spec, so one the user then collapses
+    // stays collapsed across a refetch. The seed is a plain `let` — this effect
+    // writes `open` and must not read what it writes.
+    const seed = newOpenSeed();
+    $effect(() => {
+        for (const key of seedOpenGroups(
+            seed,
+            sheet.sections.flatMap((section) =>
+                section.groups.map((group) => ({key: bsGroupKey(section.kind, group.name, group.term), accounts: group.rows.map((row) => row.account)}))
+            ),
+            depthSpec
+        ))
+            open[key] = true;
+    });
 
     function toggle(key: string): void {
         if (open[key] === true) delete open[key];

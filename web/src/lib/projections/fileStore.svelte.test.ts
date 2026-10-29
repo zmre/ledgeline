@@ -50,6 +50,8 @@ const fileBody = (revision: string, mantissa: string) => ({
         ],
         events: [],
         cash: null,
+        autoRules: [],
+        accountTypes: {},
     },
 });
 

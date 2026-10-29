@@ -44,13 +44,15 @@
     import type {Amounts, IncomeStatementReport, IsSectionKind} from "#lib/reports/types.js";
     import {settings} from "#lib/stores/settings.svelte.js";
     import {listCursor} from "#lib/ui/listCursor.svelte.js";
-    import {amountCell, fmtPct, isCursorRows, isDisplayModel, type AmountCell, type IsDisplayRow} from "./incomeStatementRows";
+    import {amountCell, fmtPct, isCursorRows, isDisplayModel, isGroupKey, type AmountCell, type IsDisplayRow} from "./incomeStatementRows";
     import FigureColgroup from "./FigureColgroup.svelte";
     import ProjectedHeadRow from "./ProjectedHeadRow.svelte";
     import {projectedEdge} from "./projectedColumns";
     import SankeyPanel from "./SankeyPanel.svelte";
     import {type FlowsPanel} from "./sankeyModel";
     import {statementMinWidth} from "./statementGrid";
+    import {newOpenSeed, seedOpenGroups} from "./confDepth";
+    import type {DepthSpec} from "#lib/settings/hledgerConfTypes.js";
 
     // `flows` is OPTIONAL with a null default deliberately: it keeps
     // IncomeStatementView.svelte.test.ts scoped exactly as it was written, and
@@ -63,7 +65,15 @@
         styles,
         flows = null,
         projectedFrom = null,
-    }: {report: IncomeStatementReport; styles: ReadonlyMap<string, AmountStyle>; flows?: FlowsPanel | null; projectedFrom?: number | null} = $props();
+        depthSpec = null,
+    }: {
+        report: IncomeStatementReport;
+        styles: ReadonlyMap<string, AmountStyle>;
+        flows?: FlowsPanel | null;
+        projectedFrom?: number | null;
+        /** hledger.conf's `--depth` for `[incomestatement]`: which groups start expanded. Null: all start collapsed. */
+        depthSpec?: DepthSpec | null;
+    } = $props();
 
     /**
      * Which groups are open, keyed by `IsDisplayRow.key`.
@@ -77,6 +87,22 @@
     let open = $state<Record<string, true>>({});
 
     const isExpanded = (key: string): boolean => open[key] === true;
+
+    // hledger.conf's depth opens groups on first sight (see `confDepth.ts`):
+    // each group is decided once per spec, so one the user then collapses
+    // stays collapsed across a refetch. The seed is a plain `let` — this effect
+    // writes `open` and must not read what it writes.
+    const seed = newOpenSeed();
+    $effect(() => {
+        for (const key of seedOpenGroups(
+            seed,
+            report.sections.flatMap((section) =>
+                section.groups.map((group) => ({key: isGroupKey(section.kind, group.name), accounts: group.rows.map((row) => row.account)}))
+            ),
+            depthSpec
+        ))
+            open[key] = true;
+    });
 
     function toggle(key: string): void {
         if (open[key] === true) delete open[key];

@@ -46,6 +46,17 @@ fn journal_fixture(relative: &str) -> Journal {
 }
 
 fn report(journal: &Journal, from: &str, to: &str, value: Valuation, compare: bool) -> Report {
+    report_at(journal, from, to, value, compare, None)
+}
+
+fn report_at(
+    journal: &Journal,
+    from: &str,
+    to: &str,
+    value: Valuation,
+    compare: bool,
+    depth: Option<usize>,
+) -> Report {
     Report(
         income_statement_grouped(
             &journal.transactions,
@@ -56,6 +67,7 @@ fn report(journal: &Journal, from: &str, to: &str, value: Valuation, compare: bo
                 value,
                 value_in: None,
                 compare,
+                depth,
             },
             &declared_types(&account_decls(journal)),
             &account_sections(journal),
@@ -1630,4 +1642,173 @@ account equity:owner  ; type: E, issection: other
         None,
         "only the recognized revenue",
     );
+}
+
+// ===========================================================================
+// A parent row is its whole subtree
+// ===========================================================================
+
+/// The report (2026-10-28): on the Projections tab, wages forecast per person
+/// under `expenses:people-costs:wages-salaries:{george,john}` rolled up into
+/// the group but left `wages-salaries` itself reading zero, because a row held
+/// only what was posted to that account DIRECTLY. The view draws rows as an
+/// indented tree, so a parent must read as its subtree, as `hledger is --tree`
+/// prints it:
+///
+/// ```text
+/// $ hledger -f tree.journal is --tree -b 2026-02-01 -e 2026-03-01
+///  expenses                      ||  $1400.00
+///    office:rent                 ||   $300.00
+///    people-costs:wages-salaries ||  $1100.00
+///      george                    ||   $600.00
+///      john                      ||   $500.00
+/// ```
+///
+/// The group total is unchanged: it is summed over members, never over rows.
+/// The wages journal both tests below read: a parent with postings of its own
+/// in January, children only in February, and a sibling whose name merely
+/// starts with the parent's.
+fn wages_journal() -> Journal {
+    parse_journal(
+        "account expenses  ; type: X\n\
+         account assets:checking  ; type: C\n\
+         \n\
+         2026-01-05 wages\n    expenses:people-costs:wages-salaries          $1000.00\n    assets:checking\n\n\
+         2026-02-05 george\n    expenses:people-costs:wages-salaries:george    $600.00\n    assets:checking\n\n\
+         2026-02-05 john\n    expenses:people-costs:wages-salaries:john      $500.00\n    assets:checking\n\n\
+         2026-02-06 rent\n    expenses:office:rent                           $300.00\n    assets:checking\n\n\
+         2026-02-07 bonus\n    expenses:people-costs:wages-salaries2           $50.00\n    assets:checking\n",
+        "tree.journal",
+    )
+    .expect("parses")
+}
+
+#[test]
+fn a_parent_row_reads_as_its_subtree_as_hledger_tree_prints_it() {
+    let journal = wages_journal();
+    let report = report(&journal, "2026-02-01", "2026-02-28", Valuation::Cost, true);
+    let rows: BTreeMap<&str, &Amounts> = report
+        .section(IsSectionKind::Opex)
+        .groups
+        .iter()
+        .flat_map(|group| &group.rows)
+        .map(|row| (row.account.as_str(), &row.amounts))
+        .collect();
+    // Current = February, prior = January.
+    assert_amounts(
+        rows["expenses:people-costs:wages-salaries"],
+        110_000,
+        Some(100_000),
+        "wages-salaries is its subtree",
+    );
+    assert_amounts(
+        rows["expenses:people-costs:wages-salaries:george"],
+        60_000,
+        Some(0),
+        "george",
+    );
+    assert_amounts(
+        rows["expenses:people-costs:wages-salaries:john"],
+        50_000,
+        Some(0),
+        "john",
+    );
+    assert_amounts(rows["expenses:office:rent"], 30_000, Some(0), "rent");
+    // A sibling whose name merely STARTS with the parent's is not beneath it.
+    assert_amounts(
+        rows["expenses:people-costs:wages-salaries2"],
+        5_000,
+        Some(0),
+        "wages-salaries2 is a sibling",
+    );
+    let people = report
+        .section(IsSectionKind::Opex)
+        .groups
+        .iter()
+        .find(|group| {
+            group
+                .rows
+                .iter()
+                .any(|row| row.account.ends_with(":george"))
+        })
+        .expect("the people-costs group");
+    assert_amounts(&people.total, 115_000, Some(100_000), "the group total");
+}
+
+/// The Projections tab's depth slider (2026-10-28: it changed nothing on the
+/// income statement). A deeper account FOLDS into its ancestor at the depth,
+/// as `hledger is --tree --depth N` prints it, rather than disappearing:
+///
+/// ```text
+/// --depth 3                          --depth 2
+///    office:rent       ||  $300.00      office       ||  $300.00
+///    people-costs      || $1150.00      people-costs || $1150.00
+///      wages-salaries  || $1100.00
+///      wages-salaries2 ||   $50.00
+/// ```
+///
+/// The group and section totals are the same at every depth.
+#[test]
+fn a_depth_folds_deeper_accounts_into_their_ancestor_as_hledger_does() {
+    let journal = wages_journal();
+    let rows_at = |depth: Option<usize>| -> Vec<(String, i128)> {
+        let report = report_at(
+            &journal,
+            "2026-02-01",
+            "2026-02-28",
+            Valuation::Cost,
+            false,
+            depth,
+        );
+        let section = report.section(IsSectionKind::Opex);
+        assert_amounts(
+            &section.total,
+            145_000,
+            None,
+            &format!("the section at {depth:?}"),
+        );
+        section
+            .groups
+            .iter()
+            .flat_map(|group| &group.rows)
+            .map(|row| {
+                // `canon` strips trailing zeros; scale back up to cents.
+                let cents = canon(&row.amounts.current)
+                    .get("$")
+                    .map_or(0, |(m, p)| m * 10_i128.pow(2 - p));
+                (row.account.clone(), cents)
+            })
+            .collect()
+    };
+    let owned = |rows: &[(&str, i128)]| -> Vec<(String, i128)> {
+        rows.iter().map(|(a, c)| ((*a).to_string(), *c)).collect()
+    };
+    assert_eq!(
+        rows_at(Some(3)),
+        owned(&[
+            ("expenses:office:rent", 30_000),
+            ("expenses:people-costs:wages-salaries", 110_000),
+            ("expenses:people-costs:wages-salaries2", 5_000),
+        ])
+    );
+    assert_eq!(
+        rows_at(Some(2)),
+        owned(&[
+            ("expenses:office", 30_000),
+            ("expenses:people-costs", 115_000)
+        ])
+    );
+    assert_eq!(rows_at(Some(0)), owned(&[]));
+    // No depth is every account with postings in the window — george and
+    // john included; `wages-salaries` itself posted only in January.
+    assert_eq!(
+        rows_at(None),
+        owned(&[
+            ("expenses:office:rent", 30_000),
+            ("expenses:people-costs:wages-salaries2", 5_000),
+            ("expenses:people-costs:wages-salaries:george", 60_000),
+            ("expenses:people-costs:wages-salaries:john", 50_000),
+        ])
+    );
+    assert_eq!(rows_at(Some(9)), rows_at(None));
 }

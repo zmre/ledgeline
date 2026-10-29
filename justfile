@@ -30,6 +30,8 @@ test-integration port="5055":
     # suite both have to know it. Every wire and /api route is token-gated, so an
     # unauthenticated probe gets a 401 and `curl -fsS` exits 22.
     export LEDGELINE_TOKEN=ledgeline-integration-token
+    # The server must never read the developer's own ~/.hledger.conf.
+    export LEDGELINE_IGNORE_USER_HLEDGER_CONF=1
     cargo build -p ledgeline
     ./target/debug/ledgeline --server fixtures/sample.journal --port {{port}} &
     server=$!
@@ -164,7 +166,10 @@ hledger-checks:
     LEDGELINE_HLEDGER_IMPORT_CHECK=1 cargo test -p ledgeline --test import_endpoints
     LEDGELINE_HLEDGER_IMPORT_CHECK=1 cargo test -p ledgeline --test import_cli
     LEDGELINE_HLEDGER_QBJOURNAL_CHECK=1 cargo test -p ledgeline --test qb_journal_hledger_check
+    LEDGELINE_HLEDGER_CONF_CHECK=1 cargo test -p ledgeline --test conf_endpoints
     LEDGELINE_HLEDGER_PROJECTION_CHECK=1 cargo test -p ledgeline-core --test projection_files
+    LEDGELINE_HLEDGER_PROJECTION_CHECK=1 cargo test -p ledgeline-core --lib every_period_form_fires_on_hledger_s_dates
+    LEDGELINE_HLEDGER_AUTO_CHECK=1 cargo test -p ledgeline-core --test auto_journal
 
 # Snapshot raw hledger-web JSON API responses into fixtures/api/vVERSION/
 snapshot-api:
@@ -184,6 +189,8 @@ snapshot-native port="5078":
     # A pinned token, not a random one: the snapshot must be reproducible, and
     # this server only ever sees fixtures/sample.journal on loopback.
     export LEDGELINE_TOKEN=ledgeline-native-fixture-token
+    # The server must never read the developer's own ~/.hledger.conf.
+    export LEDGELINE_IGNORE_USER_HLEDGER_CONF=1
     out=fixtures/native/v1
     cargo build -p ledgeline
     ./target/debug/ledgeline --server fixtures/sample.journal --port {{port}} &

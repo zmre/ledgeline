@@ -1,0 +1,15 @@
+; The `=` rules, in an included file: they reach the main journal's
+; transactions through `include`, as in hledger.
+
+; Sales tax collected on every sale.
+= revenue:sales
+    liabilities:tax:sales      *0.1
+    assets:checking
+
+; Matches through the `taxable:` tag `expenses:food` declares.
+= tag:taxable
+    (budget:tax-reserve)       *0.05
+
+= expenses:subscriptions
+    expenses:tax               *0.08
+    assets:checking

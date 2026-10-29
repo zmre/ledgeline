@@ -75,7 +75,7 @@ describe("UNIT projectionView — reading one commodity out of a mixed amount", 
 
     it("falls back only when the projection names no commodity at all", () => {
         // Only the runway's cash is charted, so only it is counted.
-        const empty = projection({cash: {opening: new Map(), values: []}});
+        const empty = projection({cash: {opening: new Map(), values: [], history: []}});
         expect(chartCommodity(empty, "£")).toBe("£");
     });
 
@@ -87,14 +87,15 @@ describe("UNIT projectionView — reading one commodity out of a mixed amount", 
                     ["EUR", 3],
                 ]),
                 values: [usd(1), usd(2)],
+                history: [],
             },
         });
         expect(otherCommodities(mixed, "$")).toEqual(["EUR"]);
         expect(otherCommodities(projection(), "$")).toEqual([]);
     });
 
-    it("an opening balance is a real figure, kept beside the closing ones", () => {
-        expect(balanceNumbers(projection().cash, "$")).toEqual({opening: 10000, values: [14800, 19600]});
+    it("an opening balance is a real figure, kept beside the closing ones and the actual months before them", () => {
+        expect(balanceNumbers(projection().cash, "$")).toEqual({opening: 10000, values: [14800, 19600], history: [8000, 10000]});
     });
 });
 
@@ -125,17 +126,17 @@ describe("UNIT projectionView — the runway, in words", () => {
     });
 
     it("a falling but still-positive balance says it is drawing down", () => {
-        const falling = projection({cash: {opening: usd(10000), values: [usd(8000), usd(6000)]}});
+        const falling = projection({cash: {opening: usd(10000), values: [usd(8000), usd(6000)], history: []}});
         expect(runwayStatement(falling, "monthly", "$", format).detail).toBe("It draws down by $2000.00 a month on average, ending at $6000.00.");
     });
 
     it("a flat balance says it ends where it started, rather than claiming a build of zero", () => {
-        const flat = projection({cash: {opening: usd(10000), values: [usd(10000), usd(10000)]}});
+        const flat = projection({cash: {opening: usd(10000), values: [usd(10000), usd(10000)], history: []}});
         expect(runwayStatement(flat, "monthly", "$", format).detail).toBe("It ends where it started, at $10000.00.");
     });
 
     it("an empty window makes no claim at all", () => {
-        const nothing = projection({buckets: [], cash: {opening: usd(0), values: []}});
+        const nothing = projection({buckets: [], cash: {opening: usd(0), values: [], history: []}});
         expect(runwayStatement(nothing, "monthly", "$", format)).toEqual({tone: "none", headline: "Nothing is projected over this window.", detail: null});
     });
 });

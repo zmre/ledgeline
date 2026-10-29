@@ -20,7 +20,9 @@
 
 import type {Dec, MixedAmount} from "#lib/domain/money.js";
 import type {ISODate, Transaction} from "#lib/domain/types.js";
-import type {BalanceSheetColumns, CashFlowStatement, IncomeStatementReport, PeriodReport} from "#lib/reports/types.js";
+import type {AutoRuleForm} from "#lib/autoRules/ruleForm.js";
+import type {AccountType} from "#lib/domain/accountClass.js";
+import type {AccountReport, BalanceSheetColumns, CashFlowStatement, IncomeStatementReport} from "#lib/reports/types.js";
 
 /** The unit a growth rate steps on. */
 export type GrowthUnit = "week" | "month" | "year";
@@ -220,12 +222,46 @@ export interface Scenario {
     events: ScenarioEvent[];
     /** `; cash:` — the scenario's default counter-account, or `null`. */
     cash: string | null;
+    /** The scenario file's `= QUERY` auto-posting rules, applied to every projected transaction (plan 30). */
+    autoRules: AutoRule[];
+    /**
+     * The account types the scenario FILE itself declares (`account hmrc:paye  ; type: L`); empty for a seed.
+     * The engine read every sign it served — a rule form's percentages, a line's section — with these winning
+     * over the main journal's, so they go back with the scenario and the engine reads edits the same way.
+     * Optional so a scenario built here (or by an older engine) needs none.
+     */
+    accountTypes?: Readonly<Record<string, AccountType>>;
+}
+
+/**
+ * One `= QUERY` auto-posting rule.
+ *
+ * `raw` is the fact for a rule nobody has touched: it goes back as it came, so
+ * the file keeps its bytes. Once `edited`, the FORM is what is sent, and the
+ * engine renders it. `form` is `null` for a rule the editor cannot state —
+ * shown raw and locked (plan 21's contract).
+ */
+export interface AutoRule {
+    /** The whole block as the file writes it, each line ending in a newline. Empty for a rule added here. */
+    raw: string;
+    /** The query, as written. */
+    query: string;
+    /** Why the rule never fires, or `null` when it does. */
+    unsupported: string | null;
+    /** The rule as a form, or `null` when the form cannot state it. */
+    form: AutoRuleForm | null;
+    /** Its position among the file's `=` blocks, or `null` for a rule the file does not hold yet. A save rewrites that block. */
+    block: number | null;
+    /** UI-only: the form was edited (or the rule added) here, so the form, not `raw`, is sent. Never on the wire. */
+    edited?: boolean;
 }
 
 /** An opening balance and each bucket's closing balance. `opening` is a real figure from the journal. */
 export interface BalanceSeries {
     opening: MixedAmount;
     values: MixedAmount[];
+    /** The REAL closing balance at the end of each lookback period, oldest → newest; empty with no lookback. */
+    history: MixedAmount[];
 }
 
 /** Where the cash crosses zero. `label` is the engine's, so a sentence never has to index back into `buckets`. */
@@ -308,23 +344,14 @@ export interface Projection {
     incomeStatement: IncomeStatementReport;
     cashFlow: CashFlowStatement;
     defaults: ForecastDefaults;
-    /** Every account per column (`hledger balance`), when the run asked for it; null otherwise. */
-    accounts: PeriodReport | null;
+    /** Every account per column, each section read its own way, when the run asked for it; null otherwise. */
+    accounts: AccountReport | null;
     /** The generated transactions, when the run asked for them; null otherwise. */
     journal: ForecastJournal | null;
 }
 
-/**
- * The Accounts tab's two readings of one set of columns: each period's
- * movement (`hledger balance`, the default) or the balance at its end
- * (`hledger balance -H`).
- */
-export type AccountsMode = "change" | "balance";
-export const ACCOUNTS_MODES: readonly AccountsMode[] = ["change", "balance"];
-
 /** What the run is asked to compute beyond the four readings every run carries. */
 export interface AccountsRequest {
-    mode: AccountsMode;
     /** Rows for declared and known accounts with nothing in any column (`-E --declared`). */
     empty: boolean;
 }
@@ -341,6 +368,8 @@ export const FORECAST_ORIGIN_KINDS: readonly ForecastOrigin["kind"][] = ["rule",
 export interface ForecastEntry {
     origin: ForecastOrigin;
     txn: Transaction;
+    /** Lowercase search text from the engine (core's `haystack`), the same text the Journal tab's free-text filter searches. */
+    haystack: string;
 }
 
 /** The forecast journal: generated transactions only, date-ascending, capped by the engine. */

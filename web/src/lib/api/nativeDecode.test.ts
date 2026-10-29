@@ -32,6 +32,7 @@ import {
     decodeSectionedReport,
     decodeSubscriptionsReport,
 } from "./nativeDecode";
+import {cloneScenario, scenarioToWire} from "#lib/projections/scenarioModel.js";
 
 // The native wire has no codegen: these decoders mirror 28 `Wire*` structs in
 // crates/ledgeline-server/src/reports_api.rs BY HAND (CLEANUP.md DRY-3).
@@ -2003,7 +2004,7 @@ const PROJECTION_RUN = {
         lines: {"rule:0": "assets:bank:checking"},
         events: {legal: "assets:bank:savings"},
     },
-    cash: {opening: {$: dec(500000, 2)}, values: [{$: dec(80000, 2)}, {$: dec(-340000, 2)}]},
+    cash: {opening: {$: dec(500000, 2)}, values: [{$: dec(80000, 2)}, {$: dec(-340000, 2)}], history: [{$: dec(450000, 2)}]},
     runway: {bucket: 1, label: "Sep 2026", date: "2026-09-30", periods: 2},
     // The per-row asset attribution (plan 23, Phase 3), which the Balance
     // column and the net-worth breakdown read. Two rows, and the second is
@@ -2036,16 +2037,22 @@ const PROJECTION_RUN = {
             {key: "2026-08", label: "Aug 2026", start: "2026-08-01", end: "2026-08-31"},
             {key: "2026-09", label: "Sep 2026", start: "2026-09-01", end: "2026-09-30"},
         ],
-        rows: [
+        sections: [
             {
-                account: "expenses:rent",
-                depth: 2,
-                values: [{}, {$: dec(420000, 2)}, {$: dec(420000, 2)}],
-                total: {$: dec(840000, 2)},
+                section: "expenses",
+                reading: "change",
+                rows: [
+                    {
+                        account: "expenses:rent",
+                        depth: 2,
+                        values: [{}, {$: dec(420000, 2)}, {$: dec(420000, 2)}],
+                        summary: {$: dec(840000, 2)},
+                    },
+                ],
+                totals: [{}, {$: dec(420000, 2)}, {$: dec(420000, 2)}],
+                summary: {$: dec(840000, 2)},
             },
         ],
-        totals: [{}, {}, {}],
-        grandTotal: {},
     },
     // One generated transaction, in the journal view's own row shape.
     journal: {
@@ -2054,6 +2061,7 @@ const PROJECTION_RUN = {
         entries: [
             {
                 origin: {kind: "rule", key: "rule:0"},
+                haystack: "projection\ngenerated-transaction: ~ monthly\nexpenses:rent\n$4,200.00\n$",
                 txn: {
                     index: 401,
                     date: "2026-08-01",
@@ -2157,8 +2165,69 @@ const SCENARIO_FILE = {
             },
         ],
         cash: null,
+        autoRules: [],
+        accountTypes: {},
     },
 };
+
+describe("UNIT nativeDecode — a scenario's auto rules (plan 30 Phase 4)", () => {
+    const base = golden("projections-seed") as Record<string, unknown>;
+    const form = {
+        matchAccount: "revenue:sales",
+        extraQuery: "",
+        postings: [
+            {account: "expenses:commission", kind: "percent", percent: {mantissa: "35", places: 1}, amount: null},
+            {account: "expenses:fee", kind: "fixed", percent: null, amount: {commodity: "$", quantity: {mantissa: "25", places: 0}, precision: 0}},
+        ],
+        counter: "assets:checking",
+        comment: "sales",
+        forecastOnly: true,
+    };
+    const rule = {
+        raw: "= ^revenue:sales(:|$) tag:_generated-transaction\n",
+        query: "^revenue:sales(:|$) tag:_generated-transaction",
+        unsupported: null,
+        form,
+        block: 3,
+    };
+
+    it("decodes a rule's form and block, and a locked rule's null form", () => {
+        const scenario = decodeScenario({...base, autoRules: [rule, {...rule, form: null, block: null}]});
+        expect(scenario.autoRules[0]).toEqual({
+            ...rule,
+            form: {
+                ...form,
+                postings: [
+                    {account: "expenses:commission", kind: "percent", percent: {m: 35n, p: 1}, amount: null},
+                    {account: "expenses:fee", kind: "fixed", percent: null, amount: {commodity: "$", quantity: {m: 25n, p: 0}, precision: 0}},
+                ],
+            },
+        });
+        expect(scenario.autoRules[1]).toMatchObject({form: null, block: null});
+    });
+
+    it("refuses a rule missing its form or block, or a posting carrying the other kind's number", () => {
+        expect(() => decodeScenario({...base, autoRules: [without(rule, "form")]})).toThrow(ApiShapeError);
+        expect(() => decodeScenario({...base, autoRules: [without(rule, "block")]})).toThrow(ApiShapeError);
+        const crossed = {...form, postings: [{...form.postings[0], kind: "fixed"}]};
+        expect(() => decodeScenario({...base, autoRules: [{...rule, form: crossed}]})).toThrow(ApiShapeError);
+        expect(() => decodeScenario({...base, autoRules: [{...rule, form: {...form, postings: [{...form.postings[0], kind: "share"}]}}]})).toThrow(
+            ApiShapeError
+        );
+    });
+
+    it("round-trips the scenario file's own account types, so an edited rule is signed as it was served", () => {
+        const scenario = decodeScenario({...base, accountTypes: {"hmrc:paye": "liability"}});
+        expect(scenario.accountTypes).toEqual({"hmrc:paye": "liability"});
+        expect(scenarioToWire(cloneScenario(scenario)).accountTypes).toEqual({"hmrc:paye": "liability"});
+    });
+
+    it("refuses absent account types, or a type it does not know", () => {
+        expect(() => decodeScenario(without(base, "accountTypes"))).toThrow(ApiShapeError);
+        expect(() => decodeScenario({...base, accountTypes: {"hmrc:paye": "debt"}})).toThrow(ApiShapeError);
+        expect(() => decodeScenario({...base, accountTypes: ["hmrc:paye"]})).toThrow(ApiShapeError);
+    });
+});
 
 describe("UNIT nativeDecode — the projection seed over its golden", () => {
     const raw = golden("projections-seed");
@@ -2360,11 +2429,22 @@ describe("UNIT nativeDecode — a projection run", () => {
         expect(decodeProjection({...PROJECTION_RUN, assets: []}).assets).toEqual([]);
     });
 
-    it("decodes the Accounts reading through the period report's own decoder", () => {
+    it("decodes the Accounts reading: sections, each saying how it reads", () => {
         const accounts = decodeProjection(PROJECTION_RUN).accounts;
         expect(accounts?.periods.map((period) => period.label)).toEqual(["Jul 2026", "Aug 2026", "Sep 2026"]);
-        expect(accounts?.rows[0]?.total?.get("$")).toEqual({m: 840000n, p: 2});
-        expect(accounts?.grandTotal).toBeDefined();
+        expect([accounts?.sections[0]?.section, accounts?.sections[0]?.reading]).toEqual(["expenses", "change"]);
+        expect(accounts?.sections[0]?.rows[0]?.summary.get("$")).toEqual({m: 840000n, p: 2});
+    });
+
+    it("refuses an Accounts section it does not know, a reading it does not know, or a short column array", () => {
+        const section = PROJECTION_RUN.accounts.sections[0]!;
+        const withSection = (patch: Record<string, unknown>) => ({
+            ...PROJECTION_RUN,
+            accounts: {...PROJECTION_RUN.accounts, sections: [{...section, ...patch}]},
+        });
+        expect(() => decodeProjection(withSection({section: "income"}))).toThrow(ApiShapeError);
+        expect(() => decodeProjection(withSection({reading: "historical"}))).toThrow(ApiShapeError);
+        expect(() => decodeProjection(withSection({totals: [{}, {}]}))).toThrow(ApiShapeError);
     });
 
     it("decodes the generated transactions as journal rows, each with its origin", () => {
@@ -2384,6 +2464,13 @@ describe("UNIT nativeDecode — a projection run", () => {
         expect(none.journal).toBeNull();
         expect(() => decodeProjection(without(PROJECTION_RUN, "accounts"))).toThrow(ApiShapeError);
         expect(() => decodeProjection(without(PROJECTION_RUN, "journal"))).toThrow(ApiShapeError);
+    });
+
+    it("carries each entry's search text, and refuses an entry without one", () => {
+        expect(decodeProjection(PROJECTION_RUN).journal?.entries[0]?.haystack).toContain("expenses:rent");
+        const entry = PROJECTION_RUN.journal.entries[0]!;
+        const bare = {...PROJECTION_RUN, journal: {...PROJECTION_RUN.journal, entries: [without(entry, "haystack")]}};
+        expect(() => decodeProjection(bare)).toThrow(ApiShapeError);
     });
 
     it("refuses an origin of an unknown kind, and more entries than the total", () => {

@@ -14,6 +14,7 @@ use super::sections::build_section;
 use super::types::{ReportMeta, SectionedReport};
 use crate::model::{AccountDeclaration, Commodity, Journal, PriceDirective, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Bound;
 
 /// Revenues + expenses over `[from, to]` (both INCLUSIVE). Presentation matches
 /// `hledger is`: revenues are sign-flipped (positive = earned); `grand_total` =
@@ -129,6 +130,11 @@ pub struct IsOpts<'a> {
     /// Also report the immediately preceding window of equal length. Ignored by
     /// [`income_statement_columns`], which has no prior comparison.
     pub compare: bool,
+    /// Clip each group's rows to this many account segments, as
+    /// `hledger is --depth N` does: a deeper account folds into its ancestor
+    /// rather than disappearing. `None` lists every account (the Reports tab,
+    /// which has no depth control); `Some(0)` lists none. Totals never change.
+    pub depth: Option<usize>,
 }
 
 /// An inclusive date range — the window a set of `prior` figures covers.
@@ -254,7 +260,10 @@ pub struct IsRow<A = Amounts> {
     pub account: String,
     /// Number of `:`-separated segments in `account`.
     pub depth: usize,
-    /// The account's own total, displayed with its section's sign.
+    /// The account's total INCLUDING every member of its group beneath it,
+    /// displayed with its section's sign — the figure `hledger is --tree`
+    /// prints for it. Group and section totals never sum these rows; they sum
+    /// the members directly, so nothing here is counted twice.
     pub amounts: A,
 }
 
@@ -560,8 +569,16 @@ impl Windows {
     /// account names — never over displayed rows — so a group total, a section
     /// total and net income cannot disagree (RPT-1/RPT-4).
     fn sum(&self, accounts: &BTreeSet<String>) -> Result<Figures, ReportError> {
+        self.sum_of(accounts)
+    }
+
+    /// [`sum`](Self::sum) over any run of member names.
+    fn sum_of<'a>(
+        &self,
+        accounts: impl IntoIterator<Item = &'a String>,
+    ) -> Result<Figures, ReportError> {
         accounts
-            .iter()
+            .into_iter()
             .try_fold(Figures::zero(self.totals.len()), |acc, account| {
                 acc.ma_add(&self.amounts(account))
             })
@@ -797,6 +814,7 @@ fn build_groups<A>(
     declared: &BTreeMap<String, String>,
     windows: &Windows,
     flip: bool,
+    depth: Option<usize>,
     shape: Shape<A>,
 ) -> Result<Vec<IsGroup<A>>, ReportError> {
     let mut buckets: BTreeMap<String, (GroupSource, BTreeSet<String>)> = BTreeMap::new();
@@ -818,20 +836,68 @@ fn build_groups<A>(
             Ok(IsGroup {
                 name,
                 source,
-                rows: accounts
-                    .iter()
-                    .map(|account| {
-                        Ok(IsRow {
-                            depth: account.split(':').count(),
-                            amounts: shape(windows.amounts(account).signed(flip)?)?,
-                            account: account.clone(),
-                        })
-                    })
-                    .collect::<Result<_, ReportError>>()?,
+                rows: group_rows(&accounts, windows, flip, depth, shape)?,
                 total: shape(windows.sum(&accounts)?.signed(flip)?)?,
             })
         })
         .collect()
+}
+
+/// One group's rows: its members, CLIPPED to `depth` segments when there is
+/// one, each reading as its whole subtree within the group.
+///
+/// The subtree is what the view's indented tree needs — a parent reads as
+/// everything beneath it, as `hledger is --tree` prints it — and it is also
+/// what makes the clip hledger's: under `--depth 3`,
+/// `expenses:people-costs:wages-salaries:george` is not dropped but folded
+/// into `expenses:people-costs:wages-salaries`, which may not be a member
+/// itself. `Some(0)` is hledger's totals-only: no rows. `None` is no clamp,
+/// which is what the Reports tab asks for.
+///
+/// Only this group's members count, so an ancestor shared with another group
+/// never borrows its figures; and totals are summed over members, never over
+/// these rows, so nothing here can move a number.
+fn group_rows<A>(
+    accounts: &BTreeSet<String>,
+    windows: &Windows,
+    flip: bool,
+    depth: Option<usize>,
+    shape: Shape<A>,
+) -> Result<Vec<IsRow<A>>, ReportError> {
+    let names: BTreeSet<&str> = match depth {
+        Some(0) => BTreeSet::new(),
+        Some(depth) => accounts
+            .iter()
+            .map(|account| clip(account, depth))
+            .collect(),
+        None => accounts.iter().map(String::as_str).collect(),
+    };
+    names
+        .into_iter()
+        .map(|account| {
+            // Every name under `account:` sorts into one contiguous run right
+            // after that prefix, so the subtree is a range read, not a scan of
+            // the whole group per row.
+            let prefix = format!("{account}:");
+            let below = accounts
+                .range::<str, _>((Bound::Included(prefix.as_str()), Bound::Unbounded))
+                .take_while(|member| member.starts_with(&prefix));
+            let own = accounts.get(account);
+            Ok(IsRow {
+                depth: account.split(':').count(),
+                amounts: shape(windows.sum_of(own.into_iter().chain(below))?.signed(flip)?)?,
+                account: account.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// `account`'s first `depth` segments (`depth` ≥ 1).
+fn clip(account: &str, depth: usize) -> &str {
+    match account.match_indices(':').nth(depth.max(1) - 1) {
+        Some((cut, _)) => &account[..cut],
+        None => account,
+    }
 }
 
 /// A grouped, market-valued income statement whose GAAP subtotal ladder appears
@@ -1078,7 +1144,14 @@ fn statement_from<A>(
         let section_members = members.remove(&rung.kind).unwrap_or_default();
         let sum = windows.sum(&section_members)?;
         contributions.insert(rung.kind, sum.ma_neg()?);
-        let lines = build_groups(&section_members, groups, &windows, rung.flip, shape)?;
+        let lines = build_groups(
+            &section_members,
+            groups,
+            &windows,
+            rung.flip,
+            opts.depth,
+            shape,
+        )?;
         if !lines.is_empty() {
             boxes.insert(rung.kind, (lines, shape(sum.signed(rung.flip)?)?));
         }

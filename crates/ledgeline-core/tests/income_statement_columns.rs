@@ -33,6 +33,7 @@ fn opts(from: &'static str, to: &'static str, value: Valuation) -> IsOpts<'stati
         value,
         value_in: None,
         compare: false,
+        depth: None,
     }
 }
 

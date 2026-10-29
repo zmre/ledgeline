@@ -32,8 +32,8 @@ export function amountIn(value: MixedAmount, commodity: string): number {
 }
 
 /** A balance series as plain numbers: the opening figure and one closing figure per bucket. */
-export function balanceNumbers(series: BalanceSeries, commodity: string): {opening: number; values: number[]} {
-    return {opening: amountIn(series.opening, commodity), values: seriesOf(series.values, commodity)};
+export function balanceNumbers(series: BalanceSeries, commodity: string): {opening: number; values: number[]; history: number[]} {
+    return {opening: amountIn(series.opening, commodity), values: seriesOf(series.values, commodity), history: seriesOf(series.history, commodity)};
 }
 
 /**
@@ -45,6 +45,7 @@ export function balanceNumbers(series: BalanceSeries, commodity: string): {openi
  */
 function* projectionAmounts(projection: Projection): Generator<MixedAmount> {
     yield projection.cash.opening;
+    yield* projection.cash.history;
     yield* projection.cash.values;
 }
 

@@ -292,6 +292,18 @@ number.
 >   it actually bites — membership is decided on the direct per-account totals,
 >   before any valuation — so a shared ancestor like `expenses` can never net
 >   children belonging to different boxes.
+>
+>   **Reversed 2026-10-28.** A row now reads as its whole subtree WITHIN its
+>   group (`IsRow::amounts`), as `hledger is --tree` prints it and as the
+>   balance sheet's rows already did. The double-count worry was about a reader
+>   adding a parent to its children. But the view draws them as an indented
+>   tree, where an inclusive parent is the convention. The direct reading also
+>   broke in practice: on the Projections tab, wage lines on
+>   `…:wages-salaries:george` and `…:john` left `wages-salaries` at zero in
+>   every projected column. Totals still sum members, never rows, so no number
+>   can move. The web fold rule (`compressIsRows`) now also compares each
+>   interval column, so a parent whose own postings cancel in the Total is never
+>   folded away. Pinned by `income_statement_grouped.rs::a_parent_row_reads_as_its_subtree_as_hledger_tree_prints_it`.
 > - **`multi_step` is read off the sections that RENDER, not raw membership.**
 >   The two differ only for a tagged account that is zero in both windows, and
 >   the literal rule would then retitle every box and print an "Operating income"

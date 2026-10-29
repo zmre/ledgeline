@@ -56,3 +56,41 @@ test("settings: a bookmarked /imports?tab=aliases URL is forwarded", async ({pag
     await page.goto("/imports");
     await expect(page.getByRole("tab", {name: "Account Aliases"})).toHaveCount(0);
 });
+
+test("settings: the hledger config tab shows the file in force and its controls, read-only here", async ({page}) => {
+    // Nothing is saved: a save would create fixtures/hledger.conf (the engine
+    // is told to ignore the developer's ~/.hledger.conf). The write path is
+    // pinned on the bytes by crates/ledgeline-server/tests/conf_endpoints.rs.
+    await page.goto("/settings?tab=hledgerConf");
+    await expect(page.getByRole("tab", {name: "hledger config"})).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByTestId("settings-hledger-conf-handle")).toBeVisible();
+    await expect(page.getByTestId("settings-hledger-conf-auto")).toBeVisible();
+    for (const section of ["general", "balancesheet", "incomestatement", "cashflow", "balance"]) {
+        await expect(page.getByTestId(`settings-hledger-conf-depth-${section}`)).toBeVisible();
+    }
+    await expect(page.getByTestId("settings-hledger-conf-save")).toBeDisabled();
+});
+
+test("settings: the Automatic postings tab says whether --auto is in force, and offers a new rule", async ({page}) => {
+    // Read-only, like the rest of this spec. `fixtures/sample.journal` has no
+    // `=` rules and no hledger.conf, so the tab says the rules are not applied
+    // and that there are none; the applied case is pinned over
+    // fixtures/auto-postings by crates/ledgeline-server/tests/auto_endpoints.rs
+    // and the component tests.
+    await page.goto("/settings");
+    await page.getByRole("tab", {name: "Automatic postings"}).click();
+    await expect(page).toHaveURL(/\/settings\?tab=auto/);
+    await expect(page.getByTestId("settings-auto-off")).toContainText("--auto");
+    await expect(page.getByTestId("settings-auto-empty")).toBeVisible();
+    // A rule can be added to the main journal. Opened and cancelled, never
+    // saved: the write is pinned byte-for-byte by auto_endpoints.rs.
+    await page.getByTestId("settings-auto-add").click();
+    await expect(page.getByTestId("settings-auto-editor")).toBeVisible();
+    await expect(page.getByLabel("Forecast transactions only for the new rule")).not.toBeChecked();
+    await page.getByRole("button", {name: "Cancel"}).click();
+    await expect(page.getByTestId("settings-auto-editor")).toHaveCount(0);
+    // The switch lives on the hledger config tab, and the notice links there.
+    await page.getByTestId("settings-auto-conf-link").click();
+    await expect(page).toHaveURL(/\/settings\?tab=hledgerConf/);
+    await expect(page.getByTestId("settings-hledger-conf-auto")).toBeVisible();
+});

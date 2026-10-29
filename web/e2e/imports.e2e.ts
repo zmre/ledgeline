@@ -473,8 +473,10 @@ test("drafts a rules file for a CSV nothing can read, and writes it", async ({pa
     await expect(page.getByTestId("imports-create-save")).toBeDisabled();
     await expect(page.getByTestId("imports-create-blocker")).toContainText(/which account/i);
     // `AccountInput` carries a fixed `aria-label="Account"` for both accounts,
-    // so the PLACEHOLDER is what tells account1 from account2 here.
-    const account1 = page.getByPlaceholder("assets:bank:checking");
+    // so the PLACEHOLDER is what tells account1 from account2 here. Scoped to
+    // the panel: the dry run's balance field uses the same placeholder and can
+    // be on the page too, depending on how fast its preview lands.
+    const account1 = panel.getByPlaceholder("assets:bank:checking");
     await account1.fill("assets:bank:checking");
     await account1.blur();
 

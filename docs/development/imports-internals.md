@@ -618,9 +618,11 @@ Where we look, and where we deliberately do not:
 - **Upward from the journal's own directory**, nearest first — because that is where a user runs
   hledger for these books, whereas a server process's working directory is an accident of how it
   was launched.
-- **Not `$HOME/.hledger.conf`, and not the XDG config dir**, though hledger falls back to both.
-  Those are outside the tree the user pointed us at. The cost is stated where it is felt: the
-  divergence notice names the file it found, or says there was none.
+- **Then `$HOME/.hledger.conf`, then `$XDG_CONFIG_HOME/hledger/hledger.conf`**, as hledger does
+  (plan 30, Decision 10), on the desktop only. `hledger_conf::locate_conf_for` is the one locator;
+  Settings › hledger config reads the same file, so the two features cannot disagree about it.
+  The divergence notice names the file it found (`~/.hledger.conf`, never an absolute path), or
+  says there was none.
 
 **Order: the config's aliases go first.** `--alias` options compose left to right and the first to
 match an account wins, so config-first means that wherever the two disagree the config's answer

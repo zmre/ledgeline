@@ -449,6 +449,76 @@ pub struct Scenario {
     /// `; cash: <account>` from the header: the default counter-account when
     /// history names none (Decision 7, step 2).
     pub cash: Option<AccountName>,
+    /// The scenario file's `= QUERY` auto-posting rules, in file order. Applied
+    /// to every rule- and event-generated forecast transaction, ALWAYS —
+    /// whatever `--auto` says for the main journal (plan 30 Decision 6).
+    pub auto_rules: Vec<ScenarioAutoRule>,
+}
+
+/// One of a scenario's `=` rules, and which of its file's `=` blocks it is.
+///
+/// The block is the rule's IDENTITY for a save (plan 30 amendment 12): an
+/// edited rule rewrites only its own block's bytes, a rule that is gone
+/// removes its block, a rule with no block is appended, and every block whose
+/// text is unchanged keeps its bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScenarioAutoRule {
+    /// Its 0-based position among the scenario FILE's own `=` blocks when it
+    /// was read, or `None` for a rule the file does not hold yet.
+    pub block: Option<usize>,
+    /// The rule.
+    pub rule: crate::model::AutoPostingRule,
+}
+
+impl Scenario {
+    /// The scenario's `=` rules, in order, as the engine applies them.
+    #[must_use]
+    pub fn auto_posting_rules(&self) -> Vec<crate::model::AutoPostingRule> {
+        self.auto_rules
+            .iter()
+            .map(|auto| auto.rule.clone())
+            .collect()
+    }
+
+    /// Every account the scenario itself names: its lines', their counter and
+    /// gains accounts, its events' postings and counters, and its `cash:`.
+    #[must_use]
+    pub fn named_accounts(&self) -> BTreeSet<String> {
+        let lines = self.lines.iter().flat_map(|line| {
+            std::iter::once(&line.account)
+                .chain(line.counter.as_ref())
+                .chain(line.gains.as_ref())
+        });
+        let events = self.events.iter().flat_map(|event| {
+            event
+                .postings
+                .iter()
+                .map(|posting| &posting.account)
+                .chain(event.counter.as_ref())
+        });
+        lines
+            .chain(events)
+            .chain(self.cash.as_ref())
+            .map(|account| account.0.clone())
+            .collect()
+    }
+}
+
+/// Decision 11 for a projection run: a warning for each scenario rule posting
+/// to an account that neither the journal (`journal_known`: every declared
+/// account and every account a transaction uses) nor the scenario itself
+/// names — almost always a typo ([`crate::auto_form::unknown_account_warnings`]).
+#[must_use]
+pub fn auto_rule_account_warnings(
+    scenario: &Scenario,
+    journal_known: &BTreeSet<String>,
+) -> Vec<String> {
+    if scenario.auto_rules.is_empty() {
+        return Vec::new();
+    }
+    let mut known = scenario.named_accounts();
+    known.extend(journal_known.iter().cloned());
+    crate::auto_form::unknown_account_warnings(&scenario.auto_posting_rules(), &known)
 }
 
 // ===========================================================================
@@ -1402,6 +1472,7 @@ pub fn seed_scenario(
     }
 
     Ok(Scenario {
+        auto_rules: Vec::new(),
         // A seed has no name: naming it is what the Save As dialog is for, and a
         // placeholder here would be a name the user never chose showing up in a
         // filename.
@@ -1625,6 +1696,7 @@ pub fn virtual_posting(account: AccountName, amount: Amount) -> Posting {
         date2: None,
         comment: String::new(),
         tags: Vec::new(),
+        generated: None,
     }
 }
 
@@ -1690,6 +1762,7 @@ mod tests {
 
     fn scenario(lines: Vec<ScenarioLine>, events: Vec<ScenarioEvent>) -> Scenario {
         Scenario {
+            auto_rules: Vec::new(),
             cash: None,
             name: "test".to_string(),
             created: None,
@@ -3478,7 +3551,12 @@ mod tests {
     #[test]
     fn an_asset_row_with_an_unsupported_period_warns() {
         let odd = growing(
-            asset("brok", "assets:brokerage", usd(200_000), "every weekday"),
+            asset(
+                "brok",
+                "assets:brokerage",
+                usd(200_000),
+                "every last day of month",
+            ),
             Dec::new(10, 2),
             GrowthUnit::Year,
         );
@@ -3492,7 +3570,7 @@ mod tests {
         assert_eq!(series_units(&projection.net_worth), [210_000; 3]);
         assert_eq!(series_units(&projection.cash), [10_000; 3]);
         assert_eq!(projection.warnings.len(), 1);
-        assert!(projection.warnings[0].contains("every weekday"));
+        assert!(projection.warnings[0].contains("every last day of month"));
     }
 
     // -----------------------------------------------------------------------
@@ -3692,7 +3770,12 @@ mod tests {
     /// projection — not an error, and not a silent zero.
     #[test]
     fn an_unsupported_period_warns_and_contributes_nothing() {
-        let unsupported = line("odd", "expenses:odd", usd(100_000), "every weekday");
+        let unsupported = line(
+            "odd",
+            "expenses:odd",
+            usd(100_000),
+            "every last day of month",
+        );
         assert_eq!(unsupported.period.kind, PeriodKind::Unsupported);
 
         let projection = run(
@@ -3707,7 +3790,7 @@ mod tests {
         assert_eq!(series_units(&projection.cash), [0, 0, 0]);
         assert_eq!(projection.warnings.len(), 1);
         assert!(
-            projection.warnings[0].contains("every weekday"),
+            projection.warnings[0].contains("every last day of month"),
             "the warning must quote what the user wrote: {:?}",
             projection.warnings
         );

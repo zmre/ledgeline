@@ -85,8 +85,8 @@ use crate::parse::{self, ParseError};
 use crate::periodic::{MAX_ACCOUNT_BYTES, MAX_DESCRIPTION_BYTES, PeriodicDoc};
 use crate::projections::discovery::{Header, parse_header};
 use crate::projections::{
-    DEFAULT_GAINS_ACCOUNT, Growth, GrowthUnit, LineRole, Scenario, ScenarioEvent, ScenarioLine,
-    rule_counter, virtual_posting,
+    DEFAULT_GAINS_ACCOUNT, Growth, GrowthUnit, LineRole, Scenario, ScenarioAutoRule, ScenarioEvent,
+    ScenarioLine, rule_counter, virtual_posting,
 };
 use crate::reports::account_types::{
     AccountType, AccountTypes, account_decls_from, declared_types,
@@ -165,7 +165,69 @@ pub fn scenario_from_text(
     fallback_name: &str,
     declared: &BTreeMap<String, crate::reports::account_types::AccountType>,
 ) -> Result<Scenario, SerializeError> {
-    read_scenario(text, source_name, fallback_name, declared).map(|(scenario, _)| scenario)
+    scenario_from_text_with_styles(text, source_name, fallback_name, declared, &[])
+}
+
+/// [`scenario_from_text`], reading amounts under the main journal's declared
+/// commodity styles (see [`parse::parse_journal_with_styles`]): `$11,344` in a
+/// scenario is eleven thousand dollars when the main journal declares
+/// `commodity $1,000.00`, as it would be were the scenario `include`d.
+///
+/// # Errors
+/// As [`scenario_from_text`].
+pub fn scenario_from_text_with_styles(
+    text: &str,
+    source_name: &str,
+    fallback_name: &str,
+    declared: &BTreeMap<String, crate::reports::account_types::AccountType>,
+    inherited: &[(crate::model::Commodity, crate::model::AmountStyle)],
+) -> Result<Scenario, SerializeError> {
+    read_scenario(text, source_name, fallback_name, declared, inherited).map(|read| read.scenario)
+}
+
+/// [`scenario_from_text_with_styles`], plus the account types the file itself
+/// declares (`account hmrc:paye ; type: L`). A caller that signs the
+/// scenario's numbers — a rule's percentages, an entry — merges them over the
+/// main journal's with [`scenario_account_types`], as the read did.
+///
+/// # Errors
+/// As [`scenario_from_text`].
+pub fn scenario_and_own_types_from_text_with_styles(
+    text: &str,
+    source_name: &str,
+    fallback_name: &str,
+    declared: &BTreeMap<String, AccountType>,
+    inherited: &[(crate::model::Commodity, crate::model::AmountStyle)],
+) -> Result<(Scenario, BTreeMap<String, AccountType>), SerializeError> {
+    read_scenario(text, source_name, fallback_name, declared, inherited)
+        .map(|read| (read.scenario, read.own_types))
+}
+
+/// The account types a scenario classifies under: the main journal's
+/// `declared`, with the scenario file's `own` declarations winning — so a
+/// scenario that carries its declarations with it classifies the same way
+/// whether or not a main journal is open.
+#[must_use]
+pub fn scenario_account_types(
+    declared: &BTreeMap<String, AccountType>,
+    own: &BTreeMap<String, AccountType>,
+) -> BTreeMap<String, AccountType> {
+    declared
+        .iter()
+        .chain(own)
+        .map(|(account, ty)| (account.clone(), *ty))
+        .collect()
+}
+
+/// What [`read_scenario`] learns from a file.
+struct Read {
+    scenario: Scenario,
+    /// Every account the file itself declares.
+    own_accounts: BTreeSet<String>,
+    /// Every commodity the file itself declares a style for.
+    own_commodities: BTreeSet<String>,
+    /// The account types the file itself declares.
+    own_types: BTreeMap<String, AccountType>,
 }
 
 /// [`scenario_from_text`], plus every account the text itself declares — what
@@ -175,8 +237,9 @@ fn read_scenario(
     source_name: &str,
     fallback_name: &str,
     declared: &BTreeMap<String, crate::reports::account_types::AccountType>,
-) -> Result<(Scenario, BTreeSet<String>), SerializeError> {
-    let journal = parse::parse_journal(text, source_name)
+    inherited: &[(crate::model::Commodity, crate::model::AmountStyle)],
+) -> Result<Read, SerializeError> {
+    let journal = parse::parse_journal_with_styles(text, source_name, inherited)
         .map_err(|error| SerializeError::Unreadable(parse_message(&error)))?;
     // Only the rules this FILE wrote. A journal that includes another would
     // otherwise hand back the includee's rules as rows the save path would then
@@ -201,11 +264,8 @@ fn read_scenario(
         own.into_iter().cloned().collect()
     };
 
-    // The file's own `account` directives win over the caller's, so a scenario
-    // that carries its declarations with it classifies the same way whether or
-    // not a main journal is open.
-    let mut types = declared.clone();
-    types.extend(declared_types(&account_decls_from(&journal.accounts)));
+    let own_types = declared_types(&account_decls_from(&journal.accounts));
+    let types = scenario_account_types(declared, &own_types);
 
     let header = parse_header(text);
     let own_accounts = journal
@@ -213,15 +273,44 @@ fn read_scenario(
         .iter()
         .map(|account| account.name.0.clone())
         .collect();
-    Ok((
-        scenario_from_rules(
-            &rules,
-            &header,
-            fallback_name,
-            &AccountTypes::from_declared(types),
-        ),
+    // The file's own `=` rules, by the same rule and the same fallback as its
+    // `~` rules above: never an includee's.
+    let mine = |rule: &&crate::model::AutoPostingRule| {
+        rule.source_file.as_os_str() == std::ffi::OsStr::new(source_name)
+    };
+    let auto_rules: Vec<crate::model::AutoPostingRule> =
+        if !journal.auto_rules.iter().any(|rule| mine(&rule)) && journal.source_files.len() <= 1 {
+            journal.auto_rules.clone()
+        } else {
+            journal.auto_rules.iter().filter(mine).cloned().collect()
+        };
+    // Each one's identity is its position among the file's own blocks.
+    let auto_rules = auto_rules
+        .into_iter()
+        .enumerate()
+        .map(|(block, rule)| ScenarioAutoRule {
+            block: Some(block),
+            rule,
+        })
+        .collect();
+    Ok(Read {
+        scenario: Scenario {
+            auto_rules,
+            ..scenario_from_rules(
+                &rules,
+                &header,
+                fallback_name,
+                &AccountTypes::from_declared(types),
+            )
+        },
         own_accounts,
-    ))
+        own_commodities: journal
+            .commodity_styles
+            .iter()
+            .map(|(commodity, _)| commodity.0.clone())
+            .collect(),
+        own_types,
+    })
 }
 
 /// Build the model from a file's `~` rules and its header.
@@ -264,6 +353,7 @@ fn scenario_from_rules(
         }
     }
     Scenario {
+        auto_rules: Vec::new(),
         name: header
             .name
             .clone()
@@ -362,6 +452,17 @@ pub struct ProjectionDoc {
     /// Every account the FILE itself declares, so a gains account it already
     /// declares is not declared twice.
     own_accounts: BTreeSet<String>,
+    /// The main journal's declared commodity styles, which this file's amounts
+    /// are read under (see [`scenario_from_text_with_styles`]), and which a
+    /// save declares in the file for every commodity it uses but does not
+    /// declare itself — so `hledger -f main -f this` reads it the same way.
+    inherited: Vec<(crate::model::Commodity, crate::model::AmountStyle)>,
+    /// Every commodity the FILE itself declares.
+    own_commodities: BTreeSet<String>,
+    /// Each of the file's own `=` blocks' whole extent, `=` line through its
+    /// last indented line and that line's terminator, in file order. The index
+    /// is [`ScenarioAutoRule::block`].
+    auto_blocks: Vec<Range<usize>>,
 }
 
 impl ProjectionDoc {
@@ -377,13 +478,32 @@ impl ProjectionDoc {
         source_name: &str,
         declared: &BTreeMap<String, crate::reports::account_types::AccountType>,
     ) -> Result<Self, SerializeError> {
+        Self::parse_with_styles(text, source_name, declared, &[])
+    }
+
+    /// [`parse`](Self::parse), under the main journal's declared commodity
+    /// styles (see [`scenario_from_text_with_styles`]).
+    ///
+    /// # Errors
+    /// As [`parse`](Self::parse).
+    pub fn parse_with_styles(
+        text: &str,
+        source_name: &str,
+        declared: &BTreeMap<String, crate::reports::account_types::AccountType>,
+        inherited: &[(crate::model::Commodity, crate::model::AmountStyle)],
+    ) -> Result<Self, SerializeError> {
         let doc = PeriodicDoc::parse(text);
         let blocks: Vec<Range<usize>> = doc
             .blocks()
             .iter()
             .map(|block| block.full.clone())
             .collect();
-        let (scenario, own_accounts) = read_scenario(text, source_name, "", declared)?;
+        let Read {
+            scenario,
+            own_accounts,
+            own_commodities,
+            ..
+        } = read_scenario(text, source_name, "", declared, inherited)?;
 
         // The blocks this module located, against the rules the journal parser
         // read. When they line up, each block's print is known and an unedited
@@ -399,6 +519,7 @@ impl ProjectionDoc {
             }
         }
 
+        let auto_blocks = auto_block_spans(text, &scenario.auto_rules);
         Ok(Self {
             newline: Newline::detect(text),
             header: header_span(text),
@@ -407,6 +528,9 @@ impl ProjectionDoc {
             text: text.to_string(),
             declared: declared.clone(),
             own_accounts,
+            inherited: inherited.to_vec(),
+            own_commodities,
+            auto_blocks,
         })
     }
 
@@ -421,11 +545,26 @@ impl ProjectionDoc {
             current: Vec::new(),
             declared: declared.clone(),
             own_accounts: BTreeSet::new(),
+            inherited: Vec::new(),
+            own_commodities: BTreeSet::new(),
+            auto_blocks: Vec::new(),
         }
     }
 
-    /// Render `scenario` into this document, rewriting only the header span and
-    /// the `~` blocks whose content actually changed.
+    /// This document, reading and declaring under `inherited` — what a create
+    /// needs, since an empty document has nothing of its own to parse.
+    #[must_use]
+    pub fn inheriting(
+        mut self,
+        inherited: &[(crate::model::Commodity, crate::model::AmountStyle)],
+    ) -> Self {
+        self.inherited = inherited.to_vec();
+        self
+    }
+
+    /// Render `scenario` into this document, rewriting only the header span,
+    /// the `~` blocks whose content actually changed and the `=` blocks whose
+    /// text did ([`Self::auto_splices`]).
     ///
     /// # Errors
     /// [`SerializeError::Invalid`] for a field that cannot be written.
@@ -464,6 +603,9 @@ impl ProjectionDoc {
                 None => splices.push((span.clone(), String::new())),
             }
         }
+        let (auto_splices, auto_appended) = self.auto_splices(&scenario.auto_rules);
+        splices.extend(auto_splices);
+        splices.sort_by_key(|(span, _)| span.start);
 
         let mut out = String::with_capacity(self.text.len() + 256);
         let mut cursor = 0usize;
@@ -492,7 +634,151 @@ impl ProjectionDoc {
                 out.push_str(&self.render_chunk(chunk, &tags)?);
             }
         }
+        // Then every `=` rule the file has no block for, each as its own block.
+        for rule in auto_appended {
+            if !out.is_empty() && !out.ends_with(nl) {
+                out.push_str(nl);
+            }
+            if !out.is_empty() && !out.ends_with(&format!("{nl}{nl}")) {
+                out.push_str(nl);
+            }
+            out.push_str(&with_newline(&rule.rule.raw, nl));
+        }
         Ok(out)
+    }
+
+    /// The splices that bring the file's `=` blocks in line with `rules`, and
+    /// the rules that have no block and go at EOF.
+    ///
+    /// # Identity is the block (plan 30 amendment 12)
+    ///
+    /// A rule CLAIMS a block: first one whose text it still is — its own
+    /// ([`ScenarioAutoRule::block`]), else any other holding exactly its text,
+    /// so an unchanged rule keeps its bytes even when its block number is stale
+    /// or absent (a client from before rules carried one) — and failing both,
+    /// an edited rule claims the block it names. Then, as for `~` blocks
+    /// ([`Assignment`]), the claimed blocks
+    /// are SLOTS filled in the scenario's order (the order hledger applies the
+    /// rules in, which matters: later rules see earlier ones' postings), the
+    /// rules left over are appended, and an unclaimed block is removed — with
+    /// one blank line after it, or before it at the end of the file, so a
+    /// deletion leaves no double gap.
+    ///
+    /// A slot whose bytes already state its rule is not spliced at all, so an
+    /// untouched rule keeps its layout, its comments and its line endings.
+    fn auto_splices<'a>(
+        &self,
+        rules: &'a [ScenarioAutoRule],
+    ) -> (Vec<(Range<usize>, String)>, Vec<&'a ScenarioAutoRule>) {
+        let blocks = &self.auto_blocks;
+        let stated = |index: usize| self.text[blocks[index].clone()].replace('\r', "");
+        // Three passes, most certain first. (1) A rule whose block still holds
+        // exactly its text. (2) A rule whose text some other unclaimed block
+        // holds — an unchanged rule whose block number went stale because the
+        // client kept its scenario across a save that removed an earlier
+        // block. (3) An edited rule, by the block it names, if still free.
+        let mut claimed: BTreeSet<usize> = BTreeSet::new();
+        let mut claims: Vec<Option<usize>> = vec![None; rules.len()];
+        for (rule, claim) in rules.iter().zip(claims.iter_mut()) {
+            if let Some(index) = rule.block.filter(|index| {
+                *index < blocks.len() && stated(*index) == rule.rule.raw && !claimed.contains(index)
+            }) {
+                claimed.insert(index);
+                *claim = Some(index);
+            }
+        }
+        for (rule, claim) in rules.iter().zip(claims.iter_mut()) {
+            if claim.is_none() {
+                *claim = (0..blocks.len())
+                    .find(|index| !claimed.contains(index) && stated(*index) == rule.rule.raw);
+                if let Some(index) = *claim {
+                    claimed.insert(index);
+                }
+            }
+        }
+        for (rule, claim) in rules.iter().zip(claims.iter_mut()) {
+            if claim.is_none()
+                && let Some(index) = rule.block.filter(|index| *index < blocks.len())
+                && claimed.insert(index)
+            {
+                *claim = Some(index);
+            }
+        }
+        let nl = self.newline.as_str();
+        let mut splices = Vec::new();
+        let mut appended = Vec::new();
+        let mut slots = claimed.iter().copied();
+        for rule in rules {
+            match slots.next() {
+                Some(slot) if stated(slot) == rule.rule.raw => {}
+                Some(slot) => {
+                    splices.push((blocks[slot].clone(), with_newline(&rule.rule.raw, nl)))
+                }
+                None => appended.push(rule),
+            }
+        }
+        let doomed: Vec<Range<usize>> = (0..blocks.len())
+            .filter(|index| !claimed.contains(index))
+            .map(|index| blocks[index].clone())
+            .collect();
+        // The doomed blocks that end the file go as ONE span: removed one by
+        // one, the last would take the blank line before it, which the one
+        // before it has already taken as the blank after it.
+        let (inner, tail) = doomed.split_at(doomed.len() - self.eof_run(&doomed));
+        splices.extend(inner.iter().map(|span| (self.removal(span), String::new())));
+        if let (Some(first), Some(last)) = (tail.first(), tail.last()) {
+            splices.push((self.removal(&(first.start..last.end)), String::new()));
+        }
+        (splices, appended)
+    }
+
+    /// How many of `doomed` (ascending block spans) end the file: the last
+    /// reaches EOF and only blank lines separate each from the next.
+    fn eof_run(&self, doomed: &[Range<usize>]) -> usize {
+        if doomed.last().is_none_or(|last| last.end != self.text.len()) {
+            return 0;
+        }
+        1 + doomed
+            .windows(2)
+            .rev()
+            .take_while(|pair| self.text[pair[0].end..pair[1].start].trim().is_empty())
+            .count()
+    }
+
+    /// The bytes deleting the `=` block at `span` removes: the block, plus the
+    /// blank line that separated it from what follows — or, for a block that
+    /// ends the file, from what precedes it, unless that line belongs to a span
+    /// another splice rewrites. `span` may cover several adjacent blocks (see
+    /// [`Self::eof_run`]).
+    fn removal(&self, span: &Range<usize>) -> Range<usize> {
+        let text = &self.text;
+        let blank_at = |start: usize| -> Option<usize> {
+            let rest = &text[start..];
+            let line = rest.split_inclusive('\n').next()?;
+            (line.ends_with('\n') && line.trim().is_empty()).then_some(line.len())
+        };
+        let preceded_by_blank = span.start == 0
+            || text[..span.start].ends_with("\n\n")
+            || text[..span.start].ends_with("\n\r\n");
+        if preceded_by_blank && let Some(len) = blank_at(span.end) {
+            return span.start..span.end + len;
+        }
+        if span.end == text.len() && span.start > 0 {
+            let before = &text[..span.start];
+            let line_start = before[..before.len() - 1]
+                .rfind('\n')
+                .map_or(0, |at| at + 1);
+            let free = self.header.end <= line_start
+                && self
+                    .blocks
+                    .iter()
+                    .chain(&self.auto_blocks)
+                    .all(|other| other.end <= line_start || other.start >= span.start);
+            if before[line_start..].trim().is_empty() && line_start < span.start && free {
+                return line_start..span.end;
+            }
+        }
+        span.clone()
     }
 
     /// Work out which scenario chunk each existing block holds, and which
@@ -533,7 +819,8 @@ impl ProjectionDoc {
         // (Decision 4), so hledger and Ledgeline classify them alike without
         // the main journal being touched. Set off by a blank line so the next
         // read's header span ends before them and a re-save is byte-identical.
-        let declarations = self.gains_declarations(scenario)?;
+        let mut declarations = self.commodity_declarations(scenario);
+        declarations.extend(self.gains_declarations(scenario)?);
         if !declarations.is_empty() {
             out.push_str(nl);
             for declaration in declarations {
@@ -549,6 +836,39 @@ impl ProjectionDoc {
             out.push_str(nl);
         }
         Ok(out)
+    }
+
+    /// `commodity $1,000.00` for each commodity the scenario's amounts use that
+    /// the main journal declares and this file does not: hledger lends no
+    /// directive across sibling `-f` files, so without it `hledger -f main -f
+    /// this` would read a hand-typed `$11,344` as 11.344 (verified, 1.52).
+    fn commodity_declarations(&self, scenario: &Scenario) -> Vec<String> {
+        let used: BTreeSet<&str> = scenario
+            .lines
+            .iter()
+            .flat_map(|line| std::iter::once(&line.amount).chain(line.opening.as_ref()))
+            .chain(
+                scenario
+                    .events
+                    .iter()
+                    .flat_map(|event| event.postings.iter().flat_map(|posting| &posting.amounts)),
+            )
+            .map(|amount| amount.commodity.0.as_str())
+            .filter(|commodity| !commodity.is_empty())
+            .collect();
+        self.inherited
+            .iter()
+            .filter(|(commodity, _)| {
+                used.contains(commodity.0.as_str()) && !self.own_commodities.contains(&commodity.0)
+            })
+            .map(|(commodity, style)| {
+                let thousand = Dec::new(1000 * 10_i128.pow(style.precision), style.precision);
+                format!(
+                    "commodity {}",
+                    crate::display::format_amount(&commodity.0, thousand, style, style.precision)
+                )
+            })
+            .collect()
     }
 
     /// `account NAME  ; type: X` for each gains account an asset row books
@@ -1326,7 +1646,7 @@ fn check_tag_value(value: &str, what: &str) -> Result<(), SerializeError> {
 /// The same rules `periodic::check_account` applies, for the same reason: each
 /// one is a value that would make the written line read back as something other
 /// than what was asked for.
-fn check_account(account: &str) -> Result<(), SerializeError> {
+pub(crate) fn check_account(account: &str) -> Result<(), SerializeError> {
     let bad = |why: &str| Err(invalid(&format!("an account name {why}")));
     if account.is_empty() {
         return bad("may not be empty");
@@ -1444,7 +1764,58 @@ pub fn write_scenario(
 ) -> Result<String, SerializeError> {
     let text = doc.apply(scenario)?;
     confirm_round_trip(doc, &text, scenario, source_name)?;
+    confirm_auto_rules(&text, scenario, source_name, &doc.declared)?;
     Ok(text)
+}
+
+/// `text` with `\n` line ends written as `nl`.
+fn with_newline(text: &str, nl: &str) -> String {
+    if nl == "\n" {
+        text.to_string()
+    } else {
+        text.replace('\n', nl)
+    }
+}
+
+/// Each `=` rule's block as a byte range of `text`, from the line span the
+/// parser recorded for it.
+fn auto_block_spans(text: &str, rules: &[ScenarioAutoRule]) -> Vec<Range<usize>> {
+    crate::auto_edit::block_spans(text, rules.iter().map(|rule| &rule.rule))
+}
+
+/// Require `text` to read back with exactly the scenario's `=` rules, in its
+/// order, so a save can never drop, garble, duplicate or reorder one.
+fn confirm_auto_rules(
+    text: &str,
+    scenario: &Scenario,
+    source_name: &str,
+    declared: &BTreeMap<String, crate::reports::account_types::AccountType>,
+) -> Result<(), SerializeError> {
+    let written = scenario_from_text(text, source_name, "", declared)?;
+    let raws = |rules: &[ScenarioAutoRule]| -> Vec<String> {
+        rules.iter().map(|rule| rule.rule.raw.clone()).collect()
+    };
+    let (want, got) = (raws(&scenario.auto_rules), raws(&written.auto_rules));
+    if want == got {
+        return Ok(());
+    }
+    let detail = want.iter().zip(&got).find(|(a, b)| a != b).map_or_else(
+        || {
+            format!(
+                "{} auto rules were to be written and {} read back",
+                want.len(),
+                got.len()
+            )
+        },
+        |(a, b)| {
+            format!(
+                "auto rule `{}` reads back as `{}`",
+                a.trim_end(),
+                b.trim_end()
+            )
+        },
+    );
+    Err(SerializeError::NotRoundTripped(detail))
 }
 
 /// Re-read `text` and require its blocks to state `scenario`.
@@ -1456,7 +1827,8 @@ fn confirm_round_trip(
 ) -> Result<(), SerializeError> {
     let values = line_tag_values(scenario);
     let want = prints(scenario, &Tags::Assigned(&values))?;
-    let written = scenario_from_text(text, source_name, "", &doc.declared)?;
+    let written =
+        scenario_from_text_with_styles(text, source_name, "", &doc.declared, &doc.inherited)?;
     // What the FILE states, read back with nothing assigned: a row whose tag
     // was written reads back with that tag as its id, and one with none reads
     // back with the id its position derives.
@@ -1504,7 +1876,25 @@ pub fn new_file(
     source_name: &str,
     declared: &BTreeMap<String, crate::reports::account_types::AccountType>,
 ) -> Result<String, SerializeError> {
-    write_scenario(&ProjectionDoc::empty(declared), scenario, source_name)
+    new_file_with_styles(scenario, source_name, declared, &[])
+}
+
+/// [`new_file`], declaring the main journal's styles for the commodities the
+/// scenario uses (see [`ProjectionDoc::inheriting`]).
+///
+/// # Errors
+/// As [`new_file`].
+pub fn new_file_with_styles(
+    scenario: &Scenario,
+    source_name: &str,
+    declared: &BTreeMap<String, crate::reports::account_types::AccountType>,
+    inherited: &[(crate::model::Commodity, crate::model::AmountStyle)],
+) -> Result<String, SerializeError> {
+    write_scenario(
+        &ProjectionDoc::empty(declared).inheriting(inherited),
+        scenario,
+        source_name,
+    )
 }
 
 #[cfg(test)]
@@ -1729,6 +2119,7 @@ mod tests {
     #[test]
     fn a_new_file_round_trips_and_states_its_header() {
         let scenario = Scenario {
+            auto_rules: Vec::new(),
             cash: None,
             name: "Plan B".to_string(),
             created: Some("2026-01-01".to_string()),
@@ -1951,6 +2342,7 @@ mod tests {
     #[test]
     fn an_asset_row_with_no_rate_still_writes_the_marker_tag() {
         let scenario = Scenario {
+            auto_rules: Vec::new(),
             name: "Flat".to_string(),
             lines: vec![asset(
                 "rule:0",
@@ -2023,6 +2415,7 @@ account activo:inversiones  ; type: A
             ..usd(Dec::new(100_000, 2), 2)
         });
         let cross_commodity = Scenario {
+            auto_rules: Vec::new(),
             lines: vec![row.clone()],
             ..Scenario::default()
         };
@@ -2037,6 +2430,7 @@ account activo:inversiones  ; type: A
         );
 
         let on_a_flow = Scenario {
+            auto_rules: Vec::new(),
             lines: vec![ScenarioLine {
                 role: LineRole::Flow,
                 opening: Some(usd(Dec::new(100_000, 2), 2)),
@@ -2193,6 +2587,7 @@ account expenses:rent    ; type: X
             "",
         ] {
             let scenario = Scenario {
+                auto_rules: Vec::new(),
                 lines: vec![line(
                     "rule:0",
                     "rule:0:0",
@@ -2217,6 +2612,7 @@ account expenses:rent    ; type: X
         // hledger ends a tag's value at a comma, so `; projection: Plan B,
         // revised` reads back as `Plan B` — and the name is also the filename.
         let scenario = Scenario {
+            auto_rules: Vec::new(),
             name: "Plan B, revised".to_string(),
             ..Scenario::default()
         };
@@ -2229,6 +2625,7 @@ account expenses:rent    ; type: X
     #[test]
     fn a_group_whose_lines_disagree_about_the_recurrence_is_refused() {
         let scenario = Scenario {
+            auto_rules: Vec::new(),
             lines: vec![
                 line(
                     "rule:0",
@@ -2260,6 +2657,7 @@ account expenses:rent    ; type: X
         // instead — so neither shape can produce an unreadable `line:` tag.
         for id in ["a,b", "a;b", " a", ""] {
             let single = Scenario {
+                auto_rules: Vec::new(),
                 lines: vec![line(
                     "rule:0",
                     id,
@@ -2273,6 +2671,7 @@ account expenses:rent    ; type: X
             assert!(!text.contains("line:"), "{text}");
 
             let step = Scenario {
+                auto_rules: Vec::new(),
                 lines: vec![
                     line(
                         "rule:0",
@@ -2359,6 +2758,7 @@ account expenses:rent    ; type: X
         // …and a readable id somebody chose is kept as it is.
         lines.extend(step("rule:3", "group-3", "hiring", "expenses:recruiting"));
         let scenario = Scenario {
+            auto_rules: Vec::new(),
             lines,
             ..Scenario::default()
         };
@@ -2534,6 +2934,7 @@ account expenses:rent    ; type: X
         lines.extend(step("rule:1", "group-1", "rule:1:0", "expenses:payroll"));
         let first = new_file(
             &Scenario {
+                auto_rules: Vec::new(),
                 lines,
                 ..Scenario::default()
             },
@@ -2655,6 +3056,7 @@ account expenses:rent    ; type: X
         // every step, so a `$1,875.00` line written as `$1875` would grow on
         // whole dollars from then on.
         let scenario = Scenario {
+            auto_rules: Vec::new(),
             lines: vec![line(
                 "rule:0",
                 "rule:0:0",
@@ -2672,6 +3074,7 @@ account expenses:rent    ; type: X
     #[test]
     fn amounts_are_aligned_within_a_block_and_only_within_it() {
         let scenario = Scenario {
+            auto_rules: Vec::new(),
             lines: vec![
                 line(
                     "rule:0",
@@ -2737,6 +3140,7 @@ account expenses:rent    ; type: X
         // that could come back as `Unbudgeted` — which is why the flip is two
         // lines here and not a function.
         let scenario = Scenario {
+            auto_rules: Vec::new(),
             lines: vec![ScenarioLine {
                 source: LineSource::Unbudgeted,
                 ..line(
@@ -2920,5 +3324,245 @@ account equity:unrealized gains  ; type: E
         scenario.lines[0].gains = Some(AccountName("equity:gains".to_string()));
         let error = new_file(&scenario, "p.journal", &declared()).unwrap_err();
         assert!(error.to_string().contains("gains"), "{error}");
+    }
+
+    // -----------------------------------------------------------------------
+    // `=` auto-posting rules: identity by block (plan 30 amendment 12)
+    // -----------------------------------------------------------------------
+
+    const RULES: &str = "; Ledgeline projection\n\
+        ; projection: Rules\n\
+        \n\
+        = expenses:wages tag:_generated-transaction\n\
+        \x20   expenses:payroll-tax   *0.1\n\
+        \x20   assets:checking\n\
+        \n\
+        ~ monthly  payroll\n\
+        \x20   expenses:wages      $9000.00\n\
+        \x20   assets:checking\n\
+        \n\
+        = revenue:sales   ; hand-aligned, with a comment\n\
+        \x20     expenses:commission    *-0.035\n\
+        \x20     assets:checking\n\
+        \n\
+        =revenue:other\n\
+        \x20   (liabilities:tax)  *0.05\n";
+
+    /// A rule as the server builds one from a client's text: no block.
+    fn new_rule(raw: &str) -> ScenarioAutoRule {
+        let journal = parse::parse_journal(raw, "rule.journal").expect("a rule");
+        ScenarioAutoRule {
+            block: None,
+            rule: journal.auto_rules.into_iter().next().expect("one rule"),
+        }
+    }
+
+    fn save(before: &str, scenario: &Scenario) -> String {
+        let doc = ProjectionDoc::parse(before, "p.journal", &declared()).expect("parses");
+        write_scenario(&doc, scenario, "p.journal").expect("writes")
+    }
+
+    #[test]
+    fn rules_read_with_their_block_and_an_untouched_save_is_byte_identical() {
+        let scenario = read(RULES);
+        let blocks: Vec<Option<usize>> = scenario.auto_rules.iter().map(|r| r.block).collect();
+        assert_eq!(blocks, [Some(0), Some(1), Some(2)]);
+        assert_eq!(save(RULES, &scenario), RULES);
+        // A client from before rules carried a block sends only the text:
+        // each claims the block holding exactly that text.
+        let mut anonymous = scenario.clone();
+        for rule in &mut anonymous.auto_rules {
+            rule.block = None;
+        }
+        assert_eq!(save(RULES, &anonymous), RULES);
+    }
+
+    #[test]
+    fn editing_one_rule_rewrites_only_its_block() {
+        let mut scenario = read(RULES);
+        scenario.auto_rules[1] = ScenarioAutoRule {
+            block: Some(1),
+            ..new_rule(
+                "= ^revenue:sales(:|$) tag:_generated-transaction\n    expenses:commission  *-0.04\n    assets:checking      *0.04\n",
+            )
+        };
+        let after = save(RULES, &scenario);
+        assert_eq!(
+            after,
+            RULES.replace(
+                "= revenue:sales   ; hand-aligned, with a comment\n      expenses:commission    *-0.035\n      assets:checking\n",
+                "= ^revenue:sales(:|$) tag:_generated-transaction\n    expenses:commission  *-0.04\n    assets:checking      *0.04\n",
+            )
+        );
+    }
+
+    #[test]
+    fn deleting_a_rule_removes_its_block_and_one_blank_line() {
+        let mut middle = read(RULES);
+        middle.auto_rules.remove(1);
+        assert_eq!(
+            save(RULES, &middle),
+            RULES.replace(
+                "= revenue:sales   ; hand-aligned, with a comment\n      expenses:commission    *-0.035\n      assets:checking\n\n",
+                "",
+            )
+        );
+        // The last block of the file takes the blank line before it.
+        let mut last = read(RULES);
+        last.auto_rules.pop();
+        assert_eq!(
+            save(RULES, &last),
+            RULES.replace("\n=revenue:other\n    (liabilities:tax)  *0.05\n", "")
+        );
+        let mut first = read(RULES);
+        first.auto_rules.remove(0);
+        assert_eq!(
+            save(RULES, &first),
+            RULES.replace(
+                "= expenses:wages tag:_generated-transaction\n    expenses:payroll-tax   *0.1\n    assets:checking\n\n",
+                "",
+            )
+        );
+    }
+
+    #[test]
+    fn deleting_the_rules_that_end_the_file_removes_them_and_one_blank_line() {
+        const WAGES: &str = "= expenses:wages tag:_generated-transaction\n    expenses:payroll-tax   *0.1\n    assets:checking\n\n";
+        let (kept, _) = RULES.split_once("\n= revenue:sales").expect("fixture");
+        // The last two blocks are adjacent and end the file: they go together,
+        // with the one blank line before them.
+        let mut last_two = read(RULES);
+        last_two.auto_rules.truncate(1);
+        assert_eq!(save(RULES, &last_two), kept);
+        let mut none = read(RULES);
+        none.auto_rules.clear();
+        assert_eq!(save(RULES, &none), kept.replace(WAGES, ""));
+        // With a `~` block after them they are not at EOF, and each takes the
+        // blank line after it.
+        let bonus = "~ yearly  bonus\n    expenses:bonus      $100.00\n    assets:checking\n";
+        let followed = format!("{RULES}\n{bonus}");
+        let mut scenario = read(&followed);
+        scenario.auto_rules.truncate(1);
+        assert_eq!(save(&followed, &scenario), format!("{kept}\n{bonus}"));
+    }
+
+    #[test]
+    fn a_new_rule_is_appended_and_the_rest_keep_their_bytes() {
+        let mut scenario = read(RULES);
+        let added = "= ^expenses:rent(:|$) tag:_generated-transaction\n    expenses:rent-tax  *0.1\n    assets:checking    *-0.1\n";
+        scenario.auto_rules.push(new_rule(added));
+        assert_eq!(save(RULES, &scenario), format!("{RULES}\n{added}"));
+        // With no file at all (Save As), the rules arrive only in the model.
+        let empty = ProjectionDoc::empty(&declared());
+        let created = write_scenario(&empty, &scenario, "p.journal").expect("writes");
+        assert_eq!(read(&created).auto_rules.len(), 4);
+    }
+
+    /// The page keeps its own scenario across a save, so after a save that
+    /// deleted the first rule the others still carry their OLD block numbers.
+    /// The next save must still leave every byte alone.
+    #[test]
+    fn stale_block_numbers_after_a_save_still_find_their_own_blocks() {
+        let mut scenario = read(RULES);
+        scenario.auto_rules.remove(0);
+        let saved = save(RULES, &scenario);
+        // Blocks 1 and 2 are now blocks 0 and 1 on disk; the scenario says 1, 2.
+        assert_eq!(save(&saved, &scenario), saved);
+        // And an edit to the rule still named by its stale number lands on it.
+        scenario.auto_rules[1] = ScenarioAutoRule {
+            block: Some(2),
+            ..new_rule("=revenue:other\n    (liabilities:tax)  *0.07\n")
+        };
+        assert_eq!(save(&saved, &scenario), saved.replace("*0.05", "*0.07"));
+    }
+
+    /// Moving a rule moves its text, because hledger applies rules in file
+    /// order; the blocks stay where they were and swap contents.
+    #[test]
+    fn reordering_rules_reorders_their_text() {
+        let mut scenario = read(RULES);
+        scenario.auto_rules.swap(0, 2);
+        let after = save(RULES, &scenario);
+        let order: Vec<String> = read(&after)
+            .auto_rules
+            .iter()
+            .map(|rule| rule.rule.query.raw().to_string())
+            .collect();
+        assert_eq!(
+            order,
+            [
+                "revenue:other",
+                "revenue:sales",
+                "expenses:wages tag:_generated-transaction"
+            ]
+        );
+        // The `~` block between them is untouched.
+        assert!(
+            after.contains("\n~ monthly  payroll\n    expenses:wages      $9000.00\n"),
+            "{after}"
+        );
+    }
+
+    #[test]
+    fn a_crlf_file_keeps_its_line_ends_in_kept_and_rewritten_blocks() {
+        let crlf = RULES.replace('\n', "\r\n");
+        let scenario = read(&crlf);
+        assert_eq!(save(&crlf, &scenario), crlf);
+        let mut edited = scenario.clone();
+        edited.auto_rules[2] = ScenarioAutoRule {
+            block: Some(2),
+            ..new_rule("=revenue:other\n    (liabilities:tax)  *0.06\n")
+        };
+        assert_eq!(save(&crlf, &edited), crlf.replace("*0.05", "*0.06"));
+    }
+
+    /// A save is refused rather than written when the rules would not read
+    /// back exactly, in order — here a "rule" whose text is two blocks.
+    #[test]
+    fn a_save_whose_rules_do_not_read_back_exactly_is_refused() {
+        let mut scenario = read(RULES);
+        let mut doubled = new_rule("= food\n    (x)  1\n");
+        doubled.rule.raw = "= food\n    (x)  1\n\n= rent\n    (y)  1\n".to_string();
+        scenario.auto_rules.push(doubled);
+        let doc = ProjectionDoc::parse(RULES, "p.journal", &declared()).expect("parses");
+        let error = write_scenario(&doc, &scenario, "p.journal").unwrap_err();
+        assert!(
+            matches!(error, SerializeError::NotRoundTripped(_)),
+            "{error}"
+        );
+    }
+
+    /// A scenario's own `account ; type:` declaration is handed back beside the
+    /// scenario, and wins over the main journal's in the merged map.
+    #[test]
+    fn a_scenario_s_own_account_types_come_back_and_win_the_merge() {
+        let text = "account hmrc:paye  ; type: L\naccount assets:cash  ; type: C\n\n~ monthly  plan\n    expenses:rent    $100.00\n    assets:cash\n";
+        let declared = BTreeMap::from([
+            ("assets:cash".to_string(), AccountType::Asset),
+            ("expenses:rent".to_string(), AccountType::Expense),
+        ]);
+        let (_, own) = scenario_and_own_types_from_text_with_styles(
+            text,
+            "scenario.journal",
+            "Scenario",
+            &declared,
+            &[],
+        )
+        .expect("reads");
+        assert_eq!(
+            own,
+            BTreeMap::from([
+                ("assets:cash".to_string(), AccountType::Cash),
+                ("hmrc:paye".to_string(), AccountType::Liability),
+            ])
+        );
+        assert_eq!(
+            scenario_account_types(&declared, &own),
+            BTreeMap::from([
+                ("assets:cash".to_string(), AccountType::Cash),
+                ("expenses:rent".to_string(), AccountType::Expense),
+                ("hmrc:paye".to_string(), AccountType::Liability),
+            ])
+        );
     }
 }

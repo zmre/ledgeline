@@ -2959,3 +2959,146 @@ async fn report_get_carries_no_cors_header_by_default() {
         "no CORS layer is installed unless --allow-origin names an exact origin"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Reports › Accounts (2026-10-28)
+// ---------------------------------------------------------------------------
+
+/// The `$` figure of a wire amount, as a `Dec`.
+fn usd_of(mixed: &Value) -> Dec {
+    mixed.get("$").map_or(Dec::zero(), |dec| {
+        Dec::new(
+            dec["mantissa"]
+                .as_str()
+                .expect("mantissa")
+                .parse()
+                .expect("parses"),
+            u32::try_from(dec["places"].as_u64().expect("places")).expect("fits"),
+        )
+    })
+}
+
+/// Every `$` posting to `account` on or before `to`, summed straight off the
+/// parsed journal: an answer that does not go through the report's pivot.
+fn balance_on(journal: &Journal, account: &str, to: &str) -> Dec {
+    journal
+        .transactions
+        .iter()
+        .filter(|txn| txn.date.as_str() <= to)
+        .flat_map(|txn| &txn.postings)
+        .filter(|posting| posting.account.0 == account)
+        .flat_map(|posting| &posting.amounts)
+        .filter(|amount| amount.commodity.0 == "$")
+        .fold(Dec::zero(), |acc, amount| {
+            acc.add(amount.quantity).expect("no overflow")
+        })
+}
+
+fn account_section<'a>(report: &'a Value, name: &str) -> &'a Value {
+    report["sections"]
+        .as_array()
+        .expect("sections")
+        .iter()
+        .find(|section| section["section"] == name)
+        .unwrap_or_else(|| panic!("a {name} section"))
+}
+
+fn account_row<'a>(section: &'a Value, account: &str) -> &'a Value {
+    section["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .find(|row| row["account"] == account)
+        .unwrap_or_else(|| panic!("a row for {account}"))
+}
+
+/// Assets read as each month's closing BALANCE — opening included — with
+/// the window's Δ last; expenses as each month's movement with a Total.
+#[tokio::test]
+async fn reports_accounts_reads_balances_for_assets_and_changes_for_flows() {
+    let journal = sample_journal();
+    let (status, _, body) = get_on(
+        &journal,
+        "/api/reports/accounts?from=2026-02-01&to=2026-04-30&interval=monthly&depth=3",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["buckets"],
+        serde_json::json!(["2026-02", "2026-03", "2026-04"])
+    );
+    let assets = account_section(&body, "assets");
+    assert_eq!(assets["reading"], "balance");
+    let checking = account_row(assets, "assets:bank:checking");
+    let closings: Vec<Dec> = checking["values"]
+        .as_array()
+        .expect("values")
+        .iter()
+        .map(usd_of)
+        .collect();
+    assert_eq!(
+        closings,
+        ["2026-02-28", "2026-03-31", "2026-04-30"].map(|to| balance_on(
+            &journal,
+            "assets:bank:checking",
+            to
+        ))
+    );
+    // Δ: closing at the end less the balance the window opened on.
+    assert_eq!(
+        usd_of(&checking["summary"]),
+        closings[2]
+            .sub(balance_on(&journal, "assets:bank:checking", "2026-01-31"))
+            .expect("no overflow")
+    );
+    let expenses = account_section(&body, "expenses");
+    assert_eq!(expenses["reading"], "change");
+    for row in expenses["rows"].as_array().expect("rows") {
+        let values: Vec<Dec> = row["values"]
+            .as_array()
+            .expect("values")
+            .iter()
+            .map(usd_of)
+            .collect();
+        let total = values
+            .iter()
+            .fold(Dec::zero(), |acc, v| acc.add(*v).expect("no overflow"));
+        assert_eq!(usd_of(&row["summary"]), total, "{}", row["account"]);
+    }
+}
+
+/// `interval=total` is one column; `empty=1` adds the declared accounts
+/// nothing posts to; a window the cash flow report refuses is refused here.
+#[tokio::test]
+async fn reports_accounts_takes_the_cash_flow_window() {
+    let journal = sample_journal();
+    let (_, _, total) = get_on(
+        &journal,
+        "/api/reports/accounts?from=2026-01-01&to=2026-06-30&interval=total",
+    )
+    .await;
+    assert_eq!(total["buckets"].as_array().expect("buckets").len(), 1);
+
+    let listed = |body: &Value| -> Vec<String> {
+        body["sections"]
+            .as_array()
+            .expect("sections")
+            .iter()
+            .flat_map(|s| {
+                s["rows"]
+                    .as_array()
+                    .expect("rows")
+                    .iter()
+                    .map(|r| r["account"].as_str().expect("account").to_string())
+            })
+            .collect()
+    };
+    let uri = "/api/reports/accounts?from=2026-01-01&to=2026-06-30&interval=monthly&depth=3";
+    let (_, _, hidden) = get_on(&journal, uri).await;
+    let (_, _, shown) = get_on(&journal, &format!("{uri}&empty=1")).await;
+    assert!(!listed(&hidden).contains(&"expenses:shopping".to_string()));
+    assert!(listed(&shown).contains(&"expenses:shopping".to_string()));
+
+    let (status, _, _) = get_on(&journal, "/api/reports/accounts?to=2026-06-30").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}

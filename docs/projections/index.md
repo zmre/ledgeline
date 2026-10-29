@@ -40,7 +40,7 @@ Design notes and the reasoning behind each decision live in
 | **Balance sheet** | the Reports tab's balance sheet at the end of every period, side by side |
 | **Income statement** | the Reports tab's income statement, one column per period plus a Total |
 | **Cash flow** | the Reports tab's statement of cash flows over the same periods |
-| **Accounts** | every account, one row each, one column per period: what changed, or the balance at each period's end |
+| **Accounts** | every account, one row each, one column per period: balances for assets and liabilities, what moved for the rest |
 | **Journal** | the transactions the scenario generates, in date order, one block per transaction |
 
 The statements are computed by the same code as on the Reports tab, with the
@@ -54,7 +54,15 @@ not yet complete; [What moves cash](cash.md#where-the-projection-starts) says
 exactly where.
 
 **Interval** and **Periods** set the columns for every reading. The depth
-slider rolls up the cash flow statement's lines and the Accounts rows.
+slider rolls up the income statement's and cash flow statement's lines and the
+Accounts rows.
+
+**Export .xlsx**, beside the tabs, downloads the reading you're looking at as an
+Excel workbook. In the statements and Accounts, every projected column's heading
+says **(projected)**, so the file can't pass a forecast off as an actual. The
+Runway workbook starts from the real opening balance. The Journal downloads in
+the same accountant-ready layout as the Journal tab's own export, holding exactly
+the transactions your search lists.
 
 ![The Runway reading over the default 24 months: the controls bar, the six reading tabs, the sentence saying cash never turns negative, and the projected cash chart](images/runway.png)
 
@@ -63,29 +71,31 @@ slider rolls up the cash flow statement's lines and the Accounts rows.
 ### Accounts
 
 The plain ledger the statements are built from, over the same columns, with
-the same Actual and Projected marking. Every account is a row in a tree, cut
-off at the depth slider. Amounts are shown as written, one line per commodity,
-and are not valued into one currency. Signs are hledger's: revenue and equity
-read negative.
+the same Actual and Projected marking. Accounts are grouped by type, and each
+group reads the way that kind of account is read:
 
-- **Change** (the default) shows what moved in each period, with a Total
-  column. This is `hledger balance -M --forecast`.
-- **Balance** shows each account's balance at the end of each period,
-  including everything before the first column. It has no Total column,
-  because adding up balances means nothing. This is `hledger balance -M -H`
-  (`--historical`).
-- **Show empty accounts** adds the accounts nothing touches in these periods:
-  every account the journal declares or has ever posted to, and every account
-  the scenario books to. They show as zero rows, which is how to see what the
-  projection leaves out. This is `-E --declared`, plus any undeclared account
-  your journal used outside these periods, which hledger leaves out. Without
-  it, a row is shown only if it, or an account under it, is non-zero in some
-  column.
+| Section | Each period's column | The last column |
+| --- | --- | --- |
+| Assets, Liabilities | the **balance** at the end of the period, everything before it included | **Δ**: how much the balance changed from the start of the first period to the end of the last, every figure marked "Δ" |
+| Equity, Revenue, Expenses | what **moved** in the period | **Total**: the sum of the periods |
+
+Each section has a total row. There's no grand total, because adding balances
+to movements means nothing. Every account is a row in a tree, cut off at the
+depth slider. Amounts are shown as written, one line per commodity, and are not
+valued into one currency. Signs are hledger's: revenue and liabilities read
+negative. A short note above the table says all this on the page.
+
+**Show empty accounts** adds the accounts nothing touches in these periods:
+every account the journal declares or has ever posted to, and every account the
+scenario books to. They show as zero rows, which is how to see what the
+projection leaves out. This is `-E --declared`, plus any undeclared account
+your journal used outside these periods, which hledger leaves out.
+
+The same report, over your recorded transactions only, is the
+[Accounts tab on Reports](../reports/accounts.md).
 
 [What moves cash](cash.md#where-the-projection-starts) gives the exact hledger
-commands for both modes and for the Journal, and the three ways they differ.
-
-![The Accounts reading in Change mode: the Change/Balance and Show empty accounts controls boxed, then one row per account with two actual months, four projected months and a Total column](images/accounts.png)
+commands for both readings and for the Journal, and the three ways they differ.
 
 ### Journal
 

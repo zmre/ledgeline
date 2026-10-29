@@ -51,6 +51,8 @@ const SEED_BODY = {
     ],
     events: [],
     cash: null,
+    autoRules: [],
+    accountTypes: {},
 };
 
 const RUN_BODY = rawProjectionRun();
@@ -78,7 +80,7 @@ beforeEach(async () => {
     });
     // Back to a known, not-dirty state: the store is a module singleton shared
     // by every test in this file.
-    scenarioStore.adopt({name: "", created: null, updated: null, lines: [], events: [], cash: null});
+    scenarioStore.adopt({name: "", created: null, updated: null, lines: [], events: [], cash: null, autoRules: []});
 });
 
 afterEach(() => {
@@ -159,7 +161,7 @@ describe("COMPONENT scenarioStore — the seed's depth", () => {
 
     it("a scenario from a FILE has no seed depth", async () => {
         await scenarioStore.ensureSeeded(FAKE_ENGINE, 23, 2);
-        scenarioStore.adopt({name: "From a file", created: null, updated: null, lines: [], events: [], cash: null});
+        scenarioStore.adopt({name: "From a file", created: null, updated: null, lines: [], events: [], cash: null, autoRules: []});
         expect(scenarioStore.seedDepth).toBe(null);
     });
 });
@@ -231,11 +233,10 @@ describe("COMPONENT scenarioStore — the payload and the question it answers", 
         const held = scenarioStore.projection.query!;
         const revision = scenarioStore.revision;
         expect(sameProjectionQuery(held, {...WINDOW, journal: true, revision})).toBe(false);
-        expect(sameProjectionQuery(held, {...WINDOW, accounts: {mode: "change", empty: false}, revision})).toBe(false);
-        const accounts = {...held, accounts: {mode: "change" as const, empty: false}};
-        expect(sameProjectionQuery(accounts, {...WINDOW, accounts: {mode: "change", empty: false}, revision})).toBe(true);
-        expect(sameProjectionQuery(accounts, {...WINDOW, accounts: {mode: "balance", empty: false}, revision})).toBe(false);
-        expect(sameProjectionQuery(accounts, {...WINDOW, accounts: {mode: "change", empty: true}, revision})).toBe(false);
+        expect(sameProjectionQuery(held, {...WINDOW, accounts: {empty: false}, revision})).toBe(false);
+        const accounts = {...held, accounts: {empty: false}};
+        expect(sameProjectionQuery(accounts, {...WINDOW, accounts: {empty: false}, revision})).toBe(true);
+        expect(sameProjectionQuery(accounts, {...WINDOW, accounts: {empty: true}, revision})).toBe(false);
     });
 });
 
@@ -258,7 +259,7 @@ describe("COMPONENT scenarioTableView — what gates the table", () => {
     });
 
     it("`adopted` is set by a load as well as by a seed", () => {
-        scenarioStore.adopt({name: "From a file", created: null, updated: null, lines: [], events: [], cash: null});
+        scenarioStore.adopt({name: "From a file", created: null, updated: null, lines: [], events: [], cash: null, autoRules: []});
         expect(scenarioStore.adopted).toBe(true);
     });
 });

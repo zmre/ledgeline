@@ -87,6 +87,8 @@ pub struct AssertionFailure {
     /// The file the asserting posting was parsed from. For a posting in an
     /// `include`d file this is the included file, matching
     /// [`Transaction::source_file`] — and matching which path hledger names.
+    /// For a posting an `=` rule generated, it is the rule's file, where the
+    /// assertion was written.
     pub source_file: PathBuf,
     /// Position of the `=` sign, relative to [`Self::source_file`].
     pub position: SourcePos,
@@ -254,6 +256,9 @@ pub(crate) fn display_styles(journal: &Journal) -> BTreeMap<&Commodity, &AmountS
         .transactions
         .iter()
         .flat_map(|transaction| &transaction.postings)
+        // An `=` rule's exact products are not written precisions (as
+        // `journal_meta::report_styles`).
+        .filter(|posting| posting.generated.is_none())
         .flat_map(|posting| {
             posting.amounts.iter().chain(
                 posting
@@ -355,15 +360,7 @@ pub fn check_balance_assertions(journal: &Journal) -> Result<Vec<AssertionFailur
             }
         }
         if let Some(assertion) = &entry.posting.balance_assertion {
-            check_one(
-                &balances,
-                account,
-                assertion,
-                entry.transaction,
-                entry.transaction_index,
-                &styles,
-                &mut failures,
-            )?;
+            check_one(&balances, &entry, assertion, &styles, &mut failures)?;
         }
     }
     Ok(failures)
@@ -373,13 +370,24 @@ pub fn check_balance_assertions(journal: &Journal) -> Result<Vec<AssertionFailur
 /// posting has been applied, appending any failures to `out`.
 fn check_one(
     balances: &Balances,
-    account: &AccountName,
+    entry: &Entry,
     assertion: &BalanceAssertion,
-    transaction: &Transaction,
-    transaction_index: usize,
     styles: &BTreeMap<&Commodity, &AmountStyle>,
     out: &mut Vec<AssertionFailure>,
 ) -> Result<(), DecError> {
+    let Entry {
+        transaction,
+        transaction_index,
+        posting,
+        ..
+    } = *entry;
+    let account = &posting.account;
+    // A generated posting's assertion was written in its rule, which may sit
+    // in another file; hledger names the rule's line.
+    let source_file = posting
+        .generated
+        .as_ref()
+        .map_or(&transaction.source_file, |origin| &origin.source_file);
     let own = balances.get(&account.0);
     let subject = if assertion.inclusive {
         inclusive_balance(balances, &account.0)?
@@ -390,7 +398,7 @@ fn check_one(
         |commodity: &Commodity| subject.get(commodity).copied().unwrap_or_else(Dec::zero);
 
     let failure = |commodity: &Commodity, asserted: Dec, calculated: Dec| AssertionFailure {
-        source_file: transaction.source_file.clone(),
+        source_file: source_file.clone(),
         position: assertion.position,
         transaction_date: transaction.date.clone(),
         transaction_index,

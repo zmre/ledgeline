@@ -6,6 +6,11 @@
     // Client-side validation is minimal (date + ≥1 posting); the engine does the
     // real balancing and its 400 message is shown inline. A 409 closes the popup
     // and lets the page's "changed on disk" banner take over.
+    //
+    // Postings an `=` rule generated (`--auto`, plan 30) are not in the form —
+    // `txnToForm` drops them and `formToBody` therefore never sends them. They
+    // are listed read-only below it, each linking to its rule, which is the one
+    // place they can be changed.
     import {tick} from "svelte";
     import {decToInput, formToBody, txnToForm, validateForm, blankForm, emptyPosting, type TxnForm} from "#lib/api/editMapping.js";
     import type {WireBalanceAssertion, WirePostingType} from "#lib/api/native.js";
@@ -17,6 +22,10 @@
     import {journal} from "#lib/stores/journal.svelte.js";
     import {txnModal} from "./modalState.svelte";
     import AccountInput from "./AccountInput.svelte";
+    import AccountLabel from "#lib/components/AccountLabel.svelte";
+    import {openAutoRule} from "#lib/autoRules/openRule.js";
+    import AmountCell from "../AmountCell.svelte";
+    import {generatedPostings} from "../rowModel";
 
     let form = $state<TxnForm>(blankForm(localToday(), "$"));
     let clientErrors = $state<string[]>([]);
@@ -60,6 +69,15 @@
      */
     function focusDate(): void {
         void tick().then(() => dateField?.focus());
+    }
+
+    /** What the rules add to the transaction being edited — shown, never edited. */
+    const generated = $derived(txnModal.mode === "edit" && txnModal.target !== null ? generatedPostings(txnModal.target) : []);
+
+    /** Leave the modal for the rule: changing a generated posting means changing its rule. */
+    function goToRule(rule: number): void {
+        txnModal.close();
+        void openAutoRule(rule);
     }
 
     /** Edit mode before its transaction has arrived: nothing to show or save yet. */
@@ -316,6 +334,32 @@
                     <span class="text-base leading-none">+</span> Add posting
                 </button>
             </div>
+
+            {#if generated.length > 0}
+                <div class="mt-4" data-testid="modal-generated">
+                    <div class="mb-1 flex items-center justify-between">
+                        <span class="label-text text-xs font-medium">Added by automatic posting rules</span>
+                        <span class="text-xs text-base-content/50">Not saved with the transaction — change the rule instead</span>
+                    </div>
+                    <ul class="flex flex-col gap-1 rounded-box border border-dashed border-base-content/15 p-2">
+                        {#each generated as posting, at (at)}
+                            <li class="flex items-center gap-2 text-sm text-base-content/55 italic" data-testid="modal-generated-posting">
+                                <span class="min-w-0 grow" title={posting.account}><AccountLabel name={posting.account} maxWidth={260} /></span>
+                                <span class="shrink-0 not-italic"><AmountCell amounts={posting.amounts} /></span>
+                                {#if posting.generated !== undefined}
+                                    {@const rule = posting.generated}
+                                    <button
+                                        type="button"
+                                        class="btn shrink-0 btn-ghost font-normal not-italic btn-xs"
+                                        title="Open the rule that adds this posting"
+                                        onclick={() => goToRule(rule.rule)}>⚙ from rule <code>= {rule.query}</code></button
+                                    >
+                                {/if}
+                            </li>
+                        {/each}
+                    </ul>
+                </div>
+            {/if}
 
             {#if clientErrors.length > 0}
                 <ul class="mt-3 list-inside list-disc text-sm text-error" role="alert">

@@ -5,11 +5,12 @@
 // imports) so the round trip is unit-testable under node.
 //
 // Scheme: `?tab=cash|bs|is|cf|accounts|journal&interval=&count=&lookback=&depth=
-// &accounts=change|balance&empty=0|1`. All seven are written in full, never only
-// the non-defaults, so a shared or reloaded URL reproduces the same readings —
-// the reports codec's rule, for the reason it gives there. `accounts` and
-// `empty` are the Accounts tab's two toggles; they are kept while another tab
-// is open, so switching back finds them as they were.
+// &empty=0|1`. All six are written in full, never only the non-defaults, so a
+// shared or reloaded URL reproduces the same readings — the reports codec's
+// rule, for the reason it gives there. `empty` is the Accounts tab's toggle;
+// it is kept while another tab is open, so switching back finds it as it was.
+// (An `accounts=change|balance` from before 2026-10-28, when the tab had a
+// Change/Balance switch, is ignored: each section now reads its own way.)
 //
 // `cash` is the Runway tab's value, unchanged since it was "Cash & runway", so
 // old links keep working. The statements take the Reports tab's own codes.
@@ -23,7 +24,6 @@
 
 import {MAX_COUNT, type PeriodInterval} from "#lib/reports/ui/params.js";
 import {clampedInt, oneOf} from "#lib/url/params.js";
-import {ACCOUNTS_MODES, type AccountsMode} from "./types";
 
 /** Which reading the bottom half is showing. */
 export type ProjectionTab = "cash" | "bs" | "is" | "cf" | "accounts" | "journal";
@@ -56,10 +56,8 @@ export interface ProjectionParams {
     count: number;
     /** How many full ACTUAL periods the statements show before the forecast (plan 28 Decision 6). `0` is allowed. */
     lookback: number;
-    /** The roll-up depth of the cash flow statement's lines and the Accounts rows. Never clamps the totals. */
+    /** The roll-up depth of the income statement's rows, the cash flow statement's lines and the Accounts rows. Never clamps the totals. */
     depth: number;
-    /** The Accounts tab: each period's movement, or the balance at its end. */
-    accounts: AccountsMode;
     /** The Accounts tab: whether declared and known accounts with nothing in any column are rows too. */
     empty: boolean;
 }
@@ -90,7 +88,7 @@ export const DEFAULT_PROJECTION_DEPTH = 2;
 
 /**
  * Defaults: runway, monthly × 24 with two periods of actuals, depth 2; the
- * Accounts tab on Change (hledger's own default) with empty accounts hidden.
+ * Accounts tab with empty accounts hidden.
  */
 export function defaultProjectionParams(): ProjectionParams {
     return {
@@ -99,7 +97,6 @@ export function defaultProjectionParams(): ProjectionParams {
         count: DEFAULT_PROJECTION_COUNT,
         lookback: DEFAULT_PROJECTION_LOOKBACK,
         depth: DEFAULT_PROJECTION_DEPTH,
-        accounts: "change",
         empty: false,
     };
 }
@@ -112,7 +109,6 @@ export function projectionParamsToSearch(params: ProjectionParams): string {
     q.set("count", String(params.count));
     q.set("lookback", String(params.lookback));
     q.set("depth", String(params.depth));
-    q.set("accounts", params.accounts);
     q.set("empty", params.empty ? "1" : "0");
     return q.toString();
 }
@@ -135,7 +131,6 @@ export function searchToProjectionParams(search: string, dflt: ProjectionParams)
         count: clampedInt(q.get("count"), 1, MAX_COUNT, dflt.count),
         lookback: clampedInt(q.get("lookback"), 0, MAX_COUNT, dflt.lookback),
         depth: clampedInt(q.get("depth"), 1, 99, dflt.depth),
-        accounts: oneOf(ACCOUNTS_MODES, q.get("accounts"), dflt.accounts),
         empty: oneOf(["0", "1"], q.get("empty"), dflt.empty ? "1" : "0") === "1",
     };
 }

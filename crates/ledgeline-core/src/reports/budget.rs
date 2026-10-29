@@ -172,7 +172,7 @@ fn anchored_in_month(year: i64, month: i64, anchor: Anchor) -> Option<String> {
             (day <= last_day_of(year, month)).then(|| clamped_date(year, month, day))
         }
         // A weekday anchor belongs to the weekly family, which never asks.
-        Anchor::Weekday(_) => None,
+        Anchor::Weekday(_) | Anchor::Weekdays(_) => None,
     }
 }
 
@@ -328,20 +328,13 @@ fn every_dates(
 /// Both verified. They are two code paths in hledger and so are two here.
 fn anchored_dates(start: &str, end: &str, spec: &PeriodSpec, anchor: Anchor) -> Vec<String> {
     let base = spec.start.as_deref().unwrap_or(start);
-    if let Anchor::Weekday(weekday) = anchor {
-        // Back up onto the anchored weekday on-or-before `base`.
-        let back = (weekday_of(base) - i64::from(weekday)).rem_euclid(7);
-        let first = add_days(base, -back);
-        let skip = (days_between(&first, start) / 7).max(0);
-        let mut out = Vec::new();
-        for n in skip.. {
-            let date = add_days(&first, n * 7);
-            if compare_iso(&date, end) == Ordering::Greater || out.len() >= MAX_OCCURRENCES {
-                break;
-            }
-            out.push(date);
-        }
-        return out;
+    let weekdays = match anchor {
+        Anchor::Weekday(weekday) => Some(1u8 << (weekday.clamp(1, 7) - 1)),
+        Anchor::Weekdays(mask) => Some(mask),
+        Anchor::DayOfMonth(_) | Anchor::NthWeekday { .. } => None,
+    };
+    if let Some(mask) = weekdays {
+        return weekday_dates(start, end, base, mask);
     }
     // Monthly-anchored: one candidate month per month of the span. Bounded by
     // the span itself, so a month with no such day can simply be skipped without
@@ -359,18 +352,59 @@ fn anchored_dates(start: &str, end: &str, spec: &PeriodSpec, anchor: Anchor) -> 
         .collect()
 }
 
-/// `every 12/25` — once a year on a fixed month/day.
+/// The weekly family: every date whose ISO weekday is in `mask` (bit 0 =
+/// Monday), on or after `start` and on or before `end`.
+///
+/// `base` snaps DOWN onto the set's EARLIEST weekday, so the first occurrence
+/// may precede a `from`: `every weekday from 2027-01-09` (a Saturday) first
+/// fires Monday 2027-01-04, and `every weekendday from` a Wednesday first fires
+/// the Saturday before it. Verified against hledger 1.52; a single weekday
+/// (`every tuesday`) is the one-bit case of the same rule.
+fn weekday_dates(start: &str, end: &str, base: &str, mask: u8) -> Vec<String> {
+    let mask = mask & 0b111_1111;
+    // The parser never builds an empty set, but a hand-built one would never
+    // match a day, and the walk below must still stop.
+    let Some(lead) = (1..=7_i64).find(|day| mask & (1 << (day - 1)) != 0) else {
+        return Vec::new();
+    };
+    let back = (weekday_of(base) - lead).rem_euclid(7);
+    let first = add_days(base, -back);
+    // Skip whole weeks up to the span rather than walking to it.
+    let week = add_days(&first, (days_between(&first, start) / 7).max(0) * 7);
+    (0..)
+        .map(|n| add_days(&week, n))
+        .take_while(|date| compare_iso(date, end) != Ordering::Greater)
+        .filter(|date| mask & (1 << (weekday_of(date) - 1)) != 0)
+        .take(MAX_OCCURRENCES)
+        .collect()
+}
+
+/// `every 12/25`, `every 1st apr` — once a year on a fixed month/day.
+///
+/// hledger's reading, verified against 1.52 in both `print --forecast` and
+/// `bal --budget`: the first occurrence on or after `base` is computed with the
+/// day OVERFLOWING the month, and each later one steps whole years from it.
 fn annual_dates(start: &str, end: &str, spec: &PeriodSpec, month: u32, day: u32) -> Vec<String> {
     let base = spec.start.as_deref().unwrap_or(start);
     let (base_year, _, _) = parts(base);
     let (last_year, _, _) = parts(end);
-    (base_year..=last_year)
-        .map(|year| clamped_date(year, i64::from(month), i64::from(day)))
-        .filter(|date| {
-            spec.start
-                .as_deref()
-                .is_none_or(|from| compare_iso(date, from) != Ordering::Less)
-        })
+    // A day past the month's end OVERFLOWS into the next month for the first
+    // occurrence: `every 2/29` from 2027 first fires 2027-03-01, and
+    // `every 31st apr` fires May 1st.
+    let overflowed = |year| add_days(&clamped_date(year, i64::from(month), 1), i64::from(day) - 1);
+    let Some(first) = [base_year, base_year + 1]
+        .into_iter()
+        .map(overflowed)
+        .find(|date| compare_iso(date, base) != Ordering::Less)
+    else {
+        return Vec::new();
+    };
+    // Every later one is that first date plus whole years, its day CLAMPED
+    // per year: `every 2/29 from 2028` fires 2028-02-29 and then 2029-02-28,
+    // while `every 2/29` from 2027 stays on March 1st. Both verified.
+    let (first_year, first_month, first_day) = parts(&first);
+    (first_year..=last_year)
+        .map(|year| clamped_date(year, first_month, first_day))
         .collect()
 }
 
@@ -879,6 +913,7 @@ mod tests {
             date2: None,
             comment: String::new(),
             tags: Vec::new(),
+            generated: None,
         }
     }
 
@@ -1771,5 +1806,395 @@ mod tests {
             (gaps.from.as_str(), gaps.to.as_str()),
             ("2026-01-31", "2026-01-31")
         );
+    }
+
+    /// Plan 30's forms, as `hledger 1.52 print --forecast=<start>..<end>`
+    /// printed them on 2026-10-27 — including its quirks: a yearly day past the
+    /// month's end overflows on the first occurrence and then steps whole years,
+    /// and a weekday set snaps a `from` back onto the set's earliest weekday.
+    #[test]
+    fn a_forecast_fires_plan_30_forms_on_hledger_s_dates() {
+        // `(forecast start, inclusive end, expression, first dates)`.
+        let cases: &[(&str, &str, &str, &[&str])] = &[
+            ("2027-01-01", "2027-12-31", "every 1st Apr", &["2027-04-01"]),
+            (
+                "2027-01-01",
+                "2027-12-31",
+                "every 1st July from 2027",
+                &["2027-07-01"],
+            ),
+            (
+                "2026-10-01",
+                "2027-12-31",
+                "every 15th Nov from 2026 to 2026-12-31",
+                &["2026-11-15"],
+            ),
+            (
+                "2027-01-01",
+                "2027-12-31",
+                "every 30th feb",
+                &["2027-03-02"],
+            ),
+            (
+                "2027-01-01",
+                "2030-12-31",
+                "every 2/29",
+                &["2027-03-01", "2028-03-01", "2029-03-01", "2030-03-01"],
+            ),
+            (
+                "2027-01-01",
+                "2030-12-31",
+                "every 2/29 from 2028",
+                &["2028-02-29", "2029-02-28", "2030-02-28"],
+            ),
+            (
+                "2027-01-01",
+                "2030-12-31",
+                "every 2/29 from 2027-03-02",
+                &["2028-02-29", "2029-02-28", "2030-02-28"],
+            ),
+            (
+                "2027-01-01",
+                "2029-12-31",
+                "every 31st apr",
+                &["2027-05-01", "2028-05-01", "2029-05-01"],
+            ),
+            (
+                "2027-01-01",
+                "2029-12-31",
+                "every 31st apr from 2027-05-02",
+                &["2028-05-01", "2029-05-01"],
+            ),
+            (
+                "2027-01-01",
+                "2029-12-31",
+                "every 12/25 from 2027-12-26",
+                &["2028-12-25", "2029-12-25"],
+            ),
+            (
+                "2026-12-01",
+                "2027-01-31",
+                "every mon,wed,fri from 2027-01-07",
+                &["2027-01-04", "2027-01-06", "2027-01-08", "2027-01-11"],
+            ),
+            (
+                "2026-12-01",
+                "2027-01-31",
+                "every weekendday from 2027-01-06",
+                &["2027-01-02", "2027-01-03", "2027-01-09"],
+            ),
+            (
+                "2026-12-01",
+                "2027-01-31",
+                "every tue,thu from 2027-01-06",
+                &["2027-01-05", "2027-01-07", "2027-01-12"],
+            ),
+            (
+                "2026-12-01",
+                "2027-01-31",
+                "every weekday from 2027-01-09",
+                &["2027-01-04", "2027-01-05", "2027-01-06"],
+            ),
+            (
+                "2026-12-01",
+                "2027-01-31",
+                "every fri,mon from 2027-01-06",
+                &["2027-01-04", "2027-01-08", "2027-01-11"],
+            ),
+            (
+                "2026-12-01",
+                "2027-01-31",
+                "every weekday",
+                &[
+                    "2026-12-01",
+                    "2026-12-02",
+                    "2026-12-03",
+                    "2026-12-04",
+                    "2026-12-07",
+                ],
+            ),
+            (
+                "2027-01-06",
+                "2027-01-31",
+                "every mon,wed,fri",
+                &["2027-01-06", "2027-01-08", "2027-01-11"],
+            ),
+            (
+                "2027-01-06",
+                "2027-01-31",
+                "every sun",
+                &["2027-01-10", "2027-01-17"],
+            ),
+            (
+                "2027-01-01",
+                "2027-12-31",
+                "monthly in 2027q2",
+                &["2027-04-01", "2027-05-01", "2027-06-01"],
+            ),
+            (
+                "2027-01-01",
+                "2027-12-31",
+                "monthly 2027-03",
+                &["2027-03-01"],
+            ),
+            (
+                "2027-01-01",
+                "2027-12-31",
+                "monthly 20270301",
+                &["2027-03-01"],
+            ),
+            (
+                "2027-01-01",
+                "2027-12-31",
+                "monthly 2027-02-15..2027-05",
+                &["2027-02-15", "2027-03-15", "2027-04-15"],
+            ),
+            (
+                "2027-01-01",
+                "2027-12-31",
+                "every 2 weeks in 2027-03",
+                &["2027-03-01", "2027-03-15", "2027-03-29"],
+            ),
+            (
+                "2027-01-01",
+                "2027-12-31",
+                "monthly until 2027-04",
+                &["2027-01-01", "2027-02-01", "2027-03-01"],
+            ),
+            (
+                "2027-01-01",
+                "2027-04-30",
+                "every 3rd tue from 2027-02",
+                &["2027-02-16", "2027-03-16", "2027-04-20"],
+            ),
+            (
+                "2027-01-01",
+                "2027-04-30",
+                "every 15th day from 2027-03",
+                &["2027-03-15", "2027-04-15"],
+            ),
+            (
+                "2027-01-01",
+                "2027-03-31",
+                "every 3rd mon",
+                &["2027-01-18", "2027-02-15", "2027-03-15"],
+            ),
+            ("2027-01-01", "2027-12-31", "2027q2", &["2027-04-01"]),
+        ];
+        for (start, end, expr, want) in cases {
+            let spec = crate::parse::parse_period_spec(expr);
+            let got = forecast_occurrences(start, end, &spec).unwrap();
+            let got: Vec<&str> = got.iter().map(String::as_str).take(want.len()).collect();
+            assert_eq!(got, *want, "`{expr}` forecast from {start}");
+        }
+        // The cases that must stop at their bound fire no more than listed.
+        for (start, end, expr, count) in [
+            ("2027-01-01", "2027-12-31", "monthly in 2027q2", 3),
+            ("2027-01-01", "2027-12-31", "monthly 2027-03", 1),
+            ("2027-01-01", "2027-12-31", "monthly until 2027-04", 3),
+            (
+                "2026-10-01",
+                "2027-12-31",
+                "every 15th Nov from 2026 to 2026-12-31",
+                1,
+            ),
+        ] {
+            let spec = crate::parse::parse_period_spec(expr);
+            assert_eq!(
+                forecast_occurrences(start, end, &spec).unwrap().len(),
+                count,
+                "`{expr}` occurrences"
+            );
+        }
+    }
+
+    /// `bal --budget` agrees with the forecast on the plan 30 quirks: hledger
+    /// 1.52 put the `every 2/29` goal in March 2027 and `every 31st apr` in May,
+    /// and counts a weekday set's days per month.
+    #[test]
+    fn a_budget_reads_plan_30_forms_as_hledger_does() {
+        let months = |expr: &str| -> Vec<usize> {
+            let spec = crate::parse::parse_period_spec(expr);
+            let dates = occurrences("2027-01-01", "2027-06-30", &spec).unwrap();
+            (1..=6)
+                .map(|month| {
+                    let prefix = format!("2027-{month:02}");
+                    dates
+                        .iter()
+                        .filter(|date| date.starts_with(&prefix))
+                        .count()
+                })
+                .collect()
+        };
+        assert_eq!(months("every 2/29"), [0, 0, 1, 0, 0, 0]);
+        assert_eq!(months("every 31st apr"), [0, 0, 0, 0, 1, 0]);
+        assert_eq!(months("every weekday"), [21, 20, 23, 22, 21, 22]);
+        assert_eq!(months("monthly 2027-03"), [0, 0, 1, 0, 0, 0]);
+        assert_eq!(months("monthly in 2027q2"), [0, 0, 0, 1, 1, 1]);
+    }
+
+    /// Every period form this engine reads, and every one it refuses, put to
+    /// the real `hledger print --forecast` — so the dates above are checked
+    /// against hledger itself rather than against a transcription of it.
+    ///
+    /// Opt-in like the projection parity suite (`just hledger-checks` sets
+    /// `LEDGELINE_HLEDGER_PROJECTION_CHECK`); without it the test returns at
+    /// once, so `cargo test` stays hermetic.
+    #[test]
+    fn every_period_form_fires_on_hledger_s_dates() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        if std::env::var("LEDGELINE_HLEDGER_PROJECTION_CHECK").is_err() {
+            return;
+        }
+        // hledger's `--forecast` end is exclusive; ours is the last day.
+        let (start, end_exclusive, end) = ("2026-12-01", "2029-01-01", "2028-12-31");
+        let hledger_dates = |expr: &str| -> Option<Vec<String>> {
+            let mut child = Command::new("hledger")
+                .args([
+                    "-f",
+                    "-",
+                    "print",
+                    &format!("--forecast={start}..{end_exclusive}"),
+                    "--today=2026-11-01",
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("hledger runs");
+            let journal = format!("~ {expr}  x\n    a  1\n    b\n");
+            child
+                .stdin
+                .take()
+                .expect("stdin")
+                .write_all(journal.as_bytes())
+                .expect("write");
+            let output = child.wait_with_output().expect("hledger exits");
+            output.status.success().then(|| {
+                String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .filter(|line| line.starts_with(|c: char| c.is_ascii_digit()))
+                    .filter_map(|line| line.split_whitespace().next())
+                    .map(|date| date.replace('/', "-"))
+                    .collect()
+            })
+        };
+        let accepted = [
+            // Plan 21's forms.
+            "daily from 2028-12-01",
+            "weekly",
+            "monthly",
+            "quarterly",
+            "yearly",
+            "every 2 weeks",
+            "biweekly",
+            "bimonthly",
+            "every 10 days from 2027-01-01",
+            "every 15th day of month",
+            "every 31st day of month",
+            "every 3rd tuesday of month",
+            "every tuesday",
+            "every 2nd day of week",
+            "every 12/25",
+            "quarterly from 2027",
+            "monthly from 2027-01-31",
+            "monthly from 2027 to 2028",
+            "2027-03-01",
+            "from 2027-03-01 to 2027-04-01",
+            // Plan 30's.
+            "every 1st Apr from 2027",
+            "every 15th Nov from 2026 to 2026-12-31",
+            "every 1st July from 2027",
+            "every Nov 15th",
+            "every 15th Nov of year",
+            "every 11/15 of year",
+            "every 01st april",
+            "every 30th feb",
+            "every 31st apr",
+            "every 2/29",
+            "every 2/29 from 2028",
+            "every 2/29 from 2027-03-02",
+            "every 12/25 from 2027-12-26",
+            "every 2nd day",
+            "every 15th day from 2027-03",
+            "every 3rd mon",
+            "every 2nd Monday",
+            "every 3rd tue from 2027-02",
+            "every weekday from 2028-11-01",
+            "every weekendday",
+            "every mon,wed,fri from 2027-01-07",
+            "every tue,thu from 2027-01-06",
+            "every fri,mon",
+            "every weekday from 2028-11-11",
+            "monthly in 2027",
+            "monthly 2027",
+            "monthly 2027-03",
+            "monthly 20270301",
+            "monthly from 202703",
+            "monthly in 2027q2",
+            "monthly from 2027q2",
+            "monthly from 2027 to 2027q3",
+            "monthly since 2027-03",
+            "monthly until 2027-04",
+            "monthly since 2027-03 to 2027-06",
+            "monthly since 2027-03..2027-06",
+            "monthly 2027-03 to 2027-06",
+            "monthly 2027-03 .. 2027-06",
+            "monthly .. 2027-06",
+            "monthly - 2027-06",
+            "monthly 2027-01..2027-04",
+            "monthly from 2027-01 - 2027-04",
+            "monthly from 2027-01-2027-04",
+            "monthly 2027-02-15..2027-05",
+            "every 2 weeks in 2027-03",
+            "every 1st apr in 2027",
+            "2027q2",
+            "in 2027-03",
+            "2027-03..2027-06",
+            "until 2027-03",
+        ];
+        let mut compared = 0;
+        let mut silent = Vec::new();
+        for expr in accepted {
+            let spec = crate::parse::parse_period_spec(expr);
+            assert_ne!(spec.kind, PeriodKind::Unsupported, "`{expr}` reads");
+            let ours = forecast_occurrences(start, end, &spec).unwrap();
+            let theirs = hledger_dates(expr).unwrap_or_else(|| panic!("hledger reads `{expr}`"));
+            assert_eq!(ours, theirs, "`{expr}`");
+            compared += theirs.len();
+            if theirs.is_empty() {
+                silent.push(expr);
+            }
+        }
+        // Not a vacuous pass: real dates were compared, and only the one rule
+        // whose whole life precedes the window fires nothing in it.
+        assert!(compared > 2_000, "only {compared} dates compared");
+        assert_eq!(silent, ["every 15th Nov from 2026 to 2026-12-31"]);
+        // hledger refuses these, and so does this engine.
+        for expr in [
+            "every nov 15",
+            "every 15 nov",
+            "every 1 apr",
+            "every 2nd quarter",
+            "every 2 weekly",
+            "every 2/30",
+            "every 4/31",
+            "every 32nd day",
+            "every last day of month",
+            "monthly 2027-01 2027-04",
+            "monthly since 2027-03 until 2027-06",
+            "monthly 2027-03 until 2027-06",
+            "monthly in 2027-03..2027-06",
+            "monthly in from 2027-03",
+        ] {
+            assert_eq!(
+                crate::parse::parse_period_spec(expr).kind,
+                PeriodKind::Unsupported,
+                "`{expr}` is refused here"
+            );
+            assert_eq!(hledger_dates(expr), None, "hledger refuses `{expr}`");
+        }
     }
 }

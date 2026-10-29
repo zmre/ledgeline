@@ -1069,12 +1069,14 @@ mod tests {
             source_files: vec![],
             transactions: vec![],
             periodic_transactions: vec![],
+            auto_rules: vec![],
             accounts: vec![],
             aliases: vec![],
             commodity_styles: vec![],
             commodity_tags: vec![],
             prices,
             default_commodity: None,
+            decimal_mark: None,
             leading_comment: None,
         };
         let tally = price_counts(&journal);

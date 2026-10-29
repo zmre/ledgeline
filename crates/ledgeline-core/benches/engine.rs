@@ -843,6 +843,7 @@ fn cached_run(facts: &JournalFacts, real: &RealSide, scenario: &Scenario) -> usi
         &StatementOpts {
             valuation: Valuation::Market,
             bs_depth: None,
+            is_depth: None,
             cf_depth: DEPTH,
         },
     )
@@ -852,7 +853,6 @@ fn cached_run(facts: &JournalFacts, real: &RealSide, scenario: &Scenario) -> usi
         facts,
         &projection.forecast,
         &AccountsOpts {
-            mode: BalanceMode::Change,
             depth: DEPTH,
             empty: false,
         },
@@ -861,7 +861,11 @@ fn cached_run(facts: &JournalFacts, real: &RealSide, scenario: &Scenario) -> usi
     statements.balance_sheet.len()
         + statements.income_statement.sections.len()
         + statements.cash_flow.sections.len()
-        + accounts.rows.len()
+        + accounts
+            .sections
+            .iter()
+            .map(|section| section.rows.len())
+            .sum::<usize>()
 }
 
 /// The run handler before plan 29: `project`, the merged lists, and every
@@ -918,6 +922,7 @@ fn full_scan_run(fx: &Fixture, scenario: &Scenario) -> usize {
             value: Valuation::Market,
             value_in: forecast.target.clone(),
             compare: false,
+            depth: None,
         },
         window.interval,
         &declared,

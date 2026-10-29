@@ -134,12 +134,27 @@ are read, and all of them count toward the bars exactly as hledger counts them:
 ~ biweekly  paycheck                    ; the same thing, spelled differently
 ~ every 15th day of month  rent
 ~ every 3rd tuesday of month  therapy
+~ every 15th day  rent                  ; "of month" is optional
+~ every 2nd monday  standup             ; the 2nd Monday of each month
 ~ every tuesday  coffee
+~ every weekday  lunch                  ; Monday to Friday
+~ every mon,wed,fri  gym
 ~ every 12/25  presents
+~ every 1st Apr  renewal                ; also "every Apr 1st", "… of year"
 ~ quarterly from 2027  new lease
 ~ monthly from 2026 to 2028  car loan
+~ monthly in 2027  this year only       ; also "monthly 2027"
+~ monthly since 2027-03 to 2027-06      ; "since" means "from"
+~ monthly until 2027-06                 ; "until" means "to", with no start
+~ monthly 2027-01..2027-04  three months
 ~ 2027-03-01  one-off
+~ 2027q2  one-off on April 1st
 ```
+
+A date in a period can be a year (`2027`), a month (`2027-03`, `202703`), a
+day (`2027-03-15`, `20270315`) or a quarter (`2027q2`). A word like `jan` or
+`this year` is not read, because its meaning would change from one day to the
+next.
 
 Two rules of hledger's own that are worth knowing, because they are easy to get
 wrong and Ledgeline follows them exactly:
@@ -148,6 +163,15 @@ wrong and Ledgeline follows them exactly:
   2026-01-15` falls on the 15th of every month, not the 1st.
 - **`to` is exclusive.** `~ monthly from 2026 to 2028` is 24 goals — January
   2026 through December 2027. The month you write as `to` is not included.
+- **A yearly date past the end of its month rolls over.** `~ every 2/29`
+  falls on March 1st in a year with no February 29th, and `~ every 31st apr`
+  falls on May 1st.
+- **A list of weekdays starts on its earliest day.** `~ every weekday from
+  2027-01-09` (a Saturday) starts on Monday 2027-01-04, not on the 9th.
+
+One known difference: `~ every 5th sunday of month` (or any other *fifth*
+weekday) skips the months that have no fifth one. hledger moves those into
+the following month instead, in a pattern Ledgeline does not reproduce.
 
 These rules are shown under **Other periods**, labelled with their own words, and
 they are read-only: the tab writes headers using one of the five plain interval

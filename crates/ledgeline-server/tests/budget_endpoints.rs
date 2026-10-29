@@ -288,7 +288,7 @@ async fn a_rule_the_editor_cannot_offer_is_listed_with_its_raw_period() {
     let tree = Tree::with(
         "~ every 2 weeks  paycheck\n    (income:salary)  $-2000\n\
          \n~ monthly from 2027  future rent\n    (expenses:rent)  $1500\n\
-         \n~ every weekday  commute\n    (expenses:bus)  $5\n\
+         \n~ every last day of month  commute\n    (expenses:bus)  $5\n\
          \n~ monthly  household budget\n    (expenses:food)  $400\n",
     );
     let (status, body) = get(&tree, "/api/budget/lines").await;
@@ -311,7 +311,7 @@ async fn a_rule_the_editor_cannot_offer_is_listed_with_its_raw_period() {
     }
     // Not understood at all: the lock says so in different words, because the
     // consequence differs — this rule contributes no goals to the bars either.
-    assert_eq!(rules[2]["period"]["raw"], json!("every weekday"));
+    assert_eq!(rules[2]["period"]["raw"], json!("every last day of month"));
     assert!(rules[2]["period"]["simple"].is_null());
     assert!(
         rules[2]["locked"]

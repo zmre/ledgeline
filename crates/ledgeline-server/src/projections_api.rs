@@ -39,38 +39,44 @@ use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::response::Response;
+use ledgeline_core::auto_form::{AutoRuleForm, form_from_rule, render};
 use ledgeline_core::decimal::MAX_PARSE_PLACES;
+use ledgeline_core::model::AutoPostingRule;
 use ledgeline_core::model::{
     AccountName, Amount, AmountStyle, Commodity, CommoditySide, PeriodSpec, Posting,
 };
-use ledgeline_core::parse::parse_period_spec;
+use ledgeline_core::parse::{JournalStyles, parse_period_spec};
 use ledgeline_core::projections::serialize::{
-    ProjectionDoc, SerializeError, new_file, scenario_from_text, write_scenario,
+    ProjectionDoc, SerializeError, new_file_with_styles, scenario_account_types,
+    scenario_and_own_types_from_text_with_styles, write_scenario,
 };
 use ledgeline_core::projections::{
     AccountsOpts, AssetRow, BalanceSeries, CounterDefaults, CreateRefusal, DEFAULT_LOOKBACK,
     DiscoveredProjection, Discovery, ForecastDefaults, ForecastOrigin, Growth, GrowthUnit, History,
     LineRole, LineSection, LineSource, ProjectedStatements, Projection, ProjectionPath, Runway,
-    Scenario, ScenarioEvent, ScenarioLine, SeedOpts, StatementOpts, discover_in, forecast_cutoff,
-    is_journal_name, label_for, latest_real_date, line_section, project_cached, projected_accounts,
-    projected_statements, seed_scenario, upgrade_legacy_counters, virtual_posting,
+    Scenario, ScenarioAutoRule, ScenarioEvent, ScenarioLine, SeedOpts, StatementOpts,
+    auto_rule_account_warnings, discover_in, forecast_cutoff, is_journal_name, label_for,
+    latest_real_date, line_section, project_cached, projected_accounts, projected_statements,
+    seed_scenario, upgrade_legacy_counters, virtual_posting,
 };
-use ledgeline_core::reports::account_types::{AccountType, AccountTypes};
+use ledgeline_core::reports::account_types::{AccountType, AccountTypes, parse_account_type_tag};
 use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
-    BalanceMode, BudgetOpts, Interval, Valuation, account_decls, declared_types,
-    periods::bucket_label, pivot_balance_sheets, signed_entry,
+    BudgetOpts, Interval, Valuation, account_decls, declared_types, periods::bucket_label,
+    pivot_balance_sheets, signed_entry,
 };
 use ledgeline_core::vault::{Revision, VaultError};
-use ledgeline_core::view::rows::{Row, RowContext};
+use ledgeline_core::view::rows::{Row, RowContext, haystack};
+use ledgeline_core::view::wire::DeclaredStyles;
 use ledgeline_core::{Dec, Fingerprint};
 use serde::{Deserialize, Serialize};
 
+use crate::auto_wire::{AutoRuleFormIn, WireAutoRuleForm, form_from_wire, rule_from_text};
 use crate::edit_api::{WireDecIn, dec_from_wire, json_body};
 use crate::error::{AppError, editing_disabled};
 use crate::reports_api::{
-    Window, WireBalanceSheetColumns, WireCashFlow, WireDec, WireIncomeStatementReport, WireMixed,
-    WirePeriodReport, checked_date, compute, today_utc, wire_mixed,
+    Window, WireAccountReport, WireBalanceSheetColumns, WireCashFlow, WireDec,
+    WireIncomeStatementReport, WireMixed, checked_date, compute, today_utc, wire_mixed,
 };
 use crate::security::no_store_json as no_store;
 use crate::{AppState, JournalLocation, Snapshot};
@@ -94,6 +100,8 @@ pub(crate) const MAX_BODY_BYTES: usize = 256 * 1024;
 const MAX_LINES: usize = 1000;
 /// The most dated events one scenario may carry.
 const MAX_EVENTS: usize = 1000;
+/// The most `=` auto-posting rules one scenario may carry.
+const MAX_AUTO_RULES: usize = 200;
 /// The most postings one event may carry.
 ///
 /// The line and event counts alone do not bound the work: one event with a
@@ -327,10 +335,64 @@ pub(crate) struct WireScenario {
     events: Vec<WireScenarioEvent>,
     /// `; cash:` — the scenario's default counter-account, or `null`.
     cash: Option<String>,
+    /// The scenario file's `= QUERY` auto-posting rules, in file order.
+    auto_rules: Vec<WireAutoRule>,
+    /// The account types the scenario FILE itself declares (`account
+    /// hmrc:paye  ; type: L`), by [`AccountType::code`]; empty for a seed.
+    /// Every sign here — a rule form's percentages, a line's section — was
+    /// read under the main journal's types with these winning, so a client
+    /// hands them back for the engine to read its edits the same way.
+    account_types: BTreeMap<String, &'static str>,
+}
+
+/// One `= QUERY` auto-posting rule, as the file writes it.
+///
+/// `raw` is the fact. `query` and `unsupported` are here so a client can list
+/// the rule without re-implementing hledger's query grammar, `form` so it can
+/// edit one (plan 30 Phase 4), and `block` so a save rewrites the block the
+/// rule came from (amendment 12). Every field is present; the optional ones
+/// are `null`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireAutoRule {
+    /// The whole block, `=` line through its last posting, each line ending
+    /// in `\n`.
+    raw: String,
+    /// The query, as written.
+    query: String,
+    /// Why the rule never fires, or `null` when it does.
+    unsupported: Option<String>,
+    /// The rule as the editor's form, or `null` when the form cannot state it
+    /// — the client then shows `raw`, locked.
+    form: Option<WireAutoRuleForm>,
+    /// Its position among the scenario file's own `=` blocks, or `null` for a
+    /// rule the file does not hold yet (a seed's).
+    block: Option<usize>,
+}
+
+impl WireAutoRule {
+    fn new(rule: &ScenarioAutoRule, types: &AccountTypes) -> Self {
+        Self {
+            raw: rule.rule.raw.clone(),
+            query: rule.rule.query.raw().to_string(),
+            unsupported: rule.rule.query.unsupported().map(ToString::to_string),
+            form: form_from_rule(&rule.rule, types)
+                .as_ref()
+                .map(WireAutoRuleForm::from),
+            block: rule.block,
+        }
+    }
 }
 
 impl WireScenario {
-    fn new(scenario: &Scenario, declared: &BTreeMap<String, AccountType>) -> Self {
+    /// `declared` is the main journal's account types and `own` the scenario
+    /// file's; everything is read under the two merged.
+    fn new(
+        scenario: &Scenario,
+        declared: &BTreeMap<String, AccountType>,
+        own: &BTreeMap<String, AccountType>,
+    ) -> Self {
+        let declared = scenario_account_types(declared, own);
         Self {
             name: scenario.name.clone(),
             created: scenario.created.clone(),
@@ -338,7 +400,7 @@ impl WireScenario {
             lines: scenario
                 .lines
                 .iter()
-                .map(|line| WireScenarioLine::new(line, declared))
+                .map(|line| WireScenarioLine::new(line, &declared))
                 .collect(),
             events: scenario
                 .events
@@ -346,7 +408,40 @@ impl WireScenario {
                 .map(WireScenarioEvent::from)
                 .collect(),
             cash: scenario.cash.as_ref().map(|account| account.0.clone()),
+            auto_rules: {
+                let types = AccountTypes::from_declared(declared);
+                scenario
+                    .auto_rules
+                    .iter()
+                    .map(|rule| WireAutoRule::new(rule, &types))
+                    .collect()
+            },
+            account_types: own
+                .iter()
+                .map(|(account, ty)| (account.clone(), ty.code()))
+                .collect(),
         }
+    }
+
+    /// The scenario file `text` (named `source_name`, displayed as
+    /// `fallback_name` when it has no `; projection:` marker), read under the
+    /// main journal's `declared` account types and `inherited` commodity
+    /// styles, as served.
+    fn read(
+        text: &str,
+        source_name: &str,
+        fallback_name: &str,
+        declared: &BTreeMap<String, AccountType>,
+        inherited: &[(Commodity, AmountStyle)],
+    ) -> Result<Self, SerializeError> {
+        let (scenario, own) = scenario_and_own_types_from_text_with_styles(
+            text,
+            source_name,
+            fallback_name,
+            declared,
+            inherited,
+        )?;
+        Ok(Self::new(&scenario, declared, &own))
     }
 }
 
@@ -358,6 +453,10 @@ struct WireBalanceSeries {
     opening: WireMixed,
     /// One closing balance per bucket, oldest → newest.
     values: Vec<WireMixed>,
+    /// The REAL closing balance at the end of each lookback period, oldest →
+    /// newest — the actuals a chart draws before the forecast. Empty with no
+    /// lookback.
+    history: Vec<WireMixed>,
 }
 
 impl From<&BalanceSeries> for WireBalanceSeries {
@@ -365,6 +464,7 @@ impl From<&BalanceSeries> for WireBalanceSeries {
         Self {
             opening: wire_mixed(&series.opening),
             values: series.values.iter().map(wire_mixed).collect(),
+            history: series.history.iter().map(wire_mixed).collect(),
         }
     }
 }
@@ -491,6 +591,10 @@ impl From<&ForecastOrigin> for WireOrigin {
 struct WireForecastEntry {
     origin: WireOrigin,
     txn: Row<'static>,
+    /// The lowercase text the Journal tab's search box matches against —
+    /// [`haystack`], the same text the main journal's free-text filter
+    /// searches, so a query finds the same things on both tabs.
+    haystack: String,
 }
 
 /// The forecast journal: every generated transaction, date-ascending.
@@ -550,7 +654,7 @@ pub(crate) struct WireProjection {
     defaults: WireForecastDefaults,
     /// Every account per column (`hledger balance`), when the request asked
     /// for it with `accounts`; `null` otherwise.
-    accounts: Option<WirePeriodReport>,
+    accounts: Option<WireAccountReport>,
     /// The generated transactions, when the request asked with `journal`;
     /// `null` otherwise.
     journal: Option<WireForecastJournal>,
@@ -594,7 +698,11 @@ fn wire_statements(
 
 /// The Journal reading: the generated transactions only, in the journal
 /// view's row shape, capped at [`MAX_JOURNAL_ENTRIES`].
-fn forecast_journal(projection: &Projection, context: &RowContext<'_>) -> WireForecastJournal {
+fn forecast_journal(
+    projection: &Projection,
+    context: &RowContext<'_>,
+    declared: &DeclaredStyles,
+) -> WireForecastJournal {
     let forecast = &projection.forecast;
     let entries = forecast
         .txns
@@ -604,6 +712,7 @@ fn forecast_journal(projection: &Projection, context: &RowContext<'_>) -> WireFo
         .map(|(txn, origin)| WireForecastEntry {
             origin: WireOrigin::from(origin),
             txn: context.row(txn, Vec::new()),
+            haystack: haystack(txn, declared),
         })
         .collect();
     WireForecastJournal {
@@ -787,6 +896,40 @@ struct ScenarioIn {
     events: Vec<ScenarioEventIn>,
     #[serde(default)]
     cash: Option<String>,
+    /// Optional, so a body written before rules travelled still decodes.
+    #[serde(default)]
+    auto_rules: Vec<AutoRuleIn>,
+    /// [`WireScenario::account_types`], handed back. Optional, so a body
+    /// written before they travelled still decodes (as the main journal's
+    /// types alone).
+    #[serde(default)]
+    account_types: BTreeMap<String, String>,
+}
+
+/// One `= QUERY` rule, inbound: its text (`raw`) or its form (`form`) —
+/// exactly one of them — and the block it came from.
+///
+/// A body from before forms and blocks travelled (`{raw}` alone) still
+/// decodes: an unchanged rule then claims the block holding its text.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AutoRuleIn {
+    #[serde(default)]
+    raw: Option<String>,
+    /// An edited rule, which the engine renders ([`render`]) and then
+    /// validates exactly as it validates `raw`.
+    #[serde(default)]
+    form: Option<AutoRuleFormIn>,
+    /// [`WireAutoRule::block`], handed back.
+    #[serde(default)]
+    block: Option<usize>,
+    /// The derived echoes a client hands back unchanged; ignored.
+    #[serde(default)]
+    #[allow(dead_code)]
+    query: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    unsupported: Option<String>,
 }
 
 /// `POST /api/projections/run`.
@@ -824,21 +967,13 @@ pub(crate) struct RunRequest {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AccountsIn {
-    #[serde(deserialize_with = "balance_mode")]
-    mode: BalanceMode,
+    /// Before 2026-10-28 the tab had a Change/Balance switch; each section now
+    /// reads its own way. Still accepted from an older page, and ignored.
+    #[serde(default)]
+    #[allow(dead_code)]
+    mode: Option<String>,
     #[serde(default)]
     empty: bool,
-}
-
-/// `"change"` | `"balance"` → [`BalanceMode`]. Anything else is a `400`.
-fn balance_mode<'de, D: serde::Deserializer<'de>>(de: D) -> Result<BalanceMode, D::Error> {
-    match String::deserialize(de)?.as_str() {
-        "change" => Ok(BalanceMode::Change),
-        "balance" => Ok(BalanceMode::Historical),
-        other => Err(serde::de::Error::custom(format!(
-            "accounts mode must be \"change\" or \"balance\", not {other:?}"
-        ))),
-    }
 }
 
 /// `lookback`, defaulted and bounded: the statements carry `lookback + count`
@@ -970,19 +1105,58 @@ struct DecodedScenario {
     /// One per line, in order: the typed magnitude, or `None` for a line whose
     /// `amount.quantity` is already signed.
     entries: Vec<Option<Dec>>,
+    /// The `=` rules, in order, with the block each came from. `scenario`'s
+    /// own `auto_rules` stay empty until [`Self::signed`] renders the forms.
+    rules: Vec<(DecodedRule, Option<usize>)>,
+    /// The scenario file's own account types, as the body handed them back.
+    own_types: BTreeMap<String, AccountType>,
+}
+
+/// A rule after decoding: read from its text, or a form whose rendering waits
+/// for the account types its signs are inferred from.
+enum DecodedRule {
+    Raw(AutoPostingRule),
+    Form(AutoRuleForm),
 }
 
 impl DecodedScenario {
-    /// The scenario, each `entry` signed by its account's type.
-    fn signed(self, declared: &BTreeMap<String, AccountType>) -> Result<Scenario, AppError> {
+    /// The scenario, each `entry` signed by its account's type: the main
+    /// journal's `declared`, with the scenario's own winning — the types its
+    /// [`WireScenario`] was read under.
+    fn signed(
+        self,
+        declared: &BTreeMap<String, AccountType>,
+        styles: &JournalStyles<'_>,
+    ) -> Result<Scenario, AppError> {
         let Self {
             mut scenario,
             entries,
+            rules,
+            own_types,
         } = self;
+        let declared = scenario_account_types(declared, &own_types);
+        // Each edited rule rendered under the same types the outbound `form`
+        // was read with, then validated exactly as a rule sent as text is.
+        let types = AccountTypes::from_declared(declared.clone());
+        scenario.auto_rules = rules
+            .into_iter()
+            .map(|(decoded, block)| {
+                let rule = match decoded {
+                    DecodedRule::Raw(rule) => rule,
+                    DecodedRule::Form(form) => {
+                        let text = render(&form, &types, styles).map_err(|error| {
+                            AppError::BadRequest(format!("an auto rule cannot be written: {error}"))
+                        })?;
+                        rule_from_text(&text, styles)?
+                    }
+                };
+                Ok(ScenarioAutoRule { block, rule })
+            })
+            .collect::<Result<_, AppError>>()?;
         for (line, entry) in scenario.lines.iter_mut().zip(entries) {
             if let Some(entry) = entry {
                 line.amount.quantity =
-                    signed_entry(&line.account.0, entry, declared).map_err(|error| {
+                    signed_entry(&line.account.0, entry, &declared).map_err(|error| {
                         AppError::BadRequest(format!(
                             "line '{}' has an amount out of range: {error}",
                             line.id
@@ -1000,7 +1174,14 @@ impl DecodedScenario {
 /// the limits is to refuse an oversized scenario cheaply, and decoding ten
 /// thousand lines in order to discover there are ten thousand of them is not
 /// that.
-fn scenario_from_wire(scenario: &ScenarioIn) -> Result<DecodedScenario, AppError> {
+///
+/// `styles` is what the main journal lends a scenario
+/// ([`JournalStyles::lent_by`]), which a rule sent as text is read under —
+/// exactly as [`open_file`] read it.
+fn scenario_from_wire(
+    scenario: &ScenarioIn,
+    styles: &JournalStyles<'_>,
+) -> Result<DecodedScenario, AppError> {
     if scenario.lines.len() > MAX_LINES {
         return Err(AppError::BadRequest(format!(
             "a scenario may have at most {MAX_LINES} lines (received {})",
@@ -1091,8 +1272,14 @@ fn scenario_from_wire(scenario: &ScenarioIn) -> Result<DecodedScenario, AppError
         .map(|line| line.entry.as_ref().map(dec_from_wire).transpose())
         .collect::<Result<Vec<_>, AppError>>()?;
 
+    let rules = auto_rules_from_wire(&scenario.auto_rules, styles)?;
+    let own_types = account_types_from_wire(&scenario.account_types)?;
+
     Ok(DecodedScenario {
+        rules,
+        own_types,
         scenario: Scenario {
+            auto_rules: Vec::new(),
             name: scenario.name.clone(),
             created: scenario.created.clone(),
             updated: scenario.updated.clone(),
@@ -1102,6 +1289,60 @@ fn scenario_from_wire(scenario: &ScenarioIn) -> Result<DecodedScenario, AppError
         },
         entries,
     })
+}
+
+/// The scenario's own account types, each spelled as an `account` directive's
+/// `type:` tag may spell it.
+fn account_types_from_wire(
+    types: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, AccountType>, AppError> {
+    types
+        .iter()
+        .map(|(account, spelling)| {
+            parse_account_type_tag(spelling)
+                .map(|ty| (account.clone(), ty))
+                .ok_or_else(|| {
+                    AppError::BadRequest(format!(
+                        "account '{account}' has an unknown account type '{spelling}'"
+                    ))
+                })
+        })
+        .collect()
+}
+
+/// Each rule, decoded: its text read back as exactly one `=` block, or its
+/// form checked for shape (the render waits for the account types), with
+/// the block each came from.
+fn auto_rules_from_wire(
+    rules: &[AutoRuleIn],
+    styles: &JournalStyles<'_>,
+) -> Result<Vec<(DecodedRule, Option<usize>)>, AppError> {
+    if rules.len() > MAX_AUTO_RULES {
+        return Err(AppError::BadRequest(format!(
+            "a scenario may have at most {MAX_AUTO_RULES} auto rules (received {})",
+            rules.len()
+        )));
+    }
+    rules
+        .iter()
+        .map(|rule| {
+            let decoded = match (&rule.raw, &rule.form) {
+                (Some(raw), None) => DecodedRule::Raw(rule_from_text(raw, styles)?),
+                // A scenario's rules apply to forecasts and nothing else
+                // (Decision 6), so each is written to say so to hledger too.
+                (None, Some(form)) => DecodedRule::Form(AutoRuleForm {
+                    forecast_only: true,
+                    ..form_from_wire(form)?
+                }),
+                _ => {
+                    return Err(AppError::BadRequest(
+                        "an auto rule must carry exactly one of `raw` and `form`".to_string(),
+                    ));
+                }
+            };
+            Ok((decoded, rule.block))
+        })
+        .collect()
 }
 
 // ===========================================================================
@@ -1146,7 +1387,10 @@ pub(crate) async fn run(
         .map(Commodity);
     // Decoded (and bounded) BEFORE a `compute` slot is claimed: a scenario we
     // are going to refuse must not first wait for a core.
-    let decoded = scenario_from_wire(&request.scenario)?;
+    let decoded = scenario_from_wire(
+        &request.scenario,
+        &JournalStyles::lent_by(&snapshot.journal),
+    )?;
 
     compute(move || {
         let journal = &snapshot.journal;
@@ -1156,13 +1400,20 @@ pub(crate) async fn run(
         // changes.
         let cache = &snapshot.projections;
         let facts = cache.facts(journal)?;
-        let scenario = decoded.signed(&facts.shape().declared)?;
+        let styles = JournalStyles::lent_by(journal);
+        let scenario = decoded.signed(&facts.shape().declared, &styles)?;
         let key = facts.key(&window.end, window.interval, lookback, value_in)?;
         let real = cache.side(journal, &facts, &key)?;
         // ONE expansion serves every reading: the cash series and runway are
         // read off it inside `project_cached`, and the statements below are
         // built over the same generated transactions and prices.
-        let projection = project_cached(&scenario, &real, window.count, window.depth)?;
+        let mut projection = project_cached(&scenario, &real, window.count, window.depth)?;
+        // Decision 11: a rule posting to an account nothing knows is a typo
+        // more often than not. hledger accepts it, so it is a warning.
+        projection.warnings.extend(auto_rule_account_warnings(
+            &scenario,
+            facts.known_accounts(),
+        ));
         let statements = projected_statements(
             &real,
             &facts,
@@ -1170,6 +1421,8 @@ pub(crate) async fn run(
             &StatementOpts {
                 valuation: Valuation::Market,
                 bs_depth: None,
+                // The page's depth slider: `hledger is --depth N`.
+                is_depth: Some(window.depth),
                 cf_depth: window.depth,
             },
         )?;
@@ -1188,17 +1441,16 @@ pub(crate) async fn run(
                     &facts,
                     &projection.forecast,
                     &AccountsOpts {
-                        mode: accounts.mode,
                         depth: window.depth,
                         empty: accounts.empty,
                     },
                 )
-                .map(|report| WirePeriodReport::from(&report))
+                .map(|report| WireAccountReport::from(&report))
             })
             .transpose()?;
         let forecast_journal = request.journal.then(|| {
             let declared = snapshot.view.declared(journal);
-            forecast_journal(&projection, &RowContext::new(journal, &declared))
+            forecast_journal(&projection, &RowContext::new(journal, &declared), &declared)
         });
         Ok(WireProjection {
             accounts,
@@ -1250,7 +1502,8 @@ pub(crate) async fn seed(
                 styles: &journal.commodity_styles,
             },
         )?;
-        Ok(WireScenario::new(&scenario, &declared))
+        // A seed is no file, so it declares nothing of its own.
+        Ok(WireScenario::new(&scenario, &declared, &BTreeMap::new()))
     })
     .await
 }
@@ -1673,20 +1926,23 @@ fn open_file(
     id: &str,
     writable: bool,
     declared: &BTreeMap<String, AccountType>,
+    // The main journal's declared commodity styles: a scenario's amounts are
+    // read under them (`$11,344` is eleven thousand under `commodity $1,000.00`).
+    inherited: &[(Commodity, AmountStyle)],
 ) -> Result<WireScenarioFile, AppError> {
     let (text, fingerprint) = read_file(found.path(), id)?;
     let name = found.path().as_path().to_string_lossy().to_string();
     // The FALLBACK display name is the filename's label, so a file with no
     // `; projection:` marker still opens with a name — "a file without it still
     // loads, and takes its name from its filename".
-    let scenario = scenario_from_text(&text, &name, &found.label, declared)
+    let scenario = WireScenario::read(&text, &name, &found.label, declared, inherited)
         .map_err(|error| unreadable_file(id, &error))?;
     Ok(WireScenarioFile {
         id: id.to_string(),
         label: found.label.clone(),
         revision: fingerprint.token(),
         writable,
-        scenario: WireScenario::new(&scenario, declared),
+        scenario,
     })
 }
 
@@ -1718,6 +1974,9 @@ fn create_scenario(
     id: &str,
     scenario: &Scenario,
     declared: &BTreeMap<String, AccountType>,
+    // The main journal's declared commodity styles: a scenario's amounts are
+    // read under them (`$11,344` is eleven thousand under `commodity $1,000.00`).
+    inherited: &[(Commodity, AmountStyle)],
 ) -> Result<WireScenarioFile, AppError> {
     // `resolve_new`, since no scan can have found a file that is not there. It
     // is the only place in either crate that joins a caller's string onto the
@@ -1726,7 +1985,8 @@ fn create_scenario(
         .resolve_new(id)
         .map_err(|refusal| create_refused(id, refusal))?;
     let name = path.as_path().to_string_lossy().to_string();
-    let text = new_file(scenario, &name, declared).map_err(|error| serialize_failed(id, &error))?;
+    let text = new_file_with_styles(scenario, &name, declared, inherited)
+        .map_err(|error| serialize_failed(id, &error))?;
 
     // A brand-new file, refusing to touch one that is already there:
     // `Vault::create_new` is `O_CREAT | O_EXCL | O_NOFOLLOW` under a
@@ -1756,7 +2016,7 @@ fn create_scenario(
         })?;
 
     let label = label_for(id);
-    let written = scenario_from_text(&text, &name, &label, declared)
+    let written = WireScenario::read(&text, &name, &label, declared, inherited)
         .map_err(|error| serialize_failed(id, &error))?;
     // The revision comes from what we WROTE, never from a re-read: a re-read
     // could pick up somebody else's write and hand this client a token for
@@ -1766,7 +2026,7 @@ fn create_scenario(
         id: id.to_string(),
         revision: Fingerprint::of_bytes(text.as_bytes()).token(),
         writable: true,
-        scenario: WireScenario::new(&written, declared),
+        scenario: written,
         label,
     })
 }
@@ -1783,6 +2043,9 @@ fn update_scenario(
     revision: &str,
     scenario: &Scenario,
     declared: &BTreeMap<String, AccountType>,
+    // The main journal's declared commodity styles: a scenario's amounts are
+    // read under them (`$11,344` is eleven thousand under `commodity $1,000.00`).
+    inherited: &[(Commodity, AmountStyle)],
 ) -> Result<WireScenarioFile, AppError> {
     // Security layer 2: a set scanned in THIS request, matched by exact string
     // equality. `root.join(id)` is unreachable from here.
@@ -1807,7 +2070,7 @@ fn update_scenario(
         return Err(stale(id));
     }
 
-    let doc = ProjectionDoc::parse(&text, &name, declared)
+    let doc = ProjectionDoc::parse_with_styles(&text, &name, declared, inherited)
         .map_err(|error| serialize_failed(id, &error))?;
     // The engine's own second opinion: splice, re-parse the whole result as a
     // journal, and require the scenario to read back as the numbers asked for.
@@ -1827,14 +2090,14 @@ fn update_scenario(
         // the more honest answer: the revision returned is the one that was
         // just checked against `revision`, over the very bytes this scenario
         // was rendered from.
-        let unchanged = scenario_from_text(&text, &name, &found.label, declared)
+        let unchanged = WireScenario::read(&text, &name, &found.label, declared, inherited)
             .map_err(|error| serialize_failed(id, &error))?;
         return Ok(WireScenarioFile {
             id: id.to_string(),
             label: found.label.clone(),
             revision: fingerprint.token(),
             writable: true,
-            scenario: WireScenario::new(&unchanged, declared),
+            scenario: unchanged,
         });
     }
 
@@ -1862,14 +2125,14 @@ fn update_scenario(
 
     // Deliberately NO `state.reopen_editor()`: it re-opens the main journal,
     // which a file the main journal does not include cannot have changed.
-    let written = scenario_from_text(&new_text, &name, &found.label, declared)
+    let written = WireScenario::read(&new_text, &name, &found.label, declared, inherited)
         .map_err(|error| serialize_failed(id, &error))?;
     Ok(WireScenarioFile {
         id: id.to_string(),
         label: found.label.clone(),
         revision: Fingerprint::of_bytes(new_text.as_bytes()).token(),
         writable: true,
-        scenario: WireScenario::new(&written, declared),
+        scenario: written,
     })
 }
 
@@ -1924,9 +2187,10 @@ pub(crate) async fn document(
     };
     let sources = snapshot.journal.source_files.clone();
     let Json(body) = compute(move || {
-        // The MAIN journal's account types, because a projection file declares
-        // none of its own and the asset/flow discriminator needs them
-        // (`serialize`'s header says why a name test will not do).
+        // The MAIN journal's account types, because a projection file usually
+        // declares few of its own and the asset/flow discriminator needs them
+        // (`serialize`'s header says why a name test will not do). The file's
+        // own declarations are merged over them as it is read.
         //
         // Inside the closure, where `run` and `seed` already do it: walking
         // every declared account and cloning its name twice is blocking work,
@@ -1939,7 +2203,13 @@ pub(crate) async fn document(
         let discovery = Discovery::without_headers_in(Arc::clone(main.vault()), main.main());
         let found = discovery.resolve(&id).ok_or_else(|| unresolved(&id))?;
         let writable = writable_path(&sources, found.path().as_path());
-        open_file(found, &id, writable, &declared)
+        open_file(
+            found,
+            &id,
+            writable,
+            &declared,
+            &snapshot.journal.commodity_styles,
+        )
     })
     .await?;
     Ok(no_store(body))
@@ -1969,7 +2239,10 @@ pub(crate) async fn save(
     // Decoded (and bounded) BEFORE the lock is taken and before a `compute`
     // slot is claimed: a scenario we are going to refuse must not first wait
     // for a core, and must not hold the write lock while it is refused.
-    let mut decoded = scenario_from_wire(&request.scenario)?;
+    let mut decoded = scenario_from_wire(
+        &request.scenario,
+        &JournalStyles::lent_by(&snapshot.journal),
+    )?;
     let today = today_utc();
     decoded.scenario.created = Some(
         decoded
@@ -1996,7 +2269,8 @@ pub(crate) async fn save(
         // serializes writers to one journal directory, the runtime serializes
         // the whole application.
         let declared = declared_types(&account_decls(&snapshot.journal));
-        let scenario = decoded.signed(&declared)?;
+        let styles = JournalStyles::lent_by(&snapshot.journal);
+        let scenario = decoded.signed(&declared, &styles)?;
         // Plan 28: a pre-plan-28 group that does not balance is written with
         // the default counter-account the engine already books it to, so the
         // file becomes plain balanced hledger and no number moves.
@@ -2029,9 +2303,23 @@ pub(crate) async fn save(
         // 200 pointless opens while holding that lock.
         let discovery = Discovery::without_headers_in(Arc::clone(main.vault()), main.main());
         if revision == NEW_FILE_REVISION {
-            create_scenario(&discovery, &id, &scenario, &declared)
+            create_scenario(
+                &discovery,
+                &id,
+                &scenario,
+                &declared,
+                &snapshot.journal.commodity_styles,
+            )
         } else {
-            update_scenario(&sources, &discovery, &id, &revision, &scenario, &declared)
+            update_scenario(
+                &sources,
+                &discovery,
+                &id,
+                &revision,
+                &scenario,
+                &declared,
+                &snapshot.journal.commodity_styles,
+            )
         }
     })
     .await?;

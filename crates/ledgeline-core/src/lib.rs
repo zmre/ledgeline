@@ -39,6 +39,10 @@
 pub mod accounts;
 pub mod aliases;
 pub mod assertions;
+pub mod auto;
+pub mod auto_balance;
+pub mod auto_edit;
+pub mod auto_form;
 pub mod convert;
 pub mod decimal;
 pub mod display;
@@ -59,6 +63,7 @@ pub mod pinned;
 pub mod projections;
 pub mod qb_import;
 pub mod qb_journal;
+pub mod query;
 pub mod reimport;
 pub mod reports;
 pub mod rules;

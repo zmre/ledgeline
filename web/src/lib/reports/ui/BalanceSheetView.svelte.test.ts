@@ -58,6 +58,20 @@ afterEach(() => {
 });
 
 describe("COMPONENT BalanceSheetView", () => {
+    it("opens the groups hledger.conf's [balancesheet] depth would show as more than one line", () => {
+        render(BalanceSheetView, {report: REPORT, styles: STYLES, depthSpec: {all: 2, perRegex: [{regex: "bank", depth: 3}]}});
+
+        // `bank` reaches depth 3: checking and savings are separate lines.
+        expect(disclosure("Cash and cash equivalents").getAttribute("aria-expanded")).toBe("true");
+        // Depth 2 rolls the broker's one account up into `assets:broker`.
+        expect(disclosure("Investments").getAttribute("aria-expanded")).toBe("false");
+    });
+
+    it("starts every group collapsed when the config sets no depth", () => {
+        render(BalanceSheetView, {report: REPORT, styles: STYLES, depthSpec: {all: null, perRegex: []}});
+        expect(disclosure("Cash and cash equivalents").getAttribute("aria-expanded")).toBe("false");
+    });
+
     it("renders three separate boxes, one per section", () => {
         mount();
 

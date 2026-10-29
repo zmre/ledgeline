@@ -1,0 +1,44 @@
+; Ledgeline projection
+; projection: Parity periods
+; created: 2026-10-27
+; updated: 2026-10-27
+
+; Plan 30: period expressions hledger reads that Ledgeline once called "not a
+; recurrence this engine can enumerate". The first three are the lines that
+; reported it, with the fixture's declared accounts.
+
+~ every 1st Apr from 2027  Lucid Software
+    revenues:salary        $-40000.00
+    assets:checking
+
+~ every 15th Nov from 2026 to 2026-12-31  AT&T
+    revenues:salary       $-250000.00
+    assets:checking
+
+~ every 1st July from 2027  AT&T
+    revenues:salary       $-250000.00
+    assets:checking
+
+~ every 3rd mon  groceries
+    expenses:food             $150.00
+    assets:checking
+
+~ every weekday  lunch
+    expenses:food              $12.00
+    assets:checking
+
+~ every 2/29  insurance
+    expenses:insurance        $900.00
+    assets:checking
+
+~ monthly in 2027q1  travel
+    expenses:travel           $400.00
+    assets:checking
+
+~ monthly 2027-02-15..2027-05  legal
+    expenses:legal            $250.00
+    assets:checking
+
+~ every Dec 24th of year  bonus
+    revenues:bonus          $-1000.00
+    assets:checking

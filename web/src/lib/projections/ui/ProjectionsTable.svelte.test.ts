@@ -59,7 +59,7 @@ const seedLine = (account: string, mantissa: string) => ({
     section: account.startsWith("income:") ? "income" : "expense",
 });
 
-const SEED = decodeScenario({
+const SEED_WIRE = {
     name: "",
     created: null,
     updated: null,
@@ -72,7 +72,10 @@ const SEED = decodeScenario({
     ],
     events: [],
     cash: null,
-});
+    autoRules: [] as unknown[],
+    accountTypes: {},
+};
+const SEED = decodeScenario(SEED_WIRE);
 
 /**
  * An ASSET row on the wire: `role: "asset"`, its `amount` the per-period
@@ -337,6 +340,8 @@ const BOUNDED = decodeScenario({
     ],
     events: [],
     cash: null,
+    autoRules: [],
+    accountTypes: {},
 });
 
 describe("COMPONENT ProjectionsTable — REGRESSION: bounded periods stay editable", () => {
@@ -598,6 +603,8 @@ function withAssets(...lines: ReturnType<typeof assetLine>[]): Scenario {
         lines: [seedLine("expenses:housing", "187500"), ...lines],
         events: [],
         cash: null,
+        autoRules: [],
+        accountTypes: {},
     });
 }
 
@@ -632,6 +639,8 @@ describe("COMPONENT ProjectionsTable — the Assets and balances section", () =>
                 lines: [seedLine("assets:checking", "50000")],
                 events: [],
                 cash: null,
+                autoRules: [],
+                accountTypes: {},
             })
         );
         mount();
@@ -673,6 +682,8 @@ describe("COMPONENT ProjectionsTable — the Assets and balances section", () =>
                 lines: [seedLine("assets:checking", "50000"), assetLine("assets:checking", "brok")],
                 events: [],
                 cash: null,
+                autoRules: [],
+                accountTypes: {},
             })
         );
         mount();
@@ -1043,6 +1054,8 @@ describe("COMPONENT ProjectionsTable — a row's description", () => {
                 ],
                 events: [],
                 cash: null,
+                autoRules: [],
+                accountTypes: {},
             })
         );
         mount();
@@ -1151,10 +1164,107 @@ describe("COMPONENT ProjectionsTable — reordering rows", () => {
                     },
                 ],
                 cash: null,
+                autoRules: [],
+                accountTypes: {},
             })
         );
         mount();
         await chooseInMenu("second", "Move up");
         expect(scenarioStore.scenario.events.map((e) => e.description)).toEqual(["second", "first"]);
+    });
+});
+
+describe("COMPONENT ProjectionsTable — automatic postings (plan 30)", () => {
+    const locked = (raw: string, query: string, unsupported: string | null = null) => ({raw, query, unsupported, form: null, block: 0});
+    const commissionForm = {
+        matchAccount: "income:salary",
+        extraQuery: "",
+        postings: [{account: "expenses:taxes", kind: "percent", percent: {mantissa: "3", places: 0}, amount: null}],
+        counter: "assets:checking",
+        comment: "",
+        forecastOnly: true,
+    };
+    const COMMISSION = "= ^income:salary(:|$) tag:_generated-transaction\n    expenses:taxes   *-0.03\n    assets:checking  *0.03\n";
+    const editable = (raw = COMMISSION, query = "^income:salary(:|$) tag:_generated-transaction", block = 0) => ({
+        raw,
+        query,
+        unsupported: null,
+        form: commissionForm,
+        block,
+    });
+
+    it("is always there to add a rule to, and says what one is for while there are none", () => {
+        mount();
+        const section = screen.getByTestId("projection-section-auto");
+        expect(section.textContent).toContain("Nothing here yet");
+        expect(within(section).queryAllByTestId("projection-auto-rule")).toHaveLength(0);
+    });
+
+    it("edits a rule the form can state, and shows one it cannot as its text, locked", () => {
+        mount(
+            decodeScenario({
+                ...SEED_WIRE,
+                autoRules: [
+                    editable(),
+                    locked("= expenses:rent\n    (budget:rent)  *-1\n", "expenses:rent"),
+                    locked("= expr:'a and b'\n    (x)  1\n", "expr:'a and b'", "`expr:` queries are not supported yet"),
+                ],
+            })
+        );
+        const rules = within(screen.getByTestId("projection-section-auto")).getAllByTestId("projection-auto-rule");
+        expect(rules).toHaveLength(3);
+        expect((within(rules[0]!).getByLabelText("Matched account for rule 1") as HTMLInputElement).value).toBe("income:salary");
+        expect(within(rules[0]!).getByTestId("auto-rule-preview").textContent).toBe("≈ $155.65 to expenses:taxes on each $5,188.33 to income:salary");
+        expect(rules[1]!.textContent).toContain("(budget:rent)  *-1");
+        expect(rules[1]!.textContent).toContain("edit in the file");
+        expect(rules[1]!.textContent).toContain("projections only here");
+        expect(within(rules[1]!).queryAllByRole("textbox")).toHaveLength(0);
+        expect(rules[2]!.textContent).toContain("never fires");
+        expect(rules[2]!.textContent).toContain("`expr:` queries are not supported yet, so it generates nothing.");
+    });
+
+    it("an edit marks the rule edited and the scenario dirty, so a save sends its form", async () => {
+        scenarioStore.adopt(decodeScenario({...SEED_WIRE, autoRules: [editable()]}));
+        mount();
+        expect(scenarioStore.dirty).toBe(false);
+        const box = screen.getByLabelText("Percent for posting 1 of rule 1");
+        await fireEvent.change(box, {target: {value: "4"}});
+        await tick();
+        const rule = scenarioStore.scenario.autoRules[0]!;
+        expect(rule.edited).toBe(true);
+        expect(rule.form?.postings[0]?.percent).toEqual({m: 4n, p: 0});
+        expect(scenarioStore.dirty).toBe(true);
+    });
+
+    it("adds a rule balanced against the scenario's cash account, and deletes one through its menu", async () => {
+        scenarioStore.adopt(decodeScenario({...SEED_WIRE, cash: "assets:checking", autoRules: [editable()]}));
+        mount();
+        await fireEvent.click(screen.getByRole("button", {name: "+ Add a rule"}));
+        await tick();
+        expect(scenarioStore.scenario.autoRules).toHaveLength(2);
+        const added = scenarioStore.scenario.autoRules[1]!;
+        expect(added).toMatchObject({raw: "", block: null, edited: true});
+        expect(added.form?.counter).toBe("assets:checking");
+
+        await chooseInMenu("rule 1", "Delete rule");
+        expect(scenarioStore.scenario.autoRules).toHaveLength(1);
+        expect(scenarioStore.scenario.autoRules[0]!.raw).toBe("");
+    });
+
+    it("reorders rules, because a later one sees what an earlier one posted", async () => {
+        scenarioStore.adopt(decodeScenario({...SEED_WIRE, autoRules: [editable(), locked("=revenue:other\n    (x)  *0.05\n", "revenue:other")]}));
+        mount();
+        await chooseInMenu("rule 2", "Move up");
+        expect(scenarioStore.scenario.autoRules.map((rule) => rule.query)).toEqual(["revenue:other", "^income:salary(:|$) tag:_generated-transaction"]);
+    });
+
+    it("offers one click to make a hand-written rule forecast-only in the file", async () => {
+        const untagged = {...editable("= income:salary\n    expenses:taxes  *-0.03\n", "income:salary"), form: {...commissionForm, counter: null}};
+        scenarioStore.adopt(decodeScenario({...SEED_WIRE, autoRules: [untagged]}));
+        mount();
+        await fireEvent.click(screen.getByRole("button", {name: "Limit to forecasts in the file"}));
+        await tick();
+        expect(scenarioStore.scenario.autoRules[0]!.edited).toBe(true);
+        expect(screen.queryByText("projections only here")).toBeNull();
     });
 });

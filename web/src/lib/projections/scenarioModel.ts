@@ -29,13 +29,15 @@
 import {encodeDec} from "#lib/api/editMapping.js";
 import type {RunProjectionBody, WireScenarioIn} from "#lib/api/native.js";
 import {absDec} from "#lib/format/amounts.js";
-import {cmp, type Dec} from "#lib/domain/money.js";
+import {cmp, isZero, type Dec} from "#lib/domain/money.js";
+import {blankRuleForm, cloneRuleForm, ruleFormComplete, ruleFormToWire, type AutoRuleForm, type RuleAmount} from "#lib/autoRules/ruleForm.js";
 import {isAccountType, type AccountClasses, type AccountType} from "#lib/domain/accountClass.js";
 import type {ISODate} from "#lib/domain/types.js";
 import {isIsoDate as isIsoDateExact} from "#lib/url/params.js";
 import type {
     AccountsRequest,
     AddSection,
+    AutoRule,
     Growth,
     HeldSection,
     LineSection,
@@ -820,7 +822,7 @@ export const GROWTH_UNIT_ABBREV: Record<Growth["unit"], string> = {week: "wk", m
 
 /** An empty, unnamed scenario — what the tab holds before a seed answers. */
 export function emptyScenario(): Scenario {
-    return {name: "", created: null, updated: null, lines: [], events: [], cash: null};
+    return {name: "", created: null, updated: null, lines: [], events: [], cash: null, autoRules: []};
 }
 
 /**
@@ -852,6 +854,8 @@ export function cloneScenario(scenario: Scenario): Scenario {
             postings: event.postings.map((posting) => ({account: posting.account, amount: cloneAmount(posting.amount)})),
         })),
         cash: scenario.cash,
+        autoRules: scenario.autoRules.map((rule) => ({...rule, form: rule.form === null ? null : cloneRuleForm(rule.form)})),
+        ...(scenario.accountTypes === undefined ? {} : {accountTypes: {...scenario.accountTypes}}),
     };
 }
 
@@ -907,7 +911,46 @@ export function scenarioToWire(scenario: Scenario): WireScenarioIn {
             counter: accountOrNull(event.counter),
         })),
         cash: accountOrNull(scenario.cash),
+        // An untouched rule's text goes back exactly as the engine sent it, so
+        // the file keeps its bytes; an edited one goes as its form.
+        autoRules: scenario.autoRules.map((rule) =>
+            sendsForm(rule) ? {block: rule.block, form: ruleFormToWire(rule.form)} : {block: rule.block, raw: rule.raw}
+        ),
+        // The types every form above was served under, so the engine renders
+        // an edited percentage with the sign the user saw.
+        accountTypes: {...scenario.accountTypes},
     };
+}
+
+/** Whether `rule` travels as its form: edited (or added) here, and expressible as one. */
+function sendsForm(rule: AutoRule): rule is AutoRule & {form: AutoRuleForm} {
+    return rule.form !== null && (rule.edited === true || rule.raw === "");
+}
+
+/**
+ * A new, empty rule, balanced against `counter` (the scenario's cash account
+ * by default, as every other counter-account here is).
+ */
+export function blankAutoRule(counter: string | null): AutoRule {
+    return {raw: "", query: "", unsupported: null, form: blankRuleForm(counter), block: null, edited: true};
+}
+
+/**
+ * A typical amount posted to `account` or under it by the scenario — the first
+ * flow line's, else the first event posting's — for a rule's preview. `null`
+ * when the scenario posts nothing there.
+ */
+export function ruleSample(scenario: Scenario, account: string): RuleAmount | null {
+    const match = account.trim();
+    if (match === "") return null;
+    const under = (name: string): boolean => name === match || name.startsWith(`${match}:`);
+    const line = scenario.lines.find((candidate) => candidate.role === "flow" && under(candidate.account) && !isZero(candidate.amount.quantity));
+    if (line !== undefined) return line.amount;
+    for (const event of scenario.events) {
+        const posting = event.postings.find((candidate) => under(candidate.account) && !isZero(candidate.amount.quantity));
+        if (posting !== undefined) return posting.amount;
+    }
+    return null;
 }
 
 /**
@@ -921,6 +964,8 @@ export function scenarioToWire(scenario: Scenario): WireScenarioIn {
 export function projectable(scenario: Scenario): Scenario {
     return {
         ...scenario,
+        // A rule still being typed is left out, as a line with no account is.
+        autoRules: scenario.autoRules.filter((rule) => !sendsForm(rule) || ruleFormComplete(rule.form)),
         lines: scenario.lines.filter((line) => line.account.trim() !== ""),
         events: scenario.events
             .filter((event) => isIsoDate(event.date))
@@ -949,7 +994,7 @@ export function runBody(
         lookback: window.lookback,
         depth: window.depth,
         // Sent only when asked for, so a run for the other tabs is the body it always was.
-        ...(window.accounts != null ? {accounts: {mode: window.accounts.mode, empty: window.accounts.empty}} : {}),
+        ...(window.accounts != null ? {accounts: {empty: window.accounts.empty}} : {}),
         ...(window.journal === true ? {journal: true} : {}),
     };
 }

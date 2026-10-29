@@ -3,6 +3,8 @@ import {dec} from "#lib/domain/money.js";
 import {NO_ACCOUNT_CLASSES, type AccountClasses} from "#lib/domain/accountClass.js";
 import {classesOf} from "#lib/domain/accountClassFixtures.js";
 import {
+    blankAutoRule,
+    ruleSample,
     accountOrNull,
     blankAssetLine,
     blankLine,
@@ -541,10 +543,10 @@ describe("UNIT scenarioModel — putting a scenario on the wire", () => {
             count: 24,
             lookback: 2,
             depth: 2,
-            accounts: {mode: "balance", empty: true},
+            accounts: {empty: true},
             journal: true,
         });
-        expect(asked.accounts).toEqual({mode: "balance", empty: true});
+        expect(asked.accounts).toEqual({empty: true});
         expect(asked.journal).toBe(true);
     });
 });
@@ -566,12 +568,43 @@ describe("UNIT scenarioModel — cloning", () => {
                     ]),
                 }),
             ]),
+            autoRules: Object.freeze([
+                Object.freeze({raw: "= expenses:rent\n    (budget:rent)  *-1\n", query: "expenses:rent", unsupported: null, form: null, block: 0}),
+                Object.freeze({
+                    raw: "= expenses:rent\n    expenses:rent-tax  *0.1\n",
+                    query: "expenses:rent",
+                    unsupported: null,
+                    block: 1,
+                    form: Object.freeze({
+                        matchAccount: "expenses:rent",
+                        extraQuery: "",
+                        postings: Object.freeze([
+                            Object.freeze({account: "expenses:rent-tax", kind: "percent" as const, percent: Object.freeze(dec(10, 0)), amount: null}),
+                        ]),
+                        counter: null,
+                        comment: "",
+                        forecastOnly: true,
+                    }),
+                }),
+            ]),
         }) as Scenario;
 
         const clone = cloneScenario(decoded);
         expect(clone).toEqual(decoded);
         // Every level is writable, which is what the editor's `$state` needs.
-        for (const target of [clone, clone.lines[0], clone.lines[0].amount, clone.lines[0].amount.quantity, clone.events[0], clone.events[0].postings[0]]) {
+        for (const target of [
+            clone,
+            clone.lines[0],
+            clone.lines[0].amount,
+            clone.lines[0].amount.quantity,
+            clone.events[0],
+            clone.events[0].postings[0],
+            clone.autoRules,
+            clone.autoRules[0],
+            clone.autoRules[1]!.form,
+            clone.autoRules[1]!.form!.postings[0],
+            clone.autoRules[1]!.form!.postings[0]!.percent,
+        ]) {
             expect(Object.isFrozen(target)).toBe(false);
         }
         clone.lines[0].account = "expenses:other";
@@ -853,5 +886,80 @@ describe("UNIT scenarioModel — descriptions", () => {
         expect(noteIsStale(withMagnitude(seeded, dec(5000, 0)))).toBe(true);
         // A description the user wrote is theirs, whatever the amount does.
         expect(noteIsStale(withMagnitude({...seeded, note: "rent"}, dec(5000, 0)))).toBe(false);
+    });
+});
+
+describe("UNIT scenarioModel — automatic posting rules (plan 30 Phase 4)", () => {
+    const form = () => ({
+        matchAccount: "expenses:rent",
+        extraQuery: "",
+        postings: [{account: "expenses:rent-tax", kind: "percent" as const, percent: dec(10, 0), amount: null}],
+        counter: "assets:checking",
+        comment: "",
+        forecastOnly: true,
+    });
+    const read = (block: number) => ({
+        raw: `= expenses:rent\n    expenses:rent-tax  *0.${block + 1}\n`,
+        query: "expenses:rent",
+        unsupported: null,
+        form: form(),
+        block,
+    });
+
+    it("sends an untouched rule as its text and an edited or new one as its form, each with its block", () => {
+        const locked = {...read(2), form: null, edited: true};
+        const wire = scenarioToWire({...emptyScenario(), autoRules: [read(0), {...read(1), edited: true}, blankAutoRule("assets:cash"), locked]});
+        expect(wire.autoRules).toEqual([
+            {block: 0, raw: read(0).raw},
+            {
+                block: 1,
+                form: {
+                    matchAccount: "expenses:rent",
+                    extraQuery: "",
+                    postings: [{account: "expenses:rent-tax", kind: "percent", percent: {mantissa: "10", places: 0}, amount: null}],
+                    counter: "assets:checking",
+                    comment: "",
+                    forecastOnly: true,
+                },
+            },
+            {
+                block: null,
+                form: {
+                    matchAccount: "",
+                    extraQuery: "",
+                    postings: [{account: "", kind: "percent", percent: null, amount: null}],
+                    counter: "assets:cash",
+                    comment: "",
+                    forecastOnly: true,
+                },
+            },
+            // A rule the form cannot state always goes back as its text.
+            {block: 2, raw: locked.raw},
+        ]);
+    });
+
+    it("leaves a half-typed rule out of a run, as it does a line with no account", () => {
+        const kept = projectable({...emptyScenario(), autoRules: [read(0), blankAutoRule(null), {...read(1), edited: true}]});
+        expect(kept.autoRules.map((rule) => rule.block)).toEqual([0, 1]);
+    });
+
+    it("finds a typical amount on the matched account or under it, for the preview", () => {
+        const sales = line({id: "s", account: "revenue:sales:acme", amount: {commodity: "$", quantity: dec(-4000000, 2), precision: 2}});
+        const withEvent: Scenario = {
+            ...scenario([line(), sales]),
+            events: [
+                {
+                    id: "e",
+                    date: "2027-01-01",
+                    description: "",
+                    counter: null,
+                    postings: [{account: "income:bonus", amount: {commodity: "$", quantity: dec(500, 0), precision: 0}}],
+                },
+            ],
+        };
+        expect(ruleSample(withEvent, "revenue:sales")).toEqual(sales.amount);
+        expect(ruleSample(withEvent, "revenue:sale")).toBeNull();
+        expect(ruleSample(withEvent, "income")?.quantity).toEqual(dec(500, 0));
+        expect(ruleSample(withEvent, " ")).toBeNull();
     });
 });

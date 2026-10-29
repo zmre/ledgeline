@@ -16,13 +16,14 @@
 //! (via `just hledger-checks`) opts in — the same pattern
 //! `rules_hledger_render.rs` and `budget_golden.rs` use.
 
+use ledgeline_core::auto_form::{AutoRuleForm, FormAmount, FormPosting, form_from_rule, render};
 use ledgeline_core::decimal::Dec;
 use ledgeline_core::model::{
     AccountName, Amount, AmountStyle, Commodity, CommoditySide, PriceDirective, Transaction,
 };
-use ledgeline_core::parse::parse_period_spec;
+use ledgeline_core::parse::{JournalStyles, parse_period_spec};
 use ledgeline_core::projections::serialize::{
-    ProjectionDoc, new_file, scenario_from_text, write_scenario,
+    ProjectionDoc, new_file, scenario_from_text, scenario_from_text_with_styles, write_scenario,
 };
 use ledgeline_core::projections::{
     CounterDefaults, Forecast, ForecastOpts, ForecastOrigin, ForecastWindow, GENERATED_TAG,
@@ -30,15 +31,16 @@ use ledgeline_core::projections::{
     merged_prices, merged_transactions, upgrade_legacy_counters,
 };
 use ledgeline_core::projections::{
-    CreateRefusal, Growth, GrowthUnit, LineRole, LineSource, Scenario, ScenarioEvent, ScenarioLine,
-    discover, slug_filename, virtual_posting,
+    CreateRefusal, Growth, GrowthUnit, LineRole, LineSource, Scenario, ScenarioAutoRule,
+    ScenarioEvent, ScenarioLine, discover, slug_filename, virtual_posting,
 };
 use ledgeline_core::reports::account_types::AccountType;
 use ledgeline_core::reports::{
-    AccountPeriodsOpts, AccountTypes, BalanceMode, BsOpts, BsSectionKind, BucketSpan, CfOpts,
-    CfTags, IS_GROUP_TAG, Interval, IsOpts, MixedAmount, Valuation, account_decls, account_groups,
-    account_periods, account_sections, add_days, balance_sheet_columns, bs_terms,
-    cash_flow_statement, declared_groups, declared_types, income_statement_columns, range_buckets,
+    AccountPeriodsOpts, AccountReportOpts, AccountSection, AccountTypes, BalanceMode, BsOpts,
+    BsSectionKind, BucketSpan, CfOpts, CfTags, IS_GROUP_TAG, Interval, IsOpts, MixedAmount,
+    Reading, Valuation, account_decls, account_groups, account_periods, account_report,
+    account_sections, add_days, balance_sheet_columns, bs_terms, cash_flow_statement,
+    declared_groups, declared_types, income_statement_columns, range_buckets,
 };
 use ledgeline_core::{Journal, parse_journal};
 use std::collections::{BTreeMap, BTreeSet};
@@ -57,9 +59,15 @@ struct Scratch(PathBuf);
 
 impl Scratch {
     fn new(name: &str) -> Self {
+        // A per-process counter, not only the clock: macOS's clock ticks in
+        // MICROseconds, so two tests running in parallel could create the same
+        // directory within one tick, and the first one's `remove_dir_all`
+        // deleted the other's files mid-test ("data file … was not found").
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "ledgeline-projections-{name}-{}-{}",
+            "ledgeline-projections-{name}-{}-{}-{}",
             std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_nanos())
@@ -506,6 +514,169 @@ fn a_save_that_changes_one_amount_changes_only_that_line_s_bytes() {
     assert_eq!(reread.lines[1].amount.quantity, Dec::new(65_000, 2));
 }
 
+/// `=` auto-posting rules in a scenario file survive every save byte for
+/// byte, wherever they sit — between `~` blocks, after the last one, and with
+/// the rule just above them edited. Ledgeline does not model them yet (plan 30
+/// Phases 2–4), so a save that dropped them would silently delete the user's
+/// commission and payroll-tax rules.
+#[test]
+fn a_save_keeps_every_auto_posting_rule_byte_for_byte() {
+    let scratch = Scratch::new("auto-rules");
+    let before = concat!(
+        "; Ledgeline projection\n",
+        "; projection: Plan\n",
+        "; created: 2026-01-01\n",
+        "; updated: 2026-01-01\n",
+        "\n",
+        "= expenses:people-costs:wages-salaries tag:_generated-transaction\n",
+        "    expenses:people-costs:payroll-tax  *0.1\n",
+        "    assets:mercury:checking\n",
+        "\n",
+        "~ monthly  payroll\n",
+        "    expenses:people-costs:wages-salaries      $9000.00\n",
+        "    assets:mercury:checking\n",
+        "\n",
+        "= revenue:sales tag:_generated-transaction\n",
+        "    expenses:people-costs:sales-commission  *-0.035\n",
+        "    assets:mercury:checking\n",
+        "\n",
+        "~ every 1st Apr from 2027  Lucid Software\n",
+        "    revenue:sales            $-40000.00\n",
+        "    assets:mercury:checking\n",
+        "\n",
+        "=revenue:other\n",
+        "    (liabilities:tax)  *0.05\n",
+    );
+    let path = scratch.write("projection-plan.journal", before);
+    let name = path.to_string_lossy().to_string();
+
+    let doc = ProjectionDoc::parse(before, &name, &declared()).expect("it parses");
+    let mut scenario = scenario_from_text(before, &name, "plan", &declared()).expect("it reads");
+    assert_eq!(scenario.lines.len(), 2, "the auto rules are not lines");
+    scenario.lines[0].amount = usd(950_000, 2, 2);
+    let after = write_scenario(&doc, &scenario, &name).expect("it writes");
+
+    for rule in [
+        "= expenses:people-costs:wages-salaries tag:_generated-transaction\n    expenses:people-costs:payroll-tax  *0.1\n    assets:mercury:checking\n",
+        "= revenue:sales tag:_generated-transaction\n    expenses:people-costs:sales-commission  *-0.035\n    assets:mercury:checking\n",
+        "=revenue:other\n    (liabilities:tax)  *0.05\n",
+    ] {
+        assert!(after.contains(rule), "lost {rule:?} from:\n{after}");
+    }
+    assert!(after.contains("$9500.00"), "the edit landed:\n{after}");
+}
+
+/// The main journal's declared commodity styles, as the server hands them to
+/// a scenario: here `commodity $1,000.00`.
+fn main_styles() -> Vec<(
+    ledgeline_core::model::Commodity,
+    ledgeline_core::model::AmountStyle,
+)> {
+    parse_journal("commodity $1,000.00\n", "main.journal")
+        .expect("parses")
+        .commodity_styles
+}
+
+/// A scenario line typed by hand as `$11,344`.
+const HAND_TYPED: &str = concat!(
+    "; Ledgeline projection\n",
+    "; projection: Plan\n",
+    "\n",
+    "~ monthly  payroll\n",
+    "    expenses:payroll      $11,344\n",
+    "    assets:checking\n",
+);
+
+/// 2026-10-28: `$11,344` in a projection file read as $11.344. A lone comma
+/// before three digits is a decimal mark to hledger in a file that declares
+/// no style for `$` (verified: `hledger -f scenario` and even
+/// `hledger -f main -f scenario` read 11.344 — sibling files lend no
+/// directives — while `include main.journal` reads 11,344). The scenario is
+/// read the way the user means it, the `include` way: under the main
+/// journal's `commodity $1,000.00`.
+#[test]
+fn a_scenario_reads_its_amounts_under_the_main_journal_s_commodity_styles() {
+    let amount = |text: &str, inherited: &[_]| {
+        scenario_from_text_with_styles(text, "s.journal", "plan", &declared(), inherited)
+            .expect("reads")
+            .lines[0]
+            .amount
+            .quantity
+    };
+    assert_eq!(amount(HAND_TYPED, &main_styles()), Dec::new(11_344, 0));
+    // Alone, it is hledger's reading of the file by itself.
+    assert_eq!(amount(HAND_TYPED, &[]), Dec::new(11_344, 3));
+    // The scenario's own declaration wins over the main journal's.
+    let european = HAND_TYPED.replace(
+        "; projection: Plan\n",
+        "; projection: Plan\n\ncommodity $1.000,00\n",
+    );
+    assert_eq!(amount(&european, &main_styles()), Dec::new(11_344, 3));
+    // And so does its own `decimal-mark`.
+    let marked = HAND_TYPED.replace(
+        "; projection: Plan\n",
+        "; projection: Plan\n\ndecimal-mark ,\n",
+    );
+    assert_eq!(amount(&marked, &main_styles()), Dec::new(11_344, 3));
+}
+
+/// A save declares the main journal's style in the scenario file for every
+/// commodity it uses and does not declare — once — so stock hledger reads the
+/// file as Ledgeline does in every mode, `-f main -f scenario` included.
+#[test]
+fn a_save_declares_the_main_journal_s_commodity_style_once() {
+    let scratch = Scratch::new("commodity-styles");
+    let path = scratch.write("projection-plan.journal", HAND_TYPED);
+    let name = path.to_string_lossy().to_string();
+    let styles = main_styles();
+
+    let doc =
+        ProjectionDoc::parse_with_styles(HAND_TYPED, &name, &declared(), &styles).expect("parses");
+    let scenario = scenario_from_text_with_styles(HAND_TYPED, &name, "plan", &declared(), &styles)
+        .expect("reads");
+    let saved = write_scenario(&doc, &scenario, &name).expect("writes");
+    assert_eq!(saved.matches("commodity $1,000.00\n").count(), 1, "{saved}");
+    // The hand-typed line is untouched: the block did not change.
+    assert!(
+        saved.contains("    expenses:payroll      $11,344\n"),
+        "{saved}"
+    );
+
+    // A second save over the saved text changes nothing.
+    let doc =
+        ProjectionDoc::parse_with_styles(&saved, &name, &declared(), &styles).expect("parses");
+    let again =
+        scenario_from_text_with_styles(&saved, &name, "plan", &declared(), &styles).expect("reads");
+    assert_eq!(write_scenario(&doc, &again, &name).expect("writes"), saved);
+    // And the saved file means $11,344 even read on its own.
+    assert_eq!(
+        scenario_from_text(&saved, &name, "plan", &declared())
+            .expect("reads")
+            .lines[0]
+            .amount
+            .quantity,
+        Dec::new(11_344, 0)
+    );
+
+    // hledger agrees, in the documented `-f main -f scenario` mode.
+    std::fs::write(&path, &saved).expect("write");
+    let main = scratch.write("main.journal", "commodity $1,000.00\n");
+    if let Some(output) = hledger(&[
+        "-f",
+        &main.to_string_lossy(),
+        "-f",
+        &path.to_string_lossy(),
+        "bal",
+        "expenses",
+        "--forecast=2027-01-01..2027-02-01",
+        "-O",
+        "csv",
+    ]) {
+        let csv = String::from_utf8_lossy(&output.stdout);
+        assert!(csv.contains("\"expenses:payroll\",\"$11344.00\""), "{csv}");
+    }
+}
+
 #[test]
 fn a_save_that_changes_nothing_produces_the_same_bytes() {
     // The no-op short-circuit every writer here has: a byte-identical result
@@ -533,6 +704,7 @@ fn a_save_that_changes_nothing_produces_the_same_bytes() {
 /// apply and which is asserted about separately below.
 fn cross_check_scenario() -> Scenario {
     Scenario {
+        auto_rules: Vec::new(),
         cash: None,
         name: "Cross check".to_string(),
         created: Some("2026-01-01".to_string()),
@@ -613,6 +785,7 @@ fn asset_scenario() -> Scenario {
         unit: GrowthUnit::Year,
     };
     Scenario {
+        auto_rules: Vec::new(),
         name: "Asset cross check".to_string(),
         lines: vec![
             // A balance that only compounds: the contribution is `$0`.
@@ -777,6 +950,7 @@ fn hledger_reads_the_growth_tag_as_a_tag_and_not_as_arithmetic() {
     };
     let scratch = Scratch::new("growth");
     let scenario = Scenario {
+        auto_rules: Vec::new(),
         name: "Growth".to_string(),
         lines: vec![ScenarioLine {
             note: "plan".to_string(),
@@ -1033,6 +1207,7 @@ fn hledger_forecasts_a_balanced_scenario_into_the_counter_account() {
     let scratch = Scratch::new("hledger-balanced");
     let counter = Some(AccountName("assets:checking".to_string()));
     let scenario = Scenario {
+        auto_rules: Vec::new(),
         name: "Balanced".to_string(),
         cash: counter.clone(),
         lines: vec![
@@ -1293,6 +1468,9 @@ impl Parity {
             &self.scenario,
             command,
             &format!("--forecast={cutoff}..{end}"),
+            // Plan 30: the scenario's `=` rules. Ledgeline applies them to the
+            // forecast always; hledger only under `--auto`.
+            "--auto",
             "-b",
             &self.window().from,
             "-e",
@@ -1322,7 +1500,25 @@ impl Parity {
     /// `value` adds `--value=end,$`: market value at each column's end, which
     /// is what Ledgeline's `Valuation::Market` statements are.
     fn hledger_table(&self, command: &str, value: bool) -> Table {
+        self.hledger_table_with(command, value, &[])
+    }
+
+    /// hledger's income statement as Ledgeline's rows read it: each account
+    /// with postings of its own (the rows of the flat report), at its whole
+    /// SUBTREE's figure (`--tree`), because a Ledgeline row stands for its
+    /// subtree (2026-10-28). An ancestor only `--tree` lists has no row here,
+    /// so it is not compared.
+    fn hledger_is_rows(&self) -> Table {
+        let flat = self.hledger_table("is", true);
+        self.hledger_table_with("is", true, &["--tree"])
+            .into_iter()
+            .filter(|(key, _)| flat.contains_key(key))
+            .collect()
+    }
+
+    fn hledger_table_with(&self, command: &str, value: bool, extra: &[&str]) -> Table {
         let mut args = self.documented(command);
+        args.extend(extra.iter().map(ToString::to_string));
         args.extend(["-O", "csv", "--layout=bare"].map(String::from));
         if value {
             args.push("--value=end,$".to_string());
@@ -1330,11 +1526,22 @@ impl Parity {
         let csv = self.run(&args);
         let columns = self.spans().len();
         let mut table = Table::new();
+        // `--tree` writes each name relative to its parent, two spaces of
+        // indent per level, a single-child chain folded (`office:rent`); the
+        // full name is the stack of names above it.
+        let mut stack: Vec<(usize, String)> = Vec::new();
         // Line 1 is the title, line 2 the header.
         for fields in csv.lines().skip(2).map(csv_fields) {
-            let [account, commodity, values @ ..] = fields.as_slice() else {
+            let [written, commodity, values @ ..] = fields.as_slice() else {
                 continue;
             };
+            let indent = written.len() - written.trim_start().len();
+            stack.retain(|(level, _)| *level < indent);
+            let account = &match stack.last() {
+                Some((_, parent)) if indent > 0 => format!("{parent}:{}", written.trim_start()),
+                _ => written.trim_start().to_string(),
+            };
+            stack.push((indent, account.clone()));
             if account.ends_with(':') && (account == "Total:" || account == "Net:") {
                 continue;
             }
@@ -1404,6 +1611,7 @@ impl Parity {
                 value: Valuation::Market,
                 value_in: self.forecast.target.clone(),
                 compare: false,
+                depth: None,
             },
             self.cadence.interval,
             &self.declared,
@@ -1470,6 +1678,7 @@ impl Parity {
                 &self.scenario,
                 "print",
                 &format!("--forecast={cutoff}..{end}"),
+                "--auto",
                 "tag:generated",
                 "-O",
                 "csv",
@@ -1611,12 +1820,7 @@ impl Parity {
             .filter(|((account, _), _)| account.starts_with("equity"))
             .collect();
         self.assert_agree("bse equity", &hledger_equity, &equity, &none);
-        self.assert_agree(
-            "is",
-            &self.hledger_table("is", true),
-            &self.ledgeline_is(),
-            &none,
-        );
+        self.assert_agree("is", &self.hledger_is_rows(), &self.ledgeline_is(), &none);
         self.assert_agree(
             "cf",
             &self.hledger_table("cf", false),
@@ -1721,6 +1925,14 @@ fn parity_multi_commodity_lines() {
     parity(&["commodities.journal"], &[MONTHLY]);
 }
 
+/// Plan 30: the period forms Ledgeline used to warn about — `every 1st Apr`,
+/// `every 3rd mon`, `every weekday`, `every 2/29`, `monthly in 2027q1`,
+/// `monthly D..D` — fire on hledger's dates.
+#[test]
+fn parity_every_period_form_plan_30_added() {
+    parity(&["periods.journal"], &[MONTHLY, QUARTERLY, WEEKLY]);
+}
+
 /// The fixture really does hold real data AFTER the cutoff, and it is the
 /// documented `expr:` that leaves it out: without it, hledger's October food
 /// carries the real 2026-10-05 $77 on top of the forecast. So the parity above
@@ -1801,7 +2013,7 @@ fn parity_with_growth_differs_only_by_the_accepted_deviations() {
 
     // 1. The flow: hledger's rent is the base in every column; ours grows
     //    from the second forecast month on (2%/mo, anchored at the cutoff).
-    let (their_is, our_is) = (run.hledger_table("is", true), run.ledgeline_is());
+    let (their_is, our_is) = (run.hledger_is_rows(), run.ledgeline_is());
     let (their_rent, our_rent) = (
         usd(&their_is, "expenses:rent"),
         usd(&our_is, "expenses:rent"),
@@ -2142,6 +2354,135 @@ impl Parity {
         }
     }
 
+    /// The sectioned Accounts report (2026-10-28) against hledger: every
+    /// asset and liability row against `balance -H`, every other row against
+    /// `balance`, and every row's last column (a Δ or a Total — the same sum)
+    /// against `balance -T`'s Total. The rows listed must be the ones hledger
+    /// lists: `-H`'s for the balance sections, plain `balance`'s for the rest.
+    fn assert_account_report_parity(&self) {
+        let types = AccountTypes::from_declared(self.declared.clone());
+        let columns = self.spans().len();
+        for empty in [false, true] {
+            for depth in DEPTHS {
+                let known = empty.then(|| known_accounts(&self.journal, &self.forecast));
+                let report = account_report(
+                    &self.txns,
+                    &AccountReportOpts {
+                        from: &self.window().from,
+                        to: &self.window().end,
+                        interval: Some(self.cadence.interval),
+                        depth,
+                        known: known.as_deref(),
+                        types: &types,
+                    },
+                )
+                .expect("account report");
+                let change = self.hledger_accounts(BalanceMode::Change, empty, depth);
+                let balance = self.hledger_accounts(BalanceMode::Historical, empty, depth);
+                let is_balance = |account: &str| {
+                    AccountSection::of(account, &types).reading() == Reading::Balance
+                };
+                let (mut ours_balance, mut ours_change) = (Table::new(), Table::new());
+                for section in &report.sections {
+                    for row in &section.rows {
+                        let table = match section.reading {
+                            Reading::Balance => &mut ours_balance,
+                            Reading::Change => &mut ours_change,
+                        };
+                        for (column, figure) in row.values.iter().enumerate() {
+                            put(table, &row.account, figure, column, columns + 1);
+                        }
+                        // The last column is hledger's `-T` Total in both
+                        // readings: a balance's Δ is its changes' sum.
+                        put(
+                            &mut ours_change,
+                            &row.account,
+                            &row.summary,
+                            columns,
+                            columns + 1,
+                        );
+                    }
+                }
+                let mut mismatches = Vec::new();
+                let mut compare =
+                    |what: &str,
+                     theirs: &Table,
+                     ours: &Table,
+                     keep: &dyn Fn(&str) -> bool,
+                     width: std::ops::Range<usize>| {
+                        let zeros = vec![Dec::zero(); columns + 1];
+                        let keys: BTreeSet<&(String, String)> = theirs
+                            .keys()
+                            .chain(ours.keys())
+                            .filter(|(account, _)| account != "Total:" && keep(account))
+                            .collect();
+                        for key in keys {
+                            let (t, o) = (
+                                theirs.get(key).unwrap_or(&zeros),
+                                ours.get(key).unwrap_or(&zeros),
+                            );
+                            for column in width.clone() {
+                                if cents(t[column]) != cents(o[column]) {
+                                    mismatches.push(format!(
+                                        "{what} {} {} @ column {column}: hledger {} ledgeline {}",
+                                        key.0,
+                                        key.1,
+                                        cents(t[column]),
+                                        cents(o[column])
+                                    ));
+                                }
+                            }
+                        }
+                    };
+                compare(
+                    "balance",
+                    &balance.table,
+                    &ours_balance,
+                    &is_balance,
+                    0..columns,
+                );
+                compare(
+                    "change",
+                    &change.table,
+                    &ours_change,
+                    &|a| !is_balance(a),
+                    0..columns,
+                );
+                compare(
+                    "last column",
+                    &change.table,
+                    &ours_change,
+                    &|_| true,
+                    columns..columns + 1,
+                );
+                assert!(
+                    mismatches.is_empty(),
+                    "{} ({:?}) account report empty={empty} depth={depth} disagrees with hledger:\n{}",
+                    self.file,
+                    self.cadence,
+                    mismatches.join("\n")
+                );
+                let listed: BTreeSet<String> = report
+                    .sections
+                    .iter()
+                    .flat_map(|section| section.rows.iter().map(|row| row.account.clone()))
+                    .collect();
+                let want: BTreeSet<String> = balance
+                    .accounts
+                    .iter()
+                    .filter(|a| is_balance(a))
+                    .chain(change.accounts.iter().filter(|a| !is_balance(a)))
+                    .cloned()
+                    .collect();
+                assert_eq!(
+                    listed, want,
+                    "{} ({:?}) empty={empty} depth={depth}: rows listed",
+                    self.file, self.cadence
+                );
+            }
+        }
+    }
+
     /// `hledger print --forecast tag:generated -O json`, in hledger's order.
     fn hledger_journal(&self) -> Vec<Entry> {
         let cutoff = &self.window().cutoff;
@@ -2154,6 +2495,7 @@ impl Parity {
                 &self.scenario,
                 "print",
                 &format!("--forecast={cutoff}..{end}"),
+                "--auto",
                 "tag:generated",
                 "-O",
                 "json",
@@ -2353,6 +2695,7 @@ fn tabs_parity(files: &[&'static str], cadences: &[Cadence]) {
             let run = Parity::new(file, *cadence);
             run.assert_journal_parity();
             run.assert_accounts_parity();
+            run.assert_account_report_parity();
         }
     }
 }
@@ -2385,6 +2728,209 @@ fn tabs_parity_step_change_with_from_and_to_bounds() {
 #[test]
 fn tabs_parity_multi_commodity_lines() {
     tabs_parity(&["commodities.journal"], &[MONTHLY]);
+}
+
+/// Plan 30: a scenario's `= QUERY` auto-posting rules — the user's own
+/// commission and payroll-tax rules, verbatim — generate the postings
+/// `hledger --auto --forecast` generates, in every statement.
+#[test]
+fn parity_auto_posting_rules_on_the_forecast() {
+    parity(&["auto.journal"], &[MONTHLY, QUARTERLY]);
+    // And not vacuously: Ledgeline's own forecast holds the generated
+    // postings — 10% payroll tax on each $9000 payroll, 3% commission on the
+    // Lucid sale — right below the posting each rule matched.
+    let run = Parity::new("auto.journal", MONTHLY);
+    let below = |account: &str, matched: &str| -> Vec<String> {
+        run.forecast
+            .txns
+            .iter()
+            .filter_map(|txn| {
+                let at = txn.postings.iter().position(|p| p.account.0 == account)?;
+                (at > 0 && txn.postings[at - 1].account.0 == matched)
+                    .then(|| format!("{} {:?}", txn.date, txn.postings[at].amounts[0].quantity))
+            })
+            .collect()
+    };
+    for (wages, cut) in [
+        ("expenses:people-costs:wages-salaries", 900),
+        // CHILD accounts of the rule's account fire it too (2026-10-28).
+        ("expenses:people-costs:wages-salaries:george", 600),
+        ("expenses:people-costs:wages-salaries:john", 500),
+    ] {
+        let tax = below("expenses:people-costs:payroll-tax", wages);
+        assert!(!tax.is_empty(), "no payroll tax under {wages}");
+        assert!(
+            tax.iter()
+                .all(|line| line.ends_with(&format!("{:?}", Dec::new(cut, 0)))),
+            "{wages}: {tax:?}"
+        );
+    }
+    let commission = below(
+        "expenses:people-costs:sales-commission:residual",
+        "revenue:sales",
+    );
+    assert!(
+        commission.iter().any(|line| line.starts_with("2027-04-01")
+            && line.ends_with(&format!("{:?}", Dec::new(1200, 0)))),
+        "{commission:?}"
+    );
+}
+
+#[test]
+fn tabs_parity_auto_posting_rules_on_the_forecast() {
+    tabs_parity(&["auto.journal"], &[MONTHLY]);
+}
+
+/// Plan 30 Phase 4: rules exactly as the rule editor writes them — anchored
+/// subtree queries, forecast-only, and the counter-account as the opposite
+/// multiplier — including two people in one `~` block, where each rule fires
+/// twice in one transaction (hledger would refuse an amountless counter
+/// there), a liability accrual, and a fixed amount gated by `amt:`.
+#[test]
+fn parity_rules_as_the_rule_editor_writes_them() {
+    parity(&["auto-form.journal"], &[MONTHLY, QUARTERLY]);
+}
+
+#[test]
+fn tabs_parity_rules_as_the_rule_editor_writes_them() {
+    tabs_parity(&["auto-form.journal"], &[MONTHLY]);
+}
+
+/// The parity fixture above holds what the editor renders, byte for byte:
+/// each rule read as a form and rendered again is its own text. So the
+/// parity run is a run over the editor's real output, not a hand-made
+/// approximation of it.
+#[test]
+fn the_rule_editor_parity_fixture_is_the_editor_s_own_output() {
+    let path = parity_dir().join("auto-form.journal");
+    let text = std::fs::read_to_string(&path).expect("reads");
+    let journal = parse_journal(&text, &path.to_string_lossy()).expect("parses");
+    let types = AccountTypes::new(&account_decls(&journal));
+    assert_eq!(journal.auto_rules.len(), 4);
+    for rule in &journal.auto_rules {
+        let form = form_from_rule(rule, &types).expect("an editor rule is a form");
+        assert_eq!(
+            render(&form, &types, &JournalStyles::default()).expect("renders"),
+            rule.raw
+        );
+    }
+}
+
+/// Editing a scenario file's rules through forms, as the Projections tab
+/// does: the edited rule's block alone is rewritten, a deleted one goes with
+/// its blank line, a new one is appended, and everything else — the `~`
+/// blocks, the comments, a hand-aligned rule nobody touched — keeps its bytes.
+/// With the opt-in, hledger then loads the result under `--auto --forecast`.
+#[test]
+fn editing_rules_through_forms_rewrites_only_their_blocks() {
+    let scratch = Scratch::new("rule-editor");
+    let before = concat!(
+        "; Ledgeline projection\n",
+        "; projection: Plan\n",
+        "; created: 2026-01-01\n",
+        "; updated: 2026-01-01\n",
+        "\n",
+        "; payroll, by hand\n",
+        "= expenses:people-costs:wages-salaries tag:_generated-transaction\n",
+        "    expenses:people-costs:payroll-tax  *0.1\n",
+        "    assets:mercury:checking\n",
+        "\n",
+        "~ monthly  payroll\n",
+        "    expenses:people-costs:wages-salaries      $9000.00\n",
+        "    assets:mercury:checking\n",
+        "\n",
+        "= revenue:sales tag:_generated-transaction\n",
+        "    expenses:people-costs:sales-commission  *-0.035\n",
+        "    assets:mercury:checking\n",
+        "\n",
+        "=revenue:other\n",
+        "    (liabilities:tax)  *0.05\n",
+        "\n",
+        "~ every 1st Apr from 2027  Lucid Software\n",
+        "    revenue:sales            $-40000.00\n",
+        "    assets:mercury:checking\n",
+    );
+    let path = scratch.write("projection-plan.journal", before);
+    let name = path.to_string_lossy().to_string();
+    let types = AccountTypes::from_declared(declared());
+
+    let doc = ProjectionDoc::parse(before, &name, &declared()).expect("it parses");
+    let mut scenario = scenario_from_text(before, &name, "plan", &declared()).expect("it reads");
+    assert_eq!(scenario.auto_rules.len(), 3);
+
+    // The commission goes from 3.5% to 4%, through its form.
+    let mut commission = form_from_rule(&scenario.auto_rules[1].rule, &types)
+        .expect("a hand-written rule is a form");
+    commission.postings[0].amount = FormAmount::Percent(Dec::new(4, 0));
+    let rendered = render(&commission, &types, &JournalStyles::default()).expect("renders");
+    scenario.auto_rules[1].rule = rule_from(&rendered);
+    // The untagged virtual rule is deleted, and a new one added.
+    scenario.auto_rules.remove(2);
+    let added = render(
+        &AutoRuleForm {
+            match_account: "expenses:rent".to_string(),
+            extra_query: String::new(),
+            postings: vec![FormPosting {
+                account: "expenses:rent-tax".to_string(),
+                amount: FormAmount::Percent(Dec::new(5, 0)),
+            }],
+            counter: Some("assets:mercury:checking".to_string()),
+            comment: String::new(),
+            forecast_only: true,
+        },
+        &types,
+        &JournalStyles::default(),
+    )
+    .expect("renders");
+    scenario.auto_rules.push(ScenarioAutoRule {
+        block: None,
+        rule: rule_from(&added),
+    });
+
+    let after = write_scenario(&doc, &scenario, &name).expect("it writes");
+    let want = before
+        .replace(
+            "= revenue:sales tag:_generated-transaction\n    expenses:people-costs:sales-commission  *-0.035\n    assets:mercury:checking\n",
+            "= ^revenue:sales(:|$) tag:_generated-transaction\n    expenses:people-costs:sales-commission  *-0.04\n    assets:mercury:checking                 *0.04\n",
+        )
+        .replace("=revenue:other\n    (liabilities:tax)  *0.05\n\n", "")
+        + "\n"
+        + &added;
+    assert_eq!(after, want);
+
+    let Some(_) = hledger(&["--version"]) else {
+        eprintln!("skipped the hledger half: set {OPT_IN}=1");
+        return;
+    };
+    std::fs::write(&path, &after).expect("write");
+    let printed = hledger(&[
+        "-f",
+        &name,
+        "print",
+        "--auto",
+        "--forecast=2027-04-01..2027-05-01",
+    ])
+    .expect("hledger runs");
+    assert!(
+        printed.status.success(),
+        "hledger refused the edited file:\n{}\n--- the file ---\n{after}",
+        String::from_utf8_lossy(&printed.stderr)
+    );
+    let out = String::from_utf8_lossy(&printed.stdout);
+    assert!(out.contains("$1600"), "4% of the $40000 sale:\n{out}");
+}
+
+/// One `=` block's text as the rule it parses to.
+fn rule_from(text: &str) -> ledgeline_core::model::AutoPostingRule {
+    parse_journal(text, "rule.journal")
+        .expect("a rule")
+        .auto_rules
+        .remove(0)
+}
+
+#[test]
+fn tabs_parity_every_period_form_plan_30_added() {
+    tabs_parity(&["periods.journal"], &[MONTHLY, WEEKLY]);
 }
 
 /// WITH growth, both tabs differ from hledger by the accepted deviations and

@@ -3,8 +3,10 @@
 
      - RUNWAY answers the question only this tab asks, and answers it in WORDS
        above the chart: a crossing point a reader has to find by eye on a line
-       is not an answer to "when do I run out". Cash only (Decision 8), over the
-       forecast periods only — the runway counts from the cutoff.
+       is not an answer to "when do I run out". Cash only (Decision 8). The
+       chart draws the Actuals control's real periods first, then the
+       forecast, with the statements' divider between them; the sentence still
+       counts from the cutoff.
      - BALANCE SHEET, INCOME STATEMENT and CASH FLOW are the Reports tab's own
        statements, rendered by the Reports tab's own views, over the real
        journal before the cutoff and the scenario's generated transactions
@@ -24,6 +26,8 @@
      are valued into one base commodity by the engine, as on the Reports tab. -->
 <script lang="ts">
     import PeriodLineChart from "#lib/components/PeriodLineChart.svelte";
+    import ExportButton from "#lib/reports/ui/ExportButton.svelte";
+    import {projectionExport} from "../export";
     import type {AmountStyle} from "#lib/domain/types.js";
     import {styleOf} from "#lib/format/amounts.js";
     import {formatChartValue, formatCompactChartValue} from "#lib/insights/series.js";
@@ -35,22 +39,20 @@
     import type {PeriodInterval} from "#lib/reports/ui/params.js";
     import {PROJECTION_TABS, PROJECTION_TAB_LABELS, type ProjectionTab} from "../params";
     import {balanceNumbers, chartCommodity, otherCommodities, runwayStatement} from "../projectionView";
-    import type {AccountsMode, Projection} from "../types";
+    import type {Projection} from "../types";
     import ForecastJournalView from "./ForecastJournalView.svelte";
-    import ProjectedAccountsView from "./ProjectedAccountsView.svelte";
+    import AccountReportView from "#lib/reports/ui/AccountReportView.svelte";
 
     let {
         tab = $bindable(),
-        accountsMode = $bindable("change"),
         emptyAccounts = $bindable(false),
         projection,
         interval,
         styles,
         fallbackCommodity,
+        scenarioName = "",
     }: {
         tab: ProjectionTab;
-        /** The Accounts tab: each period's movement or its closing balance. */
-        accountsMode?: AccountsMode;
         /** The Accounts tab: whether accounts with nothing in any column are rows too. */
         emptyAccounts?: boolean;
         projection: Projection;
@@ -59,6 +61,8 @@
         styles: ReadonlyMap<string, AmountStyle>;
         /** Used only when the projection names no commodity at all (an empty scenario over an empty journal). */
         fallbackCommodity: string;
+        /** The scenario's display name, for the downloaded workbook's title and filename. */
+        scenarioName?: string;
     } = $props();
 
     const commodity = $derived(chartCommodity(projection, fallbackCommodity));
@@ -66,11 +70,43 @@
     const format = $derived((n: number) => formatChartValue(n, commodity, style));
     const formatAxis = $derived((n: number) => formatCompactChartValue(n, commodity, style));
 
-    /** The forecast periods' labels: the engine's own, off the statements' columns past the divider. */
-    const labels = $derived(projection.balanceSheet.columns.slice(projection.projectedFrom).map((column) => column.label));
+    /**
+     * The chart's columns: the actual periods (the Actuals control's lookback),
+     * then the forecast — the statements' own columns and labels, so the
+     * divider falls where theirs does.
+     */
+    const labels = $derived(projection.balanceSheet.columns.map((column) => column.label));
     const cash = $derived(balanceNumbers(projection.cash, commodity));
     const statement = $derived(runwayStatement(projection, interval, commodity, format));
     const unchartedCommodities = $derived(otherCommodities(projection, commodity));
+
+    let strip: HTMLDivElement | undefined = $state();
+
+    /** The Journal tab's search, held here so the download matches the list. */
+    let journalQuery = $state("");
+    /** The open reading's download; null while it is not on hand (Accounts/Journal before their run). */
+    const download = $derived(
+        projectionExport(tab, projection, {
+            scenarioName,
+            runwaySentence: [statement.headline, statement.detail].filter((part) => part !== null).join(" "),
+            base: projection.balanceSheet.base ?? commodity,
+            journalQuery,
+            styleOf: (symbol) => styleOf(styles, symbol),
+        })
+    );
+
+    /**
+     * Open a report and bring its tab strip to the top of the window, so the
+     * reading fills the screen. The panels differ a lot in height (Journal and
+     * Accounts are a one-line placeholder until their run lands), and without
+     * this a shorter panel clamped the page's scroll and left the strip at the
+     * bottom of the viewport. `min-h-dvh` on the wrapper below is what lets the
+     * strip reach the top even under the shortest panel.
+     */
+    function select(next: ProjectionTab): void {
+        tab = next;
+        strip?.scrollIntoView({block: "start", behavior: "smooth"});
+    }
 
     // Digits, as on the Reports and Holdings strips: page-local, so they appear
     // in `?` only while this strip is mounted. Like every key they are ignored
@@ -82,18 +118,30 @@
             keys: String(at + 1),
             label: PROJECTION_TAB_LABELS[t],
             group: "Projections" as const,
-            run: () => (tab = t),
+            run: () => select(t),
         })),
     });
 </script>
 
-<div class="flex flex-col gap-3">
-    <div role="tablist" class="tabs tabs-border" aria-label="Projection report">
-        {#each PROJECTION_TABS as t (t)}
-            <button type="button" role="tab" class="tab whitespace-nowrap {t === tab ? 'tab-active' : ''}" aria-selected={t === tab} onclick={() => (tab = t)}>
-                {PROJECTION_TAB_LABELS[t]}
-            </button>
-        {/each}
+<div class="flex min-h-dvh flex-col gap-3">
+    <div bind:this={strip} class="flex flex-wrap items-end justify-between gap-2">
+        <div role="tablist" class="tabs tabs-border" aria-label="Projection report">
+            {#each PROJECTION_TABS as t (t)}
+                <button
+                    type="button"
+                    role="tab"
+                    class="tab whitespace-nowrap {t === tab ? 'tab-active' : ''}"
+                    aria-selected={t === tab}
+                    onclick={() => select(t)}
+                >
+                    {PROJECTION_TAB_LABELS[t]}
+                </button>
+            {/each}
+        </div>
+        {#if download !== null}
+            {@const current = download}
+            <ExportButton run={current.run} label="Export {PROJECTION_TAB_LABELS[tab]} as xlsx" />
+        {/if}
     </div>
 
     {#if tab === "cash"}
@@ -110,14 +158,17 @@
                 </span>
             </div>
             <PeriodLineChart
-                heading="Projected cash"
-                note="opening {format(cash.opening)} · from {projection.actualsEnd}"
+                heading="Cash"
+                note="{cash.history.length > 0 ? `${cash.history.length} actual, then ` : ''}projected from {projection.actualsEnd} · opening {format(
+                    cash.opening
+                )}"
                 {labels}
-                series={[{name: "Cash", values: cash.values}]}
+                series={[{name: "Cash", values: [...cash.history, ...cash.values]}]}
                 formatValue={format}
                 {formatAxis}
                 includeZero
-                markAt={projection.runway?.bucket ?? null}
+                projectedFrom={cash.history.length > 0 ? cash.history.length : null}
+                markAt={projection.runway === null ? null : cash.history.length + projection.runway.bucket}
                 empty="Add a line above to project cash."
                 testid="projection-cash-chart"
             />
@@ -142,32 +193,15 @@
     {:else if tab === "accounts"}
         <div class="flex flex-col gap-3" data-testid="projection-accounts">
             <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
-                <div class="join" role="group" aria-label="Accounts reading">
-                    <button
-                        type="button"
-                        class="btn join-item btn-sm {accountsMode === 'change' ? 'btn-active' : ''}"
-                        aria-pressed={accountsMode === "change"}
-                        title="What moved in each period (hledger balance)"
-                        onclick={() => (accountsMode = "change")}>Change</button
-                    >
-                    <button
-                        type="button"
-                        class="btn join-item btn-sm {accountsMode === 'balance' ? 'btn-active' : ''}"
-                        aria-pressed={accountsMode === "balance"}
-                        title="The balance at each period's end (hledger balance --historical)"
-                        onclick={() => (accountsMode = "balance")}>Balance</button
-                    >
-                </div>
                 <label class="label cursor-pointer gap-2 text-sm">
                     <input type="checkbox" class="checkbox checkbox-sm" bind:checked={emptyAccounts} />
                     Show empty accounts
                 </label>
-                <p class="text-xs text-base-content/50">As written, not valued; revenue reads negative, as in hledger.</p>
             </div>
             {#if projection.accounts === null}
                 <p class="text-sm text-base-content/60" role="status" data-testid="projection-accounts-pending">Reading every account…</p>
             {:else}
-                <ProjectedAccountsView report={projection.accounts} {styles} projectedFrom={projection.projectedFrom} />
+                <AccountReportView report={projection.accounts} {styles} projectedFrom={projection.projectedFrom} />
             {/if}
         </div>
     {:else}
@@ -175,7 +209,7 @@
             {#if projection.journal === null}
                 <p class="text-sm text-base-content/60" role="status" data-testid="projection-journal-pending">Listing the generated transactions…</p>
             {:else}
-                <ForecastJournalView journal={projection.journal} />
+                <ForecastJournalView journal={projection.journal} bind:query={journalQuery} />
             {/if}
         </div>
     {/if}

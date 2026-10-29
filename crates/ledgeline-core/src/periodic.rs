@@ -2508,14 +2508,14 @@ mod tests {
     /// to the bars either, and the user is owed that fact.
     #[test]
     fn an_unenumerable_period_says_so_in_its_own_words() {
-        let text = "~ every weekday  commute\n    (expenses:bus)  $5\n";
+        let text = "~ every last day of month  commute\n    (expenses:bus)  $5\n";
         let journal = parse_journal(text, "t.journal").unwrap();
         assert_eq!(journal.periodic_transactions.len(), 1);
 
         let doc = PeriodicDoc::parse(text);
         let block = &doc.blocks()[0];
         assert_eq!(block.period, None);
-        assert_eq!(block.period_text, "every weekday");
+        assert_eq!(block.period_text, "every last day of month");
         assert_eq!(block.lock, Some(BlockLock::UnsupportedPeriod));
         assert!(
             BlockLock::UnsupportedPeriod

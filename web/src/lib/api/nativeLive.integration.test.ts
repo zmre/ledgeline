@@ -20,6 +20,7 @@ import {blankLine, runBody, withMagnitude} from "#lib/projections/scenarioModel.
 import {dec} from "#lib/domain/money.js";
 import {LedgelineApi} from "./native";
 import {
+    decodeAccountReport,
     decodeCashFlowStatement,
     decodeBalanceSheetColumns,
     decodeBalanceSheetReport,
@@ -150,6 +151,19 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         expect(report.reconciles).toBe(true);
     });
 
+    it("Reports › Accounts decodes: assets as balances, the rest as changes, every row a figure per period", async () => {
+        const report = decodeAccountReport(await new LedgelineApi(url).accounts({from: "2026-01-01", to: "2026-06-30", interval: "monthly", depth: 3}));
+        expect(report.buckets).toEqual(["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06"]);
+        const readings = Object.fromEntries(report.sections.map((section) => [section.section, section.reading]));
+        expect(readings.assets).toBe("balance");
+        expect(readings.expenses).toBe("change");
+        for (const section of report.sections) for (const row of section.rows) expect(row.values).toHaveLength(6);
+        const empty = decodeAccountReport(
+            await new LedgelineApi(url).accounts({from: "2026-01-01", to: "2026-06-30", interval: "monthly", depth: 3, empty: true})
+        );
+        expect(empty.sections.flatMap((s) => s.rows).some((row) => row.account === "expenses:shopping")).toBe(true);
+    });
+
     it("holdings render AAPL/VTI values, GLD tainted, NVDA absent, TSLA short-and-hidden, partial totals", async () => {
         const styles = decodeJournalInfo(await new LedgelineApi(url).journalInfo()).reportStyles;
         const report = decodeHoldingsReport(await new LedgelineApi(url).holdings({asOf: AS_OF, accounts: "", mode: "include"}));
@@ -234,7 +248,10 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         const styles = decodeJournalInfo(await new LedgelineApi(url).journalInfo()).reportStyles;
         const rent = {...withMagnitude({...blankLine("rent", "$"), account: "expenses:rent"}, dec(420000, 2)), group: "rule:0"};
         const body = {
-            ...runBody({name: "", created: null, updated: null, lines: [rent], events: [], cash: null}, {interval: "monthly", count: 3, lookback: 2, depth: 2}),
+            ...runBody(
+                {name: "", created: null, updated: null, lines: [rent], events: [], cash: null, autoRules: []},
+                {interval: "monthly", count: 3, lookback: 2, depth: 2}
+            ),
             asOf: AS_OF,
         };
         const projection = decodeProjection(await new LedgelineApi(url).runProjection(body));
@@ -259,19 +276,104 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         // Asked for, the Accounts and Journal readings decode the real engine's bytes.
         const rent3 = {
             ...runBody(
-                {name: "", created: null, updated: null, lines: [rent], events: [], cash: null},
-                {interval: "monthly", count: 3, lookback: 2, depth: 2, accounts: {mode: "balance", empty: true}, journal: true}
+                {name: "", created: null, updated: null, lines: [rent], events: [], cash: null, autoRules: []},
+                {interval: "monthly", count: 3, lookback: 2, depth: 2, accounts: {empty: true}, journal: true}
             ),
             asOf: AS_OF,
         };
         const full = decodeProjection(await new LedgelineApi(url).runProjection(rent3));
         expect(full.accounts?.periods.map((p) => p.label)).toEqual(["May 2026", "Jun 2026", "Jul 2026", "Aug 2026", "Sep 2026"]);
-        const rentRow = full.accounts?.rows.find((row) => row.account === "expenses:rent");
-        expect(rentRow?.values.map((ma) => dollarLine(ma, styles))).toEqual([undefined, undefined, "$4,200.00", "$8,400.00", "$12,600.00"]);
+        const rows = full.accounts?.sections.flatMap((section) => section.rows) ?? [];
+        // Rent is a flow: each month's change, and the Total last.
+        const rentRow = rows.find((row) => row.account === "expenses:rent");
+        expect(rentRow?.values.map((ma) => dollarLine(ma, styles))).toEqual([undefined, undefined, "$4,200.00", "$4,200.00", "$4,200.00"]);
+        expect(dollarLine(rentRow!.summary, styles)).toBe("$12,600.00");
+        expect(full.accounts?.sections.find((section) => section.section === "assets")?.reading).toBe("balance");
         // `empty`: a declared account nothing posts to is still a row.
-        expect(full.accounts?.rows.some((row) => row.account === "expenses:shopping")).toBe(true);
+        expect(rows.some((row) => row.account === "expenses:shopping")).toBe(true);
         expect(full.journal?.entries.map((entry) => entry.txn.date)).toEqual(["2026-07-01", "2026-08-01", "2026-09-01"]);
         expect(full.journal?.entries[0]?.origin).toEqual({kind: "rule", key: "rule:0"});
+
+        // Plan 30: a scenario's `= QUERY` rule rides on the body and the real
+        // engine applies it to every projected transaction — 10% of each
+        // $4,200 rent, right below the rent posting, tagged as generated.
+        const taxed = {
+            ...runBody(
+                {
+                    name: "",
+                    created: null,
+                    updated: null,
+                    lines: [rent],
+                    events: [],
+                    cash: null,
+                    autoRules: [
+                        {
+                            raw: "= expenses:rent tag:_generated-transaction\n    expenses:rent-tax  *0.1\n    assets:bank:checking\n",
+                            query: "",
+                            unsupported: null,
+                            form: null,
+                            block: null,
+                        },
+                    ],
+                },
+                {interval: "monthly", count: 3, lookback: 2, depth: 2, journal: true}
+            ),
+            asOf: AS_OF,
+        };
+        const withTax = decodeProjection(await new LedgelineApi(url).runProjection(taxed));
+        for (const entry of withTax.journal?.entries ?? []) {
+            const at = entry.txn.postings.findIndex((posting) => posting.account === "expenses:rent");
+            const tax = entry.txn.postings[at + 1];
+            expect(tax?.account).toBe("expenses:rent-tax");
+            expect(dollarLine(new Map(tax!.amounts.map((amount) => [amount.commodity, amount.qty])), styles)).toBe("$420.00");
+            expect(tax?.tags.some(([name]) => name === "generated-posting")).toBe(true);
+        }
+        expect(withTax.journal?.entries).toHaveLength(3);
+        expect(withTax.warnings.some((warning) => warning.includes("would also apply"))).toBe(false);
+        // `expenses:rent-tax` is new to the journal: Decision 11 names it.
+        expect(withTax.warnings.some((warning) => warning.includes("`expenses:rent-tax`"))).toBe(true);
+
+        // The same rule EDITED in the table travels as its form; the engine
+        // renders it (forecast-only, the counter as `*-0.1`) and applies it.
+        const asForm = {
+            ...runBody(
+                {
+                    name: "",
+                    created: null,
+                    updated: null,
+                    lines: [rent],
+                    events: [],
+                    cash: null,
+                    autoRules: [
+                        {
+                            raw: "",
+                            query: "",
+                            unsupported: null,
+                            block: null,
+                            edited: true,
+                            form: {
+                                matchAccount: "expenses:rent",
+                                extraQuery: "",
+                                postings: [{account: "expenses:rent-tax", kind: "percent", percent: {m: 10n, p: 0}, amount: null}],
+                                counter: "assets:bank:checking",
+                                comment: "",
+                                forecastOnly: true,
+                            },
+                        },
+                    ],
+                },
+                {interval: "monthly", count: 3, lookback: 2, depth: 2, journal: true}
+            ),
+            asOf: AS_OF,
+        };
+        const viaForm = decodeProjection(await new LedgelineApi(url).runProjection(asForm));
+        for (const entry of viaForm.journal?.entries ?? []) {
+            const at = entry.txn.postings.findIndex((posting) => posting.account === "expenses:rent");
+            expect(entry.txn.postings[at + 1]?.account).toBe("expenses:rent-tax");
+            expect(entry.txn.postings[at + 2]?.account).toBe("assets:bank:checking");
+        }
+        expect(viaForm.journal?.entries).toHaveLength(3);
+        expect(viaForm.warnings.some((warning) => warning.includes("would also apply"))).toBe(false);
     });
 
     it("journal info falls back to the fixture folder's name", async () => {

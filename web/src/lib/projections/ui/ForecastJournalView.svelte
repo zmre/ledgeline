@@ -13,29 +13,39 @@
      Paginated rather than virtualised: each transaction is as tall as its
      posting count, which fixed-pitch windowing cannot represent, and a page
      of 100 keeps a 24-month, many-rule forecast cheap to render. The
-     engine caps the list (MAX_JOURNAL_ENTRIES) and says when it did. -->
+     engine caps the list (MAX_JOURNAL_ENTRIES) and says when it did.
+
+     The search box filters on each entry's `haystack`, which the engine builds
+     with the main journal's own search text (description, code, comment,
+     accounts, posting comments, amounts as displayed), and matches it the way
+     the main journal's filter does: one case-insensitive substring. Every
+     entry is already here, so filtering is instant and never re-runs the
+     projection. -->
 <script lang="ts">
     import AccountLabel from "#lib/components/AccountLabel.svelte";
     import AmountCell from "#lib/journal/AmountCell.svelte";
-    import type {ForecastEntry, ForecastJournal} from "../types";
+    import {generatedBy, matchingEntries, originLabel} from "../export";
+    import type {ForecastJournal} from "../types";
 
-    let {journal}: {journal: ForecastJournal} = $props();
+    // `query` is bindable so the reports' Export button downloads exactly what
+    // this list shows.
+    let {journal, query = $bindable("")}: {journal: ForecastJournal; query?: string} = $props();
 
     const PAGE_SIZE = 100;
     let page = $state(0);
-
-    const pages = $derived(Math.max(1, Math.ceil(journal.entries.length / PAGE_SIZE)));
+    const needle = $derived(query.trim().toLowerCase());
+    const matching = $derived(matchingEntries(journal.entries, query));
+    const pages = $derived(Math.max(1, Math.ceil(matching.length / PAGE_SIZE)));
     // A shorter forecast (fewer periods, a deleted rule) can leave the page past the end.
     const at = $derived(Math.min(page, pages - 1));
-    const shown = $derived(journal.entries.slice(at * PAGE_SIZE, (at + 1) * PAGE_SIZE));
-    const first = $derived(journal.entries.length === 0 ? 0 : at * PAGE_SIZE + 1);
-    const last = $derived(Math.min((at + 1) * PAGE_SIZE, journal.entries.length));
+    const shown = $derived(matching.slice(at * PAGE_SIZE, (at + 1) * PAGE_SIZE));
+    const first = $derived(matching.length === 0 ? 0 : at * PAGE_SIZE + 1);
+    const last = $derived(Math.min((at + 1) * PAGE_SIZE, matching.length));
 
-    /** The rule's period as hledger marks it (`~ monthly`), else what kind of entry this is. */
-    function originLabel(entry: ForecastEntry): string {
-        if (entry.origin.kind === "event") return "event";
-        if (entry.origin.kind === "growth") return "growth";
-        return entry.txn.tags.find(([name]) => name === "generated-transaction")?.[1] ?? "rule";
+    /** A new search starts on its first page. */
+    function search(value: string): void {
+        query = value;
+        page = 0;
     }
 </script>
 
@@ -50,12 +60,29 @@
 {/snippet}
 
 <div class="flex flex-col gap-2" data-testid="forecast-journal">
+    {#if journal.entries.length > 0}
+        <input
+            type="search"
+            class="input w-full max-w-md input-sm"
+            placeholder="Search descriptions, accounts, amounts…"
+            aria-label="Search the generated transactions"
+            data-testid="forecast-journal-search"
+            value={query}
+            oninput={(e) => search(e.currentTarget.value)}
+        />
+    {/if}
     <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-base-content/60">
         <p data-testid="forecast-journal-count">
             {#if journal.entries.length === 0}
                 The scenario generates no transactions over these periods.
-            {:else}
+            {:else if needle === ""}
                 Generated transactions {first}–{last} of {journal.total}{journal.truncated ? ` (the first ${journal.entries.length} are listed)` : ""}.
+            {:else if matching.length === 0}
+                No generated transaction matches “{query.trim()}”{journal.truncated ? ` among the first ${journal.entries.length} listed` : ""}.
+            {:else}
+                Matching {first}–{last} of {matching.length}{journal.truncated
+                    ? `, searching the first ${journal.entries.length} of ${journal.total} listed`
+                    : ""}.
             {/if}
         </p>
         {@render pager()}
@@ -83,9 +110,18 @@
                             </td>
                         </tr>
                         {#each entry.txn.postings as posting, p (p)}
-                            <tr class="text-base-content/80 [&>td]:py-0.5">
+                            {@const rule = generatedBy(posting.tags)}
+                            <tr
+                                class="[&>td]:py-0.5 {rule === null ? 'text-base-content/80' : 'text-base-content/55 italic'}"
+                                data-generated={rule === null ? undefined : "auto"}
+                            >
                                 <td></td>
-                                <td class="pl-6" title={posting.account}><AccountLabel name={posting.account} maxWidth={480} /></td>
+                                <td class="pl-6" title={posting.account}>
+                                    <AccountLabel name={posting.account} maxWidth={480} />
+                                    {#if rule !== null}
+                                        <span class="ml-1 badge badge-ghost badge-xs not-italic" title="Added by the automatic posting rule {rule}">auto</span>
+                                    {/if}
+                                </td>
                                 <td><AmountCell amounts={posting.amounts} /></td>
                             </tr>
                         {/each}

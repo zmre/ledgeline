@@ -1,13 +1,13 @@
 ---
 title: Reports
-description: "The Reports page: its six tabs, the shared controls, links you can share, and XLSX export."
+description: "The Reports page: its seven tabs, the shared controls, links you can share, and XLSX export."
 order: 30
 tags: [reports, export]
 ---
 
 # Reports
 
-Reports holds six tabs. Ledgeline computes every figure in its Rust engine with exact decimal math, so the totals match what hledger prints for the same journal.
+Reports holds seven tabs. Ledgeline computes every figure in its Rust engine with exact decimal math, so the totals match what hledger prints for the same journal.
 
 | Tab | Shortcut | What it answers | Page |
 | --- | --- | --- | --- |
@@ -16,7 +16,8 @@ Reports holds six tabs. Ledgeline computes every figure in its Rust engine with 
 | P&L | <kbd>3</kbd> | What came in and went out over a date range? | [The income statement](income-statement.md) |
 | Cash Flow | <kbd>4</kbd> | Where did cash come from and go: operations, investing or financing? | [Cash flow](cash-flow.md) |
 | Net Worth | <kbd>5</kbd> | How have assets and liabilities moved over time? | [Net worth](net-worth.md) |
-| Subscriptions | <kbd>6</kbd> | Which charges recur every month or year? | [Subscriptions](subscriptions.md) |
+| Accounts | <kbd>6</kbd> | What did every account hold, and what moved through it, period by period? | [Accounts](accounts.md) |
+| Subscriptions | <kbd>7</kbd> | Which charges recur every month or year? | [Subscriptions](subscriptions.md) |
 
 Insights is the tab that opens first. The digit shortcuts work only while the Reports page is showing, and <kbd>?</kbd> lists them with the rest of the page's keys. See [Keyboard shortcuts](../journal/keyboard.md).
 

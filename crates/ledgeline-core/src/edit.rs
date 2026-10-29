@@ -2340,6 +2340,7 @@ fn locate_in_file<'a>(
 ///     date2: None,
 ///     comment: String::new(),
 ///     tags: vec![],
+///     generated: None,
 /// };
 /// let txn = Transaction {
 ///     index: Tindex(1),
@@ -3019,6 +3020,7 @@ mod tests {
             date2: None,
             comment: String::new(),
             tags: vec![],
+            generated: None,
         }
     }
 

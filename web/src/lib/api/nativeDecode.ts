@@ -26,6 +26,8 @@
 
 import type {AccountEntry, AccountFile, AccountListing, AccountTag, CreatedAccountsFile} from "#lib/accounts/types.js";
 import {isBudgetPeriod} from "#lib/budget/types.js";
+import {CONF_SECTIONS, DEPTH_COMMANDS} from "#lib/settings/hledgerConfTypes.js";
+import type {ConfOrigin, ConfSection, DepthCommand, DepthSpec, HledgerConf} from "#lib/settings/hledgerConfTypes.js";
 import type {AccountReference, BudgetFile, BudgetGoal, BudgetListing, BudgetRule, CreatedBudgetFile, RulePeriod} from "#lib/budget/types.js";
 import type {AccountClass, AccountClasses, AccountType} from "#lib/domain/accountClass.js";
 import type {Dec, MixedAmount} from "#lib/domain/money.js";
@@ -106,9 +108,11 @@ import type {
     RulesSourcePref,
     RulesWarning,
 } from "#lib/imports/types.js";
+import type {AutoRuleForm} from "#lib/autoRules/ruleForm.js";
 import {FORECAST_ORIGIN_KINDS, GROWTH_UNITS, LINE_ROLES, LINE_SOURCES, SCENARIO_INTERVALS} from "#lib/projections/types.js";
 import type {
     AssetRow,
+    AutoRule,
     BalanceSeries,
     EventPosting,
     ForecastDefaults,
@@ -191,11 +195,15 @@ import type {
     PeriodReport,
     PeriodRow,
     PeriodRowKind,
+    AccountReading,
+    AccountReport,
+    AccountSectionKind,
     ReportMeta,
     ReportRow,
     Section,
     SectionedReport,
 } from "#lib/reports/types.js";
+import {ACCOUNT_READINGS, ACCOUNT_SECTION_KINDS} from "#lib/reports/types.js";
 import {ApiShapeError} from "./client";
 import {decodeRow} from "./journalViewDecode";
 import {type CommodityStyles, normalizeCommodityStyles} from "./normalize";
@@ -529,6 +537,25 @@ interface RawScenario {
     lines?: RawScenarioLine[];
     events?: RawScenarioEvent[];
     cash?: string | null;
+    autoRules?: RawAutoRule[];
+    accountTypes?: Record<string, string>;
+}
+
+interface RawAutoRule {
+    raw?: unknown;
+    query?: unknown;
+    unsupported?: string | null;
+    form?: RawAutoRuleForm | null;
+    block?: unknown;
+}
+
+export interface RawAutoRuleForm {
+    matchAccount?: unknown;
+    extraQuery?: unknown;
+    postings?: {account?: unknown; kind?: string; percent?: RawDec | null; amount?: RawScenarioAmount | null}[];
+    counter?: string | null;
+    comment?: unknown;
+    forecastOnly?: boolean;
 }
 
 interface RawProjectionFile {
@@ -562,6 +589,7 @@ interface RawScenarioFile {
 interface RawBalanceSeries {
     opening?: RawMixed;
     values?: RawMixed[];
+    history?: RawMixed[];
 }
 
 interface RawRunway {
@@ -612,6 +640,7 @@ interface RawForecastJournal {
 interface RawForecastEntry {
     origin?: {kind?: string; key?: string};
     txn?: unknown;
+    haystack?: unknown;
 }
 
 interface RawHoldingPrice {
@@ -2189,6 +2218,78 @@ export function decodePeriodReport(raw: unknown): PeriodReport {
 }
 
 // ---------------------------------------------------------------------------
+// AccountReport (Reports › Accounts and the Projections Accounts tab)
+// ---------------------------------------------------------------------------
+
+interface RawAccountReport {
+    buckets?: unknown;
+    periods?: unknown;
+    sections?: unknown;
+}
+
+interface RawAccountSection {
+    section?: unknown;
+    reading?: unknown;
+    rows?: unknown;
+    totals?: unknown;
+    summary?: unknown;
+}
+
+interface RawAccountRow {
+    account?: unknown;
+    depth?: unknown;
+    values?: unknown;
+    summary?: unknown;
+}
+
+/** Every per-period array must hold one figure per bucket — a short one would shift every column after it. */
+function decodeColumns(raw: unknown, width: number, context: string): MixedAmount[] {
+    if (!Array.isArray(raw) || raw.length !== width) throw new ApiShapeError(`${context}: expected ${width} figures`);
+    return frozen(raw.map((value, i) => decodeMixed(value as RawMixed, `${context}[${i}]`)));
+}
+
+export function decodeAccountReport(raw: unknown): AccountReport {
+    const report = raw as RawAccountReport;
+    if (typeof report !== "object" || report === null || !Array.isArray(report.buckets) || !Array.isArray(report.sections)) {
+        throw new ApiShapeError("account report: expected buckets and sections arrays");
+    }
+    const width = report.buckets.length;
+    return Object.freeze({
+        kind: "accounts" as const,
+        buckets: frozen(decodeStrings(report.buckets, "account report buckets")),
+        periods: decodePeriods(report.periods as RawPeriodReport["periods"], width, "account report periods"),
+        sections: frozen(
+            (report.sections as RawAccountSection[]).map((section, s) => {
+                const at = `account report section #${s}`;
+                if (typeof section !== "object" || section === null || !Array.isArray(section.rows)) throw new ApiShapeError(`${at}: expected rows`);
+                const kind = str(section.section, `${at} section`);
+                if (!(ACCOUNT_SECTION_KINDS as readonly string[]).includes(kind)) throw new ApiShapeError(`${at}: unknown section ${kind}`);
+                const reading = str(section.reading, `${at} reading`);
+                if (!(ACCOUNT_READINGS as readonly string[]).includes(reading)) throw new ApiShapeError(`${at}: unknown reading ${reading}`);
+                return Object.freeze({
+                    section: kind as AccountSectionKind,
+                    reading: reading as AccountReading,
+                    rows: frozen(
+                        (section.rows as RawAccountRow[]).map((row, r) => {
+                            const where = `${at} row #${r}`;
+                            if (typeof row !== "object" || row === null) throw new ApiShapeError(`${where}: expected an object`);
+                            return Object.freeze({
+                                account: str(row.account, `${where} account`),
+                                depth: decodeCount(row.depth as number, `${where} depth`),
+                                values: decodeColumns(row.values, width, `${where} values`),
+                                summary: decodeMixed(row.summary as RawMixed, `${where} summary`),
+                            });
+                        })
+                    ),
+                    totals: decodeColumns(section.totals, width, `${at} totals`),
+                    summary: decodeMixed(section.summary as RawMixed, `${at} summary`),
+                });
+            })
+        ),
+    });
+}
+
+// ---------------------------------------------------------------------------
 // BudgetReport (actuals vs. periodic-rule goals)
 // ---------------------------------------------------------------------------
 
@@ -2415,15 +2516,72 @@ export function decodeScenario(raw: unknown): Scenario {
         lines: frozen(scenario.lines.map((line, i) => decodeScenarioLine(line, `scenario line #${i}`))),
         events: frozen(scenario.events.map((event, i) => decodeScenarioEvent(event, `scenario event #${i}`))),
         cash: decodeNullableStr(scenario.cash, "scenario cash"),
+        autoRules: decodeAutoRules(scenario.autoRules),
+        accountTypes: decodeScenarioAccountTypes(scenario.accountTypes),
+    });
+}
+
+/** The scenario file's own account types — always an object on the wire (empty for a seed), so an absent one is a broken contract. */
+function decodeScenarioAccountTypes(raw: RawScenario["accountTypes"]): Readonly<Record<string, AccountType>> {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new ApiShapeError("scenario accountTypes: expected an object");
+    return Object.freeze(
+        Object.fromEntries(Object.entries(raw).map(([account, type]) => [account, decodeEnum(ACCOUNT_TYPES, type, `scenario accountTypes ${account}`)]))
+    );
+}
+
+/** A scenario's `= QUERY` rules — always an array on the wire, so an absent one is a broken contract. */
+function decodeAutoRules(raw: RawScenario["autoRules"]): AutoRule[] {
+    if (!Array.isArray(raw)) throw new ApiShapeError("scenario autoRules: expected an array");
+    return frozen(
+        raw.map((rule, i) => {
+            const at = `scenario autoRules[${i}]`;
+            if (typeof rule !== "object" || rule === null) throw new ApiShapeError(`${at}: expected an object`);
+            return Object.freeze({
+                raw: str(rule.raw, `${at} raw`),
+                query: str(rule.query, `${at} query`),
+                unsupported: decodeNullableStr(rule.unsupported, `${at} unsupported`),
+                form: decodeNullable(rule.form, `${at} form`, decodeAutoRuleForm),
+                block: rule.block === null ? null : decodeCount(rule.block, `${at} block`),
+            });
+        })
+    );
+}
+
+const RULE_POSTING_KINDS = ["percent", "fixed"] as const;
+
+/** A rule's form: every field present, the posting's unused number `null`. Shared with Settings › Automatic postings. */
+export function decodeAutoRuleForm(raw: RawAutoRuleForm, context: string): AutoRuleForm {
+    if (typeof raw !== "object" || !Array.isArray(raw.postings)) throw new ApiShapeError(`${context}: expected postings`);
+    return Object.freeze({
+        matchAccount: str(raw.matchAccount, `${context} matchAccount`),
+        extraQuery: str(raw.extraQuery, `${context} extraQuery`),
+        postings: frozen(
+            raw.postings.map((posting, i) => {
+                const where = `${context} postings[${i}]`;
+                const kind = decodeEnum(RULE_POSTING_KINDS, posting.kind, `${where} kind`);
+                const percent = decodeNullable(posting.percent, `${where} percent`, decodeDec);
+                const amount = decodeNullable(posting.amount, `${where} amount`, decodeScenarioAmount);
+                if ((kind === "percent") !== (percent !== null) || (kind === "fixed") !== (amount !== null)) {
+                    throw new ApiShapeError(`${where}: a ${kind} posting carries exactly its own number`);
+                }
+                return Object.freeze({account: str(posting.account, `${where} account`), kind, percent, amount});
+            })
+        ),
+        counter: decodeNullableStr(raw.counter, `${context} counter`),
+        comment: str(raw.comment, `${context} comment`),
+        forecastOnly: decodeBoolean(raw.forecastOnly, `${context} forecastOnly`),
     });
 }
 
 function decodeBalanceSeries(raw: RawBalanceSeries | undefined, context: string): BalanceSeries {
     if (raw === undefined || raw === null || !Array.isArray(raw.values)) throw new ApiShapeError(`${context}: missing opening/values`);
+    // The actuals before the forecast: always an array, so an absent one is a broken contract.
+    if (!Array.isArray(raw.history)) throw new ApiShapeError(`${context}: missing history`);
     return Object.freeze({
         // A real figure from the journal, not `values[-1]` of an earlier window.
         opening: decodeMixed(raw.opening, `${context} opening`),
         values: frozen(raw.values.map((value, i) => decodeMixed(value, `${context} values[${i}]`))),
+        history: frozen(raw.history.map((value, i) => decodeMixed(value, `${context} history[${i}]`))),
     });
 }
 
@@ -2493,7 +2651,11 @@ function decodeForecastJournal(raw: RawForecastJournal, context: string): Foreca
         const entry = value as RawForecastEntry;
         const at = `${context} entries[${i}]`;
         if (typeof entry !== "object" || entry === null) throw new ApiShapeError(`${at}: expected an object`);
-        return Object.freeze({origin: decodeForecastOrigin(entry.origin, `${at} origin`), txn: decodeRow(entry.txn, `${at} txn`).txn});
+        return Object.freeze({
+            origin: decodeForecastOrigin(entry.origin, `${at} origin`),
+            txn: decodeRow(entry.txn, `${at} txn`).txn,
+            haystack: str(entry.haystack, `${at} haystack`),
+        });
     });
     const total = decodeCount(raw.total, `${context} total`);
     if (entries.length > total) throw new ApiShapeError(`${context}: ${entries.length} entries but a total of ${total}`);
@@ -2541,7 +2703,7 @@ export function decodeProjection(raw: unknown): Projection {
         cashFlow: decodeCashFlowStatement(projection.cashFlow),
         defaults: decodeForecastDefaults(projection.defaults),
         // Null unless the run asked; ABSENT is still a broken contract.
-        accounts: decodeNullable(projection.accounts, "projection accounts", (value) => decodePeriodReport(value)),
+        accounts: decodeNullable(projection.accounts, "projection accounts", (value) => decodeAccountReport(value)),
         journal: decodeNullable(projection.journal, "projection journal", decodeForecastJournal),
     });
 }
@@ -4594,5 +4756,81 @@ export function decodeBudgetGaps(raw: unknown): BudgetGaps {
         revenueTotal: decodeMixed(gaps.revenueTotal, "budget gaps revenueTotal"),
         expenseTotal: decodeMixed(gaps.expenseTotal, "budget gaps expenseTotal"),
         headline: decodeMixed(gaps.headline, "budget gaps headline"),
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Settings › hledger config (`/api/hledger-conf`)
+// ---------------------------------------------------------------------------
+
+interface RawDepthSpec {
+    all?: number | null;
+    perRegex?: {regex?: string; depth?: number}[];
+}
+
+interface RawHledgerConf {
+    handle?: string | null;
+    origin?: string | null;
+    createHandle?: string | null;
+    editable?: boolean;
+    readOnlyReason?: string | null;
+    hijacked?: string | null;
+    revision?: string;
+    auto?: boolean;
+    depth?: Record<string, RawDepthSpec>;
+    effectiveDepth?: Record<string, RawDepthSpec>;
+    warnings?: {code?: string; message?: string}[];
+}
+
+const CONF_ORIGINS: readonly ConfOrigin[] = ["ledger", "home", "xdg"];
+
+function decodeDepthSpec(raw: RawDepthSpec | undefined, context: string): DepthSpec {
+    if (typeof raw !== "object" || raw === null) throw new ApiShapeError(`${context}: expected a depth object`);
+    return Object.freeze({
+        all: optNum(raw.all, `${context} all`),
+        perRegex: frozen(
+            (raw.perRegex ?? []).map((entry, i) =>
+                Object.freeze({regex: str(entry.regex, `${context} perRegex[${i}] regex`), depth: num(entry.depth, `${context} perRegex[${i}] depth`)})
+            )
+        ),
+    });
+}
+
+/** Every key of `keys` decoded out of `raw` — REQUIRED, so a renamed section fails loudly rather than reading as "unset". */
+function decodeDepthTable<K extends string>(
+    raw: Record<string, RawDepthSpec> | undefined,
+    keys: readonly K[],
+    context: string
+): Readonly<Record<K, DepthSpec>> {
+    if (typeof raw !== "object" || raw === null) throw new ApiShapeError(`${context}: expected an object`);
+    return Object.freeze(Object.fromEntries(keys.map((key) => [key, decodeDepthSpec(raw[key], `${context} ${key}`)])) as Record<K, DepthSpec>);
+}
+
+/** `GET`/`PUT /api/hledger-conf` → the config file in force and what Ledgeline reads from it. */
+export function decodeHledgerConf(raw: unknown): HledgerConf {
+    const conf = raw as RawHledgerConf;
+    if (typeof conf !== "object" || conf === null) throw new ApiShapeError("hledger conf: expected an object");
+    const origin = optStr(conf.origin, "hledger conf origin");
+    if (origin !== null && !(CONF_ORIGINS as string[]).includes(origin)) throw new ApiShapeError(`hledger conf origin: unknown ${JSON.stringify(origin)}`);
+    if (typeof conf.editable !== "boolean" || typeof conf.auto !== "boolean") throw new ApiShapeError("hledger conf: expected editable and auto booleans");
+    return Object.freeze({
+        handle: optStr(conf.handle, "hledger conf handle"),
+        origin: origin as ConfOrigin | null,
+        createHandle: optStr(conf.createHandle, "hledger conf createHandle"),
+        editable: conf.editable,
+        readOnlyReason: optStr(conf.readOnlyReason, "hledger conf readOnlyReason"),
+        hijacked: optStr(conf.hijacked, "hledger conf hijacked"),
+        revision: str(conf.revision, "hledger conf revision"),
+        auto: conf.auto,
+        depth: decodeDepthTable<ConfSection>(conf.depth, CONF_SECTIONS, "hledger conf depth"),
+        effectiveDepth: decodeDepthTable<DepthCommand>(conf.effectiveDepth, DEPTH_COMMANDS, "hledger conf effectiveDepth"),
+        warnings: frozen(
+            (conf.warnings ?? []).map((warning, i) =>
+                Object.freeze({
+                    code: str(warning.code, `hledger conf warnings[${i}] code`),
+                    message: str(warning.message, `hledger conf warnings[${i}] message`),
+                })
+            )
+        ),
     });
 }

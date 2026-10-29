@@ -139,6 +139,15 @@ fn exact(mixed: &Value) -> i128 {
     mantissa * 10_i128.pow(12 - places)
 }
 
+/// A journal row posting's first amount as `(mantissa, places)`: rows write a
+/// quantity as `{m, p}`.
+fn posting_qty(posting: &Value) -> (i128, u32) {
+    let qty = &posting["amounts"][0]["qty"];
+    let mantissa: i128 = qty["m"].as_str().expect("m").parse().expect("m parses");
+    let places = u32::try_from(qty["p"].as_u64().expect("p")).expect("p fits");
+    (mantissa, places)
+}
+
 /// A row's `values`, each `$` figure exactly ([`exact`]).
 fn exact_series(node: &Value) -> Vec<i128> {
     node["values"]
@@ -602,7 +611,7 @@ async fn a_large_event_produces_a_runway_naming_its_bucket() {
 #[tokio::test]
 async fn an_unsupported_period_is_warned_about_rather_than_failing() {
     let mut line = rent_line();
-    line["period"] = json!({"raw": "every weekday"});
+    line["period"] = json!({"raw": "every last day of month"});
     let projection = run(json!({
         "scenario": scenario_with(vec![line], vec![]),
         "asOf": "2026-07-08",
@@ -616,7 +625,7 @@ async fn an_unsupported_period_is_warned_about_rather_than_failing() {
     assert!(
         warnings[0]
             .as_str()
-            .is_some_and(|w| w.contains("every weekday")),
+            .is_some_and(|w| w.contains("every last day of month")),
         "the warning must quote what the user wrote: {warnings:?}"
     );
     assert_eq!(net_income(&projection), [0, 0]);
@@ -859,26 +868,31 @@ async fn the_actual_columns_are_the_reports_tabs_statements() {
 // The Accounts and Journal readings (plan 28, follow-ups 2026-10-26)
 // ---------------------------------------------------------------------------
 
-/// A run asking for the Accounts reading in `mode`, over July and August with
-/// May and June as actuals, at depth 3.
-async fn accounts_run(mode: &str, empty: bool, events: Vec<Value>) -> Value {
+/// A run asking for the Accounts reading, over July and August with May and
+/// June as actuals, at depth 3.
+async fn accounts_run(empty: bool, events: Vec<Value>) -> Value {
     run(json!({
         "scenario": scenario_with(vec![rent_line()], events),
         "asOf": "2026-07-08",
         "count": 2,
         "depth": 3,
-        "accounts": {"mode": mode, "empty": empty}
+        "accounts": {"empty": empty}
     }))
     .await
 }
 
-/// The Accounts report's row for `account`, if it has one.
+/// The Accounts report's row for `account` and its section, if it has one.
 fn account_row<'a>(projection: &'a Value, account: &str) -> Option<&'a Value> {
-    projection["accounts"]["rows"]
-        .as_array()
-        .expect("accounts rows")
+    account_sections(projection)
         .iter()
+        .flat_map(|section| section["rows"].as_array().expect("rows"))
         .find(|row| row["account"] == account)
+}
+
+fn account_sections(projection: &Value) -> &Vec<Value> {
+    projection["accounts"]["sections"]
+        .as_array()
+        .expect("accounts sections")
 }
 
 fn account_values(projection: &Value, account: &str) -> Vec<i128> {
@@ -898,57 +912,59 @@ async fn the_accounts_and_journal_readings_are_null_unless_asked_for() {
     assert_eq!(projection["journal"], Value::Null);
 }
 
-/// **Change is each period's movement; Balance is the running balance.** Over
-/// the same columns the statements use, `lookback ++ buckets`, with the real
-/// journal before the cutoff and the forecast after it.
+/// **Each section reads its own way** (2026-10-28): assets and liabilities
+/// are each period's BALANCE with the window's Δ last, everything else each
+/// period's net CHANGE with a Total last — over `lookback ++ buckets`, the
+/// real journal before the cutoff and the forecast after it.
 #[tokio::test]
-async fn accounts_change_is_movement_and_balance_is_the_running_total() {
-    let change = accounts_run("change", false, vec![]).await;
-    let balance = accounts_run("balance", false, vec![]).await;
+async fn assets_are_balances_and_flows_are_changes() {
+    let projection = accounts_run(false, vec![]).await;
     let keys = json!(["2026-05", "2026-06", "2026-07", "2026-08"]);
-    assert_eq!(change["accounts"]["buckets"], keys);
-    assert_eq!(balance["accounts"]["buckets"], keys);
-    assert_eq!(change["accounts"]["periods"][2]["label"], "Jul 2026");
-
-    // The scenario's own account: nothing real, then $4,200 a month.
-    assert_eq!(account_values(&change, "expenses:rent"), [0, 0, 4200, 4200]);
-    assert_eq!(
-        account_values(&balance, "expenses:rent"),
-        [0, 0, 4200, 8400]
-    );
-    // Change rows carry a Total; balance rows are snapshots and do not.
-    let rent = account_row(&change, "expenses:rent").expect("rent");
-    assert_eq!(dollars(&rent["total"]), 8400);
-    assert!(
-        account_row(&balance, "expenses:rent")
-            .expect("rent")
-            .get("total")
-            .is_none()
-    );
-    assert!(change["accounts"].get("grandTotal").is_some());
-    assert!(balance["accounts"].get("grandTotal").is_none());
-
-    // Every row: balance[i] = balance[i - 1] + change[i], and the real May
-    // movement is the real journal's (the rent was never in May).
-    for row in change["accounts"]["rows"].as_array().expect("rows") {
-        let account = row["account"].as_str().expect("account");
-        let moved = exact_series(row);
-        let Some(held) = account_row(&balance, account).map(exact_series) else {
-            continue;
+    assert_eq!(projection["accounts"]["buckets"], keys);
+    assert_eq!(projection["accounts"]["periods"][2]["label"], "Jul 2026");
+    let shape: Vec<(String, String)> = account_sections(&projection)
+        .iter()
+        .map(|section| {
+            (
+                section["section"].as_str().expect("section").to_string(),
+                section["reading"].as_str().expect("reading").to_string(),
+            )
+        })
+        .collect();
+    for (section, reading) in &shape {
+        let want = if matches!(section.as_str(), "assets" | "liabilities") {
+            "balance"
+        } else {
+            "change"
         };
-        for at in 1..moved.len() {
-            assert_eq!(held[at], held[at - 1] + moved[at], "{account} column {at}");
-        }
+        assert_eq!(reading, want, "{section}");
     }
-    // Real July 1–3 transactions are left out (Decision 5): July's checking
-    // movement is the rent alone.
-    assert_eq!(account_values(&change, "assets:bank:checking")[2], -4200);
+    assert_eq!(shape[0].0, "assets", "{shape:?}");
+
+    // A flow: nothing real, then $4,200 a month, and a Total.
+    assert_eq!(
+        account_values(&projection, "expenses:rent"),
+        [0, 0, 4200, 4200]
+    );
+    let rent = account_row(&projection, "expenses:rent").expect("rent");
+    assert_eq!(dollars(&rent["summary"]), 8400);
+
+    // Cash is a BALANCE: each column the previous plus that period's
+    // movement, and the forecast's rent comes out of it — July's balance is
+    // June's less $4,200 (real July 1–3 postings are left out, Decision 5).
+    let checking =
+        exact_series(account_row(&projection, "assets:bank:checking").expect("checking"));
+    assert!(checking[0] > 0, "a balance, not a movement: {checking:?}");
+    assert_eq!(checking[2], checking[1] - 4_200_000_000_000_000);
+    assert_eq!(checking[3], checking[2] - 4_200_000_000_000_000);
+    // (Its last column, the Δ over the window, is pinned against hledger's
+    // `balance -T` in `projection_files.rs`.)
     // Natural signs, as `hledger balance` prints them: salary is negative.
-    assert!(account_values(&change, "income:salary")[0] < 0);
+    assert!(account_values(&projection, "income:salary")[0] < 0);
 }
 
-/// **Depth rolls the rows up** like every other report's slider, and never
-/// the per-column totals.
+/// **Depth rolls the rows up** like every other report's slider, within each
+/// section, and never the section totals.
 #[tokio::test]
 async fn accounts_honour_the_depth() {
     let projection = run(json!({
@@ -956,11 +972,13 @@ async fn accounts_honour_the_depth() {
         "asOf": "2026-07-08",
         "count": 2,
         "depth": 1,
-        "accounts": {"mode": "change"}
+        "accounts": {"empty": false}
     }))
     .await;
-    let rows = projection["accounts"]["rows"].as_array().expect("rows");
-    assert!(rows.iter().all(|row| row["depth"] == 1), "{rows:?}");
+    for section in account_sections(&projection) {
+        let rows = section["rows"].as_array().expect("rows");
+        assert!(rows.iter().all(|row| row["depth"] == 1), "{rows:?}");
+    }
     assert_eq!(account_values(&projection, "expenses")[2..], [4200, 4200]);
 }
 
@@ -968,35 +986,37 @@ async fn accounts_honour_the_depth() {
 /// never touches — what a projection misses — as all-zero rows.
 #[tokio::test]
 async fn empty_accounts_are_shown_only_when_asked_for() {
-    let hidden = accounts_run("change", false, vec![]).await;
+    let hidden = accounts_run(false, vec![]).await;
     assert!(
         account_row(&hidden, "expenses:shopping").is_none(),
         "declared, never posted: hidden by default"
     );
-    let shown = accounts_run("change", true, vec![]).await;
+    let shown = accounts_run(true, vec![]).await;
     let shopping = account_row(&shown, "expenses:shopping").expect("the declared account is a row");
     assert_eq!(series(shopping), [0, 0, 0, 0]);
-    // Every row the hidden reading had is still there, with the same figures.
-    for row in hidden["accounts"]["rows"].as_array().expect("rows") {
-        let account = row["account"].as_str().expect("account");
-        assert_eq!(account_values(&shown, account), series(row), "{account}");
+    for section in account_sections(&hidden) {
+        for row in section["rows"].as_array().expect("rows") {
+            let account = row["account"].as_str().expect("account");
+            assert_eq!(account_values(&shown, account), series(row), "{account}");
+        }
     }
-    let balance = accounts_run("balance", true, vec![]).await;
-    assert!(account_row(&balance, "expenses:shopping").is_some());
 }
 
+/// A page from before 2026-10-28 still sends the old Change/Balance `mode`;
+/// it is accepted and ignored.
 #[tokio::test]
-async fn an_unknown_accounts_mode_is_a_400() {
-    let (status, text) = post(json!({
+async fn an_old_page_s_accounts_mode_is_ignored() {
+    let old = run(json!({
         "scenario": scenario_with(vec![rent_line()], vec![]),
         "asOf": "2026-07-08",
-        "accounts": {"mode": "cumulative"}
+        "count": 2,
+        "depth": 3,
+        "accounts": {"mode": "change", "empty": false}
     }))
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
-    assert!(
-        text.contains("change") && text.contains("balance"),
-        "{text}"
+    assert_eq!(
+        old["accounts"],
+        accounts_run(false, vec![]).await["accounts"]
     );
 }
 
@@ -1115,6 +1135,16 @@ async fn an_asset_rows_growth_is_named_in_the_journal() {
         assert_eq!(
             entry["txn"]["postings"][0]["account"],
             "assets:vehicles:car"
+        );
+        // The search text the Journal tab filters on: the journal's own
+        // haystack, lowercase, holding the description and every account.
+        let haystack = entry["haystack"].as_str().expect("a haystack");
+        assert_eq!(haystack, haystack.to_lowercase());
+        assert!(haystack.contains("assets:vehicles:car"), "{haystack:?}");
+        let description = entry["txn"]["description"].as_str().expect("description");
+        assert!(
+            haystack.contains(&description.to_lowercase()),
+            "{haystack:?}"
         );
     }
 }
@@ -1848,7 +1878,7 @@ const BOUNDED: &str = "\
 ~ every 15th day of month from 2026-11-01  mid-month
     (expenses:f)  $1.00
 
-~ every weekday  workdays
+~ every last day of month  workdays
     (expenses:g)  $1.00
 ";
 
@@ -1918,7 +1948,7 @@ async fn a_bounded_rule_reads_as_its_interval_and_saves_an_edited_bound() {
                 null.clone()
             ),
             expect(
-                "every weekday",
+                "every last day of month",
                 null.clone(),
                 null.clone(),
                 null.clone(),
@@ -1947,7 +1977,7 @@ async fn a_bounded_rule_reads_as_its_interval_and_saves_an_edited_bound() {
         "~ monthly from 2026-11-01\n",
         "~ monthly to 2027-06-01  ends\n",
         "~ every 15th day of month from 2027-01-01  mid-month\n",
-        "~ every weekday  workdays\n",
+        "~ every last day of month  workdays\n",
     ] {
         assert!(
             written.contains(header),
@@ -2663,9 +2693,9 @@ fn expense_line(id: &str, account: &str, mantissa: &str) -> Value {
 /// **A line on a PARENT beside lines on its leaves.** The seed starts at the
 /// page's depth, but after that a user may write a line at any level — here
 /// `expenses:food` itself, whose own history is empty, beside a line on its
-/// child `expenses:food:groceries`. The statements must show the parent's own
-/// projected amount as a row of its own under the Expenses group, apart from
-/// the child's, and classify both as expenses (the parent is undeclared, so its
+/// child `expenses:food:groceries`. The statements must show the parent as a
+/// row of its own under the Expenses group, reading as its subtree, with the
+/// child's row beneath it, and classify both as expenses (the parent is undeclared, so its
 /// type is inferred from `expenses`'s declared `type: X`).
 #[tokio::test]
 async fn a_line_on_a_parent_account_is_its_own_row_beside_its_children() {
@@ -2709,12 +2739,16 @@ async fn a_line_on_a_parent_account_is_its_own_row_beside_its_children() {
             )
         })
         .collect();
-    // The parent's OWN $300 is its own row, and the child's $200 is beside it
-    // one level down — neither folded into the other nor lost.
+    // The parent keeps a row of its own, and the child's $200 sits beneath it
+    // one level down — neither folded into the other nor lost. The parent's row
+    // reads as its whole SUBTREE, its own $300 plus the $200 beneath it, as
+    // `hledger is --tree` and the balance sheet both print a parent (2026-10-28:
+    // per-person wage lines under `wages-salaries` left that row at zero when
+    // a row held only its own postings).
     assert_eq!(
         rows,
         [
-            ("expenses:food".to_string(), 2, vec![300, 300]),
+            ("expenses:food".to_string(), 2, vec![500, 500]),
             ("expenses:food:groceries".to_string(), 3, vec![200, 200]),
         ],
         "{food}"
@@ -2722,6 +2756,64 @@ async fn a_line_on_a_parent_account_is_its_own_row_beside_its_children() {
     // The group total is both, and both are expenses: net income is -$500.
     assert_eq!(series(&food["total"]), [500, 500]);
     assert_eq!(net_income(&projection), [-500, -500]);
+}
+
+/// **The page's depth slider reaches the income statement** (2026-10-28: it
+/// changed nothing there). At depth 2 the child folds into its parent, as
+/// `hledger is --depth 2` prints it; at depth 3 it is its own row again. The
+/// group total is the same either way.
+#[tokio::test]
+async fn the_depth_slider_clips_the_income_statement_rows() {
+    let food_rows = |depth: u64| async move {
+        let projection = run(json!({
+            "scenario": scenario_with(vec![
+                expense_line("food", "expenses:food", "30000"),
+                expense_line("groceries", "expenses:food:groceries", "20000"),
+            ], vec![]),
+            "interval": "monthly",
+            "count": 2,
+            "lookback": 0,
+            "depth": depth
+        }))
+        .await;
+        let food = projection["incomeStatement"]["sections"]
+            .as_array()
+            .expect("sections")
+            .iter()
+            .find(|section| section["kind"] == "opex")
+            .and_then(|section| {
+                section["groups"]
+                    .as_array()
+                    .expect("groups")
+                    .iter()
+                    .find(|group| group["name"] == "Food")
+                    .cloned()
+            })
+            .expect("a Food group");
+        assert_eq!(series(&food["total"]), [500, 500], "depth {depth}");
+        food["rows"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .map(|row| {
+                (
+                    row["account"].as_str().expect("account").to_string(),
+                    series(&row["amounts"]),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        food_rows(2).await,
+        [("expenses:food".to_string(), vec![500, 500])]
+    );
+    assert_eq!(
+        food_rows(3).await,
+        [
+            ("expenses:food".to_string(), vec![500, 500]),
+            ("expenses:food:groceries".to_string(), vec![200, 200]),
+        ]
+    );
 }
 
 /// **The seed names its categories at the depth it is asked for.** The tab
@@ -2772,5 +2864,642 @@ async fn the_seed_names_its_categories_at_the_requested_depth() {
     assert!(
         !deep.iter().any(|account| account == "expenses:food"),
         "{deep:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `= QUERY` auto-posting rules (plan 30)
+// ---------------------------------------------------------------------------
+
+/// The scenario with `rules` riding on it, as the table sends them back.
+fn with_rules(rules: &[&str]) -> Value {
+    let mut scenario = scenario_with(vec![rent_line()], vec![]);
+    scenario["autoRules"] = json!(
+        rules
+            .iter()
+            .map(|raw| json!({"raw": raw}))
+            .collect::<Vec<_>>()
+    );
+    scenario
+}
+
+/// **A scenario's rule generates its postings in the run** — below the
+/// posting it matched, on every forecast transaction, with hledger's tag.
+#[tokio::test]
+async fn a_scenario_s_auto_rule_generates_its_postings_in_the_run() {
+    let projection = run(json!({
+        "scenario": with_rules(&[
+            "= expenses:rent tag:_generated-transaction\n    expenses:rent-tax  *0.1\n    assets:checking\n",
+        ]),
+        "interval": "monthly",
+        "count": 2,
+        "lookback": 0,
+        "journal": true
+    }))
+    .await;
+    let entries = projection["journal"]["entries"]
+        .as_array()
+        .expect("entries");
+    assert!(!entries.is_empty());
+    for entry in entries {
+        let postings = entry["txn"]["postings"].as_array().expect("postings");
+        let at = postings
+            .iter()
+            .position(|posting| posting["account"] == "expenses:rent")
+            .expect("the rent posting");
+        let tax = &postings[at + 1];
+        assert_eq!(tax["account"], "expenses:rent-tax", "{entry}");
+        // $420.000 is 10% of $4200.00.
+        let (mantissa, places) = posting_qty(tax);
+        assert_eq!(mantissa / 10_i128.pow(places), 420, "{tax}");
+        assert!(
+            tax["tags"]
+                .as_array()
+                .expect("tags")
+                .iter()
+                .any(|tag| tag[0] == "generated-posting"),
+            "{tax}"
+        );
+    }
+    // A tagged rule draws no hledger-parity warning. (Its accounts are new
+    // to the sample journal, so Decision 11's typo check does speak.)
+    let warnings = projection["warnings"].to_string();
+    assert!(!warnings.contains("would also apply"), "{warnings}");
+    assert!(!warnings.contains("refuses the file"), "{warnings}");
+}
+
+/// A percentage form, as the rule editor sends an edited rule.
+fn percent_form(match_account: &str, target: &str, percent: &str, counter: Option<&str>) -> Value {
+    json!({
+        "matchAccount": match_account,
+        "extraQuery": "",
+        "postings": [{
+            "account": target,
+            "kind": "percent",
+            "percent": {"mantissa": percent, "places": 0},
+            "amount": null
+        }],
+        "counter": counter,
+        "comment": ""
+    })
+}
+
+/// An edited rule travels as its FORM: the engine renders it — anchored,
+/// forecast-only, the counter as the opposite multiplier — signs it by the
+/// accounts' types, and applies it like any other rule.
+#[tokio::test]
+async fn a_rule_sent_as_a_form_is_rendered_and_applied() {
+    let mut scenario = scenario_with(vec![rent_line()], vec![]);
+    scenario["autoRules"] = json!([{
+        "block": null,
+        "form": percent_form("expenses:rent", "expenses:rent-tax", "10", Some("assets:bank:checking"))
+    }]);
+    let projection = run(json!({
+        "scenario": scenario,
+        "interval": "monthly",
+        "count": 2,
+        "lookback": 0,
+        "journal": true
+    }))
+    .await;
+    let entries = projection["journal"]["entries"]
+        .as_array()
+        .expect("entries");
+    assert!(!entries.is_empty());
+    for entry in entries {
+        let postings = entry["txn"]["postings"].as_array().expect("postings");
+        let at = postings
+            .iter()
+            .position(|posting| posting["account"] == "expenses:rent")
+            .expect("the rent posting");
+        let (tax, cash) = (&postings[at + 1], &postings[at + 2]);
+        assert_eq!(tax["account"], "expenses:rent-tax", "{entry}");
+        assert_eq!(cash["account"], "assets:bank:checking", "{entry}");
+        let whole = |posting: &Value| {
+            let (mantissa, places) = posting_qty(posting);
+            mantissa / 10_i128.pow(places)
+        };
+        assert_eq!((whole(tax), whole(cash)), (420, -420), "{entry}");
+    }
+    // Rendered forecast-only, so no parity warning; `expenses:rent-tax` is
+    // new, which Decision 11 names.
+    let warnings = projection["warnings"].to_string();
+    assert!(!warnings.contains("would also apply"), "{warnings}");
+    assert!(warnings.contains("`expenses:rent-tax`"), "{warnings}");
+    assert!(!warnings.contains("`assets:bank:checking`"), "{warnings}");
+}
+
+/// A raw rule's fixed amount is read under the main journal's commodity
+/// styles, as GET reads it and as hledger reads an `include`d file: `$1,500`
+/// under `commodity $1,000.00` is fifteen hundred dollars, not $1.50.
+#[tokio::test]
+async fn a_raw_rule_s_digit_grouped_amount_books_its_full_value_in_the_run() {
+    let projection = run(json!({
+        "scenario": with_rules(&[
+            "= expenses:rent tag:_generated-transaction\n    expenses:rent-tax  $1,500\n    assets:bank:checking\n",
+        ]),
+        "interval": "monthly",
+        "count": 2,
+        "lookback": 0,
+        "journal": true
+    }))
+    .await;
+    let entries = projection["journal"]["entries"]
+        .as_array()
+        .expect("entries");
+    assert!(!entries.is_empty());
+    for entry in entries {
+        let postings = entry["txn"]["postings"].as_array().expect("postings");
+        let tax = postings
+            .iter()
+            .find(|posting| posting["account"] == "expenses:rent-tax")
+            .expect("the generated posting");
+        let (mantissa, places) = posting_qty(tax);
+        assert_eq!(mantissa, 1500 * 10_i128.pow(places), "{tax}");
+    }
+}
+
+/// Decision 11: a rule posting to an account the journal neither declares nor
+/// uses — the user's real typo — is warned about, by name, and still runs.
+#[tokio::test]
+async fn a_rule_posting_to_an_unknown_account_is_warned_about() {
+    let projection = run(json!({
+        "scenario": with_rules(&[
+            "= expenses:rent tag:_generated-transaction\n    expesnses:people-costs:payroll-tax  *0.1\n    assets:bank:checking  *-0.1\n",
+        ]),
+        "interval": "monthly",
+        "count": 2,
+        "lookback": 0
+    }))
+    .await;
+    let warnings = projection["warnings"].to_string();
+    assert!(
+        warnings.contains("`expesnses:people-costs:payroll-tax`")
+            && warnings.contains("check the spelling"),
+        "{warnings}"
+    );
+    assert!(!warnings.contains("`assets:bank:checking`"), "{warnings}");
+}
+
+/// A rule carries exactly one of its text and its form, and a form's fields
+/// are checked before anything is rendered.
+#[tokio::test]
+async fn a_malformed_rule_form_is_a_400_naming_the_problem() {
+    let form = percent_form("expenses:rent", "expenses:rent-tax", "10", None);
+    let mut too_many = form.clone();
+    too_many["postings"] = json!(vec![form["postings"][0].clone(); 51]);
+    let mut wrong_kind = form.clone();
+    wrong_kind["postings"][0]["kind"] = json!("share");
+    let mut mixed = form.clone();
+    mixed["postings"] = json!([
+        form["postings"][0].clone(),
+        {"account": "expenses:fee", "kind": "fixed", "percent": null,
+         "amount": {"commodity": "$", "quantity": {"mantissa": "5", "places": 0}, "precision": 0}}
+    ]);
+    mixed["counter"] = json!("assets:bank:checking");
+    let mut blank = form.clone();
+    blank["matchAccount"] = json!("  ");
+    for (rule, says) in [
+        (
+            json!({"raw": "= food\n    (x)  1\n", "form": form.clone()}),
+            "exactly one of",
+        ),
+        (json!({"block": 0}), "exactly one of"),
+        (json!({"form": too_many}), "at most 50 postings"),
+        (json!({"form": wrong_kind}), "kind 'share'"),
+        (json!({"form": mixed}), "not a mix"),
+        (json!({"form": blank}), "needs an account to match"),
+    ] {
+        let mut scenario = scenario_with(vec![rent_line()], vec![]);
+        scenario["autoRules"] = json!([rule]);
+        let (status, text) = post(json!({
+            "scenario": scenario,
+            "interval": "monthly",
+            "count": 2,
+            "lookback": 0
+        }))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{rule}: {text}");
+        assert!(text.contains(says), "{rule}: {text}");
+    }
+}
+
+/// A rule with no `tag:_generated-transaction` still applies only to the
+/// forecast here, and the run says what stock hledger would do with it.
+#[tokio::test]
+async fn an_untagged_rule_applies_to_the_forecast_and_says_hledger_would_not_stop_there() {
+    let projection = run(json!({
+        "scenario": with_rules(&["= expenses:rent\n    (budget:rent)  *-1\n"]),
+        "interval": "monthly",
+        "count": 2,
+        "lookback": 0
+    }))
+    .await;
+    assert!(
+        projection["warnings"]
+            .to_string()
+            .contains("would also apply it to recorded ones"),
+        "{}",
+        projection["warnings"]
+    );
+}
+
+/// A rule's text is one `=` block and nothing else: a smuggled directive, a
+/// transaction, a blank line splitting the block, or two rules in one are
+/// refused before the parser acts on any of it.
+#[tokio::test]
+async fn a_rule_that_is_not_exactly_one_block_is_refused() {
+    for raw in [
+        "include /etc/passwd\n",
+        "= food\n    (x)  1\ninclude other.journal\n",
+        "= food\n    (x)  1\n\n    (y)  2\n",
+        "2026-01-01 txn\n    a  1\n    b\n",
+        "= food\n    (x)  1\n= rent\n    (y)  1\n",
+    ] {
+        let (status, text) = post(json!({
+            "scenario": with_rules(&[raw]),
+            "interval": "monthly",
+            "count": 2,
+            "lookback": 0
+        }))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{raw:?}: {text}");
+        assert!(text.contains("auto rule"), "{raw:?}: {text}");
+    }
+}
+
+/// A body from before rules travelled — no `autoRules` at all — still runs.
+#[tokio::test]
+async fn a_body_without_auto_rules_still_runs() {
+    let projection = run(json!({
+        "scenario": scenario_with(vec![rent_line()], vec![]),
+        "interval": "monthly",
+        "count": 2,
+        "lookback": 0
+    }))
+    .await;
+    assert!(projection["incomeStatement"].is_object());
+}
+
+/// The user's payroll-tax rule on the PARENT account fires for per-person
+/// CHILD accounts (2026-10-28). With two people in one `~` group (one
+/// transaction holding both), Ledgeline still taxes each, but the run warns
+/// that stock `hledger --auto` refuses that file — and says nothing when each
+/// person has a group of their own, which hledger reads fine.
+#[tokio::test]
+async fn a_parent_account_rule_taxes_each_child_and_warns_when_hledger_would_refuse() {
+    let person = |account: &str, group: &str, mantissa: &str| {
+        let mut line = expense_line(account, account, mantissa);
+        line["group"] = json!(group);
+        line
+    };
+    let rule = "= expenses:people-costs:wages-salaries tag:_generated-transaction\n    expenses:people-costs:payroll-tax  *0.1\n    assets:checking\n";
+    for (shared, warned) in [(true, true), (false, false)] {
+        let mut scenario = scenario_with(
+            vec![
+                person(
+                    "expenses:people-costs:wages-salaries:george",
+                    "rule:0",
+                    "600000",
+                ),
+                person(
+                    "expenses:people-costs:wages-salaries:john",
+                    if shared { "rule:0" } else { "rule:1" },
+                    "500000",
+                ),
+            ],
+            vec![],
+        );
+        scenario["autoRules"] = json!([{"raw": rule}]);
+        let projection = run(json!({
+            "scenario": scenario,
+            "interval": "monthly",
+            "count": 2,
+            "lookback": 0,
+            "journal": true
+        }))
+        .await;
+        // Each person's wages are followed by their own 10%.
+        let mut taxes: Vec<(String, i128)> = Vec::new();
+        for entry in projection["journal"]["entries"]
+            .as_array()
+            .expect("entries")
+        {
+            let postings = entry["txn"]["postings"].as_array().expect("postings");
+            for (at, posting) in postings.iter().enumerate() {
+                if posting["account"] == "expenses:people-costs:payroll-tax" {
+                    let (mantissa, places) = posting_qty(posting);
+                    taxes.push((
+                        postings[at - 1]["account"]
+                            .as_str()
+                            .expect("account")
+                            .to_string(),
+                        mantissa / 10_i128.pow(places),
+                    ));
+                }
+            }
+        }
+        let per_person: std::collections::BTreeSet<(String, i128)> =
+            taxes.iter().cloned().collect();
+        assert_eq!(
+            per_person.into_iter().collect::<Vec<_>>(),
+            [
+                (
+                    "expenses:people-costs:wages-salaries:george".to_string(),
+                    600
+                ),
+                ("expenses:people-costs:wages-salaries:john".to_string(), 500),
+            ],
+            "shared {shared}: {taxes:?}"
+        );
+        assert_eq!(taxes.len(), 4, "two people over two months: {taxes:?}");
+        let says = projection["warnings"]
+            .to_string()
+            .contains("refuses the file");
+        assert_eq!(says, warned, "shared {shared}: {}", projection["warnings"]);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rule forms and blocks in scenario FILES (plan 30 Phase 4)
+// ---------------------------------------------------------------------------
+
+const RULED: &str = "\
+; Ledgeline projection
+; projection: Ruled
+; created: 2026-01-01
+; updated: 2026-01-01
+
+= expenses:rent tag:_generated-transaction  ; rent tax
+    expenses:rent-tax   *0.1
+    assets:cash
+
+~ monthly  plan
+    expenses:rent    $4200.00
+    assets:cash
+
+=revenues:salary
+    (liabilities:tax)  *0.05
+";
+
+const RULED_URI: &str = "/api/projections/plans/projection-ruled.journal";
+
+/// A file's rules arrive with their block and, where the editor can state
+/// one, their form — percentages positive, as the user types them.
+#[tokio::test]
+async fn a_file_s_rules_carry_their_block_and_their_form() {
+    let tree = Tree::new(&[("plans/projection-ruled.journal", RULED)]);
+    let (status, doc) = file_json(&tree.state, "GET", RULED_URI, None).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let rules = doc["scenario"]["autoRules"].as_array().expect("rules");
+    assert_eq!(rules.len(), 2);
+    assert_eq!(rules[0]["block"], json!(0));
+    assert_eq!(rules[1]["block"], json!(1));
+    assert_eq!(
+        rules[0]["form"],
+        json!({
+            "matchAccount": "expenses:rent",
+            "extraQuery": "",
+            "postings": [{
+                "account": "expenses:rent-tax",
+                "kind": "percent",
+                "percent": {"mantissa": "10", "places": 0},
+                "amount": null
+            }],
+            "counter": "assets:cash",
+            "comment": "rent tax",
+            "forecastOnly": true
+        })
+    );
+    // A virtual posting is beyond the form: shown raw, locked.
+    assert_eq!(rules[1]["form"], Value::Null);
+}
+
+/// Saving an edited form rewrites that rule's block alone; the untouched rule,
+/// sent back as its text, keeps every byte, and so does the `~` block between.
+#[tokio::test]
+async fn a_save_with_an_edited_form_rewrites_only_that_rule_s_block() {
+    let tree = Tree::new(&[("plans/projection-ruled.journal", RULED)]);
+    let (status, doc) = file_json(&tree.state, "GET", RULED_URI, None).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let mut scenario = doc["scenario"].clone();
+    let mut form = scenario["autoRules"][0]["form"].clone();
+    form["postings"][0]["percent"] = json!({"mantissa": "12", "places": 0});
+    scenario["autoRules"][0] = json!({"block": 0, "form": form});
+    let raw = scenario["autoRules"][1]["raw"].clone();
+    scenario["autoRules"][1] = json!({"block": 1, "raw": raw});
+
+    let (status, saved) = file_json(
+        &tree.state,
+        "PUT",
+        RULED_URI,
+        Some(json!({"revision": doc["revision"], "scenario": scenario})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let after = tree.read("plans/projection-ruled.journal");
+    let body = |text: &str| {
+        text.split_once("\n\n")
+            .map(|(_, rest)| rest.to_string())
+            .unwrap()
+    };
+    assert_eq!(
+        body(&after),
+        body(RULED).replace(
+            "= expenses:rent tag:_generated-transaction  ; rent tax\n    expenses:rent-tax   *0.1\n    assets:cash\n",
+            "= ^expenses:rent(:|$) tag:_generated-transaction  ; rent tax\n    expenses:rent-tax  *0.12\n    assets:cash        *-0.12\n",
+        )
+    );
+    // The answer states the rule as written, block and all.
+    assert_eq!(saved["scenario"]["autoRules"][0]["block"], json!(0));
+    assert!(
+        saved["scenario"]["autoRules"][0]["raw"]
+            .as_str()
+            .is_some_and(|raw| raw.contains("*0.12")),
+        "{saved}"
+    );
+}
+
+/// Deleting a rule removes its block; a rule with no block is appended.
+#[tokio::test]
+async fn a_save_deletes_and_appends_rules_by_block() {
+    let tree = Tree::new(&[("plans/projection-ruled.journal", RULED)]);
+    let (_, doc) = file_json(&tree.state, "GET", RULED_URI, None).await;
+    let mut scenario = doc["scenario"].clone();
+    let first = scenario["autoRules"][0]["raw"].clone();
+    scenario["autoRules"] = json!([
+        {"block": 0, "raw": first},
+        {"block": null, "form": percent_form("expenses:rent", "expenses:rent-fee", "1", Some("assets:cash"))}
+    ]);
+    let (status, saved) = file_json(
+        &tree.state,
+        "PUT",
+        RULED_URI,
+        Some(json!({"revision": doc["revision"], "scenario": scenario})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let after = tree.read("plans/projection-ruled.journal");
+    assert!(!after.contains("=revenues:salary"), "{after}");
+    assert!(
+        after.ends_with(
+            "    assets:cash\n\n= ^expenses:rent(:|$) tag:_generated-transaction\n    expenses:rent-fee  *0.01\n    assets:cash        *-0.01\n"
+        ),
+        "{after}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Account types a scenario FILE declares itself
+// ---------------------------------------------------------------------------
+
+/// A scenario that declares its own liability, which name inference cannot
+/// classify (`hmrc` is no hledger root), and a payroll-tax rule on it. hledger
+/// 1.52 `bal --auto`: per $1000 of wages, `hmrc:paye` $-100 (the liability
+/// grows) and `expenses:payroll-tax` $100.
+const PAYE: &str = "\
+; Ledgeline projection
+; projection: PAYE
+; created: 2026-01-01
+; updated: 2026-01-01
+
+account hmrc:paye  ; type: L
+
+= ^expenses:wages(:|$) tag:_generated-transaction
+    hmrc:paye             *-0.1
+    expenses:payroll-tax  *0.1
+
+~ monthly  wages
+    expenses:wages    $1000.00
+    assets:cash
+";
+
+const PAYE_URI: &str = "/api/projections/plans/projection-paye.journal";
+
+/// The posting to `account` in a served rule form.
+fn form_posting<'a>(form: &'a Value, account: &str) -> &'a Value {
+    form["postings"]
+        .as_array()
+        .expect("postings")
+        .iter()
+        .find(|posting| posting["account"] == account)
+        .unwrap_or_else(|| panic!("no {account} posting in {form}"))
+}
+
+/// **A5-7.** GET reads the rule under the file's own `type: L`, so the
+/// liability's percentage is served positive, as the docs tell the user to
+/// type it — and a save of that form writes back the multipliers hledger
+/// books, not their inverse.
+#[tokio::test]
+async fn a_rule_on_a_liability_the_scenario_declares_is_served_positive_and_saves_unchanged() {
+    let tree = Tree::new(&[("plans/projection-paye.journal", PAYE)]);
+    let (status, doc) = file_json(&tree.state, "GET", PAYE_URI, None).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let mut scenario = doc["scenario"].clone();
+    assert_eq!(scenario["accountTypes"], json!({"hmrc:paye": "liability"}));
+    let form = scenario["autoRules"][0]["form"].clone();
+    assert_eq!(form["counter"], "expenses:payroll-tax", "{form}");
+    assert_eq!(
+        form_posting(&form, "hmrc:paye")["percent"],
+        json!({"mantissa": "10", "places": 0}),
+        "{form}"
+    );
+
+    // The user re-saves the form exactly as served (the documented figure).
+    scenario["autoRules"][0] = json!({"block": 0, "form": form});
+    let (status, saved) = file_json(
+        &tree.state,
+        "PUT",
+        PAYE_URI,
+        Some(json!({"revision": doc["revision"], "scenario": scenario})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let after = tree.read("plans/projection-paye.journal");
+    let multiplier = |account: &str| {
+        after
+            .lines()
+            .find(|line| line.trim_start().starts_with(&format!("{account} ")))
+            .and_then(|line| line.split_whitespace().last())
+            .unwrap_or_else(|| panic!("no {account} line in {after}"))
+            .to_string()
+    };
+    assert_eq!(multiplier("hmrc:paye"), "*-0.1", "{after}");
+    assert_eq!(multiplier("expenses:payroll-tax"), "*0.1", "{after}");
+    assert_eq!(
+        saved["scenario"]["accountTypes"],
+        json!({"hmrc:paye": "liability"})
+    );
+}
+
+/// Run a 10% `hmrc:paye` rule (countered by payroll tax) over the rent line,
+/// with `account_types` riding on the body, and hand back the whole-dollar
+/// amounts booked to (`hmrc:paye`, `expenses:payroll-tax`) in each entry.
+async fn paye_run(account_types: Option<Value>) -> Vec<(i128, i128)> {
+    let mut scenario = scenario_with(vec![rent_line()], vec![]);
+    scenario["autoRules"] = json!([{
+        "block": null,
+        "form": percent_form("expenses:rent", "hmrc:paye", "10", Some("expenses:payroll-tax"))
+    }]);
+    if let Some(types) = account_types {
+        scenario["accountTypes"] = types;
+    }
+    let projection = run(json!({
+        "scenario": scenario,
+        "interval": "monthly",
+        "count": 2,
+        "lookback": 0,
+        "journal": true
+    }))
+    .await;
+    let entries = projection["journal"]["entries"]
+        .as_array()
+        .expect("entries");
+    assert!(!entries.is_empty());
+    entries
+        .iter()
+        .map(|entry| {
+            let postings = entry["txn"]["postings"].as_array().expect("postings");
+            let whole = |account: &str| {
+                let posting = postings
+                    .iter()
+                    .find(|posting| posting["account"] == account)
+                    .unwrap_or_else(|| panic!("no {account} posting in {entry}"));
+                let (mantissa, places) = posting_qty(posting);
+                mantissa / 10_i128.pow(places)
+            };
+            (whole("hmrc:paye"), whole("expenses:payroll-tax"))
+        })
+        .collect()
+}
+
+/// **A5-7, the run.** A body carrying the scenario's own `hmrc:paye` liability
+/// reads the positive 10% as the liability GROWING — the multipliers hledger
+/// books for the file — so the run and the save agree.
+#[tokio::test]
+async fn a_run_reads_an_edited_rule_under_the_scenario_s_own_account_types() {
+    let booked = paye_run(Some(json!({"hmrc:paye": "L"}))).await;
+    assert!(booked.iter().all(|pair| *pair == (-420, 420)), "{booked:?}");
+}
+
+/// The fallback, pinned: a body WITHOUT `accountTypes` (an older client) reads
+/// under the main journal's types alone. `hmrc:paye` is then unclassified, and
+/// an unclassified account's percentage is its multiplier as typed.
+#[tokio::test]
+async fn a_run_without_account_types_reads_an_unclassified_account_s_percent_as_typed() {
+    let booked = paye_run(None).await;
+    assert!(booked.iter().all(|pair| *pair == (420, -420)), "{booked:?}");
+}
+
+/// A type the `account` directive itself would not accept is a 400 naming it.
+#[tokio::test]
+async fn an_unknown_account_type_in_the_body_is_a_400() {
+    let mut scenario = scenario_with(vec![rent_line()], vec![]);
+    scenario["accountTypes"] = json!({"hmrc:paye": "debt"});
+    let (status, text) = post(json!({"scenario": scenario})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    assert!(
+        text.contains("hmrc:paye") && text.contains("debt"),
+        "{text}"
     );
 }

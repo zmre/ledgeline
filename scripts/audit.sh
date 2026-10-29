@@ -92,7 +92,19 @@ spa_audit() {
   #     constants ("DNS:") and the v4 bit-twiddling are both absent from
   #     the bundle, so the vulnerable entry points are not in it.
   #
-  #   WHAT WOULD MAKE THIS ACTIONABLE: an exceljs release off uuid 8.
+  #   deepmerge  GHSA-gcqx-w48m-w2h4 (low)
+  #     `@sveltejs/vite-plugin-svelte > deepmerge`, a devDependency the Vite
+  #     plugin uses at build time to merge its own config objects. Nothing
+  #     user-supplied is merged, and deepmerge is not in the bundle
+  #     (`isMergeableObject` / `mergeObject` / `deepmerge` absent from
+  #     web/build/_app, checked 2026-10-29). No fixed release exists: 4.3.1
+  #     is the latest and the advisory covers >=4.2.0 <=4.3.1, which is also
+  #     why `bun audit fix` has nothing to offer and main's daily audit went
+  #     red on 2026-10-28.
+  #
+  #   WHAT WOULD MAKE THIS ACTIONABLE: an exceljs release off uuid 8; a
+  #   deepmerge release past 4.3.1 (hand-edit the bun.lock entry as below and
+  #   drop that --ignore), or vite-plugin-svelte dropping deepmerge.
   #   Re-check whenever this list is touched, and drop any --ignore whose
   #   package has since been bumped past the advisory (the postcss and nanoid
   #   ignores went that way on 2026-10-14, and cookie GHSA-pxg6-pf52-xh8x with
@@ -105,7 +117,8 @@ spa_audit() {
   #   registry.npmjs.org/<pkg>/<ver> — then `bun install --frozen-lockfile`
   #   to prove bun accepts it, then `just audit`.
   nix develop -L .#spaAudit -c bash -c 'cd web && bun audit \
-    --ignore=GHSA-w5hq-g745-h8pq'
+    --ignore=GHSA-w5hq-g745-h8pq \
+    --ignore=GHSA-gcqx-w48m-w2h4'
 }
 
 case "${1:-all}" in

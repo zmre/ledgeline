@@ -4,7 +4,10 @@
 // Ledgeline engine (no native routes) from one that is unreachable. The SPA
 // requires the native API; there is no plain-hledger-web fallback.
 
+import type {WireAutoRuleFormIn} from "#lib/autoRules/ruleForm.js";
+import type {SaveAutoRuleBody} from "#lib/autoRules/types.js";
 import type {BudgetPeriod} from "#lib/budget/types.js";
+import type {SaveHledgerConfBody} from "#lib/settings/hledgerConfTypes.js";
 import {ApiUnreachableError, authHeaders, REQUEST_TIMEOUT_MS, withDeadline} from "./client";
 
 /** The configured server answered, but has no /api/* routes (it is not the Ledgeline engine, or predates the route). */
@@ -764,6 +767,14 @@ export interface WireScenarioIn {
     events: WireScenarioEventIn[];
     /** `; cash:` — the scenario's default counter-account, or `null`. */
     cash: string | null;
+    /**
+     * Each `= QUERY` rule with the block it came from: its text handed back as
+     * it came (the engine re-reads it), or — once edited — its form, which the
+     * engine renders. Exactly one of the two.
+     */
+    autoRules: ({block: number | null; raw: string} | {block: number | null; form: WireAutoRuleFormIn})[];
+    /** The scenario file's own account types, handed back as the engine served them. Optional for older bodies. */
+    accountTypes?: Record<string, string>;
 }
 
 /** The whole `POST /api/projections/run` body. */
@@ -778,7 +789,7 @@ export interface RunProjectionBody {
     depth?: number;
     valueIn?: string;
     /** Ask for the Accounts reading (`accounts` is null in the answer otherwise). */
-    accounts?: {mode: "change" | "balance"; empty: boolean};
+    accounts?: {empty: boolean};
     /** Ask for the generated transactions (`journal` is null in the answer otherwise). */
     journal?: boolean;
 }
@@ -1057,6 +1068,13 @@ export class LedgelineApi {
         return this.getJson(`/api/reports/incomestatement/flows${queryString({from: query.from, to: query.to, valueIn: query.valueIn})}`);
     }
 
+    /** `GET /api/reports/accounts` — every account per period, each section read its own way (2026-10-28). Cash flow's window, plus `empty`. */
+    accounts(query: CashFlowQuery & {empty?: boolean} = {}): Promise<unknown> {
+        return this.getJson(
+            `/api/reports/accounts${queryString({from: query.from, to: query.to, interval: query.interval, depth: query.depth, empty: query.empty === true ? "1" : undefined})}`
+        );
+    }
+
     cashFlow(query: CashFlowQuery = {}): Promise<unknown> {
         return this.getJson(
             `/api/reports/cashflow${queryString({from: query.from, to: query.to, end: query.end, interval: query.interval, count: query.count, depth: query.depth})}`
@@ -1247,6 +1265,24 @@ export class LedgelineApi {
     }
 
     /**
+     * The main journal's `=` auto-posting rules and whether `--auto` is in
+     * force (plan 30 Phase 5) → decode with `decodeAutoRules`.
+     */
+    listAutoRules(): Promise<unknown> {
+        return this.getJson("/api/auto-rules");
+    }
+
+    /**
+     * One change to one journal file's `=` rules (plan 30 amendment 22). → 200,
+     * the listing as it now is (decode with `decodeAutoRules`); 409 when the
+     * file or the rule moved underneath the editor; 400 for a rule that cannot
+     * be written, with the server's sentence.
+     */
+    saveAutoRule(body: SaveAutoRuleBody): Promise<unknown> {
+        return this.mutate<unknown>("PUT", "/api/auto-rules", 200, body);
+    }
+
+    /**
      * Rewrite one journal file's alias lines. → 200, that file at its new
      * revision (decode with `decodeAliasFileResponse`); 409 when the file moved
      * underneath the editor.
@@ -1257,6 +1293,22 @@ export class LedgelineApi {
      */
     saveAliases(journalId: string, body: SaveAliasesBody): Promise<unknown> {
         return this.mutate<unknown>("PUT", `/api/aliases/${encodeRulesId(journalId)}`, 200, body);
+    }
+
+    /** The `hledger.conf` in force and what Ledgeline reads from it (decode with `decodeHledgerConf`). */
+    hledgerConf(): Promise<unknown> {
+        return this.getJson("/api/hledger-conf");
+    }
+
+    /**
+     * Set or clear general `--auto` and per-section `--depth` in the config
+     * file in force — or create `hledger.conf` beside the journal when there is
+     * none. → 200, the file as written (decode with `decodeHledgerConf`); 409
+     * when it changed on disk since `revision`; 400 for a hijacked file or a
+     * value a config file cannot hold.
+     */
+    saveHledgerConf(body: SaveHledgerConfBody): Promise<unknown> {
+        return this.mutate<unknown>("PUT", "/api/hledger-conf", 200, body);
     }
 
     /** Every account the journal declares (decode with `decodeAccountListing`). */

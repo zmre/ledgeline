@@ -75,10 +75,10 @@
 
 use crate::decimal::{Dec, DecError, MAX_PARSE_PLACES};
 use crate::model::{
-    AccountDeclaration, AccountName, AliasDirective, Amount, AmountStyle, Anchor, BalanceAssertion,
-    Commodity, CommoditySide, Cost, CostKind, DigitGroups, Journal, PeriodExpr, PeriodKind,
-    PeriodSpec, PeriodicTransaction, Posting, PostingType, PriceDirective, SourcePos, Status,
-    Tindex, Transaction,
+    AccountDeclaration, AccountName, AliasDirective, Amount, AmountStyle, Anchor, AutoAmount,
+    AutoPosting, AutoPostingRule, BalanceAssertion, Commodity, CommoditySide, Cost, CostKind,
+    DigitGroups, Journal, PeriodExpr, PeriodKind, PeriodSpec, PeriodicTransaction, Posting,
+    PostingType, PriceDirective, SourcePos, Status, Tindex, Transaction,
 };
 use crate::vault::{LocalVault, MemVault, Revision, Vault, VaultError, VaultPath};
 use std::collections::btree_map::Entry;
@@ -171,6 +171,11 @@ struct AmountCtx<'a> {
     styles: &'a Styles,
     default_mark: Option<char>,
     default_commodity: Option<&'a (Commodity, AmountStyle)>,
+    /// Styles declared OUTSIDE this text — a projection scenario reads its
+    /// main journal's `commodity` directives through this — consulted only
+    /// after the text's own declarations and only when it sets no
+    /// `decimal-mark` of its own. See [`parse_journal_with_styles`].
+    inherited: &'a Styles,
 }
 
 /// Mutable accumulators shared across the top-level file and any `include`d
@@ -190,6 +195,8 @@ struct Ctx<'v> {
     /// with exactly the bytes parsed and their [`Revision`].
     sources: Vec<ParsedSource>,
     styles: Styles,
+    /// See [`AmountCtx::inherited`].
+    inherited: Styles,
     default_decimal_mark: Option<char>,
     default_commodity: Option<(Commodity, AmountStyle)>,
     default_year: Option<i32>,
@@ -208,6 +215,7 @@ struct Ctx<'v> {
     prices: Vec<PriceDirective>,
     transactions: Vec<Transaction>,
     periodic_transactions: Vec<PeriodicTransaction>,
+    auto_rules: Vec<AutoPostingRule>,
     /// Every source file read so far (main + `include`s), in first-read order and
     /// deduplicated, as resolved absolute paths. Feeds [`Journal::source_files`].
     source_files: Vec<PathBuf>,
@@ -245,6 +253,7 @@ impl<'v> Ctx<'v> {
             main_key,
             sources: Vec::new(),
             styles: HashMap::new(),
+            inherited: HashMap::new(),
             default_decimal_mark: None,
             default_commodity: None,
             default_year: None,
@@ -256,6 +265,7 @@ impl<'v> Ctx<'v> {
             prices: Vec::new(),
             transactions: Vec::new(),
             periodic_transactions: Vec::new(),
+            auto_rules: Vec::new(),
             source_files: Vec::new(),
             include_stack: Vec::new(),
             includes_admitted: 0,
@@ -270,12 +280,14 @@ impl<'v> Ctx<'v> {
             source_files: self.source_files,
             transactions: self.transactions,
             periodic_transactions: self.periodic_transactions,
+            auto_rules: self.auto_rules,
             accounts: self.accounts,
             aliases: self.aliases,
             commodity_styles: self.commodity_styles,
             commodity_tags: self.commodity_tags,
             prices: self.prices,
             default_commodity: self.default_commodity.map(|(commodity, _style)| commodity),
+            decimal_mark: self.default_decimal_mark,
             leading_comment: self.leading_comment,
         }
     }
@@ -437,10 +449,146 @@ pub(crate) fn vault_for_source_name(source_name: &str) -> (Box<dyn Vault>, Vault
 /// directory and confined to it; a `source_name` with no real directory
 /// includes nothing (see [`vault_for_source_name`]).
 pub fn parse_journal(text: &str, source_name: &str) -> Result<Journal, ParseError> {
+    parse_seeded(text, source_name, |_| {})
+}
+
+/// [`parse_journal`], with `seed` setting up the context first.
+fn parse_seeded(
+    text: &str,
+    source_name: &str,
+    seed: impl FnOnce(&mut Ctx<'_>),
+) -> Result<Journal, ParseError> {
     let (vault, main) = vault_for_source_name(source_name);
     let mut ctx = Ctx::new(&*vault, &main, resolve_source_file(source_name), None);
+    seed(&mut ctx);
     parse_source(text, source_name, &main, &mut ctx)?;
     Ok(ctx.into_journal(source_name))
+}
+
+/// [`parse_journal`], with `inherited` commodity styles in force as though a
+/// file that included this one had declared them first.
+///
+/// What a projection scenario needs from its main journal: hledger reads
+/// `$11,344` as 11.344 in a file with no `commodity $1,000.00` of its own
+/// (a lone comma followed by three digits is a decimal mark to it), and a
+/// sibling `-f main.journal` does NOT lend its directives. Read as the user
+/// means it — the way `include main.journal` would — a scenario's amounts
+/// follow the main journal's declared styles. The scenario's own `commodity`
+/// and `decimal-mark` directives still win. Verified against hledger 1.52,
+/// 2026-10-28.
+///
+/// # Errors
+/// As [`parse_journal`].
+pub fn parse_journal_with_styles(
+    text: &str,
+    source_name: &str,
+    inherited: &[(Commodity, AmountStyle)],
+) -> Result<Journal, ParseError> {
+    parse_seeded(text, source_name, |ctx| {
+        ctx.inherited = inherited.iter().cloned().collect();
+    })
+}
+
+/// How a journal reads an amount written into it, and so what a writer must
+/// render one in: its declared commodity styles (`commodity` and `D`
+/// directives), its `decimal-mark` directive and its `D` default commodity.
+/// Rendered with `.` regardless, `*0.1` reads as `1` under `decimal-mark ,`
+/// and `1500.50 EUR` as `150050 EUR` under `commodity 1.000,00 EUR`, in this
+/// parser and in hledger 1.52 alike (verified 2026-10-28).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct JournalStyles<'a> {
+    /// Declared commodity styles, in declaration order.
+    pub declared: &'a [(Commodity, AmountStyle)],
+    /// The `decimal-mark` directive's mark.
+    pub decimal_mark: Option<char>,
+    /// The `D` directive's commodity, which a bare number adopts.
+    pub default_commodity: Option<&'a Commodity>,
+}
+
+impl<'a> JournalStyles<'a> {
+    /// The styles an amount written into `journal` itself is read with.
+    #[must_use]
+    pub fn of(journal: &'a Journal) -> Self {
+        Self {
+            declared: &journal.commodity_styles,
+            decimal_mark: journal.decimal_mark,
+            default_commodity: journal.default_commodity.as_ref(),
+        }
+    }
+
+    /// The styles `journal` lends a file read beside it, a projection
+    /// scenario: its declared commodity styles alone, since a sibling file has
+    /// its own `decimal-mark` and `D`.
+    ///
+    /// Under [`parse_journal_under`] these read a text with no directives of
+    /// its own (one `=` block) exactly as [`parse_journal_with_styles`] reads
+    /// it inheriting the same styles. A whole scenario FILE must go through
+    /// the latter: there the file's own `decimal-mark` outranks an inherited
+    /// style, and under [`parse_journal_under`] it would not.
+    #[must_use]
+    pub fn lent_by(journal: &'a Journal) -> Self {
+        Self {
+            declared: &journal.commodity_styles,
+            ..Self::default()
+        }
+    }
+
+    /// `commodity`'s declared style; the last declaration wins, as it does
+    /// in the parser.
+    #[must_use]
+    pub fn declared_style(&self, commodity: &Commodity) -> Option<&'a AmountStyle> {
+        self.declared
+            .iter()
+            .rev()
+            .find(|(declared, _)| declared == commodity)
+            .map(|(_, style)| style)
+    }
+
+    /// The decimal mark an amount in `commodity` (empty for a bare number) is
+    /// read with, in [`parse_amount`]'s order: a bare number takes the `D`
+    /// commodity's mark; otherwise the commodity's declared mark, then the
+    /// `decimal-mark` directive's. `.` when none applies, which the parser
+    /// infers from a lone mark anyway.
+    #[must_use]
+    pub fn decimal_mark_for(&self, commodity: &Commodity) -> char {
+        let style = match self.default_commodity {
+            Some(default) if commodity.0.is_empty() => {
+                return self
+                    .declared_style(default)
+                    .and_then(|style| style.decimal_mark)
+                    .unwrap_or('.');
+            }
+            _ => self.declared_style(commodity),
+        };
+        style
+            .and_then(|style| style.decimal_mark)
+            .or(self.decimal_mark)
+            .unwrap_or('.')
+    }
+}
+
+/// [`parse_journal`] of `text` read as though it followed `styles`'
+/// directives in the same file — how an amount written into that journal
+/// will be read, so a writer can check its text means what it rendered.
+/// For a whole file read BESIDE a journal, use [`parse_journal_with_styles`]
+/// (see [`JournalStyles::lent_by`] for where the two differ).
+///
+/// # Errors
+/// As [`parse_journal`].
+pub fn parse_journal_under(
+    text: &str,
+    source_name: &str,
+    styles: &JournalStyles<'_>,
+) -> Result<Journal, ParseError> {
+    parse_seeded(text, source_name, |ctx| {
+        ctx.styles = styles.declared.iter().cloned().collect();
+        ctx.default_decimal_mark = styles.decimal_mark;
+        ctx.default_commodity = styles.default_commodity.and_then(|commodity| {
+            styles
+                .declared_style(commodity)
+                .map(|style| (commodity.clone(), style.clone()))
+        });
+    })
 }
 
 /// Parse the journal rooted at `main_source_name`, resolving `include`s from an
@@ -549,6 +697,7 @@ fn parse_source(
                 styles: &ctx.styles,
                 default_mark: ctx.default_decimal_mark,
                 default_commodity: ctx.default_commodity.as_ref(),
+                inherited: &ctx.inherited,
             };
             let (txn, next) = parse_transaction(
                 &lines,
@@ -564,7 +713,15 @@ fn parse_source(
             continue;
         }
 
-        let keyword = trimmed.split_whitespace().next().unwrap_or("");
+        // `=QUERY` with no space is an auto-posting rule too: hledger reads
+        // `=revenue:other` exactly as `= revenue:other` (verified, 1.52), so
+        // it must not fall through to "unsupported directive" and refuse the
+        // whole file.
+        let keyword = if trimmed.starts_with('=') {
+            "="
+        } else {
+            trimmed.split_whitespace().next().unwrap_or("")
+        };
         match keyword {
             "account" => {
                 let decl = parse_account_directive(trimmed, line_no, &source_file)
@@ -595,6 +752,7 @@ fn parse_source(
                     styles: &ctx.styles,
                     default_mark: ctx.default_decimal_mark,
                     default_commodity: ctx.default_commodity.as_ref(),
+                    inherited: &ctx.inherited,
                 };
                 let price = parse_price_directive(trimmed, amt, ctx.default_year, &source_file)
                     .map_err(|e| locate(source_name, line_no, line, e))?;
@@ -686,6 +844,7 @@ fn parse_source(
                     styles: &ctx.styles,
                     default_mark: ctx.default_decimal_mark,
                     default_commodity: ctx.default_commodity.as_ref(),
+                    inherited: &ctx.inherited,
                 };
                 let (periodic, next) = parse_periodic_transaction(
                     &lines,
@@ -699,10 +858,20 @@ fn parse_source(
                 i = next;
                 continue;
             }
-            // Auto-posting (`=`) rule blocks: still skipped (excluded from
-            // `jtxns`, like hledger-web's `/transactions`).
+            // An `= QUERY` auto-posting rule: parsed into `auto_rules`, never
+            // into `transactions` (hledger-web's `/transactions` omits them
+            // too). Where a rule applies is the caller's business — see
+            // `AutoPostingRule`.
             "=" => {
-                i = skip_indented_block(&lines, i);
+                let amt = AmountCtx {
+                    styles: &ctx.styles,
+                    default_mark: ctx.default_decimal_mark,
+                    default_commodity: ctx.default_commodity.as_ref(),
+                    inherited: &ctx.inherited,
+                };
+                let (rule, next) = parse_auto_rule(&lines, i, amt, source_name, &source_file)?;
+                ctx.auto_rules.push(rule);
+                i = next;
                 continue;
             }
             "comment" => {
@@ -1483,20 +1652,6 @@ fn parse_date_part(part: &str, token: &str) -> Result<i32, ParseError> {
         .map_err(|_| ParseError::MalformedDate(format!("'{token}'")))
 }
 
-/// Advance past a block directive's indented body (`~`/`=` rules), returning the
-/// index of the first following non-indented line.
-fn skip_indented_block(lines: &[&str], start: usize) -> usize {
-    let mut j = start + 1;
-    while j < lines.len() {
-        let line = lines[j];
-        if line.trim().is_empty() || !line.starts_with([' ', '\t']) {
-            break;
-        }
-        j += 1;
-    }
-    j
-}
-
 /// Advance past a `comment` ... `end comment` block, returning the index after
 /// the terminating line (or end of input).
 ///
@@ -1620,6 +1775,139 @@ fn parse_periodic_transaction(
     ))
 }
 
+/// Parse an `= QUERY` auto-posting rule and its indented postings, returning
+/// the rule and the index of the first following line.
+///
+/// Unlike a `~` rule, the postings are NOT balanced here: an amount may be a
+/// multiplier of a posting that does not exist yet, so balancing is
+/// [`crate::auto`]'s job, per matched posting. A comment-only line belongs to
+/// the preceding posting, or to the rule while no posting has been seen, as in
+/// a transaction.
+fn parse_auto_rule(
+    lines: &[&str],
+    start: usize,
+    amt: AmountCtx,
+    source_name: &str,
+    source_file: &Path,
+) -> Result<(AutoPostingRule, usize), ParseError> {
+    let header_no = to_u32(start + 1);
+    let header = lines[start].trim_start();
+    // `=QUERY` and `= QUERY` alike (hledger reads both).
+    let (query_text, header_comment) = split_comment(header.strip_prefix('=').unwrap_or(""));
+    let (mut comment, mut tags) = build_comment(header_comment);
+    let mut postings: Vec<AutoPosting> = Vec::new();
+    let mut j = start + 1;
+    while j < lines.len() {
+        let line = lines[j];
+        if line.trim().is_empty() || !line.starts_with([' ', '\t']) {
+            break;
+        }
+        if let Some(content) = comment_line_content(line) {
+            match postings.last_mut() {
+                Some(posting) => {
+                    append_comment_line(&mut posting.comment, &mut posting.tags, content)
+                }
+                None => append_comment_line(&mut comment, &mut tags, content),
+            }
+            j += 1;
+            continue;
+        }
+        let line_no = to_u32(j + 1);
+        postings.push(
+            parse_auto_posting(line, line_no, amt)
+                .map_err(|e| locate(source_name, line_no, line, e))?,
+        );
+        j += 1;
+    }
+    let raw: String = lines[start..j]
+        .iter()
+        .map(|line| format!("{line}\n"))
+        .collect();
+    Ok((
+        AutoPostingRule {
+            query: crate::query::Query::parse(query_text),
+            postings,
+            comment,
+            tags,
+            raw,
+            source_span: (
+                SourcePos {
+                    line: header_no,
+                    column: 1,
+                },
+                SourcePos {
+                    line: to_u32(j + 1),
+                    column: 1,
+                },
+            ),
+            source_file: source_file.to_path_buf(),
+        },
+        j,
+    ))
+}
+
+/// One posting line of an `=` rule: the posting grammar of
+/// [`parse_posting`], with the amount read as an [`AutoAmount`].
+fn parse_auto_posting(line: &str, line_no: u32, amt: AmountCtx) -> Result<AutoPosting, ParseError> {
+    let (main, comment) = split_comment(line);
+    let (comment, tags) = build_comment(comment);
+    let trimmed = main.trim_start();
+    let (status, after_status) = if let Some(r) = trimmed.strip_prefix('*') {
+        (Status::Cleared, r.trim_start())
+    } else if let Some(r) = trimmed.strip_prefix('!') {
+        (Status::Pending, r.trim_start())
+    } else {
+        (Status::Unmarked, trimmed)
+    };
+    let (account_part, amount_part) = split_account_amount(after_status);
+    let (ptype, account) = posting_type_and_account(account_part.trim());
+    let expr = amount_part.trim();
+    let read =
+        |text: &str, amt: AmountCtx| -> Result<(Amount, Option<BalanceAssertion>), ParseError> {
+            match parse_amount_and_assertion(text, main, line_no, amt)? {
+                (Some(amount), assertion) => Ok((amount, assertion)),
+                (None, _) => Err(ParseError::MalformedAmount(text.to_string())),
+            }
+        };
+    let (amount, balance_assertion) = if expr.is_empty() {
+        (AutoAmount::Inferred, None)
+    } else if let Some(factor) = expr.strip_prefix('*') {
+        let factor = factor.trim();
+        let (parsed, assertion) = read(factor, amt)?;
+        // The product is re-denominated only when the factor WRITES a
+        // commodity, so the parsed symbol decides — not the text's shape
+        // (`*1e2`, `*0.1 @ 2 EUR` and `*0.5 = $5` keep the matched commodity
+        // and cost) and not the `D` commodity a bare number adopts. Verified
+        // against hledger 1.52, 2026-10-28.
+        let written = if amt.default_commodity.is_some() {
+            let undefaulted = AmountCtx {
+                default_commodity: None,
+                ..amt
+            };
+            read(factor, undefaulted)?.0.commodity
+        } else {
+            parsed.commodity.clone()
+        };
+        let scale = AutoAmount::Scale {
+            factor: parsed.quantity,
+            commodity: (!written.0.is_empty()).then_some(parsed),
+        };
+        (scale, assertion)
+    } else {
+        let (fixed, assertion) = read(expr, amt)?;
+        (AutoAmount::Fixed(fixed), assertion)
+    };
+    Ok(AutoPosting {
+        status,
+        ptype,
+        account,
+        amount,
+        balance_assertion,
+        comment,
+        tags,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Period expressions
 // ---------------------------------------------------------------------------
@@ -1643,9 +1931,12 @@ const MAX_PERIOD_MULTIPLIER: u32 = 1000;
 /// point: a period expression is one line of one rule, and a journal that
 /// hledger opens must open here too.
 ///
-/// Resolution order mirrors hledger's: the interval words first, then an
-/// optional `from DATE`, then an optional `to DATE`. A bare date is a single
-/// occurrence.
+/// The shape is hledger's `[INTERVAL] [in] [PERIOD]` — see [`read_period`] for
+/// how the two halves are told apart and [`parse_bounds`] for every PERIOD
+/// form. With no interval words the expression is a single occurrence. The
+/// forms added after plan 21 (`every 1st apr`, `every weekday`,
+/// `monthly in 2027`, `2027q2`, …) are tabled in
+/// `plans/30-auto-postings-and-period-grammar.md`.
 ///
 /// Shared, rather than copied, for [`crate::periodic`], whose scan must reach the
 /// *same* verdict about a header as this parse does — a block's ordinal is joined
@@ -1665,115 +1956,256 @@ const MAX_PERIOD_MULTIPLIER: u32 = 1000;
 #[must_use]
 pub fn parse_period_spec(raw: &str) -> PeriodSpec {
     let raw = raw.trim();
-    let build = |kind, start, end| PeriodSpec {
-        raw: raw.to_string(),
-        kind,
-        start,
-        end,
-    };
-    let unsupported = || build(PeriodKind::Unsupported, None, None);
-
     // Case is not significant to hledger, but `raw` keeps the original bytes.
     let lower = raw.to_ascii_lowercase();
     let tokens: Vec<&str> = lower.split_whitespace().collect();
-    let Some((head, start, end)) = split_period_bounds(&tokens) else {
-        return unsupported();
-    };
+    let (kind, bounds) = read_period(&tokens).map_or(
+        (PeriodKind::Unsupported, Bounds::default()),
+        |(_, kind, bounds)| (kind, bounds),
+    );
+    PeriodSpec {
+        raw: raw.to_string(),
+        kind,
+        start: bounds.start,
+        end: bounds.end,
+    }
+}
 
-    // `~ 2027-03-01` / `~ 2027-03` / `~ 2027`: one occurrence, and the date is
-    // its own anchor. A `from` beside a bare date is not a form hledger
-    // produces, so it is refused rather than silently preferred.
-    if let [only] = head
-        && let Some(date) = parse_period_date(only)
-    {
-        return if start.is_some() {
-            unsupported()
+/// How many leading whitespace-separated words of `raw` are its INTERVAL
+/// words — everything before the bounds clause — or `None` when the
+/// expression is not one [`parse_period_spec`] understands.
+///
+/// The same cut [`parse_period_spec`] makes, exposed so
+/// [`PeriodSpec::interval_words`] can slice the original text at exactly the
+/// place the parser did. A bounds clause no longer always starts with
+/// `from`/`to` (`monthly in 2027`, `monthly 2027-01..2027-04`), so a scan for
+/// those two words would cut in the wrong place.
+#[must_use]
+pub(crate) fn period_head_len(raw: &str) -> Option<usize> {
+    let lower = raw.to_ascii_lowercase();
+    let tokens: Vec<&str> = lower.split_whitespace().collect();
+    read_period(&tokens).map(|(head, ..)| head)
+}
+
+/// The `[start, end)` a `date:` query names (`date:2026`, `date:2026-01-02`,
+/// `date:2026-01..2026-04`, `date:from 2026-03`) — the bounds grammar of a
+/// period expression with no interval words, where a single date covers its
+/// whole span. `None` when it is not one this engine reads.
+pub(crate) fn date_query_bounds(text: &str) -> Option<(Option<String>, Option<String>)> {
+    let lower = text.to_ascii_lowercase();
+    let tokens: Vec<&str> = lower.split_whitespace().collect();
+    let bounds = parse_bounds(&tokens, true)?;
+    (bounds.start.is_some() || bounds.end.is_some()).then_some((bounds.start, bounds.end))
+}
+
+/// A period expression's bounds, ISO `YYYY-MM-DD`. `end` is EXCLUSIVE.
+#[derive(Debug, Default)]
+struct Bounds {
+    start: Option<String>,
+    end: Option<String>,
+}
+
+/// Split `tokens` into interval words and a bounds clause, and read both.
+///
+/// hledger's grammar is `[INTERVAL] [in] [PERIOD]`, but nothing marks where
+/// the interval ends: `monthly 2027` is "monthly, during 2027", while
+/// `every 1000 days` is all interval. So every cut is tried, LONGEST interval
+/// first, and the first one under which both halves read is the answer. The
+/// two grammars barely overlap — a bound's date always has a four-digit
+/// year, an interval's numbers are multipliers and ordinals — so in practice
+/// exactly one cut reads.
+///
+/// With no interval words at all the expression is a single occurrence
+/// ([`PeriodKind::Once`]): `~ 2027-03-01`, `~ from D to D2`, `~ 2027q2`.
+fn read_period(tokens: &[&str]) -> Option<(usize, PeriodKind, Bounds)> {
+    (0..=tokens.len()).rev().find_map(|cut| {
+        let (head, tail) = tokens.split_at(cut);
+        let bounds = parse_bounds(tail, !head.is_empty())?;
+        let kind = if head.is_empty() {
+            PeriodKind::Once
         } else {
-            build(PeriodKind::Once, Some(date), end)
+            parse_interval_words(head)?
         };
-    }
-    // `~ from D to D2` / `~ to D`: no interval words at all is one period, so
-    // one occurrence.
-    if head.is_empty() {
-        return build(PeriodKind::Once, start, end);
-    }
-    match parse_interval_words(head) {
-        Some(kind) => build(kind, start, end),
-        None => unsupported(),
-    }
+        Some((cut, kind, bounds))
+    })
 }
 
-/// Split a tokenized period expression into its interval words and its
-/// `from`/`to` dates.
+/// The bounds clause, in the forms hledger 1.52 accepts (each verified with
+/// `print --forecast` on 2026-10-27):
 ///
-/// `None` — i.e. the whole expression is unsupported — when a bound is
-/// malformed: a missing or unreadable date, more than one token where a date
-/// belongs, or `to` written before `from`. Refusing the expression is the safe
-/// reading: a bound we misread would silently change which buckets a goal lands
-/// in, which is worse than locking the rule.
-fn split_period_bounds<'t>(
-    tokens: &'t [&'t str],
-) -> Option<(&'t [&'t str], Option<String>, Option<String>)> {
-    let from_at = tokens.iter().position(|token| *token == "from");
-    let to_at = tokens.iter().position(|token| *token == "to");
-    let head_len = match (from_at, to_at) {
-        (Some(from), Some(to)) if to < from => return None,
-        (Some(from), _) => from,
-        (None, Some(to)) => to,
-        (None, None) => tokens.len(),
+/// - a single `D`, meaning the whole span that date names: `2027` is the
+///   year, `2027-03` the month, `2027q2` the quarter. `in D` is the same;
+/// - `D1..D2` or `D1-D2` as one token, or `D1 to D2`, `D1 .. D2`, `D1 - D2`;
+/// - `from D` / `since D`, where `D` may itself be a joined range, or
+///   `from D1 to D2` (or `..`, `-` for `to`);
+/// - `to D`, `until D`, `.. D` or `- D`: an end with no start.
+///
+/// `until` is ONLY the last form: hledger rejects `from D until D2` and
+/// `D until D2`. And `in` takes only a single date — `in D1..D2` is an error
+/// there too.
+///
+/// Every `to` is EXCLUSIVE and uses its date's START (`to 2027q3` ends on
+/// 2027-07-01).
+///
+/// `bounded_span` says whether a single `D` sets an end too. Under an
+/// interval it must — `monthly 2027-03` fires once, in March — but a bare
+/// `~ 2027-03` is a one-off whose date is its own start, and has always
+/// been read with no end.
+///
+/// `None` — the whole expression is unsupported — for anything else,
+/// including a bound with an unreadable date. Refusing is the safe reading:
+/// a bound we misread would silently move every occurrence.
+fn parse_bounds(tokens: &[&str], bounded_span: bool) -> Option<Bounds> {
+    // `to` between two dates; `until` is not one of them.
+    let is_to = |token: &str| matches!(token, "to" | ".." | "-");
+    let bounds = |start: Option<&SmartDate>, end: Option<&SmartDate>| Bounds {
+        start: start.map(|date| date.start.clone()),
+        end: end.map(|date| date.start.clone()),
     };
-    // Exactly one token between a bound keyword and the next keyword / the end.
-    let one_date = |at: usize, stop: usize| match tokens.get(at + 1..stop) {
-        Some([date]) => parse_period_date(date),
+    let span = |date: SmartDate| Bounds {
+        start: Some(date.start),
+        end: bounded_span.then_some(date.end),
+    };
+    match tokens {
+        [] => Some(Bounds::default()),
+        ["in", only] => smart_date(only).map(span),
+        [only] => match period_range(only)? {
+            (date, Some(to)) => Some(bounds(Some(&date), Some(&to))),
+            (date, None) => Some(span(date)),
+        },
+        ["from" | "since", from] => {
+            let (date, to) = period_range(from)?;
+            Some(bounds(Some(&date), to.as_ref()))
+        }
+        ["from" | "since", from, to_word, to] if is_to(to_word) => {
+            Some(bounds(Some(&smart_date(from)?), Some(&smart_date(to)?)))
+        }
+        ["to" | "until" | ".." | "-", to] => Some(bounds(None, Some(&smart_date(to)?))),
+        [from, to_word, to] if is_to(to_word) => {
+            Some(bounds(Some(&smart_date(from)?), Some(&smart_date(to)?)))
+        }
         _ => None,
-    };
-    let start = match from_at {
-        Some(from) => Some(one_date(from, to_at.unwrap_or(tokens.len()))?),
-        None => None,
-    };
-    let end = match to_at {
-        Some(to) => Some(one_date(to, tokens.len())?),
-        None => None,
-    };
-    Some((&tokens[..head_len], start, end))
+    }
 }
 
-/// A date as a period bound writes it: `YYYY`, `YYYY-MM` or `YYYY-MM-DD`, with
-/// `-`, `/` or `.` separators. A missing month or day is the first of its unit,
-/// which is how hledger expands `from 2027` to `2027-01-01` and `to 2027-06` to
-/// `2027-06-01` (both verified).
+/// One date as a period bound writes it: where it starts, and where the span
+/// it names ends (exclusive).
+#[derive(Debug)]
+struct SmartDate {
+    start: String,
+    end: String,
+}
+
+/// A token holding one date, or two joined by `..` or `-` (`2027-01..2027-04`,
+/// `2027-01-2027-04` — hledger reads both, verified).
 ///
-/// Deliberately **not** [`normalize_date`]. That function reads a two-component
-/// token as a yearless `MM-DD` against the `Y` default year — the right reading
-/// for a transaction date and the wrong one here, because hledger reads
-/// `from 2027-01` as January 2027, not as the 1st of some other year. The year
-/// must therefore be written in full, which is also what disambiguates the two.
-fn parse_period_date(token: &str) -> Option<String> {
+/// A whole-token date is tried first, so `2027-01-15` is a day and never
+/// `2027-01` to `15`; a dash split also needs a full four-digit year on its
+/// right, which is what keeps the two readings apart.
+fn period_range(token: &str) -> Option<(SmartDate, Option<SmartDate>)> {
+    if let Some(date) = smart_date(token) {
+        return Some((date, None));
+    }
+    if let Some((from, to)) = token.split_once("..") {
+        return Some((smart_date(from)?, Some(smart_date(to)?)));
+    }
+    token.match_indices('-').find_map(|(at, _)| {
+        Some((
+            smart_date(&token[..at])?,
+            Some(smart_date(&token[at + 1..])?),
+        ))
+    })
+}
+
+/// A date as a period bound writes it, with the span it names:
+///
+/// - `YYYY` — the year;
+/// - `YYYY-MM`, or six digits `YYYYMM` — the month;
+/// - `YYYY-MM-DD`, or eight digits `YYYYMMDD` — the day;
+/// - `YYYYqN` — the quarter.
+///
+/// `-`, `/` and `.` all separate. hledger expands `from 2027` to `2027-01-01`
+/// and `to 2027-06` to `2027-06-01` (both verified), i.e. a bound is its
+/// span's first day.
+///
+/// Deliberately **not** [`normalize_date`]. That function reads a
+/// two-component token as a yearless `MM-DD` against the `Y` default year —
+/// the right reading for a transaction date and the wrong one here, because
+/// hledger reads `from 2027-01` as January 2027, not as the 1st of some other
+/// year. The year must therefore be written in full, which is also what
+/// disambiguates the two. Relative dates (`jan`, `this year`, `q4`) are
+/// refused: a projection must not change meaning overnight.
+fn smart_date(token: &str) -> Option<SmartDate> {
     fn number(text: &str) -> Option<i32> {
         text.parse::<i32>().ok()
     }
-    let components: Vec<&str> = token.split(['-', '/', '.']).collect();
-    // Four digits, always: it is what tells `2027-01` (a month) apart from a
-    // yearless `MM-DD`, and it is what hledger's own period grammar requires.
-    if components.first()?.len() != 4 {
+    let all_digits = token.bytes().all(|byte| byte.is_ascii_digit());
+    let (year, month, day, months) = if let Some((year, quarter)) = token.split_once('q') {
+        let quarter = number(quarter).filter(|q| (1..=4).contains(q))?;
+        (four_digit_year(year)?, quarter * 3 - 2, None, 3)
+    } else if all_digits && token.len() == 6 {
+        (four_digit_year(&token[..4])?, number(&token[4..])?, None, 1)
+    } else if all_digits && token.len() == 8 {
+        let day = number(&token[6..])?;
+        (
+            four_digit_year(&token[..4])?,
+            number(&token[4..6])?,
+            Some(day),
+            0,
+        )
+    } else {
+        let components: Vec<&str> = token.split(['-', '/', '.']).collect();
+        match components.as_slice() {
+            [year] => (four_digit_year(year)?, 1, None, 12),
+            [year, month] => (four_digit_year(year)?, number(month)?, None, 1),
+            [year, month, day] => (
+                four_digit_year(year)?,
+                number(month)?,
+                Some(number(day)?),
+                0,
+            ),
+            _ => return None,
+        }
+    };
+    if !(1..=12).contains(&month) {
         return None;
     }
-    let (year, month, day) = match components.as_slice() {
-        [year] => (number(year)?, 1, 1),
-        [year, month] => (number(year)?, number(month)?, 1),
-        [year, month, day] => (number(year)?, number(month)?, number(day)?),
-        _ => return None,
-    };
-    if !(1..=9999).contains(&year)
-        || !(1..=12).contains(&month)
-        || !(1..=days_in_month(year, month)).contains(&day)
+    if let Some(day) = day
+        && !(1..=days_in_month(year, month)).contains(&day)
     {
         return None;
     }
-    Some(format!("{year:04}-{month:02}-{day:02}"))
+    let iso = |(year, month, day): (i32, i32, i32)| format!("{year:04}-{month:02}-{day:02}");
+    let start = (year, month, day.unwrap_or(1));
+    let end = match day {
+        // A day's span ends on the next day.
+        Some(day) if day < days_in_month(year, month) => (year, month, day + 1),
+        Some(_) => add_months(year, month, 1),
+        None => add_months(year, month, months),
+    };
+    Some(SmartDate {
+        start: iso(start),
+        end: iso(end),
+    })
 }
 
-/// The interval half of a period expression — everything before `from`/`to`.
+/// Four ASCII digits, as a year in `1..=9999`. Four, always: it is what tells
+/// `2027-01` (a month) apart from a yearless `MM-DD`, and it is what hledger's
+/// own period grammar requires.
+fn four_digit_year(text: &str) -> Option<i32> {
+    (text.len() == 4 && text.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| text.parse::<i32>().ok())
+        .flatten()
+        .filter(|year| (1..=9999).contains(year))
+}
+
+/// The first day of the month `months` after `year`-`month`.
+fn add_months(year: i32, month: i32, months: i32) -> (i32, i32, i32) {
+    let index = year * 12 + (month - 1) + months;
+    (index.div_euclid(12), index.rem_euclid(12) + 1, 1)
+}
+
+/// The interval half of a period expression — everything before the bounds.
 fn parse_interval_words(tokens: &[&str]) -> Option<PeriodKind> {
     let every = |unit, multiplier| Some(PeriodKind::Every { unit, multiplier });
     match tokens {
@@ -1790,53 +2222,110 @@ fn parse_interval_words(tokens: &[&str]) -> Option<PeriodKind> {
     }
 }
 
-/// The words after `every`.
+/// The words after `every`: the forms of hledger's "More complex report
+/// intervals" and "Multiple weekday intervals", each verified against 1.52.
 ///
-/// `every weekday` and `every weekendday` are real hledger expressions and are
-/// deliberately absent: neither is one occurrence per unit, so neither can be
-/// expressed as a step, and modelling them wrongly would be worse than locking
-/// the rule.
+/// `of month` / `of year` are optional where hledger makes them optional
+/// (`every 15th day`, `every 3rd mon`, `every 1st apr`), and required nowhere.
 fn parse_every(tokens: &[&str]) -> Option<PeriodKind> {
     match tokens {
-        [word] => {
-            if let Some(unit) = period_unit(word) {
-                return Some(PeriodKind::Every {
-                    unit,
-                    multiplier: 1,
-                });
-            }
-            if let Some(weekday) = weekday_number(word) {
-                return Some(PeriodKind::Anchored {
-                    unit: PeriodExpr::Weekly,
-                    anchor: Anchor::Weekday(weekday),
-                });
-            }
-            // `every 12/25`: one occurrence a year on a fixed month/day.
-            month_day(word).map(|(month, day)| PeriodKind::Annual { month, day })
-        }
-        [count, unit] => {
-            let multiplier = period_multiplier(count)?;
-            period_unit(unit).map(|unit| PeriodKind::Every { unit, multiplier })
-        }
-        [nth, "day", "of", "month"] => ordinal(nth, 31).map(|day| PeriodKind::Anchored {
-            unit: PeriodExpr::Monthly,
-            anchor: Anchor::DayOfMonth(day),
-        }),
+        [word] => every_word(word),
+        [first, second] => every_pair(first, second),
         [nth, "day", "of", "week"] => ordinal(nth, 7).map(|weekday| PeriodKind::Anchored {
             unit: PeriodExpr::Weekly,
             anchor: Anchor::Weekday(weekday),
         }),
-        // Must follow the two literal arms above, which are more specific.
-        [nth, weekday, "of", "month"] => {
-            // Five is the most any weekday can occur in a month.
-            let nth = ordinal(nth, 5)?;
-            weekday_number(weekday).map(|weekday| PeriodKind::Anchored {
-                unit: PeriodExpr::Monthly,
-                anchor: Anchor::NthWeekday { nth, weekday },
-            })
+        [nth, what, "of", "month"] => monthly_anchor(nth, what),
+        [first, second, "of", "year"] => annual(first, second),
+        [month_and_day, "of", "year"] => {
+            month_day(month_and_day).map(|(month, day)| PeriodKind::Annual { month, day })
         }
         _ => None,
     }
+}
+
+/// `every UNIT`, `every WEEKDAY`, `every weekday` / `every weekendday`,
+/// `every mon,wed,fri`, `every MM/DD`.
+fn every_word(word: &str) -> Option<PeriodKind> {
+    if let Some(unit) = period_unit(word) {
+        return Some(PeriodKind::Every {
+            unit,
+            multiplier: 1,
+        });
+    }
+    let weekly = |anchor| {
+        Some(PeriodKind::Anchored {
+            unit: PeriodExpr::Weekly,
+            anchor,
+        })
+    };
+    if let Some(weekday) = weekday_number(word) {
+        return weekly(Anchor::Weekday(weekday));
+    }
+    match word {
+        // hledger's documented shorthands for `mon,tue,wed,thu,fri` and
+        // `sat,sun`.
+        "weekday" => return weekly(Anchor::Weekdays(0b001_1111)),
+        "weekendday" => return weekly(Anchor::Weekdays(0b110_0000)),
+        _ => {}
+    }
+    if word.contains(',') {
+        let mask = word
+            .split(',')
+            .map(|day| weekday_number(day).map(|weekday| 1u8 << (weekday - 1)))
+            .try_fold(0u8, |mask, bit| bit.map(|bit| mask | bit))?;
+        return weekly(Anchor::Weekdays(mask));
+    }
+    // `every 12/25`: one occurrence a year on a fixed month/day.
+    month_day(word).map(|(month, day)| PeriodKind::Annual { month, day })
+}
+
+/// Two words after `every`: a multiplied unit (`every 2 weeks`), a monthly
+/// anchor without its optional `of month` (`every 15th day`, `every 3rd mon`),
+/// or a yearly one without `of year` (`every 1st apr`, `every apr 1st`).
+fn every_pair(first: &str, second: &str) -> Option<PeriodKind> {
+    if let Some(multiplier) = period_multiplier(first) {
+        // `every 2 weeks`, never `every 2 weekly`: hledger rejects the adverb
+        // after a count (verified).
+        return period_unit(second)
+            .filter(|_| !second.ends_with("ly"))
+            .map(|unit| PeriodKind::Every { unit, multiplier });
+    }
+    monthly_anchor(first, second).or_else(|| annual(first, second))
+}
+
+/// `Nth day` or `Nth WEEKDAY`, of each month.
+fn monthly_anchor(nth: &str, what: &str) -> Option<PeriodKind> {
+    let monthly = |anchor| {
+        Some(PeriodKind::Anchored {
+            unit: PeriodExpr::Monthly,
+            anchor,
+        })
+    };
+    if what == "day" {
+        return monthly(Anchor::DayOfMonth(ordinal(nth, 31)?));
+    }
+    let weekday = weekday_number(what)?;
+    // Five is the most any weekday can occur in a month.
+    monthly(Anchor::NthWeekday {
+        nth: ordinal(nth, 5)?,
+        weekday,
+    })
+}
+
+/// `Nth MONTHNAME` or `MONTHNAME Nth`: once a year.
+///
+/// The ordinal suffix is REQUIRED here — hledger rejects `every 1 apr` and
+/// `every apr 1` (verified) — and a day past the month's end is accepted, as
+/// hledger accepts it: `every 30th feb` fires on the date February 1st plus
+/// 29 days lands on. [`crate::reports::budget`] reproduces that.
+fn annual(first: &str, second: &str) -> Option<PeriodKind> {
+    let (nth, month) = match month_number(second) {
+        Some(month) => (first, month),
+        None => (second, month_number(first)?),
+    };
+    let day = ordinal_with_suffix(nth, 31)?;
+    Some(PeriodKind::Annual { month, day })
 }
 
 /// One of the five units, singular or plural (`week`, `weeks`, `weekly`).
@@ -1860,11 +2349,19 @@ fn period_multiplier(word: &str) -> Option<u32> {
 
 /// An ordinal (`15th`, `3rd`, `1st`, or a bare integer), bounded by `max`.
 fn ordinal(word: &str, max: u32) -> Option<u32> {
-    let digits = ["st", "nd", "rd", "th"]
+    let digits = strip_ordinal_suffix(word).unwrap_or(word);
+    digits.parse::<u32>().ok().filter(|n| (1..=max).contains(n))
+}
+
+/// An ordinal that MUST carry its `st`/`nd`/`rd`/`th` suffix.
+fn ordinal_with_suffix(word: &str, max: u32) -> Option<u32> {
+    strip_ordinal_suffix(word).and_then(|digits| ordinal(digits, max))
+}
+
+fn strip_ordinal_suffix(word: &str) -> Option<&str> {
+    ["st", "nd", "rd", "th"]
         .iter()
         .find_map(|suffix| word.strip_suffix(*suffix))
-        .unwrap_or(word);
-    digits.parse::<u32>().ok().filter(|n| (1..=max).contains(n))
 }
 
 /// A weekday name or its three-letter abbreviation, as an ISO number
@@ -1882,14 +2379,38 @@ fn weekday_number(word: &str) -> Option<u32> {
     })
 }
 
-/// The `12/25` of `every 12/25` — a month and a day, with no year.
-fn month_day(token: &str) -> Option<(u32, u32)> {
-    let (month, day) = token.split_once(['/', '-', '.'])?;
-    let month = month.parse::<u32>().ok()?;
-    let day = day.parse::<u32>().ok()?;
-    ((1..=12).contains(&month) && (1..=31).contains(&day)).then_some((month, day))
+/// A month name or its three-letter abbreviation, as 1-12.
+fn month_number(word: &str) -> Option<u32> {
+    Some(match word {
+        "jan" | "january" => 1,
+        "feb" | "february" => 2,
+        "mar" | "march" => 3,
+        "apr" | "april" => 4,
+        "may" => 5,
+        "jun" | "june" => 6,
+        "jul" | "july" => 7,
+        "aug" | "august" => 8,
+        "sep" | "september" => 9,
+        "oct" | "october" => 10,
+        "nov" | "november" => 11,
+        "dec" | "december" => 12,
+        _ => return None,
+    })
 }
 
+/// The `12/25` of `every 12/25` — a month and a day, with no year.
+///
+/// The day must exist in that month in SOME year: hledger rejects
+/// `every 2/30` and `every 4/31` but takes `every 2/29` (all verified), which
+/// it fires on March 1st in a non-leap year.
+fn month_day(token: &str) -> Option<(u32, u32)> {
+    let (month, day) = token.split_once(['/', '-', '.'])?;
+    let month = month.parse::<u32>().ok().filter(|m| (1..=12).contains(m))?;
+    let day = day.parse::<u32>().ok()?;
+    // 2000 is a leap year, so February admits its 29th.
+    let longest = u32::try_from(days_in_month(2000, i32::try_from(month).ok()?)).ok()?;
+    (1..=longest).contains(&day).then_some((month, day))
+}
 // ---------------------------------------------------------------------------
 // Transactions
 // ---------------------------------------------------------------------------
@@ -2459,7 +2980,15 @@ fn parse_amount(token: &str, amt: AmountCtx) -> Result<Amount, ParseError> {
     }
 
     let commodity = Commodity(symbol);
-    let canonical = amt.styles.get(&commodity);
+    // The text's own declaration first; then one inherited from outside it,
+    // unless the text set its own `decimal-mark` (which then outranks a style
+    // it never saw).
+    let canonical = amt.styles.get(&commodity).or_else(|| {
+        amt.default_mark
+            .is_none()
+            .then(|| amt.inherited.get(&commodity))
+            .flatten()
+    });
     // Infer the literal's own mark/groups first: it is both the last resort for
     // the decimal mark and (for an undeclared commodity) the display style.
     // PARSE-3 — this inference used to be computed only for the style and then
@@ -2618,8 +3147,9 @@ fn cost_contribution(amount: &Amount) -> Result<(Commodity, Dec, u32, AmountStyl
 /// The commodity and quantity come from [`Amount::at_cost`] — the engine's one
 /// definition of "at cost" — so the balance sheet's at-cost totals and this
 /// balancing pass can never disagree about what a priced posting is worth. Only
-/// the display STYLE is chosen here, since valuation has no use for it.
-fn cost_value(amount: &Amount) -> Result<(&Commodity, Dec, &AmountStyle), ParseError> {
+/// the display STYLE is chosen here, since valuation has no use for it. An `=`
+/// rule's amountless posting is inferred through it too ([`crate::auto`]).
+pub(crate) fn cost_value(amount: &Amount) -> Result<(&Commodity, Dec, &AmountStyle), DecError> {
     let (commodity, quantity) = amount.at_cost()?;
     let style = match &amount.cost {
         None => &amount.style,
@@ -2663,6 +3193,7 @@ fn finalize_posting(raw: RawPosting, sums: &[CommoditySum]) -> Result<Posting, P
         date2: raw.date2,
         comment: raw.comment,
         tags: raw.tags,
+        generated: None,
     })
 }
 
@@ -2787,14 +3318,43 @@ const BALANCED_GROUPS: [PostingType; 2] = [PostingType::Regular, PostingType::Ba
 ///
 /// # Errors
 /// Returns [`ParseError::Decimal`] only if summing a group overflows `i128`.
+///
+/// # Generated postings are not part of this check
+///
+/// Postings an `=` rule generated ([`Posting::generated`]) are left out, which
+/// is hledger's order: it checks a transaction balances BEFORE auto postings
+/// are added. Whether a rule's own postings balance is a separate finding,
+/// naming the rule — [`check_generated_balances`].
 pub fn check_transaction_balances(
     journal: &Journal,
+) -> Result<Vec<UnbalancedTransaction>, ParseError> {
+    unbalanced_where(journal, &|posting| posting.generated.is_none())
+}
+
+/// The transactions whose `=`-rule-generated postings, taken on their own, do
+/// not balance — what hledger 1.52 refuses a journal for under `--auto`
+/// ("A regular posting left unbalanced is a hard load error", plan 30). A
+/// transaction's own postings balance (or [`check_transaction_balances`]
+/// says otherwise), so these are exactly the transactions the rules unbalanced.
+///
+/// # Errors
+/// As [`check_transaction_balances`].
+pub fn check_generated_balances(
+    journal: &Journal,
+) -> Result<Vec<UnbalancedTransaction>, ParseError> {
+    unbalanced_where(journal, &|posting| posting.generated.is_some())
+}
+
+/// [`check_transaction_balances`] over only the postings `keep` accepts.
+fn unbalanced_where(
+    journal: &Journal,
+    keep: &dyn Fn(&Posting) -> bool,
 ) -> Result<Vec<UnbalancedTransaction>, ParseError> {
     let styles = crate::assertions::display_styles(journal);
     let mut failures = Vec::new();
     for (transaction_index, transaction) in journal.transactions.iter().enumerate() {
         for group in BALANCED_GROUPS {
-            let sums = group_residual(transaction, group)?;
+            let sums = group_residual(transaction, group, keep)?;
             let residual: Vec<Amount> = sums
                 .iter()
                 .filter(|(_, entry)| !looks_zero(entry.total, entry.tolerance_precision()))
@@ -2862,11 +3422,12 @@ impl Residual<'_> {
 fn group_residual<'a>(
     transaction: &'a Transaction,
     group: PostingType,
+    keep: &dyn Fn(&Posting) -> bool,
 ) -> Result<BTreeMap<&'a Commodity, Residual<'a>>, ParseError> {
     transaction
         .postings
         .iter()
-        .filter(|posting| posting.ptype == group)
+        .filter(|posting| posting.ptype == group && keep(posting))
         .flat_map(|posting| &posting.amounts)
         .try_fold(BTreeMap::new(), |mut sums, amount| {
             // The value a priced amount contributes is its COST, exactly as the
@@ -3464,6 +4025,7 @@ mod tests {
             styles,
             default_mark: None,
             default_commodity: None,
+            inherited: Box::leak(Box::default()),
         }
     }
 
@@ -3611,6 +4173,24 @@ mod tests {
         );
         let counter = &postings[1].amounts[0];
         assert_eq!(counter.quantity, Dec::new(-123450, 2));
+    }
+
+    #[test]
+    fn an_auto_rule_with_no_space_after_the_equals_sign_does_not_refuse_the_journal() {
+        // hledger 1.52 reads `=revenue:other` exactly as `= revenue:other`.
+        // Before 2026-10-28 it fell through to "unsupported directive" and
+        // refused the whole file.
+        let text = concat!(
+            "=revenue:other\n",
+            "    (liabilities:tax)  *0.05\n",
+            "\n",
+            "2026-01-01 real\n",
+            "    revenue:other  $-100\n",
+            "    assets:checking\n",
+        );
+        let journal = parse_journal(text, "t.journal").expect("the journal opens");
+        assert_eq!(journal.transactions.len(), 1);
+        assert_eq!(journal.transactions[0].postings.len(), 2);
     }
 
     #[test]
@@ -3801,6 +4381,255 @@ mod tests {
         }
     }
 
+    /// Every form plan 30 added, each verified against `hledger 1.52 print
+    /// --forecast` on 2026-10-27 before it was written down here. The first
+    /// three are the lines that reported "not a recurrence this engine can
+    /// enumerate".
+    #[test]
+    fn periodic_rule_accepts_the_forms_plan_30_added() {
+        let annual = |month, day| PeriodKind::Annual { month, day };
+        let monthly = |anchor| PeriodKind::Anchored {
+            unit: PeriodExpr::Monthly,
+            anchor,
+        };
+        let weekly = |anchor| PeriodKind::Anchored {
+            unit: PeriodExpr::Weekly,
+            anchor,
+        };
+        let every = |unit, multiplier| PeriodKind::Every { unit, multiplier };
+        let month = every(PeriodExpr::Monthly, 1);
+        let mon_wed_fri = Anchor::Weekdays(0b001_0101);
+
+        for (expr, kind, start, end) in [
+            (
+                "every 1st Apr from 2027",
+                annual(4, 1),
+                Some("2027-01-01"),
+                None,
+            ),
+            (
+                "every 15th Nov from 2026 to 2026-12-31",
+                annual(11, 15),
+                Some("2026-01-01"),
+                Some("2026-12-31"),
+            ),
+            (
+                "every 1st July from 2027",
+                annual(7, 1),
+                Some("2027-01-01"),
+                None,
+            ),
+            // Month name first, `of year`, full and short names, a
+            // zero-padded ordinal, and a day past the month's end.
+            ("every Nov 15th", annual(11, 15), None, None),
+            ("every 15th Nov of year", annual(11, 15), None, None),
+            ("every Nov 15th of year", annual(11, 15), None, None),
+            ("every 11/15 of year", annual(11, 15), None, None),
+            ("every 01st april", annual(4, 1), None, None),
+            ("every 30th feb", annual(2, 30), None, None),
+            ("every 2/29", annual(2, 29), None, None),
+            // `of month` is optional.
+            ("every 2nd day", monthly(Anchor::DayOfMonth(2)), None, None),
+            (
+                "every 15th day from 2027-03",
+                monthly(Anchor::DayOfMonth(15)),
+                Some("2027-03-01"),
+                None,
+            ),
+            (
+                "every 3rd mon",
+                monthly(Anchor::NthWeekday { nth: 3, weekday: 1 }),
+                None,
+                None,
+            ),
+            (
+                "every 2nd Monday",
+                monthly(Anchor::NthWeekday { nth: 2, weekday: 1 }),
+                None,
+                None,
+            ),
+            // Several weekdays a week.
+            (
+                "every weekday",
+                weekly(Anchor::Weekdays(0b001_1111)),
+                None,
+                None,
+            ),
+            (
+                "every weekendday",
+                weekly(Anchor::Weekdays(0b110_0000)),
+                None,
+                None,
+            ),
+            ("every mon,wed,fri", weekly(mon_wed_fri), None, None),
+            ("every fri,mon,wed", weekly(mon_wed_fri), None, None),
+            (
+                "every mon,wed,fri to 2027-01-20",
+                weekly(mon_wed_fri),
+                None,
+                Some("2027-01-20"),
+            ),
+            // `in`, `since`, `until`, `..`, `-`, and a lone date naming a span.
+            (
+                "monthly in 2027",
+                month,
+                Some("2027-01-01"),
+                Some("2028-01-01"),
+            ),
+            (
+                "monthly 2027",
+                month,
+                Some("2027-01-01"),
+                Some("2028-01-01"),
+            ),
+            (
+                "monthly 2027-03",
+                month,
+                Some("2027-03-01"),
+                Some("2027-04-01"),
+            ),
+            (
+                "monthly 20270301",
+                month,
+                Some("2027-03-01"),
+                Some("2027-03-02"),
+            ),
+            ("monthly from 202703", month, Some("2027-03-01"), None),
+            (
+                "monthly in 2027q2",
+                month,
+                Some("2027-04-01"),
+                Some("2027-07-01"),
+            ),
+            ("monthly from 2027q2", month, Some("2027-04-01"), None),
+            (
+                "monthly from 2027 to 2027q3",
+                month,
+                Some("2027-01-01"),
+                Some("2027-07-01"),
+            ),
+            ("monthly since 2027-03", month, Some("2027-03-01"), None),
+            ("monthly until 2027-04", month, None, Some("2027-04-01")),
+            (
+                "monthly since 2027-03 to 2027-06",
+                month,
+                Some("2027-03-01"),
+                Some("2027-06-01"),
+            ),
+            (
+                "monthly since 2027-03..2027-06",
+                month,
+                Some("2027-03-01"),
+                Some("2027-06-01"),
+            ),
+            (
+                "monthly 2027-03 to 2027-06",
+                month,
+                Some("2027-03-01"),
+                Some("2027-06-01"),
+            ),
+            ("monthly .. 2027-06", month, None, Some("2027-06-01")),
+            ("monthly - 2027-06", month, None, Some("2027-06-01")),
+            (
+                "monthly 2027-01..2027-04",
+                month,
+                Some("2027-01-01"),
+                Some("2027-04-01"),
+            ),
+            (
+                "monthly from 2027-01 .. 2027-04",
+                month,
+                Some("2027-01-01"),
+                Some("2027-04-01"),
+            ),
+            (
+                "monthly from 2027-01 - 2027-04",
+                month,
+                Some("2027-01-01"),
+                Some("2027-04-01"),
+            ),
+            (
+                "monthly from 2027-01-2027-04",
+                month,
+                Some("2027-01-01"),
+                Some("2027-04-01"),
+            ),
+            (
+                "monthly 2027-02-15..2027-05",
+                month,
+                Some("2027-02-15"),
+                Some("2027-05-01"),
+            ),
+            (
+                "every 2 weeks in 2027-03",
+                every(PeriodExpr::Weekly, 2),
+                Some("2027-03-01"),
+                Some("2027-04-01"),
+            ),
+            (
+                "every 1st apr in 2027",
+                annual(4, 1),
+                Some("2027-01-01"),
+                Some("2028-01-01"),
+            ),
+            // A multiplier that looks like a year is still a multiplier.
+            (
+                "every 1000 days",
+                every(PeriodExpr::Daily, 1000),
+                None,
+                None,
+            ),
+            // One-offs: a quarter, a range, `in`.
+            ("2027q2", PeriodKind::Once, Some("2027-04-01"), None),
+            ("2027Q3", PeriodKind::Once, Some("2027-07-01"), None),
+            ("in 2027-03", PeriodKind::Once, Some("2027-03-01"), None),
+            (
+                "2027-03..2027-06",
+                PeriodKind::Once,
+                Some("2027-03-01"),
+                Some("2027-06-01"),
+            ),
+            (
+                "2027-03 to 2027-06",
+                PeriodKind::Once,
+                Some("2027-03-01"),
+                Some("2027-06-01"),
+            ),
+        ] {
+            let spec = period_spec(expr);
+            assert_eq!(spec.kind, kind, "kind of `{expr}`");
+            assert_eq!(spec.start.as_deref(), start, "start of `{expr}`");
+            assert_eq!(spec.end.as_deref(), end, "end of `{expr}`");
+            assert_eq!(spec.raw, expr, "raw of `{expr}`");
+        }
+    }
+
+    /// The interval words are cut where the PARSER cut them, whatever the
+    /// bounds clause looks like — which is what lets the projections table
+    /// rewrite a bound without eating part of the interval.
+    #[test]
+    fn interval_words_stop_where_the_bounds_start() {
+        for (expr, words) in [
+            ("every 1st Apr from 2027", Some("every 1st Apr")),
+            ("every 1st apr in 2027", Some("every 1st apr")),
+            (
+                "every 15th Nov of year to 2028",
+                Some("every 15th Nov of year"),
+            ),
+            ("every 2 weeks 2027-01..2027-04", Some("every 2 weeks")),
+            ("every 3rd mon since 2027-02", Some("every 3rd mon")),
+            ("every mon,wed,fri until 2027-06", Some("every mon,wed,fri")),
+            ("every 1000 days", Some("every 1000 days")),
+            ("2027q2", None),
+        ] {
+            assert_eq!(
+                period_spec(expr).interval_words().as_deref(),
+                words,
+                "words of `{expr}`"
+            );
+        }
+    }
+
     /// Only a BARE fixed interval answers `interval()`. The single word it
     /// returns cannot express a multiplier, an anchor or a bound, so a caller
     /// that wrote it back would drop the rest of the rule.
@@ -3904,8 +4733,14 @@ mod tests {
                 Some("2027-01-01"),
                 Some("2027-02-01"),
             ),
-            // Never understood, so never rewritten.
-            ("every weekday from 2026-11-01", None, None, None, None),
+            // Bounds beside a weekday set are rewritten around its words.
+            (
+                "every weekday from 2026-11-01",
+                None,
+                Some("every weekday"),
+                Some("2026-11-01"),
+                None,
+            ),
         ];
         for (expr, interval, words, start, end) in cases {
             for header in [
@@ -3926,9 +4761,9 @@ mod tests {
         }
     }
 
-    /// The three forms hledger ITSELF rejects, plus a single-space description
-    /// (which hledger reads as part of the period expression, and errors on).
-    /// All four degrade to a locked rule with `raw` intact — **the journal still
+    /// Forms hledger ITSELF rejects, a single-space description (which hledger
+    /// reads as part of the period expression, and errors on), and relative
+    /// dates. All degrade to a locked rule with `raw` intact — **the journal still
     /// opens**, which is the whole point of this change.
     #[test]
     fn hledger_rejects_degrade_rather_than_failing_the_journal() {
@@ -3941,10 +4776,29 @@ mod tests {
             // expression, which is what makes this unreadable rather than a rule
             // named "budget".
             "monthly budget",
-            // Real hledger expressions we decline to model: neither is one
-            // occurrence per unit, so neither is a step.
-            "every weekday",
-            "every weekendday",
+            // Rejected by hledger 1.52 too (verified 2026-10-27): a month-name
+            // day needs its ordinal suffix, a quarter has no ordinal form, an
+            // interval word takes no multiplier, `MM/DD` must be a real day,
+            // two bare dates need a `to` between them, `until` only opens a
+            // range with no start, and `in` takes one date, not a range.
+            "every nov 15",
+            "every 15 nov",
+            "every 1 apr",
+            "every 2nd quarter",
+            "every 2 weekly",
+            "every 2/30",
+            "every 4/31",
+            "every 32nd day",
+            "monthly 2027-01 2027-04",
+            "monthly since 2027-03 until 2027-06",
+            "monthly from 2027-01-15 until 2027-05",
+            "monthly 2027-03 until 2027-06",
+            "monthly in 2027-03..2027-06",
+            "monthly in from 2027-03",
+            // Relative dates: hledger reads them against today, and a rule
+            // must not change meaning overnight.
+            "monthly from jan to apr",
+            "monthly in this year",
         ] {
             let spec = period_spec(expr);
             assert_eq!(

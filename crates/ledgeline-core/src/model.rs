@@ -227,6 +227,31 @@ pub struct Posting {
     pub comment: String,
     /// The posting's **own** comment tags (not account-inherited ones).
     pub tags: Vec<(String, String)>,
+    /// `Some` when an `= QUERY` auto-posting rule generated this posting
+    /// ([`crate::auto::apply`]); `None` for every posting written in a file.
+    ///
+    /// The ONE marker the edit path keys off (plan 30 Decision 5): a generated
+    /// posting is never written back, never counted in a position the editor
+    /// maps to a line, and never read for display-style inference. hledger's
+    /// `generated-posting` tag rides along in [`Self::tags`] for parity, but
+    /// tag text is a user-writable comment and is never trusted for this.
+    /// Behind an [`Arc`] so a cloned posting costs one pointer, not a copy.
+    pub generated: Option<Arc<RuleRef>>,
+}
+
+/// Which `= QUERY` rule generated a posting ([`Posting::generated`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleRef {
+    /// The rule's position in the rule list it was applied from — for the
+    /// main journal, [`Journal::auto_rules`]; for a projection scenario, its
+    /// own rules. Stable for one parse of the journal.
+    pub rule: usize,
+    /// The file the rule was read from, as [`AutoPostingRule::source_file`].
+    pub source_file: PathBuf,
+    /// The rule's `=` line, 1-based, in [`Self::source_file`].
+    pub line: u32,
+    /// The rule's query as written (`revenue:sales tag:_generated-transaction`).
+    pub query: String,
 }
 
 /// A journal transaction.
@@ -365,6 +390,9 @@ pub enum Anchor {
     },
     /// `every tuesday` / `every 2nd day of week`: one weekday each week.
     Weekday(u32),
+    /// `every weekday`, `every weekendday`, `every mon,wed,fri`: several
+    /// weekdays each week. A bit per ISO weekday, bit 0 = Monday; never zero.
+    Weekdays(u8),
 }
 
 /// The shape of a period expression, once its words are understood.
@@ -502,7 +530,7 @@ impl PeriodSpec {
     }
 
     /// The interval words of [`raw`](Self::raw) — everything before its
-    /// `from`/`to` clause, as written — when the rule's bounds can be rewritten
+    /// bounds clause, as written — when the rule's bounds can be rewritten
     /// around them; `None` when they cannot.
     ///
     /// They can whenever the words are a recurrence this engine understands:
@@ -519,14 +547,11 @@ impl PeriodSpec {
     pub fn interval_words(&self) -> Option<String> {
         match self.kind {
             PeriodKind::Every { .. } | PeriodKind::Anchored { .. } | PeriodKind::Annual { .. } => {
-                let is_bound = |word: &&str| {
-                    word.eq_ignore_ascii_case("from") || word.eq_ignore_ascii_case("to")
-                };
-                let words: Vec<&str> = self
-                    .raw
-                    .split_whitespace()
-                    .take_while(|word| !is_bound(word))
-                    .collect();
+                // The parser's own cut, not a scan for `from`/`to`: a bounds
+                // clause can also be `in 2027`, `since D` or a bare
+                // `2027-01..2027-04`.
+                let head = crate::parse::period_head_len(&self.raw)?;
+                let words: Vec<&str> = self.raw.split_whitespace().take(head).collect();
                 Some(words.join(" "))
             }
             PeriodKind::Once | PeriodKind::Unsupported => None,
@@ -605,6 +630,77 @@ pub struct PriceDirective {
     pub source_file: PathBuf,
 }
 
+/// What one posting of an `=` auto-posting rule writes, relative to the
+/// posting the rule matched (hledger's "Auto postings").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutoAmount {
+    /// `$2`, or `2` — used exactly as written. A bare number stays
+    /// commodity-less: hledger 1.52's manual says it takes the matched
+    /// posting's commodity, but the binary prints `2` beside a `$5` posting
+    /// (verified 2026-10-28), and the binary is what users run.
+    Fixed(Amount),
+    /// `*0.1` — the matched amount multiplied, exactly (no rounding), its cost
+    /// annotation with it. `*$0.1` / `*0.1 USD` also re-denominates the
+    /// product in `commodity`, whose style it borrows.
+    Scale {
+        /// The multiplier.
+        factor: Dec,
+        /// The written commodity and its style, as a template; `None` keeps
+        /// the matched posting's commodity.
+        commodity: Option<Amount>,
+    },
+    /// No amount: it balances the rule's other generated postings of its own
+    /// balance group (regular, or balanced-virtual), as hledger infers it.
+    Inferred,
+}
+
+/// One posting line of an `=` rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoPosting {
+    /// Its `*`/`!` marker.
+    pub status: Status,
+    /// Regular, `(virtual)` or `[balanced virtual]`.
+    pub ptype: PostingType,
+    /// The account as written. `%account` stands for the matched posting's.
+    pub account: String,
+    /// What it writes.
+    pub amount: AutoAmount,
+    /// A balance assertion written after the amount (`$1 = $5`, `*0.1 = $5`).
+    /// Every posting the rule generates carries it, and it is checked there
+    /// like any other assertion, as hledger does.
+    pub balance_assertion: Option<BalanceAssertion>,
+    /// Raw comment text, as [`Posting::comment`].
+    pub comment: String,
+    /// Its own tags.
+    pub tags: Vec<(String, String)>,
+}
+
+/// An `= QUERY` auto-posting rule (hledger's "Auto postings"): wherever
+/// `query` matches a posting, `postings` are added to that transaction right
+/// below it. hledger applies rules only under `--auto`; Ledgeline applies a
+/// projection scenario's rules to its forecast transactions always (plan 30
+/// Decision 6), and the main journal's not yet (plan 30 Phase 5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoPostingRule {
+    /// The query, as written and as understood. An unsupported one keeps the
+    /// rule in the journal but never fires.
+    pub query: crate::query::Query,
+    /// Its postings, in file order.
+    pub postings: Vec<AutoPosting>,
+    /// Raw header comment text, as [`PeriodicTransaction::comment`].
+    pub comment: String,
+    /// The header comment's tags.
+    pub tags: Vec<(String, String)>,
+    /// The whole block exactly as written — the `=` line through its last
+    /// posting or comment line, each ending in `\n`. What a projection
+    /// scenario carries over the wire and writes back unchanged.
+    pub raw: String,
+    /// Header line to the line after the last one, as [`Transaction::source_span`].
+    pub source_span: (SourcePos, SourcePos),
+    /// The resolved file this rule was read from.
+    pub source_file: PathBuf,
+}
+
 /// A fully-parsed, balanced journal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Journal {
@@ -623,6 +719,9 @@ pub struct Journal {
     /// `transactions` (and thus the wire `/transactions` view); consumed only by
     /// the budget report.
     pub periodic_transactions: Vec<PeriodicTransaction>,
+    /// `= QUERY` auto-posting rules in file order. Parsed, carried and shown;
+    /// applied only where [`AutoPostingRule`] says.
+    pub auto_rules: Vec<AutoPostingRule>,
     /// Account declarations in file order.
     pub accounts: Vec<AccountDeclaration>,
     /// `alias` directives in file order. Recorded, never applied — see
@@ -647,6 +746,10 @@ pub struct Journal {
     /// commodity can prefer it over guessing from price-directive frequency
     /// (see `holdings::HoldingsScope::value_in`).
     pub default_commodity: Option<Commodity>,
+    /// The `decimal-mark` directive in force when the parse ended, if any:
+    /// the mark a bare number appended to the journal is read with (see
+    /// [`crate::parse::JournalStyles`]).
+    pub decimal_mark: Option<char>,
     /// The MAIN file's leading comment: the text of its first non-empty line
     /// when that line is a comment, with the marker and surrounding whitespace
     /// stripped. `None` when the file opens with anything else.

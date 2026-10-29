@@ -189,7 +189,8 @@ balances agree with hledger's account by account.
 
 The Accounts and Journal tabs use the same window. **Accounts** is `balance`
 with the tab's tree and depth, and no `--value`, because the tab shows amounts
-as written. For Change:
+as written. Its equity, revenue and expense rows, and every row's last column,
+are:
 
 ```console
 $ hledger -f main.journal -f projection-x.journal balance --forecast=2026-10-01..2027-10-01 \
@@ -197,7 +198,9 @@ $ hledger -f main.journal -f projection-x.journal balance --forecast=2026-10-01.
     --tree --no-elide --depth 2 -T
 ```
 
-For Balance, use `-H` instead of `-T`. For Show empty accounts, add
+Its asset and liability rows are the same command with `-H` instead of `-T`:
+each period's closing balance. The last column, their Δ, is the `-T` Total
+above. For Show empty accounts, add
 `-E --declared`. `--tree --no-elide` lists every parent as its own row, as the
 tab does, and `--depth` is the depth slider. **Journal** is:
 

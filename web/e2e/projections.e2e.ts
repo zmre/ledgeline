@@ -90,6 +90,37 @@ test("projections: the Assets and balances section is there, empty, on a seeded 
     await expect(page.getByTestId("projection-asset-line")).toHaveCount(0);
 });
 
+// UNVERIFIED: written against the markup, never executed — Playwright cannot
+// run beside the other agents this was added alongside (plan 30 Phase 4).
+// Read-only like the rest of this file: a rule added in the table makes the
+// scenario dirty and re-runs it; nothing is saved. No figure is asserted.
+test("projections: an automatic posting rule is added and edited as a form", async ({page}) => {
+    await page.goto("/projections");
+    await expect(page.getByTestId("projection-cash")).toBeVisible();
+
+    const section = page.getByTestId("projection-section-auto");
+    await expect(section).toContainText("Nothing here yet");
+    await section.getByRole("button", {name: "+ Add a rule"}).click();
+    await expect(section.getByTestId("projection-auto-rule")).toHaveCount(1);
+    await expect(section.getByText("forecasts only")).toBeVisible();
+
+    await page.getByLabel("Matched account for rule 1").fill("income:salary");
+    await page.getByLabel("Matched account for rule 1").press("Enter");
+    await page.getByLabel("Account for posting 1 of rule 1").fill("expenses:taxes");
+    await page.getByLabel("Account for posting 1 of rule 1").press("Enter");
+    await page.getByLabel("Percent for posting 1 of rule 1").fill("10");
+    await page.getByLabel("Percent for posting 1 of rule 1").blur();
+
+    // The preview reads the seeded salary line; the projection re-runs with the
+    // rule and still renders.
+    await expect(section.getByTestId("auto-rule-preview")).toContainText("to expenses:taxes on each");
+    await expect(page.getByTestId("projection-runway")).toBeVisible();
+
+    await section.getByLabel("Row menu for rule 1").click();
+    await page.getByTestId("row-menu").getByRole("menuitem", {name: "Delete rule"}).click();
+    await expect(section.getByTestId("projection-auto-rule")).toHaveCount(0);
+});
+
 // UNVERIFIED, as above.
 test("projections: adding an asset row shows the ledger's own balance, greyed", async ({page}) => {
     await page.goto("/projections");
@@ -140,6 +171,23 @@ test("projections: the runway and statements render, the runway in words and the
     // "Cash turns negative in Jul 2026" off unvalued EUR seed lines).
     await expect(page.getByTestId("projection-runway")).toContainText("Cash never turns negative");
     await expect(page.getByTestId("projection-cash-chart")).toBeVisible();
+    // The Actuals control's months come first, then the forecast, with the
+    // statements' divider between the last actual tick and the first forecast one.
+    const chart = page.getByTestId("projection-cash-chart");
+    const divider = chart.locator('[data-rule="projected"]');
+    await expect(divider).toHaveCount(1);
+    // One point per period (the chart draws them up to 31 periods): their
+    // centres, left to right, are where each period's closing balance sits.
+    const points = await chart
+        .locator("svg circle")
+        .evaluateAll((circles) =>
+            [...new Set(circles.map((circle) => Math.round(circle.getBoundingClientRect().x + circle.getBoundingClientRect().width / 2)))].sort((a, b) => a - b)
+        );
+    const rule = await divider.evaluate((line) => line.getBoundingClientRect().x);
+    // Two actual months by default: the rule sits between the 2nd and 3rd points.
+    expect(points.length).toBeGreaterThan(3);
+    expect(rule).toBeGreaterThan(points[1]!);
+    expect(rule).toBeLessThan(points[2]!);
 
     // The Reports tab's own statements, over actuals and then the forecast.
     await page.getByRole("tab", {name: "Balance sheet"}).click();
@@ -157,24 +205,65 @@ test("projections: the runway and statements render, the runway in words and the
     await expect(page.getByTestId("projection-cf").getByTestId("projected-label").first()).toHaveText("Projected");
 });
 
-test("projections: the Accounts tab lists every account per period, Change or Balance, with empty accounts on request", async ({page}) => {
+test("projections: picking a reading brings its tab strip to the top of the window, just under the pinned header", async ({page}) => {
+    await page.setViewportSize({width: 1280, height: 800});
+    await page.goto("/projections?tab=bs");
+    await expect(page.getByTestId("projection-bs").getByTestId("balance-sheet")).toBeVisible();
+    const strip = page.getByRole("tablist", {name: "Projection report"});
+    const header = page.getByTestId("app-header");
+    // From the bottom of a long balance sheet to Journal, whose panel is a
+    // one-line placeholder until its run lands: the page must not shrink out
+    // from under the strip and leave it at the bottom of the viewport.
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    for (const name of ["Journal", "Income statement", "Runway"]) {
+        await page.getByRole("tab", {name}).click();
+        await expect(page.getByRole("tab", {name})).toHaveAttribute("aria-selected", "true");
+        await expect
+            .poll(
+                async () => {
+                    const [s, h] = [await strip.boundingBox(), await header.boundingBox()];
+                    return s === null || h === null ? Infinity : Math.abs(Math.round(s.y - (h.y + h.height)));
+                },
+                {message: `${name}: strip just under the header`}
+            )
+            .toBeLessThanOrEqual(1);
+    }
+});
+
+test("the header stays pinned at the top of the window while the page scrolls", async ({page}) => {
+    await page.setViewportSize({width: 1280, height: 600});
+    await page.goto("/projections?tab=bs");
+    await expect(page.getByTestId("projection-bs").getByTestId("balance-sheet")).toBeVisible();
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(200);
+    const header = page.getByTestId("app-header");
+    await expect(header).toBeInViewport();
+    expect(Math.round((await header.boundingBox())?.y ?? -1)).toBe(0);
+    await expect(header.getByRole("link", {name: "Projections"})).toBeVisible();
+});
+
+test("projections: the Accounts tab reads assets as balances with a Δ and flows as changes, with empty accounts on request", async ({page}) => {
     await page.goto("/projections?tab=accounts");
     await expect(page.getByRole("tab", {name: "Accounts"})).toHaveAttribute("aria-selected", "true");
     const view = page.getByTestId("projection-accounts");
     const table = view.getByTestId("accounts-table");
     await expect(table).toBeVisible();
     await expect(table.getByTestId("projected-label")).toHaveText("Projected");
-    await expect(table.locator("thead tr:not([data-testid]) th").last()).toHaveText("Total");
-    await expect(page).toHaveURL(/accounts=change&empty=0/);
+    await expect(page).toHaveURL(/empty=0/);
+    // Each section says how it reads, and its last column follows.
+    const assets = table.locator('[data-testid="account-section"][data-section="assets"]');
+    await expect(assets).toHaveAttribute("data-reading", "balance");
+    await expect(assets.locator('[data-column="summary-heading"]')).toHaveText("Δ over the period");
+    await expect(assets.locator('[data-testid="account-section-total"] [data-column="summary"]')).toContainText("Δ");
+    const expenses = table.locator('[data-testid="account-section"][data-section="expenses"]');
+    await expect(expenses).toHaveAttribute("data-reading", "change");
+    await expect(expenses.locator('[data-column="summary-heading"]')).toHaveText("Total");
+    // The help text says it in words.
+    await expect(view.getByTestId("account-report-help")).toContainText("balance at the end of each period");
+    // No Change/Balance switch any more.
+    await expect(view.getByRole("button", {name: "Balance"})).toHaveCount(0);
     // `expenses:shopping` is declared in sample.journal and never posted to.
     await expect(table.locator('[data-account="expenses:shopping"]')).toHaveCount(0);
-
-    await view.getByRole("button", {name: "Balance"}).click();
-    await expect(page).toHaveURL(/accounts=balance/);
-    await expect(view.getByRole("button", {name: "Balance"})).toHaveAttribute("aria-pressed", "true");
-    // Balances are snapshots: no Total column once the re-run lands.
-    await expect(table.locator("thead tr:not([data-testid]) th").last()).not.toHaveText("Total");
-
     await view.getByRole("checkbox", {name: "Show empty accounts"}).check();
     await expect(page).toHaveURL(/empty=1/);
     await expect(table.locator('[data-account="expenses:shopping"]')).toHaveCount(1);
@@ -195,6 +284,26 @@ test("projections: the Journal tab lists the generated transactions only, each n
     // The seed is monthly rules, marked as hledger marks them.
     await expect(first).toContainText("~ monthly");
     await expect(journal.getByTestId("forecast-journal-count")).toContainText("Generated transactions 1–");
+
+    // The search box narrows by the engine's own search text: an account the
+    // first entry posts to finds it, and nonsense finds nothing.
+    const account = (await first.locator("td[title]").first().getAttribute("title")) ?? "";
+    expect(account).not.toBe("");
+    const search = journal.getByTestId("forecast-journal-search");
+    await search.fill(account.toUpperCase());
+    await expect(journal.getByTestId("forecast-journal-count")).toContainText("Matching 1–");
+    // Every entry still listed posts to an account containing the query.
+    const accounts = await journal
+        .getByTestId("forecast-entry")
+        .evaluateAll((entries) => entries.map((entry) => [...entry.querySelectorAll("td[title]")].map((cell) => cell.getAttribute("title") ?? "")));
+    expect(accounts.length).toBeGreaterThan(0);
+    for (const names of accounts) expect(names.some((name) => name.includes(account))).toBe(true);
+    await search.fill("zzz-no-such-text");
+    await expect(journal.getByTestId("forecast-entry")).toHaveCount(0);
+    await expect(journal.getByTestId("forecast-journal-count")).toContainText("No generated transaction matches");
+    await search.fill("");
+    await expect(journal.getByTestId("forecast-journal-count")).toContainText("Generated transactions 1–");
+    await page.locator("h1").click();
     await page.keyboard.press("5");
     await expect(page.getByRole("tab", {name: "Accounts"})).toHaveAttribute("aria-selected", "true");
 });
@@ -350,4 +459,30 @@ test("projections: Save as shows the path it would write, and cancels without wr
     // Cancelled. NOTHING is written by this suite.
     await page.getByTestId("projection-save-cancel").click();
     await expect(page.getByTestId("projection-save-dialog")).toHaveCount(0);
+});
+
+test("projections: every reading downloads as an xlsx workbook", async ({page}) => {
+    await page.goto("/projections");
+    await expect(page.getByTestId("projection-cash")).toBeVisible();
+    for (const [name, slug] of [
+        ["Runway", "runway"],
+        ["Balance sheet", "balance-sheet"],
+        ["Income statement", "income-statement"],
+        ["Cash flow", "cash-flow"],
+        ["Accounts", "accounts"],
+        ["Journal", "journal"],
+    ] as const) {
+        await page.getByRole("tab", {name}).click();
+        const button = page.getByRole("button", {name: `Export ${name} as xlsx`});
+        // Accounts and Journal appear once their run lands.
+        await expect(button).toBeVisible();
+        const [download] = await Promise.all([page.waitForEvent("download"), button.click()]);
+        expect(download.suggestedFilename()).toMatch(new RegExp(`^projection-scenario-${slug}-\\d{4}-\\d{2}-\\d{2}-to-\\d{4}-\\d{2}-\\d{2}\\.xlsx$`));
+        const path = await download.path();
+        const {size} = await import("node:fs").then((fs) => fs.promises.stat(path));
+        // An xlsx is a zip: never empty, and starts "PK".
+        expect(size).toBeGreaterThan(1000);
+        const head = await import("node:fs").then((fs) => fs.promises.readFile(path).then((bytes) => bytes.subarray(0, 2).toString()));
+        expect(head).toBe("PK");
+    }
 });

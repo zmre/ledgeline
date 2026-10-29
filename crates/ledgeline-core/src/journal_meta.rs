@@ -108,11 +108,16 @@ pub fn date_span(journal: &Journal) -> Option<(&str, &str)> {
     }))
 }
 
+/// Every amount the journal WROTE. A posting an `=` rule generated is left
+/// out: its exact product (`$333.33 * 0.1` is `$33.333`) is not a precision
+/// anyone typed, and hledger's own reports keep `$-33.33` for it (verified
+/// 2026-10-28, `bal --auto`).
 fn posting_amounts(journal: &Journal) -> impl Iterator<Item = &Amount> {
     journal
         .transactions
         .iter()
         .flat_map(|txn| &txn.postings)
+        .filter(|posting| posting.generated.is_none())
         .flat_map(|posting| &posting.amounts)
 }
 

@@ -48,13 +48,24 @@ import {accountsStore} from "#lib/accounts/accountsStore.svelte.js";
 import {aliasStore} from "#lib/imports/aliasStore.svelte.js";
 import {importStore} from "#lib/imports/importStore.svelte.js";
 import {openRules, rulesStore} from "#lib/imports/rulesStore.svelte.js";
+import {hledgerConfStore} from "#lib/settings/hledgerConfStore.svelte.js";
 import {holdingsData, holdingsScope, otherHoldingsData} from "./holdings.svelte";
 import {journal} from "./journal.svelte";
 import {pricesStore} from "./prices.svelte";
 import {settings} from "./settings.svelte";
 
 /** Every server resource a global refresh re-reads. See the note above before editing. */
-export const REFRESH_TARGETS = ["journal", "importCapabilities", "rulesIndex", "openRules", "aliases", "accounts", "prices", "holdings"] as const;
+export const REFRESH_TARGETS = [
+    "journal",
+    "importCapabilities",
+    "rulesIndex",
+    "openRules",
+    "aliases",
+    "accounts",
+    "hledgerConf",
+    "prices",
+    "holdings",
+] as const;
 
 export type RefreshTargetName = (typeof REFRESH_TARGETS)[number];
 
@@ -127,6 +138,8 @@ async function reload(name: RefreshTargetName, serverUrl: string, state: Refresh
             return aliasStore.reload(serverUrl);
         case "accounts":
             return accountsStore.reload(serverUrl);
+        case "hledgerConf":
+            return hledgerConfStore.reload(serverUrl);
         case "prices":
             // Which symbols need a quote, and where prices already live. Its
             // own `ensureStatus` key is set the first time /holdings is
