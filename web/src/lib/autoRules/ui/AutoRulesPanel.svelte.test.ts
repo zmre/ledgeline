@@ -74,18 +74,68 @@ describe("COMPONENT AutoRulesPanel", () => {
     });
 
     describe("editing (plan 30 amendment 22)", () => {
-        /** Every PUT body; the PUT answers `answer` (the listing by default). */
-        function capturePuts(answer?: Response): unknown[] {
+        /** Every PUT body; the PUT answers `answer` (the listing by default), after `onPut` (the file changing underneath). */
+        function capturePuts(answer?: Response, onPut?: () => void): unknown[] {
             const puts: unknown[] = [];
             const inner = globalThis.fetch;
             vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
                 if (init?.method === "PUT") {
                     puts.push(JSON.parse(String(init.body)));
+                    onPut?.();
                     if (answer !== undefined) return Promise.resolve(answer.clone());
                 }
                 return inner(url, init);
             });
             return puts;
+        }
+
+        const conflict = (): Response => new Response("rules.journal changed on disk", {status: 409});
+
+        /** A listing as served; its rules are whatever "the file" now holds. */
+        type Listing = Omit<typeof AUTO_RULES_LISTING, "rules"> & {rules: {raw: string}[]};
+
+        /** A mutable copy of the listing, so a test can change "the file" after the panel read it. */
+        function servedListing(): Listing {
+            return structuredClone(AUTO_RULES_LISTING);
+        }
+
+        /** `rules.journal` once someone else added a rule above its first: every rule of that file one block later, at a new revision. */
+        function withRuleInsertedAbove(): Listing["rules"] {
+            const inserted = {
+                ...AUTO_RULES_LISTING.rules[1],
+                index: 0,
+                line: 3,
+                query: "expenses:rent",
+                raw: "= expenses:rent\n    (budget:rent)  *-1\n",
+                unsupported: null,
+                block: 0,
+                revision: "rev-rules-2",
+            };
+            const shifted = AUTO_RULES_LISTING.rules.map((rule) =>
+                rule.journalId === "rules.journal"
+                    ? {...rule, index: rule.index + 1, block: rule.block + 1, revision: "rev-rules-2"}
+                    : {...rule, index: rule.index + 1}
+            );
+            return [inserted, ...shifted];
+        }
+
+        /** The rows, once they show `listing` — the store is a module singleton, so the previous test's can linger. */
+        async function rowsShowing(listing: Listing): Promise<HTMLElement[]> {
+            await waitFor(() =>
+                expect(screen.getAllByTestId("settings-auto-rule").map((row) => row.querySelector("pre")?.textContent)).toEqual(
+                    listing.rules.map((rule) => rule.raw.trimEnd())
+                )
+            );
+            return screen.getAllByTestId("settings-auto-rule");
+        }
+
+        /** Open the text editor on the `expr:` rule (index 1) and type a new block into it. */
+        async function draftTheExprRule(): Promise<string> {
+            const rules = await rowsShowing(AUTO_RULES_LISTING);
+            await fireEvent.click(within(rules[1]).getByTestId("settings-auto-edit"));
+            const draft = "= expr:'food and not dinner'\n    (budget:food)  *-1\n";
+            await fireEvent.input(screen.getByTestId("settings-auto-text"), {target: {value: draft}});
+            return draft;
         }
 
         it("edits a rule through its form and saves it as a replace of that block", async () => {
@@ -182,6 +232,109 @@ describe("COMPONENT AutoRulesPanel", () => {
             const error = await screen.findByTestId("settings-auto-save-error");
             expect(error.textContent).toContain("changed since this list was read");
             expect(screen.getByTestId("settings-auto-editor")).toBeTruthy();
+        });
+
+        it("keeps an open edit on its own rule when a re-read moves it, and saves it there", async () => {
+            await serve(AUTO_RULES_LISTING);
+            render(AutoRulesPanel, {});
+            const draft = await draftTheExprRule();
+
+            // The watcher republishes: a rule was added above, so index 1 is now `= revenue:sales`.
+            await serve({...AUTO_RULES_LISTING, rules: withRuleInsertedAbove()});
+            await waitFor(() => expect(screen.getAllByTestId("settings-auto-rule")).toHaveLength(4));
+            const rows = screen.getAllByTestId("settings-auto-rule");
+            expect(within(rows[1]).queryByTestId("settings-auto-editor")).toBeNull();
+            expect(within(rows[2]).getByTestId("settings-auto-text")).toBeTruthy();
+            expect((screen.getByTestId("settings-auto-text") as HTMLTextAreaElement).value).toBe(draft);
+
+            const puts = capturePuts();
+            await fireEvent.click(screen.getByTestId("settings-auto-save"));
+            await waitFor(() => expect(puts).toHaveLength(1));
+            expect(puts[0]).toEqual({
+                journalId: "rules.journal",
+                revision: "rev-rules-2",
+                change: {kind: "replace", block: 2, was: AUTO_RULES_LISTING.rules[1].raw, rule: {raw: draft}},
+            });
+        });
+
+        it("closes an open edit, and says why, once a re-read shows its rule changed", async () => {
+            await serve(AUTO_RULES_LISTING);
+            render(AutoRulesPanel, {});
+            await draftTheExprRule();
+
+            const rules = AUTO_RULES_LISTING.rules.map((rule) =>
+                rule.index === 1 ? {...rule, raw: "= expr:'food'\n    (budget:food)  *-2\n", revision: "rev-rules-2"} : rule
+            );
+            await serve({...AUTO_RULES_LISTING, rules});
+            await waitFor(() => expect(screen.queryByTestId("settings-auto-editor")).toBeNull());
+            expect(screen.getByTestId("settings-auto-notice").textContent).toContain("your edit was not saved");
+            expect(screen.getAllByTestId("settings-auto-rule")[1].querySelector("pre")?.textContent).toContain("*-2");
+        });
+
+        it("after a 409 re-read moved the rule, saves the retry over that rule and not the one now at its old place", async () => {
+            await serve(AUTO_RULES_LISTING);
+            render(AutoRulesPanel, {});
+            const draft = await draftTheExprRule();
+            const listing = servedListing();
+            await serve(listing);
+            await waitFor(() => expect(screen.getByTestId("settings-auto-text")).toBeTruthy());
+            // The first PUT finds the file moved: someone added a rule above.
+            const puts = capturePuts(conflict(), () => {
+                listing.rules = withRuleInsertedAbove();
+            });
+            await fireEvent.click(screen.getByTestId("settings-auto-save"));
+            expect((await screen.findByTestId("settings-auto-save-error")).textContent).toContain("changed since this list was read");
+            await waitFor(() => expect(screen.getAllByTestId("settings-auto-rule")).toHaveLength(4));
+            expect(within(screen.getAllByTestId("settings-auto-rule")[2]).getByTestId("settings-auto-editor")).toBeTruthy();
+
+            await fireEvent.click(screen.getByTestId("settings-auto-save"));
+            await waitFor(() => expect(puts).toHaveLength(2));
+            expect(puts[1]).toEqual({
+                journalId: "rules.journal",
+                revision: "rev-rules-2",
+                change: {kind: "replace", block: 2, was: AUTO_RULES_LISTING.rules[1].raw, rule: {raw: draft}},
+            });
+        });
+
+        it("a Delete the file moved under says so above the re-read list, and opens no editor on the old text", async () => {
+            const listing = servedListing();
+            await serve(listing);
+            // The rule was already removed on disk: the file now starts at the `expr:` rule.
+            const puts = capturePuts(conflict(), () => {
+                listing.rules = AUTO_RULES_LISTING.rules
+                    .slice(1)
+                    .map((rule) =>
+                        rule.journalId === "rules.journal"
+                            ? {...rule, index: rule.index - 1, block: rule.block - 1, revision: "rev-rules-2"}
+                            : {...rule, index: rule.index - 1}
+                    );
+            });
+            render(AutoRulesPanel, {});
+            const rules = await rowsShowing(AUTO_RULES_LISTING);
+            await fireEvent.click(within(rules[0]).getByTestId("settings-auto-delete"));
+            await fireEvent.click(within(rules[0]).getByTestId("settings-auto-confirm-delete"));
+            await waitFor(() => expect(puts).toHaveLength(1));
+            await waitFor(() => expect(screen.getAllByTestId("settings-auto-rule")).toHaveLength(2));
+            expect(screen.queryByTestId("settings-auto-editor")).toBeNull();
+            expect(screen.queryByTestId("settings-auto-save")).toBeNull();
+            const notice = screen.getByTestId("settings-auto-notice");
+            expect(notice.textContent).toContain("nothing was deleted");
+            expect(notice.closest("[data-testid=settings-auto-rule]")).toBeNull();
+            expect(screen.getAllByTestId("settings-auto-rule")[0].querySelector("pre")?.textContent).toContain("expr:");
+        });
+
+        it("a Delete that fails shows the error on that rule's row and leaves the row as listed", async () => {
+            await serve(AUTO_RULES_LISTING);
+            capturePuts(new Response("rules.journal could not be written: permission denied", {status: 500}));
+            render(AutoRulesPanel, {});
+            const rules = await rowsShowing(AUTO_RULES_LISTING);
+            await fireEvent.click(within(rules[0]).getByTestId("settings-auto-delete"));
+            await fireEvent.click(within(rules[0]).getByTestId("settings-auto-confirm-delete"));
+            const notice = await within(rules[0]).findByTestId("settings-auto-notice");
+            expect(notice.textContent).not.toBe("");
+            expect(screen.queryByTestId("settings-auto-editor")).toBeNull();
+            expect(within(rules[0]).getByTestId("settings-auto-edit")).toBeTruthy();
+            expect(within(rules[0]).getByTestId("settings-auto-delete")).toBeTruthy();
         });
 
         it("offers no editing when the server does not write", async () => {
