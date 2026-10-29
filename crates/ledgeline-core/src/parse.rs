@@ -516,10 +516,15 @@ impl<'a> JournalStyles<'a> {
         }
     }
 
-    /// The styles `journal` lends a file read beside it — a projection
-    /// scenario, read through [`parse_journal_with_styles`]: its declared
-    /// commodity styles alone, since a sibling file has its own
-    /// `decimal-mark` and `D`.
+    /// The styles `journal` lends a file read beside it, a projection
+    /// scenario: its declared commodity styles alone, since a sibling file has
+    /// its own `decimal-mark` and `D`.
+    ///
+    /// Under [`parse_journal_under`] these read a text with no directives of
+    /// its own (one `=` block) exactly as [`parse_journal_with_styles`] reads
+    /// it inheriting the same styles. A whole scenario FILE must go through
+    /// the latter: there the file's own `decimal-mark` outranks an inherited
+    /// style, and under [`parse_journal_under`] it would not.
     #[must_use]
     pub fn lent_by(journal: &'a Journal) -> Self {
         Self {
@@ -565,6 +570,8 @@ impl<'a> JournalStyles<'a> {
 /// [`parse_journal`] of `text` read as though it followed `styles`'
 /// directives in the same file — how an amount written into that journal
 /// will be read, so a writer can check its text means what it rendered.
+/// For a whole file read BESIDE a journal, use [`parse_journal_with_styles`]
+/// (see [`JournalStyles::lent_by`] for where the two differ).
 ///
 /// # Errors
 /// As [`parse_journal`].
