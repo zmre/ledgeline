@@ -17,7 +17,7 @@
 //!   commodity — the manual says it takes the matched one, the binary does
 //!   not (verified), and this follows the binary.
 //! - One amountless posting balances the rule's other generated postings of
-//!   its own group: the regular ones, or the balanced-virtual ones. An
+//!   its own group, AT COST: the regular ones, or the balanced-virtual ones. An
 //!   amountless `(virtual)` posting has nothing to balance and is zero.
 //! - `%account` in an account name is the matched posting's account.
 //! - A generated posting carries the matched posting's dates and the tags
@@ -29,8 +29,8 @@
 
 use crate::decimal::{Dec, DecError};
 use crate::model::{
-    AccountName, Amount, AutoAmount, AutoPosting, AutoPostingRule, CostKind, Journal, Posting,
-    PostingType, RuleRef, Transaction,
+    AccountName, Amount, AmountStyle, AutoAmount, AutoPosting, AutoPostingRule, Commodity,
+    CostKind, Journal, Posting, PostingType, RuleRef, Transaction,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -138,6 +138,7 @@ pub fn apply_journal(journal: &Journal) -> Journal {
         commodity_tags,
         prices,
         default_commodity,
+        decimal_mark,
         leading_comment,
     } = journal;
     let account_tags = crate::wire::account_tag_map(accounts);
@@ -184,6 +185,7 @@ pub fn apply_journal(journal: &Journal) -> Journal {
         commodity_tags: commodity_tags.clone(),
         prices: prices.clone(),
         default_commodity: default_commodity.clone(),
+        decimal_mark: *decimal_mark,
         leading_comment: leading_comment.clone(),
     }
 }
@@ -461,7 +463,7 @@ fn generate(
                 ptype: auto.ptype,
                 account: AccountName(auto.account.replace("%account", &matched.account.0)),
                 amounts: amounts(auto, matched)?,
-                balance_assertion: None,
+                balance_assertion: auto.balance_assertion.clone(),
                 date: matched.date.clone(),
                 date2: matched.date2.clone(),
                 comment: auto.comment.clone(),
@@ -479,7 +481,9 @@ fn generate(
             PostingType::Virtual => false,
             own => ptype == own,
         };
-        let mut sums: BTreeMap<String, (Amount, Dec)> = BTreeMap::new();
+        // AT COST, as hledger infers it and as the parser balances a written
+        // transaction: `1 EUR @ $1.10` is balanced by `$-1.10`, not `-1 EUR`.
+        let mut sums: BTreeMap<&Commodity, (&AmountStyle, Dec)> = BTreeMap::new();
         for (other, posting) in generated.iter().enumerate() {
             if other == at
                 || !group(posting.ptype)
@@ -488,19 +492,21 @@ fn generate(
                 continue;
             }
             for amount in &posting.amounts {
+                let (commodity, quantity, style) = crate::parse::cost_value(amount)?;
                 let entry = sums
-                    .entry(amount.commodity.0.clone())
-                    .or_insert_with(|| (amount.clone(), Dec::new(0, 0)));
-                entry.1 = entry.1.add(amount.quantity)?;
+                    .entry(commodity)
+                    .or_insert_with(|| (style, Dec::new(0, 0)));
+                entry.1 = entry.1.add(quantity)?;
             }
         }
         let balancing = sums
-            .into_values()
-            .map(|(template, sum)| {
+            .into_iter()
+            .map(|(commodity, (style, sum))| {
                 Ok(Amount {
+                    commodity: commodity.clone(),
                     quantity: sum.neg()?,
+                    style: style.clone(),
                     cost: None,
-                    ..template
                 })
             })
             .collect::<Result<Vec<_>, DecError>>()?;
@@ -743,6 +749,154 @@ mod tests {
         assert!(journal.auto_rules[0].query.unsupported().is_some());
         let txn = &journal.transactions[0];
         assert_eq!(&apply(&journal.auto_rules, txn).expect("applies"), txn);
+    }
+
+    /// A factor followed by an exponent, a cost or an assertion still names
+    /// no commodity, so the product keeps the matched one and its cost —
+    /// `hledger print --auto` over this journal prints `$1000`, `$1`, `$5`
+    /// and, on `10 EUR @@ $12`, `1000 EUR @@ $1200` (2026-10-28).
+    #[test]
+    fn a_factor_with_an_exponent_cost_or_assertion_keeps_the_matched_commodity() {
+        let rules = "= expenses:food\n\
+             \x20   (budget:a)  *1e2\n\
+             \x20   (budget:b)  *0.1 @ 2 EUR\n\
+             \x20   (budget:c)  *0.5 = $5\n\n";
+        let got = applied(&format!(
+            "{rules}2026-01-01 lunch\n    expenses:food  $10\n    assets:cash\n"
+        ));
+        assert_eq!(
+            got,
+            rows(&[
+                ("expenses:food", "$10"),
+                ("budget:a", "$1000"),
+                ("budget:b", "$1"),
+                ("budget:c", "$5"),
+                ("assets:cash", "$-10"),
+            ])
+        );
+
+        let journal = parse_journal(
+            &format!("{rules}2026-01-02 euro\n    expenses:food  10 EUR @@ $12\n    assets:cash\n"),
+            "e.journal",
+        )
+        .expect("parses");
+        let txn = apply(&journal.auto_rules, &journal.transactions[0]).expect("applies");
+        let exponent = &txn.postings[1].amounts[0];
+        assert_eq!(exponent.commodity.0, "EUR");
+        assert_eq!(show(exponent.quantity), "1000");
+        let cost = exponent.cost.as_deref().expect("the matched cost is kept");
+        assert_eq!(cost.kind, CostKind::Total);
+        assert_eq!(
+            (cost.amount.commodity.0.as_str(), show(cost.amount.quantity)),
+            ("$", "1200".to_string())
+        );
+    }
+
+    /// The amountless leg balances the scaled one AT COST. `hledger print
+    /// --auto` over these journals books `assets:cash $-1.10`, `$-2.20`
+    /// (`@@`) and `$-0.55` (`*0.5`), and refuses the `-1 EUR` this used to
+    /// infer (2026-10-28).
+    #[test]
+    fn an_amountless_leg_balances_a_costed_match_at_cost_as_hledger_does() {
+        for (factor, matched, cash) in [
+            ("1", "1 EUR @ $1.10", "$-1.1"),
+            ("1", "2 EUR @@ $2.20", "$-2.2"),
+            ("0.5", "1 EUR @ $1.10", "$-0.55"),
+        ] {
+            let text = format!(
+                "= assets:stock\n    expenses:fee  *{factor}\n    assets:cash\n\n\
+                 2026-01-01 buy\n    assets:stock  {matched}\n    assets:bank\n"
+            );
+            let got = applied(&text);
+            assert_eq!(
+                got[2],
+                ("assets:cash".to_string(), cash.to_string()),
+                "{text}"
+            );
+            let journal = apply_journal(&parse_journal(&text, "c.journal").expect("parses"));
+            let generated = &journal.transactions[0].postings[2];
+            assert_eq!(generated.amounts[0].cost, None, "{text}");
+            assert_eq!(generated.amounts[0].style.precision, 2, "{text}");
+            assert!(
+                crate::parse::check_generated_balances(&journal)
+                    .expect("checks")
+                    .is_empty(),
+                "{text}"
+            );
+        }
+    }
+
+    /// A balance assertion on a rule posting rides on every posting it
+    /// generates and is checked there. `hledger print --auto` refuses the
+    /// first journal at `:2:18` ("asserted $5, calculated $1") and the second
+    /// at the SECOND lunch, where `*0.1 = $1` (still `$1`, not a bare `1`)
+    /// has made `$2` (2026-10-28).
+    #[test]
+    fn a_rule_posting_s_balance_assertion_is_checked_as_hledger_checks_it() {
+        let failures = |text: &str| {
+            let journal = parse_journal(text, "sw3.journal").expect("parses");
+            crate::assertions::check_balance_assertions(&apply_journal(&journal)).expect("checks")
+        };
+        let lunch = "\n2026-01-01 lunch\n    expenses:food  $10\n    assets:cash\n";
+
+        let fixed = failures(&format!(
+            "= expenses:food\n    assets:x  $1 = $5\n    assets:cash\n{lunch}"
+        ));
+        let [failure] = fixed.as_slice() else {
+            panic!("one failure, got {fixed:?}")
+        };
+        assert_eq!(failure.account.0, "assets:x");
+        assert_eq!(
+            (show(failure.asserted), show(failure.calculated)),
+            ("5".into(), "1".into())
+        );
+        assert_eq!((failure.position.line, failure.position.column), (2, 18));
+
+        let scaled = failures(&format!(
+            "= expenses:food\n    assets:x  *0.1 = $1\n    assets:cash\n{lunch}\
+             \n2026-01-02 lunch\n    expenses:food  $10\n    assets:cash\n"
+        ));
+        let [failure] = scaled.as_slice() else {
+            panic!("one failure, got {scaled:?}")
+        };
+        assert_eq!(failure.transaction_index, 1);
+        assert_eq!(failure.commodity.0, "$");
+        assert_eq!(
+            (show(failure.asserted), show(failure.calculated)),
+            ("1".into(), "2".into())
+        );
+
+        // Without `--auto` nothing is generated, so nothing is asserted.
+        let raw = parse_journal(
+            &format!("= expenses:food\n    assets:x  $1 = $5\n    assets:cash\n{lunch}"),
+            "raw.journal",
+        )
+        .expect("parses");
+        assert!(
+            crate::assertions::check_balance_assertions(&raw)
+                .expect("checks")
+                .is_empty()
+        );
+    }
+
+    /// Under `D $1000.00` a bare factor still keeps the matched commodity:
+    /// `D` is what a bare number adopts, not a commodity it writes —
+    /// `hledger print --auto` prints `1000 EUR` here (2026-10-28).
+    #[test]
+    fn a_default_commodity_does_not_re_denominate_a_bare_factor() {
+        let got = applied(
+            "D $1000.00\n\n= expenses:food\n    (budget:a)  *1e2\n    (budget:b)  *0.1 EUR\n\n\
+             2026-01-01 x\n    expenses:food  10 EUR\n    assets:cash\n",
+        );
+        assert_eq!(
+            got,
+            rows(&[
+                ("expenses:food", "EUR10"),
+                ("budget:a", "EUR1000"),
+                ("budget:b", "EUR1"),
+                ("assets:cash", "EUR-10"),
+            ])
+        );
     }
 
     /// The user's payroll-tax rule over per-person CHILD accounts, all in one

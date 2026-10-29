@@ -40,8 +40,9 @@ When `--auto` is on, Ledgeline uses the transactions with the rules' postings ad
 - Rules apply in file order, and a later rule can match postings an earlier rule added. A rule never matches its own postings.
 - Rules in an `include`d file apply to the whole journal.
 - `*0.1` multiplies the matched amount exactly, so `$-333.33` becomes `$-33.333`. Reports still round to the precision your journal writes, so `$-33.33` shows in a balance.
+- An amountless posting balances the rule's other postings at cost. A rule matching `1 EUR @ $1.10` balances with `$-1.10`, not `-1 EUR`.
 - A `tag:` query also matches tags a posting inherits from its account's `account` directive.
-- [Balance assertions](problems.md#balance-assertion) are checked after the rules apply, as in hledger.
+- [Balance assertions](problems.md#balance-assertion) are checked after the rules apply, as in hledger. An assertion written on a rule's own posting, such as `assets:savings  $10 = $500`, is checked on every posting the rule adds, and a failure points at the rule's line.
 - In the [budget](../budget.md), rules add to the actual amounts and never to the goals.
 - [Subscription detection](../reports/subscriptions.md) ignores the postings rules add, so a tax rule doesn't make a new subscription.
 
@@ -78,9 +79,11 @@ The tab also says whether `--auto` is on, and which config file says so. Change 
 
 The `^…(:|$)` query matches the account and its subaccounts, but not a sibling such as `revenue:sales2`. The balancing posting gets an explicit amount, because hledger refuses a blank one that fires twice in one transaction.
 
+Numbers are written the way your journal reads them. In a journal with `decimal-mark ,`, or a comma-style `D` or `commodity` directive, 8% is written `*0,08` and a fixed amount `1500,50 EUR`. Written with a `.`, hledger would read those as 800% and 150050 EUR.
+
 Leave **forecasts only** unticked for a rule about your recorded transactions. Ticked, the query gains `tag:_generated-transaction`, so hledger applies the rule only to `--forecast` transactions. Ledgeline doesn't forecast your main journal, so such a rule never adds anything here.
 
-Some rules can't be shown as a form: a `tag:` or `desc:` query with no account, virtual postings, posting comments. These open as text instead, and so does **Edit as text** on any rule. What you type is written exactly as typed.
+Some rules can't be shown as a form: a `tag:` or `desc:` query with no account, virtual postings, posting comments, balance assertions. These open as text instead, and so does **Edit as text** on any rule. What you type is written exactly as typed.
 
 A rule's postings must balance, or hledger refuses the whole journal under `--auto` as soon as the rule fires. So a form with one posting needs the account it is **balanced against**, and Ledgeline won't save a rule whose postings can never balance, such as a lone `*0.1` or `$10`. Postings in parentheses, such as `(budget:food)  *-1`, don't need to balance and are saved as typed.
 

@@ -1099,6 +1099,7 @@ mod tests {
             commodity_tags: Vec::new(),
             prices,
             default_commodity: None,
+            decimal_mark: None,
             leading_comment: None,
         }
     }

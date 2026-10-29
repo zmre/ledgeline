@@ -84,6 +84,7 @@ use ledgeline_core::auto_form::{form_from_rule, render};
 use ledgeline_core::edit::Fingerprint;
 use ledgeline_core::hledger_conf;
 use ledgeline_core::model::{AutoPostingRule, Journal, PostingType};
+use ledgeline_core::parse::JournalStyles;
 use ledgeline_core::reports::{AccountTypes, account_decls, declared_types};
 use ledgeline_core::vault::{VaultError, VaultPath};
 use serde::{Deserialize, Serialize};
@@ -433,15 +434,18 @@ fn save_rule(state: &AppState, request: &SaveRule) -> Result<WireAutoRules, AppE
     let mine = rules_of(&current, &key);
     let before: Vec<String> = mine.iter().map(|rule| rule.raw.clone()).collect();
     let types = AccountTypes::from_declared(declared_types(&account_decls(&current)));
+    // A form's amounts are written as this journal reads them: `*0,1` under
+    // `decimal-mark ,`, where `*0.1` would read as 100%.
+    let styles = JournalStyles::of(&current);
     let edit = match &request.change {
         ChangeIn::Add { rule } => RuleEdit::Append {
-            text: block_text(rule, &types)?,
+            text: block_text(rule, &types, &styles)?,
         },
         ChangeIn::Replace { block, was, rule } => {
             seen(&before, *block, was, id)?;
             RuleEdit::Replace {
                 block: *block,
-                text: block_text(rule, &types)?,
+                text: block_text(rule, &types, &styles)?,
             }
         }
         ChangeIn::Remove { block, was } => {
@@ -531,14 +535,18 @@ fn seen(before: &[String], block: usize, was: &str, id: &str) -> Result<(), AppE
 /// exactly one `=` block. Either way read back through the same check, and
 /// refused when its postings can never balance: hledger would refuse the
 /// whole journal under `--auto` the first time it fired.
-fn block_text(rule: &RuleIn, types: &AccountTypes) -> Result<String, AppError> {
+fn block_text(
+    rule: &RuleIn,
+    types: &AccountTypes,
+    styles: &JournalStyles<'_>,
+) -> Result<String, AppError> {
     let parsed = match (&rule.raw, &rule.form) {
-        (Some(raw), None) => rule_from_text(raw)?,
+        (Some(raw), None) => rule_from_text(raw, styles)?,
         (None, Some(form)) => {
-            let text = render(&form_from_wire(form)?, types).map_err(|error| {
+            let text = render(&form_from_wire(form)?, types, styles).map_err(|error| {
                 AppError::BadRequest(format!("an auto rule cannot be written: {error}"))
             })?;
-            rule_from_text(&text)?
+            rule_from_text(&text, styles)?
         }
         _ => {
             return Err(AppError::BadRequest(

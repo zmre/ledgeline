@@ -43,7 +43,8 @@
 //! explicit form once edited. A plain account word (`revenue:sales`) is read as
 //! the match account too (an edit writes it anchored), and the forecast-only
 //! tag, present or not, is [`AutoRuleForm::forecast_only`]. Anything else — virtual or
-//! status-marked postings, posting comments, `*N CUR` re-denomination, a cost,
+//! status-marked postings, posting comments, a balance assertion, `*N CUR`
+//! re-denomination, a cost,
 //! `%account`, a multi-line comment, a query whose account term is not one of
 //! those two shapes — is not representable.
 //!
@@ -89,6 +90,7 @@ use crate::decimal::Dec;
 use crate::model::{
     Amount, AmountStyle, AutoAmount, AutoPostingRule, Commodity, CommoditySide, PostingType, Status,
 };
+use crate::parse::JournalStyles;
 use crate::query::Query;
 use crate::reports::account_types::{AccountType, AccountTypes};
 
@@ -230,22 +232,28 @@ fn percent_of(factor: Dec) -> Option<Dec> {
 // Rendering
 // ===========================================================================
 
-/// `form` as one `=` block, each line ending in `\n`.
+/// `form` as one `=` block, each line ending in `\n`, its amounts written in
+/// `styles` — those of the journal the rule is written into, so `10%` is
+/// `*0,1` under `decimal-mark ,`.
 ///
-/// The result is checked to read back, through the journal parser and
-/// [`form_from_rule`], as a form that renders to the very same text, so what
-/// is written is what was asked for.
+/// The result is checked to read back, through the journal parser under those
+/// same styles and [`form_from_rule`], as a form that renders to the very same
+/// text, so what is written is what was asked for.
 ///
 /// # Errors
 /// [`FormError`] for a field that cannot be written, with the reason.
-pub fn render(form: &AutoRuleForm, types: &AccountTypes) -> Result<String, FormError> {
-    let text = render_unchecked(form, types)?;
-    let journal = crate::parse::parse_journal(&text, "auto-rule.journal")
+pub fn render(
+    form: &AutoRuleForm,
+    types: &AccountTypes,
+    styles: &JournalStyles<'_>,
+) -> Result<String, FormError> {
+    let text = render_unchecked(form, types, styles)?;
+    let journal = crate::parse::parse_journal_under(&text, "auto-rule.journal", styles)
         .map_err(|error| FormError(format!("the rule would not read back: {error}")))?;
     let [rule] = journal.auto_rules.as_slice() else {
         return refuse("the rule would not read back as one rule");
     };
-    match form_from_rule(rule, types).map(|back| render_unchecked(&back, types)) {
+    match form_from_rule(rule, types).map(|back| render_unchecked(&back, types, styles)) {
         Some(Ok(again)) if again == text => Ok(text),
         _ => refuse(format!(
             "the rule would not read back as written: {}",
@@ -255,7 +263,11 @@ pub fn render(form: &AutoRuleForm, types: &AccountTypes) -> Result<String, FormE
 }
 
 /// [`render`] without the read-back check.
-fn render_unchecked(form: &AutoRuleForm, types: &AccountTypes) -> Result<String, FormError> {
+fn render_unchecked(
+    form: &AutoRuleForm,
+    types: &AccountTypes,
+    styles: &JournalStyles<'_>,
+) -> Result<String, FormError> {
     if form.postings.is_empty() {
         return refuse("an automatic posting rule needs at least one posting");
     }
@@ -277,7 +289,7 @@ fn render_unchecked(form: &AutoRuleForm, types: &AccountTypes) -> Result<String,
             FormAmount::Percent(percent) => {
                 let factor = signed(factor_of(*percent), match_negative != target_negative)?;
                 factors.push(factor);
-                format!("*{}", plain(factor))
+                format!("*{}", plain(factor, styles))
             }
             FormAmount::Fixed {
                 commodity,
@@ -286,7 +298,7 @@ fn render_unchecked(form: &AutoRuleForm, types: &AccountTypes) -> Result<String,
                 let quantity = signed(*quantity, target_negative)?;
                 let commodity = commodity.trim();
                 fixed.push((commodity.to_string(), quantity));
-                fixed_text(commodity, quantity)?
+                fixed_text(commodity, quantity, styles)?
             }
         };
         rows.push((account.to_string(), text));
@@ -299,10 +311,10 @@ fn render_unchecked(form: &AutoRuleForm, types: &AccountTypes) -> Result<String,
     {
         check_account(counter)?;
         let text = if fixed.is_empty() {
-            format!("*{}", plain(negated_sum(&factors)?.normalized()))
+            format!("*{}", plain(negated_sum(&factors)?.normalized(), styles))
         } else if factors.is_empty() && fixed.iter().all(|(c, _)| *c == fixed[0].0) {
             let quantities: Vec<Dec> = fixed.iter().map(|(_, q)| *q).collect();
-            fixed_text(&fixed[0].0, negated_sum(&quantities)?)?
+            fixed_text(&fixed[0].0, negated_sum(&quantities)?, styles)?
         } else {
             return refuse(
                 "a counter-account balances percentages, or fixed amounts in one commodity, \
@@ -339,29 +351,39 @@ fn negated_sum(values: &[Dec]) -> Result<Dec, FormError> {
         .map_err(overflow)
 }
 
-/// A number exactly as written, no commodity: `-0.035`.
-fn plain(value: Dec) -> String {
+/// A number exactly as written, no commodity, with the mark `styles` reads a
+/// bare number with: `-0.035`, or `-0,035`.
+fn plain(value: Dec, styles: &JournalStyles<'_>) -> String {
+    let commodity = Commodity(String::new());
+    let mark = styles.decimal_mark_for(&commodity);
     crate::edit::render_amount(&Amount {
-        commodity: Commodity(String::new()),
+        commodity,
         quantity: value,
-        style: style(CommoditySide::Left, false, value.places),
+        style: style(CommoditySide::Left, false, mark, value.places),
         cost: None,
     })
 }
 
-fn style(side: CommoditySide, spaced: bool, precision: u32) -> AmountStyle {
+fn style(side: CommoditySide, spaced: bool, decimal_mark: char, precision: u32) -> AmountStyle {
     AmountStyle {
         side,
         spaced,
-        decimal_mark: Some('.'),
+        decimal_mark: Some(decimal_mark),
         digit_groups: None,
         precision,
     }
 }
 
-/// A fixed amount: a symbol such as `$` on the left with no space, a word
-/// such as `USD` on the right after one, nothing for an empty commodity.
-fn fixed_text(commodity: &str, quantity: Dec) -> Result<String, FormError> {
+/// A fixed amount in its declared style when `styles` has one (its side,
+/// spacing and decimal mark; digit groups are never written); otherwise a
+/// symbol such as `$` on the left with no space, a word such as `USD` on the
+/// right after one, nothing for an empty commodity, with the mark `styles`
+/// reads it with.
+fn fixed_text(
+    commodity: &str,
+    quantity: Dec,
+    styles: &JournalStyles<'_>,
+) -> Result<String, FormError> {
     if commodity.chars().any(|c| {
         c.is_whitespace() || c.is_control() || c.is_ascii_digit() || "\"';#-+.,*@=()[]".contains(c)
     }) {
@@ -370,16 +392,27 @@ fn fixed_text(commodity: &str, quantity: Dec) -> Result<String, FormError> {
              symbol or word"
         ));
     }
-    let wordy = commodity.chars().any(char::is_alphabetic);
-    let side = if wordy {
-        CommoditySide::Right
-    } else {
-        CommoditySide::Left
+    let commodity = Commodity(commodity.to_string());
+    let mark = styles.decimal_mark_for(&commodity);
+    let style = match styles.declared_style(&commodity) {
+        Some(declared) => AmountStyle {
+            decimal_mark: Some(mark),
+            ..declared.clone()
+        },
+        None => {
+            let wordy = commodity.0.chars().any(char::is_alphabetic);
+            let side = if wordy {
+                CommoditySide::Right
+            } else {
+                CommoditySide::Left
+            };
+            style(side, wordy, mark, quantity.places)
+        }
     };
     Ok(crate::edit::render_amount(&Amount {
-        commodity: Commodity(commodity.to_string()),
+        commodity,
         quantity,
-        style: style(side, wordy, quantity.places),
+        style,
         cost: None,
     }))
 }
@@ -527,6 +560,7 @@ pub fn form_from_rule(rule: &AutoPostingRule, types: &AccountTypes) -> Option<Au
             && posting.status == Status::Unmarked
             && posting.comment.is_empty()
             && posting.tags.is_empty()
+            && posting.balance_assertion.is_none()
             && check_account(&posting.account).is_ok();
         if !plain {
             return None;
@@ -787,6 +821,7 @@ mod tests {
                 Some("assets:checking"),
             ),
             &types(),
+            &JournalStyles::default(),
         )
         .expect("renders");
         assert_eq!(
@@ -807,6 +842,7 @@ mod tests {
                 Some("assets:checking"),
             ),
             &types(),
+            &JournalStyles::default(),
         )
         .expect("renders");
         assert!(
@@ -829,6 +865,7 @@ mod tests {
                 Some("expenses:payroll-tax"),
             ),
             &types(),
+            &JournalStyles::default(),
         )
         .expect("renders");
         assert!(text.contains("liabilities:payroll-tax  *-0.1\n"), "{text}");
@@ -846,6 +883,7 @@ mod tests {
                 Some("assets:checking"),
             ),
             &types(),
+            &JournalStyles::default(),
         )
         .expect("renders");
         let journal = parse_journal(
@@ -895,6 +933,7 @@ mod tests {
                 Some("assets:checking"),
             ),
             &types(),
+            &JournalStyles::default(),
         )
         .expect("renders");
         assert!(text.contains("expenses:fees     $50\n"), "{text}");
@@ -913,6 +952,7 @@ mod tests {
                 None,
             ),
             &types(),
+            &JournalStyles::default(),
         )
         .expect("renders");
         assert!(words.contains("expenses:x  2 USD\n"), "{words}");
@@ -936,6 +976,7 @@ mod tests {
                 Some("assets:checking"),
             ),
             &types(),
+            &JournalStyles::default(),
         )
         .expect_err("refused");
         assert!(error.0.contains("not a mix"), "{error}");
@@ -950,11 +991,11 @@ mod tests {
             Some("assets:checking"),
         );
         // Brackets are refused in a posting account, and so in a match.
-        assert!(render(&f, &types()).is_err());
+        assert!(render(&f, &types(), &JournalStyles::default()).is_err());
         f.match_account = "revenue:my sales.co+1".into();
         f.extra_query = "  desc:acme   'note:big deal'  ".into();
         f.comment = "commission, sales: yes".into();
-        let text = render(&f, &types()).expect("renders");
+        let text = render(&f, &types(), &JournalStyles::default()).expect("renders");
         assert_eq!(
             text.lines().next(),
             Some(
@@ -988,7 +1029,7 @@ mod tests {
         );
         assert_eq!(f.counter.as_deref(), Some("assets:mercury:checking"));
         // Once edited it is written in the explicit form hledger always loads.
-        let text = render(&f, &types()).expect("renders");
+        let text = render(&f, &types(), &JournalStyles::default()).expect("renders");
         assert!(
             text.starts_with("= ^revenue:sales(:|$) tag:_generated-transaction\n"),
             "{text}"
@@ -1013,7 +1054,7 @@ mod tests {
             forecast_only: false,
             ..form("expenses:rent", &[("expenses:rent-tax", pct(10, 0))], None)
         };
-        let text = render(&f, &types()).expect("renders");
+        let text = render(&f, &types(), &JournalStyles::default()).expect("renders");
         assert_eq!(text, "= ^expenses:rent(:|$)\n    expenses:rent-tax  *0.1\n");
         assert_eq!(form_from_rule(&rule_of(&text), &types()), Some(f.clone()));
 
@@ -1023,6 +1064,7 @@ mod tests {
                 ..f
             },
             &types(),
+            &JournalStyles::default(),
         )
         .expect("renders");
         assert_eq!(
@@ -1059,20 +1101,104 @@ mod tests {
         }
     }
 
+    /// A rule is written in the styles of the journal it goes into. Under a
+    /// comma decimal mark — `decimal-mark ,`, `D 1.000,00 EUR`, or (for a
+    /// fixed amount) `commodity 1.000,00 EUR` — a `.`-written `*0.1` reads as
+    /// a 100% multiplier and `1500.50 EUR` as `150050 EUR`, in this parser and
+    /// in hledger 1.52. Rendered under the journal's styles, the rule reads
+    /// back as 10% and `1500.50`, which `hledger print --auto` confirms for
+    /// each text below: a `1000 EUR` rent books `100 EUR` and `1500.50 EUR`
+    /// (2026-10-28).
+    #[test]
+    fn a_rule_is_written_in_the_decimal_mark_of_the_journal_it_goes_into() {
+        let f = AutoRuleForm {
+            forecast_only: false,
+            ..form(
+                "expenses:rent",
+                &[
+                    ("expenses:fee", pct(10, 0)),
+                    (
+                        "expenses:fixed",
+                        FormAmount::Fixed {
+                            commodity: "EUR".into(),
+                            quantity: Dec::new(150_050, 2),
+                        },
+                    ),
+                ],
+                None,
+            )
+        };
+        for (header, factor, fixed) in [
+            ("decimal-mark ,", "*0,1", "1500,50 EUR"),
+            ("D 1.000,00 EUR", "*0,1", "1500,50 EUR"),
+            ("commodity 1.000,00 EUR", "*0.1", "1500,50 EUR"),
+        ] {
+            let journal = parse_journal(&format!("{header}\n"), "j.journal").expect("parses");
+            let text = render(&f, &types(), &JournalStyles::of(&journal)).expect("renders");
+            assert_eq!(
+                text,
+                format!(
+                    "= ^expenses:rent(:|$)\n    expenses:fee    {factor}\n    expenses:fixed  {fixed}\n"
+                ),
+                "{header}"
+            );
+            // Read where it is written: after the journal's own directives.
+            let rule = rule_of(&format!("{header}\n\n{text}"));
+            assert_eq!(
+                form_from_rule(&rule, &types()).map(|back| back.postings),
+                Some(f.postings.clone()),
+                "{header}"
+            );
+        }
+        // With no such directive, `.` it is, as before.
+        let text = render(&f, &types(), &JournalStyles::default()).expect("renders");
+        assert!(
+            text.contains("*0.1\n") && text.contains("1500.50 EUR\n"),
+            "{text}"
+        );
+    }
+
+    /// A form has no place for a balance assertion, so a rule carrying one
+    /// opens as text: an Edit → Save through the form would re-render it
+    /// without the assertion and silently delete it from the journal.
+    #[test]
+    fn a_rule_with_a_balance_assertion_opens_as_text_so_a_save_cannot_drop_it() {
+        for (plain, asserted) in [
+            (
+                "= expenses:food\n    assets:x  $1\n    assets:cash  $-1\n",
+                "= expenses:food\n    assets:x  $1 = $5\n    assets:cash  $-1\n",
+            ),
+            (
+                "= expenses:food\n    assets:x  *0.1\n    assets:cash\n",
+                "= expenses:food\n    assets:x  *0.1 = $5\n    assets:cash\n",
+            ),
+        ] {
+            assert!(
+                form_from_rule(&rule_of(plain), &types()).is_some(),
+                "{plain}"
+            );
+            assert_eq!(
+                form_from_rule(&rule_of(asserted), &types()),
+                None,
+                "{asserted}"
+            );
+        }
+    }
+
     #[test]
     fn a_query_this_engine_cannot_evaluate_is_refused_at_render() {
         let mut f = form("revenue", &[("expenses:x", pct(1, 0))], None);
         f.extra_query = "type:X".into();
         assert!(
-            render(&f, &types())
+            render(&f, &types(), &JournalStyles::default())
                 .unwrap_err()
                 .0
                 .contains("cannot be used")
         );
         f.extra_query = "desc:'open".into();
-        assert!(render(&f, &types()).is_err());
+        assert!(render(&f, &types(), &JournalStyles::default()).is_err());
         f.extra_query = "desc:a ; include x".into();
-        assert!(render(&f, &types()).is_err());
+        assert!(render(&f, &types(), &JournalStyles::default()).is_err());
     }
 
     #[test]
@@ -1166,12 +1292,12 @@ mod tests {
         }
 
         proptest! {
-            /// `form_from_rule(parse(render(form))) == form`, for every form
+            /// `form_from_rule(parse(render(form, &JournalStyles::default()))) == form`, for every form
             /// that renders and is not ambiguous (postings whose last leg
             /// happens to balance the rest read back as having a counter).
             #[test]
             fn render_then_read_is_the_identity(f in arb_form()) {
-                let Ok(text) = render(&f, &types()) else {
+                let Ok(text) = render(&f, &types(), &JournalStyles::default()) else {
                     // Only a counter over mixed kinds or commodities refuses.
                     prop_assert!(f.counter.is_some());
                     return Ok(());

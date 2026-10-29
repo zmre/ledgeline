@@ -665,6 +665,10 @@ pub struct AutoPosting {
     pub account: String,
     /// What it writes.
     pub amount: AutoAmount,
+    /// A balance assertion written after the amount (`$1 = $5`, `*0.1 = $5`).
+    /// Every posting the rule generates carries it, and it is checked there
+    /// like any other assertion, as hledger does.
+    pub balance_assertion: Option<BalanceAssertion>,
     /// Raw comment text, as [`Posting::comment`].
     pub comment: String,
     /// Its own tags.
@@ -742,6 +746,10 @@ pub struct Journal {
     /// commodity can prefer it over guessing from price-directive frequency
     /// (see `holdings::HoldingsScope::value_in`).
     pub default_commodity: Option<Commodity>,
+    /// The `decimal-mark` directive in force when the parse ended, if any:
+    /// the mark a bare number appended to the journal is read with (see
+    /// [`crate::parse::JournalStyles`]).
+    pub decimal_mark: Option<char>,
     /// The MAIN file's leading comment: the text of its first non-empty line
     /// when that line is a comment, with the marker and surrounding whitespace
     /// stripped. `None` when the file opens with anything else.

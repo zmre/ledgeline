@@ -45,7 +45,7 @@ use ledgeline_core::model::AutoPostingRule;
 use ledgeline_core::model::{
     AccountName, Amount, AmountStyle, Commodity, CommoditySide, PeriodSpec, Posting,
 };
-use ledgeline_core::parse::parse_period_spec;
+use ledgeline_core::parse::{JournalStyles, parse_period_spec};
 use ledgeline_core::projections::serialize::{
     ProjectionDoc, SerializeError, new_file_with_styles, scenario_account_types,
     scenario_and_own_types_from_text_with_styles, write_scenario,
@@ -71,9 +71,7 @@ use ledgeline_core::view::wire::DeclaredStyles;
 use ledgeline_core::{Dec, Fingerprint};
 use serde::{Deserialize, Serialize};
 
-use crate::auto_wire::{
-    AutoRuleFormIn, WireAutoRuleForm, form_from_wire, rule_from_text, rule_from_text_with_styles,
-};
+use crate::auto_wire::{AutoRuleFormIn, WireAutoRuleForm, form_from_wire, rule_from_text};
 use crate::edit_api::{WireDecIn, dec_from_wire, json_body};
 use crate::error::{AppError, editing_disabled};
 use crate::reports_api::{
@@ -1104,7 +1102,11 @@ impl DecodedScenario {
     /// The scenario, each `entry` signed by its account's type: the main
     /// journal's `declared`, with the scenario's own winning — the types its
     /// [`WireScenario`] was read under.
-    fn signed(self, declared: &BTreeMap<String, AccountType>) -> Result<Scenario, AppError> {
+    fn signed(
+        self,
+        declared: &BTreeMap<String, AccountType>,
+        styles: &JournalStyles<'_>,
+    ) -> Result<Scenario, AppError> {
         let Self {
             mut scenario,
             entries,
@@ -1121,10 +1123,10 @@ impl DecodedScenario {
                 let rule = match decoded {
                     DecodedRule::Raw(rule) => rule,
                     DecodedRule::Form(form) => {
-                        let text = render(&form, &types).map_err(|error| {
+                        let text = render(&form, &types, styles).map_err(|error| {
                             AppError::BadRequest(format!("an auto rule cannot be written: {error}"))
                         })?;
-                        rule_from_text(&text)?
+                        rule_from_text(&text, styles)?
                     }
                 };
                 Ok(ScenarioAutoRule { block, rule })
@@ -1152,11 +1154,12 @@ impl DecodedScenario {
 /// thousand lines in order to discover there are ten thousand of them is not
 /// that.
 ///
-/// `inherited` is the main journal's declared commodity styles, which a rule
-/// sent as text is read under — exactly as [`open_file`] read it.
+/// `styles` is what the main journal lends a scenario
+/// ([`JournalStyles::lent_by`]), which a rule sent as text is read under —
+/// exactly as [`open_file`] read it.
 fn scenario_from_wire(
     scenario: &ScenarioIn,
-    inherited: &[(Commodity, AmountStyle)],
+    styles: &JournalStyles<'_>,
 ) -> Result<DecodedScenario, AppError> {
     if scenario.lines.len() > MAX_LINES {
         return Err(AppError::BadRequest(format!(
@@ -1248,7 +1251,7 @@ fn scenario_from_wire(
         .map(|line| line.entry.as_ref().map(dec_from_wire).transpose())
         .collect::<Result<Vec<_>, AppError>>()?;
 
-    let rules = auto_rules_from_wire(&scenario.auto_rules, inherited)?;
+    let rules = auto_rules_from_wire(&scenario.auto_rules, styles)?;
     let own_types = account_types_from_wire(&scenario.account_types)?;
 
     Ok(DecodedScenario {
@@ -1291,7 +1294,7 @@ fn account_types_from_wire(
 /// the block each came from.
 fn auto_rules_from_wire(
     rules: &[AutoRuleIn],
-    inherited: &[(Commodity, AmountStyle)],
+    styles: &JournalStyles<'_>,
 ) -> Result<Vec<(DecodedRule, Option<usize>)>, AppError> {
     if rules.len() > MAX_AUTO_RULES {
         return Err(AppError::BadRequest(format!(
@@ -1303,7 +1306,7 @@ fn auto_rules_from_wire(
         .iter()
         .map(|rule| {
             let decoded = match (&rule.raw, &rule.form) {
-                (Some(raw), None) => DecodedRule::Raw(rule_from_text_with_styles(raw, inherited)?),
+                (Some(raw), None) => DecodedRule::Raw(rule_from_text(raw, styles)?),
                 // A scenario's rules apply to forecasts and nothing else
                 // (Decision 6), so each is written to say so to hledger too.
                 (None, Some(form)) => DecodedRule::Form(AutoRuleForm {
@@ -1363,7 +1366,10 @@ pub(crate) async fn run(
         .map(Commodity);
     // Decoded (and bounded) BEFORE a `compute` slot is claimed: a scenario we
     // are going to refuse must not first wait for a core.
-    let decoded = scenario_from_wire(&request.scenario, &snapshot.journal.commodity_styles)?;
+    let decoded = scenario_from_wire(
+        &request.scenario,
+        &JournalStyles::lent_by(&snapshot.journal),
+    )?;
 
     compute(move || {
         let journal = &snapshot.journal;
@@ -1373,7 +1379,8 @@ pub(crate) async fn run(
         // changes.
         let cache = &snapshot.projections;
         let facts = cache.facts(journal)?;
-        let scenario = decoded.signed(&facts.shape().declared)?;
+        let styles = JournalStyles::lent_by(journal);
+        let scenario = decoded.signed(&facts.shape().declared, &styles)?;
         let key = facts.key(&window.end, window.interval, lookback, value_in)?;
         let real = cache.side(journal, &facts, &key)?;
         // ONE expansion serves every reading: the cash series and runway are
@@ -2230,7 +2237,10 @@ pub(crate) async fn save(
     // Decoded (and bounded) BEFORE the lock is taken and before a `compute`
     // slot is claimed: a scenario we are going to refuse must not first wait
     // for a core, and must not hold the write lock while it is refused.
-    let mut decoded = scenario_from_wire(&request.scenario, &snapshot.journal.commodity_styles)?;
+    let mut decoded = scenario_from_wire(
+        &request.scenario,
+        &JournalStyles::lent_by(&snapshot.journal),
+    )?;
     let today = today_utc();
     decoded.scenario.created = Some(
         decoded
@@ -2257,7 +2267,8 @@ pub(crate) async fn save(
         // serializes writers to one journal directory, the runtime serializes
         // the whole application.
         let declared = declared_types(&account_decls(&snapshot.journal));
-        let scenario = decoded.signed(&declared)?;
+        let styles = JournalStyles::lent_by(&snapshot.journal);
+        let scenario = decoded.signed(&declared, &styles)?;
         // Plan 28: a pre-plan-28 group that does not balance is written with
         // the default counter-account the engine already books it to, so the
         // file becomes plain balanced hledger and no number moves.

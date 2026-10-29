@@ -585,6 +585,62 @@ async fn a_stale_revision_or_block_is_a_409_and_writes_nothing() {
     assert_eq!(read(&dir, "rules.journal"), before);
 }
 
+/// A form saved into a `decimal-mark ,` journal is written with a comma, so
+/// the journal (and hledger) read the 10% the user typed. Written `*0.1`, it
+/// read as `*1`: a 100% fee on every rent, shown back in Settings as 100%.
+#[tokio::test]
+async fn a_form_saved_into_a_comma_decimal_journal_reads_back_as_typed() {
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir()
+        .join("ledgeline-auto-endpoint-tests")
+        .join(format!("{}-comma-{seq}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    std::fs::write(dir.join("hledger.conf"), "--auto\n").expect("conf");
+    let journal =
+        "decimal-mark ,\n\n2026-01-01 rent\n    expenses:rent  1000 EUR\n    assets:cash\n\n";
+    std::fs::write(dir.join("main.journal"), journal).expect("journal");
+    let state = state_in(&dir);
+    let listed = get(&state, "/api/auto-rules").await;
+    let form = json!({
+        "matchAccount": "expenses:rent",
+        "postings": [{"account": "expenses:fee", "kind": "percent",
+                      "percent": {"mantissa": "10", "places": 0}, "amount": null}],
+        "counter": "assets:cash",
+    });
+    let (status, body) = put(
+        &state,
+        json!({
+            "journalId": "main.journal",
+            "revision": listed["newRule"]["revision"],
+            "change": {"kind": "add", "rule": {"form": form}},
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        read(&dir, "main.journal"),
+        format!(
+            "{journal}= ^expenses:rent(:|$)\n    expenses:fee  *0,1\n    assets:cash   *-0,1\n"
+        )
+    );
+    let rule = &body["rules"][0];
+    assert_eq!(
+        rule["form"]["postings"][0]["percent"],
+        json!({"mantissa": "10", "places": 0}),
+        "{rule}"
+    );
+    let rent = rows(&state)
+        .await
+        .into_iter()
+        .find(|row| row["date"] == "2026-01-01")
+        .expect("the rent");
+    assert_eq!(
+        rent["postings"][1]["amounts"][0]["qty"],
+        json!({"m": "100", "p": 0}),
+        "a 100 EUR fee: {rent}"
+    );
+}
+
 /// What a rule body may not be: a directive smuggled in after the block, an
 /// unparseable query, both kinds of rule at once, a file the journal does not
 /// read.
