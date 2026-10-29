@@ -17,10 +17,13 @@
 //!   how a rule limits itself to forecast transactions.
 //! - `amt:N`, `amt:<N`, `amt:<=N`, `amt:>N`, `amt:>=N` — a signed comparison
 //!   when `N` is written with a sign (or is zero), otherwise a comparison of
-//!   MAGNITUDES. A posting holding more than one commodity always matches.
+//!   MAGNITUDES. A posting holding more than one commodity matches when any
+//!   one of its amounts does (not "always", as hledger's manual says); an
+//!   amountless posting compares as zero.
 //! - `cur:` — a regex that must match the WHOLE commodity symbol.
-//! - `status:` / `status:!` / `status:*`, `real:` / `real:0`, `depth:N`,
-//!   `date:PERIOD`.
+//! - `status:` / `status:!` / `status:*`, `depth:N`, `date:PERIOD`.
+//! - `real:` and `real:1` select real postings; any other value (`real:0`,
+//!   but also `real:yes`, `real:true`) selects virtual ones.
 //! - `not:` negates any term.
 //! - Several terms: the positive `desc:` terms are ORed, the positive account
 //!   terms are ORed, the positive `status:` terms are ORed, and those groups
@@ -190,23 +193,26 @@ fn term_matches(
     }
 }
 
-/// `amt:` — a single-commodity posting compared against `n`, signed or by
-/// magnitude; a multi-commodity one always matches (hledger's rule).
+/// `amt:` — each of the posting's amounts compared against `n`, signed or by
+/// magnitude; the term matches when ANY of them is accepted. An amountless
+/// posting compares as zero. (hledger's manual says a multi-commodity
+/// posting always matches; hledger 1.52 does this instead.)
 fn amount_matches(
     posting: &Posting,
     signed: bool,
     n: Dec,
     accept: impl Fn(Ordering) -> bool,
 ) -> bool {
-    let [amount] = posting.amounts.as_slice() else {
-        return true;
-    };
-    let quantity = if signed {
-        Ok(amount.quantity)
-    } else {
-        amount.quantity.abs()
-    };
-    quantity.is_ok_and(|q| accept(q.cmp(&n)))
+    let amountless = posting.amounts.is_empty().then(Dec::zero);
+    let mut quantities = posting
+        .amounts
+        .iter()
+        .map(|amount| amount.quantity)
+        .chain(amountless);
+    quantities.any(|quantity| {
+        let compared = if signed { Ok(quantity) } else { quantity.abs() };
+        compared.is_ok_and(|q| accept(q.cmp(&n)))
+    })
 }
 
 /// The description before `|`, trimmed; the whole description when there is
@@ -308,7 +314,9 @@ fn term(token: &str) -> Result<(bool, Term), String> {
             "*" => Status::Cleared,
             other => return Err(format!("`status:{other}` is not a status hledger knows")),
         }),
-        "real" => Term::Real(!matches!(value, "0" | "no" | "false")),
+        // hledger's parseBool: only `1` or nothing is true; `yes`, `true`
+        // and every other spelling mean virtual.
+        "real" => Term::Real(matches!(value, "" | "1")),
         "depth" => Term::Depth(
             value
                 .parse()
@@ -380,7 +388,12 @@ mod tests {
 
     /// `date account` for every posting `query` matches, in journal order.
     fn matched(query: &str) -> Vec<String> {
-        let journal = parse_journal(JOURNAL, "q.journal").expect("parses");
+        matched_in(JOURNAL, query)
+    }
+
+    /// [`matched`], over `text` instead of [`JOURNAL`].
+    fn matched_in(text: &str, query: &str) -> Vec<String> {
+        let journal = parse_journal(text, "q.journal").expect("parses");
         let query = Query::parse(query);
         assert_eq!(query.unsupported(), None, "{query:?}");
         journal
@@ -444,6 +457,18 @@ mod tests {
             ("payee:acme", &["01 expenses:food", "01 assets:checking"]),
             ("note:lunch", &["01 expenses:food", "01 assets:checking"]),
             ("real:0", &["02 budget:food"]),
+            (
+                "real:",
+                &[
+                    "01 expenses:food",
+                    "01 assets:checking",
+                    "02 expenses:rent",
+                    "02 expenses:food",
+                    "02 assets:checking",
+                    "02 assets:checking",
+                ],
+            ),
+            ("not:real:1", &["02 budget:food"]),
             ("status:*", &["01 expenses:food", "01 assets:checking"]),
             ("code:42", &["01 expenses:food", "01 assets:checking"]),
             (
@@ -473,6 +498,86 @@ mod tests {
         ];
         for (query, want) in cases {
             assert_eq!(matched(query), *want, "`{query}`");
+        }
+    }
+
+    /// `real:` reads its value as hledger's parseBool does: only `1` or
+    /// nothing is true, so `real:yes` selects VIRTUAL postings (hledger 1.52
+    /// `print --auto`, each spelling and its `not:` form, 2026-10-28).
+    #[test]
+    fn real_yes_and_other_spellings_select_virtual_postings_as_hledger_does() {
+        let real = matched("real:1");
+        let virtual_only: &[&str] = &["02 budget:food"];
+        assert_eq!(matched("real:"), real);
+        for value in [
+            "0", "yes", "true", "y", "Y", "True", "no", "false", "01", "t", "2",
+        ] {
+            assert_eq!(
+                matched(&format!("real:{value}")),
+                virtual_only,
+                "`real:{value}`"
+            );
+            assert_eq!(
+                matched(&format!("not:real:{value}")),
+                real,
+                "`not:real:{value}`"
+            );
+        }
+    }
+
+    /// A leg whose amount is inferred in two commodities (`$-10, -5 EUR`) and
+    /// a lone amountless leg: the cases [`JOURNAL`] has none of.
+    const MULTI_COMMODITY_JOURNAL: &str = "\
+2026-01-01 multi
+    expenses:a   $10
+    expenses:b   5 EUR
+    assets:checking
+
+2026-01-02 empty
+    (virtual:x)
+";
+
+    /// `amt:` on a multi-commodity leg matches when SOME commodity's amount
+    /// does, and an amountless leg compares as zero; it does not "always
+    /// match" as hledger's manual says. Every expectation is `hledger print
+    /// --auto`'s over [`MULTI_COMMODITY_JOURNAL`] (hledger 1.52, 2026-10-28).
+    #[test]
+    fn amt_on_a_multi_commodity_or_amountless_leg_matches_as_hledger_does() {
+        let cases: &[(&str, &[&str])] = &[
+            ("amt:>60", &[]),
+            ("amt:<-20", &[]),
+            (
+                "amt:>-3",
+                &["01 expenses:a", "01 expenses:b", "02 virtual:x"],
+            ),
+            ("amt:7", &[]),
+            (
+                "not:amt:>60",
+                &[
+                    "01 expenses:a",
+                    "01 expenses:b",
+                    "01 assets:checking",
+                    "02 virtual:x",
+                ],
+            ),
+            ("amt:0", &["02 virtual:x"]),
+            ("amt:<1", &["02 virtual:x"]),
+            ("amt:<=0", &["01 assets:checking", "02 virtual:x"]),
+            ("amt:10", &["01 expenses:a", "01 assets:checking"]),
+            ("amt:5", &["01 expenses:b", "01 assets:checking"]),
+            ("amt:-5", &["01 assets:checking"]),
+            ("amt:<-6", &["01 assets:checking"]),
+            (
+                "not:amt:<-6",
+                &["01 expenses:a", "01 expenses:b", "02 virtual:x"],
+            ),
+        ];
+        for (query, want) in cases {
+            assert_eq!(
+                matched_in(MULTI_COMMODITY_JOURNAL, query),
+                *want,
+                "`{query}`"
+            );
         }
     }
 
