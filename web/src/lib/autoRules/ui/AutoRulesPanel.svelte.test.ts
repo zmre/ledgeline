@@ -89,6 +89,14 @@ describe("COMPONENT AutoRulesPanel", () => {
             return puts;
         }
 
+        /** Type `value` into the field labelled `label` and commit it, as a user leaving the field does. */
+        async function commit(label: string, value: string): Promise<void> {
+            const field = screen.getByLabelText(label);
+            await fireEvent.input(field, {target: {value}});
+            await fireEvent.change(field, {target: {value}});
+            await fireEvent.blur(field);
+        }
+
         const conflict = (): Response => new Response("rules.journal changed on disk", {status: 409});
 
         /** A listing as served; its rules are whatever "the file" now holds. */
@@ -204,6 +212,26 @@ describe("COMPONENT AutoRulesPanel", () => {
                 revision: "rev-main",
                 change: {kind: "add", rule: {raw: "= expenses:food\n    (budget:food)  *1"}},
             });
+        });
+
+        it("will not send a one-posting rule with no counter-account, and says why beside the form", async () => {
+            await serve(AUTO_RULES_LISTING);
+            const puts = capturePuts();
+            render(AutoRulesPanel, {});
+            await fireEvent.click(await screen.findByTestId("settings-auto-add"));
+            await commit("Matched account for the new rule", "revenue:sales");
+            await commit("Account for posting 1 of the new rule", "liabilities:tax:sales");
+            await fireEvent.change(screen.getByLabelText("Percent for posting 1 of the new rule"), {target: {value: "10"}});
+            expect(screen.getByTestId("auto-rule-needs-counter").textContent).toContain("balanced against");
+            await fireEvent.click(screen.getByTestId("settings-auto-save"));
+            expect(screen.getByTestId("settings-auto-save-error").textContent).toContain("balanced against");
+            expect(puts).toHaveLength(0);
+
+            await commit("Counter-account for the new rule", "assets:checking");
+            expect(screen.queryByTestId("auto-rule-needs-counter")).toBeNull();
+            await fireEvent.click(screen.getByTestId("settings-auto-save"));
+            await waitFor(() => expect(puts).toHaveLength(1));
+            expect(puts[0]).toMatchObject({change: {kind: "add", rule: {form: {matchAccount: "revenue:sales", counter: "assets:checking"}}}});
         });
 
         it("deletes only once the delete is confirmed", async () => {

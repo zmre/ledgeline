@@ -82,6 +82,8 @@ Leave **forecasts only** unticked for a rule about your recorded transactions. T
 
 Some rules can't be shown as a form: a `tag:` or `desc:` query with no account, virtual postings, posting comments. These open as text instead, and so does **Edit as text** on any rule. What you type is written exactly as typed.
 
+A rule's postings must balance, or hledger refuses the whole journal under `--auto` as soon as the rule fires. So a form with one posting needs the account it is **balanced against**, and Ledgeline won't save a rule whose postings can never balance, such as a lone `*0.1` or `$10`. Postings in parentheses, such as `(budget:food)  *-1`, don't need to balance and are saved as typed.
+
 **+ Add a rule** appends a new rule to the end of your main journal file. hledger applies a rule to every transaction, wherever the rule sits in the file. **Delete** asks once more, then removes the rule and the blank line above it.
 
 Each save rewrites only that rule's lines. The rest of the file, including your comments and alignment, is left byte for byte as it was. Nothing is written if the file changed on disk since the list was read, or if the journal would no longer read. An open edit stays with its rule when other rules are added or removed around it. If the rule itself is changed or removed in the file, the editor closes and says so, and your edit is not saved. A rule in a file Ledgeline can't write, such as a symlink, has no Edit button.

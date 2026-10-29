@@ -40,6 +40,7 @@ pub mod accounts;
 pub mod aliases;
 pub mod assertions;
 pub mod auto;
+pub mod auto_balance;
 pub mod auto_edit;
 pub mod auto_form;
 pub mod convert;

@@ -3,7 +3,7 @@
 // engine's, pinned in `auto_form.rs`.
 
 import {describe, expect, it} from "vitest";
-import {blankRuleForm, cloneRuleForm, ruleFormComplete, ruleFormToWire, rulePreview, type AutoRuleForm} from "./ruleForm";
+import {blankRuleForm, cloneRuleForm, ruleFormComplete, ruleFormNeedsCounter, ruleFormToWire, rulePreview, type AutoRuleForm} from "./ruleForm";
 
 const STYLES = new Map([["$", {side: "L" as const, spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]] as [string, number[]]}]]);
 
@@ -47,6 +47,19 @@ describe("ruleForm", () => {
         for (const level of [clone, clone.postings, clone.postings[0], clone.postings[0]!.amount, clone.postings[0]!.amount!.quantity]) {
             expect(Object.isFrozen(level)).toBe(false);
         }
+    });
+
+    it("needs a counter-account when its one posting has nothing else to balance it", () => {
+        expect(ruleFormNeedsCounter(commission())).toBe(false);
+        expect(ruleFormNeedsCounter({...commission(), counter: null})).toBe(true);
+        expect(ruleFormNeedsCounter({...commission(), counter: "  "})).toBe(true);
+        // Two postings may cancel once signed; the server judges those.
+        const pair = {
+            ...commission(),
+            counter: null,
+            postings: [...commission().postings, {account: "liabilities:payable", kind: "percent" as const, percent: {m: 3n, p: 0}, amount: null}],
+        };
+        expect(ruleFormNeedsCounter(pair)).toBe(false);
     });
 
     it("is complete once it has an account to match and every posting its account and number", () => {

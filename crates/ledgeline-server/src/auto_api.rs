@@ -57,7 +57,9 @@
 //! `was`, `rule`) or `remove` (`block`, `was`). `rule` is `{form}` or
 //! `{raw}`, never both. `was` is the block's text as the client last saw it:
 //! a rule moved underneath the client is a `409` even when the revision
-//! somehow still matches.
+//! somehow still matches. A rule whose postings can never balance
+//! ([`unbalanced_group`]) is a `400`: hledger would refuse the whole journal
+//! under `--auto` the first time it fired.
 //!
 //! The write is the budget editor's pipeline (`budget_api`'s module docs):
 //! the handle resolves by membership in the journal's own files, the file is
@@ -76,11 +78,12 @@ use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::response::Response;
 use ledgeline_core::auto::{self, RuleProblem};
+use ledgeline_core::auto_balance::unbalanced_group;
 use ledgeline_core::auto_edit::{self, RuleEdit, RuleEditError};
 use ledgeline_core::auto_form::{form_from_rule, render};
 use ledgeline_core::edit::Fingerprint;
 use ledgeline_core::hledger_conf;
-use ledgeline_core::model::{AutoPostingRule, Journal};
+use ledgeline_core::model::{AutoPostingRule, Journal, PostingType};
 use ledgeline_core::reports::{AccountTypes, account_decls, declared_types};
 use ledgeline_core::vault::{VaultError, VaultPath};
 use serde::{Deserialize, Serialize};
@@ -525,7 +528,9 @@ fn seen(before: &[String], block: usize, was: &str, id: &str) -> Result<(), AppE
 }
 
 /// A rule's block text: a form rendered by the engine, or text checked to be
-/// exactly one `=` block. Either way read back through the same check.
+/// exactly one `=` block. Either way read back through the same check, and
+/// refused when its postings can never balance: hledger would refuse the
+/// whole journal under `--auto` the first time it fired.
 fn block_text(rule: &RuleIn, types: &AccountTypes) -> Result<String, AppError> {
     let parsed = match (&rule.raw, &rule.form) {
         (Some(raw), None) => rule_from_text(raw)?,
@@ -541,7 +546,27 @@ fn block_text(rule: &RuleIn, types: &AccountTypes) -> Result<String, AppError> {
             ));
         }
     };
+    if let Some(group) = unbalanced_group(&parsed) {
+        return Err(AppError::BadRequest(unbalanced_message(group)));
+    }
     Ok(parsed.raw)
+}
+
+/// Why a rule whose `group` cannot balance is not written, and what to do.
+fn unbalanced_message(group: PostingType) -> String {
+    let fix = match group {
+        PostingType::BalancedVirtual => {
+            "leave one of its [bracketed] postings without an amount, or give them amounts that \
+             cancel"
+        }
+        PostingType::Regular | PostingType::Virtual => {
+            "choose the account it is balanced against, or leave one posting without an amount"
+        }
+    };
+    format!(
+        "this rule's postings do not balance, and hledger refuses the whole journal under \
+         --auto as soon as such a rule fires, so nothing was written: {fix}"
+    )
 }
 
 impl From<RuleEditError> for AppError {

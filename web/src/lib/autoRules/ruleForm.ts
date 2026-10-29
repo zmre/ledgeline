@@ -121,6 +121,16 @@ export function ruleFormComplete(form: AutoRuleForm): boolean {
     );
 }
 
+/**
+ * Whether the form leaves its one posting with nothing to balance it: no
+ * counter-account. hledger refuses the whole journal under `--auto` once such
+ * a rule fires. Two or more postings may balance among themselves once the
+ * engine has signed them, so those are the server's to judge.
+ */
+export function ruleFormNeedsCounter(form: AutoRuleForm): boolean {
+    return (form.counter?.trim() ?? "") === "" && form.postings.length === 1;
+}
+
 /** The form as `AutoRuleIn.form` takes it. Blank counter is `null`. */
 export function ruleFormToWire(form: AutoRuleForm): WireAutoRuleFormIn {
     const counter = form.counter?.trim() ?? "";

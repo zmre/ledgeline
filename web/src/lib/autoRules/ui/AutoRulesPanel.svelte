@@ -28,7 +28,7 @@
     import {journal} from "#lib/stores/journal.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
     import AutoRuleEditor from "../AutoRuleEditor.svelte";
-    import {blankRuleForm, cloneRuleForm, ruleFormComplete, ruleFormToWire, type AutoRuleForm} from "../ruleForm";
+    import {blankRuleForm, cloneRuleForm, ruleFormComplete, ruleFormNeedsCounter, ruleFormToWire, type AutoRuleForm} from "../ruleForm";
     import {autoRules, ensureAutoRules, reloadAutoRules, saveAutoRule} from "../store.svelte";
     import type {AutoRule, AutoRuleIn, AutoRulesListing, SaveAutoRuleBody} from "../types";
 
@@ -162,6 +162,8 @@
     function ruleIn(draft: Draft): AutoRuleIn | string {
         if (draft.mode === "text") return draft.raw.trim() === "" ? "Type the rule, starting with its = line." : {raw: draft.raw};
         if (!ruleFormComplete(draft.form)) return "Choose the account to match, and an account and a number for every posting.";
+        if (ruleFormNeedsCounter(draft.form))
+            return "Choose the account this rule is balanced against: hledger refuses the whole journal under --auto when a rule's postings don't balance.";
         return {form: ruleFormToWire(draft.form)};
     }
 
