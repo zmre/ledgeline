@@ -20,7 +20,7 @@ With that rule, a sale of `$-333.33` to `revenue:sales` gains two postings direc
 
 ## Turning rules on
 
-hledger applies these rules only when it runs with `--auto`, and Ledgeline does the same. It reads the setting from the `hledger.conf` that applies to your journal. If that file has `--auto` in its general section, at the top before any `[section]` heading, the rules apply:
+hledger applies these rules only when it runs with `--auto`, and Ledgeline does the same. It reads the setting from the `hledger.conf` that applies to your journal. If that file has `--auto` in its general section, the rules apply. The general section is the top of the file before any `[section]` heading, or the last `[general]` section if the file has one:
 
 ```
 # hledger.conf beside the journal

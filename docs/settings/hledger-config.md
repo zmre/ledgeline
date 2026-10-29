@@ -35,7 +35,7 @@ Saving edits only the lines for the settings you changed. Comments, blank lines,
 Saving does nothing in these cases, and the tab tells you why:
 
 - **The file changed on disk since the tab read it.** Use **Reload and discard my changes** and make the change again.
-- **The first word of the file is not an option.** hledger reads a first word such as `balance` or `print` as the command to run, whatever you type. Every hledger command is then affected, and none of the file's options apply. Remove that word, or make it a `#` comment.
+- **The first word of the general section is not an option.** hledger reads a first word such as `balance` or `print` as the command to run, whatever you type. Every hledger command is then affected, and none of the file's options apply. Remove that word, or make it a `#` comment.
 - **The file is a symbolic link.** Dotfile managers often create these. Edit the file the link points to.
 - **The setting can't be written in a config file.** A config file has no quoting, so an account pattern can't contain a space; use `.` to match one. It also can't contain `#`, `=`, or a leading `-`, and it must be a valid regular expression.
 - **Ledgeline was started without a journal open for editing.**
@@ -44,7 +44,9 @@ After a save, every report reloads with the new settings. Ledgeline also notices
 
 ## Automatic postings
 
-The checkbox writes `--auto` into the file's general section, the part before any `[command]` heading, or removes it from there. An `--auto` inside a command section applies to that command only, and Ledgeline does not read it as this setting.
+The checkbox writes `--auto` into the file's general section, or removes it from there. An `--auto` inside a command section applies to that command only, and Ledgeline does not read it as this setting.
+
+The general section is the part before any `[command]` heading. If the file has a `[general]` heading, hledger reads the last `[general]` section as the general section instead and ignores everything above the first heading. Ledgeline reads and writes the same section hledger reads. The heading must be lower case: hledger treats `[General]` as a section for a command named `General`.
 
 ## Report depth
 

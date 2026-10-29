@@ -284,6 +284,48 @@ async fn a_hijacked_file_is_shown_and_never_written() {
 }
 
 #[tokio::test]
+async fn an_explicit_general_section_is_read_and_written_as_hledger_reads_it() {
+    // hledger 1.52 reads the last `[general]` as the general section and
+    // discards the `--depth 1` above it.
+    let tree = Tree::new();
+    tree.write("books/hledger.conf", "--depth 1\n[general]\n--auto\n");
+    let (_, body) = tree.get().await;
+    assert_eq!(body["auto"], true, "{body}");
+    assert_eq!(body["depth"]["general"]["all"], Value::Null, "{body}");
+    assert_eq!(body["editable"], true, "{body}");
+
+    let (status, body) = tree
+        .put(json!({"revision": body["revision"], "auto": false}))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["auto"], false);
+    assert_eq!(
+        tree.read("books/hledger.conf").unwrap(),
+        "--depth 1\n[general]\n"
+    );
+}
+
+#[tokio::test]
+async fn a_hijack_in_an_explicit_general_section_is_shown_and_never_written() {
+    let tree = Tree::new();
+    tree.write("books/hledger.conf", "--auto\n[general]\nprint\n");
+    let (_, body) = tree.get().await;
+    assert!(
+        body["hijacked"].as_str().unwrap().contains("`print`"),
+        "{body}"
+    );
+    assert_eq!(body["editable"], false);
+    let (status, _) = tree
+        .put(json!({"revision": body["revision"], "auto": true}))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        tree.read("books/hledger.conf").unwrap(),
+        "--auto\n[general]\nprint\n"
+    );
+}
+
+#[tokio::test]
 async fn a_no_op_write_leaves_the_bytes_and_the_generation_alone() {
     let tree = Tree::new();
     tree.write("books/hledger.conf", "--auto   # rules on\r\n");

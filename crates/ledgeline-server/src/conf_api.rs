@@ -704,6 +704,29 @@ mod tests {
     }
 
     #[test]
+    fn the_checkbox_edits_an_explicit_general_section_where_hledger_reads_it() {
+        // Unticking used to be refused by the read-back (the write missed
+        // `[general]`), and ticking wrote `--auto` above it, where hledger
+        // discards it.
+        assert_eq!(
+            edited(
+                "--depth 1\n[general]\n--auto\n",
+                &update(r#"{"revision":"","auto":false}"#)
+            )
+            .unwrap(),
+            "--depth 1\n[general]\n"
+        );
+        assert_eq!(
+            edited(
+                "--auto\n[general]\n--depth 1\n",
+                &update(r#"{"revision":"","auto":true,"depth":{"general":{"all":2}}}"#)
+            )
+            .unwrap(),
+            "--auto\n[general]\n--depth 2\n--auto\n"
+        );
+    }
+
+    #[test]
     fn an_empty_request_changes_nothing() {
         let text = "--auto\n";
         assert_eq!(edited(text, &update(r#"{"revision":""}"#)).unwrap(), text);
