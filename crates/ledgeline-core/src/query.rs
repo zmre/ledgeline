@@ -19,8 +19,9 @@
 //!   when `N` is written with a sign (or is zero), otherwise a comparison of
 //!   MAGNITUDES. A posting holding more than one commodity always matches.
 //! - `cur:` — a regex that must match the WHOLE commodity symbol.
-//! - `status:` / `status:!` / `status:*`, `real:` / `real:0`, `depth:N`,
-//!   `date:PERIOD`.
+//! - `status:` / `status:!` / `status:*`, `depth:N`, `date:PERIOD`.
+//! - `real:` and `real:1` select real postings; any other value (`real:0`,
+//!   but also `real:yes`, `real:true`) selects virtual ones.
 //! - `not:` negates any term.
 //! - Several terms: the positive `desc:` terms are ORed, the positive account
 //!   terms are ORed, the positive `status:` terms are ORed, and those groups
@@ -308,7 +309,9 @@ fn term(token: &str) -> Result<(bool, Term), String> {
             "*" => Status::Cleared,
             other => return Err(format!("`status:{other}` is not a status hledger knows")),
         }),
-        "real" => Term::Real(!matches!(value, "0" | "no" | "false")),
+        // hledger's parseBool: only `1` or nothing is true; `yes`, `true`
+        // and every other spelling mean virtual.
+        "real" => Term::Real(matches!(value, "" | "1")),
         "depth" => Term::Depth(
             value
                 .parse()
@@ -444,6 +447,18 @@ mod tests {
             ("payee:acme", &["01 expenses:food", "01 assets:checking"]),
             ("note:lunch", &["01 expenses:food", "01 assets:checking"]),
             ("real:0", &["02 budget:food"]),
+            (
+                "real:",
+                &[
+                    "01 expenses:food",
+                    "01 assets:checking",
+                    "02 expenses:rent",
+                    "02 expenses:food",
+                    "02 assets:checking",
+                    "02 assets:checking",
+                ],
+            ),
+            ("not:real:1", &["02 budget:food"]),
             ("status:*", &["01 expenses:food", "01 assets:checking"]),
             ("code:42", &["01 expenses:food", "01 assets:checking"]),
             (
@@ -473,6 +488,30 @@ mod tests {
         ];
         for (query, want) in cases {
             assert_eq!(matched(query), *want, "`{query}`");
+        }
+    }
+
+    /// `real:` reads its value as hledger's parseBool does: only `1` or
+    /// nothing is true, so `real:yes` selects VIRTUAL postings (hledger 1.52
+    /// `print --auto`, each spelling and its `not:` form, 2026-10-28).
+    #[test]
+    fn real_yes_and_other_spellings_select_virtual_postings_as_hledger_does() {
+        let real = matched("real:1");
+        let virtual_only: &[&str] = &["02 budget:food"];
+        assert_eq!(matched("real:"), real);
+        for value in [
+            "0", "yes", "true", "y", "Y", "True", "no", "false", "01", "t", "2",
+        ] {
+            assert_eq!(
+                matched(&format!("real:{value}")),
+                virtual_only,
+                "`real:{value}`"
+            );
+            assert_eq!(
+                matched(&format!("not:real:{value}")),
+                real,
+                "`not:real:{value}`"
+            );
         }
     }
 
