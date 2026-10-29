@@ -185,6 +185,40 @@ pub fn scenario_from_text_with_styles(
     read_scenario(text, source_name, fallback_name, declared, inherited).map(|read| read.scenario)
 }
 
+/// [`scenario_from_text_with_styles`], plus the account types the file itself
+/// declares (`account hmrc:paye ; type: L`). A caller that signs the
+/// scenario's numbers — a rule's percentages, an entry — merges them over the
+/// main journal's with [`scenario_account_types`], as the read did.
+///
+/// # Errors
+/// As [`scenario_from_text`].
+pub fn scenario_and_own_types_from_text_with_styles(
+    text: &str,
+    source_name: &str,
+    fallback_name: &str,
+    declared: &BTreeMap<String, AccountType>,
+    inherited: &[(crate::model::Commodity, crate::model::AmountStyle)],
+) -> Result<(Scenario, BTreeMap<String, AccountType>), SerializeError> {
+    read_scenario(text, source_name, fallback_name, declared, inherited)
+        .map(|read| (read.scenario, read.own_types))
+}
+
+/// The account types a scenario classifies under: the main journal's
+/// `declared`, with the scenario file's `own` declarations winning — so a
+/// scenario that carries its declarations with it classifies the same way
+/// whether or not a main journal is open.
+#[must_use]
+pub fn scenario_account_types(
+    declared: &BTreeMap<String, AccountType>,
+    own: &BTreeMap<String, AccountType>,
+) -> BTreeMap<String, AccountType> {
+    declared
+        .iter()
+        .chain(own)
+        .map(|(account, ty)| (account.clone(), *ty))
+        .collect()
+}
+
 /// What [`read_scenario`] learns from a file.
 struct Read {
     scenario: Scenario,
@@ -192,6 +226,8 @@ struct Read {
     own_accounts: BTreeSet<String>,
     /// Every commodity the file itself declares a style for.
     own_commodities: BTreeSet<String>,
+    /// The account types the file itself declares.
+    own_types: BTreeMap<String, AccountType>,
 }
 
 /// [`scenario_from_text`], plus every account the text itself declares — what
@@ -228,11 +264,8 @@ fn read_scenario(
         own.into_iter().cloned().collect()
     };
 
-    // The file's own `account` directives win over the caller's, so a scenario
-    // that carries its declarations with it classifies the same way whether or
-    // not a main journal is open.
-    let mut types = declared.clone();
-    types.extend(declared_types(&account_decls_from(&journal.accounts)));
+    let own_types = declared_types(&account_decls_from(&journal.accounts));
+    let types = scenario_account_types(declared, &own_types);
 
     let header = parse_header(text);
     let own_accounts = journal
@@ -276,6 +309,7 @@ fn read_scenario(
             .iter()
             .map(|(commodity, _)| commodity.0.clone())
             .collect(),
+        own_types,
     })
 }
 
@@ -468,6 +502,7 @@ impl ProjectionDoc {
             scenario,
             own_accounts,
             own_commodities,
+            ..
         } = read_scenario(text, source_name, "", declared, inherited)?;
 
         // The blocks this module located, against the rules the journal parser
@@ -3448,6 +3483,40 @@ account equity:unrealized gains  ; type: E
         assert!(
             matches!(error, SerializeError::NotRoundTripped(_)),
             "{error}"
+        );
+    }
+
+    /// A scenario's own `account ; type:` declaration is handed back beside the
+    /// scenario, and wins over the main journal's in the merged map.
+    #[test]
+    fn a_scenario_s_own_account_types_come_back_and_win_the_merge() {
+        let text = "account hmrc:paye  ; type: L\naccount assets:cash  ; type: C\n\n~ monthly  plan\n    expenses:rent    $100.00\n    assets:cash\n";
+        let declared = BTreeMap::from([
+            ("assets:cash".to_string(), AccountType::Asset),
+            ("expenses:rent".to_string(), AccountType::Expense),
+        ]);
+        let (_, own) = scenario_and_own_types_from_text_with_styles(
+            text,
+            "scenario.journal",
+            "Scenario",
+            &declared,
+            &[],
+        )
+        .expect("reads");
+        assert_eq!(
+            own,
+            BTreeMap::from([
+                ("assets:cash".to_string(), AccountType::Cash),
+                ("hmrc:paye".to_string(), AccountType::Liability),
+            ])
+        );
+        assert_eq!(
+            scenario_account_types(&declared, &own),
+            BTreeMap::from([
+                ("assets:cash".to_string(), AccountType::Cash),
+                ("expenses:rent".to_string(), AccountType::Expense),
+                ("hmrc:paye".to_string(), AccountType::Liability),
+            ])
         );
     }
 }

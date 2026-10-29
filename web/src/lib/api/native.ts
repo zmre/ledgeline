@@ -773,6 +773,8 @@ export interface WireScenarioIn {
      * engine renders. Exactly one of the two.
      */
     autoRules: ({block: number | null; raw: string} | {block: number | null; form: WireAutoRuleFormIn})[];
+    /** The scenario file's own account types, handed back as the engine served them. Optional for older bodies. */
+    accountTypes?: Record<string, string>;
 }
 
 /** The whole `POST /api/projections/run` body. */

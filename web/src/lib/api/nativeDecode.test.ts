@@ -32,6 +32,7 @@ import {
     decodeSectionedReport,
     decodeSubscriptionsReport,
 } from "./nativeDecode";
+import {cloneScenario, scenarioToWire} from "#lib/projections/scenarioModel.js";
 
 // The native wire has no codegen: these decoders mirror 28 `Wire*` structs in
 // crates/ledgeline-server/src/reports_api.rs BY HAND (CLEANUP.md DRY-3).
@@ -2165,6 +2166,7 @@ const SCENARIO_FILE = {
         ],
         cash: null,
         autoRules: [],
+        accountTypes: {},
     },
 };
 
@@ -2212,6 +2214,18 @@ describe("UNIT nativeDecode — a scenario's auto rules (plan 30 Phase 4)", () =
         expect(() => decodeScenario({...base, autoRules: [{...rule, form: {...form, postings: [{...form.postings[0], kind: "share"}]}}]})).toThrow(
             ApiShapeError
         );
+    });
+
+    it("round-trips the scenario file's own account types, so an edited rule is signed as it was served", () => {
+        const scenario = decodeScenario({...base, accountTypes: {"hmrc:paye": "liability"}});
+        expect(scenario.accountTypes).toEqual({"hmrc:paye": "liability"});
+        expect(scenarioToWire(cloneScenario(scenario)).accountTypes).toEqual({"hmrc:paye": "liability"});
+    });
+
+    it("refuses absent account types, or a type it does not know", () => {
+        expect(() => decodeScenario(without(base, "accountTypes"))).toThrow(ApiShapeError);
+        expect(() => decodeScenario({...base, accountTypes: {"hmrc:paye": "debt"}})).toThrow(ApiShapeError);
+        expect(() => decodeScenario({...base, accountTypes: ["hmrc:paye"]})).toThrow(ApiShapeError);
     });
 });
 

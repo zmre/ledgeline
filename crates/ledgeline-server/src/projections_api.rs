@@ -47,8 +47,8 @@ use ledgeline_core::model::{
 };
 use ledgeline_core::parse::parse_period_spec;
 use ledgeline_core::projections::serialize::{
-    ProjectionDoc, SerializeError, new_file_with_styles, scenario_from_text_with_styles,
-    write_scenario,
+    ProjectionDoc, SerializeError, new_file_with_styles, scenario_account_types,
+    scenario_and_own_types_from_text_with_styles, write_scenario,
 };
 use ledgeline_core::projections::{
     AccountsOpts, AssetRow, BalanceSeries, CounterDefaults, CreateRefusal, DEFAULT_LOOKBACK,
@@ -59,7 +59,7 @@ use ledgeline_core::projections::{
     latest_real_date, line_section, project_cached, projected_accounts, projected_statements,
     seed_scenario, upgrade_legacy_counters, virtual_posting,
 };
-use ledgeline_core::reports::account_types::{AccountType, AccountTypes};
+use ledgeline_core::reports::account_types::{AccountType, AccountTypes, parse_account_type_tag};
 use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
     BudgetOpts, Interval, Valuation, account_decls, declared_types, periods::bucket_label,
@@ -339,6 +339,12 @@ pub(crate) struct WireScenario {
     cash: Option<String>,
     /// The scenario file's `= QUERY` auto-posting rules, in file order.
     auto_rules: Vec<WireAutoRule>,
+    /// The account types the scenario FILE itself declares (`account
+    /// hmrc:paye  ; type: L`), by [`AccountType::code`]; empty for a seed.
+    /// Every sign here — a rule form's percentages, a line's section — was
+    /// read under the main journal's types with these winning, so a client
+    /// hands them back for the engine to read its edits the same way.
+    account_types: BTreeMap<String, &'static str>,
 }
 
 /// One `= QUERY` auto-posting rule, as the file writes it.
@@ -381,7 +387,14 @@ impl WireAutoRule {
 }
 
 impl WireScenario {
-    fn new(scenario: &Scenario, declared: &BTreeMap<String, AccountType>) -> Self {
+    /// `declared` is the main journal's account types and `own` the scenario
+    /// file's; everything is read under the two merged.
+    fn new(
+        scenario: &Scenario,
+        declared: &BTreeMap<String, AccountType>,
+        own: &BTreeMap<String, AccountType>,
+    ) -> Self {
+        let declared = scenario_account_types(declared, own);
         Self {
             name: scenario.name.clone(),
             created: scenario.created.clone(),
@@ -389,7 +402,7 @@ impl WireScenario {
             lines: scenario
                 .lines
                 .iter()
-                .map(|line| WireScenarioLine::new(line, declared))
+                .map(|line| WireScenarioLine::new(line, &declared))
                 .collect(),
             events: scenario
                 .events
@@ -398,13 +411,17 @@ impl WireScenario {
                 .collect(),
             cash: scenario.cash.as_ref().map(|account| account.0.clone()),
             auto_rules: {
-                let types = AccountTypes::from_declared(declared.clone());
+                let types = AccountTypes::from_declared(declared);
                 scenario
                     .auto_rules
                     .iter()
                     .map(|rule| WireAutoRule::new(rule, &types))
                     .collect()
             },
+            account_types: own
+                .iter()
+                .map(|(account, ty)| (account.clone(), ty.code()))
+                .collect(),
         }
     }
 }
@@ -863,6 +880,11 @@ struct ScenarioIn {
     /// Optional, so a body written before rules travelled still decodes.
     #[serde(default)]
     auto_rules: Vec<AutoRuleIn>,
+    /// [`WireScenario::account_types`], handed back. Optional, so a body
+    /// written before they travelled still decodes (as the main journal's
+    /// types alone).
+    #[serde(default)]
+    account_types: BTreeMap<String, String>,
 }
 
 /// One `= QUERY` rule, inbound: its text (`raw`) or its form (`form`) —
@@ -1067,6 +1089,8 @@ struct DecodedScenario {
     /// The `=` rules, in order, with the block each came from. `scenario`'s
     /// own `auto_rules` stay empty until [`Self::signed`] renders the forms.
     rules: Vec<(DecodedRule, Option<usize>)>,
+    /// The scenario file's own account types, as the body handed them back.
+    own_types: BTreeMap<String, AccountType>,
 }
 
 /// A rule after decoding: read from its text, or a form whose rendering waits
@@ -1077,13 +1101,17 @@ enum DecodedRule {
 }
 
 impl DecodedScenario {
-    /// The scenario, each `entry` signed by its account's type.
+    /// The scenario, each `entry` signed by its account's type: the main
+    /// journal's `declared`, with the scenario's own winning — the types its
+    /// [`WireScenario`] was read under.
     fn signed(self, declared: &BTreeMap<String, AccountType>) -> Result<Scenario, AppError> {
         let Self {
             mut scenario,
             entries,
             rules,
+            own_types,
         } = self;
+        let declared = scenario_account_types(declared, &own_types);
         // Each edited rule rendered under the same types the outbound `form`
         // was read with, then validated exactly as a rule sent as text is.
         let types = AccountTypes::from_declared(declared.clone());
@@ -1105,7 +1133,7 @@ impl DecodedScenario {
         for (line, entry) in scenario.lines.iter_mut().zip(entries) {
             if let Some(entry) = entry {
                 line.amount.quantity =
-                    signed_entry(&line.account.0, entry, declared).map_err(|error| {
+                    signed_entry(&line.account.0, entry, &declared).map_err(|error| {
                         AppError::BadRequest(format!(
                             "line '{}' has an amount out of range: {error}",
                             line.id
@@ -1221,9 +1249,11 @@ fn scenario_from_wire(
         .collect::<Result<Vec<_>, AppError>>()?;
 
     let rules = auto_rules_from_wire(&scenario.auto_rules, inherited)?;
+    let own_types = account_types_from_wire(&scenario.account_types)?;
 
     Ok(DecodedScenario {
         rules,
+        own_types,
         scenario: Scenario {
             auto_rules: Vec::new(),
             name: scenario.name.clone(),
@@ -1235,6 +1265,25 @@ fn scenario_from_wire(
         },
         entries,
     })
+}
+
+/// The scenario's own account types, each spelled as an `account` directive's
+/// `type:` tag may spell it.
+fn account_types_from_wire(
+    types: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, AccountType>, AppError> {
+    types
+        .iter()
+        .map(|(account, spelling)| {
+            parse_account_type_tag(spelling)
+                .map(|ty| (account.clone(), ty))
+                .ok_or_else(|| {
+                    AppError::BadRequest(format!(
+                        "account '{account}' has an unknown account type '{spelling}'"
+                    ))
+                })
+        })
+        .collect()
 }
 
 /// Each rule, decoded: its text read back as exactly one `=` block, or its
@@ -1425,7 +1474,8 @@ pub(crate) async fn seed(
                 styles: &journal.commodity_styles,
             },
         )?;
-        Ok(WireScenario::new(&scenario, &declared))
+        // A seed is no file, so it declares nothing of its own.
+        Ok(WireScenario::new(&scenario, &declared, &BTreeMap::new()))
     })
     .await
 }
@@ -1857,14 +1907,20 @@ fn open_file(
     // The FALLBACK display name is the filename's label, so a file with no
     // `; projection:` marker still opens with a name — "a file without it still
     // loads, and takes its name from its filename".
-    let scenario = scenario_from_text_with_styles(&text, &name, &found.label, declared, inherited)
-        .map_err(|error| unreadable_file(id, &error))?;
+    let (scenario, own) = scenario_and_own_types_from_text_with_styles(
+        &text,
+        &name,
+        &found.label,
+        declared,
+        inherited,
+    )
+    .map_err(|error| unreadable_file(id, &error))?;
     Ok(WireScenarioFile {
         id: id.to_string(),
         label: found.label.clone(),
         revision: fingerprint.token(),
         writable,
-        scenario: WireScenario::new(&scenario, declared),
+        scenario: WireScenario::new(&scenario, declared, &own),
     })
 }
 
@@ -1938,8 +1994,9 @@ fn create_scenario(
         })?;
 
     let label = label_for(id);
-    let written = scenario_from_text_with_styles(&text, &name, &label, declared, inherited)
-        .map_err(|error| serialize_failed(id, &error))?;
+    let (written, own) =
+        scenario_and_own_types_from_text_with_styles(&text, &name, &label, declared, inherited)
+            .map_err(|error| serialize_failed(id, &error))?;
     // The revision comes from what we WROTE, never from a re-read: a re-read
     // could pick up somebody else's write and hand this client a token for
     // bytes it has never seen, which is the precise way to make the next save
@@ -1948,7 +2005,7 @@ fn create_scenario(
         id: id.to_string(),
         revision: Fingerprint::of_bytes(text.as_bytes()).token(),
         writable: true,
-        scenario: WireScenario::new(&written, declared),
+        scenario: WireScenario::new(&written, declared, &own),
         label,
     })
 }
@@ -2012,15 +2069,20 @@ fn update_scenario(
         // the more honest answer: the revision returned is the one that was
         // just checked against `revision`, over the very bytes this scenario
         // was rendered from.
-        let unchanged =
-            scenario_from_text_with_styles(&text, &name, &found.label, declared, inherited)
-                .map_err(|error| serialize_failed(id, &error))?;
+        let (unchanged, own) = scenario_and_own_types_from_text_with_styles(
+            &text,
+            &name,
+            &found.label,
+            declared,
+            inherited,
+        )
+        .map_err(|error| serialize_failed(id, &error))?;
         return Ok(WireScenarioFile {
             id: id.to_string(),
             label: found.label.clone(),
             revision: fingerprint.token(),
             writable: true,
-            scenario: WireScenario::new(&unchanged, declared),
+            scenario: WireScenario::new(&unchanged, declared, &own),
         });
     }
 
@@ -2048,15 +2110,20 @@ fn update_scenario(
 
     // Deliberately NO `state.reopen_editor()`: it re-opens the main journal,
     // which a file the main journal does not include cannot have changed.
-    let written =
-        scenario_from_text_with_styles(&new_text, &name, &found.label, declared, inherited)
-            .map_err(|error| serialize_failed(id, &error))?;
+    let (written, own) = scenario_and_own_types_from_text_with_styles(
+        &new_text,
+        &name,
+        &found.label,
+        declared,
+        inherited,
+    )
+    .map_err(|error| serialize_failed(id, &error))?;
     Ok(WireScenarioFile {
         id: id.to_string(),
         label: found.label.clone(),
         revision: Fingerprint::of_bytes(new_text.as_bytes()).token(),
         writable: true,
-        scenario: WireScenario::new(&written, declared),
+        scenario: WireScenario::new(&written, declared, &own),
     })
 }
 
@@ -2111,9 +2178,10 @@ pub(crate) async fn document(
     };
     let sources = snapshot.journal.source_files.clone();
     let Json(body) = compute(move || {
-        // The MAIN journal's account types, because a projection file declares
-        // none of its own and the asset/flow discriminator needs them
-        // (`serialize`'s header says why a name test will not do).
+        // The MAIN journal's account types, because a projection file usually
+        // declares few of its own and the asset/flow discriminator needs them
+        // (`serialize`'s header says why a name test will not do). The file's
+        // own declarations are merged over them as it is read.
         //
         // Inside the closure, where `run` and `seed` already do it: walking
         // every declared account and cloning its name twice is blocking work,

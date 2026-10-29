@@ -73,6 +73,7 @@ const SEED_WIRE = {
     events: [],
     cash: null,
     autoRules: [] as unknown[],
+    accountTypes: {},
 };
 const SEED = decodeScenario(SEED_WIRE);
 
@@ -340,6 +341,7 @@ const BOUNDED = decodeScenario({
     events: [],
     cash: null,
     autoRules: [],
+    accountTypes: {},
 });
 
 describe("COMPONENT ProjectionsTable — REGRESSION: bounded periods stay editable", () => {
@@ -602,6 +604,7 @@ function withAssets(...lines: ReturnType<typeof assetLine>[]): Scenario {
         events: [],
         cash: null,
         autoRules: [],
+        accountTypes: {},
     });
 }
 
@@ -637,6 +640,7 @@ describe("COMPONENT ProjectionsTable — the Assets and balances section", () =>
                 events: [],
                 cash: null,
                 autoRules: [],
+                accountTypes: {},
             })
         );
         mount();
@@ -679,6 +683,7 @@ describe("COMPONENT ProjectionsTable — the Assets and balances section", () =>
                 events: [],
                 cash: null,
                 autoRules: [],
+                accountTypes: {},
             })
         );
         mount();
@@ -1050,6 +1055,7 @@ describe("COMPONENT ProjectionsTable — a row's description", () => {
                 events: [],
                 cash: null,
                 autoRules: [],
+                accountTypes: {},
             })
         );
         mount();
@@ -1159,6 +1165,7 @@ describe("COMPONENT ProjectionsTable — reordering rows", () => {
                 ],
                 cash: null,
                 autoRules: [],
+                accountTypes: {},
             })
         );
         mount();

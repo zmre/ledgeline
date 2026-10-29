@@ -21,6 +21,7 @@
 import type {Dec, MixedAmount} from "#lib/domain/money.js";
 import type {ISODate, Transaction} from "#lib/domain/types.js";
 import type {AutoRuleForm} from "#lib/autoRules/ruleForm.js";
+import type {AccountType} from "#lib/domain/accountClass.js";
 import type {AccountReport, BalanceSheetColumns, CashFlowStatement, IncomeStatementReport} from "#lib/reports/types.js";
 
 /** The unit a growth rate steps on. */
@@ -223,6 +224,13 @@ export interface Scenario {
     cash: string | null;
     /** The scenario file's `= QUERY` auto-posting rules, applied to every projected transaction (plan 30). */
     autoRules: AutoRule[];
+    /**
+     * The account types the scenario FILE itself declares (`account hmrc:paye  ; type: L`); empty for a seed.
+     * The engine read every sign it served — a rule form's percentages, a line's section — with these winning
+     * over the main journal's, so they go back with the scenario and the engine reads edits the same way.
+     * Optional so a scenario built here (or by an older engine) needs none.
+     */
+    accountTypes?: Readonly<Record<string, AccountType>>;
 }
 
 /**
