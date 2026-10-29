@@ -2,11 +2,14 @@
 //
 // Structure only (jsdom draws into a 0×0 box): the panel shell, the persisted
 // collapse flag, the legend the model produced — exactly the table's displayed
-// accounts — and the friendly empty and one-bucket states.
+// accounts — the friendly empty and one-bucket states, and the cash flow
+// activities' pinned colours, which follow a theme switch.
 
 import {fireEvent, render} from "@testing-library/svelte";
+import {flushSync} from "svelte";
 import {afterEach, describe, expect, it} from "vitest";
 import {dec, type MixedAmount} from "#lib/domain/money.js";
+import {DEFAULT_PALETTE} from "#lib/format/palette.js";
 import {settings} from "#lib/stores/settings.svelte.js";
 import {CASH_FLOW, CASH_FLOW_TOTAL, flow, usd} from "#lib/testing/cashFlowFixture.js";
 import type {CashFlowStatement, PeriodReport, PeriodRow, PeriodRowKind} from "../types";
@@ -46,6 +49,31 @@ function displayedLeaves(report: PeriodReport): string[] {
 }
 
 const legend = (testid: string): string[] => [...document.querySelectorAll(`[data-testid="${testid}-legend"] li`)].map((li) => li.textContent?.trim() ?? "");
+
+/** A cash flow with an exchange-rate effect, so all four pinned series draw. */
+const WITH_FX: CashFlowStatement = {...CASH_FLOW, exchange: flow([0, 10, 0])};
+
+/** Each legend entry's colour key, as jsdom serialises it (`background` or `border-color`, in `rgb()`). */
+function swatches(container: HTMLElement): Map<string, string> {
+    return new Map(
+        [...container.querySelectorAll('[data-testid="cashflow-chart-legend"] li')].map((li) => {
+            const key = li.querySelector("span") as HTMLElement | null;
+            return [li.textContent?.trim() ?? "", key?.style.background || key?.style.borderColor || ""];
+        })
+    );
+}
+
+const barFills = (container: HTMLElement): Set<string | null> =>
+    new Set([...container.querySelectorAll("path.lc-bars-bar")].map((bar) => bar.getAttribute("fill")));
+
+/** `#rrggbb` as jsdom serialises it in a style. */
+const rgb = (hex: string): string => `rgb(${[1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(", ")})`;
+
+/** Let the palette's `data-theme` observer run (a microtask), then flush the re-render. */
+async function themeObserved(): Promise<void> {
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    flushSync();
+}
 
 afterEach(() => {
     settings.netWorthChartOpen = true;
@@ -137,6 +165,46 @@ describe("COMPONENT CashFlowChart", () => {
         render(CashFlowChart, {report: withFx, styles: STYLES});
 
         expect(legend("cashflow-chart")).toContain("Exchange rates");
+    });
+
+    it("draws each activity in its statement heading's colour, not by size, and exchange rates in grey", () => {
+        // Financing is the biggest activity here by far (8,000 against 5,000 and
+        // 3,000): biggest-first would have handed it the first palette slot.
+        const {container} = render(CashFlowChart, {report: WITH_FX, styles: STYLES});
+
+        // The bars take daisy dark's resolved strings, oklch and all, as their fill.
+        expect(barFills(container)).toEqual(
+            new Set([DEFAULT_PALETTE.theme.info, DEFAULT_PALETTE.theme.secondary, DEFAULT_PALETTE.theme.accent, DEFAULT_PALETTE.other])
+        );
+        expect(swatches(container).get("Exchange rates")).toBe(rgb(DEFAULT_PALETTE.other));
+    });
+
+    it("recolours the bars and legend when the theme's info, secondary and accent change", async () => {
+        // jsdom's CSS parser drops oklch from an inline style (a browser keeps
+        // it), so the legend is checked on a theme with hex values.
+        const theme = {"--color-info": "#102030", "--color-secondary": "#405060", "--color-accent": "#708090"};
+        const root = document.documentElement;
+        const before = root.getAttribute("data-theme");
+        const {container} = render(CashFlowChart, {report: WITH_FX, styles: STYLES});
+        try {
+            for (const [token, value] of Object.entries(theme)) root.style.setProperty(token, value);
+            root.setAttribute("data-theme", "pinned-test");
+            await themeObserved();
+
+            expect([...swatches(container)]).toEqual([
+                ["Operating", rgb("#102030")],
+                ["Investing", rgb("#405060")],
+                ["Financing", rgb("#708090")],
+                ["Exchange rates", rgb(DEFAULT_PALETTE.other)],
+                ["Net change in cash", rgb(DEFAULT_PALETTE.flowNet)],
+            ]);
+            expect(barFills(container)).toEqual(new Set(["#102030", "#405060", "#708090", DEFAULT_PALETTE.other]));
+        } finally {
+            for (const token of Object.keys(theme)) root.style.removeProperty(token);
+            if (before === null) root.removeAttribute("data-theme");
+            else root.setAttribute("data-theme", before);
+            await themeObserved();
+        }
     });
 
     it("has no breakdown toggle", () => {

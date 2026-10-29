@@ -9,8 +9,8 @@ import {chartColors, createChartColors, type WatchedChartColors} from "./chartCo
 import {DEFAULT_PALETTE} from "./palette";
 
 const THEMES: Record<string, Record<string, string>> = {
-    dark: {"--chart-1": "#111111", "--chart-other": "#222222", "--chart-in": "#333333"},
-    other: {"--chart-1": "#aaaaaa", "--chart-other": "#bbbbbb", "--chart-in": "#cccccc"},
+    dark: {"--chart-1": "#111111", "--chart-other": "#222222", "--chart-in": "#333333", "--color-info": "#444444", "--color-accent": "#555555"},
+    other: {"--chart-1": "#aaaaaa", "--chart-other": "#bbbbbb", "--chart-in": "#cccccc", "--color-info": "#dddddd", "--color-accent": "#eeeeee"},
 };
 
 /** Microtask turn, which is when a `MutationObserver` callback runs. */
@@ -66,6 +66,26 @@ describe("COMPONENT chartColors", () => {
         expect(c.colorAt(0)).toBe("#aaaaaa");
         expect(c.other).toBe("#bbbbbb");
         expect(seen).toEqual(["#111111", "#aaaaaa"]);
+        stop();
+    });
+
+    it("re-resolves daisyUI's theme colours on a data-theme change, so pinned series follow the theme", async () => {
+        const c = build();
+        expect(c.theme).toEqual({info: "#444444", secondary: DEFAULT_PALETTE.theme.secondary, accent: "#555555"});
+        const seen: string[] = [];
+        const stop = $effect.root(() => {
+            $effect(() => {
+                seen.push(c.theme.info);
+            });
+        });
+        flushSync();
+
+        root.setAttribute("data-theme", "other");
+        await observed();
+        flushSync();
+
+        expect(c.theme).toEqual({info: "#dddddd", secondary: DEFAULT_PALETTE.theme.secondary, accent: "#eeeeee"});
+        expect(seen).toEqual(["#444444", "#dddddd"]);
         stop();
     });
 

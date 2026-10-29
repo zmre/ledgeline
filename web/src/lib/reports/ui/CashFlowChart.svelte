@@ -4,7 +4,9 @@
      with the net change in cash as the line.
 
      Every segment is a section total in the statement below, and the line is its
-     Net change in cash row, so the statement is the chart's accessible twin. -->
+     Net change in cash row, so the statement is the chart's accessible twin.
+     Each activity is drawn in its heading's colour there (`cashFlowColors.ts`),
+     not handed a palette slot by size, and exchange rates in the muted grey. -->
 <script lang="ts">
     import type {AmountStyle} from "#lib/domain/types.js";
     import {settings} from "#lib/stores/settings.svelte.js";

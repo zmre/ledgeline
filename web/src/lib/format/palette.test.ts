@@ -1,11 +1,13 @@
 // The dark chart palette exists twice: as `--chart-*` tokens in `app.css` (the
 // source of truth the running app reads) and as `DEFAULT_PALETTE` (the
-// fallback for jsdom, SSR, and a missing token). This pins them together.
+// fallback for jsdom, SSR, and a missing token). This pins them together, and
+// pins `DEFAULT_PALETTE.theme` to the installed daisyUI's dark theme the same way.
 
 import {readFileSync} from "node:fs";
 import {fileURLToPath} from "node:url";
+import daisyThemes from "daisyui/theme/object";
 import {describe, expect, it} from "vitest";
-import {CHART_TOKENS, DEFAULT_PALETTE, MAX_SLOTS, resolvePalette, samePalette, slotToken, unknownColor} from "./palette";
+import {CHART_TOKENS, DEFAULT_PALETTE, MAX_SLOTS, pinColor, resolvePalette, samePalette, slotToken, THEME_TOKENS, unknownColor} from "./palette";
 
 const APP_CSS = readFileSync(fileURLToPath(new URL("../../app.css", import.meta.url)), "utf8");
 
@@ -97,6 +99,46 @@ describe("UNIT resolvePalette", () => {
                 DEFAULT_PALETTE
             )
         ).toBe(false);
+    });
+});
+
+describe("UNIT theme colours (pinned series)", () => {
+    it("DEFAULT_PALETTE.theme is daisyUI dark's info, secondary and accent, so the fallback cannot drift from daisy", () => {
+        const dark = daisyThemes.dark;
+        expect(DEFAULT_PALETTE.theme).toEqual({
+            info: dark[THEME_TOKENS.info],
+            secondary: dark[THEME_TOKENS.secondary],
+            accent: dark[THEME_TOKENS.accent],
+        });
+    });
+
+    it("reads daisyUI's --color-* tokens", () => {
+        const theme: Record<string, string> = {"--color-info": " oklch(1 0 0) ", "--color-secondary": "#222222", "--color-accent": "rgb(3 3 3)"};
+        expect(resolvePalette((token) => theme[token] ?? "").theme).toEqual({info: "oklch(1 0 0)", secondary: "#222222", accent: "rgb(3 3 3)"});
+    });
+
+    it("falls back per token when one is empty", () => {
+        const palette = resolvePalette((token) => (token === "--color-secondary" ? "#222222" : ""));
+        expect(palette.theme).toEqual({...DEFAULT_PALETTE.theme, secondary: "#222222"});
+    });
+
+    it("counts a change in a theme colour as a different palette", () => {
+        for (const token of Object.values(THEME_TOKENS)) {
+            expect(
+                samePalette(
+                    resolvePalette((t) => (t === token ? "#010203" : "")),
+                    DEFAULT_PALETTE
+                ),
+                token
+            ).toBe(false);
+        }
+    });
+
+    it("pinColor resolves a token name to its colour, and `other` to the muted grey", () => {
+        expect(pinColor(DEFAULT_PALETTE, "info")).toBe(DEFAULT_PALETTE.theme.info);
+        expect(pinColor(DEFAULT_PALETTE, "secondary")).toBe(DEFAULT_PALETTE.theme.secondary);
+        expect(pinColor(DEFAULT_PALETTE, "accent")).toBe(DEFAULT_PALETTE.theme.accent);
+        expect(pinColor(DEFAULT_PALETTE, "other")).toBe(DEFAULT_PALETTE.other);
     });
 });
 

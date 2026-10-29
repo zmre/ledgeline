@@ -95,6 +95,16 @@ describe("UNIT cashFlowChartReport", () => {
         expect(chart.totals).toBe(CASH_FLOW.netChange.values);
         expect(chart.periods.map((period) => period.label)).toEqual(["Jan 2026", "Feb 2026", "Mar 2026"]);
     });
+
+    it("pins each activity to its heading's colour, and exchange rates to the muted grey", () => {
+        const chart = cashFlowChartReport({...CASH_FLOW, exchange: flow([0, 10, 0])});
+        expect(chart.rows.map((row) => [row.account, row.pin])).toEqual([
+            ["Operating", "info"],
+            ["Investing", "secondary"],
+            ["Financing", "accent"],
+            ["Exchange rates", "other"],
+        ]);
+    });
 });
 
 describe("UNIT cfDisplayModel — a rolled-up line that is one account", () => {

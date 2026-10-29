@@ -15,7 +15,8 @@
 // starts OPEN: the cash balances by account are what this tab used to show, and
 // the detail is kept on screen (plans/27, "Answers").
 
-import type {CashFlowStatement, CfCashLine, CfColumns, CfLine, CfSectionKind, IsBucket, PeriodReport} from "#lib/reports/types.js";
+import type {CashFlowStatement, CfCashLine, CfColumns, CfLine, CfSectionKind, IsBucket, PeriodReport, PeriodRow} from "#lib/reports/types.js";
+import {CF_EXCHANGE_PIN, CF_PIN} from "./cashFlowColors";
 
 export type CfRowKind = "netIncome" | "line" | "account";
 
@@ -210,14 +211,20 @@ export function cfCursorRows(model: CfDisplayModel): CfDisplayRow[] {
  *
  * Shaped as a `PeriodReport` so the stacked-bar chart the other period tabs
  * use draws it unchanged, with its tooltips, legend and one-currency note.
+ * Each row is PINNED to its heading's colour in the statement (`CF_PIN`), so
+ * the chart does not hand colours out by size the way Net Worth does.
  */
 export function cashFlowChartReport(report: CashFlowStatement): PeriodReport {
-    const series = report.sections.map((section) => ({account: section.title.replace(/ activities$/, ""), figures: section.total}));
-    if (!isZero(report.exchange)) series.push({account: "Exchange rates", figures: report.exchange});
+    const series: {account: string; figures: CfColumns; pin: NonNullable<PeriodRow["pin"]>}[] = report.sections.map((section) => ({
+        account: section.title.replace(/ activities$/, ""),
+        figures: section.total,
+        pin: CF_PIN[section.kind],
+    }));
+    if (!isZero(report.exchange)) series.push({account: "Exchange rates", figures: report.exchange, pin: CF_EXCHANGE_PIN});
     return {
         buckets: report.buckets.map((bucket) => bucket.key),
         periods: report.buckets.map((bucket) => ({key: bucket.key, label: bucket.label, start: bucket.from, end: bucket.to})),
-        rows: series.map((row) => ({account: row.account, depth: 1, values: row.figures.values, total: row.figures.total})),
+        rows: series.map((row): PeriodRow => ({account: row.account, depth: 1, values: row.figures.values, total: row.figures.total, pin: row.pin})),
         totals: report.netChange.values,
         grandTotal: report.netChange.total,
     };
