@@ -24,7 +24,7 @@
     import {decToInput, parseAmountInput} from "#lib/api/editMapping.js";
     import type {AmountStyle} from "#lib/domain/types.js";
     import AccountInput from "#lib/journal/edit/AccountInput.svelte";
-    import {blankPosting, rulePreview, type AutoRuleForm, type AutoRuleFormPosting, type RuleAmount} from "./ruleForm";
+    import {blankPosting, ruleFormNeedsCounter, rulePreview, type AutoRuleForm, type AutoRuleFormPosting, type RuleAmount} from "./ruleForm";
 
     let {
         form,
@@ -65,6 +65,8 @@
     const commodityOf = (posting: AutoRuleFormPosting, at: number): string => posting.amount?.commodity ?? pendingCommodity[at] ?? commodity;
 
     const preview = $derived(rulePreview(form, sample, styles));
+    /** A journal rule is applied to recorded transactions, where an unbalanced one stops hledger reading the journal at all. */
+    const needsCounter = $derived(scope === "journal" && ruleFormNeedsCounter(form));
 
     function setKind(posting: AutoRuleFormPosting, at: number, kind: "percent" | "fixed"): void {
         if (posting.kind === kind) return;
@@ -266,6 +268,12 @@
         </div>
         <input type="text" class="input w-56 input-xs" placeholder="comment" bind:value={form.comment} aria-label="Comment for {name}" onchange={onChange} />
     </div>
+    {#if needsCounter}
+        <p class="text-warning" data-testid="auto-rule-needs-counter">
+            Choose the account this rule is balanced against. A posting with nothing to balance it leaves every matched transaction unbalanced, and hledger then
+            refuses the whole journal under <code>--auto</code>.
+        </p>
+    {/if}
     {#if preview !== null}
         <p class="text-base-content/60" data-testid="auto-rule-preview">{preview}</p>
     {/if}

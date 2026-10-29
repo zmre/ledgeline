@@ -627,6 +627,48 @@ async fn a_bad_rule_or_file_is_refused_and_writes_nothing() {
     assert_eq!(read(&dir, "main.journal"), main);
 }
 
+/// A rule whose postings can never balance — a lone percentage, as a form
+/// with no counter-account or as text — is refused before anything is
+/// written: hledger would refuse the whole journal under `--auto` once it
+/// fired. A lone `(virtual)` posting needs no balance and is written.
+#[tokio::test]
+async fn a_rule_that_can_never_balance_is_refused_and_writes_nothing() {
+    let dir = fixture_copy(true);
+    let state = state_in(&dir);
+    let main = read(&dir, "main.journal");
+    let rules = read(&dir, "rules.journal");
+    let listed = get(&state, "/api/auto-rules").await;
+    let sales = &listed["rules"][0];
+    let counterless = json!({"form": {
+        "matchAccount": "revenue:sales", "extraQuery": "",
+        "postings": [{"account": "liabilities:tax:sales", "kind": "percent",
+                      "percent": {"mantissa": "10", "places": 0}, "amount": null}],
+        "counter": null, "comment": "", "forecastOnly": false,
+    }});
+    for change in [
+        json!({"journalId": "main.journal", "revision": listed["newRule"]["revision"],
+               "change": {"kind": "add", "rule": counterless}}),
+        json!({"journalId": "main.journal", "revision": listed["newRule"]["revision"],
+               "change": {"kind": "add", "rule": {"raw": "= revenue:sales\n    liabilities:tax  *0.1"}}}),
+        json!({"journalId": "rules.journal", "revision": sales["revision"],
+               "change": {"kind": "replace", "block": 0, "was": sales["raw"], "rule": counterless}}),
+    ] {
+        let (status, body) = put(&state, change.clone()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{change}: {body}");
+        assert!(body.to_string().contains("do not balance"), "{body}");
+    }
+    assert_eq!(read(&dir, "main.journal"), main);
+    assert_eq!(read(&dir, "rules.journal"), rules);
+
+    let (status, body) = put(
+        &state,
+        json!({"journalId": "main.journal", "revision": listed["newRule"]["revision"],
+               "change": {"kind": "add", "rule": {"raw": "= revenue:sales\n    (budget:tax)  *-0.1"}}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
 /// The write is token-gated with the read.
 #[tokio::test]
 async fn the_rule_routes_require_the_token() {

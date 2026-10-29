@@ -15,14 +15,20 @@
      journal. Each is one `PUT /api/auto-rules`, which rewrites that block
      alone and answers 409 if the file moved — the listing is then re-read
      and the user re-applies. Nothing is saved until Save: a rule half-typed
-     into a journal would change every report the moment it parsed. -->
+     into a journal would change every report the moment it parsed.
+
+     A rule's `index` names it for ONE listing only, and the listing is
+     re-read whenever the journal changes. So an edit or a delete carries the
+     rule as it was when the user acted on it (`RuleIdentity`), and sends
+     exactly that: a rule moved or changed since is the server's 409, never a
+     write to whichever rule now sits at the old place. -->
 <script lang="ts">
     import {resolve} from "$app/paths";
     import AsyncSection from "#lib/components/AsyncSection.svelte";
     import {journal} from "#lib/stores/journal.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
     import AutoRuleEditor from "../AutoRuleEditor.svelte";
-    import {blankRuleForm, cloneRuleForm, ruleFormComplete, ruleFormToWire, type AutoRuleForm} from "../ruleForm";
+    import {blankRuleForm, cloneRuleForm, ruleFormComplete, ruleFormNeedsCounter, ruleFormToWire, type AutoRuleForm} from "../ruleForm";
     import {autoRules, ensureAutoRules, reloadAutoRules, saveAutoRule} from "../store.svelte";
     import type {AutoRule, AutoRuleIn, AutoRulesListing, SaveAutoRuleBody} from "../types";
 
@@ -31,10 +37,21 @@
     /** What is being edited: a rule's form, or its block as text. */
     type Draft = {mode: "form"; form: AutoRuleForm} | {mode: "text"; raw: string};
 
-    /** The one open editor: an existing rule (by `index`) or a new one. */
-    let editing = $state<{key: number | "new"; draft: Draft; error: string | null} | null>(null);
+    /** A rule as the user saw it when they acted on it: what its `PUT` sends, and what the server checks. */
+    interface RuleIdentity {
+        journalId: string;
+        revision: string;
+        block: number;
+        /** The block's text. */
+        was: string;
+    }
+
+    /** The one open editor: an existing rule or a new one. */
+    let editing = $state<{target: RuleIdentity | "new"; draft: Draft; error: string | null} | null>(null);
     /** The rule whose Delete is waiting for its confirmation. */
-    let confirmingDelete = $state<number | null>(null);
+    let confirmingDelete = $state<RuleIdentity | null>(null);
+    /** What became of a rule the user acted on: shown on its row while it is listed, above the list once it is not. */
+    let notice = $state<{target: RuleIdentity; message: string} | null>(null);
     let saving = $state(false);
 
     /** A new block's text, for a user who would rather type it. */
@@ -50,6 +67,29 @@
 
     const listing = $derived(autoRules.value);
 
+    /** The listed rule the open editor is on, or null (none open, a new rule, or the rule is gone). */
+    const editingRule = $derived(listing === null || editing === null || editing.target === "new" ? null : locate(listing, editing.target));
+    const noticeRule = $derived(listing === null || notice === null ? null : locate(listing, notice.target));
+
+    // A re-read (an edit elsewhere, the watcher, a 409) can move the open rule
+    // or change it. Follow it while its text is what the user opened; once it
+    // is not, close the editor and say so — the draft never moves onto another rule.
+    $effect(() => {
+        const opened = editing?.target;
+        if (listing === null || opened === undefined || opened === "new") return;
+        const now = editingRule === null ? null : identityOf(editingRule);
+        if (now === null) {
+            notice = {
+                target: opened,
+                message: `While you were editing ${described(opened)}, it was changed or removed in the file, so your edit was not saved. The list shows the file as it is now.`,
+            };
+            editing = null;
+        } else if (editing !== null && (now.block !== opened.block || now.revision !== opened.revision)) {
+            // The same text, so the same rule: the file changed around it.
+            editing.target = now;
+        }
+    });
+
     function retry(): void {
         const url = settings.serverUrl;
         if (url !== null) reloadAutoRules(url, journal.generation);
@@ -61,24 +101,60 @@
     }
 
     function canEdit(listing: AutoRulesListing, rule: AutoRule): boolean {
-        return listing.editable && rule.journalId !== null && rule.revision !== null;
+        return listing.editable && identityOf(rule) !== null;
+    }
+
+    /** `rule` as an edit of it must name it, or null when its file cannot be written. */
+    function identityOf(rule: AutoRule): RuleIdentity | null {
+        if (rule.journalId === null || rule.revision === null) return null;
+        return {journalId: rule.journalId, revision: rule.revision, block: rule.block, was: rule.raw};
+    }
+
+    /** Whether `rule` is exactly `target`, in this very revision of its file. */
+    function isRule(rule: AutoRule, target: RuleIdentity): boolean {
+        return rule.journalId === target.journalId && rule.revision === target.revision && rule.block === target.block && rule.raw === target.was;
+    }
+
+    /**
+     * `target` in `listing`: the rule in the same file with the same text, at
+     * the same block if it is still there. Null once its text changed or it
+     * was removed. (Two identical blocks are interchangeable: editing either
+     * writes the same file.)
+     */
+    function locate(listing: AutoRulesListing, target: RuleIdentity): AutoRule | null {
+        const same = listing.rules.filter((rule) => rule.journalId === target.journalId && rule.raw === target.was);
+        return same.find((rule) => rule.block === target.block) ?? same[0] ?? null;
+    }
+
+    /** A rule named in a sentence: `the rule "= QUERY" in FILE`. */
+    function described(target: RuleIdentity): string {
+        return `the rule "${target.was.split("\n")[0].trim()}" in ${target.journalId}`;
     }
 
     function startEdit(rule: AutoRule): void {
+        const target = identityOf(rule);
+        if (target === null) return;
         confirmingDelete = null;
-        editing = {key: rule.index, draft: rule.form === null ? {mode: "text", raw: rule.raw} : {mode: "form", form: cloneRuleForm(rule.form)}, error: null};
+        notice = null;
+        editing = {target, draft: rule.form === null ? {mode: "text", raw: rule.raw} : {mode: "form", form: cloneRuleForm(rule.form)}, error: null};
     }
 
     function startAdd(): void {
         confirmingDelete = null;
+        notice = null;
         // A main-journal rule applies to recorded transactions, so not forecast-only.
-        editing = {key: "new", draft: {mode: "form", form: blankRuleForm(null, false)}, error: null};
+        editing = {target: "new", draft: {mode: "form", form: blankRuleForm(null, false)}, error: null};
     }
 
-    /** Switch an open editor to the text box: the rule as last saved, or a new block's skeleton. */
-    function asText(rule: AutoRule | null): void {
+    function askDelete(rule: AutoRule): void {
+        notice = null;
+        confirmingDelete = identityOf(rule);
+    }
+
+    /** Switch an open editor to the text box: the rule as it was opened, or a new block's skeleton. */
+    function asText(): void {
         if (editing === null) return;
-        editing.draft = {mode: "text", raw: rule?.raw ?? NEW_RULE_TEXT};
+        editing.draft = {mode: "text", raw: editing.target === "new" ? NEW_RULE_TEXT : editing.target.was};
         editing.error = null;
     }
 
@@ -86,50 +162,62 @@
     function ruleIn(draft: Draft): AutoRuleIn | string {
         if (draft.mode === "text") return draft.raw.trim() === "" ? "Type the rule, starting with its = line." : {raw: draft.raw};
         if (!ruleFormComplete(draft.form)) return "Choose the account to match, and an account and a number for every posting.";
+        if (ruleFormNeedsCounter(draft.form))
+            return "Choose the account this rule is balanced against: hledger refuses the whole journal under --auto when a rule's postings don't balance.";
         return {form: ruleFormToWire(draft.form)};
     }
 
-    async function send(body: SaveAutoRuleBody): Promise<string | null> {
+    /** Send one change; null when it was made, else the sentence saying why not (`conflict` for a 409). */
+    async function send(body: SaveAutoRuleBody, conflict: string): Promise<string | null> {
         const url = settings.serverUrl;
         if (url === null) return "No server is configured.";
         saving = true;
         try {
             const outcome = await saveAutoRule(url, body);
             if (outcome.ok) return null;
-            if (outcome.failure.kind === "conflict")
-                return "The file changed since this list was read, so nothing was written. It has been re-read: make the change again.";
-            return outcome.failure.message;
+            return outcome.failure.kind === "conflict" ? conflict : outcome.failure.message;
         } finally {
             saving = false;
         }
     }
 
-    async function save(listing: AutoRulesListing, rule: AutoRule | null): Promise<void> {
+    async function save(listing: AutoRulesListing): Promise<void> {
         if (editing === null) return;
         const sent = ruleIn(editing.draft);
         if (typeof sent === "string") {
             editing.error = sent;
             return;
         }
+        const target = editing.target;
         let body: SaveAutoRuleBody;
-        if (rule === null) {
+        if (target === "new") {
+            // Appended, so no other rule's place matters.
             if (listing.newRule === null) return;
             body = {...listing.newRule, change: {kind: "add", rule: sent}};
         } else {
-            if (rule.journalId === null || rule.revision === null) return;
-            body = {journalId: rule.journalId, revision: rule.revision, change: {kind: "replace", block: rule.block, was: rule.raw, rule: sent}};
+            body = {journalId: target.journalId, revision: target.revision, change: {kind: "replace", block: target.block, was: target.was, rule: sent}};
         }
-        const error = await send(body);
+        const error = await send(
+            body,
+            "The file changed since this list was read, so nothing was written. It has been re-read: check the rule and save again."
+        );
         if (editing === null) return;
         if (error === null) editing = null;
         else editing.error = error;
     }
 
-    async function remove(rule: AutoRule): Promise<void> {
-        if (rule.journalId === null || rule.revision === null) return;
-        const error = await send({journalId: rule.journalId, revision: rule.revision, change: {kind: "remove", block: rule.block, was: rule.raw}});
+    function confirmDelete(): void {
+        if (confirmingDelete !== null) void remove(confirmingDelete);
+    }
+
+    async function remove(target: RuleIdentity): Promise<void> {
+        const error = await send(
+            {journalId: target.journalId, revision: target.revision, change: {kind: "remove", block: target.block, was: target.was}},
+            "The file changed since this list was read, so nothing was deleted. It has been re-read: check the rule and delete it again if you still want to."
+        );
         confirmingDelete = null;
-        if (error !== null) editing = {key: rule.index, draft: {mode: "text", raw: rule.raw}, error};
+        // The listing stays what is shown; the error goes beside it, never into an editor.
+        if (error !== null) notice = {target, message: error};
     }
 
     function location(rule: AutoRule): string {
@@ -180,7 +268,7 @@
                 <div class="alert py-1.5 text-xs alert-error" role="alert" data-testid="settings-auto-save-error"><span>{editing.error}</span></div>
             {/if}
             <div class="flex flex-wrap items-center gap-2">
-                <button type="button" class="btn btn-primary btn-xs" disabled={saving} onclick={() => void save(listing, rule)} data-testid="settings-auto-save"
+                <button type="button" class="btn btn-primary btn-xs" disabled={saving} onclick={() => void save(listing)} data-testid="settings-auto-save"
                     >{saving ? "Saving…" : rule === null ? "Add rule" : "Save"}</button
                 >
                 <button type="button" class="btn btn-ghost btn-xs" disabled={saving} onclick={() => (editing = null)}>Cancel</button>
@@ -190,7 +278,7 @@
                         type="button"
                         class="btn btn-ghost btn-xs"
                         title="Edit the rule's text instead. Changes made in the form are dropped."
-                        onclick={() => asText(rule)}>Edit as text</button
+                        onclick={asText}>Edit as text</button
                     >
                 {/if}
             </div>
@@ -237,8 +325,12 @@
                 </div>
             {/if}
 
+            {#if notice !== null && noticeRule === null}
+                <div class="alert py-2 text-sm alert-warning" role="alert" data-testid="settings-auto-notice"><span>{notice.message}</span></div>
+            {/if}
+
             {#if loaded.editable && loaded.newRule !== null}
-                {#if editing?.key === "new"}
+                {#if editing?.target === "new"}
                     {@render ruleEditor(loaded, null)}
                 {:else}
                     <div>
@@ -275,15 +367,15 @@
                                             >{rule.generated} generated {rule.generated === 1 ? "posting" : "postings"}</span
                                         >
                                     {/if}
-                                    {#if canEdit(loaded, rule) && editing?.key !== rule.index}
+                                    {#if canEdit(loaded, rule) && editingRule?.index !== rule.index}
                                         <span class="grow"></span>
-                                        {#if confirmingDelete === rule.index}
+                                        {#if confirmingDelete !== null && isRule(rule, confirmingDelete)}
                                             <span class="text-xs text-base-content/70">Delete this rule from <code>{rule.file}</code>?</span>
                                             <button
                                                 type="button"
                                                 class="btn btn-error btn-xs"
                                                 disabled={saving}
-                                                onclick={() => void remove(rule)}
+                                                onclick={confirmDelete}
                                                 data-testid="settings-auto-confirm-delete">Delete</button
                                             >
                                             <button type="button" class="btn btn-ghost btn-xs" onclick={() => (confirmingDelete = null)}>Keep</button>
@@ -294,7 +386,7 @@
                                             <button
                                                 type="button"
                                                 class="btn btn-ghost text-error btn-xs"
-                                                onclick={() => (confirmingDelete = rule.index)}
+                                                onclick={() => askDelete(rule)}
                                                 data-testid="settings-auto-delete">Delete</button
                                             >
                                         {/if}
@@ -305,10 +397,15 @@
                                         This engine cannot read this rule's query ({rule.unsupported}), so it never fires here.
                                     </p>
                                 {/if}
-                                {#if editing?.key === rule.index}
+                                {#if editingRule?.index === rule.index}
                                     {@render ruleEditor(loaded, rule)}
                                 {:else}
                                     <pre class="overflow-x-auto rounded bg-base-200 p-2 font-mono text-xs">{rule.raw.trimEnd()}</pre>
+                                {/if}
+                                {#if notice !== null && noticeRule?.index === rule.index}
+                                    <div class="alert py-1.5 text-xs alert-error" role="alert" data-testid="settings-auto-notice">
+                                        <span>{notice.message}</span>
+                                    </div>
                                 {/if}
                                 {#each grouped(rule) as problem (problem.message)}
                                     <div
