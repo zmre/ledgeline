@@ -392,6 +392,10 @@ impl WireScenario {
         declared: &BTreeMap<String, AccountType>,
         own: &BTreeMap<String, AccountType>,
     ) -> Self {
+        // Plan 31 C1: commented-out entries are read as disabled ones, and this
+        // wire has no flag to say so yet (C2), so they are not sent; a
+        // layout-less save keeps them where they are in the file.
+        let scenario = &scenario.active();
         let declared = scenario_account_types(declared, own);
         Self {
             name: scenario.name.clone(),
@@ -1150,7 +1154,11 @@ impl DecodedScenario {
                         rule_from_text(&text, styles)?
                     }
                 };
-                Ok(ScenarioAutoRule { block, rule })
+                Ok(ScenarioAutoRule {
+                    block,
+                    key: String::new(),
+                    rule,
+                })
             })
             .collect::<Result<_, AppError>>()?;
         for (line, entry) in scenario.lines.iter_mut().zip(entries) {
@@ -1215,6 +1223,8 @@ fn scenario_from_wire(
                 )));
             }
             Ok(ScenarioLine {
+                comment: String::new(),
+                rule_comment: String::new(),
                 counter: optional_account(line.counter.as_ref())?,
                 gains,
                 id: line.id.clone(),
@@ -1255,6 +1265,8 @@ fn scenario_from_wire(
                 })
                 .collect::<Result<_, AppError>>()?;
             Ok(ScenarioEvent {
+                comment: String::new(),
+                posting_comments: Vec::new(),
                 id: event.id.clone(),
                 // The one field here that reaches bucket math, so it gets the
                 // same validation a `?end=` param does (RPT-4).
@@ -1279,6 +1291,9 @@ fn scenario_from_wire(
         rules,
         own_types,
         scenario: Scenario {
+            comments: Vec::new(),
+            fixed: Vec::new(),
+            layout: Vec::new(),
             auto_rules: Vec::new(),
             name: scenario.name.clone(),
             created: scenario.created.clone(),

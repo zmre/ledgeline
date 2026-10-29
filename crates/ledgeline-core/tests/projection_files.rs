@@ -132,6 +132,8 @@ fn usd(mantissa: i128, places: u32, precision: u32) -> Amount {
 
 fn line(group: &str, id: &str, account: &str, amount: Amount, period: &str) -> ScenarioLine {
     ScenarioLine {
+        comment: String::new(),
+        rule_comment: String::new(),
         counter: None,
         gains: None,
         id: id.to_string(),
@@ -704,6 +706,9 @@ fn a_save_that_changes_nothing_produces_the_same_bytes() {
 /// apply and which is asserted about separately below.
 fn cross_check_scenario() -> Scenario {
     Scenario {
+        comments: Vec::new(),
+        fixed: Vec::new(),
+        layout: Vec::new(),
         auto_rules: Vec::new(),
         cash: None,
         name: "Cross check".to_string(),
@@ -758,6 +763,8 @@ fn cross_check_scenario() -> Scenario {
             },
         ],
         events: vec![ScenarioEvent {
+            comment: String::new(),
+            posting_comments: Vec::new(),
             counter: None,
             id: "rule:3".to_string(),
             date: "2027-03-01".to_string(),
@@ -2857,6 +2864,10 @@ fn editing_rules_through_forms_rewrites_only_their_blocks() {
     let doc = ProjectionDoc::parse(before, &name, &declared()).expect("it parses");
     let mut scenario = scenario_from_text(before, &name, "plan", &declared()).expect("it reads");
     assert_eq!(scenario.auto_rules.len(), 3);
+    // Edited the way the Settings forms edit them: by position in
+    // `auto_rules`, with no layout — so the save takes the legacy one, which
+    // fills the file's `=` slots in scenario order (plan 31 C8).
+    scenario.layout.clear();
 
     // The commission goes from 3.5% to 4%, through its form.
     let mut commission = form_from_rule(&scenario.auto_rules[1].rule, &types)
@@ -2883,6 +2894,7 @@ fn editing_rules_through_forms_rewrites_only_their_blocks() {
     )
     .expect("renders");
     scenario.auto_rules.push(ScenarioAutoRule {
+        key: String::new(),
         block: None,
         rule: rule_from(&added),
     });

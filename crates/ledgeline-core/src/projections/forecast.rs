@@ -894,6 +894,8 @@ pub(super) fn expand(
     types: &AccountTypes,
     history: &History<'_>,
 ) -> Result<(Forecast, Vec<PriceDirective>, AccountBalances), ReportError> {
+    // A disabled entry never reaches a number (plan 31 C7).
+    let scenario = &*active(scenario);
     let window = ForecastWindow::resolve(
         opts.today,
         latest_real_date(history.txns),
@@ -934,6 +936,16 @@ pub(super) fn expand(
     Ok((forecast, prices, balances))
 }
 
+/// [`Scenario::active`], borrowed when it would change nothing — the usual
+/// case, and the one a run should not pay a clone for.
+fn active(scenario: &Scenario) -> std::borrow::Cow<'_, Scenario> {
+    if scenario.has_inactive_or_reordered() {
+        std::borrow::Cow::Owned(scenario.active())
+    } else {
+        std::borrow::Cow::Borrowed(scenario)
+    }
+}
+
 /// The first `Tindex` a forecast numbers its transactions from: one past the
 /// journal's highest.
 pub(super) fn next_index(txns: &[Transaction]) -> u32 {
@@ -970,6 +982,9 @@ pub(super) fn expand_from(
     types: &AccountTypes,
     real: RealInputs<'_>,
 ) -> Result<Forecast, ReportError> {
+    // A disabled entry never reaches a number (plan 31 C7). `expand` and this
+    // are the engine's only readers of a scenario's entries.
+    let scenario = &*active(scenario);
     let RealInputs {
         window,
         prices,
@@ -1792,6 +1807,8 @@ mod tests {
 
     fn line(group: &str, account: &str, money: Amount, period: &str) -> ScenarioLine {
         ScenarioLine {
+            comment: String::new(),
+            rule_comment: String::new(),
             id: group.to_string(),
             group: group.to_string(),
             role: LineRole::Flow,
@@ -1830,6 +1847,8 @@ mod tests {
         counter: Option<&str>,
     ) -> ScenarioEvent {
         ScenarioEvent {
+            comment: String::new(),
+            posting_comments: Vec::new(),
             id: id.to_string(),
             date: date.to_string(),
             description: id.to_string(),
