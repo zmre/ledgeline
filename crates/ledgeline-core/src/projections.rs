@@ -475,6 +475,19 @@ impl ItemKind {
             Self::Fixed => "fixed",
         }
     }
+
+    /// Read a kind from a wire field.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            "rule" => Some(Self::Rule),
+            "event" => Some(Self::Event),
+            "auto" => Some(Self::Auto),
+            "comment" => Some(Self::Comment),
+            "fixed" => Some(Self::Fixed),
+            _ => None,
+        }
+    }
 }
 
 /// One piece of a scenario file, in file order (plan 31 C1, C8).

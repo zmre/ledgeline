@@ -1492,7 +1492,7 @@ async fn the_seed_refuses_a_bad_window() {
 // The token guard, and paths
 // ---------------------------------------------------------------------------
 
-/// Both routes read the user's finances. Below the `route_layer` in `lib.rs`
+/// Every one of these routes reads the user's finances. Below the `route_layer` in `lib.rs`
 /// they would do it with no bearer token at all; this is the test that fails if
 /// they are ever moved.
 #[tokio::test]
@@ -1529,6 +1529,7 @@ async fn every_projection_route_requires_the_token() {
 
     for (method, uri) in [
         ("POST", "/api/projections/run"),
+        ("POST", "/api/projections/render"),
         ("GET", "/api/projections/seed"),
     ] {
         assert_eq!(
@@ -1731,6 +1732,17 @@ async fn file_text(
 }
 
 const PLAN_URI: &str = "/api/projections/plans/projection-plan.journal";
+
+/// `scenario` as a client from before plan 31 sends it: no layout, no
+/// comments, no file text — so the save derives the layout (`legacy_layout`)
+/// and keeps every comment, disabled entry and piece of file text where it is.
+fn legacy(mut scenario: Value) -> Value {
+    let object = scenario.as_object_mut().expect("a scenario object");
+    for field in ["layout", "comments", "fixed"] {
+        object.remove(field);
+    }
+    scenario
+}
 
 /// `GET` the plan file and hand back its revision plus its scenario.
 async fn open_plan(state: &AppState) -> (String, Value) {
@@ -2123,8 +2135,17 @@ async fn a_file_that_does_not_parse_is_a_400_about_reading_it_not_a_500_about_wr
 
 #[tokio::test]
 async fn a_save_rewrites_only_the_rule_it_changed() {
+    // A body from before plan 31 (no layout) and one handing the served
+    // layout back mean the same save.
+    for shape in [legacy as fn(Value) -> Value, |scenario| scenario] {
+        a_save_rewrites_only_the_rule_it_changed_as(shape).await;
+    }
+}
+
+async fn a_save_rewrites_only_the_rule_it_changed_as(shape: fn(Value) -> Value) {
     let tree = Tree::standard();
-    let (revision, mut scenario) = open_plan(&tree.state).await;
+    let (revision, scenario) = open_plan(&tree.state).await;
+    let mut scenario = shape(scenario);
     scenario["lines"][0]["amount"]["quantity"]["mantissa"] = json!("450000");
 
     let (status, doc) = file_json(
@@ -3282,7 +3303,8 @@ async fn a_save_with_an_edited_form_rewrites_only_that_rule_s_block() {
     let tree = Tree::new(&[("plans/projection-ruled.journal", RULED)]);
     let (status, doc) = file_json(&tree.state, "GET", RULED_URI, None).await;
     assert_eq!(status, StatusCode::OK, "{doc}");
-    let mut scenario = doc["scenario"].clone();
+    // Rules edited by position, with no keys, as a layout-less client does.
+    let mut scenario = legacy(doc["scenario"].clone());
     let mut form = scenario["autoRules"][0]["form"].clone();
     form["postings"][0]["percent"] = json!({"mantissa": "12", "places": 0});
     scenario["autoRules"][0] = json!({"block": 0, "form": form});
@@ -3325,7 +3347,7 @@ async fn a_save_with_an_edited_form_rewrites_only_that_rule_s_block() {
 async fn a_save_deletes_and_appends_rules_by_block() {
     let tree = Tree::new(&[("plans/projection-ruled.journal", RULED)]);
     let (_, doc) = file_json(&tree.state, "GET", RULED_URI, None).await;
-    let mut scenario = doc["scenario"].clone();
+    let mut scenario = legacy(doc["scenario"].clone());
     let first = scenario["autoRules"][0]["raw"].clone();
     scenario["autoRules"] = json!([
         {"block": 0, "raw": first},
@@ -3406,7 +3428,8 @@ async fn a_rule_on_a_liability_the_scenario_declares_is_served_positive_and_save
     );
 
     // The user re-saves the form exactly as served (the documented figure).
-    scenario["autoRules"][0] = json!({"block": 0, "form": form});
+    // The body hands the served layout back, so the rule names its key.
+    scenario["autoRules"][0] = json!({"block": 0, "key": "auto:0", "form": form});
     let (status, saved) = file_json(
         &tree.state,
         "PUT",
@@ -3501,5 +3524,707 @@ async fn an_unknown_account_type_in_the_body_is_a_400() {
     assert!(
         text.contains("hmrc:paye") && text.contains("debt"),
         "{text}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Plan 31 Phase C2: the file's pieces on the wire, and one entry's text
+// ---------------------------------------------------------------------------
+
+/// The parity fixture written the way a person writes a scenario: sections,
+/// notes, attached comments, comments inside blocks, a step pair, and a
+/// disabled rule, one-off and `=` rule.
+const COMMENTS: &str = include_str!("../../../fixtures/projections-parity/comments.journal");
+
+const COMMENTS_FILE: &str = "plans/projection-comments.journal";
+const COMMENTS_URI: &str = "/api/projections/plans/projection-comments.journal";
+const RENDER_URI: &str = "/api/projections/render";
+
+fn comments_tree() -> Tree {
+    Tree::new(&[(COMMENTS_FILE, COMMENTS)])
+}
+
+/// `text` without its `; updated:` line, which every save moves to today.
+fn sans_updated(text: &str) -> String {
+    text.split_inclusive('\n')
+        .filter(|line| !line.starts_with("; updated:"))
+        .collect()
+}
+
+/// [`file_json`], with a body that is not JSON (an error's sentence) as a
+/// JSON string rather than `null`.
+async fn file_value(
+    state: &AppState,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let (status, bytes) = file_request(state, method, uri, body).await;
+    (
+        status,
+        serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned())),
+    )
+}
+
+/// `PUT` `scenario` over `uri` at `revision`.
+async fn put(
+    state: &AppState,
+    uri: &str,
+    revision: &Value,
+    scenario: Value,
+) -> (StatusCode, Value) {
+    file_value(
+        state,
+        "PUT",
+        uri,
+        Some(json!({"revision": revision, "scenario": scenario})),
+    )
+    .await
+}
+
+/// The served scenario handed back as a client sends it: each `=` rule as
+/// its text (`raw`) alone, with its block and key — plan 30's "exactly one
+/// of `raw` and `form`" — and everything else as served.
+fn handed_back(scenario: &Value) -> Value {
+    let mut out = scenario.clone();
+    out["autoRules"] = Value::Array(
+        scenario["autoRules"]
+            .as_array()
+            .expect("autoRules")
+            .iter()
+            .map(|rule| json!({"block": rule["block"], "key": rule["key"], "raw": rule["raw"]}))
+            .collect(),
+    );
+    out
+}
+
+/// The served scenario as the table before plan 31 holds it: the ACTIVE
+/// entries only, and no layout, comments or file text.
+fn active_legacy(scenario: &Value) -> Value {
+    let off: Vec<String> = scenario["layout"]
+        .as_array()
+        .expect("a layout")
+        .iter()
+        .filter(|item| item["disabled"] == json!(true))
+        .map(|item| item["key"].as_str().expect("a key").to_string())
+        .collect();
+    let keep = |field: &str, key: &str| -> Value {
+        Value::Array(
+            scenario[field]
+                .as_array()
+                .expect(field)
+                .iter()
+                .filter(|entry| !off.iter().any(|key_off| entry[key] == json!(key_off)))
+                .cloned()
+                .collect(),
+        )
+    };
+    let mut out = legacy(handed_back(scenario));
+    out["lines"] = keep("lines", "group");
+    out["events"] = keep("events", "id");
+    out["autoRules"] = keep("autoRules", "key");
+    out
+}
+
+/// The layout item keyed `key`.
+fn item<'a>(scenario: &'a Value, key: &str) -> &'a Value {
+    scenario["layout"]
+        .as_array()
+        .expect("a layout")
+        .iter()
+        .find(|item| item["key"] == key)
+        .unwrap_or_else(|| panic!("no layout item {key} in {scenario}"))
+}
+
+/// **The pieces travel, and a disabled entry travels FLAGGED.** Its lines,
+/// one-off and rule are in the scenario like any other; its layout item is
+/// the one place that says it is off. Each item carries its piece's exact
+/// text.
+#[tokio::test]
+async fn a_file_is_served_as_its_pieces_with_disabled_entries_flagged() {
+    let tree = comments_tree();
+    let (status, doc) = file_json(&tree.state, "GET", COMMENTS_URI, None).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let scenario = &doc["scenario"];
+    let layout: Vec<(String, String, bool)> = scenario["layout"]
+        .as_array()
+        .expect("a layout")
+        .iter()
+        .map(|item| {
+            (
+                item["kind"].as_str().expect("kind").to_string(),
+                item["key"].as_str().expect("key").to_string(),
+                item["disabled"].as_bool().expect("disabled"),
+            )
+        })
+        .collect();
+    let want: Vec<(String, String, bool)> = [
+        ("comment", "comment:0", false),
+        ("comment", "comment:1", false),
+        ("rule", "rule:0", false),
+        ("rule", "off:0", true),
+        ("comment", "comment:2", false),
+        ("rule", "rule:1", false),
+        ("rule", "rule:2", false),
+        ("rule", "rule:3", false),
+        ("event", "off:1", true),
+        ("auto", "auto:off:0", true),
+        ("comment", "comment:3", false),
+    ]
+    .iter()
+    .map(|(kind, key, off)| (kind.to_string(), key.to_string(), *off))
+    .collect();
+    assert_eq!(layout, want);
+
+    // A disabled rule's lines, one-off and `=` rule are data like any other.
+    assert!(
+        scenario["lines"]
+            .as_array()
+            .expect("lines")
+            .iter()
+            .any(|line| line["group"] == "off:0" && line["account"] == "revenues:bonus"),
+        "{scenario}"
+    );
+    assert_eq!(scenario["events"][0]["id"], "off:1");
+    assert_eq!(scenario["events"][0]["postings"][0]["comment"], "");
+    assert_eq!(scenario["autoRules"][0]["key"], "auto:off:0");
+    assert_eq!(scenario["autoRules"][0]["block"], Value::Null);
+
+    // `raw` is the piece's text, attached comment included; `attached` the
+    // comment alone.
+    let salary = item(scenario, "rule:0");
+    assert_eq!(
+        salary["attached"],
+        "; Salary, paid on the last working day.\n"
+    );
+    assert_eq!(
+        salary["raw"],
+        "; Salary, paid on the last working day.\n~ monthly  salary  ; employer: acme\n    \
+         revenues:salary      $-6000.00  ; owner: alex\n    assets:checking\n"
+    );
+    assert_eq!(salary["origin"], json!(2));
+    // C6: the comments inside a block.
+    let line = scenario["lines"]
+        .as_array()
+        .expect("lines")
+        .iter()
+        .find(|line| line["group"] == "rule:0")
+        .expect("the salary line");
+    assert_eq!(line["comment"], "owner: alex");
+    assert_eq!(line["ruleComment"], "employer: acme");
+
+    // Comments carry their style, raw text and display text.
+    assert_eq!(
+        scenario["comments"][1],
+        json!({
+            "key": "comment:1",
+            "style": "section",
+            "raw": ";;;;;;;;;;;;;;;;;;;;;;\n;; Income\n",
+            "text": "Income"
+        })
+    );
+    assert_eq!(scenario["comments"][3]["style"], "block");
+    assert_eq!(scenario["fixed"], json!([]));
+}
+
+/// **GET then PUT is byte-identical**, apart from `updated:` — with the
+/// served layout handed back, and with a body from before plan 31 that holds
+/// only the active entries and no layout (today's table).
+#[tokio::test]
+async fn a_served_scenario_saved_back_rewrites_nothing_but_updated() {
+    for shape in [handed_back, active_legacy] {
+        let tree = comments_tree();
+        let (_, doc) = file_json(&tree.state, "GET", COMMENTS_URI, None).await;
+        let (status, saved) = put(
+            &tree.state,
+            COMMENTS_URI,
+            &doc["revision"],
+            shape(&doc["scenario"]),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{saved}");
+        let after = tree.read(COMMENTS_FILE);
+        assert_eq!(sans_updated(&after), sans_updated(COMMENTS));
+        // The answer is the file re-read: the layout again, fresh.
+        assert_eq!(saved["scenario"]["layout"], doc["scenario"]["layout"]);
+    }
+}
+
+/// **Turning an entry off and on through the layout** comments it out line by
+/// line and back, leaving its attached comment as it was.
+#[tokio::test]
+async fn a_layout_s_disabled_flag_comments_an_entry_out_and_back() {
+    let tree = comments_tree();
+    let (_, doc) = file_json(&tree.state, "GET", COMMENTS_URI, None).await;
+    let mut scenario = handed_back(&doc["scenario"]);
+    let at = scenario["layout"]
+        .as_array()
+        .expect("a layout")
+        .iter()
+        .position(|item| item["key"] == "rule:0")
+        .expect("the salary rule");
+    scenario["layout"][at]["disabled"] = json!(true);
+    let (status, saved) = put(&tree.state, COMMENTS_URI, &doc["revision"], scenario).await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let off = tree.read(COMMENTS_FILE);
+    assert!(
+        off.contains(
+            "; Salary, paid on the last working day.\n; ~ monthly  salary  ; employer: acme\n; \
+             \u{20}   revenues:salary      $-6000.00  ; owner: alex\n;     assets:checking\n"
+        ),
+        "{off}"
+    );
+    assert_eq!(item(&saved["scenario"], "off:0")["disabled"], json!(true));
+
+    let mut back = handed_back(&saved["scenario"]);
+    let at = back["layout"]
+        .as_array()
+        .expect("a layout")
+        .iter()
+        .position(|item| item["origin"] == json!(2))
+        .expect("the salary rule's piece");
+    back["layout"][at]["disabled"] = json!(false);
+    let (status, restored) = put(&tree.state, COMMENTS_URI, &saved["revision"], back).await;
+    assert_eq!(status, StatusCode::OK, "{restored}");
+    assert_eq!(
+        sans_updated(&tree.read(COMMENTS_FILE)),
+        sans_updated(COMMENTS)
+    );
+}
+
+/// **The engine never runs a disabled entry.** A run of the scenario as served
+/// (disabled entries in it, flagged) answers exactly as a run of it with them
+/// deleted.
+#[tokio::test]
+async fn a_run_leaves_disabled_entries_out() {
+    let tree = comments_tree();
+    let (_, doc) = file_json(&tree.state, "GET", COMMENTS_URI, None).await;
+    let body = |scenario: Value| json!({"scenario": scenario, "interval": "monthly", "count": 3, "lookback": 0, "journal": true, "asOf": "2027-01-15"});
+    let run_on = |scenario: Value| {
+        let state = tree.state.clone();
+        async move {
+            let (status, projection) =
+                file_value(&state, "POST", "/api/projections/run", Some(body(scenario))).await;
+            assert_eq!(status, StatusCode::OK, "{projection}");
+            projection
+        }
+    };
+    let flagged = run_on(handed_back(&doc["scenario"])).await;
+    let deleted = run_on(active_legacy(&doc["scenario"])).await;
+    assert_eq!(flagged, deleted);
+    // And it did run something: the active salary rule.
+    assert!(
+        flagged["journal"]["total"].as_u64().unwrap_or(0) > 0,
+        "{flagged}"
+    );
+}
+
+/// Two `account` directives with a rule between: two pieces of file text.
+const FIXED: &str = "\
+; Ledgeline projection
+; projection: Fixed
+
+account expenses:a  ; type: X
+
+~ monthly  a
+    expenses:a  $1.00
+    assets:cash
+
+account expenses:b  ; type: X
+";
+
+/// **Every C8 validation is a `400` with a sentence**, and writes nothing.
+#[tokio::test]
+async fn every_layout_and_comment_validation_is_a_400_naming_the_problem() {
+    let rule = json!({"kind": "rule", "key": "rule:0"});
+    let note = |raw: &str| json!({"key": "comment:0", "raw": raw});
+    let with = |layout: Value, comments: Value| {
+        let mut scenario = scenario_with(vec![rent_line()], vec![]);
+        scenario["layout"] = layout;
+        scenario["comments"] = comments;
+        json!({"scenario": scenario, "count": 1, "lookback": 0})
+    };
+    let big = "x".repeat(64 * 1024 + 1);
+    let cases: Vec<(Value, &str)> = vec![
+        (
+            with(json!([{"kind": "blob", "key": "rule:0"}]), json!([])),
+            "unknown kind 'blob'",
+        ),
+        (
+            with(json!([rule, {"kind": "event", "key": "nope"}]), json!([])),
+            "which the scenario does not have",
+        ),
+        (
+            with(
+                json!([{"kind": "comment", "key": "comment:0"}]),
+                json!([note("; hi\n")]),
+            ),
+            "leaves out rule `rule:0`",
+        ),
+        (
+            with(json!([rule, rule]), json!([])),
+            "names rule `rule:0` twice",
+        ),
+        (
+            with(
+                json!([rule, {"kind": "rule", "key": "rule:0", "disabled": true}]),
+                json!([]),
+            ),
+            "twice",
+        ),
+        (
+            with(
+                json!([rule, {"kind": "comment", "key": "comment:0", "disabled": true}]),
+                json!([note("; hi\n")]),
+            ),
+            "can be turned off",
+        ),
+        (
+            with(
+                json!([{"kind": "rule", "key": "rule:0", "attached": "; a\n", "attachedText": "a"}]),
+                json!([]),
+            ),
+            "at most one of `attached` and `attachedText`",
+        ),
+        (
+            with(
+                json!([{"kind": "rule", "key": "rule:0", "attachedText": ";;;;;;"}]),
+                json!([]),
+            ),
+            "divider",
+        ),
+        (
+            with(json!([rule]), json!([note(&format!("; {big}\n"))])),
+            "a comment may be at most 65536",
+        ),
+        (
+            with(json!([rule]), json!([note("; bell \u{7}\n")])),
+            "control character",
+        ),
+        (
+            with(
+                json!([rule]),
+                json!([{"key": "comment:0", "raw": "; hi\n", "text": "bye"}]),
+            ),
+            "not both",
+        ),
+        (
+            with(
+                json!([rule]),
+                json!([{"key": "comment:0", "style": "loud", "text": "hi"}]),
+            ),
+            "unknown style 'loud'",
+        ),
+        (
+            with(json!([rule]), json!([{"key": "comment:0", "text": "hi"}])),
+            "needs its `style`",
+        ),
+        (
+            with(
+                json!([rule]),
+                json!([note("~ monthly\n    expenses:x  $1\n")]),
+            ),
+            "does not read as one comment",
+        ),
+        (
+            with(
+                json!([rule]),
+                json!([{"key": "comment:0", "raw": "; hi\n", "style": "section"}]),
+            ),
+            "reads as a note, not the section",
+        ),
+        (
+            with(
+                json!([rule]),
+                json!(
+                    (0..1001)
+                        .map(|n| json!({"key": format!("comment:{n}"), "raw": "; hi\n"}))
+                        .collect::<Vec<_>>()
+                ),
+            ),
+            "at most 1000 comments",
+        ),
+    ];
+    for (body, needle) in cases {
+        let (status, text) = post(body.clone()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{needle}: {text}");
+        assert!(text.contains(needle), "wanted {needle:?} in {text}");
+    }
+
+    // A line's own comment is bounded and checked the same way.
+    let mut line = rent_line();
+    line["comment"] = json!(big);
+    let (status, text) = post(json!({"scenario": scenario_with(vec![line], vec![])})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    assert!(
+        text.contains("line 'rent' comment is 65537 bytes"),
+        "{text}"
+    );
+
+    // File text keeps its order: a save refuses a layout that swaps it, and
+    // the file is untouched.
+    let tree = Tree::new(&[("plans/projection-fixed.journal", FIXED)]);
+    let uri = "/api/projections/plans/projection-fixed.journal";
+    let (_, doc) = file_json(&tree.state, "GET", uri, None).await;
+    let mut scenario = doc["scenario"].clone();
+    assert_eq!(
+        scenario["fixed"].as_array().map(Vec::len),
+        Some(2),
+        "{scenario}"
+    );
+    let layout = scenario["layout"].as_array_mut().expect("a layout");
+    let (first, last) = (0, layout.len() - 1);
+    layout.swap(first, last);
+    let (status, refused) = put(&tree.state, uri, &doc["revision"], scenario).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    assert!(refused.to_string().contains("keeps its order"), "{refused}");
+    assert_eq!(tree.read("plans/projection-fixed.journal"), FIXED);
+}
+
+/// **A client cannot write file text.** It sends fixed pieces by key; the
+/// bytes a save writes are the file's, whatever `raw` it echoes.
+#[tokio::test]
+async fn file_text_is_written_from_the_file_never_from_the_body() {
+    let tree = Tree::new(&[("plans/projection-fixed.journal", FIXED)]);
+    let uri = "/api/projections/plans/projection-fixed.journal";
+    let (_, doc) = file_json(&tree.state, "GET", uri, None).await;
+    let mut scenario = doc["scenario"].clone();
+    scenario["fixed"][0]["raw"] = json!("include /etc/passwd\n");
+    // An edit elsewhere, so the save does write.
+    scenario["lines"][0]["amount"]["quantity"]["mantissa"] = json!("200");
+    let (status, saved) = put(&tree.state, uri, &doc["revision"], scenario).await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let after = tree.read("plans/projection-fixed.journal");
+    assert!(!after.contains("passwd"), "{after}");
+    assert!(after.contains("account expenses:a  ; type: X\n"), "{after}");
+    assert!(after.contains("account expenses:b  ; type: X\n"), "{after}");
+}
+
+/// `POST /api/projections/render` with `scenario` and `key`.
+async fn render(state: &AppState, scenario: Value, key: &str) -> (StatusCode, Value) {
+    file_value(
+        state,
+        "POST",
+        RENDER_URI,
+        Some(json!({"scenario": scenario, "key": key})),
+    )
+    .await
+}
+
+/// The served `scenario` with `items` as its whole layout: what a client asks
+/// a render of one entry with.
+fn rendering(scenario: &Value, items: &[&Value]) -> Value {
+    let mut out = scenario.clone();
+    out["layout"] = json!(items);
+    out
+}
+
+/// **Every kind of entry renders**: a rule from a file (attached and inner
+/// comments included), a disabled one, a one-off, an asset row, an edited
+/// `=` rule form and an edited comment.
+#[tokio::test]
+async fn every_kind_of_entry_renders_as_a_save_would_write_it() {
+    let tree = comments_tree();
+    let (_, doc) = file_json(&tree.state, "GET", COMMENTS_URI, None).await;
+    let served = &handed_back(&doc["scenario"]);
+    let text = |status: StatusCode, body: &Value| -> String {
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body["text"].as_str().expect("text").to_string()
+    };
+
+    // A rule, as the file has it.
+    let (status, body) = render(
+        &tree.state,
+        rendering(served, &[item(served, "rule:0")]),
+        "rule:0",
+    )
+    .await;
+    assert_eq!(
+        text(status, &body),
+        "; Salary, paid on the last working day.\n~ monthly  salary  ; employer: acme\n    \
+         revenues:salary  $-6000.00  ; owner: alex\n    assets:checking\n"
+    );
+    // A disabled one, prefixed.
+    let (status, body) = render(
+        &tree.state,
+        rendering(served, &[item(served, "off:0")]),
+        "off:0",
+    )
+    .await;
+    let off = text(status, &body);
+    assert!(off.starts_with("; The \"with\" alternative"), "{off}");
+    assert!(
+        off.contains("\n; ~ monthly from 2027-01-01  bonus contract\n"),
+        "{off}"
+    );
+    // An edited attached comment.
+    let mut edited = item(served, "rule:1").clone();
+    edited.as_object_mut().expect("an item").remove("attached");
+    edited["attachedText"] = json!("Rent, from the lease.");
+    let (status, body) = render(&tree.state, rendering(served, &[&edited]), "rule:1").await;
+    // Rendered, the rule's header comment goes on its `~` line (C6).
+    let rent = text(status, &body);
+    assert!(
+        rent.starts_with("; Rent, from the lease.\n~ monthly  rent  ; the lease runs to 2028\n"),
+        "{rent}"
+    );
+    // An edited section, keeping its framing.
+    let mut scenario = rendering(served, &[item(served, "comment:2")]);
+    scenario["comments"][2] = json!({
+        "key": "comment:2",
+        "style": "section",
+        "text": "Running costs",
+        "previous": served["comments"][2]["raw"]
+    });
+    let (status, body) = render(&tree.state, scenario, "comment:2").await;
+    assert_eq!(
+        text(status, &body),
+        ";;;;;;;;;;;;;;;;;;;;;;\n;; Running costs\n"
+    );
+
+    // A one-off, an asset row and a rule form, from scratch with no layout.
+    let event = json!({
+        "id": "legal",
+        "date": "2027-03-01",
+        "description": "legal fees",
+        "postings": [{"account": "expenses:legal", "amount": {"commodity": "$", "quantity": {"mantissa": "450000", "places": 2}, "precision": 2}, "comment": "the retainer"}],
+        "counter": "assets:cash",
+        "comment": "estimate"
+    });
+    let (status, body) = render(&tree.state, scenario_with(vec![], vec![event]), "legal").await;
+    assert_eq!(
+        text(status, &body),
+        "~ 2027-03-01  legal fees  ; estimate\n    expenses:legal  $4500.00  ; the retainer\n    \
+         assets:cash\n"
+    );
+    let (status, body) = render(
+        &tree.state,
+        scenario_with(vec![asset_row("assets:broker", "7")], vec![]),
+        "rule:1",
+    )
+    .await;
+    let asset = text(status, &body);
+    // A $0 contribution balances, so the legacy virtual form stays.
+    assert!(
+        asset.contains("(assets:broker)  $0.00  ; growth: 7%/yr\n"),
+        "{asset}"
+    );
+    let mut ruled = scenario_with(vec![], vec![]);
+    ruled["autoRules"] = json!([{
+        "key": "auto:new",
+        "form": percent_form("expenses:rent", "expenses:rent-tax", "10", Some("assets:cash"))
+    }]);
+    let (status, body) = render(&tree.state, ruled, "auto:new").await;
+    let rule = text(status, &body);
+    assert!(
+        rule.starts_with("= ^expenses:rent(:|$) tag:_generated-transaction\n"),
+        "{rule}"
+    );
+    assert!(rule.contains("    expenses:rent-tax  *0.1\n"), "{rule}");
+}
+
+/// **A refusal is the writer's own sentence, as a `400`** — the sentence a
+/// save of the same entry gives — and a render names exactly one entry.
+#[tokio::test]
+async fn a_render_refuses_with_the_writer_s_sentence() {
+    let tree = comments_tree();
+    let (_, doc) = file_json(&tree.state, "GET", COMMENTS_URI, None).await;
+    let served = &handed_back(&doc["scenario"]);
+
+    let two = rendering(served, &[item(served, "rule:0"), item(served, "rule:1")]);
+    let (status, body) = render(&tree.state, two, "rule:0").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body.to_string()
+            .contains("at most one layout item (received 2)"),
+        "{body}"
+    );
+
+    let (status, body) = render(&tree.state, rendering(served, &[]), "rule:99").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.to_string().contains("no entry `rule:99`"), "{body}");
+
+    // One rule, two recurrences: unwritable. The save says the same.
+    let mut split = scenario_with(
+        vec![rent_line(), {
+            let mut other = rent_line();
+            other["id"] = json!("other");
+            other["period"] = json!({"raw": "weekly"});
+            other
+        }],
+        vec![],
+    );
+    let (status, rendered) = render(&tree.state, split.clone(), "rule:0").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{rendered}");
+    let sentence = "every line of one rule must share its recurrence";
+    assert!(rendered.to_string().contains(sentence), "{rendered}");
+    split["name"] = json!("Split");
+    let (status, saved) = put(
+        &tree.state,
+        "/api/projections/projection-split.journal",
+        &json!(""),
+        split,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{saved}");
+    assert!(saved.to_string().contains(sentence), "{saved}");
+}
+
+/// Every file under `dir`, with its length and modification time.
+fn listing(dir: &std::path::Path) -> Vec<(PathBuf, u64, std::time::SystemTime)> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(next) = stack.pop() {
+        for entry in std::fs::read_dir(&next).expect("lists").flatten() {
+            let meta = entry.metadata().expect("stats");
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else {
+                out.push((entry.path(), meta.len(), meta.modified().expect("mtime")));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// **A magnitude is signed by the main journal's declared types**, exactly as
+/// a save signs it — the rendered block IS the saved one — and a render
+/// touches no file.
+#[tokio::test]
+async fn a_render_signs_as_a_save_does_and_touches_no_file() {
+    let tree = Tree::standard();
+    // `revenues:salary` is declared `type: R` by the main journal, so a typed
+    // 5000 is written negative.
+    let mut line = rent_line();
+    line["id"] = json!("salary");
+    line["account"] = json!("revenues:salary");
+    line["entry"] = json!({"mantissa": "500000", "places": 2});
+    let mut scenario = scenario_with(vec![line], vec![]);
+    scenario["name"] = json!("Signed");
+
+    let before = listing(&tree.dir);
+    let (status, body) = render(&tree.state, scenario.clone(), "rule:0").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(listing(&tree.dir), before, "a render touches no file");
+    let rendered = body["text"].as_str().expect("text").to_string();
+    assert!(
+        rendered.contains("revenues:salary  $-5000.00\n"),
+        "{rendered}"
+    );
+
+    let (status, saved) = put(
+        &tree.state,
+        "/api/projections/projection-signed.journal",
+        &json!(""),
+        scenario,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let written = tree.read("projection-signed.journal");
+    assert!(
+        written.ends_with(&format!("\n\n{rendered}")),
+        "the save writes the rendered block:\n{written}\n---\n{rendered}"
     );
 }

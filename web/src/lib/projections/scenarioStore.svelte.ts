@@ -34,7 +34,7 @@ import {decodeProjection, decodeScenario} from "#lib/api/nativeDecode.js";
 import type {PeriodInterval} from "#lib/reports/ui/params.js";
 import {dataView, type DataView, type LoadStatus} from "#lib/stores/loadState.js";
 import {createResource} from "#lib/stores/resource.svelte.js";
-import {cloneScenario, emptyScenario, runBody} from "./scenarioModel";
+import {activeScenario, cloneScenario, emptyScenario, runBody} from "./scenarioModel";
 import type {AccountsRequest, Projection, Scenario} from "./types";
 
 /** How many trailing months the seed's unbudgeted averages are taken over. The engine's own default, stated so the request is readable. */
@@ -182,9 +182,14 @@ export const scenarioStore = {
      * Cloned on the way in: `decodeScenario` freezes what it returns, as every
      * decoder here does, and the editor has to be able to write into what it
      * holds.
+     *
+     * Only the ACTIVE entries (`activeScenario`, plan 31 Phase C2): the wire
+     * carries disabled ones, flagged, and this table cannot show a flag, so it
+     * is never handed one. Its save sends no layout, and the engine puts every
+     * disabled entry back where the file has it, still commented out.
      */
     adopt(next: Scenario, seededAt: number | null = null): void {
-        scenario = cloneScenario(next);
+        scenario = cloneScenario(activeScenario(next));
         revision += 1;
         dirty = false;
         adopted = true;

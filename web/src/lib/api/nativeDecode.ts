@@ -109,12 +109,16 @@ import type {
     RulesWarning,
 } from "#lib/imports/types.js";
 import type {AutoRuleForm} from "#lib/autoRules/ruleForm.js";
-import {FORECAST_ORIGIN_KINDS, GROWTH_UNITS, LINE_ROLES, LINE_SOURCES, SCENARIO_INTERVALS} from "#lib/projections/types.js";
+import {COMMENT_STYLES, FORECAST_ORIGIN_KINDS, GROWTH_UNITS, ITEM_KINDS, LINE_ROLES, LINE_SOURCES, SCENARIO_INTERVALS} from "#lib/projections/types.js";
 import type {
     AssetRow,
     AutoRule,
     BalanceSeries,
     EventPosting,
+    FixedPiece,
+    LayoutItem,
+    RenderedEntry,
+    ScenarioComment,
     ForecastDefaults,
     ForecastEntry,
     ForecastJournal,
@@ -515,11 +519,14 @@ interface RawScenarioLine {
     counter?: string | null;
     gains?: string | null;
     source?: string;
+    comment?: string;
+    ruleComment?: string;
 }
 
 interface RawEventPosting {
     account?: string;
     amount?: RawScenarioAmount;
+    comment?: string;
 }
 
 interface RawScenarioEvent {
@@ -528,6 +535,28 @@ interface RawScenarioEvent {
     description?: string;
     postings?: RawEventPosting[];
     counter?: string | null;
+    comment?: string;
+}
+
+interface RawLayoutItem {
+    kind?: string;
+    key?: string;
+    origin?: number | null;
+    disabled?: boolean;
+    attached?: string;
+    raw?: string;
+}
+
+interface RawScenarioComment {
+    key?: string;
+    style?: string;
+    raw?: string;
+    text?: string;
+}
+
+interface RawFixedPiece {
+    key?: string;
+    raw?: string;
 }
 
 interface RawScenario {
@@ -539,6 +568,9 @@ interface RawScenario {
     cash?: string | null;
     autoRules?: RawAutoRule[];
     accountTypes?: Record<string, string>;
+    layout?: RawLayoutItem[];
+    comments?: RawScenarioComment[];
+    fixed?: RawFixedPiece[];
 }
 
 interface RawAutoRule {
@@ -547,6 +579,7 @@ interface RawAutoRule {
     unsupported?: string | null;
     form?: RawAutoRuleForm | null;
     block?: unknown;
+    key?: unknown;
 }
 
 export interface RawAutoRuleForm {
@@ -2464,6 +2497,10 @@ function decodeScenarioLine(raw: RawScenarioLine | undefined, context: string): 
         counter: decodeNullableStr(raw.counter, `${context} counter`),
         gains: decodeNullableStr(raw.gains, `${context} gains`),
         source: decodeEnum(LINE_SOURCES, raw.source, `${context} source`),
+        // Plan 31 C6: required, `""` for none, so a rename cannot silently
+        // turn into a save that strips every comment.
+        comment: str(raw.comment, `${context} comment`),
+        ruleComment: str(raw.ruleComment, `${context} ruleComment`),
         // The engine's placement, pinned to what it placed. Optional (not
         // nullable-required like the rest of this wire): the table previews a
         // section itself when it is missing, so an older body still renders.
@@ -2484,7 +2521,11 @@ function decodeResolved(raw: RawScenarioLine, context: string): ScenarioLine["re
 
 function decodeEventPosting(raw: RawEventPosting | undefined, context: string): EventPosting {
     if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing posting`);
-    return Object.freeze({account: str(raw.account, `${context} account`), amount: decodeScenarioAmount(raw.amount, `${context} amount`)});
+    return Object.freeze({
+        account: str(raw.account, `${context} account`),
+        amount: decodeScenarioAmount(raw.amount, `${context} amount`),
+        comment: str(raw.comment, `${context} comment`),
+    });
 }
 
 function decodeScenarioEvent(raw: RawScenarioEvent | undefined, context: string): ScenarioEvent {
@@ -2495,6 +2536,7 @@ function decodeScenarioEvent(raw: RawScenarioEvent | undefined, context: string)
         description: str(raw.description, `${context} description`),
         postings: frozen(raw.postings.map((posting, i) => decodeEventPosting(posting, `${context} postings[${i}]`))),
         counter: decodeNullableStr(raw.counter, `${context} counter`),
+        comment: str(raw.comment, `${context} comment`),
     });
 }
 
@@ -2518,7 +2560,79 @@ export function decodeScenario(raw: unknown): Scenario {
         cash: decodeNullableStr(scenario.cash, "scenario cash"),
         autoRules: decodeAutoRules(scenario.autoRules),
         accountTypes: decodeScenarioAccountTypes(scenario.accountTypes),
+        layout: decodeScenarioLayout(scenario.layout),
+        comments: decodeScenarioComments(scenario.comments),
+        fixed: decodeFixedPieces(scenario.fixed),
     });
+}
+
+/**
+ * The file's pieces in order (plan 31 C8) — always an array on the wire, so an
+ * absent one is a broken contract.
+ *
+ * Decoded faithfully, disabled items and all: a disabled entry stays in
+ * `lines`/`events`/`autoRules` with its flag here. What the pre-plan-31 table
+ * holds is `scenarioModel.activeScenario` of this, applied where the store
+ * adopts a scenario, so the table can never show one as live or save it
+ * uncommented.
+ */
+function decodeScenarioLayout(raw: RawScenario["layout"]): LayoutItem[] {
+    if (!Array.isArray(raw)) throw new ApiShapeError("scenario layout: expected an array");
+    return frozen(
+        raw.map((item, i) => {
+            const at = `scenario layout[${i}]`;
+            if (typeof item !== "object" || item === null) throw new ApiShapeError(`${at}: expected an object`);
+            return Object.freeze({
+                kind: decodeEnum(ITEM_KINDS, item.kind, `${at} kind`),
+                key: str(item.key, `${at} key`),
+                // Nullable (a new entry's), never absent.
+                origin: item.origin === null ? null : decodeCount(item.origin, `${at} origin`),
+                disabled: flag(item.disabled, `${at} disabled`),
+                attached: str(item.attached, `${at} attached`),
+                raw: str(item.raw, `${at} raw`),
+            });
+        })
+    );
+}
+
+/** The free-standing comment pieces — always an array on the wire. */
+function decodeScenarioComments(raw: RawScenario["comments"]): ScenarioComment[] {
+    if (!Array.isArray(raw)) throw new ApiShapeError("scenario comments: expected an array");
+    return frozen(
+        raw.map((comment, i) => {
+            const at = `scenario comments[${i}]`;
+            if (typeof comment !== "object" || comment === null) throw new ApiShapeError(`${at}: expected an object`);
+            return Object.freeze({
+                key: str(comment.key, `${at} key`),
+                style: decodeEnum(COMMENT_STYLES, comment.style, `${at} style`),
+                raw: str(comment.raw, `${at} raw`),
+                text: str(comment.text, `${at} text`),
+            });
+        })
+    );
+}
+
+/** The file text the scenario does not model — always an array on the wire. */
+function decodeFixedPieces(raw: RawScenario["fixed"]): FixedPiece[] {
+    if (!Array.isArray(raw)) throw new ApiShapeError("scenario fixed: expected an array");
+    return frozen(
+        raw.map((fixed, i) => {
+            const at = `scenario fixed[${i}]`;
+            if (typeof fixed !== "object" || fixed === null) throw new ApiShapeError(`${at}: expected an object`);
+            return Object.freeze({key: str(fixed.key, `${at} key`), raw: str(fixed.raw, `${at} raw`)});
+        })
+    );
+}
+
+/**
+ * `POST /api/projections/render` — one entry's exact text, as a save would
+ * write it (plan 31 C15). A refusal arrives as a 400 with the writer's own
+ * sentence, through the client's error path, never here.
+ */
+export function decodeRenderedEntry(raw: unknown): RenderedEntry {
+    const body = raw as {text?: unknown};
+    if (typeof body !== "object" || body === null) throw new ApiShapeError("rendered entry: expected an object");
+    return Object.freeze({text: str(body.text, "rendered entry text")});
 }
 
 /** The scenario file's own account types — always an object on the wire (empty for a seed), so an absent one is a broken contract. */
@@ -2542,6 +2656,7 @@ function decodeAutoRules(raw: RawScenario["autoRules"]): AutoRule[] {
                 unsupported: decodeNullableStr(rule.unsupported, `${at} unsupported`),
                 form: decodeNullable(rule.form, `${at} form`, decodeAutoRuleForm),
                 block: rule.block === null ? null : decodeCount(rule.block, `${at} block`),
+                key: str(rule.key, `${at} key`),
             });
         })
     );

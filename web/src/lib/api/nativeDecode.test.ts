@@ -23,6 +23,7 @@ import {
     decodeProjection,
     decodeProjectionIndex,
     decodeQbCommitResult,
+    decodeRenderedEntry,
     decodeQbPreview,
     decodeRulesDoc,
     decodeRulesIndex,
@@ -2153,6 +2154,8 @@ const SCENARIO_FILE = {
                 counter: null,
                 gains: null,
                 source: "journal",
+                comment: "",
+                ruleComment: "",
             },
         ],
         events: [
@@ -2160,13 +2163,33 @@ const SCENARIO_FILE = {
                 id: "rule:1",
                 date: "2027-03-01",
                 description: "Series A",
-                postings: [{account: "assets:cash", amount: {commodity: "$", quantity: {mantissa: "200000000", places: 2}, precision: 2}}],
+                postings: [
+                    {account: "assets:cash", amount: {commodity: "$", quantity: {mantissa: "200000000", places: 2}, precision: 2}, comment: "the round"},
+                ],
                 counter: null,
+                comment: "priced round",
             },
         ],
         cash: null,
         autoRules: [],
         accountTypes: {},
+        // Plan 31 C8: what no golden can carry — a disabled item, a piece of
+        // file text — so the rename sweep reaches every one of their keys.
+        layout: [
+            {kind: "fixed", key: "fixed:0", origin: 0, disabled: false, attached: "", raw: "account expenses:rent  ; type: X\n"},
+            {kind: "comment", key: "comment:0", origin: 1, disabled: false, attached: "", raw: ";;;;;;;;;;;;;;;;;;;;;;\n;; Costs\n"},
+            {
+                kind: "rule",
+                key: "rule:0",
+                origin: 2,
+                disabled: false,
+                attached: "; Rent, from the lease.\n",
+                raw: "; Rent, from the lease.\n~ monthly  projection\n    (expenses:rent)  $4200.00  ; growth: 2%/yr\n",
+            },
+            {kind: "event", key: "rule:1", origin: null, disabled: true, attached: "", raw: ""},
+        ],
+        comments: [{key: "comment:0", style: "section", raw: ";;;;;;;;;;;;;;;;;;;;;;\n;; Costs\n", text: "Costs"}],
+        fixed: [{key: "fixed:0", raw: "account expenses:rent  ; type: X\n"}],
     },
 };
 
@@ -2189,6 +2212,7 @@ describe("UNIT nativeDecode — a scenario's auto rules (plan 30 Phase 4)", () =
         unsupported: null,
         form,
         block: 3,
+        key: "auto:3",
     };
 
     it("decodes a rule's form and block, and a locked rule's null form", () => {
@@ -2342,6 +2366,31 @@ describe("UNIT nativeDecode — one scenario file", () => {
         expect(file.scenario.lines[0].growth).toEqual({rate: {m: 2n, p: 2}, unit: "year"});
         // A `~ DATE` block comes back as an EVENT, not a one-off line.
         expect(file.scenario.events[0].date).toBe("2027-03-01");
+        // Plan 31 C6/C8: comments, the layout (disabled flag and all), comment
+        // pieces and file text, decoded as sent.
+        expect(file.scenario.events[0].comment).toBe("priced round");
+        expect(file.scenario.events[0].postings[0].comment).toBe("the round");
+        expect(file.scenario.layout.map((item) => [item.kind, item.key, item.origin, item.disabled])).toEqual([
+            ["fixed", "fixed:0", 0, false],
+            ["comment", "comment:0", 1, false],
+            ["rule", "rule:0", 2, false],
+            ["event", "rule:1", null, true],
+        ]);
+        expect(file.scenario.layout[2].attached).toBe("; Rent, from the lease.\n");
+        expect(file.scenario.layout[2].raw).toContain("~ monthly  projection\n");
+        expect(file.scenario.comments).toEqual([{key: "comment:0", style: "section", raw: ";;;;;;;;;;;;;;;;;;;;;;\n;; Costs\n", text: "Costs"}]);
+        expect(file.scenario.fixed).toEqual([{key: "fixed:0", raw: "account expenses:rent  ; type: X\n"}]);
+    });
+
+    it("refuses an unknown piece kind or comment style, and an absent layout, comments or fixed", () => {
+        const scenario = SCENARIO_FILE.scenario;
+        const withScenario = (patch: Record<string, unknown>) => ({...SCENARIO_FILE, scenario: {...scenario, ...patch}});
+        expect(() => decodeScenarioFile(withScenario({layout: [{...scenario.layout[0], kind: "directive"}]}))).toThrow(ApiShapeError);
+        expect(() => decodeScenarioFile(withScenario({comments: [{...scenario.comments[0], style: "banner"}]}))).toThrow(ApiShapeError);
+        expect(() => decodeScenarioFile(withScenario({layout: [{...scenario.layout[0], origin: -1}]}))).toThrow(ApiShapeError);
+        for (const field of ["layout", "comments", "fixed"]) {
+            expect(() => decodeScenarioFile(withScenario({[field]: undefined}))).toThrow(ApiShapeError);
+        }
     });
 
     it("an ABSENT revision is a broken contract, never an empty string", () => {
@@ -2349,6 +2398,16 @@ describe("UNIT nativeDecode — one scenario file", () => {
         // so defaulting it would turn the next Save of an open file into "a file
         // already exists there" about the file being edited.
         expect(() => decodeScenarioFile({...SCENARIO_FILE, revision: undefined})).toThrow(ApiShapeError);
+    });
+});
+
+describe("UNIT nativeDecode — one entry's text (plan 31 C15)", () => {
+    it("decodes `{text}`, and refuses a body without it", () => {
+        expect(decodeRenderedEntry({text: "~ monthly  rent\n    expenses:rent  $1.00\n"})).toEqual({text: "~ monthly  rent\n    expenses:rent  $1.00\n"});
+        expect(decodeRenderedEntry({text: ""})).toEqual({text: ""});
+        expect(() => decodeRenderedEntry({})).toThrow(ApiShapeError);
+        expect(() => decodeRenderedEntry({text: 3})).toThrow(ApiShapeError);
+        expect(() => decodeRenderedEntry(null)).toThrow(ApiShapeError);
     });
 });
 

@@ -27,7 +27,7 @@
 // locked to the engine's by `scenario_signs_golden.rs`).
 
 import {encodeDec} from "#lib/api/editMapping.js";
-import type {RunProjectionBody, WireScenarioIn} from "#lib/api/native.js";
+import type {RenderProjectionBody, RunProjectionBody, WireLayoutItemIn, WireScenarioIn} from "#lib/api/native.js";
 import {absDec} from "#lib/format/amounts.js";
 import {cmp, isZero, type Dec} from "#lib/domain/money.js";
 import {blankRuleForm, cloneRuleForm, ruleFormComplete, ruleFormToWire, type AutoRuleForm, type RuleAmount} from "#lib/autoRules/ruleForm.js";
@@ -40,6 +40,8 @@ import type {
     AutoRule,
     Growth,
     HeldSection,
+    ItemKind,
+    LayoutItem,
     LineSection,
     Scenario,
     ScenarioAmount,
@@ -416,6 +418,8 @@ export function blankLine(id: string, commodity: string): ScenarioLine {
         // Authored, not estimated: the user is writing it, so it must not wear
         // the "from history" flag a seeded row wears.
         source: "journal",
+        comment: "",
+        ruleComment: "",
     };
 }
 
@@ -438,7 +442,14 @@ export function blankAssetLine(id: string, commodity: string): ScenarioLine {
 /** A blank dated event with one empty posting. */
 export function blankEvent(id: string, date: ISODate, commodity: string): ScenarioEvent {
     const precision = NEW_ROW_PRECISION;
-    return {id, date, description: "", postings: [{account: "", amount: {commodity, quantity: {m: 0n, p: precision}, precision}}], counter: null};
+    return {
+        id,
+        date,
+        description: "",
+        postings: [{account: "", amount: {commodity, quantity: {m: 0n, p: precision}, precision}, comment: ""}],
+        counter: null,
+        comment: "",
+    };
 }
 
 /**
@@ -822,7 +833,7 @@ export const GROWTH_UNIT_ABBREV: Record<Growth["unit"], string> = {week: "wk", m
 
 /** An empty, unnamed scenario — what the tab holds before a seed answers. */
 export function emptyScenario(): Scenario {
-    return {name: "", created: null, updated: null, lines: [], events: [], cash: null, autoRules: []};
+    return {name: "", created: null, updated: null, lines: [], events: [], cash: null, autoRules: [], layout: [], comments: [], fixed: []};
 }
 
 /**
@@ -851,12 +862,44 @@ export function cloneScenario(scenario: Scenario): Scenario {
         })),
         events: scenario.events.map((event) => ({
             ...event,
-            postings: event.postings.map((posting) => ({account: posting.account, amount: cloneAmount(posting.amount)})),
+            postings: event.postings.map((posting) => ({account: posting.account, amount: cloneAmount(posting.amount), comment: posting.comment})),
         })),
         cash: scenario.cash,
         autoRules: scenario.autoRules.map((rule) => ({...rule, form: rule.form === null ? null : cloneRuleForm(rule.form)})),
         ...(scenario.accountTypes === undefined ? {} : {accountTypes: {...scenario.accountTypes}}),
+        layout: scenario.layout.map((item) => ({...item})),
+        comments: scenario.comments.map((comment) => ({...comment})),
+        fixed: scenario.fixed.map((fixed) => ({...fixed})),
     };
+}
+
+/**
+ * The scenario as the engine runs it: every DISABLED entry (plan 31 C7) and its
+ * layout item dropped — a mirror of `Scenario::active` in the engine.
+ *
+ * Also what the table before plan 31 holds (`scenarioStore.adopt`), and the
+ * reason it stays safe while the wire carries disabled entries: that table
+ * has no idea what "off" means, so it must never be handed one, or it would
+ * show it as a live row, run it, and save it uncommented. It never sends a
+ * layout, so its save lets the engine derive one from the file, which puts
+ * every disabled entry back where it was, still commented out.
+ */
+export function activeScenario(scenario: Scenario): Scenario {
+    const off = new Set(scenario.layout.filter((item) => item.disabled).map((item) => layoutId(item.kind, item.key)));
+    if (off.size === 0) return scenario;
+    const on = (kind: ItemKind, key: string): boolean => !off.has(layoutId(kind, key));
+    return {
+        ...scenario,
+        lines: scenario.lines.filter((line) => on("rule", line.group)),
+        events: scenario.events.filter((event) => on("event", event.id)),
+        autoRules: scenario.autoRules.filter((rule) => on("auto", rule.key)),
+        layout: scenario.layout.filter((item) => !item.disabled),
+    };
+}
+
+/** One identity per (kind, key): a rule's group and a one-off's id may coincide. */
+function layoutId(kind: ItemKind, key: string): string {
+    return `${kind}\u0000${key}`;
 }
 
 function cloneAmount(amount: ScenarioAmount): ScenarioAmount {
@@ -899,6 +942,10 @@ export function scenarioToWire(scenario: Scenario): WireScenarioIn {
             counter: accountOrNull(line.counter),
             gains: accountOrNull(line.gains),
             source: line.source,
+            // Plan 31 C6: sent back as served, so a save keeps a block's
+            // comments even when it rewrites the block.
+            comment: line.comment,
+            ruleComment: line.ruleComment,
         })),
         events: scenario.events.map((event) => ({
             id: event.id,
@@ -907,15 +954,21 @@ export function scenarioToWire(scenario: Scenario): WireScenarioIn {
             postings: event.postings.map((posting) => ({
                 account: posting.account,
                 amount: {commodity: posting.amount.commodity, quantity: encodeDec(posting.amount.quantity), precision: posting.amount.precision},
+                comment: posting.comment,
             })),
             counter: accountOrNull(event.counter),
+            comment: event.comment,
         })),
         cash: accountOrNull(scenario.cash),
         // An untouched rule's text goes back exactly as the engine sent it, so
         // the file keeps its bytes; an edited one goes as its form.
         autoRules: scenario.autoRules.map((rule) =>
-            sendsForm(rule) ? {block: rule.block, form: ruleFormToWire(rule.form)} : {block: rule.block, raw: rule.raw}
+            sendsForm(rule) ? {block: rule.block, key: rule.key, form: ruleFormToWire(rule.form)} : {block: rule.block, key: rule.key, raw: rule.raw}
         ),
+        // NO `layout`, `comments` or `fixed` (plan 31 Phase C2): the table can
+        // reorder rows but knows nothing of the file's pieces, so its save lets
+        // the engine derive the layout, which keeps every comment, disabled
+        // entry and piece of file text where it is in the file.
         // The types every form above was served under, so the engine renders
         // an edited percentage with the sign the user saw.
         accountTypes: {...scenario.accountTypes},
@@ -932,7 +985,7 @@ function sendsForm(rule: AutoRule): rule is AutoRule & {form: AutoRuleForm} {
  * by default, as every other counter-account here is).
  */
 export function blankAutoRule(counter: string | null): AutoRule {
-    return {raw: "", query: "", unsupported: null, form: blankRuleForm(counter), block: null, edited: true};
+    return {raw: "", query: "", unsupported: null, form: blankRuleForm(counter), block: null, key: "", edited: true};
 }
 
 /**
@@ -961,7 +1014,10 @@ export function ruleSample(scenario: Scenario, account: string): RuleAmount | nu
  * Dropping it instead projects everything that IS complete, which is the live
  * editing the body-carried scenario exists for.
  */
-export function projectable(scenario: Scenario): Scenario {
+export function projectable(full: Scenario): Scenario {
+    // A disabled entry never runs (plan 31 C7); the engine would drop it, and
+    // a body without a layout could not tell it to.
+    const scenario = activeScenario(full);
     return {
         ...scenario,
         // A rule still being typed is left out, as a line with no account is.
@@ -972,6 +1028,33 @@ export function projectable(scenario: Scenario): Scenario {
             .map((event) => ({...event, postings: event.postings.filter((posting) => posting.account.trim() !== "")}))
             .filter((event) => event.postings.length > 0),
     };
+}
+
+/**
+ * The `POST /api/projections/render` body for the entry `key` names (plan 31
+ * C15): the whole scenario as a save sends it — so a step change's `line:` tag
+ * is decided over every line, as the save decides it — plus that entry's ONE
+ * layout item, and every comment piece as served.
+ *
+ * `item` overrides the scenario's own item for `key` (an edited draft's);
+ * with neither, the entry renders enabled and with no attached comment.
+ */
+export function renderBody(scenario: Scenario, key: string, item?: WireLayoutItemIn): RenderProjectionBody {
+    const own = item ?? layoutItemToWire(scenario.layout.find((candidate) => candidate.key === key));
+    return {
+        scenario: {
+            ...scenarioToWire(scenario),
+            layout: own === undefined ? [] : [own],
+            comments: scenario.comments.map((comment) => ({key: comment.key, raw: comment.raw})),
+        },
+        key,
+    };
+}
+
+/** A served layout item as it goes back: its attached comment unchanged, its `raw` left behind. */
+function layoutItemToWire(item: LayoutItem | undefined): WireLayoutItemIn | undefined {
+    if (item === undefined) return undefined;
+    return {kind: item.kind, key: item.key, origin: item.origin, disabled: item.disabled, attached: item.attached};
 }
 
 /**

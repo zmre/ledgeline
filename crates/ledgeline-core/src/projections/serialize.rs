@@ -258,6 +258,43 @@ pub fn scenario_and_own_types_from_text_with_styles(
         .map(|read| (read.scenario, read.own_types))
 }
 
+/// A scenario file as a client is handed it: the scenario, the account types
+/// the file itself declares, and each piece's exact text.
+#[derive(Debug, Clone)]
+pub struct ScenarioRead {
+    /// The scenario, layout and all.
+    pub scenario: Scenario,
+    /// The account types the file itself declares.
+    pub own_types: BTreeMap<String, AccountType>,
+    /// Each piece's exact text, attached comment included, `\n` line ends:
+    /// what an unchanged piece is written as (plan 31 C15's `raw`). Index for
+    /// index with [`LayoutItem::origin`].
+    pub piece_texts: Vec<String>,
+}
+
+/// [`scenario_and_own_types_from_text_with_styles`], plus each piece's text,
+/// from the one read.
+///
+/// # Errors
+/// As [`scenario_from_text`].
+pub fn read_scenario_file(
+    text: &str,
+    source_name: &str,
+    fallback_name: &str,
+    declared: &BTreeMap<String, AccountType>,
+    inherited: &[(crate::model::Commodity, crate::model::AmountStyle)],
+) -> Result<ScenarioRead, SerializeError> {
+    read_scenario(text, source_name, fallback_name, declared, inherited).map(|read| ScenarioRead {
+        piece_texts: read
+            .pieces
+            .iter()
+            .map(|piece| canonical(&text[piece.span.clone()]))
+            .collect(),
+        scenario: read.scenario,
+        own_types: read.own_types,
+    })
+}
+
 /// The account types a scenario classifies under: the main journal's
 /// `declared`, with the scenario file's `own` declarations winning — so a
 /// scenario that carries its declarations with it classifies the same way
@@ -1051,6 +1088,13 @@ impl ProjectionDoc {
             .map(|piece| canonical(&self.text[piece.span.clone()]))
     }
 
+    /// The file's fixed text, keys as read. A save takes fixed text's bytes
+    /// from the file, never from a client, which sends only the keys.
+    #[must_use]
+    pub fn fixed(&self) -> &[FixedPiece] {
+        &self.read.fixed
+    }
+
     /// Every piece of the file, in order: what it is and where its bytes are.
     #[must_use]
     pub fn pieces(&self) -> Vec<PieceView> {
@@ -1718,6 +1762,14 @@ impl<'a> Entries<'a> {
     /// Index `scenario`, and require its layout to name every entry exactly
     /// once.
     fn of(scenario: &'a Scenario) -> Result<Self, SerializeError> {
+        let entries = Self::index(scenario)?;
+        entries.check_named(&scenario.layout)?;
+        Ok(entries)
+    }
+
+    /// Index `scenario`'s entries by key, requiring each key to be unique
+    /// within its kind.
+    fn index(scenario: &'a Scenario) -> Result<Self, SerializeError> {
         let mut groups: BTreeMap<&str, Vec<&ScenarioLine>> = BTreeMap::new();
         for line in &scenario.lines {
             groups.entry(line.group.as_str()).or_default().push(line);
@@ -1734,7 +1786,7 @@ impl<'a> Entries<'a> {
             }
             Ok(out)
         }
-        let entries = Self {
+        Ok(Self {
             groups,
             events: unique(
                 scenario
@@ -1764,9 +1816,13 @@ impl<'a> Entries<'a> {
                     .map(|fixed| (fixed.key.as_str(), fixed)),
                 "file text pieces",
             )?,
-        };
+        })
+    }
+
+    /// Require `layout` to name every entry exactly once, and nothing twice.
+    fn check_named(&self, layout: &[LayoutItem]) -> Result<(), SerializeError> {
         let mut named: BTreeSet<(ItemKind, &str)> = BTreeSet::new();
-        for item in &scenario.layout {
+        for item in layout {
             if !named.insert((item.kind, item.key.as_str())) {
                 return Err(invalid(&format!(
                     "the layout names {} `{}` twice",
@@ -1785,16 +1841,34 @@ impl<'a> Entries<'a> {
                 None => Ok(()),
             }
         };
-        unnamed(ItemKind::Rule, entries.groups.keys().copied().collect())?;
-        unnamed(ItemKind::Event, entries.events.keys().copied().collect())?;
-        unnamed(ItemKind::Auto, entries.autos.keys().copied().collect())?;
-        unnamed(
-            ItemKind::Comment,
-            entries.comments.keys().copied().collect(),
-        )?;
+        unnamed(ItemKind::Rule, self.groups.keys().copied().collect())?;
+        unnamed(ItemKind::Event, self.events.keys().copied().collect())?;
+        unnamed(ItemKind::Auto, self.autos.keys().copied().collect())?;
+        unnamed(ItemKind::Comment, self.comments.keys().copied().collect())?;
         // Fixed text the layout leaves out is kept where it is
         // ([`ProjectionDoc::keep_fixed`]), never dropped.
-        Ok(entries)
+        Ok(())
+    }
+
+    /// The kind of the one entry `key` names.
+    fn kind_of(&self, key: &str) -> Result<ItemKind, SerializeError> {
+        let kinds: Vec<ItemKind> = [
+            (ItemKind::Rule, self.groups.contains_key(key)),
+            (ItemKind::Event, self.events.contains_key(key)),
+            (ItemKind::Auto, self.autos.contains_key(key)),
+            (ItemKind::Comment, self.comments.contains_key(key)),
+            (ItemKind::Fixed, self.fixed.contains_key(key)),
+        ]
+        .into_iter()
+        .filter_map(|(kind, held)| held.then_some(kind))
+        .collect();
+        match kinds.as_slice() {
+            [kind] => Ok(*kind),
+            [] => Err(invalid(&format!("the scenario has no entry `{key}`"))),
+            _ => Err(invalid(&format!(
+                "`{key}` names more than one entry; send its layout item to say which"
+            ))),
+        }
     }
 
     /// The entry `item` names.
@@ -3175,6 +3249,111 @@ pub fn new_file_with_styles(
         &scenario,
         source_name,
     )
+}
+
+/// Check a scenario's layout without writing anything (plan 31 C8): every
+/// key names an entry the scenario has, exactly once, every line group, event,
+/// `=` rule and comment is named, and only rules, one-offs and `=` rules are
+/// turned off or carry an attached comment. A scenario with no layout passes:
+/// it is derived at save ([`legacy_layout`]).
+///
+/// What it cannot check without the file is the fixed text's order; a save
+/// checks that.
+///
+/// # Errors
+/// [`SerializeError::Invalid`], with the sentence a save would refuse with.
+pub fn check_layout(scenario: &Scenario) -> Result<(), SerializeError> {
+    if scenario.layout.is_empty() {
+        return Ok(());
+    }
+    let entries = Entries::of(scenario)?;
+    scenario
+        .layout
+        .iter()
+        .try_for_each(|item| entries.resolve(item).map(|_| ()))
+}
+
+/// What `raw`, alone, reads as as a free-standing comment piece, or `None`
+/// when it is not exactly one (plan 31 C4).
+#[must_use]
+pub fn comment_style(raw: &str) -> Option<CommentStyle> {
+    comment_style_of(&canonical(raw))
+}
+
+/// The source name a rendered entry is re-read under. Any name serves: the
+/// snippet is a whole journal of its own.
+const RENDER_SOURCE: &str = "entry.journal";
+
+/// One entry's exact text, as a save writes it when the entry is new or
+/// edited (plan 31 C15): the attached comment, the rendered block (commented
+/// out when disabled) or comment, `\n` line ends, no header.
+///
+/// `key` names the entry. `scenario` holds it and at most one layout item,
+/// which must be its own; with none, the entry is rendered enabled and with no
+/// attached comment. The scenario may hold other entries too: they are not
+/// rendered, but a step change's `line:` value is decided over every line
+/// present, as a save decides it, so a body carrying the whole scenario
+/// renders exactly the tag the save writes.
+///
+/// The body is [`ProjectionDoc::body`] over an empty document, the very
+/// function [`ProjectionDoc::apply`] writes an unclaimed piece with, so the
+/// preview cannot disagree with the save. The text is then re-read on its own
+/// and must state the entry, as [`write_scenario`] requires of a whole file.
+///
+/// `declared` is the account types the save would classify under (the main
+/// journal's, with the scenario's own winning), and `inherited` the main
+/// journal's commodity styles.
+///
+/// # Errors
+/// [`SerializeError::Invalid`] with the sentence a save would refuse the same
+/// entry with, or for a key the scenario does not hold, a layout item for
+/// another entry, two layout items, or file text (which a save never
+/// renders). [`SerializeError::NotRoundTripped`] when the text does not read
+/// back as the entry.
+pub fn render_entry(
+    scenario: &Scenario,
+    key: &str,
+    declared: &BTreeMap<String, AccountType>,
+    inherited: &[(crate::model::Commodity, crate::model::AmountStyle)],
+) -> Result<String, SerializeError> {
+    let entries = Entries::index(scenario)?;
+    let item = match scenario.layout.as_slice() {
+        [] => LayoutItem {
+            kind: entries.kind_of(key)?,
+            key: key.to_string(),
+            origin: None,
+            disabled: false,
+            attached: String::new(),
+        },
+        [item] if item.key == key => item.clone(),
+        [item] => {
+            return Err(invalid(&format!(
+                "the layout item is {} `{}`, not the entry `{key}` asked for",
+                item.kind.as_str(),
+                item.key
+            )));
+        }
+        items => {
+            return Err(invalid(&format!(
+                "one entry is rendered at a time, so the layout may hold at most one item, not {}",
+                items.len()
+            )));
+        }
+    };
+    if item.kind == ItemKind::Fixed {
+        return Err(invalid(&format!(
+            "`{key}` is file text, which a save writes as the file has it and never renders"
+        )));
+    }
+    let doc = ProjectionDoc::empty(declared).inheriting(inherited);
+    let values = line_tag_values(scenario);
+    let tags = Tags::Assigned(&values);
+    let entry = entries.resolve(&item)?;
+    let print = entry.print(&tags)?;
+    let text = doc.body(&item, &entry, &print, None, &tags)?;
+    let want = item_print(&item, &entry, &print, None);
+    confirm_round_trip(&doc, &text, &want, RENDER_SOURCE)?;
+    Ok(text)
 }
 
 #[cfg(test)]
@@ -5378,5 +5557,294 @@ end comment
             checked += 1;
         }
         assert!(checked > 20, "checked {checked}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Plan 31 C15: one entry's text
+    // -----------------------------------------------------------------------
+
+    /// `scenario` holding only the entry `item` names, laid out alone as a
+    /// new piece.
+    fn only(scenario: &Scenario, item: &LayoutItem) -> Scenario {
+        let mine = |kind: ItemKind, key: &str| item.kind == kind && item.key == key;
+        Scenario {
+            lines: scenario
+                .lines
+                .iter()
+                .filter(|line| mine(ItemKind::Rule, &line.group))
+                .cloned()
+                .collect(),
+            events: scenario
+                .events
+                .iter()
+                .filter(|event| mine(ItemKind::Event, &event.id))
+                .cloned()
+                .collect(),
+            auto_rules: scenario
+                .auto_rules
+                .iter()
+                .filter(|rule| mine(ItemKind::Auto, &rule.key))
+                .cloned()
+                .collect(),
+            comments: scenario
+                .comments
+                .iter()
+                .filter(|comment| mine(ItemKind::Comment, &comment.key))
+                .cloned()
+                .collect(),
+            layout: vec![LayoutItem {
+                origin: None,
+                ..item.clone()
+            }],
+            ..Scenario::default()
+        }
+    }
+
+    /// What a save of `scenario` into an empty document writes after its
+    /// header: the bytes of its one entry.
+    fn appended(scenario: &Scenario, rendered: &str) -> String {
+        let full = ProjectionDoc::empty(&declared())
+            .apply(scenario)
+            .expect("applies");
+        let header = full
+            .strip_suffix(rendered)
+            .unwrap_or_else(|| panic!("the save ends with something else:\n{full}"));
+        assert!(header.ends_with("\n\n"), "{full}");
+        assert!(header.starts_with(BANNER), "{full}");
+        full[header.len()..].to_string()
+    }
+
+    fn render(scenario: &Scenario, key: &str) -> Result<String, SerializeError> {
+        render_entry(scenario, key, &declared(), &[])
+    }
+
+    #[test]
+    fn an_entry_renders_as_the_save_writes_it_new() {
+        let comments = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/projections-parity/comments.journal"),
+        )
+        .expect("the fixture");
+        for text in [PIECES, EXAMPLE, comments.as_str()] {
+            let scenario = read_full(text);
+            for item in scenario
+                .layout
+                .iter()
+                .filter(|item| item.kind != ItemKind::Fixed)
+            {
+                let single = only(&scenario, item);
+                let rendered = render(&single, &item.key)
+                    .unwrap_or_else(|error| panic!("{} renders: {error}", item.key));
+                assert_eq!(rendered, appended(&single, &rendered), "{}", item.key);
+                // Without its layout item, it renders enabled and unattached.
+                let bare = Scenario {
+                    layout: Vec::new(),
+                    ..single.clone()
+                };
+                let plain = render(&bare, &item.key).expect("renders without an item");
+                if item.attached.is_empty() && !item.disabled {
+                    assert_eq!(plain, rendered, "{}", item.key);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_disabled_entry_renders_prefixed_below_its_attached_comment() {
+        let scenario = read_full(PIECES);
+        let item = scenario
+            .layout
+            .iter()
+            .find(|item| item.key == "rule:0")
+            .expect("the rent rule");
+        let off = Scenario {
+            layout: vec![LayoutItem {
+                disabled: true,
+                ..item.clone()
+            }],
+            ..only(&scenario, item)
+        };
+        let text = render(&off, "rule:0").expect("renders");
+        let mut lines = text.lines();
+        assert_eq!(lines.next(), Some("; Rent goes up in spring."), "{text}");
+        assert!(
+            lines.all(|line| line.starts_with("; ")),
+            "every content line is commented out:\n{text}"
+        );
+        assert!(
+            text.contains("; ~ monthly  rent  ; landlord: acme\n"),
+            "{text}"
+        );
+        // A disabled one-off and `=` rule as well.
+        for key in ["off:1", "auto:off:0"] {
+            let item = scenario
+                .layout
+                .iter()
+                .find(|item| item.key == key)
+                .expect(key);
+            assert!(item.disabled, "{key}");
+            let text = render(&only(&scenario, item), key).expect("renders");
+            assert!(
+                text.lines()
+                    .filter(|line| !item.attached.contains(*line))
+                    .all(|line| line.starts_with("; ")),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_attached_comment_and_the_comments_inside_a_block_render() {
+        let scenario = read_full(PIECES);
+        let item = scenario
+            .layout
+            .iter()
+            .find(|item| item.key == "rule:0")
+            .expect("the rent rule");
+        let text = render(&only(&scenario, item), "rule:0").expect("renders");
+        assert!(
+            text.starts_with("; Rent goes up in spring.\n~ monthly  rent  ; landlord: acme\n"),
+            "{text}"
+        );
+        assert!(text.contains("    ; the lease runs to 2028\n"), "{text}");
+        assert!(
+            text.contains("; growth: 2%/yr, paid on the 1st\n"),
+            "{text}"
+        );
+        // An edited attached comment is written `; ` + line.
+        let edited = Scenario {
+            layout: vec![LayoutItem {
+                attached: attached_raw("Rent goes up.\nTwice.").expect("writable"),
+                ..item.clone()
+            }],
+            ..only(&scenario, item)
+        };
+        let text = render(&edited, "rule:0").expect("renders");
+        assert!(
+            text.starts_with("; Rent goes up.\n; Twice.\n~ monthly"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_step_segment_renders_its_line_tag_when_the_body_carries_its_sibling() {
+        let comments = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/projections-parity/comments.journal"),
+        )
+        .expect("the fixture");
+        let scenario = read_full(&comments);
+        let segment = scenario
+            .lines
+            .iter()
+            .find(|line| line.id == "payroll")
+            .expect("a payroll segment");
+        let item = scenario
+            .layout
+            .iter()
+            .find(|item| item.key == segment.group)
+            .expect("its item");
+        // With the whole scenario as context: the tag a save writes.
+        let whole = Scenario {
+            layout: vec![item.clone()],
+            ..scenario.clone()
+        };
+        let text = render(&whole, &item.key).expect("renders");
+        assert!(text.contains("; line: payroll\n"), "{text}");
+        // Alone, it is no step, so no tag — as a save of it alone writes it.
+        let alone = render(&only(&scenario, item), &item.key).expect("renders");
+        assert!(!alone.contains("line:"), "{alone}");
+    }
+
+    #[test]
+    fn a_refused_entry_gives_the_sentence_a_save_gives() {
+        let mut scenario = read(EXAMPLE);
+        // One rule, two recurrences: the writer refuses it.
+        let first = scenario.lines[0].group.clone();
+        let second = scenario
+            .lines
+            .iter_mut()
+            .filter(|line| line.group == first)
+            .nth(1)
+            .expect("a second line");
+        second.period = parse_period_spec("weekly");
+        let saved = write_scenario(&doc(EXAMPLE), &scenario, "p.journal").expect_err("refused");
+        let rendered = render(&scenario, &first).expect_err("refused");
+        assert_eq!(rendered, saved);
+        assert!(
+            matches!(&rendered, SerializeError::Invalid(message) if message.contains("share its recurrence")),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn a_render_is_of_one_entry_the_scenario_holds_and_never_of_file_text() {
+        let scenario = read_full(PIECES);
+        let refused = |scenario: &Scenario, key: &str| match render(scenario, key) {
+            Err(SerializeError::Invalid(message)) => message,
+            other => panic!("{key}: {other:?}"),
+        };
+        // Two layout items.
+        let two = Scenario {
+            layout: scenario.layout[..2].to_vec(),
+            ..scenario.clone()
+        };
+        assert!(refused(&two, "comment:0").contains("at most one item"));
+        // An item for another entry.
+        let other = Scenario {
+            layout: vec![scenario.layout[0].clone()],
+            ..scenario.clone()
+        };
+        assert!(refused(&other, "rule:0").contains("not the entry `rule:0`"));
+        // A key the scenario does not hold.
+        let none = Scenario {
+            layout: Vec::new(),
+            ..scenario.clone()
+        };
+        assert!(refused(&none, "rule:99").contains("no entry `rule:99`"));
+        // File text.
+        assert!(refused(&none, "fixed:0").contains("file text"));
+    }
+
+    #[test]
+    fn check_layout_names_what_a_save_would_refuse() {
+        let scenario = read_full(PIECES);
+        assert_eq!(check_layout(&scenario), Ok(()));
+        assert_eq!(check_layout(&read(PIECES)), Ok(()), "no layout passes");
+        let mut dropped = scenario.clone();
+        dropped.layout.retain(|item| item.key != "rule:0");
+        assert!(
+            matches!(check_layout(&dropped), Err(SerializeError::Invalid(message)) if message.contains("leaves out rule `rule:0`"))
+        );
+        let mut twice = scenario.clone();
+        twice.layout.push(scenario.layout[3].clone());
+        assert!(
+            matches!(check_layout(&twice), Err(SerializeError::Invalid(message)) if message.contains("twice"))
+        );
+        let mut unknown = scenario;
+        unknown.layout[3].key = "rule:42".to_string();
+        assert!(matches!(
+            check_layout(&unknown),
+            Err(SerializeError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn a_read_hands_out_each_piece_s_text() {
+        let read =
+            read_scenario_file(PIECES, "p.journal", "fallback", &declared(), &[]).expect("reads");
+        let doc = doc(PIECES);
+        assert_eq!(read.piece_texts.len(), doc.pieces().len());
+        for (at, text) in read.piece_texts.iter().enumerate() {
+            assert_eq!(Some(text.clone()), doc.piece_text(at));
+        }
+        assert_eq!(read.scenario, read_full(PIECES));
+        assert_eq!(
+            doc.fixed(),
+            [FixedPiece {
+                key: "fixed:0".into(),
+                raw: "account expenses:rent  ; type: X\n".into()
+            }]
+        );
     }
 }

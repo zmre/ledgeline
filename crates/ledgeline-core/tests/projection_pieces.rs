@@ -27,10 +27,12 @@ use ledgeline_core::auto_edit::block_spans;
 use ledgeline_core::decimal::Dec;
 use ledgeline_core::parse_journal;
 use ledgeline_core::periodic::PeriodicDoc;
-use ledgeline_core::projections::serialize::{ProjectionDoc, scenario_from_text, write_scenario};
+use ledgeline_core::projections::serialize::{
+    ProjectionDoc, render_entry, scenario_from_text, write_scenario,
+};
 use ledgeline_core::projections::{
-    DEFAULT_GAINS_ACCOUNT, ItemKind, JournalFacts, ProjectionOpts, RealSide, Scenario, project,
-    project_cached,
+    DEFAULT_GAINS_ACCOUNT, ItemKind, JournalFacts, LayoutItem, ProjectionOpts, RealSide, Scenario,
+    project, project_cached,
 };
 use ledgeline_core::reports::Interval;
 use ledgeline_core::reports::account_types::AccountType;
@@ -393,6 +395,43 @@ fn stated(scenario: &Scenario) -> Vec<String> {
         .collect()
 }
 
+/// `scenario` holding only the entry `item` names, laid out alone as a new
+/// piece: what plan 31 C15's render and a save into an empty file both write.
+fn only(scenario: &Scenario, item: &LayoutItem) -> Scenario {
+    let mine = |kind: ItemKind, key: &str| item.kind == kind && item.key == key;
+    Scenario {
+        lines: scenario
+            .lines
+            .iter()
+            .filter(|line| mine(ItemKind::Rule, &line.group))
+            .cloned()
+            .collect(),
+        events: scenario
+            .events
+            .iter()
+            .filter(|event| mine(ItemKind::Event, &event.id))
+            .cloned()
+            .collect(),
+        auto_rules: scenario
+            .auto_rules
+            .iter()
+            .filter(|rule| mine(ItemKind::Auto, &rule.key))
+            .cloned()
+            .collect(),
+        comments: scenario
+            .comments
+            .iter()
+            .filter(|comment| mine(ItemKind::Comment, &comment.key))
+            .cloned()
+            .collect(),
+        layout: vec![LayoutItem {
+            origin: None,
+            ..item.clone()
+        }],
+        ..Scenario::default()
+    }
+}
+
 /// A deterministic shuffle of `items` driven by `seed`.
 fn shuffled<T>(mut items: Vec<T>, seed: u64) -> Vec<T> {
     let mut state = seed | 1;
@@ -608,6 +647,37 @@ proptest! {
         prop_assert_eq!(back.layout[at].disabled, once.layout[at].disabled, "{}", toggled);
         back.layout[at].disabled = !back.layout[at].disabled;
         prop_assert_eq!(save(&toggled, &back), text);
+    }
+
+    /// Plan 31 C15: every entry renders exactly as a save into an empty file
+    /// writes it after the header, enabled or disabled, so the editor's
+    /// preview cannot disagree with the save.
+    #[test]
+    fn an_entry_renders_as_a_save_writes_it(file in file()) {
+        let scenario = read(&file.render());
+        for item in scenario.layout.iter().filter(|item| item.kind != ItemKind::Fixed) {
+            for disabled in [item.disabled, !item.disabled && item.kind != ItemKind::Comment] {
+                let single = only(&scenario, &LayoutItem { disabled, ..item.clone() });
+                let rendered = render_entry(&single, &item.key, &declared(), &[])
+                    .map_err(|error| TestCaseError::fail(format!("{}: {error}", item.key)))?;
+                let full = ProjectionDoc::empty(&declared())
+                    .apply(&single)
+                    .map_err(|error| TestCaseError::fail(format!("{}: {error}", item.key)))?;
+                let header = full.strip_suffix(rendered.as_str());
+                prop_assert!(
+                    header.is_some_and(|header| header.ends_with("\n\n")),
+                    "{}: rendered\n{}\nsaved\n{}", item.key, rendered, full
+                );
+                if disabled {
+                    prop_assert!(
+                        rendered
+                            .strip_prefix(item.attached.as_str())
+                            .is_some_and(|content| content.lines().all(|line| line.starts_with("; "))),
+                        "{}", rendered
+                    );
+                }
+            }
+        }
     }
 
     /// Guarantee 5: the active scenario is the file with its disabled blocks

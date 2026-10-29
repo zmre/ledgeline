@@ -55,6 +55,8 @@ const seedLine = (account: string, mantissa: string) => ({
     counter: null,
     gains: null,
     source: "unbudgeted",
+    comment: "",
+    ruleComment: "",
     // The engine's placement (plan 26 B6), as the seed sends it.
     section: account.startsWith("income:") ? "income" : "expense",
 });
@@ -74,6 +76,9 @@ const SEED_WIRE = {
     cash: null,
     autoRules: [] as unknown[],
     accountTypes: {},
+    layout: [],
+    comments: [],
+    fixed: [],
 };
 const SEED = decodeScenario(SEED_WIRE);
 
@@ -94,6 +99,8 @@ const assetLine = (account: string, group: string, contribution = "0") => ({
     counter: null,
     gains: null,
     source: "journal",
+    comment: "",
+    ruleComment: "",
     section: "asset",
 });
 
@@ -319,6 +326,8 @@ const periodLine = (account: string, period: Record<string, string | null>, note
     period,
     note,
     source: "journal",
+    comment: "",
+    ruleComment: "",
     section: "expense",
 });
 
@@ -342,6 +351,9 @@ const BOUNDED = decodeScenario({
     cash: null,
     autoRules: [],
     accountTypes: {},
+    layout: [],
+    comments: [],
+    fixed: [],
 });
 
 describe("COMPONENT ProjectionsTable — REGRESSION: bounded periods stay editable", () => {
@@ -605,6 +617,9 @@ function withAssets(...lines: ReturnType<typeof assetLine>[]): Scenario {
         cash: null,
         autoRules: [],
         accountTypes: {},
+        layout: [],
+        comments: [],
+        fixed: [],
     });
 }
 
@@ -641,6 +656,9 @@ describe("COMPONENT ProjectionsTable — the Assets and balances section", () =>
                 cash: null,
                 autoRules: [],
                 accountTypes: {},
+                layout: [],
+                comments: [],
+                fixed: [],
             })
         );
         mount();
@@ -684,6 +702,9 @@ describe("COMPONENT ProjectionsTable — the Assets and balances section", () =>
                 cash: null,
                 autoRules: [],
                 accountTypes: {},
+                layout: [],
+                comments: [],
+                fixed: [],
             })
         );
         mount();
@@ -1056,6 +1077,9 @@ describe("COMPONENT ProjectionsTable — a row's description", () => {
                 cash: null,
                 autoRules: [],
                 accountTypes: {},
+                layout: [],
+                comments: [],
+                fixed: [],
             })
         );
         mount();
@@ -1152,20 +1176,25 @@ describe("COMPONENT ProjectionsTable — reordering rows", () => {
                         id: "rule:0",
                         date: "2027-01-01",
                         description: "first",
-                        postings: [{account: "expenses:a", amount: {commodity: "$", quantity: {mantissa: "100", places: 2}, precision: 2}}],
+                        postings: [{account: "expenses:a", amount: {commodity: "$", quantity: {mantissa: "100", places: 2}, precision: 2}, comment: ""}],
                         counter: null,
+                        comment: "",
                     },
                     {
                         id: "rule:1",
                         date: "2027-02-01",
                         description: "second",
-                        postings: [{account: "expenses:b", amount: {commodity: "$", quantity: {mantissa: "100", places: 2}, precision: 2}}],
+                        postings: [{account: "expenses:b", amount: {commodity: "$", quantity: {mantissa: "100", places: 2}, precision: 2}, comment: ""}],
                         counter: null,
+                        comment: "",
                     },
                 ],
                 cash: null,
                 autoRules: [],
                 accountTypes: {},
+                layout: [],
+                comments: [],
+                fixed: [],
             })
         );
         mount();
@@ -1175,7 +1204,7 @@ describe("COMPONENT ProjectionsTable — reordering rows", () => {
 });
 
 describe("COMPONENT ProjectionsTable — automatic postings (plan 30)", () => {
-    const locked = (raw: string, query: string, unsupported: string | null = null) => ({raw, query, unsupported, form: null, block: 0});
+    const locked = (raw: string, query: string, unsupported: string | null = null) => ({raw, query, unsupported, form: null, block: 0, key: "auto:0"});
     const commissionForm = {
         matchAccount: "income:salary",
         extraQuery: "",
@@ -1191,6 +1220,7 @@ describe("COMPONENT ProjectionsTable — automatic postings (plan 30)", () => {
         unsupported: null,
         form: commissionForm,
         block,
+        key: `auto:${block}`,
     });
 
     it("is always there to add a rule to, and says what one is for while there are none", () => {
