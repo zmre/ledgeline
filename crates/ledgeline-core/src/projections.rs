@@ -614,17 +614,21 @@ impl Scenario {
     /// no layout has nothing disabled and comes back unchanged.
     #[must_use]
     pub fn active(&self) -> Scenario {
-        let off = |kind: ItemKind, key: &str| {
-            self.layout
-                .iter()
-                .any(|item| item.disabled && item.kind == kind && item.key == key)
-        };
-        let place = |key: &str| {
-            self.layout
-                .iter()
-                .position(|item| item.kind == ItemKind::Auto && item.key == key)
-                .unwrap_or(usize::MAX)
-        };
+        let disabled: BTreeSet<(ItemKind, &str)> = self
+            .layout
+            .iter()
+            .filter(|item| item.disabled)
+            .map(|item| (item.kind, item.key.as_str()))
+            .collect();
+        let off = |kind: ItemKind, key: &str| disabled.contains(&(kind, key));
+        let places: BTreeMap<&str, usize> = self
+            .layout
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.kind == ItemKind::Auto)
+            .map(|(at, item)| (item.key.as_str(), at))
+            .collect();
+        let place = |key: &str| places.get(key).copied().unwrap_or(usize::MAX);
         let mut auto_rules: Vec<ScenarioAutoRule> = self
             .auto_rules
             .iter()
