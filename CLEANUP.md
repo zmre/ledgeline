@@ -1210,6 +1210,10 @@ fixes did not widen. Unverified beyond what the agent saw.
   shape: put the scenario's own styles on the wire (or re-read them from the file on save) and
   pass them to `rule_from_text` / `render`. Reasoned from the code by the polish pass, not
   reproduced; `write_scenario`'s read-back may or may not refuse the rendered case.
+  **Decision 2026-10-29: deferred, to be done first after this PR merges.** Start by reproducing
+  both examples against hledger 1.52, then carry the scenario's own `commodity` and `decimal-mark`
+  on the wire beside `accountTypes` (A5-7's shape) so run and save read under the same styles GET
+  does.
 - **F-11** `crates/ledgeline-core/src/auto.rs`, `auto_form.rs` — `generate` seeds its sum with
   `Dec::new(0, 0)` and `auto_form::negated_sum` with `Dec::zero()`, the pattern
   `parse::group_residual`'s comment documents as overflowing at tiny scales
