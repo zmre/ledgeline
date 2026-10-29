@@ -1169,20 +1169,41 @@ silently. Where a fix is cheap, it is usually "call the helper that already does
   409-417; lib.rs:704-716; HledgerConfPanel.svelte:33, 57, 61, 83-84, 247, 251-252;
   hledgerConfModel.ts:128-129, 139-142; conf_api.rs:446-447.
 
+## Follow-ups noted while fixing the highs
+
+Observations the fix agents made next to their findings. None is a regression; each is a gap the
+fixes did not widen. Unverified beyond what the agent saw.
+
+- **F-1** `web/src/lib/projections/**` — the client's own section logic still classifies lines
+  with the main journal's account types only; the wire now carries the scenario's `accountTypes`
+  (A5-7), so the client could merge them the way the server does.
+- **F-2** `crates/ledgeline-server/src/projections_api.rs` — Save As of a scenario that declares
+  its own accounts writes the new file without those declarations, so the new file's forms are
+  re-served under the main journal's types (the text is right; only the displayed sign changes).
+- **F-3** `crates/ledgeline-server/src/projections_api.rs` — the run's unknown-account warning
+  (Decision 11) checks the main journal's accounts only, so it still fires for an account declared
+  only in the scenario.
+- **F-4** `crates/ledgeline-server/src/projections_api.rs` — the scenario write path does not
+  apply `auto_balance::unbalanced_group` (A2-8 added it to the main-journal PUT only); clearing the
+  counter in the Projections host could still write a rule hledger refuses once it fires.
+- **F-5** `web/src/lib/hledgerConf/**` — Settings › hledger config does not warn about a
+  duplicate `[general]` heading or about top-of-file options an explicit `[general]` discards;
+  hledger is silent too, so this is a convenience, not parity.
+
 ## Fixed on the branch before the PR (13 high)
 
 For the record, the high-severity findings and the commits that fixed them:
 
 - **A1-1** `crates/ledgeline-core/src/auto.rs:494` — the amountless leg of a `*N` rule was inferred from raw quantities, not at cost as hledger does. _Fixed in: TBD_
 - **C-1** `crates/ledgeline-core/src/auto_form.rs:356` — rules were rendered with a hard-coded `.` decimal mark, so comma-mark journals read them 10x/100x. _Fixed in: TBD_
-- **A3-1** `crates/ledgeline-core/src/hledger_conf.rs:1174` — an explicit `[general]` section was not treated as the general section. _Fixed in: TBD_
+- **A3-1** `crates/ledgeline-core/src/hledger_conf.rs:1174` — an explicit `[general]` section was not treated as the general section. _Fixed in: `ffb2861`, `7d5a47b`_
 - **SW-3** `crates/ledgeline-core/src/parse.rs:1762` — balance assertions on `=` rule postings were dropped, and deleted on re-save. _Fixed in: TBD_
 - **A4-2** `crates/ledgeline-core/src/parse.rs:1772` — a `*FACTOR` followed by an exponent, cost or assertion was re-denominated in the empty commodity. _Fixed in: TBD_
-- **D1-1** `crates/ledgeline-core/src/projections/serialize.rs:718` — removing the last two adjacent `=` blocks produced overlapping splices and panicked. _Fixed in: TBD_
-- **A4-1** `crates/ledgeline-core/src/query.rs:201` — `amt:` matched every multi-commodity or empty leg, unlike hledger. _Fixed in: TBD_
-- **A4-4** `crates/ledgeline-core/src/query.rs:311` — `real:yes` / `real:true` selected the opposite postings from hledger, which accepts only `1`. _Fixed in: TBD_
-- **A5-7** `crates/ledgeline-server/src/projections_api.rs:399` — rule percentages were signed with the main journal's account types, ignoring the scenario's own declarations. _Fixed in: TBD_
-- **A5-1** `crates/ledgeline-server/src/projections_api.rs:1248` — the projection run parsed raw rules without commodity styles, so `$1,500` became `$1.500`. _Fixed in: TBD_
-- **A2-8** `web/src/lib/autoRules/ui/AutoRulesPanel.svelte:75` — a one-posting percent rule could be saved, making hledger refuse the whole journal under `--auto`. _Fixed in: TBD_
-- **D2-4** `web/src/lib/autoRules/ui/AutoRulesPanel.svelte:120` — the rule editor was keyed by listing index, so Save could overwrite a different rule after a refresh. _Fixed in: TBD_
-- **A2-3** `web/src/lib/autoRules/ui/AutoRulesPanel.svelte:132` — a failed Delete reopened the editor on the deleted rule's text, and Save replaced whichever rule then held that index. _Fixed in: TBD_
+- **D1-1** `crates/ledgeline-core/src/projections/serialize.rs:718` — removing the last two adjacent `=` blocks produced overlapping splices and panicked. _Fixed in: `db0d21b`_
+- **A4-1** `crates/ledgeline-core/src/query.rs:201` — `amt:` matched every multi-commodity or empty leg, unlike hledger. _Fixed in: `ff30f79`_
+- **A4-4** `crates/ledgeline-core/src/query.rs:311` — `real:yes` / `real:true` selected the opposite postings from hledger, which accepts only `1`. _Fixed in: `3bbac6f`_
+- **A5-7** `crates/ledgeline-server/src/projections_api.rs:399` — rule percentages were signed with the main journal's account types, ignoring the scenario's own declarations. _Fixed in: `1060cad`_
+- **A5-1** `crates/ledgeline-server/src/projections_api.rs:1248` — the projection run parsed raw rules without commodity styles, so `$1,500` became `$1.500`. _Fixed in: `61b26bf`_
+- **A2-8** `web/src/lib/autoRules/ui/AutoRulesPanel.svelte:75` — a one-posting percent rule could be saved, making hledger refuse the whole journal under `--auto`. _Fixed in: `57055c1`_
+- **D2-4** `web/src/lib/autoRules/ui/AutoRulesPanel.svelte:120` — the rule editor was keyed by listing index, so Save could overwrite a different rule after a refresh. _Fixed in: `5fa68a5`_
+- **A2-3** `web/src/lib/autoRules/ui/AutoRulesPanel.svelte:132` — a failed Delete reopened the editor on the deleted rule's text, and Save replaced whichever rule then held that index. _Fixed in: `5fa68a5`_
