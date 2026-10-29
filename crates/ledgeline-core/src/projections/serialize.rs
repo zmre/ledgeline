@@ -682,16 +682,39 @@ impl ProjectionDoc {
                 None => appended.push(rule),
             }
         }
-        for index in (0..blocks.len()).filter(|index| !claimed.contains(index)) {
-            splices.push((self.removal(&blocks[index]), String::new()));
+        let doomed: Vec<Range<usize>> = (0..blocks.len())
+            .filter(|index| !claimed.contains(index))
+            .map(|index| blocks[index].clone())
+            .collect();
+        // The doomed blocks that end the file go as ONE span: removed one by
+        // one, the last would take the blank line before it, which the one
+        // before it has already taken as the blank after it.
+        let (inner, tail) = doomed.split_at(doomed.len() - self.eof_run(&doomed));
+        splices.extend(inner.iter().map(|span| (self.removal(span), String::new())));
+        if let (Some(first), Some(last)) = (tail.first(), tail.last()) {
+            splices.push((self.removal(&(first.start..last.end)), String::new()));
         }
         (splices, appended)
+    }
+
+    /// How many of `doomed` (ascending block spans) end the file: the last
+    /// reaches EOF and only blank lines separate each from the next.
+    fn eof_run(&self, doomed: &[Range<usize>]) -> usize {
+        if doomed.last().is_none_or(|last| last.end != self.text.len()) {
+            return 0;
+        }
+        1 + doomed
+            .windows(2)
+            .rev()
+            .take_while(|pair| self.text[pair[0].end..pair[1].start].trim().is_empty())
+            .count()
     }
 
     /// The bytes deleting the `=` block at `span` removes: the block, plus the
     /// blank line that separated it from what follows — or, for a block that
     /// ends the file, from what precedes it, unless that line belongs to a span
-    /// another splice rewrites.
+    /// another splice rewrites. `span` may cover several adjacent blocks (see
+    /// [`Self::eof_run`]).
     fn removal(&self, span: &Range<usize>) -> Range<usize> {
         let text = &self.text;
         let blank_at = |start: usize| -> Option<usize> {
@@ -711,9 +734,11 @@ impl ProjectionDoc {
                 .rfind('\n')
                 .map_or(0, |at| at + 1);
             let free = self.header.end <= line_start
-                && self.blocks.iter().chain(&self.auto_blocks).all(|other| {
-                    other.end <= line_start || other.start >= span.end || other == span
-                });
+                && self
+                    .blocks
+                    .iter()
+                    .chain(&self.auto_blocks)
+                    .all(|other| other.end <= line_start || other.start >= span.start);
             if before[line_start..].trim().is_empty() && line_start < span.start && free {
                 return line_start..span.end;
             }
@@ -3363,6 +3388,27 @@ account equity:unrealized gains  ; type: E
                 "",
             )
         );
+    }
+
+    #[test]
+    fn deleting_the_rules_that_end_the_file_removes_them_and_one_blank_line() {
+        const WAGES: &str = "= expenses:wages tag:_generated-transaction\n    expenses:payroll-tax   *0.1\n    assets:checking\n\n";
+        let (kept, _) = RULES.split_once("\n= revenue:sales").expect("fixture");
+        // The last two blocks are adjacent and end the file: they go together,
+        // with the one blank line before them.
+        let mut last_two = read(RULES);
+        last_two.auto_rules.truncate(1);
+        assert_eq!(save(RULES, &last_two), kept);
+        let mut none = read(RULES);
+        none.auto_rules.clear();
+        assert_eq!(save(RULES, &none), kept.replace(WAGES, ""));
+        // With a `~` block after them they are not at EOF, and each takes the
+        // blank line after it.
+        let bonus = "~ yearly  bonus\n    expenses:bonus      $100.00\n    assets:checking\n";
+        let followed = format!("{RULES}\n{bonus}");
+        let mut scenario = read(&followed);
+        scenario.auto_rules.truncate(1);
+        assert_eq!(save(&followed, &scenario), format!("{kept}\n{bonus}"));
     }
 
     #[test]
