@@ -1201,6 +1201,20 @@ fixes did not widen. Unverified beyond what the agent saw.
 - **F-9** `crates/ledgeline-core/src/auto_form.rs` — under a `D` directive a form's fixed amount with
   no commodity is now refused at render (the journal would read it as the `D` commodity); before C-1
   it was silently written. The form could offer the `D` commodity instead.
+- **F-10** `crates/ledgeline-server/src/projections_api.rs` — the projection run and save read raw
+  rules and render forms under `JournalStyles::lent_by(main)` (the main journal's `commodity` styles
+  only), while `open_file` reads the same file with its own `commodity` and `decimal-mark` in force.
+  A scenario file that declares `decimal-mark ,` would get a 10% form rendered as `*0.1`, which the
+  file and hledger read as `*1`; a raw `1.500 EUR` under a scenario-declared `commodity 1.000,00 EUR`
+  books 1.5 in the run and 1500 on GET. The body carries no directives, so the fix is the A5-7
+  shape: put the scenario's own styles on the wire (or re-read them from the file on save) and
+  pass them to `rule_from_text` / `render`. Reasoned from the code by the polish pass, not
+  reproduced; `write_scenario`'s read-back may or may not refuse the rendered case.
+- **F-11** `crates/ledgeline-core/src/auto.rs`, `auto_form.rs` — `generate` seeds its sum with
+  `Dec::new(0, 0)` and `auto_form::negated_sum` with `Dec::zero()`, the pattern
+  `parse::group_residual`'s comment documents as overflowing at tiny scales
+  (`Dec::zero().add(5e-255)`); `auto_balance::total` already seeds with the first value. Pre-dates
+  the fixes.
 
 ## Fixed on the branch before the PR (13 high)
 
