@@ -58,12 +58,12 @@ use crate::reports::periods::{
 };
 use crate::reports::prices::{PriceDb, infer_market_prices};
 
-use super::LineRole;
 use super::{
     AccountBalances, AssetRow, MAX_GROWTH_STEPS, Scenario, ScenarioEvent, ScenarioLine,
     account_balances_at, describe_type, grow_once, growth_boundaries, growth_steps, in_subtree,
     line_label, show, subtree_balance,
 };
+use super::{ItemKind, LineRole};
 
 /// How many full periods before the cutoff a projection shows by default
 /// (Decision 6). `0` is allowed.
@@ -810,12 +810,24 @@ impl CounterDefaults {
 /// changes no number. A group that already balances (a rule that states its own
 /// cash leg) is left alone, and so is an event that balances. Never used on
 /// `budget.journal`, which is never written (plan 22 Decision 5).
+///
+/// A DISABLED entry (plan 31 C7) is left alone too: it posts nothing, so it
+/// has no default to make explicit, and touching it would rewrite a
+/// commented-out block the user did not edit.
 #[must_use]
 pub fn upgrade_legacy_counters(scenario: &Scenario, defaults: &CounterDefaults) -> Scenario {
     let mut out = scenario.clone();
+    let off: BTreeSet<(ItemKind, &str)> = scenario
+        .layout
+        .iter()
+        .filter(|item| item.disabled)
+        .map(|item| (item.kind, item.key.as_str()))
+        .collect();
     let mut groups: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
     for (index, line) in scenario.lines.iter().enumerate() {
-        groups.entry(line.group.as_str()).or_default().push(index);
+        if !off.contains(&(ItemKind::Rule, line.group.as_str())) {
+            groups.entry(line.group.as_str()).or_default().push(index);
+        }
     }
     for members in groups.values() {
         let lines: Vec<&ScenarioLine> = members.iter().map(|&i| &scenario.lines[i]).collect();
@@ -847,7 +859,7 @@ pub fn upgrade_legacy_counters(scenario: &Scenario, defaults: &CounterDefaults) 
         }
     }
     for event in &mut out.events {
-        if event.counter.is_some() {
+        if event.counter.is_some() || off.contains(&(ItemKind::Event, event.id.as_str())) {
             continue;
         }
         let mut sum = MixedAmount::new();
