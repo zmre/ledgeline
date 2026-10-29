@@ -17,6 +17,11 @@
 //      hide exactly the spending categories the diagram exists to show. Only the
 //      account side has a tail, and it is the side whose identity a reader can
 //      recover from the legend.
+//
+// The hover text is built here too (`nodeTooltip`, `linkTooltip`), not in the
+// panel: a bar whose label had its figure line dropped for room has the tooltip
+// as the only place on the chart that says what it is worth, so the wording is
+// a claim worth a unit test.
 
 import {add, cmp, toNumber, type Dec} from "#lib/domain/money.js";
 import type {AmountStyle} from "#lib/domain/types.js";
@@ -104,7 +109,42 @@ export interface SankeyLinkView {
     target: string;
     value: number;
     color: string;
+    /** `source → target`, by label. */
+    label: string;
+    /** The source end's label, which the share is a share OF. */
+    sourceLabel: string;
+    amount: string;
+    /** Percent of the source bar's total; 0 when that total is zero. */
+    share: number;
+}
+
+/** What the panel's hover box says: a bold first line, then the figures under it. */
+export interface SankeyTooltip {
     title: string;
+    lines: string[];
+}
+
+/** A share as the tooltip prints it. A sliver that rounds to nothing still says it is there. */
+export function formatShare(percent: number): string {
+    return percent > 0 && percent < 0.05 ? "<0.1%" : `${percent.toFixed(1)}%`;
+}
+
+/**
+ * A bar's hover text: its name, its figure, and its share of its column. Both
+ * columns decompose the same drawn total, so "of the total" is true on either side.
+ */
+export function nodeTooltip(node: Pick<SankeyNodeView, "label" | "amount" | "share">): SankeyTooltip {
+    return {title: node.label, lines: [node.amount, `${formatShare(node.share)} of the total`]};
+}
+
+/** A ribbon's hover text: both ends, its figure, and how much of its SOURCE it carries. */
+export function linkTooltip(link: Pick<SankeyLinkView, "label" | "sourceLabel" | "amount" | "share">): SankeyTooltip {
+    return {title: link.label, lines: [link.amount, `${formatShare(link.share)} of ${link.sourceLabel}`]};
+}
+
+/** The same text on one line, for an `aria-label`: `"Food: $2,700.00, 26.1% of the total"`. */
+export function tooltipText(tip: SankeyTooltip): string {
+    return `${tip.title}: ${tip.lines.join(", ")}`;
 }
 
 export interface SankeyView {
@@ -138,6 +178,8 @@ export function sankeyView(graph: FlowGraph, palette: FlowPalette, base: string 
 
     const nodes: SankeyNodeView[] = [];
     const labels = new Map<string, string>();
+    /** Each drawn bar's exact total, for the ribbons' share of their source. */
+    const totals = new Map<string, Dec>();
     // Every account node in one graph sits on the same side (targets in "Money
     // in", sources in "Money out"), so the tail inherits it from the first one.
     let tail: {side: FlowSide; total: Dec} | null = null;
@@ -148,6 +190,7 @@ export function sankeyView(graph: FlowGraph, palette: FlowPalette, base: string 
             continue;
         }
         labels.set(node.key, node.label);
+        totals.set(node.key, node.total);
         nodes.push({
             key: node.key,
             label: node.label,
@@ -161,6 +204,7 @@ export function sankeyView(graph: FlowGraph, palette: FlowPalette, base: string 
     }
     if (tail !== null) {
         labels.set(OTHER_KEY, OTHER_LABEL);
+        totals.set(OTHER_KEY, tail.total);
         nodes.push({
             key: OTHER_KEY,
             label: OTHER_LABEL,
@@ -186,13 +230,20 @@ export function sankeyView(graph: FlowGraph, palette: FlowPalette, base: string 
     }
 
     const accountSide: FlowSide = graph.nodes.find((node) => node.account !== null)?.side ?? "source";
-    const links: SankeyLinkView[] = [...merged.values()].map(({source, target, value}) => ({
-        source,
-        target,
-        value: toNumber(value),
-        color: palette.color(accountSide === "source" ? source : target),
-        title: `${labels.get(source) ?? source} → ${labels.get(target) ?? target}: ${money(value)}`,
-    }));
+    const links: SankeyLinkView[] = [...merged.values()].map(({source, target, value}) => {
+        const sourceLabel = labels.get(source) ?? source;
+        const whole = toNumber(totals.get(source) ?? value);
+        return {
+            source,
+            target,
+            value: toNumber(value),
+            color: palette.color(accountSide === "source" ? source : target),
+            label: `${sourceLabel} → ${labels.get(target) ?? target}`,
+            sourceLabel,
+            amount: money(value),
+            share: whole === 0 ? 0 : (toNumber(value) / whole) * 100,
+        };
+    });
 
     const legend = nodes
         .filter((node): node is SankeyNodeView & {color: string} => node.color !== null)
