@@ -745,6 +745,67 @@ mod tests {
         assert_eq!(&apply(&journal.auto_rules, txn).expect("applies"), txn);
     }
 
+    /// A factor followed by an exponent, a cost or an assertion still names
+    /// no commodity, so the product keeps the matched one and its cost —
+    /// `hledger print --auto` over this journal prints `$1000`, `$1`, `$5`
+    /// and, on `10 EUR @@ $12`, `1000 EUR @@ $1200` (2026-10-28).
+    #[test]
+    fn a_factor_with_an_exponent_cost_or_assertion_keeps_the_matched_commodity() {
+        let rules = "= expenses:food\n\
+             \x20   (budget:a)  *1e2\n\
+             \x20   (budget:b)  *0.1 @ 2 EUR\n\
+             \x20   (budget:c)  *0.5 = $5\n\n";
+        let got = applied(&format!(
+            "{rules}2026-01-01 lunch\n    expenses:food  $10\n    assets:cash\n"
+        ));
+        assert_eq!(
+            got,
+            rows(&[
+                ("expenses:food", "$10"),
+                ("budget:a", "$1000"),
+                ("budget:b", "$1"),
+                ("budget:c", "$5"),
+                ("assets:cash", "$-10"),
+            ])
+        );
+
+        let journal = parse_journal(
+            &format!("{rules}2026-01-02 euro\n    expenses:food  10 EUR @@ $12\n    assets:cash\n"),
+            "e.journal",
+        )
+        .expect("parses");
+        let txn = apply(&journal.auto_rules, &journal.transactions[0]).expect("applies");
+        let exponent = &txn.postings[1].amounts[0];
+        assert_eq!(exponent.commodity.0, "EUR");
+        assert_eq!(show(exponent.quantity), "1000");
+        let cost = exponent.cost.as_deref().expect("the matched cost is kept");
+        assert_eq!(cost.kind, CostKind::Total);
+        assert_eq!(
+            (cost.amount.commodity.0.as_str(), show(cost.amount.quantity)),
+            ("$", "1200".to_string())
+        );
+    }
+
+    /// Under `D $1000.00` a bare factor still keeps the matched commodity:
+    /// `D` is what a bare number adopts, not a commodity it writes —
+    /// `hledger print --auto` prints `1000 EUR` here (2026-10-28).
+    #[test]
+    fn a_default_commodity_does_not_re_denominate_a_bare_factor() {
+        let got = applied(
+            "D $1000.00\n\n= expenses:food\n    (budget:a)  *1e2\n    (budget:b)  *0.1 EUR\n\n\
+             2026-01-01 x\n    expenses:food  10 EUR\n    assets:cash\n",
+        );
+        assert_eq!(
+            got,
+            rows(&[
+                ("expenses:food", "EUR10"),
+                ("budget:a", "EUR1000"),
+                ("budget:b", "EUR1"),
+                ("assets:cash", "EUR-10"),
+            ])
+        );
+    }
+
     /// The user's payroll-tax rule over per-person CHILD accounts, all in one
     /// transaction: each child's posting gets its own 10% and its own
     /// balancing leg. Those are the figures `hledger print --auto` prints for

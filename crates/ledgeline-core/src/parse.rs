@@ -1751,13 +1751,7 @@ fn parse_auto_posting(line: &str, line_no: u32, amt: AmountCtx) -> Result<AutoPo
     let (account_part, amount_part) = split_account_amount(after_status);
     let (ptype, account) = posting_type_and_account(account_part.trim());
     let expr = amount_part.trim();
-    // Whether a multiplier names a commodity to re-denominate in: anything
-    // beyond a signed number.
-    let bare = |text: &str| {
-        text.chars()
-            .all(|c| c.is_ascii_digit() || matches!(c, '.' | ',' | '-' | '+' | ' '))
-    };
-    let read = |text: &str| -> Result<Amount, ParseError> {
+    let read = |text: &str, amt: AmountCtx| -> Result<Amount, ParseError> {
         parse_amount_and_assertion(text, main, line_no, amt)?
             .0
             .ok_or_else(|| ParseError::MalformedAmount(text.to_string()))
@@ -1766,13 +1760,27 @@ fn parse_auto_posting(line: &str, line_no: u32, amt: AmountCtx) -> Result<AutoPo
         AutoAmount::Inferred
     } else if let Some(factor) = expr.strip_prefix('*') {
         let factor = factor.trim();
-        let parsed = read(factor)?;
+        let parsed = read(factor, amt)?;
+        // The product is re-denominated only when the factor WRITES a
+        // commodity, so the parsed symbol decides — not the text's shape
+        // (`*1e2`, `*0.1 @ 2 EUR` and `*0.5 = $5` keep the matched commodity
+        // and cost) and not the `D` commodity a bare number adopts. Verified
+        // against hledger 1.52, 2026-10-28.
+        let written = if amt.default_commodity.is_some() {
+            let undefaulted = AmountCtx {
+                default_commodity: None,
+                ..amt
+            };
+            read(factor, undefaulted)?.commodity
+        } else {
+            parsed.commodity.clone()
+        };
         AutoAmount::Scale {
             factor: parsed.quantity,
-            commodity: (!bare(factor)).then_some(parsed),
+            commodity: (!written.0.is_empty()).then_some(parsed),
         }
     } else {
-        AutoAmount::Fixed(read(expr)?)
+        AutoAmount::Fixed(read(expr, amt)?)
     };
     Ok(AutoPosting {
         status,
