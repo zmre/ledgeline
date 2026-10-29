@@ -1,6 +1,7 @@
-//! The projections wire: run a what-if, and seed one from the journal.
+//! The projections wire: run a what-if, seed one from the journal, and render
+//! one entry of one.
 //!
-//! Two routes, and they differ in a way worth stating at the top:
+//! Three routes, and they differ in a way worth stating at the top:
 //!
 //! - `POST /api/projections/run` takes the WHOLE scenario in its body. That is
 //!   the point (decision 3 of `plans/22-projections.md`): live editing has to
@@ -9,6 +10,19 @@
 //!   trip is to localhost.
 //! - `GET /api/projections/seed` reads the journal and answers with a starting
 //!   scenario — its `~` rules plus one monthly line per unbudgeted category.
+//! - `POST /api/projections/render` (plan 31 C15) answers one entry's exact
+//!   text, as a save would write it: the editor's "Writes:" preview. Like
+//!   `run`, it writes nothing, and it reads no file either.
+//!
+//! # The file's pieces (plan 31 C8)
+//!
+//! A scenario travels with its LAYOUT: every piece of its file in order —
+//! rules, one-offs, `=` rules, comments, and file text it does not model. A
+//! commented-out ("disabled") entry is in `lines`/`events`/`autoRules` like any
+//! other, and its layout item is the one place that says it is off; the engine
+//! never runs one. A body WITHOUT a layout (every client before plan 31, the
+//! FFI) has one derived at save by `legacy_layout`, which keeps every comment,
+//! disabled entry and piece of file text where the file has it.
 //!
 //! # A `POST` that writes nothing
 //!
@@ -39,7 +53,7 @@ use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::response::Response;
-use ledgeline_core::auto_form::{AutoRuleForm, form_from_rule, render};
+use ledgeline_core::auto_form::{AutoRuleForm, form_from_rule, render as render_rule};
 use ledgeline_core::decimal::MAX_PARSE_PLACES;
 use ledgeline_core::model::AutoPostingRule;
 use ledgeline_core::model::{
@@ -47,14 +61,16 @@ use ledgeline_core::model::{
 };
 use ledgeline_core::parse::{JournalStyles, parse_period_spec};
 use ledgeline_core::projections::serialize::{
-    ProjectionDoc, SerializeError, new_file_with_styles, scenario_account_types,
-    scenario_and_own_types_from_text_with_styles, write_scenario,
+    ProjectionDoc, ScenarioRead, SerializeError, attached_raw, check_layout, comment_raw,
+    comment_style, comment_text, legacy_layout, new_file_with_styles, read_scenario_file,
+    render_entry, scenario_account_types, write_scenario,
 };
 use ledgeline_core::projections::{
-    AccountsOpts, AssetRow, BalanceSeries, CounterDefaults, CreateRefusal, DEFAULT_LOOKBACK,
-    DiscoveredProjection, Discovery, ForecastDefaults, ForecastOrigin, Growth, GrowthUnit, History,
-    LineRole, LineSection, LineSource, ProjectedStatements, Projection, ProjectionPath, Runway,
-    Scenario, ScenarioAutoRule, ScenarioEvent, ScenarioLine, SeedOpts, StatementOpts,
+    AccountsOpts, AssetRow, BalanceSeries, CommentStyle, CounterDefaults, CreateRefusal,
+    DEFAULT_LOOKBACK, DiscoveredProjection, Discovery, FixedPiece, ForecastDefaults,
+    ForecastOrigin, Growth, GrowthUnit, History, ItemKind, LayoutItem, LineRole, LineSection,
+    LineSource, ProjectedStatements, Projection, ProjectionPath, Runway, Scenario,
+    ScenarioAutoRule, ScenarioComment, ScenarioEvent, ScenarioLine, SeedOpts, StatementOpts,
     auto_rule_account_warnings, discover_in, forecast_cutoff, is_journal_name, label_for,
     latest_real_date, line_section, project_cached, projected_accounts, projected_statements,
     seed_scenario, upgrade_legacy_counters, virtual_posting,
@@ -108,6 +124,15 @@ const MAX_AUTO_RULES: usize = 200;
 /// hundred thousand postings is a single event. This is the third number the
 /// body limit would otherwise be the only guard for.
 const MAX_EVENT_POSTINGS: usize = 100;
+/// The most free-standing comment pieces one scenario may carry (plan 31 C8).
+const MAX_COMMENTS: usize = 1000;
+/// The most pieces of file text one scenario may name.
+const MAX_FIXED: usize = 1000;
+/// The longest one comment may be, in bytes: a comment piece, an attached
+/// comment, or a posting's, rule's or one-off's own comment (plan 31 C8).
+const MAX_COMMENT_BYTES: usize = 64 * 1024;
+/// The most layout items one scenario may carry: one per entry it can hold.
+const MAX_LAYOUT_ITEMS: usize = MAX_LINES + MAX_EVENTS + MAX_AUTO_RULES + MAX_COMMENTS + MAX_FIXED;
 
 /// The most generated transactions one run's `journal` carries.
 ///
@@ -253,6 +278,12 @@ struct WireScenarioLine {
     /// here without carrying the rule; it only needs its own answer for an
     /// account the user is still typing.
     section: LineSection,
+    /// The posting's own comment, Ledgeline's tags taken out, one line per
+    /// `\n` (plan 31 C6); `""` for none.
+    comment: String,
+    /// The rule's header comment, as `comment`. Every line of one `group`
+    /// carries the same one.
+    rule_comment: String,
 }
 
 impl WireScenarioLine {
@@ -271,6 +302,8 @@ impl WireScenarioLine {
             counter: line.counter.as_ref().map(|account| account.0.clone()),
             gains: line.gains.as_ref().map(|account| account.0.clone()),
             source: line.source.as_str(),
+            comment: line.comment.clone(),
+            rule_comment: line.rule_comment.clone(),
         }
     }
 }
@@ -287,6 +320,9 @@ impl WireScenarioLine {
 struct WireEventPosting {
     account: String,
     amount: WireAmount,
+    /// The posting's own comment (plan 31 C6), on the first wire posting of a
+    /// flattened multi-amount one; `""` for none.
+    comment: String,
 }
 
 /// A dated one-off.
@@ -299,6 +335,8 @@ struct WireScenarioEvent {
     postings: Vec<WireEventPosting>,
     /// The account the event balances against, or `null`.
     counter: Option<String>,
+    /// The block's header comment (plan 31 C6); `""` for none.
+    comment: String,
 }
 
 impl From<&ScenarioEvent> for WireScenarioEvent {
@@ -310,14 +348,30 @@ impl From<&ScenarioEvent> for WireScenarioEvent {
             postings: event
                 .postings
                 .iter()
-                .flat_map(|posting| {
-                    posting.amounts.iter().map(|amount| WireEventPosting {
-                        account: posting.account.0.clone(),
-                        amount: WireAmount::from(amount),
-                    })
+                .enumerate()
+                .flat_map(|(index, posting)| {
+                    posting
+                        .amounts
+                        .iter()
+                        .enumerate()
+                        .map(move |(at, amount)| WireEventPosting {
+                            account: posting.account.0.clone(),
+                            amount: WireAmount::from(amount),
+                            // A save writes a posting's comment once, on its
+                            // first amount, so that is where it travels.
+                            comment: match at {
+                                0 => event
+                                    .posting_comments
+                                    .get(index)
+                                    .cloned()
+                                    .unwrap_or_default(),
+                                _ => String::new(),
+                            },
+                        })
                 })
                 .collect(),
             counter: event.counter.as_ref().map(|account| account.0.clone()),
+            comment: event.comment.clone(),
         }
     }
 }
@@ -343,6 +397,105 @@ pub(crate) struct WireScenario {
     /// read under the main journal's types with these winning, so a client
     /// hands them back for the engine to read its edits the same way.
     account_types: BTreeMap<String, &'static str>,
+    /// The file's pieces, top to bottom (plan 31 C1, C8): every line group,
+    /// one-off, `=` rule, comment and piece of file text, each exactly once.
+    /// A seed's is derived (every entry new, in seed order).
+    ///
+    /// A DISABLED (commented-out) entry is in `lines`/`events`/`autoRules`
+    /// like any other; its item here is the one place that says it is off.
+    /// The engine never runs one.
+    layout: Vec<WireLayoutItem>,
+    /// The free-standing comment pieces, in file order.
+    comments: Vec<WireComment>,
+    /// The file text this scenario does not model, in file order. Read-only:
+    /// a save takes these bytes from the file, never from a client.
+    fixed: Vec<WireFixed>,
+}
+
+/// One piece of a scenario file, in file order (plan 31 C8, C15).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireLayoutItem {
+    /// `rule` | `event` | `auto` | `comment` | `fixed`.
+    kind: &'static str,
+    /// Rule: its lines' `group`. Event: its `id`. Auto: its `key`. Comment
+    /// and fixed: theirs.
+    key: String,
+    /// The piece of the file it was read from, or `null` for a new one (a
+    /// seed's). A save uses it to keep the piece's bytes; it is a hint, and a
+    /// stale one costs byte preservation, never correctness.
+    origin: Option<usize>,
+    /// Commented out (plan 31 C7). Only ever true for a rule, a one-off or an
+    /// `=` rule.
+    disabled: bool,
+    /// The comment attached directly above the entry, exactly as the file
+    /// states it (prefixes included, `\n` line ends); `""` for none.
+    attached: String,
+    /// The piece's exact text, attached comment included, `\n` line ends:
+    /// what a save writes while the entry is unchanged. `""` for a new one.
+    raw: String,
+}
+
+impl WireLayoutItem {
+    fn new(item: &LayoutItem, piece_texts: &[String]) -> Self {
+        Self {
+            kind: item.kind.as_str(),
+            key: item.key.clone(),
+            origin: item.origin,
+            disabled: item.disabled,
+            attached: item.attached.clone(),
+            raw: item
+                .origin
+                .and_then(|origin| piece_texts.get(origin))
+                .cloned()
+                .unwrap_or_default(),
+        }
+    }
+}
+
+/// A free-standing comment piece (plan 31 C4).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireComment {
+    key: String,
+    /// `note` | `section` | `block`.
+    style: &'static str,
+    /// The text exactly as the file states it, prefixes included, `\n` line
+    /// ends. Handed back unchanged, it keeps the piece's bytes.
+    raw: String,
+    /// The display form: prefixes stripped, and a section's divider lines
+    /// dropped. A `block` shows verbatim. Derived; never read back.
+    text: String,
+}
+
+impl From<&ScenarioComment> for WireComment {
+    fn from(comment: &ScenarioComment) -> Self {
+        Self {
+            key: comment.key.clone(),
+            style: comment.style.as_str(),
+            raw: comment.raw.clone(),
+            text: comment_text(comment.style, &comment.raw),
+        }
+    }
+}
+
+/// File text a scenario carries but does not model (`account`, `commodity`,
+/// transactions, `include` …). Display only.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireFixed {
+    key: String,
+    /// Its text, `\n` line ends.
+    raw: String,
+}
+
+impl From<&FixedPiece> for WireFixed {
+    fn from(fixed: &FixedPiece) -> Self {
+        Self {
+            key: fixed.key.clone(),
+            raw: fixed.raw.clone(),
+        }
+    }
 }
 
 /// One `= QUERY` auto-posting rule, as the file writes it.
@@ -366,8 +519,11 @@ struct WireAutoRule {
     /// — the client then shows `raw`, locked.
     form: Option<WireAutoRuleForm>,
     /// Its position among the scenario file's own `=` blocks, or `null` for a
-    /// rule the file does not hold yet (a seed's).
+    /// rule the file does not hold yet (a seed's) or holds commented out.
     block: Option<usize>,
+    /// Its layout key (plan 31 C8): `auto:B` for the file's Bth active `=`
+    /// block, `auto:off:K` for its Kth commented-out one.
+    key: String,
 }
 
 impl WireAutoRule {
@@ -380,23 +536,33 @@ impl WireAutoRule {
                 .as_ref()
                 .map(WireAutoRuleForm::from),
             block: rule.block,
+            key: rule.key.clone(),
         }
     }
 }
 
 impl WireScenario {
     /// `declared` is the main journal's account types and `own` the scenario
-    /// file's; everything is read under the two merged.
+    /// file's; everything is read under the two merged. `piece_texts` is each
+    /// of the file's pieces' text, for the layout's `raw`; empty for a seed.
+    ///
+    /// A scenario with no layout (a seed) is sent with the one a save would
+    /// derive for it ([`legacy_layout`] over an empty document), so a client
+    /// is always handed a complete layout.
     fn new(
         scenario: &Scenario,
         declared: &BTreeMap<String, AccountType>,
         own: &BTreeMap<String, AccountType>,
+        piece_texts: &[String],
     ) -> Self {
-        // Plan 31 C1: commented-out entries are read as disabled ones, and this
-        // wire has no flag to say so yet (C2), so they are not sent; a
-        // layout-less save keeps them where they are in the file.
-        let scenario = &scenario.active();
         let declared = scenario_account_types(declared, own);
+        let derived;
+        let scenario = if scenario.layout.is_empty() {
+            derived = legacy_layout(&ProjectionDoc::empty(&declared), scenario);
+            &derived
+        } else {
+            scenario
+        };
         Self {
             name: scenario.name.clone(),
             created: scenario.created.clone(),
@@ -424,6 +590,13 @@ impl WireScenario {
                 .iter()
                 .map(|(account, ty)| (account.clone(), ty.code()))
                 .collect(),
+            layout: scenario
+                .layout
+                .iter()
+                .map(|item| WireLayoutItem::new(item, piece_texts))
+                .collect(),
+            comments: scenario.comments.iter().map(WireComment::from).collect(),
+            fixed: scenario.fixed.iter().map(WireFixed::from).collect(),
         }
     }
 
@@ -438,14 +611,12 @@ impl WireScenario {
         declared: &BTreeMap<String, AccountType>,
         inherited: &[(Commodity, AmountStyle)],
     ) -> Result<Self, SerializeError> {
-        let (scenario, own) = scenario_and_own_types_from_text_with_styles(
-            text,
-            source_name,
-            fallback_name,
-            declared,
-            inherited,
-        )?;
-        Ok(Self::new(&scenario, declared, &own))
+        let ScenarioRead {
+            scenario,
+            own_types,
+            piece_texts,
+        } = read_scenario_file(text, source_name, fallback_name, declared, inherited)?;
+        Ok(Self::new(&scenario, declared, &own_types, &piece_texts))
     }
 }
 
@@ -864,6 +1035,12 @@ struct ScenarioLineIn {
     /// an instruction.
     #[serde(default, rename = "section")]
     _section: Option<serde::de::IgnoredAny>,
+    /// The posting's own comment (plan 31 C6). Absent is none.
+    #[serde(default)]
+    comment: String,
+    /// The rule's header comment; a save writes the first line's.
+    #[serde(default)]
+    rule_comment: String,
 }
 
 #[derive(Deserialize)]
@@ -871,6 +1048,9 @@ struct ScenarioLineIn {
 struct EventPostingIn {
     account: String,
     amount: AmountIn,
+    /// The posting's own comment (plan 31 C6). Absent is none.
+    #[serde(default)]
+    comment: String,
 }
 
 #[derive(Deserialize)]
@@ -883,6 +1063,9 @@ struct ScenarioEventIn {
     postings: Vec<EventPostingIn>,
     #[serde(default)]
     counter: Option<String>,
+    /// The block's header comment (plan 31 C6). Absent is none.
+    #[serde(default)]
+    comment: String,
 }
 
 #[derive(Deserialize)]
@@ -908,6 +1091,82 @@ struct ScenarioIn {
     /// types alone).
     #[serde(default)]
     account_types: BTreeMap<String, String>,
+    /// The file's pieces in order (plan 31 C8). Absent or empty: the save
+    /// derives one ([`legacy_layout`]), which keeps every comment, disabled
+    /// entry and piece of file text where it is in the file — what every
+    /// body from before plan 31 means.
+    #[serde(default)]
+    layout: Vec<LayoutItemIn>,
+    /// The free-standing comment pieces the layout names.
+    #[serde(default)]
+    comments: Vec<CommentIn>,
+    /// The file text the layout names, by key only.
+    #[serde(default)]
+    fixed: Vec<FixedIn>,
+}
+
+/// One layout item, inbound: [`WireLayoutItem`] handed back, with an edited
+/// attached comment as `attachedText` in place of `attached`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LayoutItemIn {
+    /// `rule` | `event` | `auto` | `comment` | `fixed`.
+    kind: String,
+    key: String,
+    /// [`WireLayoutItem::origin`], handed back; `null` or absent for a new
+    /// entry.
+    #[serde(default)]
+    origin: Option<usize>,
+    #[serde(default)]
+    disabled: bool,
+    /// The attached comment exactly as it was handed out. At most one of
+    /// this and `attachedText`; neither is none.
+    #[serde(default)]
+    attached: Option<String>,
+    /// An EDITED attached comment, as display text without `; ` prefixes,
+    /// which the engine writes `; ` + line.
+    #[serde(default)]
+    attached_text: Option<String>,
+    /// [`WireLayoutItem::raw`], accepted and dropped so an item can be handed
+    /// straight back: what a save writes is never the client's to say.
+    #[serde(default, rename = "raw")]
+    _raw: Option<serde::de::IgnoredAny>,
+}
+
+/// One free-standing comment, inbound: `{key, raw}` unchanged, or
+/// `{key, style, text}` edited — one of `raw` and `text`, as an
+/// [`AutoRuleIn`] carries one of `raw` and `form`. The outbound
+/// [`WireComment`] handed straight back (`raw` with its derived `text`) is
+/// the unchanged form too; `raw` with any OTHER text is refused, since it
+/// cannot say which of the two the client means.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CommentIn {
+    key: String,
+    /// The text as it was handed out ([`WireComment::raw`]).
+    #[serde(default)]
+    raw: Option<String>,
+    /// `note` | `section` | `block`. Required with `text`; with `raw`,
+    /// optional, and it must be the style `raw` reads as.
+    #[serde(default)]
+    style: Option<String>,
+    /// The edited display text, without prefixes (or a section's dividers).
+    #[serde(default)]
+    text: Option<String>,
+    /// With `text`: the `raw` the comment was handed out with, whose dividers
+    /// and framing an edited section keeps. Absent is a new comment.
+    #[serde(default)]
+    previous: Option<String>,
+}
+
+/// One piece of file text, inbound: its key and nothing else. Its bytes are
+/// the file's (plan 31 C8); an echoed `raw` is accepted and dropped.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FixedIn {
+    key: String,
+    #[serde(default, rename = "raw")]
+    _raw: Option<serde::de::IgnoredAny>,
 }
 
 /// One `= QUERY` rule, inbound: its text (`raw`) or its form (`form`) —
@@ -920,13 +1179,17 @@ struct ScenarioIn {
 struct AutoRuleIn {
     #[serde(default)]
     raw: Option<String>,
-    /// An edited rule, which the engine renders ([`render`]) and then
+    /// An edited rule, which the engine renders ([`render_rule`]) and then
     /// validates exactly as it validates `raw`.
     #[serde(default)]
     form: Option<AutoRuleFormIn>,
     /// [`WireAutoRule::block`], handed back.
     #[serde(default)]
     block: Option<usize>,
+    /// [`WireAutoRule::key`], handed back. Absent or empty only in a body
+    /// with no layout, which names no rule by key.
+    #[serde(default)]
+    key: Option<String>,
     /// The derived echoes a client hands back unchanged; ignored.
     #[serde(default)]
     #[allow(dead_code)]
@@ -1109,11 +1372,18 @@ struct DecodedScenario {
     /// One per line, in order: the typed magnitude, or `None` for a line whose
     /// `amount.quantity` is already signed.
     entries: Vec<Option<Dec>>,
-    /// The `=` rules, in order, with the block each came from. `scenario`'s
-    /// own `auto_rules` stay empty until [`Self::signed`] renders the forms.
-    rules: Vec<(DecodedRule, Option<usize>)>,
+    /// The `=` rules, in order. `scenario`'s own `auto_rules` stay empty
+    /// until [`Self::signed`] renders the forms.
+    rules: Vec<DecodedAuto>,
     /// The scenario file's own account types, as the body handed them back.
     own_types: BTreeMap<String, AccountType>,
+}
+
+/// One `=` rule after decoding, with the block it came from and its key.
+struct DecodedAuto {
+    rule: DecodedRule,
+    block: Option<usize>,
+    key: String,
 }
 
 /// A rule after decoding: read from its text, or a form whose rendering waits
@@ -1144,21 +1414,17 @@ impl DecodedScenario {
         let types = AccountTypes::from_declared(declared.clone());
         scenario.auto_rules = rules
             .into_iter()
-            .map(|(decoded, block)| {
-                let rule = match decoded {
+            .map(|DecodedAuto { rule, block, key }| {
+                let rule = match rule {
                     DecodedRule::Raw(rule) => rule,
                     DecodedRule::Form(form) => {
-                        let text = render(&form, &types, styles).map_err(|error| {
+                        let text = render_rule(&form, &types, styles).map_err(|error| {
                             AppError::BadRequest(format!("an auto rule cannot be written: {error}"))
                         })?;
                         rule_from_text(&text, styles)?
                     }
                 };
-                Ok(ScenarioAutoRule {
-                    block,
-                    key: String::new(),
-                    rule,
-                })
+                Ok(ScenarioAutoRule { block, key, rule })
             })
             .collect::<Result<_, AppError>>()?;
         for (line, entry) in scenario.lines.iter_mut().zip(entries) {
@@ -1202,6 +1468,17 @@ fn scenario_from_wire(
             scenario.events.len()
         )));
     }
+    for (what, count, limit) in [
+        ("comments", scenario.comments.len(), MAX_COMMENTS),
+        ("pieces of file text", scenario.fixed.len(), MAX_FIXED),
+        ("layout items", scenario.layout.len(), MAX_LAYOUT_ITEMS),
+    ] {
+        if count > limit {
+            return Err(AppError::BadRequest(format!(
+                "a scenario may have at most {limit} {what} (received {count})"
+            )));
+        }
+    }
 
     let lines = scenario
         .lines
@@ -1222,9 +1499,13 @@ fn scenario_from_wire(
                     line.id
                 )));
             }
+            check_comment(&line.comment, || format!("line '{}' comment", line.id))?;
+            check_comment(&line.rule_comment, || {
+                format!("line '{}' rule comment", line.id)
+            })?;
             Ok(ScenarioLine {
-                comment: String::new(),
-                rule_comment: String::new(),
+                comment: line.comment.clone(),
+                rule_comment: line.rule_comment.clone(),
                 counter: optional_account(line.counter.as_ref())?,
                 gains,
                 id: line.id.clone(),
@@ -1264,9 +1545,25 @@ fn scenario_from_wire(
                     ))
                 })
                 .collect::<Result<_, AppError>>()?;
+            check_comment(&event.comment, || format!("event '{}' comment", event.id))?;
+            for posting in &event.postings {
+                check_comment(&posting.comment, || {
+                    format!("event '{}' posting comment", event.id)
+                })?;
+            }
+            // Index for index with `postings`, trailing empty ones dropped,
+            // as a read gives them.
+            let mut posting_comments: Vec<String> = event
+                .postings
+                .iter()
+                .map(|posting| posting.comment.clone())
+                .collect();
+            while posting_comments.last().is_some_and(String::is_empty) {
+                posting_comments.pop();
+            }
             Ok(ScenarioEvent {
-                comment: String::new(),
-                posting_comments: Vec::new(),
+                comment: event.comment.clone(),
+                posting_comments,
                 id: event.id.clone(),
                 // The one field here that reaches bucket math, so it gets the
                 // same validation a `?end=` param does (RPT-4).
@@ -1291,9 +1588,25 @@ fn scenario_from_wire(
         rules,
         own_types,
         scenario: Scenario {
-            comments: Vec::new(),
-            fixed: Vec::new(),
-            layout: Vec::new(),
+            comments: scenario
+                .comments
+                .iter()
+                .map(comment_from_wire)
+                .collect::<Result<_, AppError>>()?,
+            fixed: scenario
+                .fixed
+                .iter()
+                .map(|fixed| FixedPiece {
+                    key: fixed.key.clone(),
+                    // The file's bytes are filled in at save, from the file.
+                    raw: String::new(),
+                })
+                .collect(),
+            layout: scenario
+                .layout
+                .iter()
+                .map(layout_item_from_wire)
+                .collect::<Result<_, AppError>>()?,
             auto_rules: Vec::new(),
             name: scenario.name.clone(),
             created: scenario.created.clone(),
@@ -1331,7 +1644,7 @@ fn account_types_from_wire(
 fn auto_rules_from_wire(
     rules: &[AutoRuleIn],
     styles: &JournalStyles<'_>,
-) -> Result<Vec<(DecodedRule, Option<usize>)>, AppError> {
+) -> Result<Vec<DecodedAuto>, AppError> {
     if rules.len() > MAX_AUTO_RULES {
         return Err(AppError::BadRequest(format!(
             "a scenario may have at most {MAX_AUTO_RULES} auto rules (received {})",
@@ -1355,9 +1668,158 @@ fn auto_rules_from_wire(
                     ));
                 }
             };
-            Ok((decoded, rule.block))
+            Ok(DecodedAuto {
+                rule: decoded,
+                block: rule.block,
+                key: rule.key.clone().unwrap_or_default(),
+            })
         })
         .collect()
+}
+
+/// Refuse a comment no file could hold: longer than [`MAX_COMMENT_BYTES`], or
+/// carrying a control character other than a line break or a tab. `what`
+/// names it in the sentence.
+fn check_comment(text: &str, what: impl FnOnce() -> String) -> Result<(), AppError> {
+    if text.len() > MAX_COMMENT_BYTES {
+        return Err(AppError::BadRequest(format!(
+            "{} is {} bytes; a comment may be at most {MAX_COMMENT_BYTES}",
+            what(),
+            text.len()
+        )));
+    }
+    if text
+        .chars()
+        .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+    {
+        return Err(AppError::BadRequest(format!(
+            "{} may not contain a control character",
+            what()
+        )));
+    }
+    Ok(())
+}
+
+/// A writer refusal about a field of the body, as the `400` it is.
+fn refused(error: SerializeError) -> AppError {
+    match error {
+        SerializeError::Invalid(message) => AppError::BadRequest(message),
+        other => AppError::Internal(other.to_string()),
+    }
+}
+
+/// One comment piece: its text handed back (`raw`), or edited (`text`) and
+/// written here in its style.
+fn comment_from_wire(comment: &CommentIn) -> Result<ScenarioComment, AppError> {
+    let key = &comment.key;
+    for text in [&comment.raw, &comment.text, &comment.previous]
+        .into_iter()
+        .flatten()
+    {
+        check_comment(text, || format!("comment '{key}'"))?;
+    }
+    let style = comment
+        .style
+        .as_deref()
+        .map(|style| {
+            CommentStyle::parse(style).ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "comment '{key}' has an unknown style '{style}' (expected note, section or \
+                     block)"
+                ))
+            })
+        })
+        .transpose()?;
+    let (style, raw) = match (&comment.raw, &comment.text, &comment.previous) {
+        // Unchanged: `raw` alone, or the outbound comment handed straight
+        // back, whose `text` is exactly what `raw` displays as.
+        (Some(raw), text, None)
+            if text.as_ref().is_none_or(|text| {
+                comment_style(raw).is_some_and(|style| comment_text(style, raw) == *text)
+            }) =>
+        {
+            let reads_as = comment_style(raw).ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "comment '{key}' does not read as one comment: its raw text must be a run of \
+                     comment lines or one `comment` block"
+                ))
+            })?;
+            if style.is_some_and(|style| style != reads_as) {
+                return Err(AppError::BadRequest(format!(
+                    "comment '{key}' reads as a {}, not the {} it says it is",
+                    reads_as.as_str(),
+                    style.map_or("", CommentStyle::as_str)
+                )));
+            }
+            (reads_as, raw.clone())
+        }
+        (None, Some(text), previous) => {
+            let style = style.ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "comment '{key}' is edited text, which needs its `style`"
+                ))
+            })?;
+            (
+                style,
+                comment_raw(style, text, previous.as_deref()).map_err(refused)?,
+            )
+        }
+        _ => {
+            return Err(AppError::BadRequest(format!(
+                "comment '{key}' must carry its unchanged `raw` or its edited `text`, not both \
+                 (and `previous` only with `text`)"
+            )));
+        }
+    };
+    Ok(ScenarioComment {
+        key: key.clone(),
+        style,
+        raw,
+    })
+}
+
+/// One layout item. An edited attached comment (`attachedText`) is written
+/// `; ` + line here.
+fn layout_item_from_wire(item: &LayoutItemIn) -> Result<LayoutItem, AppError> {
+    let kind = ItemKind::parse(&item.kind).ok_or_else(|| {
+        AppError::BadRequest(format!(
+            "layout item '{}' has an unknown kind '{}' (expected rule, event, auto, comment or \
+             fixed)",
+            item.key, item.kind
+        ))
+    })?;
+    let attached = match (&item.attached, &item.attached_text) {
+        (None, None) => String::new(),
+        (Some(raw), None) => {
+            check_comment(raw, || format!("the comment attached to '{}'", item.key))?;
+            raw.clone()
+        }
+        (None, Some(text)) => {
+            check_comment(text, || format!("the comment attached to '{}'", item.key))?;
+            attached_raw(text).map_err(refused)?
+        }
+        (Some(_), Some(_)) => {
+            return Err(AppError::BadRequest(format!(
+                "layout item '{}' must carry at most one of `attached` and `attachedText`",
+                item.key
+            )));
+        }
+    };
+    Ok(LayoutItem {
+        kind,
+        key: item.key.clone(),
+        origin: item.origin,
+        disabled: item.disabled,
+        attached,
+    })
+}
+
+/// Plan 31 C8's check of a body's layout, as a `400` with the writer's own
+/// sentence: every key names an entry exactly once and every entry is named.
+/// An empty layout passes; it is derived at save.
+fn checked_layout(scenario: Scenario) -> Result<Scenario, AppError> {
+    check_layout(&scenario).map_err(refused)?;
+    Ok(scenario)
 }
 
 // ===========================================================================
@@ -1416,7 +1878,9 @@ pub(crate) async fn run(
         let cache = &snapshot.projections;
         let facts = cache.facts(journal)?;
         let styles = JournalStyles::lent_by(journal);
-        let scenario = decoded.signed(&facts.shape().declared, &styles)?;
+        // Disabled entries are the engine's to leave out (`Scenario::active`,
+        // plan 31 C7), and a body with no layout has none.
+        let scenario = checked_layout(decoded.signed(&facts.shape().declared, &styles)?)?;
         let key = facts.key(&window.end, window.interval, lookback, value_in)?;
         let real = cache.side(journal, &facts, &key)?;
         // ONE expansion serves every reading: the cash series and runway are
@@ -1424,9 +1888,10 @@ pub(crate) async fn run(
         // built over the same generated transactions and prices.
         let mut projection = project_cached(&scenario, &real, window.count, window.depth)?;
         // Decision 11: a rule posting to an account nothing knows is a typo
-        // more often than not. hledger accepts it, so it is a warning.
+        // more often than not. hledger accepts it, so it is a warning — about
+        // the rules that run, never a disabled one (plan 31 C7).
         projection.warnings.extend(auto_rule_account_warnings(
-            &scenario,
+            &scenario.active(),
             facts.known_accounts(),
         ));
         let statements = projected_statements(
@@ -1518,9 +1983,131 @@ pub(crate) async fn seed(
             },
         )?;
         // A seed is no file, so it declares nothing of its own.
-        Ok(WireScenario::new(&scenario, &declared, &BTreeMap::new()))
+        Ok(WireScenario::new(
+            &scenario,
+            &declared,
+            &BTreeMap::new(),
+            &[],
+        ))
     })
     .await
+}
+
+/// A decoded body made ready to write, as a save and a render both need it.
+struct Writable {
+    /// Signed, its rules' forms rendered, and every unbalanced pre-plan-28
+    /// group given the counter-account the engine already books it to.
+    scenario: Scenario,
+    /// The main journal's declared account types: what a save reads the file
+    /// under (the file's own declarations are merged over them as it reads).
+    declared: BTreeMap<String, AccountType>,
+    /// `declared` with the body's `accountTypes` winning: what the scenario
+    /// was signed under, and what a render with no file to read classifies by.
+    merged: BTreeMap<String, AccountType>,
+}
+
+/// `decoded`, as a save writes it: its magnitudes signed by the main
+/// journal's declared types (the scenario's own winning) and its rules'
+/// forms rendered ([`DecodedScenario::signed`]), then plan 28's upgrade — a
+/// pre-plan-28 group that does not balance is written with the default
+/// counter-account the engine already books it to, so the file becomes plain
+/// balanced hledger and no number moves.
+///
+/// Blocking work (it walks the declared accounts and the history), so it is
+/// called inside `compute`.
+fn writable(
+    decoded: DecodedScenario,
+    journal: &ledgeline_core::Journal,
+) -> Result<Writable, AppError> {
+    let declared = declared_types(&account_decls(journal));
+    let merged = scenario_account_types(&declared, &decoded.own_types);
+    let styles = JournalStyles::lent_by(journal);
+    let scenario = decoded.signed(&declared, &styles)?;
+    let history = History {
+        txns: &journal.transactions,
+        prices: &journal.prices,
+    };
+    let cutoff = forecast_cutoff(
+        &today_utc(),
+        latest_real_date(history.txns),
+        Interval::Monthly,
+    )?;
+    let defaults = CounterDefaults::new(
+        &history,
+        &AccountTypes::from_declared(declared.clone()),
+        &cutoff,
+        scenario.cash.as_ref(),
+        None,
+    )?;
+    Ok(Writable {
+        scenario: upgrade_legacy_counters(&scenario, &defaults),
+        declared,
+        merged,
+    })
+}
+
+/// `POST /api/projections/render`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RenderRequest {
+    /// The entry, and at most one layout item: its own. It may carry the rest
+    /// of the scenario too, which is not rendered: a step change's `line:`
+    /// value is decided over every line the body holds, as a save decides it
+    /// over the whole scenario.
+    scenario: ScenarioIn,
+    /// The entry to render: a rule's `group`, a one-off's `id`, an `=` rule's
+    /// or a comment's `key`.
+    key: String,
+}
+
+/// The answer: the entry's text, `\n` line ends, no header.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WireRenderedEntry {
+    text: String,
+}
+
+/// `POST /api/projections/render` — one entry's exact text, as a save would
+/// write it new or edited (plan 31 C15): the editor's "Writes:" preview.
+///
+/// The body is decoded and signed exactly as a save's ([`writable`]: the main
+/// journal's declared types and lent styles, the counter upgrade), then
+/// [`render_entry`] writes it through the writer's own body path and re-reads
+/// it. A refusal is the writer's own sentence, as a `400`.
+///
+/// It reads and writes NO file: no discovery, no `import_writes` lock, nothing
+/// on disk. Bounded as `run` is, plus at most one layout item.
+pub(crate) async fn render(
+    State(state): State<AppState>,
+    payload: Result<Json<RenderRequest>, JsonRejection>,
+) -> Result<Response, AppError> {
+    let request = json_body(payload)?;
+    if request.scenario.layout.len() > 1 {
+        return Err(AppError::BadRequest(format!(
+            "a render is of one entry, so its scenario may carry at most one layout item (received \
+             {})",
+            request.scenario.layout.len()
+        )));
+    }
+    let snapshot = state.snapshot();
+    let decoded = scenario_from_wire(
+        &request.scenario,
+        &JournalStyles::lent_by(&snapshot.journal),
+    )?;
+    let key = request.key;
+    let Json(body) = compute(move || {
+        let Writable {
+            scenario, merged, ..
+        } = writable(decoded, &snapshot.journal)?;
+        let text = render_entry(&scenario, &key, &merged, &snapshot.journal.commodity_styles)
+            .map_err(|error| match error {
+                SerializeError::Invalid(message) => AppError::BadRequest(message),
+                other => AppError::Internal(format!("the entry did not render correctly: {other}")),
+            })?;
+        Ok(WireRenderedEntry { text })
+    })
+    .await?;
+    Ok(no_store(body))
 }
 
 // ===========================================================================
@@ -2046,6 +2633,36 @@ fn create_scenario(
     })
 }
 
+/// `scenario` with each piece of file text it names holding the FILE's bytes
+/// for it: a client sends file text by key alone (plan 31 C8). A key the file
+/// does not hold keeps `""`, and the writer refuses it unless its origin
+/// names file text, whose bytes are then the file's anyway.
+fn with_file_text<'a>(
+    doc: &ProjectionDoc,
+    scenario: &'a Scenario,
+) -> std::borrow::Cow<'a, Scenario> {
+    if scenario.fixed.is_empty() {
+        return std::borrow::Cow::Borrowed(scenario);
+    }
+    let fixed = scenario
+        .fixed
+        .iter()
+        .map(|piece| FixedPiece {
+            key: piece.key.clone(),
+            raw: doc
+                .fixed()
+                .iter()
+                .find(|file| file.key == piece.key)
+                .map(|file| file.raw.clone())
+                .unwrap_or_default(),
+        })
+        .collect();
+    std::borrow::Cow::Owned(Scenario {
+        fixed,
+        ..scenario.clone()
+    })
+}
+
 /// The whole of an UPDATE, synchronously, on the blocking pool.
 ///
 /// Every `?` here is a decision not to write. The single pinned replace is the
@@ -2087,10 +2704,11 @@ fn update_scenario(
 
     let doc = ProjectionDoc::parse_with_styles(&text, &name, declared, inherited)
         .map_err(|error| serialize_failed(id, &error))?;
+    let scenario = with_file_text(&doc, scenario);
     // The engine's own second opinion: splice, re-parse the whole result as a
     // journal, and require the scenario to read back as the numbers asked for.
     let new_text =
-        write_scenario(&doc, scenario, &name).map_err(|error| serialize_failed(id, &error))?;
+        write_scenario(&doc, &scenario, &name).map_err(|error| serialize_failed(id, &error))?;
 
     if new_text == text {
         // A no-op writes NOTHING. Writing byte-identical content still bumps
@@ -2283,29 +2901,10 @@ pub(crate) async fn save(
         // this line did not. That is the right side to pay on: the lock
         // serializes writers to one journal directory, the runtime serializes
         // the whole application.
-        let declared = declared_types(&account_decls(&snapshot.journal));
-        let styles = JournalStyles::lent_by(&snapshot.journal);
-        let scenario = decoded.signed(&declared, &styles)?;
-        // Plan 28: a pre-plan-28 group that does not balance is written with
-        // the default counter-account the engine already books it to, so the
-        // file becomes plain balanced hledger and no number moves.
-        let history = History {
-            txns: &snapshot.journal.transactions,
-            prices: &snapshot.journal.prices,
-        };
-        let cutoff = forecast_cutoff(
-            &today_utc(),
-            latest_real_date(history.txns),
-            Interval::Monthly,
-        )?;
-        let defaults = CounterDefaults::new(
-            &history,
-            &AccountTypes::from_declared(declared.clone()),
-            &cutoff,
-            scenario.cash.as_ref(),
-            None,
-        )?;
-        let scenario = upgrade_legacy_counters(&scenario, &defaults);
+        let Writable {
+            scenario, declared, ..
+        } = writable(decoded, &snapshot.journal)?;
+        let scenario = checked_layout(scenario)?;
         // Scanned in THIS request, never cached. That is the whole of security
         // layer 2: an id resolves against a set built from `read_dir` names
         // moments ago, so a cached set would be one that no longer describes
