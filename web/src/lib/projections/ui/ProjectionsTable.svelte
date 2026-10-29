@@ -578,7 +578,7 @@
     }
 
     function addPosting(event: ScenarioEvent): void {
-        event.postings = [...event.postings, {account: "", amount: {commodity, quantity: {m: 0n, p: 2}, precision: 2}}];
+        event.postings = [...event.postings, {account: "", amount: {commodity, quantity: {m: 0n, p: 2}, precision: 2}, comment: ""}];
         onChange();
     }
 

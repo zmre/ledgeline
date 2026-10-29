@@ -20,6 +20,7 @@
 import {beforeEach, afterEach, describe, expect, it, vi} from "vitest";
 import {connectFakeEngine, FAKE_ENGINE} from "#lib/testing/fakeEngine.js";
 import {rawProjectionRun} from "#lib/testing/projectionFixture.js";
+import {decodeScenario} from "#lib/api/nativeDecode.js";
 import {scenarioStore, scenarioTableView, sameProjectionQuery, type ProjectionWindow} from "./scenarioStore.svelte";
 
 const SEED_ROUTE = "/api/projections/seed?count=12&depth=2";
@@ -47,12 +48,17 @@ const SEED_BODY = {
             counter: null,
             gains: null,
             source: "unbudgeted",
+            comment: "",
+            ruleComment: "",
         },
     ],
     events: [],
     cash: null,
     autoRules: [],
     accountTypes: {},
+    layout: [],
+    comments: [],
+    fixed: [],
 };
 
 const RUN_BODY = rawProjectionRun();
@@ -80,7 +86,7 @@ beforeEach(async () => {
     });
     // Back to a known, not-dirty state: the store is a module singleton shared
     // by every test in this file.
-    scenarioStore.adopt({name: "", created: null, updated: null, lines: [], events: [], cash: null, autoRules: []});
+    scenarioStore.adopt({name: "", created: null, updated: null, lines: [], events: [], cash: null, autoRules: [], layout: [], comments: [], fixed: []});
 });
 
 afterEach(() => {
@@ -161,8 +167,35 @@ describe("COMPONENT scenarioStore — the seed's depth", () => {
 
     it("a scenario from a FILE has no seed depth", async () => {
         await scenarioStore.ensureSeeded(FAKE_ENGINE, 23, 2);
-        scenarioStore.adopt({name: "From a file", created: null, updated: null, lines: [], events: [], cash: null, autoRules: []});
+        scenarioStore.adopt({
+            name: "From a file",
+            created: null,
+            updated: null,
+            lines: [],
+            events: [],
+            cash: null,
+            autoRules: [],
+            layout: [],
+            comments: [],
+            fixed: [],
+        });
         expect(scenarioStore.seedDepth).toBe(null);
+    });
+});
+
+describe("COMPONENT scenarioStore — disabled entries (plan 31 Phase C2)", () => {
+    it("the table is handed only the ACTIVE entries, so it can never run or save a disabled one as live", () => {
+        const decoded = decodeScenario({
+            ...SEED_BODY,
+            lines: [SEED_BODY.lines[0], {...SEED_BODY.lines[0], id: "off:0:0", group: "off:0", account: "revenues:bonus"}],
+            layout: [
+                {kind: "rule", key: "gap:expenses:housing:$", origin: null, disabled: false, attached: "", raw: ""},
+                {kind: "rule", key: "off:0", origin: 1, disabled: true, attached: "", raw: "; ~ monthly\n"},
+            ],
+        });
+        scenarioStore.adopt(decoded);
+        expect(scenarioStore.scenario.lines.map((l) => l.group)).toEqual(["gap:expenses:housing:$"]);
+        expect(scenarioStore.scenario.layout.map((item) => item.key)).toEqual(["gap:expenses:housing:$"]);
     });
 });
 
@@ -259,7 +292,18 @@ describe("COMPONENT scenarioTableView — what gates the table", () => {
     });
 
     it("`adopted` is set by a load as well as by a seed", () => {
-        scenarioStore.adopt({name: "From a file", created: null, updated: null, lines: [], events: [], cash: null, autoRules: []});
+        scenarioStore.adopt({
+            name: "From a file",
+            created: null,
+            updated: null,
+            lines: [],
+            events: [],
+            cash: null,
+            autoRules: [],
+            layout: [],
+            comments: [],
+            fixed: [],
+        });
         expect(scenarioStore.adopted).toBe(true);
     });
 });

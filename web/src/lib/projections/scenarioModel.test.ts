@@ -3,7 +3,10 @@ import {dec} from "#lib/domain/money.js";
 import {NO_ACCOUNT_CLASSES, type AccountClasses} from "#lib/domain/accountClass.js";
 import {classesOf} from "#lib/domain/accountClassFixtures.js";
 import {
+    activeScenario,
     blankAutoRule,
+    blankEvent,
+    renderBody,
     ruleSample,
     accountOrNull,
     blankAssetLine,
@@ -73,6 +76,8 @@ function line(overrides: Partial<ScenarioLine> = {}): ScenarioLine {
         counter: null,
         gains: null,
         source: "journal",
+        comment: "",
+        ruleComment: "",
         ...overrides,
     };
 }
@@ -504,22 +509,25 @@ describe("UNIT scenarioModel — putting a scenario on the wire", () => {
                     id: "e1",
                     date: "2027-03-01",
                     description: "raise",
-                    postings: [{account: "assets:cash", amount: {commodity: "$", quantity: dec(200, 0), precision: 0}}],
+                    postings: [{account: "assets:cash", amount: {commodity: "$", quantity: dec(200, 0), precision: 0}, comment: ""}],
                     counter: null,
+                    comment: "",
                 },
                 {
                     id: "e2",
                     date: "2027-03-01",
                     description: "half typed",
-                    postings: [{account: "", amount: {commodity: "$", quantity: dec(0, 0), precision: 0}}],
+                    postings: [{account: "", amount: {commodity: "$", quantity: dec(0, 0), precision: 0}, comment: ""}],
                     counter: null,
+                    comment: "",
                 },
                 {
                     id: "e3",
                     date: "",
                     description: "no date",
-                    postings: [{account: "assets:cash", amount: {commodity: "$", quantity: dec(1, 0), precision: 0}}],
+                    postings: [{account: "assets:cash", amount: {commodity: "$", quantity: dec(1, 0), precision: 0}, comment: ""}],
                     counter: null,
+                    comment: "",
                 },
             ],
         };
@@ -564,10 +572,20 @@ describe("UNIT scenarioModel — cloning", () => {
                     date: "2027-03-01",
                     description: "raise",
                     postings: Object.freeze([
-                        Object.freeze({account: "assets:cash", amount: Object.freeze({commodity: "$", quantity: Object.freeze(dec(200, 0)), precision: 0})}),
+                        Object.freeze({
+                            account: "assets:cash",
+                            amount: Object.freeze({commodity: "$", quantity: Object.freeze(dec(200, 0)), precision: 0}),
+                            comment: "a",
+                        }),
                     ]),
+                    comment: "the raise",
                 }),
             ]),
+            layout: Object.freeze([
+                Object.freeze({kind: "rule" as const, key: "rule:0", origin: 0, disabled: false, attached: "; rent\n", raw: "; rent\n~ monthly\n"}),
+            ]),
+            comments: Object.freeze([Object.freeze({key: "comment:0", style: "note" as const, raw: "; hi\n", text: "hi"})]),
+            fixed: Object.freeze([Object.freeze({key: "fixed:0", raw: "account x\n"})]),
             autoRules: Object.freeze([
                 Object.freeze({raw: "= expenses:rent\n    (budget:rent)  *-1\n", query: "expenses:rent", unsupported: null, form: null, block: 0}),
                 Object.freeze({
@@ -604,6 +622,10 @@ describe("UNIT scenarioModel — cloning", () => {
             clone.autoRules[1]!.form,
             clone.autoRules[1]!.form!.postings[0],
             clone.autoRules[1]!.form!.postings[0]!.percent,
+            clone.layout,
+            clone.layout[0],
+            clone.comments[0],
+            clone.fixed[0],
         ]) {
             expect(Object.isFrozen(target)).toBe(false);
         }
@@ -758,7 +780,7 @@ describe("UNIT scenarioModel — counter-accounts, one per rule (plan 28)", () =
         const wire = scenarioToWire({
             ...scenario([line({counter: " assets:checking ", gains: ""})]),
             cash: "  ",
-            events: [{id: "e", date: "2027-01-01", description: "", postings: [], counter: ""}],
+            events: [{id: "e", date: "2027-01-01", description: "", postings: [], counter: "", comment: ""}],
         });
         expect(wire.lines[0].counter).toBe("assets:checking");
         expect(wire.lines[0].gains).toBeNull();
@@ -851,7 +873,7 @@ describe("UNIT scenarioModel — moving rows", () => {
     });
 
     it("events reorder freely", () => {
-        const ev = (id: string) => ({id, date: "2027-01-01", description: id, postings: [], counter: null});
+        const ev = (id: string) => ({id, date: "2027-01-01", description: id, postings: [], counter: null, comment: ""});
         const events = [ev("x"), ev("y"), ev("z")];
         expect(moveEvent(events, "z", -1).map((e) => e.id)).toEqual(["x", "z", "y"]);
         expect(moveEvent(events, "x", -1).map((e) => e.id)).toEqual(["x", "y", "z"]);
@@ -904,15 +926,17 @@ describe("UNIT scenarioModel — automatic posting rules (plan 30 Phase 4)", () 
         unsupported: null,
         form: form(),
         block,
+        key: `auto:${block}`,
     });
 
     it("sends an untouched rule as its text and an edited or new one as its form, each with its block", () => {
         const locked = {...read(2), form: null, edited: true};
         const wire = scenarioToWire({...emptyScenario(), autoRules: [read(0), {...read(1), edited: true}, blankAutoRule("assets:cash"), locked]});
         expect(wire.autoRules).toEqual([
-            {block: 0, raw: read(0).raw},
+            {block: 0, key: "auto:0", raw: read(0).raw},
             {
                 block: 1,
+                key: "auto:1",
                 form: {
                     matchAccount: "expenses:rent",
                     extraQuery: "",
@@ -924,6 +948,7 @@ describe("UNIT scenarioModel — automatic posting rules (plan 30 Phase 4)", () 
             },
             {
                 block: null,
+                key: "",
                 form: {
                     matchAccount: "",
                     extraQuery: "",
@@ -934,7 +959,7 @@ describe("UNIT scenarioModel — automatic posting rules (plan 30 Phase 4)", () 
                 },
             },
             // A rule the form cannot state always goes back as its text.
-            {block: 2, raw: locked.raw},
+            {block: 2, key: "auto:2", raw: locked.raw},
         ]);
     });
 
@@ -953,7 +978,8 @@ describe("UNIT scenarioModel — automatic posting rules (plan 30 Phase 4)", () 
                     date: "2027-01-01",
                     description: "",
                     counter: null,
-                    postings: [{account: "income:bonus", amount: {commodity: "$", quantity: dec(500, 0), precision: 0}}],
+                    comment: "",
+                    postings: [{account: "income:bonus", amount: {commodity: "$", quantity: dec(500, 0), precision: 0}, comment: ""}],
                 },
             ],
         };
@@ -961,5 +987,74 @@ describe("UNIT scenarioModel — automatic posting rules (plan 30 Phase 4)", () 
         expect(ruleSample(withEvent, "revenue:sale")).toBeNull();
         expect(ruleSample(withEvent, "income")?.quantity).toEqual(dec(500, 0));
         expect(ruleSample(withEvent, " ")).toBeNull();
+    });
+});
+
+describe("UNIT scenarioModel — the file's pieces on the wire (plan 31 Phase C2)", () => {
+    /** A scenario as a file serves it: a live rule, a disabled one, a disabled one-off and `=` rule, a note. */
+    function served(): Scenario {
+        const event = {...blankEvent("off:1", "2027-03-01", "$"), comment: "maybe"};
+        return {
+            ...emptyScenario(),
+            lines: [line({comment: "owner: alex", ruleComment: "employer: acme"}), line({id: "off:0:0", group: "off:0", account: "revenues:bonus"})],
+            events: [{...event, postings: [{...event.postings[0], account: "expenses:legal", comment: "retainer"}]}],
+            autoRules: [
+                {raw: "= expenses:rent\n    (x)  *0.1\n", query: "expenses:rent", unsupported: null, form: null, block: null, key: "auto:off:0"},
+                {raw: "= expenses:rent\n    (y)  *0.2\n", query: "expenses:rent", unsupported: null, form: null, block: 0, key: "auto:0"},
+            ],
+            layout: [
+                {kind: "comment", key: "comment:0", origin: 0, disabled: false, attached: "", raw: "; a note\n"},
+                {kind: "rule", key: "rule:0", origin: 1, disabled: false, attached: "; rent\n", raw: "; rent\n~ monthly\n"},
+                {kind: "rule", key: "off:0", origin: 2, disabled: true, attached: "", raw: "; ~ monthly\n"},
+                {kind: "event", key: "off:1", origin: 3, disabled: true, attached: "", raw: "; ~ 2027-03-01\n"},
+                {kind: "auto", key: "auto:off:0", origin: 4, disabled: true, attached: "", raw: "; = expenses:rent\n"},
+                {kind: "auto", key: "auto:0", origin: 5, disabled: false, attached: "", raw: "= expenses:rent\n"},
+            ],
+            comments: [{key: "comment:0", style: "note", raw: "; a note\n", text: "a note"}],
+            fixed: [],
+        };
+    }
+
+    it("the active scenario drops every disabled entry and its layout item, as the engine's does", () => {
+        const active = activeScenario(served());
+        expect(active.lines.map((l) => l.group)).toEqual(["rule:0"]);
+        expect(active.events).toEqual([]);
+        expect(active.autoRules.map((r) => r.key)).toEqual(["auto:0"]);
+        expect(active.layout.map((item) => item.key)).toEqual(["comment:0", "rule:0", "auto:0"]);
+        expect(active.comments).toEqual(served().comments);
+        // Nothing disabled: the very same scenario.
+        expect(activeScenario(active)).toBe(active);
+    });
+
+    it("a run never carries a disabled entry: the body has no layout to say it is off", () => {
+        const body = runBody(served(), {interval: "monthly", count: 3, lookback: 0, depth: 2});
+        expect(body.scenario.lines.map((l) => l.group)).toEqual(["rule:0"]);
+        expect(body.scenario.events).toEqual([]);
+        expect(body.scenario.autoRules.map((r) => r.key)).toEqual(["auto:0"]);
+        expect(projectable(served()).layout.some((item) => item.disabled)).toBe(false);
+    });
+
+    it("a save echoes every comment inside a block, and each rule's key, but no layout yet", () => {
+        const wire = scenarioToWire(cloneScenario(served()));
+        expect(wire.lines[0]).toMatchObject({comment: "owner: alex", ruleComment: "employer: acme"});
+        expect(wire.events[0]).toMatchObject({comment: "maybe"});
+        expect(wire.events[0].postings[0].comment).toBe("retainer");
+        expect(wire.autoRules.map((rule) => rule.key)).toEqual(["auto:off:0", "auto:0"]);
+        // The engine derives the layout, keeping every piece where the file has it.
+        expect("layout" in wire).toBe(false);
+        expect("comments" in wire).toBe(false);
+        expect("fixed" in wire).toBe(false);
+    });
+
+    it("a render body is the whole scenario with ONE layout item, the entry's own", () => {
+        const body = renderBody(served(), "rule:0");
+        expect(body.key).toBe("rule:0");
+        expect(body.scenario.layout).toEqual([{kind: "rule", key: "rule:0", origin: 1, disabled: false, attached: "; rent\n"}]);
+        expect(body.scenario.lines).toHaveLength(2);
+        expect(body.scenario.comments).toEqual([{key: "comment:0", raw: "; a note\n"}]);
+        // A draft's item overrides the scenario's; an entry with none sends none.
+        const draft = {kind: "rule", key: "rule:0", origin: 1, disabled: true, attachedText: "Rent."};
+        expect(renderBody(served(), "rule:0", draft).scenario.layout).toEqual([draft]);
+        expect(renderBody(emptyScenario(), "new").scenario.layout).toEqual([]);
     });
 });
