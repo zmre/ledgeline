@@ -422,6 +422,27 @@ impl WireScenario {
                 .collect(),
         }
     }
+
+    /// The scenario file `text` (named `source_name`, displayed as
+    /// `fallback_name` when it has no `; projection:` marker), read under the
+    /// main journal's `declared` account types and `inherited` commodity
+    /// styles, as served.
+    fn read(
+        text: &str,
+        source_name: &str,
+        fallback_name: &str,
+        declared: &BTreeMap<String, AccountType>,
+        inherited: &[(Commodity, AmountStyle)],
+    ) -> Result<Self, SerializeError> {
+        let (scenario, own) = scenario_and_own_types_from_text_with_styles(
+            text,
+            source_name,
+            fallback_name,
+            declared,
+            inherited,
+        )?;
+        Ok(Self::new(&scenario, declared, &own))
+    }
 }
 
 /// An opening balance and each bucket's closing balance.
@@ -1914,20 +1935,14 @@ fn open_file(
     // The FALLBACK display name is the filename's label, so a file with no
     // `; projection:` marker still opens with a name — "a file without it still
     // loads, and takes its name from its filename".
-    let (scenario, own) = scenario_and_own_types_from_text_with_styles(
-        &text,
-        &name,
-        &found.label,
-        declared,
-        inherited,
-    )
-    .map_err(|error| unreadable_file(id, &error))?;
+    let scenario = WireScenario::read(&text, &name, &found.label, declared, inherited)
+        .map_err(|error| unreadable_file(id, &error))?;
     Ok(WireScenarioFile {
         id: id.to_string(),
         label: found.label.clone(),
         revision: fingerprint.token(),
         writable,
-        scenario: WireScenario::new(&scenario, declared, &own),
+        scenario,
     })
 }
 
@@ -2001,9 +2016,8 @@ fn create_scenario(
         })?;
 
     let label = label_for(id);
-    let (written, own) =
-        scenario_and_own_types_from_text_with_styles(&text, &name, &label, declared, inherited)
-            .map_err(|error| serialize_failed(id, &error))?;
+    let written = WireScenario::read(&text, &name, &label, declared, inherited)
+        .map_err(|error| serialize_failed(id, &error))?;
     // The revision comes from what we WROTE, never from a re-read: a re-read
     // could pick up somebody else's write and hand this client a token for
     // bytes it has never seen, which is the precise way to make the next save
@@ -2012,7 +2026,7 @@ fn create_scenario(
         id: id.to_string(),
         revision: Fingerprint::of_bytes(text.as_bytes()).token(),
         writable: true,
-        scenario: WireScenario::new(&written, declared, &own),
+        scenario: written,
         label,
     })
 }
@@ -2076,20 +2090,14 @@ fn update_scenario(
         // the more honest answer: the revision returned is the one that was
         // just checked against `revision`, over the very bytes this scenario
         // was rendered from.
-        let (unchanged, own) = scenario_and_own_types_from_text_with_styles(
-            &text,
-            &name,
-            &found.label,
-            declared,
-            inherited,
-        )
-        .map_err(|error| serialize_failed(id, &error))?;
+        let unchanged = WireScenario::read(&text, &name, &found.label, declared, inherited)
+            .map_err(|error| serialize_failed(id, &error))?;
         return Ok(WireScenarioFile {
             id: id.to_string(),
             label: found.label.clone(),
             revision: fingerprint.token(),
             writable: true,
-            scenario: WireScenario::new(&unchanged, declared, &own),
+            scenario: unchanged,
         });
     }
 
@@ -2117,20 +2125,14 @@ fn update_scenario(
 
     // Deliberately NO `state.reopen_editor()`: it re-opens the main journal,
     // which a file the main journal does not include cannot have changed.
-    let (written, own) = scenario_and_own_types_from_text_with_styles(
-        &new_text,
-        &name,
-        &found.label,
-        declared,
-        inherited,
-    )
-    .map_err(|error| serialize_failed(id, &error))?;
+    let written = WireScenario::read(&new_text, &name, &found.label, declared, inherited)
+        .map_err(|error| serialize_failed(id, &error))?;
     Ok(WireScenarioFile {
         id: id.to_string(),
         label: found.label.clone(),
         revision: Fingerprint::of_bytes(new_text.as_bytes()).token(),
         writable: true,
-        scenario: WireScenario::new(&written, declared, &own),
+        scenario: written,
     })
 }
 
