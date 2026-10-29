@@ -47,16 +47,22 @@
 //! * `#` starts a comment, anywhere on a line. **`;` does not** — a leading `;`
 //!   is read as the command word, which hijacks the invocation exactly as a bare
 //!   `balance` would.
-//! * **The FIRST token of the general section, if it does not begin with a dash,
-//!   replaces the command.** Only the first: a bare word appearing after any
+//! * **The FIRST token of the general section (the one hledger reads, below),
+//!   if it does not begin with a dash, replaces the command.** Only the first: a bare word appearing after any
 //!   option is passed through as an ordinary argument and hijacks nothing (both
 //!   verified). A hijacked config file breaks every hledger command the user runs,
 //!   so none of its options reach anything — which is why [`alias_arguments`]
 //!   answers with none, and [`hijacks_command`] exists to say why.
-//! * `[name]` opens a section. Everything before the first heading is the
-//!   *general* section and applies to every command; a `[name]` section applies
-//!   only to that command. An import therefore sees general + `[import]`, and
-//!   [`Section::applies_to`] is that rule.
+//! * `[name]` opens a section. The *general* section applies to every command;
+//!   a `[name]` section applies only to that command. An import therefore sees
+//!   general + `[import]`, and [`Section::applies_to`] is that rule.
+//! * **The general section is the last `[general]` heading, if there is one;
+//!   otherwise it is everything before the first heading.** An explicit
+//!   `[general]` discards the options above the first heading, so
+//!   `--auto\n[general]\n--depth 1` means depth 1 and no `--auto`.
+//!   `[General]` is an ordinary command section. The manual only says "top
+//!   (general) section"; this rule was found by testing the binary, and
+//!   `InForce` is the one place it lives.
 //! * The general section's options are applied **before** a command section's,
 //!   and `--alias` options compose in order, so the first one to match an account
 //!   wins.
@@ -134,15 +140,29 @@ pub const MAX_CONF_ALIASES: usize = 200;
 // ---------------------------------------------------------------------------
 
 /// Which part of a config file an option was declared in.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Section {
-    /// Before the first `[heading]`. Applies to every command.
+    /// Applies to every command: the LAST `[general]` section, or the lines
+    /// before the first heading when there is no `[general]` (module docs).
     General,
     /// Inside `[name]`. Applies to `name` only.
     Command(String),
 }
 
+/// The heading that opens the general section explicitly, spelled exactly:
+/// `[General]` is an ordinary command section (verified).
+const GENERAL_HEADING: &str = "general";
+
 impl Section {
+    /// The section a `[name]` heading opens.
+    fn of_heading(name: String) -> Self {
+        if name == GENERAL_HEADING {
+            Self::General
+        } else {
+            Self::Command(name)
+        }
+    }
+
     /// Does an option in this section reach `command`?
     #[must_use]
     pub fn applies_to(&self, command: &str) -> bool {
@@ -164,8 +184,12 @@ pub struct ConfOption {
     pub value: Option<String>,
 }
 
-/// Every option a config file declares, in file order, each tagged with its
-/// section.
+/// Every option hledger reads from a config file, in file order, each tagged
+/// with its section.
+///
+/// Only the sections hledger reads (`InForce`): the options above an explicit
+/// `[general]`, and those under any heading that appears again later, are not
+/// here, because hledger discards them.
 ///
 /// Deliberately tolerant: a line this module does not understand contributes
 /// nothing and stops nothing. The result is used for exactly one thing — finding
@@ -173,18 +197,12 @@ pub struct ConfOption {
 /// opinion about would turn an unrelated setting into a broken import.
 #[must_use]
 pub fn parse(text: &str) -> Vec<ConfOption> {
-    text.lines()
-        .scan(Section::General, |section, line| {
-            // `#` comments run to end of line, wherever they start. `;` does NOT
-            // start one — see the module docs.
-            let content = line.split('#').next().unwrap_or_default().trim();
-            if let Some(name) = heading(content) {
-                *section = Section::Command(name);
-                return Some(Vec::new());
-            }
-            Some(options(content, section))
-        })
-        .flatten()
+    let lines = scan(text);
+    let in_force = InForce::of(&lines);
+    lines
+        .iter()
+        .filter(|line| !line.heading && in_force.includes(&line.section))
+        .flat_map(|line| options(line.body, &line.section.section))
         .collect()
 }
 
@@ -240,7 +258,9 @@ fn options(line: &str, section: &Section) -> Vec<ConfOption> {
 /// section does not begin with a dash (eg: print), it is treated as the command
 /// argument (overriding any argument on the command line)." Verified, including
 /// the narrowness of it — a bare word after any option is an ordinary argument
-/// and overrides nothing.
+/// and overrides nothing — and including the part the manual leaves out: "the
+/// general section" is the one hledger reads, so `[general]\nprint` hijacks and
+/// a `print` above an explicit `[general]` does not.
 ///
 /// A config in this state makes **every** hledger command fail or run as
 /// something else, so its options never reach anything. Worth naming rather than
@@ -248,31 +268,15 @@ fn options(line: &str, section: &Section) -> Vec<ConfOption> {
 /// is owed the reason.
 #[must_use]
 pub fn hijacks_command(text: &str) -> Option<String> {
-    parse_tokens(text)
-        .into_iter()
-        .find(|(section, _)| *section == Section::General)
-        .map(|(_, token)| token)
+    let lines = scan(text);
+    let general = InForce::of(&lines).section(&Section::General);
+    lines
+        .iter()
+        .filter(|line| !line.heading && Some(&line.section) == general.as_ref())
+        .flat_map(|line| line.body.split_whitespace())
+        .next()
         .filter(|token| !token.starts_with('-'))
-}
-
-/// Every whitespace-separated token, decommented, tagged with its section.
-fn parse_tokens(text: &str) -> Vec<(Section, String)> {
-    text.lines()
-        .scan(Section::General, |section, line| {
-            let content = line.split('#').next().unwrap_or_default().trim();
-            if let Some(name) = heading(content) {
-                *section = Section::Command(name);
-                return Some(Vec::new());
-            }
-            Some(
-                content
-                    .split_whitespace()
-                    .map(|token| (section.clone(), token.to_string()))
-                    .collect::<Vec<_>>(),
-            )
-        })
-        .flatten()
-        .collect()
+        .map(str::to_string)
 }
 
 /// The `--alias` values a config file would give `command`, in the order hledger
@@ -846,7 +850,9 @@ pub fn conf_line(argument: &str) -> String {
     format!("--alias={argument}")
 }
 
-/// Where a new general-section option has to go, as a byte offset into `text`.
+/// Where a new option goes in the general section above the first heading, as
+/// a byte offset into `text` — used only when there is no `[general]` (see
+/// [`insert_line`]).
 ///
 /// **Not the end of the file**, and that distinction is load-bearing. Everything
 /// after the first `[heading]` belongs to that command's section, so a line
@@ -854,8 +860,7 @@ pub fn conf_line(argument: &str) -> String {
 /// — present, plausible, and never applied to an import. So the insertion point
 /// is immediately before the first heading, or the end of the file when there is
 /// none.
-#[must_use]
-pub fn general_section_end(text: &str) -> usize {
+fn top_section_end(text: &str) -> usize {
     let mut offset = 0;
     for line in text.split_inclusive('\n') {
         let content = line.split('#').next().unwrap_or_default().trim();
@@ -1163,15 +1168,18 @@ impl ConfSettings {
             return Self::default();
         }
         let lines = scan(text);
-        let last = last_occurrences(&lines);
+        let in_force = InForce::of(&lines);
         let mut settings = Self::default();
         for found in occurrences(text, &lines) {
             let at = &lines[found.line].section;
+            if !in_force.includes(at) {
+                continue;
+            }
             let command = match &at.section {
                 Section::General => None,
                 Section::Command(name) => match DepthCommand::from_name(name) {
-                    Some(command) if last.get(name) == Some(&at.occurrence) => Some(command),
-                    _ => continue,
+                    Some(command) => Some(command),
+                    None => continue,
                 },
             };
             match (&found.what, command) {
@@ -1209,7 +1217,7 @@ impl ConfSettings {
                 });
             }
             if let Some(command) = DepthCommand::from_name(name)
-                && last.get(name).is_some_and(|count| *count > 1)
+                && in_force.headings(&line.section.section) > 1
             {
                 settings
                     .warnings
@@ -1380,11 +1388,13 @@ impl std::fmt::Display for ConfWriteError {
 impl std::error::Error for ConfWriteError {}
 
 /// `text` with `option` set in `section`: the last occurrence of its slot
-/// there rewritten in place, or a new line inserted — at the end of the general
-/// section (never at EOF, see [`general_section_end`]), after the last option of
-/// a command section, or under a new `[command]` heading appended at EOF.
+/// there rewritten in place, or a new line inserted — after the section's last
+/// option (for a general section above the first heading with none yet, just
+/// before that heading, never at EOF), or under a new `[command]` heading
+/// appended at EOF.
 ///
-/// A command section means its LAST heading, the one hledger reads. Every byte
+/// A section means the one hledger reads: a command's LAST heading, and the
+/// last `[general]` or, without one, the lines above the first heading. Every byte
 /// outside the rewritten or inserted run comes out unchanged — comments,
 /// unknown options, blank lines, CRLF line endings — and a value that is
 /// already in force returns `text` byte-identical, so a caller can compare and
@@ -1470,8 +1480,11 @@ fn guard(text: &str, section: &Section) -> Result<(), ConfWriteError> {
     if let Some(word) = hijacks_command(text) {
         return Err(ConfWriteError::Hijacked(word));
     }
+    // `general` too: a `[general]` written as a command section would become
+    // the general section and discard the real one.
     if let Section::Command(name) = section
         && (name.is_empty()
+            || name == GENERAL_HEADING
             || !name
                 .chars()
                 .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'))
@@ -1481,48 +1494,29 @@ fn guard(text: &str, section: &Section) -> Result<(), ConfWriteError> {
     Ok(())
 }
 
-/// The options found in `section` as hledger reads it: the general section, or
-/// the last heading of a command's name.
+/// The options found in `section` as hledger reads it (`InForce`).
 fn in_section(text: &str, lines: &[Line<'_>], section: &Section) -> Vec<Occurrence> {
-    let target = target_of(lines, section);
+    let target = InForce::of(lines).section(section);
     occurrences(text, lines)
         .into_iter()
         .filter(|found| Some(&lines[found.line].section) == target.as_ref())
         .collect()
 }
 
-fn target_of(lines: &[Line<'_>], section: &Section) -> Option<SectionAt> {
-    match section {
-        Section::General => Some(SectionAt {
-            section: Section::General,
-            occurrence: 0,
-        }),
-        Section::Command(name) => last_occurrences(lines)
-            .get(name)
-            .map(|occurrence| SectionAt {
-                section: section.clone(),
-                occurrence: *occurrence,
-            }),
-    }
-}
-
 /// `text` with `option_line` inserted into `section` (see [`with_option`]).
 fn insert_line(text: &str, lines: &[Line<'_>], section: &Section, option_line: &str) -> String {
     let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
-    let at = match (section, target_of(lines, section)) {
-        // After the general section's last option, so a new one joins its
-        // peers rather than the blank line before the first heading; with no
-        // option yet, just before that heading (never at EOF — see
-        // `general_section_end`).
-        (Section::General, Some(target)) => lines
-            .iter()
-            .rfind(|line| line.section == target && !line.body.trim().is_empty())
-            .map_or_else(|| general_section_end(text), |line| line.end),
-        (Section::General, None) => general_section_end(text),
-        (Section::Command(_), Some(target)) => lines
+    let at = match (section, InForce::of(lines).section(section)) {
+        // After the section's last option, so a new one joins its peers rather
+        // than the blank line before the next heading; with no option yet,
+        // right under its heading. Only the general section above the first
+        // heading has no heading of its own: there, with no option yet, just
+        // before the first heading (never at EOF — see `top_section_end`).
+        (_, Some(target)) => lines
             .iter()
             .rfind(|line| line.section == target && (line.heading || !line.body.trim().is_empty()))
-            .map_or(text.len(), |line| line.end),
+            .map_or_else(|| top_section_end(text), |line| line.end),
+        (Section::General, None) => top_section_end(text),
         (Section::Command(name), None) => {
             let mut out = text.to_string();
             if !out.is_empty() && !out.ends_with('\n') {
@@ -1544,7 +1538,9 @@ fn insert_line(text: &str, lines: &[Line<'_>], section: &Section, option_line: &
 }
 
 /// Which heading a line sits under: the section, and which occurrence of that
-/// heading (1 for the first `[balance]`, 2 for a second …; 0 for general).
+/// heading (1 for the first `[balance]`, 2 for a second …). The general
+/// section's lines before any heading are its occurrence 0, so a `[general]`
+/// heading is its occurrence 1.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SectionAt {
     section: Section,
@@ -1566,7 +1562,7 @@ struct Line<'a> {
 }
 
 fn scan(text: &str) -> Vec<Line<'_>> {
-    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut seen: std::collections::HashMap<Section, usize> = std::collections::HashMap::new();
     let mut current = SectionAt {
         section: Section::General,
         occurrence: 0,
@@ -1581,10 +1577,11 @@ fn scan(text: &str) -> Vec<Line<'_>> {
             let body = raw.split('#').next().unwrap_or_default();
             let opened = heading(body.trim());
             if let Some(name) = &opened {
-                let count = seen.entry(name.clone()).or_insert(0);
+                let section = Section::of_heading(name.clone());
+                let count = seen.entry(section.clone()).or_insert(0);
                 *count += 1;
                 current = SectionAt {
-                    section: Section::Command(name.clone()),
+                    section,
                     occurrence: *count,
                 };
             }
@@ -1599,17 +1596,49 @@ fn scan(text: &str) -> Vec<Line<'_>> {
         .collect()
 }
 
-/// How many times each heading appears, which is also the occurrence number
-/// of its last one — the one hledger reads.
-fn last_occurrences(lines: &[Line<'_>]) -> std::collections::HashMap<String, usize> {
-    lines
-        .iter()
-        .filter(|line| line.heading)
-        .filter_map(|line| match &line.section.section {
-            Section::Command(name) => Some((name.clone(), line.section.occurrence)),
-            Section::General => None,
+/// Which occurrence of each section hledger reads — the one place that rule
+/// lives. Verified against hledger 1.52:
+///
+/// * of several headings of one name, only the **last** is read;
+/// * the general section is the last `[general]`, and the lines above the
+///   first heading are read as the general section **only when there is no
+///   `[general]`** (occurrence 0, see [`SectionAt`]).
+struct InForce {
+    /// How many times each heading appears, which is also the occurrence
+    /// number of its last one.
+    headings: std::collections::HashMap<Section, usize>,
+}
+
+impl InForce {
+    fn of(lines: &[Line<'_>]) -> Self {
+        Self {
+            headings: lines
+                .iter()
+                .filter(|line| line.heading)
+                .map(|line| (line.section.section.clone(), line.section.occurrence))
+                .collect(),
+        }
+    }
+
+    /// How many `[heading]`s open `section`.
+    fn headings(&self, section: &Section) -> usize {
+        self.headings.get(section).copied().unwrap_or(0)
+    }
+
+    /// The occurrence of `section` hledger reads; `None` for a command section
+    /// the file has no heading for. Always `Some` for the general section.
+    fn section(&self, section: &Section) -> Option<SectionAt> {
+        let occurrence = self.headings(section);
+        (occurrence > 0 || *section == Section::General).then(|| SectionAt {
+            section: section.clone(),
+            occurrence,
         })
-        .collect()
+    }
+
+    /// Does hledger read the lines under `at`?
+    fn includes(&self, at: &SectionAt) -> bool {
+        self.section(&at.section).as_ref() == Some(at)
+    }
 }
 
 /// An option this module manages, as found in the text.
@@ -2177,6 +2206,114 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // An explicit `[general]` heading. Every layout below was run through
+    // `hledger 1.52 --conf FILE -f J balance` over a journal with one `=` rule,
+    // and the expectation is what hledger did.
+    // -----------------------------------------------------------------------
+
+    /// `(auto, plain general depth)` as hledger applies them.
+    fn general_settings(text: &str) -> (bool, Option<u32>) {
+        let settings = ConfSettings::read(text);
+        (settings.auto, settings.general.all)
+    }
+
+    #[test]
+    fn an_explicit_general_heading_is_the_general_section() {
+        // hledger: the `=` rule's postings appear.
+        assert_eq!(general_settings("[general]\n--auto\n"), (true, None));
+        // Its heading is trimmed like any other.
+        assert_eq!(general_settings("[ general ]\n--auto\n"), (true, None));
+        // A command section after it does not end it for good: it is the
+        // `[general]` heading's own lines that count.
+        assert_eq!(
+            general_settings("[general]\n--auto\n[balance]\n--depth 2\n"),
+            (true, None)
+        );
+    }
+
+    #[test]
+    fn an_explicit_general_heading_discards_the_options_above_it() {
+        // hledger: depth 1 and NO generated postings (assets 100, not 200).
+        assert_eq!(
+            general_settings("--auto\n[general]\n--depth 1\n"),
+            (false, Some(1))
+        );
+        // The exact reverse: postings, and no depth limit.
+        assert_eq!(
+            general_settings("--depth 1\n[general]\n--auto\n"),
+            (true, None)
+        );
+        // Even an empty `[general]` discards them.
+        assert_eq!(general_settings("--auto\n[general]\n"), (false, None));
+        // Without one, the top of the file is the general section, as before.
+        assert_eq!(general_settings("--auto\n--depth 1\n"), (true, Some(1)));
+    }
+
+    #[test]
+    fn of_several_general_headings_only_the_last_is_read() {
+        assert_eq!(
+            general_settings("[general]\n--auto\n[general]\n--depth 1\n"),
+            (false, Some(1))
+        );
+        // Unlike a report section, hledger says nothing about a duplicate
+        // `[general]`, and neither does this reader.
+        assert!(
+            ConfSettings::read("[general]\n--auto\n[general]\n")
+                .warnings
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_general_heading_in_another_case_is_an_ordinary_command_section() {
+        // `[General]` is a section for a command named `General`, which never
+        // runs: hledger applies the depth above it and not the `--auto` in it.
+        assert_eq!(
+            general_settings("--depth 1\n[General]\n--auto\n"),
+            (false, Some(1))
+        );
+    }
+
+    #[test]
+    fn the_first_word_of_an_explicit_general_section_hijacks() {
+        // hledger --debug=1: "using command name argument from config file:
+        // \"print\"", for all three.
+        assert_eq!(
+            hijacks_command("[general]\nprint\n").as_deref(),
+            Some("print")
+        );
+        assert_eq!(
+            hijacks_command("--auto\n[general]\nprint\n").as_deref(),
+            Some("print")
+        );
+        assert_eq!(
+            ConfSettings::read("[general]\nprint\n--auto\n"),
+            ConfSettings::default()
+        );
+        // And a bare word in the DISCARDED top section hijacks nothing: hledger
+        // runs the command typed, with `--auto`.
+        assert_eq!(hijacks_command("print\n[general]\n--auto\n"), None);
+        assert_eq!(general_settings("print\n[general]\n--auto\n"), (true, None));
+    }
+
+    #[test]
+    fn aliases_come_from_the_sections_hledger_reads() {
+        // hledger balance: `income:GEN`, and `assets:bank:checking` unrenamed.
+        assert_eq!(
+            alias_arguments("--alias=a=TOP\n[general]\n--alias=b=GEN\n", "balance"),
+            vec!["b=GEN"]
+        );
+        // hledger balance: only the last `[balance]`'s alias renames anything.
+        assert_eq!(
+            alias_arguments(
+                "[balance]\n--alias=a=FIRST\n[balance]\n--alias=b=LAST\n",
+                "balance"
+            ),
+            vec!["b=LAST"]
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Writing
     // -----------------------------------------------------------------------
 
@@ -2386,6 +2523,95 @@ mod tests {
             with_option("", &command("Balance"), &ManagedOption::Auto),
             Err(ConfWriteError::BadSection(_))
         ));
+    }
+
+    #[test]
+    fn writes_land_in_the_explicit_general_section_hledger_reads() {
+        // Unticking `--auto` takes it out of `[general]`, where hledger reads it.
+        assert_eq!(
+            without_option("[general]\n--auto\n", &general(), &ConfSlot::Auto).unwrap(),
+            "[general]\n"
+        );
+        // Ticking puts it under the heading, never above it where hledger
+        // discards it.
+        assert_eq!(
+            with_option(
+                "[general]\n--depth 1\n\n[balance]\n",
+                &general(),
+                &ManagedOption::Auto
+            )
+            .unwrap(),
+            "[general]\n--depth 1\n--auto\n\n[balance]\n"
+        );
+        assert_eq!(
+            with_option(
+                "# mine\n[general]\n[balance]\n",
+                &general(),
+                &ManagedOption::Auto
+            )
+            .unwrap(),
+            "# mine\n[general]\n--auto\n[balance]\n"
+        );
+        // Of several `[general]` headings, the last.
+        assert_eq!(
+            with_option(
+                "[general]\n--depth 3\n[general]\n--depth 1\n",
+                &general(),
+                &ManagedOption::Depth(2)
+            )
+            .unwrap(),
+            "[general]\n--depth 3\n[general]\n--depth 2\n"
+        );
+        assert_eq!(
+            with_aliases("[general]\n--auto\n[import]\n", &["a=b".to_string()]),
+            "[general]\n--auto\n--alias=a=b\n[import]\n"
+        );
+    }
+
+    #[test]
+    fn an_option_only_above_an_explicit_general_heading_is_not_in_force() {
+        // hledger discards the top `--auto`, so it is not on: ticking adds one
+        // where hledger reads it, and unticking has nothing to remove. The
+        // discarded line is the user's and stays.
+        let text = "--auto\n[general]\n--depth 1\n";
+        assert_eq!(
+            with_option(text, &general(), &ManagedOption::Auto).unwrap(),
+            "--auto\n[general]\n--depth 1\n--auto\n"
+        );
+        assert_eq!(
+            without_option(text, &general(), &ConfSlot::Auto).unwrap(),
+            text
+        );
+    }
+
+    #[test]
+    fn a_hijack_in_an_explicit_general_section_refuses_every_write() {
+        for text in ["[general]\nprint\n", "--auto\n[general]\nprint\n"] {
+            assert_eq!(
+                with_option(text, &general(), &ManagedOption::Auto),
+                Err(ConfWriteError::Hijacked("print".to_string())),
+                "{text:?}"
+            );
+            assert_eq!(
+                without_option(text, &command("balance"), &ConfSlot::Depth),
+                Err(ConfWriteError::Hijacked("print".to_string())),
+                "{text:?}"
+            );
+        }
+        // A bare word in the discarded top section hijacks nothing.
+        assert_eq!(
+            with_option("print\n[general]\n", &general(), &ManagedOption::Auto).unwrap(),
+            "print\n[general]\n--auto\n"
+        );
+    }
+
+    #[test]
+    fn general_is_never_written_as_a_command_section() {
+        // It would open a new `[general]` at EOF and discard the real one.
+        assert_eq!(
+            with_option("--auto\n", &command("general"), &ManagedOption::Depth(1)),
+            Err(ConfWriteError::BadSection("general".to_string()))
+        );
     }
 
     #[test]
