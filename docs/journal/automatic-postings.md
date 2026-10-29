@@ -79,6 +79,8 @@ The tab also says whether `--auto` is on, and which config file says so. Change 
 
 The `^…(:|$)` query matches the account and its subaccounts, but not a sibling such as `revenue:sales2`. The balancing posting gets an explicit amount, because hledger refuses a blank one that fires twice in one transaction.
 
+Numbers are written the way your journal reads them. In a journal with `decimal-mark ,`, or a comma-style `D` or `commodity` directive, 8% is written `*0,08` and a fixed amount `1500,50 EUR`. Written with a `.`, hledger would read those as 800% and 150050 EUR.
+
 Leave **forecasts only** unticked for a rule about your recorded transactions. Ticked, the query gains `tag:_generated-transaction`, so hledger applies the rule only to `--forecast` transactions. Ledgeline doesn't forecast your main journal, so such a rule never adds anything here.
 
 Some rules can't be shown as a form: a `tag:` or `desc:` query with no account, virtual postings, posting comments, balance assertions. These open as text instead, and so does **Edit as text** on any rule. What you type is written exactly as typed.

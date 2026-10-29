@@ -1076,7 +1076,11 @@ enum DecodedRule {
 
 impl DecodedScenario {
     /// The scenario, each `entry` signed by its account's type.
-    fn signed(self, declared: &BTreeMap<String, AccountType>) -> Result<Scenario, AppError> {
+    fn signed(
+        self,
+        declared: &BTreeMap<String, AccountType>,
+        styles: &ledgeline_core::parse::JournalStyles<'_>,
+    ) -> Result<Scenario, AppError> {
         let Self {
             mut scenario,
             entries,
@@ -1091,7 +1095,7 @@ impl DecodedScenario {
                 let rule = match decoded {
                     DecodedRule::Raw(rule) => rule,
                     DecodedRule::Form(form) => {
-                        let text = render(&form, &types).map_err(|error| {
+                        let text = render(&form, &types, styles).map_err(|error| {
                             AppError::BadRequest(format!("an auto rule cannot be written: {error}"))
                         })?;
                         rule_from_text(&text)?
@@ -1315,7 +1319,8 @@ pub(crate) async fn run(
         // changes.
         let cache = &snapshot.projections;
         let facts = cache.facts(journal)?;
-        let scenario = decoded.signed(&facts.shape().declared)?;
+        let styles = ledgeline_core::parse::JournalStyles::lent_by(journal);
+        let scenario = decoded.signed(&facts.shape().declared, &styles)?;
         let key = facts.key(&window.end, window.interval, lookback, value_in)?;
         let real = cache.side(journal, &facts, &key)?;
         // ONE expansion serves every reading: the cash series and runway are
@@ -2180,7 +2185,8 @@ pub(crate) async fn save(
         // serializes writers to one journal directory, the runtime serializes
         // the whole application.
         let declared = declared_types(&account_decls(&snapshot.journal));
-        let scenario = decoded.signed(&declared)?;
+        let styles = ledgeline_core::parse::JournalStyles::lent_by(&snapshot.journal);
+        let scenario = decoded.signed(&declared, &styles)?;
         // Plan 28: a pre-plan-28 group that does not balance is written with
         // the default counter-account the engine already books it to, so the
         // file becomes plain balanced hledger and no number moves.

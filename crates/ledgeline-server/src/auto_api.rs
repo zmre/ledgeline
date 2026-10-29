@@ -430,15 +430,18 @@ fn save_rule(state: &AppState, request: &SaveRule) -> Result<WireAutoRules, AppE
     let mine = rules_of(&current, &key);
     let before: Vec<String> = mine.iter().map(|rule| rule.raw.clone()).collect();
     let types = AccountTypes::from_declared(declared_types(&account_decls(&current)));
+    // A form's amounts are written as this journal reads them: `*0,1` under
+    // `decimal-mark ,`, where `*0.1` would read as 100%.
+    let styles = ledgeline_core::parse::JournalStyles::of(&current);
     let edit = match &request.change {
         ChangeIn::Add { rule } => RuleEdit::Append {
-            text: block_text(rule, &types)?,
+            text: block_text(rule, &types, &styles)?,
         },
         ChangeIn::Replace { block, was, rule } => {
             seen(&before, *block, was, id)?;
             RuleEdit::Replace {
                 block: *block,
-                text: block_text(rule, &types)?,
+                text: block_text(rule, &types, &styles)?,
             }
         }
         ChangeIn::Remove { block, was } => {
@@ -526,11 +529,15 @@ fn seen(before: &[String], block: usize, was: &str, id: &str) -> Result<(), AppE
 
 /// A rule's block text: a form rendered by the engine, or text checked to be
 /// exactly one `=` block. Either way read back through the same check.
-fn block_text(rule: &RuleIn, types: &AccountTypes) -> Result<String, AppError> {
+fn block_text(
+    rule: &RuleIn,
+    types: &AccountTypes,
+    styles: &ledgeline_core::parse::JournalStyles<'_>,
+) -> Result<String, AppError> {
     let parsed = match (&rule.raw, &rule.form) {
         (Some(raw), None) => rule_from_text(raw)?,
         (None, Some(form)) => {
-            let text = render(&form_from_wire(form)?, types).map_err(|error| {
+            let text = render(&form_from_wire(form)?, types, styles).map_err(|error| {
                 AppError::BadRequest(format!("an auto rule cannot be written: {error}"))
             })?;
             rule_from_text(&text)?

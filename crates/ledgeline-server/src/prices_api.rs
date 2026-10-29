@@ -1076,6 +1076,7 @@ mod tests {
             commodity_tags: vec![],
             prices,
             default_commodity: None,
+            decimal_mark: None,
             leading_comment: None,
         };
         let tally = price_counts(&journal);

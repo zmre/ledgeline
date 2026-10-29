@@ -746,6 +746,10 @@ pub struct Journal {
     /// commodity can prefer it over guessing from price-directive frequency
     /// (see `holdings::HoldingsScope::value_in`).
     pub default_commodity: Option<Commodity>,
+    /// The `decimal-mark` directive in force when the parse ended, if any:
+    /// the mark a bare number appended to the journal is read with (see
+    /// [`crate::parse::JournalStyles`]).
+    pub decimal_mark: Option<char>,
     /// The MAIN file's leading comment: the text of its first non-empty line
     /// when that line is a comment, with the marker and surrounding whitespace
     /// stripped. `None` when the file opens with anything else.

@@ -287,6 +287,7 @@ impl<'v> Ctx<'v> {
             commodity_tags: self.commodity_tags,
             prices: self.prices,
             default_commodity: self.default_commodity.map(|(commodity, _style)| commodity),
+            decimal_mark: self.default_decimal_mark,
             leading_comment: self.leading_comment,
         }
     }
@@ -448,8 +449,18 @@ pub(crate) fn vault_for_source_name(source_name: &str) -> (Box<dyn Vault>, Vault
 /// directory and confined to it; a `source_name` with no real directory
 /// includes nothing (see [`vault_for_source_name`]).
 pub fn parse_journal(text: &str, source_name: &str) -> Result<Journal, ParseError> {
+    parse_seeded(text, source_name, |_| {})
+}
+
+/// [`parse_journal`], with `seed` setting up the context first.
+fn parse_seeded(
+    text: &str,
+    source_name: &str,
+    seed: impl FnOnce(&mut Ctx<'_>),
+) -> Result<Journal, ParseError> {
     let (vault, main) = vault_for_source_name(source_name);
     let mut ctx = Ctx::new(&*vault, &main, resolve_source_file(source_name), None);
+    seed(&mut ctx);
     parse_source(text, source_name, &main, &mut ctx)?;
     Ok(ctx.into_journal(source_name))
 }
@@ -473,11 +484,104 @@ pub fn parse_journal_with_styles(
     source_name: &str,
     inherited: &[(Commodity, AmountStyle)],
 ) -> Result<Journal, ParseError> {
-    let (vault, main) = vault_for_source_name(source_name);
-    let mut ctx = Ctx::new(&*vault, &main, resolve_source_file(source_name), None);
-    ctx.inherited = inherited.iter().cloned().collect();
-    parse_source(text, source_name, &main, &mut ctx)?;
-    Ok(ctx.into_journal(source_name))
+    parse_seeded(text, source_name, |ctx| {
+        ctx.inherited = inherited.iter().cloned().collect();
+    })
+}
+
+/// How a journal reads an amount written into it, and so what a writer must
+/// render one in: its declared commodity styles (`commodity` and `D`
+/// directives), its `decimal-mark` directive and its `D` default commodity.
+/// Rendered with `.` regardless, `*0.1` reads as `1` under `decimal-mark ,`
+/// and `1500.50 EUR` as `150050 EUR` under `commodity 1.000,00 EUR`, in this
+/// parser and in hledger 1.52 alike (verified 2026-10-28).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct JournalStyles<'a> {
+    /// Declared commodity styles, in declaration order.
+    pub declared: &'a [(Commodity, AmountStyle)],
+    /// The `decimal-mark` directive's mark.
+    pub decimal_mark: Option<char>,
+    /// The `D` directive's commodity, which a bare number adopts.
+    pub default_commodity: Option<&'a Commodity>,
+}
+
+impl<'a> JournalStyles<'a> {
+    /// The styles an amount written into `journal` itself is read with.
+    #[must_use]
+    pub fn of(journal: &'a Journal) -> Self {
+        Self {
+            declared: &journal.commodity_styles,
+            decimal_mark: journal.decimal_mark,
+            default_commodity: journal.default_commodity.as_ref(),
+        }
+    }
+
+    /// The styles `journal` lends a file read beside it — a projection
+    /// scenario, read through [`parse_journal_with_styles`]: its declared
+    /// commodity styles alone, since a sibling file has its own
+    /// `decimal-mark` and `D`.
+    #[must_use]
+    pub fn lent_by(journal: &'a Journal) -> Self {
+        Self {
+            declared: &journal.commodity_styles,
+            ..Self::default()
+        }
+    }
+
+    /// `commodity`'s declared style; the last declaration wins, as it does
+    /// in the parser.
+    #[must_use]
+    pub fn declared_style(&self, commodity: &Commodity) -> Option<&'a AmountStyle> {
+        self.declared
+            .iter()
+            .rev()
+            .find(|(declared, _)| declared == commodity)
+            .map(|(_, style)| style)
+    }
+
+    /// The decimal mark an amount in `commodity` (empty for a bare number) is
+    /// read with, in [`parse_amount`]'s order: a bare number takes the `D`
+    /// commodity's mark; otherwise the commodity's declared mark, then the
+    /// `decimal-mark` directive's. `.` when none applies, which the parser
+    /// infers from a lone mark anyway.
+    #[must_use]
+    pub fn decimal_mark_for(&self, commodity: &Commodity) -> char {
+        let style = match self.default_commodity {
+            Some(default) if commodity.0.is_empty() => {
+                return self
+                    .declared_style(default)
+                    .and_then(|style| style.decimal_mark)
+                    .unwrap_or('.');
+            }
+            _ => self.declared_style(commodity),
+        };
+        style
+            .and_then(|style| style.decimal_mark)
+            .or(self.decimal_mark)
+            .unwrap_or('.')
+    }
+}
+
+/// [`parse_journal`] of `text` read as though it followed `styles`'
+/// directives in the same file — how an amount written into that journal
+/// will be read, so a writer can check its text means what it rendered.
+///
+/// # Errors
+/// As [`parse_journal`].
+pub fn parse_journal_under(
+    text: &str,
+    source_name: &str,
+    styles: &JournalStyles<'_>,
+) -> Result<Journal, ParseError> {
+    parse_seeded(text, source_name, |ctx| {
+        ctx.styles = styles.declared.iter().cloned().collect();
+        ctx.default_decimal_mark = styles.decimal_mark;
+        ctx.default_commodity = styles.default_commodity.and_then(|commodity| {
+            styles
+                .declared_style(commodity)
+                .map(|style| (commodity.clone(), style.clone()))
+        });
+    })
 }
 
 /// Parse the journal rooted at `main_source_name`, resolving `include`s from an

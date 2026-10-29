@@ -21,7 +21,7 @@ use ledgeline_core::decimal::Dec;
 use ledgeline_core::model::{
     AccountName, Amount, AmountStyle, Commodity, CommoditySide, PriceDirective, Transaction,
 };
-use ledgeline_core::parse::parse_period_spec;
+use ledgeline_core::parse::{JournalStyles, parse_period_spec};
 use ledgeline_core::projections::serialize::{
     ProjectionDoc, new_file, scenario_from_text, scenario_from_text_with_styles, write_scenario,
 };
@@ -2809,7 +2809,10 @@ fn the_rule_editor_parity_fixture_is_the_editor_s_own_output() {
     assert_eq!(journal.auto_rules.len(), 4);
     for rule in &journal.auto_rules {
         let form = form_from_rule(rule, &types).expect("an editor rule is a form");
-        assert_eq!(render(&form, &types).expect("renders"), rule.raw);
+        assert_eq!(
+            render(&form, &types, &JournalStyles::default()).expect("renders"),
+            rule.raw
+        );
     }
 }
 
@@ -2859,7 +2862,7 @@ fn editing_rules_through_forms_rewrites_only_their_blocks() {
     let mut commission = form_from_rule(&scenario.auto_rules[1].rule, &types)
         .expect("a hand-written rule is a form");
     commission.postings[0].amount = FormAmount::Percent(Dec::new(4, 0));
-    let rendered = render(&commission, &types).expect("renders");
+    let rendered = render(&commission, &types, &JournalStyles::default()).expect("renders");
     scenario.auto_rules[1].rule = rule_from(&rendered);
     // The untagged virtual rule is deleted, and a new one added.
     scenario.auto_rules.remove(2);
@@ -2876,6 +2879,7 @@ fn editing_rules_through_forms_rewrites_only_their_blocks() {
             forecast_only: true,
         },
         &types,
+        &JournalStyles::default(),
     )
     .expect("renders");
     scenario.auto_rules.push(ScenarioAutoRule {

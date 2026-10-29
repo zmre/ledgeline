@@ -138,6 +138,7 @@ pub fn apply_journal(journal: &Journal) -> Journal {
         commodity_tags,
         prices,
         default_commodity,
+        decimal_mark,
         leading_comment,
     } = journal;
     let account_tags = crate::wire::account_tag_map(accounts);
@@ -184,6 +185,7 @@ pub fn apply_journal(journal: &Journal) -> Journal {
         commodity_tags: commodity_tags.clone(),
         prices: prices.clone(),
         default_commodity: default_commodity.clone(),
+        decimal_mark: *decimal_mark,
         leading_comment: leading_comment.clone(),
     }
 }
