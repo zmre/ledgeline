@@ -129,7 +129,6 @@ use crate::reports::account_types::{
 };
 use crate::rules::Newline;
 
-
 /// The indent a posting line gets. Four spaces, which is what hledger's own
 /// documentation and every fixture in this repo use.
 const INDENT: &str = "    ";
@@ -294,6 +293,24 @@ struct Read {
 enum Disabled {
     Tilde(PeriodicTransaction),
     Auto(AutoPostingRule),
+}
+
+/// One piece of a file as a caller sees it ([`ProjectionDoc::pieces`]): what
+/// it is, its key as read, and where its bytes are in the file's text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PieceView {
+    /// What the piece is.
+    pub kind: ItemKind,
+    /// Commented out.
+    pub disabled: bool,
+    /// Its key as read: the [`LayoutItem::key`] its item was read under.
+    pub key: String,
+    /// The whole piece: attached comment and content.
+    pub span: Range<usize>,
+    /// Its attached comment, a prefix of `span`; empty for none.
+    pub attached: Range<usize>,
+    /// The blank lines after it.
+    pub gap: Range<usize>,
 }
 
 /// One piece of a file: where it is, and what it states.
@@ -1034,10 +1051,20 @@ impl ProjectionDoc {
             .map(|piece| canonical(&self.text[piece.span.clone()]))
     }
 
-    /// How many pieces the file has.
+    /// Every piece of the file, in order: what it is and where its bytes are.
     #[must_use]
-    pub fn piece_count(&self) -> usize {
-        self.pieces.len()
+    pub fn pieces(&self) -> Vec<PieceView> {
+        self.pieces
+            .iter()
+            .map(|piece| PieceView {
+                kind: piece.kind,
+                disabled: piece.disabled,
+                key: piece.key.clone(),
+                span: piece.span.clone(),
+                attached: piece.attached.clone(),
+                gap: piece.gap.clone(),
+            })
+            .collect()
     }
 
     /// Render `scenario` into this document (plan 31 C5): the header, the
@@ -1765,7 +1792,8 @@ impl<'a> Entries<'a> {
             ItemKind::Comment,
             entries.comments.keys().copied().collect(),
         )?;
-        unnamed(ItemKind::Fixed, entries.fixed.keys().copied().collect())?;
+        // Fixed text the layout leaves out is kept where it is
+        // ([`ProjectionDoc::keep_fixed`]), never dropped.
         Ok(entries)
     }
 
@@ -4866,5 +4894,489 @@ account equity:unrealized gains  ; type: E
                 ("hmrc:paye".to_string(), AccountType::Liability),
             ])
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Plan 31: the piece model
+    // -----------------------------------------------------------------------
+
+    /// A file with one of everything: a section, a note, attached comments,
+    /// fixed text, a `comment` block, a step, and a disabled rule, one-off
+    /// and auto rule.
+    const PIECES: &str = "\
+; Ledgeline projection
+; projection: Pieces
+
+;;;;;;;;;;;;;;;;;;;;;;
+;; Operational expenses
+
+; A note about the plan as a whole.
+
+account expenses:rent  ; type: X
+
+; Rent goes up in spring.
+~ monthly  rent  ; landlord: acme
+    ; the lease runs to 2028
+    expenses:rent      $4200.00  ; growth: 2%/yr, paid on the 1st
+    assets:checking
+
+; The with alternative.
+; ~ monthly from 2027-01-01  acme contract
+;     revenues:acme      $-40000.00
+;     assets:checking
+
+; ~ 2027-03-01  windfall
+;     revenues:gift      $-100.00
+;     assets:checking
+
+; = expenses:rent
+;     (liabilities:tax)  *0.05
+
+comment
+~ monthly  not a rule at all
+    expenses:x  $1
+end comment
+
+= expenses:rent
+    (liabilities:levy)  *0.01
+";
+
+    fn doc(text: &str) -> ProjectionDoc {
+        ProjectionDoc::parse(text, "p.journal", &declared()).expect("parses")
+    }
+
+    fn save_full(before: &str, scenario: &Scenario) -> String {
+        write_scenario(&doc(before), scenario, "p.journal").expect("writes")
+    }
+
+    fn summary(scenario: &Scenario) -> Vec<(ItemKind, String, bool, String)> {
+        scenario
+            .layout
+            .iter()
+            .map(|item| {
+                (
+                    item.kind,
+                    item.key.clone(),
+                    item.disabled,
+                    item.attached.clone(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_piece_reads_as_its_kind_in_file_order() {
+        let scenario = read_full(PIECES);
+        assert_eq!(
+            summary(&scenario),
+            [
+                (ItemKind::Comment, "comment:0".into(), false, String::new()),
+                (ItemKind::Comment, "comment:1".into(), false, String::new()),
+                (ItemKind::Fixed, "fixed:0".into(), false, String::new()),
+                (
+                    ItemKind::Rule,
+                    "rule:0".into(),
+                    false,
+                    "; Rent goes up in spring.\n".into()
+                ),
+                (
+                    ItemKind::Rule,
+                    "off:0".into(),
+                    true,
+                    "; The with alternative.\n".into()
+                ),
+                (ItemKind::Event, "off:1".into(), true, String::new()),
+                (ItemKind::Auto, "auto:off:0".into(), true, String::new()),
+                (ItemKind::Comment, "comment:2".into(), false, String::new()),
+                (ItemKind::Auto, "auto:0".into(), false, String::new()),
+            ]
+        );
+        let styles: Vec<CommentStyle> = scenario.comments.iter().map(|c| c.style).collect();
+        assert_eq!(
+            styles,
+            [
+                CommentStyle::Section,
+                CommentStyle::Note,
+                CommentStyle::Block
+            ]
+        );
+        assert_eq!(
+            comment_text(CommentStyle::Section, &scenario.comments[0].raw),
+            "Operational expenses"
+        );
+        assert_eq!(
+            comment_text(CommentStyle::Note, &scenario.comments[1].raw),
+            "A note about the plan as a whole."
+        );
+        // The commented-out `~` inside `comment` is not a disabled entry.
+        assert_eq!(scenario.lines.len(), 2, "rent, and acme's one stated line");
+        // C6: the comments inside a block are the rule's.
+        let rent = &scenario.lines[0];
+        assert_eq!(rent.rule_comment, "landlord: acme\nthe lease runs to 2028");
+        assert_eq!(rent.comment, "paid on the 1st");
+        assert!(rent.growth.is_some());
+        // The active scenario is the file as hledger reads it.
+        let active = scenario.active();
+        assert_eq!(active.lines.len(), 1);
+        assert!(active.events.is_empty());
+        assert_eq!(active.auto_rules.len(), 1);
+        assert_eq!(active.auto_rules[0].key, "auto:0");
+    }
+
+    #[test]
+    fn a_save_that_changes_nothing_is_byte_identical_with_and_without_a_layout() {
+        let scenario = read_full(PIECES);
+        assert_eq!(save_full(PIECES, &scenario), PIECES);
+        let mut legacy = scenario.clone();
+        legacy.layout.clear();
+        assert_eq!(save_full(PIECES, &legacy), PIECES);
+        // And what today's wire carries: the active entries, no comments.
+        assert_eq!(save_full(PIECES, &read(PIECES)), PIECES);
+        for text in [
+            PIECES.replace('\n', "\r\n"),
+            PIECES.trim_end().to_string(),
+            format!("{PIECES}\n\n"),
+        ] {
+            assert_eq!(save_full(&text, &read_full(&text)), text, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_moved_unchanged_block_keeps_its_bytes_and_its_attached_comment() {
+        let mut scenario = read_full(PIECES);
+        // Move the `=` rule to the top, under the section heading, and the
+        // rent rule to the end.
+        let auto = scenario.layout.pop().expect("the = rule");
+        scenario.layout.insert(1, auto);
+        let rent = scenario.layout.remove(4);
+        assert_eq!(rent.key, "rule:0");
+        scenario.layout.push(rent);
+        let text = save_full(PIECES, &scenario);
+        assert!(
+            text.contains(
+                "; Rent goes up in spring.\n~ monthly  rent  ; landlord: acme\n    ; the lease runs \
+                 to 2028\n    expenses:rent      $4200.00  ; growth: 2%/yr, paid on the 1st\n    \
+                 assets:checking\n"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(";; Operational expenses\n\n= expenses:rent\n    (liabilities:levy)  *0.01\n\n; A note"),
+            "{text}"
+        );
+        let reread = read_full(&text);
+        assert_eq!(
+            reread.layout.last().map(|item| item.kind),
+            Some(ItemKind::Rule)
+        );
+        // Free comments did not move: they were not moved.
+        assert!(text.contains("; A note about the plan as a whole.\n\naccount expenses:rent"));
+    }
+
+    #[test]
+    fn a_comment_edit_inside_a_block_survives_and_is_a_change() {
+        let mut scenario = read_full(PIECES);
+        scenario.lines[0].amount = usd(Dec::new(450_000, 2), 2);
+        let text = save_full(PIECES, &scenario);
+        // Rendered, but with every comment the block held.
+        assert!(
+            text.contains(
+                "; Rent goes up in spring.\n~ monthly  rent  ; landlord: acme\n    ; the lease runs \
+                 to 2028\n    expenses:rent  $4500.00  ; growth: 2%/yr, paid on the 1st\n    \
+                 assets:checking\n"
+            ),
+            "{text}"
+        );
+        // Changing only a comment is a change too.
+        let mut scenario = read_full(PIECES);
+        scenario.lines[0].comment = "owner: alex".to_string();
+        let text = save_full(PIECES, &scenario);
+        assert!(
+            text.contains("expenses:rent  $4200.00  ; growth: 2%/yr\n        ; owner: alex\n"),
+            "a user tag goes on a continuation line: {text}"
+        );
+        assert_eq!(read_full(&text).lines[0].comment, "owner: alex");
+        // Ledgeline's own tags cannot be smuggled in through a comment.
+        let mut scenario = read_full(PIECES);
+        scenario.lines[0].comment = "growth: 9%/yr".to_string();
+        assert!(matches!(
+            write_scenario(&doc(PIECES), &scenario, "p.journal"),
+            Err(SerializeError::Invalid(ref why)) if why.contains("own")
+        ));
+    }
+
+    #[test]
+    fn turning_an_entry_off_and_on_again_restores_its_bytes() {
+        let scenario = read_full(PIECES);
+        for at in 0..scenario.layout.len() {
+            if !matches!(
+                scenario.layout[at].kind,
+                ItemKind::Rule | ItemKind::Event | ItemKind::Auto
+            ) {
+                continue;
+            }
+            let mut toggled = scenario.clone();
+            toggled.layout[at].disabled = !toggled.layout[at].disabled;
+            let once = save_full(PIECES, &toggled);
+            let mut back = read_full(&once);
+            assert_eq!(
+                back.layout[at].disabled, toggled.layout[at].disabled,
+                "{once}"
+            );
+            back.layout[at].disabled = !back.layout[at].disabled;
+            assert_eq!(save_full(&once, &back), PIECES, "item {at}:\n{once}");
+        }
+    }
+
+    #[test]
+    fn disabling_writes_every_line_commented_and_leaves_the_attached_comment() {
+        let mut scenario = read_full(PIECES);
+        scenario.layout[3].disabled = true;
+        let text = save_full(PIECES, &scenario);
+        assert!(
+            text.contains(
+                "; Rent goes up in spring.\n; ~ monthly  rent  ; landlord: acme\n;     ; the lease \
+                 runs to 2028\n;     expenses:rent      $4200.00  ; growth: 2%/yr, paid on the 1st\n\
+                 ;     assets:checking\n"
+            ),
+            "{text}"
+        );
+        // A disabled entry that is edited is rendered, commented out.
+        let mut scenario = read_full(PIECES);
+        let acme = scenario
+            .lines
+            .iter_mut()
+            .find(|line| line.account.0 == "revenues:acme")
+            .expect("acme");
+        acme.amount = usd(Dec::new(-5_000_000, 2), 2);
+        let text = save_full(PIECES, &scenario);
+        assert!(
+            text.contains(
+                "; The with alternative.\n; ~ monthly from 2027-01-01  acme contract\n;     \
+                 revenues:acme  $-50000.00\n;     assets:checking\n"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn prose_that_looks_like_a_rule_and_a_rule_that_does_not_parse_stay_comments() {
+        const PROSE: &str = "\
+; ~ monthly is how often this runs
+; = Totals =
+
+; ~ monthly
+;     expenses:a  $1  $2
+;     assets:checking
+
+~ monthly
+    expenses:b  $1
+    assets:checking
+";
+        let scenario = read_full(PROSE);
+        let kinds: Vec<ItemKind> = scenario.layout.iter().map(|item| item.kind).collect();
+        assert_eq!(
+            kinds,
+            [ItemKind::Comment, ItemKind::Comment, ItemKind::Rule]
+        );
+        assert!(scenario.layout.iter().all(|item| !item.disabled));
+        // A save writes a header above a file that has none; nothing else.
+        assert_eq!(
+            save_full(PROSE, &scenario),
+            format!("; Ledgeline projection\n; projection: fallback\n\n{PROSE}")
+        );
+    }
+
+    #[test]
+    fn a_new_section_is_written_in_the_house_style_and_an_edit_keeps_its_framing() {
+        assert_eq!(
+            comment_raw(CommentStyle::Section, "Operational expenses", None).unwrap(),
+            ";;;;;;;;;;;;;;;;;;;;;;\n;; Operational expenses\n"
+        );
+        let framed = "; -----------\n; Income\n; -----------\n";
+        assert_eq!(
+            comment_raw(CommentStyle::Section, "Revenue", Some(framed)).unwrap(),
+            "; -----------\n; Revenue\n; -----------\n"
+        );
+        assert_eq!(
+            comment_raw(CommentStyle::Note, "one\n\ntwo", None).unwrap(),
+            "; one\n;\n; two\n"
+        );
+        assert!(comment_raw(CommentStyle::Note, "-----", None).is_err());
+        assert!(comment_raw(CommentStyle::Block, "x\nend comment", None).is_err());
+        assert_eq!(
+            comment_raw(CommentStyle::Block, "free text", None).unwrap(),
+            "comment\nfree text\nend comment\n"
+        );
+        assert_eq!(attached_raw("about this").unwrap(), "; about this\n");
+        assert_eq!(attached_raw("").unwrap(), "");
+        assert!(attached_raw(";;;;;;").is_err());
+    }
+
+    #[test]
+    fn new_pieces_are_set_off_by_a_blank_line_and_read_back_in_place() {
+        let mut scenario = read_full(PIECES);
+        scenario.comments.push(ScenarioComment {
+            key: "new-section".to_string(),
+            style: CommentStyle::Section,
+            raw: comment_raw(CommentStyle::Section, "Income", None).unwrap(),
+        });
+        scenario.layout.insert(
+            3,
+            LayoutItem {
+                kind: ItemKind::Comment,
+                key: "new-section".to_string(),
+                origin: None,
+                disabled: false,
+                attached: String::new(),
+            },
+        );
+        let text = save_full(PIECES, &scenario);
+        assert!(
+            text.contains(
+                "; type: X\n\n;;;;;;;;;;;;;;;;;;;;;;\n;; Income\n\n; Rent goes up in spring.\n"
+            ),
+            "{text}"
+        );
+        let reread = read_full(&text);
+        assert_eq!(reread.layout[3].kind, ItemKind::Comment);
+        assert_eq!(reread.layout[4].attached, "; Rent goes up in spring.\n");
+    }
+
+    #[test]
+    fn fixed_text_cannot_be_reordered_and_is_kept_when_a_layout_leaves_it_out() {
+        const TWO: &str =
+            "account a  ; type: X\n\n~ monthly\n    a  $1\n    b\n\naccount b  ; type: A\n";
+        let scenario = read_full(TWO);
+        let mut swapped = scenario.clone();
+        swapped.layout.swap(0, 2);
+        assert!(matches!(
+            write_scenario(&doc(TWO), &swapped, "p.journal"),
+            Err(SerializeError::Invalid(ref why)) if why.contains("order")
+        ));
+        let mut forgot = scenario.clone();
+        forgot.layout.retain(|item| item.kind != ItemKind::Fixed);
+        let text = save_full(TWO, &forgot);
+        assert!(
+            text.ends_with(
+                "account a  ; type: X\n\n~ monthly\n    a  $1\n    b\n\naccount b  ; type: A\n"
+            ),
+            "{text}"
+        );
+        // A rule can move past fixed text.
+        let mut moved = scenario;
+        moved.layout.swap(0, 1);
+        let text = save_full(TWO, &moved);
+        assert!(
+            text.contains("~ monthly\n    a  $1\n    b\n\naccount a"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_layout_must_name_every_entry_exactly_once() {
+        let scenario = read_full(PIECES);
+        let mut twice = scenario.clone();
+        twice.layout.push(twice.layout[3].clone());
+        assert!(write_scenario(&doc(PIECES), &twice, "p.journal").is_err());
+        let mut missing = scenario.clone();
+        missing.layout.remove(3);
+        assert!(matches!(
+            write_scenario(&doc(PIECES), &missing, "p.journal"),
+            Err(SerializeError::Invalid(ref why)) if why.contains("leaves out")
+        ));
+        let mut unknown = scenario;
+        unknown.layout[3].key = "rule:99".to_string();
+        assert!(write_scenario(&doc(PIECES), &unknown, "p.journal").is_err());
+    }
+
+    #[test]
+    fn deleting_a_piece_takes_its_gap_and_the_file_end_stays_as_it_was() {
+        let mut scenario = read_full(PIECES);
+        // The last `=` rule and the `comment` block before it.
+        scenario.layout.truncate(7);
+        scenario.auto_rules.retain(|rule| rule.key != "auto:0");
+        scenario
+            .comments
+            .retain(|comment| comment.key != "comment:2");
+        let text = save_full(PIECES, &scenario);
+        assert!(
+            text.ends_with("; = expenses:rent\n;     (liabilities:tax)  *0.05\n"),
+            "{text:?}"
+        );
+    }
+
+    #[test]
+    fn a_file_without_a_final_newline_keeps_that_after_a_move() {
+        const BARE: &str = "~ monthly  a\n    a  $1\n    b\n\n~ monthly  b\n    c  $2\n    b";
+        let mut scenario = read_full(BARE);
+        scenario.layout.swap(0, 1);
+        let text = save_full(BARE, &scenario);
+        assert!(text.ends_with("    a  $1\n    b"), "{text:?}");
+        assert!(
+            text.contains("    c  $2\n    b\n\n~ monthly  a"),
+            "{text:?}"
+        );
+    }
+
+    #[test]
+    fn the_scan_s_blocks_are_periodic_doc_s_and_auto_edit_s_over_every_fixture() {
+        fn journals(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    journals(&path, out);
+                } else if path.extension().is_some_and(|ext| ext == "journal") {
+                    out.push(path);
+                }
+            }
+        }
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+        let mut files = Vec::new();
+        journals(&root, &mut files);
+        assert!(files.len() > 20, "found {} fixtures", files.len());
+        let mut checked = 0;
+        for path in files {
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let name = path.to_string_lossy().to_string();
+            let Ok(journal) = parse::parse_journal(&text, &name) else {
+                continue;
+            };
+            let scan = layout::scan(&text, 0, &mut |_| None);
+            let tildes: Vec<Range<usize>> = scan
+                .pieces
+                .iter()
+                .filter(|piece| piece.kind == RawKind::Tilde)
+                .map(layout::RawPiece::content)
+                .collect();
+            let periodic: Vec<Range<usize>> = crate::periodic::PeriodicDoc::parse(&text)
+                .blocks()
+                .iter()
+                .map(|block| block.full.clone())
+                .collect();
+            assert_eq!(tildes, periodic, "{name}");
+            // `read_scenario`'s own-file rule and fallback.
+            let mine = |rule: &&AutoPostingRule| {
+                rule.source_file.as_os_str() == std::ffi::OsStr::new(&name)
+            };
+            let own: Vec<&AutoPostingRule> = if !journal.auto_rules.iter().any(|rule| mine(&rule))
+                && journal.source_files.len() <= 1
+            {
+                journal.auto_rules.iter().collect()
+            } else {
+                journal.auto_rules.iter().filter(mine).collect()
+            };
+            let autos: Vec<Range<usize>> = scan
+                .pieces
+                .iter()
+                .filter(|piece| piece.kind == RawKind::Auto)
+                .map(layout::RawPiece::content)
+                .collect();
+            assert_eq!(autos, crate::auto_edit::block_spans(&text, own), "{name}");
+            checked += 1;
+        }
+        assert!(checked > 20, "checked {checked}");
     }
 }
