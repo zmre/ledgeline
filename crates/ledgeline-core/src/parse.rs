@@ -3036,8 +3036,9 @@ fn cost_contribution(amount: &Amount) -> Result<(Commodity, Dec, u32, AmountStyl
 /// The commodity and quantity come from [`Amount::at_cost`] — the engine's one
 /// definition of "at cost" — so the balance sheet's at-cost totals and this
 /// balancing pass can never disagree about what a priced posting is worth. Only
-/// the display STYLE is chosen here, since valuation has no use for it.
-fn cost_value(amount: &Amount) -> Result<(&Commodity, Dec, &AmountStyle), ParseError> {
+/// the display STYLE is chosen here, since valuation has no use for it. An `=`
+/// rule's amountless posting is inferred through it too ([`crate::auto`]).
+pub(crate) fn cost_value(amount: &Amount) -> Result<(&Commodity, Dec, &AmountStyle), DecError> {
     let (commodity, quantity) = amount.at_cost()?;
     let style = match &amount.cost {
         None => &amount.style,

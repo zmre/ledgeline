@@ -17,7 +17,7 @@
 //!   commodity — the manual says it takes the matched one, the binary does
 //!   not (verified), and this follows the binary.
 //! - One amountless posting balances the rule's other generated postings of
-//!   its own group: the regular ones, or the balanced-virtual ones. An
+//!   its own group, AT COST: the regular ones, or the balanced-virtual ones. An
 //!   amountless `(virtual)` posting has nothing to balance and is zero.
 //! - `%account` in an account name is the matched posting's account.
 //! - A generated posting carries the matched posting's dates and the tags
@@ -29,8 +29,8 @@
 
 use crate::decimal::{Dec, DecError};
 use crate::model::{
-    AccountName, Amount, AutoAmount, AutoPosting, AutoPostingRule, CostKind, Journal, Posting,
-    PostingType, RuleRef, Transaction,
+    AccountName, Amount, AmountStyle, AutoAmount, AutoPosting, AutoPostingRule, Commodity,
+    CostKind, Journal, Posting, PostingType, RuleRef, Transaction,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -479,7 +479,9 @@ fn generate(
             PostingType::Virtual => false,
             own => ptype == own,
         };
-        let mut sums: BTreeMap<String, (Amount, Dec)> = BTreeMap::new();
+        // AT COST, as hledger infers it and as the parser balances a written
+        // transaction: `1 EUR @ $1.10` is balanced by `$-1.10`, not `-1 EUR`.
+        let mut sums: BTreeMap<&Commodity, (&AmountStyle, Dec)> = BTreeMap::new();
         for (other, posting) in generated.iter().enumerate() {
             if other == at
                 || !group(posting.ptype)
@@ -488,19 +490,21 @@ fn generate(
                 continue;
             }
             for amount in &posting.amounts {
+                let (commodity, quantity, style) = crate::parse::cost_value(amount)?;
                 let entry = sums
-                    .entry(amount.commodity.0.clone())
-                    .or_insert_with(|| (amount.clone(), Dec::new(0, 0)));
-                entry.1 = entry.1.add(amount.quantity)?;
+                    .entry(commodity)
+                    .or_insert_with(|| (style, Dec::new(0, 0)));
+                entry.1 = entry.1.add(quantity)?;
             }
         }
         let balancing = sums
-            .into_values()
-            .map(|(template, sum)| {
+            .into_iter()
+            .map(|(commodity, (style, sum))| {
                 Ok(Amount {
+                    commodity: commodity.clone(),
                     quantity: sum.neg()?,
+                    style: style.clone(),
                     cost: None,
-                    ..template
                 })
             })
             .collect::<Result<Vec<_>, DecError>>()?;
@@ -784,6 +788,40 @@ mod tests {
             (cost.amount.commodity.0.as_str(), show(cost.amount.quantity)),
             ("$", "1200".to_string())
         );
+    }
+
+    /// The amountless leg balances the scaled one AT COST. `hledger print
+    /// --auto` over these journals books `assets:cash $-1.10`, `$-2.20`
+    /// (`@@`) and `$-0.55` (`*0.5`), and refuses the `-1 EUR` this used to
+    /// infer (2026-10-28).
+    #[test]
+    fn an_amountless_leg_balances_a_costed_match_at_cost_as_hledger_does() {
+        for (factor, matched, cash) in [
+            ("1", "1 EUR @ $1.10", "$-1.1"),
+            ("1", "2 EUR @@ $2.20", "$-2.2"),
+            ("0.5", "1 EUR @ $1.10", "$-0.55"),
+        ] {
+            let text = format!(
+                "= assets:stock\n    expenses:fee  *{factor}\n    assets:cash\n\n\
+                 2026-01-01 buy\n    assets:stock  {matched}\n    assets:bank\n"
+            );
+            let got = applied(&text);
+            assert_eq!(
+                got[2],
+                ("assets:cash".to_string(), cash.to_string()),
+                "{text}"
+            );
+            let journal = apply_journal(&parse_journal(&text, "c.journal").expect("parses"));
+            let generated = &journal.transactions[0].postings[2];
+            assert_eq!(generated.amounts[0].cost, None, "{text}");
+            assert_eq!(generated.amounts[0].style.precision, 2, "{text}");
+            assert!(
+                crate::parse::check_generated_balances(&journal)
+                    .expect("checks")
+                    .is_empty(),
+                "{text}"
+            );
+        }
     }
 
     /// A balance assertion on a rule posting rides on every posting it

@@ -40,6 +40,7 @@ When `--auto` is on, Ledgeline uses the transactions with the rules' postings ad
 - Rules apply in file order, and a later rule can match postings an earlier rule added. A rule never matches its own postings.
 - Rules in an `include`d file apply to the whole journal.
 - `*0.1` multiplies the matched amount exactly, so `$-333.33` becomes `$-33.333`. Reports still round to the precision your journal writes, so `$-33.33` shows in a balance.
+- An amountless posting balances the rule's other postings at cost. A rule matching `1 EUR @ $1.10` balances with `$-1.10`, not `-1 EUR`.
 - A `tag:` query also matches tags a posting inherits from its account's `account` directive.
 - [Balance assertions](problems.md#balance-assertion) are checked after the rules apply, as in hledger. An assertion written on a rule's own posting, such as `assets:savings  $10 = $500`, is checked on every posting the rule adds, and a failure points at the rule's line.
 - In the [budget](../budget.md), rules add to the actual amounts and never to the goals.
