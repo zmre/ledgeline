@@ -1189,16 +1189,28 @@ fixes did not widen. Unverified beyond what the agent saw.
 - **F-5** `web/src/lib/hledgerConf/**` — Settings › hledger config does not warn about a
   duplicate `[general]` heading or about top-of-file options an explicit `[general]` discards;
   hledger is silent too, so this is a convenience, not parity.
+- **F-6** `crates/ledgeline-core/src/auto.rs` — `*2 EUR @ $3` on a rule posting: Ledgeline drops the
+  written cost, hledger keeps it (`20 EUR @ $3`).
+- **F-7** `crates/ledgeline-core/src/parse.rs` — a rule posting with only an assertion
+  (`assets:cash  = $-11`) makes Ledgeline refuse the whole journal as a malformed amount; hledger
+  reads it without `--auto` and refuses only under `--auto`.
+- **F-8** `crates/ledgeline-server/src/auto_api.rs` — the post-write check compares raw text only;
+  a value-level read-back like `budget_api::confirm_written_goal` would also catch a `decimal-mark`
+  directive placed after the block being replaced, which `JournalStyles::of` (the mark in force at
+  the end of the parse, and the whole journal's declared styles) does not model.
+- **F-9** `crates/ledgeline-core/src/auto_form.rs` — under a `D` directive a form's fixed amount with
+  no commodity is now refused at render (the journal would read it as the `D` commodity); before C-1
+  it was silently written. The form could offer the `D` commodity instead.
 
 ## Fixed on the branch before the PR (13 high)
 
 For the record, the high-severity findings and the commits that fixed them:
 
-- **A1-1** `crates/ledgeline-core/src/auto.rs:494` — the amountless leg of a `*N` rule was inferred from raw quantities, not at cost as hledger does. _Fixed in: TBD_
-- **C-1** `crates/ledgeline-core/src/auto_form.rs:356` — rules were rendered with a hard-coded `.` decimal mark, so comma-mark journals read them 10x/100x. _Fixed in: TBD_
+- **A1-1** `crates/ledgeline-core/src/auto.rs:494` — the amountless leg of a `*N` rule was inferred from raw quantities, not at cost as hledger does. _Fixed in: `7722b96`_
+- **C-1** `crates/ledgeline-core/src/auto_form.rs:356` — rules were rendered with a hard-coded `.` decimal mark, so comma-mark journals read them 10x/100x. _Fixed in: `b8b57ec`_
 - **A3-1** `crates/ledgeline-core/src/hledger_conf.rs:1174` — an explicit `[general]` section was not treated as the general section. _Fixed in: `ffb2861`, `7d5a47b`_
-- **SW-3** `crates/ledgeline-core/src/parse.rs:1762` — balance assertions on `=` rule postings were dropped, and deleted on re-save. _Fixed in: TBD_
-- **A4-2** `crates/ledgeline-core/src/parse.rs:1772` — a `*FACTOR` followed by an exponent, cost or assertion was re-denominated in the empty commodity. _Fixed in: TBD_
+- **SW-3** `crates/ledgeline-core/src/parse.rs:1762` — balance assertions on `=` rule postings were dropped, and deleted on re-save. _Fixed in: `3b84016`_
+- **A4-2** `crates/ledgeline-core/src/parse.rs:1772` — a `*FACTOR` followed by an exponent, cost or assertion was re-denominated in the empty commodity. _Fixed in: `ac32f26`_
 - **D1-1** `crates/ledgeline-core/src/projections/serialize.rs:718` — removing the last two adjacent `=` blocks produced overlapping splices and panicked. _Fixed in: `db0d21b`_
 - **A4-1** `crates/ledgeline-core/src/query.rs:201` — `amt:` matched every multi-commodity or empty leg, unlike hledger. _Fixed in: `ff30f79`_
 - **A4-4** `crates/ledgeline-core/src/query.rs:311` — `real:yes` / `real:true` selected the opposite postings from hledger, which accepts only `1`. _Fixed in: `3bbac6f`_
