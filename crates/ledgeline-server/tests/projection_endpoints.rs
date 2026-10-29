@@ -2984,6 +2984,38 @@ async fn a_rule_sent_as_a_form_is_rendered_and_applied() {
     assert!(!warnings.contains("`assets:bank:checking`"), "{warnings}");
 }
 
+/// A raw rule's fixed amount is read under the main journal's commodity
+/// styles, as GET reads it and as hledger reads an `include`d file: `$1,500`
+/// under `commodity $1,000.00` is fifteen hundred dollars, not $1.50.
+#[tokio::test]
+async fn a_raw_rule_s_digit_grouped_amount_books_its_full_value_in_the_run() {
+    let projection = run(json!({
+        "scenario": with_rules(&[
+            "= expenses:rent tag:_generated-transaction\n    expenses:rent-tax  $1,500\n    assets:bank:checking\n",
+        ]),
+        "interval": "monthly",
+        "count": 2,
+        "lookback": 0,
+        "journal": true
+    }))
+    .await;
+    let entries = projection["journal"]["entries"]
+        .as_array()
+        .expect("entries");
+    assert!(!entries.is_empty());
+    for entry in entries {
+        let postings = entry["txn"]["postings"].as_array().expect("postings");
+        let tax = postings
+            .iter()
+            .find(|posting| posting["account"] == "expenses:rent-tax")
+            .expect("the generated posting");
+        let qty = &tax["amounts"][0]["qty"];
+        let mantissa: i128 = qty["m"].as_str().expect("m").parse().expect("m parses");
+        let places = u32::try_from(qty["p"].as_u64().expect("p")).expect("p fits");
+        assert_eq!(mantissa, 1500 * 10_i128.pow(places), "{tax}");
+    }
+}
+
 /// Decision 11: a rule posting to an account the journal neither declares nor
 /// uses — the user's real typo — is warned about, by name, and still runs.
 #[tokio::test]

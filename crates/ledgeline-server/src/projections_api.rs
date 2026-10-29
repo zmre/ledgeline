@@ -71,7 +71,9 @@ use ledgeline_core::view::wire::DeclaredStyles;
 use ledgeline_core::{Dec, Fingerprint};
 use serde::{Deserialize, Serialize};
 
-use crate::auto_wire::{AutoRuleFormIn, WireAutoRuleForm, form_from_wire, rule_from_text};
+use crate::auto_wire::{
+    AutoRuleFormIn, WireAutoRuleForm, form_from_wire, rule_from_text, rule_from_text_with_styles,
+};
 use crate::edit_api::{WireDecIn, dec_from_wire, json_body};
 use crate::error::{AppError, editing_disabled};
 use crate::reports_api::{
@@ -1121,7 +1123,13 @@ impl DecodedScenario {
 /// the limits is to refuse an oversized scenario cheaply, and decoding ten
 /// thousand lines in order to discover there are ten thousand of them is not
 /// that.
-fn scenario_from_wire(scenario: &ScenarioIn) -> Result<DecodedScenario, AppError> {
+///
+/// `inherited` is the main journal's declared commodity styles, which a rule
+/// sent as text is read under — exactly as [`open_file`] read it.
+fn scenario_from_wire(
+    scenario: &ScenarioIn,
+    inherited: &[(Commodity, AmountStyle)],
+) -> Result<DecodedScenario, AppError> {
     if scenario.lines.len() > MAX_LINES {
         return Err(AppError::BadRequest(format!(
             "a scenario may have at most {MAX_LINES} lines (received {})",
@@ -1212,7 +1220,7 @@ fn scenario_from_wire(scenario: &ScenarioIn) -> Result<DecodedScenario, AppError
         .map(|line| line.entry.as_ref().map(dec_from_wire).transpose())
         .collect::<Result<Vec<_>, AppError>>()?;
 
-    let rules = auto_rules_from_wire(&scenario.auto_rules)?;
+    let rules = auto_rules_from_wire(&scenario.auto_rules, inherited)?;
 
     Ok(DecodedScenario {
         rules,
@@ -1234,6 +1242,7 @@ fn scenario_from_wire(scenario: &ScenarioIn) -> Result<DecodedScenario, AppError
 /// the block each came from.
 fn auto_rules_from_wire(
     rules: &[AutoRuleIn],
+    inherited: &[(Commodity, AmountStyle)],
 ) -> Result<Vec<(DecodedRule, Option<usize>)>, AppError> {
     if rules.len() > MAX_AUTO_RULES {
         return Err(AppError::BadRequest(format!(
@@ -1245,7 +1254,7 @@ fn auto_rules_from_wire(
         .iter()
         .map(|rule| {
             let decoded = match (&rule.raw, &rule.form) {
-                (Some(raw), None) => DecodedRule::Raw(rule_from_text(raw)?),
+                (Some(raw), None) => DecodedRule::Raw(rule_from_text_with_styles(raw, inherited)?),
                 // A scenario's rules apply to forecasts and nothing else
                 // (Decision 6), so each is written to say so to hledger too.
                 (None, Some(form)) => DecodedRule::Form(AutoRuleForm {
@@ -1305,7 +1314,7 @@ pub(crate) async fn run(
         .map(Commodity);
     // Decoded (and bounded) BEFORE a `compute` slot is claimed: a scenario we
     // are going to refuse must not first wait for a core.
-    let decoded = scenario_from_wire(&request.scenario)?;
+    let decoded = scenario_from_wire(&request.scenario, &snapshot.journal.commodity_styles)?;
 
     compute(move || {
         let journal = &snapshot.journal;
@@ -2153,7 +2162,7 @@ pub(crate) async fn save(
     // Decoded (and bounded) BEFORE the lock is taken and before a `compute`
     // slot is claimed: a scenario we are going to refuse must not first wait
     // for a core, and must not hold the write lock while it is refused.
-    let mut decoded = scenario_from_wire(&request.scenario)?;
+    let mut decoded = scenario_from_wire(&request.scenario, &snapshot.journal.commodity_styles)?;
     let today = today_utc();
     decoded.scenario.created = Some(
         decoded

@@ -4,7 +4,7 @@
 //! ([`crate::projections_api`]) and the main journal ([`crate::auto_api`]).
 
 use ledgeline_core::auto_form::{AutoRuleForm, FormAmount, FormPosting};
-use ledgeline_core::model::AutoPostingRule;
+use ledgeline_core::model::{AmountStyle, AutoPostingRule, Commodity};
 use serde::{Deserialize, Serialize};
 
 use crate::edit_api::{WireDecIn, dec_from_wire};
@@ -141,6 +141,17 @@ pub(crate) struct FormAmountIn {
 /// smuggling in a directive — `include`, `alias`, a transaction — that the
 /// parser would otherwise act on. A rendered form goes through here too.
 pub(crate) fn rule_from_text(raw: &str) -> Result<AutoPostingRule, AppError> {
+    rule_from_text_with_styles(raw, &[])
+}
+
+/// [`rule_from_text`], reading amounts under `inherited` commodity styles
+/// (see [`ledgeline_core::parse::parse_journal_with_styles`]) — what a scenario's
+/// hand-written rule needs, so that `$1,500` under the main journal's
+/// `commodity $1,000.00` is read as the file's GET reads it.
+pub(crate) fn rule_from_text_with_styles(
+    raw: &str,
+    inherited: &[(Commodity, AmountStyle)],
+) -> Result<AutoPostingRule, AppError> {
     let refuse = |why: &str| AppError::BadRequest(format!("an auto rule {why}"));
     if raw.len() > MAX_AUTO_RULE_BYTES {
         return Err(refuse(&format!(
@@ -159,8 +170,9 @@ pub(crate) fn rule_from_text(raw: &str) -> Result<AutoPostingRule, AppError> {
         ));
     }
     let text = format!("{body}\n");
-    let journal = ledgeline_core::parse_journal(&text, "auto-rule.journal")
-        .map_err(|error| refuse(&format!("could not be read: {error}")))?;
+    let journal =
+        ledgeline_core::parse::parse_journal_with_styles(&text, "auto-rule.journal", inherited)
+            .map_err(|error| refuse(&format!("could not be read: {error}")))?;
     match journal.auto_rules.as_slice() {
         [only] if journal.transactions.is_empty() && journal.periodic_transactions.is_empty() => {
             Ok(only.clone())
