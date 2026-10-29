@@ -26,13 +26,13 @@ use ledgeline_core::projections::serialize::{
     ProjectionDoc, new_file, scenario_from_text, scenario_from_text_with_styles, write_scenario,
 };
 use ledgeline_core::projections::{
+    CommentStyle, CreateRefusal, Growth, GrowthUnit, ItemKind, LineRole, LineSource, Scenario,
+    ScenarioAutoRule, ScenarioEvent, ScenarioLine, discover, slug_filename, virtual_posting,
+};
+use ledgeline_core::projections::{
     CounterDefaults, Forecast, ForecastOpts, ForecastOrigin, ForecastWindow, GENERATED_TAG,
     History, forecast_cutoff, forecast_transactions, known_accounts, latest_real_date,
     merged_prices, merged_transactions, upgrade_legacy_counters,
-};
-use ledgeline_core::projections::{
-    CreateRefusal, Growth, GrowthUnit, LineRole, LineSource, Scenario, ScenarioAutoRule,
-    ScenarioEvent, ScenarioLine, discover, slug_filename, virtual_posting,
 };
 use ledgeline_core::reports::account_types::AccountType;
 use ledgeline_core::reports::{
@@ -132,6 +132,8 @@ fn usd(mantissa: i128, places: u32, precision: u32) -> Amount {
 
 fn line(group: &str, id: &str, account: &str, amount: Amount, period: &str) -> ScenarioLine {
     ScenarioLine {
+        comment: String::new(),
+        rule_comment: String::new(),
         counter: None,
         gains: None,
         id: id.to_string(),
@@ -704,6 +706,9 @@ fn a_save_that_changes_nothing_produces_the_same_bytes() {
 /// apply and which is asserted about separately below.
 fn cross_check_scenario() -> Scenario {
     Scenario {
+        comments: Vec::new(),
+        fixed: Vec::new(),
+        layout: Vec::new(),
         auto_rules: Vec::new(),
         cash: None,
         name: "Cross check".to_string(),
@@ -758,6 +763,8 @@ fn cross_check_scenario() -> Scenario {
             },
         ],
         events: vec![ScenarioEvent {
+            comment: String::new(),
+            posting_comments: Vec::new(),
             counter: None,
             id: "rule:3".to_string(),
             date: "2027-03-01".to_string(),
@@ -2857,6 +2864,10 @@ fn editing_rules_through_forms_rewrites_only_their_blocks() {
     let doc = ProjectionDoc::parse(before, &name, &declared()).expect("it parses");
     let mut scenario = scenario_from_text(before, &name, "plan", &declared()).expect("it reads");
     assert_eq!(scenario.auto_rules.len(), 3);
+    // Edited the way the Settings forms edit them: by position in
+    // `auto_rules`, with no layout — so the save takes the legacy one, which
+    // fills the file's `=` slots in scenario order (plan 31 C8).
+    scenario.layout.clear();
 
     // The commission goes from 3.5% to 4%, through its form.
     let mut commission = form_from_rule(&scenario.auto_rules[1].rule, &types)
@@ -2883,6 +2894,7 @@ fn editing_rules_through_forms_rewrites_only_their_blocks() {
     )
     .expect("renders");
     scenario.auto_rules.push(ScenarioAutoRule {
+        key: String::new(),
         block: None,
         rule: rule_from(&added),
     });
@@ -3143,5 +3155,220 @@ fn accounts_parity_empty_rows_beyond_declared() {
     assert_eq!(
         wider(BalanceMode::Historical, true),
         names(&["expenses:late"])
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Plan 31: comments, section headings and disabled entries
+// ---------------------------------------------------------------------------
+
+/// `fixtures/projections-parity/comments.journal`, its path, and its text.
+fn comments_fixture() -> (String, String) {
+    let path = parity_dir().join("comments.journal");
+    let text = std::fs::read_to_string(&path).expect("the fixture reads");
+    (path.to_string_lossy().to_string(), text)
+}
+
+/// The comments fixture reads as its pieces, in file order, and a save that
+/// changes nothing changes no byte — with the layout and through the legacy
+/// path today's wire takes. Hermetic: no hledger needed.
+#[test]
+fn the_comments_fixture_reads_as_its_pieces_and_rewrites_unchanged() {
+    let (name, text) = comments_fixture();
+    let scenario = scenario_from_text(&text, &name, "x", &declared()).expect("it reads");
+    let layout: Vec<(ItemKind, &str, bool, bool)> = scenario
+        .layout
+        .iter()
+        .map(|item| {
+            (
+                item.kind,
+                item.key.as_str(),
+                item.disabled,
+                !item.attached.is_empty(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        layout,
+        [
+            (ItemKind::Comment, "comment:0", false, false),
+            (ItemKind::Comment, "comment:1", false, false),
+            (ItemKind::Rule, "rule:0", false, true),
+            (ItemKind::Rule, "off:0", true, true),
+            (ItemKind::Comment, "comment:2", false, false),
+            (ItemKind::Rule, "rule:1", false, false),
+            (ItemKind::Rule, "rule:2", false, true),
+            (ItemKind::Rule, "rule:3", false, false),
+            (ItemKind::Event, "off:1", true, false),
+            (ItemKind::Auto, "auto:off:0", true, false),
+            (ItemKind::Comment, "comment:3", false, false),
+        ]
+    );
+    let styles: Vec<CommentStyle> = scenario.comments.iter().map(|c| c.style).collect();
+    assert_eq!(
+        styles,
+        [
+            CommentStyle::Note,
+            CommentStyle::Section,
+            CommentStyle::Section,
+            CommentStyle::Block
+        ]
+    );
+    assert_eq!(scenario.lines[0].comment, "owner: alex");
+    assert_eq!(scenario.lines[0].rule_comment, "employer: acme");
+
+    let doc = ProjectionDoc::parse(&text, &name, &declared()).expect("it parses");
+    assert_eq!(
+        write_scenario(&doc, &scenario, &name).expect("writes"),
+        text
+    );
+    let mut legacy = scenario.active();
+    legacy.layout.clear();
+    legacy.comments.clear();
+    legacy.fixed.clear();
+    for line in &mut legacy.lines {
+        line.comment.clear();
+        line.rule_comment.clear();
+    }
+    assert_eq!(
+        write_scenario(&doc, &legacy, &name).expect("writes"),
+        text,
+        "a client from before plan 31 keeps every comment and disabled entry"
+    );
+}
+
+#[test]
+fn parity_comments_sections_and_disabled_entries() {
+    parity(&["comments.journal"], &[MONTHLY, QUARTERLY]);
+}
+
+/// hledger forecasts the comments fixture exactly as it forecasts the same
+/// file with its disabled blocks deleted, and so does Ledgeline.
+#[test]
+fn hledger_forecasts_disabled_entries_as_if_they_were_deleted() {
+    if hledger(&["--version"]).is_none() {
+        eprintln!("skipped: set {OPT_IN}=1 (see `just hledger-checks`)");
+        return;
+    }
+    let (name, text) = comments_fixture();
+    let doc = ProjectionDoc::parse(&text, &name, &declared()).expect("it parses");
+    let mut stripped = text.clone();
+    let disabled: Vec<_> = doc.pieces().into_iter().filter(|p| p.disabled).collect();
+    assert_eq!(disabled.len(), 3);
+    for piece in disabled.iter().rev() {
+        stripped.replace_range(piece.span.start..piece.gap.end, "");
+    }
+    let scratch = Scratch::new("disabled");
+    let main = parity_dir()
+        .join("main.journal")
+        .to_string_lossy()
+        .to_string();
+    let print = |file: &Path| {
+        let file = file.to_string_lossy().to_string();
+        let out = hledger(&[
+            "-f",
+            &main,
+            "-f",
+            &file,
+            "print",
+            "--forecast=2026-10-01..2027-10-01",
+            "--auto",
+            "tag:generated",
+        ])
+        .expect("hledger runs");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let with = print(&scratch.write("with.journal", &text));
+    let without = print(&scratch.write("without.journal", &stripped));
+    assert!(with.contains("expenses:payroll"), "{with}");
+    assert!(!with.contains("revenues:bonus"), "{with}");
+    assert_eq!(with, without);
+
+    let active = |text: &str| {
+        scenario_from_text(text, &name, "x", &declared())
+            .expect("it reads")
+            .active()
+    };
+    assert_eq!(active(&text).lines, active(&stripped).lines);
+    assert_eq!(active(&text).events, active(&stripped).events);
+}
+
+/// A user's own comment beside Ledgeline's tags (plan 31 C6) reads the same
+/// tags in hledger as in Ledgeline: `growth:` on the posting that has it, the
+/// user's `owner:` on theirs, and the header's on every posting.
+#[test]
+fn hledger_reads_ledgeline_s_tags_and_a_user_s_own_side_by_side() {
+    const SOURCE: &str = "~ monthly  plan\n    expenses:rent      $1000.00  ; growth: \
+                          3%/yr\n    expenses:food       $200.00\n    assets:checking\n";
+    let scratch = Scratch::new("tags");
+    let path = scratch.path().join("tags.journal");
+    let name = path.to_string_lossy().to_string();
+    let mut scenario = scenario_from_text(SOURCE, &name, "Tags", &declared()).expect("reads");
+    scenario.lines[0].comment = "owner: alex".to_string();
+    scenario.lines[1].comment = "weekly shop, roughly".to_string();
+    for line in &mut scenario.lines {
+        line.rule_comment = "employer: acme\nreviewed yearly".to_string();
+    }
+    let text = new_file(&scenario, &name, &declared()).expect("it writes");
+    assert!(
+        text.contains(
+            "~ monthly  plan  ; employer: acme\n    ; reviewed yearly\n    expenses:rent  \
+             $1000.00  ; growth: 3%/yr\n        ; owner: alex\n    expenses:food  $200.00  ; \
+             weekly shop, roughly\n"
+        ),
+        "{text}"
+    );
+    let reread = scenario_from_text(&text, &name, "Tags", &declared()).expect("re-reads");
+    assert_eq!(reread.lines[0].comment, "owner: alex");
+    assert!(reread.lines[0].growth.is_some());
+    assert_eq!(reread.lines[1].comment, "weekly shop, roughly");
+    assert!(reread.lines[1].growth.is_none());
+    assert_eq!(
+        reread.lines[0].rule_comment,
+        "employer: acme\nreviewed yearly"
+    );
+
+    if hledger(&["--version"]).is_none() {
+        eprintln!("skipped the hledger half: set {OPT_IN}=1 (see `just hledger-checks`)");
+        return;
+    }
+    std::fs::write(&path, &text).expect("write");
+    let accounts = |query: &str| -> Vec<String> {
+        let out = hledger(&[
+            "-f",
+            &name,
+            "reg",
+            "--forecast=2027-01-01..2027-02-01",
+            query,
+            "-O",
+            "csv",
+        ])
+        .expect("hledger runs");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let csv = String::from_utf8_lossy(&out.stdout).to_string();
+        let mut rows = csv.lines().map(csv_fields);
+        let header = rows.next().expect("a header");
+        let at = header
+            .iter()
+            .position(|field| field == "account")
+            .expect("an account column");
+        let mut accounts: Vec<String> = rows.map(|fields| fields[at].clone()).collect();
+        accounts.sort();
+        accounts
+    };
+    assert_eq!(accounts("tag:growth"), ["expenses:rent"]);
+    assert_eq!(accounts("tag:owner=alex"), ["expenses:rent"]);
+    assert_eq!(
+        accounts("tag:employer=acme"),
+        ["assets:checking", "expenses:food", "expenses:rent"]
     );
 }

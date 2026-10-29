@@ -1,9 +1,11 @@
-//! Scenario ⇄ journal text (plan 22, Phase 3, §"The file format").
+//! Scenario ⇄ journal text (plan 22, Phase 3, §"The file format"; the piece
+//! model is plan 31, Part C).
 //!
 //! A scenario file is an ordinary hledger journal. Reading one is
-//! [`crate::parse::parse_journal`] over that file alone plus a header scan;
-//! writing one is this module, and it is written **by splicing**, never by
-//! re-rendering the file.
+//! [`crate::parse::parse_journal`] over that file alone, a header scan, and a
+//! scan of the file into PIECES ([`super::layout`]); writing one is this
+//! module, and it is written **piece by piece**, never by re-rendering the
+//! file.
 //!
 //! # Never round-trip through `hledger print`
 //!
@@ -11,53 +13,82 @@
 //! would come back with every scenario line gone and nothing to say it had
 //! happened. Ledgeline writes these files itself.
 //!
-//! # The discipline: an edit rewrites the spans it names, and nothing else
+//! # The discipline: a file is its pieces, and an unchanged piece keeps its bytes
 //!
-//! The same rule [`crate::periodic`] and [`crate::aliases`] state. A save
-//! rewrites exactly two kinds of span:
+//! After the header, a file is a LEAD (the blank lines after the header), then
+//! a list of pieces, each followed by its GAP (the blank lines up to the next
+//! one). A piece is a `~` rule, an `=` rule, a commented-out ("disabled") one
+//! of either, a free-standing comment, an hledger `comment` block, or FIXED
+//! journal text this module does not model (`account`, `commodity`,
+//! transactions, `P`, `include` …). A comment directly above a rule, with no
+//! blank line and no divider, is part of that rule's piece: its ATTACHED
+//! comment.
 //!
-//! - the **header comment block** at the top of the file, and only the lines of
-//!   it this module recognizes (the banner, `projection:`, `created:`,
-//!   `updated:`) — a user's own prose above or between them is copied through;
-//! - one **`~` block's whole extent** per scenario group, located by
-//!   [`crate::periodic::PeriodicDoc`], which is the one model in the crate that
-//!   knows where a rule's bytes begin and end.
+//! The scenario's [`Scenario::layout`] lists the pieces in order, and a save
+//! writes:
 //!
-//! Everything else — `account` directives, transactions, comments between two
-//! rules, the bytes after the last rule — comes out the `&str` slice it went
-//! in as. A new group is appended at EOF; a group the scenario no longer has
-//! has its block removed.
+//! 1. the **header** comment lines this module recognizes (the banner,
+//!    `projection:`, `created:`, `updated:`, `cash:`), re-rendered — a user's
+//!    own prose above or between them is a piece of its own and copied
+//!    through;
+//! 2. the original **lead**;
+//! 3. each layout item's **body**, then its **separator**.
+//!
+//! An item CLAIMS the piece it was read from ([`ProjectionDoc::claim`]: by
+//! origin and content, then content alone, then origin alone). A claimed piece
+//! whose content is unchanged is written with **its own original bytes, even
+//! when it has moved**; one whose only change is its disabled flag has those
+//! bytes commented or uncommented line by line; anything else is rendered,
+//! keeping the attached comment's bytes when that is unchanged. A claimed
+//! piece keeps its own gap, plus a blank line when its neighbour changed and
+//! it had none, so nothing glues onto what now follows it. Fixed text cannot
+//! be added, dropped or reordered among itself.
+//!
+//! The renderer is careful, and the caller still re-parses the written text
+//! and requires it to read back as the layout it asked for, in order
+//! ([`write_scenario`]).
+//!
+//! A scenario with NO layout — a client from before plan 31, a seed, the FFI —
+//! is written through [`legacy_layout`], which derives one with the old
+//! per-kind slot filling (`~` rules and events fill the claimed `~` slots,
+//! `=` rules the claimed `=` slots), every comment, disabled and fixed piece
+//! kept where it is, new entries appended. That is the only home of the old
+//! algorithm.
 //!
 //! ## Why not `PeriodicDoc::plan`/`apply`/`verify`
 //!
-//! Plan 22 Phase 3 says to reuse them, and the *locating* half is reused:
-//! [`PeriodicDoc::parse`] is what says where each block is. Its **edit
-//! vocabulary** is not, and cannot be — it is `SetAmount` / `Delete` /
-//! `AppendLine` / `AppendBlock`, one written amount at a time, built for a
-//! budget editor that changes a number inside a rule somebody else authored.
-//! A scenario save rewrites a rule's period, its description, its accounts and
-//! its `growth:`/`line:` tags, and `AppendBlock` can only write a *bare*
-//! [`PeriodExpr`] header — so `~ monthly from 2027-04-01`, which is half the
-//! format, is not expressible in it at all. See amendment 28.
-//!
-//! The half of `verify` that matters is kept, and strengthened: the caller
-//! re-parses the written text as a journal and requires the scenario to read
-//! back as the scenario it asked for ([`confirm_round_trip`]).
+//! Plan 22 Phase 3 says to reuse them. Their **edit vocabulary** cannot be —
+//! it is `SetAmount` / `Delete` / `AppendLine` / `AppendBlock`, one written
+//! amount at a time, built for a budget editor that changes a number inside a
+//! rule somebody else authored. A scenario save rewrites a rule's period, its
+//! description, its accounts and its `growth:`/`line:` tags, and `AppendBlock`
+//! can only write a *bare* [`crate::model::PeriodExpr`] header — so
+//! `~ monthly from 2027-04-01`, which is half the format, is not expressible
+//! in it at all. See amendment 28. Where a block begins and ends is still the
+//! parser's: [`super::layout`]'s extents are asserted equal to
+//! [`crate::periodic::PeriodicDoc`]'s and [`crate::auto_edit::block_spans`]'.
 //!
 //! # The mapping between a file and a model
-//!
-//! One `~` block is one **group**, and the group's id is `rule:<block index>`
-//! — the same spelling [`super::seed_scenario`] gives the journal's own rules,
-//! so a seeded scenario and a loaded one are indistinguishable in shape.
 //!
 //! | file | model |
 //! |---|---|
 //! | `~ monthly  projection` with N postings | N [`ScenarioLine`]s sharing `group: "rule:K"` |
 //! | `~ 2027-03-01  Series A` | one [`ScenarioEvent`] with `id: "rule:K"` |
+//! | `= QUERY` block | one [`ScenarioAutoRule`], `key: "auto:B"`, `block: Some(B)` |
+//! | a commented-out `~` block (plan 31 C7) | its lines under `group: "off:K"` (or an event `off:K`), its layout item `disabled` |
+//! | a commented-out `=` block | a [`ScenarioAutoRule`] `key: "auto:off:K"`, its layout item `disabled` |
+//! | a free comment run / `comment` block | a [`ScenarioComment`] `comment:N` |
+//! | anything else | a [`FixedPiece`] `fixed:N` |
 //! | a posting's `; line: <id>` | that line's logical-row id (a step change's two segments share it) |
 //! | a posting's `; growth: 3%/yr` | that line's [`Growth`] |
 //! | a `; growth:` on an ASSET-typed account | [`LineRole::Asset`]: the amount is the CONTRIBUTION |
 //! | an asset row's `; opening: 200000` | that row's balance override |
+//! | a posting's other comment text | [`ScenarioLine::comment`] (plan 31 C6) |
+//! | a rule header's comment | [`ScenarioLine::rule_comment`] / [`ScenarioEvent::comment`] |
+//!
+//! K is the block's index among the file's active `~` blocks (or its disabled
+//! ones, for `off:K`), B among its active `=` blocks — the same spelling
+//! [`super::seed_scenario`] gives the journal's own rules.
 //!
 //! # Why reading needs the account types
 //!
@@ -75,18 +106,23 @@
 //! The engine treats the two identically, and the tab shows both in the same
 //! section, so nothing a user can see moves.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ops::Range;
 
 use crate::decimal::Dec;
 use crate::edit::render_amount;
-use crate::model::{AccountName, Amount, PeriodKind, PeriodicTransaction, Posting};
+use crate::model::{
+    AccountName, Amount, AutoPostingRule, PeriodKind, PeriodicTransaction, Posting,
+};
 use crate::parse::{self, ParseError};
-use crate::periodic::{MAX_ACCOUNT_BYTES, MAX_DESCRIPTION_BYTES, PeriodicDoc};
-use crate::projections::discovery::{Header, parse_header};
+use crate::periodic::{MAX_ACCOUNT_BYTES, MAX_DESCRIPTION_BYTES};
+use crate::projections::discovery::parse_header;
+use crate::projections::layout::{self, Confirmed, RawKind};
 use crate::projections::{
-    DEFAULT_GAINS_ACCOUNT, Growth, GrowthUnit, LineRole, Scenario, ScenarioAutoRule, ScenarioEvent,
-    ScenarioLine, rule_counter, virtual_posting,
+    CommentStyle, DEFAULT_GAINS_ACCOUNT, FixedPiece, Growth, GrowthUnit, ItemKind, LayoutItem,
+    LineRole, Scenario, ScenarioAutoRule, ScenarioComment, ScenarioEvent, ScenarioLine,
+    is_ledgeline_tag, rule_counter, user_comment, virtual_posting,
 };
 use crate::reports::account_types::{
     AccountType, AccountTypes, account_decls_from, declared_types,
@@ -100,6 +136,11 @@ const INDENT: &str = "    ";
 /// The banner Ledgeline writes at the top of a file it created. Display only —
 /// nothing keys off it, and a file without it loads identically.
 const BANNER: &str = "; Ledgeline projection";
+
+/// The divider a NEW section heading is written under: Patrick's own hand
+/// style, 22 semicolons, then `;; Title` (plan 31 C4). Existing headings keep
+/// whatever framing they have.
+const SECTION_DIVIDER: &str = ";;;;;;;;;;;;;;;;;;;;;;";
 
 /// The longest note (a rule description) this module will write. The same cap
 /// `periodic` puts on one, restated by reference rather than by number.
@@ -136,6 +177,17 @@ fn invalid(what: &str) -> SerializeError {
     SerializeError::Invalid(what.to_string())
 }
 
+/// `text` with `\r\n` line ends written `\n`, and a final `\n` supplied when
+/// it has text and none: the form every comparison here is made in.
+fn canonical(text: &str) -> String {
+    let lf = text.replace("\r\n", "\n");
+    if lf.is_empty() || lf.ends_with('\n') {
+        lf
+    } else {
+        lf + "\n"
+    }
+}
+
 // ===========================================================================
 // Reading
 // ===========================================================================
@@ -156,6 +208,9 @@ fn invalid(what: &str) -> SerializeError {
 /// usually declares none of its own and the asset/flow discriminator needs them.
 /// Anything the file DOES declare wins, so a self-contained scenario classifies
 /// correctly with no journal open at all.
+///
+/// The scenario comes back with its [`Scenario::layout`]: every piece of the
+/// file in order, its comments, its fixed text and its disabled entries.
 ///
 /// # Errors
 /// [`SerializeError::Unreadable`] when the text is not a journal.
@@ -228,10 +283,66 @@ struct Read {
     own_commodities: BTreeSet<String>,
     /// The account types the file itself declares.
     own_types: BTreeMap<String, AccountType>,
+    /// The blank lines between the header and the first piece.
+    lead: Range<usize>,
+    /// Every piece, in file order; index for index with the layout.
+    pieces: Vec<Piece>,
+}
+
+/// A commented-out candidate the parser confirmed (plan 31 C7).
+enum Disabled {
+    Tilde(PeriodicTransaction),
+    Auto(AutoPostingRule),
+}
+
+/// One piece of a file as a caller sees it ([`ProjectionDoc::pieces`]): what
+/// it is, its key as read, and where its bytes are in the file's text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PieceView {
+    /// What the piece is.
+    pub kind: ItemKind,
+    /// Commented out.
+    pub disabled: bool,
+    /// Its key as read: the [`LayoutItem::key`] its item was read under.
+    pub key: String,
+    /// The whole piece: attached comment and content.
+    pub span: Range<usize>,
+    /// Its attached comment, a prefix of `span`; empty for none.
+    pub attached: Range<usize>,
+    /// The blank lines after it.
+    pub gap: Range<usize>,
+}
+
+/// One piece of a file: where it is, and what it states.
+#[derive(Debug, Clone)]
+struct Piece {
+    kind: ItemKind,
+    disabled: bool,
+    /// Its key as read.
+    key: String,
+    /// The whole piece: attached comment and content.
+    span: Range<usize>,
+    /// Its attached comment: a prefix of `span`, empty for none.
+    attached: Range<usize>,
+    /// The blank lines after it.
+    gap: Range<usize>,
+    /// A disabled piece's comment prefix, which every content line carries.
+    prefix: Option<String>,
+    /// What it states, as [`Entry::print`] prints it. Equal prints mean
+    /// writing one over the other would change nothing.
+    print: Vec<String>,
+}
+
+impl Piece {
+    /// The piece without its attached comment.
+    fn content(&self) -> Range<usize> {
+        self.attached.end..self.span.end
+    }
 }
 
 /// [`scenario_from_text`], plus every account the text itself declares — what
-/// the writer needs to know before it declares a gains account (Decision 4).
+/// the writer needs to know before it declares a gains account (Decision 4) —
+/// and the file's pieces.
 fn read_scenario(
     text: &str,
     source_name: &str,
@@ -265,7 +376,7 @@ fn read_scenario(
     };
 
     let own_types = declared_types(&account_decls_from(&journal.accounts));
-    let types = scenario_account_types(declared, &own_types);
+    let types = AccountTypes::from_declared(scenario_account_types(declared, &own_types));
 
     let header = parse_header(text);
     let own_accounts = journal
@@ -275,34 +386,158 @@ fn read_scenario(
         .collect();
     // The file's own `=` rules, by the same rule and the same fallback as its
     // `~` rules above: never an includee's.
-    let mine = |rule: &&crate::model::AutoPostingRule| {
-        rule.source_file.as_os_str() == std::ffi::OsStr::new(source_name)
-    };
-    let auto_rules: Vec<crate::model::AutoPostingRule> =
+    let mine =
+        |rule: &&AutoPostingRule| rule.source_file.as_os_str() == std::ffi::OsStr::new(source_name);
+    let auto_rules: Vec<AutoPostingRule> =
         if !journal.auto_rules.iter().any(|rule| mine(&rule)) && journal.source_files.len() <= 1 {
             journal.auto_rules.clone()
         } else {
             journal.auto_rules.iter().filter(mine).cloned().collect()
         };
-    // Each one's identity is its position among the file's own blocks.
-    let auto_rules = auto_rules
-        .into_iter()
-        .enumerate()
-        .map(|(block, rule)| ScenarioAutoRule {
-            block: Some(block),
-            rule,
-        })
-        .collect();
+
+    // The pieces. A commented-out candidate is a disabled entry only when its
+    // stripped text, parsed ALONE under the same styles, is exactly one `~` or
+    // exactly one `=` rule (C7); anything else is prose.
+    let mut disabled: VecDeque<Disabled> = VecDeque::new();
+    let scan = layout::scan(text, header_span(text).end, &mut |stripped| {
+        let parsed = parse::parse_journal_with_styles(stripped, source_name, inherited).ok()?;
+        if !parsed.transactions.is_empty() {
+            return None;
+        }
+        let mut periodic = parsed.periodic_transactions;
+        let mut autos = parsed.auto_rules;
+        match (periodic.len(), autos.len()) {
+            (1, 0) => {
+                disabled.push_back(Disabled::Tilde(periodic.pop()?));
+                Some(Confirmed::Tilde)
+            }
+            (0, 1) => {
+                disabled.push_back(Disabled::Auto(autos.pop()?));
+                Some(Confirmed::Auto)
+            }
+            _ => None,
+        }
+    });
+    let count = |kind: RawKind| {
+        scan.pieces
+            .iter()
+            .filter(|piece| piece.kind == kind)
+            .count()
+    };
+    if count(RawKind::Tilde) != rules.len() || count(RawKind::Auto) != auto_rules.len() {
+        return Err(SerializeError::Unreadable(format!(
+            "the file's {} `~` and {} `=` blocks could not be lined up with the {} and {} rules it \
+             reads as",
+            count(RawKind::Tilde),
+            count(RawKind::Auto),
+            rules.len(),
+            auto_rules.len()
+        )));
+    }
+
+    let mut scenario = Scenario {
+        name: header
+            .name
+            .clone()
+            .unwrap_or_else(|| fallback_name.to_string()),
+        created: header.created.clone(),
+        updated: header.updated.clone(),
+        cash: header.cash.clone().map(AccountName),
+        ..Scenario::default()
+    };
+    let mut rules = rules.into_iter();
+    let mut autos = auto_rules.into_iter();
+    let mut counters = PieceCounters::default();
+    let mut pieces = Vec::with_capacity(scan.pieces.len());
+    for raw in &scan.pieces {
+        let missing = || SerializeError::Unreadable("a block was read twice".to_string());
+        let (kind, key, print) = match raw.kind {
+            RawKind::Tilde => {
+                let rule = rules.next().ok_or_else(missing)?;
+                let key = group_key(counters.next(Counter::Tilde));
+                let (kind, print) = scenario.push_tilde(&key, &rule, &types);
+                (kind, key, print)
+            }
+            RawKind::DisabledTilde => {
+                let Some(Disabled::Tilde(rule)) = disabled.pop_front() else {
+                    return Err(missing());
+                };
+                let key = format!("off:{}", counters.next(Counter::OffTilde));
+                let (kind, print) = scenario.push_tilde(&key, &rule, &types);
+                (kind, key, print)
+            }
+            RawKind::Auto | RawKind::DisabledAuto => {
+                let (rule, block, key) = if raw.kind == RawKind::Auto {
+                    let block = counters.next(Counter::Auto);
+                    (
+                        autos.next().ok_or_else(missing)?,
+                        Some(block),
+                        format!("auto:{block}"),
+                    )
+                } else {
+                    let Some(Disabled::Auto(rule)) = disabled.pop_front() else {
+                        return Err(missing());
+                    };
+                    (
+                        rule,
+                        None,
+                        format!("auto:off:{}", counters.next(Counter::OffAuto)),
+                    )
+                };
+                let print = vec![canonical(&rule.raw)];
+                scenario.auto_rules.push(ScenarioAutoRule {
+                    block,
+                    key: key.clone(),
+                    rule,
+                });
+                (ItemKind::Auto, key, print)
+            }
+            RawKind::Note | RawKind::Section | RawKind::Block => {
+                let key = format!("comment:{}", counters.next(Counter::Comment));
+                let raw_text = canonical(&text[raw.span.clone()]);
+                scenario.comments.push(ScenarioComment {
+                    key: key.clone(),
+                    style: match raw.kind {
+                        RawKind::Note => CommentStyle::Note,
+                        RawKind::Section => CommentStyle::Section,
+                        _ => CommentStyle::Block,
+                    },
+                    raw: raw_text.clone(),
+                });
+                (ItemKind::Comment, key, vec![raw_text])
+            }
+            RawKind::Fixed => {
+                let key = format!("fixed:{}", counters.next(Counter::Fixed));
+                let raw_text = canonical(&text[raw.span.clone()]);
+                scenario.fixed.push(FixedPiece {
+                    key: key.clone(),
+                    raw: raw_text.clone(),
+                });
+                (ItemKind::Fixed, key, vec![raw_text])
+            }
+        };
+        let disabled = matches!(raw.kind, RawKind::DisabledTilde | RawKind::DisabledAuto);
+        scenario.layout.push(LayoutItem {
+            kind,
+            key: key.clone(),
+            origin: Some(pieces.len()),
+            disabled,
+            attached: canonical(&text[raw.attached.clone()]),
+        });
+        pieces.push(Piece {
+            kind,
+            disabled,
+            key,
+            span: raw.span.clone(),
+            attached: raw.attached.clone(),
+            gap: raw.gap.clone(),
+            prefix: raw.prefix.clone(),
+            print,
+        });
+    }
+
     Ok(Read {
-        scenario: Scenario {
-            auto_rules,
-            ..scenario_from_rules(
-                &rules,
-                &header,
-                fallback_name,
-                &AccountTypes::from_declared(types),
-            )
-        },
+        scenario,
         own_accounts,
         own_commodities: journal
             .commodity_styles
@@ -310,60 +545,117 @@ fn read_scenario(
             .map(|(commodity, _)| commodity.0.clone())
             .collect(),
         own_types,
+        lead: scan.lead,
+        pieces,
     })
 }
 
-/// Build the model from a file's `~` rules and its header.
-fn scenario_from_rules(
-    rules: &[PeriodicTransaction],
-    header: &Header,
-    fallback_name: &str,
-    types: &AccountTypes,
-) -> Scenario {
-    let mut lines = Vec::new();
-    let mut events = Vec::new();
-    for (index, rule) in rules.iter().enumerate() {
-        let key = group_key(index);
+/// The per-kind ordinals keys are made of.
+#[derive(Default)]
+struct PieceCounters([usize; 6]);
+
+#[derive(Clone, Copy)]
+enum Counter {
+    Tilde,
+    OffTilde,
+    Auto,
+    OffAuto,
+    Comment,
+    Fixed,
+}
+
+impl PieceCounters {
+    /// The next ordinal of `counter`, counting it.
+    fn next(&mut self, counter: Counter) -> usize {
+        let slot = &mut self.0[counter as usize];
+        *slot += 1;
+        *slot - 1
+    }
+}
+
+impl Scenario {
+    /// Add one `~` rule under `key`: an event when it is the single-date form,
+    /// else a group of lines. What kind it became, and what it states.
+    fn push_tilde(
+        &mut self,
+        key: &str,
+        rule: &PeriodicTransaction,
+        types: &AccountTypes,
+    ) -> (ItemKind, Vec<String>) {
         match event_date(rule) {
-            Some(date) => events.push(ScenarioEvent {
-                id: key,
-                date,
-                description: rule.description.clone(),
-                // Flattened to one posting per amount, exactly as the wire
-                // flattens an event on the way out — so a scenario that came
-                // from a file and one that came back from a browser have the
-                // same shape.
-                postings: rule
-                    .postings
-                    .iter()
-                    .enumerate()
-                    // The elided posting is the counter, not a stated leg.
-                    .filter(|(index, _)| Some(*index) != rule.elided)
-                    .flat_map(|(_, posting)| {
-                        posting
-                            .amounts
-                            .iter()
-                            .map(|amount| virtual_posting(posting.account.clone(), amount.clone()))
-                    })
-                    .collect(),
-                // The block's amountless posting, as for a recurring rule.
-                counter: rule_counter(rule),
-            }),
-            None => lines.extend(super::lines_from_rule(&key, rule, types)),
+            Some(date) => {
+                let event = event_from_rule(key, date, rule);
+                let print = chunk_print(&Chunk::Event(&event), &Tags::Literal).unwrap_or_default();
+                self.events.push(event);
+                (ItemKind::Event, print)
+            }
+            None => {
+                let lines = super::lines_from_rule(key, rule, types);
+                let print = chunk_print(
+                    &Chunk::Rule {
+                        key,
+                        lines: lines.iter().collect(),
+                    },
+                    &Tags::Literal,
+                )
+                .unwrap_or_default();
+                self.lines.extend(lines);
+                (ItemKind::Rule, print)
+            }
         }
     }
-    Scenario {
-        auto_rules: Vec::new(),
-        name: header
-            .name
-            .clone()
-            .unwrap_or_else(|| fallback_name.to_string()),
-        created: header.created.clone(),
-        updated: header.updated.clone(),
-        lines,
-        events,
-        cash: header.cash.clone().map(AccountName),
+}
+
+/// A single-date `~` rule as a [`ScenarioEvent`].
+fn event_from_rule(key: &str, date: String, rule: &PeriodicTransaction) -> ScenarioEvent {
+    // The elided posting is the counter, not a stated leg.
+    let stated: Vec<&Posting> = rule
+        .postings
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| Some(*index) != rule.elided)
+        .map(|(_, posting)| posting)
+        .collect();
+    ScenarioEvent {
+        id: key.to_string(),
+        date,
+        description: rule.description.clone(),
+        // Flattened to one posting per amount, exactly as the wire flattens an
+        // event on the way out — so a scenario that came from a file and one
+        // that came back from a browser have the same shape.
+        postings: stated
+            .iter()
+            .flat_map(|posting| {
+                posting
+                    .amounts
+                    .iter()
+                    .map(|amount| virtual_posting(posting.account.clone(), amount.clone()))
+            })
+            .collect(),
+        // The block's amountless posting, as for a recurring rule.
+        counter: rule_counter(rule),
+        comment: user_comment(&rule.comment),
+        posting_comments: event_posting_comments(&stated),
     }
+}
+
+/// Each flattened posting's comment: a posting's comment goes with its FIRST
+/// amount, since a save writes one row per amount and the comment once.
+/// Trailing empty ones are dropped, so an event with no comments has none.
+fn event_posting_comments(stated: &[&Posting]) -> Vec<String> {
+    let mut comments: Vec<String> = stated
+        .iter()
+        .flat_map(|posting| {
+            (0..posting.amounts.len()).map(|at| match at {
+                0 => user_comment(&posting.comment),
+                _ => String::new(),
+            })
+        })
+        .collect();
+    while comments.last().is_some_and(String::is_empty) {
+        comments.pop();
+    }
+    comments
 }
 
 /// The date a rule fires on, when it is the single-date form (`~ 2027-03-01`)
@@ -417,11 +709,229 @@ fn parse_message(error: &ParseError) -> String {
 }
 
 // ===========================================================================
+// Comments as text (plan 31 C4)
+// ===========================================================================
+
+/// A comment piece's DISPLAY text: its prefixes stripped (the leading run of
+/// comment characters and one space), and for a section its divider lines
+/// dropped. A `comment` block shows verbatim.
+#[must_use]
+pub fn comment_text(style: CommentStyle, raw: &str) -> String {
+    let raw = canonical(raw);
+    match style {
+        CommentStyle::Block => raw.trim_end_matches('\n').to_string(),
+        CommentStyle::Note | CommentStyle::Section => raw
+            .lines()
+            .filter(|line| style == CommentStyle::Note || !layout::is_divider(line))
+            .map(strip_comment_prefix)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+/// `;; Title` → `Title`.
+fn strip_comment_prefix(line: &str) -> &str {
+    let rest = line.trim_start_matches([';', '#', '*']);
+    rest.strip_prefix(' ').unwrap_or(rest)
+}
+
+/// The file text of a comment piece whose display text is `text`.
+///
+/// - A **note** is written `; ` plus each line (`;` alone for an empty one).
+/// - A **section** edited from `previous` keeps that heading's divider lines
+///   and framing, and rewrites only its other lines, in the prefix its first
+///   one had. A NEW section is Patrick's hand style: 22 semicolons, then
+///   `;; Title` (plan 31 C4).
+/// - A **block** is `comment`, the text, `end comment`.
+///
+/// # Errors
+/// [`SerializeError::Invalid`] for text that would not read back as that
+/// style: a control character, a note line that is a divider, an empty
+/// section, a block containing `end comment`.
+pub fn comment_raw(
+    style: CommentStyle,
+    text: &str,
+    previous: Option<&str>,
+) -> Result<String, SerializeError> {
+    let text = text.replace("\r\n", "\n");
+    if text
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\t')
+    {
+        return Err(invalid("a comment may not contain a control character"));
+    }
+    let lines: Vec<&str> = text.trim_end_matches('\n').split('\n').collect();
+    let raw = match style {
+        CommentStyle::Block => {
+            if lines.iter().any(|line| line.trim() == "end comment") {
+                return Err(invalid(
+                    "a comment block may not contain a line `end comment`, which would end it",
+                ));
+            }
+            let mut out = String::from("comment\n");
+            for line in lines.iter().filter(|_| !text.is_empty()) {
+                out.push_str(line);
+                out.push('\n');
+            }
+            out.push_str("end comment\n");
+            out
+        }
+        CommentStyle::Note => lines
+            .iter()
+            .map(|line| prefixed("; ", line))
+            .collect::<String>(),
+        CommentStyle::Section => {
+            let words: Vec<&str> = lines
+                .iter()
+                .copied()
+                .filter(|line| !line.trim().is_empty())
+                .collect();
+            if words.is_empty() {
+                return Err(invalid("a section heading needs a title"));
+            }
+            section_raw(previous, &words)
+        }
+    };
+    let read_as = comment_style_of(&raw);
+    if read_as != Some(style) {
+        return Err(invalid(&format!(
+            "that text would read back as a {} rather than a {}: {}",
+            read_as.map_or("rule", CommentStyle::as_str),
+            style.as_str(),
+            match style {
+                CommentStyle::Note =>
+                    "a note may not hold a divider line (three or more of - = _ ~ * # ;)",
+                _ => "change the text",
+            }
+        )));
+    }
+    Ok(raw)
+}
+
+/// `prefix` + `line`, trimmed of trailing space; `;` alone for an empty line.
+fn prefixed(prefix: &str, line: &str) -> String {
+    let line = line.trim_end();
+    if line.is_empty() {
+        format!("{}\n", prefix.trim_end())
+    } else {
+        format!("{prefix}{line}\n")
+    }
+}
+
+/// A section heading's raw text: `previous`'s dividers and framing with its
+/// other lines replaced by `words`, or a new heading in the house style.
+fn section_raw(previous: Option<&str>, words: &[&str]) -> String {
+    let previous = previous.map(canonical).unwrap_or_default();
+    let old: Vec<&str> = previous.lines().collect();
+    if !old.iter().any(|line| layout::is_divider(line)) {
+        let mut out = format!("{SECTION_DIVIDER}\n");
+        out.extend(words.iter().map(|word| prefixed(";; ", word)));
+        return out;
+    }
+    // The prefix the heading's own words were written in, `;; ` by default.
+    let prefix =
+        old.iter()
+            .find(|line| !layout::is_divider(line))
+            .map_or(";; ".to_string(), |line| {
+                let body = strip_comment_prefix(line);
+                line[..line.len() - body.len()].to_string()
+            });
+    let prefix = if prefix.trim().is_empty() {
+        ";; ".to_string()
+    } else if prefix.ends_with(' ') {
+        prefix
+    } else {
+        format!("{prefix} ")
+    };
+    let first_word = old
+        .iter()
+        .position(|line| !layout::is_divider(line))
+        .unwrap_or(1.min(old.len()));
+    let mut out = String::new();
+    for (at, line) in old.iter().enumerate() {
+        if at == first_word {
+            out.extend(words.iter().map(|word| prefixed(&prefix, word)));
+        }
+        if layout::is_divider(line) {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if first_word >= old.len() {
+        out.extend(words.iter().map(|word| prefixed(&prefix, word)));
+    }
+    out
+}
+
+/// What `raw`, alone, reads as: a note, a section or a block — or `None`
+/// when it is not one comment piece at all (blank lines, a rule, or a
+/// commented-out rule).
+fn comment_style_of(raw: &str) -> Option<CommentStyle> {
+    let scan = layout::scan(raw, 0, &mut |stripped| {
+        let parsed = parse::parse_journal(stripped, "comment.journal").ok()?;
+        match (parsed.periodic_transactions.len(), parsed.auto_rules.len()) {
+            (1, 0) => Some(Confirmed::Tilde),
+            (0, 1) => Some(Confirmed::Auto),
+            _ => None,
+        }
+    });
+    match scan.pieces.as_slice() {
+        [piece] if piece.gap.is_empty() && scan.lead.is_empty() => match piece.kind {
+            RawKind::Note => Some(CommentStyle::Note),
+            RawKind::Section => Some(CommentStyle::Section),
+            RawKind::Block => Some(CommentStyle::Block),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The ATTACHED comment written above an entry whose comment reads `text`:
+/// `; ` plus each line. Empty text is no comment.
+///
+/// # Errors
+/// [`SerializeError::Invalid`] for text that would not stay attached: a
+/// control character, or a divider line (which would make it a section).
+pub fn attached_raw(text: &str) -> Result<String, SerializeError> {
+    let text = text.replace("\r\n", "\n");
+    let text = text.trim_end_matches('\n');
+    if text.trim().is_empty() {
+        return Ok(String::new());
+    }
+    let raw = comment_raw(CommentStyle::Note, text, None)?;
+    check_attached(&raw)?;
+    Ok(raw)
+}
+
+/// Refuse an attached comment that would not read back attached: every line a
+/// column-1 comment, none blank, none a divider.
+fn check_attached(raw: &str) -> Result<(), SerializeError> {
+    for line in canonical(raw).lines() {
+        if !line.starts_with([';', '#', '*']) {
+            return Err(invalid(
+                "every line of an attached comment must start with `;`, `#` or `*`",
+            ));
+        }
+        if line.chars().any(|c| c.is_control() && c != '\t') {
+            return Err(invalid(
+                "an attached comment may not contain a control character",
+            ));
+        }
+        if layout::is_divider(line) {
+            return Err(invalid(
+                "an attached comment may not hold a divider line (three or more of - = _ ~ * # \
+                 ;): that would make it a section heading, which is never attached",
+            ));
+        }
+    }
+    Ok(())
+}
+
+// ===========================================================================
 // Writing
 // ===========================================================================
 
-/// One projection file's text, with the spans a save rewrites located and what
-/// each of them currently states.
+/// One projection file's text, cut into its pieces, with what each states.
 ///
 /// Immutable: [`ProjectionDoc::apply`] returns a new `String` and never mutates
 /// `self`, so a refused write cannot leave half a document behind.
@@ -429,21 +939,16 @@ fn parse_message(error: &ParseError) -> String {
 pub struct ProjectionDoc {
     text: String,
     newline: Newline,
-    /// The leading run of RECOGNIZED header comment lines. Empty (and of zero
-    /// width) when the file has none, in which case a header is inserted at
-    /// that offset.
-    header: Range<usize>,
-    /// Each `~` block's whole extent, in file order, from [`PeriodicDoc`].
-    blocks: Vec<Range<usize>>,
-    /// What each block says, as [`chunk_print`] prints it.
-    ///
-    /// **This is what makes an unchanged block keep its own bytes.** Without
-    /// it, every save would re-render every rule, and a user's column
-    /// alignment, their two-space-versus-eight indent and their inline spacing
-    /// would all be normalized away by an edit to a different rule. `None` for
-    /// a block this module could not line up with a parsed rule, which makes it
-    /// rewritten — the safe direction.
-    current: Vec<Option<Vec<String>>>,
+    /// The blank lines between the header (the leading run of RECOGNIZED
+    /// header comment lines, [`header_span`]) and the first piece. A save
+    /// re-renders the header and keeps these.
+    lead: Range<usize>,
+    /// Every piece, in file order (plan 31 C5).
+    pieces: Vec<Piece>,
+    /// The scenario as this file states it, keys as read: what
+    /// [`legacy_layout`] restores the pieces a layout-less client never sent
+    /// from (comments, fixed text, disabled entries).
+    read: Scenario,
     /// The account types this document was read under, carried so that
     /// [`confirm_round_trip`] re-reads the written text the same way. Reading
     /// the result under a different classification would compare an asset row
@@ -459,14 +964,10 @@ pub struct ProjectionDoc {
     inherited: Vec<(crate::model::Commodity, crate::model::AmountStyle)>,
     /// Every commodity the FILE itself declares.
     own_commodities: BTreeSet<String>,
-    /// Each of the file's own `=` blocks' whole extent, `=` line through its
-    /// last indented line and that line's terminator, in file order. The index
-    /// is [`ScenarioAutoRule::block`].
-    auto_blocks: Vec<Range<usize>>,
 }
 
 impl ProjectionDoc {
-    /// Locate the spans of an existing file, and read what each block says.
+    /// Cut an existing file into its pieces, and read what each says.
     ///
     /// `source_name` is the file's own path, and `declared` the account types,
     /// for the same reasons [`scenario_from_text`] takes them.
@@ -492,45 +993,24 @@ impl ProjectionDoc {
         declared: &BTreeMap<String, crate::reports::account_types::AccountType>,
         inherited: &[(crate::model::Commodity, crate::model::AmountStyle)],
     ) -> Result<Self, SerializeError> {
-        let doc = PeriodicDoc::parse(text);
-        let blocks: Vec<Range<usize>> = doc
-            .blocks()
-            .iter()
-            .map(|block| block.full.clone())
-            .collect();
         let Read {
             scenario,
             own_accounts,
             own_commodities,
+            lead,
+            pieces,
             ..
         } = read_scenario(text, source_name, "", declared, inherited)?;
-
-        // The blocks this module located, against the rules the journal parser
-        // read. When they line up, each block's print is known and an unedited
-        // one is left alone; when they do not, nothing is claimed to be known
-        // and every block is rewritten.
-        let mut current = vec![None; blocks.len()];
-        let assignment = assign_to(&scenario, blocks.len());
-        if assignment.appended.is_empty() {
-            for (index, (chunk, in_place)) in &assignment.slots {
-                if *in_place {
-                    current[*index] = chunk_print(chunk, &Tags::Literal).ok();
-                }
-            }
-        }
-
-        let auto_blocks = auto_block_spans(text, &scenario.auto_rules);
         Ok(Self {
             newline: Newline::detect(text),
-            header: header_span(text),
-            blocks,
-            current,
+            lead,
+            pieces,
+            read: scenario,
             text: text.to_string(),
             declared: declared.clone(),
             own_accounts,
             inherited: inherited.to_vec(),
             own_commodities,
-            auto_blocks,
         })
     }
 
@@ -540,14 +1020,13 @@ impl ProjectionDoc {
         Self {
             text: String::new(),
             newline: Newline::Lf,
-            header: 0..0,
-            blocks: Vec::new(),
-            current: Vec::new(),
+            lead: 0..0,
+            pieces: Vec::new(),
+            read: Scenario::default(),
             declared: declared.clone(),
             own_accounts: BTreeSet::new(),
             inherited: Vec::new(),
             own_commodities: BTreeSet::new(),
-            auto_blocks: Vec::new(),
         }
     }
 
@@ -562,238 +1041,383 @@ impl ProjectionDoc {
         self
     }
 
-    /// Render `scenario` into this document, rewriting only the header span,
-    /// the `~` blocks whose content actually changed and the `=` blocks whose
-    /// text did ([`Self::auto_splices`]).
+    /// The exact text of piece `origin` (a [`LayoutItem::origin`]), attached
+    /// comment included, `\n` line ends — what an unchanged piece is written
+    /// as (plan 31 C15's `raw`). `None` for a piece the file does not have.
+    #[must_use]
+    pub fn piece_text(&self, origin: usize) -> Option<String> {
+        self.pieces
+            .get(origin)
+            .map(|piece| canonical(&self.text[piece.span.clone()]))
+    }
+
+    /// Every piece of the file, in order: what it is and where its bytes are.
+    #[must_use]
+    pub fn pieces(&self) -> Vec<PieceView> {
+        self.pieces
+            .iter()
+            .map(|piece| PieceView {
+                kind: piece.kind,
+                disabled: piece.disabled,
+                key: piece.key.clone(),
+                span: piece.span.clone(),
+                attached: piece.attached.clone(),
+                gap: piece.gap.clone(),
+            })
+            .collect()
+    }
+
+    /// Render `scenario` into this document (plan 31 C5): the header, the
+    /// lead, then each layout item's body and separator. A scenario with no
+    /// layout is written through [`legacy_layout`].
     ///
     /// # Errors
-    /// [`SerializeError::Invalid`] for a field that cannot be written.
+    /// [`SerializeError::Invalid`] for a field that cannot be written, or a
+    /// layout that does not name the scenario's entries exactly once or moves
+    /// the file's fixed text.
     pub fn apply(&self, scenario: &Scenario) -> Result<String, SerializeError> {
-        let chunks = self.assign(scenario);
+        self.render(&self.resolve(scenario)).map(|(text, _)| text)
+    }
+
+    /// `scenario` with a layout: its own, or [`legacy_layout`]'s.
+    fn resolve<'a>(&self, scenario: &'a Scenario) -> Cow<'a, Scenario> {
+        if scenario.layout.is_empty() {
+            Cow::Owned(legacy_layout(self, scenario))
+        } else {
+            Cow::Borrowed(scenario)
+        }
+    }
+
+    /// The written text, and what it must read back as ([`layout_prints`]'
+    /// rows) for [`confirm_round_trip`].
+    fn render(&self, scenario: &Scenario) -> Result<(String, Vec<String>), SerializeError> {
+        let nl = self.newline.as_str();
+        let entries = Entries::of(scenario)?;
         let values = line_tag_values(scenario);
         let tags = Tags::Assigned(&values);
-        let nl = self.newline.as_str();
+        let mut plan: Vec<Planned<'_>> = scenario
+            .layout
+            .iter()
+            .map(|item| {
+                let entry = entries.resolve(item)?;
+                let print = entry.print(&tags)?;
+                Ok(Planned {
+                    item: Cow::Borrowed(item),
+                    entry,
+                    print,
+                    claim: None,
+                })
+            })
+            .collect::<Result<_, SerializeError>>()?;
+        let claims = self.claim(
+            &scenario.layout,
+            &plan
+                .iter()
+                .map(|planned| planned.print.clone())
+                .collect::<Vec<_>>(),
+        );
+        for (planned, claim) in plan.iter_mut().zip(claims) {
+            planned.claim = claim;
+        }
+        self.keep_fixed(&mut plan);
+        self.check_fixed(&plan)?;
 
-        // Splices, in file order: the header first (it is at offset 0), then
-        // one per block. All of them rendered before a byte is written, so an
-        // invalid field refuses the whole save rather than half of it.
-        let mut splices: Vec<(Range<usize>, String)> = Vec::new();
-        let header = self.render_header(scenario)?;
-        if header != self.text[self.header.clone()] {
-            splices.push((self.header.clone(), header));
-        }
-        for (index, span) in self.blocks.iter().enumerate() {
-            match chunks.slots.get(&index) {
-                Some((chunk, in_place)) => {
-                    // The one comparison that keeps an untouched rule's own
-                    // bytes: what the scenario says about this block, against
-                    // what the block already says. Equal means no splice at
-                    // all, so the user's own layout survives an edit to a
-                    // different rule. A chunk MOVED into this slot by a
-                    // reorder is always rendered: these bytes are another
-                    // rule's.
-                    if *in_place
-                        && self.current[index].as_ref() == Some(&chunk_print(chunk, &tags)?)
-                    {
-                        continue;
-                    }
-                    splices.push((span.clone(), self.render_chunk(chunk, &tags)?));
-                }
-                // The scenario no longer has this block: it goes.
-                None => splices.push((span.clone(), String::new())),
+        // Every body rendered before a byte is assembled, so an invalid field
+        // refuses the whole save rather than half of it.
+        let mut body = self.text[self.lead.clone()].to_string();
+        let mut want = Vec::new();
+        let claims: Vec<Option<usize>> = plan.iter().map(|planned| planned.claim).collect();
+        let kinds: Vec<ItemKind> = plan.iter().map(|planned| planned.item.kind).collect();
+        for (at, planned) in plan.iter().enumerate() {
+            let piece = planned.claim.map(|index| &self.pieces[index]);
+            push_terminated(
+                &mut body,
+                &self.body(&planned.item, &planned.entry, &planned.print, piece, &tags)?,
+                nl,
+            );
+            let separator = self.separator(at, &kinds, &claims);
+            if at + 1 == plan.len() {
+                body.push_str(separator);
+            } else {
+                push_terminated(&mut body, separator, nl);
             }
+            want.extend(item_print(
+                &planned.item,
+                &planned.entry,
+                &planned.print,
+                piece.map(|piece| canonical(&self.text[piece.span.clone()])),
+            ));
         }
-        let (auto_splices, auto_appended) = self.auto_splices(&scenario.auto_rules);
-        splices.extend(auto_splices);
-        splices.sort_by_key(|(span, _)| span.start);
-
-        let mut out = String::with_capacity(self.text.len() + 256);
-        let mut cursor = 0usize;
-        for (span, body) in splices {
-            // `PeriodicDoc`'s spans are ascending and non-overlapping, and the
-            // header span ends at or before the first of them (it is the
-            // leading comment block). A `debug_assert` rather than a branch:
-            // if it were ever false the output would be silently scrambled.
-            debug_assert!(span.start >= cursor, "spans must be ascending");
-            out.push_str(&self.text[cursor..span.start]);
-            out.push_str(&body);
-            cursor = span.end;
+        // The file's own final-newline convention.
+        if !self.text.is_empty() && !self.text.ends_with('\n') {
+            body.truncate(body.trim_end_matches(['\r', '\n']).len());
         }
-        out.push_str(&self.text[cursor..]);
-
-        // Anything the file had no block for goes at EOF, which is where a new
-        // rule goes in every other writer here.
-        if !chunks.appended.is_empty() {
-            if !out.is_empty() && !out.ends_with(nl) {
-                out.push_str(nl);
-            }
-            for chunk in &chunks.appended {
-                if !out.is_empty() && !out.ends_with(&format!("{nl}{nl}")) {
-                    out.push_str(nl);
-                }
-                out.push_str(&self.render_chunk(chunk, &tags)?);
-            }
+        let (mut out, declarations) = self.render_header(scenario, &body)?;
+        // Declarations the header wrote read back as the file's first piece
+        // of fixed text.
+        if let Some(declarations) = declarations {
+            want.insert(0, format!("fixed | {:?}", canonical(&declarations)));
         }
-        // Then every `=` rule the file has no block for, each as its own block.
-        for rule in auto_appended {
-            if !out.is_empty() && !out.ends_with(nl) {
-                out.push_str(nl);
-            }
-            if !out.is_empty() && !out.ends_with(&format!("{nl}{nl}")) {
-                out.push_str(nl);
-            }
-            out.push_str(&with_newline(&rule.rule.raw, nl));
-        }
-        Ok(out)
+        out.push_str(&body);
+        Ok((out, want))
     }
 
-    /// The splices that bring the file's `=` blocks in line with `rules`, and
-    /// the rules that have no block and go at EOF.
+    /// Weave every piece of fixed text the layout does not name back in where
+    /// it is in the file: before the first item written from a later piece.
     ///
-    /// # Identity is the block (plan 30 amendment 12)
-    ///
-    /// A rule CLAIMS a block: first one whose text it still is — its own
-    /// ([`ScenarioAutoRule::block`]), else any other holding exactly its text,
-    /// so an unchanged rule keeps its bytes even when its block number is stale
-    /// or absent (a client from before rules carried one) — and failing both,
-    /// an edited rule claims the block it names. Then, as for `~` blocks
-    /// ([`Assignment`]), the claimed blocks
-    /// are SLOTS filled in the scenario's order (the order hledger applies the
-    /// rules in, which matters: later rules see earlier ones' postings), the
-    /// rules left over are appended, and an unclaimed block is removed — with
-    /// one blank line after it, or before it at the end of the file, so a
-    /// deletion leaves no double gap.
-    ///
-    /// A slot whose bytes already state its rule is not spliced at all, so an
-    /// untouched rule keeps its layout, its comments and its line endings.
-    fn auto_splices<'a>(
-        &self,
-        rules: &'a [ScenarioAutoRule],
-    ) -> (Vec<(Range<usize>, String)>, Vec<&'a ScenarioAutoRule>) {
-        let blocks = &self.auto_blocks;
-        let stated = |index: usize| self.text[blocks[index].clone()].replace('\r', "");
-        // Three passes, most certain first. (1) A rule whose block still holds
-        // exactly its text. (2) A rule whose text some other unclaimed block
-        // holds — an unchanged rule whose block number went stale because the
-        // client kept its scenario across a save that removed an earlier
-        // block. (3) An edited rule, by the block it names, if still free.
-        let mut claimed: BTreeSet<usize> = BTreeSet::new();
-        let mut claims: Vec<Option<usize>> = vec![None; rules.len()];
-        for (rule, claim) in rules.iter().zip(claims.iter_mut()) {
-            if let Some(index) = rule.block.filter(|index| {
-                *index < blocks.len() && stated(*index) == rule.rule.raw && !claimed.contains(index)
-            }) {
-                claimed.insert(index);
-                *claim = Some(index);
+    /// A client never deletes fixed text (it is not editable), so a layout
+    /// without one is a stale layout — typically one read before a save that
+    /// declared a gains account or a commodity under the header — and the
+    /// text stays rather than the save being refused.
+    fn keep_fixed<'a>(&'a self, plan: &mut Vec<Planned<'a>>) {
+        let named: BTreeSet<usize> = plan.iter().filter_map(|planned| planned.claim).collect();
+        for (index, piece) in self.pieces.iter().enumerate() {
+            if piece.kind != ItemKind::Fixed || named.contains(&index) {
+                continue;
             }
+            let Some(fixed) = self.read.fixed.iter().find(|fixed| fixed.key == piece.key) else {
+                continue;
+            };
+            let at = plan
+                .iter()
+                .position(|planned| planned.claim.is_some_and(|claim| claim > index))
+                .unwrap_or(plan.len());
+            plan.insert(
+                at,
+                Planned {
+                    item: Cow::Owned(LayoutItem {
+                        kind: ItemKind::Fixed,
+                        key: piece.key.clone(),
+                        origin: Some(index),
+                        disabled: false,
+                        attached: String::new(),
+                    }),
+                    entry: Entry::Fixed(fixed),
+                    print: piece.print.clone(),
+                    claim: Some(index),
+                },
+            );
         }
-        for (rule, claim) in rules.iter().zip(claims.iter_mut()) {
-            if claim.is_none() {
-                *claim = (0..blocks.len())
-                    .find(|index| !claimed.contains(index) && stated(*index) == rule.rule.raw);
-                if let Some(index) = *claim {
-                    claimed.insert(index);
-                }
-            }
-        }
-        for (rule, claim) in rules.iter().zip(claims.iter_mut()) {
-            if claim.is_none()
-                && let Some(index) = rule.block.filter(|index| *index < blocks.len())
-                && claimed.insert(index)
-            {
-                *claim = Some(index);
-            }
-        }
-        let nl = self.newline.as_str();
-        let mut splices = Vec::new();
-        let mut appended = Vec::new();
-        let mut slots = claimed.iter().copied();
-        for rule in rules {
-            match slots.next() {
-                Some(slot) if stated(slot) == rule.rule.raw => {}
-                Some(slot) => {
-                    splices.push((blocks[slot].clone(), with_newline(&rule.rule.raw, nl)))
-                }
-                None => appended.push(rule),
-            }
-        }
-        let doomed: Vec<Range<usize>> = (0..blocks.len())
-            .filter(|index| !claimed.contains(index))
-            .map(|index| blocks[index].clone())
-            .collect();
-        // The doomed blocks that end the file go as ONE span: removed one by
-        // one, the last would take the blank line before it, which the one
-        // before it has already taken as the blank after it.
-        let (inner, tail) = doomed.split_at(doomed.len() - self.eof_run(&doomed));
-        splices.extend(inner.iter().map(|span| (self.removal(span), String::new())));
-        if let (Some(first), Some(last)) = (tail.first(), tail.last()) {
-            splices.push((self.removal(&(first.start..last.end)), String::new()));
-        }
-        (splices, appended)
     }
 
-    /// How many of `doomed` (ascending block spans) end the file: the last
-    /// reaches EOF and only blank lines separate each from the next.
-    fn eof_run(&self, doomed: &[Range<usize>]) -> usize {
-        if doomed.last().is_none_or(|last| last.end != self.text.len()) {
-            return 0;
-        }
-        1 + doomed
-            .windows(2)
-            .rev()
-            .take_while(|pair| self.text[pair[0].end..pair[1].start].trim().is_empty())
-            .count()
-    }
-
-    /// The bytes deleting the `=` block at `span` removes: the block, plus the
-    /// blank line that separated it from what follows — or, for a block that
-    /// ends the file, from what precedes it, unless that line belongs to a span
-    /// another splice rewrites. `span` may cover several adjacent blocks (see
-    /// [`Self::eof_run`]).
-    fn removal(&self, span: &Range<usize>) -> Range<usize> {
-        let text = &self.text;
-        let blank_at = |start: usize| -> Option<usize> {
-            let rest = &text[start..];
-            let line = rest.split_inclusive('\n').next()?;
-            (line.ends_with('\n') && line.trim().is_empty()).then_some(line.len())
+    /// Which piece each layout item CLAIMS (plan 31 C9), most certain first:
+    ///
+    /// 1. its origin, holding the same content;
+    /// 2. any unclaimed piece of its kind holding the same content — an
+    ///    unchanged entry whose origin went stale;
+    /// 3. its origin alone — an edited entry.
+    ///
+    /// Kinds must match, with disabled and active of one kind, and recurring
+    /// and single-date `~` rules, counted as the same kind. A claim decides
+    /// only which bytes may be reused; correctness is
+    /// [`confirm_round_trip`]'s.
+    fn claim(&self, layout: &[LayoutItem], prints: &[Vec<String>]) -> Vec<Option<usize>> {
+        let fits = |item: &LayoutItem, index: usize| {
+            self.pieces
+                .get(index)
+                .is_some_and(|piece| kind_class(piece.kind) == kind_class(item.kind))
         };
-        let preceded_by_blank = span.start == 0
-            || text[..span.start].ends_with("\n\n")
-            || text[..span.start].ends_with("\n\r\n");
-        if preceded_by_blank && let Some(len) = blank_at(span.end) {
-            return span.start..span.end + len;
-        }
-        if span.end == text.len() && span.start > 0 {
-            let before = &text[..span.start];
-            let line_start = before[..before.len() - 1]
-                .rfind('\n')
-                .map_or(0, |at| at + 1);
-            let free = self.header.end <= line_start
-                && self
-                    .blocks
-                    .iter()
-                    .chain(&self.auto_blocks)
-                    .all(|other| other.end <= line_start || other.start >= span.start);
-            if before[line_start..].trim().is_empty() && line_start < span.start && free {
-                return line_start..span.end;
+        let mut taken = vec![false; self.pieces.len()];
+        let mut claims: Vec<Option<usize>> = vec![None; layout.len()];
+        for (at, item) in layout.iter().enumerate() {
+            if let Some(origin) = item.origin
+                && fits(item, origin)
+                && !taken[origin]
+                && self.pieces[origin].print == prints[at]
+            {
+                taken[origin] = true;
+                claims[at] = Some(origin);
             }
         }
-        span.clone()
+        let mut by_print: BTreeMap<(u8, &[String]), VecDeque<usize>> = BTreeMap::new();
+        for (index, piece) in self.pieces.iter().enumerate() {
+            if !taken[index] {
+                by_print
+                    .entry((kind_class(piece.kind), piece.print.as_slice()))
+                    .or_default()
+                    .push_back(index);
+            }
+        }
+        for (at, item) in layout.iter().enumerate() {
+            if claims[at].is_some() {
+                continue;
+            }
+            if let Some(queue) = by_print.get_mut(&(kind_class(item.kind), prints[at].as_slice())) {
+                while let Some(index) = queue.pop_front() {
+                    if !taken[index] {
+                        taken[index] = true;
+                        claims[at] = Some(index);
+                        break;
+                    }
+                }
+            }
+        }
+        for (at, item) in layout.iter().enumerate() {
+            if claims[at].is_none()
+                && let Some(origin) = item.origin
+                && fits(item, origin)
+                && !taken[origin]
+            {
+                taken[origin] = true;
+                claims[at] = Some(origin);
+            }
+        }
+        claims
     }
 
-    /// Work out which scenario chunk each existing block holds, and which
-    /// chunks have no block yet.
-    fn assign<'a>(&self, scenario: &'a Scenario) -> Assignment<'a> {
-        assign_to(scenario, self.blocks.len())
+    /// Fixed text stays put (plan 31 C5): every fixed item is a piece of
+    /// this file, and they keep their order among themselves.
+    fn check_fixed(&self, plan: &[Planned<'_>]) -> Result<(), SerializeError> {
+        let mut last: Option<usize> = None;
+        for planned in plan
+            .iter()
+            .filter(|planned| planned.item.kind == ItemKind::Fixed)
+        {
+            let Some(index) = planned.claim else {
+                return Err(invalid(&format!(
+                    "`{}` is file text this file does not hold; file text can only stay where it \
+                     is in the file it was read from",
+                    planned.item.key
+                )));
+            };
+            if last.is_some_and(|last| index < last) {
+                return Err(invalid(
+                    "file text (account declarations, transactions, directives) keeps its order; \
+                     other entries can move past it, but it cannot be reordered",
+                ));
+            }
+            last = Some(index);
+        }
+        Ok(())
+    }
+
+    /// One layout item's text, per plan 31 C5's body rule.
+    fn body(
+        &self,
+        item: &LayoutItem,
+        entry: &Entry<'_>,
+        print: &[String],
+        piece: Option<&Piece>,
+        tags: &Tags<'_>,
+    ) -> Result<String, SerializeError> {
+        let nl = self.newline.as_str();
+        let unchanged = piece.filter(|piece| piece.print == print);
+        match entry {
+            Entry::Fixed(_) => piece
+                .map(|piece| self.text[piece.span.clone()].to_string())
+                .ok_or_else(|| invalid("file text cannot be added by a save")),
+            Entry::Comment(comment) => {
+                if let Some(piece) = unchanged {
+                    return Ok(self.text[piece.span.clone()].to_string());
+                }
+                if comment_style_of(&canonical(&comment.raw)) != Some(comment.style) {
+                    return Err(invalid(&format!(
+                        "comment `{}` does not read back as a {}",
+                        comment.key,
+                        comment.style.as_str()
+                    )));
+                }
+                Ok(with_newline(&canonical(&comment.raw), nl))
+            }
+            Entry::Chunk(_) | Entry::Auto(_) => {
+                let attached = match piece {
+                    Some(piece)
+                        if canonical(&self.text[piece.attached.clone()])
+                            == canonical(&item.attached) =>
+                    {
+                        self.text[piece.attached.clone()].to_string()
+                    }
+                    _ => {
+                        let raw = canonical(&item.attached);
+                        check_attached(&raw)?;
+                        with_newline(&raw, nl)
+                    }
+                };
+                let kept = unchanged.and_then(|piece| self.toggled(piece, item.disabled));
+                let content = match kept {
+                    Some(content) => content,
+                    None => {
+                        let rendered = match entry {
+                            Entry::Chunk(chunk) => self.render_chunk(chunk, tags)?,
+                            Entry::Auto(rule) => with_newline(&canonical(&rule.rule.raw), nl),
+                            Entry::Comment(_) | Entry::Fixed(_) => unreachable!("matched above"),
+                        };
+                        if item.disabled {
+                            comment_out(&rendered)
+                        } else {
+                            rendered
+                        }
+                    }
+                };
+                let mut out = attached;
+                push_terminated(&mut out, &content, nl);
+                Ok(out)
+            }
+        }
+    }
+
+    /// An unchanged piece's content bytes, commented out or uncommented line
+    /// by line when only its disabled flag changed (plan 31 C7). `None` when
+    /// they cannot be (a line without the piece's prefix), and it is rendered.
+    fn toggled(&self, piece: &Piece, disabled: bool) -> Option<String> {
+        let bytes = &self.text[piece.content()];
+        match (piece.disabled, disabled) {
+            (was, now) if was == now => Some(bytes.to_string()),
+            (false, _) => Some(comment_out(bytes)),
+            (true, _) => {
+                let prefix = piece.prefix.as_deref()?;
+                bytes
+                    .split_inclusive('\n')
+                    .map(|line| line.strip_prefix(prefix))
+                    .collect::<Option<String>>()
+            }
+        }
+    }
+
+    /// What follows layout item `at` (plan 31 C5's separator rule).
+    fn separator(&self, at: usize, kinds: &[ItemKind], claims: &[Option<usize>]) -> &str {
+        let nl = self.newline.as_str();
+        let last = at + 1 == claims.len();
+        // What the file ended with after its last piece.
+        let trailing = self
+            .pieces
+            .last()
+            .map_or("", |piece| &self.text[piece.gap.clone()]);
+        let Some(index) = claims[at] else {
+            return if last { trailing } else { nl };
+        };
+        let piece = &self.pieces[index];
+        let gap = &self.text[piece.gap.clone()];
+        if last {
+            return if index + 1 == self.pieces.len() {
+                gap
+            } else {
+                trailing
+            };
+        }
+        if claims[at + 1] == Some(index + 1) || !gap.is_empty() {
+            return gap;
+        }
+        // Fixed text that had no gap keeps none — unless fixed text now follows
+        // it, which would read back as one piece.
+        if piece.kind == ItemKind::Fixed && kinds[at + 1] != ItemKind::Fixed {
+            return "";
+        }
+        nl
     }
 
     /// The header comment block, as this save wants it written.
     ///
     /// Every line is rewritten on every save: `created:` is carried through
     /// from what was loaded, `updated:` is whatever the caller set. A blank
-    /// line follows it when there is anything after it, so the header cannot be
-    /// glued onto a directive.
-    fn render_header(&self, scenario: &Scenario) -> Result<String, SerializeError> {
+    /// line follows it when there is anything after it (`rest`), so the
+    /// header cannot be glued onto a directive. Also the declarations it
+    /// wrote, if any, which the next read reads as fixed text.
+    fn render_header(
+        &self,
+        scenario: &Scenario,
+        rest: &str,
+    ) -> Result<(String, Option<String>), SerializeError> {
         let nl = self.newline.as_str();
         let mut out = String::new();
         out.push_str(BANNER);
@@ -821,6 +1445,12 @@ impl ProjectionDoc {
         // read's header span ends before them and a re-save is byte-identical.
         let mut declarations = self.commodity_declarations(scenario);
         declarations.extend(self.gains_declarations(scenario)?);
+        let declared = (!declarations.is_empty()).then(|| {
+            declarations
+                .iter()
+                .map(|declaration| format!("{declaration}\n"))
+                .collect::<String>()
+        });
         if !declarations.is_empty() {
             out.push_str(nl);
             for declaration in declarations {
@@ -828,14 +1458,13 @@ impl ProjectionDoc {
                 out.push_str(nl);
             }
         }
-        // A blank line, unless the header is the whole file. `trim_start` on
+        // A blank line, unless the header is the whole file. `starts_with` on
         // the remainder rather than a length test: a file that already begins
         // its body with a blank line must not gain a second one on every save.
-        let rest = &self.text[self.header.end..];
         if !rest.is_empty() && !rest.starts_with(['\n', '\r']) {
             out.push_str(nl);
         }
-        Ok(out)
+        Ok((out, declared))
     }
 
     /// `commodity $1,000.00` for each commodity the scenario's amounts use that
@@ -910,7 +1539,7 @@ impl ProjectionDoc {
     /// One `~` block, header line and postings, terminated.
     fn render_chunk(&self, chunk: &Chunk<'_>, tags: &Tags<'_>) -> Result<String, SerializeError> {
         let nl = self.newline.as_str();
-        let (period, description, rows) = match chunk {
+        let (period, description, comment, rows) = match chunk {
             Chunk::Rule { key, lines } => {
                 let period = lines
                     .first()
@@ -926,6 +1555,7 @@ impl ProjectionDoc {
                     ));
                 }
                 let description = lines.first().map_or("", |line| line.note.as_str());
+                let comment = lines.first().map_or("", |line| line.rule_comment.as_str());
                 let counter = block_counter(lines)?;
                 let mut rows = lines
                     .iter()
@@ -939,39 +1569,62 @@ impl ProjectionDoc {
                             // amountless one balances; one without is the
                             // legacy virtual form, outside balancing.
                             virtual_: line.counter.is_none(),
+                            comment: comment_lines(&line.comment, "a posting's comment")?,
                         })
                     })
                     .collect::<Result<Vec<_>, SerializeError>>()?;
                 if let Some(counter) = counter {
                     rows.push(Row::counter(&counter.0));
                 }
-                (period, description, rows)
+                (period, description, comment, rows)
             }
             Chunk::Event(event) => {
-                let mut rows = event
-                    .postings
-                    .iter()
-                    .flat_map(|posting: &Posting| {
-                        posting.amounts.iter().map(move |amount| Row {
+                let mut rows = Vec::new();
+                for (index, posting) in event.postings.iter().enumerate() {
+                    for (at, amount) in posting.amounts.iter().enumerate() {
+                        let comment = if at == 0 {
+                            event.posting_comments.get(index).map_or("", String::as_str)
+                        } else {
+                            ""
+                        };
+                        rows.push(Row {
                             account: &posting.account.0,
                             amount: Some(amount),
                             // An event's postings carry no `line:` — the event
                             // IS the row, and its id is its block's index.
                             tags: String::new(),
                             virtual_: event.counter.is_none(),
-                        })
-                    })
-                    .collect::<Vec<_>>();
+                            comment: comment_lines(comment, "a posting's comment")?,
+                        });
+                    }
+                }
                 if let Some(counter) = &event.counter {
                     rows.push(Row::counter(&counter.0));
                 }
-                (event.date.as_str(), event.description.as_str(), rows)
+                (
+                    event.date.as_str(),
+                    event.description.as_str(),
+                    event.comment.as_str(),
+                    rows,
+                )
             }
         };
 
         let mut out = String::new();
-        out.push_str(&rule_header(period, description)?);
+        let comment = comment_lines(comment, "a rule's comment")?;
+        let mut header = rule_header(period, description)?;
+        if let Some(first) = comment.first() {
+            header.push_str("  ; ");
+            header.push_str(first);
+        }
+        out.push_str(&header);
         out.push_str(nl);
+        // The rest of the header comment, before the first posting: the
+        // parser folds those lines into the rule's own comment.
+        for line in comment.iter().skip(1) {
+            out.push_str(&format!("{INDENT}; {line}"));
+            out.push_str(nl);
+        }
         // One column for the whole block, so a rule reads as a table. Computed
         // from the rendered accounts rather than guessed, and deterministic, so
         // a scenario written twice produces identical bytes.
@@ -982,14 +1635,584 @@ impl ProjectionDoc {
             .max()
             .unwrap_or(0);
         for row in &rows {
-            out.push_str(&render_row(row, width)?);
-            out.push_str(nl);
+            for line in render_row(row, width)? {
+                out.push_str(&line);
+                out.push_str(nl);
+            }
         }
         Ok(out)
     }
 }
 
-/// Where each chunk of a scenario goes.
+/// Recurring and single-date `~` rules are one kind for a claim; disabled and
+/// active of one kind too (plan 31 C9).
+const fn kind_class(kind: ItemKind) -> u8 {
+    match kind {
+        ItemKind::Rule | ItemKind::Event => 0,
+        ItemKind::Auto => 1,
+        ItemKind::Comment => 2,
+        ItemKind::Fixed => 3,
+    }
+}
+
+/// Append `text` to `out`, then `nl` unless it already ends a line.
+fn push_terminated(out: &mut String, text: &str, nl: &str) {
+    out.push_str(text);
+    if !text.is_empty() && !text.ends_with('\n') {
+        out.push_str(nl);
+    }
+}
+
+/// `; ` before every line (plan 31 C7). Each line keeps its own terminator.
+fn comment_out(text: &str) -> String {
+    text.split_inclusive('\n')
+        .map(|line| format!("; {line}"))
+        .collect()
+}
+
+/// One item a save writes: the layout's own, or fixed text it keeps.
+struct Planned<'a> {
+    item: Cow<'a, LayoutItem>,
+    entry: Entry<'a>,
+    /// What the entry states ([`Entry::print`]).
+    print: Vec<String>,
+    /// The piece it claimed.
+    claim: Option<usize>,
+}
+
+/// A layout item's content in the scenario.
+enum Entry<'a> {
+    /// A `~` rule: a group of lines, or an event.
+    Chunk(Chunk<'a>),
+    /// An `=` rule.
+    Auto(&'a ScenarioAutoRule),
+    /// A free-standing comment.
+    Comment(&'a ScenarioComment),
+    /// Fixed journal text.
+    Fixed(&'a FixedPiece),
+}
+
+impl Entry<'_> {
+    /// What the entry states: [`chunk_print`] for a `~` rule, the text for
+    /// everything else.
+    fn print(&self, tags: &Tags<'_>) -> Result<Vec<String>, SerializeError> {
+        Ok(match self {
+            Entry::Chunk(chunk) => chunk_print(chunk, tags)?,
+            Entry::Auto(rule) => vec![canonical(&rule.rule.raw)],
+            Entry::Comment(comment) => vec![canonical(&comment.raw)],
+            Entry::Fixed(fixed) => vec![canonical(&fixed.raw)],
+        })
+    }
+}
+
+/// Every keyed entry of a scenario, for resolving a layout against.
+struct Entries<'a> {
+    groups: BTreeMap<&'a str, Vec<&'a ScenarioLine>>,
+    events: BTreeMap<&'a str, &'a ScenarioEvent>,
+    autos: BTreeMap<&'a str, &'a ScenarioAutoRule>,
+    comments: BTreeMap<&'a str, &'a ScenarioComment>,
+    fixed: BTreeMap<&'a str, &'a FixedPiece>,
+}
+
+impl<'a> Entries<'a> {
+    /// Index `scenario`, and require its layout to name every entry exactly
+    /// once.
+    fn of(scenario: &'a Scenario) -> Result<Self, SerializeError> {
+        let mut groups: BTreeMap<&str, Vec<&ScenarioLine>> = BTreeMap::new();
+        for line in &scenario.lines {
+            groups.entry(line.group.as_str()).or_default().push(line);
+        }
+        fn unique<'b, T>(
+            items: impl IntoIterator<Item = (&'b str, T)>,
+            what: &str,
+        ) -> Result<BTreeMap<&'b str, T>, SerializeError> {
+            let mut out = BTreeMap::new();
+            for (key, item) in items {
+                if out.insert(key, item).is_some() {
+                    return Err(invalid(&format!("two {what} share the key `{key}`")));
+                }
+            }
+            Ok(out)
+        }
+        let entries = Self {
+            groups,
+            events: unique(
+                scenario
+                    .events
+                    .iter()
+                    .map(|event| (event.id.as_str(), event)),
+                "one-offs",
+            )?,
+            autos: unique(
+                scenario
+                    .auto_rules
+                    .iter()
+                    .map(|rule| (rule.key.as_str(), rule)),
+                "auto rules",
+            )?,
+            comments: unique(
+                scenario
+                    .comments
+                    .iter()
+                    .map(|comment| (comment.key.as_str(), comment)),
+                "comments",
+            )?,
+            fixed: unique(
+                scenario
+                    .fixed
+                    .iter()
+                    .map(|fixed| (fixed.key.as_str(), fixed)),
+                "file text pieces",
+            )?,
+        };
+        let mut named: BTreeSet<(ItemKind, &str)> = BTreeSet::new();
+        for item in &scenario.layout {
+            if !named.insert((item.kind, item.key.as_str())) {
+                return Err(invalid(&format!(
+                    "the layout names {} `{}` twice",
+                    item.kind.as_str(),
+                    item.key
+                )));
+            }
+        }
+        let unnamed = |kind: ItemKind, keys: Vec<&str>| -> Result<(), SerializeError> {
+            match keys.into_iter().find(|key| !named.contains(&(kind, *key))) {
+                Some(key) => Err(invalid(&format!(
+                    "the layout leaves out {} `{key}`; every entry of the scenario must have its \
+                     place in the file",
+                    kind.as_str()
+                ))),
+                None => Ok(()),
+            }
+        };
+        unnamed(ItemKind::Rule, entries.groups.keys().copied().collect())?;
+        unnamed(ItemKind::Event, entries.events.keys().copied().collect())?;
+        unnamed(ItemKind::Auto, entries.autos.keys().copied().collect())?;
+        unnamed(
+            ItemKind::Comment,
+            entries.comments.keys().copied().collect(),
+        )?;
+        // Fixed text the layout leaves out is kept where it is
+        // ([`ProjectionDoc::keep_fixed`]), never dropped.
+        Ok(entries)
+    }
+
+    /// The entry `item` names.
+    fn resolve(&self, item: &'a LayoutItem) -> Result<Entry<'a>, SerializeError> {
+        let missing = || {
+            invalid(&format!(
+                "the layout names {} `{}`, which the scenario does not have",
+                item.kind.as_str(),
+                item.key
+            ))
+        };
+        if item.disabled && matches!(item.kind, ItemKind::Comment | ItemKind::Fixed) {
+            return Err(invalid(&format!(
+                "only a rule, a one-off or an auto rule can be turned off, not {} `{}`",
+                item.kind.as_str(),
+                item.key
+            )));
+        }
+        if !item.attached.is_empty() && matches!(item.kind, ItemKind::Comment | ItemKind::Fixed) {
+            return Err(invalid(&format!(
+                "{} `{}` cannot carry an attached comment",
+                item.kind.as_str(),
+                item.key
+            )));
+        }
+        let key = item.key.as_str();
+        Ok(match item.kind {
+            ItemKind::Rule => {
+                let (key, lines) = self.groups.get_key_value(key).ok_or_else(missing)?;
+                Entry::Chunk(Chunk::Rule {
+                    key,
+                    lines: lines.clone(),
+                })
+            }
+            ItemKind::Event => Entry::Chunk(Chunk::Event(
+                self.events.get(key).copied().ok_or_else(missing)?,
+            )),
+            ItemKind::Auto => Entry::Auto(self.autos.get(key).copied().ok_or_else(missing)?),
+            ItemKind::Comment => {
+                Entry::Comment(self.comments.get(key).copied().ok_or_else(missing)?)
+            }
+            ItemKind::Fixed => Entry::Fixed(self.fixed.get(key).copied().ok_or_else(missing)?),
+        })
+    }
+}
+
+/// What one layout item must read back as, as rows: its kind, its disabled
+/// flag and attached comment, then what it states. `fixed_raw` is the text a
+/// fixed item was written as (its piece's), else its own.
+fn item_print(
+    item: &LayoutItem,
+    entry: &Entry<'_>,
+    print: &[String],
+    fixed_raw: Option<String>,
+) -> Vec<String> {
+    let mut rows = Vec::with_capacity(print.len() + 1);
+    match entry {
+        Entry::Chunk(_) | Entry::Auto(_) => {
+            rows.push(format!(
+                "{} {} | attached {:?}",
+                item.kind.as_str(),
+                if item.disabled { "off" } else { "on" },
+                canonical(&item.attached)
+            ));
+            rows.extend(print.iter().cloned());
+        }
+        Entry::Comment(comment) => rows.push(format!(
+            "comment {} | {:?}",
+            comment.style.as_str(),
+            canonical(&comment.raw)
+        )),
+        Entry::Fixed(fixed) => rows.push(format!(
+            "fixed | {:?}",
+            fixed_raw.unwrap_or_else(|| canonical(&fixed.raw))
+        )),
+    }
+    rows
+}
+
+/// Every layout item of `scenario`, as [`item_print`] prints it: what a
+/// written file must read back as.
+fn layout_prints(scenario: &Scenario, tags: &Tags<'_>) -> Result<Vec<String>, SerializeError> {
+    let entries = Entries::of(scenario)?;
+    let mut rows = Vec::new();
+    for item in &scenario.layout {
+        let entry = entries.resolve(item)?;
+        let print = entry.print(tags)?;
+        rows.extend(item_print(item, &entry, &print, None));
+    }
+    Ok(rows)
+}
+
+// ===========================================================================
+// The legacy layout (plan 31 C8)
+// ===========================================================================
+
+/// The layout a scenario with NONE is written in: today's semantics before
+/// plan 31, exactly.
+///
+/// - `~` rules and events claim the file's active `~` blocks by their
+///   `rule:K` keys ([`assign_to`]), and fill the claimed blocks, each kind
+///   among its own, in scenario order; the rest are appended.
+/// - `=` rules claim the file's active `=` blocks by block number and text
+///   ([`claim_auto_blocks`]), fill them in scenario order, and the rest are
+///   appended after the `~` rules.
+/// - A block nothing claims is removed.
+/// - Every comment, disabled entry and piece of fixed text is kept where it
+///   is: from the scenario when it states one with that key, else from the
+///   file. A comment attached to a block stays with the BLOCK's place, as
+///   comments between blocks always did.
+/// - A `~` rule whose lines state no comment at all inherits its file
+///   block's comments, line by line by id: a client that cannot edit
+///   comments (one from before plan 31) cannot have meant to delete them.
+///
+/// It keeps the FFI, seeds and older clients correct, and is the only home
+/// of the old algorithm.
+#[must_use]
+pub fn legacy_layout(doc: &ProjectionDoc, scenario: &Scenario) -> Scenario {
+    let mut out = scenario.clone();
+    unique_keys(&mut out);
+    inherit_comments(doc, &mut out);
+
+    let off: BTreeSet<(u8, &str)> = doc
+        .pieces
+        .iter()
+        .filter(|piece| piece.disabled)
+        .map(|piece| (kind_class(piece.kind), piece.key.as_str()))
+        .collect();
+    let is_off = |kind: ItemKind, key: &str| off.contains(&(kind_class(kind), key));
+
+    // `~` slots, over the scenario's active entries only.
+    let view = Scenario {
+        lines: out
+            .lines
+            .iter()
+            .filter(|line| !is_off(ItemKind::Rule, &line.group))
+            .cloned()
+            .collect(),
+        events: out
+            .events
+            .iter()
+            .filter(|event| !is_off(ItemKind::Event, &event.id))
+            .cloned()
+            .collect(),
+        ..Scenario::default()
+    };
+    let tilde_blocks = doc
+        .pieces
+        .iter()
+        .filter(|piece| kind_class(piece.kind) == 0 && !piece.disabled)
+        .count();
+    let Assignment { slots, appended } = assign_to(&view, tilde_blocks);
+    let chunk_item = |chunk: &Chunk<'_>| match chunk {
+        Chunk::Rule { key, .. } => (ItemKind::Rule, (*key).to_string()),
+        Chunk::Event(event) => (ItemKind::Event, event.id.clone()),
+    };
+    let tilde_slots: BTreeMap<usize, (ItemKind, String)> = slots
+        .iter()
+        .map(|(block, (chunk, _))| (*block, chunk_item(chunk)))
+        .collect();
+    let tilde_appended: Vec<(ItemKind, String)> = appended.iter().map(chunk_item).collect();
+
+    // `=` slots.
+    let autos: Vec<&ScenarioAutoRule> = out
+        .auto_rules
+        .iter()
+        .filter(|rule| !is_off(ItemKind::Auto, &rule.key))
+        .collect();
+    let auto_blocks: Vec<&Piece> = doc
+        .pieces
+        .iter()
+        .filter(|piece| piece.kind == ItemKind::Auto && !piece.disabled)
+        .collect();
+    let (auto_slots, auto_appended) = claim_auto_blocks(&autos, &auto_blocks);
+
+    let item =
+        |kind: ItemKind, key: String, origin: Option<usize>, disabled, attached| LayoutItem {
+            kind,
+            key,
+            origin,
+            disabled,
+            attached,
+        };
+    let mut layout = Vec::new();
+    let mut restore: Vec<(ItemKind, String)> = Vec::new();
+    let (mut tilde, mut auto) = (0usize, 0usize);
+    for (index, piece) in doc.pieces.iter().enumerate() {
+        let attached = canonical(&doc.text[piece.attached.clone()]);
+        match (piece.kind, piece.disabled) {
+            (ItemKind::Rule | ItemKind::Event, false) => {
+                if let Some((kind, key)) = tilde_slots.get(&tilde) {
+                    layout.push(item(*kind, key.clone(), Some(index), false, attached));
+                }
+                tilde += 1;
+            }
+            (ItemKind::Auto, false) => {
+                if let Some(rule) = auto_slots.get(&auto) {
+                    layout.push(item(
+                        ItemKind::Auto,
+                        rule.key.clone(),
+                        Some(index),
+                        false,
+                        attached,
+                    ));
+                }
+                auto += 1;
+            }
+            (kind, disabled) => {
+                let key = piece.key.as_str();
+                let stated = match kind {
+                    ItemKind::Rule | ItemKind::Event => {
+                        if out.lines.iter().any(|line| line.group == key) {
+                            Some(ItemKind::Rule)
+                        } else if out.events.iter().any(|event| event.id == key) {
+                            Some(ItemKind::Event)
+                        } else {
+                            None
+                        }
+                    }
+                    ItemKind::Auto => out
+                        .auto_rules
+                        .iter()
+                        .any(|rule| rule.key == key)
+                        .then_some(ItemKind::Auto),
+                    ItemKind::Comment => out
+                        .comments
+                        .iter()
+                        .any(|comment| comment.key == key)
+                        .then_some(ItemKind::Comment),
+                    ItemKind::Fixed => out
+                        .fixed
+                        .iter()
+                        .any(|fixed| fixed.key == key)
+                        .then_some(ItemKind::Fixed),
+                };
+                if stated.is_none() {
+                    restore.push((kind, key.to_string()));
+                }
+                layout.push(item(
+                    stated.unwrap_or(kind),
+                    key.to_string(),
+                    Some(index),
+                    disabled,
+                    attached,
+                ));
+            }
+        }
+    }
+    let auto_appended: Vec<String> = auto_appended.iter().map(|rule| rule.key.clone()).collect();
+    for (kind, key) in tilde_appended {
+        layout.push(item(kind, key, None, false, String::new()));
+    }
+    for key in auto_appended {
+        layout.push(item(ItemKind::Auto, key, None, false, String::new()));
+    }
+    for (kind, key) in restore {
+        doc.read.copy_entry(kind, &key, &mut out);
+    }
+    out.layout = layout;
+    out
+}
+
+impl Scenario {
+    /// Copy this scenario's entry `key` of `kind` into `into`.
+    fn copy_entry(&self, kind: ItemKind, key: &str, into: &mut Scenario) {
+        match kind {
+            ItemKind::Rule | ItemKind::Event => {
+                into.lines
+                    .extend(self.lines.iter().filter(|line| line.group == key).cloned());
+                into.events
+                    .extend(self.events.iter().filter(|event| event.id == key).cloned());
+            }
+            ItemKind::Auto => into.auto_rules.extend(
+                self.auto_rules
+                    .iter()
+                    .filter(|rule| rule.key == key)
+                    .cloned(),
+            ),
+            ItemKind::Comment => into.comments.extend(
+                self.comments
+                    .iter()
+                    .filter(|comment| comment.key == key)
+                    .cloned(),
+            ),
+            ItemKind::Fixed => {
+                into.fixed
+                    .extend(self.fixed.iter().filter(|fixed| fixed.key == key).cloned());
+            }
+        }
+    }
+}
+
+/// Give every event and `=` rule a key a layout can name exactly once: a
+/// client from before plan 31 sends `=` rules with none, and nothing stops
+/// one sending two events with one id.
+fn unique_keys(scenario: &mut Scenario) {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for (index, event) in scenario.events.iter_mut().enumerate() {
+        if !seen.insert(event.id.clone()) {
+            event.id = format!("{}#{index}", event.id);
+            seen.insert(event.id.clone());
+        }
+    }
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for (index, rule) in scenario.auto_rules.iter_mut().enumerate() {
+        if rule.key.is_empty() || !seen.insert(rule.key.clone()) {
+            rule.key = format!("auto:in:{index}");
+            seen.insert(rule.key.clone());
+        }
+    }
+}
+
+/// [`legacy_layout`]'s comment inheritance: a `~` rule or event keyed to a
+/// block of `doc` whose lines state no comment at all takes that block's.
+fn inherit_comments(doc: &ProjectionDoc, scenario: &mut Scenario) {
+    let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (index, line) in scenario.lines.iter().enumerate() {
+        groups.entry(line.group.clone()).or_default().push(index);
+    }
+    for (group, members) in groups {
+        let silent = members.iter().all(|&index| {
+            scenario.lines[index].comment.is_empty()
+                && scenario.lines[index].rule_comment.is_empty()
+        });
+        let theirs: Vec<&ScenarioLine> = doc
+            .read
+            .lines
+            .iter()
+            .filter(|line| line.group == group)
+            .collect();
+        if !silent || theirs.is_empty() {
+            continue;
+        }
+        for index in members {
+            let line = &mut scenario.lines[index];
+            line.rule_comment = theirs[0].rule_comment.clone();
+            if let Some(stated) = theirs.iter().find(|theirs| theirs.id == line.id) {
+                line.comment = stated.comment.clone();
+            }
+        }
+    }
+    for event in &mut scenario.events {
+        let silent =
+            event.comment.is_empty() && event.posting_comments.iter().all(String::is_empty);
+        let Some(theirs) = doc.read.events.iter().find(|theirs| theirs.id == event.id) else {
+            continue;
+        };
+        if silent {
+            event.comment = theirs.comment.clone();
+            if theirs.postings.len() == event.postings.len() {
+                event.posting_comments = theirs.posting_comments.clone();
+            }
+        }
+    }
+}
+
+/// Which of the file's active `=` blocks each rule fills, and the rules left
+/// over to append (plan 30 amendment 12, unchanged).
+///
+/// A rule CLAIMS a block: first one whose text it still is — its own
+/// ([`ScenarioAutoRule::block`]), else any other holding exactly its text, so
+/// an unchanged rule keeps its bytes even when its block number is stale or
+/// absent — and failing both, an edited rule claims the block it names. Then
+/// the claimed blocks are SLOTS filled in the scenario's order (the order
+/// hledger applies the rules in), the rules left over are appended, and an
+/// unclaimed block is removed.
+fn claim_auto_blocks<'a>(
+    rules: &[&'a ScenarioAutoRule],
+    blocks: &[&Piece],
+) -> (
+    BTreeMap<usize, &'a ScenarioAutoRule>,
+    Vec<&'a ScenarioAutoRule>,
+) {
+    let stated = |index: usize| blocks[index].print.first().map(String::as_str);
+    let holds =
+        |index: usize, rule: &ScenarioAutoRule| stated(index) == Some(&canonical(&rule.rule.raw));
+    let mut claimed: BTreeSet<usize> = BTreeSet::new();
+    let mut claims: Vec<Option<usize>> = vec![None; rules.len()];
+    for (rule, claim) in rules.iter().zip(claims.iter_mut()) {
+        if let Some(index) = rule.block.filter(|index| {
+            *index < blocks.len() && holds(*index, rule) && !claimed.contains(index)
+        }) {
+            claimed.insert(index);
+            *claim = Some(index);
+        }
+    }
+    for (rule, claim) in rules.iter().zip(claims.iter_mut()) {
+        if claim.is_none() {
+            *claim =
+                (0..blocks.len()).find(|index| !claimed.contains(index) && holds(*index, rule));
+            if let Some(index) = *claim {
+                claimed.insert(index);
+            }
+        }
+    }
+    for (rule, claim) in rules.iter().zip(claims.iter_mut()) {
+        if claim.is_none()
+            && let Some(index) = rule.block.filter(|index| *index < blocks.len())
+            && claimed.insert(index)
+        {
+            *claim = Some(index);
+        }
+    }
+    let mut slots = BTreeMap::new();
+    let mut appended = Vec::new();
+    let mut free = claimed.iter().copied();
+    for rule in rules {
+        match free.next() {
+            Some(slot) => {
+                slots.insert(slot, *rule);
+            }
+            None => appended.push(*rule),
+        }
+    }
+    (slots, appended)
+}
+
+/// Where each chunk of a scenario goes, under [`legacy_layout`].
 ///
 /// # Order is the scenario's (the what-if table's Move up / Move down)
 ///
@@ -998,16 +2221,15 @@ impl ProjectionDoc {
 /// them in. The block a chunk claims (by its `rule:K` key) is not necessarily
 /// where it is written: the claimed blocks are SLOTS, and the chunks fill them
 /// in scenario order. So reordering two rows reorders their blocks while every
-/// byte between blocks (a comment, a transaction) stays where it was, and a
-/// deleted block still removes its own slot rather than shifting every later
-/// block's bytes.
+/// other piece (a comment, a transaction) stays where it was, and a deleted
+/// block still removes its own slot rather than shifting every later block.
 ///
 /// Rules and events fill separate slot sets. A file that interleaves the two —
 /// a rule, a dated one-off, another rule — keeps that interleaving, because the
 /// table orders each kind only among its own.
 struct Assignment<'a> {
     /// Block index → the chunk written there, and whether that chunk CLAIMED
-    /// this very block. Only an in-place chunk may keep the block's own bytes.
+    /// this very block.
     slots: BTreeMap<usize, (Chunk<'a>, bool)>,
     /// Chunks with no slot, in scenario order: rules first, then events.
     appended: Vec<Chunk<'a>>,
@@ -1103,21 +2325,35 @@ fn assign_to<'a>(scenario: &'a Scenario, blocks: usize) -> Assignment<'a> {
     Assignment { slots, appended }
 }
 
-/// Each block's key (a rule's group, an event's id) in the order a save writes
-/// the blocks, which is the order hledger reads the rules in and so the order
-/// `hledger print --forecast` lists two same-day generated transactions in.
+/// Each `~` block's key (a rule's group, an event's id) in the order a save
+/// writes the blocks, which is the order hledger reads the rules in and so the
+/// order `hledger print --forecast` lists two same-day generated transactions
+/// in.
 ///
-/// It is [`assign_to`]'s, with every `rule:K` key taken as a block the file
-/// has: true of any scenario read from its file, whose keys ARE the block
-/// indices. Keys with no slot follow, rules first, as a save appends them.
+/// With a layout, it is the layout's order (plan 31 C5: the file's order).
+/// Without one it is [`assign_to`]'s, with every `rule:K` key taken as a block
+/// the file has: true of any scenario read from its file, whose keys ARE the
+/// block indices. Keys with no slot follow, rules first, as a save appends
+/// them.
 pub(crate) fn block_order(scenario: &Scenario) -> Vec<&str> {
     let Assignment { slots, appended } = assign_to(scenario, usize::MAX);
-    slots
+    let legacy = slots
         .into_values()
         .map(|(chunk, _)| chunk)
         .chain(appended)
-        .map(Chunk::into_key)
-        .collect()
+        .map(Chunk::into_key);
+    if scenario.layout.is_empty() {
+        return legacy.collect();
+    }
+    let mut keys: Vec<&str> = scenario
+        .layout
+        .iter()
+        .filter(|item| matches!(item.kind, ItemKind::Rule | ItemKind::Event))
+        .map(|item| item.key.as_str())
+        .collect();
+    let named: BTreeSet<&str> = keys.iter().copied().collect();
+    keys.extend(legacy.filter(|key| !named.contains(key)));
+    keys
 }
 
 /// Which `line:` value each row of a chunk states.
@@ -1139,6 +2375,16 @@ impl Tags<'_> {
     }
 }
 
+/// A comment as one line per string: trimmed, empty lines dropped — the form
+/// both sides of a comparison are made in, and the form a save writes.
+fn normal_comment(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// What one chunk SAYS, as a list of strings — one per row, headed by the
 /// rule's own line.
 ///
@@ -1147,6 +2393,8 @@ impl Tags<'_> {
 /// the block's own position and renumbers whenever a block is added or removed,
 /// and not a row's id unless a `line:` tag is actually written for it. Two
 /// prints being equal means writing one over the other would change nothing.
+/// Comments are fields the file states (plan 31 C6), so changing only one is
+/// a change.
 ///
 /// Used for two different jobs, which is why it is one function: deciding
 /// whether a block needs rewriting at all, and proving the written file reads
@@ -1164,10 +2412,14 @@ fn chunk_print(chunk: &Chunk<'_>, tags: &Tags<'_>) -> Result<Vec<String>, Serial
             // Trimmed, as `rule_header` writes it: a description typed with a
             // trailing space is the same description.
             let note = lines.first().map_or("", |line| line.note.trim());
-            rows.push(format!("~ {period} | {note}"));
+            let comment = lines
+                .first()
+                .map_or(String::new(), |line| normal_comment(&line.rule_comment));
+            rows.push(format!("~ {period} | {note} | comment {comment:?}"));
             for (at, line) in lines.iter().enumerate() {
                 rows.push(format!(
-                    "{} {} | {} | line {} | growth {} | opening {} | every {} | counter {} | gains {}",
+                    "{} {} | {} | line {} | growth {} | opening {} | every {} | counter {} | gains \
+                     {} | comment {:?}",
                     line.account.0,
                     render_scenario_amount(&line.amount)?,
                     line.role.as_str(),
@@ -1181,25 +2433,36 @@ fn chunk_print(chunk: &Chunk<'_>, tags: &Tags<'_>) -> Result<Vec<String>, Serial
                         .transpose()?
                         .unwrap_or_else(|| "-".to_string()),
                     line.period.raw,
-                    line.counter.as_ref().map_or("-", |counter| counter.0.as_str()),
+                    line.counter
+                        .as_ref()
+                        .map_or("-", |counter| counter.0.as_str()),
                     line.gains.as_ref().map_or("-", |gains| gains.0.as_str()),
+                    normal_comment(&line.comment),
                 ));
             }
         }
         Chunk::Event(event) => {
             rows.push(format!(
-                "~ {} | {} | counter {}",
+                "~ {} | {} | counter {} | comment {:?}",
                 event.date,
                 event.description.trim(),
                 event
                     .counter
                     .as_ref()
-                    .map_or("-", |counter| counter.0.as_str())
+                    .map_or("-", |counter| counter.0.as_str()),
+                normal_comment(&event.comment)
             ));
-            for posting in &event.postings {
-                for amount in &posting.amounts {
+            for (index, posting) in event.postings.iter().enumerate() {
+                for (at, amount) in posting.amounts.iter().enumerate() {
+                    let comment = match at {
+                        0 => event
+                            .posting_comments
+                            .get(index)
+                            .map_or(String::new(), |comment| normal_comment(comment)),
+                        _ => String::new(),
+                    };
                     rows.push(format!(
-                        "{} {}",
+                        "{} {} | comment {comment:?}",
                         posting.account.0,
                         render_scenario_amount(amount)?
                     ));
@@ -1325,6 +2588,8 @@ struct Row<'a> {
     tags: String,
     /// Written `(account)`: a pre-plan-28 line with no counter-account.
     virtual_: bool,
+    /// The user's own comment, one string per line (plan 31 C6).
+    comment: Vec<&'a str>,
 }
 
 impl<'a> Row<'a> {
@@ -1336,6 +2601,7 @@ impl<'a> Row<'a> {
             amount: None,
             tags: String::new(),
             virtual_: false,
+            comment: Vec::new(),
         }
     }
 
@@ -1395,13 +2661,22 @@ const fn type_letter(ty: AccountType) -> &'static str {
     }
 }
 
-/// `    (account)   $1,200.00  ; growth: 3%/yr`
-fn render_row(row: &Row<'_>, width: usize) -> Result<String, SerializeError> {
+/// `    (account)   $1,200.00  ; growth: 3%/yr`, then any continuation
+/// comment lines.
+///
+/// # Where the user's comment goes (plan 31 C6)
+///
+/// Ledgeline's tags first, then the user's text: after `, ` on the same line
+/// when its first line has no tag of its own, else on continuation lines. So
+/// hledger's tag grammar, where a value runs to the next comma, can never read
+/// the user's words as part of a Ledgeline tag's value, and a user's own
+/// `owner: alex` stays a tag of its own.
+fn render_row(row: &Row<'_>, width: usize) -> Result<Vec<String>, SerializeError> {
     check_account(row.account)?;
     let account = row.rendered_account();
     let Some(amount) = row.amount else {
         // The amountless counter posting: the account and nothing else.
-        return Ok(format!("{INDENT}{account}"));
+        return Ok(vec![format!("{INDENT}{account}")]);
     };
     let amount = render_scenario_amount(amount)?;
     // `chars`, not `len`: a padding computed in bytes puts a multi-byte account
@@ -1409,11 +2684,57 @@ fn render_row(row: &Row<'_>, width: usize) -> Result<String, SerializeError> {
     // what separates an account from an amount.
     let pad = width.saturating_sub(account.chars().count()) + 2;
     let mut line = format!("{INDENT}{account}{}{amount}", " ".repeat(pad));
+    let mut rest: &[&str] = &row.comment;
     if !row.tags.is_empty() {
         line.push_str("  ; ");
         line.push_str(&row.tags);
+        if let Some(first) = rest.first().filter(|first| !has_tag(first)) {
+            line.push_str(", ");
+            line.push_str(first);
+            rest = &rest[1..];
+        }
+    } else if let Some(first) = rest.first() {
+        line.push_str("  ; ");
+        line.push_str(first);
+        rest = &rest[1..];
     }
-    Ok(line)
+    Ok(std::iter::once(line)
+        .chain(rest.iter().map(|text| format!("{INDENT}{INDENT}; {text}")))
+        .collect())
+}
+
+/// Whether a comment line holds a tag, by the parser's own rule.
+fn has_tag(line: &str) -> bool {
+    line.split(',')
+        .any(|segment| parse::tag_in_segment(segment).is_some())
+}
+
+/// A user's comment (plan 31 C6) as the lines a save writes: trimmed, empty
+/// ones dropped.
+///
+/// # Errors
+/// [`SerializeError::Invalid`] for a control character, or for one of
+/// Ledgeline's own tags, which the reader takes out of a comment and so could
+/// never read back.
+fn comment_lines<'a>(text: &'a str, what: &str) -> Result<Vec<&'a str>, SerializeError> {
+    text.split('\n')
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            if line.chars().any(|c| c.is_control() && c != '\t') {
+                return Err(invalid(&format!(
+                    "{what} may not contain a control character"
+                )));
+            }
+            if line.split(',').any(is_ledgeline_tag) {
+                return Err(invalid(&format!(
+                    "{what} may not state Ledgeline's own `line:`, `growth:`, `opening:` or \
+                     `gains:` tag; those are the row's own fields"
+                )));
+            }
+            Ok(line)
+        })
+        .collect()
 }
 
 /// `~ PERIOD  DESCRIPTION`, or `~ PERIOD` when there is none.
@@ -1743,16 +3064,20 @@ fn is_header_comment(comment: &str) -> bool {
 /// This is the whole write, minus the I/O. The proof is the point: the renderer
 /// is careful, and "careful" is not a property a user's money is entitled to
 /// rely on. The new text is re-parsed as a journal from scratch, and what each
-/// of its blocks says is compared with what the scenario asked for — so a
-/// growth rate that rendered into an unreadable tag, an amount whose precision
-/// moved, or an account name that split at a double space fails here rather
+/// of its pieces says is compared, in LAYOUT ORDER, with what the scenario
+/// asked for (plan 31 C5 guarantee 3): kinds, order, disabled flags, attached
+/// comments, comment texts, and each entry's print — so a growth rate that
+/// rendered into an unreadable tag, an amount whose precision moved, an
+/// account name that split at a double space, a note that glued itself onto
+/// the rule below, or an `=` rule whose text is two blocks fails here rather
 /// than on disk.
 ///
-/// The comparison is [`chunk_print`], which carries every field the FILE states
-/// and none it derives. It deliberately does not compare whole [`Scenario`]s:
-/// `source` is a UI flag no file carries (a seeded row saved to disk is, from
-/// then on, a row the user authored), and a group id is a block's own position,
-/// which renumbers the moment a block is added or removed.
+/// The comparison is [`chunk_print`] and the pieces' texts, which carry every
+/// field the FILE states and none it derives. It deliberately does not compare
+/// whole [`Scenario`]s: `source` is a UI flag no file carries (a seeded row
+/// saved to disk is, from then on, a row the user authored), and a key is a
+/// piece's own position, which renumbers the moment a piece is added or
+/// removed.
 ///
 /// # Errors
 /// [`SerializeError`] — the render refused, the result is not a journal, or it
@@ -1762,9 +3087,9 @@ pub fn write_scenario(
     scenario: &Scenario,
     source_name: &str,
 ) -> Result<String, SerializeError> {
-    let text = doc.apply(scenario)?;
-    confirm_round_trip(doc, &text, scenario, source_name)?;
-    confirm_auto_rules(&text, scenario, source_name, &doc.declared)?;
+    let resolved = doc.resolve(scenario);
+    let (text, want) = doc.render(&resolved)?;
+    confirm_round_trip(doc, &text, &want, source_name)?;
     Ok(text)
 }
 
@@ -1777,62 +3102,19 @@ fn with_newline(text: &str, nl: &str) -> String {
     }
 }
 
-/// Each `=` rule's block as a byte range of `text`, from the line span the
-/// parser recorded for it.
-fn auto_block_spans(text: &str, rules: &[ScenarioAutoRule]) -> Vec<Range<usize>> {
-    crate::auto_edit::block_spans(text, rules.iter().map(|rule| &rule.rule))
-}
-
-/// Require `text` to read back with exactly the scenario's `=` rules, in its
-/// order, so a save can never drop, garble, duplicate or reorder one.
-fn confirm_auto_rules(
-    text: &str,
-    scenario: &Scenario,
-    source_name: &str,
-    declared: &BTreeMap<String, crate::reports::account_types::AccountType>,
-) -> Result<(), SerializeError> {
-    let written = scenario_from_text(text, source_name, "", declared)?;
-    let raws = |rules: &[ScenarioAutoRule]| -> Vec<String> {
-        rules.iter().map(|rule| rule.rule.raw.clone()).collect()
-    };
-    let (want, got) = (raws(&scenario.auto_rules), raws(&written.auto_rules));
-    if want == got {
-        return Ok(());
-    }
-    let detail = want.iter().zip(&got).find(|(a, b)| a != b).map_or_else(
-        || {
-            format!(
-                "{} auto rules were to be written and {} read back",
-                want.len(),
-                got.len()
-            )
-        },
-        |(a, b)| {
-            format!(
-                "auto rule `{}` reads back as `{}`",
-                a.trim_end(),
-                b.trim_end()
-            )
-        },
-    );
-    Err(SerializeError::NotRoundTripped(detail))
-}
-
-/// Re-read `text` and require its blocks to state `scenario`.
+/// Re-read `text` and require its layout to print as `want`.
 fn confirm_round_trip(
     doc: &ProjectionDoc,
     text: &str,
-    scenario: &Scenario,
+    want: &[String],
     source_name: &str,
 ) -> Result<(), SerializeError> {
-    let values = line_tag_values(scenario);
-    let want = prints(scenario, &Tags::Assigned(&values))?;
     let written =
         scenario_from_text_with_styles(text, source_name, "", &doc.declared, &doc.inherited)?;
     // What the FILE states, read back with nothing assigned: a row whose tag
     // was written reads back with that tag as its id, and one with none reads
     // back with the id its position derives.
-    let got = prints(&written, &Tags::Literal)?;
+    let got = layout_prints(&written, &Tags::Literal)?;
     if want == got {
         return Ok(());
     }
@@ -1851,22 +3133,6 @@ fn confirm_round_trip(
     Err(SerializeError::NotRoundTripped(detail))
 }
 
-/// Every chunk of a scenario, printed: its rules in order, then its events in
-/// order.
-///
-/// Each kind in the order the FILE states it, which is the scenario's order
-/// ([`Assignment`]) — so a written scenario and the same file re-read print
-/// alike, whatever order its blocks held before the save and however a file
-/// interleaves rules with events.
-fn prints(scenario: &Scenario, tags: &Tags<'_>) -> Result<Vec<String>, SerializeError> {
-    let (rules, events) = chunks_of(scenario);
-    let mut out = Vec::new();
-    for chunk in rules.iter().chain(&events) {
-        out.extend(chunk_print(chunk, tags)?);
-    }
-    Ok(out)
-}
-
 /// The fresh text of a brand-new file holding `scenario`.
 ///
 /// # Errors
@@ -1882,6 +3148,10 @@ pub fn new_file(
 /// [`new_file`], declaring the main journal's styles for the commodities the
 /// scenario uses (see [`ProjectionDoc::inheriting`]).
 ///
+/// A new file holds the scenario and nothing else: its FIXED pieces (another
+/// file's `account` directives, transactions, `include`s) are left out, as
+/// Save As has always left them (plan 31, Scope).
+///
 /// # Errors
 /// As [`new_file`].
 pub fn new_file_with_styles(
@@ -1890,9 +3160,19 @@ pub fn new_file_with_styles(
     declared: &BTreeMap<String, crate::reports::account_types::AccountType>,
     inherited: &[(crate::model::Commodity, crate::model::AmountStyle)],
 ) -> Result<String, SerializeError> {
+    let scenario = Scenario {
+        fixed: Vec::new(),
+        layout: scenario
+            .layout
+            .iter()
+            .filter(|item| item.kind != ItemKind::Fixed)
+            .cloned()
+            .collect(),
+        ..scenario.clone()
+    };
     write_scenario(
         &ProjectionDoc::empty(declared).inheriting(inherited),
-        scenario,
+        &scenario,
         source_name,
     )
 }
@@ -1944,8 +3224,55 @@ mod tests {
         BTreeMap::new()
     }
 
-    fn read(text: &str) -> Scenario {
+    /// What a file reads as, whole: layout, comments, fixed text and all.
+    fn read_full(text: &str) -> Scenario {
         scenario_from_text(text, "p.journal", "fallback", &declared()).expect("the example parses")
+    }
+
+    /// What a client from before plan 31 holds after loading a file: the
+    /// scenario as today's wire carries it (its active entries, no layout,
+    /// no comments, no keys on `=` rules), so its save takes
+    /// [`legacy_layout`].
+    fn wire(scenario: Scenario) -> Scenario {
+        let active = scenario.active();
+        Scenario {
+            lines: active
+                .lines
+                .into_iter()
+                .map(|line| ScenarioLine {
+                    comment: String::new(),
+                    rule_comment: String::new(),
+                    ..line
+                })
+                .collect(),
+            events: active
+                .events
+                .into_iter()
+                .map(|event| ScenarioEvent {
+                    comment: String::new(),
+                    posting_comments: Vec::new(),
+                    ..event
+                })
+                .collect(),
+            auto_rules: active
+                .auto_rules
+                .into_iter()
+                .map(|rule| ScenarioAutoRule {
+                    key: String::new(),
+                    ..rule
+                })
+                .collect(),
+            comments: Vec::new(),
+            fixed: Vec::new(),
+            layout: Vec::new(),
+            ..active
+        }
+    }
+
+    /// [`read_full`] through [`wire`]: what every test from before plan 31
+    /// means by "the scenario the file reads as".
+    fn read(text: &str) -> Scenario {
+        wire(read_full(text))
     }
 
     fn usd(quantity: Dec, precision: u32) -> Amount {
@@ -1965,6 +3292,8 @@ mod tests {
 
     fn line(group: &str, id: &str, account: &str, amount: Amount, period: &str) -> ScenarioLine {
         ScenarioLine {
+            comment: String::new(),
+            rule_comment: String::new(),
             counter: None,
             gains: None,
             id: id.to_string(),
@@ -2101,8 +3430,7 @@ mod tests {
             "p.journal",
         )
         .expect("it writes");
-        let second =
-            scenario_from_text(&text, "p.journal", "fallback", &declared()).expect("it re-reads");
+        let second = read(&text);
         assert_eq!(first, second);
 
         // And the text is a fixed point too, so a save that changes nothing
@@ -2119,6 +3447,9 @@ mod tests {
     #[test]
     fn a_new_file_round_trips_and_states_its_header() {
         let scenario = Scenario {
+            comments: Vec::new(),
+            fixed: Vec::new(),
+            layout: Vec::new(),
             auto_rules: Vec::new(),
             cash: None,
             name: "Plan B".to_string(),
@@ -2147,6 +3478,8 @@ mod tests {
                 ),
             ],
             events: vec![ScenarioEvent {
+                comment: String::new(),
+                posting_comments: Vec::new(),
                 counter: None,
                 id: "rule:1".to_string(),
                 date: "2027-03-01".to_string(),
@@ -2168,10 +3501,7 @@ mod tests {
             "; Ledgeline projection\n; projection: Plan B\n; created: 2026-01-01\n; updated: \
              2026-09-20\n\n"
         ));
-        assert_eq!(
-            scenario_from_text(&text, "p.journal", "x", &declared()).unwrap(),
-            scenario
-        );
+        assert_eq!(read(&text), scenario);
     }
 
     #[test]
@@ -2358,7 +3688,7 @@ mod tests {
             text.contains("    (assets:brokerage)  $0.00  ; growth:\n"),
             "{text}"
         );
-        let reread = scenario_from_text(&text, "p.journal", "x", &declared()).unwrap();
+        let reread = read(&text);
         assert_eq!(reread.lines[0].role, LineRole::Asset);
         assert_eq!(reread.lines[0].growth, None);
         assert_eq!(reread, scenario);
@@ -3157,8 +4487,7 @@ account expenses:rent    ; type: X
         // is about what the format can carry, so asserting it on a value we just
         // assigned would pin nothing.
         let text = new_file(&scenario, "p.journal", &declared()).expect("it writes");
-        let reread =
-            scenario_from_text(&text, "p.journal", "fallback", &declared()).expect("it re-reads");
+        let reread = read(&text);
         assert_eq!(reread.lines[0].source, LineSource::Journal);
     }
 
@@ -3352,6 +4681,7 @@ account equity:unrealized gains  ; type: E
     fn new_rule(raw: &str) -> ScenarioAutoRule {
         let journal = parse::parse_journal(raw, "rule.journal").expect("a rule");
         ScenarioAutoRule {
+            key: String::new(),
             block: None,
             rule: journal.auto_rules.into_iter().next().expect("one rule"),
         }
@@ -3564,5 +4894,489 @@ account equity:unrealized gains  ; type: E
                 ("hmrc:paye".to_string(), AccountType::Liability),
             ])
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Plan 31: the piece model
+    // -----------------------------------------------------------------------
+
+    /// A file with one of everything: a section, a note, attached comments,
+    /// fixed text, a `comment` block, a step, and a disabled rule, one-off
+    /// and auto rule.
+    const PIECES: &str = "\
+; Ledgeline projection
+; projection: Pieces
+
+;;;;;;;;;;;;;;;;;;;;;;
+;; Operational expenses
+
+; A note about the plan as a whole.
+
+account expenses:rent  ; type: X
+
+; Rent goes up in spring.
+~ monthly  rent  ; landlord: acme
+    ; the lease runs to 2028
+    expenses:rent      $4200.00  ; growth: 2%/yr, paid on the 1st
+    assets:checking
+
+; The with alternative.
+; ~ monthly from 2027-01-01  acme contract
+;     revenues:acme      $-40000.00
+;     assets:checking
+
+; ~ 2027-03-01  windfall
+;     revenues:gift      $-100.00
+;     assets:checking
+
+; = expenses:rent
+;     (liabilities:tax)  *0.05
+
+comment
+~ monthly  not a rule at all
+    expenses:x  $1
+end comment
+
+= expenses:rent
+    (liabilities:levy)  *0.01
+";
+
+    fn doc(text: &str) -> ProjectionDoc {
+        ProjectionDoc::parse(text, "p.journal", &declared()).expect("parses")
+    }
+
+    fn save_full(before: &str, scenario: &Scenario) -> String {
+        write_scenario(&doc(before), scenario, "p.journal").expect("writes")
+    }
+
+    fn summary(scenario: &Scenario) -> Vec<(ItemKind, String, bool, String)> {
+        scenario
+            .layout
+            .iter()
+            .map(|item| {
+                (
+                    item.kind,
+                    item.key.clone(),
+                    item.disabled,
+                    item.attached.clone(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_piece_reads_as_its_kind_in_file_order() {
+        let scenario = read_full(PIECES);
+        assert_eq!(
+            summary(&scenario),
+            [
+                (ItemKind::Comment, "comment:0".into(), false, String::new()),
+                (ItemKind::Comment, "comment:1".into(), false, String::new()),
+                (ItemKind::Fixed, "fixed:0".into(), false, String::new()),
+                (
+                    ItemKind::Rule,
+                    "rule:0".into(),
+                    false,
+                    "; Rent goes up in spring.\n".into()
+                ),
+                (
+                    ItemKind::Rule,
+                    "off:0".into(),
+                    true,
+                    "; The with alternative.\n".into()
+                ),
+                (ItemKind::Event, "off:1".into(), true, String::new()),
+                (ItemKind::Auto, "auto:off:0".into(), true, String::new()),
+                (ItemKind::Comment, "comment:2".into(), false, String::new()),
+                (ItemKind::Auto, "auto:0".into(), false, String::new()),
+            ]
+        );
+        let styles: Vec<CommentStyle> = scenario.comments.iter().map(|c| c.style).collect();
+        assert_eq!(
+            styles,
+            [
+                CommentStyle::Section,
+                CommentStyle::Note,
+                CommentStyle::Block
+            ]
+        );
+        assert_eq!(
+            comment_text(CommentStyle::Section, &scenario.comments[0].raw),
+            "Operational expenses"
+        );
+        assert_eq!(
+            comment_text(CommentStyle::Note, &scenario.comments[1].raw),
+            "A note about the plan as a whole."
+        );
+        // The commented-out `~` inside `comment` is not a disabled entry.
+        assert_eq!(scenario.lines.len(), 2, "rent, and acme's one stated line");
+        // C6: the comments inside a block are the rule's.
+        let rent = &scenario.lines[0];
+        assert_eq!(rent.rule_comment, "landlord: acme\nthe lease runs to 2028");
+        assert_eq!(rent.comment, "paid on the 1st");
+        assert!(rent.growth.is_some());
+        // The active scenario is the file as hledger reads it.
+        let active = scenario.active();
+        assert_eq!(active.lines.len(), 1);
+        assert!(active.events.is_empty());
+        assert_eq!(active.auto_rules.len(), 1);
+        assert_eq!(active.auto_rules[0].key, "auto:0");
+    }
+
+    #[test]
+    fn a_save_that_changes_nothing_is_byte_identical_with_and_without_a_layout() {
+        let scenario = read_full(PIECES);
+        assert_eq!(save_full(PIECES, &scenario), PIECES);
+        let mut legacy = scenario.clone();
+        legacy.layout.clear();
+        assert_eq!(save_full(PIECES, &legacy), PIECES);
+        // And what today's wire carries: the active entries, no comments.
+        assert_eq!(save_full(PIECES, &read(PIECES)), PIECES);
+        for text in [
+            PIECES.replace('\n', "\r\n"),
+            PIECES.trim_end().to_string(),
+            format!("{PIECES}\n\n"),
+        ] {
+            assert_eq!(save_full(&text, &read_full(&text)), text, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_moved_unchanged_block_keeps_its_bytes_and_its_attached_comment() {
+        let mut scenario = read_full(PIECES);
+        // Move the `=` rule to the top, under the section heading, and the
+        // rent rule to the end.
+        let auto = scenario.layout.pop().expect("the = rule");
+        scenario.layout.insert(1, auto);
+        let rent = scenario.layout.remove(4);
+        assert_eq!(rent.key, "rule:0");
+        scenario.layout.push(rent);
+        let text = save_full(PIECES, &scenario);
+        assert!(
+            text.contains(
+                "; Rent goes up in spring.\n~ monthly  rent  ; landlord: acme\n    ; the lease runs \
+                 to 2028\n    expenses:rent      $4200.00  ; growth: 2%/yr, paid on the 1st\n    \
+                 assets:checking\n"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(";; Operational expenses\n\n= expenses:rent\n    (liabilities:levy)  *0.01\n\n; A note"),
+            "{text}"
+        );
+        let reread = read_full(&text);
+        assert_eq!(
+            reread.layout.last().map(|item| item.kind),
+            Some(ItemKind::Rule)
+        );
+        // Free comments did not move: they were not moved.
+        assert!(text.contains("; A note about the plan as a whole.\n\naccount expenses:rent"));
+    }
+
+    #[test]
+    fn a_comment_edit_inside_a_block_survives_and_is_a_change() {
+        let mut scenario = read_full(PIECES);
+        scenario.lines[0].amount = usd(Dec::new(450_000, 2), 2);
+        let text = save_full(PIECES, &scenario);
+        // Rendered, but with every comment the block held.
+        assert!(
+            text.contains(
+                "; Rent goes up in spring.\n~ monthly  rent  ; landlord: acme\n    ; the lease runs \
+                 to 2028\n    expenses:rent  $4500.00  ; growth: 2%/yr, paid on the 1st\n    \
+                 assets:checking\n"
+            ),
+            "{text}"
+        );
+        // Changing only a comment is a change too.
+        let mut scenario = read_full(PIECES);
+        scenario.lines[0].comment = "owner: alex".to_string();
+        let text = save_full(PIECES, &scenario);
+        assert!(
+            text.contains("expenses:rent  $4200.00  ; growth: 2%/yr\n        ; owner: alex\n"),
+            "a user tag goes on a continuation line: {text}"
+        );
+        assert_eq!(read_full(&text).lines[0].comment, "owner: alex");
+        // Ledgeline's own tags cannot be smuggled in through a comment.
+        let mut scenario = read_full(PIECES);
+        scenario.lines[0].comment = "growth: 9%/yr".to_string();
+        assert!(matches!(
+            write_scenario(&doc(PIECES), &scenario, "p.journal"),
+            Err(SerializeError::Invalid(ref why)) if why.contains("own")
+        ));
+    }
+
+    #[test]
+    fn turning_an_entry_off_and_on_again_restores_its_bytes() {
+        let scenario = read_full(PIECES);
+        for at in 0..scenario.layout.len() {
+            if !matches!(
+                scenario.layout[at].kind,
+                ItemKind::Rule | ItemKind::Event | ItemKind::Auto
+            ) {
+                continue;
+            }
+            let mut toggled = scenario.clone();
+            toggled.layout[at].disabled = !toggled.layout[at].disabled;
+            let once = save_full(PIECES, &toggled);
+            let mut back = read_full(&once);
+            assert_eq!(
+                back.layout[at].disabled, toggled.layout[at].disabled,
+                "{once}"
+            );
+            back.layout[at].disabled = !back.layout[at].disabled;
+            assert_eq!(save_full(&once, &back), PIECES, "item {at}:\n{once}");
+        }
+    }
+
+    #[test]
+    fn disabling_writes_every_line_commented_and_leaves_the_attached_comment() {
+        let mut scenario = read_full(PIECES);
+        scenario.layout[3].disabled = true;
+        let text = save_full(PIECES, &scenario);
+        assert!(
+            text.contains(
+                "; Rent goes up in spring.\n; ~ monthly  rent  ; landlord: acme\n;     ; the lease \
+                 runs to 2028\n;     expenses:rent      $4200.00  ; growth: 2%/yr, paid on the 1st\n\
+                 ;     assets:checking\n"
+            ),
+            "{text}"
+        );
+        // A disabled entry that is edited is rendered, commented out.
+        let mut scenario = read_full(PIECES);
+        let acme = scenario
+            .lines
+            .iter_mut()
+            .find(|line| line.account.0 == "revenues:acme")
+            .expect("acme");
+        acme.amount = usd(Dec::new(-5_000_000, 2), 2);
+        let text = save_full(PIECES, &scenario);
+        assert!(
+            text.contains(
+                "; The with alternative.\n; ~ monthly from 2027-01-01  acme contract\n;     \
+                 revenues:acme  $-50000.00\n;     assets:checking\n"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn prose_that_looks_like_a_rule_and_a_rule_that_does_not_parse_stay_comments() {
+        const PROSE: &str = "\
+; ~ monthly is how often this runs
+; = Totals =
+
+; ~ monthly
+;     expenses:a  $1  $2
+;     assets:checking
+
+~ monthly
+    expenses:b  $1
+    assets:checking
+";
+        let scenario = read_full(PROSE);
+        let kinds: Vec<ItemKind> = scenario.layout.iter().map(|item| item.kind).collect();
+        assert_eq!(
+            kinds,
+            [ItemKind::Comment, ItemKind::Comment, ItemKind::Rule]
+        );
+        assert!(scenario.layout.iter().all(|item| !item.disabled));
+        // A save writes a header above a file that has none; nothing else.
+        assert_eq!(
+            save_full(PROSE, &scenario),
+            format!("; Ledgeline projection\n; projection: fallback\n\n{PROSE}")
+        );
+    }
+
+    #[test]
+    fn a_new_section_is_written_in_the_house_style_and_an_edit_keeps_its_framing() {
+        assert_eq!(
+            comment_raw(CommentStyle::Section, "Operational expenses", None).unwrap(),
+            ";;;;;;;;;;;;;;;;;;;;;;\n;; Operational expenses\n"
+        );
+        let framed = "; -----------\n; Income\n; -----------\n";
+        assert_eq!(
+            comment_raw(CommentStyle::Section, "Revenue", Some(framed)).unwrap(),
+            "; -----------\n; Revenue\n; -----------\n"
+        );
+        assert_eq!(
+            comment_raw(CommentStyle::Note, "one\n\ntwo", None).unwrap(),
+            "; one\n;\n; two\n"
+        );
+        assert!(comment_raw(CommentStyle::Note, "-----", None).is_err());
+        assert!(comment_raw(CommentStyle::Block, "x\nend comment", None).is_err());
+        assert_eq!(
+            comment_raw(CommentStyle::Block, "free text", None).unwrap(),
+            "comment\nfree text\nend comment\n"
+        );
+        assert_eq!(attached_raw("about this").unwrap(), "; about this\n");
+        assert_eq!(attached_raw("").unwrap(), "");
+        assert!(attached_raw(";;;;;;").is_err());
+    }
+
+    #[test]
+    fn new_pieces_are_set_off_by_a_blank_line_and_read_back_in_place() {
+        let mut scenario = read_full(PIECES);
+        scenario.comments.push(ScenarioComment {
+            key: "new-section".to_string(),
+            style: CommentStyle::Section,
+            raw: comment_raw(CommentStyle::Section, "Income", None).unwrap(),
+        });
+        scenario.layout.insert(
+            3,
+            LayoutItem {
+                kind: ItemKind::Comment,
+                key: "new-section".to_string(),
+                origin: None,
+                disabled: false,
+                attached: String::new(),
+            },
+        );
+        let text = save_full(PIECES, &scenario);
+        assert!(
+            text.contains(
+                "; type: X\n\n;;;;;;;;;;;;;;;;;;;;;;\n;; Income\n\n; Rent goes up in spring.\n"
+            ),
+            "{text}"
+        );
+        let reread = read_full(&text);
+        assert_eq!(reread.layout[3].kind, ItemKind::Comment);
+        assert_eq!(reread.layout[4].attached, "; Rent goes up in spring.\n");
+    }
+
+    #[test]
+    fn fixed_text_cannot_be_reordered_and_is_kept_when_a_layout_leaves_it_out() {
+        const TWO: &str =
+            "account a  ; type: X\n\n~ monthly\n    a  $1\n    b\n\naccount b  ; type: A\n";
+        let scenario = read_full(TWO);
+        let mut swapped = scenario.clone();
+        swapped.layout.swap(0, 2);
+        assert!(matches!(
+            write_scenario(&doc(TWO), &swapped, "p.journal"),
+            Err(SerializeError::Invalid(ref why)) if why.contains("order")
+        ));
+        let mut forgot = scenario.clone();
+        forgot.layout.retain(|item| item.kind != ItemKind::Fixed);
+        let text = save_full(TWO, &forgot);
+        assert!(
+            text.ends_with(
+                "account a  ; type: X\n\n~ monthly\n    a  $1\n    b\n\naccount b  ; type: A\n"
+            ),
+            "{text}"
+        );
+        // A rule can move past fixed text.
+        let mut moved = scenario;
+        moved.layout.swap(0, 1);
+        let text = save_full(TWO, &moved);
+        assert!(
+            text.contains("~ monthly\n    a  $1\n    b\n\naccount a"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_layout_must_name_every_entry_exactly_once() {
+        let scenario = read_full(PIECES);
+        let mut twice = scenario.clone();
+        twice.layout.push(twice.layout[3].clone());
+        assert!(write_scenario(&doc(PIECES), &twice, "p.journal").is_err());
+        let mut missing = scenario.clone();
+        missing.layout.remove(3);
+        assert!(matches!(
+            write_scenario(&doc(PIECES), &missing, "p.journal"),
+            Err(SerializeError::Invalid(ref why)) if why.contains("leaves out")
+        ));
+        let mut unknown = scenario;
+        unknown.layout[3].key = "rule:99".to_string();
+        assert!(write_scenario(&doc(PIECES), &unknown, "p.journal").is_err());
+    }
+
+    #[test]
+    fn deleting_a_piece_takes_its_gap_and_the_file_end_stays_as_it_was() {
+        let mut scenario = read_full(PIECES);
+        // The last `=` rule and the `comment` block before it.
+        scenario.layout.truncate(7);
+        scenario.auto_rules.retain(|rule| rule.key != "auto:0");
+        scenario
+            .comments
+            .retain(|comment| comment.key != "comment:2");
+        let text = save_full(PIECES, &scenario);
+        assert!(
+            text.ends_with("; = expenses:rent\n;     (liabilities:tax)  *0.05\n"),
+            "{text:?}"
+        );
+    }
+
+    #[test]
+    fn a_file_without_a_final_newline_keeps_that_after_a_move() {
+        const BARE: &str = "~ monthly  a\n    a  $1\n    b\n\n~ monthly  b\n    c  $2\n    b";
+        let mut scenario = read_full(BARE);
+        scenario.layout.swap(0, 1);
+        let text = save_full(BARE, &scenario);
+        assert!(text.ends_with("    a  $1\n    b"), "{text:?}");
+        assert!(
+            text.contains("    c  $2\n    b\n\n~ monthly  a"),
+            "{text:?}"
+        );
+    }
+
+    #[test]
+    fn the_scan_s_blocks_are_periodic_doc_s_and_auto_edit_s_over_every_fixture() {
+        fn journals(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    journals(&path, out);
+                } else if path.extension().is_some_and(|ext| ext == "journal") {
+                    out.push(path);
+                }
+            }
+        }
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+        let mut files = Vec::new();
+        journals(&root, &mut files);
+        assert!(files.len() > 20, "found {} fixtures", files.len());
+        let mut checked = 0;
+        for path in files {
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let name = path.to_string_lossy().to_string();
+            let Ok(journal) = parse::parse_journal(&text, &name) else {
+                continue;
+            };
+            let scan = layout::scan(&text, 0, &mut |_| None);
+            let tildes: Vec<Range<usize>> = scan
+                .pieces
+                .iter()
+                .filter(|piece| piece.kind == RawKind::Tilde)
+                .map(layout::RawPiece::content)
+                .collect();
+            let periodic: Vec<Range<usize>> = crate::periodic::PeriodicDoc::parse(&text)
+                .blocks()
+                .iter()
+                .map(|block| block.full.clone())
+                .collect();
+            assert_eq!(tildes, periodic, "{name}");
+            // `read_scenario`'s own-file rule and fallback.
+            let mine = |rule: &&AutoPostingRule| {
+                rule.source_file.as_os_str() == std::ffi::OsStr::new(&name)
+            };
+            let own: Vec<&AutoPostingRule> = if !journal.auto_rules.iter().any(|rule| mine(&rule))
+                && journal.source_files.len() <= 1
+            {
+                journal.auto_rules.iter().collect()
+            } else {
+                journal.auto_rules.iter().filter(mine).collect()
+            };
+            let autos: Vec<Range<usize>> = scan
+                .pieces
+                .iter()
+                .filter(|piece| piece.kind == RawKind::Auto)
+                .map(layout::RawPiece::content)
+                .collect();
+            assert_eq!(autos, crate::auto_edit::block_spans(&text, own), "{name}");
+            checked += 1;
+        }
+        assert!(checked > 20, "checked {checked}");
     }
 }
