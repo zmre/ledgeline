@@ -41,7 +41,7 @@ When `--auto` is on, Ledgeline uses the transactions with the rules' postings ad
 - Rules in an `include`d file apply to the whole journal.
 - `*0.1` multiplies the matched amount exactly, so `$-333.33` becomes `$-33.333`. Reports still round to the precision your journal writes, so `$-33.33` shows in a balance.
 - A `tag:` query also matches tags a posting inherits from its account's `account` directive.
-- [Balance assertions](problems.md#balance-assertion) are checked after the rules apply, as in hledger.
+- [Balance assertions](problems.md#balance-assertion) are checked after the rules apply, as in hledger. An assertion written on a rule's own posting, such as `assets:savings  $10 = $500`, is checked on every posting the rule adds, and a failure points at the rule's line.
 - In the [budget](../budget.md), rules add to the actual amounts and never to the goals.
 - [Subscription detection](../reports/subscriptions.md) ignores the postings rules add, so a tax rule doesn't make a new subscription.
 
@@ -80,7 +80,7 @@ The `^…(:|$)` query matches the account and its subaccounts, but not a sibling
 
 Leave **forecasts only** unticked for a rule about your recorded transactions. Ticked, the query gains `tag:_generated-transaction`, so hledger applies the rule only to `--forecast` transactions. Ledgeline doesn't forecast your main journal, so such a rule never adds anything here.
 
-Some rules can't be shown as a form: a `tag:` or `desc:` query with no account, virtual postings, posting comments. These open as text instead, and so does **Edit as text** on any rule. What you type is written exactly as typed.
+Some rules can't be shown as a form: a `tag:` or `desc:` query with no account, virtual postings, posting comments, balance assertions. These open as text instead, and so does **Edit as text** on any rule. What you type is written exactly as typed.
 
 **+ Add a rule** appends a new rule to the end of your main journal file. hledger applies a rule to every transaction, wherever the rule sits in the file. **Delete** asks once more, then removes the rule and the blank line above it.
 

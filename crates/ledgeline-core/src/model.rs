@@ -665,6 +665,10 @@ pub struct AutoPosting {
     pub account: String,
     /// What it writes.
     pub amount: AutoAmount,
+    /// A balance assertion written after the amount (`$1 = $5`, `*0.1 = $5`).
+    /// Every posting the rule generates carries it, and it is checked there
+    /// like any other assertion, as hledger does.
+    pub balance_assertion: Option<BalanceAssertion>,
     /// Raw comment text, as [`Posting::comment`].
     pub comment: String,
     /// Its own tags.

@@ -461,7 +461,7 @@ fn generate(
                 ptype: auto.ptype,
                 account: AccountName(auto.account.replace("%account", &matched.account.0)),
                 amounts: amounts(auto, matched)?,
-                balance_assertion: None,
+                balance_assertion: auto.balance_assertion.clone(),
                 date: matched.date.clone(),
                 date2: matched.date2.clone(),
                 comment: auto.comment.clone(),
@@ -783,6 +783,59 @@ mod tests {
         assert_eq!(
             (cost.amount.commodity.0.as_str(), show(cost.amount.quantity)),
             ("$", "1200".to_string())
+        );
+    }
+
+    /// A balance assertion on a rule posting rides on every posting it
+    /// generates and is checked there. `hledger print --auto` refuses the
+    /// first journal at `:2:18` ("asserted $5, calculated $1") and the second
+    /// at the SECOND lunch, where `*0.1 = $1` (still `$1`, not a bare `1`)
+    /// has made `$2` (2026-10-28).
+    #[test]
+    fn a_rule_posting_s_balance_assertion_is_checked_as_hledger_checks_it() {
+        let failures = |text: &str| {
+            let journal = parse_journal(text, "sw3.journal").expect("parses");
+            crate::assertions::check_balance_assertions(&apply_journal(&journal)).expect("checks")
+        };
+        let lunch = "\n2026-01-01 lunch\n    expenses:food  $10\n    assets:cash\n";
+
+        let fixed = failures(&format!(
+            "= expenses:food\n    assets:x  $1 = $5\n    assets:cash\n{lunch}"
+        ));
+        let [failure] = fixed.as_slice() else {
+            panic!("one failure, got {fixed:?}")
+        };
+        assert_eq!(failure.account.0, "assets:x");
+        assert_eq!(
+            (show(failure.asserted), show(failure.calculated)),
+            ("5".into(), "1".into())
+        );
+        assert_eq!((failure.position.line, failure.position.column), (2, 18));
+
+        let scaled = failures(&format!(
+            "= expenses:food\n    assets:x  *0.1 = $1\n    assets:cash\n{lunch}\
+             \n2026-01-02 lunch\n    expenses:food  $10\n    assets:cash\n"
+        ));
+        let [failure] = scaled.as_slice() else {
+            panic!("one failure, got {scaled:?}")
+        };
+        assert_eq!(failure.transaction_index, 1);
+        assert_eq!(failure.commodity.0, "$");
+        assert_eq!(
+            (show(failure.asserted), show(failure.calculated)),
+            ("1".into(), "2".into())
+        );
+
+        // Without `--auto` nothing is generated, so nothing is asserted.
+        let raw = parse_journal(
+            &format!("= expenses:food\n    assets:x  $1 = $5\n    assets:cash\n{lunch}"),
+            "raw.journal",
+        )
+        .expect("parses");
+        assert!(
+            crate::assertions::check_balance_assertions(&raw)
+                .expect("checks")
+                .is_empty()
         );
     }
 

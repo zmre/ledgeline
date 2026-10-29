@@ -1073,3 +1073,39 @@ fn assertions_see_auto_postings_once_the_rules_are_applied() {
             .is_empty()
     );
 }
+
+/// An assertion written on an `=` rule's posting is checked on every posting
+/// the rule generates, and a failure names the RULE's line, in the rule's
+/// file — `hledger print --auto` over these two files reports
+/// `rules.journal:3:18` (2026-10-28).
+#[test]
+fn a_rule_posting_s_assertion_fails_at_the_rule_s_line_in_the_rule_s_file() {
+    let dir = scratch("rule_posting_assertion");
+    let rules = write(
+        &dir,
+        "rules.journal",
+        "; rules\n= expenses:food\n    assets:x  $1 = $5\n    assets:cash\n",
+    );
+    let main = write(
+        &dir,
+        "main.journal",
+        "include rules.journal\n\n2026-01-01 lunch\n    expenses:food  $10\n    assets:cash\n",
+    );
+    let text = std::fs::read_to_string(&main).expect("read");
+    let raw = ledgeline_core::parse_journal(&text, &main.to_string_lossy()).expect("parses");
+    let applied = ledgeline_core::auto::apply_journal(&raw);
+    let failures = check_balance_assertions(&applied).expect("checks");
+    let [failure] = failures.as_slice() else {
+        panic!("one failure, got {failures:?}")
+    };
+    assert_eq!(failure.account.0, "assets:x");
+    assert_eq!(
+        failure.source_file,
+        std::fs::canonicalize(&rules).expect("canonical")
+    );
+    assert_eq!((failure.position.line, failure.position.column), (3, 18));
+    assert!(
+        check_balance_assertions(&raw).expect("checks").is_empty(),
+        "without --auto nothing is generated, so nothing is asserted"
+    );
+}

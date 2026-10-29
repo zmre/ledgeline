@@ -43,7 +43,8 @@
 //! explicit form once edited. A plain account word (`revenue:sales`) is read as
 //! the match account too (an edit writes it anchored), and the forecast-only
 //! tag, present or not, is [`AutoRuleForm::forecast_only`]. Anything else — virtual or
-//! status-marked postings, posting comments, `*N CUR` re-denomination, a cost,
+//! status-marked postings, posting comments, a balance assertion, `*N CUR`
+//! re-denomination, a cost,
 //! `%account`, a multi-line comment, a query whose account term is not one of
 //! those two shapes — is not representable.
 //!
@@ -527,6 +528,7 @@ pub fn form_from_rule(rule: &AutoPostingRule, types: &AccountTypes) -> Option<Au
             && posting.status == Status::Unmarked
             && posting.comment.is_empty()
             && posting.tags.is_empty()
+            && posting.balance_assertion.is_none()
             && check_account(&posting.account).is_ok();
         if !plain {
             return None;
@@ -1056,6 +1058,33 @@ mod tests {
             "= revenue:sales\n    expenses:x  $5 @ €4\n",
         ] {
             assert_eq!(form_from_rule(&rule_of(text), &types()), None, "{text}");
+        }
+    }
+
+    /// A form has no place for a balance assertion, so a rule carrying one
+    /// opens as text: an Edit → Save through the form would re-render it
+    /// without the assertion and silently delete it from the journal.
+    #[test]
+    fn a_rule_with_a_balance_assertion_opens_as_text_so_a_save_cannot_drop_it() {
+        for (plain, asserted) in [
+            (
+                "= expenses:food\n    assets:x  $1\n    assets:cash  $-1\n",
+                "= expenses:food\n    assets:x  $1 = $5\n    assets:cash  $-1\n",
+            ),
+            (
+                "= expenses:food\n    assets:x  *0.1\n    assets:cash\n",
+                "= expenses:food\n    assets:x  *0.1 = $5\n    assets:cash\n",
+            ),
+        ] {
+            assert!(
+                form_from_rule(&rule_of(plain), &types()).is_some(),
+                "{plain}"
+            );
+            assert_eq!(
+                form_from_rule(&rule_of(asserted), &types()),
+                None,
+                "{asserted}"
+            );
         }
     }
 

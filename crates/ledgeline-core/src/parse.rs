@@ -1751,16 +1751,18 @@ fn parse_auto_posting(line: &str, line_no: u32, amt: AmountCtx) -> Result<AutoPo
     let (account_part, amount_part) = split_account_amount(after_status);
     let (ptype, account) = posting_type_and_account(account_part.trim());
     let expr = amount_part.trim();
-    let read = |text: &str, amt: AmountCtx| -> Result<Amount, ParseError> {
-        parse_amount_and_assertion(text, main, line_no, amt)?
-            .0
-            .ok_or_else(|| ParseError::MalformedAmount(text.to_string()))
-    };
-    let amount = if expr.is_empty() {
-        AutoAmount::Inferred
+    let read =
+        |text: &str, amt: AmountCtx| -> Result<(Amount, Option<BalanceAssertion>), ParseError> {
+            match parse_amount_and_assertion(text, main, line_no, amt)? {
+                (Some(amount), assertion) => Ok((amount, assertion)),
+                (None, _) => Err(ParseError::MalformedAmount(text.to_string())),
+            }
+        };
+    let (amount, balance_assertion) = if expr.is_empty() {
+        (AutoAmount::Inferred, None)
     } else if let Some(factor) = expr.strip_prefix('*') {
         let factor = factor.trim();
-        let parsed = read(factor, amt)?;
+        let (parsed, assertion) = read(factor, amt)?;
         // The product is re-denominated only when the factor WRITES a
         // commodity, so the parsed symbol decides — not the text's shape
         // (`*1e2`, `*0.1 @ 2 EUR` and `*0.5 = $5` keep the matched commodity
@@ -1771,22 +1773,25 @@ fn parse_auto_posting(line: &str, line_no: u32, amt: AmountCtx) -> Result<AutoPo
                 default_commodity: None,
                 ..amt
             };
-            read(factor, undefaulted)?.commodity
+            read(factor, undefaulted)?.0.commodity
         } else {
             parsed.commodity.clone()
         };
-        AutoAmount::Scale {
+        let scale = AutoAmount::Scale {
             factor: parsed.quantity,
             commodity: (!written.0.is_empty()).then_some(parsed),
-        }
+        };
+        (scale, assertion)
     } else {
-        AutoAmount::Fixed(read(expr, amt)?)
+        let (fixed, assertion) = read(expr, amt)?;
+        (AutoAmount::Fixed(fixed), assertion)
     };
     Ok(AutoPosting {
         status,
         ptype,
         account,
         amount,
+        balance_assertion,
         comment,
         tags,
     })
