@@ -139,6 +139,15 @@ fn exact(mixed: &Value) -> i128 {
     mantissa * 10_i128.pow(12 - places)
 }
 
+/// A journal row posting's first amount as `(mantissa, places)`: rows write a
+/// quantity as `{m, p}`.
+fn posting_qty(posting: &Value) -> (i128, u32) {
+    let qty = &posting["amounts"][0]["qty"];
+    let mantissa: i128 = qty["m"].as_str().expect("m").parse().expect("m parses");
+    let places = u32::try_from(qty["p"].as_u64().expect("p")).expect("p fits");
+    (mantissa, places)
+}
+
 /// A row's `values`, each `$` figure exactly ([`exact`]).
 fn exact_series(node: &Value) -> Vec<i128> {
     node["values"]
@@ -2900,10 +2909,8 @@ async fn a_scenario_s_auto_rule_generates_its_postings_in_the_run() {
             .expect("the rent posting");
         let tax = &postings[at + 1];
         assert_eq!(tax["account"], "expenses:rent-tax", "{entry}");
-        // Journal rows write a quantity as `{m, p}`: $420.000 is 10% of $4200.00.
-        let qty = &tax["amounts"][0]["qty"];
-        let mantissa: i128 = qty["m"].as_str().expect("m").parse().expect("m parses");
-        let places = u32::try_from(qty["p"].as_u64().expect("p")).expect("p fits");
+        // $420.000 is 10% of $4200.00.
+        let (mantissa, places) = posting_qty(tax);
         assert_eq!(mantissa / 10_i128.pow(places), 420, "{tax}");
         assert!(
             tax["tags"]
@@ -2969,9 +2976,7 @@ async fn a_rule_sent_as_a_form_is_rendered_and_applied() {
         assert_eq!(tax["account"], "expenses:rent-tax", "{entry}");
         assert_eq!(cash["account"], "assets:bank:checking", "{entry}");
         let whole = |posting: &Value| {
-            let qty = &posting["amounts"][0]["qty"];
-            let mantissa: i128 = qty["m"].as_str().expect("m").parse().expect("m parses");
-            let places = u32::try_from(qty["p"].as_u64().expect("p")).expect("p fits");
+            let (mantissa, places) = posting_qty(posting);
             mantissa / 10_i128.pow(places)
         };
         assert_eq!((whole(tax), whole(cash)), (420, -420), "{entry}");
@@ -3009,9 +3014,7 @@ async fn a_raw_rule_s_digit_grouped_amount_books_its_full_value_in_the_run() {
             .iter()
             .find(|posting| posting["account"] == "expenses:rent-tax")
             .expect("the generated posting");
-        let qty = &tax["amounts"][0]["qty"];
-        let mantissa: i128 = qty["m"].as_str().expect("m").parse().expect("m parses");
-        let places = u32::try_from(qty["p"].as_u64().expect("p")).expect("p fits");
+        let (mantissa, places) = posting_qty(tax);
         assert_eq!(mantissa, 1500 * 10_i128.pow(places), "{tax}");
     }
 }
@@ -3185,9 +3188,7 @@ async fn a_parent_account_rule_taxes_each_child_and_warns_when_hledger_would_ref
             let postings = entry["txn"]["postings"].as_array().expect("postings");
             for (at, posting) in postings.iter().enumerate() {
                 if posting["account"] == "expenses:people-costs:payroll-tax" {
-                    let qty = &posting["amounts"][0]["qty"];
-                    let mantissa: i128 = qty["m"].as_str().expect("m").parse().expect("m parses");
-                    let places = u32::try_from(qty["p"].as_u64().expect("p")).expect("p fits");
+                    let (mantissa, places) = posting_qty(posting);
                     taxes.push((
                         postings[at - 1]["account"]
                             .as_str()
@@ -3464,9 +3465,7 @@ async fn paye_run(account_types: Option<Value>) -> Vec<(i128, i128)> {
                     .iter()
                     .find(|posting| posting["account"] == account)
                     .unwrap_or_else(|| panic!("no {account} posting in {entry}"));
-                let qty = &posting["amounts"][0]["qty"];
-                let mantissa: i128 = qty["m"].as_str().expect("m").parse().expect("m parses");
-                let places = u32::try_from(qty["p"].as_u64().expect("p")).expect("p fits");
+                let (mantissa, places) = posting_qty(posting);
                 mantissa / 10_i128.pow(places)
             };
             (whole("hmrc:paye"), whole("expenses:payroll-tax"))

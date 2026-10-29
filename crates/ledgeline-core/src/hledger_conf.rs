@@ -48,9 +48,9 @@
 //!   is read as the command word, which hijacks the invocation exactly as a bare
 //!   `balance` would.
 //! * **The FIRST token of the general section (the one hledger reads, below),
-//!   if it does not begin with a dash, replaces the command.** Only the first: a bare word appearing after any
-//!   option is passed through as an ordinary argument and hijacks nothing (both
-//!   verified). A hijacked config file breaks every hledger command the user runs,
+//!   if it does not begin with a dash, replaces the command.** Only the first:
+//!   a bare word appearing after any option is passed through as an ordinary
+//!   argument and hijacks nothing (both verified). A hijacked config file breaks every hledger command the user runs,
 //!   so none of its options reach anything — which is why [`alias_arguments`]
 //!   answers with none, and [`hijacks_command`] exists to say why.
 //! * `[name]` opens a section. The *general* section applies to every command;

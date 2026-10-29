@@ -44,9 +44,8 @@
 //! the match account too (an edit writes it anchored), and the forecast-only
 //! tag, present or not, is [`AutoRuleForm::forecast_only`]. Anything else — virtual or
 //! status-marked postings, posting comments, a balance assertion, `*N CUR`
-//! re-denomination, a cost,
-//! `%account`, a multi-line comment, a query whose account term is not one of
-//! those two shapes — is not representable.
+//! re-denomination, a cost, `%account`, a multi-line comment, a query whose
+//! account term is not one of those two shapes — is not representable.
 //!
 //! # Sign inference
 //!
@@ -1292,9 +1291,10 @@ mod tests {
         }
 
         proptest! {
-            /// `form_from_rule(parse(render(form, &JournalStyles::default()))) == form`, for every form
-            /// that renders and is not ambiguous (postings whose last leg
-            /// happens to balance the rest read back as having a counter).
+            /// `form_from_rule(parse(render(form))) == form`, under the default
+            /// styles, for every form that renders and is not ambiguous
+            /// (postings whose last leg happens to balance the rest read back
+            /// as having a counter).
             #[test]
             fn render_then_read_is_the_identity(f in arb_form()) {
                 let Ok(text) = render(&f, &types(), &JournalStyles::default()) else {
