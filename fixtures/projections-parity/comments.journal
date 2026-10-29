@@ -1,0 +1,55 @@
+; Ledgeline projection
+; projection: Parity comments
+; created: 2026-10-29
+; updated: 2026-10-29
+; cash: assets:checking
+
+; Plan 31: a scenario file as a person writes one. `;;;;` section headings,
+; notes, a comment attached to the rule below it, comments inside blocks,
+; commented-out (disabled) entries, a `comment` block and a step pair. hledger
+; reads every disabled entry as the comment it is, and so must Ledgeline.
+
+;;;;;;;;;;;;;;;;;;;;;;
+;; Income
+
+; Salary, paid on the last working day.
+~ monthly  salary  ; employer: acme
+    revenues:salary      $-6000.00  ; owner: alex
+    assets:checking
+
+; The "with" alternative: a big new customer, turned off.
+; ~ monthly from 2027-01-01  bonus contract
+;     revenues:bonus      $-4000.00
+;     assets:checking
+
+;;;;;;;;;;;;;;;;;;;;;;
+;; Operational expenses
+
+~ monthly  rent
+    ; the lease runs to 2028
+    expenses:rent         $2000.00
+    assets:checking
+
+; A STEP: payroll jumps in February.
+~ monthly to 2027-02-01  payroll
+    expenses:payroll      $5000.00  ; line: payroll
+    assets:checking
+
+~ monthly from 2027-02-01  payroll
+    expenses:payroll      $8000.00  ; line: payroll
+    assets:checking
+
+; ~ 2027-03-01  legal fees, maybe
+;     expenses:legal      $4500.00
+;     liabilities:payable
+
+; = expenses:rent tag:_generated-transaction
+;     expenses:insurance   *0.10
+;     assets:checking     *-0.10
+
+comment
+An old plan, kept for reference; hledger skips all of it.
+~ monthly  travel
+    expenses:travel  $300.00
+    assets:checking
+end comment

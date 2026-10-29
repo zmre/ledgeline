@@ -201,6 +201,9 @@ fn the_parity_fixtures_are_identical_cached() {
         "step.journal",
         "commodities.journal",
         "growth.journal",
+        // Plan 31: notes, sections and disabled entries, which no reading
+        // may count.
+        "comments.journal",
     ]
     .into_iter()
     .map(|file| (file, read(&format!("projections-parity/{file}"))))
