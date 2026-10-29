@@ -10,6 +10,7 @@
 //   * statement lines never fold and never take a slot
 //   * `complete` compares the exact figures, not the formatted ones
 //   * every drawn column adds up to the graph's total
+//   * a ribbon's share is of its source bar, and the hover text says so
 
 import {describe, expect, it} from "vitest";
 import {decodeFlowReport} from "#lib/api/nativeDecode.js";
@@ -18,7 +19,7 @@ import {DEFAULT_PALETTE, OTHER_LABEL} from "#lib/format/palette.js";
 
 const SLOTS = DEFAULT_PALETTE.categorical.length;
 import {FLOW_REPORT} from "#lib/testing/flowsFixture.js";
-import {flowPalette, OTHER_KEY, sankeyView} from "./sankeyModel";
+import {flowPalette, formatShare, linkTooltip, nodeTooltip, OTHER_KEY, sankeyView, tooltipText} from "./sankeyModel";
 
 const STYLES: ReadonlyMap<string, AmountStyle> = new Map<string, AmountStyle>([
     ["$", {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]}],
@@ -125,9 +126,20 @@ describe("UNIT sankeyView", () => {
         expect(outbound?.color).toBe(DEFAULT_PALETTE.categorical[0]);
     });
 
-    it("titles a ribbon with both ends and the amount", () => {
+    it("names a ribbon by both ends, with its amount", () => {
         const link = OUT.links.find((entry) => entry.source === OTHER_KEY);
-        expect(link?.title).toBe(`${OTHER_LABEL} → Utilities: $300.00`);
+        expect(link?.label).toBe(`${OTHER_LABEL} → Utilities`);
+        expect(link?.amount).toBe("$300.00");
+    });
+
+    it("shares a ribbon against its SOURCE bar, not the graph", () => {
+        // Checking pays $1,000.00 of its $3,940.00 to Utilities; the folded
+        // tail's three accounts pay nothing else, so their one ribbon is all of it.
+        const checking = OUT.links.find((link) => link.source === "a:assets:bank:checking" && link.target === "g:Utilities");
+        const tail = OUT.links.find((link) => link.source === OTHER_KEY);
+
+        expect(checking?.share).toBeCloseTo((1000 / 3940) * 100, 9);
+        expect(tail?.share).toBeCloseTo(100, 9);
     });
 
     it("lists the legend in palette order, tail last", () => {
@@ -167,6 +179,35 @@ describe("UNIT sankeyView", () => {
         // LayerChart's Sankey clones the graph it is handed, and a `Dec` carries
         // a bigint. Cloning here is the assertion.
         expect(() => structuredClone({nodes: OUT.nodes, links: OUT.links})).not.toThrow();
+    });
+});
+
+describe("UNIT sankey tooltips", () => {
+    const node = (label: string) => {
+        const found = OUT.nodes.find((entry) => entry.label === label);
+        if (found === undefined) throw new Error(`no node ${label}`);
+        return found;
+    };
+
+    it("says what a bar is worth and how much of the total it is", () => {
+        expect(nodeTooltip(node("Food"))).toEqual({title: "Food", lines: ["$2,700.00", "26.1% of the total"]});
+    });
+
+    it("says what a ribbon carries and how much of its source that is", () => {
+        const link = OUT.links.find((entry) => entry.source === "a:assets:bank:checking" && entry.target === "g:Utilities");
+        if (link === undefined) throw new Error("no Checking → Utilities ribbon");
+
+        expect(linkTooltip(link)).toEqual({title: "Bank: Checking → Utilities", lines: ["$1,000.00", "25.4% of Bank: Checking"]});
+    });
+
+    it("reads as one line for a screen reader", () => {
+        expect(tooltipText(nodeTooltip(node("Food")))).toBe("Food: $2,700.00, 26.1% of the total");
+    });
+
+    it("never calls a real sliver 0%", () => {
+        expect(formatShare(0.01)).toBe("<0.1%");
+        expect(formatShare(0)).toBe("0.0%");
+        expect(formatShare(100)).toBe("100.0%");
     });
 });
 
