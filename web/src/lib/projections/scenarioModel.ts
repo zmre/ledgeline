@@ -855,6 +855,7 @@ export function cloneScenario(scenario: Scenario): Scenario {
         })),
         cash: scenario.cash,
         autoRules: scenario.autoRules.map((rule) => ({...rule, form: rule.form === null ? null : cloneRuleForm(rule.form)})),
+        ...(scenario.accountTypes === undefined ? {} : {accountTypes: {...scenario.accountTypes}}),
     };
 }
 
@@ -915,6 +916,9 @@ export function scenarioToWire(scenario: Scenario): WireScenarioIn {
         autoRules: scenario.autoRules.map((rule) =>
             sendsForm(rule) ? {block: rule.block, form: ruleFormToWire(rule.form)} : {block: rule.block, raw: rule.raw}
         ),
+        // The types every form above was served under, so the engine renders
+        // an edited percentage with the sign the user saw.
+        accountTypes: {...scenario.accountTypes},
     };
 }
 

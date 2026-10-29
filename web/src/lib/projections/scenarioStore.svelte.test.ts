@@ -52,6 +52,7 @@ const SEED_BODY = {
     events: [],
     cash: null,
     autoRules: [],
+    accountTypes: {},
 };
 
 const RUN_BODY = rawProjectionRun();

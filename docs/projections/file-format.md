@@ -254,6 +254,14 @@ payroll tax on wages (an expense into an expense) is `*0.1`, and 10% of wages
 owed as a tax liability (an expense into a liability) is `*-0.1`. A fixed amount
 takes its own account's sign: `$50` into an expense, `$-50` into a liability.
 
+An account's type comes from an `account` directive, in the main journal or in
+the scenario file itself (`account hmrc:paye  ; type: L`; where both declare
+one, the scenario file's wins). An undeclared account is typed from its name
+(`liabilities:…`, `expenses:…`). If the name gives no type either, as with
+`hmrc:paye`, the account is treated as growing with a positive amount. In that
+case the percentage is written exactly as you type it, so declare the account's
+type if it is really a liability.
+
 A rule edited here is saved in this form:
 
 ```journal

@@ -538,6 +538,7 @@ interface RawScenario {
     events?: RawScenarioEvent[];
     cash?: string | null;
     autoRules?: RawAutoRule[];
+    accountTypes?: Record<string, string>;
 }
 
 interface RawAutoRule {
@@ -2516,7 +2517,16 @@ export function decodeScenario(raw: unknown): Scenario {
         events: frozen(scenario.events.map((event, i) => decodeScenarioEvent(event, `scenario event #${i}`))),
         cash: decodeNullableStr(scenario.cash, "scenario cash"),
         autoRules: decodeAutoRules(scenario.autoRules),
+        accountTypes: decodeScenarioAccountTypes(scenario.accountTypes),
     });
+}
+
+/** The scenario file's own account types — always an object on the wire (empty for a seed), so an absent one is a broken contract. */
+function decodeScenarioAccountTypes(raw: RawScenario["accountTypes"]): Readonly<Record<string, AccountType>> {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new ApiShapeError("scenario accountTypes: expected an object");
+    return Object.freeze(
+        Object.fromEntries(Object.entries(raw).map(([account, type]) => [account, decodeEnum(ACCOUNT_TYPES, type, `scenario accountTypes ${account}`)]))
+    );
 }
 
 /** A scenario's `= QUERY` rules — always an array on the wire, so an absent one is a broken contract. */

@@ -2984,6 +2984,38 @@ async fn a_rule_sent_as_a_form_is_rendered_and_applied() {
     assert!(!warnings.contains("`assets:bank:checking`"), "{warnings}");
 }
 
+/// A raw rule's fixed amount is read under the main journal's commodity
+/// styles, as GET reads it and as hledger reads an `include`d file: `$1,500`
+/// under `commodity $1,000.00` is fifteen hundred dollars, not $1.50.
+#[tokio::test]
+async fn a_raw_rule_s_digit_grouped_amount_books_its_full_value_in_the_run() {
+    let projection = run(json!({
+        "scenario": with_rules(&[
+            "= expenses:rent tag:_generated-transaction\n    expenses:rent-tax  $1,500\n    assets:bank:checking\n",
+        ]),
+        "interval": "monthly",
+        "count": 2,
+        "lookback": 0,
+        "journal": true
+    }))
+    .await;
+    let entries = projection["journal"]["entries"]
+        .as_array()
+        .expect("entries");
+    assert!(!entries.is_empty());
+    for entry in entries {
+        let postings = entry["txn"]["postings"].as_array().expect("postings");
+        let tax = postings
+            .iter()
+            .find(|posting| posting["account"] == "expenses:rent-tax")
+            .expect("the generated posting");
+        let qty = &tax["amounts"][0]["qty"];
+        let mantissa: i128 = qty["m"].as_str().expect("m").parse().expect("m parses");
+        let places = u32::try_from(qty["p"].as_u64().expect("p")).expect("p fits");
+        assert_eq!(mantissa, 1500 * 10_i128.pow(places), "{tax}");
+    }
+}
+
 /// Decision 11: a rule posting to an account the journal neither declares nor
 /// uses — the user's real typo — is warned about, by name, and still runs.
 #[tokio::test]
@@ -3313,5 +3345,162 @@ async fn a_save_deletes_and_appends_rules_by_block() {
             "    assets:cash\n\n= ^expenses:rent(:|$) tag:_generated-transaction\n    expenses:rent-fee  *0.01\n    assets:cash        *-0.01\n"
         ),
         "{after}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Account types a scenario FILE declares itself
+// ---------------------------------------------------------------------------
+
+/// A scenario that declares its own liability, which name inference cannot
+/// classify (`hmrc` is no hledger root), and a payroll-tax rule on it. hledger
+/// 1.52 `bal --auto`: per $1000 of wages, `hmrc:paye` $-100 (the liability
+/// grows) and `expenses:payroll-tax` $100.
+const PAYE: &str = "\
+; Ledgeline projection
+; projection: PAYE
+; created: 2026-01-01
+; updated: 2026-01-01
+
+account hmrc:paye  ; type: L
+
+= ^expenses:wages(:|$) tag:_generated-transaction
+    hmrc:paye             *-0.1
+    expenses:payroll-tax  *0.1
+
+~ monthly  wages
+    expenses:wages    $1000.00
+    assets:cash
+";
+
+const PAYE_URI: &str = "/api/projections/plans/projection-paye.journal";
+
+/// The posting to `account` in a served rule form.
+fn form_posting<'a>(form: &'a Value, account: &str) -> &'a Value {
+    form["postings"]
+        .as_array()
+        .expect("postings")
+        .iter()
+        .find(|posting| posting["account"] == account)
+        .unwrap_or_else(|| panic!("no {account} posting in {form}"))
+}
+
+/// **A5-7.** GET reads the rule under the file's own `type: L`, so the
+/// liability's percentage is served positive, as the docs tell the user to
+/// type it — and a save of that form writes back the multipliers hledger
+/// books, not their inverse.
+#[tokio::test]
+async fn a_rule_on_a_liability_the_scenario_declares_is_served_positive_and_saves_unchanged() {
+    let tree = Tree::new(&[("plans/projection-paye.journal", PAYE)]);
+    let (status, doc) = file_json(&tree.state, "GET", PAYE_URI, None).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let mut scenario = doc["scenario"].clone();
+    assert_eq!(scenario["accountTypes"], json!({"hmrc:paye": "liability"}));
+    let form = scenario["autoRules"][0]["form"].clone();
+    assert_eq!(form["counter"], "expenses:payroll-tax", "{form}");
+    assert_eq!(
+        form_posting(&form, "hmrc:paye")["percent"],
+        json!({"mantissa": "10", "places": 0}),
+        "{form}"
+    );
+
+    // The user re-saves the form exactly as served (the documented figure).
+    scenario["autoRules"][0] = json!({"block": 0, "form": form});
+    let (status, saved) = file_json(
+        &tree.state,
+        "PUT",
+        PAYE_URI,
+        Some(json!({"revision": doc["revision"], "scenario": scenario})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let after = tree.read("plans/projection-paye.journal");
+    let multiplier = |account: &str| {
+        after
+            .lines()
+            .find(|line| line.trim_start().starts_with(&format!("{account} ")))
+            .and_then(|line| line.split_whitespace().last())
+            .unwrap_or_else(|| panic!("no {account} line in {after}"))
+            .to_string()
+    };
+    assert_eq!(multiplier("hmrc:paye"), "*-0.1", "{after}");
+    assert_eq!(multiplier("expenses:payroll-tax"), "*0.1", "{after}");
+    assert_eq!(
+        saved["scenario"]["accountTypes"],
+        json!({"hmrc:paye": "liability"})
+    );
+}
+
+/// Run a 10% `hmrc:paye` rule (countered by payroll tax) over the rent line,
+/// with `account_types` riding on the body, and hand back the whole-dollar
+/// amounts booked to (`hmrc:paye`, `expenses:payroll-tax`) in each entry.
+async fn paye_run(account_types: Option<Value>) -> Vec<(i128, i128)> {
+    let mut scenario = scenario_with(vec![rent_line()], vec![]);
+    scenario["autoRules"] = json!([{
+        "block": null,
+        "form": percent_form("expenses:rent", "hmrc:paye", "10", Some("expenses:payroll-tax"))
+    }]);
+    if let Some(types) = account_types {
+        scenario["accountTypes"] = types;
+    }
+    let projection = run(json!({
+        "scenario": scenario,
+        "interval": "monthly",
+        "count": 2,
+        "lookback": 0,
+        "journal": true
+    }))
+    .await;
+    let entries = projection["journal"]["entries"]
+        .as_array()
+        .expect("entries");
+    assert!(!entries.is_empty());
+    entries
+        .iter()
+        .map(|entry| {
+            let postings = entry["txn"]["postings"].as_array().expect("postings");
+            let whole = |account: &str| {
+                let posting = postings
+                    .iter()
+                    .find(|posting| posting["account"] == account)
+                    .unwrap_or_else(|| panic!("no {account} posting in {entry}"));
+                let qty = &posting["amounts"][0]["qty"];
+                let mantissa: i128 = qty["m"].as_str().expect("m").parse().expect("m parses");
+                let places = u32::try_from(qty["p"].as_u64().expect("p")).expect("p fits");
+                mantissa / 10_i128.pow(places)
+            };
+            (whole("hmrc:paye"), whole("expenses:payroll-tax"))
+        })
+        .collect()
+}
+
+/// **A5-7, the run.** A body carrying the scenario's own `hmrc:paye` liability
+/// reads the positive 10% as the liability GROWING — the multipliers hledger
+/// books for the file — so the run and the save agree.
+#[tokio::test]
+async fn a_run_reads_an_edited_rule_under_the_scenario_s_own_account_types() {
+    let booked = paye_run(Some(json!({"hmrc:paye": "L"}))).await;
+    assert!(booked.iter().all(|pair| *pair == (-420, 420)), "{booked:?}");
+}
+
+/// The fallback, pinned: a body WITHOUT `accountTypes` (an older client) reads
+/// under the main journal's types alone. `hmrc:paye` is then unclassified, and
+/// an unclassified account's percentage is its multiplier as typed.
+#[tokio::test]
+async fn a_run_without_account_types_reads_an_unclassified_account_s_percent_as_typed() {
+    let booked = paye_run(None).await;
+    assert!(booked.iter().all(|pair| *pair == (420, -420)), "{booked:?}");
+}
+
+/// A type the `account` directive itself would not accept is a 400 naming it.
+#[tokio::test]
+async fn an_unknown_account_type_in_the_body_is_a_400() {
+    let mut scenario = scenario_with(vec![rent_line()], vec![]);
+    scenario["accountTypes"] = json!({"hmrc:paye": "debt"});
+    let (status, text) = post(json!({"scenario": scenario})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    assert!(
+        text.contains("hmrc:paye") && text.contains("debt"),
+        "{text}"
     );
 }
