@@ -509,9 +509,15 @@
     {/if}
 
     <div class="flex flex-col gap-2">
-        {#if stale}
-            <p class="text-xs text-base-content/60" role="status" aria-live="polite" data-testid="projection-stale">Recomputing for your latest edit…</p>
-        {/if}
+        <!-- Always one line tall, text or not. Picking a reading scrolls the tab
+             strip below to the top of the window, and when this line came and
+             went with the run (every switch into or out of Accounts/Journal
+             starts one) it moved the strip by its height plus the gap, so a
+             scroll taken on a slow machine landed a line off. A live region
+             that is always present is also the one screen readers announce. -->
+        <p class="min-h-4 text-xs text-base-content/60" role="status" aria-live="polite" data-testid="projection-stale">
+            {stale ? "Recomputing for your latest edit…" : ""}
+        </p>
         <div class={stale ? "opacity-60" : ""} aria-busy={stale}>
             <AsyncSection
                 view={projectionView}
