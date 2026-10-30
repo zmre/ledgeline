@@ -3,17 +3,21 @@
      The date, what it is, and its postings with SIGNED amounts: an event is
      where a balance-sheet movement is written (the raise that puts $2M into
      `assets:cash`), and its direction is the user's to state, not an account
-     type's (plan 22 amendment 19). Then the counter-account and the header
-     comment. Edits write the draft only. -->
+     type's (plan 22 amendment 19). Each posting shows its account's type
+     badge. Then the counter-account (none needed when the postings balance on
+     their own) and the header comment. Edits write the draft only. -->
 <script lang="ts">
     import {decToInput, parseAmountInput} from "#lib/api/editMapping.js";
+    import type {AccountClasses} from "#lib/domain/accountClass.js";
     import AccountInput from "#lib/journal/edit/AccountInput.svelte";
-    import {accountOrNull, isIsoDate, noteProblem} from "../../../scenarioModel";
+    import {accountOrNull, eventBalances, isIsoDate, noteProblem} from "../../../scenarioModel";
     import type {ForecastDefaults, ScenarioEvent} from "../../../types";
+    import TypeBadge from "../TypeBadge.svelte";
 
     let {
         event,
         accountNames,
+        declared,
         commodity,
         defaults,
         cash,
@@ -22,6 +26,8 @@
         /** The draft's event. Mutated in place. */
         event: ScenarioEvent;
         accountNames: string[];
+        /** The scenario's account types, for the badges. */
+        declared: AccountClasses;
         commodity: string;
         defaults: ForecastDefaults | null;
         cash: string | null;
@@ -29,6 +35,8 @@
     } = $props();
 
     const noteError = $derived(noteProblem(event.description));
+    /** The postings balance on their own: no counter-account is needed. */
+    const balanced = $derived(eventBalances(event));
     const names = $derived(
         event.postings.map((posting, at) => (posting.account.trim() === "" ? `posting ${at + 1}` : `${posting.account.trim()} (posting ${at + 1})`))
     );
@@ -122,17 +130,21 @@
                             onclick={() => dropPosting(at)}>✕</button
                         >
                     </div>
-                    <input
-                        type="text"
-                        class="input mt-1.5 w-full input-ghost font-mono text-base-content/70 input-xs"
-                        value={posting.comment}
-                        placeholder="; comment on this posting (optional)"
-                        aria-label="Comment for {name}"
-                        onchange={(e) => {
-                            posting.comment = e.currentTarget.value;
-                            onEdit();
-                        }}
-                    />
+                    <!-- The type badge leads the second line, as in a rule's posting rows. -->
+                    <div class="mt-1.5 flex items-center gap-2">
+                        <TypeBadge account={posting.account} classes={declared} />
+                        <input
+                            type="text"
+                            class="input w-full input-ghost font-mono text-base-content/70 input-xs"
+                            value={posting.comment}
+                            placeholder="; comment on this posting (optional)"
+                            aria-label="Comment for {name}"
+                            onchange={(e) => {
+                                posting.comment = e.currentTarget.value;
+                                onEdit();
+                            }}
+                        />
+                    </div>
                 </li>
             {/each}
         </ol>
@@ -147,12 +159,15 @@
                 {accountNames}
                 size="sm"
                 label="Counter-account"
-                placeholder={defaults?.events.get(event.id) ?? cash ?? defaults?.cash ?? "the default cash account"}
+                placeholder={balanced ? "none needed" : (defaults?.events.get(event.id) ?? cash ?? defaults?.cash ?? "the default cash account")}
                 onCommit={() => {
                     event.counter = accountOrNull(event.counter);
                     onEdit();
                 }}
             />
+            {#if balanced && event.counter === null}
+                <span class="text-xs text-base-content/45" data-testid="counter-not-needed">None needed: the postings balance on their own.</span>
+            {/if}
         </label>
         <label class="flex flex-col gap-1">
             <span class="text-xs text-base-content/60">Header comment</span>

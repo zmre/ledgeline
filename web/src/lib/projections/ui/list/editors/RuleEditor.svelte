@@ -12,6 +12,11 @@
      ↑/↓. A posting that needs a different counter-account belongs in a rule
      of its own (+ Add, or Duplicate this one).
 
+     Each posting shows its account's type badge as it is typed, the list's
+     own. The counter-account box says when none is needed: postings that
+     balance on their own post nothing to a counter (Patrick's capex rule,
+     2026-10-29), and the server's render below shows what is written.
+
      Edits write the DRAFT only. `onEdit` fires on each committed change (a
      change event, an account chosen), never per keystroke, and is what asks
      the server for the "Writes:" preview. -->
@@ -28,6 +33,7 @@
     import {
         accountOrNull,
         boundsLockedReason,
+        linesBalance,
         GROWTH_UNIT_ABBREV,
         isIsoDate,
         magnitudeOf,
@@ -42,6 +48,7 @@
         withMagnitude,
     } from "../../../scenarioModel";
     import {GROWTH_UNITS, SCENARIO_INTERVALS, type AssetRow, type ForecastDefaults, type ScenarioLine} from "../../../types";
+    import TypeBadge from "../TypeBadge.svelte";
 
     let {
         lines,
@@ -211,7 +218,9 @@
     }
 
     const growthPercent = (line: ScenarioLine): string => (line.growth === null ? "" : decToInput(percentFromRate(line.growth.rate)));
-    const counterPlaceholder = $derived(defaults?.lines.get(group) ?? cash ?? defaults?.cash ?? "the default cash account");
+    /** The postings balance on their own: no counter-account is needed, and none is written unless one is typed. */
+    const balanced = $derived(linesBalance(lines, declared));
+    const counterPlaceholder = $derived(balanced ? "none needed" : (defaults?.lines.get(group) ?? cash ?? defaults?.cash ?? "the default cash account"));
 </script>
 
 <div class="flex flex-col gap-4" data-testid="rule-editor">
@@ -420,7 +429,9 @@
                             </div>
                         </div>
                     {/if}
-                    <div class="mt-1.5 pl-14">
+                    <!-- The type badge leads the posting's second line, under its account: on the first it would push the row past the dialog's width. -->
+                    <div class="mt-1.5 flex items-center gap-2 pl-14">
+                        <TypeBadge account={line.account} classes={declared} />
                         <input
                             type="text"
                             class="input w-full input-ghost font-mono text-base-content/70 input-xs"
@@ -450,6 +461,9 @@
                 placeholder={counterPlaceholder}
                 onCommit={() => setAll({counter: accountOrNull(first.counter)})}
             />
+            {#if balanced && first.counter === null}
+                <span class="text-xs text-base-content/45" data-testid="counter-not-needed">None needed: the postings balance on their own.</span>
+            {/if}
         </label>
         <label class="flex flex-col gap-1">
             <span class="text-xs text-base-content/60">Header comment</span>

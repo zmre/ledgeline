@@ -1,29 +1,33 @@
 <!-- A one-off (`~ YYYY-MM-DD` block), read like its text: the date and what
-     it is, then each posting with its SIGNED amount (an event's direction is
-     the user's to state, plan 22 amendment 19), then the counter-account. -->
+     it is, then each posting with its account's type badge and its SIGNED
+     amount (an event's direction is the user's to state, plan 22 amendment
+     19), then the counter-account — greyed when it is the default, and absent
+     when the postings balance on their own. -->
 <script lang="ts">
+    import type {AccountClasses} from "#lib/domain/accountClass.js";
     import type {AmountStyle} from "#lib/domain/types.js";
     import {amountText} from "../../entryText";
     import {attachedText, type Entry} from "../../entries";
-    import type {ForecastDefaults} from "../../types";
     import EntryFrame from "./EntryFrame.svelte";
+    import PostingAccount from "./PostingAccount.svelte";
     import {POSTING_GRID, POSTING_NOTES, type FrameProps} from "./frame";
 
     let {
         entry,
         frame,
+        declared,
         styles,
-        defaults,
     }: {
         entry: Extract<Entry, {kind: "event"}>;
         frame: FrameProps;
+        /** The scenario's account types (`scenarioClasses`), for the badges. */
+        declared: AccountClasses;
         styles: ReadonlyMap<string, AmountStyle>;
-        defaults: ForecastDefaults | null;
     } = $props();
 
     const event = $derived(entry.event);
     const attached = $derived(attachedText(entry.item));
-    const counterDefault = $derived(defaults?.events.get(event.id) ?? null);
+    const counter = $derived(entry.counter);
 </script>
 
 <EntryFrame {entry} {...frame}>
@@ -50,21 +54,29 @@
         <div class={POSTING_GRID} data-testid="entry-postings">
             {#each event.postings as posting, at (at)}
                 {@const amount = amountText(posting.amount.commodity, posting.amount.quantity, styles)}
-                <span class="min-w-0 truncate text-base-content/90" title={posting.account}>{posting.account === "" ? "(no account)" : posting.account}</span>
+                <PostingAccount account={posting.account} classes={declared} class="text-base-content/90" />
                 <span class={["text-right whitespace-nowrap", amount.startsWith("−") && "text-error"]}>{amount}</span>
                 <span class="min-w-0 truncate text-xs text-base-content/55 italic {POSTING_NOTES}" title={posting.comment}
                     >{#if posting.comment !== ""}; {posting.comment.split("\n").join(" · ")}{/if}</span
                 >
             {/each}
-            <span class="col-span-full min-w-0 truncate text-base-content/50" data-testid="entry-counter">
-                <span aria-hidden="true">→</span><span class="sr-only">balanced against</span>
-                {#if event.counter !== null}
-                    {event.counter}
-                {:else}
-                    <span class="italic">{counterDefault ?? "the default cash account"}</span>
-                    <span class="font-sans text-xs text-base-content/35">(default)</span>
-                {/if}
-            </span>
+            {#if counter !== null}
+                <PostingAccount
+                    account={counter.account ?? ""}
+                    classes={declared}
+                    dim={counter.inferred}
+                    class="col-span-full text-base-content/50"
+                    testid="entry-counter"
+                >
+                    <span aria-hidden="true">→</span><span class="sr-only">balanced against</span>
+                    {#if !counter.inferred}
+                        {counter.account}
+                    {:else}
+                        <span class="italic">{counter.account ?? "the default cash account"}</span>
+                        <span class="font-sans text-xs text-base-content/35">(default)</span>
+                    {/if}
+                </PostingAccount>
+            {/if}
         </div>
     {/snippet}
 </EntryFrame>

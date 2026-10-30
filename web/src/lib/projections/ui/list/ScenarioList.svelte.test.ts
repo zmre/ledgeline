@@ -14,7 +14,7 @@ import {tick} from "svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {keymap} from "#lib/keys/keymap.svelte.js";
 import ScenarioListHarness from "#lib/testing/ScenarioListHarness.svelte";
-import {ACCOUNT_NAMES, DECLARED, FILE, SEED, STYLES} from "#lib/testing/scenarioListFixture.js";
+import {ACCOUNT_NAMES, DECLARED, FILE, SEED, STYLES, TYPES, TYPES_DECLARED} from "#lib/testing/scenarioListFixture.js";
 import {emptyScenario, runBody} from "../../scenarioModel";
 import {scenarioStore} from "../../scenarioStore.svelte";
 import type {Scenario} from "../../types";
@@ -55,6 +55,10 @@ async function choose(key: string, label: string): Promise<void> {
     await tick();
 }
 
+/** The account-type badges a card draws, in order: one per posting, the counter-account's last. */
+const typeBadges = (element: HTMLElement): string[] =>
+    [...element.querySelectorAll<HTMLElement>("[data-type-badge]")].map((badge) => badge.dataset.typeBadge ?? "");
+
 /** Real timers: the preview's 300ms debounce, then its answer. */
 const settle = (ms = 360): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -70,8 +74,11 @@ describe("COMPONENT ScenarioList — a seeded scenario", () => {
     it("one card per seeded rule, badged by the account's TYPE, in the seed's order", () => {
         mount({seeded: true});
         expect(keysShown()).toEqual(["gap:income:salary:$", "gap:income:dividends:$", "gap:expenses:housing:$", "gap:expenses:taxes:$"]);
-        expect(within(card("gap:income:salary:$")).getByText("income").dataset.badge).toBe("income");
-        expect(within(card("gap:expenses:housing:$")).getByText("expense").dataset.badge).toBe("expense");
+        // Before the first run the counter's default is unknown, so only the posting is typed.
+        expect(typeBadges(card("gap:income:salary:$"))).toEqual(["income"]);
+        expect(typeBadges(card("gap:expenses:housing:$"))).toEqual(["expense"]);
+        // No section badge in the header: the kind is all it says.
+        expect(card("gap:income:salary:$").querySelector("[data-badge=income]")).toBeNull();
     });
 
     it("shows the amount the file holds, revenue signed negative, and marks it estimated", () => {
@@ -139,7 +146,9 @@ describe("COMPONENT ScenarioList — the file, in file order (plan 31 C1)", () =
         const asset = card("rule:4");
         expect(within(asset).getByTestId("entry-balance").textContent).toContain("(override)");
         expect(asset.textContent).toContain("gains → equity:gains");
-        expect(within(asset).getByText("asset").dataset.badge).toBe("asset");
+        // The house, and its counter-account (assets:checking under a declared `assets`).
+        expect(typeBadges(asset)).toEqual(["asset", "asset"]);
+        expect(asset.querySelector("[data-badge]")).toBeNull();
     });
 
     it("a one-off reads with its date and SIGNED amount", () => {
@@ -153,7 +162,9 @@ describe("COMPONENT ScenarioList — the file, in file order (plan 31 C1)", () =
     it("an `=` rule reads as a sentence, and one the form cannot state shows its text, locked", () => {
         mount();
         const auto = card("auto:0");
-        expect(within(auto).getByRole("heading").textContent).toMatch(/When\s*income:salary\s*is projected/);
+        expect(within(auto).getByRole("heading").textContent).toMatch(/When\s*income\s*income:salary\s*is projected/);
+        // The matched account, each generated posting and the counter, each by its type.
+        expect(typeBadges(auto)).toEqual(["income", "expense", "asset"]);
         expect(within(auto).getByTestId("entry-postings").textContent).toContain("3% of it");
         const locked = card("auto:1");
         expect(locked.textContent).toContain("edit in the file");
@@ -197,10 +208,61 @@ describe("COMPONENT ScenarioList — the file, in file order (plan 31 C1)", () =
     });
 });
 
+describe("COMPONENT ScenarioList — every posting badged by its account's type (2026-10-29)", () => {
+    beforeEach(() => scenarioStore.adopt(TYPES));
+    // The run named a default for the one rule that needs one, and none for the balanced ones.
+    const defaults = {cash: "assets:checking", gains: "equity:gains", lines: new Map([["rule:r", "assets:checking"]]), events: new Map()};
+
+    it("a deferred-revenue rule reads as a liability AND income, with no counter line: it balances", () => {
+        mount({declared: TYPES_DECLARED, defaults});
+        const deferred = card("rule:d");
+        expect(typeBadges(deferred)).toEqual(["liability", "income"]);
+        expect(within(deferred).getByText("liability").closest("[data-type-badge]")).toBeTruthy();
+        expect(within(deferred).queryByTestId("entry-counter")).toBeNull();
+        expect(deferred.querySelector("[data-badge]")).toBeNull();
+    });
+
+    it("a capital purchase stating both legs has no default counter, nor does a balanced one-off", () => {
+        mount({declared: TYPES_DECLARED, defaults});
+        expect(typeBadges(card("rule:c"))).toEqual(["cash", "asset"]);
+        expect(within(card("rule:c")).queryByTestId("entry-counter")).toBeNull();
+        expect(within(card("move")).queryByTestId("entry-counter")).toBeNull();
+    });
+
+    it("a rule left to its default counter shows it greyed, its badge dimmed like its text", () => {
+        mount({declared: TYPES_DECLARED, defaults});
+        const counter = within(card("rule:r")).getByTestId("entry-counter");
+        expect(counter.textContent).toContain("assets:checking");
+        expect(counter.textContent).toContain("(default)");
+        const badge = counter.querySelector<HTMLElement>("[data-type-badge]");
+        expect(badge?.dataset.typeBadge).toBe("cash");
+        expect(badge?.className).toContain("opacity-60");
+    });
+
+    it("a type the scenario file declares wins; an untyped account says so, in words", () => {
+        mount({declared: TYPES_DECLARED, defaults});
+        expect(typeBadges(card("rule:h"))).toEqual(["liability", "cash"]);
+        const unknown = card("rule:m").querySelector<HTMLElement>("[data-type-badge=none]");
+        expect(unknown?.textContent).toContain("no account type");
+        expect(unknown?.title).toContain("misc:thing has no account type");
+    });
+
+    it("one chip per type present; an entry matches a type by ANY of its accounts", async () => {
+        mount({declared: TYPES_DECLARED, defaults});
+        expect(screen.getByTestId("projection-filter-income").textContent).toMatch(/Income\s*1/);
+        expect(screen.getByTestId("projection-filter-liability").textContent).toMatch(/Liability\s*2/);
+        expect(screen.queryByTestId("projection-filter-equity")).toBeNull();
+        await fireEvent.click(screen.getByTestId("projection-filter-income"));
+        expect(keysShown()).toEqual(["rule:d"]);
+        await fireEvent.click(screen.getByTestId("projection-filter-liability"));
+        expect(keysShown()).toEqual(["rule:d", "rule:h"]);
+    });
+});
+
 describe("COMPONENT ScenarioList — empty states", () => {
     it("a new, empty scenario says so, with the four Add buttons", async () => {
         scenarioStore.adopt(emptyScenario());
-        mount();
+        mount({declared: TYPES_DECLARED});
         const empty = screen.getByTestId("projection-empty");
         expect(empty.textContent).toContain("No entries yet");
         const buttons = within(empty)
@@ -219,8 +281,8 @@ describe("COMPONENT ScenarioList — empty states", () => {
             lines: scenarioStore.scenario.lines.filter((l) => l.role !== "asset"),
             layout: scenarioStore.scenario.layout.filter((item) => item.key !== "rule:4"),
         });
-        mount({filter: "asset"});
-        expect(screen.getByTestId("projection-filter-empty").textContent).toContain("No asset entries.");
+        mount({filter: "liability"});
+        expect(screen.getByTestId("projection-filter-empty").textContent).toContain("No liability entries.");
         // Section headings stay, for context, but say nothing matched.
         expect(keysShown()).toEqual(["comment:0"]);
         await fireEvent.click(within(screen.getByTestId("projection-filter-empty")).getByRole("button", {name: "Clear filter"}));
@@ -230,9 +292,13 @@ describe("COMPONENT ScenarioList — empty states", () => {
 
 describe("COMPONENT ScenarioList — filter chips (plan 31 C12)", () => {
     it("count each kind, and a chip shows only its kind with section headings kept", async () => {
-        mount();
+        mount({declared: TYPES_DECLARED});
         expect(screen.getByTestId("projection-filter-all").textContent).toMatch(/All\s*11/);
-        expect(screen.getByTestId("projection-filter-income").textContent).toMatch(/Income\s*2/);
+        // Income: the salary rule, the turned-off contract, and the `=` rule matching salary.
+        expect(screen.getByTestId("projection-filter-income").textContent).toMatch(/Income\s*3/);
+        expect(screen.getByTestId("projection-filter-equity").textContent).toMatch(/Equity\s*1/);
+        // A type nothing in the file has gets no chip.
+        expect(screen.queryByTestId("projection-filter-liability")).toBeNull();
         expect(screen.getByTestId("projection-filter-off").textContent).toMatch(/Off\s*1/);
         expect(screen.getByTestId("projection-filter-notes").textContent).toMatch(/Notes\s*2/);
         await fireEvent.click(screen.getByTestId("projection-filter-oneoff"));
@@ -241,7 +307,7 @@ describe("COMPONENT ScenarioList — filter chips (plan 31 C12)", () => {
     });
 
     it("turns reordering off while filtered, and says how to get it back", async () => {
-        mount();
+        mount({declared: TYPES_DECLARED});
         await fireEvent.click(screen.getByTestId("projection-filter-income"));
         expect(screen.getByTestId("projection-filter-hint").textContent).toContain("Clear the filter to reorder");
         await fireEvent.click(within(card("rule:0")).getByTestId("row-menu-trigger"));
@@ -260,7 +326,7 @@ describe("COMPONENT ScenarioList — filter chips (plan 31 C12)", () => {
 
 describe("COMPONENT ScenarioList — turn off, delete, move", () => {
     it("Turn off dims the entry, says so, and takes it out of the run body", async () => {
-        mount();
+        mount({declared: TYPES_DECLARED});
         const before = scenarioStore.revision;
         await choose("rule:3", "Turn off");
         expect(card("rule:3").dataset.disabled).toBe("true");
@@ -275,14 +341,14 @@ describe("COMPONENT ScenarioList — turn off, delete, move", () => {
     });
 
     it("Delete removes the entry and what it holds", async () => {
-        mount();
+        mount({declared: TYPES_DECLARED});
         await choose("comment:1", "Delete");
         expect(keysShown()).not.toContain("comment:1");
         expect(scenarioStore.scenario.comments.map((c) => c.key)).toEqual(["comment:0"]);
     });
 
     it("Move up and Move down move ANY entry, one place, past any kind", async () => {
-        mount();
+        mount({declared: TYPES_DECLARED});
         await choose("rule:3", "Move up");
         expect(keysShown().slice(5, 8)).toEqual(["rule:2", "rule:3", "comment:1"]);
         await choose("comment:0", "Move down");
@@ -290,7 +356,7 @@ describe("COMPONENT ScenarioList — turn off, delete, move", () => {
     });
 
     it("dragging an entry onto another puts it there, past file text", async () => {
-        mount();
+        mount({declared: TYPES_DECLARED});
         const handle = within(card("auto:0")).getByTestId("drag-handle");
         await fireEvent.dragStart(handle, {dataTransfer: {setData: () => {}, effectAllowed: "move"}});
         const target = card("fixed:0").parentElement as HTMLElement;
@@ -301,7 +367,7 @@ describe("COMPONENT ScenarioList — turn off, delete, move", () => {
     });
 
     it("file text has no grip to drag and no menu to move it", () => {
-        mount();
+        mount({declared: TYPES_DECLARED});
         expect(within(card("fixed:0")).queryByTestId("row-menu-trigger")).toBeNull();
         expect(within(card("fixed:0")).queryByTestId("drag-handle")).toBeNull();
     });
@@ -309,7 +375,7 @@ describe("COMPONENT ScenarioList — turn off, delete, move", () => {
 
 describe("COMPONENT ScenarioList — the keyboard (plan 31 C13)", () => {
     it("j/k move the cursor, G and g g jump to the ends, Escape clears", async () => {
-        mount();
+        mount({declared: TYPES_DECLARED});
         await press("j");
         expect(card("fixed:0").getAttribute("aria-current")).toBe("true");
         await press("j");
@@ -327,7 +393,7 @@ describe("COMPONENT ScenarioList — the keyboard (plan 31 C13)", () => {
     });
 
     it("J/K move the entry, and the cursor goes with it", async () => {
-        mount();
+        mount({declared: TYPES_DECLARED});
         await fireEvent.click(card("rule:3"));
         await press("K");
         expect(keysShown()[6]).toBe("rule:3");
@@ -337,7 +403,7 @@ describe("COMPONENT ScenarioList — the keyboard (plan 31 C13)", () => {
     });
 
     it("Enter and e open the dialog on the cursor's entry", async () => {
-        mount();
+        mount({declared: TYPES_DECLARED});
         await fireEvent.click(card("rule:0"));
         await press("Enter");
         expect(screen.getByTestId("entry-dialog")).toBeTruthy();
@@ -349,7 +415,7 @@ describe("COMPONENT ScenarioList — the keyboard (plan 31 C13)", () => {
     });
 
     it("t turns the cursor's entry off and on", async () => {
-        mount();
+        mount({declared: TYPES_DECLARED});
         await fireEvent.click(card("rule:0"));
         await press("t");
         expect(card("rule:0").dataset.disabled).toBe("true");
@@ -358,7 +424,7 @@ describe("COMPONENT ScenarioList — the keyboard (plan 31 C13)", () => {
     });
 
     it("x arms a delete, the second x deletes, and Escape disarms", async () => {
-        mount();
+        mount({declared: TYPES_DECLARED});
         await fireEvent.click(card("comment:1"));
         await press("x");
         expect(screen.getByTestId("entry-delete-confirm").textContent).toContain("note Assumes no price rises.");
@@ -371,7 +437,7 @@ describe("COMPONENT ScenarioList — the keyboard (plan 31 C13)", () => {
     });
 
     it("c opens a Duplicate draft and C an alternative; n opens the Add menu", async () => {
-        mount();
+        mount({declared: TYPES_DECLARED});
         await fireEvent.click(card("rule:0"));
         await press("c");
         expect(screen.getByRole("dialog").textContent).toContain("Copy of a recurring rule");
@@ -386,7 +452,7 @@ describe("COMPONENT ScenarioList — the keyboard (plan 31 C13)", () => {
     });
 
     it("nothing fires while the dialog is open", async () => {
-        mount();
+        mount({declared: TYPES_DECLARED});
         await fireEvent.click(card("rule:0"));
         await press("Enter");
         const before = scenarioStore.revision;
@@ -398,7 +464,7 @@ describe("COMPONENT ScenarioList — the keyboard (plan 31 C13)", () => {
 
 describe("COMPONENT ScenarioList — Duplicate and Duplicate as alternative (plan 31 C11)", () => {
     it("Duplicate opens a draft with a placeholder below; Done inserts it there in ONE edit", async () => {
-        mount();
+        mount({declared: TYPES_DECLARED});
         const touch = vi.spyOn(scenarioStore, "touch");
         await choose("rule:3", "Duplicate");
         const placeholder = screen.getByTestId("entry-placeholder");
@@ -418,7 +484,7 @@ describe("COMPONENT ScenarioList — Duplicate and Duplicate as alternative (pla
     });
 
     it("Cancel leaves the scenario exactly as it was, with no run", async () => {
-        mount();
+        mount({declared: TYPES_DECLARED});
         const before = snapshot();
         const revision = scenarioStore.revision;
         await choose("rule:0", "Duplicate");
@@ -430,7 +496,7 @@ describe("COMPONENT ScenarioList — Duplicate and Duplicate as alternative (pla
     });
 
     it("as alternative: the original says it will be turned off; Done adds the copy AND turns it off, in one edit", async () => {
-        mount();
+        mount({declared: TYPES_DECLARED});
         const revision = scenarioStore.revision;
         await choose("rule:0", "Duplicate as alternative");
         expect(within(card("rule:0")).getByTestId("entry-hint").textContent).toContain("Will be turned off");
@@ -445,7 +511,7 @@ describe("COMPONENT ScenarioList — Duplicate and Duplicate as alternative (pla
     });
 
     it("as alternative, Cancel leaves the original enabled and no copy", async () => {
-        mount();
+        mount({declared: TYPES_DECLARED});
         await choose("rule:0", "Duplicate as alternative");
         await fireEvent.click(screen.getByTestId("entry-dialog-cancel"));
         await tick();
@@ -462,7 +528,7 @@ describe("COMPONENT ScenarioList — notes and section headings", () => {
     }
 
     it("a section heading is created from the Add menu, after the cursor's entry", async () => {
-        mount();
+        mount({declared: TYPES_DECLARED});
         await fireEvent.click(card("rule:2"));
         await addFromMenu("Section heading");
         expect(screen.getByRole("dialog").textContent).toContain("New section heading");
@@ -479,7 +545,7 @@ describe("COMPONENT ScenarioList — notes and section headings", () => {
     });
 
     it("a note is edited in the dialog, and can become a heading", async () => {
-        mount();
+        mount({declared: TYPES_DECLARED});
         await fireEvent.click(within(card("comment:1")).getByTestId("entry-edit"));
         await fireEvent.change(screen.getByLabelText("Note text"), {target: {value: "Assumes 2% rises."}});
         await fireEvent.click(screen.getByRole("radio", {name: "Section heading"}));
@@ -491,7 +557,7 @@ describe("COMPONENT ScenarioList — notes and section headings", () => {
     });
 
     it("a note moves like any entry, and is deleted from its menu", async () => {
-        mount();
+        mount({declared: TYPES_DECLARED});
         await choose("comment:1", "Move up");
         expect(keysShown()[5]).toBe("comment:1");
         await choose("comment:1", "Delete");
@@ -501,7 +567,7 @@ describe("COMPONENT ScenarioList — notes and section headings", () => {
 
 describe("COMPONENT ScenarioList — step changes", () => {
     it("Add a step change… asks for a date, then opens the new segment; Done adds it below", async () => {
-        mount();
+        mount({declared: TYPES_DECLARED});
         await choose("rule:0", "Add a step change…");
         const prompt = screen.getByTestId("step-prompt");
         await fireEvent.change(within(prompt).getByLabelText("Date the step starts"), {target: {value: "2027-06-01"}});
@@ -519,13 +585,13 @@ describe("COMPONENT ScenarioList — step changes", () => {
     });
 
     it("no step change on an asset rule: two segments would compound the same balance twice", async () => {
-        mount();
+        mount({declared: TYPES_DECLARED});
         await fireEvent.click(within(card("rule:4")).getByTestId("row-menu-trigger"));
         expect(within(screen.getByTestId("row-menu")).queryByRole("menuitem", {name: "Add a step change…"})).toBeNull();
     });
 
     it("Merge with the other step gives back one rule", async () => {
-        mount();
+        mount({declared: TYPES_DECLARED});
         await choose("rule:2", "Merge with the other step");
         expect(keysShown()).not.toContain("rule:2");
         expect(within(card("rule:1")).queryByTestId("step-chip")).toBeNull();
@@ -535,7 +601,7 @@ describe("COMPONENT ScenarioList — step changes", () => {
 describe("COMPONENT ScenarioList — the default cash account", () => {
     it("is greyed with the engine's fallback, and settable as one edit", async () => {
         scenarioStore.adopt({...FILE, cash: null});
-        mount({defaults: {cash: "assets:bank", gains: "equity:gains", lines: new Map(), events: new Map()}});
+        mount({declared: TYPES_DECLARED, defaults: {cash: "assets:bank", gains: "equity:gains", lines: new Map(), events: new Map()}});
         const box = screen.getByLabelText("Default cash account") as HTMLInputElement;
         expect(box.value).toBe("");
         expect(box.placeholder).toBe("assets:bank");

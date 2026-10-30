@@ -59,7 +59,7 @@
         type EntryFilter,
     } from "../../entries";
     import {addDraft, draftOf, duplicateDraft, stepDraft, type Draft} from "../../entryDraft.svelte";
-    import {accountOrNull, periodWords, sectionPrefix} from "../../scenarioModel";
+    import {accountOrNull, periodWords, scenarioClasses, sectionPrefix} from "../../scenarioModel";
     import type {AssetRow, ForecastDefaults, Scenario} from "../../types";
     import RowMenu from "../RowMenu.svelte";
     import AutoEntry from "./AutoEntry.svelte";
@@ -110,7 +110,9 @@
         onCommit: (next: Scenario) => void;
     } = $props();
 
-    const entries = $derived(entriesOf(scenario, declared));
+    /** The journal's account types with the scenario file's own on top, as the engine reads the scenario. */
+    const classes = $derived(scenarioClasses(declared, scenario));
+    const entries = $derived(entriesOf(scenario, classes, defaults));
     const counts = $derived(filterCounts(entries));
     const filtered = $derived(filter !== "all");
     const visible = $derived(entries.filter((entry) => entryVisible(entry, filter)));
@@ -121,6 +123,11 @@
         income: "Income",
         expense: "Expense",
         asset: "Asset",
+        cash: "Cash",
+        liability: "Liability",
+        equity: "Equity",
+        gain: "Gain",
+        conversion: "Conversion",
         oneoff: "One-off",
         auto: "Auto",
         off: "Off",
@@ -132,6 +139,11 @@
         income: "income",
         expense: "expense",
         asset: "asset",
+        cash: "cash",
+        liability: "liability",
+        equity: "equity",
+        gain: "gain",
+        conversion: "conversion",
         oneoff: "one-off",
         auto: "automatic posting",
         off: "turned-off",
@@ -221,7 +233,7 @@
 
     function dialogDone(next: Scenario, key: string, draft: Draft): void {
         dialog = null;
-        const name = entriesOf(next, declared).find((entry) => entry.key === key)?.name ?? "the entry";
+        const name = entriesOf(next, classes).find((entry) => entry.key === key)?.name ?? "the entry";
         const message =
             draft.origin === "alternative"
                 ? "Original turned off; copy added"
@@ -615,11 +627,11 @@
                         ></div>
                     {/if}
                     {#if entry.kind === "rule"}
-                        <RuleEntry {entry} {frame} {declared} {styles} {assetBalances} {defaults} onJump={cursorTo} />
+                        <RuleEntry {entry} {frame} declared={classes} {styles} {assetBalances} onJump={cursorTo} />
                     {:else if entry.kind === "event"}
-                        <EventEntry {entry} {frame} {styles} {defaults} />
+                        <EventEntry {entry} {frame} declared={classes} {styles} />
                     {:else if entry.kind === "auto"}
-                        <AutoEntry {entry} {frame} {styles} />
+                        <AutoEntry {entry} {frame} declared={classes} {styles} />
                     {:else if entry.kind === "comment"}
                         <CommentEntry {entry} {frame} />
                     {:else}
@@ -666,7 +678,7 @@
     <EntryDialog
         initial={dialog}
         {scenario}
-        {declared}
+        declared={classes}
         {accountNames}
         {commodity}
         {styles}

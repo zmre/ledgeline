@@ -1,6 +1,6 @@
 import {describe, expect, it} from "vitest";
 import {dec} from "#lib/domain/money.js";
-import {NO_ACCOUNT_CLASSES, type AccountClasses} from "#lib/domain/accountClass.js";
+import {accountTypeOf, NO_ACCOUNT_CLASSES, type AccountClasses} from "#lib/domain/accountClass.js";
 import {classesOf} from "#lib/domain/accountClassFixtures.js";
 import {
     activeScenario,
@@ -29,8 +29,10 @@ import {
     projectable,
     projectionId,
     rateFromPercent,
-    resolvedSection,
     runBody,
+    scenarioClasses,
+    linesBalance,
+    eventBalances,
     scenarioToWire,
     sectionPrefix,
     slugFilename,
@@ -124,23 +126,51 @@ describe("UNIT scenarioModel — magnitudes in, the engine signs", () => {
     });
 });
 
+describe("UNIT scenarioModel — account types and balance", () => {
+    it("the scenario file's own types win over the journal's, for the account and its undeclared descendants", () => {
+        const journal = classesOf({name: "hmrc", type: null, typeDeclared: false}, {name: "hmrc:paye", type: null, typeDeclared: false}, [
+            "hmrc:paye:refund",
+            "asset",
+        ]);
+        const classes = scenarioClasses(journal, {accountTypes: {hmrc: "liability"}});
+        expect(accountTypeOf("hmrc", classes)).toBe("liability");
+        expect(accountTypeOf("hmrc:paye", classes)).toBe("liability");
+        // A journal declaration of its own is the nearer one; it stands.
+        expect(accountTypeOf("hmrc:paye:refund", classes)).toBe("asset");
+        // A name nobody has seen inherits from the declared ancestor.
+        expect(accountTypeOf("hmrc:vat", classes)).toBe("liability");
+        expect(scenarioClasses(journal, {})).toBe(journal);
+    });
+
+    it("a rule that states both legs balances; one that leaves its cash leg to a counter does not", () => {
+        const capex = [
+            line({account: "assets:checking", amount: {commodity: "$", quantity: dec(-300000, 2), precision: 2}}),
+            line({account: "assets:fixed:computers", amount: {commodity: "$", quantity: dec(300000, 2), precision: 2}}),
+        ];
+        expect(linesBalance(capex, DECLARED)).toBe(true);
+        expect(linesBalance([line()], DECLARED)).toBe(false);
+        expect(linesBalance([], DECLARED)).toBe(false);
+    });
+
+    it("balance is read from the amounts as the file will hold them, signed by account type", () => {
+        // A typed magnitude on revenue is written negative, so it balances a
+        // liability going up by the same figure (Patrick's deferred revenue).
+        const deferred = [line({account: "liabilities:deferred-revenue", entry: dec(5000, 0)}), line({account: "income:sales", entry: dec(5000, 0)})];
+        expect(linesBalance(deferred, DECLARED)).toBe(true);
+        // Dollars against euros balance nothing.
+        const fx = [line(), line({account: "assets:eur", amount: {commodity: "€", quantity: dec(-420000, 2), precision: 2}})];
+        expect(linesBalance(fx, DECLARED)).toBe(false);
+    });
+
+    it("a one-off balances when its own postings sum to zero", () => {
+        const posting = (account: string, cents: number) => ({account, amount: {commodity: "$", quantity: dec(cents, 2), precision: 2}, comment: ""});
+        const move = {...blankEvent("move", "2027-01-01", "$"), postings: [posting("assets:checking", 10000), posting("assets:savings", -10000)]};
+        expect(eventBalances(move)).toBe(true);
+        expect(eventBalances({...move, postings: [posting("expenses:legal", 10000)]})).toBe(false);
+    });
+});
+
 describe("UNIT scenarioModel — sections", () => {
-    it("revenue goes to Income; everything else, including an asset transfer, to Expenses", () => {
-        expect(resolvedSection(line({account: "income:salary"}), DECLARED)).toBe("income");
-        expect(resolvedSection(line({account: "expenses:rent"}), DECLARED)).toBe("expense");
-        expect(resolvedSection(line({account: "assets:savings"}), DECLARED)).toBe("expense");
-    });
-
-    it("a single-date `~` rule is shown among the one-offs, though the engine keeps it a LINE", () => {
-        const dated = line({period: {raw: "2027-03-01", simple: null, base: null, from: null, to: null}});
-        expect(resolvedSection(dated, DECLARED)).toBe("oneoff");
-    });
-
-    it("a bounded-but-irregular period is NOT a one-off — its raw is not a date", () => {
-        const weird = line({period: {raw: "every weekday", simple: null, base: null, from: null, to: null}});
-        expect(resolvedSection(weird, DECLARED)).toBe("expense");
-    });
-
     it("a new row opens on a prefix of the right TYPE, learned from the journal", () => {
         const names = ["revenues:salary", "revenues:consulting", "spending:rent"];
         const declared = classesOf(["revenues", "revenue"], ["spending", "expense"]);
@@ -162,28 +192,6 @@ describe("UNIT scenarioModel — sections", () => {
 });
 
 describe("UNIT scenarioModel — the ASSET section (plan 23, Phase 3)", () => {
-    // A row's section is its ROLE, ahead of its period and ahead of its
-    // account. That is the whole reason this section needs no hold: nothing a
-    // user can type into the row changes `role`.
-
-    it("an asset row is an asset row whatever its account resolves to", () => {
-        for (const account of ["assets:brokerage", "expenses:rent", "income:salary", "", "a"]) {
-            expect(resolvedSection(line({role: "asset", account}), DECLARED)).toBe("asset");
-        }
-    });
-
-    it("a FLOW row posting to an asset account is still an outflow — the role decides, not the account", () => {
-        expect(resolvedSection(line({role: "flow", account: "assets:savings"}), DECLARED)).toBe("expense");
-    });
-
-    it("`asset` beats a single-date period, which `oneoff` would otherwise claim", () => {
-        // A balance with a dated contribution is still a balance, and the
-        // one-off table has no Growth column to show its rate in.
-        const dated = line({role: "asset", account: "assets:house", period: {raw: "2027-03-01", simple: null, base: null, from: null, to: null}});
-        expect(resolvedSection(dated, DECLARED)).toBe("asset");
-        expect(resolvedSection(dated, DECLARED)).toBe("asset");
-    });
-
     it("`blankAssetLine` is an asset with a ZERO contribution and the journal's balance", () => {
         const asset = blankAssetLine("line-9", "$");
         expect(asset.role).toBe("asset");

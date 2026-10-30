@@ -31,6 +31,7 @@ These belong under "Contract amendments made during implementation" in
    with the cursor on the new rule. Holding a second, split-off entry
    inside one draft would have needed a two-entry draft model for one rare
    action. It is offered on existing rules only, not on a new draft.
+   **Removed on Patrick's request (2026-10-29), see 28.**
 
 5. **Step changes split the whole block.** "Add a step change…" opens a
    small date prompt under the card. It defaults to the page's step date
@@ -110,7 +111,8 @@ These belong under "Contract amendments made during implementation" in
 
 17. **Filter chips with a zero count are hidden**, except All and the chip
     in use, so the chip row lists only what the file has. The URL key is
-    `show` (`params.ts`), as the plan named it.
+    `show` (`params.ts`), as the plan named it. The chips themselves changed
+    on 2026-10-29, see 26.
 
 18. **The read-only notice moved, and Save explains itself.** The notice is
     now beside the list (`projection-read-only`, same test id). The file
@@ -167,3 +169,75 @@ These belong under "Contract amendments made during implementation" in
     Exceptions: section membership is now `resolvedSection` (asserted where
     it was `sectionOfLine`), and the counter is a block field (no split).
     `NoteButton.svelte` had no test of its own.
+
+## Patrick's 2026-10-29 feedback
+
+26. **Every posting is badged by its account's TYPE, not the rule by its
+    main account.** The plan's C12 badged a rule card's header with the
+    `line_section` of each posting (income/expense/asset), which reads a
+    rule off the posting that is not its counter: Patrick's deferred-revenue
+    rule (`liabilities:deferred-revenue` up, `revenue:sales` down) showed
+    only "expense". Now each posting line, on every kind of card, carries a
+    badge for `accountTypeOf(account)`: asset, cash, liability, equity,
+    income (revenue), expense, gain, conversion. The counter-account line is
+    badged too, explicit or default, and a default's badge is dimmed like
+    its text. For an `=` rule, the matched account (in the sentence) and
+    each generated posting's account are badged. An account with no type
+    gets a neutral `?` whose title says how to declare one. A blank account
+    gets nothing. The badge sits in a fixed slot (`TYPE_SLOT`,
+    `PostingAccount.svelte`), so names line up down the list and the
+    amount column (amendment 1) still lines up. Tints: income `--chart-in`,
+    expense `--chart-out`, asset info, cash primary, liability warning,
+    equity secondary, gain and conversion neutral. Each is text as well.
+    - The header keeps only KIND badges: one-off, auto, off, estimated
+      (`Badge` is `"oneoff" | "auto"`). A single-date rule is still a one-off.
+      An asset rule has no kind badge; its balance annotation marks it.
+    - The filter chips follow: All, one chip per account type present, then
+      One-off, Auto, Off, Notes. An entry matches a type if ANY of its
+      accounts has it, counter included (`Entry.types`), so the
+      deferred-revenue rule is under both Income and Liability. A type's URL
+      value is its badge word (`?show=liability`). The old `income`,
+      `expense` and `asset` values still parse.
+    - The types are the journal's with the scenario file's own `type:`
+      declarations on top (`scenarioClasses`), as the engine reads a
+      scenario (`scenario_account_types`). Before this, the list read only
+      the journal's.
+    - The dialog's posting rows (rule and one-off) show the same badges, live
+      as the account is typed. Each badge leads the row's second line, before
+      the posting comment, because in the first line it pushed a rule's row
+      past the dialog's width. The `=` rule editor is the shared rule form
+      and has none.
+    - `resolvedSection` is gone, with its tests. The engine still serves each
+      line's `section`, and `ScenarioLine.resolved` still decodes it, so the
+      wire key stays checked (`nativeDecode.test.ts`'s TOLERATED list only
+      shrinks). Nothing reads it. Dropping it from the engine's wire is a
+      follow-up.
+
+27. **A rule or one-off whose postings balance has no default
+    counter-account.** Patrick's capex rule (`~ every 6 months`, -3000
+    `assets:checking`, +3000 `assets:fixed:computers`) showed a default
+    counter it never uses. The engine's `ForecastDefaults::of_under` now
+    skips a counter-less group or event whose amounts sum to zero per
+    commodity, as `upgrade_legacy_counters` already did. Both call one rule
+    (`lines_balance` / `event_balances` over `sums_to_zero`), and the
+    expansion still adds no counter posting for them. On the card,
+    `Entry.counter` is null when the counter is null and either the postings
+    balance as written (`linesBalance` / `eventBalances` in
+    `scenarioModel`, signed as the file will hold them) or the engine ran
+    the enabled entry and named no default. Then no `→` line is drawn.
+    Before the first run, an unbalanced rule's line reads "the default cash
+    account". In the dialog, a balanced draft's Counter-account box has the
+    placeholder "none needed" and says "None needed: the postings balance on
+    their own." Done is not blocked, and a save writes no counter: the
+    upgrade skips a balanced group. Once an edit unbalances the postings,
+    the box offers the default again, and the server's "Writes:" render
+    shows what is written.
+
+28. **"Move posting to a new rule" is removed** (amendment 4, plan C3's
+    "To give one posting a different counter, use Move posting to a new
+    rule", and the dialog mockup's button). Patrick found it confusing. The
+    `⇲` button, the dialog's `movePosting`, `entries.movePostingToNewRule`
+    and their tests are deleted. A posting that needs a different
+    counter-account goes in a rule of its own, made with **+ Add** or
+    **Duplicate**. `docs/projections/cash.md` says so, in place of the old
+    table's automatic split.

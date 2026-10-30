@@ -1,26 +1,35 @@
 <!-- An automatic posting (`= QUERY` block), read as a sentence (plan 31 C3):
 
-         When revenue:sales is projected:
-             expenses:people-costs:sales-commission     3% of it
-             → assets:mercury:checking                  ▸ rule text
+         When INCOME revenue:sales is projected:
+             EXPENSE  expenses:people-costs:sales-commission     3% of it
+             CASH     → assets:mercury:checking                  ▸ rule text
+
+     The matched account and every generated posting's account carry their
+     type badge, as a rule's postings do.
 
      A rule the form cannot state is shown by its text, with a lock and the
      reason: it is kept, applied and saved exactly as written. The rule's own
      text is always one click away in a disclosure. -->
 <script lang="ts">
+    import type {AccountClasses} from "#lib/domain/accountClass.js";
     import type {AmountStyle} from "#lib/domain/types.js";
     import {autoLockedReason, autoPostingText} from "../../entryText";
     import {attachedText, type Entry} from "../../entries";
     import EntryFrame from "./EntryFrame.svelte";
+    import PostingAccount from "./PostingAccount.svelte";
+    import TypeBadge from "./TypeBadge.svelte";
     import {POSTING_GRID, type FrameProps} from "./frame";
 
     let {
         entry,
         frame,
+        declared,
         styles,
     }: {
         entry: Extract<Entry, {kind: "auto"}>;
         frame: FrameProps;
+        /** The scenario's account types (`scenarioClasses`), for the badges. */
+        declared: AccountClasses;
         styles: ReadonlyMap<string, AmountStyle>;
     } = $props();
 
@@ -37,6 +46,7 @@
         <h3 {id} class={["flex min-w-0 flex-wrap items-baseline gap-x-2 text-sm", entry.disabled && "line-through decoration-base-content/50"]}>
             {#if form !== null}
                 <span class="text-base-content/70">When</span>
+                {#if form.matchAccount !== ""}<TypeBadge account={form.matchAccount} classes={declared} />{/if}
                 <span class="font-mono text-[0.8125rem] text-base-content">{form.matchAccount === "" ? "…" : form.matchAccount}</span>
                 {#if form.extraQuery.trim() !== ""}
                     <span class="font-mono text-xs text-base-content/60">and {form.extraQuery}</span>
@@ -67,15 +77,13 @@
         {#if form !== null}
             <div class={POSTING_GRID} data-testid="entry-postings">
                 {#each form.postings as posting, at (at)}
-                    <span class="min-w-0 truncate text-base-content/90" title={posting.account}
-                        >{posting.account === "" ? "(no account)" : posting.account}</span
-                    >
+                    <PostingAccount account={posting.account} classes={declared} class="text-base-content/90" />
                     <span class="text-right whitespace-nowrap text-base-content/80">{autoPostingText(posting, styles)}</span>
                     <span class="hidden lg:block"></span>
                 {/each}
                 {#if form.counter !== null}
-                    <span class="col-span-full min-w-0 truncate text-base-content/50" data-testid="entry-counter"
-                        ><span aria-hidden="true">→</span><span class="sr-only">balanced against</span> {form.counter}</span
+                    <PostingAccount account={form.counter} classes={declared} class="col-span-full text-base-content/50" testid="entry-counter"
+                        ><span aria-hidden="true">→</span><span class="sr-only">balanced against</span> {form.counter}</PostingAccount
                     >
                 {/if}
             </div>

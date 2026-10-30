@@ -100,9 +100,10 @@ export interface Growth {
 }
 
 /**
- * Which kind of flow a line is, for the list's badges and filters: income,
- * expense, a compounding asset, or a one-off. `asset` is decided by the
- * line's `role` and nothing else — see `resolvedSection`.
+ * Which kind of flow the ENGINE says a line is (`projections::line_section`):
+ * income, expense, a compounding asset, or a one-off. Decoded and kept with
+ * the line (`ScenarioLine.resolved`), but the list no longer reads it: since
+ * 2026-10-29 it badges each posting by its account's TYPE instead.
  */
 export type LineSection = "income" | "expense" | "asset" | "oneoff";
 
@@ -159,10 +160,10 @@ export interface ScenarioLine {
     entry?: Dec;
     /**
      * The section the ENGINE placed this line in, and the role, account and
-     * period it placed it for (`projections::line_section`, plan 26 B6). It is
-     * the authority while those three are unchanged; once the user edits one,
-     * `resolvedSection` previews the answer from the engine's account table
-     * until the line round-trips again. Absent from a body that predates it.
+     * period it placed it for (`projections::line_section`, plan 26 B6), valid
+     * while those three are unchanged, so an edit clears it. Absent from a body
+     * that predates it. Nothing reads it now (see `LineSection`); it stays so
+     * the wire's `section` key is still checked.
      */
     resolved?: Readonly<{role: LineRole; account: string; raw: string; section: LineSection}>;
     /**

@@ -5,8 +5,8 @@
 // imports) so the round trip is unit-testable under node.
 //
 // Scheme: `?tab=cash|bs|is|cf|accounts|journal&interval=&count=&lookback=&depth=
-// &empty=0|1&show=all|income|…`. `show` is the scenario list's filter chip
-// (plan 31 C12), view state like the rest. All six are written in full, never only the non-defaults, so a
+// &empty=0|1&show=all|income|liability|…|oneoff|…`. `show` is the scenario list's filter chip
+// (plan 31 C12; one per account type since 2026-10-29), view state like the rest. All six are written in full, never only the non-defaults, so a
 // shared or reloaded URL reproduces the same readings — the reports codec's
 // rule, for the reason it gives there. `empty` is the Accounts tab's toggle;
 // it is kept while another tab is open, so switching back finds it as it was.

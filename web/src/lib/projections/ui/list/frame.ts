@@ -1,6 +1,7 @@
 // What the list hands every entry's card besides the entry itself: the
 // cursor, drag and menu wiring, which `EntryFrame` draws the same way for
 // every kind. Bundled so each kind's component passes it through untouched.
+// And the postings grid's shared tracks, so every card lines up.
 
 export interface FrameMenuItem {
     label: string;
@@ -29,6 +30,13 @@ export interface FrameProps {
  */
 export const POSTING_GRID =
     "mt-1 grid grid-cols-[minmax(0,1fr)_minmax(0,9.5rem)] lg:grid-cols-[minmax(0,1fr)_minmax(0,9.5rem)_minmax(0,19rem)] items-baseline gap-x-4 gap-y-0.5 pl-6 font-mono text-[0.8125rem] tabular-nums";
+
+/**
+ * The type badge's slot before every account (`PostingAccount`): a fixed
+ * width that fits the longest label ("conversion"), so names line up across
+ * cards whatever their badges say.
+ */
+export const TYPE_SLOT = "w-[5.25rem] shrink-0";
 
 /**
  * A posting's annotation cell: its own track from `lg` up; below that it

@@ -2,15 +2,18 @@
 
          ~ monthly to 2027-02-01   payroll          ⛓ step 1 of 2
          ; A STEP: payroll jumps in February.
-             expenses:payroll                 $5,000.00
-             → assets:checking
+             EXPENSE  expenses:payroll        $5,000.00
+             CASH     → assets:checking
 
-     Amounts are signed as the file holds them and right-aligned in one column
-     per card; growth is a chip; an asset posting says where its balance comes
-     from (the journal's figure, or an override) and where its gains go. The
-     counter-account is the last line, greyed when it is the engine's default.
-     A single-date rule (`~ 2027-03-01`) reads the same way and badges as a
-     one-off. -->
+     Every posting carries its account's TYPE badge, the counter-account's
+     included, so a rule reads as what it touches (a deferred-revenue rule is
+     income and a liability). Amounts are signed as the file holds them and
+     right-aligned in one column down the list; growth is a chip; an asset
+     posting says where its balance comes from (the journal's figure, or an
+     override) and where its gains go. The counter-account is the last line,
+     greyed when it is the engine's default, and absent when the postings
+     balance on their own (nothing posts to a counter). A single-date rule
+     (`~ 2027-03-01`) reads the same way and badges as a one-off. -->
 <script lang="ts">
     import type {AccountClasses} from "#lib/domain/accountClass.js";
     import type {AmountStyle} from "#lib/domain/types.js";
@@ -18,9 +21,10 @@
     import {attachedText, type Entry} from "../../entries";
     import {journalBalanceFor} from "../../projectionView";
     import {noteIsStale} from "../../scenarioModel";
-    import type {AssetRow, ForecastDefaults} from "../../types";
+    import type {AssetRow} from "../../types";
     import EntryFrame from "./EntryFrame.svelte";
     import KindBadge from "./KindBadge.svelte";
+    import PostingAccount from "./PostingAccount.svelte";
     import {POSTING_GRID, POSTING_NOTES, type FrameProps} from "./frame";
 
     let {
@@ -29,15 +33,14 @@
         declared,
         styles,
         assetBalances,
-        defaults,
         onJump,
     }: {
         entry: Extract<Entry, {kind: "rule"}>;
         frame: FrameProps;
+        /** The scenario's account types (`scenarioClasses`): the badges and the signs. */
         declared: AccountClasses;
         styles: ReadonlyMap<string, AmountStyle>;
         assetBalances: ReadonlyMap<string, AssetRow>;
-        defaults: ForecastDefaults | null;
         /** Move the cursor to another segment of this step change. */
         onJump: (group: string) => void;
     } = $props();
@@ -46,8 +49,7 @@
     const attached = $derived(attachedText(entry.item));
     const estimated = $derived(entry.lines.some((line) => line.source === "unbudgeted"));
     const stale = $derived(entry.lines.some(noteIsStale));
-    const counter = $derived(first.counter);
-    const counterDefault = $derived(defaults?.lines.get(entry.key) ?? null);
+    const counter = $derived(entry.counter);
     const nextStep = $derived(entry.step === null ? null : entry.step.groups[entry.step.index % entry.step.of]);
 </script>
 
@@ -103,7 +105,7 @@
                 {@const asset = line.role === "asset"}
                 {@const journal = asset ? journalBalanceFor(assetBalances, entry.key, line.account, line.amount.commodity) : null}
                 {@const amount = lineAmountText(line, declared, styles)}
-                <span class="min-w-0 truncate text-base-content/90" title={line.account}>{line.account === "" ? "(no account)" : line.account}</span>
+                <PostingAccount account={line.account} classes={declared} class="text-base-content/90" />
                 <span class={["text-right whitespace-nowrap", amount.startsWith("−") && "text-error"]}>{amount}</span>
                 <span class="flex min-w-0 flex-wrap items-baseline gap-x-2 font-sans text-xs text-base-content/55 {POSTING_NOTES}">
                     {#if line.growth !== null}
@@ -128,15 +130,23 @@
                     {/if}
                 </span>
             {/each}
-            <span class="col-span-full min-w-0 truncate text-base-content/50" data-testid="entry-counter">
-                <span aria-hidden="true">→</span><span class="sr-only">balanced against</span>
-                {#if counter !== null}
-                    {counter}
-                {:else}
-                    <span class="italic">{counterDefault ?? "the default cash account"}</span>
-                    <span class="font-sans text-xs text-base-content/35">(default)</span>
-                {/if}
-            </span>
+            {#if counter !== null}
+                <PostingAccount
+                    account={counter.account ?? ""}
+                    classes={declared}
+                    dim={counter.inferred}
+                    class="col-span-full text-base-content/50"
+                    testid="entry-counter"
+                >
+                    <span aria-hidden="true">→</span><span class="sr-only">balanced against</span>
+                    {#if !counter.inferred}
+                        {counter.account}
+                    {:else}
+                        <span class="italic">{counter.account ?? "the default cash account"}</span>
+                        <span class="font-sans text-xs text-base-content/35">(default)</span>
+                    {/if}
+                </PostingAccount>
+            {/if}
         </div>
     {/snippet}
 </EntryFrame>

@@ -162,7 +162,63 @@ export const FILE_WIRE = {
     fixed: [{key: "fixed:0", raw: "account equity:gains  ; type: E\n"}],
 };
 
+/**
+ * Patrick's 2026-10-29 cases: a deferred-revenue rule (a liability up, revenue
+ * down — balanced, no counter), a capital purchase that states both legs
+ * (balanced), a rent rule left to its default counter, a one-off transfer that
+ * balances, a liability the scenario FILE types (`hmrc`), and an account with
+ * no type at all.
+ */
+export const TYPES_WIRE = {
+    ...SEED_WIRE,
+    name: "Types",
+    lines: [
+        authored("liabilities:deferred-revenue", "500000", {id: "d:0", group: "rule:d", note: "prepaid annual plans", counter: null}),
+        authored("revenue:sales", "-500000", {id: "d:1", group: "rule:d", note: "prepaid annual plans", counter: null}),
+        authored("assets:checking", "-300000", {
+            id: "c:0",
+            group: "rule:c",
+            note: "computers",
+            counter: null,
+            period: {raw: "every 6 months", simple: null, base: "every 6 months", from: null, to: null},
+        }),
+        authored("assets:fixed:computers", "300000", {
+            id: "c:1",
+            group: "rule:c",
+            note: "computers",
+            counter: null,
+            period: {raw: "every 6 months", simple: null, base: "every 6 months", from: null, to: null},
+        }),
+        authored("expenses:housing", "187500", {id: "r:0", group: "rule:r", note: "rent", counter: null}),
+        authored("hmrc:paye", "40000", {id: "h:0", group: "rule:h", note: "paye", counter: "assets:checking"}),
+        authored("misc:thing", "1000", {id: "m:0", group: "rule:m", note: "untyped", counter: "assets:checking"}),
+    ],
+    events: [
+        {
+            id: "move",
+            date: "2027-01-01",
+            description: "top up savings",
+            postings: [
+                {account: "assets:checking", amount: {commodity: "$", quantity: {mantissa: "-100000", places: 2}, precision: 2}, comment: ""},
+                {account: "assets:savings", amount: {commodity: "$", quantity: {mantissa: "100000", places: 2}, precision: 2}, comment: ""},
+            ],
+            counter: null,
+            comment: "",
+        },
+    ],
+    accountTypes: {hmrc: "liability"},
+    layout: [
+        newItem("rule", "rule:d"),
+        newItem("rule", "rule:c"),
+        newItem("rule", "rule:r"),
+        newItem("rule", "rule:h"),
+        newItem("rule", "rule:m"),
+        newItem("event", "move"),
+    ],
+};
+
 export const SEED: Scenario = decodeScenario(SEED_WIRE);
+export const TYPES: Scenario = decodeScenario(TYPES_WIRE);
 export const FILE: Scenario = decodeScenario(FILE_WIRE);
 
 export const ACCOUNT_NAMES = [
@@ -177,4 +233,12 @@ export const ACCOUNT_NAMES = [
     "equity:capital",
 ];
 export const DECLARED = classesOf(["income", "revenue"], ["expenses", "expense"], ["assets", "asset"], ["equity", "equity"]);
+/** The journal's types for `TYPES`: checking is declared Cash, as a real journal would. */
+export const TYPES_DECLARED = classesOf(
+    ["revenue", "revenue"],
+    ["expenses", "expense"],
+    ["assets", "asset"],
+    ["assets:checking", "cash"],
+    ["liabilities", "liability"]
+);
 export const STYLES = new Map<string, AmountStyle>([["$", {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]}]]);

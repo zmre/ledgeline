@@ -13,7 +13,7 @@ import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {ValidationError, type RenderProjectionBody} from "#lib/api/native.js";
 import {keymap} from "#lib/keys/keymap.svelte.js";
 import ScenarioListHarness from "#lib/testing/ScenarioListHarness.svelte";
-import {ACCOUNT_NAMES, DECLARED, FILE, STYLES} from "#lib/testing/scenarioListFixture.js";
+import {ACCOUNT_NAMES, DECLARED, FILE, STYLES, TYPES, TYPES_DECLARED} from "#lib/testing/scenarioListFixture.js";
 import {scenarioStore} from "../../scenarioStore.svelte";
 import type {AssetRow, ForecastDefaults} from "../../types";
 
@@ -358,5 +358,46 @@ describe("COMPONENT EntryDialog — an automatic posting", () => {
         await fireEvent.click(done());
         await settle(20);
         expect(scenarioStore.scenario.autoRules.find((rule) => rule.key === "auto:0")?.edited).toBe(true);
+    });
+});
+
+describe("COMPONENT EntryDialog — balanced postings need no counter-account (2026-10-29)", () => {
+    beforeEach(() => scenarioStore.adopt(TYPES));
+    const RENDERED_CAPEX = "~ every 6 months  computers\n    assets:checking  $-3000.00\n    assets:fixed:computers  $3500.00\n";
+
+    it("says none is needed, and Done keeps the rule without one", async () => {
+        renderMock = vi.fn<(body: RenderProjectionBody) => Promise<string>>(async () => RENDERED_CAPEX);
+        mount({declared: TYPES_DECLARED});
+        await open("rule:c");
+        const counter = within(dialog()).getByLabelText("Counter-account") as HTMLInputElement;
+        expect(counter.placeholder).toBe("none needed");
+        expect(within(dialog()).getByTestId("counter-not-needed").textContent).toContain("balance on their own");
+        // Each posting row carries its account's type.
+        expect([...dialog().querySelectorAll<HTMLElement>("[data-type-badge]")].map((badge) => badge.dataset.typeBadge)).toEqual(["cash", "asset"]);
+        await change("Description", "laptops");
+        await settle();
+        expect(done().disabled).toBe(false);
+        await fireEvent.click(done());
+        await settle(20);
+        expect(scenarioStore.scenario.lines.filter((line) => line.group === "rule:c").map((line) => [line.note, line.counter])).toEqual([
+            ["laptops", null],
+            ["laptops", null],
+        ]);
+    });
+
+    it("once an edit unbalances the postings, the box offers the default again", async () => {
+        mount({declared: TYPES_DECLARED, defaults: {cash: "assets:checking", gains: "equity:gains", lines: new Map(), events: new Map()}});
+        await open("rule:c");
+        await change("Amount for assets:fixed:computers", "3500");
+        const counter = within(dialog()).getByLabelText("Counter-account") as HTMLInputElement;
+        expect(counter.placeholder).toBe("assets:checking");
+        expect(within(dialog()).queryByTestId("counter-not-needed")).toBeNull();
+    });
+
+    it("a balanced one-off says the same", async () => {
+        mount({declared: TYPES_DECLARED});
+        await open("move");
+        expect((within(dialog()).getByLabelText("Counter-account") as HTMLInputElement).placeholder).toBe("none needed");
+        expect(within(dialog()).getByTestId("counter-not-needed")).toBeTruthy();
     });
 });

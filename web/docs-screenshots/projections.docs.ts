@@ -39,7 +39,7 @@ test("description bubble", async ({page}) => {
     await page.goto("/projections");
     const expense = page
         .locator('[data-testid="projection-entry"]')
-        .filter({has: page.locator('[data-badge="expense"]')})
+        .filter({has: page.locator('[data-type-badge="expense"]')})
         .first();
     await expect(expense).toBeVisible();
     await shot(page, SECTION, "description", {clip: [expense], padding: 4});
@@ -97,7 +97,7 @@ test.describe("asset growth scenario", () => {
         const value = await picker.locator("option", {hasText: /asset/i}).getAttribute("value");
         if (value === null) throw new Error("asset-growth-scenario.journal is not in the scenario picker");
         await picker.selectOption(value);
-        await expect(page.locator('[data-testid="projection-entry"] [data-badge="asset"]').first()).toBeVisible();
+        await expect(page.locator('[data-testid="projection-entry"] [data-testid="entry-balance"]').first()).toBeVisible();
     });
 
     test("scenario", async ({page}) => {
@@ -112,7 +112,7 @@ test.describe("asset growth scenario", () => {
     test("asset rows", async ({page}) => {
         const asset = page
             .locator('[data-testid="projection-entry"]')
-            .filter({has: page.locator('[data-badge="asset"]')})
+            .filter({has: page.getByTestId("entry-balance")})
             .first();
         const drawn = await annotate(page, [{kind: "box", target: asset.getByTestId("entry-balance").first(), pad: 1}]);
         await shot(page, SECTION, "asset-rows", {clip: [asset, drawn], padding: 8});

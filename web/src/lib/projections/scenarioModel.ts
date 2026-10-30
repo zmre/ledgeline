@@ -1,5 +1,5 @@
-// Editing a scenario: magnitudes, sections, periods, step split/merge, and the
-// encoder that puts one on the wire.
+// Editing a scenario: magnitudes, account types, periods, step split/merge,
+// and the encoder that puts one on the wire.
 //
 // Pure module — no Svelte, no DOM, no clock — so every decision below is tested
 // by calling it rather than by building a screen to reach it (`web/README.md`).
@@ -17,19 +17,18 @@
 // PREVIEWS that sign (`signedAmount`) so a card reads like the file; it never
 // sends one.
 //
-// # Sections: the engine's, previewed while typing
+// # Account types: the journal's, with the scenario file's on top
 //
-// Every line the engine sends says which section it belongs in
-// (`ScenarioLine.resolved`). After an edit the list still has to badge the
-// entry before the engine has seen it — so [`resolvedSection`] previews the
-// same rule from the engine's account table until the line round-trips. The
-// two agree by construction (the rule is locked to the engine's by
-// `scenario_signs_golden.rs`).
+// The list badges every posting by its account's TYPE (Patrick's 2026-10-29
+// feedback: a deferred-revenue rule is income AND a liability, whatever its
+// first posting). The engine reads a scenario with the types its own file
+// declares winning over the journal's (`scenario_account_types`), so the
+// list does too: [`scenarioClasses`].
 
 import {encodeDec} from "#lib/api/editMapping.js";
 import type {RenderProjectionBody, RunProjectionBody, WireCommentIn, WireLayoutItemIn, WireScenarioIn} from "#lib/api/native.js";
 import {absDec} from "#lib/format/amounts.js";
-import {cmp, isZero, neg, type Dec} from "#lib/domain/money.js";
+import {add, cmp, isZero, neg, type Dec} from "#lib/domain/money.js";
 import {blankRuleForm, cloneRuleForm, ruleFormComplete, ruleFormToWire, type AutoRuleForm, type RuleAmount} from "#lib/autoRules/ruleForm.js";
 import {isAccountType, type AccountClasses, type AccountType} from "#lib/domain/accountClass.js";
 import type {ISODate} from "#lib/domain/types.js";
@@ -41,7 +40,6 @@ import type {
     Growth,
     ItemKind,
     LayoutItem,
-    LineSection,
     Scenario,
     ScenarioAmount,
     ScenarioComment,
@@ -51,7 +49,7 @@ import type {
     ScenarioPeriod,
 } from "./types";
 
-export type {AddSection, LineSection};
+export type {AddSection};
 
 /**
  * Whether a string is a full ISO date, which is all `type=date` and the engine
@@ -70,8 +68,8 @@ export function isIsoDate(value: string): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * Whether `account` is revenue by the engine's account table — the preview
- * half of [`resolvedSection`], for a name the engine has not placed yet.
+ * Whether `account` is revenue by the engine's account table — the half of
+ * `account_types::signed_entry` that [`signedAmount`] previews.
  *
  * `isAccountType`, not `accountTypeOf(...) === "revenue"`: a declared
  * `type: G` gain is revenue to the engine (hledger's `type:R` query matches one).
@@ -120,31 +118,57 @@ export function signedAmount(line: ScenarioLine, declared: AccountClasses): Dec 
 }
 
 // ---------------------------------------------------------------------------
-// Sections
+// Account types and balance
 // ---------------------------------------------------------------------------
 
 /**
- * The section a line's ROLE, PERIOD and ACCOUNT TYPE put it in — the reading
- * that ignores any hold.
- *
- * The ENGINE's answer (`ScenarioLine.resolved`, from `projections::line_section`)
- * while the line still has the role, account and period it was answered for.
- * After an edit, a preview of the same rule from the engine's account table, in
- * the same order:
- *
- * 1. **`role: "asset"` wins outright** — a balance's section is its role, which
- *    no box on the row edits.
- * 2. **A single-date rule (`~ 2027-03-01`) is a one-off** to a reader, though the
- *    model keeps it a line (plan 22, amendment 12).
- * 3. **Revenue is Income; everything else is Expenses**, a recurring transfer to
- *    an asset included — hence "and other outflows".
+ * The journal's account table with the scenario file's own `type:`
+ * declarations on top, as the engine reads a scenario
+ * (`scenario_account_types`): a declared account takes its type, and so does
+ * every known descendant whose type was not itself declared. A name the table
+ * has never seen inherits from the declared ancestor through `accountTypeOf`.
  */
-export function resolvedSection(line: ScenarioLine, declared: AccountClasses): LineSection {
-    const engine = line.resolved;
-    if (engine !== undefined && engine.role === line.role && engine.account === line.account && engine.raw === line.period.raw) return engine.section;
-    if (line.role === "asset") return "asset";
-    if (line.period.simple === null && isIsoDate(line.period.raw)) return "oneoff";
-    return isRevenueAccount(line.account, declared) ? "income" : "expense";
+export function scenarioClasses(declared: AccountClasses, scenario: Pick<Scenario, "accountTypes">): AccountClasses {
+    const own = Object.entries(scenario.accountTypes ?? {});
+    if (own.length === 0) return declared;
+    const out = new Map(declared);
+    // Shallowest first, so a deeper declaration in the file wins over its ancestor's.
+    own.sort(([a], [b]) => a.split(":").length - b.split(":").length);
+    for (const [account, type] of own) {
+        const prefix = `${account}:`;
+        for (const [name, known] of out) {
+            if (name.startsWith(prefix) && !known.typeDeclared) out.set(name, {...known, type});
+        }
+        const known = out.get(account);
+        out.set(account, {type, typeDeclared: true, term: known?.term ?? null, termGuessed: known?.termGuessed ?? false});
+    }
+    return out;
+}
+
+/** Whether `amounts` sum to zero in every commodity: the engine's `sums_to_zero`. */
+function sumsToZero(amounts: Iterable<{commodity: string; quantity: Dec}>): boolean {
+    const sum = new Map<string, Dec>();
+    for (const {commodity, quantity} of amounts) {
+        const prev = sum.get(commodity);
+        sum.set(commodity, prev === undefined ? quantity : add(prev, quantity));
+    }
+    return [...sum.values()].every(isZero);
+}
+
+/**
+ * Whether a rule's postings balance on their own, so it needs no
+ * counter-account: their amounts, signed as the file will hold them
+ * (`signedAmount`), sum to zero — the engine's `lines_balance`, which leaves
+ * such a rule without a default counter. A rule that states both legs (a
+ * transfer, a capital purchase) is one.
+ */
+export function linesBalance(lines: readonly ScenarioLine[], declared: AccountClasses): boolean {
+    return lines.length > 0 && sumsToZero(lines.map((line) => ({commodity: line.amount.commodity, quantity: signedAmount(line, declared)})));
+}
+
+/** Whether a one-off's stated amounts balance on their own: the engine's `event_balances`. */
+export function eventBalances(event: ScenarioEvent): boolean {
+    return event.postings.length > 0 && sumsToZero(event.postings.map((posting) => posting.amount));
 }
 
 /** Earliest span first; an unbounded start sorts before every dated one. */

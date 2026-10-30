@@ -254,7 +254,7 @@
                     onJump={isNew || onJump === null ? null : onJump}
                 />
             {:else if draft.payload.kind === "event"}
-                <EventEditor event={draft.payload.event} {accountNames} {commodity} {defaults} cash={scenario.cash} onEdit={edited} />
+                <EventEditor event={draft.payload.event} {accountNames} {declared} {commodity} {defaults} cash={scenario.cash} onEdit={edited} />
             {:else if draft.payload.kind === "auto"}
                 <AutoEntryEditor rule={draft.payload.rule} {scenario} {accountNames} {commodity} {styles} onEdit={edited} />
             {:else}

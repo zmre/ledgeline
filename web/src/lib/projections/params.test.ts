@@ -32,6 +32,13 @@ describe("UNIT projections params — the URL codec", () => {
         expect(searchToProjectionParams(`?${projectionParamsToSearch(params)}`, dflt)).toEqual(params);
     });
 
+    it("round-trips every account-type chip, and the old income/expense/asset values still parse", () => {
+        for (const show of ["income", "expense", "asset", "cash", "liability", "equity", "gain", "conversion"] as const) {
+            const params: ProjectionParams = {...dflt, show};
+            expect(searchToProjectionParams(projectionParamsToSearch(params), dflt).show).toBe(show);
+        }
+    });
+
     it("writes every param in full, so a shared link reproduces the same charts", () => {
         // Not only the non-defaults: the defaults are relative to a codebase that
         // can change them, and a link saved today must still open the same page.

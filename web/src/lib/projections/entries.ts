@@ -10,6 +10,12 @@
 // rules: those were the table's (`moveRow`, `gatherRules`, the section hold),
 // and they are gone with it because nothing here moves while you type.
 //
+// Every posting is badged by its account's TYPE, the counter-account included
+// (explicit or the engine's default), and the type filters match an entry by
+// ANY of those accounts: a deferred-revenue rule is both Income and Liability
+// (Patrick's 2026-10-29 feedback). The header keeps only the entry's KIND —
+// one-off, auto — never a section read off its first posting.
+//
 // Keys are one namespace across every kind (`takenIds` covers them all, and the
 // engine's own keys — `rule:K`, `off:K`, `auto:B`, `comment:N`, `fixed:N` — never
 // collide), so a key alone names one entry.
@@ -18,7 +24,7 @@
 // drafts from these, and the list component calls them and hands the result to
 // `scenarioStore.commit`, so every edit is one revision and one run.
 
-import type {AccountClasses} from "#lib/domain/accountClass.js";
+import {accountTypeOf, type AccountClasses} from "#lib/domain/accountClass.js";
 import type {ISODate} from "#lib/domain/types.js";
 import {
     blankAssetLine,
@@ -27,21 +33,69 @@ import {
     blankLine,
     freshId,
     isIsoDate,
+    eventBalances,
+    linesBalance,
     mergeStep,
     periodWords,
-    resolvedSection,
     takenIds,
     withBounds,
     withLayout,
 } from "./scenarioModel";
-import type {AutoRule, CommentStyle, FixedPiece, ItemKind, LayoutItem, LineSection, Scenario, ScenarioComment, ScenarioEvent, ScenarioLine} from "./types";
+import type {AutoRule, CommentStyle, FixedPiece, ForecastDefaults, ItemKind, LayoutItem, Scenario, ScenarioComment, ScenarioEvent, ScenarioLine} from "./types";
 
 // ---------------------------------------------------------------------------
 // Entries
 // ---------------------------------------------------------------------------
 
-/** What a badge on a card says. Text, never colour alone. */
-export type Badge = LineSection | "auto";
+/** An entry-KIND badge in a card's header. Text, never colour alone. */
+export type Badge = "oneoff" | "auto";
+
+/**
+ * An account-TYPE badge on a posting: the account's resolved type
+ * (`accountTypeOf`), with `revenue` called "income" as the rest of the app
+ * calls it. Text, never colour alone.
+ */
+export type TypeBadge = "income" | "expense" | "asset" | "cash" | "liability" | "equity" | "gain" | "conversion";
+
+/** The order type badges and their filter chips are listed in. */
+export const TYPE_BADGES: readonly TypeBadge[] = ["income", "expense", "asset", "cash", "liability", "equity", "gain", "conversion"];
+
+/** `account`'s type badge; null for no account, or an account with no type. */
+export function typeBadgeOf(account: string, classes: AccountClasses): TypeBadge | null {
+    const name = account.trim();
+    if (name === "") return null;
+    const type = accountTypeOf(name, classes);
+    return type === null ? null : type === "revenue" ? "income" : type;
+}
+
+/**
+ * The counter-account line a card draws: the block's own, else the engine's
+ * default (`inferred`, drawn greyed; `account` null when the engine has not
+ * named it yet). Null when there is none to draw — the postings balance on
+ * their own, so nothing posts to a counter.
+ *
+ * Balance is asked twice, and either answer hides the line: of the postings
+ * as they are now (`linesBalance`/`eventBalances`, so an edit shows at once),
+ * and of the engine, which names a default for every enabled entry that does
+ * not balance (`ForecastDefaults`). A turned-off entry is not in the run, so
+ * only the first applies to it.
+ */
+export type CounterLine = {account: string | null; inferred: boolean} | null;
+
+function counterLine(
+    counter: string | null,
+    balanced: boolean,
+    fallback: string | undefined,
+    defaults: ForecastDefaults | null,
+    disabled: boolean
+): CounterLine {
+    if (counter !== null) return {account: counter, inferred: false};
+    if (balanced) return null;
+    if (fallback !== undefined) return {account: fallback, inferred: true};
+    // The engine has run this entry and named no default: it balances.
+    if (defaults !== null && !disabled) return null;
+    return {account: null, inferred: true};
+}
 
 /** Where a rule sits in a step change: two or more `~` blocks whose postings share a `; line:` id (plan 31 C2). */
 export interface StepInfo {
@@ -61,17 +115,28 @@ interface EntryBase {
     name: string;
     disabled: boolean;
     badges: Badge[];
+    /** Every type badge its accounts carry, the counter-account's included, in `TYPE_BADGES` order: what the type filters match. */
+    types: TypeBadge[];
 }
 
 export type Entry =
-    | (EntryBase & {kind: "rule"; lines: ScenarioLine[]; step: StepInfo | null})
-    | (EntryBase & {kind: "event"; event: ScenarioEvent})
+    | (EntryBase & {kind: "rule"; lines: ScenarioLine[]; step: StepInfo | null; counter: CounterLine})
+    | (EntryBase & {kind: "event"; event: ScenarioEvent; counter: CounterLine})
     | (EntryBase & {kind: "auto"; rule: AutoRule})
     | (EntryBase & {kind: "comment"; comment: ScenarioComment})
     | (EntryBase & {kind: "fixed"; fixed: FixedPiece});
 
-/** The order badges are shown in, whatever order a block's postings are in. */
-const BADGE_ORDER: readonly Badge[] = ["income", "expense", "asset", "oneoff", "auto"];
+/** The type badges of `accounts`, each once, in `TYPE_BADGES` order. */
+function typesOf(accounts: readonly (string | null)[], classes: AccountClasses): TypeBadge[] {
+    const found = new Set(accounts.map((account) => (account === null ? null : typeBadgeOf(account, classes))));
+    return TYPE_BADGES.filter((badge) => found.has(badge));
+}
+
+/** A single-date rule (`~ 2027-03-01`) reads as a one-off, though the model keeps it a line (plan 22, amendment 12); a balance never does. */
+function isOneOffRule(lines: readonly ScenarioLine[]): boolean {
+    const first = lines[0];
+    return first !== undefined && first.role !== "asset" && first.period.simple === null && isIsoDate(first.period.raw);
+}
 
 /** One line of a comment or attached comment, its comment character and one space stripped. */
 function stripPrefix(line: string): string {
@@ -97,13 +162,15 @@ export function attachedText(item: LayoutItem): string {
 }
 
 /**
- * Every entry of `scenario`, in layout order, with its badges, step and name.
+ * Every entry of `scenario`, in layout order, with its badges, account
+ * types, counter line, step and name. `classes` should be the scenario's own
+ * reading (`scenarioClasses`); `defaults` are the last run's, null before one.
  *
  * A layout item naming nothing the scenario holds is skipped rather than
  * thrown on: the engine refuses such a layout on save with its own sentence,
  * and the list should still draw everything else.
  */
-export function entriesOf(full: Scenario, declared: AccountClasses): Entry[] {
+export function entriesOf(full: Scenario, classes: AccountClasses, defaults: ForecastDefaults | null = null): Entry[] {
     const scenario = withLayout(full);
     const groups = new Map<string, ScenarioLine[]>();
     for (const line of scenario.lines) {
@@ -124,35 +191,50 @@ export function entriesOf(full: Scenario, declared: AccountClasses): Entry[] {
             case "rule": {
                 const lines = groups.get(item.key);
                 if (lines === undefined) return;
-                const sections = new Set(lines.map((line) => resolvedSection(line, declared)));
+                const counter = counterLine(lines[0].counter, linesBalance(lines, classes), defaults?.lines.get(item.key), defaults, item.disabled);
                 out.push({
                     ...base,
                     kind: "rule",
                     lines,
                     step: steps.get(item.key) ?? null,
+                    counter,
                     name: "",
-                    badges: BADGE_ORDER.filter((badge) => sections.has(badge as LineSection)),
+                    badges: isOneOffRule(lines) ? ["oneoff"] : [],
+                    types: typesOf([...lines.map((line) => line.account), counter?.account ?? null], classes),
                 });
                 return;
             }
             case "event": {
                 const event = events.get(item.key);
-                if (event !== undefined) out.push({...base, kind: "event", event, name: "", badges: ["oneoff"]});
+                if (event === undefined) return;
+                const counter = counterLine(event.counter, eventBalances(event), defaults?.events.get(event.id), defaults, item.disabled);
+                out.push({
+                    ...base,
+                    kind: "event",
+                    event,
+                    counter,
+                    name: "",
+                    badges: ["oneoff"],
+                    types: typesOf([...event.postings.map((posting) => posting.account), counter?.account ?? null], classes),
+                });
                 return;
             }
             case "auto": {
                 const rule = autos.get(item.key);
-                if (rule !== undefined) out.push({...base, kind: "auto", rule, name: "", badges: ["auto"]});
+                if (rule === undefined) return;
+                const form = rule.form;
+                const accounts = form === null ? [] : [form.matchAccount, ...form.postings.map((posting) => posting.account), form.counter];
+                out.push({...base, kind: "auto", rule, name: "", badges: ["auto"], types: typesOf(accounts, classes)});
                 return;
             }
             case "comment": {
                 const comment = comments.get(item.key);
-                if (comment !== undefined) out.push({...base, kind: "comment", comment, name: "", badges: []});
+                if (comment !== undefined) out.push({...base, kind: "comment", comment, name: "", badges: [], types: []});
                 return;
             }
             case "fixed": {
                 const piece = fixed.get(item.key);
-                if (piece !== undefined) out.push({...base, kind: "fixed", fixed: piece, name: "", badges: []});
+                if (piece !== undefined) out.push({...base, kind: "fixed", fixed: piece, name: "", badges: [], types: []});
                 return;
             }
         }
@@ -236,8 +318,9 @@ function nameEntries(entries: Entry[]): Entry[] {
 // Filters (plan 31 C12)
 // ---------------------------------------------------------------------------
 
-export type EntryFilter = "all" | "income" | "expense" | "asset" | "oneoff" | "auto" | "off" | "notes";
-export const ENTRY_FILTERS: readonly EntryFilter[] = ["all", "income", "expense", "asset", "oneoff", "auto", "off", "notes"];
+/** All, one per account type, then the kinds. A type's URL value is its badge's word (`?show=income`). */
+export type EntryFilter = "all" | TypeBadge | "oneoff" | "auto" | "off" | "notes";
+export const ENTRY_FILTERS: readonly EntryFilter[] = ["all", ...TYPE_BADGES, "oneoff", "auto", "off", "notes"];
 
 /** Whether `entry` is shown under `filter`, ignoring the section-heading exception (see `entryVisible`). */
 export function entryMatches(entry: Entry, filter: EntryFilter): boolean {
@@ -250,8 +333,11 @@ export function entryMatches(entry: Entry, filter: EntryFilter): boolean {
             return entry.kind === "comment";
         case "auto":
             return entry.kind === "auto";
+        case "oneoff":
+            return entry.badges.includes("oneoff");
         default:
-            return entry.badges.includes(filter);
+            // An account type: ANY of the entry's accounts, its counter's included.
+            return entry.types.includes(filter);
     }
 }
 

@@ -58,11 +58,11 @@ test("projections: is a top-level tab, reachable from the nav", async ({page}) =
 test("projections: seeds the scenario list from the journal, flagging what it estimated", async ({page}) => {
     await page.goto("/projections");
 
-    // One card per seeded rule, in the seed's order, badged by account type.
+    // One card per seeded rule, in the seed's order; each posting badged by its account's type.
     const list = page.getByTestId("projection-list");
     await expect(list.getByTestId("projection-entry").first()).toBeVisible();
     const salary = list.locator('[data-testid="projection-entry"][data-key="gap:income:salary:$"]');
-    await expect(salary.locator('[data-badge="income"]')).toBeVisible();
+    await expect(salary.getByTestId("entry-postings").locator('[data-type-badge="income"]')).toBeVisible();
 
     // sample.journal has no `~` rules, so every seeded rule is an average of
     // the trailing twelve months — and says so, rather than reading as
@@ -100,7 +100,7 @@ test("projections: an asset rule is added from the Add menu, and its balance is 
     await expect(dialog).toHaveCount(0);
 
     const card = page.getByTestId("projection-entry").filter({hasText: "brokerage"});
-    await expect(card.locator('[data-badge="asset"]')).toBeVisible();
+    await expect(card.locator('[data-type-badge="asset"]').first()).toBeVisible();
     await expect(page.getByTestId("projection-dirty")).toBeVisible();
 
     // Once the run lands, the balance box is EMPTY with the journal's figure

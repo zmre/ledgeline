@@ -1,18 +1,15 @@
-<!-- A kind badge on an entry's card: small caps, tinted, and always TEXT —
-     the colour repeats the word, it never replaces it (plan 31 C12).
+<!-- A kind badge on an entry's card header: small caps, tinted, and always
+     TEXT — the colour repeats the word, it never replaces it (plan 31 C12).
 
-     The tints are the app's own: income and expense take the cash-flow
-     chart's in/out colours (`--chart-in`, `--chart-out`), so a card reads in
-     the same colours as the charts under the list. -->
+     Only the entry's KIND lives here (one-off, auto, off, estimated, and a
+     comment's section/note). What an entry's money touches is badged per
+     posting, by account type (`TypeBadge`). -->
 <script lang="ts">
     import type {Badge} from "../../entries";
 
     let {kind}: {kind: Badge | "off" | "estimated" | "section" | "note"} = $props();
 
     const LABEL: Record<typeof kind, string> = {
-        income: "income",
-        expense: "expense",
-        asset: "asset",
         oneoff: "one-off",
         auto: "auto",
         off: "off",
@@ -23,9 +20,6 @@
 
     // Spelled out, not interpolated, so Tailwind sees every class.
     const TINT: Record<typeof kind, string> = {
-        income: "bg-(--chart-in)/12 text-(--chart-in)",
-        expense: "bg-(--chart-out)/14 text-(--chart-out)",
-        asset: "bg-info/12 text-info",
         oneoff: "bg-accent/12 text-accent",
         auto: "bg-secondary/14 text-secondary",
         off: "bg-base-content/10 text-base-content/70",

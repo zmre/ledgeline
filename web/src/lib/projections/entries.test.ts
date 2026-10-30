@@ -26,7 +26,7 @@ import {
     toggleDisabled,
 } from "./entries";
 import {blankEvent, emptyScenario, scenarioToWire} from "./scenarioModel";
-import type {LayoutItem, Scenario, ScenarioLine} from "./types";
+import type {ForecastDefaults, LayoutItem, Scenario, ScenarioLine} from "./types";
 
 const DECLARED = classesOf(["income", "revenue"], ["expenses", "expense"], ["assets", "asset"]);
 
@@ -129,18 +129,37 @@ describe("UNIT entries — the file's pieces as a list (plan 31 C1)", () => {
         ]);
     });
 
-    it("badges a rule for every section its postings fall in, in a fixed order", () => {
+    it("types a rule by EVERY account it posts to, its counter-account included, in a fixed order", () => {
         const [, , salary, acme] = entriesOf(file(), DECLARED);
-        expect(salary.badges).toEqual(["income", "expense"]);
-        expect(acme.badges).toEqual(["income"]);
+        expect(salary.types).toEqual(["income", "expense", "asset"]);
+        expect(acme.types).toEqual(["income", "asset"]);
         expect(acme.disabled).toBe(true);
+        // The header keeps only the entry's kind: no section read off a posting.
+        expect(salary.badges).toEqual([]);
     });
 
-    it("a single-date rule badges as a one-off, and an asset rule as an asset", () => {
+    it("a deferred-revenue rule is income AND a liability, whichever posting comes first (2026-10-29)", () => {
+        const deferred = {
+            ...emptyScenario(),
+            lines: [
+                line({id: "d0", account: "liabilities:deferred-revenue", counter: null}),
+                line({id: "d1", account: "income:sales", amount: {commodity: "$", quantity: dec(-420000, 2), precision: 2}, counter: null}),
+            ],
+        };
+        const [entry] = entriesOf(deferred, DECLARED);
+        expect(entry.types).toEqual(["income", "liability"]);
+        expect(entryMatches(entry, "income")).toBe(true);
+        expect(entryMatches(entry, "liability")).toBe(true);
+        expect(entryMatches(entry, "expense")).toBe(false);
+    });
+
+    it("a single-date rule badges as a one-off; an asset rule has no kind badge, only its account's type", () => {
         const dated = {...emptyScenario(), lines: [line({period: {raw: "2027-03-01", simple: null, base: null, from: null, to: null}})]};
         expect(entriesOf(dated, DECLARED)[0].badges).toEqual(["oneoff"]);
-        const asset = {...emptyScenario(), lines: [line({role: "asset", account: "assets:house"})]};
-        expect(entriesOf(asset, DECLARED)[0].badges).toEqual(["asset"]);
+        const weird = {...emptyScenario(), lines: [line({period: {raw: "every weekday", simple: null, base: null, from: null, to: null}})]};
+        expect(entriesOf(weird, DECLARED)[0].badges).toEqual([]);
+        const asset = {...emptyScenario(), lines: [line({role: "asset", account: "assets:house", counter: null})]};
+        expect(entriesOf(asset, DECLARED)[0]).toMatchObject({badges: [], types: ["asset"]});
     });
 
     it("finds a step change's segments by their shared posting id, in span order", () => {
@@ -176,9 +195,86 @@ describe("UNIT entries — the file's pieces as a list (plan 31 C1)", () => {
     });
 });
 
+describe("UNIT entries — the counter-account line", () => {
+    const defaults = (lines: [string, string][] = [], events: [string, string][] = []): ForecastDefaults => ({
+        cash: "assets:checking",
+        gains: "equity:unrealized gains",
+        lines: new Map(lines),
+        events: new Map(events),
+    });
+    const capex = {
+        ...emptyScenario(),
+        lines: [
+            line({id: "c0", account: "assets:checking", amount: {commodity: "$", quantity: dec(-300000, 2), precision: 2}, counter: null}),
+            line({id: "c1", account: "assets:fixed:computers", amount: {commodity: "$", quantity: dec(300000, 2), precision: 2}, counter: null}),
+        ],
+    };
+    const rent = {...emptyScenario(), lines: [line({counter: null})]};
+    const counterOf = (scenario: Scenario, known: ForecastDefaults | null) => {
+        const [entry] = entriesOf(scenario, DECLARED, known);
+        return entry.kind === "rule" || entry.kind === "event" ? entry.counter : undefined;
+    };
+
+    it("a rule whose postings balance has no counter line, before a run and after (Patrick's capex rule)", () => {
+        expect(counterOf(capex, null)).toBeNull();
+        expect(counterOf(capex, defaults())).toBeNull();
+    });
+
+    it("a rule left to a counter shows the engine's default, greyed, and its type", () => {
+        expect(counterOf(rent, defaults([["rule:0", "assets:savings"]]))).toEqual({account: "assets:savings", inferred: true});
+        expect(entriesOf(rent, DECLARED, defaults([["rule:0", "liabilities:card"]]))[0].types).toEqual(["expense", "liability"]);
+        // Before the first run the default is not known yet: the line says so, untyped.
+        expect(counterOf(rent, null)).toEqual({account: null, inferred: true});
+    });
+
+    it("an enabled rule the engine ran and named no default for balances: no line", () => {
+        expect(counterOf(rent, defaults())).toBeNull();
+        // A turned-off rule is not in the run, so the engine's silence says nothing about it.
+        const off = {...rent, layout: [item("rule", "rule:0", {disabled: true})]};
+        expect(counterOf(off, defaults())).toEqual({account: null, inferred: true});
+    });
+
+    it("an explicit counter-account is always drawn, as written", () => {
+        expect(counterOf({...emptyScenario(), lines: [line()]}, defaults())).toEqual({account: "assets:checking", inferred: false});
+    });
+
+    it("a one-off whose postings balance has no counter line; one that does not, its default", () => {
+        const posting = (account: string, cents: number) => ({account, amount: {commodity: "$", quantity: dec(cents, 2), precision: 2}, comment: ""});
+        const move = {...blankEvent("e", "2027-01-01", "$"), postings: [posting("assets:checking", 10000), posting("assets:savings", -10000)]};
+        expect(counterOf({...emptyScenario(), events: [move]}, null)).toBeNull();
+        const legal = {...move, postings: [posting("expenses:legal", 10000)]};
+        expect(counterOf({...emptyScenario(), events: [legal]}, defaults([], [["e", "assets:savings"]]))).toEqual({
+            account: "assets:savings",
+            inferred: true,
+        });
+    });
+});
+
 describe("UNIT entries — filters (plan 31 C12)", () => {
     it("counts each chip, headings only under All and Notes", () => {
-        expect(filterCounts(entriesOf(file(), DECLARED))).toEqual({all: 9, income: 2, expense: 3, asset: 0, oneoff: 1, auto: 1, off: 1, notes: 2});
+        expect(filterCounts(entriesOf(file(), DECLARED))).toEqual({
+            all: 9,
+            income: 2,
+            expense: 3,
+            asset: 5,
+            cash: 0,
+            liability: 0,
+            equity: 0,
+            gain: 0,
+            conversion: 0,
+            oneoff: 1,
+            auto: 1,
+            off: 1,
+            notes: 2,
+        });
+    });
+
+    it("tells cash from other assets, by the account's type", () => {
+        const classes = classesOf(["income", "revenue"], ["expenses", "expense"], {name: "assets:checking", type: "cash"});
+        const [, , salary] = entriesOf(file(), classes);
+        expect(salary.types).toEqual(["income", "expense", "cash"]);
+        expect(entryMatches(salary, "cash")).toBe(true);
+        expect(entryMatches(salary, "asset")).toBe(false);
     });
 
     it("keeps section headings visible under every filter, so the context survives", () => {
