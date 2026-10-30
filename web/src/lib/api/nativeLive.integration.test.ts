@@ -16,7 +16,7 @@ import type {MixedAmount} from "#lib/domain/money.js";
 import {partitionShortPositions, shortPositionNote} from "#lib/holdings/ui/view.js";
 import {styleOf} from "#lib/format/amounts.js";
 import {formatTotals} from "#lib/journal/rowModel.js";
-import {blankLine, runBody, withMagnitude} from "#lib/projections/scenarioModel.js";
+import {activeScenario, blankLine, cloneScenario, emptyScenario, renderBody, runBody, withQuantity} from "#lib/projections/scenarioModel.js";
 import {dec} from "#lib/domain/money.js";
 import {LedgelineApi} from "./native";
 import {
@@ -30,6 +30,8 @@ import {
     decodeJournalInfo,
     decodePeriodReport,
     decodeProjection,
+    decodeRenderedEntry,
+    decodeScenarioFile,
     decodeSectionedReport,
 } from "./nativeDecode";
 
@@ -246,10 +248,10 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
     // pinned here — the tab sends none, so the engine's clock would decide.
     it("a projection run carries the three statements, the cutoff and the defaults", async () => {
         const styles = decodeJournalInfo(await new LedgelineApi(url).journalInfo()).reportStyles;
-        const rent = {...withMagnitude({...blankLine("rent", "$"), account: "expenses:rent"}, dec(420000, 2)), group: "rule:0"};
+        const rent = {...withQuantity({...blankLine("rent", "$"), account: "expenses:rent"}, dec(420000, 2)), group: "rule:0"};
         const body = {
             ...runBody(
-                {name: "", created: null, updated: null, lines: [rent], events: [], cash: null, autoRules: []},
+                {name: "", created: null, updated: null, lines: [rent], events: [], cash: null, autoRules: [], layout: [], comments: [], fixed: []},
                 {interval: "monthly", count: 3, lookback: 2, depth: 2}
             ),
             asOf: AS_OF,
@@ -276,7 +278,7 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         // Asked for, the Accounts and Journal readings decode the real engine's bytes.
         const rent3 = {
             ...runBody(
-                {name: "", created: null, updated: null, lines: [rent], events: [], cash: null, autoRules: []},
+                {name: "", created: null, updated: null, lines: [rent], events: [], cash: null, autoRules: [], layout: [], comments: [], fixed: []},
                 {interval: "monthly", count: 3, lookback: 2, depth: 2, accounts: {empty: true}, journal: true}
             ),
             asOf: AS_OF,
@@ -313,8 +315,12 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
                             unsupported: null,
                             form: null,
                             block: null,
+                            key: "",
                         },
                     ],
+                    layout: [],
+                    comments: [],
+                    fixed: [],
                 },
                 {interval: "monthly", count: 3, lookback: 2, depth: 2, journal: true}
             ),
@@ -350,6 +356,7 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
                             query: "",
                             unsupported: null,
                             block: null,
+                            key: "",
                             edited: true,
                             form: {
                                 matchAccount: "expenses:rent",
@@ -361,6 +368,9 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
                             },
                         },
                     ],
+                    layout: [],
+                    comments: [],
+                    fixed: [],
                 },
                 {interval: "monthly", count: 3, lookback: 2, depth: 2, journal: true}
             ),
@@ -374,6 +384,68 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         }
         expect(viaForm.journal?.entries).toHaveLength(3);
         expect(viaForm.warnings.some((warning) => warning.includes("would also apply"))).toBe(false);
+    });
+
+    // Plan 31 C8/C15: a file's pieces come through the real decoder, and one
+    // entry renders through the writer's own body path — the "Writes:"
+    // preview. The asset fixture is the one projection file sample.journal's
+    // directory serves.
+    it("a scenario file's pieces decode, and an entry renders exactly as a save would write it", async () => {
+        const api = new LedgelineApi(url);
+        const file = decodeScenarioFile(await api.getProjection("asset-growth-scenario.journal"));
+        expect(file.scenario.layout.map((item) => `${item.kind} ${item.key}`)).toEqual([
+            "comment comment:0",
+            "rule rule:0",
+            "comment comment:1",
+            "rule rule:1",
+        ]);
+        expect(file.scenario.comments.map((comment) => comment.style)).toEqual(["note", "note"]);
+        const rule = file.scenario.layout[1];
+        expect(rule.raw.startsWith("~ monthly  brokerage and savings plan\n")).toBe(true);
+
+        // Re-rendered, it states the same rule: header, every account, the
+        // asset tags. The rule does not balance, so — exactly as a save would —
+        // it is written with the default counter-account (plan 28), its
+        // postings plain rather than `(virtual)`.
+        const text = decodeRenderedEntry(await api.renderProjectionEntry(renderBody(cloneScenario(activeScenario(file.scenario)), "rule:0"))).text;
+        expect(text.split("\n")[0]).toBe("~ monthly  brokerage and savings plan");
+        for (const account of ["assets:broker:taxable:vti", "assets:bank:savings", "assets:property:home", "expenses:housing:rent"]) {
+            expect(text).toContain(`    ${account}  `);
+        }
+        expect(text).toContain("; growth: 3%/yr, opening: 640000.00");
+
+        // A typed amount is written exactly as typed, minus and all (plan 31
+        // amendment C3-29): nothing re-signs it by the account's type.
+        const salary = {
+            ...withQuantity({...blankLine("salary", "$"), account: "income:salary", counter: "assets:bank:checking"}, dec(-500000, 2)),
+            group: "rule:0",
+        };
+        const signed = decodeRenderedEntry(await api.renderProjectionEntry(renderBody({...emptyScenario(), lines: [salary]}, "rule:0"))).text;
+        expect(signed).toBe("~ monthly\n    income:salary  $-5000.00\n    assets:bank:checking\n");
+
+        // A refusal is the writer's own sentence, as a 400.
+        const weekly = {...salary, id: "bonus", period: {...salary.period, raw: "weekly"}};
+        await expect(api.renderProjectionEntry(renderBody({...emptyScenario(), lines: [salary, weekly]}, "rule:0"))).rejects.toThrow(
+            /every line of one rule must share its recurrence/
+        );
+    });
+
+    // Plan 31 C3: every run and save now carries the list's layout, and the
+    // list writes NEW comment pieces as text for the engine to render.
+    it("a run carries the served layout back, and a new section heading renders in the house style", async () => {
+        const api = new LedgelineApi(url);
+        const file = decodeScenarioFile(await api.getProjection("asset-growth-scenario.journal"));
+        const window = {interval: "monthly", count: 3, lookback: 0, depth: 2};
+        const run = decodeProjection(await api.runProjection(runBody(cloneScenario(file.scenario), window)));
+        expect(run.buckets).toHaveLength(3);
+
+        const heading = {
+            ...emptyScenario(),
+            comments: [{key: "comment-1", style: "section" as const, raw: "", text: "Capital", edited: true}],
+            layout: [{kind: "comment" as const, key: "comment-1", origin: null, disabled: false, attached: "", raw: ""}],
+        };
+        const text = decodeRenderedEntry(await api.renderProjectionEntry(renderBody(heading, "comment-1"))).text;
+        expect(text).toBe(`${";".repeat(22)}\n;; Capital\n`);
     });
 
     it("journal info falls back to the fixture folder's name", async () => {

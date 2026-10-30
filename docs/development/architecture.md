@@ -56,7 +56,7 @@ An axum `Router` over an `AppState`. The library is what every host links; `main
 
 ## The web app
 
-`web/` is a SvelteKit SPA. Since plan 26 it requires the native API and holds no journal-sized data: the Journal tab reads windows of rows, the budget bars come with their pace and verdicts, and a projection line is sent as a magnitude for the engine to sign. What remains in TypeScript is presentation: layout, formatting with the engine's styles, chart and bar geometry, and form state. A component may still preview something while the user types (for example, which section a half-typed projection line will land in), but the engine's answer is the authority once it arrives.
+`web/` is a SvelteKit SPA. Since plan 26 it requires the native API and holds no journal-sized data: the Journal tab reads windows of rows, the budget bars come with their pace and verdicts, and a projection line is sent signed as the file writes it, which the engine writes unchanged. What remains in TypeScript is presentation: layout, formatting with the engine's styles, chart and bar geometry, and form state. A component may still preview something while the user types (for example, whether a projection rule's postings balance on their own), but the engine's answer is the authority once it arrives.
 
 ## Adding a native UI
 

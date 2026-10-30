@@ -37,7 +37,10 @@
 //      alike); a grey segment is still its own segment, tooltip row and legend
 //      entry. The ranking only picks colours: the legend and stack stay in
 //      table order. An account's colour is the same in every bucket by
-//      construction.
+//      construction. A row with a `pin` (the cash flow activities, matching
+//      the statement's headings) takes its theme colour instead, whatever its
+//      size, and is left out of the ranking, so the unpinned rows share every
+//      slot among themselves; with no pins the colours are exactly as above.
 //   5. SIDES. A segment with an engine classification (a net-worth row's
 //      `kind`, by effective declared type — never sign or name) is on the side
 //      that kind says: assets up, liabilities down; a `mixed` row, or a row
@@ -58,7 +61,7 @@
 //   7. THE NET is the table's Net row (`report.totals`) in the charted commodity.
 
 import {maAdd, maIsZero, maNeg, rankCommodities, type MixedAmount} from "#lib/domain/money.js";
-import {colorAt, type ChartPalette} from "#lib/format/palette.js";
+import {colorAt, pinColor, type ChartPalette} from "#lib/format/palette.js";
 import {amountIn} from "#lib/projections/projectionView.js";
 import type {PeriodReport, PeriodRow, PeriodRowKind} from "../types";
 import {compressPeriodRows, type DisplayRow} from "./displayRows";
@@ -78,6 +81,8 @@ export interface StackSegment {
     label: string;
     /** The engine's side for the row, when it gave one (net worth). */
     kind?: PeriodRowKind;
+    /** The row's fixed colour token, when it has one (cash flow); an own segment inherits its row's. */
+    pin?: PeriodRow["pin"];
     /** Exact per-bucket values. */
     values: readonly MixedAmount[];
 }
@@ -157,7 +162,12 @@ export function stackSegments(display: readonly DisplayRow<PeriodRow>[]): StackS
     display.forEach((shown, i) => {
         const {row} = shown;
         const kids = children[i];
-        const base = {account: row.account, label: shown.label, ...(row.kind === undefined ? {} : {kind: row.kind})};
+        const base = {
+            account: row.account,
+            label: shown.label,
+            ...(row.kind === undefined ? {} : {kind: row.kind}),
+            ...(row.pin === undefined ? {} : {pin: row.pin}),
+        };
         if (kids.length === 0) {
             segments.push({...base, key: row.account, own: false, values: row.values});
             return;
@@ -221,13 +231,17 @@ export function periodStack(report: PeriodReport, palette: ChartPalette, fallbac
     const drawn = stackSegments(compressPeriodRows(report.rows))
         .map((segment) => ({segment, values: segment.values.map((value) => amountIn(value, commodity))}))
         .filter(({values}) => values.some((v) => v !== 0));
-    // Slots by size, biggest first; past the palette's last slot `colorAt`
-    // gives the `other` colour rather than cycling — see rule 4.
-    const slots = slotsBySize(drawn.map(({values}) => values));
-    const inTableOrder = drawn.map(({segment, values}, i): StackEntity => ({
+    // A pinned segment takes its theme colour. The rest get slots by size,
+    // biggest first, ranked among themselves only (a pin is not a slot); past
+    // the palette's last slot `colorAt` gives the `other` colour rather than
+    // cycling — see rule 4.
+    const unpinned = drawn.filter(({segment}) => segment.pin === undefined);
+    const slots = slotsBySize(unpinned.map(({values}) => values));
+    const colorOf = new Map(unpinned.map(({segment}, i) => [segment, colorAt(palette, slots[i])]));
+    const inTableOrder = drawn.map(({segment, values}): StackEntity => ({
         key: segment.key,
         label: segment.label,
-        color: colorAt(palette, slots[i]),
+        color: segment.pin === undefined ? (colorOf.get(segment) ?? palette.other) : pinColor(palette, segment.pin),
         side: sideOf(segment.kind, values),
         values,
     }));

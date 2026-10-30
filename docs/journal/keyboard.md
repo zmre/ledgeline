@@ -83,8 +83,20 @@ On the Holdings page, which has no search box, <kbd>/</kbd> opens the account pi
 | Keys                         | Action                                                                    |
 | ---------------------------- | ------------------------------------------------------------------------- |
 | <kbd>1</kbd> to <kbd>6</kbd> | Runway, Balance sheet, Income statement, Cash flow, Accounts, Journal     |
+| <kbd>j</kbd> or <kbd>↓</kbd> | Next entry in the scenario list                                           |
+| <kbd>k</kbd> or <kbd>↑</kbd> | Previous entry                                                            |
+| <kbd>g</kbd> <kbd>g</kbd>    | First entry                                                               |
+| <kbd>G</kbd>                 | Last entry                                                                |
+| <kbd>Enter</kbd> or <kbd>e</kbd> | Edit the entry                                                        |
+| <kbd>J</kbd> / <kbd>K</kbd>  | Move the entry down or up                                                 |
+| <kbd>c</kbd>                 | Duplicate                                                                 |
+| <kbd>C</kbd>                 | Duplicate as alternative                                                  |
+| <kbd>t</kbd>                 | Turn the entry off or on                                                  |
+| <kbd>x</kbd> <kbd>x</kbd>    | Delete the entry (press twice)                                            |
+| <kbd>n</kbd>                 | Open the **+ Add** menu                                                   |
+| <kbd>Esc</kbd>               | Cancel a delete, or clear the cursor                                      |
 
-Like every shortcut, these are ignored while you're typing in the what-if table. Click outside the field first.
+In the entry editor, <kbd>⌘</kbd> <kbd>Enter</kbd> is Done and <kbd>Esc</kbd> is Cancel. Like every shortcut, the list's keys are ignored while you're typing in a field. Click outside the field first.
 
 ## Reports
 

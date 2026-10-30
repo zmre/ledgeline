@@ -53,6 +53,20 @@
 // separates at CVD ΔE 13.3. `net` is `base-content`, the neutral midpoint, and
 // the chart draws it over a surface-coloured halo so it is always read against
 // the surface rather than a bar.
+//
+// ── THEME PINS ───────────────────────────────────────────────────────────────
+//
+// A few charts must match colours the page ALREADY uses outside the chart: the
+// cash flow chart's activities are the statement's section headings, which are
+// daisyUI's `info`, `secondary` and `accent` (`CashFlowStatementView.svelte`).
+// Those are not chart tokens and get no `--chart-*` copy; `theme` reads daisy's
+// own `--color-info`, `--color-secondary` and `--color-accent`, so a heading
+// and its series are the same colour in every theme by construction, and a
+// theme switch recolours both. A chart names one by `ThemePin` (a token name,
+// never a colour, so report models stay theme-free) and `pinColor` resolves
+// it. The dark values below are daisy dark's, as oklch strings: SVG `fill` and
+// CSS `background` take them as they are. `palette.test.ts` pins them to the
+// installed daisyUI.
 
 /** Resolved chart colours for one theme. Every value is a concrete CSS colour, never a `var(...)`. */
 export interface ChartPalette {
@@ -66,7 +80,22 @@ export interface ChartPalette {
     readonly flowOut: string;
     /** The net line drawn over the two. */
     readonly flowNet: string;
+    /** daisyUI's own theme colours, for a series that must match a heading outside the chart (see THEME PINS). */
+    readonly theme: ThemeColors;
 }
+
+/** The daisyUI theme colours a chart series can be pinned to. */
+export interface ThemeColors {
+    readonly info: string;
+    readonly secondary: string;
+    readonly accent: string;
+}
+
+/**
+ * A series' fixed colour, by NAME: one of daisyUI's theme colours, or the muted
+ * `other` grey for a residual that is not a category. Resolved by `pinColor`.
+ */
+export type ThemePin = keyof ThemeColors | "other";
 
 /**
  * The most `--chart-N` slots `resolvePalette` will read — a safety cap on the
@@ -87,6 +116,13 @@ export const CHART_TOKENS = {
     flowOut: "--chart-out",
     flowNet: "--chart-net",
 } as const;
+
+/** daisyUI 5's custom property behind each `ThemeColors` entry. Declared by daisyUI, not by `app.css`. */
+export const THEME_TOKENS = {
+    info: "--color-info",
+    secondary: "--color-secondary",
+    accent: "--color-accent",
+} as const satisfies Record<keyof ThemeColors, string>;
 
 /** daisyUI dark's chart tokens — the fallback when CSS is absent. Must match `app.css` (tested). */
 export const DEFAULT_PALETTE: ChartPalette = Object.freeze({
@@ -110,6 +146,12 @@ export const DEFAULT_PALETTE: ChartPalette = Object.freeze({
     flowIn: "#00d390",
     flowOut: "#e44062",
     flowNet: "#ecf9ff",
+    // daisy dark's own values (node_modules/daisyui/theme/dark.css; tested).
+    theme: Object.freeze({
+        info: "oklch(74% 0.16 232.661)", //     sky blue
+        secondary: "oklch(65% 0.241 354.308)", // pink-magenta
+        accent: "oklch(77% 0.152 181.912)", //   teal
+    }),
 });
 
 /**
@@ -123,6 +165,11 @@ export const DEFAULT_PALETTE: ChartPalette = Object.freeze({
  */
 export function colorAt(palette: ChartPalette, i: number): string {
     return palette.categorical[i] ?? palette.other;
+}
+
+/** A pinned series' colour: the resolved theme colour, or the muted `other` grey. */
+export function pinColor(palette: ChartPalette, pin: ThemePin): string {
+    return pin === "other" ? palette.other : palette.theme[pin];
 }
 
 /** How opaque the "unknown" wash is: see `unknownColor`. */
@@ -158,7 +205,8 @@ export function unknownColor(palette: ChartPalette, alpha = UNKNOWN_ALPHA): stri
  * reads back empty (at most `MAX_SLOTS`), so a theme sets its own slot count. A
  * theme that defines none keeps `fallback`'s slots. Each named token that reads
  * back empty keeps its `fallback` value, so a theme that omits one degrades to
- * a working colour rather than to an invisible mark.
+ * a working colour rather than to an invisible mark. The `theme` colours are
+ * read the same way, from daisyUI's `--color-*` tokens.
  */
 export function resolvePalette(read: (token: string) => string, fallback: ChartPalette = DEFAULT_PALETTE): ChartPalette {
     const pick = (token: string, backup: string): string => read(token).trim() || backup;
@@ -174,6 +222,11 @@ export function resolvePalette(read: (token: string) => string, fallback: ChartP
         flowIn: pick(CHART_TOKENS.flowIn, fallback.flowIn),
         flowOut: pick(CHART_TOKENS.flowOut, fallback.flowOut),
         flowNet: pick(CHART_TOKENS.flowNet, fallback.flowNet),
+        theme: Object.freeze({
+            info: pick(THEME_TOKENS.info, fallback.theme.info),
+            secondary: pick(THEME_TOKENS.secondary, fallback.theme.secondary),
+            accent: pick(THEME_TOKENS.accent, fallback.theme.accent),
+        }),
     });
 }
 
@@ -184,6 +237,9 @@ export function samePalette(a: ChartPalette, b: ChartPalette): boolean {
         a.flowIn === b.flowIn &&
         a.flowOut === b.flowOut &&
         a.flowNet === b.flowNet &&
+        a.theme.info === b.theme.info &&
+        a.theme.secondary === b.theme.secondary &&
+        a.theme.accent === b.theme.accent &&
         a.categorical.length === b.categorical.length &&
         a.categorical.every((c, i) => c === b.categorical[i])
     );

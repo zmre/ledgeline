@@ -95,6 +95,7 @@
 /// re-exports, and nothing else.
 mod discovery;
 mod forecast;
+mod layout;
 mod real_side;
 pub mod serialize;
 
@@ -404,6 +405,15 @@ pub struct ScenarioLine {
     pub note: String,
     /// Authored, or estimated from history.
     pub source: LineSource,
+    /// The posting's own comment, with Ledgeline's tags (`line`, `growth`,
+    /// `opening`, `gains`) taken out (plan 31 C6). One string per comment
+    /// line, joined by `\n`; continuation lines are kept, since the parser
+    /// folds them into the posting's comment. Empty for none.
+    pub comment: String,
+    /// The rule's header comment, Ledgeline's tags taken out, as
+    /// [`ScenarioLine::comment`]. Group-level, like `note`: every line of one
+    /// `~` block carries the same one, and a save writes the first line's.
+    pub rule_comment: String,
 }
 
 /// A dated one-off: its postings say whether it touches the P&L, the balance
@@ -430,6 +440,130 @@ pub struct ScenarioEvent {
     /// in the file. `None` with postings that do not balance is a
     /// pre-plan-28 event, and its sum goes to the default counter-account.
     pub counter: Option<AccountName>,
+    /// The block's header comment, as [`ScenarioLine::rule_comment`].
+    pub comment: String,
+    /// Each posting's comment, as [`ScenarioLine::comment`], index for index
+    /// with `postings`. Shorter than `postings` means "no comment" for the
+    /// rest.
+    pub posting_comments: Vec<String>,
+}
+
+/// What one [`LayoutItem`] is (plan 31 C8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ItemKind {
+    /// A recurring `~` rule: a group of [`Scenario::lines`].
+    Rule,
+    /// A single-date `~` rule: one of [`Scenario::events`].
+    Event,
+    /// An `=` rule: one of [`Scenario::auto_rules`].
+    Auto,
+    /// A free-standing comment: one of [`Scenario::comments`].
+    Comment,
+    /// Journal text that is none of the above: one of [`Scenario::fixed`].
+    Fixed,
+}
+
+impl ItemKind {
+    /// The wire spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Rule => "rule",
+            Self::Event => "event",
+            Self::Auto => "auto",
+            Self::Comment => "comment",
+            Self::Fixed => "fixed",
+        }
+    }
+
+    /// Read a kind from a wire field.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            "rule" => Some(Self::Rule),
+            "event" => Some(Self::Event),
+            "auto" => Some(Self::Auto),
+            "comment" => Some(Self::Comment),
+            "fixed" => Some(Self::Fixed),
+            _ => None,
+        }
+    }
+}
+
+/// One piece of a scenario file, in file order (plan 31 C1, C8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayoutItem {
+    /// What the piece is.
+    pub kind: ItemKind,
+    /// Rule: the group. Event: its id. Auto: [`ScenarioAutoRule::key`].
+    /// Comment: [`ScenarioComment::key`]. Fixed: [`FixedPiece::key`].
+    pub key: String,
+    /// The piece of the file this item was read from (its index in the
+    /// [`serialize::ProjectionDoc`]'s pieces), or `None` for a new one.
+    pub origin: Option<usize>,
+    /// Commented out (plan 31 C7). Rule, Event and Auto only. A disabled
+    /// entry is kept in the model and dropped by [`Scenario::active`].
+    pub disabled: bool,
+    /// The comment attached above the entry, as the file states it
+    /// (prefixes included, `\n` line ends), or `""` for none.
+    pub attached: String,
+}
+
+/// How a free-standing comment piece reads (plan 31 C4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommentStyle {
+    /// A run of comment lines with no divider.
+    Note,
+    /// A run of comment lines with a divider line: a section heading.
+    Section,
+    /// hledger's `comment` … `end comment`.
+    Block,
+}
+
+impl CommentStyle {
+    /// The wire spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Note => "note",
+            Self::Section => "section",
+            Self::Block => "block",
+        }
+    }
+
+    /// Read a style from a wire field.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            "note" => Some(Self::Note),
+            "section" => Some(Self::Section),
+            "block" => Some(Self::Block),
+            _ => None,
+        }
+    }
+}
+
+/// A free-standing comment piece of a scenario file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScenarioComment {
+    /// Its handle in the layout: `comment:N` on read.
+    pub key: String,
+    /// How it reads.
+    pub style: CommentStyle,
+    /// Its text exactly as the file states it, prefixes included, `\n` line
+    /// ends.
+    pub raw: String,
+}
+
+/// Journal text a scenario carries but does not model: `account`,
+/// `commodity`, transactions, `P`, `include`, `alias` … Kept where it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixedPiece {
+    /// Its handle in the layout: `fixed:N` on read.
+    pub key: String,
+    /// Its text as the file states it, `\n` line ends. Display only: a save
+    /// writes the file's own bytes, never these.
+    pub raw: String,
 }
 
 /// A whole what-if.
@@ -453,6 +587,14 @@ pub struct Scenario {
     /// to every rule- and event-generated forecast transaction, ALWAYS —
     /// whatever `--auto` says for the main journal (plan 30 Decision 6).
     pub auto_rules: Vec<ScenarioAutoRule>,
+    /// The file's free-standing comment pieces (plan 31 C4).
+    pub comments: Vec<ScenarioComment>,
+    /// The file's journal text that is none of the above (plan 31 C1).
+    pub fixed: Vec<FixedPiece>,
+    /// The file's pieces in order (plan 31 C8). Empty means "derive it": a
+    /// client from before plan 31, a seed or the FFI, whose save takes
+    /// [`serialize::legacy_layout`].
+    pub layout: Vec<LayoutItem>,
 }
 
 /// One of a scenario's `=` rules, and which of its file's `=` blocks it is.
@@ -463,14 +605,95 @@ pub struct Scenario {
 /// text is unchanged keeps its bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScenarioAutoRule {
-    /// Its 0-based position among the scenario FILE's own `=` blocks when it
-    /// was read, or `None` for a rule the file does not hold yet.
+    /// Its 0-based position among the scenario FILE's own active `=` blocks
+    /// when it was read, or `None` for a rule the file does not hold yet (or
+    /// holds commented out).
     pub block: Option<usize>,
+    /// Its handle in the layout (plan 31 C8): `auto:B` on read, `auto:off:K`
+    /// for the file's Kth commented-out one. Empty from a client that sends
+    /// none, which only a layout-less save may do.
+    pub key: String,
     /// The rule.
     pub rule: crate::model::AutoPostingRule,
 }
 
 impl Scenario {
+    /// The scenario as the engine reads it: every disabled group, event and
+    /// `=` rule dropped (plan 31 C7), and the `=` rules in layout order, which
+    /// is the order the file states them in and so the order hledger applies
+    /// them in.
+    ///
+    /// The disabled flag lives on the [`LayoutItem`] alone, so a scenario with
+    /// no layout has nothing disabled and comes back unchanged.
+    #[must_use]
+    pub fn active(&self) -> Scenario {
+        let disabled: BTreeSet<(ItemKind, &str)> = self
+            .layout
+            .iter()
+            .filter(|item| item.disabled)
+            .map(|item| (item.kind, item.key.as_str()))
+            .collect();
+        let off = |kind: ItemKind, key: &str| disabled.contains(&(kind, key));
+        let places: BTreeMap<&str, usize> = self
+            .layout
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.kind == ItemKind::Auto)
+            .map(|(at, item)| (item.key.as_str(), at))
+            .collect();
+        let place = |key: &str| places.get(key).copied().unwrap_or(usize::MAX);
+        let mut auto_rules: Vec<ScenarioAutoRule> = self
+            .auto_rules
+            .iter()
+            .filter(|rule| !off(ItemKind::Auto, &rule.key))
+            .cloned()
+            .collect();
+        // Stable, so rules the layout does not name keep their own order.
+        auto_rules.sort_by_key(|rule| place(&rule.key));
+        Scenario {
+            lines: self
+                .lines
+                .iter()
+                .filter(|line| !off(ItemKind::Rule, &line.group))
+                .cloned()
+                .collect(),
+            events: self
+                .events
+                .iter()
+                .filter(|event| !off(ItemKind::Event, &event.id))
+                .cloned()
+                .collect(),
+            auto_rules,
+            layout: self
+                .layout
+                .iter()
+                .filter(|item| !item.disabled)
+                .cloned()
+                .collect(),
+            ..self.clone()
+        }
+    }
+
+    /// Whether [`Scenario::active`] would change anything: an item is
+    /// disabled, or the `=` rules are out of layout order.
+    #[must_use]
+    pub(crate) fn has_inactive_or_reordered(&self) -> bool {
+        if self.layout.iter().any(|item| item.disabled) {
+            return true;
+        }
+        let places: Vec<usize> = self
+            .auto_rules
+            .iter()
+            .map(|rule| {
+                self.layout
+                    .iter()
+                    .position(|item| item.kind == ItemKind::Auto && item.key == rule.key)
+                    .unwrap_or(usize::MAX)
+            })
+            .collect();
+        places.windows(2).any(|pair| pair[0] > pair[1])
+    }
+
     /// The scenario's `=` rules, in order, as the engine applies them.
     #[must_use]
     pub fn auto_posting_rules(&self) -> Vec<crate::model::AutoPostingRule> {
@@ -1467,12 +1690,17 @@ pub fn seed_scenario(
                 gains: None,
                 note: format!("unbudgeted — average over {} to {}", gaps.from, gaps.to),
                 source: LineSource::Unbudgeted,
+                comment: String::new(),
+                rule_comment: String::new(),
             });
         }
     }
 
     Ok(Scenario {
         auto_rules: Vec::new(),
+        comments: Vec::new(),
+        fixed: Vec::new(),
+        layout: Vec::new(),
         // A seed has no name: naming it is what the Save As dialog is for, and a
         // placeholder here would be a name the user never chose showing up in a
         // filename.
@@ -1566,9 +1794,49 @@ pub(crate) fn lines_from_rule(
                 },
                 note: rule.description.clone(),
                 source: LineSource::Journal,
+                comment: user_comment(&posting.comment),
+                rule_comment: user_comment(&rule.comment),
             })
         })
         .collect()
+}
+
+/// The tags Ledgeline itself writes on a scenario posting. A user's comment is
+/// read with them taken out, and may not state them (plan 31 C6).
+pub(crate) const LEDGELINE_TAGS: [&str; 4] = ["line", "growth", "opening", "gains"];
+
+/// Whether one comma-separated segment of a comment is one of
+/// [`LEDGELINE_TAGS`], by the parser's own tag rule.
+pub(crate) fn is_ledgeline_tag(segment: &str) -> bool {
+    crate::parse::tag_in_segment(segment)
+        .is_some_and(|(name, _)| LEDGELINE_TAGS.contains(&name.as_str()))
+}
+
+/// A comment as the model carries it (plan 31 C6): the parser's raw comment
+/// (`"first\ncontinuation\n"`), with every segment that is one of Ledgeline's
+/// own tags taken out, each line trimmed, empty lines dropped, joined by `\n`.
+///
+/// Segments are split at commas, as hledger's tag grammar splits them, and
+/// the remaining ones rejoined with their own spacing, so a comment that
+/// carries no Ledgeline tag comes back exactly as written.
+pub(crate) fn user_comment(raw: &str) -> String {
+    raw.lines()
+        .map(|line| {
+            let line = line.trim();
+            if line.split(',').any(is_ledgeline_tag) {
+                line.split(',')
+                    .filter(|segment| !is_ledgeline_tag(segment))
+                    .collect::<Vec<_>>()
+                    .join(",")
+                    .trim()
+                    .to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// A block's counter-account: its REGULAR posting whose amount was elided,
@@ -1716,6 +1984,8 @@ mod tests {
     /// would get.
     fn line(group: &str, account: &str, money: Amount, period: &str) -> ScenarioLine {
         ScenarioLine {
+            comment: String::new(),
+            rule_comment: String::new(),
             counter: None,
             gains: None,
             id: group.to_string(),
@@ -1747,6 +2017,8 @@ mod tests {
 
     fn event(id: &str, date: &str, postings: &[(&str, Amount)]) -> ScenarioEvent {
         ScenarioEvent {
+            comment: String::new(),
+            posting_comments: Vec::new(),
             counter: None,
             id: id.to_string(),
             date: date.to_string(),
@@ -1762,6 +2034,9 @@ mod tests {
 
     fn scenario(lines: Vec<ScenarioLine>, events: Vec<ScenarioEvent>) -> Scenario {
         Scenario {
+            comments: Vec::new(),
+            fixed: Vec::new(),
+            layout: Vec::new(),
             auto_rules: Vec::new(),
             cash: None,
             name: "test".to_string(),

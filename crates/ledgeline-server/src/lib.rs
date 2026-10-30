@@ -1141,6 +1141,16 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
                 projections_api::MAX_BODY_BYTES,
             )),
         )
+        // One entry's exact text, as a save would write it (plan 31 C15): the
+        // editor dialog's "Writes:" preview. Like `run`, a POST that writes
+        // nothing, with `run`'s body limit; a literal segment, so `{*id}`
+        // below cannot shadow it (and an id must end in `.journal`).
+        .route(
+            "/api/projections/render",
+            post(projections_api::render).route_layer(axum::extract::DefaultBodyLimit::max(
+                projections_api::MAX_BODY_BYTES,
+            )),
+        )
         .route("/api/projections/seed", get(projections_api::seed))
         // Projection scenario FILES (plan 22, Phase 3): list, read, save.
         //
@@ -1150,7 +1160,7 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         // it would be reachable with no bearer token at all.
         // `projection_endpoints.rs` pins the 401 for all three.
         //
-        // The two fixed segments above (`run`, `seed`) MUST stay registered
+        // The fixed segments above (`run`, `render`, `seed`) MUST stay registered
         // before `{*id}`: axum matches a literal ahead of a wildcard, so the
         // order is not what disambiguates them — but keeping them adjacent and
         // in this order is what makes that readable. An id always ends in

@@ -521,6 +521,13 @@ export interface PeriodRow {
     kind?: PeriodRowKind;
     /** The sum of `values`, the row's Total column. Present exactly when `PeriodReport.grandTotal` is. */
     total?: MixedAmount;
+    /**
+     * A fixed chart colour, by theme token NAME (never a colour string, so the
+     * model stays theme-free; `format/palette.ts`'s `pinColor` resolves it).
+     * Only the cash flow chart's activities set it; absent rows are coloured
+     * biggest-first as always (`periodStack.ts`, rule 4).
+     */
+    pin?: "info" | "secondary" | "accent" | "other";
 }
 
 /** A section of the Accounts report, in display order (plans/30 follow-up, 2026-10-28). */

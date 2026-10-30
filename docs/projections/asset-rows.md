@@ -7,22 +7,21 @@ tags: [projections]
 
 # Asset rows: a balance, a rate, and what you put into it
 
-Every other row in the table is a per-period *flow*. An asset row states a
+Every other posting in a scenario is a per-period *flow*. An asset row states a
 *stock*: what you hold, what rate it compounds at, and what you add to it —
 enough to model a brokerage account, a 401k or a house in one line.
 
-![The asset-growth-scenario file loaded in Projections: income and expense flows plus three asset rows, one with a balance override](images/asset-scenario.png)
-
 ```journal
 ~ monthly  investing
-    (assets:brokerage)           $0  ; growth: 7%/yr
-    (assets:savings)          $2000  ; growth: 4%/yr
-    (assets:house)               $0  ; growth: 3%/yr, opening: 640000
+    assets:brokerage           $0  ; growth: 7%/yr
+    assets:savings          $2000  ; growth: 4%/yr
+    assets:house               $0  ; growth: 3%/yr, opening: 640000
+    assets:checking
 ```
 
 **A posting is an asset row when it carries a `growth:` tag AND its account is
 typed as an asset.** Both halves matter. `growth:` alone is not enough —
-`(expenses:rent) $4200 ; growth: 2%/yr` is a growing flow, and it is in the
+`expenses:rent  $4200  ; growth: 2%/yr` is a growing flow, and it is in the
 [file format example](file-format.md). An asset account alone is not enough either: **a posting with no
 `growth:` is a flow line whatever its account**, so a transfer into
 `assets:savings`, or a one-off purchase booked to `assets:cash`, means exactly
@@ -86,7 +85,7 @@ period — a yearly contribution on a yearly rate — this is exactly the textbo
 > approximation of something finer. The error runs **conservative** — it
 > understates growth on contributions rather than inflating a retirement or
 > runway figure — it is one rule rather than two, and it keeps a single balance
-> per row, so the table's Balance column is exactly the figure the engine used.
+> per row, so the balance the list shows is exactly the figure the engine used.
 >
 > **If you want finer granularity, quote the rate per month rather than per
 > year** (`0.5%/mo` rather than `6%/yr`). Twelve boundaries a year means a
@@ -113,33 +112,36 @@ The same applies when one row's account sits **under** another's —
 is left out in the same way. Give each row an account that holds money no other
 row's does.
 
-This is why the Assets section offers no "add a step": a rate that changes over
-time is a single rate covering the span, not one row split into two dated
-segments naming one account.
+This is why an asset rule's menu has no **Add a step change…**: a rate that
+changes over time is a single rate covering the span, not one row split into
+two dated segments naming one account.
 
-## The Assets and balances table
+## In the list and the editor
 
-The Projections tab shows asset rows in their own section, after Income and
-Expenses and before One-off events:
+An asset rule's card shows each asset posting with its contribution, its growth
+rate, and the balance it compounds: `bal $468,000.00 (journal)` for the
+journal's own figure, or `bal $700,000.00 (override)`, in the warning colour,
+for one you typed. A gains account other than the default is shown as
+`gains → …`.
 
-| Column | What it is |
+![An asset rule's card: the comment above it, assets:broker:taxable:vti with a $500.00 contribution at 7%/yr from the journal's balance, and assets:property:home at $0.00 and 3%/yr with its $700,000.00 override boxed, then the counter-account](images/asset-rows.png)
+
+In the [editor](index.md#the-editor), each posting has an **asset** switch.
+Turn it on and the posting gets two more fields:
+
+| Field | What it is |
 |---|---|
-| **Account** | the account whose balance this row carries |
-| **Balance** | **the journal's own figure**, greyed, until you type over it |
-| **Growth** | the rate the balance compounds at, and the unit it steps on |
-| **Gains account** | where the growth is booked; `equity:unrealized gains`, greyed, until you name another |
-| **Contribution** | what you add each period. `0` is normal — see below |
-| **Per** | how often the contribution happens |
-| **From** / **To** | optional bounds, `To` exclusive as hledger writes it |
+| **Balance** | empty, with the journal's own figure beside it, until you type over it |
+| gains account | where the growth is booked; `equity:unrealized gains`, greyed, until you name another |
 
-![The Assets and balances section, the first asset row boxed: growth 7%/yr and a $0 contribution](images/asset-rows.png)
+The posting's amount is the **contribution**: what you add each period. The
+growth rate and its unit, and the rule's **Repeats**, **From** and **To**, are
+the same fields a flow has. **+ Add → Asset** starts a new asset rule.
 
-**A row is an asset row because it says so, not because of its account.** The
-section is decided by the row's kind and nothing else, so a row here cannot
-wander into Expenses because of what you type in its Account box, and a
-recurring transfer to `assets:savings` entered in Expenses stays an expense-side
-flow. The two are genuinely different things: one compounds, the other moves a
-fixed amount each period.
+**A posting is an asset row because it says so.** The switch, written to the
+file as the `growth:` tag on an asset account, decides it. A recurring transfer
+to `assets:savings` with the switch off stays a flow. The two are different
+things. One compounds, and the other moves a fixed amount each period.
 
 **A contribution of `0` is the normal case**, not an unfinished row. It means
 "this balance only compounds" — a house, a brokerage account you are not paying
@@ -158,7 +160,7 @@ valued into the same commodity the net-worth report uses. When you type over it,
 the tag records what you said:
 
 ```journal
-    (assets:house)   $0  ; growth: 3%/yr, opening: 640000
+    assets:house   $0  ; growth: 3%/yr, opening: 640000
 ```
 
 Only the **difference** between your figure and the journal's reaches the chart,
@@ -167,17 +169,17 @@ Nothing silently restates your balance sheet. Cash is never adjusted: an
 override says what an asset is worth, not what is in the bank, so a house
 valuation can never move your runway.
 
-In the table, an overridden Balance is not a quiet edit either. The box fills
-with your figure and turns the warning colour, a `✕` beside it puts the
-journal's figure back (as does clearing the box, or "Use the journal's balance"
-in the row menu), and **the ledger's own number stays on screen underneath**.
-That last part is the point of the column: a valuation you typed six months ago
-should never be mistakable for what your ledger says today.
+An overridden balance is not a quiet edit either. In the editor the Balance box
+turns the warning colour, and **✕ use the journal's** beside it names the
+ledger's own figure and puts it back (as does clearing the box). On the card the
+balance reads "(override)", in the warning colour. A valuation you typed six
+months ago should never be mistakable for what your ledger says today.
 
-The figure shown is the one the projection actually used, so it appears once a
-projection has been computed — a dash means "not known yet", which is also what
-you get for a row the engine declined to model. It is never a zero standing in
-for an unknown.
+The journal's figure shown is the one the projection actually used, so it
+appears once a projection has run. Until then the card says "bal from the
+journal" and the editor's Balance box shows a dash. You also get these for a
+row the engine declined to model. It is never a zero standing in for an
+unknown.
 
 ## What hledger makes of an asset row
 

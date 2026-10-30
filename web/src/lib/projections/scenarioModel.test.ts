@@ -1,28 +1,24 @@
 import {describe, expect, it} from "vitest";
 import {dec} from "#lib/domain/money.js";
-import {NO_ACCOUNT_CLASSES, type AccountClasses} from "#lib/domain/accountClass.js";
+import {accountTypeOf, NO_ACCOUNT_CLASSES} from "#lib/domain/accountClass.js";
 import {classesOf} from "#lib/domain/accountClassFixtures.js";
 import {
+    activeScenario,
+    commentToWire,
+    withLayout,
     blankAutoRule,
+    blankEvent,
+    renderBody,
     ruleSample,
     accountOrNull,
     blankAssetLine,
     blankLine,
     boundsLockedReason,
     cloneScenario,
-    duplicateRow,
     emptyScenario,
     freshId,
-    gatherRules,
-    isRevenueAccount,
-    logicalRows,
-    magnitudeOf,
     MAX_NOTE_BYTES,
     mergeStep,
-    moveEvent,
-    moveEventTo,
-    moveRow,
-    moveRowTo,
     noteIsStale,
     noteProblem,
     percentFromRate,
@@ -30,34 +26,22 @@ import {
     projectable,
     projectionId,
     rateFromPercent,
-    removeSegment,
-    resolvedSection,
-    rowNames,
-    ruleSize,
     runBody,
+    scenarioClasses,
+    linesBalance,
+    eventBalances,
     scenarioToWire,
-    sectionOfLine,
     sectionPrefix,
     slugFilename,
     splitStep,
     takenIds,
     trimDec,
-    withAccount,
-    withCounter,
-    withGains,
-    withMagnitude,
+    parseSignedInput,
+    withQuantity,
     withBounds,
     withInterval,
-    withNote,
 } from "./scenarioModel";
 import type {Scenario, ScenarioLine} from "./types";
-
-/**
- * A journal that declares its own types rather than relying on hledger's name
- * regexes — [[account-type-not-name]]: `wages` is revenue here because it is
- * DECLARED revenue, which is the case name matching gets wrong.
- */
-const DECLARED: AccountClasses = classesOf(["income", "revenue"], ["wages", "revenue"], ["expenses", "expense"], ["assets", "asset"]);
 
 function line(overrides: Partial<ScenarioLine> = {}): ScenarioLine {
     return {
@@ -73,6 +57,8 @@ function line(overrides: Partial<ScenarioLine> = {}): ScenarioLine {
         counter: null,
         gains: null,
         source: "journal",
+        comment: "",
+        ruleComment: "",
         ...overrides,
     };
 }
@@ -83,74 +69,104 @@ function scenario(lines: ScenarioLine[]): Scenario {
 
 // ---------------------------------------------------------------------------
 
-describe("UNIT scenarioModel — magnitudes in, the engine signs", () => {
-    // The sign rule itself — revenue negative, by the account's resolved TYPE —
-    // is the engine's (`account_types::signed_entry`, locked to the TypeScript it
-    // replaced by `scenario_signs_golden.rs`). This side only keeps the number a
-    // user typed and says that it is one.
+describe("UNIT scenarioModel — amounts are signed as the file writes them", () => {
+    // Plan 31 amendment C3-29: what is typed is what the file holds. Nothing
+    // here, and nothing in the engine on this path, signs by account type.
 
-    it("the table shows a magnitude whichever way the wire signed it", () => {
-        expect(magnitudeOf(line({amount: {commodity: "$", quantity: dec(-518833, 2), precision: 2}}))).toEqual(dec(518833, 2));
-        expect(magnitudeOf(line({amount: {commodity: "$", quantity: dec(187500, 2), precision: 2}}))).toEqual(dec(187500, 2));
+    it("a typed figure is the line's signed amount, minus kept", () => {
+        const salary = line({account: "income:salary", amount: {commodity: "$", quantity: dec(-518833, 2), precision: 2}});
+        expect(withQuantity(salary, dec(-600000, 2)).amount.quantity).toEqual(dec(-600000, 2));
+        // A positive figure on revenue stays positive: a refund, or a mistake the "Writes:" box shows.
+        expect(withQuantity(salary, dec(600000, 2)).amount.quantity).toEqual(dec(600000, 2));
     });
 
-    it("a typed amount becomes the line's ENTRY, a magnitude, and the shown figure", () => {
-        const edited = withMagnitude(line({account: "income:salary"}), dec(-900000, 2));
-        expect(edited.entry).toEqual(dec(900000, 2));
-        expect(magnitudeOf(edited)).toEqual(dec(900000, 2));
+    it("the capex rule's checking leg keeps its minus, so the rule still balances", () => {
+        const capex = [
+            line({id: "c", account: "assets:checking", amount: {commodity: "$", quantity: dec(-300000, 2), precision: 2}}),
+            line({id: "f", account: "assets:fixed:computers", amount: {commodity: "$", quantity: dec(300000, 2), precision: 2}}),
+        ];
+        const edited = [withQuantity(capex[0], dec(-3500, 0)), withQuantity(capex[1], dec(3500, 0))];
+        expect(edited[0].amount.quantity).toEqual(dec(-3500, 0));
+        expect(linesBalance(edited)).toBe(true);
+        const wire = scenarioToWire(scenario(edited));
+        expect(wire.lines.map((wired) => wired.amount.quantity)).toEqual([
+            {mantissa: "-3500", places: 0},
+            {mantissa: "3500", places: 0},
+        ]);
     });
 
-    it("moving a row to another account re-enters what it held, so the engine re-signs it", () => {
-        const moved = withAccount(line({amount: {commodity: "$", quantity: dec(-420000, 2), precision: 2}}), "expenses:rent");
-        expect(moved.account).toBe("expenses:rent");
-        expect(moved.entry).toEqual(dec(420000, 2));
+    it("reads a leading minus, and the true minus the list draws, as a minus", () => {
+        expect(parseSignedInput("-3,500")).toEqual(dec(-3500, 0));
+        expect(parseSignedInput("\u22123500.00")).toEqual(dec(-350000, 2));
+        expect(parseSignedInput("12000")).toEqual(dec(12000, 0));
+        expect(parseSignedInput("−")).toBeNull();
+        expect(parseSignedInput("abc")).toBeNull();
     });
 
     it("display precision is RAISED to fit a typed amount and never lowered", () => {
         const seeded = line({amount: {commodity: "$", quantity: dec(187500, 2), precision: 2}});
         // Retyping "1875" must not quietly move this line's growth onto whole dollars.
-        expect(withMagnitude(seeded, dec(1875, 0)).amount.precision).toBe(2);
+        expect(withQuantity(seeded, dec(1875, 0)).amount.precision).toBe(2);
         // A third decimal place has to be representable or the growth walk rounds it away.
-        expect(withMagnitude(seeded, dec(1875125, 3)).amount.precision).toBe(3);
+        expect(withQuantity(seeded, dec(-1875125, 3)).amount.precision).toBe(3);
     });
 
-    it("the preview classification honours the engine's declared type over the name", () => {
-        // Nothing about "wages" matches hledger's revenue regex; the declaration
-        // is what makes it revenue.
-        expect(isRevenueAccount("wages:contract", DECLARED)).toBe(true);
-        expect(isRevenueAccount("wages:contract", NO_ACCOUNT_CLASSES)).toBe(false);
-        expect(isRevenueAccount("income:salary", NO_ACCOUNT_CLASSES)).toBe(true);
+    it("remembers the served figure once, through any number of edits", () => {
+        const seeded = line({amount: {commodity: "$", quantity: dec(-518833, 2), precision: 2}});
+        const twice = withQuantity(withQuantity(seeded, dec(-1, 0)), dec(-2, 0));
+        expect(twice.served).toEqual(dec(-518833, 2));
+        expect(twice.amount.quantity).toEqual(dec(-2, 0));
+    });
+});
+
+describe("UNIT scenarioModel — account types and balance", () => {
+    it("the scenario file's own types win over the journal's, for the account and its undeclared descendants", () => {
+        const journal = classesOf({name: "hmrc", type: null, typeDeclared: false}, {name: "hmrc:paye", type: null, typeDeclared: false}, [
+            "hmrc:paye:refund",
+            "asset",
+        ]);
+        const classes = scenarioClasses(journal, {accountTypes: {hmrc: "liability"}});
+        expect(accountTypeOf("hmrc", classes)).toBe("liability");
+        expect(accountTypeOf("hmrc:paye", classes)).toBe("liability");
+        // A journal declaration of its own is the nearer one; it stands.
+        expect(accountTypeOf("hmrc:paye:refund", classes)).toBe("asset");
+        // A name nobody has seen inherits from the declared ancestor.
+        expect(accountTypeOf("hmrc:vat", classes)).toBe("liability");
+        expect(scenarioClasses(journal, {})).toBe(journal);
+    });
+
+    it("a rule that states both legs balances; one that leaves its cash leg to a counter does not", () => {
+        const capex = [
+            line({account: "assets:checking", amount: {commodity: "$", quantity: dec(-300000, 2), precision: 2}}),
+            line({account: "assets:fixed:computers", amount: {commodity: "$", quantity: dec(300000, 2), precision: 2}}),
+        ];
+        expect(linesBalance(capex)).toBe(true);
+        expect(linesBalance([line()])).toBe(false);
+        expect(linesBalance([])).toBe(false);
+    });
+
+    it("balance is read from the amounts as written, whatever the accounts' types", () => {
+        // Revenue is typed negative, so it balances a liability going up by
+        // the same figure (Patrick's deferred revenue).
+        const usd = (cents: number) => ({commodity: "$", quantity: dec(cents, 2), precision: 2});
+        const deferred = [line({account: "liabilities:deferred-revenue", amount: usd(500000)}), line({account: "income:sales", amount: usd(-500000)})];
+        expect(linesBalance(deferred)).toBe(true);
+        // Two positive figures do not, though one account is revenue: nothing re-signs it.
+        expect(linesBalance([deferred[0], {...deferred[1], amount: usd(500000)}])).toBe(false);
+        // Dollars against euros balance nothing.
+        const fx = [line(), line({account: "assets:eur", amount: {commodity: "€", quantity: dec(-420000, 2), precision: 2}})];
+        expect(linesBalance(fx)).toBe(false);
+    });
+
+    it("a one-off balances when its own postings sum to zero", () => {
+        const posting = (account: string, cents: number) => ({account, amount: {commodity: "$", quantity: dec(cents, 2), precision: 2}, comment: ""});
+        const move = {...blankEvent("move", "2027-01-01", "$"), postings: [posting("assets:checking", 10000), posting("assets:savings", -10000)]};
+        expect(eventBalances(move)).toBe(true);
+        expect(eventBalances({...move, postings: [posting("expenses:legal", 10000)]})).toBe(false);
     });
 });
 
 describe("UNIT scenarioModel — sections", () => {
-    it("revenue goes to Income; everything else, including an asset transfer, to Expenses", () => {
-        expect(sectionOfLine(line({account: "income:salary"}), DECLARED)).toBe("income");
-        expect(sectionOfLine(line({account: "expenses:rent"}), DECLARED)).toBe("expense");
-        expect(sectionOfLine(line({account: "assets:savings"}), DECLARED)).toBe("expense");
-    });
-
-    it("a single-date `~` rule is shown among the one-offs, though the engine keeps it a LINE", () => {
-        const dated = line({period: {raw: "2027-03-01", simple: null, base: null, from: null, to: null}});
-        expect(sectionOfLine(dated, DECLARED)).toBe("oneoff");
-    });
-
-    it("a bounded-but-irregular period is NOT a one-off — its raw is not a date", () => {
-        const weird = line({period: {raw: "every weekday", simple: null, base: null, from: null, to: null}});
-        expect(sectionOfLine(weird, DECLARED)).toBe("expense");
-    });
-
-    it("groups segments into one logical row, earliest span first, keeping the rows' own order", () => {
-        const lines = [
-            line({id: "b", group: "g-b", account: "expenses:software"}),
-            line({id: "a", group: "g-a2", period: withBounds({raw: "", simple: "monthly", base: null, from: null, to: null}, "2027-04-01", null)}),
-            line({id: "a", group: "g-a1", period: withBounds({raw: "", simple: "monthly", base: null, from: null, to: null}, null, "2027-04-01")}),
-        ];
-        const rows = logicalRows(lines, DECLARED, "expense");
-        expect(rows.map((r) => r.id)).toEqual(["b", "a"]);
-        expect(rows[1].segments.map((s) => s.group)).toEqual(["g-a1", "g-a2"]);
-    });
-
     it("a new row opens on a prefix of the right TYPE, learned from the journal", () => {
         const names = ["revenues:salary", "revenues:consulting", "spending:rent"];
         const declared = classesOf(["revenues", "revenue"], ["spending", "expense"]);
@@ -172,38 +188,6 @@ describe("UNIT scenarioModel — sections", () => {
 });
 
 describe("UNIT scenarioModel — the ASSET section (plan 23, Phase 3)", () => {
-    // A row's section is its ROLE, ahead of its period and ahead of its
-    // account. That is the whole reason this section needs no hold: nothing a
-    // user can type into the row changes `role`.
-
-    it("an asset row is an asset row whatever its account resolves to", () => {
-        for (const account of ["assets:brokerage", "expenses:rent", "income:salary", "", "a"]) {
-            expect(sectionOfLine(line({role: "asset", account}), DECLARED)).toBe("asset");
-        }
-    });
-
-    it("a FLOW row posting to an asset account is still an outflow — the role decides, not the account", () => {
-        expect(sectionOfLine(line({role: "flow", account: "assets:savings"}), DECLARED)).toBe("expense");
-    });
-
-    it("`asset` beats a single-date period, which `oneoff` would otherwise claim", () => {
-        // A balance with a dated contribution is still a balance, and the
-        // one-off table has no Growth column to show its rate in.
-        const dated = line({role: "asset", account: "assets:house", period: {raw: "2027-03-01", simple: null, base: null, from: null, to: null}});
-        expect(sectionOfLine(dated, DECLARED)).toBe("asset");
-        expect(resolvedSection(dated, DECLARED)).toBe("asset");
-    });
-
-    it("`asset` beats a stale HOLD, which only the two flow sections can use", () => {
-        expect(sectionOfLine(line({role: "asset", account: "assets:house", section: "income"}), DECLARED)).toBe("asset");
-    });
-
-    it("`logicalRows` gathers the asset section like any other", () => {
-        const lines = [line({id: "rent"}), line({id: "brok", role: "asset", account: "assets:brokerage"})];
-        expect(logicalRows(lines, DECLARED, "asset").map((r) => r.id)).toEqual(["brok"]);
-        expect(logicalRows(lines, DECLARED, "expense").map((r) => r.id)).toEqual(["rent"]);
-    });
-
     it("`blankAssetLine` is an asset with a ZERO contribution and the journal's balance", () => {
         const asset = blankAssetLine("line-9", "$");
         expect(asset.role).toBe("asset");
@@ -216,98 +200,6 @@ describe("UNIT scenarioModel — the ASSET section (plan 23, Phase 3)", () => {
 
     it("`blankLine` still makes a FLOW, and must — an asset row is created deliberately", () => {
         expect(blankLine("line-1", "$").role).toBe("flow");
-    });
-});
-
-describe("UNIT scenarioModel — a HELD section", () => {
-    // The model half of the section-stability rule. The component owns when a
-    // hold is taken and dropped; what a hold MEANS is here.
-
-    it("REGRESSION: a held row does not move on a half-typed account", () => {
-        // `r` is not a revenue account and neither is ``, so both of these read
-        // as "expense" by type. That re-derivation on every keystroke is what
-        // threw a row out of Income on its first letter.
-        expect(sectionOfLine(line({account: "r", section: "income"}), DECLARED)).toBe("income");
-        expect(sectionOfLine(line({account: "", section: "income"}), DECLARED)).toBe("income");
-    });
-
-    it("holds a row on the WRONG side too, for as long as the hold lasts", () => {
-        // Deliberate: the point is that nothing moves mid-edit, not that the
-        // hold is ever right. Reconciling is the release's job.
-        expect(sectionOfLine(line({account: "income:salary", section: "expense"}), DECLARED)).toBe("expense");
-    });
-
-    it("hands the row back to its account's TYPE once the hold is gone", () => {
-        expect(sectionOfLine(line({account: "wages:contract"}), DECLARED)).toBe("income");
-    });
-
-    it("never lets a hold beat `oneoff`, which is the PERIOD talking", () => {
-        const dated = line({account: "expenses:rent", section: "income", period: {raw: "2027-03-01", simple: null, base: null, from: null, to: null}});
-        expect(sectionOfLine(dated, DECLARED)).toBe("oneoff");
-    });
-
-    it("`resolvedSection` ignores the hold — it is what a release reconciles against", () => {
-        expect(resolvedSection(line({account: "income:salary", section: "expense"}), DECLARED)).toBe("income");
-        expect(resolvedSection(line({account: "r", section: "income"}), DECLARED)).toBe("expense");
-    });
-
-    it("keeps a held row out of the section its account would file it under", () => {
-        // The tear this prevents: `logicalRows` gathers per section, so a row
-        // listed in neither or both is a row that vanished or was duplicated.
-        const held = line({id: "new", group: "g-new", account: "r", section: "income"});
-        expect(logicalRows([held], DECLARED, "income").map((r) => r.id)).toEqual(["new"]);
-        expect(logicalRows([held], DECLARED, "expense")).toEqual([]);
-    });
-
-    it("keeps both segments of a step change together when both are held", () => {
-        const first = line({
-            id: "pay",
-            group: "g-1",
-            account: "inc",
-            section: "income",
-            period: withBounds({raw: "", simple: "monthly", base: null, from: null, to: null}, null, "2027-04-01"),
-        });
-        const second = line({
-            id: "pay",
-            group: "g-2",
-            account: "inc",
-            section: "income",
-            period: withBounds({raw: "", simple: "monthly", base: null, from: null, to: null}, "2027-04-01", null),
-        });
-        const rows = logicalRows([first, second], DECLARED, "income");
-        expect(rows).toHaveLength(1);
-        expect(rows[0].segments.map((s) => s.group)).toEqual(["g-1", "g-2"]);
-    });
-
-    it("a duplicated row does NOT inherit the hold", () => {
-        // Nobody is editing a row that did not exist a moment ago, and nothing
-        // releases a hold on a row that is never focused.
-        const held = line({id: "pay", group: "g-1", account: "income:salary", section: "expense"});
-        const copies = duplicateRow([held], "pay", takenIds(scenario([held])));
-        expect(copies[1].section).toBeUndefined();
-        expect(sectionOfLine(copies[1], DECLARED)).toBe("income");
-    });
-
-    it("names every row of a section distinctly, blank or duplicated", () => {
-        // Defect 2's other half: a delete you cannot address is not a delete.
-        const rows = logicalRows(
-            [
-                line({id: "a", group: "g-a", account: "income:salary"}),
-                line({id: "b", group: "g-b", account: "income:"}),
-                line({id: "c", group: "g-c", account: "income:"}),
-                line({id: "d", group: "g-d", account: "", section: "income"}),
-            ],
-            DECLARED,
-            "income"
-        );
-        expect(rowNames(rows, "Income")).toEqual(["income:salary", "income: (row 2 of Income)", "income: (row 3 of Income)", "row 4 of Income"]);
-    });
-
-    it("never puts a hold on the wire", () => {
-        // UI-only, like a period's derived fields. `scenarioToWire` names its
-        // fields one by one, and a file round trip must not carry this one.
-        const wired = scenarioToWire(scenario([line({account: "income:salary", section: "expense"})]));
-        expect(wired.lines[0]).not.toHaveProperty("section");
     });
 });
 
@@ -411,31 +303,6 @@ describe("UNIT scenarioModel — step split and merge", () => {
         expect(mergeStep(base.lines, "payroll")).toEqual(base.lines);
     });
 
-    it("deleting ONE segment of a step leaves the other, still a whole row", () => {
-        const split = splitStep(base.lines, "payroll", "2027-04-01", takenIds(base));
-        const left = removeSegment(split, split[1].group);
-        expect(left).toHaveLength(1);
-        expect(left[0].period.to).toBe("2027-04-01");
-        expect(logicalRows(left, DECLARED, "expense")).toHaveLength(1);
-    });
-
-    it("duplicating copies every segment under one NEW id, immediately after the original", () => {
-        const split = splitStep(base.lines, "payroll", "2027-04-01", takenIds(base));
-        const copied = duplicateRow(split, "payroll", new Set(split.flatMap((s) => [s.id, s.group])));
-        expect(copied).toHaveLength(4);
-        const ids = new Set(copied.slice(2).map((s) => s.id));
-        expect(ids.size).toBe(1);
-        expect([...ids][0]).not.toBe("payroll");
-        // Distinct groups, or the copy's derived cash leg would be guarded by the original's postings.
-        expect(new Set(copied.map((s) => s.group)).size).toBe(4);
-    });
-
-    it("a duplicate of an estimated row is AUTHORED — it is no longer an average of anything", () => {
-        const seeded = scenario([line({id: "gap", group: "gap", source: "unbudgeted"})]);
-        const copied = duplicateRow(seeded.lines, "gap", takenIds(seeded));
-        expect(copied[1].source).toBe("journal");
-    });
-
     it("fresh ids avoid everything in use, ids and groups alike", () => {
         expect(freshId("line", new Set(["line-1", "line-2"]))).toBe("line-3");
         const s = scenario([line({id: "line-1", group: "line-2"})]);
@@ -482,12 +349,13 @@ describe("UNIT scenarioModel — putting a scenario on the wire", () => {
         expect(wire.created).toBeNull();
     });
 
-    it("sends an edited line's ENTRY for the engine to sign, and no entry for an untouched one", () => {
+    it("sends an edited line's amount signed as typed, and never an `entry` for the engine to sign", () => {
         const untouched = line({account: "income:salary", amount: {commodity: "$", quantity: dec(-518833, 2), precision: 2}});
-        const edited = withMagnitude(untouched, dec(600000, 2));
+        const edited = withQuantity(untouched, dec(-600000, 2));
         const wire = scenarioToWire(scenario([untouched, {...edited, id: "b", group: "rule:1"}]));
-        expect(wire.lines[0].entry).toBeUndefined();
-        expect(wire.lines[1].entry).toEqual({mantissa: "600000", places: 2});
+        expect(wire.lines.map((wired) => "entry" in wired)).toEqual([false, false]);
+        expect(wire.lines.map((wired) => "served" in wired)).toEqual([false, false]);
+        expect(wire.lines[1].amount.quantity).toEqual({mantissa: "-600000", places: 2});
     });
 
     it("sends a growth rate as the fraction it is", () => {
@@ -504,22 +372,25 @@ describe("UNIT scenarioModel — putting a scenario on the wire", () => {
                     id: "e1",
                     date: "2027-03-01",
                     description: "raise",
-                    postings: [{account: "assets:cash", amount: {commodity: "$", quantity: dec(200, 0), precision: 0}}],
+                    postings: [{account: "assets:cash", amount: {commodity: "$", quantity: dec(200, 0), precision: 0}, comment: ""}],
                     counter: null,
+                    comment: "",
                 },
                 {
                     id: "e2",
                     date: "2027-03-01",
                     description: "half typed",
-                    postings: [{account: "", amount: {commodity: "$", quantity: dec(0, 0), precision: 0}}],
+                    postings: [{account: "", amount: {commodity: "$", quantity: dec(0, 0), precision: 0}, comment: ""}],
                     counter: null,
+                    comment: "",
                 },
                 {
                     id: "e3",
                     date: "",
                     description: "no date",
-                    postings: [{account: "assets:cash", amount: {commodity: "$", quantity: dec(1, 0), precision: 0}}],
+                    postings: [{account: "assets:cash", amount: {commodity: "$", quantity: dec(1, 0), precision: 0}, comment: ""}],
                     counter: null,
+                    comment: "",
                 },
             ],
         };
@@ -564,10 +435,20 @@ describe("UNIT scenarioModel — cloning", () => {
                     date: "2027-03-01",
                     description: "raise",
                     postings: Object.freeze([
-                        Object.freeze({account: "assets:cash", amount: Object.freeze({commodity: "$", quantity: Object.freeze(dec(200, 0)), precision: 0})}),
+                        Object.freeze({
+                            account: "assets:cash",
+                            amount: Object.freeze({commodity: "$", quantity: Object.freeze(dec(200, 0)), precision: 0}),
+                            comment: "a",
+                        }),
                     ]),
+                    comment: "the raise",
                 }),
             ]),
+            layout: Object.freeze([
+                Object.freeze({kind: "rule" as const, key: "rule:0", origin: 0, disabled: false, attached: "; rent\n", raw: "; rent\n~ monthly\n"}),
+            ]),
+            comments: Object.freeze([Object.freeze({key: "comment:0", style: "note" as const, raw: "; hi\n", text: "hi"})]),
+            fixed: Object.freeze([Object.freeze({key: "fixed:0", raw: "account x\n"})]),
             autoRules: Object.freeze([
                 Object.freeze({raw: "= expenses:rent\n    (budget:rent)  *-1\n", query: "expenses:rent", unsupported: null, form: null, block: 0}),
                 Object.freeze({
@@ -604,6 +485,10 @@ describe("UNIT scenarioModel — cloning", () => {
             clone.autoRules[1]!.form,
             clone.autoRules[1]!.form!.postings[0],
             clone.autoRules[1]!.form!.postings[0]!.percent,
+            clone.layout,
+            clone.layout[0],
+            clone.comments[0],
+            clone.fixed[0],
         ]) {
             expect(Object.isFrozen(target)).toBe(false);
         }
@@ -684,81 +569,18 @@ describe("UNIT scenarioModel — the name and the file it becomes", () => {
     });
 });
 
-describe("UNIT scenarioModel — counter-accounts, one per rule (plan 28)", () => {
-    // One `~` rule of three lines, the shape a budget.journal rule seeds as.
-    const rule = (): ScenarioLine[] => [
-        line({id: "food", group: "rule:0", account: "expenses:food", counter: "assets:checking"}),
-        line({id: "rent", group: "rule:0", account: "expenses:rent", counter: "assets:checking"}),
-        line({id: "fun", group: "rule:0", account: "expenses:fun", counter: "assets:checking"}),
-    ];
-    const taken = (lines: ScenarioLine[]) => takenIds(scenario(lines));
-
-    it("moves a line whose counter now DIFFERS into a rule of its own, so the file stays writable", () => {
-        const lines = rule();
-        const next = withCounter(lines, "rent", "rule:0", "liabilities:card", taken(lines));
-        const rent = next.find((l) => l.id === "rent")!;
-        expect(rent.counter).toBe("liabilities:card");
-        expect(rent.group).not.toBe("rule:0");
-        expect(taken(lines).has(rent.group)).toBe(false);
-        // The rest of the rule is untouched, and still agrees with itself.
-        expect(next.filter((l) => l.group === "rule:0").map((l) => [l.id, l.counter])).toEqual([
-            ["food", "assets:checking"],
-            ["fun", "assets:checking"],
-        ]);
-        // Every rule now names ONE counter — what the serializer requires.
-        const byGroup = new Map<string, Set<string | null>>();
-        for (const l of next) byGroup.set(l.group, (byGroup.get(l.group) ?? new Set()).add(l.counter));
-        expect([...byGroup.values()].every((counters) => counters.size === 1)).toBe(true);
-    });
-
-    it("keeps the rule when the new counter agrees with every rule-mate", () => {
-        const lines = rule();
-        expect(withCounter(lines, "rent", "rule:0", "assets:checking", taken(lines))).toEqual(lines);
-    });
-
-    it("keeps the rule for a line alone in it, whatever it is set to", () => {
-        const lines = [line({counter: null})];
-        const next = withCounter(lines, "rent", "rule:0", "assets:savings", taken(lines));
-        expect(next).toEqual([{...lines[0], counter: "assets:savings"}]);
-    });
-
-    it("clearing one line's counter splits it too: a counter-less line beside a countered one would be written virtual", () => {
-        const lines = rule();
-        const next = withCounter(lines, "food", "rule:0", "  ", taken(lines));
-        const food = next.find((l) => l.id === "food")!;
-        expect(food.counter).toBeNull();
-        expect(food.group).not.toBe("rule:0");
-    });
-
-    it("touches only the segment named, not the other segments of a step change", () => {
-        const lines = [line({id: "pay", group: "g:a", counter: null}), line({id: "pay", group: "g:b", counter: null})];
-        const next = withCounter(lines, "pay", "g:b", "assets:savings", taken(lines));
-        expect(next.map((l) => [l.group, l.counter])).toEqual([
-            ["g:a", null],
-            ["g:b", "assets:savings"],
-        ]);
-    });
-
+describe("UNIT scenarioModel — counter-accounts (plan 28)", () => {
     it("trims a typed account, and blank means the engine's default", () => {
         expect(accountOrNull("  assets:checking ")).toBe("assets:checking");
         expect(accountOrNull("   ")).toBeNull();
         expect(accountOrNull(null)).toBeNull();
     });
 
-    it("sets an asset row's gains account without touching its rule", () => {
-        const lines = [line({id: "house", group: "rule:9", role: "asset", account: "assets:house"}), line()];
-        const next = withGains(lines, "rule:9", " equity:home gains ");
-        expect(next[0]).toEqual({...lines[0], gains: "equity:home gains"});
-        // Never on a flow line — the wire refuses one there.
-        expect(withGains(lines, "rule:0", "equity:x")[1].gains).toBeNull();
-        expect(withGains(next, "rule:9", "")[0].gains).toBeNull();
-    });
-
     it("sends trimmed accounts, and blank as null, so ' ' is never an account name on the wire", () => {
         const wire = scenarioToWire({
             ...scenario([line({counter: " assets:checking ", gains: ""})]),
             cash: "  ",
-            events: [{id: "e", date: "2027-01-01", description: "", postings: [], counter: ""}],
+            events: [{id: "e", date: "2027-01-01", description: "", postings: [], counter: "", comment: ""}],
         });
         expect(wire.lines[0].counter).toBe("assets:checking");
         expect(wire.lines[0].gains).toBeNull();
@@ -771,104 +593,7 @@ describe("UNIT scenarioModel — counter-accounts, one per rule (plan 28)", () =
 // Order, and descriptions (plan 28, follow-ups 2026-10-26)
 // ---------------------------------------------------------------------------
 
-describe("UNIT scenarioModel — moving rows", () => {
-    const expense = (id: string, group: string, account = `expenses:${id}`) => line({id, group, account});
-    const accounts = (lines: readonly ScenarioLine[]) => logicalRows(lines, DECLARED, "expense").map((row) => row.segments[0].account);
-
-    it("swaps two single-rule rows, and the ends go nowhere", () => {
-        const lines = [expense("a", "g-a"), expense("b", "g-b"), expense("c", "g-c")];
-        expect(accounts(moveRow(lines, DECLARED, "expense", "b", -1))).toEqual(["expenses:b", "expenses:a", "expenses:c"]);
-        expect(accounts(moveRow(lines, DECLARED, "expense", "b", 1))).toEqual(["expenses:a", "expenses:c", "expenses:b"]);
-        expect(accounts(moveRow(lines, DECLARED, "expense", "a", -1))).toEqual(["expenses:a", "expenses:b", "expenses:c"]);
-        expect(accounts(moveRow(lines, DECLARED, "expense", "c", 1))).toEqual(["expenses:a", "expenses:b", "expenses:c"]);
-    });
-
-    it("two postings of ONE rule swap inside it — the posting order is what persists", () => {
-        const lines = [expense("a", "rule:0"), expense("b", "rule:0"), expense("c", "rule:1")];
-        const moved = moveRow(lines, DECLARED, "expense", "b", -1);
-        expect(moved.map((l) => [l.id, l.group])).toEqual([
-            ["b", "rule:0"],
-            ["a", "rule:0"],
-            ["c", "rule:1"],
-        ]);
-    });
-
-    it("past a row of another rule, a row carries its whole rule with it", () => {
-        // `a` and `b` are one budget rule; `c` is a seeded row of its own. Moving
-        // `c` above `b` can only be stored as `c`'s rule above `a`+`b`'s.
-        const lines = [expense("a", "rule:0"), expense("b", "rule:0"), expense("c", "gap:c")];
-        expect(accounts(moveRow(lines, DECLARED, "expense", "c", -1))).toEqual(["expenses:c", "expenses:a", "expenses:b"]);
-        // …and `b` moving down past `c` carries `a` along, for the same reason.
-        expect(accounts(moveRow(lines, DECLARED, "expense", "b", 1))).toEqual(["expenses:c", "expenses:a", "expenses:b"]);
-    });
-
-    it("a step change's segments move together, as one row", () => {
-        const lines = [
-            expense("a", "g-a"),
-            line({
-                id: "pay",
-                group: "g-1",
-                account: "expenses:pay",
-                period: {raw: "monthly to 2027-04-01", simple: "monthly", base: null, from: null, to: "2027-04-01"},
-            }),
-            line({
-                id: "pay",
-                group: "g-2",
-                account: "expenses:pay",
-                period: {raw: "monthly from 2027-04-01", simple: "monthly", base: null, from: "2027-04-01", to: null},
-            }),
-        ];
-        const moved = moveRow(lines, DECLARED, "expense", "pay", -1);
-        expect(moved.map((l) => l.group)).toEqual(["g-1", "g-2", "g-a"]);
-        expect(logicalRows(moved, DECLARED, "expense")[0].segments).toHaveLength(2);
-    });
-
-    it("moves only within the section: an income row in between is not a neighbour", () => {
-        const lines = [expense("a", "g-a"), line({id: "pay", group: "g-p", account: "income:salary"}), expense("b", "g-b")];
-        const moved = moveRow(lines, DECLARED, "expense", "b", -1);
-        expect(accounts(moved)).toEqual(["expenses:b", "expenses:a"]);
-        expect(logicalRows(moved, DECLARED, "income").map((row) => row.id)).toEqual(["pay"]);
-    });
-
-    it("never changes a row's section or its hold", () => {
-        const held = line({id: "x", group: "g-x", account: "income:half-typed", section: "expense"});
-        const lines = [expense("a", "g-a"), held];
-        const moved = moveRow(lines, DECLARED, "expense", "x", -1);
-        expect(moved[0]).toEqual(held);
-        expect(sectionOfLine(moved[0], DECLARED)).toBe("expense");
-    });
-
-    it("a drag lands the row where the target was, through the same moves", () => {
-        const lines = ["a", "b", "c", "d"].map((id) => expense(id, `g-${id}`));
-        expect(accounts(moveRowTo(lines, DECLARED, "expense", "d", "a"))).toEqual(["expenses:d", "expenses:a", "expenses:b", "expenses:c"]);
-        expect(accounts(moveRowTo(lines, DECLARED, "expense", "a", "c"))).toEqual(["expenses:b", "expenses:c", "expenses:a", "expenses:d"]);
-        expect(accounts(moveRowTo(lines, DECLARED, "expense", "b", "b"))).toEqual(["expenses:a", "expenses:b", "expenses:c", "expenses:d"]);
-    });
-
-    it("gathers a rule whose lines were apart, which is what the file would do", () => {
-        const lines = [expense("a", "rule:0"), expense("b", "rule:1"), expense("c", "rule:0")];
-        expect(gatherRules(lines).map((l) => l.id)).toEqual(["a", "c", "b"]);
-    });
-
-    it("events reorder freely", () => {
-        const ev = (id: string) => ({id, date: "2027-01-01", description: id, postings: [], counter: null});
-        const events = [ev("x"), ev("y"), ev("z")];
-        expect(moveEvent(events, "z", -1).map((e) => e.id)).toEqual(["x", "z", "y"]);
-        expect(moveEvent(events, "x", -1).map((e) => e.id)).toEqual(["x", "y", "z"]);
-        expect(moveEventTo(events, "z", "x").map((e) => e.id)).toEqual(["z", "x", "y"]);
-        expect(moveEventTo(events, "x", "z").map((e) => e.id)).toEqual(["y", "z", "x"]);
-    });
-});
-
 describe("UNIT scenarioModel — descriptions", () => {
-    it("a description belongs to the RULE: every line of it takes the edit", () => {
-        const lines = [line({id: "a", group: "rule:0"}), line({id: "b", group: "rule:0"}), line({id: "c", group: "rule:1", note: "kept"})];
-        const next = withNote(lines, "rule:0", "rent and utilities");
-        expect(next.map((l) => l.note)).toEqual(["rent and utilities", "rent and utilities", "kept"]);
-        expect(ruleSize(lines, "rule:0")).toBe(2);
-        expect(ruleSize(lines, "rule:1")).toBe(1);
-    });
-
     it("refuses exactly what the file writer refuses", () => {
         expect(noteProblem("rent, after the move")).toBeNull();
         expect(noteProblem("")).toBeNull();
@@ -882,10 +607,12 @@ describe("UNIT scenarioModel — descriptions", () => {
     it("flags a seeded description as stale once the amount it describes changes", () => {
         const seeded = line({source: "unbudgeted", note: "unbudgeted — average over 2025-11-01 to 2026-10-22"});
         expect(noteIsStale(seeded)).toBe(false);
-        expect(noteIsStale(withMagnitude(seeded, dec(420000, 2)))).toBe(false);
-        expect(noteIsStale(withMagnitude(seeded, dec(5000, 0)))).toBe(true);
+        expect(noteIsStale(withQuantity(seeded, dec(420000, 2)))).toBe(false);
+        expect(noteIsStale(withQuantity(seeded, dec(5000, 0)))).toBe(true);
+        // A sign flip is a different figure too.
+        expect(noteIsStale(withQuantity(seeded, dec(-420000, 2)))).toBe(true);
         // A description the user wrote is theirs, whatever the amount does.
-        expect(noteIsStale(withMagnitude({...seeded, note: "rent"}, dec(5000, 0)))).toBe(false);
+        expect(noteIsStale(withQuantity({...seeded, note: "rent"}, dec(5000, 0)))).toBe(false);
     });
 });
 
@@ -904,15 +631,17 @@ describe("UNIT scenarioModel — automatic posting rules (plan 30 Phase 4)", () 
         unsupported: null,
         form: form(),
         block,
+        key: `auto:${block}`,
     });
 
     it("sends an untouched rule as its text and an edited or new one as its form, each with its block", () => {
         const locked = {...read(2), form: null, edited: true};
         const wire = scenarioToWire({...emptyScenario(), autoRules: [read(0), {...read(1), edited: true}, blankAutoRule("assets:cash"), locked]});
         expect(wire.autoRules).toEqual([
-            {block: 0, raw: read(0).raw},
+            {block: 0, key: "auto:0", raw: read(0).raw},
             {
                 block: 1,
+                key: "auto:1",
                 form: {
                     matchAccount: "expenses:rent",
                     extraQuery: "",
@@ -924,6 +653,8 @@ describe("UNIT scenarioModel — automatic posting rules (plan 30 Phase 4)", () 
             },
             {
                 block: null,
+                // Keyless, it is given one: the layout names every rule by its key.
+                key: "auto:new-1",
                 form: {
                     matchAccount: "",
                     extraQuery: "",
@@ -934,7 +665,7 @@ describe("UNIT scenarioModel — automatic posting rules (plan 30 Phase 4)", () 
                 },
             },
             // A rule the form cannot state always goes back as its text.
-            {block: 2, raw: locked.raw},
+            {block: 2, key: "auto:2", raw: locked.raw},
         ]);
     });
 
@@ -953,7 +684,8 @@ describe("UNIT scenarioModel — automatic posting rules (plan 30 Phase 4)", () 
                     date: "2027-01-01",
                     description: "",
                     counter: null,
-                    postings: [{account: "income:bonus", amount: {commodity: "$", quantity: dec(500, 0), precision: 0}}],
+                    comment: "",
+                    postings: [{account: "income:bonus", amount: {commodity: "$", quantity: dec(500, 0), precision: 0}, comment: ""}],
                 },
             ],
         };
@@ -961,5 +693,125 @@ describe("UNIT scenarioModel — automatic posting rules (plan 30 Phase 4)", () 
         expect(ruleSample(withEvent, "revenue:sale")).toBeNull();
         expect(ruleSample(withEvent, "income")?.quantity).toEqual(dec(500, 0));
         expect(ruleSample(withEvent, " ")).toBeNull();
+    });
+});
+
+describe("UNIT scenarioModel — the file's pieces on the wire (plan 31 Phase C2)", () => {
+    /** A scenario as a file serves it: a live rule, a disabled one, a disabled one-off and `=` rule, a note. */
+    function served(): Scenario {
+        const event = {...blankEvent("off:1", "2027-03-01", "$"), comment: "maybe"};
+        return {
+            ...emptyScenario(),
+            lines: [line({comment: "owner: alex", ruleComment: "employer: acme"}), line({id: "off:0:0", group: "off:0", account: "revenues:bonus"})],
+            events: [{...event, postings: [{...event.postings[0], account: "expenses:legal", comment: "retainer"}]}],
+            autoRules: [
+                {raw: "= expenses:rent\n    (x)  *0.1\n", query: "expenses:rent", unsupported: null, form: null, block: null, key: "auto:off:0"},
+                {raw: "= expenses:rent\n    (y)  *0.2\n", query: "expenses:rent", unsupported: null, form: null, block: 0, key: "auto:0"},
+            ],
+            layout: [
+                {kind: "comment", key: "comment:0", origin: 0, disabled: false, attached: "", raw: "; a note\n"},
+                {kind: "rule", key: "rule:0", origin: 1, disabled: false, attached: "; rent\n", raw: "; rent\n~ monthly\n"},
+                {kind: "rule", key: "off:0", origin: 2, disabled: true, attached: "", raw: "; ~ monthly\n"},
+                {kind: "event", key: "off:1", origin: 3, disabled: true, attached: "", raw: "; ~ 2027-03-01\n"},
+                {kind: "auto", key: "auto:off:0", origin: 4, disabled: true, attached: "", raw: "; = expenses:rent\n"},
+                {kind: "auto", key: "auto:0", origin: 5, disabled: false, attached: "", raw: "= expenses:rent\n"},
+            ],
+            comments: [{key: "comment:0", style: "note", raw: "; a note\n", text: "a note"}],
+            fixed: [],
+        };
+    }
+
+    it("the active scenario drops every disabled entry and its layout item, as the engine's does", () => {
+        const active = activeScenario(served());
+        expect(active.lines.map((l) => l.group)).toEqual(["rule:0"]);
+        expect(active.events).toEqual([]);
+        expect(active.autoRules.map((r) => r.key)).toEqual(["auto:0"]);
+        expect(active.layout.map((item) => item.key)).toEqual(["comment:0", "rule:0", "auto:0"]);
+        expect(active.comments).toEqual(served().comments);
+        // Nothing disabled: the very same scenario.
+        expect(activeScenario(active)).toBe(active);
+    });
+
+    it("a run never carries a disabled entry, nor its layout item", () => {
+        const body = runBody(served(), {interval: "monthly", count: 3, lookback: 0, depth: 2});
+        expect(body.scenario.lines.map((l) => l.group)).toEqual(["rule:0"]);
+        expect(body.scenario.events).toEqual([]);
+        expect(body.scenario.autoRules.map((r) => r.key)).toEqual(["auto:0"]);
+        expect(projectable(served()).layout.some((item) => item.disabled)).toBe(false);
+    });
+
+    it("a save sends every comment inside a block, each rule's key, and the whole layout in the list's order (plan 31 C3)", () => {
+        const wire = scenarioToWire(cloneScenario(served()));
+        expect(wire.lines[0]).toMatchObject({comment: "owner: alex", ruleComment: "employer: acme"});
+        expect(wire.events[0]).toMatchObject({comment: "maybe"});
+        expect(wire.events[0].postings[0].comment).toBe("retainer");
+        expect(wire.autoRules.map((rule) => rule.key)).toEqual(["auto:off:0", "auto:0"]);
+        // Every item, disabled flags and attached comments as served, `raw` left behind.
+        expect(wire.layout?.map((item) => [item.kind, item.key, item.disabled])).toEqual([
+            ["comment", "comment:0", false],
+            ["rule", "rule:0", false],
+            ["rule", "off:0", true],
+            ["event", "off:1", true],
+            ["auto", "auto:off:0", true],
+            ["auto", "auto:0", false],
+        ]);
+        expect(wire.layout?.[1]).toEqual({kind: "rule", key: "rule:0", origin: 1, disabled: false, attached: "; rent\n"});
+        expect(wire.comments).toEqual([{key: "comment:0", raw: "; a note\n"}]);
+        expect(wire.fixed).toEqual([]);
+    });
+
+    it("an edited attached comment goes as its text, and an edited comment as text with its old raw", () => {
+        const scenario = served();
+        scenario.layout[1] = {...scenario.layout[1], attachedText: "Rent, revised."};
+        const wire = scenarioToWire(scenario);
+        expect(wire.layout?.[1]).toEqual({kind: "rule", key: "rule:0", origin: 1, disabled: false, attachedText: "Rent, revised."});
+        expect(commentToWire({key: "comment:0", style: "section", raw: ";;;;\n;; Old\n", text: "New", edited: true})).toEqual({
+            key: "comment:0",
+            style: "section",
+            text: "New",
+            previous: ";;;;\n;; Old\n",
+        });
+        // A new comment has nothing to keep the framing of: the engine writes the house style.
+        expect(commentToWire({key: "comment-1", style: "section", raw: "", text: "Capital", edited: true})).toEqual({
+            key: "comment-1",
+            style: "section",
+            text: "Capital",
+        });
+    });
+
+    it("a scenario with no layout is given the derived one, in the engine's legacy order", () => {
+        const plain = {
+            ...scenario([line({group: "g-b"}), line({id: "x", group: "g-a"}), line({id: "y", group: "g-b"})]),
+            events: [blankEvent("event-1", "2027-01-01", "$")],
+            autoRules: [blankAutoRule(null)],
+        };
+        const derived = withLayout(plain);
+        expect(derived.layout.map((item) => [item.kind, item.key])).toEqual([
+            ["rule", "g-b"],
+            ["rule", "g-a"],
+            ["event", "event-1"],
+            ["auto", "auto:new-1"],
+        ]);
+        expect(derived.autoRules[0].key).toBe("auto:new-1");
+        expect(withLayout(derived)).toBe(derived);
+    });
+
+    it("a run prunes the layout with the entries it drops, so the body still names each one exactly once", () => {
+        const half = {...served(), lines: [...served().lines, {...blankLine("line-9", "$"), group: "g-new"}]};
+        half.layout = [...half.layout, {kind: "rule", key: "g-new", origin: null, disabled: false, attached: "", raw: ""}];
+        const body = runBody(half, {interval: "monthly", count: 3, lookback: 0, depth: 2});
+        expect(body.scenario.layout?.map((item) => item.key)).toEqual(["comment:0", "rule:0", "auto:0"]);
+    });
+
+    it("a render body is the whole scenario with ONE layout item, the entry's own", () => {
+        const body = renderBody(served(), "rule:0");
+        expect(body.key).toBe("rule:0");
+        expect(body.scenario.layout).toEqual([{kind: "rule", key: "rule:0", origin: 1, disabled: false, attached: "; rent\n"}]);
+        expect(body.scenario.lines).toHaveLength(2);
+        expect(body.scenario.comments).toEqual([{key: "comment:0", raw: "; a note\n"}]);
+        // A draft's item overrides the scenario's; an entry with none sends none.
+        const draft = {kind: "rule", key: "rule:0", origin: 1, disabled: true, attachedText: "Rent."};
+        expect(renderBody(served(), "rule:0", draft).scenario.layout).toEqual([draft]);
+        expect(renderBody(emptyScenario(), "new").scenario.layout).toEqual([]);
     });
 });

@@ -109,7 +109,11 @@
                 disabled={!editable || !canSave || busy}
                 onclick={onSave}
                 data-testid="projection-save"
-                title={canSave ? "" : "This scenario has no file of its own yet — use Save as."}
+                title={canSave
+                    ? ""
+                    : currentId === null
+                      ? "This scenario has no file of its own yet — use Save as."
+                      : "This file is part of your main journal, so it is never saved over — use Save as."}
             >
                 {#if busy}<span class="loading loading-xs loading-spinner"></span>{/if}
                 Save
@@ -120,15 +124,6 @@
             {/if}
         </div>
     </div>
-
-    {#if currentId !== null && !canSave}
-        <!-- Decision 5, said out loud rather than discovered at the moment of a
-             refused save: the Projections tab never writes over a plan of
-             record. -->
-        <p class="text-xs text-base-content/60" data-testid="projection-read-only">
-            This file is part of your main journal, so it can be read but never saved over. Use <strong>Save as…</strong> to keep your changes.
-        </p>
-    {/if}
 
     {#if pending !== null}
         <div class="flex flex-col gap-1 rounded border border-warning/40 p-2" role="alert" data-testid="projection-discard">

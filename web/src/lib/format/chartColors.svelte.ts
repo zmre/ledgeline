@@ -1,11 +1,12 @@
-// The live chart palette: `app.css`'s `--chart-*` tokens resolved to concrete
+// The live chart palette: `app.css`'s `--chart-*` tokens (and daisyUI's
+// `--color-info`/`-secondary`/`-accent` for pinned series) resolved to concrete
 // colour strings, re-resolved whenever `<html data-theme>` changes.
 //
 // Why resolve at all, rather than hand charts `var(--chart-1)`: see the header
 // of `./palette.ts`. Reading any getter here inside a component template or a
 // `$derived` subscribes to it, so a theme switch recolours every chart live.
 
-import {colorAt, DEFAULT_PALETTE, resolvePalette, samePalette, type ChartPalette} from "./palette";
+import {colorAt, DEFAULT_PALETTE, resolvePalette, samePalette, type ChartPalette, type ThemeColors} from "./palette";
 
 /** Where the tokens are read from, and how. Injected in tests; the app uses the defaults. */
 export interface ChartColorsSource {
@@ -24,6 +25,8 @@ export interface ChartColors {
     readonly flowIn: string;
     readonly flowOut: string;
     readonly flowNet: string;
+    /** daisyUI's theme colours, for a pinned series (`pinColor`). */
+    readonly theme: ThemeColors;
     /** Slot `i`'s colour, folding to `other` past the last slot (never cycling). */
     colorAt(i: number): string;
 }
@@ -73,6 +76,9 @@ class ReactiveChartColors implements WatchedChartColors {
     }
     get flowNet(): string {
         return this.#current.flowNet;
+    }
+    get theme(): ThemeColors {
+        return this.#current.theme;
     }
 
     colorAt(i: number): string {

@@ -41,6 +41,9 @@
     let {
         label,
         items,
+        text = "⋯",
+        triggerClass = "btn btn-ghost btn-xs",
+        testid = "row-menu-trigger",
     }: {
         /**
          * The trigger's accessible name.
@@ -51,6 +54,10 @@
          */
         label: string;
         items: Item[];
+        /** What the trigger shows. `⋯` for an entry's menu; the Add menu says "+ Add ▾". */
+        text?: string;
+        triggerClass?: string;
+        testid?: string;
     } = $props();
 
     /** The menu's width in px, which is `w-52`. A number because the style is inline. */
@@ -95,6 +102,11 @@
         // no frame in which the menu is painted at the last row's position.
         reposition();
         open = true;
+    }
+
+    /** Open from outside — a keyboard binding (`n` opens the Add menu), with focus on its first item. */
+    export function openMenu(): void {
+        if (!open) toggle();
     }
 
     function choose(item: Item): void {
@@ -145,14 +157,14 @@
 <button
     bind:this={trigger}
     type="button"
-    class="btn btn-ghost btn-xs"
+    class={triggerClass}
     aria-haspopup="menu"
     aria-expanded={open}
     aria-label={label}
-    data-testid="row-menu-trigger"
+    data-testid={testid}
     onclick={toggle}
 >
-    ⋯
+    {text}
 </button>
 
 {#if open}

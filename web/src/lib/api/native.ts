@@ -721,13 +721,9 @@ export interface WireScenarioLineIn {
      * balance only compounds, which is the `$0` posting the file carries.
      */
     amount: WireAmountIn;
-    /**
-     * The MAGNITUDE the user typed, for an edited line (plan 26 B6). The engine
-     * signs it by the account's type and it replaces `amount.quantity`; absent,
-     * `amount.quantity` is taken as already signed. So the SPA never carries
-     * the "revenue is negative" rule.
-     */
-    entry?: WireDec;
+    // The server also takes an optional `entry`, a magnitude it signs by the
+    // account's type (plan 26 B6). The SPA never sends it: an amount is typed
+    // and sent signed as the file writes it (plan 31 amendment C3-29).
     period: WirePeriodIn;
     growth: WireGrowthIn | null;
     /**
@@ -743,11 +739,17 @@ export interface WireScenarioLineIn {
     gains: string | null;
     /** `journal` | `unbudgeted`. An unrecognized value is a 400, not a silent fallback. */
     source: string;
+    /** The posting's own comment (plan 31 C6), as it was served; `""` for none. */
+    comment: string;
+    /** The rule's header comment; the engine writes the first line's. */
+    ruleComment: string;
 }
 
 export interface WireEventPostingIn {
     account: string;
     amount: WireAmountIn;
+    /** The posting's own comment (plan 31 C6); `""` for none. */
+    comment: string;
 }
 
 export interface WireScenarioEventIn {
@@ -757,6 +759,34 @@ export interface WireScenarioEventIn {
     postings: WireEventPostingIn[];
     /** The account the event balances against (plan 28), or `null`. */
     counter: string | null;
+    /** The block's header comment (plan 31 C6); `""` for none. */
+    comment: string;
+}
+
+/**
+ * One layout item on the way out (plan 31 C8): `LayoutItem` handed back, with
+ * an EDITED attached comment as `attachedText` (display text, no `; `) in place
+ * of `attached`. At most one of the two. `raw` may be echoed; it is dropped.
+ */
+export interface WireLayoutItemIn {
+    kind: string;
+    key: string;
+    origin: number | null;
+    disabled: boolean;
+    attached?: string;
+    attachedText?: string;
+}
+
+/**
+ * One comment piece on the way out: `{key, raw}` unchanged, or
+ * `{key, style, text, previous?}` edited — `previous` being the `raw` it was
+ * served with, whose framing an edited section keeps.
+ */
+export type WireCommentIn = {key: string; raw: string; style?: string} | {key: string; style: string; text: string; previous?: string};
+
+/** One piece of file text on the way out: its key only. The engine writes the file's own bytes. */
+export interface WireFixedIn {
+    key: string;
 }
 
 export interface WireScenarioIn {
@@ -772,9 +802,36 @@ export interface WireScenarioIn {
      * it came (the engine re-reads it), or — once edited — its form, which the
      * engine renders. Exactly one of the two.
      */
-    autoRules: ({block: number | null; raw: string} | {block: number | null; form: WireAutoRuleFormIn})[];
+    autoRules: ({block: number | null; key: string; raw: string} | {block: number | null; key: string; form: WireAutoRuleFormIn})[];
     /** The scenario file's own account types, handed back as the engine served them. Optional for older bodies. */
     accountTypes?: Record<string, string>;
+    /**
+     * The file's pieces in order (plan 31 C8). ABSENT means "derive it", which
+     * keeps every comment, disabled entry and piece of file text where it is in
+     * the file — what every save sends until the list editor (plan 31 C3).
+     * Present, it must name every line group, one-off, `=` rule and comment
+     * exactly once (a 400 otherwise). A render sends at most one item.
+     */
+    layout?: WireLayoutItemIn[];
+    /** The comment pieces the layout names. */
+    comments?: WireCommentIn[];
+    /** The file text the layout names. */
+    fixed?: WireFixedIn[];
+}
+
+/**
+ * The whole `POST /api/projections/render` body (plan 31 C15).
+ *
+ * `scenario` holds the entry `key` names and at most one layout item, its own;
+ * with none, the entry renders enabled and with no attached comment. It may
+ * hold the rest of the scenario too, which is not rendered — but a step
+ * change's `line:` tag is decided over every line it holds, so send the whole
+ * scenario for the exact tag a save writes.
+ */
+export interface RenderProjectionBody {
+    scenario: WireScenarioIn;
+    /** A rule's `group`, a one-off's `id`, an `=` rule's or a comment's `key`. */
+    key: string;
 }
 
 /** The whole `POST /api/projections/run` body. */
@@ -1122,6 +1179,18 @@ export class LedgelineApi {
      */
     runProjection(body: RunProjectionBody): Promise<unknown> {
         return this.mutate<unknown>("POST", "/api/projections/run", 200, body, {404: () => new NativeApiUnavailableError(NATIVE_UNAVAILABLE_MESSAGE)});
+    }
+
+    /**
+     * One entry's exact text, as a save would write it (plan 31 C15; decode
+     * with `decodeRenderedEntry`): the editor's "Writes:" preview.
+     *
+     * A POST that reads and writes no file, mapped like `runProjection` — its
+     * 404 means "this engine predates the render". A 400 carries the writer's
+     * own sentence, the one a save of the same entry would refuse with.
+     */
+    renderProjectionEntry(body: RenderProjectionBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/projections/render", 200, body, {404: () => new NativeApiUnavailableError(NATIVE_UNAVAILABLE_MESSAGE)});
     }
 
     /**

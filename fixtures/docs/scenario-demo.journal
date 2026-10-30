@@ -1,0 +1,77 @@
+; Ledgeline projection
+; projection: Series A with a hiring ramp
+; created: 2026-06-01
+; updated: 2026-07-01
+; cash: assets:bank:checking
+
+account liabilities:deferred-revenue  ; type: L
+account income:consulting  ; type: R
+account expenses:taxes:state  ; type: X
+
+;;;;;;;;;;;;;;;;;;;;;;
+;; Income
+
+~ monthly  salary
+    income:salary            $-5660.00  ; growth: 3%/yr
+    expenses:taxes:federal    $1150.00
+    assets:bank:checking
+
+; Consulting as it is today.
+~ monthly  consulting
+    income:consulting        $-1500.00
+    assets:bank:checking
+
+; With a big new customer: the "with" alternative, turned off.
+; ~ monthly from 2027-01-01  consulting, with Acme
+;     income:consulting        $-6000.00
+;     assets:bank:checking
+
+; Annual retainer, billed up front each January and earned month by month.
+~ yearly from 2027-01-01  retainer billed
+    assets:bank:checking      $24000.00
+    liabilities:deferred-revenue
+
+~ monthly from 2027-01-01  retainer earned
+    liabilities:deferred-revenue  $2000.00
+    income:consulting        $-2000.00
+
+; State tax follows salary.
+= ^income:salary(:|$) tag:_generated-transaction  ; state tax
+    expenses:taxes:state      *-0.055
+    assets:bank:checking      *0.055
+
+;;;;;;;;;;;;;;;;;;;;;;
+;; Spending
+
+; The lease renews in January at the new rate.
+~ monthly to 2027-01-01  rent
+    expenses:housing:rent     $1875.00  ; line: rent
+    assets:bank:checking
+
+~ monthly from 2027-01-01  rent
+    expenses:housing:rent     $1975.00  ; line: rent, growth: 3%/yr
+    assets:bank:checking
+
+~ monthly  groceries and eating out
+    expenses:food:groceries    $650.00
+    expenses:food:restaurants  $250.00
+    assets:bank:checking
+
+; Assumes no new car before 2028.
+
+~ 2027-04-15  tax bill
+    expenses:taxes:federal    $6000.00
+    assets:bank:checking
+
+;;;;;;;;;;;;;;;;;;;;;;
+;; Saving and investing
+
+~ monthly  to savings
+    assets:bank:savings        $300.00
+    assets:bank:checking      $-300.00
+
+; Savings plan agreed with Alex, June 2026.
+~ monthly  investing
+    assets:broker:taxable:vti  $500.00  ; growth: 7%/yr
+    assets:property:home         $0.00  ; growth: 3%/yr, opening: 700000.00
+    assets:bank:checking

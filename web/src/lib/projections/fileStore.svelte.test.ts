@@ -46,12 +46,17 @@ const fileBody = (revision: string, mantissa: string) => ({
                 counter: null,
                 gains: null,
                 source: "journal",
+                comment: "",
+                ruleComment: "",
             },
         ],
         events: [],
         cash: null,
         autoRules: [],
         accountTypes: {},
+        layout: [],
+        comments: [],
+        fixed: [],
     },
 });
 

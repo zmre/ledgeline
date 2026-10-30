@@ -385,6 +385,57 @@ describe("UNIT periodStack — every account, and its colour", () => {
     });
 });
 
+describe("UNIT periodStack — pinned colours", () => {
+    const pinned = (account: string, values: number[], pin: NonNullable<PeriodRow["pin"]>): PeriodRow => ({...dollars(account, values), pin});
+
+    it("gives a pinned row its token's colour whatever its size, and `other` its grey", () => {
+        // financing is the biggest by far: biggest-first would hand it slot 0.
+        const rows = [
+            pinned("Operating", [10, -5], "info"),
+            pinned("Investing", [-20, 0], "secondary"),
+            pinned("Financing", [900, 0], "accent"),
+            pinned("Exchange rates", [1, 1], "other"),
+        ];
+        const stack = periodStack(report(rows, [891, -4]), DEFAULT_PALETTE, "$");
+        expect(stack.entities.map((e) => [e.key, e.color])).toEqual([
+            ["Operating", DEFAULT_PALETTE.theme.info],
+            ["Investing", DEFAULT_PALETTE.theme.secondary],
+            ["Financing", DEFAULT_PALETTE.theme.accent],
+            ["Exchange rates", DEFAULT_PALETTE.other],
+        ]);
+    });
+
+    it("colours unpinned rows biggest-first among themselves: a pin takes no slot", () => {
+        const rows = [dollars("small", [1]), pinned("huge", [1000], "accent"), dollars("big", [50])];
+        const stack = periodStack(report(rows, [1051], ["2026"]), DEFAULT_PALETTE, "$");
+        expect(stack.entities.map((e) => [e.key, e.color])).toEqual([
+            ["small", DEFAULT_PALETTE.categorical[1]],
+            ["huge", DEFAULT_PALETTE.theme.accent],
+            ["big", DEFAULT_PALETTE.categorical[0]],
+        ]);
+    });
+
+    it("lets a parent's own segment inherit its row's pin", () => {
+        const rows = [pinned("assets", [30], "info"), dollars("assets:bank", [10])];
+        const stack = periodStack(report(rows, [30], ["2026"]), DEFAULT_PALETTE, "$");
+        expect(stack.entities.map((e) => [e.key, e.color])).toEqual([
+            ["assets (own)", DEFAULT_PALETTE.theme.info],
+            ["assets:bank", DEFAULT_PALETTE.categorical[0]],
+        ]);
+    });
+
+    it("uses the palette it is handed, so a theme switch recolours the pins", () => {
+        const palette = {...DEFAULT_PALETTE, theme: {info: "#000001", secondary: "#000002", accent: "#000003"}};
+        // The sample journal has no financing, and an exchange-rate effect.
+        const stack = periodStack(SAMPLE_CASH_FLOW, palette, "$");
+        expect(stack.entities.map((e) => [e.key, e.color])).toEqual([
+            ["Operating", "#000001"],
+            ["Investing", "#000002"],
+            ["Exchange rates", palette.other],
+        ]);
+    });
+});
+
 describe("UNIT periodStack — commodity", () => {
     it("charts the commodity carrying the most figures, and names the rest", () => {
         const rows: PeriodRow[] = [row("assets:checking", [usd(10), usd(20), usd(30)]), row("assets:wise", [eur(5), new Map(), new Map()])];

@@ -118,7 +118,7 @@ The tag inherits to sub-accounts. It works on cash accounts too: tag several ban
 
 ## The chart
 
-Above the statement, one stacked bar per period for each section: **Operating**, **Investing**, **Financing**, and **Exchange rates** when there is any. Cash in is above zero and cash out below it, and the **Net change in cash** is the line across the bars. Every bar segment is a section total in the statement below.
+Above the statement, one stacked bar per period for each section: **Operating**, **Investing**, **Financing**, and **Exchange rates** when there is any. Cash in is above zero and cash out below it, and the **Net change in cash** is the line across the bars. Every bar segment is a section total in the statement below. Each section's bars are the colour of its heading in the statement, so Operating, Investing and Financing match from chart to table whatever their sizes. Exchange rates is grey.
 
 The chart draws one currency. Anything else is named under it ("Charted in $ only; EUR not shown"), and the statement still shows it. With Interval set to Total there is one column, so the chart asks for a wider range instead of drawing a single bar.
 

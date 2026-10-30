@@ -29,7 +29,7 @@ account equity:unrealized gains  ; type: E
     assets:checking
 
 ; A STEP: payroll jumps in April and grows from the new base. Two bounded rules
-; for one account, linked by the `line:` tag so the editor shows one row.
+; for one account, linked by the `line:` tag so the list shows them as one step change.
 ~ monthly to 2027-04-01  projection
     expenses:payroll      $50000  ; line: payroll
     assets:checking
@@ -56,6 +56,11 @@ account equity:unrealized gains  ; type: E
     assets:house              $0  ; growth: 4%/yr, gains: equity:unrealized gains
     assets:savings         $2000  ; growth: 4%/yr
     assets:checking
+
+; A TRANSFER balances on its own, so it needs no counter-account.
+~ monthly  to savings
+    assets:savings          $300
+    assets:checking         $-300
 ```
 
 Every line of it is hledger's own syntax. Nothing here is a Ledgeline format.
@@ -75,7 +80,7 @@ rest go on postings.
 | `projection: <name>` | a comment at the top of the file | the scenario's display name |
 | `cash: <account>` | a comment at the top of the file | the counter-account for a line your history says nothing about |
 | `growth: <rate>/<unit>` | a posting comment | the amount grows by `rate` per completed `unit`; on an asset-typed account it ALSO marks the row as a balance |
-| `line: <id>` | a posting comment | two bounded rules are two segments of ONE row; written only for a step change |
+| `line: <id>` | a posting comment | two bounded rules are two steps of ONE change; written only for a step change |
 | `opening: <number>` | an asset row's posting comment | override the journal's balance for that account |
 | `gains: <account>` | an asset row's posting comment | where appreciation is booked; `equity:unrealized gains` when absent |
 
@@ -101,47 +106,186 @@ asset row and nothing else, it carries a bare number in the row's own commodity
 and [Asset rows](asset-rows.md#the-opening-tag-restates-the-balance-and-says-so) says exactly
 what the engine does with it.
 
-**`line:` is what makes a step change one row.** A step is a permanent change to
-a recurring line: payroll jumps from `$50k/mo` to `$120k/mo` in April and stays
-there, growing from the new base. That is two bounded `~` rules for the same
-account, and the shared `line:` tag is what tells the editor to show them as one
-row with a "from" on it rather than two unrelated lines. Without the tag they
-are still two perfectly good rules; they just appear separately.
+**`line:` is what links the two steps of a step change.** A step is a permanent
+change to a recurring line: payroll jumps from `$50k/mo` to `$120k/mo` in April
+and stays there, growing from the new base. That is two bounded `~` rules for
+the same account. The shared `line:` tag tells the list they belong together,
+so each card shows `step 1 of 2` or `step 2 of 2` and links to the other.
+Without the tag they are still two good rules. They just aren't linked.
 
-**Ledgeline writes `line:` only for a step change.** A row with one segment
+**Ledgeline writes `line:` only for a step change.** A rule with one step
 needs no tag, so a save writes none, and drops the `line: gap:…` tags older
-versions put on every seeded row. A step gets a short id made from its account's
+versions put on every seeded line. A step gets a short id made from its account's
 leaf (`expenses:payroll` becomes `payroll`, and a second one `payroll-2`), or
 keeps the id you wrote yourself. An id Ledgeline writes never contains a colon.
-Untagged rows get positional ids when the file loads, and a written id can never
-look like one of those, so reordering the rules can't join two unrelated rows.
+Untagged lines get positional ids when the file loads, and a written id can never
+look like one of those, so reordering the rules can't join two unrelated lines.
+
+## Amounts are signed as hledger writes them
+
+A rule's amounts are the file's amounts, with their signs. Revenue is
+negative, as in any hledger journal: `revenues:salary  $-12000`. An expense is
+positive. A minus moves money out of an account, so a transfer from checking to
+savings is `$300` on savings and `$-300` on checking. The list shows each
+amount with this sign, and the editor takes it the same way. Type `-12000` for
+salary and `4200` for rent. Ledgeline never flips a sign for you, even when you
+change a posting's account.
+
+The `=` rule form is the one exception. Its percentages follow [their own
+rule](#editing-rules-on-the-projections-page).
+
+## A rule that balances needs no counter-account
+
+If a rule's postings already sum to zero, there is nothing left over for a
+counter-account to take, so the rule has none:
+
+```journal
+~ monthly  to savings
+    assets:savings      $300
+    assets:checking    $-300
+
+; Deferred revenue: a retainer billed in January is earned month by month.
+~ monthly from 2027-01-01  retainer earned
+    liabilities:deferred-revenue  $2000
+    revenues:consulting          $-2000
+```
+
+The list draws no `→` line for these, and the editor's Counter-account box says
+"None needed". Ledgeline writes them as plain postings, and adds no
+counter-account unless you type one. If an edit makes the postings stop
+balancing, the rule needs a counter-account again, and the default comes back.
 
 ## Descriptions and order
 
 **A rule's description is the text after its period**, separated by two spaces:
-`~ monthly  unbudgeted — average over 2025-11-01 to 2026-10-22`. In the table it
-is the speech-bubble icon beside each row's account. Hover over or focus the
-icon to read the description, and click it to edit. Enter saves and Escape
-cancels. A description is one line and can't contain `;` or `#`, because hledger
-would read the rest of the line as a comment.
+`~ monthly  unbudgeted — average over 2025-11-01 to 2026-10-22`. The list shows
+it on the card's first line, after the period, and the editor has a
+**Description** box for it. A description is one line and can't contain `;` or
+`#`, because hledger would read the rest of the line as a comment.
 
-![The description tooltip open under the speech-bubble icon of the expenses:housing row: "unbudgeted — average over 2025-08-01 to 2026-07-08"](images/description.png)
+![A seeded rule's card: the period, the description "unbudgeted — average over 2025-08-01 to 2026-07-08" and an estimated badge, then the expenses:housing posting and its default counter-account](images/description.png)
 
-The description belongs to the **rule**, not to the row. When several rows are
-postings of one rule, such as a budget rule listing rent and utilities, they
-share one header, and editing it from any of those rows changes it for all of
-them. The tooltip says when this applies.
+A description belongs to the whole rule, so a rule with several postings has
+one description. A seeded rule's description says what the estimate was
+averaged over. If you change that rule's amount, a small dot appears after the
+description, and hovering over it says the description may be out of date.
+Ledgeline never rewrites a description itself.
 
-A seeded row's description says what the estimate was averaged over. If you
-change that row's amount, the icon gets a small dot and the tooltip says the
-description may be out of date. Ledgeline never rewrites a description itself.
+**The list's order is the file's order.** Dragging a card by its grip, Move up
+and Move down in its menu, and <kbd>J</kbd> / <kbd>K</kbd> move the whole entry
+in the file, with the comment above it. A rule's postings are reordered inside
+the editor, with ↑ and ↓. The two steps of a step change move separately,
+because hledger doesn't care which comes first. File text, such as an `account`
+directive, never moves. Other entries can move past it.
 
-**The table's order is the file's order.** Move up and Move down in a row's
-menu, or dragging a row by its handle, reorder the rules in the file and the
-postings within a rule. Comments and transactions between rules stay where they
-were. A row that shares its rule with other rows moves with that rule, because
-the file can't put another rule between two postings of one rule. A step
-change's segments always move together.
+Moving an entry doesn't rewrite it. A save writes an entry you didn't edit with
+its own bytes, wherever it now sits.
+
+## Comments and section headings
+
+Comments in a scenario file are entries in the list, in the place the file has
+them. Ledgeline reads a run of comment lines (lines starting with `;`, `#` or
+`*`, with no blank line inside) as one of three things:
+
+- **A section heading**, when the run has a divider line: a line of three or
+  more of `-`, `=`, `_`, `~`, `*`, `#` or `;`. The list shows its title in
+  capitals with a rule after it. A heading never attaches to the rule below it.
+- **A comment on the entry below**, when the run sits directly above a rule,
+  a one-off or an automatic posting, with no blank line between. The card shows
+  it in italics, and it moves, duplicates, turns off and deletes with its
+  entry. The editor's **Comment above this entry** box edits it.
+- **A note** otherwise: a comment with a blank line after it. It stays where
+  you put it.
+
+```journal
+;;;;;;;;;;;;;;;;;;;;;;
+;; Spending
+
+; The lease renews in January at the new rate.
+~ monthly to 2027-01-01  rent
+    expenses:rent      $1875  ; line: rent
+    assets:checking
+
+; Assumes no new car before 2028.
+
+~ 2027-04-15  tax bill
+    expenses:taxes     $6000
+    assets:checking
+```
+
+Here `;; Spending` is a section heading, "The lease renews…" belongs to the
+rent rule, and "Assumes no new car…" is a note.
+
+**+ Add → Section heading** writes a new heading as a line of 22 semicolons and
+then `;; Title`, with no closing line. A heading already in the file keeps its
+own framing when you edit its title. A note is written `; ` before each line.
+Ledgeline puts a blank line after a heading or a note, so the next read doesn't
+attach it to the entry below.
+
+A `comment` … `end comment` block is a note too. Ledgeline shows it as written,
+and never reads anything inside it as a rule.
+
+**Comments inside a rule survive edits.** A comment on a posting
+(`expenses:rent  $4200  ; owner: alex`), a comment after the period on the `~`
+line, and indented comment lines between postings stay when you edit the rule.
+The editor has a comment box for each posting and a **Header comment** box for
+the `~` line. Ledgeline writes its own tags (`growth:`, `opening:`, `gains:`,
+`line:`) first, then your text after a comma, so hledger still reads your own
+tags as tags. One comment is lost. A comment on the counter-account line is
+dropped when the rule is rewritten.
+
+## Turning an entry off
+
+**Turn off** (or <kbd>t</kbd>, or the editor's **Enabled** switch) comments the
+entry out. Ledgeline puts `; ` in front of every line of the entry and leaves
+the comment above it as it is:
+
+```journal
+; With a big new customer: the "with" alternative.
+; ~ monthly from 2027-01-01  consulting, with Acme
+;     revenues:consulting   $-6000
+;     assets:checking
+```
+
+hledger skips it, and so does Ledgeline. A turned-off entry changes no number on
+the page. The list still shows it, dimmed, struck through and badged `off`.
+**Turn on** removes the `; ` again and gives back the exact lines you had.
+
+Ledgeline reads a commented-out block as a turned-off entry only when all of
+these hold:
+
+- its first line, after the comment character and at most one space, starts
+  with `~` or `=`;
+- every line of it starts with the same comment prefix, so a block that mixes
+  `;` and `#` is not one;
+- it has at least one posting line;
+- the text, with the prefix removed, is exactly one hledger rule.
+
+Anything else stays a comment. `; ~ monthly is how often we pay` has no posting,
+so it is a note. A rule inside `comment` … `end comment` is part of that note,
+too.
+
+## Duplicate as alternative
+
+To compare a plan with and without something, keep both versions in the file
+and turn one off. Say you want to see the runway with a big new customer and
+without one:
+
+1. Open the menu on the consulting rule and choose **Duplicate as
+   alternative** (or press <kbd>C</kbd>).
+2. The editor opens on a copy, placed directly below the original. Change the
+   amount to the bigger figure (`-6000`: income is negative), and put "with
+   Acme" in the description.
+3. Press **Done**. The copy is added and the original is turned off, in one
+   change, so the readings now show the "with" version.
+
+To switch back, turn the copy off and the original on. Each is one press of
+<kbd>t</kbd>. **Cancel** in step 2 leaves no copy, and the original stays on.
+
+**Duplicate** (<kbd>c</kbd>) does the same without turning anything off. Use it
+to start a new rule from an existing one, for example to give one posting a
+different counter-account. Copies never share a `line:` id with the original,
+so a copy is never mistaken for a step.
 
 ## Growth is stepwise, not smoothly compounded
 
@@ -237,7 +381,7 @@ transactions.
 
 ### Editing rules on the Projections page
 
-The **Automatic postings** section edits a rule as a form: *when a posting to
+The editor for an automatic posting is a form: *when a posting to
 this account (or one of its subaccounts) is projected, add these postings*.
 Each posting is a percentage of the matched amount or a fixed amount, and a
 counter-account (the scenario's cash account by default) takes the balance.
@@ -245,8 +389,9 @@ A line under the rule shows what it comes to on an amount the scenario already
 posts there, such as "≈ $1,200.00 to expenses:people-costs:sales-commission
 on each $40,000.00 to revenue:sales".
 
-**Type positive figures.** A percentage means "this account grows by this
-share of the matched amount", and Ledgeline works out the sign from the two
+**In this form, type positive figures.** This is unlike a `~` rule, whose
+amounts you type with the file's signs. A percentage here means "this account
+grows by this share of the matched amount", and Ledgeline works out the sign from the two
 accounts' types. Asset and expense accounts grow with a positive amount;
 liability, equity and revenue accounts grow with a negative one. So 3%
 commission on a sale (revenue into an expense) is written `*-0.03`, 10%
@@ -279,10 +424,9 @@ A rule edited here is saved in this form:
   For that reason a counter-account balances percentages, or fixed amounts in
   one commodity, but not a mix of the two.
 - Only the rule you edited is rewritten. The others keep their text, comments
-  and layout exactly. A deleted rule's block is removed, a new rule is added at
-  the end of the file, and moving a rule up or down moves its text, because
-  hledger applies rules in file order and a later rule sees the postings an
-  earlier one added.
+  and layout exactly. A deleted rule's block is removed, and a new rule goes
+  where you added it in the list. Order matters, because hledger applies rules in
+  file order, and a later rule sees the postings an earlier one added.
 - A hand-written rule in the style above (a plain account name, an amountless
   last posting, with or without the tag) opens as a form too. Once you edit it
   it is saved in the form shown. An untagged rule shows **projections only

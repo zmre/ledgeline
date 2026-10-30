@@ -79,24 +79,29 @@ When you **save**, Ledgeline writes the default it used into the file, so the
 file becomes plain balanced hledger and the numbers do not move. It never
 writes to `budget.journal`.
 
-## In the table
+## In the list
 
-Every Income, Expenses and One-off row has a **Counter-account** column. It
-starts empty, with the default Ledgeline would use greyed in it. Type an
-account to override it; clear the box to go back to the default. An event has
-one counter-account, on its first posting: it takes whatever the event's
-postings leave unbalanced.
+Each rule's card ends with its counter-account, after a `→`. A counter-account
+written in the file is shown plainly. Otherwise the card shows the default
+Ledgeline will use, greyed, with "(default)" after it. To set one, open the
+rule's editor and type an account in **Counter-account**. Clear the box to go
+back to the default. A one-off works the same way. Its counter-account takes
+whatever its postings leave unbalanced.
+
+A rule whose postings balance on their own has no `→` line, and its
+Counter-account box says "None needed". Nothing is left over, so nothing posts
+to a counter-account.
 
 The scenario's own default, the `; cash:` header, is the **Default cash
-account** box above the table. It starts greyed with the account Ledgeline
+account** box above the list. It starts greyed with the account Ledgeline
 falls back to (steps 3 and 4 above).
 
-![The Default cash account box boxed above the Income section, and the Counter-account column boxed, showing the greyed defaults assets:bank:checking and assets:broker:taxable:cash](images/counter-account.png)
+![The Default cash account box boxed above the filter chips, and a seeded salary rule's greyed default counter-account line, → assets:bank:checking (default), boxed](images/counter-account.png)
 
-A rule has exactly one counter-account. When you give one line of a
-multi-line rule a different counter-account from the rest, Ledgeline moves that
-line into a rule of its own, so the file can still be written as hledger reads
-it. No number changes; the file just has one more `~` rule.
+A rule has exactly one counter-account. It is the rule's one posting with no
+amount, which is how hledger reads it. To balance one posting against a
+different account, give it a rule of its own: **+ Add** a new rule, or
+**Duplicate** this one and keep only that posting in the copy.
 
 ## Accruals and partial payments
 
