@@ -6,6 +6,7 @@
 
 account liabilities:deferred-revenue  ; type: L
 account income:consulting  ; type: R
+account expenses:taxes:state  ; type: X
 
 ;;;;;;;;;;;;;;;;;;;;;;
 ;; Income
