@@ -1,35 +1,35 @@
-// Editing a scenario: magnitudes, the sections, step split/merge, and the
+// Editing a scenario: magnitudes, sections, periods, step split/merge, and the
 // encoder that puts one on the wire.
 //
 // Pure module — no Svelte, no DOM, no clock — so every decision below is tested
 // by calling it rather than by building a screen to reach it (`web/README.md`).
-// `scenarioStore.svelte.ts` is the thin `$state` wrapper that calls into here.
+// `scenarioStore.svelte.ts` is the thin `$state` wrapper that calls into here,
+// and `entries.ts` is the list editor's view of the file's pieces (plan 31).
 //
 // # The sign is the engine's
 //
 // A scenario line as the engine sends it carries the JOURNAL's sign:
 // `(income:salary) $-5188.33` is negative, `(expenses:rent) $4200` positive. The
-// table shows and takes MAGNITUDES, the way the budget editor does for goals —
-// a user typing an income line types what they earn. An edited line keeps what
-// was typed as its `entry` and sends it as such; the ENGINE signs it by the
-// account's resolved type (`account_types::signed_entry`, plan 26 B6). Nothing
-// here negates an amount, so nothing here can get the sign wrong — moving a row
-// from `expenses:rent` to `income:rent` just re-enters its magnitude
-// ([`withAccount`]) and the engine re-signs it.
+// editor takes MAGNITUDES, the way the budget editor does for goals — a user
+// typing an income line types what they earn. An edited line keeps what was
+// typed as its `entry` and sends it as such; the ENGINE signs it by the
+// account's resolved type (`account_types::signed_entry`, plan 26 B6). The list
+// PREVIEWS that sign (`signedAmount`) so a card reads like the file; it never
+// sends one.
 //
 // # Sections: the engine's, previewed while typing
 //
 // Every line the engine sends says which section it belongs in
-// (`ScenarioLine.resolved`). While the user retypes an account or a period the
-// table still has to place the row, synchronously, for a name the engine has not
-// seen — so [`resolvedSection`] previews the same rule from the engine's account
-// table until the line round-trips. The two agree by construction (the rule is
-// locked to the engine's by `scenario_signs_golden.rs`).
+// (`ScenarioLine.resolved`). After an edit the list still has to badge the
+// entry before the engine has seen it — so [`resolvedSection`] previews the
+// same rule from the engine's account table until the line round-trips. The
+// two agree by construction (the rule is locked to the engine's by
+// `scenario_signs_golden.rs`).
 
 import {encodeDec} from "#lib/api/editMapping.js";
-import type {RenderProjectionBody, RunProjectionBody, WireLayoutItemIn, WireScenarioIn} from "#lib/api/native.js";
+import type {RenderProjectionBody, RunProjectionBody, WireCommentIn, WireLayoutItemIn, WireScenarioIn} from "#lib/api/native.js";
 import {absDec} from "#lib/format/amounts.js";
-import {cmp, isZero, type Dec} from "#lib/domain/money.js";
+import {cmp, isZero, neg, type Dec} from "#lib/domain/money.js";
 import {blankRuleForm, cloneRuleForm, ruleFormComplete, ruleFormToWire, type AutoRuleForm, type RuleAmount} from "#lib/autoRules/ruleForm.js";
 import {isAccountType, type AccountClasses, type AccountType} from "#lib/domain/accountClass.js";
 import type {ISODate} from "#lib/domain/types.js";
@@ -39,22 +39,19 @@ import type {
     AddSection,
     AutoRule,
     Growth,
-    HeldSection,
     ItemKind,
     LayoutItem,
     LineSection,
     Scenario,
     ScenarioAmount,
+    ScenarioComment,
     ScenarioEvent,
     ScenarioInterval,
     ScenarioLine,
     ScenarioPeriod,
 } from "./types";
 
-// Re-exported because every reader of a section is a reader of this module, and
-// the two names were declared here before the hold moved them next to the field
-// that carries one (`ScenarioLine.section`).
-export type {AddSection, HeldSection, LineSection};
+export type {AddSection, LineSection};
 
 /**
  * Whether a string is a full ISO date, which is all `type=date` and the engine
@@ -108,6 +105,20 @@ export function withAccount(line: ScenarioLine, account: string): ScenarioLine {
     return {...withMagnitude(line, magnitudeOf(line)), account};
 }
 
+/**
+ * The signed quantity the file will hold for `line`: the engine's own figure
+ * while the line is as it sent it, else the typed magnitude signed as
+ * `account_types::signed_entry` signs it (negated for a revenue account).
+ *
+ * DISPLAY ONLY. The list shows a card the way the file reads; what goes back
+ * is still the magnitude (`entry`), which the engine signs.
+ */
+export function signedAmount(line: ScenarioLine, declared: AccountClasses): Dec {
+    if (line.entry === undefined) return line.amount.quantity;
+    const magnitude = absDec(line.entry);
+    return isRevenueAccount(line.account, declared) ? neg(magnitude) : magnitude;
+}
+
 // ---------------------------------------------------------------------------
 // Sections
 // ---------------------------------------------------------------------------
@@ -134,116 +145,6 @@ export function resolvedSection(line: ScenarioLine, declared: AccountClasses): L
     if (line.role === "asset") return "asset";
     if (line.period.simple === null && isIsoDate(line.period.raw)) return "oneoff";
     return isRevenueAccount(line.account, declared) ? "income" : "expense";
-}
-
-/**
- * The section the table SHOWS a line in: its hold while it has one, else its
- * account's type.
- *
- * THE SECTION-STABILITY RULE, and the reason `ScenarioLine.section` exists. A
- * section read live from the account text moves a row on a keystroke — `i` is
- * not a revenue account, and neither is `` — and moving a row between two
- * `{#each}` blocks destroys its DOM node and the focus in it. So while a row is
- * being edited it is HELD, and the account type gets to decide again only once
- * editing is over. `ProjectionsTable.svelte` owns when a hold is taken and
- * released; this function owns what a hold means.
- *
- * A hold never beats `oneoff` or `asset`. Those two are the line's PERIOD and
- * its ROLE talking, and the account box cannot argue with either — so a stale
- * hold left on a row that became one must not drag it back into the flow
- * tables.
- */
-export function sectionOfLine(line: ScenarioLine, declared: AccountClasses): LineSection {
-    const resolved = resolvedSection(line, declared);
-    if (resolved === "oneoff" || resolved === "asset") return resolved;
-    return line.section ?? resolved;
-}
-
-/** One logical row of the table: a line and, when it is a step change, its later segments. */
-export interface LogicalRow {
-    id: string;
-    /** In span order, earliest first. Length > 1 means this row is a step change. */
-    segments: ScenarioLine[];
-}
-
-/** Every section's logical rows at once — what [`groupLines`] answers. */
-export type SectionRows = Record<LineSection, LogicalRow[]>;
-
-/**
- * Every line placed in its section and grouped into logical rows, segments in
- * span order — the whole table in ONE pass.
- *
- * Rows keep the order their FIRST segment appears in, so a table does not
- * reshuffle itself when a step is added to a row halfway down it.
- *
- * All four sections at once because the table wants all four, and asking one at
- * a time walked the scenario once per section — each walk resolving
- * `sectionOfLine` → `isRevenueAccount` → `accountTypeOf` for every line in
- * it, including the ones it was about to discard. That cost is per KEYSTROKE:
- * the scenario is deep `$state` and every one of those reads touches
- * `line.account`, so a single character invalidated all four derivations.
- *
- * The grouping itself is unchanged, which is what leaves THE SECTION-STABILITY
- * RULE exactly where it was: a row's identity is still `line.id`, and its
- * section is still whatever `sectionOfLine` says — hold and all.
- */
-export function groupLines(lines: readonly ScenarioLine[], declared: AccountClasses): SectionRows {
-    const sections: SectionRows = {income: [], expense: [], asset: [], oneoff: []};
-    // Keyed by section AND id, not by id alone. Grouping WITHIN a section is
-    // the behaviour a single pass has to keep: two segments of one row can
-    // resolve into different sections, and joining them on id alone would put a
-    // row in a table its own segment said it was not in.
-    const byKey = new Map<string, LogicalRow>();
-    for (const line of lines) {
-        const section = sectionOfLine(line, declared);
-        const key = `${section} ${line.id}`;
-        const existing = byKey.get(key);
-        if (existing === undefined) {
-            const row: LogicalRow = {id: line.id, segments: [line]};
-            byKey.set(key, row);
-            sections[section].push(row);
-        } else {
-            existing.segments.push(line);
-        }
-    }
-    for (const rows of Object.values(sections)) {
-        for (const row of rows) row.segments.sort(compareSegments);
-    }
-    return sections;
-}
-
-/** One section's logical rows. The table itself reads [`groupLines`], once for all four. */
-export function logicalRows(lines: readonly ScenarioLine[], declared: AccountClasses, section: LineSection): LogicalRow[] {
-    return groupLines(lines, declared)[section];
-}
-
-/**
- * One accessible name per row of a section, each unique WITHIN it.
- *
- * The account, which is what a user calls a row — falling back to the row's
- * POSITION when it has no account yet, and adding the position when two rows
- * share one. Every blank row used to be "a new row", so neither a screen reader
- * nor a test could say which `⋯` it meant, which left the half-typed row a user
- * most wants to delete with no name to reach it by. Two rows freshly added to
- * one section both carry the seeded `income:` prefix, so the duplicate case is
- * not hypothetical either.
- *
- * `sectionTitle` is passed in rather than derived: the words on the headings
- * belong to the component, and this module has no business knowing that the
- * `expense` section is called "Expenses and other outflows".
- */
-export function rowNames(rows: readonly LogicalRow[], sectionTitle: string): string[] {
-    const counts = new Map<string, number>();
-    for (const row of rows) {
-        const account = row.segments[0].account.trim();
-        counts.set(account, (counts.get(account) ?? 0) + 1);
-    }
-    return rows.map((row, at) => {
-        const account = row.segments[0].account.trim();
-        const where = `row ${at + 1} of ${sectionTitle}`;
-        if (account === "") return where;
-        return (counts.get(account) ?? 0) > 1 ? `${account} (${where})` : account;
-    });
 }
 
 /** Earliest span first; an unbounded start sorts before every dated one. */
@@ -324,7 +225,10 @@ export function freshId(prefix: string, taken: ReadonlySet<string>): string {
     }
 }
 
-/** Every id and group in use, which is what a fresh one has to avoid. */
+/**
+ * Every id, group and layout key in use, which is what a fresh one has to
+ * avoid. One namespace for every kind, so a key alone names one entry.
+ */
 export function takenIds(scenario: Scenario): Set<string> {
     const taken = new Set<string>();
     for (const line of scenario.lines) {
@@ -332,6 +236,10 @@ export function takenIds(scenario: Scenario): Set<string> {
         taken.add(line.group);
     }
     for (const event of scenario.events) taken.add(event.id);
+    for (const rule of scenario.autoRules) taken.add(rule.key);
+    for (const comment of scenario.comments) taken.add(comment.key);
+    for (const fixed of scenario.fixed) taken.add(fixed.key);
+    for (const item of scenario.layout) taken.add(item.key);
     return taken;
 }
 
@@ -543,220 +451,9 @@ export function accountOrNull(raw: string | null): string | null {
     return trimmed === "" ? null : trimmed;
 }
 
-/**
- * Set ONE line's counter-account, keeping every rule writable.
- *
- * A `~` rule has ONE counter-account: its amountless posting (plan 28,
- * amendment 5), and the file writer refuses a rule whose lines name two. So
- * when the line shares its rule (`group`) with any other line whose counter
- * would now DIFFER — a different account, or none — the line moves into a rule
- * of its own, with a fresh `group`, rather than leaving a scenario that cannot
- * be saved. "None" counts as different on purpose: a counter-less line beside
- * a countered one is written as a virtual `(account)` posting, which hledger
- * leaves out of balancing, so the file would stop meaning what the projection
- * shows.
- *
- * A line alone in its rule, or one whose rule-mates already agree, keeps its
- * group, so a no-op edit changes nothing.
- */
-export function withCounter(lines: readonly ScenarioLine[], id: string, group: string, counter: string | null, taken: ReadonlySet<string>): ScenarioLine[] {
-    const value = accountOrNull(counter);
-    const split = lines.some((line) => line.group === group && line.id !== id && line.counter !== value);
-    const nextGroup = split ? freshId("group", new Set([...taken, group])) : group;
-    return lines.map((line) => (line.id === id && line.group === group ? {...line, counter: value, group: nextGroup} : line));
-}
-
-/**
- * Set an asset row's gains account. A posting tag (`gains:`), so unlike a
- * counter it is per line and never splits a rule.
- */
-export function withGains(lines: readonly ScenarioLine[], group: string, gains: string | null): ScenarioLine[] {
-    const value = accountOrNull(gains);
-    return lines.map((line) => (line.group === group && line.role === "asset" ? {...line, gains: value} : line));
-}
-
-/** Remove one SEGMENT (one `~` rule) by its group. */
-export function removeSegment(lines: readonly ScenarioLine[], group: string): ScenarioLine[] {
-    return lines.filter((line) => line.group !== group);
-}
-
-/** Remove a whole logical row and every segment of it. */
-export function removeRow(lines: readonly ScenarioLine[], id: string): ScenarioLine[] {
-    return lines.filter((line) => line.id !== id);
-}
-
-/**
- * Copy a logical row, segments and all, beneath the original.
- *
- * The copy is AUTHORED even when the original was seeded from history: a user
- * who duplicated an estimate and is about to edit it is no longer being shown an
- * average, and leaving the flag on would say they were.
- *
- * It carries no section HOLD either, for the same kind of reason: a hold belongs
- * to a row being edited, and nobody is editing a row that does not exist yet. A
- * copy that inherited one would keep it until somebody happened to focus and
- * leave the copy, since nothing else ever releases one.
- */
-export function duplicateRow(lines: readonly ScenarioLine[], id: string, taken: ReadonlySet<string>): ScenarioLine[] {
-    const segments = lines.filter((line) => line.id === id);
-    if (segments.length === 0) return [...lines];
-    const claimed = new Set(taken);
-    const newId = freshId("line", claimed);
-    claimed.add(newId);
-    const copies = segments.map((segment) => {
-        const group = freshId("group", claimed);
-        claimed.add(group);
-        return {...segment, id: newId, group, source: "journal" as const, section: undefined};
-    });
-    const last = lines.map((line) => line.id).lastIndexOf(id);
-    return [...lines.slice(0, last + 1), ...copies, ...lines.slice(last + 1)];
-}
-
-// ---------------------------------------------------------------------------
-// Order (Move up / Move down, and drag)
-// ---------------------------------------------------------------------------
-
-/**
- * The lines with every rule's postings gathered together, at the position of
- * the rule's FIRST line, otherwise in order.
- *
- * This is the order the file writer produces — one `~` block per `group`, the
- * blocks in first-appearance order, postings in line order — so after this
- * the table shows exactly what a save and a reload would. It is not a no-op on
- * every scenario: `withCounter` moves a line into a rule of its own without
- * moving it, which can leave a rule's lines apart.
- */
-export function gatherRules(lines: readonly ScenarioLine[]): ScenarioLine[] {
-    const byGroup = new Map<string, ScenarioLine[]>();
-    for (const line of lines) {
-        const run = byGroup.get(line.group);
-        if (run === undefined) byGroup.set(line.group, [line]);
-        else run.push(line);
-    }
-    return [...byGroup.values()].flat();
-}
-
-/**
- * Move logical row `id` one place up (`-1`) or down (`+1`) within `section`.
- *
- * # A row moves as the file can store it
- *
- * The order persists as the order of the scenario file's `~` blocks and of the
- * postings inside each one, so a move has to be one a file can state:
- *
- * - **Two rows that are postings of ONE rule** swap their postings within it.
- * - **Otherwise** the row's whole rule — every segment's rule, for a step
- *   change — moves past the neighbour's rule. A rule is one block, so a row
- *   that shares its rule with other rows (a budget rule with several
- *   postings) carries them along: the file has no way to put another rule
- *   between two postings of one.
- *
- * Step-change segments always move together: they are one row. Nothing here
- * touches a line's `section` hold or its account, so THE SECTION-STABILITY RULE
- * is untouched — a move changes a row's place within its section, never which
- * section it is in.
- *
- * Unchanged when there is nowhere to go (the first row moving up, the last
- * moving down) or when the two rows share a rule in a way no single move can
- * untangle (a step whose earlier segment shares a rule with the neighbour).
- */
-export function moveRow(lines: readonly ScenarioLine[], declared: AccountClasses, section: LineSection, id: string, delta: -1 | 1): ScenarioLine[] {
-    const ordered = gatherRules(lines);
-    const rows = groupLines(ordered, declared)[section];
-    const at = rows.findIndex((row) => row.id === id);
-    const to = at + delta;
-    if (at < 0 || to < 0 || to >= rows.length) return [...lines];
-    const row = rows[at];
-    const other = rows[to];
-    const mine = new Set(row.segments.map((line) => line.group));
-    const theirs = new Set(other.segments.map((line) => line.group));
-
-    if ([...mine].some((group) => theirs.has(group))) {
-        if (mine.size !== 1 || theirs.size !== 1) return [...lines];
-        // One rule: swap the two rows' postings inside it. The later row's
-        // postings take the earlier positions.
-        const [earlier, later] = delta < 0 ? [other, row] : [row, other];
-        const isOf = (target: LogicalRow) => (line: ScenarioLine) => line.id === target.id && mine.has(line.group);
-        const slots = ordered.flatMap((line, index) => (isOf(earlier)(line) || isOf(later)(line) ? [index] : []));
-        const content = [...ordered.filter(isOf(later)), ...ordered.filter(isOf(earlier))];
-        const out = [...ordered];
-        slots.forEach((slot, n) => (out[slot] = content[n]));
-        return out;
-    }
-
-    // Different rules: lift every line of this row's rules out, and set them
-    // down just before the neighbour's first rule (up) or after its last (down).
-    const moving = ordered.filter((line) => mine.has(line.group));
-    const rest = ordered.filter((line) => !mine.has(line.group));
-    const anchor = delta < 0 ? rest.findIndex((line) => theirs.has(line.group)) : rest.findLastIndex((line) => theirs.has(line.group)) + 1;
-    return [...rest.slice(0, anchor), ...moving, ...rest.slice(anchor)];
-}
-
-/**
- * Move logical row `id` to where row `target` is in `section` — a drag and
- * drop, as the sequence of single moves the menu would make.
- *
- * Built on [`moveRow`] rather than beside it so a drag can never produce an
- * order the menu could not, which is what keeps the two paths saving alike.
- * Stops early if a step makes no progress (a move no file could state).
- */
-export function moveRowTo(lines: readonly ScenarioLine[], declared: AccountClasses, section: LineSection, id: string, target: string): ScenarioLine[] {
-    const indexOf = (current: readonly ScenarioLine[], rowId: string) => groupLines(current, declared)[section].findIndex((row) => row.id === rowId);
-    let current = [...lines];
-    const goal = indexOf(current, target);
-    let at = indexOf(current, id);
-    if (goal < 0 || at < 0) return current;
-    while (at !== goal) {
-        const next = moveRow(current, declared, section, id, at < goal ? 1 : -1);
-        const moved = indexOf(next, id);
-        if (moved === at) break;
-        // A move that carried a whole rule can overshoot the target; stopping
-        // there is still the nearest order a file can store.
-        const overshot = at < goal ? moved > goal : moved < goal;
-        current = next;
-        at = moved;
-        if (overshot) break;
-    }
-    return current;
-}
-
-/** Move event `id` one place up or down. Events are one block each, so any order is storable. */
-export function moveEvent(events: readonly ScenarioEvent[], id: string, delta: -1 | 1): ScenarioEvent[] {
-    const at = events.findIndex((event) => event.id === id);
-    const to = at + delta;
-    if (at < 0 || to < 0 || to >= events.length) return [...events];
-    const out = [...events];
-    [out[at], out[to]] = [out[to], out[at]];
-    return out;
-}
-
-/** Move event `id` to where event `target` is — a drag and drop. */
-export function moveEventTo(events: readonly ScenarioEvent[], id: string, target: string): ScenarioEvent[] {
-    const at = events.findIndex((event) => event.id === id);
-    const to = events.findIndex((event) => event.id === target);
-    if (at < 0 || to < 0 || at === to) return [...events];
-    const out = events.filter((event) => event.id !== id);
-    out.splice(to, 0, events[at]);
-    return out;
-}
-
 // ---------------------------------------------------------------------------
 // Descriptions (a `~` rule's header text)
 // ---------------------------------------------------------------------------
-
-/**
- * Set the description of rule `group` — every line of it, because a rule has
- * ONE header and the file writer takes it from the rule's first line. Setting
- * it on one line alone would be a description the file silently drops.
- */
-export function withNote(lines: readonly ScenarioLine[], group: string, note: string): ScenarioLine[] {
-    return lines.map((line) => (line.group === group ? {...line, note} : line));
-}
-
-/** How many lines share rule `group`, and so share its description. */
-export function ruleSize(lines: readonly ScenarioLine[], group: string): number {
-    return lines.reduce((n, line) => (line.group === group ? n + 1 : n), 0);
-}
 
 /** The engine's longest rule description (`periodic::MAX_DESCRIPTION_BYTES`). */
 export const MAX_NOTE_BYTES = 256;
@@ -874,15 +571,45 @@ export function cloneScenario(scenario: Scenario): Scenario {
 }
 
 /**
+ * The scenario with a complete layout (plan 31 C8).
+ *
+ * The engine always sends one (a seed's is derived, plan 31 amendment C2-2),
+ * so this only fills in for a scenario built here or by an older engine: the
+ * server's own legacy order — rules by first appearance, then one-offs, then
+ * `=` rules, then comments and file text — every entry new. A keyless `=` rule
+ * is given a key, since a layout names it by one. Returned as is when the
+ * layout is already there.
+ */
+export function withLayout(scenario: Scenario): Scenario {
+    if (scenario.layout.length > 0) return scenario;
+    const taken = takenIds(scenario);
+    const autoRules = scenario.autoRules.map((rule) => {
+        if (rule.key !== "") return rule;
+        const key = freshId("auto:new", taken);
+        taken.add(key);
+        return {...rule, key};
+    });
+    const item = (kind: ItemKind, key: string): LayoutItem => ({kind, key, origin: null, disabled: false, attached: "", raw: ""});
+    const groups = [...new Set(scenario.lines.map((line) => line.group))];
+    return {
+        ...scenario,
+        autoRules,
+        layout: [
+            ...groups.map((group) => item("rule", group)),
+            ...scenario.events.map((event) => item("event", event.id)),
+            ...autoRules.map((rule) => item("auto", rule.key)),
+            ...scenario.comments.map((comment) => item("comment", comment.key)),
+            ...scenario.fixed.map((fixed) => item("fixed", fixed.key)),
+        ],
+    };
+}
+
+/**
  * The scenario as the engine runs it: every DISABLED entry (plan 31 C7) and its
  * layout item dropped — a mirror of `Scenario::active` in the engine.
  *
- * Also what the table before plan 31 holds (`scenarioStore.adopt`), and the
- * reason it stays safe while the wire carries disabled entries: that table
- * has no idea what "off" means, so it must never be handed one, or it would
- * show it as a live row, run it, and save it uncommented. It never sends a
- * layout, so its save lets the engine derive one from the file, which puts
- * every disabled entry back where it was, still commented out.
+ * What `projectable` starts from, so a run body never carries an entry that
+ * is turned off; the engine would drop it anyway.
  */
 export function activeScenario(scenario: Scenario): Scenario {
     const off = new Set(scenario.layout.filter((item) => item.disabled).map((item) => layoutId(item.kind, item.key)));
@@ -913,7 +640,9 @@ function cloneAmount(amount: ScenarioAmount): ScenarioAmount {
  * inbound type without `deny_unknown_fields`, precisely so a client need not
  * strip the derived fields first, and `raw` is the only one the server reads.
  */
-export function scenarioToWire(scenario: Scenario): WireScenarioIn {
+export function scenarioToWire(full: Scenario): WireScenarioIn {
+    const scenario = withLayout(full);
+    const layout = scenario.layout;
     return {
         name: scenario.name,
         created: scenario.created,
@@ -965,14 +694,42 @@ export function scenarioToWire(scenario: Scenario): WireScenarioIn {
         autoRules: scenario.autoRules.map((rule) =>
             sendsForm(rule) ? {block: rule.block, key: rule.key, form: ruleFormToWire(rule.form)} : {block: rule.block, key: rule.key, raw: rule.raw}
         ),
-        // NO `layout`, `comments` or `fixed` (plan 31 Phase C2): the table can
-        // reorder rows but knows nothing of the file's pieces, so its save lets
-        // the engine derive the layout, which keeps every comment, disabled
-        // entry and piece of file text where it is in the file.
         // The types every form above was served under, so the engine renders
         // an edited percentage with the sign the user saw.
         accountTypes: {...scenario.accountTypes},
+        // The file's pieces in the list's order (plan 31 C8): the order IS the
+        // file's, every disabled flag and attached comment travels on its item,
+        // and file text goes back by key alone (the engine writes the file's
+        // own bytes). A scenario with no layout is given the derived one.
+        layout: layout.map(layoutItemToWire),
+        comments: scenario.comments.map(commentToWire),
+        fixed: scenario.fixed.map((fixed) => ({key: fixed.key})),
     };
+}
+
+/**
+ * A layout item as it goes back: an EDITED attached comment as its display
+ * text (`attachedText`, which the engine writes `; ` + line), an unchanged one
+ * exactly as served, and `raw` left behind — what a save writes is never the
+ * client's to say.
+ */
+export function layoutItemToWire(item: LayoutItem): WireLayoutItemIn {
+    const attached = item.attachedText === undefined ? {attached: item.attached} : {attachedText: item.attachedText};
+    return {kind: item.kind, key: item.key, origin: item.origin, disabled: item.disabled, ...attached};
+}
+
+/**
+ * A comment piece as it goes back: unchanged as its served `raw`, so it keeps
+ * its bytes; edited (or new) as its display text and style, with the `raw` it
+ * was served as `previous`, whose dividers and framing an edited section keeps
+ * (plan 31 amendment C2-4). A new section has no `previous`, so the engine
+ * writes Patrick's house style: 22 semicolons, then `;; Title`.
+ */
+export function commentToWire(comment: ScenarioComment): WireCommentIn {
+    if (comment.edited !== true) return {key: comment.key, raw: comment.raw};
+    return comment.raw === ""
+        ? {key: comment.key, style: comment.style, text: comment.text}
+        : {key: comment.key, style: comment.style, text: comment.text, previous: comment.raw};
 }
 
 /** Whether `rule` travels as its form: edited (or added) here, and expressible as one. */
@@ -1017,44 +774,41 @@ export function ruleSample(scenario: Scenario, account: string): RuleAmount | nu
 export function projectable(full: Scenario): Scenario {
     // A disabled entry never runs (plan 31 C7); the engine would drop it, and
     // a body without a layout could not tell it to.
-    const scenario = activeScenario(full);
-    return {
-        ...scenario,
-        // A rule still being typed is left out, as a line with no account is.
-        autoRules: scenario.autoRules.filter((rule) => !sendsForm(rule) || ruleFormComplete(rule.form)),
-        lines: scenario.lines.filter((line) => line.account.trim() !== ""),
-        events: scenario.events
-            .filter((event) => isIsoDate(event.date))
-            .map((event) => ({...event, postings: event.postings.filter((posting) => posting.account.trim() !== "")}))
-            .filter((event) => event.postings.length > 0),
-    };
+    const scenario = activeScenario(withLayout(full));
+    const autoRules = scenario.autoRules.filter((rule) => !sendsForm(rule) || ruleFormComplete(rule.form));
+    const lines = scenario.lines.filter((line) => line.account.trim() !== "");
+    const events = scenario.events
+        .filter((event) => isIsoDate(event.date))
+        .map((event) => ({...event, postings: event.postings.filter((posting) => posting.account.trim() !== "")}))
+        .filter((event) => event.postings.length > 0);
+    // A layout must name every entry the body holds and nothing else, so an
+    // entry dropped above takes its item with it.
+    const kept = new Set<string>([
+        ...lines.map((line) => layoutId("rule", line.group)),
+        ...events.map((event) => layoutId("event", event.id)),
+        ...autoRules.map((rule) => layoutId("auto", rule.key)),
+        ...scenario.comments.map((comment) => layoutId("comment", comment.key)),
+        ...scenario.fixed.map((fixed) => layoutId("fixed", fixed.key)),
+    ]);
+    return {...scenario, autoRules, lines, events, layout: scenario.layout.filter((item) => kept.has(layoutId(item.kind, item.key)))};
 }
 
 /**
  * The `POST /api/projections/render` body for the entry `key` names (plan 31
  * C15): the whole scenario as a save sends it — so a step change's `line:` tag
  * is decided over every line, as the save decides it — plus that entry's ONE
- * layout item, and every comment piece as served.
+ * layout item, and every comment piece as it would be saved.
  *
  * `item` overrides the scenario's own item for `key` (an edited draft's);
  * with neither, the entry renders enabled and with no attached comment.
  */
 export function renderBody(scenario: Scenario, key: string, item?: WireLayoutItemIn): RenderProjectionBody {
-    const own = item ?? layoutItemToWire(scenario.layout.find((candidate) => candidate.key === key));
+    const found = scenario.layout.find((candidate) => candidate.key === key);
+    const own = item ?? (found === undefined ? undefined : layoutItemToWire(found));
     return {
-        scenario: {
-            ...scenarioToWire(scenario),
-            layout: own === undefined ? [] : [own],
-            comments: scenario.comments.map((comment) => ({key: comment.key, raw: comment.raw})),
-        },
+        scenario: {...scenarioToWire(scenario), layout: own === undefined ? [] : [own]},
         key,
     };
-}
-
-/** A served layout item as it goes back: its attached comment unchanged, its `raw` left behind. */
-function layoutItemToWire(item: LayoutItem | undefined): WireLayoutItemIn | undefined {
-    if (item === undefined) return undefined;
-    return {kind: item.kind, key: item.key, origin: item.origin, disabled: item.disabled, attached: item.attached};
 }
 
 /**

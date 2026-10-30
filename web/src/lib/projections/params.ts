@@ -5,7 +5,8 @@
 // imports) so the round trip is unit-testable under node.
 //
 // Scheme: `?tab=cash|bs|is|cf|accounts|journal&interval=&count=&lookback=&depth=
-// &empty=0|1`. All six are written in full, never only the non-defaults, so a
+// &empty=0|1&show=all|income|…`. `show` is the scenario list's filter chip
+// (plan 31 C12), view state like the rest. All six are written in full, never only the non-defaults, so a
 // shared or reloaded URL reproduces the same readings — the reports codec's
 // rule, for the reason it gives there. `empty` is the Accounts tab's toggle;
 // it is kept while another tab is open, so switching back finds it as it was.
@@ -24,6 +25,7 @@
 
 import {MAX_COUNT, type PeriodInterval} from "#lib/reports/ui/params.js";
 import {clampedInt, oneOf} from "#lib/url/params.js";
+import {ENTRY_FILTERS, type EntryFilter} from "./entries";
 
 /** Which reading the bottom half is showing. */
 export type ProjectionTab = "cash" | "bs" | "is" | "cf" | "accounts" | "journal";
@@ -60,6 +62,8 @@ export interface ProjectionParams {
     depth: number;
     /** The Accounts tab: whether declared and known accounts with nothing in any column are rows too. */
     empty: boolean;
+    /** The scenario list's filter chip (plan 31 C12). */
+    show: EntryFilter;
 }
 
 /**
@@ -98,6 +102,7 @@ export function defaultProjectionParams(): ProjectionParams {
         lookback: DEFAULT_PROJECTION_LOOKBACK,
         depth: DEFAULT_PROJECTION_DEPTH,
         empty: false,
+        show: "all",
     };
 }
 
@@ -110,6 +115,7 @@ export function projectionParamsToSearch(params: ProjectionParams): string {
     q.set("lookback", String(params.lookback));
     q.set("depth", String(params.depth));
     q.set("empty", params.empty ? "1" : "0");
+    q.set("show", params.show);
     return q.toString();
 }
 
@@ -132,5 +138,6 @@ export function searchToProjectionParams(search: string, dflt: ProjectionParams)
         lookback: clampedInt(q.get("lookback"), 0, MAX_COUNT, dflt.lookback),
         depth: clampedInt(q.get("depth"), 1, 99, dflt.depth),
         empty: oneOf(["0", "1"], q.get("empty"), dflt.empty ? "1" : "0") === "1",
+        show: oneOf(ENTRY_FILTERS, q.get("show"), dflt.show),
     };
 }

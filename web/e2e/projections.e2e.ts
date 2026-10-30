@@ -55,100 +55,96 @@ test("projections: is a top-level tab, reachable from the nav", async ({page}) =
     await expect(page.getByRole("heading", {name: "Projections", exact: true})).toBeVisible();
 });
 
-test("projections: seeds the what-if table from the journal, flagging what it estimated", async ({page}) => {
+test("projections: seeds the scenario list from the journal, flagging what it estimated", async ({page}) => {
     await page.goto("/projections");
 
-    // Both recurring sections exist, and the seed put rows in them.
-    await expect(page.getByTestId("projection-section-income")).toBeVisible();
-    await expect(page.getByTestId("projection-section-expense")).toBeVisible();
-    await expect(page.getByTestId("projection-line").first()).toBeVisible();
+    // One card per seeded rule, in the seed's order, badged by account type.
+    const list = page.getByTestId("projection-list");
+    await expect(list.getByTestId("projection-entry").first()).toBeVisible();
+    const salary = list.locator('[data-testid="projection-entry"][data-key="gap:income:salary:$"]');
+    await expect(salary.locator('[data-badge="income"]')).toBeVisible();
 
-    // sample.journal has no `~` rules, so every seeded row is an average of the
-    // trailing twelve months — and says so, rather than reading as something the
-    // user wrote.
-    const note = page.getByLabel("Description for income:salary");
-    await note.hover();
-    await expect(page.getByTestId("note-tooltip")).toContainText("average over");
+    // sample.journal has no `~` rules, so every seeded rule is an average of
+    // the trailing twelve months — and says so, rather than reading as
+    // something the user wrote.
+    await expect(salary.locator('[data-badge="estimated"]')).toBeVisible();
+    await expect(salary).toContainText("average over");
+    await expect(page.getByTestId("projection-seeded")).toContainText("nothing is saved until you Save as");
 
-    // Income is a MAGNITUDE in the box, though the wire signs revenue negative.
-    await expect(page.getByLabel("Amount for income:salary")).toHaveValue(/^\d/);
+    // The card shows the sign the file holds; the dialog takes a MAGNITUDE.
+    await expect(salary.getByTestId("entry-postings")).toContainText("−$");
+    await salary.getByTestId("entry-edit").click();
+    const dialog = page.getByTestId("entry-dialog");
+    await expect(dialog.getByLabel("Amount for income:salary")).toHaveValue(/^\d/);
+    await dialog.getByTestId("entry-dialog-cancel").click();
+    await expect(dialog).toHaveCount(0);
 });
 
-// UNVERIFIED: written against the markup, never executed — Playwright cannot
-// run in the environment this was added in (plan 23, Phase 3).
-test("projections: the Assets and balances section is there, empty, on a seeded journal", async ({page}) => {
+test("projections: an asset rule is added from the Add menu, and its balance is the ledger's own, greyed", async ({page}) => {
     await page.goto("/projections");
+    await expect(page.getByTestId("projection-cash")).toBeVisible();
 
-    // `sample.journal` has no `~` rules at all, so the seed produces flows only
-    // — `budget_gaps` measures revenue and expense accounts. The section is
-    // still present, with its own empty state and its own Add button, because
-    // an asset row is something the user creates deliberately.
-    const assets = page.getByTestId("projection-section-asset");
-    await expect(assets).toBeVisible();
-    await expect(assets).toContainText("A brokerage account, a 401k, a house.");
-    await expect(assets.getByRole("button", {name: "+ Add an asset"})).toBeEnabled();
-    await expect(page.getByTestId("projection-asset-line")).toHaveCount(0);
+    await page.getByTestId("projection-add-menu").click();
+    await page.getByTestId("row-menu").getByRole("menuitem", {name: "Asset"}).click();
+    const dialog = page.getByTestId("entry-dialog");
+    await expect(dialog.getByRole("heading", {name: "New asset rule"})).toBeVisible();
+    // Opened on the journal's own asset tree; nothing is added until Done.
+    const account = dialog.getByLabel(/^Account for /);
+    await expect(account).toHaveValue("assets:");
+    await account.fill("assets:broker:taxable");
+    await account.press("Enter");
+    await dialog.getByLabel("Description").fill("brokerage");
+    await dialog.getByLabel("Description").blur();
+    await expect(dialog.getByTestId("entry-dialog-writes")).toContainText("assets:broker:taxable");
+    await dialog.getByTestId("entry-dialog-done").click();
+    await expect(dialog).toHaveCount(0);
+
+    const card = page.getByTestId("projection-entry").filter({hasText: "brokerage"});
+    await expect(card.locator('[data-badge="asset"]')).toBeVisible();
+    await expect(page.getByTestId("projection-dirty")).toBeVisible();
+
+    // Once the run lands, the balance box is EMPTY with the journal's figure
+    // as its placeholder — "greyed until you type over it".
+    // A projection run under the whole suite's load can take a while.
+    await expect(card.getByTestId("entry-balance")).toContainText("(journal)", {timeout: 20_000});
+    await card.getByTestId("entry-edit").click();
+    const balance = dialog.getByLabel("Balance for assets:broker:taxable");
+    await expect(balance).toHaveValue("");
+    await expect(balance).toHaveAttribute("placeholder", /^\d/);
+    await balance.fill("640000");
+    await balance.blur();
+    await expect(dialog.getByRole("button", {name: "Use the journal's balance for assets:broker:taxable"})).toBeVisible();
+    await dialog.getByTestId("entry-dialog-cancel").click();
 });
 
-// UNVERIFIED: written against the markup, never executed — Playwright cannot
-// run beside the other agents this was added alongside (plan 30 Phase 4).
-// Read-only like the rest of this file: a rule added in the table makes the
-// scenario dirty and re-runs it; nothing is saved. No figure is asserted.
 test("projections: an automatic posting rule is added and edited as a form", async ({page}) => {
     await page.goto("/projections");
     await expect(page.getByTestId("projection-cash")).toBeVisible();
 
-    const section = page.getByTestId("projection-section-auto");
-    await expect(section).toContainText("Nothing here yet");
-    await section.getByRole("button", {name: "+ Add a rule"}).click();
-    await expect(section.getByTestId("projection-auto-rule")).toHaveCount(1);
-    await expect(section.getByText("forecasts only")).toBeVisible();
+    await page.getByTestId("projection-add-menu").click();
+    await page.getByTestId("row-menu").getByRole("menuitem", {name: "Automatic posting"}).click();
+    const dialog = page.getByTestId("entry-dialog");
+    await expect(dialog.getByText("forecasts only")).toBeVisible();
+    await dialog.getByLabel("Matched account for this rule").fill("income:salary");
+    await dialog.getByLabel("Matched account for this rule").press("Enter");
+    await dialog.getByLabel("Account for posting 1 of this rule").fill("expenses:taxes");
+    await dialog.getByLabel("Account for posting 1 of this rule").press("Enter");
+    await dialog.getByLabel("Percent for posting 1 of this rule").fill("10");
+    await dialog.getByLabel("Percent for posting 1 of this rule").blur();
 
-    await page.getByLabel("Matched account for rule 1").fill("income:salary");
-    await page.getByLabel("Matched account for rule 1").press("Enter");
-    await page.getByLabel("Account for posting 1 of rule 1").fill("expenses:taxes");
-    await page.getByLabel("Account for posting 1 of rule 1").press("Enter");
-    await page.getByLabel("Percent for posting 1 of rule 1").fill("10");
-    await page.getByLabel("Percent for posting 1 of rule 1").blur();
+    // The preview reads the seeded salary rule; the exact text comes from the engine.
+    await expect(dialog.getByTestId("auto-rule-preview")).toContainText("to expenses:taxes on each");
+    await expect(dialog.getByTestId("entry-dialog-writes")).toContainText("tag:_generated-transaction");
+    await dialog.getByTestId("entry-dialog-done").click();
 
-    // The preview reads the seeded salary line; the projection re-runs with the
-    // rule and still renders.
-    await expect(section.getByTestId("auto-rule-preview")).toContainText("to expenses:taxes on each");
+    const rule = page.locator('[data-testid="projection-entry"][data-kind="auto"]');
+    await expect(rule).toHaveCount(1);
+    await expect(rule).toContainText("is projected");
     await expect(page.getByTestId("projection-runway")).toBeVisible();
 
-    await section.getByLabel("Row menu for rule 1").click();
-    await page.getByTestId("row-menu").getByRole("menuitem", {name: "Delete rule"}).click();
-    await expect(section.getByTestId("projection-auto-rule")).toHaveCount(0);
-});
-
-// UNVERIFIED, as above.
-test("projections: adding an asset row shows the ledger's own balance, greyed", async ({page}) => {
-    await page.goto("/projections");
-    await expect(page.getByTestId("projection-cash")).toBeVisible();
-
-    await page.getByRole("button", {name: "+ Add an asset"}).click();
-    const row = page.getByTestId("projection-asset-line").first();
-    await expect(row).toBeVisible();
-
-    // Seeded into the journal's own asset tree, and a balance box that is EMPTY
-    // — the journal's figure is its placeholder, which is what "greyed until
-    // you type over it" means.
-    await expect(row.getByRole("combobox").first()).toHaveValue("assets:");
-    const balance = page.getByLabel(/^Balance for /);
-    await expect(balance).toHaveValue("");
-
-    // Naming a real account and letting the debounced recompute land puts the
-    // ledger's figure in the placeholder.
-    await row.getByRole("combobox").first().fill("assets:broker:taxable");
-    await row.getByRole("combobox").first().press("Enter");
-    await expect(page.getByLabel("Balance for assets:broker:taxable")).toHaveAttribute("placeholder", /^\d/);
-
-    // Typing over it is visibly an override, and the ledger's figure survives.
-    await page.getByLabel("Balance for assets:broker:taxable").fill("640000");
-    await page.getByLabel("Balance for assets:broker:taxable").blur();
-    await expect(page.getByTestId("ledger-balance")).toContainText("ledger");
-    await page.getByLabel("Use the journal's balance for assets:broker:taxable").click();
-    await expect(page.getByTestId("ledger-balance")).toHaveCount(0);
+    await rule.getByTestId("row-menu-trigger").click();
+    await page.getByTestId("row-menu").getByRole("menuitem", {name: "Delete"}).click();
+    await expect(rule).toHaveCount(0);
 });
 
 test("projections: opens on the runway over two years with two periods of actuals, and says so in the URL", async ({page}) => {
@@ -308,17 +304,22 @@ test("projections: the Journal tab lists the generated transactions only, each n
     await expect(page.getByRole("tab", {name: "Accounts"})).toHaveAttribute("aria-selected", "true");
 });
 
-test("projections: a seeded row shows its inferred counter-account greyed", async ({page}) => {
+test("projections: a seeded rule shows its inferred counter-account greyed", async ({page}) => {
     await page.goto("/projections");
     await expect(page.getByTestId("projection-cash")).toBeVisible();
-    // Empty box, the engine's default as the placeholder — "greyed until you
-    // type over it", as the Balance column is.
-    const counter = page.getByLabel("Counter-account for expenses:housing");
+    // On the card, the engine's default, marked as one; in the dialog, an empty
+    // box with it as the placeholder — "greyed until you type over it".
+    const housing = page.locator('[data-testid="projection-entry"][data-key="gap:expenses:housing:$"]');
+    await expect(housing.getByTestId("entry-counter")).toContainText(/assets:.*\(default\)/);
+    await housing.getByTestId("entry-edit").click();
+    const counter = page.getByTestId("entry-dialog").getByLabel("Counter-account");
     await expect(counter).toHaveValue("");
     await expect(counter).toHaveAttribute("placeholder", /^assets:/);
+    await page.getByTestId("entry-dialog-cancel").click();
     // Inferred from the most common pairing in history, ANY account type:
     // depreciation books against its contra-asset, never cash.
-    await expect(page.getByLabel("Counter-account for expenses:depreciation")).toHaveAttribute("placeholder", "assets:vehicles:car:depreciation");
+    const depreciation = page.locator('[data-testid="projection-entry"][data-key="gap:expenses:depreciation:$"]');
+    await expect(depreciation.getByTestId("entry-counter")).toContainText("assets:vehicles:car:depreciation");
     await expect(page.getByLabel("Default cash account")).toHaveAttribute("placeholder", /^assets:/);
 });
 
@@ -337,11 +338,11 @@ test("projections: a link to a reading plan 28 retired opens the runway instead"
     await expect(page.getByTestId("projection-cash")).toBeVisible();
 });
 
-test("projections: editing the table marks it edited and recomputes", async ({page}) => {
+test("projections: editing an entry marks the scenario edited and recomputes, once, on Done", async ({page}) => {
     // The whole point of carrying the scenario in the request body: an UNSAVED
     // edit projects. Asserted as a request going out and the page saying the
-    // table has been edited — never as a figure, which depends on the engine's
-    // own today.
+    // scenario has been edited — never as a figure, which depends on the
+    // engine's own today.
     const runs: string[] = [];
     page.on("request", (request) => {
         if (request.url().includes("/api/projections/run")) runs.push(request.url());
@@ -351,14 +352,45 @@ test("projections: editing the table marks it edited and recomputes", async ({pa
     await expect(page.getByTestId("projection-cash")).toBeVisible();
     const before = runs.length;
 
-    await page.getByLabel("Amount for expenses:housing").fill("2500");
-    await page.getByLabel("Amount for expenses:housing").blur();
+    const housing = page.locator('[data-testid="projection-entry"][data-key="gap:expenses:housing:$"]');
+    await housing.getByTestId("entry-edit").click();
+    const dialog = page.getByTestId("entry-dialog");
+    await dialog.getByLabel("Amount for expenses:housing").fill("2500");
+    await dialog.getByLabel("Amount for expenses:housing").blur();
+    await expect(dialog.getByTestId("entry-dialog-writes")).toContainText("$2500");
+    // The draft is the dialog's: nothing ran, nothing is edited yet.
+    expect(runs.length).toBe(before);
+    await expect(page.getByTestId("projection-dirty")).toHaveCount(0);
 
+    await dialog.getByTestId("entry-dialog-done").click();
+    await expect(housing.getByTestId("entry-postings")).toContainText("$2,500.00");
     await expect(page.getByTestId("projection-dirty")).toBeVisible();
     await expect.poll(() => runs.length).toBeGreaterThan(before);
     // Nothing was written — an edit is an edit, and the "edited" badge stays up
-    // until a save clears it. This spec never saves.
+    // until a save clears it. This test never saves.
     await expect(page.getByTestId("projection-file-select")).toHaveValue("");
+});
+
+test("projections: the list is driven from the keyboard", async ({page}) => {
+    await page.goto("/projections");
+    await expect(page.getByTestId("projection-cash")).toBeVisible();
+    await page.locator("h1").click();
+    const entries = page.getByTestId("projection-list").getByTestId("projection-entry");
+    await page.keyboard.press("j");
+    await expect(entries.first()).toHaveAttribute("aria-current", "true");
+    await page.keyboard.press("j");
+    await expect(entries.nth(1)).toHaveAttribute("aria-current", "true");
+    // t turns it off, in place; t again turns it back on.
+    await page.keyboard.press("t");
+    await expect(entries.nth(1)).toHaveAttribute("data-disabled", "true");
+    await page.keyboard.press("t");
+    await expect(entries.nth(1)).toHaveAttribute("data-disabled", "false");
+    // Enter opens the dialog; Escape cancels it and focus comes back to the card.
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("entry-dialog")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("entry-dialog")).toHaveCount(0);
+    await expect(entries.nth(1).getByTestId("entry-edit")).toBeFocused();
 });
 
 test("projections: a reload with a scenario file open shows its table, not a spinner", async ({page}) => {
@@ -379,7 +411,7 @@ test("projections: a reload with a scenario file open shows its table, not a spi
     for (const visit of ["first load", "reload"]) {
         if (visit === "reload") await page.reload();
         await expect(page.getByTestId("projection-file-select"), visit).toHaveValue(id);
-        await expect(page.getByTestId("projection-line").first(), visit).toBeVisible();
+        await expect(page.getByTestId("projection-entry").first(), visit).toBeVisible();
         await expect(page.getByLabel("Loading a starting scenario"), visit).toHaveCount(0);
         await expect(page.getByTestId("projection-cash"), visit).toBeVisible();
     }
@@ -434,7 +466,7 @@ test("projections: the fixture journal is loadable and marked read-only", async 
     await page.getByTestId("projection-file-select").selectOption({label: "sample"});
     await expect(page.getByTestId("projection-read-only")).toContainText("part of your main journal");
     await expect(page.getByTestId("projection-save")).toBeDisabled();
-    // The table is still there, still projecting, just from a different source.
+    // The list is still there, still projecting, just from a different source.
     await expect(page.getByTestId("projection-cash")).toBeVisible();
 });
 
@@ -484,5 +516,57 @@ test("projections: every reading downloads as an xlsx workbook", async ({page}) 
         expect(size).toBeGreaterThan(1000);
         const head = await import("node:fs").then((fs) => fs.promises.readFile(path).then((bytes) => bytes.subarray(0, 2).toString()));
         expect(head).toBe("PK");
+    }
+});
+
+// ---------------------------------------------------------------------------
+// The one test here that WRITES (plan 31 C3) — and only to a scratch COPY.
+//
+// Turning an entry off is a byte-level promise (it is commented out in place,
+// the rest of the file untouched) that only a real save and a real re-read can
+// show end to end. So the comments fixture is copied to a scratch name beside
+// the main journal, written there, and the copy is deleted in `finally`,
+// whatever happens. No committed fixture is ever written.
+// ---------------------------------------------------------------------------
+
+test("projections: an entry turned off is saved commented out, and reloads turned off", async ({page}) => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const fixtures = path.resolve(import.meta.dirname, "../../fixtures");
+    const id = "projection-e2e-scratch-comments.journal";
+    const scratch = path.join(fixtures, id);
+    fs.copyFileSync(path.join(fixtures, "projections-parity/comments.journal"), scratch);
+    try {
+        await page.addInitScript(
+            ([url, token, remembered]) => {
+                localStorage.setItem("ledgeline.settings.v1", JSON.stringify({serverUrl: url, serverToken: token, lastProjectionId: remembered}));
+            },
+            [API_URL, API_TOKEN, id]
+        );
+        await page.goto("/projections");
+        const salary = page.getByTestId("projection-entry").filter({hasText: "salary"}).first();
+        await expect(salary).toBeVisible();
+        // The file's own pieces: its headings, its turned-off alternative, its block comment.
+        await expect(page.locator('[data-testid="projection-entry"][data-style="section"]')).toHaveCount(2);
+        await expect(page.locator('[data-testid="projection-entry"][data-disabled="true"]')).toHaveCount(3);
+        await expect(page.locator('[data-testid="projection-entry"][data-style="block"]')).toHaveCount(1);
+
+        await salary.getByTestId("row-menu-trigger").click();
+        await page.getByTestId("row-menu").getByRole("menuitem", {name: "Turn off"}).click();
+        await expect(salary).toHaveAttribute("data-disabled", "true");
+        await page.getByTestId("projection-save").click();
+        await expect(page.getByTestId("projection-dirty")).toHaveCount(0);
+
+        // In the file: commented out, its attached comment and its own comments kept.
+        const text = fs.readFileSync(scratch, "utf8");
+        expect(text).toContain("; Salary, paid on the last working day.\n; ~ monthly  salary  ; employer: acme\n;     revenues:salary");
+        expect(text).toContain(";;;;;;;;;;;;;;;;;;;;;;\n;; Operational expenses\n");
+
+        await page.reload();
+        const reloaded = page.getByTestId("projection-entry").filter({hasText: "salary"}).first();
+        await expect(reloaded).toHaveAttribute("data-disabled", "true");
+        await expect(page.locator('[data-testid="projection-entry"][data-disabled="true"]')).toHaveCount(4);
+    } finally {
+        fs.rmSync(scratch, {force: true});
     }
 });

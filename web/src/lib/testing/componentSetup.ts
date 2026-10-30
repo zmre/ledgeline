@@ -53,6 +53,36 @@ if (typeof globalThis.ResizeObserver === "undefined") {
     };
 }
 
+// The Web Animations API is missing too, and Svelte's `animate:` directive
+// (the scenario list's `animate:flip` on a move) calls `getAnimations` and
+// `animate` on the moving element. The stub is an animation that has already
+// finished: with no layout there is nothing to animate between, so the honest
+// outcome is the end state, at once.
+if (typeof Element !== "undefined" && typeof Element.prototype.animate !== "function") {
+    Element.prototype.getAnimations = function getAnimations(): Animation[] {
+        return [];
+    };
+    Element.prototype.animate = function animate(): Animation {
+        let finish: ((this: Animation, event: AnimationPlaybackEvent) => unknown) | null = null;
+        const animation = {
+            cancel: () => {},
+            finish: () => {},
+            play: () => {},
+            pause: () => {},
+            currentTime: 0,
+            finished: Promise.resolve(),
+            get onfinish() {
+                return finish;
+            },
+            set onfinish(callback) {
+                finish = callback;
+                if (callback !== null) queueMicrotask(() => callback.call(animation as unknown as Animation, {} as AnimationPlaybackEvent));
+            },
+        };
+        return animation as unknown as Animation;
+    };
+}
+
 // Testing Library only auto-registers its own teardown when `afterEach` is a
 // GLOBAL, and this suite runs with vitest's default `globals: false`. Without
 // this line every mounted component stays in the document and the next test's

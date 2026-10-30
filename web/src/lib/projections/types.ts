@@ -100,27 +100,14 @@ export interface Growth {
 }
 
 /**
- * Which of the what-if table's four sections a row is shown in.
- *
- * `asset` is decided by the row's `role` and nothing else, so unlike the
- * income/expense split it cannot change while a row is being typed into — see
- * `resolvedSection`.
+ * Which kind of flow a line is, for the list's badges and filters: income,
+ * expense, a compounding asset, or a one-off. `asset` is decided by the
+ * line's `role` and nothing else — see `resolvedSection`.
  */
 export type LineSection = "income" | "expense" | "asset" | "oneoff";
 
-/**
- * The two sections a row can be HELD in.
- *
- * Never `oneoff`: that one is decided by the line's PERIOD, which nothing typed
- * into an account box can change. Never `asset` either, and for the stronger
- * version of the same reason — that one is decided by the row's `role`, which no
- * editable field on the row touches at all, so there is nothing for a hold to
- * protect against.
- */
-export type HeldSection = "income" | "expense";
-
-/** The sections with an "Add a line" button — the ones a new row can be born into. */
-export type AddSection = HeldSection | "asset";
+/** The kinds of recurring line the Add menu creates, each opened on its account tree's prefix (`sectionPrefix`). */
+export type AddSection = "income" | "expense" | "asset";
 
 /** One recurring row of the what-if table. */
 export interface ScenarioLine {
@@ -150,33 +137,16 @@ export interface ScenarioLine {
     /**
      * The account this line balances against (plan 28 Decision 1). `null` is a
      * pre-plan-28 line: the engine books it to the default counter-account and
-     * a save writes that default. The table shows that default greyed
+     * a save writes that default. The editor shows that default greyed
      * (`ForecastDefaults.lines`, keyed by `group`).
      *
-     * ONE PER RULE: every line of one `group` that names a counter must name
-     * the same one, or the file cannot be written. `withCounter` keeps that
-     * true by moving a line whose counter differs into a rule of its own.
+     * ONE PER RULE: it is the block's amountless posting, so the editor sets it
+     * on every line of the `group` at once (plan 31 C2).
      */
     counter: string | null;
     /** `asset` rows only: the gains account; `null` is `equity:unrealized gains`. */
     gains: string | null;
     source: LineSource;
-    /**
-     * The section the table is HOLDING this row in, or absent for "wherever its
-     * account type says".
-     *
-     * UI-ONLY, like `ScenarioPeriod`'s `simple`/`from`/`to`: `scenarioToWire`
-     * names its fields one by one and this is not among them, so it never
-     * reaches the engine and a file round trip never carries it.
-     *
-     * It exists because a row's section USED to be re-derived from the account
-     * text on every keystroke, and a half-typed account is not revenue — so a
-     * row added under Income jumped to Expenses on the first letter and back on
-     * the last, losing focus each time because the two sections are two
-     * different `{#each}` blocks. See `ProjectionsTable.svelte`'s header for the
-     * rule this field enforces, and plan 22, amendment 37.
-     */
-    section?: HeldSection;
     /**
      * The MAGNITUDE the user typed, once this line has been edited (plan 26 B6).
      *
@@ -250,6 +220,12 @@ export interface LayoutItem {
     disabled: boolean;
     /** The comment attached directly above the entry, exactly as the file states it (prefixes, `\n` ends); `""` for none. */
     attached: string;
+    /**
+     * UI-only: the attached comment as EDITED here, display text without `; `
+     * prefixes. Present, it is sent as `attachedText` in place of `attached`,
+     * and the engine writes it `; ` + line.
+     */
+    attachedText?: string;
     /** The piece's exact text, attached comment included, `\n` line ends: what a save writes while it is unchanged. `""` for a new entry. */
     raw: string;
 }
@@ -266,6 +242,11 @@ export interface ScenarioComment {
     raw: string;
     /** The display form: prefixes stripped, a section's divider lines dropped; a `block` verbatim. Derived. */
     text: string;
+    /**
+     * UI-only: `text` or `style` was edited (or the comment added) here, so a
+     * save sends the text for the engine to render, with `raw` as `previous`.
+     */
+    edited?: boolean;
 }
 
 /** File text the scenario carries but does not model (`account`, `commodity`, transactions …). Read-only. */
@@ -294,10 +275,9 @@ export interface Scenario {
      */
     accountTypes?: Readonly<Record<string, AccountType>>;
     /**
-     * The file's pieces, top to bottom (plan 31 C8). The engine always sends a
-     * complete one (a seed's is derived). Not sent back yet: until the list
-     * editor (plan 31 C3) a save lets the engine derive it, which keeps every
-     * comment, disabled entry and piece of file text where it is.
+     * The file's pieces, top to bottom (plan 31 C8): the list editor's order.
+     * The engine always sends a complete one (a seed's is derived), and every
+     * save and run sends it back (`scenarioToWire`).
      */
     layout: LayoutItem[];
     /** The free-standing comment pieces, in file order. */

@@ -23,7 +23,8 @@
     // in exactly three places, and nowhere else:
     //
     //   load  → `fileStore.open`   → `scenarioStore.adopt`
-    //   save  → `fileStore.save`   → `scenarioStore.markSaved`
+    //   save  → `fileStore.save`   → `scenarioStore.adopt` of the echo, or
+    //                                `markSaved` if an edit landed meanwhile
     //   seed  → `scenarioStore.ensureSeeded`, which declines over `dirty` work
     //
     // On first mount the tab reopens whatever was last loaded
@@ -39,9 +40,10 @@
     import {assetRowsByGroup} from "#lib/projections/projectionView.js";
     import {sameProjectionQuery, scenarioStore, scenarioTableView, type ProjectionWindow} from "#lib/projections/scenarioStore.svelte.js";
     import ProjectionReports from "#lib/projections/ui/ProjectionReports.svelte";
-    import ProjectionsTable from "#lib/projections/ui/ProjectionsTable.svelte";
+    import ScenarioList from "#lib/projections/ui/list/ScenarioList.svelte";
     import SaveScenarioDialog from "#lib/projections/ui/SaveScenarioDialog.svelte";
     import ScenarioFileBar from "#lib/projections/ui/ScenarioFileBar.svelte";
+    import type {ScenarioFile} from "#lib/projections/types.js";
     import {bucketStart, today} from "#lib/reports/periods.js";
     import {MAX_COUNT} from "#lib/reports/ui/params.js";
     import {dataView} from "#lib/stores/loadState.js";
@@ -199,15 +201,28 @@
         if (url !== null) void openFile(url, id);
     }
 
+    /**
+     * After a successful write: adopt the engine's echo when nothing was edited
+     * while the request was in flight (plan 31 C10), else just mark it saved.
+     *
+     * Adopting makes every layout origin and key fresh — a new rule's
+     * `group-1` becomes the file's `rule:K` — so the next save claims each
+     * piece by its own origin. With an edit in flight the echo would discard
+     * it, so the scenario on screen is kept and only `dirty` clears; the
+     * engine's content-checked claims (C9) keep that next save byte-faithful.
+     */
+    function saved(file: ScenarioFile, revisionAtSave: number): void {
+        if (scenarioStore.revision === revisionAtSave) scenarioStore.adopt(file.scenario);
+        else scenarioStore.markSaved();
+    }
+
     async function saveOver(): Promise<void> {
         const url = settings.serverUrl;
         if (url === null) return;
+        const revisionAtSave = scenarioStore.revision;
         const outcome = await fileStore.save(url, scenarioStore.scenario);
         if (outcome.ok) {
-            // `markSaved` rather than `adopt`: the scenario on screen is the one
-            // that was written, and re-adopting the engine's echo of it would
-            // discard a keystroke the user made while the request was in flight.
-            scenarioStore.markSaved();
+            saved(outcome.file, revisionAtSave);
             fileError = null;
             diskNotice = null;
         } else {
@@ -221,11 +236,11 @@
         // The NAME is part of the scenario, and the file is named after it — so
         // it is set before the write rather than afterwards, or the file would
         // carry a `; projection:` line the picker does not show.
-        scenarioStore.scenario.name = name;
-        scenarioStore.touch();
+        scenarioStore.commit({...scenarioStore.scenario, name});
+        const revisionAtSave = scenarioStore.revision;
         const outcome = await fileStore.saveAs(url, id, scenarioStore.scenario);
         if (outcome.ok) {
-            scenarioStore.markSaved();
+            saved(outcome.file, revisionAtSave);
             saveAsOpen = false;
             fileError = null;
             diskNotice = null;
@@ -428,11 +443,11 @@
         loadingLabel="Loading a starting scenario"
         onRetry={retrySeed}
     >
-        <!-- Implicit children: the table renders the STORE's scenario, not the
+        <!-- Implicit children: the list renders the STORE's scenario, not the
              seed payload. The seed is adopted once, cloned into `$state`, and
              then edited — so the held payload is the thing that gates this
              section, never the thing it draws. -->
-        <ProjectionsTable
+        <ScenarioList
             scenario={scenarioStore.scenario}
             accountNames={journal.accountNames}
             {declared}
@@ -441,7 +456,10 @@
             {assetBalances}
             defaults={forecastDefaults}
             {styles}
-            onChange={() => scenarioStore.touch()}
+            seeded={scenarioStore.seedDepth !== null && fileStore.currentId === null}
+            readOnly={fileStore.currentId !== null && !fileStore.canSave}
+            bind:filter={params.show}
+            onCommit={(next) => scenarioStore.commit(next)}
         />
     </AsyncSection>
 

@@ -430,6 +430,24 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         );
     });
 
+    // Plan 31 C3: every run and save now carries the list's layout, and the
+    // list writes NEW comment pieces as text for the engine to render.
+    it("a run carries the served layout back, and a new section heading renders in the house style", async () => {
+        const api = new LedgelineApi(url);
+        const file = decodeScenarioFile(await api.getProjection("asset-growth-scenario.journal"));
+        const window = {interval: "monthly", count: 3, lookback: 0, depth: 2};
+        const run = decodeProjection(await api.runProjection(runBody(cloneScenario(file.scenario), window)));
+        expect(run.buckets).toHaveLength(3);
+
+        const heading = {
+            ...emptyScenario(),
+            comments: [{key: "comment-1", style: "section" as const, raw: "", text: "Capital", edited: true}],
+            layout: [{kind: "comment" as const, key: "comment-1", origin: null, disabled: false, attached: "", raw: ""}],
+        };
+        const text = decodeRenderedEntry(await api.renderProjectionEntry(renderBody(heading, "comment-1"))).text;
+        expect(text).toBe(`${";".repeat(22)}\n;; Capital\n`);
+    });
+
     it("journal info falls back to the fixture folder's name", async () => {
         const info = decodeJournalInfo(await new LedgelineApi(url).journalInfo());
         expect({title: info.title, file: info.file}).toEqual({title: "fixtures", file: "sample.journal"});
