@@ -55,6 +55,10 @@
 
     let params = $state<ProjectionParams>(defaultProjectionParams());
     let restored = $state(false);
+    // The Accounts tab's chosen accounts and closed rows. Held here, not in
+    // ProjectionReports: AsyncSection unmounts it on every re-run.
+    let accountFilter = $state<ReadonlySet<string>>(new Set());
+    let accountsCollapsed = $state<ReadonlySet<string>>(new Set());
 
     onMount(() => {
         if (window.location.search !== "") Object.assign(params, searchToProjectionParams(window.location.search, defaultProjectionParams()));
@@ -550,6 +554,8 @@
                     <ProjectionReports
                         bind:tab={params.tab}
                         bind:emptyAccounts={params.empty}
+                        bind:accountFilter
+                        bind:accountsCollapsed
                         projection={held}
                         interval={params.interval}
                         {styles}

@@ -323,6 +323,39 @@ describe("COMPONENT ProjectionReports — accounts", () => {
         expect(checkbox.checked).toBe(true);
     });
 
+    it("collapses and expands a parent's rows, one at a time and all at once", async () => {
+        mount("accounts", projection({accounts: accountsFixture()}));
+        const expenses = () => screen.getByRole("button", {name: /expenses/});
+        expect(expenses().getAttribute("aria-expanded")).toBe("true");
+        await fireEvent.click(expenses());
+        expect(expenses().getAttribute("aria-expanded")).toBe("false");
+        expect(rowsOf()).toContain("expenses");
+        expect(rowsOf()).not.toContain("expenses:rent");
+        // The section total still counts what is folded away.
+        const total = screen.getAllByTestId("account-section-total")[2]!;
+        expect(total.querySelector('[data-column="summary"]')?.textContent?.trim()).toBe("$16,800.00");
+        await fireEvent.click(screen.getByTestId("accounts-expand-all"));
+        expect(rowsOf()).toContain("expenses:rent");
+        await fireEvent.click(screen.getByTestId("accounts-collapse-all"));
+        expect(rowsOf()).not.toContain("expenses:shopping");
+    });
+
+    it("narrows to the accounts chosen in the dropdown, totals and all", async () => {
+        mount("accounts", projection({accounts: accountsFixture()}));
+        // Through the <details>, as FilterBar's test does: jsdom does not toggle it on a <summary> click.
+        const details = screen.getByLabelText("Search accounts").closest("details") as HTMLDetailsElement;
+        details.open = true;
+        details.dispatchEvent(new Event("toggle"));
+        await tick();
+        await fireEvent.click(screen.getByRole("checkbox", {name: "rent"}));
+        expect(rowsOf()).toEqual(["expenses:rent"]);
+        const sections = [...screen.getByTestId("accounts-table").querySelectorAll('[data-testid="account-section"]')];
+        expect(sections.map((s) => s.getAttribute("data-section"))).toEqual(["expenses"]);
+        const total = screen.getByTestId("account-section-total");
+        expect(total.querySelector("th")?.textContent?.trim()).toBe("Total selected expenses");
+        expect(total.querySelector('[data-column="summary"]')?.textContent?.trim()).toBe("$16,800.00");
+    });
+
     it("says it is reading while a projection held from another tab has no accounts yet", () => {
         mount("accounts");
         expect(screen.getByTestId("projection-accounts-pending")).toBeDefined();

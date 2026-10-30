@@ -41,11 +41,15 @@
     import {balanceNumbers, chartCommodity, otherCommodities, runwayStatement} from "../projectionView";
     import type {Projection} from "../types";
     import ForecastJournalView from "./ForecastJournalView.svelte";
+    import AccountReportControls from "#lib/reports/ui/AccountReportControls.svelte";
     import AccountReportView from "#lib/reports/ui/AccountReportView.svelte";
+    import {filterAccountReport} from "#lib/reports/ui/accountReportRows.js";
 
     let {
         tab = $bindable(),
         emptyAccounts = $bindable(false),
+        accountFilter = $bindable(new Set()),
+        accountsCollapsed = $bindable(new Set()),
         projection,
         interval,
         styles,
@@ -55,6 +59,9 @@
         tab: ProjectionTab;
         /** The Accounts tab: whether accounts with nothing in any column are rows too. */
         emptyAccounts?: boolean;
+        /** The Accounts tab: the chosen accounts (subtree roots; empty for all), and the rows closed. Held by the page, which outlives a re-run. */
+        accountFilter?: ReadonlySet<string>;
+        accountsCollapsed?: ReadonlySet<string>;
         projection: Projection;
         /** The interval the buckets were built on — the noun the runway sentence counts in. */
         interval: PeriodInterval;
@@ -80,19 +87,26 @@
     const statement = $derived(runwayStatement(projection, interval, commodity, format));
     const unchartedCommodities = $derived(otherCommodities(projection, commodity));
 
+    /** The Accounts tab's report narrowed to the chosen accounts: what the table shows and the download holds. */
+    const accounts = $derived(projection.accounts === null ? null : filterAccountReport(projection.accounts, accountFilter));
+
     let strip: HTMLDivElement | undefined = $state();
 
     /** The Journal tab's search, held here so the download matches the list. */
     let journalQuery = $state("");
     /** The open reading's download; null while it is not on hand (Accounts/Journal before their run). */
     const download = $derived(
-        projectionExport(tab, projection, {
-            scenarioName,
-            runwaySentence: [statement.headline, statement.detail].filter((part) => part !== null).join(" "),
-            base: projection.balanceSheet.base ?? commodity,
-            journalQuery,
-            styleOf: (symbol) => styleOf(styles, symbol),
-        })
+        projectionExport(
+            tab,
+            {...projection, accounts},
+            {
+                scenarioName,
+                runwaySentence: [statement.headline, statement.detail].filter((part) => part !== null).join(" "),
+                base: projection.balanceSheet.base ?? commodity,
+                journalQuery,
+                styleOf: (symbol) => styleOf(styles, symbol),
+            }
+        )
     );
 
     /**
@@ -192,16 +206,17 @@
         </div>
     {:else if tab === "accounts"}
         <div class="flex flex-col gap-3" data-testid="projection-accounts">
-            <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
-                <label class="label cursor-pointer gap-2 text-sm">
-                    <input type="checkbox" class="checkbox checkbox-sm" bind:checked={emptyAccounts} />
-                    Show empty accounts
-                </label>
-            </div>
-            {#if projection.accounts === null}
+            <AccountReportControls report={projection.accounts} bind:selected={accountFilter} bind:empty={emptyAccounts} />
+            {#if accounts === null}
                 <p class="text-sm text-base-content/60" role="status" data-testid="projection-accounts-pending">Reading every account…</p>
             {:else}
-                <AccountReportView report={projection.accounts} {styles} projectedFrom={projection.projectedFrom} />
+                <AccountReportView
+                    report={accounts}
+                    {styles}
+                    projectedFrom={projection.projectedFrom}
+                    bind:collapsed={accountsCollapsed}
+                    filtered={accountFilter.size > 0}
+                />
             {/if}
         </div>
     {:else}

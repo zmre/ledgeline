@@ -227,6 +227,10 @@ scenario books to. They show as zero rows, which is how to see what the
 projection leaves out. This is `-E --declared`, plus any undeclared account
 your journal used outside these periods, which hledger leaves out.
 
+The **Accounts** dropdown narrows the table to the accounts you tick, and the
+arrow on a parent row folds its accounts away, as on the [Accounts tab on
+Reports](../reports/accounts.md#controls).
+
 The same report, over your recorded transactions only, is the
 [Accounts tab on Reports](../reports/accounts.md).
 

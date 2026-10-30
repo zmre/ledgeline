@@ -37,6 +37,19 @@ tree up; it never changes a section's totals. **Show empty accounts** adds every
 account the journal declares or has ever posted to, as zero rows where nothing
 moved.
 
+The **Accounts** dropdown narrows the table to the accounts you tick. It's the
+same picker as the journal's filter, with a search box at the top. Ticking an
+account keeps it and everything under it, so ticking `expenses:food` keeps
+groceries and restaurants. Sections with nothing ticked drop out, and each
+total becomes **Total selected …**, summed over the ticked accounts alone. The
+export holds what the table shows.
+
+Any row with accounts under it has an arrow. Click the arrow to fold those
+rows away, and click it again to bring them back. **Collapse all** and
+**Expand all** do every row at once. A folded row still shows its full total.
+What you fold and what you tick both stay put when you change the dates or the
+depth.
+
 ## The hledger commands
 
 The asset and liability columns are `hledger balance -H -M` (each period's
