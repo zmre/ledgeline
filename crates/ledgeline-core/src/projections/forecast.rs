@@ -1178,12 +1178,14 @@ fn before(a: &str, b: &str) -> bool {
 /// One group's postings for one date, before it is closed into a transaction.
 #[derive(Default)]
 struct DatedLegs {
-    /// The description and period the transaction is labelled with.
+    /// The description, period and header comment the transaction is
+    /// labelled with.
     description: String,
     period: String,
-    /// Postings in the order they were placed: the lines', then the explicit
-    /// counters'.
-    postings: Vec<(String, MixedAmount, AmountStyle)>,
+    comment: String,
+    /// Postings in the order they were placed, each with its own comment: the
+    /// lines', then the explicit counters'.
+    postings: Vec<(String, MixedAmount, AmountStyle, String)>,
     /// Explicit counter-account → the amount it takes.
     counters: BTreeMap<String, MixedAmount>,
     /// The sum of the counter-less postings: the legacy residual.
@@ -1328,11 +1330,13 @@ impl<'a> Expansion<'a> {
         if legs.postings.is_empty() {
             legs.description = description_of(&line.note);
             legs.period = line.period.raw.clone();
+            legs.comment = line.rule_comment.clone();
         }
         legs.postings.push((
             line.account.0.clone(),
             amount.clone(),
             line.amount.style.clone(),
+            line.comment.clone(),
         ));
         match &line.counter {
             Some(counter) => legs
@@ -1359,7 +1363,9 @@ impl<'a> Expansion<'a> {
                 let mut postings: Vec<Posting> = legs
                     .postings
                     .iter()
-                    .flat_map(|(account, amount, style)| posting(account, amount, style))
+                    .flat_map(|(account, amount, style, comment)| {
+                        posting(account, amount, style).map(|posting| commented(posting, comment))
+                    })
                     .collect();
                 for (counter, amount) in &legs.counters {
                     postings.extend(posting(counter, amount, &plain_style()));
@@ -1375,8 +1381,13 @@ impl<'a> Expansion<'a> {
                     );
                     postings.extend(posting(&counter.0, &residual.ma_neg()?, &plain_style()));
                 }
-                self.txns
-                    .push(generated(&date, &legs.description, &legs.period, postings));
+                self.txns.push(generated(
+                    &date,
+                    &legs.description,
+                    &legs.period,
+                    &legs.comment,
+                    postings,
+                ));
                 self.origins.push(ForecastOrigin::Rule(group.clone()));
             }
         }
@@ -1391,16 +1402,20 @@ impl<'a> Expansion<'a> {
         }
         let mut sum = MixedAmount::new();
         let mut postings = Vec::new();
-        for item in &event.postings {
+        for (index, item) in event.postings.iter().enumerate() {
             for amount in &item.amounts {
                 self.commodities.insert(amount.commodity.clone());
                 sum.accumulate(&amount.commodity, amount.quantity)?;
             }
             if !item.amounts.is_empty() {
-                postings.push(Posting {
-                    ptype: PostingType::Regular,
-                    ..item.clone()
-                });
+                let comment = event.posting_comments.get(index).map_or("", String::as_str);
+                postings.push(commented(
+                    Posting {
+                        ptype: PostingType::Regular,
+                        ..item.clone()
+                    },
+                    comment,
+                ));
             }
         }
         sum.drop_zeros();
@@ -1418,6 +1433,7 @@ impl<'a> Expansion<'a> {
             &event.date,
             &description_of(&event.description),
             &event.date,
+            &event.comment,
             postings,
         ));
         self.origins.push(ForecastOrigin::Event(event.id.clone()));
@@ -1653,7 +1669,7 @@ impl<'a> Expansion<'a> {
             .chain(posting(gains, &negated, style))
             .collect();
         self.txns
-            .push(generated(date, description, "growth", postings));
+            .push(generated(date, description, "growth", "", postings));
         self.origins.push(ForecastOrigin::Growth(group.to_string()));
     }
 
@@ -1746,8 +1762,16 @@ fn description_of(note: &str) -> String {
     }
 }
 
-/// A generated transaction, marked as hledger marks its own.
-fn generated(date: &str, description: &str, period: &str, postings: Vec<Posting>) -> Transaction {
+/// A generated transaction, marked as hledger marks its own, carrying the
+/// tags of its `~` block's header `comment` as hledger's forecast does — so a
+/// scenario's `=` rule can match them.
+fn generated(
+    date: &str,
+    description: &str,
+    period: &str,
+    comment: &str,
+    postings: Vec<Posting>,
+) -> Transaction {
     let marker = format!("~ {period}");
     let pos = SourcePos { line: 0, column: 0 };
     Transaction {
@@ -1759,14 +1783,34 @@ fn generated(date: &str, description: &str, period: &str, postings: Vec<Posting>
         description: description.to_string(),
         comment: format!("{GENERATED_TAG}: {marker}"),
         preceding_comment: String::new(),
-        tags: vec![
-            (GENERATED_TAG.to_string(), marker.clone()),
-            (HIDDEN_GENERATED_TAG.to_string(), marker),
-        ],
+        tags: comment_tags(comment)
+            .into_iter()
+            .chain([
+                (GENERATED_TAG.to_string(), marker.clone()),
+                (HIDDEN_GENERATED_TAG.to_string(), marker),
+            ])
+            .collect(),
         postings,
         source_span: (pos, pos),
         source_file: PathBuf::new(),
     }
+}
+
+/// `posting` carrying a `~` posting's `comment` (as the model holds it: one
+/// line per comment line) and the tags it states, as hledger's forecast copies
+/// them onto every posting it generates — what a scenario's `= tag:vendor=…`
+/// rule matches on.
+fn commented(posting: Posting, comment: &str) -> Posting {
+    Posting {
+        comment: comment.lines().map(|line| format!("{line}\n")).collect(),
+        tags: comment_tags(comment),
+        ..posting
+    }
+}
+
+/// The tags a model comment states, each line read by the parser's own rule.
+fn comment_tags(comment: &str) -> Vec<(String, String)> {
+    comment.lines().flat_map(crate::parse::parse_tags).collect()
 }
 
 /// What a scenario's `=` rules need said about them: one that can never fire,
@@ -2973,5 +3017,86 @@ mod tests {
         let forecast = expand_over(&scenario(vec![odd], Vec::new()), &journal(), &[], 2);
         assert!(forecast.txns.is_empty());
         assert_eq!(forecast.warnings.len(), 1);
+    }
+
+    /// A scenario's `=` rule matching on a tag the `~` block states — on a
+    /// posting, on the block's header, or on a one-off's posting — fires, as
+    /// `hledger print --auto --forecast` fires it (the user's own file,
+    /// verified 2026-10-30). The forecast used to drop every comment.
+    #[test]
+    fn a_rule_matches_the_tags_a_scenario_posting_or_header_states() {
+        let rule = |query: &str| {
+            format!(
+                "= {query} amt:<0 tag:_generated-transaction  ; Stripe Fee\n\
+                 \x20   expenses:ga:bank-service-charges   $2.21   ; Stripe flat fee\n\
+                 \x20   assets:mercury:checking           $-2.21\n\
+                 \x20   expenses:ga:bank-service-charges  *-0.0301\n\
+                 \x20   assets:mercury:checking            *0.0301\n\n"
+            )
+        };
+        let fee = |sale: &str, cents: i128, fee: i128| {
+            vec![
+                (sale.to_string(), -cents),
+                ("expenses:ga:bank-service-charges".to_string(), 221),
+                ("assets:mercury:checking".to_string(), -221),
+                ("expenses:ga:bank-service-charges".to_string(), fee),
+                ("assets:mercury:checking".to_string(), -fee),
+                ("assets:mercury:checking".to_string(), cents),
+            ]
+        };
+        let forecast_of = |text: String| {
+            let scenario = crate::projections::serialize::scenario_from_text(
+                &text,
+                "s.journal",
+                "s",
+                &BTreeMap::new(),
+            )
+            .expect("it reads");
+            expand_over(&scenario, &journal(), &[], 2)
+        };
+        let monthly = "~ monthly from 2026-10-01  Some company\n\
+                       \x20   revenue:sales:monthly    $-5555  ; vendor: Stripe\n\
+                       \x20   assets:mercury:checking\n";
+        for query in [
+            "^(assets:accounts-receivable|revenue:sales) tag:vendor=Stripe",
+            "acct:^(assets:accounts-receivable|revenue:sales) tag:vendor=Stripe",
+        ] {
+            let forecast = forecast_of(rule(query) + monthly);
+            assert_eq!(forecast.txns.len(), 2, "{query}");
+            for txn in &forecast.txns {
+                assert_eq!(
+                    legs(txn),
+                    fee("revenue:sales:monthly", 555_500, 16_721),
+                    "{query}"
+                );
+            }
+            assert!(
+                forecast.warnings.is_empty(),
+                "{query}: {:?}",
+                forecast.warnings
+            );
+        }
+
+        let header = "~ monthly from 2026-10-01  Some company  ; vendor: Stripe\n\
+                      \x20   revenue:sales:monthly    $-5555\n\
+                      \x20   assets:mercury:checking\n";
+        let forecast = forecast_of(rule("revenue:sales tag:vendor=Stripe") + header);
+        assert_eq!(
+            legs(&forecast.txns[0]),
+            fee("revenue:sales:monthly", 555_500, 16_721)
+        );
+
+        let one_off = "~ 2026-11-15  Big deal\n\
+                       \x20   revenue:sales    $-10000  ; vendor: Stripe\n\
+                       \x20   assets:mercury:checking\n";
+        let forecast = forecast_of(rule("revenue:sales tag:vendor=Stripe") + one_off);
+        assert_eq!(
+            legs(&forecast.txns[0]),
+            fee("revenue:sales", 1_000_000, 30_100)
+        );
+
+        let untagged = monthly.replace("  ; vendor: Stripe", "");
+        let forecast = forecast_of(rule("revenue:sales tag:vendor=Stripe") + &untagged);
+        assert_eq!(forecast.txns[0].postings.len(), 2, "no tag, no fee");
     }
 }
