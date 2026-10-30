@@ -118,6 +118,7 @@ use crate::model::{
 use crate::parse::{self, ParseError};
 use crate::periodic::{MAX_ACCOUNT_BYTES, MAX_DESCRIPTION_BYTES};
 use crate::projections::discovery::parse_header;
+use crate::projections::forecast::{event_balances, lines_balance};
 use crate::projections::layout::{self, Confirmed, RawKind};
 use crate::projections::{
     CommentStyle, DEFAULT_GAINS_ACCOUNT, FixedPiece, Growth, GrowthUnit, ItemKind, LayoutItem,
@@ -1601,6 +1602,16 @@ impl ProjectionDoc {
                 let description = lines.first().map_or("", |line| line.note.as_str());
                 let comment = lines.first().map_or("", |line| line.rule_comment.as_str());
                 let counter = block_counter(lines)?;
+                // A counter-less group that balances on its own (a transfer
+                // stating both legs) is an ordinary balanced transaction, and
+                // is written as one. Only an UNBALANCED counter-less group is
+                // the legacy virtual form; writing a balanced one in
+                // parentheses would take it out of hledger's balancing and
+                // out of `-R` reports. An all-zero group (an asset row that only
+                // compounds) states no transfer and keeps the form it had.
+                let states_a_transfer = lines_balance(lines)
+                    && lines.iter().any(|line| !line.amount.quantity.is_zero());
+                let plain_transfer = counter.is_none() && states_a_transfer;
                 let mut rows = lines
                     .iter()
                     .enumerate()
@@ -1610,9 +1621,10 @@ impl ProjectionDoc {
                             amount: Some(&line.amount),
                             tags: line_tags(tags.of(key, at, line), line)?,
                             // A line with a counter is a REGULAR posting the
-                            // amountless one balances; one without is the
+                            // amountless one balances, and so is a line of a
+                            // group that balances itself; the rest are the
                             // legacy virtual form, outside balancing.
-                            virtual_: line.counter.is_none(),
+                            virtual_: !plain_transfer && line.counter.is_none(),
                             comment: comment_lines(&line.comment, "a posting's comment")?,
                         })
                     })
@@ -1623,6 +1635,14 @@ impl ProjectionDoc {
                 (period, description, comment, rows)
             }
             Chunk::Event(event) => {
+                // As for a rule: a one-off whose stated legs balance is a
+                // plain transaction, not the legacy virtual form.
+                let event_states_a_transfer = event_balances(event)
+                    && event
+                        .postings
+                        .iter()
+                        .flat_map(|posting| &posting.amounts)
+                        .any(|amount| !amount.quantity.is_zero());
                 let mut rows = Vec::new();
                 for (index, posting) in event.postings.iter().enumerate() {
                     for (at, amount) in posting.amounts.iter().enumerate() {
@@ -1637,7 +1657,7 @@ impl ProjectionDoc {
                             // An event's postings carry no `line:` — the event
                             // IS the row, and its id is its block's index.
                             tags: String::new(),
-                            virtual_: event.counter.is_none(),
+                            virtual_: event.counter.is_none() && !event_states_a_transfer,
                             comment: comment_lines(comment, "a posting's comment")?,
                         });
                     }
@@ -4812,6 +4832,33 @@ account equity:unrealized gains  ; type: E
         let reread = read(&text);
         assert_eq!(reread.lines[0].counter, scenario.lines[0].counter);
         assert_eq!(reread.lines[1].counter, None);
+    }
+
+    /// A rule (or one-off) that states every leg and balances names no counter,
+    /// and an EDIT of it must still write plain postings: parentheses would
+    /// make a capex transfer virtual, out of hledger's balancing and out of
+    /// `-R` reports, with nothing on screen to say so.
+    #[test]
+    fn an_edited_balanced_rule_without_a_counter_stays_regular() {
+        let file = "~ every 6 months  computers\n    assets:checking         $-3000.00\n    assets:fixed:computers   $3000.00\n\n\
+                    ~ 2027-03-01  move\n    assets:checking   $-500.00\n    assets:savings     $500.00\n";
+        let mut scenario = read(file);
+        assert!(scenario.lines.iter().all(|line| line.counter.is_none()));
+        scenario.lines[0].amount.quantity = Dec::new(-350_000, 2);
+        scenario.lines[1].amount.quantity = Dec::new(350_000, 2);
+        scenario.events[0].description = "transfer".to_string();
+        let doc = ProjectionDoc::parse(file, "p.journal", &declared()).unwrap();
+        let text = write_scenario(&doc, &scenario, "p.journal").expect("it writes");
+        assert!(!text.contains('('), "{text}");
+        assert!(
+            text.lines()
+                .any(|line| line.trim_start().starts_with("assets:checking")
+                    && line.ends_with("$-3500.00")),
+            "{text}"
+        );
+        assert!(text.contains("~ 2027-03-01  transfer"), "{text}");
+        let reread = read(&text);
+        assert!(reread.lines.iter().all(|line| line.counter.is_none()));
     }
 
     /// One rule cannot carry two counter-accounts — hledger infers only one

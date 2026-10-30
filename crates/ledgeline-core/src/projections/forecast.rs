@@ -350,7 +350,7 @@ fn sums_to_zero<'a>(amounts: impl IntoIterator<Item = (&'a Commodity, Dec)>) -> 
 /// Whether counter-less `lines` (one group's) balance on their own: their base
 /// amounts sum to zero, as a rule that states its own cash leg does. Such a
 /// group needs no counter-account, so it has no default and no upgrade.
-fn lines_balance(lines: &[&ScenarioLine]) -> bool {
+pub(crate) fn lines_balance(lines: &[&ScenarioLine]) -> bool {
     sums_to_zero(
         lines
             .iter()
@@ -359,7 +359,7 @@ fn lines_balance(lines: &[&ScenarioLine]) -> bool {
 }
 
 /// Whether `event`'s stated amounts balance on their own (see [`lines_balance`]).
-fn event_balances(event: &ScenarioEvent) -> bool {
+pub(crate) fn event_balances(event: &ScenarioEvent) -> bool {
     sums_to_zero(
         event
             .postings
