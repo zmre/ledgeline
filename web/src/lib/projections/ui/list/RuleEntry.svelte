@@ -7,7 +7,8 @@
 
      Every posting carries its account's TYPE badge, the counter-account's
      included, so a rule reads as what it touches (a deferred-revenue rule is
-     income and a liability). Amounts are signed as the file holds them and
+     income and a liability). Amounts are signed as the file holds them (a minus in the plain text
+     colour: it is a direction, not a warning) and
      right-aligned in one column down the list; growth is a chip; an asset
      posting says where its balance comes from (the journal's figure, or an
      override) and where its gains go. The counter-account is the last line,
@@ -104,9 +105,10 @@
             {#each entry.lines as line (line.id)}
                 {@const asset = line.role === "asset"}
                 {@const journal = asset ? journalBalanceFor(assetBalances, entry.key, line.account, line.amount.commodity) : null}
-                {@const amount = lineAmountText(line, declared, styles)}
+                {@const amount = lineAmountText(line, styles)}
                 <PostingAccount account={line.account} classes={declared} class="text-base-content/90" />
-                <span class={["text-right whitespace-nowrap", amount.startsWith("−") && "text-error"]}>{amount}</span>
+                <!-- Neutral, minus or not: a minus is a direction here, not a warning. -->
+                <span class="text-right whitespace-nowrap" data-testid="entry-amount">{amount}</span>
                 <span class="flex min-w-0 flex-wrap items-baseline gap-x-2 font-sans text-xs text-base-content/55 {POSTING_NOTES}">
                     {#if line.growth !== null}
                         <span class="rounded bg-base-content/6 px-1 font-mono whitespace-nowrap text-base-content/70">{growthText(line.growth)}</span>

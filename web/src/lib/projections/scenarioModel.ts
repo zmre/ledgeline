@@ -1,4 +1,4 @@
-// Editing a scenario: magnitudes, account types, periods, step split/merge,
+// Editing a scenario: amounts, account types, periods, step split/merge,
 // and the encoder that puts one on the wire.
 //
 // Pure module — no Svelte, no DOM, no clock — so every decision below is tested
@@ -6,16 +6,17 @@
 // `scenarioStore.svelte.ts` is the thin `$state` wrapper that calls into here,
 // and `entries.ts` is the list editor's view of the file's pieces (plan 31).
 //
-// # The sign is the engine's
+// # Amounts are signed as the file writes them
 //
-// A scenario line as the engine sends it carries the JOURNAL's sign:
-// `(income:salary) $-5188.33` is negative, `(expenses:rent) $4200` positive. The
-// editor takes MAGNITUDES, the way the budget editor does for goals — a user
-// typing an income line types what they earn. An edited line keeps what was
-// typed as its `entry` and sends it as such; the ENGINE signs it by the
-// account's resolved type (`account_types::signed_entry`, plan 26 B6). The list
-// PREVIEWS that sign (`signedAmount`) so a card reads like the file; it never
-// sends one.
+// A scenario line carries the JOURNAL's sign, from the engine and from the
+// editor alike: `(income:salary) $-5188.33` is negative, `(expenses:rent)
+// $4200` positive, and a capex rule is `assets:checking $-3000` against
+// `assets:fixed:computers $3000`. The list shows that figure and the dialog
+// takes it, minus and all (Patrick's 2026-10-29 decision, plan 31 amendment
+// C3-29), so what is typed is what the file holds and the engine writes it
+// unchanged. Nothing here signs by account type: an account change keeps the
+// amount's sign, and two asset postings that move money between them can be
+// typed at all, which a type-signed magnitude could not express.
 //
 // # Account types: the journal's, with the scenario file's on top
 //
@@ -25,10 +26,9 @@
 // declares winning over the journal's (`scenario_account_types`), so the
 // list does too: [`scenarioClasses`].
 
-import {encodeDec} from "#lib/api/editMapping.js";
+import {encodeDec, parseAmountInput} from "#lib/api/editMapping.js";
 import type {RenderProjectionBody, RunProjectionBody, WireCommentIn, WireLayoutItemIn, WireScenarioIn} from "#lib/api/native.js";
-import {absDec} from "#lib/format/amounts.js";
-import {add, cmp, isZero, neg, type Dec} from "#lib/domain/money.js";
+import {add, cmp, isZero, type Dec} from "#lib/domain/money.js";
 import {blankRuleForm, cloneRuleForm, ruleFormComplete, ruleFormToWire, type AutoRuleForm, type RuleAmount} from "#lib/autoRules/ruleForm.js";
 import {isAccountType, type AccountClasses, type AccountType} from "#lib/domain/accountClass.js";
 import type {ISODate} from "#lib/domain/types.js";
@@ -64,27 +64,22 @@ export function isIsoDate(value: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Magnitudes
+// Amounts
 // ---------------------------------------------------------------------------
 
 /**
- * Whether `account` is revenue by the engine's account table — the half of
- * `account_types::signed_entry` that [`signedAmount`] previews.
- *
- * `isAccountType`, not `accountTypeOf(...) === "revenue"`: a declared
- * `type: G` gain is revenue to the engine (hledger's `type:R` query matches one).
+ * A typed amount, or null when it is not a number. A leading `-` or the true
+ * minus `−` the list draws are both a minus, so a figure copied off a card
+ * reads back as itself.
  */
-export function isRevenueAccount(account: string, declared: AccountClasses): boolean {
-    return isAccountType(account, declared, "revenue");
-}
-
-/** The magnitude the table shows: what was typed, else the engine's signed amount's size. */
-export function magnitudeOf(line: ScenarioLine): Dec {
-    return absDec(line.entry ?? line.amount.quantity);
+export function parseSignedInput(raw: string): Dec | null {
+    return parseAmountInput(raw.replace(/\u2212/g, "-"));
 }
 
 /**
- * The line re-entered at `magnitude`, which the engine will sign by account type.
+ * The line at the signed `quantity`, exactly as typed: the file will hold it
+ * as is. The served figure is remembered once (`served`), so a seeded
+ * description can tell it no longer describes the row (`noteIsStale`).
  *
  * The display precision is RAISED to fit the new quantity and never lowered.
  * Raising it is required — an amount whose precision was below its own places
@@ -93,28 +88,12 @@ export function magnitudeOf(line: ScenarioLine): Dec {
  * line's growth onto whole dollars, which is a modelling change made by a
  * cosmetic edit.
  */
-export function withMagnitude(line: ScenarioLine, magnitude: Dec): ScenarioLine {
-    const entry = absDec(magnitude);
-    return {...line, entry, amount: {...line.amount, precision: Math.max(line.amount.precision, entry.p)}};
-}
-
-/** A line with a new account, its magnitude re-entered so the engine re-signs it for the account's type. */
-export function withAccount(line: ScenarioLine, account: string): ScenarioLine {
-    return {...withMagnitude(line, magnitudeOf(line)), account};
-}
-
-/**
- * The signed quantity the file will hold for `line`: the engine's own figure
- * while the line is as it sent it, else the typed magnitude signed as
- * `account_types::signed_entry` signs it (negated for a revenue account).
- *
- * DISPLAY ONLY. The list shows a card the way the file reads; what goes back
- * is still the magnitude (`entry`), which the engine signs.
- */
-export function signedAmount(line: ScenarioLine, declared: AccountClasses): Dec {
-    if (line.entry === undefined) return line.amount.quantity;
-    const magnitude = absDec(line.entry);
-    return isRevenueAccount(line.account, declared) ? neg(magnitude) : magnitude;
+export function withQuantity(line: ScenarioLine, quantity: Dec): ScenarioLine {
+    return {
+        ...line,
+        served: line.served ?? line.amount.quantity,
+        amount: {...line.amount, quantity, precision: Math.max(line.amount.precision, quantity.p)},
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -157,13 +136,12 @@ function sumsToZero(amounts: Iterable<{commodity: string; quantity: Dec}>): bool
 
 /**
  * Whether a rule's postings balance on their own, so it needs no
- * counter-account: their amounts, signed as the file will hold them
- * (`signedAmount`), sum to zero — the engine's `lines_balance`, which leaves
- * such a rule without a default counter. A rule that states both legs (a
- * transfer, a capital purchase) is one.
+ * counter-account: their amounts sum to zero — the engine's `lines_balance`,
+ * which leaves such a rule without a default counter. A rule that states both
+ * legs (a transfer, a capital purchase) is one.
  */
-export function linesBalance(lines: readonly ScenarioLine[], declared: AccountClasses): boolean {
-    return lines.length > 0 && sumsToZero(lines.map((line) => ({commodity: line.amount.commodity, quantity: signedAmount(line, declared)})));
+export function linesBalance(lines: readonly ScenarioLine[]): boolean {
+    return lines.length > 0 && sumsToZero(lines.map((line) => line.amount));
 }
 
 /** Whether a one-off's stated amounts balance on their own: the engine's `event_balances`. */
@@ -323,7 +301,7 @@ export function sectionPrefix(section: AddSection, accountNames: readonly string
  * cent; a SEEDED row takes the engine's precision instead, which is the
  * journal's own. It is a module constant rather than a parameter of the three
  * constructors below because every call site passed exactly this — three
- * parameters threaded through seven calls to say "2" — and `withMagnitude` raises
+ * parameters threaded through seven calls to say "2" — and `withQuantity` raises
  * it the moment a user types a third decimal anyway.
  */
 const NEW_ROW_PRECISION = 2;
@@ -511,8 +489,8 @@ const SEEDED_NOTE_PREFIX = "unbudgeted — average over ";
  * stale note is still a true statement about where the row started.
  */
 export function noteIsStale(line: ScenarioLine): boolean {
-    if (!line.note.startsWith(SEEDED_NOTE_PREFIX) || line.entry === undefined) return false;
-    return cmp(absDec(line.entry), absDec(line.amount.quantity)) !== 0;
+    if (!line.note.startsWith(SEEDED_NOTE_PREFIX) || line.served === undefined) return false;
+    return cmp(line.served, line.amount.quantity) !== 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -579,7 +557,7 @@ export function cloneScenario(scenario: Scenario): Scenario {
             // freezes it: a spread alone would hand the editor a frozen object
             // to write a new quantity into.
             opening: line.opening === null ? null : cloneAmount(line.opening),
-            ...(line.entry === undefined ? {} : {entry: {m: line.entry.m, p: line.entry.p}}),
+            ...(line.served === undefined ? {} : {served: {m: line.served.m, p: line.served.p}}),
         })),
         events: scenario.events.map((event) => ({
             ...event,
@@ -681,8 +659,9 @@ export function scenarioToWire(full: Scenario): WireScenarioIn {
             role: line.role,
             account: line.account,
             amount: {commodity: line.amount.commodity, quantity: encodeDec(line.amount.quantity), precision: line.amount.precision},
-            // Only for an edited line: the engine signs it by account type.
-            ...(line.entry === undefined ? {} : {entry: encodeDec(line.entry)}),
+            // Signed as the file writes it, edited or not: the engine takes
+            // it as is. (The wire's optional `entry`, a magnitude the engine
+            // signs by account type, is never sent: amendment C3-29.)
             period: {raw: line.period.raw},
             growth: line.growth === null ? null : {rate: encodeDec(line.growth.rate), unit: line.growth.unit},
             opening:

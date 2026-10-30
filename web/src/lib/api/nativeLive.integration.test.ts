@@ -16,7 +16,7 @@ import type {MixedAmount} from "#lib/domain/money.js";
 import {partitionShortPositions, shortPositionNote} from "#lib/holdings/ui/view.js";
 import {styleOf} from "#lib/format/amounts.js";
 import {formatTotals} from "#lib/journal/rowModel.js";
-import {activeScenario, blankLine, cloneScenario, emptyScenario, renderBody, runBody, withMagnitude} from "#lib/projections/scenarioModel.js";
+import {activeScenario, blankLine, cloneScenario, emptyScenario, renderBody, runBody, withQuantity} from "#lib/projections/scenarioModel.js";
 import {dec} from "#lib/domain/money.js";
 import {LedgelineApi} from "./native";
 import {
@@ -248,7 +248,7 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
     // pinned here — the tab sends none, so the engine's clock would decide.
     it("a projection run carries the three statements, the cutoff and the defaults", async () => {
         const styles = decodeJournalInfo(await new LedgelineApi(url).journalInfo()).reportStyles;
-        const rent = {...withMagnitude({...blankLine("rent", "$"), account: "expenses:rent"}, dec(420000, 2)), group: "rule:0"};
+        const rent = {...withQuantity({...blankLine("rent", "$"), account: "expenses:rent"}, dec(420000, 2)), group: "rule:0"};
         const body = {
             ...runBody(
                 {name: "", created: null, updated: null, lines: [rent], events: [], cash: null, autoRules: [], layout: [], comments: [], fixed: []},
@@ -414,10 +414,10 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         }
         expect(text).toContain("; growth: 3%/yr, opening: 640000.00");
 
-        // A typed magnitude is signed by the journal's declared types, as a
-        // save signs it: `income:salary` is `type: R`, so it is written negative.
+        // A typed amount is written exactly as typed, minus and all (plan 31
+        // amendment C3-29): nothing re-signs it by the account's type.
         const salary = {
-            ...withMagnitude({...blankLine("salary", "$"), account: "income:salary", counter: "assets:bank:checking"}, dec(500000, 2)),
+            ...withQuantity({...blankLine("salary", "$"), account: "income:salary", counter: "assets:bank:checking"}, dec(-500000, 2)),
             group: "rule:0",
         };
         const signed = decodeRenderedEntry(await api.renderProjectionEntry(renderBody({...emptyScenario(), lines: [salary]}, "rule:0"))).text;

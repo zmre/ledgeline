@@ -2,12 +2,11 @@
 // the file writes it, amounts signed as the file holds them, growth as a chip,
 // an `=` rule as a sentence. Pure, so the wording is tested without a mount.
 
-import type {AccountClasses} from "#lib/domain/accountClass.js";
 import type {Dec} from "#lib/domain/money.js";
 import type {AmountStyle} from "#lib/domain/types.js";
 import {absDec, fmt} from "#lib/format/amounts.js";
 import type {AutoRule, Growth, ScenarioLine} from "./types";
-import {GROWTH_UNIT_ABBREV, percentFromRate, signedAmount} from "./scenarioModel";
+import {GROWTH_UNIT_ABBREV, percentFromRate} from "./scenarioModel";
 import type {AutoRuleFormPosting} from "#lib/autoRules/ruleForm.js";
 
 /** A signed amount in its commodity's display style, with a real minus. */
@@ -16,9 +15,9 @@ export function amountText(commodity: string, quantity: Dec, styles: ReadonlyMap
     return quantity.m < 0n ? `−${text}` : text;
 }
 
-/** A line's amount as the file holds it (the engine's sign, previewed for an edit). */
-export function lineAmountText(line: ScenarioLine, declared: AccountClasses, styles: ReadonlyMap<string, AmountStyle>): string {
-    return amountText(line.amount.commodity, signedAmount(line, declared), styles);
+/** A line's amount as the file holds it: signed as typed, served or edited alike. */
+export function lineAmountText(line: ScenarioLine, styles: ReadonlyMap<string, AmountStyle>): string {
+    return amountText(line.amount.commodity, line.amount.quantity, styles);
 }
 
 /** A decimal as typed, trailing zeros kept as the value states them. */

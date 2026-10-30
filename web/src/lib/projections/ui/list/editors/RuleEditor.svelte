@@ -5,10 +5,11 @@
      counter-account (the block's amountless posting) and the header comment.
      Every line of the block carries these, so each setter writes them all.
 
-     Per posting: the account, the amount as a MAGNITUDE (the engine signs it
-     by the account's type, plan 26 B6 — the preview below shows the sign the
-     file will hold), growth, the asset switch, and for an asset its balance
-     override and gains account, and its own comment. Postings reorder with
+     Per posting: the account, the amount SIGNED as the file writes it (a
+     minus moves money out of the account; plan 31 amendment C3-29 — what is
+     typed is what is saved, and an account change never flips it), growth,
+     the asset switch, and for an asset its contribution (signed the same
+     way), balance override and gains account, and its own comment. Postings reorder with
      ↑/↓. A posting that needs a different counter-account belongs in a rule
      of its own (+ Add, or Duplicate this one).
 
@@ -36,16 +37,14 @@
         linesBalance,
         GROWTH_UNIT_ABBREV,
         isIsoDate,
-        magnitudeOf,
         noteProblem,
         percentFromRate,
         periodWords,
         rateFromPercent,
-        signedAmount,
-        withAccount,
         withBounds,
         withInterval,
-        withMagnitude,
+        parseSignedInput,
+        withQuantity,
     } from "../../../scenarioModel";
     import {GROWTH_UNITS, SCENARIO_INTERVALS, type AssetRow, type ForecastDefaults, type ScenarioLine} from "../../../types";
     import TypeBadge from "../TypeBadge.svelte";
@@ -118,19 +117,12 @@
         setAll({period: {raw, simple: null, base: null, from: null, to: null}});
     }
 
-    function setMagnitude(line: ScenarioLine, raw: string): void {
-        const parsed = parseAmountInput(raw);
+    /** The typed figure, signed as the file will hold it. */
+    function setAmount(line: ScenarioLine, raw: string): void {
+        const parsed = parseSignedInput(raw);
         if (parsed === null) return;
-        const next = withMagnitude(line, parsed);
-        line.entry = next.entry;
-        line.amount = next.amount;
-        onEdit();
-    }
-
-    function commitAccount(line: ScenarioLine): void {
-        // The re-sign: the magnitude re-entered, for the engine to sign by the new account's type.
-        const next = withAccount(line, line.account);
-        line.entry = next.entry;
+        const next = withQuantity(line, parsed);
+        line.served = next.served;
         line.amount = next.amount;
         onEdit();
     }
@@ -166,7 +158,7 @@
 
     /** An empty box is "use the journal's" — the same as the clear button. */
     function setOpening(line: ScenarioLine, raw: string): void {
-        const parsed = parseAmountInput(raw);
+        const parsed = parseSignedInput(raw);
         if (parsed === null) {
             if (raw.trim() === "") clearOpening(line);
             return;
@@ -200,7 +192,6 @@
             role: "flow",
             account: "",
             amount: {commodity: template.amount.commodity, quantity: {m: 0n, p: 2}, precision: 2},
-            entry: {m: 0n, p: 2},
             growth: null,
             opening: null,
             gains: null,
@@ -219,7 +210,7 @@
 
     const growthPercent = (line: ScenarioLine): string => (line.growth === null ? "" : decToInput(percentFromRate(line.growth.rate)));
     /** The postings balance on their own: no counter-account is needed, and none is written unless one is typed. */
-    const balanced = $derived(linesBalance(lines, declared));
+    const balanced = $derived(linesBalance(lines));
     const counterPlaceholder = $derived(balanced ? "none needed" : (defaults?.lines.get(group) ?? cash ?? defaults?.cash ?? "the default cash account"));
 </script>
 
@@ -301,7 +292,9 @@
     <div class="flex flex-col gap-1.5">
         <div class="flex items-baseline justify-between">
             <span class="text-xs font-medium text-base-content/70">Postings</span>
-            <span class="text-xs text-base-content/45">Amounts are per period, as a positive figure; the file's sign follows the account.</span>
+            <span class="text-xs text-base-content/45" data-testid="amount-help"
+                >Amounts per period, as the journal writes them: a minus moves money out of an account.</span
+            >
         </div>
         <ol class="flex flex-col gap-2">
             {#each lines as line, at (line.id)}
@@ -333,18 +326,17 @@
                                 size="sm"
                                 label="Account for {name}"
                                 placeholder="account"
-                                onCommit={() => commitAccount(line)}
+                                onCommit={onEdit}
                             />
                         </div>
-                        <label class="input w-32 input-sm" title="The file will hold {amountText(line.amount.commodity, signedAmount(line, declared), styles)}">
+                        <label class="input w-32 input-sm">
                             <span class="text-base-content/50">{line.amount.commodity}</span>
                             <input
                                 type="text"
-                                inputmode="decimal"
                                 class="text-right font-mono"
-                                value={decToInput(magnitudeOf(line))}
+                                value={decToInput(line.amount.quantity)}
                                 aria-label="{asset ? 'Contribution' : 'Amount'} for {name}"
-                                onchange={(e) => setMagnitude(line, e.currentTarget.value)}
+                                onchange={(e) => setAmount(line, e.currentTarget.value)}
                             />
                         </label>
                         <div class="flex items-center gap-1">

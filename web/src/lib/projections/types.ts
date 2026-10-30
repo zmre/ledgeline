@@ -8,8 +8,8 @@
 //
 //  1. A LINE'S `amount` CARRIES THE JOURNAL'S OWN SIGN. A revenue line is
 //     NEGATIVE (`(income:salary) $-5188.33`) and an expense line is positive,
-//     exactly as the postings are written. The table shows magnitudes; the flip
-//     lives in `scenarioModel.ts` and nowhere else.
+//     exactly as the postings are written. The list shows that figure and
+//     the dialog takes it as is (plan 31 amendment C3-29): nothing re-signs it.
 //  2. The projection's STATEMENTS are the Reports tab's own (plan 28): the
 //     balance sheet, income statement and cash flow statement over the real
 //     journal before the cutoff plus the scenario's generated transactions
@@ -120,9 +120,9 @@ export interface ScenarioLine {
     role: LineRole;
     account: string;
     /**
-     * For a `flow`, signed as the journal writes it — see fact (1) at the top of
-     * this file. For an `asset` row, the per-period CONTRIBUTION, zero when the
-     * balance only compounds.
+     * Signed as the journal writes it — see fact (1) at the top of this file.
+     * For an `asset` row, the per-period CONTRIBUTION (a minus withdraws),
+     * zero when the balance only compounds.
      */
     amount: ScenarioAmount;
     period: ScenarioPeriod;
@@ -149,15 +149,12 @@ export interface ScenarioLine {
     gains: string | null;
     source: LineSource;
     /**
-     * The MAGNITUDE the user typed, once this line has been edited (plan 26 B6).
-     *
-     * Absent on a line as the engine sent it, whose `amount.quantity` carries
-     * the journal's sign. Present after an amount or account edit: it is what the
-     * table shows, and it is sent as the wire's `entry`, which the ENGINE signs by
-     * the account's type — so nothing on this side knows that revenue is written
-     * negative.
+     * The signed quantity the engine served, kept once the amount is edited
+     * (`withQuantity`), so a seeded description can tell it is out of date
+     * (`noteIsStale`). Client-only: never sent. The amount is always signed as
+     * the file writes it (plan 31 amendment C3-29).
      */
-    entry?: Dec;
+    served?: Dec;
     /**
      * The section the ENGINE placed this line in, and the role, account and
      * period it placed it for (`projections::line_section`, plan 26 B6), valid

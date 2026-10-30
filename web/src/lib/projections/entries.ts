@@ -191,7 +191,7 @@ export function entriesOf(full: Scenario, classes: AccountClasses, defaults: For
             case "rule": {
                 const lines = groups.get(item.key);
                 if (lines === undefined) return;
-                const counter = counterLine(lines[0].counter, linesBalance(lines, classes), defaults?.lines.get(item.key), defaults, item.disabled);
+                const counter = counterLine(lines[0].counter, linesBalance(lines), defaults?.lines.get(item.key), defaults, item.disabled);
                 out.push({
                     ...base,
                     kind: "rule",

@@ -1,16 +1,17 @@
 <!-- The dialog's fields for a one-off — a `~ YYYY-MM-DD` block (plan 31 C3).
 
-     The date, what it is, and its postings with SIGNED amounts: an event is
-     where a balance-sheet movement is written (the raise that puts $2M into
-     `assets:cash`), and its direction is the user's to state, not an account
-     type's (plan 22 amendment 19). Each posting shows its account's type
+     The date, what it is, and its postings with amounts SIGNED as the file
+     writes them, as a recurring rule's are (plan 31 amendment C3-29): an
+     event is where a balance-sheet movement is written (the raise that puts
+     $2M into `assets:cash`), and its direction is the user's to state, not
+     an account type's (plan 22 amendment 19). Each posting shows its account's type
      badge. Then the counter-account (none needed when the postings balance on
      their own) and the header comment. Edits write the draft only. -->
 <script lang="ts">
-    import {decToInput, parseAmountInput} from "#lib/api/editMapping.js";
+    import {decToInput} from "#lib/api/editMapping.js";
     import type {AccountClasses} from "#lib/domain/accountClass.js";
     import AccountInput from "#lib/journal/edit/AccountInput.svelte";
-    import {accountOrNull, eventBalances, isIsoDate, noteProblem} from "../../../scenarioModel";
+    import {accountOrNull, eventBalances, isIsoDate, noteProblem, parseSignedInput} from "../../../scenarioModel";
     import type {ForecastDefaults, ScenarioEvent} from "../../../types";
     import TypeBadge from "../TypeBadge.svelte";
 
@@ -48,7 +49,7 @@
     }
 
     function setAmount(at: number, raw: string): void {
-        const parsed = parseAmountInput(raw);
+        const parsed = parseSignedInput(raw);
         const posting = event.postings[at];
         if (parsed === null || posting === undefined) return;
         posting.amount = {...posting.amount, quantity: parsed, precision: Math.max(posting.amount.precision, parsed.p)};
@@ -94,7 +95,9 @@
     <div class="flex flex-col gap-1.5">
         <div class="flex items-baseline justify-between">
             <span class="text-xs font-medium text-base-content/70">Postings</span>
-            <span class="text-xs text-base-content/45">Signed: a minus is money leaving that account.</span>
+            <span class="text-xs text-base-content/45" data-testid="amount-help"
+                >Amounts as the journal writes them: a minus moves money out of an account.</span
+            >
         </div>
         <ol class="flex flex-col gap-2">
             {#each event.postings as posting, at (at)}
@@ -115,7 +118,6 @@
                             <span class="text-base-content/50">{posting.amount.commodity}</span>
                             <input
                                 type="text"
-                                inputmode="decimal"
                                 class="text-right font-mono"
                                 value={decToInput(posting.amount.quantity)}
                                 aria-label="Amount for {name}"

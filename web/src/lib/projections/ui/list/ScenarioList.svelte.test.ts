@@ -90,6 +90,20 @@ describe("COMPONENT ScenarioList — a seeded scenario", () => {
         expect(salary.textContent).toContain("unbudgeted — average over");
     });
 
+    it("draws a negative amount in the neutral text colour, never as an error (amendment C3-29)", () => {
+        scenarioStore.adopt(TYPES);
+        mount({declared: TYPES_DECLARED});
+        const amounts = (key: string): HTMLElement[] => within(card(key)).getAllByTestId("entry-amount");
+        // The capex rule reads as the file does: money out of checking, into the computers.
+        expect(amounts("rule:c").map((amount) => amount.textContent)).toEqual(["−$3,000.00", "$3,000.00"]);
+        expect(amounts("rule:d").map((amount) => amount.textContent)).toEqual(["$5,000.00", "−$5,000.00"]);
+        const negatives = cards()
+            .flatMap((entry) => within(entry).queryAllByTestId("entry-amount"))
+            .filter((amount) => amount.textContent?.startsWith("−"));
+        expect(negatives.length).toBeGreaterThan(2);
+        for (const amount of negatives) expect(amount.className).not.toMatch(/text-error/);
+    });
+
     it("says nothing is saved until Save As, and opens not-dirty", () => {
         mount({seeded: true});
         expect(screen.getByTestId("projection-seeded").textContent).toContain("nothing is saved until you Save as");

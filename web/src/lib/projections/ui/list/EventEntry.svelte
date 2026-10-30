@@ -55,7 +55,8 @@
             {#each event.postings as posting, at (at)}
                 {@const amount = amountText(posting.amount.commodity, posting.amount.quantity, styles)}
                 <PostingAccount account={posting.account} classes={declared} class="text-base-content/90" />
-                <span class={["text-right whitespace-nowrap", amount.startsWith("−") && "text-error"]}>{amount}</span>
+                <!-- Neutral, minus or not: a minus is a direction here, not a warning. -->
+                <span class="text-right whitespace-nowrap" data-testid="entry-amount">{amount}</span>
                 <span class="min-w-0 truncate text-xs text-base-content/55 italic {POSTING_NOTES}" title={posting.comment}
                     >{#if posting.comment !== ""}; {posting.comment.split("\n").join(" · ")}{/if}</span
                 >

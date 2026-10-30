@@ -721,13 +721,9 @@ export interface WireScenarioLineIn {
      * balance only compounds, which is the `$0` posting the file carries.
      */
     amount: WireAmountIn;
-    /**
-     * The MAGNITUDE the user typed, for an edited line (plan 26 B6). The engine
-     * signs it by the account's type and it replaces `amount.quantity`; absent,
-     * `amount.quantity` is taken as already signed. So the SPA never carries
-     * the "revenue is negative" rule.
-     */
-    entry?: WireDec;
+    // The server also takes an optional `entry`, a magnitude it signs by the
+    // account's type (plan 26 B6). The SPA never sends it: an amount is typed
+    // and sent signed as the file writes it (plan 31 amendment C3-29).
     period: WirePeriodIn;
     growth: WireGrowthIn | null;
     /**

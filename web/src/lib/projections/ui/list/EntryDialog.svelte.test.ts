@@ -73,7 +73,7 @@ describe("COMPONENT EntryDialog — the draft (plan 31 C3)", () => {
         const touch = vi.spyOn(scenarioStore, "touch");
         await open("rule:0");
         await change("Description", "salary and bonus");
-        await change("Amount for income:salary", "6500");
+        await change("Amount for income:salary", "-6500");
         await fireEvent.click(within(dialog()).getByLabelText("Enabled"));
         await change("Comment above this entry", "Paid monthly, on the last day.");
         expect(snapshot()).toBe(before);
@@ -87,7 +87,7 @@ describe("COMPONENT EntryDialog — the draft (plan 31 C3)", () => {
         const touch = vi.spyOn(scenarioStore, "touch");
         await open("rule:0");
         await change("Description", "salary and bonus");
-        await change("Amount for income:salary", "6500");
+        await change("Amount for income:salary", "-6500");
         await change("Growth rate for income:salary, in percent", "4");
         await change("Comment above this entry", "Paid on the last day.");
         await fireEvent.click(within(dialog()).getByLabelText("Enabled"));
@@ -98,8 +98,8 @@ describe("COMPONENT EntryDialog — the draft (plan 31 C3)", () => {
         expect(screen.queryByTestId("entry-dialog")).toBeNull();
         const [salary] = scenarioStore.scenario.lines;
         expect(salary.note).toBe("salary and bonus");
-        // A magnitude: the engine signs it by the account's type.
-        expect(salary.entry).toEqual({m: 6500n, p: 0});
+        // Signed as typed, as the file writes it (amendment C3-29).
+        expect(salary.amount.quantity).toEqual({m: -6500n, p: 0});
         expect(salary.growth).toEqual({rate: {m: 4n, p: 2}, unit: "year"});
         const item = scenarioStore.scenario.layout.find((candidate) => candidate.key === "rule:0");
         expect(item).toMatchObject({disabled: true, attachedText: "Paid on the last day.", raw: RENDERED});
@@ -303,11 +303,97 @@ describe("COMPONENT EntryDialog — a recurring rule's fields", () => {
     });
 });
 
+describe("COMPONENT EntryDialog — amounts as the file writes them (amendment C3-29)", () => {
+    const amountBox = (label: string): HTMLInputElement => within(dialog()).getByLabelText(label) as HTMLInputElement;
+    /** The lines of `group` in the last body sent to the render, as the wire carries them. */
+    const renderedLines = (group: string) => {
+        const body = renderMock.mock.calls.at(-1)?.[0];
+        if (body === undefined) throw new Error("nothing was rendered");
+        return body.scenario.lines.filter((line) => line.group === group);
+    };
+
+    it("shows revenue negative, and saves a typed minus as is", async () => {
+        mount();
+        await open("rule:0");
+        expect(amountBox("Amount for income:salary").value).toBe("-6000.00");
+        expect(within(dialog()).getByTestId("amount-help").textContent).toBe(
+            "Amounts per period, as the journal writes them: a minus moves money out of an account."
+        );
+        expect(dialog().textContent).not.toMatch(/positive figure|sign follows/);
+        await change("Amount for income:salary", "-12000");
+        await settle();
+        const [sent] = renderedLines("rule:0");
+        expect(sent.amount.quantity).toEqual({mantissa: "-12000", places: 0});
+        expect("entry" in sent).toBe(false);
+        await fireEvent.click(done());
+        await settle(20);
+        expect(scenarioStore.scenario.lines[0].amount.quantity).toEqual({m: -12000n, p: 0});
+        expect(within(card("rule:0")).getByTestId("entry-amount").textContent).toBe("−$12,000.00");
+    });
+
+    it("REGRESSION: the capex rule's checking amount keeps its minus, so the rule still balances", async () => {
+        scenarioStore.adopt(TYPES);
+        renderMock = vi.fn<(body: RenderProjectionBody) => Promise<string>>(
+            async () => "~ every 6 months  computers\n    assets:checking  $-3500.00\n    assets:fixed:computers  $3500.00\n"
+        );
+        mount({declared: TYPES_DECLARED});
+        await open("rule:c");
+        expect(amountBox("Amount for assets:checking").value).toBe("-3000.00");
+        expect(amountBox("Amount for assets:fixed:computers").value).toBe("3000.00");
+        await change("Amount for assets:checking", "-3500");
+        await change("Amount for assets:fixed:computers", "3500");
+        // Still balanced, so still no counter-account.
+        expect(within(dialog()).getByTestId("counter-not-needed")).toBeTruthy();
+        await settle();
+        expect(renderedLines("rule:c").map((line) => [line.amount.quantity, "entry" in line])).toEqual([
+            [{mantissa: "-3500", places: 0}, false],
+            [{mantissa: "3500", places: 0}, false],
+        ]);
+        expect(writes()).toContain("assets:checking  $-3500.00");
+        await fireEvent.click(done());
+        await settle(20);
+        const lines = scenarioStore.scenario.lines.filter((line) => line.group === "rule:c");
+        expect(lines.map((line) => line.amount.quantity)).toEqual([
+            {m: -3500n, p: 0},
+            {m: 3500n, p: 0},
+        ]);
+        expect(
+            within(card("rule:c"))
+                .getAllByTestId("entry-amount")
+                .map((amount) => amount.textContent)
+        ).toEqual(["−$3,500.00", "$3,500.00"]);
+    });
+
+    it("changing a posting's account keeps its sign", async () => {
+        mount();
+        await open("rule:0");
+        const account = within(dialog()).getByLabelText("Account for income:salary") as HTMLInputElement;
+        await fireEvent.input(account, {target: {value: "expenses:housing"}});
+        await fireEvent.blur(account);
+        await tick();
+        expect(amountBox("Amount for expenses:housing").value).toBe("-6000.00");
+        await settle();
+        expect(renderedLines("rule:0")[0].amount.quantity).toEqual({mantissa: "-600000", places: 2});
+    });
+
+    it("takes the true minus the list draws, and a signed contribution on an asset posting", async () => {
+        mount();
+        await open("rule:4");
+        await change("Contribution for assets:house", "−250");
+        await settle();
+        await fireEvent.click(done());
+        await settle(20);
+        expect(scenarioStore.scenario.lines.find((line) => line.group === "rule:4")?.amount.quantity).toEqual({m: -250n, p: 0});
+    });
+});
+
 describe("COMPONENT EntryDialog — a one-off's fields", () => {
     it("takes a SIGNED amount, a date and a counter-account", async () => {
         mount();
         await open("rule:3");
         expect(within(dialog()).getByRole("heading", {name: "Edit one-off"})).toBeTruthy();
+        // The same words as a recurring rule's, less "per period".
+        expect(within(dialog()).getByTestId("amount-help").textContent).toBe("Amounts as the journal writes them: a minus moves money out of an account.");
         await change("Amount for assets:checking (posting 1)", "-2500");
         await change("Date", "2027-04-01");
         await settle();

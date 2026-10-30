@@ -71,11 +71,16 @@ test("projections: seeds the scenario list from the journal, flagging what it es
     await expect(salary).toContainText("average over");
     await expect(page.getByTestId("projection-seeded")).toContainText("nothing is saved until you Save as");
 
-    // The card shows the sign the file holds; the dialog takes a MAGNITUDE.
+    // The card and the dialog both show the sign the file holds, and a typed
+    // minus is written as is (plan 31 amendment C3-29).
     await expect(salary.getByTestId("entry-postings")).toContainText("−$");
     await salary.getByTestId("entry-edit").click();
     const dialog = page.getByTestId("entry-dialog");
-    await expect(dialog.getByLabel("Amount for income:salary")).toHaveValue(/^\d/);
+    const amount = dialog.getByLabel("Amount for income:salary");
+    await expect(amount).toHaveValue(/^-\d/);
+    await amount.fill("-12000");
+    await amount.blur();
+    await expect(dialog.getByTestId("entry-dialog-writes")).toContainText("income:salary  $-12000");
     await dialog.getByTestId("entry-dialog-cancel").click();
     await expect(dialog).toHaveCount(0);
 });

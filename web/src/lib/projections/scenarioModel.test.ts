@@ -1,11 +1,10 @@
 import {describe, expect, it} from "vitest";
 import {dec} from "#lib/domain/money.js";
-import {accountTypeOf, NO_ACCOUNT_CLASSES, type AccountClasses} from "#lib/domain/accountClass.js";
+import {accountTypeOf, NO_ACCOUNT_CLASSES} from "#lib/domain/accountClass.js";
 import {classesOf} from "#lib/domain/accountClassFixtures.js";
 import {
     activeScenario,
     commentToWire,
-    signedAmount,
     withLayout,
     blankAutoRule,
     blankEvent,
@@ -18,8 +17,6 @@ import {
     cloneScenario,
     emptyScenario,
     freshId,
-    isRevenueAccount,
-    magnitudeOf,
     MAX_NOTE_BYTES,
     mergeStep,
     noteIsStale,
@@ -39,19 +36,12 @@ import {
     splitStep,
     takenIds,
     trimDec,
-    withAccount,
-    withMagnitude,
+    parseSignedInput,
+    withQuantity,
     withBounds,
     withInterval,
 } from "./scenarioModel";
 import type {Scenario, ScenarioLine} from "./types";
-
-/**
- * A journal that declares its own types rather than relying on hledger's name
- * regexes — [[account-type-not-name]]: `wages` is revenue here because it is
- * DECLARED revenue, which is the case name matching gets wrong.
- */
-const DECLARED: AccountClasses = classesOf(["income", "revenue"], ["wages", "revenue"], ["expenses", "expense"], ["assets", "asset"]);
 
 function line(overrides: Partial<ScenarioLine> = {}): ScenarioLine {
     return {
@@ -79,50 +69,53 @@ function scenario(lines: ScenarioLine[]): Scenario {
 
 // ---------------------------------------------------------------------------
 
-describe("UNIT scenarioModel — magnitudes in, the engine signs", () => {
-    // The sign rule itself — revenue negative, by the account's resolved TYPE —
-    // is the engine's (`account_types::signed_entry`, locked to the TypeScript it
-    // replaced by `scenario_signs_golden.rs`). This side only keeps the number a
-    // user typed and says that it is one.
+describe("UNIT scenarioModel — amounts are signed as the file writes them", () => {
+    // Plan 31 amendment C3-29: what is typed is what the file holds. Nothing
+    // here, and nothing in the engine on this path, signs by account type.
 
-    it("the table shows a magnitude whichever way the wire signed it", () => {
-        expect(magnitudeOf(line({amount: {commodity: "$", quantity: dec(-518833, 2), precision: 2}}))).toEqual(dec(518833, 2));
-        expect(magnitudeOf(line({amount: {commodity: "$", quantity: dec(187500, 2), precision: 2}}))).toEqual(dec(187500, 2));
+    it("a typed figure is the line's signed amount, minus kept", () => {
+        const salary = line({account: "income:salary", amount: {commodity: "$", quantity: dec(-518833, 2), precision: 2}});
+        expect(withQuantity(salary, dec(-600000, 2)).amount.quantity).toEqual(dec(-600000, 2));
+        // A positive figure on revenue stays positive: a refund, or a mistake the "Writes:" box shows.
+        expect(withQuantity(salary, dec(600000, 2)).amount.quantity).toEqual(dec(600000, 2));
     });
 
-    it("a typed amount becomes the line's ENTRY, a magnitude, and the shown figure", () => {
-        const edited = withMagnitude(line({account: "income:salary"}), dec(-900000, 2));
-        expect(edited.entry).toEqual(dec(900000, 2));
-        expect(magnitudeOf(edited)).toEqual(dec(900000, 2));
+    it("the capex rule's checking leg keeps its minus, so the rule still balances", () => {
+        const capex = [
+            line({id: "c", account: "assets:checking", amount: {commodity: "$", quantity: dec(-300000, 2), precision: 2}}),
+            line({id: "f", account: "assets:fixed:computers", amount: {commodity: "$", quantity: dec(300000, 2), precision: 2}}),
+        ];
+        const edited = [withQuantity(capex[0], dec(-3500, 0)), withQuantity(capex[1], dec(3500, 0))];
+        expect(edited[0].amount.quantity).toEqual(dec(-3500, 0));
+        expect(linesBalance(edited)).toBe(true);
+        const wire = scenarioToWire(scenario(edited));
+        expect(wire.lines.map((wired) => wired.amount.quantity)).toEqual([
+            {mantissa: "-3500", places: 0},
+            {mantissa: "3500", places: 0},
+        ]);
     });
 
-    it("moving a row to another account re-enters what it held, so the engine re-signs it", () => {
-        const moved = withAccount(line({amount: {commodity: "$", quantity: dec(-420000, 2), precision: 2}}), "expenses:rent");
-        expect(moved.account).toBe("expenses:rent");
-        expect(moved.entry).toEqual(dec(420000, 2));
+    it("reads a leading minus, and the true minus the list draws, as a minus", () => {
+        expect(parseSignedInput("-3,500")).toEqual(dec(-3500, 0));
+        expect(parseSignedInput("\u22123500.00")).toEqual(dec(-350000, 2));
+        expect(parseSignedInput("12000")).toEqual(dec(12000, 0));
+        expect(parseSignedInput("−")).toBeNull();
+        expect(parseSignedInput("abc")).toBeNull();
     });
 
     it("display precision is RAISED to fit a typed amount and never lowered", () => {
         const seeded = line({amount: {commodity: "$", quantity: dec(187500, 2), precision: 2}});
         // Retyping "1875" must not quietly move this line's growth onto whole dollars.
-        expect(withMagnitude(seeded, dec(1875, 0)).amount.precision).toBe(2);
+        expect(withQuantity(seeded, dec(1875, 0)).amount.precision).toBe(2);
         // A third decimal place has to be representable or the growth walk rounds it away.
-        expect(withMagnitude(seeded, dec(1875125, 3)).amount.precision).toBe(3);
+        expect(withQuantity(seeded, dec(-1875125, 3)).amount.precision).toBe(3);
     });
 
-    it("previews the sign the file will hold: the engine's while untouched, a typed revenue negated", () => {
-        const salary = line({account: "wages:contract", amount: {commodity: "$", quantity: dec(-518833, 2), precision: 2}});
-        expect(signedAmount(salary, DECLARED)).toEqual(dec(-518833, 2));
-        expect(signedAmount(withMagnitude(salary, dec(600000, 2)), DECLARED)).toEqual(dec(-600000, 2));
-        expect(signedAmount(withMagnitude(line(), dec(-5000, 2)), DECLARED)).toEqual(dec(5000, 2));
-    });
-
-    it("the preview classification honours the engine's declared type over the name", () => {
-        // Nothing about "wages" matches hledger's revenue regex; the declaration
-        // is what makes it revenue.
-        expect(isRevenueAccount("wages:contract", DECLARED)).toBe(true);
-        expect(isRevenueAccount("wages:contract", NO_ACCOUNT_CLASSES)).toBe(false);
-        expect(isRevenueAccount("income:salary", NO_ACCOUNT_CLASSES)).toBe(true);
+    it("remembers the served figure once, through any number of edits", () => {
+        const seeded = line({amount: {commodity: "$", quantity: dec(-518833, 2), precision: 2}});
+        const twice = withQuantity(withQuantity(seeded, dec(-1, 0)), dec(-2, 0));
+        expect(twice.served).toEqual(dec(-518833, 2));
+        expect(twice.amount.quantity).toEqual(dec(-2, 0));
     });
 });
 
@@ -147,19 +140,22 @@ describe("UNIT scenarioModel — account types and balance", () => {
             line({account: "assets:checking", amount: {commodity: "$", quantity: dec(-300000, 2), precision: 2}}),
             line({account: "assets:fixed:computers", amount: {commodity: "$", quantity: dec(300000, 2), precision: 2}}),
         ];
-        expect(linesBalance(capex, DECLARED)).toBe(true);
-        expect(linesBalance([line()], DECLARED)).toBe(false);
-        expect(linesBalance([], DECLARED)).toBe(false);
+        expect(linesBalance(capex)).toBe(true);
+        expect(linesBalance([line()])).toBe(false);
+        expect(linesBalance([])).toBe(false);
     });
 
-    it("balance is read from the amounts as the file will hold them, signed by account type", () => {
-        // A typed magnitude on revenue is written negative, so it balances a
-        // liability going up by the same figure (Patrick's deferred revenue).
-        const deferred = [line({account: "liabilities:deferred-revenue", entry: dec(5000, 0)}), line({account: "income:sales", entry: dec(5000, 0)})];
-        expect(linesBalance(deferred, DECLARED)).toBe(true);
+    it("balance is read from the amounts as written, whatever the accounts' types", () => {
+        // Revenue is typed negative, so it balances a liability going up by
+        // the same figure (Patrick's deferred revenue).
+        const usd = (cents: number) => ({commodity: "$", quantity: dec(cents, 2), precision: 2});
+        const deferred = [line({account: "liabilities:deferred-revenue", amount: usd(500000)}), line({account: "income:sales", amount: usd(-500000)})];
+        expect(linesBalance(deferred)).toBe(true);
+        // Two positive figures do not, though one account is revenue: nothing re-signs it.
+        expect(linesBalance([deferred[0], {...deferred[1], amount: usd(500000)}])).toBe(false);
         // Dollars against euros balance nothing.
         const fx = [line(), line({account: "assets:eur", amount: {commodity: "€", quantity: dec(-420000, 2), precision: 2}})];
-        expect(linesBalance(fx, DECLARED)).toBe(false);
+        expect(linesBalance(fx)).toBe(false);
     });
 
     it("a one-off balances when its own postings sum to zero", () => {
@@ -353,12 +349,13 @@ describe("UNIT scenarioModel — putting a scenario on the wire", () => {
         expect(wire.created).toBeNull();
     });
 
-    it("sends an edited line's ENTRY for the engine to sign, and no entry for an untouched one", () => {
+    it("sends an edited line's amount signed as typed, and never an `entry` for the engine to sign", () => {
         const untouched = line({account: "income:salary", amount: {commodity: "$", quantity: dec(-518833, 2), precision: 2}});
-        const edited = withMagnitude(untouched, dec(600000, 2));
+        const edited = withQuantity(untouched, dec(-600000, 2));
         const wire = scenarioToWire(scenario([untouched, {...edited, id: "b", group: "rule:1"}]));
-        expect(wire.lines[0].entry).toBeUndefined();
-        expect(wire.lines[1].entry).toEqual({mantissa: "600000", places: 2});
+        expect(wire.lines.map((wired) => "entry" in wired)).toEqual([false, false]);
+        expect(wire.lines.map((wired) => "served" in wired)).toEqual([false, false]);
+        expect(wire.lines[1].amount.quantity).toEqual({mantissa: "-600000", places: 2});
     });
 
     it("sends a growth rate as the fraction it is", () => {
@@ -610,10 +607,12 @@ describe("UNIT scenarioModel — descriptions", () => {
     it("flags a seeded description as stale once the amount it describes changes", () => {
         const seeded = line({source: "unbudgeted", note: "unbudgeted — average over 2025-11-01 to 2026-10-22"});
         expect(noteIsStale(seeded)).toBe(false);
-        expect(noteIsStale(withMagnitude(seeded, dec(420000, 2)))).toBe(false);
-        expect(noteIsStale(withMagnitude(seeded, dec(5000, 0)))).toBe(true);
+        expect(noteIsStale(withQuantity(seeded, dec(420000, 2)))).toBe(false);
+        expect(noteIsStale(withQuantity(seeded, dec(5000, 0)))).toBe(true);
+        // A sign flip is a different figure too.
+        expect(noteIsStale(withQuantity(seeded, dec(-420000, 2)))).toBe(true);
         // A description the user wrote is theirs, whatever the amount does.
-        expect(noteIsStale(withMagnitude({...seeded, note: "rent"}, dec(5000, 0)))).toBe(false);
+        expect(noteIsStale(withQuantity({...seeded, note: "rent"}, dec(5000, 0)))).toBe(false);
     });
 });
 
