@@ -376,7 +376,7 @@ perf-probe size="200000":
 # .github/workflows/docs.yml). Same pinned mbr as CI, run through nix so nothing
 # is installed. `--accept-flake-config` lets nix use mbr's binary cache instead
 # of compiling ffmpeg and pdfium.
-mbr := "nix run --accept-flake-config github:zmre/mbr-markdown-browser/v0.6.2#mbr --"
+mbr := "nix run --accept-flake-config github:zmre/mbr-markdown-browser/v0.7.1#mbr --"
 
 # Preview the docs site locally (mbr prints the URL)
 docs:

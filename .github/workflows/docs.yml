@@ -33,7 +33,7 @@ concurrency:
 
 env:
   # Pinned so a new mbr release can't change the site between two tags.
-  MBR_FLAKE: github:zmre/mbr-markdown-browser/v0.6.2#mbr
+  MBR_FLAKE: github:zmre/mbr-markdown-browser/v0.7.1#mbr
 
 jobs:
   build:
