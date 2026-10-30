@@ -93,10 +93,10 @@ falls back to (steps 3 and 4 above).
 
 ![The Default cash account box boxed above the Income section, and the Counter-account column boxed, showing the greyed defaults assets:bank:checking and assets:broker:taxable:cash](images/counter-account.png)
 
-A rule has exactly one counter-account. When you give one line of a
-multi-line rule a different counter-account from the rest, Ledgeline moves that
-line into a rule of its own, so the file can still be written as hledger reads
-it. No number changes; the file just has one more `~` rule.
+A rule has exactly one counter-account: it is the rule's one posting with no
+amount, which is how hledger reads it. To balance one posting against a
+different account, give it a rule of its own (**+ Add**, or **Duplicate** the
+rule and keep the one posting).
 
 ## Accruals and partial payments
 

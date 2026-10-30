@@ -24,7 +24,7 @@
     import type {AmountStyle} from "#lib/domain/types.js";
     import {dismissible} from "#lib/keys/dismissible.js";
     import {settings} from "#lib/stores/settings.svelte.js";
-    import {canDisable, entriesOf, movePostingToNewRule, plainCopy} from "../../entries";
+    import {canDisable, entriesOf, plainCopy} from "../../entries";
     import {applyDraft, draftProblems, draftRenderBody, EntryPreview, type Draft} from "../../entryDraft.svelte";
     import type {AssetRow, ForecastDefaults, Scenario} from "../../types";
     import AutoEntryEditor from "./editors/AutoEntryEditor.svelte";
@@ -174,16 +174,6 @@
         onCancel();
     }
 
-    /** Split posting `at` out into a rule of its own, below — the draft applied with it, in one edit. */
-    function movePosting(at: number): void {
-        if (blocking) return;
-        const applied = applyDraft(scenario, draft);
-        const moved = movePostingToNewRule(applied, draft.key, at);
-        if (moved === null) return;
-        preview.stop();
-        onDone(moved.scenario, moved.key, draft);
-    }
-
     function onKeydown(event: KeyboardEvent): void {
         if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey)) return;
         // A completion popup takes precedence: it has already prevented this.
@@ -261,7 +251,6 @@
                     cash={scenario.cash}
                     {step}
                     onEdit={edited}
-                    onMovePosting={isNew ? null : movePosting}
                     onJump={isNew || onJump === null ? null : onJump}
                 />
             {:else if draft.payload.kind === "event"}

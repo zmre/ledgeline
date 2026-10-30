@@ -9,8 +9,8 @@
      by the account's type, plan 26 B6 — the preview below shows the sign the
      file will hold), growth, the asset switch, and for an asset its balance
      override and gains account, and its own comment. Postings reorder with
-     ↑/↓, and one can be moved out into a rule of its own (for a different
-     counter-account).
+     ↑/↓. A posting that needs a different counter-account belongs in a rule
+     of its own (+ Add, or Duplicate this one).
 
      Edits write the DRAFT only. `onEdit` fires on each committed change (a
      change event, an account chosen), never per keystroke, and is what asks
@@ -54,7 +54,6 @@
         cash,
         step,
         onEdit,
-        onMovePosting,
         onJump,
     }: {
         /** The draft's lines. Mutated in place. */
@@ -70,8 +69,6 @@
         cash: string | null;
         step: (StepInfo & {others: {group: string; period: string}[]}) | null;
         onEdit: () => void;
-        /** Move posting `at` out into a rule of its own; null when this draft cannot (a new entry, one posting). */
-        onMovePosting: ((at: number) => void) | null;
         onJump: ((group: string) => void) | null;
     } = $props();
 
@@ -374,15 +371,6 @@
                             />
                             asset
                         </label>
-                        {#if onMovePosting !== null && lines.length > 1}
-                            <button
-                                type="button"
-                                class="btn btn-square btn-ghost btn-xs"
-                                title="Move to a new rule: split this posting out into a rule of its own, directly below — for a different counter-account"
-                                aria-label="Move {name} to a new rule"
-                                onclick={() => onMovePosting?.(at)}>⇲</button
-                            >
-                        {/if}
                         <button
                             type="button"
                             class="btn btn-square btn-ghost text-error btn-xs"

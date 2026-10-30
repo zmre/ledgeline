@@ -665,18 +665,3 @@ export function mergeSteps(full: Scenario, group: string): {scenario: Scenario; 
         key: merged.group,
     };
 }
-
-/**
- * Move posting `at` of rule `group` out into a rule of its own, directly
- * below. For a posting that needs a different counter-account: a block has
- * one amountless posting, so the split is how the posting gets its own.
- */
-export function movePostingToNewRule(full: Scenario, group: string, at: number): {scenario: Scenario; key: string} | null {
-    const scenario = withLayout(full);
-    const lines = scenario.lines.filter((line) => line.group === group);
-    if (lines.length < 2 || at < 0 || at >= lines.length) return null;
-    const key = freshId("group", takenIds(scenario));
-    const moved = {...lines[at], group: key, resolved: undefined};
-    const kept = replacePayload(scenario, group, {kind: "rule", lines: lines.filter((_, index) => index !== at)});
-    return {scenario: insertEntry(kept, {kind: "rule", lines: [moved]}, group), key};
-}

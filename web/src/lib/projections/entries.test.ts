@@ -17,7 +17,6 @@ import {
     mergeSteps,
     moveEntry,
     moveEntryBy,
-    movePostingToNewRule,
     removeEntry,
     setAttached,
     setComment,
@@ -353,15 +352,5 @@ describe("UNIT entries — step changes (plan 31 C2)", () => {
         expect(keys(merged?.scenario ?? file())).not.toContain("rule:2");
         expect(merged?.scenario.lines.find((l) => l.group === "rule:1")?.period.raw).toBe("monthly");
         expect(mergeSteps(file(), "rule:0")).toBeNull();
-    });
-
-    it("moves one posting out into a rule of its own, directly below", () => {
-        const moved = movePostingToNewRule(file(), "rule:0", 1);
-        expect(moved).not.toBeNull();
-        if (moved === null) return;
-        expect(moved.scenario.lines.filter((l) => l.group === "rule:0").map((l) => l.account)).toEqual(["income:salary"]);
-        expect(moved.scenario.lines.filter((l) => l.group === moved.key).map((l) => l.account)).toEqual(["expenses:rent"]);
-        expect(keys(moved.scenario)[3]).toBe(moved.key);
-        expect(movePostingToNewRule(file(), "rule:3", 0)).toBeNull();
     });
 });

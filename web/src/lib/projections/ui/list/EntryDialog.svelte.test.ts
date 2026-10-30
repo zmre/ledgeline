@@ -283,7 +283,7 @@ describe("COMPONENT EntryDialog — a recurring rule's fields", () => {
         expect(scenarioStore.scenario.lines.filter((line) => line.group === "rule:0").map((line) => line.counter)).toEqual(["liabilities:card"]);
     });
 
-    it("adds a posting, and moves one out into a rule of its own", async () => {
+    it("adds a posting, written into the same rule on Done", async () => {
         mount();
         await open("rule:0");
         await fireEvent.click(within(dialog()).getByRole("button", {name: "+ Add a posting"}));
@@ -291,14 +291,15 @@ describe("COMPONENT EntryDialog — a recurring rule's fields", () => {
         await fireEvent.input(account, {target: {value: "income:dividends"}});
         await fireEvent.blur(account);
         await change("Amount for income:dividends", "100");
-        const revision = scenarioStore.revision;
-        await fireEvent.click(within(dialog()).getByRole("button", {name: "Move income:dividends to a new rule"}));
+        // Moving a posting out into a rule of its own was removed (2026-10-29).
+        expect(within(dialog()).queryByRole("button", {name: /to a new rule/})).toBeNull();
+        await settle();
+        await fireEvent.click(done());
         await settle(20);
-        expect(scenarioStore.revision).toBe(revision + 1);
-        const keys = scenarioStore.scenario.layout.map((item) => item.key);
-        const moved = keys[keys.indexOf("rule:0") + 1];
-        expect(scenarioStore.scenario.lines.filter((line) => line.group === moved).map((line) => line.account)).toEqual(["income:dividends"]);
-        expect(scenarioStore.scenario.lines.filter((line) => line.group === "rule:0").map((line) => line.account)).toEqual(["income:salary"]);
+        expect(scenarioStore.scenario.lines.filter((line) => line.group === "rule:0").map((line) => line.account)).toEqual([
+            "income:salary",
+            "income:dividends",
+        ]);
     });
 });
 
