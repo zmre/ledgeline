@@ -69,7 +69,7 @@ The tab also says whether `--auto` is on, and which config file says so. Change 
 
 ### Editing a rule
 
-**Edit** on a rule's card opens it in a form: the account it matches, the postings it adds, and the account that balances them. Type percentages and amounts as positive numbers meaning "this account grows by". Ledgeline works out each sign from the accounts' types, the same way the [projections rule editor](../projections/index.md) does. For example, 10% sales tax on a sale (a negative revenue amount) is written `*0.1` to the liability. A form edit is saved in a standard shape:
+**Edit** on a rule's card opens it in a form: the account it matches, the postings it adds, and the account that balances them. Type percentages and amounts as positive numbers meaning "this account grows by". Ledgeline works out each sign from the accounts' types, the same way the [projections rule editor](../projections/file-format.md#editing-rules-on-the-projections-page) does. For example, 10% sales tax on a sale (a negative revenue amount) is written `*0.1` to the liability. A form edit is saved in a standard shape:
 
 ```journal
 = ^revenue:sales(:|$)

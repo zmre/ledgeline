@@ -8,9 +8,9 @@ tags: [projections]
 # Projections
 
 The Projections tab asks one question — _if things carry on like this, when does
-the cash run out?_ — and lets you argue with the answer. The top half is an
-editable what-if table, seeded from your budget plus whatever your budget does
-not cover. The bottom half is that table read forward in time: the runway, and
+the cash run out?_ — and lets you argue with the answer. The top half is the
+scenario, a list of what you expect, seeded from your budget plus whatever your
+budget does not cover. The bottom half is that list read forward in time: the runway, and
 the same balance sheet, income statement and cash flow statement the Reports
 tab shows, run forward. Press <kbd>g</kbd> <kbd>p</kbd> to get here from
 anywhere, and <kbd>1</kbd> to <kbd>6</kbd> to switch between those readings
@@ -20,17 +20,153 @@ A scenario is **an ordinary hledger journal file that nothing includes**, so it
 can be edited in your own editor, diffed, committed, and read by `hledger`
 itself. Playing with a what-if can never damage a plan of record.
 
-![The Projections tab seeded from the journal: the scenario picker, the Default cash account box, and the income and expense lines with their counter-accounts](images/seeded.png)
+![The Projections tab seeded from the journal: the scenario picker, the Default cash account box, the filter chips, and the first seeded rules with their counter-accounts](images/seeded.png)
 
 This section has four pages:
 
-- this one: where scenario files live and how saving works;
+- this one: the scenario list, the editor, where scenario files live and how saving works;
 - [The scenario file format](file-format.md): the `~` rules, the tag vocabulary, growth, and reading a scenario with hledger;
 - [What moves cash](cash.md): counter-accounts, the defaults Ledgeline picks, and where a projection starts;
 - [Asset rows](asset-rows.md): balances that compound, contributions, and `opening:` overrides.
 
 Design notes and the reasoning behind each decision live in
 [`plans/22-projections.md`](https://github.com/zmre/ledgeline/blob/main/plans/22-projections.md).
+
+## The scenario list
+
+The list is the scenario file, top to bottom, in the file's order. Each entry is
+one piece of the file, shown the way the file writes it:
+
+- a **rule** (`~ monthly`, `~ yearly from 2027-01-01`) with its postings, their
+  amounts, any growth rate, and the counter-account last, after a `→`;
+- a **one-off** (`~ 2027-04-15`), badged `one-off`;
+- an **automatic posting** (`=`), read as a sentence ("When income:salary is
+  projected") and badged `auto`. **rule text** under it shows the rule as the
+  file has it;
+- a **section heading** or a **note**: comments that stand on their own;
+- **file text**: anything else the file holds, such as `account` directives.
+  It is read-only here and never moves. Edit it in the file.
+
+A comment directly above a rule is shown on that rule's card, in italics, and
+belongs to it. [Comments and section headings](file-format.md#comments-and-section-headings)
+has the rules.
+
+![A scenario file in the list: the filter chips, the file's account declarations as read-only file text, the Income, Spending and Saving and investing headings, a turned-off alternative, a step change, an automatic posting, a one-off, a note and an asset rule](images/list.png)
+
+**Every posting is badged by its account's type**: income, expense, asset,
+cash, liability, equity, gain or conversion. The counter-account line is
+badged too. The types are your journal's `account` declarations, with the
+scenario file's own declarations on top. An account with no type gets a `?`
+badge; hover over it to see how to declare one.
+
+**Amounts are signed as the file writes them.** Income reads `−$5,660.00`,
+because hledger writes revenue negative. A minus means money moves out of that
+account. It is not a warning, so it is not red.
+
+**A rule with no `→` line balances on its own.** Its postings sum to zero, as
+a transfer from checking to savings does, so nothing goes to a counter-account.
+A rule that doesn't balance shows its counter-account. Ledgeline's default is
+shown greyed with "(default)" after it. [What moves cash](cash.md) explains how
+Ledgeline picks one.
+
+A turned-off entry is dimmed, its first line struck through, and badged `off`.
+A step change is two cards, each with a `step 1 of 2` chip. The chip jumps to
+the other step, and hovering one card outlines the other.
+
+### Filters
+
+The chips above the list count the entries of each kind in the file. There is
+one chip per account type present, then One-off, Auto, Off and Notes. A chip with
+nothing under it is hidden. Choosing one shows only the matching entries.
+Section headings stay, so you can still see where you are. An entry matches a
+type when any of its postings has that type, the counter-account included, so a
+deferred-revenue rule is under both Income and Liability. The chip you choose is
+kept in the address bar (`?show=liability`).
+
+While a filter is on, entries can't be moved, because moving an entry past ones
+you can't see would be a guess. Choose **All** to reorder.
+
+### Changing the list
+
+Each card has an **Edit** button and a `⋯` menu with Edit, Duplicate,
+Duplicate as alternative, Turn off (or Turn on), Add a step change…, Merge with
+the other step, Move up, Move down and Delete. Double-clicking a card opens it
+too. Drag a card by its grip (`⠿`) to move it anywhere in the file.
+
+**+ Add** adds a recurring flow, an asset, a one-off, an automatic posting, a
+note or a section heading. The new entry goes below the selected entry, or at
+the end of the list.
+
+- **Duplicate** opens the editor on a copy, placed directly below the original.
+- **Duplicate as alternative** does the same and turns the original off when
+  you press Done. [Duplicate as alternative](file-format.md#duplicate-as-alternative)
+  shows what that is for.
+- **Turn off** comments the entry out in the file, so neither Ledgeline nor
+  hledger uses it. **Turn on** puts it back exactly as it was.
+- **Add a step change…** asks for a date and splits the rule there. The rule
+  as it is runs up to that date. The new step starts on it and opens in the
+  editor, so you can change its amount. An asset rule has no step change.
+
+### The editor
+
+The editor is a dialog over one entry. It edits a draft. Nothing in the list or
+the readings below changes until you press **Done** (or <kbd>⌘</kbd> <kbd>Enter</kbd>),
+and then the whole change is one edit and one new projection. **Cancel**,
+<kbd>Escape</kbd> or a click outside the dialog throws the draft away. Cancel on
+a duplicate leaves no copy, and Cancel on Duplicate as alternative leaves the
+original turned on.
+
+![The editor open on an asset rule: Enabled, Comment above this entry, Repeats/From/To, Description, two asset postings with their balance and gains account, the Counter-account and Header comment boxes, and the Writes box showing the rule's text](images/editor.png)
+
+For a rule, the editor has:
+
+- **Enabled**, the same switch as Turn off;
+- **Comment above this entry**, the comment that sits above the rule in the
+  file and moves with it. Type it without `;` prefixes;
+- **Repeats**, **From** and **To** (exclusive). A period these controls can't
+  state is shown as hledger text, which you can edit;
+- **Description**, the text after the period;
+- the **postings**: account, amount, growth rate, and the **asset** switch. An
+  asset posting also has **Balance** and a gains account ([Asset
+  rows](asset-rows.md)). Each posting has an optional comment, and ↑ and ↓
+  reorder them;
+- **Counter-account**, the rule's posting with no amount;
+- **Header comment**, a comment on the `~` line.
+
+Type amounts as the file writes them, with a minus for money out of an account:
+`-5660` on `income:salary`, `1150` on `expenses:taxes:federal`. Changing an
+account never changes its amount's sign. When the postings balance, the
+Counter-account box says "None needed", and none is written unless you type
+one.
+
+A one-off has a date, a description, postings and a counter-account. An
+automatic posting has the rule form described in [Automatic
+postings](file-format.md#editing-rules-on-the-projections-page). A note or
+section heading is a text box, with a switch between the two.
+
+**Writes** shows the exact text a save puts in the file for this entry. Until
+you change something, it is the entry's text from the file. After a change, the
+engine renders the draft with the same code a save uses, so the box and the
+saved file can't disagree. If the engine refuses the draft, the box says why in
+red and Done stays disabled until you fix it.
+
+### Keys
+
+With focus outside any text box, these keys work on the list (<kbd>?</kbd>
+lists them all):
+
+| Keys | Action |
+|---|---|
+| <kbd>j</kbd> / <kbd>↓</kbd>, <kbd>k</kbd> / <kbd>↑</kbd> | next or previous entry |
+| <kbd>g</kbd> <kbd>g</kbd> / <kbd>G</kbd> | first or last entry |
+| <kbd>Enter</kbd> or <kbd>e</kbd> | edit the entry (expand it, for file text) |
+| <kbd>J</kbd> / <kbd>K</kbd> | move the entry down or up |
+| <kbd>c</kbd> | duplicate |
+| <kbd>C</kbd> | duplicate as alternative |
+| <kbd>t</kbd> | turn off or on |
+| <kbd>x</kbd> then <kbd>x</kbd> | delete (the first press asks) |
+| <kbd>n</kbd> | open the **+ Add** menu |
+| <kbd>Escape</kbd> | cancel a delete, or clear the selection |
 
 ## The six readings
 
@@ -120,7 +256,7 @@ the seed exists, it's only a starting point. You can put rows on any account
 you like, mixing a parent such as `expenses:food` with leaves such as
 `expenses:travel:flights`. The statements show a parent's own projected amount
 as its own row, next to its children. Moving the slider later doesn't re-seed
-the table. If you haven't edited the seed yet, and it didn't come from a file,
+the list. If you haven't edited the seed yet, and it didn't come from a file,
 a **Re-seed at depth N** button appears beside the slider.
 
 A link to an older `tab=net` or `tab=worth` reading opens Runway.
@@ -171,8 +307,9 @@ you the resulting path **before** it writes.
   exists there" and nothing is touched.
 - **A save rewrites only what changed.** Your own comments, `account`
   directives, transactions, blank lines, tabs, column alignment and CRLF line
-  endings all survive: a rule you did not edit comes out the bytes it went in
-  as, and a save that changes nothing writes nothing at all.
+  endings all survive. An entry you did not edit comes out the bytes it went in
+  as, even if you moved it, and a save that changes nothing writes nothing at
+  all.
 - **The header is rewritten on every save**: `created:` is carried forward from
   the file, and `updated:` is set to today by the engine's clock, not your
   browser's.
@@ -185,8 +322,7 @@ rather than silently shortening it.
 
 ### One normalization to know about
 
-A single-date rule — `~ 2027-03-01  Series A` — is loaded back as a **one-off
-event**, which is the row the tab shows it as. If you had it as a recurring row
-with a single-date recurrence, it will come back in the "One-off events" section
-after a save-and-reload. The engine treats the two identically, so no projected
+A single-date rule, `~ 2027-03-01  Series A`, is a **one-off**, and the list
+badges it so. A recurring rule you give a single-date period loads back as a
+one-off after a save. The engine treats the two the same, so no projected
 figure moves.
