@@ -267,9 +267,12 @@ pub struct ForecastDefaults {
     /// Group → the default counter-account its counter-less lines balance
     /// against ([`CounterDefaults::for_lines`] over those lines' accounts and
     /// commodities).
-    /// Only groups with at least one counter-less line appear.
+    /// Only groups with at least one counter-less line appear, and only when
+    /// those lines do not balance on their own ([`lines_balance`]): a group
+    /// that does posts nothing to a counter, so it has no default.
     pub lines: BTreeMap<String, AccountName>,
-    /// Event id → the default counter-account, for events that name none.
+    /// Event id → the default counter-account, for events that name none and
+    /// do not balance on their own.
     pub events: BTreeMap<String, AccountName>,
     /// The journal's own fallback (Decision 7 steps 3 and 4): what a scenario
     /// with no `; cash:` header balances a line against when history pairs it
@@ -294,22 +297,30 @@ impl ForecastDefaults {
         defaults: &CounterDefaults,
         header: Option<&AccountName>,
     ) -> Self {
-        let mut grouped: BTreeMap<&str, Vec<(&str, &Commodity)>> = BTreeMap::new();
+        let mut grouped: BTreeMap<&str, Vec<&ScenarioLine>> = BTreeMap::new();
         for line in scenario.lines.iter().filter(|line| line.counter.is_none()) {
-            grouped
-                .entry(line.group.as_str())
-                .or_default()
-                .push((line.account.0.as_str(), &line.amount.commodity));
+            grouped.entry(line.group.as_str()).or_default().push(line);
         }
         Self {
+            // A group or event that balances on its own posts nothing to a
+            // counter (the expansion adds no leg), so it has no default to show.
             lines: grouped
                 .into_iter()
-                .map(|(group, lines)| (group.to_string(), defaults.for_lines_under(lines, header)))
+                .filter(|(_, lines)| !lines_balance(lines))
+                .map(|(group, lines)| {
+                    let accounts = lines
+                        .iter()
+                        .map(|line| (line.account.0.as_str(), &line.amount.commodity));
+                    (
+                        group.to_string(),
+                        defaults.for_lines_under(accounts, header),
+                    )
+                })
                 .collect(),
             events: scenario
                 .events
                 .iter()
-                .filter(|event| event.counter.is_none())
+                .filter(|event| event.counter.is_none() && !event_balances(event))
                 .map(|event| {
                     (
                         event.id.clone(),
@@ -321,6 +332,41 @@ impl ForecastDefaults {
             gains: AccountName(DEFAULT_GAINS_ACCOUNT.to_string()),
         }
     }
+}
+
+/// Whether `amounts` sum to zero in every commodity. An overflowing sum is not
+/// zero, so a default stands for it.
+fn sums_to_zero<'a>(amounts: impl IntoIterator<Item = (&'a Commodity, Dec)>) -> bool {
+    let mut sum = MixedAmount::new();
+    for (commodity, quantity) in amounts {
+        if sum.accumulate(commodity, quantity).is_err() {
+            return false;
+        }
+    }
+    sum.drop_zeros();
+    sum.is_empty()
+}
+
+/// Whether counter-less `lines` (one group's) balance on their own: their base
+/// amounts sum to zero, as a rule that states its own cash leg does. Such a
+/// group needs no counter-account, so it has no default and no upgrade.
+fn lines_balance(lines: &[&ScenarioLine]) -> bool {
+    sums_to_zero(
+        lines
+            .iter()
+            .map(|line| (&line.amount.commodity, line.amount.quantity)),
+    )
+}
+
+/// Whether `event`'s stated amounts balance on their own (see [`lines_balance`]).
+fn event_balances(event: &ScenarioEvent) -> bool {
+    sums_to_zero(
+        event
+            .postings
+            .iter()
+            .flat_map(|posting| &posting.amounts)
+            .map(|amount| (&amount.commodity, amount.quantity)),
+    )
 }
 
 /// An event's postings as `(account, commodity)`, one per stated amount — what
@@ -805,7 +851,8 @@ impl CounterDefaults {
 /// default and writes it on save").
 ///
 /// Only a group where NO line names a counter and whose base amounts do not sum
-/// to zero is touched; every line in it gets the group's default. That posts the
+/// to zero ([`lines_balance`], the same test [`ForecastDefaults`] makes) is
+/// touched; every line in it gets the group's default. That posts the
 /// same money to the same account the engine's legacy rule would, so saving
 /// changes no number. A group that already balances (a rule that states its own
 /// cash leg) is left alone, and so is an event that balances. Never used on
@@ -831,22 +878,7 @@ pub fn upgrade_legacy_counters(scenario: &Scenario, defaults: &CounterDefaults) 
     }
     for members in groups.values() {
         let lines: Vec<&ScenarioLine> = members.iter().map(|&i| &scenario.lines[i]).collect();
-        if lines.iter().any(|line| line.counter.is_some()) {
-            continue;
-        }
-        let mut sum = MixedAmount::new();
-        for line in &lines {
-            if sum
-                .accumulate(&line.amount.commodity, line.amount.quantity)
-                .is_err()
-            {
-                // An overflowing sum is not zero; let the default stand.
-                sum = MixedAmount::single(line.amount.commodity.clone(), Dec::new(1, 0));
-                break;
-            }
-        }
-        sum.drop_zeros();
-        if sum.is_empty() {
+        if lines.iter().any(|line| line.counter.is_some()) || lines_balance(&lines) {
             continue;
         }
         let counter = defaults.for_lines(
@@ -859,19 +891,13 @@ pub fn upgrade_legacy_counters(scenario: &Scenario, defaults: &CounterDefaults) 
         }
     }
     for event in &mut out.events {
-        if event.counter.is_some() || off.contains(&(ItemKind::Event, event.id.as_str())) {
+        if event.counter.is_some()
+            || off.contains(&(ItemKind::Event, event.id.as_str()))
+            || event_balances(event)
+        {
             continue;
         }
-        let mut sum = MixedAmount::new();
-        let overflowed = event
-            .postings
-            .iter()
-            .flat_map(|posting| &posting.amounts)
-            .any(|amount| sum.accumulate(&amount.commodity, amount.quantity).is_err());
-        sum.drop_zeros();
-        if overflowed || !sum.is_empty() {
-            event.counter = Some(defaults.for_lines(event_lines(event)));
-        }
+        event.counter = Some(defaults.for_lines(event_lines(event)));
     }
     out
 }
@@ -2856,6 +2882,52 @@ mod tests {
             Some("assets:savings")
         );
         assert_eq!(upgraded.events[1].counter, None);
+    }
+
+    /// The editor's greyed defaults follow the same rule as the upgrade: a
+    /// group or event that balances on its own posts nothing to a counter, so
+    /// it gets no default (Patrick's capex rule, 2026-10-29); one that does
+    /// not still gets one.
+    #[test]
+    fn only_an_unbalanced_group_or_event_gets_a_default_counter() {
+        let defaults = defaults_over(&journal(), None);
+        let shown = ForecastDefaults::of(
+            &scenario(
+                vec![
+                    line("capex", "assets:checking", usd(-300_000), "every 6 months"),
+                    line(
+                        "capex",
+                        "assets:fixed:computers",
+                        usd(300_000),
+                        "every 6 months",
+                    ),
+                    line("rent", "expenses:rent", usd(100_000), "monthly"),
+                ],
+                vec![
+                    event(
+                        "move",
+                        "2027-01-01",
+                        &[("assets:checking", usd(100)), ("assets:savings", usd(-100))],
+                        None,
+                    ),
+                    event("legal", "2027-01-01", &[("expenses:legal", usd(100))], None),
+                ],
+            ),
+            &defaults,
+        );
+        assert_eq!(shown.lines.keys().collect::<Vec<_>>(), ["rent"]);
+        assert_eq!(shown.lines["rent"].0, "assets:savings");
+        assert_eq!(shown.events.keys().collect::<Vec<_>>(), ["legal"]);
+    }
+
+    /// A sum is zero per commodity: `$100` against `€-100` balances nothing.
+    #[test]
+    fn a_group_balances_only_commodity_by_commodity() {
+        let euro = line("fx", "assets:eur", amount("€", -10_000, 2), "monthly");
+        let dollars = line("fx", "assets:checking", usd(10_000), "monthly");
+        assert!(!lines_balance(&[&euro, &dollars]));
+        let back = line("fx", "assets:savings", usd(-10_000), "monthly");
+        assert!(lines_balance(&[&dollars, &back]));
     }
 
     /// The upgrade changes no number: the same scenario projects identically
