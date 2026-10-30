@@ -22,6 +22,7 @@ import {connectFakeEngine, FAKE_ENGINE} from "#lib/testing/fakeEngine.js";
 import {rawProjectionRun} from "#lib/testing/projectionFixture.js";
 import {decodeScenario} from "#lib/api/nativeDecode.js";
 import {scenarioStore, scenarioTableView, sameProjectionQuery, type ProjectionWindow} from "./scenarioStore.svelte";
+import {runBody} from "./scenarioModel";
 
 const SEED_ROUTE = "/api/projections/seed?count=12&depth=2";
 /** The same seed, asked for one level deeper — the page's depth slider at 3. */
@@ -183,8 +184,8 @@ describe("COMPONENT scenarioStore — the seed's depth", () => {
     });
 });
 
-describe("COMPONENT scenarioStore — disabled entries (plan 31 Phase C2)", () => {
-    it("the table is handed only the ACTIVE entries, so it can never run or save a disabled one as live", () => {
+describe("COMPONENT scenarioStore — disabled entries (plan 31 C3)", () => {
+    it("the list is handed EVERY entry, a disabled one flagged on its layout item; a run still leaves it out", () => {
         const decoded = decodeScenario({
             ...SEED_BODY,
             lines: [SEED_BODY.lines[0], {...SEED_BODY.lines[0], id: "off:0:0", group: "off:0", account: "revenues:bonus"}],
@@ -194,8 +195,33 @@ describe("COMPONENT scenarioStore — disabled entries (plan 31 Phase C2)", () =
             ],
         });
         scenarioStore.adopt(decoded);
-        expect(scenarioStore.scenario.lines.map((l) => l.group)).toEqual(["gap:expenses:housing:$"]);
-        expect(scenarioStore.scenario.layout.map((item) => item.key)).toEqual(["gap:expenses:housing:$"]);
+        expect(scenarioStore.scenario.lines.map((l) => l.group)).toEqual(["gap:expenses:housing:$", "off:0"]);
+        expect(scenarioStore.scenario.layout.map((item) => [item.key, item.disabled])).toEqual([
+            ["gap:expenses:housing:$", false],
+            ["off:0", true],
+        ]);
+        const body = runBody(scenarioStore.scenario, WINDOW);
+        expect(body.scenario.lines.map((l) => l.group)).toEqual(["gap:expenses:housing:$"]);
+        expect(body.scenario.layout?.map((item) => item.key)).toEqual(["gap:expenses:housing:$"]);
+    });
+
+    it("a scenario adopted without a layout is given the derived one", () => {
+        scenarioStore.adopt(decodeScenario({...SEED_BODY, layout: []}));
+        expect(scenarioStore.scenario.layout.map((item) => item.kind)).toEqual(scenarioStore.scenario.lines.map(() => "rule"));
+    });
+});
+
+describe("COMPONENT scenarioStore — commit (plan 31 C3)", () => {
+    it("replaces the scenario as ONE edit: one revision, dirty, through touch()", () => {
+        scenarioStore.adopt(decodeScenario(SEED_BODY));
+        const before = scenarioStore.revision;
+        const touch = vi.spyOn(scenarioStore, "touch");
+        scenarioStore.commit({...scenarioStore.scenario, cash: "assets:cash"});
+        expect(touch).toHaveBeenCalledTimes(1);
+        expect(scenarioStore.revision).toBe(before + 1);
+        expect(scenarioStore.dirty).toBe(true);
+        expect(scenarioStore.scenario.cash).toBe("assets:cash");
+        touch.mockRestore();
     });
 });
 

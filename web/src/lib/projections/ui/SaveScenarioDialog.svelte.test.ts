@@ -161,9 +161,12 @@ describe("COMPONENT ScenarioFileBar", () => {
 
     it("explains a read-only file rather than letting the save be refused", () => {
         // DECISION 5: the Projections tab never writes over a plan of record.
+        // The notice itself sits beside the scenario list (plan 31 C3); the
+        // disabled Save says why on its own.
         mountBar({currentId: "budget.journal", canSave: false});
-        expect(screen.getByTestId("projection-read-only").textContent).toContain("part of your main journal");
-        expect((screen.getByTestId("projection-save") as HTMLButtonElement).disabled).toBe(true);
+        const save = screen.getByTestId("projection-save") as HTMLButtonElement;
+        expect(save.disabled).toBe(true);
+        expect(save.title).toContain("part of your main journal");
     });
 
     it("disables every write on a server with no editor bound", () => {

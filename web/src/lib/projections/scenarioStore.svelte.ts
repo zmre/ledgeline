@@ -34,7 +34,7 @@ import {decodeProjection, decodeScenario} from "#lib/api/nativeDecode.js";
 import type {PeriodInterval} from "#lib/reports/ui/params.js";
 import {dataView, type DataView, type LoadStatus} from "#lib/stores/loadState.js";
 import {createResource} from "#lib/stores/resource.svelte.js";
-import {activeScenario, cloneScenario, emptyScenario, runBody} from "./scenarioModel";
+import {cloneScenario, emptyScenario, runBody, withLayout} from "./scenarioModel";
 import type {AccountsRequest, Projection, Scenario} from "./types";
 
 /** How many trailing months the seed's unbudgeted averages are taken over. The engine's own default, stated so the request is readable. */
@@ -177,19 +177,32 @@ export const scenarioStore = {
     },
 
     /**
+     * Replace the scenario with an edited one, as ONE edit (plan 31 C3).
+     *
+     * The list editor's dialog edits a draft and applies it here on Done, so a
+     * whole dialog's worth of fields costs one revision and one debounced run.
+     * Goes through `touch()` rather than beside it, so there is still exactly
+     * one place that says the scenario changed.
+     */
+    commit(next: Scenario): void {
+        scenario = next;
+        scenarioStore.touch();
+    },
+
+    /**
      * Replace the whole scenario — a seed, or (Phase 3) a loaded file.
      *
      * Cloned on the way in: `decodeScenario` freezes what it returns, as every
      * decoder here does, and the editor has to be able to write into what it
      * holds.
      *
-     * Only the ACTIVE entries (`activeScenario`, plan 31 Phase C2): the wire
-     * carries disabled ones, flagged, and this table cannot show a flag, so it
-     * is never handed one. Its save sends no layout, and the engine puts every
-     * disabled entry back where the file has it, still commented out.
+     * Every entry, disabled ones included (plan 31 C3): the list shows a
+     * turned-off entry in place, and `projectable` keeps it out of a run. A
+     * scenario without a layout is given the derived one, so the list always
+     * has the file's order to show.
      */
     adopt(next: Scenario, seededAt: number | null = null): void {
-        scenario = cloneScenario(activeScenario(next));
+        scenario = cloneScenario(withLayout(next));
         revision += 1;
         dirty = false;
         adopted = true;
