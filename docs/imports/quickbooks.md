@@ -16,7 +16,7 @@ Ledgeline imports the **Journal** report from QuickBooks Online. That report is 
 > 2. Set the report period. **All dates** is a good choice. Re-importing skips transactions that are already in your journal, matched by QuickBooks' transaction number (Trans #), which Ledgeline stores as an `id:` tag.
 > 3. Optionally, use **Customize** to add the **Vendor**, **Customer** and **Class** columns. Ledgeline keeps them as tags when they are present.
 > 4. Run the report.
-> 5. Choose **Export**, then **Export to Excel**, to download an `.xlsx` file. Use the Excel export rather than CSV.
+> 5. Choose **Export**, then **Export to Excel**, to download an `.xlsx` file. Use the Excel export rather than CSV as it includes more data that we need.
 
 ## Import the file
 
