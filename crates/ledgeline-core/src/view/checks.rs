@@ -134,7 +134,10 @@ pub fn engine_findings(journal: &Journal) -> Vec<Finding> {
 /// `*:unknown`, `*:uncategorized` (any depth, including bare), or a bare
 /// top-level account whose TYPE is expense or revenue — decided by type, so a
 /// chart of accounts rooted at `cogs:` or `gastos:` is caught too.
-fn is_uncategorized(account: &str, classes: &Classes) -> bool {
+///
+/// `pub(crate)` for [`crate::review`], whose "unknown" must be this exact
+/// predicate so the review queue and the Problems drawer count the same rows.
+pub(crate) fn is_uncategorized(account: &str, classes: &Classes) -> bool {
     let lowered = account.to_lowercase();
     let mut segments = lowered.split(':');
     let depth = segments.clone().count();

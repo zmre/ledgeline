@@ -58,14 +58,17 @@
 
 use crate::decimal::{Dec, DecError};
 use crate::model::{
-    Amount, AmountStyle, BalanceAssertion, Commodity, CommoditySide, CostKind, Journal, Posting,
-    PostingType, Status, Tindex, Transaction,
+    AccountName, Amount, AmountStyle, BalanceAssertion, Commodity, CommoditySide, CostKind,
+    Journal, Posting, PostingType, Status, Tindex, Transaction,
 };
-use crate::parse::{ParseError, ParsedJournal, check_transaction_balances, resolve_source_file};
+use crate::parse::{
+    ParseError, ParsedJournal, check_transaction_balances, parse_tags, resolve_source_file,
+    split_comment, tag_in_segment,
+};
 use crate::vault::{LocalVault, Revision, Vault, VaultError, VaultPath};
 use ropey::Rope;
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thiserror::Error;
@@ -163,6 +166,53 @@ pub enum EditError {
 /// public API through wall-clock timing instead.
 #[cfg(test)]
 static BULK_REPARSE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+// Test-only instrumentation: every whole-journal reparse an edit performs
+// ([`JournalEditor::reparse`]), counted per THREAD so tests running in
+// parallel cannot see each other's. [`JournalEditor::apply_batch`]'s whole
+// point is that this is one per batch however many transactions it touches.
+#[cfg(test)]
+thread_local! {
+    static REPARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// One edit [`JournalEditor::apply_batch`] makes to one transaction.
+///
+/// Every variant but [`Replace`](Self::Replace) is **surgical**: it rewrites
+/// the characters it names on the line they live on and leaves every other
+/// byte of the transaction alone, so an elided amount stays elided and a
+/// hand-aligned amount column stays aligned. `Replace` re-renders the whole
+/// transaction through [`format_transaction`], exactly as
+/// [`JournalEditor::replace_transaction`] does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditOp {
+    /// The description, as [`JournalEditor::set_description`] — except that
+    /// the header's comment is carried across byte-for-byte rather than
+    /// re-rendered.
+    SetDescription(String),
+    /// The account of the `posting`-th WRITTEN posting, as
+    /// [`JournalEditor::set_posting_account`].
+    SetPostingAccount {
+        /// 0-based posting position, counting the postings the file writes.
+        posting: usize,
+        /// The new account name.
+        account: String,
+    },
+    /// Set (`Some`) or remove (`None`) one transaction tag, as
+    /// [`JournalEditor::set_txn_tag`].
+    SetTxnTag {
+        /// The tag name (`reviewed`).
+        name: String,
+        /// Its new value, or `None` to remove every occurrence.
+        value: Option<String>,
+    },
+    /// The free text of the header's same-line comment, keeping its tags, as
+    /// [`JournalEditor::set_txn_comment`].
+    SetTxnComment(String),
+    /// A full re-render from this transaction. Must be the entry's FIRST op:
+    /// anything before it would be overwritten.
+    Replace(Box<Transaction>),
+}
 
 /// Where [`JournalEditor::add_transaction`] places the new transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -722,6 +772,8 @@ impl JournalEditor {
     /// Reparse the whole journal through the vault with `texts` overriding
     /// what storage holds.
     fn reparse(&self, texts: &HashMap<VaultPath, String>) -> Result<Journal, EditError> {
+        #[cfg(test)]
+        REPARSES.with(|count| count.set(count.get() + 1));
         crate::parse::parse_in(
             &*self.vault,
             &self.main,
@@ -1572,6 +1624,322 @@ impl JournalEditor {
         }
 
         self.commit(&source_file, candidate, reparsed)
+    }
+
+    /// The [`Fingerprint`] of the exact source text of the transaction with
+    /// `index` (what [`transaction_source`](Self::transaction_source) returns),
+    /// or `None` if there is no such transaction.
+    ///
+    /// A client echoes it back to [`apply_batch`](Self::apply_batch) to prove it
+    /// is editing the transaction it was shown: any byte of it changing —
+    /// another tab's save, an external editor — changes the fingerprint.
+    #[must_use]
+    pub fn transaction_fingerprint(&self, index: Tindex) -> Option<Fingerprint> {
+        self.transaction_source(index)
+            .map(|text| Fingerprint::of_bytes(text.as_bytes()))
+    }
+
+    /// [`transaction_fingerprint`](Self::transaction_fingerprint) for many
+    /// transactions at once, in `indices` order.
+    ///
+    /// Each file's line index is built once rather than once per transaction —
+    /// a review queue fingerprints 50 or 100 transactions of a file that may
+    /// hold 200k.
+    #[must_use]
+    pub fn transaction_fingerprints(&self, indices: &[Tindex]) -> Vec<Option<Fingerprint>> {
+        let mut lines_by_file: HashMap<&Path, Lines<'_>> = HashMap::new();
+        indices
+            .iter()
+            .map(|&index| {
+                let txn = self.journal.transactions.get(self.position_of(index)?)?;
+                let rope = self.rope_for(&txn.source_file).ok()?;
+                let lines = lines_by_file
+                    .entry(txn.source_file.as_path())
+                    .or_insert_with(|| Lines::new(rope));
+                let (start, end) = txn_char_range(lines, txn).ok()?;
+                Some(Fingerprint::of_bytes(
+                    rope.slice(start..end).to_string().as_bytes(),
+                ))
+            })
+            .collect()
+    }
+
+    /// Set (`Some`) or remove (`None`) the tag `name` on the transaction with
+    /// `index`, rewriting only the comment it lives in (plan 32 D2).
+    ///
+    /// - An existing tag is rewritten where it sits — on the header's same-line
+    ///   comment or on an indented `;` line above the first posting — with its
+    ///   own spacing kept; see [`upsert_tag`] for the comma rules.
+    /// - A new tag joins the header's comment, or starts one written as exactly
+    ///   `"  ; "` after the header text.
+    /// - `None` removes every occurrence, with its separator. A comment (or a
+    ///   continuation line) left empty is removed whole.
+    ///
+    /// Nothing else in the transaction moves: an elided amount stays elided.
+    /// The result is re-parsed, and refused unless the tag reads back exactly
+    /// as asked and every other tag is untouched.
+    ///
+    /// # Errors
+    /// [`EditError::TransactionNotFound`], [`EditError::Unsupported`] for a
+    /// name or value hledger could not read back (a comma, a line break,
+    /// whitespace in the name), [`EditError::ParseInvalidAfterEdit`],
+    /// [`EditError::RoundTripMismatch`], or [`EditError::Internal`]. On any
+    /// error `self` is unchanged.
+    pub fn set_txn_tag(
+        &mut self,
+        index: Tindex,
+        name: &str,
+        value: Option<&str>,
+    ) -> Result<(), EditError> {
+        self.apply_one(
+            index,
+            EditOp::SetTxnTag {
+                name: name.to_string(),
+                value: value.map(str::to_string),
+            },
+        )
+    }
+
+    /// Replace the FREE TEXT of the header's same-line comment with `text`,
+    /// keeping every tag on it (plan 32 D9).
+    ///
+    /// The comment is rebuilt as `text` followed by the line's tags, in their
+    /// order and with their own spacing. An empty `text` leaves only the tags,
+    /// and with no tags either the comment is removed. A header with no comment
+    /// gains one written as `"  ; text"`. Continuation `;` lines are left as
+    /// they are.
+    ///
+    /// # Errors
+    /// As [`set_txn_tag`](Self::set_txn_tag); `text` that hledger would read as
+    /// a tag (`note: x`) or that spans lines is [`EditError::Unsupported`].
+    pub fn set_txn_comment(&mut self, index: Tindex, text: &str) -> Result<(), EditError> {
+        self.apply_one(index, EditOp::SetTxnComment(text.to_string()))
+    }
+
+    /// One op on one transaction, with no fingerprint to check, reporting the
+    /// failure itself rather than a [`EditError::BulkTransaction`] of one.
+    fn apply_one(&mut self, index: Tindex, op: EditOp) -> Result<(), EditError> {
+        let ops = [op];
+        self.apply_entries(&[(index, None, &ops)])
+            .map_err(|error| match error {
+                EditError::BulkTransaction { source, .. } => *source,
+                other => other,
+            })
+    }
+
+    /// Apply many transactions' edits as ONE edit (plan 32 D14): one reparse,
+    /// one validation, all or nothing.
+    ///
+    /// Each entry names a transaction, the [`Fingerprint`] of the source text
+    /// the caller was shown ([`transaction_fingerprint`](Self::transaction_fingerprint)),
+    /// and the [`EditOp`]s to apply to it in order.
+    ///
+    /// 1. Every target is resolved and its fingerprint checked against the
+    ///    current text before anything is rewritten.
+    /// 2. Each transaction's new text is built from its old text, op by op.
+    /// 3. Each file's rewrites are spliced into a copy of its rope
+    ///    back-to-front, so no splice moves a span another one still needs.
+    /// 4. The whole journal is re-parsed ONCE and checked: the count is
+    ///    unchanged, every transaction outside the batch is byte-identical,
+    ///    every edited one re-parsed in place and reads back as asked, and no
+    ///    new imbalance appeared anywhere.
+    ///
+    /// Only then are the ropes and the journal replaced. Like every mutation
+    /// here this is in memory; [`save`](Self::save) writes every touched file
+    /// in one pass, refusing them all if any changed on disk.
+    ///
+    /// # Errors
+    /// A failure that belongs to one entry — no such transaction, a stale
+    /// fingerprint ([`EditError::ExternalChange`]), an op it cannot take, a
+    /// read-back mismatch — is [`EditError::BulkTransaction`] with that entry's
+    /// position in `edits`. A combined result that does not parse is
+    /// [`EditError::ParseInvalidAfterEdit`]; a change outside the batch is
+    /// [`EditError::Internal`]; a new imbalance is [`EditError::Unbalanced`].
+    /// On any error `self` is unchanged.
+    pub fn apply_batch(
+        &mut self,
+        edits: &[(Tindex, Fingerprint, Vec<EditOp>)],
+    ) -> Result<(), EditError> {
+        let entries: Vec<BatchEntry<'_>> = edits
+            .iter()
+            .map(|(index, fingerprint, ops)| (*index, Some(fingerprint), ops.as_slice()))
+            .collect();
+        self.apply_entries(&entries)
+    }
+
+    /// [`apply_batch`](Self::apply_batch)'s body, with the fingerprint optional
+    /// so the single-op methods share every line of it.
+    fn apply_entries(&mut self, entries: &[BatchEntry<'_>]) -> Result<(), EditError> {
+        let attributed = |index: usize, source: EditError| EditError::BulkTransaction {
+            index,
+            source: Box::new(source),
+        };
+
+        // 1. Resolve every target to its position, once each.
+        let mut positions: Vec<usize> = Vec::with_capacity(entries.len());
+        let mut seen: HashSet<usize> = HashSet::with_capacity(entries.len());
+        for (at, (index, _, _)) in entries.iter().enumerate() {
+            let position = self
+                .position_of(*index)
+                .ok_or_else(|| attributed(at, EditError::TransactionNotFound(index.0)))?;
+            if !seen.insert(position) {
+                return Err(attributed(
+                    at,
+                    EditError::Unsupported(format!(
+                        "transaction #{} is listed more than once in the batch",
+                        index.0
+                    )),
+                ));
+            }
+            positions.push(position);
+        }
+
+        // 2-3. Rewrite each transaction from its own text; splice per file.
+        let mut by_file: HashMap<&Path, Vec<usize>> = HashMap::new();
+        for (at, &position) in positions.iter().enumerate() {
+            by_file
+                .entry(self.journal.transactions[position].source_file.as_path())
+                .or_default()
+                .push(at);
+        }
+        let mut rewrites: Vec<Option<Rewrite>> = entries.iter().map(|_| None).collect();
+        let mut candidates: HashMap<PathBuf, Rope> = HashMap::new();
+        for (key, members) in by_file {
+            let rope = self.rope_for(key)?;
+            let lines = Lines::new(rope);
+            let terminator = dominant_terminator(rope);
+            let mut splices: Vec<(usize, usize, String)> = Vec::new();
+            for at in members {
+                let (_, fingerprint, ops) = entries[at];
+                let txn = &self.journal.transactions[positions[at]];
+                let (start, end) = txn_char_range(&lines, txn)?;
+                let old = rope.slice(start..end).to_string();
+                if let Some(expected) = fingerprint
+                    && !expected.content_matches(&Fingerprint::of_bytes(old.as_bytes()))
+                {
+                    return Err(attributed(at, EditError::ExternalChange));
+                }
+                let elided = elided_postings(&lines, txn);
+                let rewrite = rewrite_transaction(txn, &old, &elided, ops, terminator)
+                    .map_err(|error| attributed(at, error))?;
+                if rewrite.text != old {
+                    splices.push((start, end, rewrite.text.clone()));
+                }
+                rewrites[at] = Some(rewrite);
+            }
+            if splices.is_empty() {
+                continue;
+            }
+            splices.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
+            let mut candidate = rope.clone();
+            for (start, end, text) in splices {
+                candidate.remove(start..end);
+                candidate.insert(start, &text);
+            }
+            candidates.insert(key.to_path_buf(), candidate);
+        }
+        // Every op asked for what the file already says.
+        if candidates.is_empty() {
+            return Ok(());
+        }
+
+        // 4. One reparse, one validation.
+        let targets: HashMap<usize, (usize, &Rewrite)> = positions
+            .iter()
+            .zip(&rewrites)
+            .enumerate()
+            .filter_map(|(at, (&position, rewrite))| Some((position, (at, rewrite.as_ref()?))))
+            .collect();
+        let reparsed = self.validate_batch(&candidates, &targets)?;
+
+        for (key, candidate) in candidates {
+            let file = self.files.get_mut(&key).ok_or_else(|| {
+                EditError::Internal(format!(
+                    "no loaded buffer for source file {}",
+                    key.display()
+                ))
+            })?;
+            file.rope = candidate;
+            file.dirty = true;
+        }
+        self.journal = Arc::new(reparsed);
+        Ok(())
+    }
+
+    /// The batch analogue of [`validate_with`](Self::validate_with): reparse
+    /// ONCE with every `candidates` rope substituted, then prove the batch did
+    /// exactly what it asked. `targets` maps an edited transaction's position
+    /// to its entry and planned rewrite.
+    ///
+    /// A batch only rewrites transactions in place, so the before and after
+    /// sequences line up position for position — no prefix/suffix alignment
+    /// ([`check_single_change`]) is needed, and anything that does not line up
+    /// is itself the failure.
+    fn validate_batch(
+        &self,
+        candidates: &HashMap<PathBuf, Rope>,
+        targets: &HashMap<usize, (usize, &Rewrite)>,
+    ) -> Result<Journal, EditError> {
+        let mut texts = self.rope_texts();
+        let before = transaction_sources(&self.journal, &self.text_of(&texts))?;
+        for (key, candidate) in candidates {
+            texts.insert(self.vault_path_of(key)?, candidate.to_string());
+        }
+        let reparsed = self.reparse(&texts)?;
+        if reparsed.transactions.len() != before.len() {
+            return Err(EditError::Internal(format!(
+                "expected {} transactions after the batch, found {}",
+                before.len(),
+                reparsed.transactions.len()
+            )));
+        }
+        let after = transaction_sources(&reparsed, &self.text_of(&texts))?;
+
+        for (position, (was, now)) in before.iter().zip(&after).enumerate() {
+            match targets.get(&position) {
+                Some(&(at, rewrite)) => {
+                    let attributed = |source: EditError| EditError::BulkTransaction {
+                        index: at,
+                        source: Box::new(source),
+                    };
+                    if now.0 != was.0 || strip_terminator(&now.1) != strip_terminator(&rewrite.text)
+                    {
+                        return Err(attributed(EditError::Internal(
+                            "the edited transaction did not re-parse in place".to_string(),
+                        )));
+                    }
+                    rewrite
+                        .expected
+                        .check(
+                            &self.journal.transactions[position],
+                            &reparsed.transactions[position],
+                        )
+                        .map_err(attributed)?;
+                }
+                None => {
+                    if now.0 != was.0 || strip_terminator(&now.1) != strip_terminator(&was.1) {
+                        return Err(EditError::Internal(
+                            "the batch changed a transaction outside it; only the listed \
+                             transactions may change"
+                                .to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+        check_no_new_imbalance(&self.journal, &before, &reparsed, &after)?;
+        Ok(reparsed)
+    }
+
+    /// The position in `journal.transactions` of the transaction with `index`.
+    /// A `tindex` is its 1-based file-order position, so that is tried first;
+    /// the scan is the backstop, never the common path.
+    fn position_of(&self, index: Tindex) -> Option<usize> {
+        let transactions = &self.journal.transactions;
+        (index.0 as usize)
+            .checked_sub(1)
+            .filter(|&guess| transactions.get(guess).is_some_and(|t| t.index == index))
+            .or_else(|| transactions.iter().position(|t| t.index == index))
     }
 
     /// Decide which file the new transaction lands in and where within that file's
@@ -2547,6 +2915,463 @@ fn push_continuation_lines(out: &mut String, comment: &str) {
         }
         out.push('\n');
     }
+}
+
+// ---------------------------------------------------------------------------
+// Surgical batch edits (plan 32)
+// ---------------------------------------------------------------------------
+
+/// One entry of a batch: the transaction, the fingerprint to check (none for
+/// the single-op methods), and its ops.
+type BatchEntry<'a> = (Tindex, Option<&'a Fingerprint>, &'a [EditOp]);
+
+/// One transaction's planned rewrite: its new source text, and what the
+/// reparse must read back from it.
+struct Rewrite {
+    text: String,
+    expected: Expected,
+}
+
+/// What an edited transaction must look like after the reparse.
+struct Expected {
+    /// The transaction as the ops describe it: the original with each
+    /// description and account change applied, or a replacement body.
+    model: Transaction,
+    /// A [`EditOp::Replace`] re-rendered it, so it is held to the round-trip
+    /// guard rather than to "every untouched field is identical".
+    replaced: bool,
+    /// The last value asked of each tag an op named (`None`: absent).
+    tags: Vec<(String, Option<String>)>,
+    /// The free text asked of the header comment, if an op set it.
+    comment: Option<String>,
+}
+
+impl Expected {
+    /// Hold `parsed` (the reparse of the rewrite of `original`) to the ops.
+    fn check(&self, original: &Transaction, parsed: &Transaction) -> Result<(), EditError> {
+        if self.replaced {
+            if !is_balanced(&parsed.postings)? {
+                return Err(EditError::Unbalanced);
+            }
+            if !transactions_equivalent(&self.model, parsed) {
+                return Err(EditError::RoundTripMismatch);
+            }
+        } else {
+            // A surgical edit moves nothing it did not name.
+            let header_kept = parsed.date == original.date
+                && parsed.date2 == original.date2
+                && parsed.status == original.status
+                && parsed.code == original.code
+                && parsed.description == self.model.description;
+            let postings_kept = parsed.postings.len() == self.model.postings.len()
+                && self
+                    .model
+                    .postings
+                    .iter()
+                    .zip(&parsed.postings)
+                    .all(|(want, got)| {
+                        want.account == got.account
+                            && want.ptype == got.ptype
+                            && want.status == got.status
+                            && want.amounts == got.amounts
+                            && want.comment == got.comment
+                    });
+            let untouched = |txn: &'_ Transaction| -> Vec<(String, String)> {
+                txn.tags
+                    .iter()
+                    .filter(|(name, _)| !self.tags.iter().any(|(asked, _)| asked == name))
+                    .cloned()
+                    .collect()
+            };
+            if !header_kept || !postings_kept || untouched(original) != untouched(parsed) {
+                return Err(EditError::RoundTripMismatch);
+            }
+        }
+        let tags_read_back = self.tags.iter().all(|(name, value)| {
+            let found = parsed.tags.iter().find(|(tag, _)| tag == name);
+            found.map(|(_, v)| v.as_str()) == value.as_deref()
+        });
+        let comment_read_back = self
+            .comment
+            .as_deref()
+            .is_none_or(|text| free_text(same_line_comment(&parsed.comment)) == free_text(text));
+        if tags_read_back && comment_read_back {
+            Ok(())
+        } else {
+            Err(EditError::RoundTripMismatch)
+        }
+    }
+}
+
+/// The non-tag, non-empty comma segments of a comment, trimmed — the part a
+/// [`EditOp::SetTxnComment`] owns.
+fn free_text(comment: &str) -> Vec<&str> {
+    comment
+        .split(',')
+        .filter(|segment| tag_in_segment(segment).is_none())
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .collect()
+}
+
+/// Build `txn`'s new source text from `old` (its current span text), applying
+/// `ops` in order, and record what the reparse must show.
+///
+/// `elided` is which postings the ORIGINAL text left without an amount, for a
+/// [`EditOp::Replace`] to write blank again ([`restore_elisions`]);
+/// `terminator` is the file's line ending, for the lines a replace renders.
+fn rewrite_transaction(
+    txn: &Transaction,
+    old: &str,
+    elided: &[bool],
+    ops: &[EditOp],
+    terminator: &str,
+) -> Result<Rewrite, EditError> {
+    let mut text = old.to_string();
+    let mut expected = Expected {
+        model: txn.clone(),
+        replaced: false,
+        tags: Vec::new(),
+        comment: None,
+    };
+    for (at, op) in ops.iter().enumerate() {
+        match op {
+            EditOp::Replace(body) => {
+                if at != 0 {
+                    return Err(EditError::Unsupported(
+                        "a replace must be the first edit of its transaction".to_string(),
+                    ));
+                }
+                if body.postings.iter().any(|p| p.amounts.len() > 1) {
+                    return Err(EditError::Unsupported(
+                        "a posting carries multiple commodity amounts".to_string(),
+                    ));
+                }
+                if !is_balanced(&body.postings)? {
+                    return Err(EditError::Unbalanced);
+                }
+                let written = restore_elisions(body, elided);
+                text = with_line_terminator(&format_transaction(&written), terminator);
+                expected.model = (**body).clone();
+                expected.replaced = true;
+            }
+            EditOp::SetDescription(description) => {
+                refuse_line_breaks("a description", description)?;
+                expected.model.description.clone_from(description);
+                text = rewrite_description(&text, &expected.model)?;
+            }
+            EditOp::SetPostingAccount { posting, account } => {
+                refuse_line_breaks("an account", account)?;
+                let target = expected
+                    .model
+                    .postings
+                    .get_mut(*posting)
+                    .filter(|p| p.generated.is_none())
+                    .ok_or(EditError::PostingNotFound {
+                        txn: txn.index.0,
+                        posting: *posting,
+                    })?;
+                text = rewrite_posting_account(&text, *posting, &target.account.0, account)?;
+                target.account = AccountName(account.clone());
+            }
+            EditOp::SetTxnTag { name, value } => {
+                check_tag(name, value.as_deref())?;
+                text = rewrite_txn_tag(&text, name, value.as_deref())?;
+                expected.tags.retain(|(asked, _)| asked != name);
+                expected.tags.push((name.clone(), value.clone()));
+            }
+            EditOp::SetTxnComment(comment) => {
+                refuse_line_breaks("a comment", comment)?;
+                if !parse_tags(comment).is_empty() {
+                    return Err(EditError::Unsupported(
+                        "the comment would be read as a tag (`name:value`); set tags separately"
+                            .to_string(),
+                    ));
+                }
+                text = rewrite_txn_comment(&text, comment)?;
+                expected.comment = Some(comment.clone());
+            }
+        }
+    }
+    Ok(Rewrite { text, expected })
+}
+
+/// Refuse a value that would split the line it is written on.
+fn refuse_line_breaks(what: &str, value: &str) -> Result<(), EditError> {
+    if value.contains(['\n', '\r']) {
+        return Err(EditError::Unsupported(format!(
+            "{what} cannot contain a line break"
+        )));
+    }
+    Ok(())
+}
+
+/// Refuse a tag hledger could not read back as written: a name must be one
+/// word with no `:`/`,`/`;`, and a value runs to the next comma, so it cannot
+/// hold one — nor leading or trailing space, which the parser trims.
+fn check_tag(name: &str, value: Option<&str>) -> Result<(), EditError> {
+    if name.is_empty() || name.contains(|c: char| c.is_whitespace() || matches!(c, ':' | ',' | ';'))
+    {
+        return Err(EditError::Unsupported(format!(
+            "`{name}` is not a tag name hledger can read"
+        )));
+    }
+    if let Some(value) = value {
+        refuse_line_breaks("a tag value", value)?;
+        if value.contains(',') || value.trim() != value {
+            return Err(EditError::Unsupported(format!(
+                "the tag value `{value}` cannot hold a comma or leading/trailing spaces"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// `rope` with chars `[start, end)` replaced by `with`, as a string.
+fn spliced(rope: &Rope, start: usize, end: usize, with: &str) -> String {
+    let mut edited = rope.clone();
+    edited.remove(start..end);
+    edited.insert(start, with);
+    edited.to_string()
+}
+
+/// `text` (a transaction's span, header on its first line) with the header's
+/// description changed to `model`'s.
+///
+/// The part before the comment is rebuilt exactly as
+/// [`JournalEditor::set_description`] rebuilds it (keeping the original date
+/// token), but the comment — and the whitespace in front of it — is carried
+/// across byte-for-byte rather than re-rendered.
+fn rewrite_description(text: &str, model: &Transaction) -> Result<String, EditError> {
+    let rope = Rope::from_str(text);
+    let lines = Lines::new(&rope);
+    let (start, end) = lines.content_range(0)?;
+    let content = rope.slice(start..end).to_string();
+    let (before, comment) = split_comment(&content);
+    let gap = &before[before.trim_end().len()..];
+    let bare = Transaction {
+        comment: String::new(),
+        ..model.clone()
+    };
+    let mut header = rebuild_header(&bare, &lines, 0)?;
+    if let Some(comment) = comment {
+        header.push_str(gap);
+        header.push(';');
+        header.push_str(comment);
+    }
+    Ok(spliced(&rope, start, end, &header))
+}
+
+/// `text` with the `posting`-th posting line's account token `current`
+/// replaced by `account` ([`locate_account_token`]).
+fn rewrite_posting_account(
+    text: &str,
+    posting: usize,
+    current: &str,
+    account: &str,
+) -> Result<String, EditError> {
+    let rope = Rope::from_str(text);
+    let lines = Lines::new(&rope);
+    let line0 = nth_posting_line(&lines, 0, lines.len(), posting).ok_or_else(|| {
+        EditError::Internal(format!(
+            "could not locate posting #{posting} in its transaction"
+        ))
+    })?;
+    let (start, end) = locate_account_token(&lines, line0, current)?;
+    Ok(spliced(&rope, start, end, account))
+}
+
+/// The lines of a transaction's span whose comments belong to the TRANSACTION:
+/// the header, then every `;` line above the first posting (PARSE-7 attaches
+/// later ones to the posting before them).
+fn header_block(lines: &Lines) -> Vec<usize> {
+    std::iter::once(0)
+        .chain(
+            (1..lines.len())
+                .take_while(|&line0| !lines.is_posting(line0))
+                .filter(|&line0| {
+                    lines
+                        .text(line0)
+                        .is_some_and(|text| text.trim_start().starts_with(';'))
+                }),
+        )
+        .collect()
+}
+
+/// The comment of `line0` (everything after its first `;`) and that `;`'s
+/// byte offset in the line's content, plus the content itself.
+fn line_comment(lines: &Lines, line0: usize) -> Option<(String, usize)> {
+    let content = strip_terminator(&lines.text(line0)?).to_string();
+    let semi = content.find(';')?;
+    Some((content, semi))
+}
+
+/// Whether comment `body` carries a tag named `name`, by the parser's rule.
+fn has_tag(body: &str, name: &str) -> bool {
+    tag_segment(&body.split(',').collect::<Vec<_>>(), name).is_some()
+}
+
+/// The first comma segment of a comment that is the tag `name`.
+fn tag_segment(segments: &[&str], name: &str) -> Option<usize> {
+    segments
+        .iter()
+        .position(|segment| tag_in_segment(segment).is_some_and(|(tag, _)| tag == name))
+}
+
+/// `text` with the transaction tag `name` set to `value`, or every occurrence
+/// removed for `None` (see [`JournalEditor::set_txn_tag`]).
+fn rewrite_txn_tag(text: &str, name: &str, value: Option<&str>) -> Result<String, EditError> {
+    let mut text = text.to_string();
+    // A removal takes one occurrence per pass; a comment cannot hold more
+    // tags than it has commas, so the bound is generous, never reached.
+    for _ in 0..=text.matches(',').count() + text.lines().count() {
+        let rope = Rope::from_str(&text);
+        let lines = Lines::new(&rope);
+        let hit = header_block(&lines).into_iter().find(|&line0| {
+            line_comment(&lines, line0)
+                .is_some_and(|(content, semi)| has_tag(&content[semi + 1..], name))
+        });
+        let Some(line0) = hit else {
+            let Some(value) = value else {
+                return Ok(text);
+            };
+            let (start, end) = lines.content_range(0)?;
+            let content = rope.slice(start..end).to_string();
+            let header = match content.find(';') {
+                Some(semi) => format!(
+                    "{}{}",
+                    &content[..=semi],
+                    upsert_tag(&content[semi + 1..], name, Some(value))
+                ),
+                None => format!("{}  ; {name}:{value}", content.trim_end()),
+            };
+            return Ok(spliced(&rope, start, end, &header));
+        };
+        let (start, end) = lines.content_range(line0)?;
+        let (content, semi) = line_comment(&lines, line0)
+            .ok_or_else(|| EditError::Internal("a tagged line lost its comment".to_string()))?;
+        let body = upsert_tag(&content[semi + 1..], name, value);
+        text = match (body.trim().is_empty(), line0) {
+            // The header's last tag went: drop the `;` and the gap before it.
+            (true, 0) => spliced(&rope, start, end, content[..semi].trim_end()),
+            // A continuation line left with nothing to say goes entirely.
+            (true, _) => spliced(&rope, start, lines.line_to_char(line0 + 1)?, ""),
+            (false, _) => spliced(&rope, start, end, &format!("{}{body}", &content[..=semi])),
+        };
+        if value.is_some() {
+            return Ok(text);
+        }
+    }
+    Err(EditError::Internal(format!(
+        "removing tag `{name}` did not converge"
+    )))
+}
+
+/// `text` with the header comment's free text replaced by `comment`, its tags
+/// kept (see [`JournalEditor::set_txn_comment`]).
+fn rewrite_txn_comment(text: &str, comment: &str) -> Result<String, EditError> {
+    let rope = Rope::from_str(text);
+    let lines = Lines::new(&rope);
+    let (start, end) = lines.content_range(0)?;
+    let content = rope.slice(start..end).to_string();
+    let wanted = comment.trim();
+    let header = match content.find(';') {
+        Some(semi) => {
+            let body = &content[semi + 1..];
+            let parts: Vec<&str> = std::iter::once(wanted)
+                .filter(|text| !text.is_empty())
+                .chain(
+                    body.split(',')
+                        .filter(|segment| tag_in_segment(segment).is_some()),
+                )
+                .collect();
+            if parts.is_empty() {
+                content[..semi].trim_end().to_string()
+            } else {
+                let lead = &body[..body.len() - body.trim_start().len()];
+                let lead = if body.trim().is_empty() { " " } else { lead };
+                format!(
+                    "{}{lead}{}",
+                    &content[..=semi],
+                    parts.join(",").trim_start()
+                )
+            }
+        }
+        None if wanted.is_empty() => return Ok(text.to_string()),
+        None => format!("{}  ; {wanted}", content.trim_end()),
+    };
+    Ok(spliced(&rope, start, end, &header))
+}
+
+/// Set (`Some`) or remove (`None`) the tag `name` in one comment's text, by
+/// hledger's rules: a comment is comma-separated segments, a segment is a tag
+/// when it holds a `:`, the tag's name is the last word before that `:`, and
+/// its value runs to the next comma.
+///
+/// `comment` is the text AFTER the `;` (its leading space included), and the
+/// result is in the same form. Only the segment that changes is touched:
+///
+/// - **Set, present:** the first such tag's value is replaced; the name, the
+///   spacing around the value, and any free text before the name stay.
+/// - **Set, absent:** `, name:value` is appended (just ` name:value` when the
+///   comment is empty).
+/// - **Remove:** the first such tag goes with its separating comma. Free text
+///   that shared its segment (`groceries reviewed:x`) stays.
+///
+/// ```
+/// use ledgeline_core::edit::upsert_tag;
+/// assert_eq!(upsert_tag(" groceries", "reviewed", Some("2026-10-30")),
+///            " groceries, reviewed:2026-10-30");
+/// assert_eq!(upsert_tag(" reviewed:2026-01-02, x:1", "reviewed", None), " x:1");
+/// ```
+#[must_use]
+pub fn upsert_tag(comment: &str, name: &str, value: Option<&str>) -> String {
+    let segments: Vec<&str> = comment.split(',').collect();
+    let Some(at) = tag_segment(&segments, name) else {
+        return match value {
+            Some(value) if comment.trim().is_empty() => format!(" {name}:{value}"),
+            Some(value) => format!("{}, {name}:{value}", comment.trim_end()),
+            None => comment.to_string(),
+        };
+    };
+    let segment = segments[at];
+    // `tag_in_segment` matched, so the segment has a `:`.
+    let colon = segment.find(':').unwrap_or(segment.len());
+    let mut rebuilt: Vec<String> = segments.iter().map(|s| (*s).to_string()).collect();
+    match value {
+        Some(value) => {
+            let old = segment.get(colon + 1..).unwrap_or("");
+            let (lead, trail) = if old.trim().is_empty() {
+                (old, "")
+            } else {
+                (
+                    &old[..old.len() - old.trim_start().len()],
+                    &old[old.trim_end().len()..],
+                )
+            };
+            rebuilt[at] = format!("{}:{lead}{value}{trail}", &segment[..colon]);
+        }
+        None => {
+            // The parser's name is the last word of the text before `:`.
+            let head = segment[..colon].trim_end();
+            let prefix = &head[..head.len().saturating_sub(name.len())];
+            if !prefix.trim().is_empty() {
+                rebuilt[at] = prefix.trim_end().to_string();
+            } else if segments.len() == 1 {
+                return String::new();
+            } else if at == 0 {
+                let lead = &segment[..segment.len() - segment.trim_start().len()];
+                rebuilt.remove(0);
+                rebuilt[0] = format!("{lead}{}", rebuilt[0].trim_start());
+            } else {
+                rebuilt.remove(at);
+                if at == segments.len() - 1 {
+                    return rebuilt.join(",").trim_end().to_string();
+                }
+            }
+        }
+    }
+    rebuilt.join(",")
 }
 
 /// Render one amount exactly as a journal line writes it.
@@ -3631,5 +4456,51 @@ mod tests {
             0
         );
         assert_eq!(editor.text(), before);
+    }
+
+    /// The batch's whole point (plan 32 D14): ONE whole-journal reparse for
+    /// the batch, however many transactions it edits — and none at all for a
+    /// batch refused before anything is rewritten. Counted through the
+    /// per-thread [`REPARSES`] hook, which parallel tests cannot disturb.
+    #[test]
+    fn apply_batch_reparses_the_whole_journal_exactly_once() {
+        let text: String = (0..60)
+            .map(|n| {
+                format!(
+                    "2026-01-{:02} Cafe {n}\n    expenses:unknown  $1.00\n    assets:cash\n\n",
+                    1 + n % 28
+                )
+            })
+            .collect();
+        let mut editor = JournalEditor::from_text("mem.journal", &text).unwrap();
+        let edits: Vec<(Tindex, Fingerprint, Vec<EditOp>)> = (1..=50)
+            .map(|n| {
+                let index = Tindex(n);
+                let ops = vec![
+                    EditOp::SetPostingAccount {
+                        posting: 0,
+                        account: "expenses:coffee".to_string(),
+                    },
+                    EditOp::SetTxnTag {
+                        name: "reviewed".to_string(),
+                        value: Some("2026-10-30".to_string()),
+                    },
+                ];
+                (index, editor.transaction_fingerprint(index).unwrap(), ops)
+            })
+            .collect();
+
+        REPARSES.with(|count| count.set(0));
+        editor
+            .apply_batch(&edits)
+            .expect("a well-formed batch applies");
+        assert_eq!(REPARSES.with(std::cell::Cell::get), 1);
+        assert_eq!(editor.text().matches("reviewed:2026-10-30").count(), 50);
+
+        // A stale fingerprint is refused before any rope is rewritten.
+        let stale = vec![(Tindex(55), edits[0].1.clone(), edits[0].2.clone())];
+        REPARSES.with(|count| count.set(0));
+        assert!(editor.apply_batch(&stale).is_err());
+        assert_eq!(REPARSES.with(std::cell::Cell::get), 0);
     }
 }

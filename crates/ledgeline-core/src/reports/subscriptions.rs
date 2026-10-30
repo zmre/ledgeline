@@ -117,6 +117,9 @@ pub struct Subscription {
     /// Expense accounts the charges posted to (sorted, deduped) — the hook for
     /// per-category ignore rules later.
     pub accounts: Vec<String>,
+    /// The accounts the charges were paid FROM (the non-expense side, sorted,
+    /// deduped) — what [`crate::review`] matches a renamed charge by.
+    pub funding: Vec<String>,
     /// True when this entry exists because a transaction was tagged
     /// `subscription:true`, rather than because the detector found a pattern.
     pub manual: bool,
@@ -211,7 +214,10 @@ const ANNUAL_DOMINANCE_PCT: usize = 80;
 
 /// The payee part of a description: everything before the first `|`, trimmed.
 /// Descriptions are stored whole in the model; this splits only for grouping.
-fn payee_of(description: &str) -> &str {
+///
+/// `pub(crate)` for [`crate::review`]'s similarity key, which must split a
+/// description into payee and note exactly as this detector does.
+pub(crate) fn payee_of(description: &str) -> &str {
     description
         .split('|')
         .next()
@@ -348,7 +354,9 @@ fn month_of(date: &str) -> i64 {
 /// Distance between two days-of-month, wrapping around the end of the month so
 /// a charge that bills on the 31st and slips to the 1st reads as 1 day apart,
 /// not 30.
-fn day_distance(a: i64, b: i64) -> i64 {
+///
+/// `pub(crate)` for [`crate::review`]'s recurring-charge suggestion.
+pub(crate) fn day_distance(a: i64, b: i64) -> i64 {
     let direct = (a - b).abs();
     direct.min(31 - direct)
 }
@@ -429,6 +437,16 @@ fn account_horizons(txns: &[Transaction], as_of: &str) -> BTreeMap<String, Strin
         }
     }
     latest
+}
+
+/// Every funding account `charges` were paid from, sorted and deduped.
+fn sorted_funding<'a>(charges: impl Iterator<Item = &'a Charge>) -> Vec<String> {
+    let mut funding: Vec<String> = charges
+        .flat_map(|charge| charge.funding.iter().cloned())
+        .collect();
+    funding.sort();
+    funding.dedup();
+    funding
 }
 
 /// Find recurring monthly and annual charges in the journal's expense history.
@@ -551,6 +569,7 @@ pub fn detect_subscriptions(
                 .collect();
             accounts.sort();
             accounts.dedup();
+            let funding = sorted_funding(dated.values().copied());
 
             let first_seen = dates.first().cloned().unwrap_or_default();
             let last_seen = dates.last().cloned().unwrap_or_default();
@@ -587,6 +606,7 @@ pub fn detect_subscriptions(
                 last_seen,
                 next_expected,
                 accounts,
+                funding,
                 manual: false,
             };
             match cadence {
@@ -640,6 +660,7 @@ pub fn detect_subscriptions(
             },
             last_seen,
             accounts,
+            funding: sorted_funding(charges.iter()),
             manual: true,
         };
         match cadence {

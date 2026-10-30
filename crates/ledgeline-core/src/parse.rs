@@ -3512,7 +3512,10 @@ fn looks_zero(residual: Dec, precision: u32) -> bool {
 
 /// Split a line at its first `;`, returning `(before, Some(after))` or
 /// `(line, None)`.
-fn split_comment(line: &str) -> (&str, Option<&str>) {
+///
+/// `pub(crate)` for the editor's surgical comment ops ([`crate::edit`]), which
+/// must find a header's comment exactly where this parser does.
+pub(crate) fn split_comment(line: &str) -> (&str, Option<&str>) {
     match line.find(';') {
         Some(pos) => (&line[..pos], Some(&line[pos + 1..])),
         None => (line, None),

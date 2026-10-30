@@ -1,0 +1,19 @@
+; Included by review.journal: an earlier file whose last transactions fall
+; inside the review window, so a batch can span two files and a read-only
+; include can be counted as "not editable".
+
+2025-01-05 Opening balance
+    assets:checking  $5000.00
+    equity:opening
+
+2025-01-15 Safeway
+    expenses:food:groceries  $61.20
+    assets:checking
+
+2025-12-02 SQ *BLUE BOTTLE 7777 OAKLAND
+    expenses:unknown  $5.75
+    liabilities:visa
+
+2025-12-20 Safeway
+    expenses:food:groceries  $70.00
+    assets:checking

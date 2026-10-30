@@ -58,5 +58,12 @@ name = "engine"
 path = "benches/engine.rs"
 harness = false
 
+# Plan 32's review engine (queue, similar, suggest, batch) against its D14
+# budget.
+[[bench]]
+name = "review"
+path = "benches/review.rs"
+harness = false
+
 [lib]
 bench = false
