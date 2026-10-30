@@ -157,6 +157,6 @@ http-body-util = "0.1"
 # Builds the allocation-bomb workbooks the spreadsheet tests feed the reader.
 # Already in the tree via calamine (same major, same feature), so this adds no
 # crate to Cargo.lock.
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 # Isolated temp dirs for the recents-store unit tests.
 tempfile = "3"
