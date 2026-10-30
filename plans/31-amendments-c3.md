@@ -241,3 +241,42 @@ These belong under "Contract amendments made during implementation" in
     counter-account goes in a rule of its own, made with **+ Add** or
     **Duplicate**. `docs/projections/cash.md` says so, in place of the old
     table's automatic split.
+
+29. **Amounts are shown and typed as the file writes them** (Patrick,
+    2026-10-29). This replaces the plan's C3 rule (and plan 26 B6 on this
+    path) that a recurring or asset posting takes a positive magnitude and
+    the engine signs it by account type. Revenue reads `−$12,000.00` on the
+    card and `-12000.00` in the dialog. The capex rule reads
+    `assets:checking −$3,000.00` / `assets:fixed:computers $3,000.00`. The
+    bug that prompted it: both capex accounts are assets, so editing the
+    checking amount sent `entry: 3000`, the engine signed it positive, and
+    the rule stopped balancing.
+    - The rule dialog's amount, contribution and balance boxes show the
+      signed figure and accept a leading `-`, or the `−` the list draws
+      (`parseSignedInput`). The boxes drop `inputmode="decimal"`, whose
+      phone keypad has no minus. A typed figure becomes the line's
+      `amount.quantity` (`withQuantity`), and the wire carries it with no
+      `entry`, so the engine writes exactly what was typed. Changing a
+      posting's account leaves its amount alone. One-offs already took
+      signed amounts. Both editors now say "Amounts [per period,] as the
+      journal writes them: a minus moves money out of an account."
+    - Removed: `magnitudeOf`, `withMagnitude`, `withAccount`,
+      `signedAmount`, `isRevenueAccount`, `ScenarioLine.entry` and
+      `WireScenarioLineIn.entry`. `linesBalance` and `lineAmountText` take
+      no account types any more. `ScenarioLine.served` (client-only, never
+      sent) keeps the engine's figure once a line is edited, so
+      `noteIsStale` still flags a seeded "average over …" description whose
+      amount has changed.
+    - The server still accepts `entry` and signs it (`ScenarioLineIn.entry`,
+      `signed_entry`). No web code sends it now, but it is a documented
+      wire field and other clients (FFI, older SPAs) may. Nothing in Rust
+      changed.
+    - Seeded lines need no conversion: the seed's averages already carry
+      the journal's sign.
+    - The list draws a negative amount in the neutral text colour, not
+      `text-error`. A minus is a direction here, not a warning. The minus
+      glyph is still U+2212.
+    - Unchanged: the automatic-posting (`=` rule) form keeps its own rule.
+      A percentage there means "this account grows by this much", signed
+      by the accounts' types (`docs/projections/file-format.md`, "Type
+      positive figures").
