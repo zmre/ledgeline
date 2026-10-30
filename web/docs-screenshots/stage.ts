@@ -40,8 +40,13 @@ const SETS: Readonly<Record<string, FixtureSet>> = {
     sample: {
         files: [
             ["sample.journal", "sample.journal"],
-            // Projections lists journals beside the main one; this is its asset-row scenario.
-            ["asset-growth-scenario.journal", "asset-growth-scenario.journal"],
+            // The scenario list's demo file (plan 31 C4), written as a person writes one: section
+            // headings, a note, a turned-off alternative, a step change, an asset rule, a one-off,
+            // an `=` rule, a balanced transfer and a deferred-revenue pair. It carries no comment
+            // about itself, because every comment in it is an entry on screen. Named
+            // projection-*.journal only here: the e2e engine scans fixtures/, and its picker spec
+            // expects no "Projections" group there.
+            ["docs/scenario-demo.journal", "projection-series-a.journal"],
             ["rules/simple/checking.csv.rules", "imports/checking.csv.rules"],
             ["rules/simple/checking.csv", "imports/checking.csv"],
             ["rules/simple/creditcard1.csv.rules", "imports/creditcard1.csv.rules"],
