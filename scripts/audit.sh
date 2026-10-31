@@ -59,7 +59,7 @@ rust_audit() {
 }
 
 spa_audit() {
-  # The one ignored advisory does not reach a user. Ledgeline ships ONE
+  # Neither ignored advisory reaches a user. Ledgeline ships ONE
   # artifact out of web/: the static bundle in web/build, embedded into the Rust binary by
   # rust-embed and served by our own axum server. There is no Node runtime
   # and no SvelteKit server — adapter-static emits only _app/, index.html,
@@ -78,9 +78,24 @@ spa_audit() {
   #     why `bun audit fix` has nothing to offer and main's daily audit went
   #     red on 2026-10-28.
   #
-  #   WHAT WOULD MAKE THIS ACTIONABLE: a deepmerge release past 4.3.1
+  #   minimatch  GHSA-g3hv-75wg-m249 (moderate, published 2026-10-30)
+  #     DoS via globparts amplification in minimatch < 11.0.1. Three copies:
+  #     10.x under eslint and typescript-eslint (devDependencies, matching
+  #     our own config globs at lint time) and 3.x under
+  #     `exceljs > archiver > archiver-utils > glob@7`, which globs only
+  #     when archiver adds a directory from disk; Ledgeline never does, and
+  #     none of it is in the bundle (`minimatch` / `GLOBSTAR` / `globparts` /
+  #     `archiver-utils` / `readdir-glob` absent from web/build/_app,
+  #     checked 2026-10-30). There is no 3.x/5.x/10.x backport, and an
+  #     `overrides` pin to 11 was tried and BREAKS glob 7 (`glob.sync`
+  #     throws reading `rawGlob.charAt`: v11 changed the parsed set glob 7
+  #     walks), and bun cannot scope an override to one consumer.
+  #
+  #   WHAT WOULD MAKE THESE ACTIONABLE: a deepmerge release past 4.3.1
   #   (hand-edit the bun.lock entry as below and drop that --ignore), or
-  #   vite-plugin-svelte dropping deepmerge.
+  #   vite-plugin-svelte dropping deepmerge; eslint/typescript-eslint moving
+  #   to minimatch 11 AND exceljs/archiver moving off glob 7 (then drop the
+  #   minimatch --ignore, overriding to ^11 if only one side moved).
   #   Re-check whenever this list is touched, and drop any --ignore whose
   #   package has since been bumped past the advisory (the postcss and nanoid
   #   ignores went that way on 2026-10-14, cookie GHSA-pxg6-pf52-xh8x with
@@ -97,7 +112,8 @@ spa_audit() {
   #   registry.npmjs.org/<pkg>/<ver> — then `bun install --frozen-lockfile`
   #   to prove bun accepts it, then `just audit`.
   nix develop -L .#spaAudit -c bash -c 'cd web && bun audit \
-    --ignore=GHSA-gcqx-w48m-w2h4'
+    --ignore=GHSA-gcqx-w48m-w2h4 \
+    --ignore=GHSA-g3hv-75wg-m249'
 }
 
 case "${1:-all}" in
