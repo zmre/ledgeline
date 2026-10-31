@@ -32,7 +32,7 @@ const STYLES: ReadonlyMap<string, AmountStyle> = new Map([["$", DEFAULT_AMOUNT_S
 
 const projection = (overrides: Partial<Projection> = {}): Projection => projectionFixture(overrides);
 
-function mount(tab: ProjectionTab, value: Projection = projection(), extra: {emptyAccounts?: boolean} = {}) {
+function mount(tab: ProjectionTab, value: Projection = projection(), extra: {emptyAccounts?: boolean; scrollTarget?: HTMLElement} = {}) {
     return render(ProjectionReports, {tab, projection: value, interval: "monthly" as const, styles: STYLES, fallbackCommodity: "$", ...extra});
 }
 
@@ -204,6 +204,29 @@ describe("COMPONENT ProjectionReports — the tab strip", () => {
             ]);
         } finally {
             Element.prototype.scrollIntoView = original;
+        }
+    });
+
+    it("brings the page's controls to the top instead when handed them, by click or by digit", async () => {
+        const calls: {target: Element; options: unknown}[] = [];
+        const original = Element.prototype.scrollIntoView;
+        Element.prototype.scrollIntoView = function (this: Element, options?: unknown): void {
+            calls.push({target: this, options});
+        };
+        // The page's interval/depth bar, which sits above the strip.
+        const controls = document.body.appendChild(document.createElement("div"));
+        try {
+            mount("cash", projection(), {scrollTarget: controls});
+            await fireEvent.click(screen.getByRole("tab", {name: "Journal"}));
+            keymap.handle(new KeyboardEvent("keydown", {key: "2", cancelable: true}));
+            await tick();
+            expect(calls).toEqual([
+                {target: controls, options: {block: "start", behavior: "smooth"}},
+                {target: controls, options: {block: "start", behavior: "smooth"}},
+            ]);
+        } finally {
+            Element.prototype.scrollIntoView = original;
+            controls.remove();
         }
     });
 

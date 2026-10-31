@@ -91,6 +91,8 @@
     const declared = $derived(journal.accountClasses);
     const commodity = $derived(journal.dominantCommodity);
     const maxDepth = $derived(journal.accountNames.reduce((max, name) => Math.max(max, name.split(":").length), 1));
+    /** The interval/periods/actuals/depth bar: what picking a reading scrolls to the top. */
+    let controls: HTMLDivElement | undefined = $state();
 
     // --- The scenario --------------------------------------------------------
 
@@ -469,7 +471,9 @@
 
     <div class="divider my-0"></div>
 
-    <div class="flex flex-wrap items-end gap-x-4 gap-y-2 rounded-box bg-base-200 px-3 py-2">
+    <!-- Picking a reading scrolls THIS bar to the top of the window (under the
+         pinned header), so interval and depth stay in view above the strip. -->
+    <div bind:this={controls} class="flex flex-wrap items-end gap-x-4 gap-y-2 rounded-box bg-base-200 px-3 py-2" data-testid="projection-controls">
         <label class="form-control">
             <span class="label-text mb-1 block text-xs text-base-content/70">Interval</span>
             <select class="select w-32 select-sm" bind:value={params.interval} aria-label="Interval">
@@ -531,12 +535,13 @@
     {/if}
 
     <div class="flex flex-col gap-2">
-        <!-- Always one line tall, text or not. Picking a reading scrolls the tab
-             strip below to the top of the window, and when this line came and
-             went with the run (every switch into or out of Accounts/Journal
-             starts one) it moved the strip by its height plus the gap, so a
-             scroll taken on a slow machine landed a line off. A live region
-             that is always present is also the one screen readers announce. -->
+        <!-- Always one line tall, text or not. Picking a reading scrolls the
+             controls bar above to the top of the window, and when this line
+             came and went with the run (every switch into or out of
+             Accounts/Journal starts one) it moved the strip below by its height
+             plus the gap, so the reading jumped a line under the reader. A live
+             region that is always present is also the one screen readers
+             announce. -->
         <p class="min-h-4 text-xs text-base-content/60" role="status" aria-live="polite" data-testid="projection-stale">
             {stale ? "Recomputing for your latest edit…" : ""}
         </p>
@@ -561,6 +566,7 @@
                         {styles}
                         fallbackCommodity={commodity}
                         scenarioName={scenarioStore.scenario.name}
+                        scrollTarget={controls}
                     />
                 {/snippet}
             </AsyncSection>
