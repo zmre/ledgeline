@@ -40,44 +40,26 @@ rust_audit() {
   # wrong, and is the easy mistake to make here.
   #
   # It is deliberately NOT `--ignore`d: it costs nothing to leave visible, and
-  # unlike the quick-xml pair below there is no CI failure to suppress.
+  # there is no CI failure to suppress.
   #
   # WHAT WOULD MAKE THIS ACTIONABLE: any of tao / wry / muda / gtk / gdk /
   # webkit2gtk starting to iterate a string-array GVariant (XDG portal replies,
   # GSettings string lists and GTK action targets are the plausible routes).
   # That risk arrives with a dependency bump, so re-run the grep above whenever
-  # wry/tao move — not on a calendar (last re-run 2026-10-14, wry 0.57 / tao
-  # 0.37: still nothing). The real fix is upstream: wry/tao migrating Linux off
+  # wry/tao move — not on a calendar (last re-run 2026-10-30, wry 0.57.1 / tao
+  # 0.37.2: still nothing). The real fix is upstream: wry/tao migrating Linux off
   # GTK3. gtk 0.19 exists as of 2026-09, but wry, tao, muda and webkit2gtk all
   # still require gtk "^0.18" (and so glib "^0.18"), so no lockfile change can
   # reach a fixed glib — which is also why Dependabot cannot open a PR for it.
   # Bumping our own direct `gtk` to 0.19 would only add a second GTK binding.
   #
-  # The three ignored advisories are zip 8.6.0's, investigated 2026-10-16 and
-  # assessed as NOT AFFECTED:
-  #
-  #   RUSTSEC-2026-0367  SUID/SGID bits preserved on extraction
-  #   RUSTSEC-2026-0368  extract() creates symlinks pointing outside the dest
-  #   RUSTSEC-2026-0369  extract() applies permissions through symlinks
-  #
-  # All three live in `ZipArchive::extract` / `ZipStreamReader::extract`, the
-  # write-the-archive-to-disk path. Grepping our crates and calamine-0.36.1's
-  # src for `extract(` / `ZipStreamReader` returns nothing: calamine reads
-  # XLSX/ODS entries in memory via `by_name`, and our own direct `zip`
-  # dependency only builds test fixtures with `ZipWriter`.
-  #
-  # WHAT WOULD MAKE THIS ACTIONABLE: a calamine release off zip 8 (0.36.1
-  # requires `zip ^8.6`; the fix is zip >= 9). When it lands, bump calamine and
-  # our direct `zip` to 9 and drop these three --ignores. Re-check the grep if
-  # anything in the tree starts unpacking archives to disk.
-  nix develop -L .#audit -c cargo-audit audit \
-    --ignore RUSTSEC-2026-0367 \
-    --ignore RUSTSEC-2026-0368 \
-    --ignore RUSTSEC-2026-0369
+  # Nothing is --ignored here. zip 8.6.0's RUSTSEC-2026-0367/0368/0369 were,
+  # until calamine 0.37 moved to zip 9 (2026-10-30, zip 9.1.3).
+  nix develop -L .#audit -c cargo-audit audit
 }
 
 spa_audit() {
-  # The one ignored advisory does not reach a user. Ledgeline ships ONE
+  # Neither ignored advisory reaches a user. Ledgeline ships ONE
   # artifact out of web/: the static bundle in web/build, embedded into the Rust binary by
   # rust-embed and served by our own axum server. There is no Node runtime
   # and no SvelteKit server — adapter-static emits only _app/, index.html,
@@ -85,12 +67,6 @@ spa_audit() {
   #
   # Every claim below was CHECKED against the built bundle rather than
   # assumed, with `grep -r <marker> web/build/_app`.
-  #
-  #   uuid  GHSA-w5hq-g745-h8pq (moderate)
-  #     `exceljs > uuid`, and exceljs does ship. The advisory requires uuid
-  #     v3/v5/v6 called WITH a `buf` argument; the v3/v5 namespace
-  #     constants ("DNS:") and the v4 bit-twiddling are both absent from
-  #     the bundle, so the vulnerable entry points are not in it.
   #
   #   deepmerge  GHSA-gcqx-w48m-w2h4 (low)
   #     `@sveltejs/vite-plugin-svelte > deepmerge`, a devDependency the Vite
@@ -102,13 +78,32 @@ spa_audit() {
   #     why `bun audit fix` has nothing to offer and main's daily audit went
   #     red on 2026-10-28.
   #
-  #   WHAT WOULD MAKE THIS ACTIONABLE: an exceljs release off uuid 8; a
-  #   deepmerge release past 4.3.1 (hand-edit the bun.lock entry as below and
-  #   drop that --ignore), or vite-plugin-svelte dropping deepmerge.
+  #   minimatch  GHSA-g3hv-75wg-m249 (moderate, published 2026-10-30)
+  #     DoS via globparts amplification in minimatch < 11.0.1. Three copies:
+  #     10.x under eslint and typescript-eslint (devDependencies, matching
+  #     our own config globs at lint time) and 3.x under
+  #     `exceljs > archiver > archiver-utils > glob@7`, which globs only
+  #     when archiver adds a directory from disk; Ledgeline never does, and
+  #     none of it is in the bundle (`minimatch` / `GLOBSTAR` / `globparts` /
+  #     `archiver-utils` / `readdir-glob` absent from web/build/_app,
+  #     checked 2026-10-30). There is no 3.x/5.x/10.x backport, and an
+  #     `overrides` pin to 11 was tried and BREAKS glob 7 (`glob.sync`
+  #     throws reading `rawGlob.charAt`: v11 changed the parsed set glob 7
+  #     walks), and bun cannot scope an override to one consumer.
+  #
+  #   WHAT WOULD MAKE THESE ACTIONABLE: a deepmerge release past 4.3.1
+  #   (hand-edit the bun.lock entry as below and drop that --ignore), or
+  #   vite-plugin-svelte dropping deepmerge; eslint/typescript-eslint moving
+  #   to minimatch 11 AND exceljs/archiver moving off glob 7 (then drop the
+  #   minimatch --ignore, overriding to ^11 if only one side moved).
   #   Re-check whenever this list is touched, and drop any --ignore whose
   #   package has since been bumped past the advisory (the postcss and nanoid
-  #   ignores went that way on 2026-10-14, and cookie GHSA-pxg6-pf52-xh8x with
-  #   the SvelteKit 3 upgrade, which moved kit onto cookie 2).
+  #   ignores went that way on 2026-10-14, cookie GHSA-pxg6-pf52-xh8x with
+  #   the SvelteKit 3 upgrade, which moved kit onto cookie 2, and uuid
+  #   GHSA-w5hq-g745-h8pq on 2026-10-30 via web/package.json's `overrides`:
+  #   exceljs 4.4.0, still the latest, wants uuid 8 but only calls the CJS
+  #   `v4`, which uuid 11 still exports — drop that override when exceljs
+  #   moves off uuid 8).
   #
   #   NEW ADVISORY WITH A PATCH RELEASE: fix the lockfile, don't add an
   #   --ignore. `bun update` re-resolves the whole tree (and rewrites
@@ -117,8 +112,8 @@ spa_audit() {
   #   registry.npmjs.org/<pkg>/<ver> — then `bun install --frozen-lockfile`
   #   to prove bun accepts it, then `just audit`.
   nix develop -L .#spaAudit -c bash -c 'cd web && bun audit \
-    --ignore=GHSA-w5hq-g745-h8pq \
-    --ignore=GHSA-gcqx-w48m-w2h4'
+    --ignore=GHSA-gcqx-w48m-w2h4 \
+    --ignore=GHSA-g3hv-75wg-m249'
 }
 
 case "${1:-all}" in

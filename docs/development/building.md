@@ -34,7 +34,7 @@ direnv allow                 # auto-loads the flake dev shell (.envrc)
 nix develop path:.
 ```
 
-The dev shell provides the pinned Rust toolchain, `pkg-config`, `nodejs_22`,
+The dev shell provides the pinned Rust toolchain, `pkg-config`, `nodejs_24`,
 `bun`, `hledger`, `hledger-web`, `just`, and the Playwright browsers, plus the
 Linux GUI libraries (`webkitgtk_4_1`, `gtk3`, `libsoup_3`). It also exports
 `LEDGELINE_FIXTURE` and the Playwright env vars. Common tasks live in the

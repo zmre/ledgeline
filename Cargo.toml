@@ -64,7 +64,7 @@ csv = "1"
 # July 2026 asking for help, so an unattended minor bump is a real risk to a
 # money app. `dates` is what makes `as_datetime()` available — reading a date
 # cell as f64 and dividing is how you land a transaction on the wrong day.
-calamine = { version = "=0.36.1", features = ["dates"] }
+calamine = { version = "=0.37.0", features = ["dates"] }
 
 # Text decoding for bank CSVs, which are routinely not UTF-8. `encoding_rs` is
 # the WHATWG-spec decoder (the one Firefox ships); `encoding_rs_io` wraps it in a
