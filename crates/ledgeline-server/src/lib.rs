@@ -65,6 +65,7 @@ mod qb_journal_api;
 pub mod recents;
 mod redact;
 mod reports_api;
+mod review_api;
 mod rules_api;
 mod security;
 mod sidecar;
@@ -264,13 +265,11 @@ impl Snapshot {
     ) -> Self {
         // Minted FIRST, because `/api/journal` carries it as `generation`.
         let etag = next_etag();
-        let auto = auto_api::auto_setting(
-            location
-                .clone()
-                .or_else(|| JournalLocation::of_parsed(&raw).map(Arc::new))
-                .as_deref(),
-            user,
-        );
+        // Where the journal lives, judged the way `Snapshot::storage` does.
+        let storage = location
+            .clone()
+            .or_else(|| JournalLocation::of_parsed(&raw).map(Arc::new));
+        let auto = auto_api::auto_setting(storage.as_deref(), user);
         let journal = if auto.in_force && !raw.auto_rules.is_empty() {
             Arc::new(ledgeline_core::auto::apply_journal(&raw))
         } else {
@@ -297,7 +296,7 @@ impl Snapshot {
             commodities,
             accounts,
             journal_info,
-            view: journal_api::ViewCache::warmed(&journal),
+            view: journal_api::ViewCache::warmed(&journal, storage),
             projections: projection_cache::ProjectionCache::default(),
             conf: std::sync::OnceLock::new(),
             journal,
@@ -1211,6 +1210,17 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
                 .put(edit_api::replace_transaction)
                 .patch(edit_api::patch_transaction),
         )
+        // Plan 32: save a review card and every similar transaction it was
+        // applied to as ONE edit (see `review_api`). A static segment, so it
+        // wins over `{index}` above; it writes the journal, so it stays above
+        // the `route_layer` with the rest of the write path.
+        .route("/api/transactions/batch", post(review_api::batch))
+        // Plan 32: the review queues, similar transactions, and the payee and
+        // tag completions (see `review_api`).
+        .route("/api/review/queue", get(review_api::queue))
+        .route("/api/review/similar/{index}", get(review_api::similar))
+        .route("/api/payees", get(review_api::payees))
+        .route("/api/tags", get(review_api::tags))
         // CSV import rules (Imports, steps 7-8): list, read, preview, save.
         //
         // THESE MUST STAY ABOVE the `route_layer` below. `route_layer` covers

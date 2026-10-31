@@ -176,6 +176,50 @@ export interface DeleteResult {
 }
 
 // ---------------------------------------------------------------------------
+// Transaction review (plan 32): `POST /api/transactions/batch`.
+// ---------------------------------------------------------------------------
+
+/**
+ * One edit to one transaction, tagged by `op`. Every op but `replace` is
+ * SURGICAL: it rewrites only the text it names, so an elided amount stays
+ * elided. `replace` re-renders the whole transaction from a PUT-shaped body
+ * and must be the entry's first op; ops after it apply to the re-rendered text.
+ *
+ * `setPostingAccount.posting` counts the postings the FILE writes (the form's
+ * rows, `txnToForm`'s), not the served ones — a posting an `=` rule generated
+ * cannot be addressed. (`PATCH`'s `postings[].index` counts served postings;
+ * the two differ only with `--auto` in force.)
+ */
+export type WireEditOp =
+    | {op: "setDescription"; description: string}
+    | {op: "setPostingAccount"; posting: number; account: string}
+    /** `value: null` removes every occurrence of the tag. */
+    | {op: "setTxnTag"; name: string; value: string | null}
+    /** The header comment's FREE TEXT; its tags are kept. */
+    | {op: "setTxnComment"; comment: string}
+    | {op: "replace"; transaction: ReplaceTransactionBody};
+
+/** One transaction's edits, with the fingerprint of the text the client was shown. */
+export interface WireBatchEdit {
+    index: number;
+    fingerprint: string;
+    ops: WireEditOp[];
+}
+
+/** `POST /api/transactions/batch` body: every edit applied as one, all or nothing. */
+export interface BatchTransactionsBody {
+    edits: WireBatchEdit[];
+}
+
+/** The review queues' shared settings (D4/D19): the client's date, Recents' cap and the lookback window. */
+export interface ReviewWindowQuery {
+    today: string;
+    limit?: number;
+    /** 0 = no limit. */
+    maxDays?: number;
+}
+
+// ---------------------------------------------------------------------------
 // CSV import rules write path (`PUT /api/rules/{*id}`).
 //
 // The body is the COMPLETE intended shape of the document, and the engine
@@ -1040,9 +1084,15 @@ export class LedgelineApi {
         return this.getJson(`/api/journal/rows${queryString({...filterParams(filter), ...window})}`);
     }
 
-    /** The filtered view's footer total, big numbers and chart selectors (decode with `decodeJournalSummary`). */
-    journalSummary(filter: JournalQueryFilter): Promise<unknown> {
-        return this.getJson(`/api/journal/summary${queryString(filterParams(filter))}`);
+    /**
+     * The filtered view's footer total, big numbers and chart selectors (decode
+     * with `decodeJournalSummary`), plus the review queues' sizes for the
+     * toolbar badges (D18) — as of `review.today` when given, which the counts
+     * depend on (they ignore the filter).
+     */
+    journalSummary(filter: JournalQueryFilter, review?: ReviewWindowQuery): Promise<unknown> {
+        const window = review === undefined ? {} : {today: review.today, reviewLimit: review.limit, reviewMaxDays: review.maxDays};
+        return this.getJson(`/api/journal/summary${queryString({...filterParams(filter), ...window})}`);
     }
 
     /** The insights pie or line for the filtered view (decode with `decodeChart`). */
@@ -1498,6 +1548,45 @@ export class LedgelineApi {
     /** DELETE the transaction at `index`. → 200 `{deletedIndex, remaining}`. */
     deleteTransaction(index: number): Promise<DeleteResult> {
         return this.mutate<DeleteResult>("DELETE", `/api/transactions/${index}`, 200);
+    }
+
+    /**
+     * Apply every edit as ONE (plan 32 D14): one lock, one re-parse, one save.
+     * → 200 `{generation, edited}` (decode with `decodeBatchResult`). A stale
+     * fingerprint is a 409 (`ConflictError`) naming the transaction; an op the
+     * engine cannot take is a 400 (`ValidationError`) starting
+     * `transaction #N:`. Nothing is written on any failure.
+     */
+    batchTransactions(body: BatchTransactionsBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/transactions/batch", 200, body);
+    }
+
+    /**
+     * One page of a review queue, newest first (decode with `decodeQueuePage`):
+     * full rows with fingerprints, similarity keys and suggestions. `limit`
+     * defaults to 100 for unknowns and 50 for recents.
+     */
+    reviewQueue(kind: "unknowns" | "recents", window: ReviewWindowQuery & {offset?: number}): Promise<unknown> {
+        return this.getJson(`/api/review/queue${queryString({kind, ...window})}`);
+    }
+
+    /**
+     * The transactions similar to `index` (decode with `decodeSimilarSet`):
+     * unreviewed ones with the same similarity key, the precedent, and which of
+     * them are among `queue` (the client's run).
+     */
+    reviewSimilar(index: number, today: string, queue: readonly number[] = []): Promise<unknown> {
+        return this.getJson(`/api/review/similar/${index}${queryString({today, queue: queue.join(",")})}`);
+    }
+
+    /** Every payee with its use count and newest date (decode with `decodePayees`). */
+    payees(): Promise<unknown> {
+        return this.getJson("/api/payees");
+    }
+
+    /** Every transaction tag name with its commonest values (decode with `decodeTags`). */
+    tags(): Promise<unknown> {
+        return this.getJson("/api/tags");
     }
 
     /**

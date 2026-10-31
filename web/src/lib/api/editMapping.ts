@@ -14,7 +14,8 @@
 // style is NOT sent — the engine infers it from the journal when rendering.
 
 import type {Dec} from "#lib/domain/money.js";
-import type {Amount, Posting, Transaction, TxnStatus} from "#lib/domain/types.js";
+import type {Amount, ISODate, Posting, Transaction, TxnStatus} from "#lib/domain/types.js";
+import type {ReviewForm} from "#lib/review/types.js";
 import {isIsoDate} from "#lib/url/params.js";
 import type {
     AddTransactionBody,
@@ -23,6 +24,7 @@ import type {
     WireBalanceAssertion,
     WireCost,
     WireDec,
+    WireEditOp,
     WirePostingAmount,
     WirePostingInput,
     WirePostingType,
@@ -304,4 +306,223 @@ export function postingIndicesForAccount(txn: Transaction, account: string): num
  */
 export function accountPatch(txn: Transaction, oldAccount: string, newAccount: string): PatchTransactionBody {
     return {postings: postingIndicesForAccount(txn, oldAccount).map((index) => ({index, account: newAccount}))};
+}
+
+// ---------------------------------------------------------------------------
+// Review card → batch ops (plan 32 D9, D11)
+// ---------------------------------------------------------------------------
+
+/** The tag a reviewed transaction carries (D1). */
+export const REVIEWED_TAG = "reviewed";
+/** The tag a rename from the review card records the ORIGINAL similarity key in (D13a, Q12). */
+export const PAYEE_KEY_TAG = "payee-key";
+
+/**
+ * Tags the card never shows as chips: hledger's hidden twins (`_name`) and
+ * the ones `--auto` and the forecast stamp on a transaction at read time,
+ * which are not in the file to edit.
+ */
+const MACHINE_TAGS: ReadonlySet<string> = new Set(["modified-transaction", "generated-transaction"]);
+
+function isCardTag(name: string): boolean {
+    return !name.startsWith("_") && !MACHINE_TAGS.has(name);
+}
+
+/**
+ * The engine's reading of one comma segment (`parse.rs tag_in_segment`): a
+ * tag when any word precedes its first `:` — the last such word is the name.
+ */
+function isTagSegment(segment: string): boolean {
+    const colon = segment.indexOf(":");
+    return colon >= 0 && segment.slice(0, colon).trim() !== "";
+}
+
+/**
+ * The FREE TEXT of a transaction comment: the non-tag comma segments of its
+ * first (same-line) line, trimmed and rejoined with `", "` — exactly the part
+ * `setTxnComment` owns (`edit.rs free_text`).
+ */
+export function commentFreeText(comment: string): string {
+    const firstLine = (comment.split("\n", 1)[0] ?? "").trim();
+    return firstLine
+        .split(",")
+        .filter((segment) => !isTagSegment(segment))
+        .map((segment) => segment.trim())
+        .filter((segment) => segment !== "")
+        .join(", ");
+}
+
+/** The review card's form for `txn` (D8): free-text comment, tag chips, and the written postings. */
+export function reviewFormOf(txn: Transaction): ReviewForm {
+    return {
+        date: txn.date,
+        description: txn.description,
+        comment: commentFreeText(txn.comment),
+        tags: txn.tags.filter(([name]) => isCardTag(name)).map(([name, value]) => [name, value]),
+        postings: txnToForm(txn).postings,
+    };
+}
+
+/** Two typed amounts denote the same number (`5.5` and `5.50` do; blank only equals blank). */
+function sameAmount(a: string, b: string): boolean {
+    const x = parseAmountInput(a);
+    const y = parseAmountInput(b);
+    if (x === null || y === null) return x === y && a.trim() === b.trim();
+    const places = Math.max(x.p, y.p);
+    return x.m * 10n ** BigInt(places - x.p) === y.m * 10n ** BigInt(places - y.p);
+}
+
+function sameJson(a: unknown, b: unknown): boolean {
+    return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * Whether `form` changes `original`'s postings beyond their accounts — an
+ * amount, a commodity, a posting added or removed (D11's "split"). Such a
+ * save re-renders the transaction (`replace`), and is never applied to
+ * similar transactions. An elided amount left blank is not a change.
+ */
+export function isSplit(original: Transaction, form: ReviewForm): boolean {
+    const before = txnToForm(original).postings;
+    if (before.length !== form.postings.length) return true;
+    return before.some((was, at) => {
+        const now = form.postings[at];
+        return (
+            now === undefined ||
+            !sameAmount(was.amount, now.amount) ||
+            (parseAmountInput(now.amount) !== null && was.commodity.trim() !== now.commodity.trim()) ||
+            was.status !== now.status ||
+            was.comment.trim() !== now.comment.trim() ||
+            was.type !== now.type ||
+            !sameJson(was.cost, now.cost) ||
+            !sameJson(was.balanceAssertion, now.balanceAssertion)
+        );
+    });
+}
+
+/** The first value of each tag name, in order. */
+function firstValues(tags: readonly (readonly [string, string])[]): Map<string, string> {
+    const values = new Map<string, string>();
+    for (const [name, value] of tags) if (!values.has(name)) values.set(name, value);
+    return values;
+}
+
+/** `setTxnTag` ops turning `before`'s tags into `after`'s: changed or added ones set, missing ones removed. */
+function tagOps(before: readonly (readonly [string, string])[], after: readonly (readonly [string, string])[]): WireEditOp[] {
+    const was = firstValues(before);
+    const now = firstValues(after);
+    const ops: WireEditOp[] = [];
+    for (const [name, value] of now) if (was.get(name) !== value) ops.push({op: "setTxnTag", name, value});
+    for (const name of was.keys()) if (!now.has(name)) ops.push({op: "setTxnTag", name, value: null});
+    return ops;
+}
+
+/**
+ * The batch ops that save `form` over `original` (D9), in the order the
+ * engine wants them:
+ *
+ * - **Description and accounts only:** surgical `setDescription` /
+ *   `setPostingAccount`, so the rest of the text — an elided amount, a
+ *   hand-aligned column — is untouched.
+ * - **A split, or a new date:** `replace` first (there is no surgical date
+ *   op), which re-renders the one transaction with its comment as it was.
+ * - **Then, either way,** `setTxnTag` for each tag chip changed, added or
+ *   removed, and `setTxnComment` when the free text changed — surgical over
+ *   whichever text the ops before left.
+ *
+ * Empty when nothing changed. Positions are the form's rows: the postings the
+ * file writes.
+ */
+export function formToOps(original: Transaction, form: ReviewForm, defaultCommodity = "$"): WireEditOp[] {
+    const before = reviewFormOf(original);
+    const ops: WireEditOp[] = [];
+    if (isSplit(original, form) || form.date.trim() !== original.date) {
+        const body = formToBody(
+            {
+                date: form.date,
+                date2: original.date2 ?? "",
+                status: original.status,
+                code: original.code,
+                description: form.description,
+                comment: original.comment,
+                postings: form.postings,
+            },
+            defaultCommodity
+        );
+        ops.push({op: "replace", transaction: body});
+    } else {
+        if (form.description.trim() !== original.description) ops.push({op: "setDescription", description: form.description.trim()});
+        form.postings.forEach((row, posting) => {
+            const account = row.account.trim();
+            if (account !== "" && account !== before.postings[posting]?.account) ops.push({op: "setPostingAccount", posting, account});
+        });
+    }
+    ops.push(...tagOps(before.tags, form.tags));
+    if (form.comment.trim() !== before.comment) ops.push({op: "setTxnComment", comment: form.comment.trim()});
+    return ops;
+}
+
+/**
+ * The ops a review save sends for its own card: `formToOps`, plus — when the
+ * description changed — `payee-key:<original key>` so the rename can be
+ * suggested once the raw text is gone (Q12), plus `reviewed:<date>` when the
+ * card is being marked reviewed.
+ */
+export function cardOps(
+    original: Transaction,
+    form: ReviewForm,
+    options: {key: string | null; reviewedOn: ISODate | null; defaultCommodity?: string}
+): WireEditOp[] {
+    const ops = formToOps(original, form, options.defaultCommodity);
+    const renamed = form.description.trim() !== original.description;
+    const hasKey = (tags: readonly (readonly [string, string])[]): boolean => tags.some(([name]) => name === PAYEE_KEY_TAG);
+    if (renamed && options.key !== null && !hasKey(original.tags) && !hasKey(form.tags)) {
+        ops.push({op: "setTxnTag", name: PAYEE_KEY_TAG, value: options.key});
+    }
+    if (options.reviewedOn !== null) ops.push({op: "setTxnTag", name: REVIEWED_TAG, value: options.reviewedOn});
+    return ops;
+}
+
+/** What a card's save changes that may be applied to similar transactions (D11). */
+export interface CardChange {
+    /** The new description, or null when it is unchanged. */
+    description: string | null;
+    /** Old account → new account, for each account the card moved. */
+    accounts: ReadonlyMap<string, string>;
+}
+
+/**
+ * What `form` changes over `original` that similar transactions could take:
+ * the description and the accounts. Null for a split (D11: never applied to
+ * similar transactions) and when nothing applicable changed.
+ */
+export function cardChange(original: Transaction, form: ReviewForm): CardChange | null {
+    if (isSplit(original, form)) return null;
+    const before = txnToForm(original).postings;
+    const accounts = new Map<string, string>();
+    form.postings.forEach((row, at) => {
+        const was = before[at]?.account;
+        const now = row.account.trim();
+        if (was !== undefined && now !== "" && now !== was && !accounts.has(was)) accounts.set(was, now);
+    });
+    const description = form.description.trim() !== original.description ? form.description.trim() : null;
+    return description === null && accounts.size === 0 ? null : {description, accounts};
+}
+
+/**
+ * The ops that apply `change` to one similar `candidate`: its description set,
+ * and every WRITTEN posting on a moved account moved. Empty when nothing
+ * applies (the candidate has none of the accounts and the description is
+ * unchanged or already that). Never marks it reviewed (D11).
+ */
+export function similarOps(candidate: Transaction, change: CardChange): WireEditOp[] {
+    const ops: WireEditOp[] = [];
+    if (change.description !== null && candidate.description !== change.description) ops.push({op: "setDescription", description: change.description});
+    candidate.postings
+        .filter((posting) => posting.generated === undefined)
+        .forEach((posting, written) => {
+            const account = change.accounts.get(posting.account);
+            if (account !== undefined) ops.push({op: "setPostingAccount", posting: written, account});
+        });
+    return ops;
 }

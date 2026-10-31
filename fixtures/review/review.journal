@@ -14,7 +14,10 @@
 ;   with free text before it, the window boundary on both sides;
 ; - elided amounts on almost every transaction;
 ; - an include (review-2025.journal) holding in-window transactions, so a
-;   batch can span two files and a read-only include can be counted.
+;   batch can span two files and a read-only include can be counted. It also
+;   holds an `=` rule posting to the unknown account (fires only under
+;   `--auto`); with the `~` rule below: generated postings count, forecasts
+;   don't (plan 32 amendment A).
 ;
 ; Not loaded by sample.journal's e2e: its totals must not move.
 
@@ -27,6 +30,12 @@ account expenses:streaming  ; type: X
 account expenses:unknown  ; type: X
 
 include review-2025.journal
+
+; A periodic rule posting to the unknown account. Its forecast transactions
+; are nobody's to review: not in a queue, not in the Problems drawer.
+~ monthly from 2026-11-01
+    expenses:unknown  $9.99
+    liabilities:visa
 
 2024-03-10 SQ *BLUE BOTTLE 9999 OAKLAND
     expenses:unknown  $4.50

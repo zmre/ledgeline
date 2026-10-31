@@ -77,3 +77,11 @@ These belong under "Contract amendments made during implementation" in
     (`=` rule) postings from "unknown", but `checks.rs`'s `uncategorized` check
     doesn't. With an auto rule that posts to an unknown account, the review
     count and the drawer's count will differ. Decide in Phase 2.
+14. **Amendment 13 is resolved (Patrick, 2026-10-30), in Phase 2.**
+    - `=` auto postings on real journal transactions count as unknown, in
+      review and in the drawer. `is_unknown` loses its generated-posting
+      exclusion.
+    - Forecast transactions from `~` periodic rules, and auto postings applied
+      to them, are ignored everywhere, including the drawer.
+15. **Full NFKC (Patrick, 2026-10-30), in Phase 2.** `unicode-normalization`
+    is added and replaces the partial fold from amendment 8.

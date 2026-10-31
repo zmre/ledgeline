@@ -540,7 +540,7 @@ pub(crate) fn bound(slot: &mut Option<JournalEditor>) -> Result<&mut JournalEdit
 /// handler boundaries rather than at each `?`, so no future failure inside the
 /// locked operations can bypass it (SEC-15). The redaction is built only on the
 /// error path, so a successful edit pays nothing for it.
-fn redacted<T>(state: &AppState, outcome: Result<T, AppError>) -> Result<T, AppError> {
+pub(crate) fn redacted<T>(state: &AppState, outcome: Result<T, AppError>) -> Result<T, AppError> {
     outcome.map_err(|error| Redactor::for_journal(state).redact_error(error))
 }
 
@@ -649,7 +649,7 @@ fn patch_transaction_locked(
 }
 
 /// A `409` for a full replace that carries a posting an `=` rule generated.
-fn refuse_generated(request: &AddRequest) -> Result<(), AppError> {
+pub(crate) fn refuse_generated(request: &AddRequest) -> Result<(), AppError> {
     match request
         .postings
         .iter()
@@ -1153,14 +1153,14 @@ fn insertion_index(journal: &Journal, txn: &Transaction, position: InsertPositio
 // cap is the one the budget rules' posting lines already use.
 const MAX_DATE_BYTES: usize = 32;
 const MAX_CODE_BYTES: usize = 256;
-const MAX_DESCRIPTION_BYTES: usize = 1024;
-const MAX_COMMENT_BYTES: usize = 4096;
+pub(crate) const MAX_DESCRIPTION_BYTES: usize = 1024;
+pub(crate) const MAX_COMMENT_BYTES: usize = 4096;
 const MAX_COMMODITY_BYTES: usize = 128;
 
 /// The ASCII control characters a field may carry, beyond none at all.
-const NONE: &[char] = &[];
+pub(crate) const NONE: &[char] = &[];
 /// A tab is inert inside a description or code: it cannot end the line.
-const TAB: &[char] = &['\t'];
+pub(crate) const TAB: &[char] = &['\t'];
 /// A comment may also span lines: the model joins a multi-line comment's lines
 /// with `\n` (the read API hands that back, and the edit popup echoes it), and
 /// the writer renders each line as its own indented `; …` line.
@@ -1175,7 +1175,12 @@ const COMMENT: &[char] = &['\t', '\n'];
 /// `P` price directive — and the post-edit guards compare the transaction, not
 /// the lines around it. `\r` goes with it (a lone one is invisible damage), as
 /// does the rest of the control range, which has no meaning in a journal.
-fn check_text(what: &str, value: &str, cap: usize, allowed: &[char]) -> Result<(), AppError> {
+pub(crate) fn check_text(
+    what: &str,
+    value: &str,
+    cap: usize,
+    allowed: &[char],
+) -> Result<(), AppError> {
     if let Some(control) = value
         .chars()
         .find(|c| c.is_ascii_control() && !allowed.contains(c))
@@ -1197,7 +1202,10 @@ fn check_text(what: &str, value: &str, cap: usize, allowed: &[char]) -> Result<(
 // Build a `core::Transaction` from the request (with inferred styles)
 // ===========================================================================
 
-fn build_transaction(journal: &Journal, request: &AddRequest) -> Result<Transaction, AppError> {
+pub(crate) fn build_transaction(
+    journal: &Journal,
+    request: &AddRequest,
+) -> Result<Transaction, AppError> {
     if request.date.trim().is_empty() {
         return Err(AppError::BadRequest(
             "a transaction needs a date".to_string(),

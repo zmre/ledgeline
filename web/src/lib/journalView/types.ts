@@ -6,6 +6,7 @@ import type {Problem} from "#lib/checks/engine.js";
 import type {RootCategory} from "#lib/domain/accounts.js";
 import type {Dec} from "#lib/domain/money.js";
 import type {Amount, AmountStyle, ISODate, Transaction} from "#lib/domain/types.js";
+import type {ReviewCounts} from "#lib/review/types.js";
 
 /** One row of the Balances view: one account, one commodity. */
 export interface BalanceRow {
@@ -50,6 +51,14 @@ export interface JournalRow {
     txn: Transaction;
     /** The findings anchored to this transaction (as of the client's today), for the row's flag dot. */
     flags: Problem[];
+    /**
+     * Review marker (plan 32 D20): a posting — one an `=` rule generated
+     * included — is to an uncategorised account, and the transaction is not
+     * `reviewed:ignore`. Exactly what puts it in Review Unknowns (bar the window).
+     */
+    unknown: boolean;
+    /** Review marker: it carries a `reviewed` tag of any value (`ignore` included), so Recents skips it. */
+    reviewed: boolean;
 }
 
 /** `GET /api/journal/rows` — one window of the filtered journal. */
@@ -89,6 +98,8 @@ export interface JournalSummary {
     /** Deepest account under the account selection; at least 1. */
     maxDepth: number;
     primary: string | null;
+    /** The review queues' sizes for the toolbar badges (plan 32 D18), or null from an engine that predates them. */
+    review: ReviewCounts | null;
 }
 
 /** One pie slice: a display-boundary number and the exact amount, formatted. */

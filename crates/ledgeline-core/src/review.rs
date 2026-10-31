@@ -14,8 +14,12 @@
 //!   other value. A `reviewed:` on a posting comment is ignored, so `hledger
 //!   reg tag:reviewed` and `not:tag:reviewed` mean exactly what the UI means.
 //! - **Unknown** ([`is_unknown`], D3) is the Problems drawer's
-//!   `uncategorized` rule ([`crate::view::checks`]), over written postings
-//!   only: a posting an `=` rule generated is not one anyone has to categorise.
+//!   `uncategorized` rule ([`crate::view::checks`]) over every posting of a
+//!   real transaction, the ones an `=` rule generated included (amendment
+//!   A): an auto rule that books to `expenses:unknown` has produced an
+//!   uncategorised posting like any other, and the drawer counts it too.
+//!   Forecast transactions (`~` rules, [`is_generated`]) are never unknown,
+//!   here or in the drawer.
 //! - **Similar** ([`similarity_key`], D10) is exact equality of a normalised
 //!   payee, never fuzzy matching — a bulk edit is not the place for false
 //!   positives, and an exact key can be indexed.
@@ -42,6 +46,7 @@ use crate::view::checks::is_uncategorized;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::OnceLock;
+use unicode_normalization::UnicodeNormalization;
 
 /// The tag that records a transaction's review (D1).
 pub const REVIEWED_TAG: &str = "reviewed";
@@ -147,42 +152,46 @@ fn is_iso_date(value: &str) -> bool {
         })
 }
 
-/// The postings `txn`'s file writes: a posting an `=` rule generated is
-/// nobody's to categorise (D3).
+/// The postings `txn`'s file writes. A posting an `=` rule generated is the
+/// rule's choice of account, not the person's, so it never votes as precedent
+/// or names a funding account — though it can still make `txn` unknown.
 fn written(txn: &Transaction) -> impl Iterator<Item = &Posting> {
     txn.postings
         .iter()
         .filter(|posting| posting.generated.is_none())
 }
 
-/// Whether `txn` is **unknown** (D3): any written posting to an account the
-/// Problems drawer flags as uncategorized.
+/// Whether `txn` is **unknown** (D3): any posting — a generated one included
+/// — to an account the Problems drawer flags as uncategorized, on a real
+/// transaction. A forecast transaction is never unknown.
 #[must_use]
 pub fn is_unknown(txn: &Transaction, classes: &Classes) -> bool {
-    written(txn).any(|posting| is_uncategorized(&posting.account.0, classes))
+    !is_generated(txn)
+        && txn
+            .postings
+            .iter()
+            .any(|posting| is_uncategorized(&posting.account.0, classes))
 }
 
 /// The normalised payee two transactions must share to be "similar" (D10), or
 /// `None` when nothing is left of it.
 ///
 /// 1. The payee part (before `|`, as the subscription detector splits it).
-/// 2. Fullwidth forms folded to ASCII, then lowercased.
+/// 2. Unicode NFKC, then lowercased: compatibility forms a bank export emits
+///    (fullwidth `ＳＱ`, the ligature `ﬁ`, `™`, the ideographic space) key the
+///    same as their plain spellings. NFKC first, so the case mapping sees the
+///    plain letters.
 /// 3. Every whitespace-separated token containing a digit dropped (`#4412`,
 ///    `POS0923`, `10/12`, `X1234`).
 /// 4. Punctuation turned into spaces, whitespace collapsed.
 ///
 /// So `SQ *BLUE BOTTLE 4412 OAKLAND` and `SQ *BLUE BOTTLE 0917 OAKLAND` both
-/// key to `sq blue bottle oakland`, and `12345` keys to nothing.
-///
-/// Step 2 is the part of Unicode NFKC that bank exports actually exercise —
-/// the fullwidth ASCII block and the ideographic space — rather than the full
-/// normalization, which would need a Unicode table dependency this crate does
-/// not otherwise carry.
+/// key to `sq blue bottle oakland`, and `12345` keys to nothing. A digit NFKC
+/// produces (`①` → `1`) counts as a digit in step 3.
 #[must_use]
 pub fn similarity_key(description: &str) -> Option<String> {
     let folded: String = payee_of(description)
-        .chars()
-        .map(fold_width)
+        .nfkc()
         .collect::<String>()
         .to_lowercase();
     let words: Vec<&str> = folded
@@ -192,16 +201,6 @@ pub fn similarity_key(description: &str) -> Option<String> {
         .filter(|word| !word.is_empty())
         .collect();
     (!words.is_empty()).then(|| words.join(" "))
-}
-
-/// A fullwidth ASCII form (`Ａ`, `１`, `＃`) as its ASCII self, the
-/// ideographic space as a space, anything else unchanged.
-fn fold_width(c: char) -> char {
-    match c {
-        '\u{FF01}'..='\u{FF5E}' => char::from_u32(c as u32 - 0xFEE0).unwrap_or(c),
-        '\u{3000}' => ' ',
-        _ => c,
-    }
 }
 
 /// Which review queue (D4).
@@ -401,12 +400,15 @@ impl ReviewIndex {
                 }
             }
             state.push(ReviewState::of(txn));
-            unknown.push(written(txn).any(|posting| {
-                let account = posting.account.0.as_str();
-                *uncategorized
-                    .entry(account)
-                    .or_insert_with(|| is_uncategorized(account, classes))
-            }));
+            unknown.push(
+                !is_generated(txn)
+                    && txn.postings.iter().any(|posting| {
+                        let account = posting.account.0.as_str();
+                        *uncategorized
+                            .entry(account)
+                            .or_insert_with(|| is_uncategorized(account, classes))
+                    }),
+            );
             editable_at.push(
                 *writable
                     .entry(txn.source_file.as_path())

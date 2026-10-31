@@ -15,6 +15,7 @@ use ledgeline_core::review::{
     SuggestionSource, is_unknown, similarity_key, top_chip,
 };
 use ledgeline_core::view::Classes;
+use ledgeline_core::view::checks::local_findings;
 use proptest::prelude::*;
 use std::path::Path;
 
@@ -225,9 +226,10 @@ proptest! {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn generated_postings_do_not_make_a_transaction_unknown() {
-    // An `=` rule that books a memo posting to an uncategorized account: a
-    // categorised coffee is not an unknown because the rule fired on it.
+fn a_generated_posting_to_an_unknown_account_makes_the_transaction_unknown() {
+    // Amendment A: an `=` rule that books to an uncategorized account has
+    // produced an uncategorised posting like any other — review and the
+    // Problems drawer both count it.
     let journal = auto::apply_journal(&inline(
         "= expenses:food:coffee\n    (budget:unknown)  *1\n\n\
          2026-10-01 Blue Bottle\n    expenses:food:coffee  $5\n    assets:cash\n",
@@ -238,10 +240,83 @@ fn generated_postings_do_not_make_a_transaction_unknown() {
         "the rule fired"
     );
     let (classes, index) = indexed(&journal);
+    assert!(is_unknown(txn, &classes));
+    assert!(index.unknown_at(0));
+    let unknowns = index.queue(&journal, &opts(QueueKind::Unknowns));
+    assert_eq!(unknowns.total, 1);
+    let drawer = local_findings(&journal, &classes, TODAY);
+    assert!(
+        drawer
+            .iter()
+            .any(|finding| finding.rule == "uncategorized" && finding.position == Some(0)),
+        "the drawer flags the generated posting too"
+    );
+}
+
+#[test]
+fn the_fixtures_auto_rule_makes_a_reviewed_rename_unknown_again() {
+    // `= desc:coffee$` in review.journal, applied as `--auto` would.
+    let written = fixture();
+    let journal = auto::apply_journal(&written);
+    let rename = find(&journal, "2026-09-01", "Blue Bottle Coffee");
+    let at = rename.0 as usize - 1;
+    let (classes, index) = indexed(&journal);
+    assert!(is_unknown(&journal.transactions[at], &classes));
+    assert!(
+        !is_unknown(&written.transactions[at], &classes),
+        "only under --auto"
+    );
+    // Reviewed but unknown: in Unknowns (newest first), still not in Recents.
+    let unknowns = index.queue(&journal, &opts(QueueKind::Unknowns));
+    assert_eq!(unknowns.total, 9);
+    assert!(unknowns.items.contains(&rename));
+    let recents = index.queue(&journal, &opts(QueueKind::Recents));
+    assert!(!recents.items.contains(&rename));
+}
+
+#[test]
+fn forecast_transactions_are_never_unknown_here_or_in_the_drawer() {
+    // What a `~` rule generates (hledger tags it `generated-transaction`),
+    // with an `=` rule's posting on top: nobody's to review or fix.
+    let journal = auto::apply_journal(&inline(
+        "= expenses:unknown\n    (budget:unknown)  *1\n\n\
+         2026-10-01 Rent  ; generated-transaction:~ monthly\n    expenses:unknown  $900\n    assets:cash\n",
+    ));
+    let txn = &journal.transactions[0];
+    let (classes, index) = indexed(&journal);
     assert!(!is_unknown(txn, &classes));
     assert!(!index.unknown_at(0));
-    let unknowns = index.queue(&journal, &opts(QueueKind::Unknowns));
-    assert_eq!(unknowns.total, 0);
+    assert_eq!(index.queue(&journal, &opts(QueueKind::Unknowns)).total, 0);
+    assert_eq!(index.queue(&journal, &opts(QueueKind::Recents)).total, 0);
+    let drawer = local_findings(&journal, &classes, TODAY);
+    assert!(
+        drawer.iter().all(|finding| finding.position != Some(0)),
+        "no transaction rule looks at a forecast: {drawer:?}"
+    );
+}
+
+#[test]
+fn the_fixtures_periodic_rule_adds_nothing_to_review_or_the_drawer() {
+    let journal = fixture();
+    assert!(
+        !journal.periodic_transactions.is_empty(),
+        "the `~` rule parsed"
+    );
+    let (classes, index) = indexed(&journal);
+    // The same counts the queue tests below pin, and no drawer finding names
+    // anything the rule could have produced.
+    assert_eq!(index.queue(&journal, &opts(QueueKind::Unknowns)).total, 8);
+    let drawer = local_findings(&journal, &classes, TODAY);
+    let uncategorized = drawer
+        .iter()
+        .filter(|finding| finding.rule == "uncategorized")
+        .count();
+    let unknown_txns = journal
+        .transactions
+        .iter()
+        .filter(|txn| is_unknown(txn, &classes))
+        .count();
+    assert_eq!(uncategorized, unknown_txns);
 }
 
 // ---------------------------------------------------------------------------
@@ -772,4 +847,41 @@ fn tag_uses_count_header_tags_and_rank_their_values() {
         vec![("paris".to_string(), 2), ("rome".to_string(), 1)]
     );
     assert!(tags[1].values.is_empty(), "an empty value is not offered");
+}
+
+// ---------------------------------------------------------------------------
+// similarity_key: Unicode NFKC (amendment B)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn similarity_key_folds_compatibility_forms_through_nfkc() {
+    let cases: &[(&str, &str)] = &[
+        // Ligatures.
+        ("\u{FB01}ve Guys", "five guys"),
+        ("Ca\u{FB00}e Roma", "caffe roma"),
+        // Fullwidth letters, punctuation and the ideographic space.
+        ("ＳＱ ＊ＢＬＵＥ　ＢＯＴＴＬＥ", "sq blue bottle"),
+        // Compatibility characters: a trademark sign, a superscript, a
+        // circled letter, black-letter and a non-breaking space. A superscript
+        // digit becomes a digit, so its token drops like a store number.
+        ("Acme\u{2122} Store", "acmetm store"),
+        ("Suite \u{00B2} Cafe", "suite cafe"),
+        ("\u{24B6}cme", "acme"),
+        ("\u{210C}ome\u{00A0}Depot", "home depot"),
+        // A precomposed letter and its decomposed spelling key the same.
+        ("Caf\u{00E9}", "caf\u{00E9}"),
+        ("Cafe\u{0301}", "caf\u{00E9}"),
+    ];
+    for (description, expected) in cases {
+        assert_eq!(
+            similarity_key(description).as_deref(),
+            Some(*expected),
+            "{description:?}"
+        );
+    }
+    // A digit NFKC produces is still a digit: the circled store number drops.
+    assert_eq!(
+        similarity_key("Shell \u{2460}\u{2461}").as_deref(),
+        Some("shell")
+    );
 }

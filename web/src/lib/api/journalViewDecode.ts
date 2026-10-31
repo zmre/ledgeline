@@ -22,16 +22,17 @@ import type {
     RowPosition,
     RowsPage,
 } from "#lib/journalView/types.js";
+import type {ReviewCounts} from "#lib/review/types.js";
 import {ApiShapeError} from "./client";
 
 type Raw = Record<string, unknown>;
 
-function obj(raw: unknown, context: string): Raw {
+export function obj(raw: unknown, context: string): Raw {
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new ApiShapeError(`${context}: expected an object`);
     return raw as Raw;
 }
 
-function arr(raw: unknown, context: string): unknown[] {
+export function arr(raw: unknown, context: string): unknown[] {
     if (!Array.isArray(raw)) throw new ApiShapeError(`${context}: expected an array`);
     return raw;
 }
@@ -294,7 +295,14 @@ export function decodeRow(raw: unknown, context = "row"): JournalRow {
         const problem = decodeProblem({...obj(flag, `${context}.flags[]`), tindex: index});
         return problem === null ? [] : [problem];
     });
-    return Object.freeze({txn: Object.freeze(txn), flags: Object.freeze(flags) as Problem[]});
+    return Object.freeze({
+        txn: Object.freeze(txn),
+        flags: Object.freeze(flags) as Problem[],
+        // Absent on a row that is not a journal transaction (a projection's
+        // forecast rows): nothing to review there. Present, they must be booleans.
+        unknown: value.unknown === undefined ? false : bool(value.unknown, `${context}.unknown`),
+        reviewed: value.reviewed === undefined ? false : bool(value.reviewed, `${context}.reviewed`),
+    });
 }
 
 /** `GET /api/journal/rows` → one window. */
@@ -336,6 +344,7 @@ export function decodeJournalSummary(raw: unknown): JournalSummary {
     if (perCommodity.length !== commodities.length) throw new ApiShapeError("journal summary: one perCommodity entry per commodity expected");
     const visibleNet = arr(body.visibleNet, "journal summary visibleNet").map((entry, i) => decodeAmount(entry, `journal summary visibleNet[${i}]`));
     const primary = body.primary === null ? null : str(body.primary, "journal summary primary");
+    const review = body.review === undefined ? null : decodeReviewCounts(body.review, "journal summary review");
     return Object.freeze({
         generation: str(body.generation, "journal summary generation"),
         total: num(body.total, "journal summary total"),
@@ -344,6 +353,23 @@ export function decodeJournalSummary(raw: unknown): JournalSummary {
         perCommodity: Object.freeze(perCommodity) as CommoditySummary[],
         maxDepth: num(body.maxDepth, "journal summary maxDepth"),
         primary,
+        review,
+    });
+}
+
+/** `review` in the summary: four counts, every one required. */
+export function decodeReviewCounts(raw: unknown, context: string): ReviewCounts {
+    const value = obj(raw, context);
+    const count = (field: keyof ReviewCounts): number => {
+        const n = num(value[field], `${context}.${field}`);
+        if (!Number.isSafeInteger(n) || n < 0) throw new ApiShapeError(`${context}.${field}: invalid count ${n}`);
+        return n;
+    };
+    return Object.freeze({
+        unknown: count("unknown"),
+        unreviewedRecent: count("unreviewedRecent"),
+        notEditable: count("notEditable"),
+        notEditableRecent: count("notEditableRecent"),
     });
 }
 

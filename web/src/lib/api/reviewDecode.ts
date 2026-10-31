@@ -1,0 +1,158 @@
+// Wire → domain decoders for the transaction-review routes (plan 32;
+// `crates/ledgeline-server/src/review_api.rs`).
+//
+// Same discipline as journalViewDecode.ts, whose row decoder every review
+// transaction goes through: every field is checked, a missing or mistyped one
+// throws `ApiShapeError` rather than rendering as a quiet zero, and decoded
+// objects are frozen.
+
+import type {
+    BatchResult,
+    PayeeList,
+    PayeeUse,
+    Precedent,
+    QueueItem,
+    QueueKind,
+    QueuePage,
+    ReviewTxn,
+    SimilarSet,
+    Suggestion,
+    SuggestionSource,
+    TagList,
+    TagUse,
+} from "#lib/review/types.js";
+import {ApiShapeError} from "./client";
+import {arr, bool, decodeRow, num, obj, str} from "./journalViewDecode";
+
+const SOURCES: ReadonlySet<string> = new Set<SuggestionSource>(["exactKey", "ruleFile", "payeePrefix", "recurring"]);
+
+function count(raw: unknown, context: string): number {
+    const n = num(raw, context);
+    if (!Number.isSafeInteger(n) || n < 0) throw new ApiShapeError(`${context}: invalid count ${n}`);
+    return n;
+}
+
+function index(raw: unknown, context: string): number {
+    const n = num(raw, context);
+    if (!Number.isSafeInteger(n) || n < 1) throw new ApiShapeError(`${context}: invalid index ${n}`);
+    return n;
+}
+
+function nullableStr(raw: unknown, context: string): string | null {
+    return raw === null ? null : str(raw, context);
+}
+
+/** A review transaction: a journal row (markers required here) plus its fingerprint. */
+export function decodeReviewTxn(raw: unknown, context = "review txn"): ReviewTxn {
+    const value = obj(raw, context);
+    // `decodeRow` tolerates absent markers (forecast rows have none); a review
+    // route always sends them, so their absence here means a different engine.
+    bool(value.unknown, `${context}.unknown`);
+    bool(value.reviewed, `${context}.reviewed`);
+    return Object.freeze({...decodeRow(value, context), fingerprint: nullableStr(value.fingerprint, `${context}.fingerprint`)});
+}
+
+function decodeSuggestion(raw: unknown, context: string): Suggestion {
+    const value = obj(raw, context);
+    const source = str(value.source, `${context}.source`);
+    if (!SOURCES.has(source)) throw new ApiShapeError(`${context}: unknown source ${JSON.stringify(source)}`);
+    return Object.freeze({
+        account: str(value.account, `${context}.account`),
+        description: nullableStr(value.description, `${context}.description`),
+        source: source as SuggestionSource,
+        confidence: count(value.confidence, `${context}.confidence`),
+        strong: bool(value.strong, `${context}.strong`),
+        count: count(value.count, `${context}.count`),
+    });
+}
+
+function decodeQueueItem(raw: unknown, context: string): QueueItem {
+    const value = obj(raw, context);
+    const suggestions = arr(value.suggestions, `${context}.suggestions`).map((s, i) => decodeSuggestion(s, `${context}.suggestions[${i}]`));
+    return Object.freeze({
+        ...decodeReviewTxn(value, context),
+        key: nullableStr(value.key, `${context}.key`),
+        suggestions: Object.freeze(suggestions) as Suggestion[],
+    });
+}
+
+/** `GET /api/review/queue` → one page of a queue. */
+export function decodeQueuePage(raw: unknown): QueuePage {
+    const page = obj(raw, "review queue");
+    const kind = str(page.kind, "review queue kind");
+    if (kind !== "unknowns" && kind !== "recents") throw new ApiShapeError(`review queue: unknown kind ${JSON.stringify(kind)}`);
+    const offset = count(page.offset, "review queue offset");
+    const items = arr(page.items, "review queue items").map((item, i) => decodeQueueItem(item, `review queue items[${offset + i}]`));
+    return Object.freeze({
+        generation: str(page.generation, "review queue generation"),
+        kind: kind as QueueKind,
+        total: count(page.total, "review queue total"),
+        offset,
+        notEditable: count(page.notEditable, "review queue notEditable"),
+        items: Object.freeze(items) as QueueItem[],
+    });
+}
+
+/** `GET /api/review/similar/{index}` → the candidates, the queued ones among them, and the precedent. */
+export function decodeSimilarSet(raw: unknown): SimilarSet {
+    const body = obj(raw, "similar");
+    const candidates = arr(body.candidates, "similar candidates").map((c, i) => decodeReviewTxn(c, `similar candidates[${i}]`));
+    const inQueue = arr(body.inQueue, "similar inQueue").map((i, at) => index(i, `similar inQueue[${at}]`));
+    let precedent: Precedent | null = null;
+    if (body.precedent !== null) {
+        const value = obj(body.precedent, "similar precedent");
+        precedent = Object.freeze({
+            account: str(value.account, "similar precedent account"),
+            count: count(value.count, "similar precedent count"),
+            of: count(value.of, "similar precedent of"),
+        });
+    }
+    return Object.freeze({
+        generation: str(body.generation, "similar generation"),
+        index: index(body.index, "similar index"),
+        key: nullableStr(body.key, "similar key"),
+        total: count(body.total, "similar total"),
+        candidates: Object.freeze(candidates) as ReviewTxn[],
+        inQueue: Object.freeze(inQueue) as number[],
+        precedent,
+    });
+}
+
+/** `POST /api/transactions/batch` → 200: the new generation and every edited transaction. */
+export function decodeBatchResult(raw: unknown): BatchResult {
+    const body = obj(raw, "batch");
+    const edited = arr(body.edited, "batch edited").map((txn, i) => decodeReviewTxn(txn, `batch edited[${i}]`));
+    return Object.freeze({generation: str(body.generation, "batch generation"), edited: Object.freeze(edited) as ReviewTxn[]});
+}
+
+/** `GET /api/payees` → every payee, most used first. */
+export function decodePayees(raw: unknown): PayeeList {
+    const body = obj(raw, "payees");
+    const payees = arr(body.payees, "payees list").map((entry, i): PayeeUse => {
+        const value = obj(entry, `payees[${i}]`);
+        return Object.freeze({
+            payee: str(value.payee, `payees[${i}].payee`),
+            count: count(value.count, `payees[${i}].count`),
+            last: str(value.last, `payees[${i}].last`),
+        });
+    });
+    return Object.freeze({generation: str(body.generation, "payees generation"), payees: Object.freeze(payees) as PayeeUse[]});
+}
+
+/** `GET /api/tags` → every tag name with its commonest values. */
+export function decodeTags(raw: unknown): TagList {
+    const body = obj(raw, "tags");
+    const tags = arr(body.tags, "tags list").map((entry, i): TagUse => {
+        const value = obj(entry, `tags[${i}]`);
+        const values = arr(value.values, `tags[${i}].values`).map((v, j) => {
+            const pair = obj(v, `tags[${i}].values[${j}]`);
+            return Object.freeze({value: str(pair.value, `tags[${i}].values[${j}].value`), count: count(pair.count, `tags[${i}].values[${j}].count`)});
+        });
+        return Object.freeze({
+            name: str(value.name, `tags[${i}].name`),
+            count: count(value.count, `tags[${i}].count`),
+            values: Object.freeze(values) as TagUse["values"],
+        });
+    });
+    return Object.freeze({generation: str(body.generation, "tags generation"), tags: Object.freeze(tags) as TagUse[]});
+}
