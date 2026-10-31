@@ -46,7 +46,7 @@ An axum `Router` over an `AppState`. The library is what every host links; `main
 - **Cargo features.**
   - `gui` (default): the wry/tao desktop window, menus and file dialogs.
   - `watcher` (default): live reload from a `notify` file watcher. Without it, the host calls `refresh()`.
-  - `external-tools` (default): running `hledger` and `git` as subprocesses. They need a real path (`Vault::local_path`); without the feature those features report that this build cannot run them.
+  - `external-tools` (default): running `hledger` as a subprocess. It needs a real path (`Vault::local_path`); without the feature the features that use it report that this build cannot run it.
 
 ## Hosts
 

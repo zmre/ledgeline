@@ -9,6 +9,10 @@
     // description; `rows` is that set filtered by the card's current change
     // (client-side, `similarRows`), so the section follows every edit with no
     // request per keystroke.
+    //
+    // A staged run (plan 32 D24) shows TWO of these, one per source — "in this
+    // import" and "already in the journal" — so the heading and the test ids
+    // are props, and each keeps its own checked list.
     import {formatAmount} from "#lib/domain/money.js";
     import {txnFlowAmounts} from "#lib/journal/rowModel.js";
     import {checkState, shortAccount, shortDate, type SimilarRow} from "../card";
@@ -20,6 +24,8 @@
         open = $bindable(false),
         applying,
         disabled = false,
+        title = "Similar unreviewed",
+        testid = "review-similar",
     }: {
         rows: SimilarRow[];
         /** The checked candidates' tindices. */
@@ -28,6 +34,10 @@
         /** "description + account", or "" before anything applicable has changed. */
         applying: string;
         disabled?: boolean;
+        /** The section's heading. */
+        title?: string;
+        /** The prefix of every test id in the section (and its list's DOM id), unique per section on a card. */
+        testid?: string;
     } = $props();
 
     const checkedSet = $derived(new Set(checked));
@@ -45,25 +55,35 @@
 
     /** ⇧A and the header box: all checked → none, otherwise all. */
     export function toggleAll(): void {
+        setAll(tri !== "all");
+    }
+
+    /** Check every row, or none (⇧A across both of a staged card's sections). */
+    export function setAll(on: boolean): void {
         if (!canApply) return;
-        checked = tri === "all" ? [] : rows.map((row) => row.txn.txn.index);
+        checked = on ? rows.map((row) => row.txn.txn.index) : [];
+    }
+
+    /** Every row is checked. */
+    export function allChecked(): boolean {
+        return tri === "all";
     }
 </script>
 
-<section class="rounded-box border border-base-content/10 bg-base-200/40" data-testid="review-similar" data-open={open ? "" : undefined}>
+<section class="rounded-box border border-base-content/10 bg-base-200/40" data-testid={testid} data-open={open ? "" : undefined}>
     <div class="flex items-center gap-2 px-3 py-2">
         <button
             type="button"
             class="flex min-w-0 grow items-center gap-1.5 text-left text-sm font-medium"
             aria-expanded={open}
-            aria-controls="review-similar-list"
+            aria-controls="{testid}-list"
             onclick={() => (open = !open)}
         >
             <ReviewIcon name={open ? "chevron-down" : "chevron-right"} class="h-3.5 w-3.5 text-base-content/50" />
             <kbd class="kbd kbd-xs font-normal">s</kbd>
-            Similar unreviewed
+            {title}
             <span class="text-base-content/40">·</span>
-            <span class="tabular-nums" data-testid="review-similar-count">{rows.length}</span>
+            <span class="tabular-nums" data-testid="{testid}-count">{rows.length}</span>
         </button>
         {#if applying !== ""}
             <span class="shrink-0 text-xs text-base-content/50">apply: <span class="text-base-content/80">{applying}</span></span>
@@ -74,7 +94,7 @@
     <!-- 0fr → 1fr: the section's height animates without measuring anything. -->
     <div class={["grid transition-[grid-template-rows] duration-120 ease-out motion-reduce:transition-none", open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"]}>
         <div class="min-h-0 overflow-hidden" inert={!open}>
-            <div class="border-t border-base-content/10 px-3 pt-2 pb-3" id="review-similar-list">
+            <div class="border-t border-base-content/10 px-3 pt-2 pb-3" id="{testid}-list">
                 <label class="flex w-fit items-center gap-2 py-1 text-xs text-base-content/60">
                     <input
                         type="checkbox"
@@ -83,12 +103,12 @@
                         bind:this={allBox}
                         onchange={toggleAll}
                         disabled={!canApply}
-                        aria-label="Check all similar transactions"
-                        data-testid="review-similar-all"
+                        aria-label="Check all: {title}"
+                        data-testid="{testid}-all"
                     />
                     all <kbd class="kbd kbd-xs">⇧A</kbd>
                 </label>
-                <ul class="mt-1 flex max-h-56 flex-col overflow-y-auto" data-testid="review-similar-rows">
+                <ul class="mt-1 flex max-h-56 flex-col overflow-y-auto" data-testid="{testid}-rows" data-similar-rows>
                     {#each rows as row (row.txn.txn.index)}
                         {@const index = row.txn.txn.index}
                         <li>
@@ -97,7 +117,7 @@
                                     "grid cursor-pointer grid-cols-[auto_3.5rem_minmax(0,1fr)_auto] items-center gap-x-3 rounded-field px-1 py-1 text-sm hover:bg-base-content/5",
                                     checkedSet.has(index) && "bg-success/5",
                                 ]}
-                                data-testid="review-similar-row"
+                                data-testid="{testid}-row"
                                 data-txn={index}
                             >
                                 <input

@@ -17,6 +17,14 @@
 //     Then the queue is re-validated against the new generation in the
 //     background and merged, keeping the run's order, skips and current card.
 //
+// A run has a SOURCE (plan 32 Phase 4). "journal" is all of the above.
+// "staged" runs over an import's transactions before they are written
+// (`openStaged`): the cards are handed in, nothing is paged or revalidated,
+// and a save goes to the import store's sink as overrides (for the card and
+// its staged siblings) and queued journal edits (for similar transactions
+// already in the journal, D24) — never to the network. Similar is fetched by
+// the card's similarity key, since a staged card has no journal index.
+//
 // The run lives in module state like every store here (one overlay at a
 // time); `resetReview` is the test seam.
 
@@ -25,11 +33,24 @@
    bookkeeping no template or effect observes. */
 import {classify, type EditFailure, type EditResult} from "#lib/api/editFailure.js";
 import {LedgelineApi, type WireBatchEdit, type WireEditOp} from "#lib/api/native.js";
-import {decodeBatchResult, decodeQueuePage, decodeSimilarSet} from "#lib/api/reviewDecode.js";
+import {decodeBatchResult, decodeKeySimilarSet, decodeQueuePage, decodeSimilarSet} from "#lib/api/reviewDecode.js";
+import type {StagedSink, StagedTxn} from "#lib/imports/reviewTypes.js";
 import type {QueueItem, QueueKind, ReviewForm, ReviewTxn, SimilarSet} from "#lib/review/types.js";
 import {localToday} from "./filters.svelte";
 import {journal} from "./journal.svelte";
 import {settings} from "./settings.svelte";
+
+/** What a staged run covers: the import's unknowns, or every transaction it would write (D26's "Review All"). */
+export type StagedKind = "unknowns" | "all";
+
+/** Where a run's cards come from and where its saves go. */
+export type ReviewSource = "journal" | "staged";
+
+/** One similar transaction a save is applied to: a journal one (→ a journal edit) or, in a staged run, a staged sibling (→ an override). */
+export interface SimilarEntry {
+    txn: ReviewTxn | StagedTxn;
+    ops: readonly WireEditOp[];
+}
 
 /** Where a card stands in the run. */
 export type CardStatus = "open" | "saving" | "saved" | "skipped";
@@ -62,7 +83,10 @@ export interface SaveFailure {
 
 interface Run {
     serverUrl: string;
-    kind: QueueKind;
+    source: ReviewSource;
+    kind: QueueKind | StagedKind;
+    /** A staged run's save target; null for a journal run. */
+    sink: StagedSink | null;
     today: string;
     limit: number | undefined;
     maxDays: number | undefined;
@@ -109,6 +133,15 @@ function api(serverUrl: string): LedgelineApi {
 
 const indexOf = (card: ReviewCard): number => card.item.txn.index;
 
+function isStaged(txn: ReviewTxn | StagedTxn): txn is StagedTxn {
+    return "ref" in txn;
+}
+
+/** A save's ops that recategorise: an account moved, or a full re-render. What takes a staged sibling out of an Unknowns run. */
+function categorises(ops: readonly WireEditOp[]): boolean {
+    return ops.some((op) => op.op === "setPostingAccount" || op.op === "replace");
+}
+
 /** A fresh review transaction over a held queue item, keeping the item's key and suggestions. */
 function refreshed(item: QueueItem, txn: ReviewTxn): QueueItem {
     return Object.freeze({...item, ...txn});
@@ -147,13 +180,21 @@ async function fetchSimilar(index: number): Promise<SimilarSet | null> {
     const target = run;
     if (target === null) return null;
     const cached = similarCache.get(index);
-    if (cached !== undefined && cached.generation === target.generation) return cached;
+    // A staged run reconciles with no generation: its similar sets are kept for the run.
+    if (cached !== undefined && (target.source === "staged" || cached.generation === target.generation)) return cached;
     const pending = inflight.get(index);
     if (pending !== undefined) return pending;
     const started = epoch;
+    // A staged card has no journal index: its journal siblings are found by the
+    // similarity key of what the bank sent (D24).
+    const key = target.source === "staged" ? (cards.find((card) => indexOf(card) === index)?.item.key ?? null) : null;
+    if (target.source === "staged" && key === null) return null;
     const request = (async (): Promise<SimilarSet | null> => {
         try {
-            const set = decodeSimilarSet(await api(target.serverUrl).reviewSimilar(index, target.today, openIndices()));
+            const set =
+                target.source === "staged"
+                    ? decodeKeySimilarSet(await api(target.serverUrl).reviewSimilarKey(key as string, target.today))
+                    : decodeSimilarSet(await api(target.serverUrl).reviewSimilar(index, target.today, openIndices()));
             if (started !== epoch) return null;
             const next = new Map(similarCache);
             next.set(index, set);
@@ -181,12 +222,17 @@ function prefetch(): void {
 /** Unknowns are paged: fetch the next page when the cursor nears the end of the held cards. */
 async function pageAhead(): Promise<void> {
     const target = run;
-    if (target === null || paging || target.fetched >= target.total || cursor < cards.length - PAGE_AHEAD) return;
+    if (target === null || target.source === "staged" || paging || target.fetched >= target.total || cursor < cards.length - PAGE_AHEAD) return;
     paging = true;
     const started = epoch;
     try {
         const page = decodeQueuePage(
-            await api(target.serverUrl).reviewQueue(target.kind, {today: target.today, limit: target.limit, maxDays: target.maxDays, offset: target.fetched})
+            await api(target.serverUrl).reviewQueue(target.kind as QueueKind, {
+                today: target.today,
+                limit: target.limit,
+                maxDays: target.maxDays,
+                offset: target.fetched,
+            })
         );
         if (started !== epoch || run === null) return;
         const held = new Set(cards.map(indexOf));
@@ -302,12 +348,12 @@ function startDrain(): void {
  */
 async function revalidate(): Promise<void> {
     const target = run;
-    if (target === null || queue.length > 0) return;
+    if (target === null || target.source === "staged" || queue.length > 0) return;
     const token = ++revalidation;
     const started = epoch;
     try {
         const page = decodeQueuePage(
-            await api(target.serverUrl).reviewQueue(target.kind, {
+            await api(target.serverUrl).reviewQueue(target.kind as QueueKind, {
                 today: target.today,
                 limit: Math.max(target.fetched, target.limit ?? 0) || undefined,
                 maxDays: target.maxDays,
@@ -340,8 +386,12 @@ async function revalidate(): Promise<void> {
 
 export const review = {
     /** The queue the run is working through, or null when no run is open. */
-    get kind(): QueueKind | null {
+    get kind(): QueueKind | StagedKind | null {
         return run?.kind ?? null;
+    },
+    /** Where the run's cards come from: the journal's queues, or an import's staged transactions. */
+    get source(): ReviewSource | null {
+        return run?.source ?? null;
     },
     /** The generation the run was last reconciled with. */
     get generation(): string | null {
@@ -416,7 +466,9 @@ export const review = {
             if (started !== epoch) return;
             run = {
                 serverUrl,
+                source: "journal",
                 kind,
+                sink: null,
                 today,
                 limit: options.limit,
                 maxDays: options.maxDays,
@@ -434,6 +486,51 @@ export const review = {
         } finally {
             if (started === epoch) loading = false;
         }
+    },
+
+    /**
+     * Open a run over an import's staged transactions (plan 32 D23): `unknowns`
+     * keeps those with an uncategorised posting, `all` keeps every one. Saves go
+     * to `sink`, synchronously; nothing is written until the import is.
+     * `generation` is null for the run's whole life — there is no queue to
+     * reconcile with.
+     */
+    openStaged(kind: StagedKind, items: readonly StagedTxn[], sink: StagedSink): void {
+        const serverUrl = settings.serverUrl;
+        resetReview();
+        if (serverUrl === null) {
+            error = "No server is configured.";
+            return;
+        }
+        const held = kind === "unknowns" ? items.filter((item) => item.unknown) : [...items];
+        run = {
+            serverUrl,
+            source: "staged",
+            kind,
+            sink,
+            today: localToday(),
+            limit: undefined,
+            maxDays: undefined,
+            generation: "",
+            total: held.length,
+            notEditable: 0,
+            fetched: held.length,
+        };
+        cards = held.map(cardOf);
+        cursor = 0;
+        error = null;
+        prefetch();
+    },
+
+    /**
+     * The OTHER staged transactions in this run sharing `index`'s similarity
+     * key (D24's "In this import" group), in run order. Empty in a journal run.
+     */
+    stagedSimilar(index: number): StagedTxn[] {
+        if (run?.source !== "staged") return [];
+        const key = cards.find((card) => indexOf(card) === index)?.item.key ?? null;
+        if (key === null) return [];
+        return cards.filter((card) => indexOf(card) !== index && card.item.key === key && card.status !== "saved").map((card) => card.item as StagedTxn);
     },
 
     /** Close the run (the overlay's ✕): forget it. Saves already sent still land. */
@@ -466,7 +563,7 @@ export const review = {
     /** `index`'s similar set when it has arrived (reactive), else null. */
     similar(index: number): SimilarSet | null {
         const set = similarCache.get(index);
-        return set !== undefined && set.generation === run?.generation ? set : null;
+        return set !== undefined && (run?.source === "staged" || set.generation === run?.generation) ? set : null;
     },
     /** `index`'s similar set, fetched if it is not held. Null when it cannot be had. */
     loadSimilar(index: number): Promise<SimilarSet | null> {
@@ -479,9 +576,10 @@ export const review = {
      * as one batch, and advance at once. The returned promise settles when
      * THIS save lands or fails; the UI need not wait for it.
      */
-    save(ops: readonly WireEditOp[], similar: readonly {txn: ReviewTxn; ops: readonly WireEditOp[]}[] = []): Promise<EditResult> {
+    save(ops: readonly WireEditOp[], similar: readonly SimilarEntry[] = []): Promise<EditResult> {
         const card = cards[cursor];
         if (card === undefined || run === null) return Promise.resolve({ok: false, failure: {kind: "unknown", message: "There is no card to save."}});
+        if (run.source === "staged") return Promise.resolve(saveStaged(card, ops, similar));
         const entries = [{txn: card.item, ops}, ...similar.filter((entry) => entry.ops.length > 0)];
         const unprintable = entries.find((entry) => entry.txn.fingerprint === null);
         if (unprintable !== undefined) {
@@ -513,6 +611,8 @@ export const review = {
      * the queue in the background; the run's own saves already did.
      */
     syncGeneration(generation: string | null): void {
+        // A staged run's cards come from the import, not the journal's queue.
+        if (run?.source === "staged") return;
         if (run === null || generation === null || generation === run.generation || queue.length > 0) return;
         void revalidate();
     },
@@ -522,6 +622,52 @@ export const review = {
         while (draining !== null) await draining;
     },
 };
+
+/**
+ * A staged run's save (D23/D24): the card and its staged siblings become
+ * overrides, similar journal transactions become queued journal edits, all
+ * handed to the import's sink at once. Nothing goes to the network, so it
+ * settles before it returns.
+ *
+ * The card is marked saved and KEEPS its draft — the overlay sets it before
+ * saving — so ← shows the edit: the row itself only changes at the next dry
+ * run. In Unknowns a staged sibling this save recategorised leaves the run
+ * (D5a's "fixed via similar"); otherwise it shows which card changed it.
+ */
+function saveStaged(card: ReviewCard, ops: readonly WireEditOp[], similar: readonly SimilarEntry[]): EditResult {
+    const target = run;
+    if (target === null || target.sink === null) return {ok: false, failure: {kind: "unknown", message: "There is no import to save into."}};
+    const applied = similar.filter((entry) => entry.ops.length > 0);
+    const siblings = applied.filter((entry): entry is {txn: StagedTxn; ops: readonly WireEditOp[]} => isStaged(entry.txn));
+    const journalEdits = applied.filter((entry) => !isStaged(entry.txn));
+    if (journalEdits.some((entry) => entry.txn.fingerprint === null)) {
+        return {ok: false, failure: {kind: "unavailable", message: "Editing is not enabled on this server."}};
+    }
+    const result = target.sink.stage({
+        overrides: [{item: card.item as StagedTxn, ops}, ...siblings.map((entry) => ({item: entry.txn, ops: entry.ops}))],
+        journalEdits: journalEdits.map((entry) => ({index: entry.txn.txn.index, fingerprint: entry.txn.fingerprint as string, ops: [...entry.ops]})),
+    });
+    if (!result.ok) {
+        failure = {index: indexOf(card), failure: result.failure};
+        return result;
+    }
+    failure = null;
+    const changed = new Map(siblings.map((entry) => [entry.txn.txn.index, entry.ops]));
+    const self = indexOf(card);
+    let removed = 0;
+    const next: ReviewCard[] = [];
+    for (const held of cards) {
+        const siblingOps = changed.get(indexOf(held));
+        if (indexOf(held) === self) next.push({...held, status: "saved"});
+        else if (siblingOps === undefined) next.push(held);
+        else if (target.kind === "unknowns" && categorises(siblingOps) && (held.status === "open" || held.status === "skipped")) removed += 1;
+        else next.push({...held, updatedFrom: self});
+    }
+    fixed += removed;
+    replaceCards(next);
+    review.go(cursor + 1);
+    return {ok: true};
+}
 
 /** Test seam: forget the run (vitest runs every test against one module instance). */
 export function resetReview(): void {

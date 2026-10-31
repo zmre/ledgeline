@@ -1,17 +1,16 @@
 //! Locating, version-gating and running the `hledger` binary (WP-11).
 //!
-//! # This module and `git.rs` are the ONLY places `Command::new` may appear
+//! # This module is the ONLY place `Command::new` may appear
 //!
-//! And both are switched off together by building without the
+//! And it is switched off by building without the
 //! `external-tools` feature (a sandboxed host, where there is no `hledger` to
 //! run and no real path to hand it): [`Hledger::resolve`] and
 //! [`Invocation::run`] then answer [`HledgerError::Disabled`] without spawning
 //! anything. The rest of the module still compiles, so nothing that merely
 //! *mentions* an invocation needs a `cfg` of its own.
 //!
-//! Ledgeline has, until now, run no subprocesses at all. WP-11 introduces
-//! exactly two: `hledger` (here) and `git` (`git.rs`). Every other module that
-//! needs a subprocess goes through one of them. The rule is worth stating as a
+//! Ledgeline runs exactly one subprocess: `hledger` (here). Every other module
+//! that needs a subprocess goes through this one. The rule is worth stating as a
 //! rule because the alternative — process spawning scattered across the import
 //! pipeline — is how the four invariants below get quietly broken one call site
 //! at a time. `docs/development/imports-internals.md` says the same thing.
@@ -23,8 +22,7 @@
 //!    `sh -c` anywhere in this codebase. Journal paths, rules paths and account
 //!    names are all user data containing spaces, quotes and `$`.
 //! 2. **Every call has a wall-clock timeout.** Ledgeline is a desktop GUI; a
-//!    subprocess that never exits (a `git` GPG passphrase prompt, an `hledger`
-//!    reading a FIFO) must not be able to hang the window forever.
+//!    subprocess that never exits (an `hledger` reading a FIFO) must not be able to hang the window forever.
 //! 3. **stdout and stderr are captured SEPARATELY.** This one is load-bearing
 //!    rather than tidy: `hledger import --dry-run` writes the proposed
 //!    transactions to **stdout** as re-parseable journal text and its

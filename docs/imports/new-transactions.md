@@ -44,7 +44,7 @@ Ledgeline checks the balance against your journal plus the new transactions. It 
 
 ## Preview before writing
 
-Press **Save and Import** to run a dry run. hledger works out what it would add and Ledgeline shows the result under "Nothing has been written yet". The panel shows:
+Press **Test Import** to run a dry run. It writes nothing: hledger works out what it would add, and Ledgeline shows the result under "Nothing has been written yet". The panel shows:
 
 - hledger's own status line, and the proposed transactions exactly as they will be appended;
 - a warning if hledger would silently drop rows dated on or before the last import from this CSV;
@@ -61,12 +61,6 @@ If hledger rejects the import, the panel shows hledger's error output unedited. 
 Press **Write changes**. Ledgeline appends the text you just saw, unaltered, to the journal you chose. It then tells hledger to record the import so the same rows aren't proposed again. If that last step fails, Ledgeline restores the journal to how it was and reports the whole import as failed.
 
 The result panel lists every file it wrote.
-
-### The git safety net
-
-If your journal is in a git repository, an import refuses to start while a file it will write has uncommitted changes. It names those files, so you can commit them first. Once the import is written, Ledgeline commits the CSV and the journal with a generated message. `git diff` and `git revert` then undo an import cleanly.
-
-Ledgeline only stages the files the import wrote. Other work in progress, including files you have already staged, is left alone. If the commit itself fails, for example because of a pre-commit hook or a signing prompt, the import is still written and the result panel shows git's message.
 
 ### Re-sorting by date
 

@@ -553,3 +553,122 @@ test("refuses to create a rules file over one that already exists", async ({page
     // And the existing file is untouched — the whole point of the refusal.
     expect(readFileSync(SCRATCH_RULES, "utf8")).toBe(RULES);
 });
+
+// ---------------------------------------------------------------------------
+// Review before writing (plan 32 Phase 4)
+// ---------------------------------------------------------------------------
+//
+// Against the import-review engine on :5097 — a scratch copy staged fresh on
+// every run (target/e2e-import-review/: an empty journal and the docs'
+// `imports/checking.csv.rules`; see playwright.config.ts), because this test
+// writes a rule and then the import.
+//
+// The statement is the docs' `checking.csv`: five rows, of which the rules
+// file categorises four. HARDWARE STORE stays `expenses:unknown`, in posting 2.
+
+const REVIEW_API = "http://127.0.0.1:5097";
+const REVIEW_COPY = new URL("../../target/e2e-import-review/", import.meta.url);
+const CHECKING_CSV = new URL("../../fixtures/rules/simple/checking.csv", import.meta.url);
+const REVIEW_NOW = new Date(2026, 9, 31, 12, 0, 0); // local 2026-10-31
+/**
+ * Short enough that the button pressed is at the bottom of the window and what
+ * it makes appear starts below it — the case `#lib/ui/reveal` exists for.
+ */
+const SHORT_VIEWPORT = {width: 1280, height: 600};
+
+test.describe("review before writing", () => {
+    test.beforeEach(async ({page}) => {
+        await page.clock.setFixedTime(REVIEW_NOW);
+        // Registered after the file's own init script, so this server wins.
+        await page.addInitScript(
+            ([url, token]) => localStorage.setItem("ledgeline.settings.v1", JSON.stringify({serverUrl: url, serverToken: token})),
+            [REVIEW_API, API_TOKEN]
+        );
+    });
+
+    test("reviews an unknown, remembers a rule, and writes both", async ({page}) => {
+        await page.goto("/imports");
+        await expect(page.getByTestId("imports-new")).toBeVisible();
+        if ((await page.getByTestId("imports-drop-target").count()) === 0) test.skip(true, "this engine cannot run hledger");
+
+        // 1. Stage the docs' checking.csv; its rules file is the one candidate.
+        await page.locator('input[type="file"]').setInputFiles({name: "checking.csv", mimeType: "text/csv", buffer: readFileSync(CHECKING_CSV)});
+        await expect(page.getByTestId("imports-csv-path")).toHaveValue("imports/checking.csv");
+
+        // 2. Test Import (the dry run), then `u`. In a short window the dry run
+        // lands below the button, and is scrolled up into view.
+        const viewport = page.viewportSize();
+        await page.setViewportSize(SHORT_VIEWPORT);
+        await expect(page.getByTestId("imports-submit")).toHaveText("Test Import");
+        await page.getByTestId("imports-submit").click();
+        await expect(page.getByTestId("imports-dry-run").getByRole("heading", {name: "Nothing has been written yet"})).toBeInViewport();
+        if (viewport !== null) await page.setViewportSize(viewport);
+        await expect(page.getByTestId("imports-review-unknowns-count")).toHaveText("1");
+        await expect(page.getByTestId("imports-review-all-count")).toHaveText("5");
+        await expect(page.getByTestId("imports-write-changes")).toBeEnabled();
+        await page.keyboard.press("u");
+        const overlay = page.getByTestId("review-overlay");
+        await expect(overlay.getByRole("heading", {name: "Review Unknowns"})).toBeVisible();
+        const card = page.locator('[data-card-index="5"]');
+        await expect(card).toBeFocused();
+        await expect(card.getByTestId("review-payee")).toContainText("HARDWARE STORE");
+
+        // 3. Recategorise, enable "Remember as a rule" with R, check the live count.
+        const account = card.getByLabel("Account for posting 2");
+        await account.fill("expenses:home:supplies");
+        // Escape closes the completion list if it is open, then leaves the field (D16).
+        for (let tries = 0; tries < 3 && !(await card.evaluate((element) => element === document.activeElement)); tries += 1) {
+            await page.keyboard.press("Escape");
+        }
+        await expect(card).toBeFocused();
+        await expect(card.getByTestId("review-rule")).toBeVisible();
+        await page.keyboard.press("Shift+R");
+        await expect(card.getByTestId("review-rule-toggle")).toBeChecked();
+        await expect(card.getByTestId("review-rule-field")).toHaveValue("description");
+        await expect(card.getByTestId("review-rule-pattern")).toHaveValue("hardware.*store");
+        await expect(card.getByTestId("review-rule-target")).toBeChecked();
+        await expect(card.getByTestId("review-rule-count")).toHaveText(/Matches\s+1\s+of\s+5\s+rows in checking\.csv\s+·\s+0\s+already categorised/);
+        await card.getByTestId("review-rule-changes-toggle").click();
+        await expect(card.getByTestId("review-rule-change")).toContainText("+ expenses:home:supplies");
+
+        // 4. Save: the rule first, then the card. The run is over.
+        await page.keyboard.press("ControlOrMeta+Enter");
+        await expect(page.getByTestId("review-summary")).toBeVisible();
+        await expect(page.getByTestId("review-staged-note")).toContainText("Write changes");
+        await expect(async () => {
+            const rules = readFileSync(new URL("imports/checking.csv.rules", REVIEW_COPY), "utf8");
+            expect(rules).toMatch(/if %description hardware\.\*store\n\s+account2 expenses:home:supplies/);
+            // Appended at the END: the last matching rule wins.
+            expect(rules.indexOf("hardware.*store")).toBeGreaterThan(rules.indexOf("LANDLORD LLC"));
+        }).toPass();
+        // Nothing is in the journal yet.
+        expect(readFileSync(new URL("main.journal", REVIEW_COPY), "utf8")).not.toContain("HARDWARE STORE");
+
+        // Closing keeps the edit: the dry run now carries it, and the rule
+        // categorises the row, so there is no unknown left.
+        await overlay.getByRole("button", {name: /Done/}).click();
+        await expect(overlay).toBeHidden();
+        await expect(page.getByTestId("imports-review-edits-count")).toHaveText("1 reviewed edit");
+        await expect(page.getByTestId("imports-review-unknowns-count")).toHaveText("0");
+        await expect(page.getByTestId("imports-cli-note")).toContainText("plus 1 reviewed edit");
+        await expect(page.getByTestId("imports-dry-run-entries")).toContainText("reviewed:2026-10-31");
+
+        // 5. Write changes — and, in a short window, the result is scrolled into view.
+        await page.setViewportSize(SHORT_VIEWPORT);
+        await page.getByTestId("imports-write-changes").click();
+        await expect(page.getByTestId("imports-result")).toBeVisible();
+        await expect(page.getByTestId("imports-result").getByRole("heading", {name: "Done"})).toBeInViewport();
+
+        // 6. The rule is in the rules file, and the journal has the edited, reviewed transaction.
+        const journalText = readFileSync(new URL("main.journal", REVIEW_COPY), "utf8").replaceAll("\r\n", "\n");
+        const at = journalText.indexOf("2024-01-19 HARDWARE STORE");
+        expect(at).toBeGreaterThanOrEqual(0);
+        const written = journalText.slice(at, journalText.indexOf("\n\n", at) < 0 ? undefined : journalText.indexOf("\n\n", at));
+        expect(written).toContain("reviewed:2026-10-31");
+        expect(written).toMatch(/expenses:home:supplies\s+\$62\.13/);
+        expect(written).not.toContain("expenses:unknown");
+        // The other four rows came in untouched and unreviewed.
+        expect(journalText).toContain("2024-01-15 ACME PAYROLL");
+        expect(journalText.match(/reviewed:/g)).toHaveLength(1);
+    });
+});

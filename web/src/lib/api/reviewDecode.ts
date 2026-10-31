@@ -38,6 +38,13 @@ function index(raw: unknown, context: string): number {
     return n;
 }
 
+/** The keyed route's `index`, which names no transaction and must be 0. */
+function zero(raw: unknown, context: string): number {
+    const n = num(raw, context);
+    if (n !== 0) throw new ApiShapeError(`${context}: expected 0 for a keyed similar set, got ${n}`);
+    return n;
+}
+
 function nullableStr(raw: unknown, context: string): string | null {
     return raw === null ? null : str(raw, context);
 }
@@ -66,7 +73,8 @@ function decodeSuggestion(raw: unknown, context: string): Suggestion {
     });
 }
 
-function decodeQueueItem(raw: unknown, context: string): QueueItem {
+/** One queue item: a review transaction plus its similarity key and suggestions. Also the staged-card base (`importReviewDecode.ts`). */
+export function decodeQueueItem(raw: unknown, context: string): QueueItem {
     const value = obj(raw, context);
     const suggestions = arr(value.suggestions, `${context}.suggestions`).map((s, i) => decodeSuggestion(s, `${context}.suggestions[${i}]`));
     return Object.freeze({
@@ -95,6 +103,19 @@ export function decodeQueuePage(raw: unknown): QueuePage {
 
 /** `GET /api/review/similar/{index}` → the candidates, the queued ones among them, and the precedent. */
 export function decodeSimilarSet(raw: unknown): SimilarSet {
+    return similarSet(raw, false);
+}
+
+/**
+ * `GET /api/review/similar-key` → the same body for a similarity key rather
+ * than a journal transaction (a staged import card, plan 32 D24). Its `index`
+ * is 0: there is no journal transaction it is similar TO.
+ */
+export function decodeKeySimilarSet(raw: unknown): SimilarSet {
+    return similarSet(raw, true);
+}
+
+function similarSet(raw: unknown, keyed: boolean): SimilarSet {
     const body = obj(raw, "similar");
     const candidates = arr(body.candidates, "similar candidates").map((c, i) => decodeReviewTxn(c, `similar candidates[${i}]`));
     const inQueue = arr(body.inQueue, "similar inQueue").map((i, at) => index(i, `similar inQueue[${at}]`));
@@ -109,7 +130,7 @@ export function decodeSimilarSet(raw: unknown): SimilarSet {
     }
     return Object.freeze({
         generation: str(body.generation, "similar generation"),
-        index: index(body.index, "similar index"),
+        index: keyed ? zero(body.index, "similar index") : index(body.index, "similar index"),
         key: nullableStr(body.key, "similar key"),
         total: count(body.total, "similar total"),
         candidates: Object.freeze(candidates) as ReviewTxn[],

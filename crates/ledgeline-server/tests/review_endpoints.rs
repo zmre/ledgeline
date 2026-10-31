@@ -354,6 +354,60 @@ async fn similar_lists_same_key_candidates_marks_the_queued_ones_and_names_the_p
     assert_eq!(bare["inQueue"], json!([]));
 }
 
+/// D24 for a card not in the journal (a staged import's): the same set by
+/// key, with nothing left out and nothing queued.
+#[tokio::test]
+async fn similar_by_key_is_the_same_set_with_no_card_to_leave_out() {
+    let dir = fixture_copy(None);
+    let state = state_in(&dir);
+    let unknowns = queue(&state, "unknowns", "").await;
+    let card = item(&unknowns["items"], "2026-10-12", "4412");
+    let index = card["index"].as_u64().expect("index");
+    let by_index = get(
+        &state,
+        &format!("/api/review/similar/{index}?today={TODAY}"),
+    )
+    .await;
+    // Any spelling of the payee keys the same, the raw description included.
+    let by_key = get(
+        &state,
+        &format!("/api/review/similar-key?key=SQ%20*BLUE%20BOTTLE%209999%20OAKLAND&today={TODAY}"),
+    )
+    .await;
+    assert_eq!(by_key["index"], json!(0));
+    assert_eq!(by_key["key"], "sq blue bottle oakland");
+    assert_eq!(by_key["inQueue"], json!([]));
+    assert_eq!(by_key["precedent"], by_index["precedent"]);
+    // The card itself is a candidate now: there is no card.
+    assert_eq!(
+        by_key["total"].as_u64(),
+        by_index["total"].as_u64().map(|t| t + 1)
+    );
+    assert!(
+        by_key["candidates"]
+            .as_array()
+            .expect("candidates")
+            .iter()
+            .any(|c| c["index"] == index)
+    );
+
+    let none = get(
+        &state,
+        &format!("/api/review/similar-key?key=12345&today={TODAY}"),
+    )
+    .await;
+    assert_eq!((&none["key"], &none["total"]), (&Value::Null, &json!(0)));
+    let long = "x".repeat(2_000);
+    let (status, _, _) = send(
+        &state,
+        "GET",
+        &format!("/api/review/similar-key?key={long}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
 #[tokio::test]
 async fn similar_answers_404_for_a_missing_transaction_and_400_for_a_bad_queue() {
     let dir = fixture_copy(None);

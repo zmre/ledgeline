@@ -373,11 +373,57 @@ export interface ImportRunBody {
     journalId: string;
     balance: string | null;
     balanceAccount: string | null;
+    /**
+     * Review edits to staged transactions (plan 32 D23), applied by the engine
+     * to the regenerated entries before they are shown or appended. Omitted
+     * when there are none, so a body without review edits is byte-for-byte the
+     * one an older client sent.
+     */
+    overrides?: WireStagedOverride[];
+}
+
+/**
+ * One review edit to a STAGED CSV transaction (plan 32 D23): the 0-based
+ * position in the dry run's `entries`, the fingerprint of the GENERATED text
+ * it was made on, and the batch route's ops. A fingerprint the regenerated
+ * transaction no longer has is a 409 naming the ordinal.
+ */
+export interface WireStagedOverride {
+    ordinal: number;
+    fingerprint: string;
+    ops: WireEditOp[];
+}
+
+/** The QuickBooks twin of {@link WireStagedOverride}, keyed by Trans # (D30). */
+export interface WireQbOverride {
+    id: string;
+    fingerprint: string;
+    ops: WireEditOp[];
 }
 
 /** `POST /api/import/commit` — the dry-run body plus whether to write the balance assertion. */
 export interface ImportCommitBody extends ImportRunBody {
     writeAssertion: boolean;
+    /**
+     * Edits to similar EXISTING journal transactions (D24), applied under the
+     * same lock and in the same write as the append. Omitted when none.
+     */
+    journalEdits?: WireBatchEdit[];
+}
+
+/** `POST /api/import/rule-preview` — the dry run's four handles plus the candidate rule (D25). */
+export interface ImportRulePreviewBody {
+    stageId: string;
+    rulesId: string;
+    csvPath: string;
+    journalId: string;
+    rule: WireRuleSpec;
+}
+
+/** A candidate `if` block. A matcher with no `field` matches the whole CSV record. */
+export interface WireRuleSpec {
+    matchers: {field?: string | null; pattern: string}[];
+    assignments: {field: string; value: string}[];
 }
 
 /**
@@ -385,7 +431,7 @@ export interface ImportCommitBody extends ImportRunBody {
  *
  * Two fields, and that is the whole request: there is no rules file, so there is
  * no journal, no balance and no assertion. The response is
- * `{csvWritten, git}` and decodes through `decodeCommitResult`, whose absent
+ * `{csvWritten}` and decodes through `decodeCommitResult`, whose absent
  * `journalWritten` already means "no journal was touched".
  */
 export interface ImportSaveCsvBody {
@@ -480,10 +526,9 @@ export interface SaveBudgetLinesBody {
     change: BudgetChange;
 }
 
-/** `PUT /api/prefs`. Both fields are tri-state: null means "unset", not "off". */
+/** `PUT /api/prefs`. `hledgerPath: null` means "unset": discover hledger. */
 export interface PrefsBody {
     hledgerPath: string | null;
-    gitAutocommit: boolean | null;
 }
 
 /**
@@ -499,6 +544,10 @@ export interface QbJournalCommitBody {
     stageId: string;
     /** Replace transactions the journal already holds differently with the export's version. Omitted means off. */
     updateChanged?: boolean;
+    /** Review edits to staged QuickBooks transactions, by Trans # (D30). Omitted when none. */
+    overrides?: WireQbOverride[];
+    /** Edits to similar existing journal transactions (D24), in the same write. Omitted when none. */
+    journalEdits?: WireBatchEdit[];
 }
 
 /**
@@ -1579,6 +1628,15 @@ export class LedgelineApi {
         return this.getJson(`/api/review/similar/${index}${queryString({today, queue: queue.join(",")})}`);
     }
 
+    /**
+     * The journal transactions sharing similarity `key` (decode with
+     * `decodeKeySimilarSet`): the staged-card twin of `reviewSimilar`, for a
+     * transaction that is not in the journal yet. Its body's `index` is 0.
+     */
+    reviewSimilarKey(key: string, today: string): Promise<unknown> {
+        return this.getJson(`/api/review/similar-key${queryString({key, today})}`);
+    }
+
     /** Every payee with its use count and newest date (decode with `decodePayees`). */
     payees(): Promise<unknown> {
         return this.getJson("/api/payees");
@@ -1616,7 +1674,7 @@ export class LedgelineApi {
     // none of it derives from the journal snapshot, so none of it is ETagged.
     // -----------------------------------------------------------------------
 
-    /** What the screen may offer at all: hledger's version, the formats, the journal targets, git. */
+    /** What the screen may offer at all: hledger's version, the formats, the journal targets. */
     importCapabilities(): Promise<unknown> {
         return this.getJson("/api/import/capabilities");
     }
@@ -1638,7 +1696,16 @@ export class LedgelineApi {
         return this.mutate<unknown>("POST", "/api/import/dry-run", 200, body);
     }
 
-    /** Write the CSV, run the real import, report ordering and git. */
+    /**
+     * How a candidate rule would change THIS import (D25's live check; decode
+     * with `decodeRulePreview`). `ok:false` is a 200 with hledger's stderr. Pass
+     * an AbortSignal in the constructor's options to cancel a superseded one.
+     */
+    importRulePreview(body: ImportRulePreviewBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/import/rule-preview", 200, body);
+    }
+
+    /** Write the CSV, run the real import, report ordering. */
     importCommit(body: ImportCommitBody): Promise<unknown> {
         return this.mutate<unknown>("POST", "/api/import/commit", 200, body);
     }
@@ -1696,7 +1763,7 @@ export class LedgelineApi {
         return this.mutate<unknown>("POST", "/api/import/hledger-conf", 200, {revision});
     }
 
-    /** The preferences store (the resolved hledger path, the git-autocommit opt-out). */
+    /** The preferences store (the resolved hledger path). */
     getPrefs(): Promise<unknown> {
         return this.getJson("/api/prefs");
     }

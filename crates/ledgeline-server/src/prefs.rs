@@ -10,15 +10,16 @@
 //!
 //! The store is a single JSON object at `prefs.json` in the injected
 //! [`AppDirs::config_dir`] (on the desktop, `$LEDGELINE_CONFIG_DIR` or
-//! `dirs::config_dir()/ledgeline` — see [`AppDirs::from_env`]), holding two
-//! settings:
+//! `dirs::config_dir()/ledgeline` — see [`AppDirs::from_env`]), holding one
+//! setting:
 //!
 //! * `hledgerPath` — an explicit `hledger` binary, for the (common) case where
 //!   the desktop app is launched from Finder and inherits a `$PATH` that has
 //!   never seen the user's shell profile.
-//! * `gitAutocommit` — whether to commit around imports. `None` is not "off":
-//!   it means "commit when a git repo is present", the default posture
-//!   `git.rs` implements.
+//!
+//! A file written by an older build may still carry `gitAutocommit` (the git
+//! safety net, since removed). It is an unknown field now, and is ignored on
+//! load like any other — see "Forward compatibility" below.
 //!
 //! # Why `store` validates and `load` does not
 //!
@@ -92,13 +93,6 @@ pub(crate) struct Prefs {
     /// An explicit `hledger` binary, or `None` to discover one. Validated by
     /// [`store`]; see the module docs for why it is not validated by [`load`].
     pub(crate) hledger_path: Option<PathBuf>,
-    /// `None` = commit around imports when a git repo is present. See `git.rs`.
-    ///
-    /// Three-valued rather than a `bool` so "I have never been asked" is
-    /// distinguishable from "I said no": the import panel offers its opt-out
-    /// toggle only in the first case, and writing `Some(false)` is what silences
-    /// it for good.
-    pub(crate) git_autocommit: Option<bool>,
 }
 
 /// A preferences write that could not be completed.
@@ -121,7 +115,7 @@ pub(crate) enum PrefsError {
     /// written. `std::io::Error`'s own `Display` names the errno, not the file.
     #[error("could not save preferences: {0}")]
     Io(#[from] std::io::Error),
-    /// Serializing two `Option`s cannot realistically fail, but it is not
+    /// Serializing one `Option` cannot realistically fail, but it is not
     /// unwrapped.
     #[error("could not serialize preferences: {0}")]
     Serialize(#[from] serde_json::Error),

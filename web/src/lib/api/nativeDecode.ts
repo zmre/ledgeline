@@ -65,7 +65,6 @@ import type {
     ConvertNote,
     DryRunResult,
     FieldDiff,
-    GitReport,
     HledgerStatus,
     HledgerUnavailableReason,
     IdMatches,
@@ -209,6 +208,7 @@ import type {
 } from "#lib/reports/types.js";
 import {ACCOUNT_READINGS, ACCOUNT_SECTION_KINDS} from "#lib/reports/types.js";
 import {ApiShapeError} from "./client";
+import {decodeCsvStagedTxn, decodeQbStagedTxn, decodeStagedRecords, decodeStagedTxns} from "./importReviewDecode";
 import {decodeRow} from "./journalViewDecode";
 import {type CommodityStyles, normalizeCommodityStyles} from "./normalize";
 
@@ -1028,16 +1028,10 @@ interface RawJournalTarget {
     writable?: boolean;
 }
 
-interface RawGitCapability {
-    available?: boolean;
-    autocommit?: boolean;
-}
-
 interface RawImportCapabilities {
     hledger?: RawHledgerStatus;
     formats?: unknown[];
     journals?: RawJournalTarget[];
-    git?: RawGitCapability;
     aliases?: RawAlias[];
     editable?: boolean;
 }
@@ -1255,7 +1249,6 @@ interface RawDryRun {
     skipped?: RawSkippedRows | null;
     balance?: RawBalanceCheck | null;
     aliases?: RawAliasEffect | null;
-    blockedByGit?: unknown[];
     // Contract amendment (WP-16 Phase 3) — see WireProposal's doc comment in
     // import_api.rs: additive, and always present on a SUCCESSFUL preview, so it
     // is required rather than optional here. Not `cliParity`, which is a
@@ -1266,6 +1259,13 @@ interface RawDryRun {
     // required like `cliCommand` — every rules file written before this feature
     // existed has nothing to say here, and null is that fact, not an absence.
     idMatches?: RawIdMatches | null;
+    // Plan 32 Phase 4 (D23/D25): the staged transactions as review cards, the
+    // raw records behind them, and the overrides applied. Decoded by
+    // `importReviewDecode.ts`; absent from an engine that predates review.
+    txns?: unknown;
+    records?: unknown;
+    overrides?: number;
+    cliNote?: string | null;
     stderr?: string;
 }
 
@@ -1281,30 +1281,22 @@ interface RawOrdering {
     moves?: RawSortMove[];
 }
 
-interface RawGitReport {
-    committed?: boolean;
-    paths?: unknown[];
-    skipped?: unknown[];
-    // Contract amendment — see WireGitResult's doc comment in import_api.rs:
-    // additive, and omitted (not null) on success.
-    message?: string;
-}
-
 interface RawCommitResult {
     csvWritten?: string;
     journalWritten?: string | null;
     imported?: number;
     ordering?: RawOrdering;
-    git?: RawGitReport | null;
     // Contract amendment (WP-16 Phase 4) — same nullable convention as the dry
     // run's copy; `statusChanged[].applied` here reports what was actually
     // written rather than what a commit would write.
     idMatches?: RawIdMatches | null;
+    // Plan 32 Phase 4: review overrides applied, existing transactions edited.
+    overrides?: number;
+    journalEdited?: number;
 }
 
 interface RawSortResult {
     moved?: number;
-    git?: RawGitReport | null;
 }
 
 // --- QuickBooks Online Journal import (qb_journal_api.rs, WP-17 Phase C) ---
@@ -1339,6 +1331,8 @@ interface RawQbPreview {
     unmappedAccounts?: unknown[];
     sample?: RawQbSample[];
     idMatches?: RawQbIdMatches | null;
+    // Plan 32 D30: every built transaction as a review card, keyed by Trans #.
+    txns?: unknown;
 }
 
 interface RawQbFileOrdering {
@@ -1357,12 +1351,12 @@ interface RawQbCommitResult {
     updated?: number;
     idMatches?: RawQbIdMatches;
     ordering?: RawQbOrdering;
-    git?: RawGitReport | null;
+    overrides?: number;
+    journalEdited?: number;
 }
 
 interface RawPrefs {
     hledgerPath?: string | null;
-    gitAutocommit?: boolean | null;
 }
 
 interface RawJournalInfo {
@@ -3699,7 +3693,6 @@ export function decodeImportCapabilities(raw: unknown): ImportCapabilities {
         hledger: decodeHledgerStatus(caps.hledger, "import capabilities hledger"),
         formats: frozen(decodeStrings(caps.formats, "import capabilities formats")),
         journals: frozen(caps.journals.map((target, i) => decodeJournalTarget(target, `import capabilities journals[${i}]`))),
-        git: Object.freeze({available: caps.git?.available === true, autocommit: caps.git?.autocommit === true}),
         // Absent reads as "this journal declares none", which is true of almost
         // every journal and is exactly what an older engine meant by omitting it.
         aliases: frozen((caps.aliases ?? []).map((alias, i) => decodeAlias(alias, `import capabilities aliases[${i}]`))),
@@ -4120,6 +4113,7 @@ export function decodeDryRun(raw: unknown): DryRunResult {
         throw new ApiShapeError("dry run: expected an ok flag");
     }
     if (!run.ok) return Object.freeze({ok: false as const, stderr: str(run.stderr, "dry run stderr")});
+    const txns = decodeStagedTxns(run.txns, "dry run txns", decodeCsvStagedTxn);
     return Object.freeze({
         ok: true as const,
         entries: str(run.entries, "dry run entries"),
@@ -4131,9 +4125,12 @@ export function decodeDryRun(raw: unknown): DryRunResult {
                 : Object.freeze({olderThan: str(run.skipped.olderThan, "dry run skipped olderThan"), count: num(run.skipped.count, "dry run skipped count")}),
         balance: decodeBalanceCheck(run.balance, "dry run balance"),
         aliases: decodeAliasEffect(run.aliases, "dry run aliases"),
-        blockedByGit: frozen(decodeStrings(run.blockedByGit, "dry run blockedByGit")),
         cliCommand: str(run.cliCommand, "dry run cliCommand"),
         idMatches: decodeIdMatches(run.idMatches, "dry run idMatches"),
+        txns,
+        records: decodeStagedRecords(run.records, "dry run records", txns.length),
+        overrides: optNum(run.overrides, "dry run overrides") ?? 0,
+        cliNote: optStr(run.cliNote, "dry run cliNote"),
     });
 }
 
@@ -4156,16 +4153,6 @@ function decodeOrdering(raw: RawOrdering | null | undefined, context: string): O
     });
 }
 
-function decodeGitReport(raw: RawGitReport | null | undefined, context: string): GitReport | null {
-    if (raw === undefined || raw === null) return null;
-    return Object.freeze({
-        committed: raw.committed === true,
-        paths: frozen(decodeStrings(raw.paths, `${context} paths`)),
-        skipped: frozen(decodeStrings(raw.skipped, `${context} skipped`)),
-        message: optStr(raw.message, `${context} message`),
-    });
-}
-
 /** `POST /api/import/commit` → what was written. */
 export function decodeCommitResult(raw: unknown): CommitResult {
     const result = raw as RawCommitResult;
@@ -4177,24 +4164,18 @@ export function decodeCommitResult(raw: unknown): CommitResult {
         journalWritten: optStr(result.journalWritten, "commit result journalWritten"),
         imported: optNum(result.imported, "commit result imported") ?? 0,
         ordering: decodeOrdering(result.ordering, "commit result ordering"),
-        git: decodeGitReport(result.git, "commit result git"),
         idMatches: decodeIdMatches(result.idMatches, "commit result idMatches"),
+        overrides: optNum(result.overrides, "commit result overrides") ?? 0,
+        journalEdited: optNum(result.journalEdited, "commit result journalEdited") ?? 0,
     });
 }
 
-/**
- * `POST /api/import/sort` → how many transactions the confirmed re-sort moved,
- * and whether git took the rewrite.
- *
- * `git` is null when the journal is not under version control or autocommit is
- * off — the same convention `decodeCommitResult` uses.
- */
+/** `POST /api/import/sort` → how many transactions the confirmed re-sort moved. */
 export function decodeSortResult(raw: unknown): SortResult {
     const result = raw as RawSortResult;
     if (typeof result !== "object" || result === null) throw new ApiShapeError("sort result: expected an object");
     return Object.freeze({
         moved: num(result.moved, "sort result moved"),
-        git: decodeGitReport(result.git, "sort result git"),
     });
 }
 
@@ -4250,6 +4231,7 @@ export function decodeQbPreview(raw: unknown): QbPreview {
         unmappedAccounts: frozen(decodeStrings(preview.unmappedAccounts, "qb preview unmappedAccounts")),
         sample: frozen((preview.sample ?? []).map((txn, i) => decodeQbSample(txn, `qb preview sample[${i}]`))),
         idMatches: decodeOptQbIdMatches(preview.idMatches, "qb preview idMatches"),
+        txns: decodeStagedTxns(preview.txns, "qb preview txns", decodeQbStagedTxn),
     });
 }
 
@@ -4279,7 +4261,8 @@ export function decodeQbCommitResult(raw: unknown): QbCommitResult {
         updated: num(result.updated, "qb commit result updated"),
         idMatches: decodeQbIdMatches(result.idMatches, "qb commit result idMatches"),
         ordering: decodeQbOrdering(result.ordering, "qb commit result ordering"),
-        git: decodeGitReport(result.git, "qb commit result git"),
+        overrides: optNum(result.overrides, "qb commit result overrides") ?? 0,
+        journalEdited: optNum(result.journalEdited, "qb commit result journalEdited") ?? 0,
     });
 }
 
@@ -4381,11 +4364,9 @@ export function decodePrefs(raw: unknown): Prefs {
     const prefs = raw as RawPrefs;
     if (typeof prefs !== "object" || prefs === null) throw new ApiShapeError("prefs: expected an object");
     return Object.freeze({
+        // Only the known key: a `gitAutocommit` an older engine still reports
+        // is dropped here, so the SPA never sends it back on a PUT.
         hledgerPath: optStr(prefs.hledgerPath, "prefs hledgerPath"),
-        // Tri-state and it matters: null = "commit when a repo is present",
-        // false = the user turned it off. Collapsing null to false would silently
-        // disable a feature the user never opted out of.
-        gitAutocommit: optBool(prefs.gitAutocommit, "prefs gitAutocommit"),
     });
 }
 

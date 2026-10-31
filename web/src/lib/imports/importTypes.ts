@@ -15,6 +15,8 @@
 // No Svelte/DOM imports: these are read by `importModel.ts`, which is the pure
 // node-tested half of this screen.
 
+import type {StagedRecords, StagedTxn} from "./reviewTypes";
+
 /** Why hledger cannot be used. `timedOut` is the amendment `HledgerError` gained during lane A. */
 export type HledgerUnavailableReason = "notFound" | "tooOld" | "unrunnable" | "timedOut";
 
@@ -46,12 +48,6 @@ export interface JournalTarget {
     readonly isRoot: boolean;
     /** False ⇒ a symlink, a non-regular file, or outside the include root. Offered but not selectable. */
     readonly writable: boolean;
-}
-
-/** Whether the engine found a git repo around the targets, and whether it will commit into it. */
-export interface GitCapability {
-    readonly available: boolean;
-    readonly autocommit: boolean;
 }
 
 /** Why an alias is not handed to hledger for an import. */
@@ -112,7 +108,6 @@ export interface ImportCapabilities {
     /** Lowercase extensions, no dots: `["csv","tsv","ofx",…]`. Drives the picker's `accept`. */
     readonly formats: readonly string[];
     readonly journals: readonly JournalTarget[];
-    readonly git: GitCapability;
     /** Every `alias` the journal declares, in file order. Empty for most journals. */
     readonly aliases: readonly AliasEntry[];
     /** False ⇒ no journal is bound to an editor, so nothing here can be written. */
@@ -344,8 +339,6 @@ export interface DryRunOk {
      * force. See {@link AliasEffect}.
      */
     readonly aliases: AliasEffect | null;
-    /** Modified targets that make `commit` refuse. Empty when clear. */
-    readonly blockedByGit: readonly string[];
     /**
      * The `ledgeline import …` line that reproduces this import from a terminal,
      * built by the engine's own argv builder — the same one `ledgeline import`
@@ -358,6 +351,18 @@ export interface DryRunOk {
     readonly cliCommand: string;
     /** What matching this statement against the journal by id found. See {@link IdMatches}. */
     readonly idMatches: IdMatches | null;
+    /**
+     * Every transaction in `entries`, in order, as a review card (plan 32 D23):
+     * the row as it now reads (overrides applied), keyed by its generated
+     * text's fingerprint. Empty from an engine that predates review.
+     */
+    readonly txns: readonly StagedTxn[];
+    /** The raw CSV record behind each of `txns`, for the rule builder (D25). */
+    readonly records: StagedRecords;
+    /** How many review overrides the engine applied to produce `entries`. */
+    readonly overrides: number;
+    /** "plus 2 reviewed edits" beside the equivalent command line (Q8), or null when there are none. */
+    readonly cliNote: string | null;
 }
 
 /** One account rewrite an alias performed on this import. */
@@ -461,16 +466,6 @@ export interface OrderingReport {
     readonly moves: readonly SortMove[];
 }
 
-/** What git did around the import. Null when no repository contained the targets. */
-export interface GitReport {
-    readonly committed: boolean;
-    readonly paths: readonly string[];
-    /** Targets deliberately not committed (gitignored, or in another repo). Reported, never force-added. */
-    readonly skipped: readonly string[];
-    /** A commit failure's stderr (a rejecting pre-commit hook, a GPG prompt, ...). Null on success. */
-    readonly message: string | null;
-}
-
 /**
  * `POST /api/import/commit` — what was written.
  *
@@ -483,7 +478,6 @@ export interface CommitResult {
     readonly journalWritten: string | null;
     readonly imported: number;
     readonly ordering: OrderingReport;
-    readonly git: GitReport | null;
     /**
      * What matching this statement against the journal by id found, or null
      * when the rules file declares no id. See {@link IdMatches}. Unlike the
@@ -491,26 +485,20 @@ export interface CommitResult {
      * written, and `entries`/`imported` above are already net of it.
      */
     readonly idMatches: IdMatches | null;
+    /** Review overrides applied to the appended entries (0 on the Save-CSV path). */
+    readonly overrides: number;
+    /** Existing journal transactions edited in the same write (D24). */
+    readonly journalEdited: number;
 }
 
-/**
- * `POST /api/import/sort` — how many transactions the confirmed re-sort moved,
- * and what the git safety net did with the rewritten journal.
- *
- * The sort gets its own commit rather than amending the import's, so that
- * reverting the ordering and reverting the transactions are separate acts.
- * `git` is null when the journal is not under version control, when autocommit
- * is off, or when nothing moved.
- */
+/** `POST /api/import/sort` — how many transactions the confirmed re-sort moved. */
 export interface SortResult {
     readonly moved: number;
-    readonly git: GitReport | null;
 }
 
-/** `GET`/`PUT /api/prefs`. `gitAutocommit: null` = "commit when a repo is present". */
+/** `GET`/`PUT /api/prefs`. */
 export interface Prefs {
     readonly hledgerPath: string | null;
-    readonly gitAutocommit: boolean | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -571,6 +559,8 @@ export interface QbPreview {
     readonly sample: readonly QbSample[];
     /** Null while any account is unmapped — nothing can be built (and so nothing classified) without one. */
     readonly idMatches: QbIdMatches | null;
+    /** Every built transaction as a review card, keyed by Trans # (D30). Empty while any account is unmapped. */
+    readonly txns: readonly StagedTxn[];
 }
 
 /** One `include`d file a commit touched, and whether it is still in date order after the write. */
@@ -594,5 +584,8 @@ export interface QbCommitResult {
     readonly updated: number;
     readonly idMatches: QbIdMatches;
     readonly ordering: QbOrdering;
-    readonly git: GitReport | null;
+    /** Review overrides applied to the written transactions. */
+    readonly overrides: number;
+    /** Existing journal transactions edited in the same write (D24). */
+    readonly journalEdited: number;
 }

@@ -743,3 +743,219 @@ async fn commit_reports_ordering_for_the_file_it_wrote_into() {
     assert_eq!(files.len(), 1, "only main.journal was touched");
     assert_eq!(files[0]["journalId"], "main.journal");
 }
+
+// ===========================================================================
+// Import review (plan 32 D30): staged txns, overrides by Trans #, journal edits
+// ===========================================================================
+
+/// Map every unmapped account of `stage_id`: QuickBooks' own "Uncategorized
+/// Expense" to `expenses:unknown` (the case the import review exists for),
+/// everything else to a synthetic `assets:qb:N`.
+async fn map_with_an_unknown(tree: &Tree, stage_id: &str) {
+    let (_, preview) = get(tree, &format!("/api/import/qb-journal/{stage_id}")).await;
+    let (_, aliases) = get(tree, "/api/aliases").await;
+    let root = &aliases["files"][0];
+    let edits: Vec<Value> = preview["unmappedAccounts"]
+        .as_array()
+        .expect("unmappedAccounts")
+        .iter()
+        .enumerate()
+        .map(|(index, account)| {
+            let account = account.as_str().expect("string");
+            let replacement = if account.contains("Uncategorized") {
+                "expenses:unknown".to_string()
+            } else {
+                format!("assets:qb:{index}")
+            };
+            json!({"kind": "append", "pattern": account, "replacement": replacement, "regex": false})
+        })
+        .collect();
+    let (status, response) = put(
+        tree,
+        &format!(
+            "/api/aliases/{}",
+            root["journalId"].as_str().expect("journalId")
+        ),
+        json!({"revision": root["revision"], "edits": edits}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+}
+
+/// The preview's `txns`: every built transaction, keyed by Trans #, the
+/// aliased-to-unknown one marked unknown.
+async fn uncategorized_preview(tree: &Tree) -> (String, Value) {
+    let id = staged(tree, "uncategorized.xlsx").await;
+    let (_, before) = get(tree, &format!("/api/import/qb-journal/{id}")).await;
+    assert_eq!(
+        before["txns"],
+        json!([]),
+        "nothing is built while accounts are unmapped"
+    );
+    map_with_an_unknown(tree, &id).await;
+    let (status, preview) = get(tree, &format!("/api/import/qb-journal/{id}")).await;
+    assert_eq!(status, StatusCode::OK, "{preview}");
+    (id, preview)
+}
+
+fn qb_txn<'a>(preview: &'a Value, id: &str) -> &'a Value {
+    preview["txns"]
+        .as_array()
+        .expect("txns")
+        .iter()
+        .find(|txn| txn["id"] == json!(id))
+        .unwrap_or_else(|| panic!("no Trans # {id} in {preview}"))
+}
+
+#[tokio::test]
+async fn the_preview_lists_every_built_transaction_for_review() {
+    let tree = Tree::bare();
+    let (_, preview) = uncategorized_preview(&tree).await;
+    let txns = preview["txns"].as_array().expect("txns");
+    assert_eq!(txns.len(), 2);
+    let unknown = qb_txn(&preview, "77");
+    assert_eq!(unknown["unknown"], json!(true));
+    assert_eq!(unknown["classification"], json!("new"));
+    // The Name, which is what the description is built from.
+    assert_eq!(unknown["key"], json!("corner hardware"));
+    assert!(unknown.get("ordinal").is_none(), "{unknown}");
+    assert!(
+        unknown["fingerprint"]
+            .as_str()
+            .is_some_and(|f| !f.is_empty())
+    );
+    assert_eq!(qb_txn(&preview, "78")["unknown"], json!(false));
+}
+
+/// D30: an override keyed by Trans # recategorises the aliased-to-unknown
+/// transaction; the other is written as built.
+#[tokio::test]
+async fn an_override_keyed_by_trans_number_recategorises_an_unknown() {
+    let tree = Tree::bare();
+    let (id, preview) = uncategorized_preview(&tree).await;
+    let unknown = qb_txn(&preview, "77");
+    // Which written posting is the unknown one.
+    let posting = unknown["postings"]
+        .as_array()
+        .expect("postings")
+        .iter()
+        .position(|posting| posting["account"] == json!("expenses:unknown"))
+        .expect("an unknown posting");
+    let (status, body) = post(
+        &tree,
+        "/api/import/qb-journal/commit",
+        json!({
+            "stageId": id,
+            "overrides": [{
+                "id": "77",
+                "fingerprint": unknown["fingerprint"],
+                "ops": [
+                    {"op": "setPostingAccount", "posting": posting, "account": "expenses:home:hardware"},
+                    {"op": "setTxnTag", "name": "reviewed", "value": "2026-10-31"},
+                ],
+            }],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["imported"], json!(2));
+    assert_eq!(body["overrides"], json!(1));
+    let text = tree.journal_text();
+    assert!(text.contains("expenses:home:hardware  $42.17"), "{text}");
+    // Only the alias line still names the unknown account.
+    assert_eq!(text.matches("expenses:unknown").count(), 1, "{text}");
+    assert!(text.contains("reviewed:2026-10-31"), "{text}");
+    assert!(text.contains("id: 77") && text.contains("id: 78"), "{text}");
+}
+
+#[tokio::test]
+async fn a_stale_quickbooks_override_is_a_conflict_and_writes_nothing() {
+    let tree = Tree::bare();
+    let (id, preview) = uncategorized_preview(&tree).await;
+    let before = tree.journal_text();
+    let (status, body) = post(
+        &tree,
+        "/api/import/qb-journal/commit",
+        json!({
+            "stageId": id,
+            "overrides": [{
+                "id": "77",
+                "fingerprint": qb_txn(&preview, "78")["fingerprint"],
+                "ops": [{"op": "setDescription", "description": "Corner Hardware"}],
+            }],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(
+        body.as_str()
+            .is_some_and(|text| text.contains("QuickBooks transaction 77")),
+        "{body}"
+    );
+    assert_eq!(tree.journal_text(), before);
+
+    // An id this commit does not write cannot carry an edit.
+    let (status, body) = post(
+        &tree,
+        "/api/import/qb-journal/commit",
+        json!({
+            "stageId": id,
+            "overrides": [{"id": "999", "fingerprint": "x", "ops": [{"op": "setDescription", "description": "y"}]}],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(tree.journal_text(), before);
+}
+
+/// D24 for QuickBooks: edits to existing transactions land in the same save
+/// as the import, or not at all.
+#[tokio::test]
+async fn quickbooks_journal_edits_land_with_the_import() {
+    let tree = Tree::bare();
+    let (id, _) = uncategorized_preview(&tree).await;
+    let (_, queue) = get(
+        &tree,
+        "/api/review/queue?kind=recents&today=2026-12-31&maxDays=0",
+    )
+    .await;
+    let opening = &queue["items"][0];
+    assert_eq!(opening["description"], json!("opening balances"), "{queue}");
+
+    // A stale one refuses the whole commit.
+    let before = tree.journal_text();
+    let edit = |fingerprint: &Value| {
+        json!({
+            "stageId": id,
+            "journalEdits": [{
+                "index": opening["index"],
+                "fingerprint": fingerprint,
+                "ops": [{"op": "setTxnTag", "name": "reviewed", "value": "2026-10-31"}],
+            }],
+        })
+    };
+    let (status, _) = post(
+        &tree,
+        "/api/import/qb-journal/commit",
+        edit(&json!("stale")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(tree.journal_text(), before);
+
+    let (status, body) = post(
+        &tree,
+        "/api/import/qb-journal/commit",
+        edit(&opening["fingerprint"]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["imported"], json!(2));
+    assert_eq!(body["journalEdited"], json!(1));
+    let text = tree.journal_text();
+    assert!(
+        text.contains("opening balances  ; reviewed:2026-10-31"),
+        "{text}"
+    );
+    assert!(text.contains("id: 77"), "{text}");
+}

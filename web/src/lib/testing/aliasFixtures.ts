@@ -120,8 +120,11 @@ export function dryRun(aliases: AliasEffect | null): DryRunResult {
         skipped: null,
         balance: null,
         aliases,
-        blockedByGit: [],
         cliCommand: "ledgeline import -i bank.csv -o import/bank.csv -r import/bank.csv.rules -j 2026/2026.journal",
         idMatches: null,
+        txns: [],
+        records: {aligned: false, header: null, fields: null, rows: []},
+        overrides: 0,
+        cliNote: null,
     };
 }

@@ -79,8 +79,8 @@ P 2025-09-30 SPY 659.0695 USD
 
 It is deliberately **not included** in your journal and must not be: these are
 adjusted closes, not market prices, and would misvalue a real holding of the
-same fund. Ledgeline never adds an `include` for it, never commits it with the
-git safety net, and the live-reload watcher ignores it. When a chart needs days
+same fund. Ledgeline never adds an `include` for it, and the live-reload
+watcher ignores it. When a chart needs days
 the file doesn't have yet, that fund's whole history for the chart is
 downloaded again in one request. That keeps every cached day on the same
 dividend adjustment, because Yahoo re-bases the adjusted history each time a

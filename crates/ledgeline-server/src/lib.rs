@@ -51,9 +51,9 @@ mod commodity_profile;
 mod conf_api;
 mod edit_api;
 mod error;
-mod git;
 mod hledger;
 mod import_api;
+mod import_review;
 mod journal_api;
 mod location;
 mod prefs;
@@ -1219,6 +1219,7 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         // tag completions (see `review_api`).
         .route("/api/review/queue", get(review_api::queue))
         .route("/api/review/similar/{index}", get(review_api::similar))
+        .route("/api/review/similar-key", get(review_api::similar_key))
         .route("/api/payees", get(review_api::payees))
         .route("/api/tags", get(review_api::tags))
         // CSV import rules (Imports, steps 7-8): list, read, preview, save.
@@ -1274,6 +1275,9 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
             )),
         )
         .route("/api/import/dry-run", post(import_api::dry_run))
+        // Plan 32 D25: a dry run with one candidate rule appended to a temp
+        // copy of the rules file. Writes nothing the user owns.
+        .route("/api/import/rule-preview", post(import_api::rule_preview))
         .route("/api/import/commit", post(import_api::commit))
         // The no-rules-file path: keep the converted CSV, import nothing. Its
         // own route rather than a commit with null handles — a dry-run with no

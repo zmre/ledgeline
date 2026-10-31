@@ -10,13 +10,35 @@
 //
 // The payee and tag vocabularies (D15) live here too: loaded once per open,
 // and again when the journal's generation moves.
+//
+// An IMPORT opens a staged run the same way (plan 32 Phase 4): the New
+// Transactions panel mounts the overlay while `staged` is set, handing it the
+// import's transactions, the sink its saves go to, and — for a CSV import
+// only — the rule builder's view of the rules file. Closing one calls its
+// `onClose` instead of steering the journal's cursor.
 
 import {LedgelineApi} from "#lib/api/native.js";
 import {decodePayees, decodeTags} from "#lib/api/reviewDecode.js";
+import type {RuleSource, StagedSink, StagedTxn} from "#lib/imports/reviewTypes.js";
+import type {StagedKind} from "#lib/stores/review.svelte.js";
 import {settings} from "#lib/stores/settings.svelte.js";
 import type {PayeeUse, QueueKind, TagUse} from "../types";
 
+/** What an import hands the overlay to review its transactions before they are written. */
+export interface StagedLaunch {
+    readonly kind: StagedKind;
+    readonly items: readonly StagedTxn[];
+    readonly sink: StagedSink;
+    /** "Remember as a rule" (D25): a CSV import's rules file. Null for QuickBooks (D30), which has no rule to write. */
+    readonly rules: RuleSource | null;
+    /** The import's write button, which is what applies the run's edits (D26): "Write changes", or "Import" for QuickBooks. */
+    readonly writeLabel?: string;
+    /** The run closed; `saved` says whether any card was saved in it. */
+    readonly onClose?: (saved: boolean) => void;
+}
+
 let kind = $state<QueueKind | null>(null);
+let staged = $state.raw<StagedLaunch | null>(null);
 let returnTo = $state<{txnIndex: number; nonce: number} | null>(null);
 let nonce = 0;
 
@@ -31,12 +53,29 @@ export const reviewLaunch = {
         return kind;
     },
     open(next: QueueKind): void {
+        staged = null;
         kind = next;
     },
-    /** Close; `lastReviewed` (a tindex) is where the journal's cursor should land. */
-    close(lastReviewed: number | null): void {
+    /** The staged run the overlay is showing, or null. */
+    get staged(): StagedLaunch | null {
+        return staged;
+    },
+    /** Open a review run over an import's transactions (D23, D30). */
+    openStaged(request: StagedLaunch): void {
         kind = null;
-        if (lastReviewed !== null) returnTo = {txnIndex: lastReviewed, nonce: ++nonce};
+        staged = request;
+    },
+    /**
+     * Close. For a journal run `lastReviewed` (a tindex) is where the journal's
+     * cursor should land; for a staged run it is the last staged card saved,
+     * and the import is told whether there was one.
+     */
+    close(lastReviewed: number | null): void {
+        const closing = staged;
+        kind = null;
+        staged = null;
+        if (closing !== null) closing.onClose?.(lastReviewed !== null);
+        else if (lastReviewed !== null) returnTo = {txnIndex: lastReviewed, nonce: ++nonce};
     },
     get returnTo(): {txnIndex: number; nonce: number} | null {
         return returnTo;
@@ -82,6 +121,7 @@ export const reviewLaunch = {
 /** Test seam. */
 export function resetReviewLaunch(): void {
     kind = null;
+    staged = null;
     returnTo = null;
     payees = [];
     tags = [];

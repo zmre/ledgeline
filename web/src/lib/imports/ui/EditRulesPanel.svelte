@@ -30,6 +30,7 @@
     import {journal} from "#lib/stores/journal.svelte.js";
     import {holdUnsavedEdits} from "#lib/stores/refreshAll.js";
     import {settings} from "#lib/stores/settings.svelte.js";
+    import {createRevealArm, reveal} from "#lib/ui/reveal.js";
 
     type Tab = "prefs" | "mapping" | "accounts";
     const TABS: {id: Tab; label: string}[] = [
@@ -221,7 +222,14 @@
         serverError = null;
     }
 
+    /**
+     * Save's errors are listed below the form, under the button that was
+     * pressed; `reveal` scrolls them into view, armed by that press.
+     */
+    const arm = createRevealArm();
+
     async function save(): Promise<void> {
+        arm.arm();
         if (form === null || baseline === null) return;
         clientErrors = validateForm(form);
         if (clientErrors.length > 0) return;
@@ -443,14 +451,24 @@
                             {/key}
 
                             {#if clientErrors.length > 0}
-                                <ul class="list-inside list-disc text-sm text-error" role="alert" data-testid="imports-client-errors">
+                                <ul
+                                    class="list-inside list-disc text-sm text-error"
+                                    role="alert"
+                                    use:reveal={{arm, key: clientErrors}}
+                                    data-testid="imports-client-errors"
+                                >
                                     {#each clientErrors as message (message)}
                                         <li>{message}</li>
                                     {/each}
                                 </ul>
                             {/if}
                             {#if serverError !== null}
-                                <div class="alert py-2 text-sm alert-error" role="alert" data-testid="imports-server-error">
+                                <div
+                                    class="alert py-2 text-sm alert-error"
+                                    role="alert"
+                                    use:reveal={{arm, key: serverError}}
+                                    data-testid="imports-server-error"
+                                >
                                     <span class="break-words">{serverError}</span>
                                 </div>
                             {/if}

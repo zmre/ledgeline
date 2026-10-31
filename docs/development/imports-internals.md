@@ -36,26 +36,25 @@ Statement conversion handles CSV/TSV/SSV, OFX/QFX/QBO, and xls/xlsx/xlsm/xlsb/od
 | `crates/ledgeline-core/src/hledger_conf.rs` | `hledger.conf`: reading its `--alias` options, and the escaping rule for writing one |
 | `crates/ledgeline-server/src/rules_api.rs` | `/api/rules`, `/api/rules/{*id}`, `/api/rules-preview/{*id}`, `/api/rules-create` |
 | `crates/ledgeline-server/src/alias_api.rs` | `/api/aliases`, `/api/aliases/{*journalId}` |
-| `crates/ledgeline-server/src/{hledger,git,prefs}.rs` | Subprocess invocation, the git safety net, the preferences store |
+| `crates/ledgeline-server/src/{hledger,prefs}.rs` | Subprocess invocation, the preferences store |
 | `web/src/lib/imports/` | Pure form model, reorder, date-format catalogue, store, UI |
 | `fixtures/rules/`, `fixtures/import/` | The corpora. See each `README.md` — they explain what every fixture is *for* |
 
-## Subprocesses: exactly two modules, no shell, ever
+## Subprocesses: one module, no shell, ever
 
-`crates/ledgeline-server/src/hledger.rs` and `crates/ledgeline-server/src/git.rs` are the **only**
-places in production code where `Command::new` may appear. That is a deliberate, enforceable
+`crates/ledgeline-server/src/hledger.rs` is the **only** place in production code where
+`Command::new` may appear for an external tool. That is a deliberate, enforceable
 boundary, and it exists because this codebase already refuses to execute a rules file's
 `source ... | CMD` directive (see [Security](#security)). Having won that argument, we do not then scatter
 process spawning across the server.
 
-The rules those two modules hold to:
+The rules that module holds to:
 
 - **Every hledger invocation passes `--no-conf`.** See [No hledger we run reads a config file](#no-hledger-we-run-reads-a-config-file) —
   this one is a security property, not a tidiness one.
 - **Arguments as a `Vec<OsString>`, never a shell string.** No `sh -c`. `--` terminates every
-  pathspec list, so a statement named `-f` is a file. git additionally gets `--literal-pathspecs`,
-  because `statement[2026].csv` is otherwise a *glob*.
-- **Every invocation has a wall-clock timeout.** A GPG passphrase prompt or a hung `hledger` must
+  pathspec list, so a statement named `-f` is a file.
+- **Every invocation has a wall-clock timeout.** A hung `hledger` must
   not hang the desktop window. Note the non-obvious part: on timeout the pipe-draining threads are
   *dropped, not joined*. `kill` reaches the child but not a grandchild still holding the same
   pipes, so joining would block for exactly as long as the timeout existed to prevent.
@@ -63,9 +62,6 @@ The rules those two modules hold to:
   `hledger import --dry-run` writes the proposed transactions to stdout and its
   `would import N new transactions` status line to stderr, and the entire preview feature is that
   split.
-- **git stages explicit pathspecs only.** Never `add -A`, never `add .`, never `commit -a`. A user
-  with unrelated work in progress must find it untouched — asserted by a test that leaves an
-  unrelated file dirty and proves it is still dirty afterwards.
 
 ## No hledger we run reads a config file
 
@@ -463,9 +459,8 @@ Three things about *when* and *where*:
   unrepresentable rather than merely avoided.
 - **It is confined to the import's own target file.** The id index spans the whole tree — a row
   already imported into an `include`d file is still a row this statement must not import again — but
-  the *write* is confined to `journalId`: the one file whose git state this request checked before
-  committing, and the one its git commit carries. A match outside it is reported with
-  `applied: false` rather than written somewhere the request had no way to offer to undo. A status
+  the *write* is confined to `journalId`, the one file this request writes. A match outside it is
+  reported with `applied: false` rather than written somewhere the request never named. A status
   sync therefore adds **no path** to a commit's blast radius.
 
 Nothing is ever written on a dry-run, so `applied` is `false` throughout a preview.
@@ -903,7 +898,6 @@ cargo test -p ledgeline-core --test journals         # target ranking, by conten
 cargo test -p ledgeline-core --lib reimport          # the id classifier's four-way split
 cargo test -p ledgeline-core --test reimport         # …over the committed re-download corpus
 cargo test -p ledgeline --test prefs          # prefs store + hledger resolution
-cargo test -p ledgeline --test git_commit     # the git safety net
 cargo test -p ledgeline --test import_endpoints  # the /api/import/* routes
 ```
 
@@ -946,7 +940,3 @@ alone could mean the fragment was harmless. Together they are the premise
 `--ignore-assertions` rests on, and if hledger ever stops behaving that way this is where it
 surfaces rather than in someone's books.
 
-`git_commit` is gated differently — **skip-if-absent, not opt-in.** git is present on every
-machine that can clone this repo, and the property it protects (*an import never touches your
-unrelated work*) is too important to sit behind an environment variable nobody exports. A test
-that silently never runs is worse than no test.

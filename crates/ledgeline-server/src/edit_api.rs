@@ -804,7 +804,7 @@ pub(crate) struct Replacement {
 /// a loop, is `O(N)` full reparses of an ever-growing journal). Returns the
 /// files [`JournalEditor::dirty_files`] reported just before the save, so a
 /// caller that has to know which files were actually touched (the QuickBooks
-/// import's git safety net) does not have to guess from
+/// import's per-file ordering report) does not have to guess from
 /// [`InsertPosition::DateOrdered`]'s placement rule itself.
 ///
 /// On ANY failure the editor is re-synced from disk exactly as
@@ -845,15 +845,31 @@ pub(crate) struct Replacement {
 /// order, so each index it returns stays valid across the replacements before
 /// it.
 ///
+/// # Editing, first
+///
+/// `edits` — the batch route's edits to EXISTING transactions, a QuickBooks
+/// import review's `journalEdits` (plan 32 D24) — are applied before
+/// anything else, under the same lock and in the same save, so they land with
+/// the import or not at all.
+///
 /// Returns the touched files and how many transactions were replaced.
 pub(crate) fn add_and_replace_transactions(
     state: &AppState,
+    edits: &[crate::review_api::BatchEditIn],
     transactions: &[Transaction],
     labels: &[String],
     position: InsertPosition,
     replace: &dyn Fn(&Journal) -> Vec<Replacement>,
 ) -> Result<(Vec<std::path::PathBuf>, usize), AppError> {
     let mut guard = lock_editor(state)?;
+    let editor = bound(&mut guard)?;
+    // Plan 32 D24: the review's edits to EXISTING transactions go first, while
+    // every index they name still means what it meant when the client read
+    // it — the additions below shift them. In memory and atomic; any later
+    // failure re-syncs from disk, which discards them with the rest.
+    if !edits.is_empty() {
+        crate::review_api::apply_edits(editor, edits)?;
+    }
     let editor = bound(&mut guard)?;
     let added = if transactions.is_empty() {
         Ok(())
@@ -1745,6 +1761,7 @@ mod tests {
 
         let error = add_and_replace_transactions(
             &state,
+            &[],
             &[good, bad],
             &labels,
             InsertPosition::Append,
@@ -1792,7 +1809,7 @@ mod tests {
         );
 
         let error =
-            add_and_replace_transactions(&state, &[bad], &[], InsertPosition::Append, &|_| {
+            add_and_replace_transactions(&state, &[], &[bad], &[], InsertPosition::Append, &|_| {
                 Vec::new()
             })
             .expect_err("unbalanced");

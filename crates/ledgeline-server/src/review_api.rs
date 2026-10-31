@@ -13,6 +13,8 @@
 //! - `GET /api/review/similar/{index}?today&queue=1,2,3` — the unreviewed
 //!   transactions sharing `index`'s similarity key, the precedent among the
 //!   categorised ones, and which candidates are in the client's queue.
+//! - `GET /api/review/similar-key?key&today` — the same for a similarity key
+//!   with no journal transaction behind it (a staged import's, plan 32 D24).
 //! - `GET /api/payees`, `GET /api/tags` — autocomplete vocabularies (D15),
 //!   one body per snapshot.
 //! - `POST /api/transactions/batch` — `{edits: [{index, fingerprint, ops}]}`,
@@ -123,8 +125,9 @@ impl<'a> ReviewRow<'a> {
     }
 
     /// `row` with the markers for a transaction in `state` that is, or is
-    /// not, [`is_unknown`].
-    fn marked(row: Row<'a>, state: Option<&ReviewState>, unknown: bool) -> Self {
+    /// not, [`is_unknown`]. `pub(crate)`: an import's staged transactions
+    /// (plan 32 Phase 4) are in no review index, so they are judged directly.
+    pub(crate) fn marked(row: Row<'a>, state: Option<&ReviewState>, unknown: bool) -> Self {
         Self {
             row,
             unknown: unknown && state != Some(&ReviewState::Ignored),
@@ -340,10 +343,11 @@ pub(crate) struct QueueQuery {
     offset: Option<usize>,
 }
 
-/// One suggested category (D13a).
+/// One suggested category (D13a). `pub(crate)`: an import's staged
+/// transactions carry the same chips.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct WireSuggestion {
+pub(crate) struct WireSuggestion {
     account: String,
     /// A rename reviewed transactions with this key received, or null.
     description: Option<String>,
@@ -593,6 +597,82 @@ pub(crate) async fn similar(
 }
 
 // ---------------------------------------------------------------------------
+// GET /api/review/similar-key
+// ---------------------------------------------------------------------------
+
+/// The longest `?key=` the similar-by-key route reads. A similarity key is a
+/// few words; this only bounds a hostile URL.
+const MAX_KEY_BYTES: usize = 1_024;
+
+/// `?key&today` — a similarity key (D10) and the client's date.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SimilarKeyQuery {
+    key: Option<String>,
+    today: Option<String>,
+}
+
+/// `GET /api/review/similar-key?key&today` — D24's "already in the journal"
+/// group for a card that is not in the journal: a STAGED import transaction's.
+/// The body of [`similar`] for a journal transaction with `key`, with
+/// `index: 0` (there is none) and `inQueue: []` (an import's run queues no
+/// journal transaction). The key is normalised again, so any description's
+/// key — or the description itself — reads the same.
+pub(crate) async fn similar_key(
+    State(state): State<AppState>,
+    Query(query): Query<SimilarKeyQuery>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let today = parse_date("today", query.today, today_utc)?;
+    let raw = query.key.unwrap_or_default();
+    if raw.len() > MAX_KEY_BYTES {
+        return Err(AppError::BadRequest(format!(
+            "key may be at most {MAX_KEY_BYTES} bytes, got {}",
+            raw.len()
+        )));
+    }
+    let key = similarity_key(&raw);
+    answer(state, &headers, today, move |state, today| {
+        let Picked {
+            snapshot,
+            indices,
+            fingerprints,
+            found,
+        } = fingerprinted(state, |snapshot| {
+            let journal = &snapshot.journal;
+            let found = key.as_deref().map_or_else(review::Similar::default, |key| {
+                snapshot.view.review(journal).similar_by_key(
+                    journal,
+                    &snapshot.view.classes(journal),
+                    key,
+                )
+            });
+            Ok((found.candidates.clone(), found))
+        })?;
+        let entry = snapshot.view.diagnostics(&snapshot.journal, today);
+        let candidates = review_txns(&snapshot, &entry, &indices, fingerprints)
+            .into_iter()
+            .map(|(_, txn)| txn)
+            .collect();
+        let body = to_bytes(&SimilarBody {
+            generation: generation_of(&snapshot.etag),
+            index: 0,
+            key: key.clone(),
+            total: found.total,
+            candidates,
+            in_queue: Vec::new(),
+            precedent: found.precedent.map(|precedent| WirePrecedent {
+                account: precedent.account,
+                count: precedent.count,
+                of: precedent.of,
+            }),
+        })?;
+        Ok((Arc::clone(&snapshot), body))
+    })
+    .await
+}
+
+// ---------------------------------------------------------------------------
 // GET /api/payees, GET /api/tags
 // ---------------------------------------------------------------------------
 
@@ -746,6 +826,13 @@ pub(crate) struct BatchEditIn {
     ops: Vec<EditOpIn>,
 }
 
+impl BatchEditIn {
+    /// The transaction this edit names.
+    pub(crate) fn index(&self) -> Tindex {
+        Tindex(self.index)
+    }
+}
+
 /// `{edits: [{index, fingerprint, ops}]}`.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -774,7 +861,14 @@ fn stale(index: u32) -> AppError {
 /// engine refuses what hledger could not read back (a comma in a tag value);
 /// this refuses what should never reach it.
 fn check_ops(edit: &BatchEditIn) -> Result<(), AppError> {
-    for op in &edit.ops {
+    check_op_list(&edit.ops)
+}
+
+/// [`check_ops`] over a bare op list — what an import's override carries
+/// (plan 32 D23): the same ops, aimed at a staged transaction rather than a
+/// journal one.
+pub(crate) fn check_op_list(ops: &[EditOpIn]) -> Result<(), AppError> {
+    for op in ops {
         match op {
             EditOpIn::SetDescription { description } => {
                 check_text("a description", description, MAX_DESCRIPTION_BYTES, TAB)?;
@@ -799,7 +893,7 @@ fn check_ops(edit: &BatchEditIn) -> Result<(), AppError> {
 
 /// The engine's ops for one wire edit. A `replace` body is built against the
 /// editor's journal, so its amounts take the journal's own styles.
-fn engine_ops(journal: &Journal, ops: &[EditOpIn]) -> Result<Vec<EditOp>, AppError> {
+pub(crate) fn engine_ops(journal: &Journal, ops: &[EditOpIn]) -> Result<Vec<EditOp>, AppError> {
     ops.iter()
         .map(|op| {
             Ok(match op {
@@ -880,42 +974,10 @@ fn batch_locked(state: &AppState, request: &BatchRequest) -> Result<Bytes, AppEr
             "a batch needs at least one edit".to_string(),
         ));
     }
-    if edits.len() > MAX_BATCH {
-        return Err(AppError::BadRequest(format!(
-            "a batch may edit at most {MAX_BATCH} transactions, got {}",
-            edits.len()
-        )));
-    }
-    edits.iter().try_for_each(check_ops)?;
+    check_edits(edits)?;
 
     let mut guard = lock_editor(state)?;
-    let editor = bound(&mut guard)?;
-    let indices: Vec<Tindex> = edits.iter().map(|edit| Tindex(edit.index)).collect();
-    // Checked here, by token, so a stale one is named before any op is built;
-    // the engine checks the same fingerprints again inside `apply_batch`.
-    let current = editor.transaction_fingerprints(&indices);
-    let mut batch = Vec::with_capacity(edits.len());
-    for (edit, fingerprint) in edits.iter().zip(current) {
-        let Some(fingerprint) = fingerprint else {
-            return Err(AppError::NotFound(format!(
-                "no transaction with index {}",
-                edit.index
-            )));
-        };
-        if fingerprint.token() != edit.fingerprint {
-            return Err(stale(edit.index));
-        }
-        batch.push((
-            Tindex(edit.index),
-            fingerprint,
-            engine_ops(editor.journal(), &edit.ops)?,
-        ));
-    }
-    // `apply_batch` leaves the editor untouched on any failure (it is atomic),
-    // so unlike the per-op PATCH there is nothing to re-sync from disk.
-    editor
-        .apply_batch(&batch)
-        .map_err(|error| attributed(error, edits))?;
+    let indices = apply_edits(bound(&mut guard)?, edits)?;
     save_and_publish(state, &mut guard)?;
 
     // An edit in place adds, removes and reorders nothing, so every index
@@ -929,6 +991,69 @@ fn batch_locked(state: &AppState, request: &BatchRequest) -> Result<Bytes, AppEr
     let snapshot = state.snapshot();
     drop(guard);
     edited_body(&snapshot, &indices, fingerprints)
+}
+
+/// The checks a batch's edits pass before the editor is locked: at most
+/// [`MAX_BATCH`] of them, and every op's free text sane. Shared with an
+/// import's `journalEdits` (plan 32 D24), which are the same edits riding on
+/// a commit; an empty list is fine there.
+pub(crate) fn check_edits(edits: &[BatchEditIn]) -> Result<(), AppError> {
+    if edits.len() > MAX_BATCH {
+        return Err(AppError::BadRequest(format!(
+            "a batch may edit at most {MAX_BATCH} transactions, got {}",
+            edits.len()
+        )));
+    }
+    edits.iter().try_for_each(check_ops)
+}
+
+/// `edit`'s fingerprint against the transaction's `current` one: a `404` when
+/// there is no such transaction, the `409` [`stale`] words when it changed.
+pub(crate) fn check_fingerprint(
+    edit: &BatchEditIn,
+    current: Option<&Fingerprint>,
+) -> Result<(), AppError> {
+    match current {
+        None => Err(AppError::NotFound(format!(
+            "no transaction with index {}",
+            edit.index
+        ))),
+        Some(current) if current.token() != edit.fingerprint => Err(stale(edit.index)),
+        Some(_) => Ok(()),
+    }
+}
+
+/// Check every edit's fingerprint against `editor` and apply them all as ONE
+/// [`JournalEditor::apply_batch`] — in memory; the caller saves. Returns the
+/// edited transactions' indices, in request order.
+///
+/// On any error `editor` is unchanged (`apply_batch` is atomic), so there is
+/// nothing to re-sync. `pub(crate)`: an import's commit applies its
+/// `journalEdits` through this, under the same lock as its own write.
+pub(crate) fn apply_edits(
+    editor: &mut ledgeline_core::JournalEditor,
+    edits: &[BatchEditIn],
+) -> Result<Vec<Tindex>, AppError> {
+    let indices: Vec<Tindex> = edits.iter().map(BatchEditIn::index).collect();
+    // Checked here, by token, so a stale one is named before any op is built;
+    // the engine checks the same fingerprints again inside `apply_batch`.
+    let current = editor.transaction_fingerprints(&indices);
+    let mut batch = Vec::with_capacity(edits.len());
+    for (edit, fingerprint) in edits.iter().zip(current) {
+        check_fingerprint(edit, fingerprint.as_ref())?;
+        let Some(fingerprint) = fingerprint else {
+            continue;
+        };
+        batch.push((
+            Tindex(edit.index),
+            fingerprint,
+            engine_ops(editor.journal(), &edit.ops)?,
+        ));
+    }
+    editor
+        .apply_batch(&batch)
+        .map_err(|error| attributed(error, edits))?;
+    Ok(indices)
 }
 
 /// The batch's `200` body over the new `snapshot`. The markers are judged

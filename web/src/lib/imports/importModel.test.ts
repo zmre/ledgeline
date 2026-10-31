@@ -44,8 +44,6 @@ import {
     formatList,
     formatScore,
     formIsBusy,
-    gitBlockMessage,
-    gitCommitFailure,
     headerFilename,
     hledgerBannerCopy,
     idMatchesSummary,
@@ -80,7 +78,6 @@ const CAPABILITIES_JSON = {
     hledger: {available: true, version: "1.52"},
     formats: ["csv", "tsv", "ssv", "ofx", "qfx", "qbo", "xls", "xlsx", "xlsm", "xlsb", "ods"],
     journals: [{id: "2026/2026.journal", label: "2026.journal", txnCount: 412, lastTxnDate: "2026-08-01", isRoot: false, writable: true}],
-    git: {available: true, autocommit: true},
     editable: true,
 };
 
@@ -118,7 +115,6 @@ const DRY_RUN_JSON = {
     status: "would import 3 new transactions from bank.csv:",
     skipped: {olderThan: "2026-02-05", count: 1},
     balance: {statement: "$2945.05", computed: "$2945.05", matches: true, difference: "$0.00"},
-    blockedByGit: ["2026/2026.journal"],
     cliCommand: "ledgeline import -i bank.csv -o import/2026/bank.csv -r import/2026/bank.csv.rules -j 2026/2026.journal",
     idMatches: null,
 };
@@ -128,7 +124,6 @@ const COMMIT_JSON = {
     journalWritten: "2026/2026.journal",
     imported: 3,
     ordering: {inOrder: false, moves: [{date: "2026-01-20", description: "BACK DATED", fromLine: 812, toLine: 540}]},
-    git: {committed: true, paths: ["import/2026/bank.csv", "2026/2026.journal"], skipped: []},
     idMatches: null,
 };
 
@@ -174,7 +169,7 @@ describe("UNIT import wire decoders", () => {
             isRoot: false,
             writable: true,
         });
-        expect(caps.git).toEqual({available: true, autocommit: true});
+        expect(caps).not.toHaveProperty("git");
         expect(caps.editable).toBe(true);
     });
 
@@ -303,7 +298,6 @@ describe("UNIT import wire decoders", () => {
         // typed) beside `$2945.05` (what hledger answered), which reads as a
         // mismatch above a badge saying "match".
         expect(run.balance).toEqual({statement: "$2945.05", computed: "$2945.05", matches: true, difference: "$0.00"});
-        expect(run.blockedByGit).toEqual(["2026/2026.journal"]);
     });
 
     it("decodes a failed dry run as a VALUE carrying stderr verbatim", () => {
@@ -316,11 +310,10 @@ describe("UNIT import wire decoders", () => {
     });
 
     it("reads a null skipped and a null balance as 'nothing to report'", () => {
-        const run = decodeDryRun({...DRY_RUN_JSON, skipped: null, balance: null, blockedByGit: []});
+        const run = decodeDryRun({...DRY_RUN_JSON, skipped: null, balance: null});
         if (!run.ok) throw new Error("unreachable");
         expect(run.skipped).toBeNull();
         expect(run.balance).toBeNull();
-        expect(run.blockedByGit).toEqual([]);
     });
 
     it("throws when a dry run carries no ok flag", () => {
@@ -340,8 +333,7 @@ describe("UNIT import wire decoders", () => {
     it("refuses a successful dry run with no command line", () => {
         // Required, not optional: a preview that succeeded always has an
         // invocation that reproduces it, so an absent field is a decode failure
-        // rather than "there is none". Contrast `git.message`, which is genuinely
-        // absent on success.
+        // rather than "there is none".
         expect(() => decodeDryRun(without(DRY_RUN_JSON, "cliCommand"))).toThrow(ApiShapeError);
     });
 
@@ -449,54 +441,34 @@ describe("UNIT import wire decoders", () => {
         expect(commit.imported).toBe(3);
         expect(commit.ordering.inOrder).toBe(false);
         expect(commit.ordering.moves[0]).toEqual({date: "2026-01-20", description: "BACK DATED", fromLine: 812, toLine: 540});
-        expect(commit.git).toEqual({committed: true, paths: ["import/2026/bank.csv", "2026/2026.journal"], skipped: [], message: null});
     });
 
-    it("decodes git.message, the contract amendment for a rejecting pre-commit hook", () => {
-        // The Rust field is additive and omitted on success (see import_api.rs's
-        // WireGitResult doc comment) — this is the one case where it is present.
-        const commit = decodeCommitResult({
-            ...COMMIT_JSON,
-            git: {
-                committed: false,
-                paths: [],
-                skipped: ["import/2026/bank.csv", "2026/2026.journal"],
-                message: "hook rejected: no swearing in commit messages",
-            },
-        });
-        expect(commit.git).toEqual({
-            committed: false,
-            paths: [],
-            skipped: ["import/2026/bank.csv", "2026/2026.journal"],
-            message: "hook rejected: no swearing in commit messages",
-        });
+    it("ignores the git report an older engine still sends", () => {
+        const commit = decodeCommitResult({...COMMIT_JSON, git: {committed: true, paths: ["a"], skipped: []}});
+        expect(commit).not.toHaveProperty("git");
+        expect(writtenLines(commit).join(" ")).not.toMatch(/commit/i);
     });
 
     it("decodes the Save-CSV-only commit, where no journal was touched", () => {
         // The contract does not spell this shape out; the decoder treats an
         // absent journal/ordering as "nothing was imported", which is the only
         // reading that is not a lie.
-        const commit = decodeCommitResult({csvWritten: "import/2026/bank.csv", journalWritten: null, git: null});
+        const commit = decodeCommitResult({csvWritten: "import/2026/bank.csv", journalWritten: null});
         expect(commit.journalWritten).toBeNull();
         expect(commit.imported).toBe(0);
         expect(commit.ordering).toEqual({inOrder: true, moves: []});
-        expect(commit.git).toBeNull();
     });
 
     it("decodes the sort result", () => {
-        // No `git` at all: the journal is not under version control, or
-        // autocommit is off. Not the same as a commit that was refused.
-        expect(decodeSortResult({moved: 3})).toEqual({moved: 3, git: null});
-        expect(decodeSortResult({moved: 2, git: {committed: true, paths: ["main.journal"], skipped: []}})).toEqual({
-            moved: 2,
-            git: {committed: true, paths: ["main.journal"], skipped: [], message: null},
-        });
+        expect(decodeSortResult({moved: 3})).toEqual({moved: 3});
+        // An older engine's git report is dropped, not decoded.
+        expect(decodeSortResult({moved: 2, git: {committed: true, paths: ["main.journal"], skipped: []}})).toEqual({moved: 2});
     });
 
-    it("decodes prefs, keeping gitAutocommit's three states apart", () => {
-        expect(decodePrefs({hledgerPath: null, gitAutocommit: null})).toEqual({hledgerPath: null, gitAutocommit: null});
-        expect(decodePrefs({hledgerPath: "/usr/bin/hledger", gitAutocommit: false})).toEqual({hledgerPath: "/usr/bin/hledger", gitAutocommit: false});
-        expect(decodePrefs({})).toEqual({hledgerPath: null, gitAutocommit: null});
+    it("decodes prefs, dropping the retired gitAutocommit", () => {
+        expect(decodePrefs({hledgerPath: "/usr/bin/hledger"})).toEqual({hledgerPath: "/usr/bin/hledger"});
+        expect(decodePrefs({hledgerPath: null, gitAutocommit: false})).toEqual({hledgerPath: null});
+        expect(decodePrefs({})).toEqual({hledgerPath: null});
     });
 });
 
@@ -861,33 +833,33 @@ describe("UNIT ConvertNote rendering", () => {
 // ---------------------------------------------------------------------------
 
 describe("UNIT actions", () => {
-    it("offers Save CSV alone with no rules file, and Save and Import with one", () => {
+    it("offers Save CSV alone with no rules file, and Test Import with one", () => {
         expect(importAction(null)).toBe("saveCsv");
         expect(actionLabel(importAction(null))).toBe("Save CSV");
-        expect(importAction("bank.csv.rules")).toBe("saveAndImport");
-        expect(actionLabel(importAction("bank.csv.rules"))).toBe("Save and Import");
+        expect(importAction("bank.csv.rules")).toBe("testImport");
+        expect(actionLabel(importAction("bank.csv.rules"))).toBe("Test Import");
     });
 
     it("dry-runs only the import — Save CSV has nothing to propose", () => {
-        expect(actionRunsDryRun("saveAndImport")).toBe(true);
+        expect(actionRunsDryRun("testImport")).toBe(true);
         expect(actionRunsDryRun("saveCsv")).toBe(false);
     });
 
     it("names what blocks the action, one fixable thing at a time", () => {
         const ok = {csvPath: "import/bank.csv", journalId: "2026.journal", balance: "", balanceAccount: ""};
-        expect(actionBlocker("saveAndImport", ok)).toBeNull();
-        expect(actionBlocker("saveAndImport", {...ok, csvPath: ""})).toMatch(/name/);
-        expect(actionBlocker("saveAndImport", {...ok, journalId: null})).toMatch(/journal/);
+        expect(actionBlocker("testImport", ok)).toBeNull();
+        expect(actionBlocker("testImport", {...ok, csvPath: ""})).toMatch(/name/);
+        expect(actionBlocker("testImport", {...ok, journalId: null})).toMatch(/journal/);
         // Save CSV needs no journal at all.
         expect(actionBlocker("saveCsv", {...ok, journalId: null})).toBeNull();
     });
 
     it("refuses a balance with no account to assert it against", () => {
         const draft = {csvPath: "bank.csv", journalId: "j", balance: "2945.05", balanceAccount: ""};
-        expect(actionBlocker("saveAndImport", draft)).toMatch(/account/);
-        expect(actionBlocker("saveAndImport", {...draft, balanceAccount: "assets:bank"})).toBeNull();
+        expect(actionBlocker("testImport", draft)).toMatch(/account/);
+        expect(actionBlocker("testImport", {...draft, balanceAccount: "assets:bank"})).toBeNull();
         // A blank balance needs no account.
-        expect(actionBlocker("saveAndImport", {...draft, balance: "   "})).toBeNull();
+        expect(actionBlocker("testImport", {...draft, balance: "   "})).toBeNull();
     });
 
     it("does not fire the balance blocker once the account has been seeded from the rules file", () => {
@@ -901,7 +873,7 @@ describe("UNIT actions", () => {
             balanceAccount: defaultBalanceAccount(candidateById(decodeStagedFile(STAGE_JSON), "import/2026/bank.csv.rules")),
         };
         expect(seeded.balanceAccount).toBe("assets:bank:checking");
-        expect(actionBlocker("saveAndImport", seeded)).toBeNull();
+        expect(actionBlocker("testImport", seeded)).toBeNull();
     });
 
     it("never blocks Save CSV over a balance its request cannot carry", () => {
@@ -998,12 +970,6 @@ describe("UNIT dry run rendering", () => {
         expect(balanceVerdict({statement: "10.0", computed: "10.0", matches: false, difference: "0.00"}).tone).toBe("error");
     });
 
-    it("names the files git blocks on, and says nothing when clear", () => {
-        expect(gitBlockMessage([])).toBeNull();
-        expect(gitBlockMessage(["2026/2026.journal"])).toContain("one file");
-        expect(gitBlockMessage(["a", "b"])).toContain("2 files");
-    });
-
     it("says nothing about id matches when the rules file has no id column", () => {
         expect(idMatchesSummary(null)).toBeNull();
     });
@@ -1016,8 +982,7 @@ describe("UNIT dry run rendering", () => {
 
     it("reports a status sync", () => {
         // The headline is a count; the per-row from/to detail is the template's
-        // job to render from `idMatches.statusChanged` directly, the same split
-        // `gitBlockMessage`'s sentence vs. `blockedByGit`'s list already uses.
+        // job to render from `idMatches.statusChanged` directly.
         const summary = idMatchesSummary({
             new: 0,
             unchanged: 0,
@@ -1064,11 +1029,10 @@ describe("UNIT dry run rendering", () => {
         expect(line).toContain("COFFEE SHOP #2");
     });
 
-    it("refuses to offer a write with no dry run, a failed one, or a git block", () => {
+    it("refuses to offer a write with no dry run or a failed one", () => {
         expect(canWrite(null)).toBe(false);
         expect(canWrite({ok: false, stderr: "boom"})).toBe(false);
-        expect(canWrite(decodeDryRun(DRY_RUN_JSON))).toBe(false);
-        expect(canWrite(decodeDryRun({...DRY_RUN_JSON, blockedByGit: []}))).toBe(true);
+        expect(canWrite(decodeDryRun(DRY_RUN_JSON))).toBe(true);
     });
 });
 
@@ -1152,38 +1116,12 @@ describe("UNIT sameWriteRequest", () => {
 describe("UNIT result rendering", () => {
     const commit = (): CommitResult => decodeCommitResult(COMMIT_JSON);
 
-    it("says what was written, including what git did", () => {
-        expect(writtenLines(commit())).toEqual([
-            "Wrote import/2026/bank.csv.",
-            "Imported 3 transactions into 2026/2026.journal.",
-            "Committed import/2026/bank.csv, 2026/2026.journal.",
-        ]);
+    it("says what was written", () => {
+        expect(writtenLines(commit())).toEqual(["Wrote import/2026/bank.csv.", "Imported 3 transactions into 2026/2026.journal."]);
     });
 
     it("says nothing about a journal on the Save-CSV-only path", () => {
         expect(writtenLines(decodeCommitResult({csvWritten: "bank.csv"}))).toEqual(["Wrote bank.csv."]);
-    });
-
-    it("reports what git declined to commit rather than hiding it", () => {
-        const result = decodeCommitResult({...COMMIT_JSON, git: {committed: true, paths: ["a"], skipped: ["b"]}});
-        expect(writtenLines(result)).toContain("Not committed: b.");
-    });
-
-    it("reports a git commit failure separately from what was written, rather than dropping it", () => {
-        const clean = decodeCommitResult({...COMMIT_JSON, git: {committed: true, paths: ["a"], skipped: []}});
-        expect(gitCommitFailure(clean)).toBeNull();
-
-        const failed = decodeCommitResult({
-            ...COMMIT_JSON,
-            git: {committed: false, paths: [], skipped: ["a", "b"], message: "hook rejected: no swearing in commit messages"},
-        });
-        expect(gitCommitFailure(failed)).toBe("hook rejected: no swearing in commit messages");
-        // Not duplicated into the plain "what was written" list.
-        expect(writtenLines(failed).join(" ")).not.toContain("hook rejected");
-    });
-
-    it("has nothing to report when git never ran (no repository)", () => {
-        expect(gitCommitFailure(decodeCommitResult({csvWritten: "bank.csv"}))).toBeNull();
     });
 
     it("offers the re-sort only when the journal came out of order", () => {

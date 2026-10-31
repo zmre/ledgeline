@@ -631,16 +631,30 @@ impl JournalEditor {
     /// flag.
     ///
     /// For a caller that has to know *which* files a batch of edits touched
-    /// before it saves them (the QuickBooks Journal import's git safety net
-    /// checks every source file up front, because [`InsertPosition::DateOrdered`]
-    /// does not commit to one until [`add_transaction`](Self::add_transaction)
-    /// has actually placed the row, and then needs the precise set to commit).
+    /// before it saves them (the QuickBooks Journal import reports date order
+    /// per touched file, and [`InsertPosition::DateOrdered`] does not settle on
+    /// a file until [`add_transaction`](Self::add_transaction) has actually
+    /// placed the row).
     #[must_use]
     pub fn dirty_files(&self) -> Vec<&Path> {
         self.files
             .iter()
             .filter(|(_, file)| file.dirty)
             .map(|(path, _)| path.as_path())
+            .collect()
+    }
+
+    /// [`dirty_files`](Self::dirty_files) as their places in
+    /// [`vault`](Self::vault) — what a caller that must put a file back after
+    /// a later step fails (an import that edits the journal and appends to it
+    /// as ONE commit, plan 32 D24) reads the pre-edit bytes of, before
+    /// [`save`](Self::save).
+    #[must_use]
+    pub fn dirty_sources(&self) -> Vec<VaultPath> {
+        self.files
+            .values()
+            .filter(|file| file.dirty)
+            .map(|file| file.path.clone())
             .collect()
     }
 

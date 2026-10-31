@@ -1,7 +1,7 @@
 //! The one path redactor: rewrite the absolute paths *we* know about out of
 //! text that is about to reach a client.
 //!
-//! hledger, git and the journal parser all name files in their diagnostics —
+//! hledger and the journal parser both name files in their diagnostics —
 //! `imported 3 new transactions from bank.csv to /Users/me/finances/main.journal`
 //! is verbatim real output — and those diagnostics are the single most useful
 //! thing on the screen when something goes wrong, so withholding them is not an
@@ -10,7 +10,7 @@
 //!
 //! Used by the import and QuickBooks-journal routes (subprocess output), the
 //! edit routes (SEC-15: parse errors rendered with the editor's absolute
-//! `source_name`) and `git.rs` (hook and identity complaints).
+//! `source_name`).
 //!
 //! # Rules
 //!
@@ -208,8 +208,8 @@ mod tests {
         // Every real boundary still redacts.
         assert_eq!(redactor.apply("/u/fin/main.journal"), "main.journal");
         assert_eq!(
-            redactor.apply("not a git repository: /u/fin"),
-            "not a git repository: ."
+            redactor.apply("no such directory: /u/fin"),
+            "no such directory: ."
         );
         assert_eq!(redactor.apply("in '/u/fin': denied"), "in '.': denied");
         assert_eq!(redactor.apply("(/u/fin)"), "(.)");

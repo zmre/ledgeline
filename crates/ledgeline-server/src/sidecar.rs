@@ -20,8 +20,7 @@
 //! - **Disposable.** A missing, unreadable or unparseable file is an empty
 //!   cache, a failed write is logged and not raised: the next request refetches.
 //!
-//! The file is never `include`d, never passed to the git safety net (which only
-//! stages paths an import names), and sits outside the journal's include tree,
+//! The file is never `include`d and sits outside the journal's include tree,
 //! so the live-reload watcher ignores it.
 
 use std::path::PathBuf;

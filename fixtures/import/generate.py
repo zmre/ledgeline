@@ -531,6 +531,33 @@ def qb_simple_xlsx() -> None:
     )
 
 
+def qb_uncategorized_xlsx() -> None:
+    """Plan 32 D30: a charge QuickBooks itself left uncategorised.
+
+    QuickBooks Online books a bank-feed transaction nobody categorised to its
+    built-in "Uncategorized Expense" account, and a journal that aliases that
+    account to `expenses:unknown` imports it as an unknown — the case the
+    import review exists for. One such Expense (`77`), plus `simple.xlsx`'s
+    categorised Expense under a different id (`78`), so a review override can
+    be shown to recategorise exactly one of the two.
+    """
+    uncategorized = [
+        ["", "02/03/2026", "Expense", "", "Corner Hardware", "POS 4412 CORNER HARDWARE", "2005",
+         "2005 Northbank Credit Card", None, 42.17, "", 42.17, "", "Corner Hardware"],
+        ["", "02/03/2026", "Expense", "", "Corner Hardware", "POS 4412 CORNER HARDWARE", "6999",
+         "6999 Uncategorized Expense", 42.17, None, "", 84.34, "", "Corner Hardware"],
+    ]
+    _qb_write(
+        "uncategorized.xlsx",
+        QB_CUSTOM_HEADER,
+        [
+            ("77", uncategorized, ("Total for 77", 42.17, 42.17)),
+            ("78", QB_EXPENSE, ("Total for 78", "79.989999999999995", "79.989999999999995")),
+        ],
+        total=122.16,
+    )
+
+
 def qb_default_columns_xlsx() -> None:
     """The same two groups under the stock column set, and two other spellings.
 
@@ -1034,6 +1061,7 @@ def main() -> None:
         latin1_csv,
         utf16le_bom_csv,
         qb_simple_xlsx,
+        qb_uncategorized_xlsx,
         qb_default_columns_xlsx,
         qb_many_postings_xlsx,
         qb_truncated_tail_xlsx,

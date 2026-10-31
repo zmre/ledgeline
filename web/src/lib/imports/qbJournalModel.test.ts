@@ -136,6 +136,7 @@ describe("UNIT qbJournalModel — the commit gate", () => {
         unmappedAccounts: unmapped,
         sample: [],
         idMatches: unmapped.length === 0 ? idMatches() : null,
+        txns: [],
     });
 
     it("is blocked before a preview has answered", () => {

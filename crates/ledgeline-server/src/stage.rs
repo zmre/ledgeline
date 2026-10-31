@@ -83,6 +83,7 @@
 use ledgeline_core::convert::{self, SourceFormat};
 use ledgeline_core::vault::{Vault, VaultPath};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 /// The largest upload accepted, enforced by an axum `DefaultBodyLimit` on the
@@ -145,6 +146,13 @@ pub(crate) const RUN_WITH_LATEST: &str = "with-latest";
 /// The run directory used for the second, `.latest`-free dry-run whose count
 /// difference is how many rows dedup would silently drop.
 pub(crate) const RUN_BARE: &str = "bare";
+
+/// The prefix of a rule-preview's run directory (plan 32 D25). Each preview
+/// gets its OWN directory — [`Stage::preview_slot`] — because a live check is
+/// debounced but can still overlap the next one, and [`Stage::materialize`]
+/// recreates its directory: two previews sharing one would delete each
+/// other's CSV out from under hledger.
+const RUN_RULE_PREVIEW: &str = "rule-preview";
 
 /// An opaque handle to one staged upload.
 ///
@@ -210,6 +218,8 @@ pub(crate) struct Stage {
     format: SourceFormat,
     /// The name the upload ARRIVED under — see [`Stage::upload_name`].
     upload_name: String,
+    /// Hands out [`Stage::preview_slot`]s.
+    previews: AtomicU64,
 }
 
 impl Stage {
@@ -232,6 +242,21 @@ impl Stage {
     /// separators, `..` and control characters.
     pub(crate) fn upload_name(&self) -> &str {
         &self.upload_name
+    }
+
+    /// A fresh run-directory name for one rule preview: this module's own
+    /// prefix plus a per-stage counter, never a client string.
+    pub(crate) fn preview_slot(&self) -> String {
+        let n = self.previews.fetch_add(1, Ordering::Relaxed);
+        format!("{RUN_RULE_PREVIEW}-{n}")
+    }
+
+    /// Remove a run directory [`materialize`](Self::materialize) made. Best
+    /// effort: the whole stage goes when it is evicted or the process exits.
+    pub(crate) fn discard(&self, slot: &str) {
+        if is_bare_name(slot) {
+            let _ = std::fs::remove_dir_all(self.dir.join(slot));
+        }
     }
 
     /// The **canonical** converted CSV: header on line 1, nothing prepended.
@@ -525,6 +550,7 @@ impl StageArea {
             dir,
             format,
             upload_name: upload_name.to_string(),
+            previews: AtomicU64::new(0),
         });
         area.stages.push((id.clone(), Arc::clone(&stage)));
         // Evict from the front, so the stage a user is actively working with —

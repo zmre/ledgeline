@@ -78,8 +78,6 @@ Every line of a QuickBooks transaction becomes its own posting, even when severa
 
 The result panel says how many transactions were imported. If any journal file ended up out of date order, it offers to re-sort that file.
 
-If your journal is in a git repository, the import refuses to start while any journal file has uncommitted changes. Afterwards it commits only the files it wrote, as described in [the git safety net](new-transactions.md#the-git-safety-net).
-
 ## Importing again
 
 Before writing, Ledgeline compares every transaction in the export with the transactions already in your journal, by their `id:` tag. The comparison covers every file in the journal.
@@ -104,6 +102,6 @@ The same import runs without the window:
 ledgeline import -i Journal.xlsx -j main.journal
 ```
 
-Ledgeline detects the QuickBooks format from the file. The `-o`, `-r` and balance options are refused for this format, because there is no CSV, rules file or single statement balance. Every account still has to be mapped first. `ledgeline import --help` lists the remaining options, including `--dry-run`, `--no-git` and `--update-changed`.
+Ledgeline detects the QuickBooks format from the file. The `-o`, `-r` and balance options are refused for this format, because there is no CSV, rules file or single statement balance. Every account still has to be mapped first. `ledgeline import --help` lists the remaining options, including `--dry-run` and `--update-changed`.
 
 The design notes for this importer are in [plan 17](https://github.com/zmre/ledgeline/blob/main/plans/17-quickbooks-journal-import.md).

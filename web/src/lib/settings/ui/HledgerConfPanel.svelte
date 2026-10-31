@@ -25,6 +25,7 @@
         type SectionForm,
     } from "../hledgerConfModel";
     import {CONF_SECTIONS, type ConfSection, type HledgerConf} from "../hledgerConfTypes";
+    import {createRevealArm, reveal} from "#lib/ui/reveal.js";
 
     onServerReady((url) => {
         void hledgerConfStore.ensure(url, String(settings.serverNonce));
@@ -73,7 +74,14 @@
         updateSection(section, {overrides: form.sections[section].overrides.map((o, i) => (i === at ? {...o, ...patch} : o))});
     }
 
+    /**
+     * Save's errors are listed below the form, under the button that was
+     * pressed; `reveal` scrolls them into view, armed by that press.
+     */
+    const arm = createRevealArm();
+
     async function save(): Promise<void> {
+        arm.arm();
         if (conf === null || form === null) return;
         clientErrors = validateForm(form);
         serverError = null;
@@ -253,14 +261,23 @@
                 </div>
 
                 {#if clientErrors.length > 0}
-                    <ul class="alert list-inside list-disc rounded-box py-2 text-sm alert-error" data-testid="settings-hledger-conf-client-errors">
+                    <ul
+                        class="alert list-inside list-disc rounded-box py-2 text-sm alert-error"
+                        use:reveal={{arm, key: clientErrors}}
+                        data-testid="settings-hledger-conf-client-errors"
+                    >
                         {#each clientErrors as problem (problem)}
                             <li>{problem}</li>
                         {/each}
                     </ul>
                 {/if}
                 {#if serverError !== null}
-                    <div class="alert items-start rounded-box py-2 text-sm alert-error" role="alert" data-testid="settings-hledger-conf-server-error">
+                    <div
+                        class="alert items-start rounded-box py-2 text-sm alert-error"
+                        role="alert"
+                        use:reveal={{arm, key: serverError}}
+                        data-testid="settings-hledger-conf-server-error"
+                    >
                         <span>{serverError}</span>
                     </div>
                 {/if}

@@ -21,6 +21,8 @@ import {decodeQbCommitResult, decodeQbPreview, decodeSortResult} from "#lib/api/
 import {aliasListing, aliasStore} from "./aliasStore.svelte";
 import {isInFlight} from "./importModel";
 import type {QbCommitResult, QbPreview} from "./importTypes";
+import type {ReplayReport, StagedOverride, StagedRef, StagedSink, StagedTxn} from "./reviewTypes";
+import {createStagedEdits} from "./stagedEdits.svelte";
 import {defaultAliasTargetFile, mappingEdits} from "./qbJournalModel";
 import {createResource} from "#lib/stores/resource.svelte.js";
 import {settings} from "#lib/stores/settings.svelte.js";
@@ -78,6 +80,15 @@ let sortingJournalId = $state<string | null>(null);
 let sortMoved = $state<Record<string, number>>({});
 let sortErrors = $state<Record<string, string>>({});
 
+/**
+ * The review overlay's edits (plan 32 D30): overrides to the built
+ * transactions, keyed by Trans #, and queued edits to similar journal
+ * transactions. Both ride on the commit; the preview takes none, so it always
+ * shows what the export alone would write.
+ */
+const edits = createStagedEdits();
+let lastReplay = $state.raw<ReplayReport | null>(null);
+
 function failureMessage(error: unknown): string {
     const failure: EditFailure = classify(error);
     return failure.message;
@@ -93,6 +104,8 @@ function resetForNewStage(): void {
     sortingJournalId = null;
     sortMoved = {};
     sortErrors = {};
+    edits.clear();
+    lastReplay = null;
 }
 
 export const qbJournalStore = {
@@ -118,6 +131,37 @@ export const qbJournalStore = {
     /** Re-fetch the SAME stage's preview unconditionally — after a mapping save, or a Retry. */
     async refreshPreview(serverUrl: string, stageId: string): Promise<void> {
         await preview.load(serverUrl, stageId);
+        // A mapping save rebuilds every transaction it touched, so the held
+        // overrides are replayed against the new build (D25's rules, by Trans #).
+        const fresh = preview.value;
+        if (fresh !== null && preview.query === stageId && edits.overrideCount > 0) lastReplay = edits.replay(fresh.txns);
+    },
+
+    // --- review edits (plan 32 D30) -------------------------------------------
+    /** The built transactions of the current preview, as review cards. Empty while any account is unmapped. */
+    get stagedTxns(): readonly StagedTxn[] {
+        return preview.value?.txns ?? [];
+    },
+    get overrides(): readonly StagedOverride[] {
+        return edits.overrides;
+    },
+    get overrideCount(): number {
+        return edits.overrideCount;
+    },
+    get journalEditCount(): number {
+        return edits.journalEditCount;
+    },
+    get flaggedOverrides(): readonly StagedOverride[] {
+        return edits.flagged;
+    },
+    get lastReplay(): ReplayReport | null {
+        return lastReplay;
+    },
+    /** The review store's staged sink: saves become overrides and queued journal edits, not writes. */
+    reviewSink: {stage: (save) => edits.stage(save)} satisfies StagedSink as StagedSink,
+    /** Let go of held overrides (the panel's "Discard" on flagged edits). The preview takes none, so nothing re-runs. */
+    discardOverrides(refs: readonly StagedRef[]): void {
+        for (const ref of refs) edits.discard(ref);
     },
 
     // --- resolving unmapped accounts -----------------------------------------
@@ -204,7 +248,22 @@ export const qbJournalStore = {
         commitRequested = true;
         sortMoved = {};
         sortErrors = {};
-        await commit.load(serverUrl, {stageId, updateChanged});
+        const overrides = edits.qbOverrides();
+        const journalEdits = edits.journalEdits;
+        const body: QbJournalCommitBody = {
+            stageId,
+            updateChanged,
+            // Only when there are some, so a commit without review is the body it always was.
+            ...(overrides.length === 0 ? {} : {overrides}),
+            ...(journalEdits.length === 0 ? {} : {journalEdits: [...journalEdits]}),
+        };
+        await commit.load(serverUrl, body);
+        if (commit.error === null && commit.query === body) {
+            edits.clear();
+        } else if (commit.error !== null && classify(commit.error).kind === "conflict" && overrides.length > 0) {
+            // An override went stale: rebuild the preview and replay against it.
+            await this.refreshPreview(serverUrl, stageId);
+        }
     },
 
     // --- the post-commit re-sort, per touched file ------------------------------
@@ -228,14 +287,6 @@ export const qbJournalStore = {
                 const rest = {...sortErrors};
                 delete rest[journalId];
                 sortErrors = rest;
-            }
-            // A re-sort git did not take leaves the journal rewritten and
-            // uncommitted — the same caveat `importStore.resort` reports.
-            if (sorted.git !== null && !sorted.git.committed) {
-                sortErrors = {
-                    ...sortErrors,
-                    [journalId]: `The journal was re-sorted, but git did not commit the change. Commit ${journalId} yourself — until you do, this import can no longer be undone with \`git revert\`.`,
-                };
             }
         } catch (error) {
             sortErrors = {...sortErrors, [journalId]: failureMessage(error)};

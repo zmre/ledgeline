@@ -41,6 +41,7 @@ use crate::reports::periods::add_days;
 use crate::reports::subscriptions::{
     Subscription, SubscriptionOpts, day_distance, detect_subscriptions, payee_of,
 };
+use crate::rules::{HledgerField, NumberedField, RulesDoc};
 use crate::view::Classes;
 use crate::view::checks::is_uncategorized;
 use std::collections::{HashMap, HashSet};
@@ -94,6 +95,17 @@ const RECURRING_AMOUNT_TOLERANCE_PCT: i128 = 1;
 /// How far a charge's day of month may be from a subscription's last billing
 /// day — the subscription detector's own default tolerance.
 const RECURRING_DAY_TOLERANCE: i64 = 4;
+
+/// The confidence of a rule-file precedent (D13a source 2): a rule the user
+/// wrote names this description, which is strong evidence — but it did NOT
+/// fire on this row (or the row would not need a suggestion), so it stays
+/// below certain. Shared out when several rules' accounts match.
+const RULE_FILE_CONFIDENCE: u32 = 7_000;
+
+/// The largest compiled program one rules-file matcher may become. A matcher
+/// is user text from a file on disk; this only stops a pathological one from
+/// costing more than a review card is worth.
+const MAX_MATCHER_REGEX_BYTES: usize = 1 << 20;
 
 /// A transaction's review state, read from its HEADER tags only (D1).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -273,7 +285,7 @@ pub struct Precedent {
 }
 
 /// What [`ReviewIndex::similar`] found for one transaction.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Similar {
     /// Unreviewed, editable transactions with the same key, newest first,
     /// at most [`SIMILAR_CAP`].
@@ -291,8 +303,10 @@ pub enum SuggestionSource {
     /// The most common counter-account among categorised transactions with
     /// the same similarity key.
     ExactKey,
-    /// A rule in the import's rules file (Phase 4: import time only, never
-    /// produced by [`ReviewIndex::suggest`]).
+    /// A rule in the import's rules file assigns an account to a matching
+    /// description ([`rule_file_suggestions`]). Import time only: produced
+    /// through [`ReviewIndex::suggest_staged`], never by
+    /// [`ReviewIndex::suggest`].
     RuleFile,
     /// The longest leading run of at least two key tokens shared with
     /// categorised transactions, when the exact key has no history.
@@ -497,21 +511,35 @@ impl ReviewIndex {
     /// CURRENT description, which is the pre-edit one while the card is open.
     #[must_use]
     pub fn similar(&self, journal: &Journal, classes: &Classes, index: Tindex) -> Similar {
-        let empty = Similar {
-            candidates: Vec::new(),
-            total: 0,
-            precedent: None,
-        };
         let Some(position) = position_of(journal, index) else {
-            return empty;
+            return Similar::default();
         };
         let Some(key) = similarity_key(&journal.transactions[position].description) else {
-            return empty;
+            return Similar::default();
         };
+        self.similar_inner(journal, classes, &key, Some(position))
+    }
+
+    /// The journal transactions similar to a description that is NOT in the
+    /// journal — a staged import's (plan 32 D24, "already in the journal") —
+    /// by its similarity `key`: the same candidates and precedent
+    /// [`similar`](Self::similar) gives a journal transaction with that key.
+    #[must_use]
+    pub fn similar_by_key(&self, journal: &Journal, classes: &Classes, key: &str) -> Similar {
+        self.similar_inner(journal, classes, key, None)
+    }
+
+    fn similar_inner(
+        &self,
+        journal: &Journal,
+        classes: &Classes,
+        key: &str,
+        exclude: Option<usize>,
+    ) -> Similar {
         let mut candidates: Vec<(&str, usize)> = self
-            .positions(journal, self.by_key.get(&key))
+            .positions(journal, self.by_key.get(key))
             .filter(|&other| {
-                other != position
+                Some(other) != exclude
                     && self.state.get(other) == Some(&ReviewState::Unreviewed)
                     && self.editable.get(other) == Some(&true)
                     && self.real.get(other) == Some(&true)
@@ -523,9 +551,9 @@ impl ReviewIndex {
         let tally = self.tally(
             journal,
             classes,
-            &self.key_pool(journal, &key),
-            position,
-            Some(&key),
+            &self.key_pool(journal, key),
+            exclude,
+            Some(key),
         );
         Similar {
             candidates: candidates
@@ -553,18 +581,50 @@ impl ReviewIndex {
         let Some(position) = position_of(journal, index) else {
             return Vec::new();
         };
-        let txn = &journal.transactions[position];
+        self.suggest_inner(
+            journal,
+            classes,
+            &journal.transactions[position],
+            Some(position),
+            Vec::new(),
+        )
+    }
+
+    /// Suggested categories for a STAGED transaction (plan 32 Phase 4): one an
+    /// import is about to write, so it is in no journal. The journal's own
+    /// precedent (sources 1, 3 and 4 of D13a) plus `rule_file` — source 2,
+    /// [`rule_file_suggestions`] for the import's rules file — ranked together
+    /// exactly as [`suggest`](Self::suggest) ranks its own.
+    #[must_use]
+    pub fn suggest_staged(
+        &self,
+        journal: &Journal,
+        classes: &Classes,
+        txn: &Transaction,
+        rule_file: Vec<Suggestion>,
+    ) -> Vec<Suggestion> {
+        self.suggest_inner(journal, classes, txn, None, rule_file)
+    }
+
+    fn suggest_inner(
+        &self,
+        journal: &Journal,
+        classes: &Classes,
+        txn: &Transaction,
+        exclude: Option<usize>,
+        extra: Vec<Suggestion>,
+    ) -> Vec<Suggestion> {
         let Some(key) = similarity_key(&txn.description) else {
             return Vec::new();
         };
-        let mut found: Vec<Suggestion> = Vec::new();
+        let mut found: Vec<Suggestion> = extra;
 
         // 1. Exact-key precedent; 3. payee-prefix only when that is silent.
         let exact = self.tally(
             journal,
             classes,
             &self.key_pool(journal, &key),
-            position,
+            exclude,
             Some(&key),
         );
         if exact.total > 0 {
@@ -575,7 +635,7 @@ impl ReviewIndex {
                 confidence: vote.confidence(exact.total_weight, 1, 1),
                 count: vote.count,
             }));
-        } else if let Some((shared, prefix)) = self.prefix_tally(journal, classes, &key, position) {
+        } else if let Some((shared, prefix)) = self.prefix_tally(journal, classes, &key, exclude) {
             let tokens = key.split(' ').count();
             found.extend(prefix.ranked().into_iter().map(|vote| Suggestion {
                 account: vote.account.to_string(),
@@ -628,12 +688,12 @@ impl ReviewIndex {
         journal: &'j Journal,
         classes: &Classes,
         pool: &[usize],
-        exclude: usize,
+        exclude: Option<usize>,
         rename_key: Option<&str>,
     ) -> Tally<'j> {
         let mut tally = Tally::default();
         for &position in pool {
-            if position == exclude || self.unknown.get(position) != Some(&false) {
+            if Some(position) == exclude || self.unknown.get(position) != Some(&false) {
                 continue;
             }
             let txn = &journal.transactions[position];
@@ -682,7 +742,7 @@ impl ReviewIndex {
         journal: &'j Journal,
         classes: &Classes,
         key: &str,
-        exclude: usize,
+        exclude: Option<usize>,
     ) -> Option<(usize, Tally<'j>)> {
         let prefixes = self.prefixes.get_or_init(|| {
             let mut prefixes: HashMap<String, Vec<String>> = HashMap::new();
@@ -925,6 +985,103 @@ impl<'j> Tally<'j> {
             .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
             .map(|(description, _)| (*description).to_string())
     }
+}
+
+/// D13a source 2: the accounts the `if` blocks of an import's rules file
+/// assign to a description like `description` — "a rule another file
+/// triggers but this one doesn't", or one whose other conditions failed on
+/// this row.
+///
+/// A block counts when ANY of its matchers, as a case-insensitive regex (as
+/// hledger reads them), matches the transaction's description; its field
+/// scope and its `&` partners are deliberately not required, because the
+/// question is "does a rule already name this payee", not "would hledger have
+/// fired it" — hledger has already answered that one, and the answer was no.
+/// Only `account2` and higher assign the category side (`account1` is the
+/// statement's own account); a value with a `%` field reference or an
+/// uncategorized account says nothing. A block's `description` assignment
+/// rides along as the suggestion's rename. A matcher that does not compile
+/// here is skipped. Blocks carrying `skip`/`end`, and opaque ones, never
+/// count.
+#[must_use]
+pub fn rule_file_suggestions(
+    doc: &RulesDoc,
+    description: &str,
+    classes: &Classes,
+) -> Vec<Suggestion> {
+    let text = doc.text();
+    let mut hits: Vec<(String, Option<String>)> = Vec::new();
+    for block in doc.items().iter().filter_map(crate::rules::Item::if_block) {
+        if block.control.is_some() {
+            continue;
+        }
+        let value = |span: &crate::rules::Span| text.get(span.clone()).unwrap_or_default().trim();
+        let usable = |value: &str| !value.is_empty() && !value.contains('%');
+        let accounts: Vec<&str> = block
+            .assignments
+            .iter()
+            .filter(|assignment| {
+                matches!(
+                    assignment.field,
+                    HledgerField::Numbered { base: NumberedField::Account, n } if n >= 2
+                )
+            })
+            .map(|assignment| value(&assignment.value_span))
+            .filter(|account| usable(account) && !is_uncategorized(account, classes))
+            .collect();
+        if accounts.is_empty() {
+            continue;
+        }
+        let matched = block
+            .groups
+            .iter()
+            .flat_map(|group| &group.matchers)
+            .any(|matcher| matcher_matches(&matcher.pattern, description));
+        if !matched {
+            continue;
+        }
+        let rename = block
+            .assignments
+            .iter()
+            .filter(|assignment| assignment.field == HledgerField::Description)
+            .map(|assignment| value(&assignment.value_span))
+            .rfind(|rename| usable(rename))
+            .map(str::to_string);
+        hits.extend(
+            accounts
+                .into_iter()
+                .map(|account| (account.to_string(), rename.clone())),
+        );
+    }
+    let mut accounts: Vec<&str> = hits.iter().map(|(account, _)| account.as_str()).collect();
+    accounts.sort_unstable();
+    accounts.dedup();
+    let share = u32::try_from(accounts.len()).unwrap_or(u32::MAX).max(1);
+    accounts
+        .iter()
+        .map(|account| Suggestion {
+            account: (*account).to_string(),
+            // hledger's last matching block wins, so its rename does too.
+            description: hits
+                .iter()
+                .rfind(|(hit, _)| hit == account)
+                .and_then(|(_, rename)| rename.clone()),
+            source: SuggestionSource::RuleFile,
+            confidence: RULE_FILE_CONFIDENCE / share,
+            count: hits.iter().filter(|(hit, _)| hit == account).count(),
+        })
+        .collect()
+}
+
+/// Whether one rules-file matcher pattern matches `description`, read the way
+/// hledger reads it: a case-insensitive regex. A pattern this engine cannot
+/// compile matches nothing.
+fn matcher_matches(pattern: &str, description: &str) -> bool {
+    regex::RegexBuilder::new(pattern)
+        .case_insensitive(true)
+        .size_limit(MAX_MATCHER_REGEX_BYTES)
+        .build()
+        .is_ok_and(|regex| regex.is_match(description))
 }
 
 /// Merge suggestions from every source: one per account at its best

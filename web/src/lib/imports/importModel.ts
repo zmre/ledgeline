@@ -62,7 +62,7 @@ export interface ImportFlowState {
      * branch that needs the payload anyway.
      */
     readonly staged: boolean;
-    /** `Save and Import` was pressed, so a dry run exists or is running. */
+    /** `Test Import` was pressed, so a dry run exists or is running. */
     readonly dryRunRequested: boolean;
     /** `Write changes` was pressed. */
     readonly committed: boolean;
@@ -449,15 +449,15 @@ export function statementFacts(statement: StatementMeta | null): {label: string;
 // Actions
 // ---------------------------------------------------------------------------
 
-/** `Save CSV` alone when no rules file is chosen; `Save and Import` when one is. */
-export type ImportAction = "saveCsv" | "saveAndImport";
+/** `Save CSV` alone when no rules file is chosen; `Test Import` when one is. */
+export type ImportAction = "saveCsv" | "testImport";
 
 export function importAction(selectedRulesId: string | null): ImportAction {
-    return selectedRulesId === null ? "saveCsv" : "saveAndImport";
+    return selectedRulesId === null ? "saveCsv" : "testImport";
 }
 
 export function actionLabel(action: ImportAction): string {
-    return action === "saveCsv" ? "Save CSV" : "Save and Import";
+    return action === "saveCsv" ? "Save CSV" : "Test Import";
 }
 
 /**
@@ -468,7 +468,7 @@ export function actionLabel(action: ImportAction): string {
  * interposing an empty confirmation panel would be ceremony, not safety.
  */
 export function actionRunsDryRun(action: ImportAction): boolean {
-    return action === "saveAndImport";
+    return action === "testImport";
 }
 
 /** The destinations as the user has them. Everything is text; nothing here is a number. */
@@ -565,13 +565,6 @@ export function balanceVerdict(balance: BalanceCheck): BalanceVerdict {
     };
 }
 
-/** The git-blocked panel's sentence, or null when nothing blocks. */
-export function gitBlockMessage(blockedByGit: readonly string[]): string | null {
-    if (blockedByGit.length === 0) return null;
-    const files = blockedByGit.length === 1 ? "one file this import writes has" : `${blockedByGit.length} files this import writes have`;
-    return `Commit first: ${files} uncommitted changes. An import rewrites ${blockedByGit.length === 1 ? "it" : "them"} in place, and \`git diff\` is how you would undo that — which only works if what is there now is committed.`;
-}
-
 /**
  * The id-matching section's headline, or null when there is nothing worth a
  * section for.
@@ -605,9 +598,9 @@ export function conflictDetail(conflict: Conflict): string {
     return conflict.diffs.map((diff) => `${diff.field}: ${diff.existing} → ${diff.incoming}`).join("; ");
 }
 
-/** Whether `Write changes` may be offered at all. Git blocks it, and so does a failed dry run. */
+/** Whether `Write changes` may be offered at all. A failed dry run blocks it. */
 export function canWrite(dryRun: DryRunResult | null): boolean {
-    return dryRun !== null && dryRun.ok && dryRun.blockedByGit.length === 0;
+    return dryRun !== null && dryRun.ok;
 }
 
 /**
@@ -676,22 +669,7 @@ export function writtenLines(result: CommitResult): string[] {
     if (result.journalWritten !== null) {
         lines.push(`Imported ${result.imported} transaction${result.imported === 1 ? "" : "s"} into ${result.journalWritten}.`);
     }
-    if (result.git !== null) {
-        if (result.git.committed) lines.push(`Committed ${result.git.paths.join(", ")}.`);
-        if (result.git.skipped.length > 0) lines.push(`Not committed: ${result.git.skipped.join(", ")}.`);
-    }
     return lines;
-}
-
-/**
- * A rejecting pre-commit hook, a GPG prompt, an unset `user.email` — surfaced
- * distinctly from {@link writtenLines} rather than folded into that plain list,
- * because the journal is already correctly written at this point (`git.rs`'s
- * own rule): this is a bonus step that failed, not part of what was written.
- * Null when there is nothing to report (including when git never ran at all).
- */
-export function gitCommitFailure(result: CommitResult): string | null {
-    return result.git?.message ?? null;
 }
 
 /** The re-sort offer, or null when the journal came out in date order. */

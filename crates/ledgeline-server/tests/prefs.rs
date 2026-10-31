@@ -205,25 +205,21 @@ fn child_dir() -> Option<PathBuf> {
 // prefs: round-trip, defaults, forward compatibility
 // ---------------------------------------------------------------------------
 
-/// The basic contract: what goes in comes back out, including the three-valued
-/// `git_autocommit` whose `None` is a distinct meaning ("decide by whether a
-/// repo is present") and not merely an absent `false`.
+/// The basic contract: what goes in comes back out, a set path and a cleared
+/// one alike.
 #[test]
 fn prefs_round_trip_through_the_store() {
     let dir = TempDir::new().expect("temp dir");
     let store = dir.path().join("prefs.json");
     let stub = write_stub(dir.path(), "hledger", "hledger 1.52, mac-aarch64");
 
-    for autocommit in [None, Some(true), Some(false)] {
-        let written = Prefs {
-            hledger_path: Some(stub.clone()),
-            git_autocommit: autocommit,
-        };
+    for hledger_path in [Some(stub), None] {
+        let written = Prefs { hledger_path };
         prefs::store_in(&store, &written).expect("store valid prefs");
         assert_eq!(
             prefs::load_from(&store),
             written,
-            "git_autocommit {autocommit:?} must survive the round trip verbatim"
+            "{written:?} must survive the round trip verbatim"
         );
     }
 }
@@ -237,7 +233,6 @@ fn a_missing_store_reads_as_defaults() {
 
     assert_eq!(prefs::load_from(&store), Prefs::default());
     assert_eq!(Prefs::default().hledger_path, None);
-    assert_eq!(Prefs::default().git_autocommit, None);
     assert!(!store.exists(), "reading must not create the store");
     assert!(
         !store.with_extension("json.corrupt").exists(),
@@ -257,14 +252,12 @@ fn the_stored_json_uses_camel_case_keys() {
         &store,
         &Prefs {
             hledger_path: Some(stub),
-            git_autocommit: Some(false),
         },
     )
     .expect("store");
 
     let text = std::fs::read_to_string(&store).expect("read the store back");
     assert!(text.contains("\"hledgerPath\""), "got: {text}");
-    assert!(text.contains("\"gitAutocommit\""), "got: {text}");
 }
 
 /// Forward compatibility, both directions: a file written by a LATER version
@@ -292,10 +285,7 @@ fn unknown_and_missing_fields_both_load() {
 
     assert_eq!(
         prefs::load_from(&store),
-        Prefs {
-            hledger_path: None,
-            git_autocommit: Some(true),
-        },
+        Prefs { hledger_path: None },
         "unknown fields must be ignored, not rejected"
     );
     assert!(
@@ -306,6 +296,41 @@ fn unknown_and_missing_fields_both_load() {
     // An older version's file: no keys at all.
     std::fs::write(&store, "{}").expect("write an empty object");
     assert_eq!(prefs::load_from(&store), Prefs::default());
+}
+
+/// A `prefs.json` written before the git safety net was removed still carries
+/// `gitAutocommit`. It must load — keeping the `hledgerPath` beside it — and is
+/// not corrupt; the next store simply drops the retired key.
+#[test]
+fn a_legacy_git_autocommit_field_is_ignored_and_dropped_on_the_next_store() {
+    let dir = TempDir::new().expect("temp dir");
+    let store = dir.path().join("prefs.json");
+    let stub = write_stub(dir.path(), "hledger", "hledger 1.52, mac-aarch64");
+
+    for legacy in [
+        serde_json::json!(true),
+        serde_json::json!(false),
+        serde_json::Value::Null,
+    ] {
+        let text = serde_json::json!({ "hledgerPath": stub, "gitAutocommit": legacy });
+        std::fs::write(&store, text.to_string()).expect("write a legacy store");
+
+        assert_eq!(
+            prefs::load_from(&store),
+            Prefs {
+                hledger_path: Some(stub.clone()),
+            },
+            "a legacy `gitAutocommit: {legacy}` must not stop the store loading"
+        );
+        assert!(
+            !store.with_extension("json.corrupt").exists(),
+            "a legacy store is not a corrupt one"
+        );
+    }
+
+    prefs::store_in(&store, &prefs::load_from(&store)).expect("store");
+    let text = std::fs::read_to_string(&store).expect("read the store back");
+    assert!(!text.contains("gitAutocommit"), "got: {text}");
 }
 
 // ---------------------------------------------------------------------------
@@ -347,12 +372,12 @@ fn storing_over_a_corrupt_file_preserves_it_too() {
     let store = dir.path().join("prefs.json");
     let garbage = "\u{feff}not json at all";
     std::fs::write(&store, garbage).expect("write garbage");
+    let stub = write_stub(dir.path(), "hledger", "hledger 1.52, mac-aarch64");
 
     prefs::store_in(
         &store,
         &Prefs {
-            hledger_path: None,
-            git_autocommit: Some(true),
+            hledger_path: Some(stub.clone()),
         },
     )
     .expect("store over a corrupt file");
@@ -363,8 +388,8 @@ fn storing_over_a_corrupt_file_preserves_it_too() {
         garbage
     );
     assert_eq!(
-        prefs::load_from(&store).git_autocommit,
-        Some(true),
+        prefs::load_from(&store).hledger_path,
+        Some(stub),
         "and the store recovers rather than staying broken"
     );
 }
@@ -436,7 +461,6 @@ fn an_unusable_hledger_path_is_rejected_and_nothing_is_written() {
     for (label, path, expected_reason) in cases {
         let attempted = Prefs {
             hledger_path: Some(path),
-            git_autocommit: None,
         };
         let error = prefs::store_in(&store, &attempted)
             .expect_err(&format!("{label} must be rejected, not persisted"));
@@ -481,7 +505,6 @@ fn a_binary_writable_by_other_users_is_refused() {
             &store,
             &Prefs {
                 hledger_path: Some(stub),
-                git_autocommit: None,
             },
         )
         .expect_err(&format!("mode {mode:o} must be refused, not persisted"));
@@ -516,7 +539,6 @@ fn a_binary_that_does_not_answer_like_hledger_is_refused() {
         &store,
         &Prefs {
             hledger_path: Some(impostor.clone()),
-            git_autocommit: None,
         },
     )
     .expect_err("a binary that does not report an hledger version must be refused");
@@ -567,7 +589,6 @@ fn the_store_time_probe_runs_the_candidate_exactly_once() {
         &store,
         &Prefs {
             hledger_path: Some(impostor),
-            git_autocommit: None,
         },
     )
     .expect_err("an impostor must be refused");
@@ -598,7 +619,6 @@ fn a_too_old_hledger_is_still_a_valid_preference() {
         &store,
         &Prefs {
             hledger_path: Some(ancient.clone()),
-            git_autocommit: None,
         },
     )
     .expect("a runnable but too-old hledger is a legitimate preference");
@@ -618,7 +638,6 @@ fn a_rejection_message_never_names_the_path() {
         &store,
         &Prefs {
             hledger_path: Some(missing.clone()),
-            git_autocommit: None,
         },
     )
     .expect_err("rejected");
@@ -643,7 +662,6 @@ fn a_rejected_write_leaves_existing_settings_intact() {
 
     let good = Prefs {
         hledger_path: Some(stub),
-        git_autocommit: Some(true),
     };
     prefs::store_in(&store, &good).expect("store good prefs");
 
@@ -651,7 +669,6 @@ fn a_rejected_write_leaves_existing_settings_intact() {
         &store,
         &Prefs {
             hledger_path: Some(dir.path().join("gone")),
-            git_autocommit: Some(false),
         },
     );
     assert!(error.is_err());
@@ -674,7 +691,6 @@ fn clearing_the_hledger_path_is_always_valid() {
         &store,
         &Prefs {
             hledger_path: Some(stub),
-            git_autocommit: None,
         },
     )
     .expect("store");
@@ -695,14 +711,7 @@ fn the_store_is_written_atomically_and_owner_only() {
     let dir = TempDir::new().expect("temp dir");
     let store = dir.path().join("prefs.json");
 
-    prefs::store_in(
-        &store,
-        &Prefs {
-            hledger_path: None,
-            git_autocommit: Some(true),
-        },
-    )
-    .expect("store");
+    prefs::store_in(&store, &Prefs { hledger_path: None }).expect("store");
 
     let leftovers: Vec<PathBuf> = std::fs::read_dir(dir.path())
         .expect("read config dir")
@@ -736,17 +745,17 @@ fn the_store_is_written_atomically_and_owner_only() {
 fn storing_creates_a_missing_config_directory() {
     let dir = TempDir::new().expect("temp dir");
     let store = dir.path().join("nested").join("deeper").join("prefs.json");
+    let stub = write_stub(dir.path(), "hledger", "hledger 1.52, mac-aarch64");
 
     prefs::store_in(
         &store,
         &Prefs {
-            hledger_path: None,
-            git_autocommit: Some(false),
+            hledger_path: Some(stub.clone()),
         },
     )
     .expect("store into a not-yet-existing directory");
 
-    assert_eq!(prefs::load_from(&store).git_autocommit, Some(false));
+    assert_eq!(prefs::load_from(&store).hledger_path, Some(stub));
 }
 
 // ---------------------------------------------------------------------------
@@ -778,8 +787,7 @@ fn the_config_dir_env_var_redirects_the_store() {
     assert_eq!(
         prefs::load_from(&store),
         Prefs {
-            hledger_path: None,
-            git_autocommit: Some(false),
+            hledger_path: Some(dir.path().join("hledger")),
         }
     );
 }
@@ -800,8 +808,7 @@ fn child_config_dir_env_var_is_honoured() {
     );
 
     let written = Prefs {
-        hledger_path: None,
-        git_autocommit: Some(false),
+        hledger_path: Some(write_stub(&dir, "hledger", "hledger 1.52, mac-aarch64")),
     };
     prefs::store(&AppDirs::from_env(), &written).expect("store through the env-resolved path");
     assert_eq!(
@@ -996,7 +1003,6 @@ fn child_preference_outranks_the_env_var() {
     // With a preference set, it takes precedence — and the version proves it.
     let preferred = resolve(&Prefs {
         hledger_path: Some(dir.join("from-prefs")),
-        git_autocommit: None,
     })
     .expect("preferred stub resolves");
     assert_eq!(preferred.path(), dir.join("from-prefs"));
@@ -1068,7 +1074,6 @@ fn child_too_old_is_terminal() {
 
     let error = resolve(&Prefs {
         hledger_path: Some(dir.join("old")),
-        git_autocommit: None,
     })
     .expect_err("an old preference must be reported, not skipped");
 
@@ -1190,7 +1195,6 @@ fn child_stale_preference_falls_through() {
     ] {
         let resolved = resolve(&Prefs {
             hledger_path: Some(stale.clone()),
-            git_autocommit: None,
         })
         .unwrap_or_else(|error| panic!("{stale:?} should fall through, got {error:?}"));
         assert_eq!(
@@ -1376,7 +1380,6 @@ fn a_binary_that_predates_the_flag_still_reports_its_version() {
 
     let error = resolve(&Prefs {
         hledger_path: Some(script.clone()),
-        git_autocommit: None,
     })
     .expect_err("1.39 is below the floor");
     assert!(
@@ -1630,7 +1633,6 @@ fn a_binary_that_is_still_open_for_writing_is_waited_for() {
 
     let hledger = resolve(&Prefs {
         hledger_path: Some(script.clone()),
-        git_autocommit: None,
     })
     .expect("a momentarily busy binary must be waited for, not called missing");
     assert_eq!(hledger.path(), script);
@@ -1641,7 +1643,6 @@ fn a_binary_that_is_still_open_for_writing_is_waited_for() {
 fn resolve_stub(path: &Path) -> Hledger {
     resolve(&Prefs {
         hledger_path: Some(path.to_path_buf()),
-        git_autocommit: None,
     })
     .expect("the stub resolves")
 }

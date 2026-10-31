@@ -29,6 +29,28 @@ export function queueItemWire(txn: Transaction, marks: Marks & {key?: string | n
     return {...reviewTxnWire(txn, marks), key: marks.key === undefined ? "payee" : marks.key, suggestions: marks.suggestions ?? []};
 }
 
+/** A CSV dry run's staged transaction (plan 32 D23): a queue item plus its 0-based ordinal. `txn.index` should be `ordinal + 1`. */
+export function stagedTxnWire(
+    txn: Transaction,
+    marks: Marks & {ordinal?: number; key?: string | null; suggestions?: unknown[]; overridden?: boolean} = {}
+): Record<string, unknown> {
+    return {
+        ...queueItemWire(txn, {...marks, fingerprint: marks.fingerprint === undefined ? `gen-${txn.index}` : marks.fingerprint}),
+        ordinal: marks.ordinal ?? txn.index - 1,
+        overridden: marks.overridden ?? false,
+    };
+}
+
+/** A QuickBooks preview's staged transaction (D30): keyed by Trans #, with its classification. */
+export function qbStagedTxnWire(txn: Transaction, id: string, marks: Marks & {key?: string | null; classification?: string} = {}): Record<string, unknown> {
+    return {
+        ...queueItemWire(txn, {...marks, fingerprint: marks.fingerprint === undefined ? `qb-${id}` : marks.fingerprint}),
+        id,
+        classification: marks.classification ?? "new",
+        overridden: false,
+    };
+}
+
 /** One `/api/review/queue` page over `items` (already wire-shaped). */
 export function queuePageWire(
     kind: QueueKind,
@@ -96,6 +118,8 @@ export interface SeenRequest {
 export interface ReviewHandlers {
     queue: (url: URL) => unknown;
     similar?: (index: number, url: URL) => unknown;
+    /** `/api/review/similar-key?key=` (a staged card's journal siblings). Defaults to an empty set. */
+    similarKey?: (key: string, url: URL) => unknown;
     batch?: (body: {edits: {index: number; fingerprint: string; ops: unknown[]}[]}) => unknown;
 }
 
@@ -120,6 +144,10 @@ export function serveReview(handlers: ReviewHandlers): SeenRequest[] {
         if (path.endsWith("/api/journal")) return answer(FAKE_JOURNAL_INFO);
         if (path.endsWith("/api/diagnostics")) return answer({count: 0, maxSeverity: null, diagnostics: []});
         if (path.endsWith("/api/review/queue")) return answer(handlers.queue(url));
+        if (path.endsWith("/api/review/similar-key")) {
+            const key = url.searchParams.get("key") ?? "";
+            return answer(handlers.similarKey?.(key, url) ?? {...similarWire(0, []), key});
+        }
         const similar = /\/api\/review\/similar\/(\d+)$/.exec(path);
         if (similar !== null) {
             const index = Number(similar[1]);

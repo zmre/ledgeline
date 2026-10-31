@@ -143,7 +143,7 @@ so the work can start without waiting for an answer.
 ### Import
 
 - **Steps.** Drop → Staged (preview, ranked rules candidates, destination,
-  balance) → **Save and Import** → `DryRunPanel` (`POST /api/import/dry-run`)
+  balance) → **Test Import** → `DryRunPanel` (`POST /api/import/dry-run`)
   → **Write changes** (`POST /api/import/commit`) → Result.
 - **The dry run is text.** `DryRunOk.entries` is hledger's stdout, shown in a
   `<pre>`. No per-transaction struct exists, and nothing links back to a CSV row.
@@ -1232,10 +1232,13 @@ It is sized after Phases 1–5 land and have been used for real.
 ## Status
 
 - Plan written 2026-10-30 and revised the same day after Patrick's review.
-- **Phase 1: built 2026-10-30.** `just engine-check` and `just engine-test` are green (3283 passed, 60 new). Not committed. Amendments are in `32-amendments-p1.md`.
-  Bench at 200k transactions: queue 1.4ms, similar 1.7ms, batch of 50 404ms, single PATCH 403ms.
-- **Phase 2: built 2026-10-30.** All five recipes are green (engine 3306, web 2793, live integration included). Amendments are in `32-amendments-p2.md`.
-- **Phase 3: built 2026-10-30.** `just check`, `just test` and `bun run lint` are green. The e2e spec (`web/e2e/review.e2e.ts`, engine on :5098) has not been run yet. Amendments are in `32-amendments-p3.md`.
+- **Phase 1: committed 2026-10-30** (`8131198`). Amendments are in `32-amendments-p1.md`.
+- **Phase 2: committed 2026-10-30** (`936f6f5`). Amendments are in `32-amendments-p2.md`.
+- **Phase 3: committed 2026-10-30** (`c02538d`), after two rounds of UI review
+  with Patrick, which produced the card deck and the visual tweaks. Amendments are in
+  `32-amendments-p3.md`.
+- Also on this branch: `721edb0`, the Projections scroll fix (not part of plan 32).
+- **Phase 4: in progress.** It's split into 4a (server and wire) and 4b (UI).
 
 ## Contract amendments made during implementation
 

@@ -43,27 +43,13 @@
 //! — which `include`d file receives each row. There is no single destination
 //! to name, so the commit request below carries only a `stageId`.
 //!
-//! # The git safety net, and why it checks the whole tree
-//!
-//! CSV import's git check (`import_api::blocked_by_git`) looks at the one or
-//! two files it is about to write, known in advance from the request. A
-//! multi-year QuickBooks export can route its rows into any number of
-//! `include`d files, and which ones is not known until after the write. So the
-//! PRE-write check here looks at every file [`Journal::source_files`] lists —
-//! the superset of anything `DateOrdered` could possibly touch — and the
-//! POST-write git commit is then narrowed to exactly the files
-//! [`edit_api::add_and_replace_transactions`] reports as touched
-//! ([`JournalEditor::dirty_files`](ledgeline_core::edit::JournalEditor::dirty_files)),
-//! so the commit's blast radius matches what was actually written, same as
-//! the CSV path's own `committed` set.
-//!
 //! # No absolute path is ever echoed
 //!
 //! Same rule as every other route in this crate. Nothing here reads a
 //! client-supplied path at all (there is no `journalId`/`csvPath` to resolve);
 //! the only paths in play are the journal's own `source_files`, and every one
 //! that could reach a response goes through [`journal_handle`] (a relative,
-//! forward-slash handle) or [`Redactor`] first.
+//! forward-slash handle) first.
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
@@ -85,8 +71,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use crate::AppState;
 use crate::edit_api::{self, infer_style, json_body};
 use crate::error::{AppError, editing_disabled};
-use crate::import_api::{self, GitPolicy, WireGitResult, WireMove};
-use crate::redact::Redactor;
+use crate::import_api::{self, WireMove};
+use crate::import_review::{StagedEdit, StagedPlace, StagedText, WireQbOverride, WireStagedTxn};
+use crate::review_api::BatchEditIn;
 use crate::security::no_store_json as no_store;
 use crate::stage::StageId;
 
@@ -188,6 +175,11 @@ pub(crate) struct WireQbPreview {
     /// journal. `null` while any account is unmapped: nothing can be built
     /// (and therefore nothing classified) without a resolved account.
     id_matches: Option<WireQbIdMatches>,
+    /// Every built transaction, in export order, in the review queue's row
+    /// shape (plan 32 D30) — keyed by Trans # (`id`), with its
+    /// `classification` and the fingerprint an override must echo. Empty
+    /// while any account is unmapped.
+    txns: Vec<WireStagedTxn>,
 }
 
 #[derive(Serialize)]
@@ -257,9 +249,10 @@ pub(crate) struct WireQbCommit {
     pub(crate) updated: usize,
     pub(crate) id_matches: WireQbIdMatches,
     pub(crate) ordering: WireQbOrdering,
-    /// `null` when nothing was written, when no touched file is under version
-    /// control, or when the git safety net is off.
-    git: Option<WireGitResult>,
+    /// How many review overrides the written transactions carry.
+    pub(crate) overrides: usize,
+    /// How many existing journal transactions `journalEdits` changed.
+    pub(crate) journal_edited: usize,
 }
 
 /// Whether the journal is still in date order after the import, and what a
@@ -294,6 +287,22 @@ pub(crate) struct WireQbCommitRequest {
     /// instead of only reporting them. Absent means `false`.
     #[serde(default)]
     update_changed: bool,
+    /// Review edits to the export's transactions (plan 32 D30), keyed by
+    /// Trans #, applied after a fingerprint check. Absent means none.
+    #[serde(default)]
+    overrides: Vec<WireQbOverride>,
+    /// Review edits to EXISTING journal transactions (D24) — the batch
+    /// route's `edits` — written in the same edit and save.
+    #[serde(default)]
+    journal_edits: Vec<BatchEditIn>,
+}
+
+/// The review that rides on a QuickBooks commit (plan 32 D30). Empty for the
+/// command line, which has no review step.
+#[derive(Default)]
+pub(crate) struct QbReview<'a> {
+    pub(crate) overrides: &'a [WireQbOverride],
+    pub(crate) journal_edits: &'a [BatchEditIn],
 }
 
 // ===========================================================================
@@ -324,13 +333,10 @@ pub(crate) async fn commit(
         return Err(editing_disabled());
     }
     // Serialize against CSV imports too: both can touch the same journal
-    // file, and both may run a git commit over it — see the module docs.
+    // file.
     let guard = state.clone();
     let _write = guard.import_writes().lock().await;
-    let Json(body) = crate::reports_api::compute(move || {
-        run_commit(&state, &request.stage_id, request.update_changed)
-    })
-    .await?;
+    let Json(body) = crate::reports_api::compute(move || run_commit(&state, &request)).await?;
     Ok(no_store(body))
 }
 
@@ -368,11 +374,16 @@ fn preview_of(
     let aliases = plain_aliases(&snapshot.journal);
     let unmapped = qb_import::unmapped_accounts(&aliases, &parsed.transactions);
 
-    let id_matches = if unmapped.is_empty() {
+    let (id_matches, txns) = if unmapped.is_empty() {
         let built = build_and_classify(&snapshot.journal, &aliases, &parsed.transactions)?;
-        Some(wire_id_matches(&built))
+        let staged = staged_text(&built)?;
+        let txns = crate::import_review::wire_txns(&snapshot, &staged, None, |at| {
+            let row = &built[at];
+            StagedPlace::Qb(row.id.clone(), classification_word(&row.classification))
+        });
+        (Some(wire_id_matches(&built)), txns)
     } else {
-        None
+        (None, Vec::new())
     };
 
     let posting_count = parsed
@@ -398,7 +409,106 @@ fn preview_of(
         unmapped_accounts: unmapped,
         sample,
         id_matches,
+        txns,
     })
+}
+
+/// A classification as the preview's `txns` spell it.
+fn classification_word(classification: &RowClassification) -> &'static str {
+    match classification {
+        RowClassification::New => "new",
+        RowClassification::Unchanged => "unchanged",
+        // Never produced here (see `WireQbIdMatches`), and a difference is a
+        // difference.
+        RowClassification::StatusOnly { .. } | RowClassification::Conflicting { .. } => "changed",
+    }
+}
+
+/// Every built transaction rendered exactly as the editor will write it, held
+/// as one staged text (plan 32 D30) — so a fingerprint is of the text a
+/// transaction would be written as, and the preview and the commit, which
+/// build the same transactions, agree on it.
+fn staged_text(built: &[Classified]) -> Result<StagedText, AppError> {
+    let text = built
+        .iter()
+        .map(|row| ledgeline_core::format_transaction(&row.transaction))
+        .collect::<Vec<_>>()
+        .join("\n");
+    StagedText::parse(&text)
+}
+
+/// Apply a commit's review overrides (plan 32 D30) to the transactions it is
+/// about to write. Each must name a Trans # this commit WRITES — a new one, or
+/// a changed one under `updateChanged` — and echo the fingerprint the preview
+/// gave it; the edited transaction then replaces the built one.
+///
+/// # Errors
+/// `400` for an id not in the export, or not written by this commit; `409`
+/// naming the id whose fingerprint is stale; `400` for a refused op.
+fn apply_overrides(
+    styles: &Journal,
+    built: &mut [Classified],
+    overrides: &[WireQbOverride],
+    update_changed: bool,
+) -> Result<(), AppError> {
+    if overrides.is_empty() {
+        return Ok(());
+    }
+    crate::import_review::check_override_count(overrides.len())?;
+    let mut staged = staged_text(built)?;
+    let edits = overrides
+        .iter()
+        .map(|override_| {
+            let position = built
+                .iter()
+                .position(|row| row.id == override_.id)
+                .ok_or_else(|| {
+                    AppError::BadRequest(format!(
+                        "QuickBooks transaction {:?} is not in this export",
+                        clip(&override_.id)
+                    ))
+                })?;
+            let row = &built[position];
+            let written = row.classification == RowClassification::New
+                || (update_changed
+                    && matches!(row.classification, RowClassification::Conflicting { .. }));
+            if !written {
+                return Err(AppError::BadRequest(format!(
+                    "QuickBooks transaction {} is not written by this commit, so it cannot carry a \
+                     review edit",
+                    row.id
+                )));
+            }
+            Ok(StagedEdit {
+                position,
+                fingerprint: &override_.fingerprint,
+                ops: &override_.ops,
+                label: format!(
+                    "QuickBooks transaction {} ({} {})",
+                    row.id, row.transaction.date, row.transaction.description
+                ),
+            })
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
+    staged.apply(&edits, styles)?;
+    for edit in &edits {
+        let mut edited = staged.current().transactions[edit.position].clone();
+        // The editor reassigns the index and the place on write, exactly as
+        // for a built transaction.
+        edited.index = Tindex(0);
+        edited.source_span = (
+            SourcePos { line: 1, column: 1 },
+            SourcePos { line: 1, column: 1 },
+        );
+        edited.source_file = PathBuf::new();
+        built[edit.position].transaction = edited;
+    }
+    Ok(())
+}
+
+/// A client's string, bounded for an error body.
+fn clip(value: &str) -> String {
+    value.chars().take(120).collect()
 }
 
 fn wire_sample(txn: &QbTransaction) -> WireQbSample {
@@ -742,26 +852,24 @@ fn posting_comment(posting: &QbPosting) -> String {
 }
 
 // ===========================================================================
-// Commit: refuse unmapped accounts, git-check, write, git-commit, report
+// Commit: refuse unmapped accounts, write, report
 // ===========================================================================
 
-fn run_commit(
-    state: &AppState,
-    stage_id: &str,
-    update_changed: bool,
-) -> Result<WireQbCommit, AppError> {
-    let (_, stage) = resolve_stage(state, stage_id)?;
-    // Always `FromPrefs`: the HTTP route has no `--no-git`-equivalent
-    // request field, and never has — git behaviour here is governed purely
-    // by Preferences, exactly as it always was. See [`commit_journal`]'s own
-    // docs for why it now takes this as a parameter rather than deciding it
-    // internally.
-    commit_journal(state, stage.journal(), GitPolicy::FromPrefs, update_changed)
+fn run_commit(state: &AppState, request: &WireQbCommitRequest) -> Result<WireQbCommit, AppError> {
+    let (_, stage) = resolve_stage(state, &request.stage_id)?;
+    commit_journal(
+        state,
+        stage.journal(),
+        request.update_changed,
+        &QbReview {
+            overrides: &request.overrides,
+            journal_edits: &request.journal_edits,
+        },
+    )
 }
 
 /// Classify every parsed transaction by id, refuse if any account is
-/// unmapped, otherwise build and write the new ones, git-check/git-commit
-/// around the write, and report ordering.
+/// unmapped, otherwise build and write the new ones, and report ordering.
 ///
 /// This is [`run_commit`]'s own body from "unmapped accounts block the
 /// write" onward (see the plan's Phase D amendments,
@@ -772,25 +880,16 @@ fn run_commit(
 /// force it to fake one. `run_commit` above is now a thin `resolve_stage` +
 /// call to this. There is exactly one write path: nothing downstream of the
 /// unmapped-accounts check is duplicated anywhere else in this crate.
-///
-/// `git`: the CSV path's own `run_commit`/`run_dry_run`/`run_sort` all take
-/// this as a parameter rather than deciding it themselves, for the same
-/// reason it has to be a parameter here now that a second caller exists that
-/// is not bound to Preferences — `import_api::cli_import`'s `--no-git` has no
-/// representation on the HTTP wire at all, so it can only reach this
-/// function as an argument, never by this function re-reading Preferences
-/// itself. [`run_commit`] passes [`GitPolicy::FromPrefs`] unconditionally,
-/// which is exactly what this function did before the parameter existed, so
-/// the HTTP route's own behaviour (and `qb_journal_endpoints.rs`'s existing
-/// tests) is unchanged.
 pub(crate) fn commit_journal(
     state: &AppState,
     parsed: &QbJournal,
-    git: GitPolicy,
     update_changed: bool,
+    review: &QbReview<'_>,
 ) -> Result<WireQbCommit, AppError> {
-    let (snapshot, built) = classify_parsed(state, parsed)?;
+    crate::review_api::check_edits(review.journal_edits)?;
+    let (snapshot, mut built) = classify_parsed(state, parsed)?;
     let id_matches = wire_id_matches(&built);
+    apply_overrides(&snapshot.raw, &mut built, review.overrides, update_changed)?;
     let (new, changed): (Vec<Classified>, Vec<Classified>) = built
         .into_iter()
         .filter(|row| {
@@ -820,76 +919,30 @@ pub(crate) fn commit_journal(
         .collect();
     let new_transactions: Vec<Transaction> = new.into_iter().map(|row| row.transaction).collect();
 
-    if new_transactions.is_empty() && replacements(&snapshot.journal, &changed).is_empty() {
+    if new_transactions.is_empty()
+        && replacements(&snapshot.journal, &changed).is_empty()
+        && review.journal_edits.is_empty()
+    {
         return Ok(WireQbCommit {
             imported: 0,
             updated: 0,
             id_matches,
             ordering: qb_ordering(&snapshot, &[]),
-            git: None,
+            overrides: 0,
+            journal_edited: 0,
         });
-    }
-
-    // Sequencing rule (mirrors `import_api::run_commit`'s rule 3): checked
-    // server-side, over every file this write *could* touch — see the module
-    // docs for why that is the whole tree rather than one known target.
-    let prefs = crate::prefs::load(state.app_dirs());
-    let handles: Vec<String> = snapshot
-        .journal
-        .source_files
-        .iter()
-        .map(|path| journal_handle(&snapshot.journal, path))
-        .collect();
-    let git_targets: Vec<(&Path, &str)> = snapshot
-        .journal
-        .source_files
-        .iter()
-        .map(PathBuf::as_path)
-        .zip(handles.iter().map(String::as_str))
-        .collect();
-    let blocked = if git.enabled(&prefs) {
-        import_api::blocked_by_git(&git_targets)
-    } else {
-        Vec::new()
-    };
-    if !blocked.is_empty() {
-        return Err(AppError::Conflict(format!(
-            "these files have uncommitted changes, so an import could not be undone with `git \
-             revert`: {}. Commit them first, or turn off the git safety net in Preferences.",
-            blocked.join(", ")
-        )));
     }
 
     let (touched, updated) = edit_api::add_and_replace_transactions(
         state,
+        review.journal_edits,
         &new_transactions,
         &labels,
         InsertPosition::DateOrdered,
         &|journal| replacements(journal, &changed),
     )?;
 
-    let touched_handles: Vec<String> = touched
-        .iter()
-        .map(|path| journal_handle(&snapshot.journal, path))
-        .collect();
-    let redactor = touched
-        .iter()
-        .zip(touched_handles.iter())
-        .fold(Redactor::default(), |redactor, (path, handle)| {
-            redactor.hide(path, handle)
-        });
-    let committed: Vec<(&Path, &str)> = touched
-        .iter()
-        .map(PathBuf::as_path)
-        .zip(touched_handles.iter().map(String::as_str))
-        .collect();
     let imported = new_transactions.len();
-    let git = git
-        .enabled(&prefs)
-        .then(|| {
-            import_api::commit_targets(&committed, &commit_message(imported, updated), &redactor)
-        })
-        .filter(|result| result.committed || result.message.is_some());
 
     // `edit_api::add_and_replace_transactions` already republished the snapshot; read it
     // fresh here so the ordering check sees the bytes it just wrote.
@@ -900,7 +953,8 @@ pub(crate) fn commit_journal(
         updated,
         id_matches,
         ordering,
-        git,
+        overrides: review.overrides.len(),
+        journal_edited: review.journal_edits.len(),
     })
 }
 
@@ -1051,19 +1105,6 @@ fn unmapped_refusal(unmapped: &[String]) -> AppError {
     ))
 }
 
-fn commit_message(imported: usize, updated: usize) -> String {
-    let plural = |n: usize| if n == 1 { "" } else { "s" };
-    let what = match (imported, updated) {
-        (imported, 0) => format!("import {imported} transaction{}", plural(imported)),
-        (0, updated) => format!("update {updated} transaction{}", plural(updated)),
-        (imported, updated) => format!(
-            "import {imported} transaction{} and update {updated}",
-            plural(imported)
-        ),
-    };
-    format!("{what} from a QuickBooks Journal export")
-}
-
 /// A journal id for `path`: relative to the main file's own directory,
 /// forward-slash separated — the same shape `journals::targets` produces
 /// (`journals::relative_id`'s algorithm, not re-exported, so reproduced here
@@ -1088,7 +1129,7 @@ fn journal_id_for(journal: &Journal, path: &Path) -> Option<String> {
 /// below the journal's own directory (should not happen for anything in
 /// [`Journal::source_files`], but a display handle must never be an empty
 /// string).
-fn journal_handle(journal: &Journal, path: &Path) -> String {
+pub(crate) fn journal_handle(journal: &Journal, path: &Path) -> String {
     journal_id_for(journal, path).unwrap_or_else(|| {
         path.file_name()
             .map_or_else(String::new, |name| name.to_string_lossy().into_owned())

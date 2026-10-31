@@ -17,6 +17,7 @@
     import {registerKeys} from "#lib/keys/keymap.svelte.js";
     import {PRIORITY} from "#lib/keys/types.js";
     import {rowMarker, type RowMarker} from "#lib/review/card.js";
+    import {REVIEW_BUTTON} from "#lib/review/ui/buttons.js";
     import {reviewLaunch} from "#lib/review/ui/launch.svelte.js";
     import ReviewIcon from "#lib/review/ui/ReviewIcon.svelte";
     import ReviewSettings from "#lib/review/ui/ReviewSettings.svelte";
@@ -82,13 +83,6 @@
     const unknownCount = $derived(reviewCounts?.unknown ?? 0);
     const recentCount = $derived(reviewCounts?.unreviewedRecent ?? 0);
     const today = localToday();
-    /**
-     * The review buttons (D18): low-key, but a few shades above the page so they
-     * still read as buttons in dark mode. A default `btn` paints `base-200`,
-     * which in the dark theme is DARKER than the `base-100` page and sinks into
-     * it. One subtle border on all three, so the ▾ matches the button it splits.
-     */
-    const REVIEW_BUTTON = "btn btn-sm border-base-content/10 bg-base-content/10 shadow-none hover:border-base-content/20 hover:bg-base-content/15";
     const markerOf = (row: JournalRow): RowMarker => rowMarker(row, today, settings.reviewMaxDays, settings.reviewMarkers);
     let reviewMenuOpen = $state(false);
 

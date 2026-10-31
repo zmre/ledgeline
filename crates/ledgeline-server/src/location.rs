@@ -16,7 +16,7 @@
 //!
 //! # Subprocesses
 //!
-//! `hledger` and `git` need a real path. [`JournalLocation::local_path`] is the
+//! `hledger` needs a real path. [`JournalLocation::local_path`] is the
 //! one place that asks for one, and the one place that says why there is none.
 
 use std::collections::HashMap;
@@ -123,7 +123,7 @@ impl JournalLocation {
             .then_some(candidate)
     }
 
-    /// A real filesystem path for `path`, for handing to `hledger` or `git`.
+    /// A real filesystem path for `path`, for handing to `hledger`.
     ///
     /// # Errors
     /// [`AppError::BadRequest`] naming what needs one, when the journal is not

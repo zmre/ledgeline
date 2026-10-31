@@ -43,6 +43,18 @@
     // Optimistic: `review.save` advances at once and writes behind; the header's
     // dot says "saving…". A failure rewinds to that card with its edits and the
     // error.
+    //
+    // # Over an import (plan 32 Phase 4)
+    //
+    // The same overlay runs over the transactions an import WOULD write when it
+    // is handed `staged` (D23, D30): the cards are the import's, a save goes to
+    // the import's sink as overrides and never to the network, and closing
+    // keeps every edit for the write. Similar shows two groups (D24), "in this
+    // import" (→ overrides) and "already in the journal" (→ edits the write
+    // makes), each with its own count and check-all. A CSV import's card whose
+    // description or account changed also offers "Remember as a rule" (D25),
+    // whose rule is saved BEFORE the card, so the dry run that follows sees both.
+    // There is no full editor for a transaction that is not in a file yet.
     import {flushSync, tick, untrack} from "svelte";
     import {cardChange, cardOps, isSplit, reviewFormOf} from "#lib/api/editMapping.js";
     import {openAutoRule} from "#lib/autoRules/openRule.js";
@@ -53,12 +65,13 @@
     import {PRIORITY} from "#lib/keys/types.js";
     import {localToday} from "#lib/stores/filters.svelte.js";
     import {journal} from "#lib/stores/journal.svelte.js";
-    import {review, type ReviewCard} from "#lib/stores/review.svelte.js";
+    import type {RuleSpec, StagedTxn} from "#lib/imports/reviewTypes.js";
+    import {review, type ReviewCard, type StagedKind} from "#lib/stores/review.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
     import {acceptChip, changeSummary, chipsFor, cycleChip, footerState, hasUnknown, isDirty, similarRows, type Chips} from "../card";
     import type {Transaction} from "#lib/domain/types.js";
     import type {QueueKind, ReviewForm} from "../types";
-    import {reviewLaunch} from "./launch.svelte";
+    import {reviewLaunch, type StagedLaunch} from "./launch.svelte";
     import {
         backdrop,
         barIn,
@@ -80,11 +93,22 @@
     import ReviewHero from "./ReviewHero.svelte";
     import ReviewIcon from "./ReviewIcon.svelte";
     import ReviewSettings from "./ReviewSettings.svelte";
+    import RuleBuilder from "./RuleBuilder.svelte";
     import SimilarSection from "./SimilarSection.svelte";
 
-    let {kind}: {kind: QueueKind} = $props();
+    let {
+        kind,
+        staged = null,
+    }: {
+        kind: QueueKind | StagedKind;
+        /** An import's transactions to review before they are written. Null: the journal's queue `kind`. */
+        staged?: StagedLaunch | null;
+    } = $props();
 
-    const TITLES: Record<QueueKind, string> = {unknowns: "Review Unknowns", recents: "Review Recents"};
+    const TITLES: Record<QueueKind | StagedKind, string> = {unknowns: "Review Unknowns", recents: "Review Recents", all: "Review All"};
+    /** Fixed per mount: the page mounts the overlay for one run and unmounts it when it closes. */
+    const source = untrack(() => staged);
+    const writeLabel = source?.writeLabel ?? "Write changes";
     const NO_CHIPS: Chips = {chips: [], target: null, initial: null, mode: "fix"};
     /**
      * A card's surface in the deck. Every card sits in the one grid cell, pinned
@@ -110,11 +134,27 @@
 
     let root = $state<HTMLDivElement | null>(null);
     let stack = $state<HTMLDivElement | null>(null);
-    let similarSection = $state<{toggleAll: () => void} | null>(null);
+    type SimilarHandle = {toggleAll: () => void; setAll: (on: boolean) => void; allChecked: () => boolean};
+    let similarSection = $state<SimilarHandle | null>(null);
+    let stagedSection = $state<SimilarHandle | null>(null);
+    let ruleBuilder = $state<{currentRule: () => RuleSpec | null} | null>(null);
     let form = $state<ReviewForm>({date: today, description: "", comment: "", tags: [], postings: []});
     let selected = $state<number | null>(null);
     let similarOpen = $state(false);
     let checked = $state<number[]>([]);
+    /** A staged run's "in this import" group (D24): its own open state and checked list (ordinals + 1, not tindices). */
+    let stagedOpen = $state(false);
+    let checkedStaged = $state<number[]>([]);
+    /** Remember as a rule (D25), per card. */
+    let ruleOn = $state(false);
+    let ruleError = $state<string | null>(null);
+    /**
+     * Why the import failed to regenerate after a rule was saved. Shown on top
+     * of the deck until dismissed: the dry-run panel that would otherwise say
+     * so is underneath the backdrop, blurred, where nobody can read it.
+     */
+    let importNotice = $state<string | null>(null);
+    let ruleSaving = $state(false);
     let showDate = $state(false);
     let confirmClose = $state(false);
     let menuOpen = $state(false);
@@ -141,6 +181,10 @@
     const change = $derived(txn === null ? null : cardChange(txn, form));
     const similarSet = $derived(txn === null ? null : review.similar(txn.index));
     const rows = $derived(similarSet === null || split ? [] : similarRows(similarSet.candidates, similarSet.inQueue, change));
+    /** D24's "in this import": the run's other cards with the same key. They are all in the run, so none is marked "in this run". */
+    const stagedRows = $derived(source === null || txn === null || split ? [] : similarRows(review.stagedSimilar(txn.index), [], change));
+    /** D25: offered on a CSV import's card whose description or account changed (`change` is null for a split). */
+    const ruleItem = $derived(source?.rules != null && current !== null && change !== null ? (current.item as StagedTxn) : null);
     const updatedFrom = $derived.by(() => {
         const from = current?.updatedFrom;
         if (from === null || from === undefined) return null;
@@ -156,7 +200,9 @@
 
     // One run per mount: the page mounts this when a run opens and unmounts it when it closes.
     untrack(() => {
-        void review.open(kind, kind === "recents" ? {limit: settings.reviewRecentLimit, maxDays: settings.reviewMaxDays} : {maxDays: settings.reviewMaxDays});
+        if (source !== null) review.openStaged(source.kind, source.items, source.sink);
+        else if (kind === "recents") void review.open(kind, {limit: settings.reviewRecentLimit, maxDays: settings.reviewMaxDays});
+        else if (kind === "unknowns") void review.open(kind, {maxDays: settings.reviewMaxDays});
     });
 
     // Each new card: seed the form from its draft (or its transaction), reset
@@ -198,6 +244,10 @@
         selected = chipsFor(card.item, reviewFormOf(card.item.txn), classes).initial;
         similarOpen = false;
         checked = [];
+        stagedOpen = false;
+        checkedStaged = [];
+        ruleOn = false;
+        ruleError = null;
         showDate = false;
         confirmClose = false;
         stamped = null;
@@ -242,12 +292,55 @@
             if (finished || empty) close();
             return;
         }
-        if (phase === "clean-unknown" || current.status === "saving") return;
+        if (phase === "clean-unknown" || current.status === "saving" || ruleSaving) return;
+        if (ruleItem !== null && ruleOn) return void saveWithRule();
+        save();
+    }
+
+    /**
+     * D25: "Remember as a rule" is on. The rule is written FIRST — if it is
+     * refused the card stays, edits and all, with the reason under the rule —
+     * then the card is saved into the import as usual, then the import is
+     * regenerated: the card's override replays over what the rule now writes.
+     */
+    async function saveWithRule(): Promise<void> {
+        const rules = source?.rules ?? null;
+        const rule = ruleBuilder?.currentRule() ?? null;
+        const index = txn?.index ?? null;
+        if (rules === null || index === null) return;
+        if (rule === null) {
+            ruleError = "give it a pattern and something to set, or turn it off.";
+            return;
+        }
+        ruleError = null;
+        ruleSaving = true;
+        const result = await rules.save(rule);
+        ruleSaving = false;
+        if (!result.ok) {
+            ruleError = result.failure.message;
+            return;
+        }
+        // Nothing can move the card while the rule saves (the keys are off),
+        // but a run closed underneath has no card left to save.
+        if (review.current?.item.txn.index === index) save();
+        importNotice = await rules.refresh();
+    }
+
+    /** Save the card on screen, with the checked similar rows, and advance (D14). */
+    function save(): void {
+        if (current === null || txn === null) return;
         const reviewedOn = phase === "dirty-unknown" ? null : today;
         const ops = cardOps(txn, form, {key: current.item.key, reviewedOn, defaultCommodity: journal.dominantCommodity});
         if (ops.length === 0) return;
         const picked = new Set(checked);
-        const similar = change === null ? [] : rows.filter((row) => picked.has(row.txn.txn.index)).map((row) => ({txn: row.txn, ops: row.ops}));
+        const pickedStaged = new Set(checkedStaged);
+        const similar =
+            change === null
+                ? []
+                : [
+                      ...stagedRows.filter((row) => pickedStaged.has(row.txn.txn.index)).map((row) => ({txn: row.txn, ops: row.ops})),
+                      ...rows.filter((row) => picked.has(row.txn.txn.index)).map((row) => ({txn: row.txn, ops: row.ops})),
+                  ];
         const index = txn.index;
         // The stamp must be ON the card before it starts to leave: once its
         // block is outroing, it no longer updates.
@@ -318,7 +411,7 @@
     }
 
     function openEditor(): void {
-        if (txn === null) return;
+        if (txn === null || source !== null) return;
         const index = txn.index;
         close();
         txnModal.openEdit(index);
@@ -329,12 +422,29 @@
         void openAutoRule(rule);
     }
 
+    /** `s`: open every Similar group on the card (both, in a staged run), or close them all if they are open. */
     async function toggleSimilar(): Promise<void> {
-        if (rows.length === 0) return;
-        similarOpen = !similarOpen;
-        if (!similarOpen) return void focusCard();
+        if (rows.length === 0 && stagedRows.length === 0) return;
+        const opening = !((rows.length === 0 || similarOpen) && (stagedRows.length === 0 || stagedOpen));
+        similarOpen = opening && rows.length > 0;
+        stagedOpen = opening && stagedRows.length > 0;
+        if (!opening) return void focusCard();
         await tick();
-        (currentCard() ?? root)?.querySelector<HTMLInputElement>("[data-testid='review-similar-rows'] input:not([disabled])")?.focus();
+        (currentCard() ?? root)?.querySelector<HTMLInputElement>("[data-similar-rows] input:not([disabled])")?.focus();
+    }
+
+    /** ⇧A: check every similar row on the card — both groups in a staged run — or, when all are checked, none. */
+    function toggleAllSimilar(): void {
+        const sections = [similarSection, stagedSection].filter((section): section is SimilarHandle => section !== null);
+        const on = !sections.every((section) => section.allChecked());
+        for (const section of sections) section.setAll(on);
+    }
+
+    /** `R` (D25): turn "Remember as a rule" on or off. */
+    function toggleRule(): void {
+        if (ruleItem === null || ruleSaving) return;
+        ruleOn = !ruleOn;
+        ruleError = null;
     }
 
     function editDate(): void {
@@ -405,7 +515,7 @@
 
     // -- the key layer -----------------------------------------------------
 
-    const live = (): boolean => !keymap.helpOpen && !confirmClose;
+    const live = (): boolean => !keymap.helpOpen && !confirmClose && !ruleSaving;
     const onCard = (): boolean => live() && review.current !== null;
 
     registerKeys({
@@ -438,10 +548,17 @@
             {keys: "t", label: "Add a tag", group: "Review", enabled: onCard, run: () => focusField("tags")},
             {keys: "m", label: "Edit comment", group: "Review", enabled: onCard, run: () => focusField("comment")},
             {keys: "s", label: "Open or close Similar", group: "Review", enabled: onCard, run: () => void toggleSimilar()},
-            {keys: " ", label: "Toggle the focused similar row", group: "Review", enabled: () => onCard() && similarOpen, run: () => void activateFocused()},
-            {keys: "A", label: "Check or uncheck all similar", group: "Review", enabled: onCard, run: () => similarSection?.toggleAll()},
+            {
+                keys: " ",
+                label: "Toggle the focused similar row",
+                group: "Review",
+                enabled: () => onCard() && (similarOpen || stagedOpen),
+                run: () => void activateFocused(),
+            },
+            {keys: "A", label: "Check or uncheck all similar", group: "Review", enabled: onCard, run: toggleAllSimilar},
+            {keys: "R", label: "Remember as a rule", group: "Review", enabled: () => onCard() && ruleItem !== null, run: toggleRule},
             {keys: "i", label: "Ignore (never ask again)", group: "Review", enabled: onCard, run: ignore},
-            {keys: "o", label: "Open in the full editor", group: "Review", enabled: onCard, run: openEditor},
+            {keys: "o", label: "Open in the full editor", group: "Review", enabled: () => onCard() && source === null, run: openEditor},
             {keys: "Escape", label: "Leave the field, or close", group: "Review", run: requestClose},
             {keys: "?", label: "Show keyboard shortcuts", group: "Review", run: () => keymap.toggleHelp()},
         ],
@@ -510,17 +627,23 @@
                                     <ReviewIcon name="ban" /> Ignore — never ask again <kbd class="ml-auto kbd kbd-xs">i</kbd>
                                 </button>
                             </li>
-                            <li>
-                                <button type="button" onclick={openEditor} disabled={current === null}>
-                                    <ReviewIcon name="pencil" /> Open in full editor <kbd class="ml-auto kbd kbd-xs">o</kbd>
-                                </button>
-                            </li>
+                            {#if source === null}
+                                <!-- A staged transaction is in no file yet: there is nothing for the full editor to open. -->
+                                <li>
+                                    <button type="button" onclick={openEditor} disabled={current === null}>
+                                        <ReviewIcon name="pencil" /> Open in full editor <kbd class="ml-auto kbd kbd-xs">o</kbd>
+                                    </button>
+                                </li>
+                            {/if}
                             <li>
                                 <button type="button" onclick={editDate} disabled={current === null}>Edit date</button>
                             </li>
-                            <li>
-                                <button type="button" onclick={() => (settingsOpen = true)}><ReviewIcon name="sliders" /> Settings</button>
-                            </li>
+                            {#if source === null}
+                                <!-- The window and the limit shape the journal's queues; an import's run is the whole import. -->
+                                <li>
+                                    <button type="button" onclick={() => (settingsOpen = true)}><ReviewIcon name="sliders" /> Settings</button>
+                                </li>
+                            {/if}
                         </ul>
                     {/if}
                 </div>
@@ -536,6 +659,15 @@
             </button>
         </div>
 
+        {#if importNotice !== null}
+            <div class="pointer-events-auto alert w-full max-w-4xl alert-error shadow-lg" role="alert" data-testid="review-import-notice">
+                <div class="min-w-0 grow">
+                    <p class="font-medium">The rule was saved, but the import couldn't be regenerated</p>
+                    <pre class="mt-1 max-h-32 overflow-auto text-xs break-words whitespace-pre-wrap">{importNotice}</pre>
+                </div>
+                <button type="button" class="btn shrink-0 btn-ghost btn-sm" onclick={() => (importNotice = null)}>Dismiss</button>
+            </div>
+        {/if}
         <!-- The deck: every card in one grid cell. Summary at the bottom, then the peeks, then the top card. -->
         <div
             bind:this={stack}
@@ -563,7 +695,11 @@
                     <span class="grid h-12 w-12 place-items-center rounded-full bg-success/15 text-success"><ReviewIcon name="check" class="h-6 w-6" /></span>
                     <p class="text-lg font-medium">Nothing to review</p>
                     <p class="text-sm text-base-content/60">
-                        {kind === "unknowns" ? "Every transaction in the window has a category." : "Everything in the window is reviewed."}
+                        {#if source !== null}
+                            {kind === "unknowns" ? "Every transaction in this import has a category." : "This import has nothing to write."}
+                        {:else}
+                            {kind === "unknowns" ? "Every transaction in the window has a category." : "Everything in the window is reviewed."}
+                        {/if}
                         {#if review.notEditable > 0}({review.notEditable} not editable){/if}
                     </p>
                     <button type="button" class="btn btn-sm" onclick={close}>Close</button>
@@ -586,6 +722,13 @@
                         <p class="text-sm text-base-content/70 tabular-nums" data-testid="review-tally">
                             {review.tally.saved} reviewed · {review.tally.fixed} fixed via similar · {review.tally.skipped} skipped
                         </p>
+                        {#if source !== null}
+                            <p class="max-w-sm text-sm text-base-content/60" data-testid="review-staged-note">
+                                Nothing is written yet. These edits are applied when you press <strong class="font-medium text-base-content/80"
+                                    >{writeLabel}</strong
+                                >.
+                            </p>
+                        {/if}
                         <button type="button" class="btn btn-sm btn-success" onclick={close}>Done <kbd class="kbd kbd-xs">↵</kbd></button>
                     </div>
                 {/if}
@@ -646,8 +789,44 @@
                                 />
                                 {#if split}
                                     <p class="text-xs text-base-content/50" data-testid="review-split-note">Splits aren't applied to similar transactions.</p>
+                                {:else if source !== null}
+                                    <!-- D24: two sources, two groups, each with its own count and check-all. -->
+                                    {#if stagedRows.length > 0}
+                                        <SimilarSection
+                                            bind:this={stagedSection}
+                                            rows={stagedRows}
+                                            bind:checked={checkedStaged}
+                                            bind:open={stagedOpen}
+                                            applying={changeSummary(change)}
+                                            title="Similar in this import"
+                                            testid="review-similar-staged"
+                                        />
+                                    {/if}
+                                    {#if rows.length > 0}
+                                        <SimilarSection
+                                            bind:this={similarSection}
+                                            {rows}
+                                            bind:checked
+                                            bind:open={similarOpen}
+                                            applying={changeSummary(change)}
+                                            title="Similar already in the journal"
+                                            testid="review-similar-journal"
+                                        />
+                                    {/if}
                                 {:else if rows.length > 0}
                                     <SimilarSection bind:this={similarSection} {rows} bind:checked bind:open={similarOpen} applying={changeSummary(change)} />
+                                {/if}
+                                {#if ruleItem !== null && source?.rules != null && change !== null}
+                                    <RuleBuilder
+                                        bind:this={ruleBuilder}
+                                        bind:on={ruleOn}
+                                        source={source.rules}
+                                        item={ruleItem}
+                                        original={txn}
+                                        {change}
+                                        error={ruleError}
+                                        busy={ruleSaving}
+                                    />
                                 {/if}
                             </div>
 
@@ -666,7 +845,14 @@
                                     </span>
                                 </div>
                             {:else}
-                                <ReviewFooter {phase} {reduced} busy={current.status === "saving"} onPrimary={primary} onSkip={skip} onRevert={revert} />
+                                <ReviewFooter
+                                    {phase}
+                                    {reduced}
+                                    busy={current.status === "saving" || ruleSaving}
+                                    onPrimary={primary}
+                                    onSkip={skip}
+                                    onRevert={revert}
+                                />
                             {/if}
 
                             {#if stamped === txn.index}

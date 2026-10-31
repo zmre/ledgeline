@@ -43,6 +43,19 @@ export default defineConfig({
             url: "http://127.0.0.1:5098/",
             reuseExistingServer: false,
         },
+        {
+            // The import-review engine (plan 32 Phase 4, the "review before
+            // writing" test in e2e/imports.e2e.ts). That test WRITES twice — a
+            // rule into the rules file, then the import into the journal — so,
+            // like the review engine, it runs over a scratch copy staged fresh
+            // on every run (target/e2e-import-review/, gitignored): an empty
+            // journal and `imports/checking.csv.rules`, the docs' checking
+            // account rules.
+            command: `rm -rf ../target/e2e-import-review && mkdir -p ../target/e2e-import-review/imports && cp ../fixtures/rules/simple/checking.csv.rules ../target/e2e-import-review/imports/ && echo "; Staged by web/playwright.config.ts for the import-review e2e. Not a fixture." > ../target/e2e-import-review/main.journal && exec ${process.env.LEDGELINE_BIN ?? "../target/debug/ledgeline"} --server ../target/e2e-import-review/main.journal --port 5097 --allow-origin http://localhost:4173`,
+            env: {LEDGELINE_TOKEN: API_TOKEN, LEDGELINE_IGNORE_USER_HLEDGER_CONF: "1"},
+            url: "http://127.0.0.1:5097/",
+            reuseExistingServer: false,
+        },
         {command: "bun run build && bun run preview", port: 4173},
     ],
     // With multiple webServers playwright does not infer baseURL from `port`.

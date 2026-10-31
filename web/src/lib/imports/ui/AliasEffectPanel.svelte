@@ -56,6 +56,7 @@
     } from "../aliasModel";
     import type {AliasEffect, AliasEntry, ConfWritten} from "../importTypes";
     import RenameList from "./RenameList.svelte";
+    import {reveal, revealArm} from "#lib/ui/reveal.js";
 
     let {
         effect,
@@ -77,6 +78,9 @@
         confError: string | null;
         onInstallConf: (revision: string) => void;
     } = $props();
+
+    /** The host flow's reveal arm (`NewTransactionsPanel`); null when mounted alone. */
+    const arm = revealArm();
 
     const tone = $derived(aliasEffectTone(effect));
     /** The rewrite half. Null when the aliases matched nothing here, which is the ordinary import. */
@@ -184,13 +188,13 @@
                 {/if}
 
                 {#if confWritten !== null}
-                    <p class="text-xs" data-testid="imports-cli-parity-written">
+                    <p class="text-xs" use:reveal={{arm}} data-testid="imports-cli-parity-written">
                         {confWritten.created ? "Created" : "Updated"}
                         {confWritten.confPath} with {confWritten.added.length} alias{confWritten.added.length === 1 ? "" : "es"}.
                     </p>
                 {/if}
                 {#if confError !== null}
-                    <p class="text-xs text-error" data-testid="imports-cli-parity-error">{confError}</p>
+                    <p class="text-xs text-error" use:reveal={{arm}} data-testid="imports-cli-parity-error">{confError}</p>
                 {/if}
             </div>
         {/if}

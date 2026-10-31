@@ -14,7 +14,8 @@
     // inline rather than replacing this panel with a spinner. The commit it sits
     // inside is the async surface.
     import AsyncSection from "#lib/components/AsyncSection.svelte";
-    import {gitCommitFailure, reorderOffer, writtenLines} from "../importModel";
+    import {reorderOffer, writtenLines} from "../importModel";
+    import {reveal, revealArm} from "#lib/ui/reveal.js";
     import type {CommitResult} from "../importTypes";
 
     let {
@@ -37,6 +38,9 @@
         onRetry: () => void;
         onSort: () => void;
     } = $props();
+
+    /** The host flow's reveal arm (`NewTransactionsPanel`); null when mounted alone. */
+    const arm = revealArm();
 </script>
 
 <AsyncSection {view} value={result} {error} testid="imports-commit-error" label="the import" loadingLabel="Writing the import" {onRetry}>
@@ -48,15 +52,6 @@
                     <li>{line}</li>
                 {/each}
             </ul>
-
-            {#if gitCommitFailure(commit) !== null}
-                <!-- The journal itself was already written correctly (git.rs's own rule) —
-                     this is the bonus commit step failing, e.g. a rejecting pre-commit hook,
-                     surfaced rather than silently dropped. -->
-                <p class="text-sm text-warning" role="alert" data-testid="imports-git-commit-failed">
-                    Git commit failed: {gitCommitFailure(commit)}
-                </p>
-            {/if}
 
             {#if reorderOffer(commit) !== null && sortMoved === null}
                 <!-- `flex` before `flex-col`: `.alert` is a grid with
@@ -78,12 +73,12 @@
             {/if}
 
             {#if sortMoved !== null}
-                <p class="text-sm text-success" data-testid="imports-sorted">
+                <p class="text-sm text-success" use:reveal={{arm}} data-testid="imports-sorted">
                     Re-sorted: {sortMoved} transaction{sortMoved === 1 ? "" : "s"} moved. Directives, includes and comments are untouched.
                 </p>
             {/if}
             {#if sortError !== null}
-                <p class="text-sm text-error" role="alert" data-testid="imports-sort-error">{sortError}</p>
+                <p class="text-sm text-error" role="alert" use:reveal={{arm}} data-testid="imports-sort-error">{sortError}</p>
             {/if}
         </section>
     {/snippet}

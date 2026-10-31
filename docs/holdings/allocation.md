@@ -107,8 +107,7 @@ a week, in case you have since added a `yahoo:` tag to fix the lookup.
 - It holds only Yahoo's answers, not your tags, so a tag you edit takes effect
   at once.
 - It is not a journal file. It is never `include`d, never read by hledger,
-  never committed by the import's git step, and editing it does not trigger a
-  reload.
+  and editing it does not trigger a reload.
 - It is written only when Ledgeline may write to your journal's folder.
 - **It is safe to delete.** Ledgeline rebuilds it on the next visit. A damaged
   file is treated as empty and replaced.

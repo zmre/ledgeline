@@ -336,11 +336,15 @@ fn the_import_subcommand_documents_every_flag() {
         "--write-assertion",
         "--sort",
         "--dry-run",
-        "--no-git",
         "--update-changed",
     ] {
         assert!(help.contains(flag), "`{flag}` must be documented:\n{help}");
     }
+    // The git safety net and its opt-out flag are gone.
+    assert!(
+        !help.contains("--no-git"),
+        "`--no-git` was removed:\n{help}"
+    );
     // The short forms the rendered command line uses.
     for short in ["-i,", "-o,", "-r,", "-j,"] {
         assert!(help.contains(short), "`{short}` must exist:\n{help}");
@@ -637,7 +641,7 @@ fn a_committing_run_writes_the_csv_and_appends_the_journal() {
     let before = std::fs::read_to_string(tree.path("2026/2026.journal")).expect("target");
     let snapshot = tree.snapshot();
 
-    let output = tree.import(&[&tree.standard_args()[..], &["--no-git"]].concat());
+    let output = tree.import(&tree.standard_args());
     assert!(output.status.success(), "{}", transcript(&output));
 
     // The CSV landed where `--output` said.
@@ -691,7 +695,7 @@ fn a_dry_run_writes_nothing_at_all() {
     let tree = Tree::split_year();
     let before = tree.snapshot();
 
-    let output = tree.import(&[&tree.standard_args()[..], &["--dry-run", "--no-git"]].concat());
+    let output = tree.import(&[&tree.standard_args()[..], &["--dry-run"]].concat());
     assert!(output.status.success(), "{}", transcript(&output));
     assert!(
         stdout(&output).contains("Nothing was written"),
@@ -724,7 +728,7 @@ fn sort_restores_date_order_after_a_backdated_import() {
 
     // Without --sort the file is left out of order, and the run SAYS so rather
     // than leaving the user to find out.
-    let unsorted = tree.import(&[&tree.standard_args()[..], &["--no-git"]].concat());
+    let unsorted = tree.import(&tree.standard_args());
     assert!(unsorted.status.success(), "{}", transcript(&unsorted));
     assert!(
         stdout(&unsorted).contains("no longer in date order"),
@@ -734,8 +738,7 @@ fn sort_restores_date_order_after_a_backdated_import() {
 
     // A second, sorting run over a fresh copy of the same tree.
     let sorted_tree = Tree::backdated();
-    let sorted =
-        sorted_tree.import(&[&sorted_tree.standard_args()[..], &["--sort", "--no-git"]].concat());
+    let sorted = sorted_tree.import(&[&sorted_tree.standard_args()[..], &["--sort"]].concat());
     assert!(sorted.status.success(), "{}", transcript(&sorted));
     assert!(stdout(&sorted).contains("re-sorted"), "{}", stdout(&sorted));
 
@@ -774,7 +777,6 @@ fn a_refused_balance_writes_nothing_at_all() {
                 "999999.00",
                 "--balance-account",
                 "assets:bank:checking",
-                "--no-git",
             ],
         ]
         .concat(),
@@ -807,7 +809,6 @@ fn a_refused_balance_writes_nothing_at_all() {
                 computed.as_str(),
                 "--balance-account",
                 "assets:bank:checking",
-                "--no-git",
             ],
         ]
         .concat(),
@@ -833,7 +834,6 @@ fn balance_after_import(tree: &Tree) -> String {
                 "--balance-account",
                 "assets:bank:checking",
                 "--dry-run",
-                "--no-git",
             ],
         ]
         .concat(),
@@ -1002,11 +1002,11 @@ fn re_importing_the_same_statement_adds_nothing() {
     require_hledger!();
     let tree = Tree::split_year();
 
-    let first = tree.import(&[&tree.standard_args()[..], &["--no-git"]].concat());
+    let first = tree.import(&tree.standard_args());
     assert!(first.status.success(), "{}", transcript(&first));
     let after_first = std::fs::read(tree.path("2026/2026.journal")).expect("target");
 
-    let second = tree.import(&[&tree.standard_args()[..], &["--no-git"]].concat());
+    let second = tree.import(&tree.standard_args());
     assert!(second.status.success(), "{}", transcript(&second));
     assert_eq!(
         after_first,
@@ -1068,7 +1068,6 @@ fn the_cli_gets_the_same_id_matching_the_screen_does() {
             "import/bank.csv.rules",
             "-j",
             "main.journal",
-            "--no-git",
         ]
     };
 

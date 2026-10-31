@@ -21,8 +21,9 @@
 // is no injected-transport seam because there does not need to be one, and a
 // second implementation of these calls would be a second thing to keep true.
 
-import {classify, type EditFailure} from "#lib/api/editFailure.js";
+import {classify, type EditFailure, type EditResult} from "#lib/api/editFailure.js";
 import {LedgelineApi, type ImportRunBody} from "#lib/api/native.js";
+import {decodeRulePreview} from "#lib/api/importReviewDecode.js";
 import {
     decodeCommitResult,
     decodeConfWritten,
@@ -36,7 +37,9 @@ import {
 } from "#lib/api/nativeDecode.js";
 import {createSaveRequest, defaultRulesId, draftForm} from "./createModel";
 import type {RulesDraft} from "./types";
-import type {FormItem, RulesForm} from "./model";
+import {appendRule, blankRule, toForm, toSaveRequest, type FormItem, type IfBlockItem, type RulesForm} from "./model";
+import {baseName} from "./ruleBuilder";
+import {rulesStore} from "./rulesStore.svelte";
 import {dataView, type DataView} from "#lib/stores/loadState.js";
 import {createResource} from "#lib/stores/resource.svelte.js";
 import {settings} from "#lib/stores/settings.svelte.js";
@@ -54,6 +57,8 @@ import {
     type WriteRequest,
 } from "./importModel";
 import type {CommitResult, ConfWritten, DryRunResult, ImportCapabilities, JournalTarget, Prefs, StagedFile} from "./importTypes";
+import type {ReplayReport, RulePreview, RuleSource, RuleSpec, StagedOverride, StagedRef, StagedSink, StagedTxn} from "./reviewTypes";
+import {createStagedEdits} from "./stagedEdits.svelte";
 
 /** What `staged` is loaded FOR: the file itself, plus a nonce so re-dropping the same file refetches. */
 export interface StageQuery {
@@ -87,9 +92,9 @@ export const dryRun = createResource<ImportRunBody, DryRunResult>(async (serverU
 export const committed = createResource<WriteRequest, CommitResult>(async (serverUrl, request) => {
     const api = new LedgelineApi(serverUrl);
     const raw = request.kind === "import" ? await api.importCommit(request.body) : await api.importSaveCsv(request.body);
-    // Both responses decode as a `CommitResult`: save-csv sends `{csvWritten,
-    // git}` and the decoder already reads an absent `journalWritten` as "no
-    // journal was touched", which is exactly what happened.
+    // Both responses decode as a `CommitResult`: save-csv sends `{csvWritten}`
+    // and the decoder already reads an absent `journalWritten` as "no journal
+    // was touched", which is exactly what happened.
     return decodeCommitResult(raw);
 });
 
@@ -158,7 +163,7 @@ let createdId = $state<string | null>(null);
 
 /** A file refused before it was uploaded (a `.pdf`, an extension the engine does not read). */
 let rejection = $state<string | null>(null);
-/** `Save and Import` / `Save CSV` has been pressed at least once for the current staging. */
+/** `Test Import` / `Save CSV` has been pressed at least once for the current staging. */
 let dryRunRequested = $state(false);
 let writeRequested = $state(false);
 
@@ -175,6 +180,18 @@ let sortError = $state<string | null>(null);
 let confWriting = $state(false);
 let confWritten = $state<ConfWritten | null>(null);
 let confError = $state<string | null>(null);
+
+// --- review before writing (plan 32 D23–D26) -------------------------------
+//
+// The review overlay's edits to the staged transactions are OVERRIDES, held
+// here by ordinal and sent with every dry run and the commit, so the preview
+// shows exactly the bytes that will be appended. Its edits to similar journal
+// transactions are queued too, and land in the commit's own write (D24).
+// Closing the overlay keeps them all; Write changes is never blocked (D26).
+
+const edits = createStagedEdits();
+/** What the last replay did, so the panel can say "2 edits were covered by your rule". Null until one ran. */
+let lastReplay = $state.raw<ReplayReport | null>(null);
 
 let capabilitiesKey: string | null = null;
 let stageAttempt = 0;
@@ -213,6 +230,9 @@ function resetFlow(): void {
     sortError = null;
     confWritten = null;
     confError = null;
+    // A new staging is a different import: the review edits belong to the old one.
+    edits.clear();
+    lastReplay = null;
 }
 
 /**
@@ -264,7 +284,15 @@ function runBody(): ImportRunBody | null {
         journalId,
         balance: trimmedBalance === "" ? null : trimmedBalance,
         balanceAccount: trimmedBalance === "" ? null : balanceAccount.trim(),
+        // Only when there are some: a body with no review edits is exactly the
+        // one sent before review existed.
+        ...withOverrides(),
     };
+}
+
+function withOverrides(): Pick<ImportRunBody, "overrides"> {
+    const overrides = edits.csvOverrides();
+    return overrides.length === 0 ? {} : {overrides};
 }
 
 /** What the write button will send, as the form currently reads. Null when nothing is staged. */
@@ -273,7 +301,8 @@ function writeRequest(): WriteRequest | null {
     if (file === null) return null;
     const run = runBody();
     if (run === null) return {kind: "saveCsv", body: {stageId: file.stageId, csvPath: csvPath.trim()}};
-    return {kind: "import", body: {...run, writeAssertion}};
+    const journalEdits = edits.journalEdits;
+    return {kind: "import", body: {...run, writeAssertion, ...(journalEdits.length === 0 ? {} : {journalEdits: [...journalEdits]})}};
 }
 
 /** Drop the draft and everything derived from it. */
@@ -480,14 +509,155 @@ export const importStore = {
         return dataView(dryRun.status, dryRun.value !== null, sameRunRequest(dryRun.query, runBody()));
     },
 
-    /** Run the dry run for the form as it stands. */
+    /**
+     * Run the dry run for the form as it stands, review overrides included.
+     *
+     * A 409 means an override no longer matches what the rules generate (a
+     * rule was saved, a rules file changed). Then the import is regenerated
+     * WITHOUT overrides, they are replayed against it (D25: covered by a rule
+     * → dropped, unaffected → kept, changed underneath → kept and flagged), and
+     * the dry run is run again with what is left. The panel never shows a run
+     * carrying edits the user did not make.
+     *
+     * That 409 is EXPECTED, not a failure: saving a rule from the review card
+     * always changes the text the card's own override was fingerprinted
+     * against. So it is resolved inside one `dryRun.run` and never reaches the
+     * panel. Loading it into `dryRun` first used to flash the conflict as an
+     * error under the review overlay until the replayed run landed (Patrick,
+     * 2026-10-31). Only a failure of the final run is shown.
+     */
     async runDryRun(): Promise<void> {
         const url = settings.serverUrl;
         const body = runBody();
         if (url === null || body === null) return;
         writeRequested = false;
         dryRunRequested = true;
-        await dryRun.load(url, body);
+        const api = new LedgelineApi(url);
+        await dryRun.run(async () => {
+            try {
+                return {query: body, value: decodeDryRun(await api.importDryRun(body))};
+            } catch (error) {
+                if (body.overrides === undefined || classify(error).kind !== "conflict") throw error;
+            }
+            const bare = decodeDryRun(await api.importDryRun({...body, overrides: undefined}));
+            // hledger refused the rules file outright: there is nothing to
+            // replay against, and that refusal is the answer to show.
+            if (!bare.ok) return {query: {...body, overrides: undefined}, value: bare};
+            lastReplay = edits.replay(bare.txns);
+            const replayed = runBody() ?? body;
+            return {query: replayed, value: decodeDryRun(await api.importDryRun(replayed))};
+        });
+    },
+
+    /** Re-run the dry run — after the review overlay closed, or a rule was saved (D25). Same as `runDryRun`. */
+    async refreshDryRun(): Promise<void> {
+        await this.runDryRun();
+    },
+
+    // --- review edits (plan 32 D23–D25) -----------------------------------
+    /** The staged transactions of the last successful dry run, as review cards. Empty before one. */
+    get stagedTxns(): readonly StagedTxn[] {
+        const run = dryRun.value;
+        return run !== null && run.ok ? run.txns : [];
+    },
+    /** Every held override, in the order first made. */
+    get overrides(): readonly StagedOverride[] {
+        return edits.overrides;
+    },
+    /** "N reviewed edits" beside Write changes. */
+    get overrideCount(): number {
+        return edits.overrideCount;
+    },
+    /** Similar journal transactions the commit will also edit (D24). */
+    get journalEditCount(): number {
+        return edits.journalEditCount;
+    },
+    /** Overrides a replay found changed underneath them. */
+    get flaggedOverrides(): readonly StagedOverride[] {
+        return edits.flagged;
+    },
+    /** What the last 409-triggered replay did, or null. */
+    get lastReplay(): ReplayReport | null {
+        return lastReplay;
+    },
+    /** The review store's staged sink: saves become overrides and queued journal edits, not writes. */
+    reviewSink: {stage: (save) => edits.stage(save)} satisfies StagedSink as StagedSink,
+
+    /**
+     * The rule builder's live check (D25): this import with `rule` appended to
+     * a temporary copy of the chosen rules file. Null when the form names no
+     * rules file or journal. Pass `signal` to cancel a superseded check (it
+     * then rejects with the abort).
+     */
+    async rulePreview(rule: RuleSpec, signal?: AbortSignal): Promise<RulePreview | null> {
+        const url = settings.serverUrl;
+        const run = runBody();
+        if (url === null || run === null) return null;
+        const body = {
+            stageId: run.stageId,
+            rulesId: run.rulesId,
+            csvPath: run.csvPath,
+            journalId: run.journalId,
+            rule: {
+                matchers: rule.matchers.map((matcher) => ({field: matcher.field, pattern: matcher.pattern})),
+                assignments: rule.assignments.map((assignment) => ({field: assignment.field, value: assignment.value})),
+            },
+        };
+        return decodeRulePreview(await new LedgelineApi(url, {signal}).importRulePreview(body));
+    },
+
+    /**
+     * "Remember as a rule" (D25): append `rule` to the import's rules file
+     * through the rules editor's own PUT, pinned to the revision just read, at
+     * the END (the last match wins). Writes only the rules file; the caller
+     * stages the card's override and then `refreshDryRun()`s, and the commit
+     * picks the edited rules file up by itself (4a amendment 5).
+     */
+    async saveReviewRule(rule: RuleSpec): Promise<EditResult> {
+        const url = settings.serverUrl;
+        const id = runBody()?.rulesId ?? null;
+        if (url === null || id === null) return {ok: false, failure: {kind: "unavailable", message: "This import has no rules file to add a rule to."}};
+        let baseline: RulesForm;
+        try {
+            baseline = toForm(decodeRulesDoc(await new LedgelineApi(url).getRules(id)));
+        } catch (error) {
+            return {ok: false, failure: classify(error)};
+        }
+        const block: IfBlockItem = {
+            ...blankRule(),
+            // One group per matcher: OR-ed, hledger's stacked `if` lines.
+            groups: rule.matchers.map((matcher) => ({matchers: [{field: matcher.field ?? "", pattern: matcher.pattern}]})),
+            assignments: rule.assignments.map((assignment) => ({field: assignment.field, value: assignment.value})),
+        };
+        const outcome = await rulesStore.save(id, toSaveRequest(baseline, {...baseline, items: appendRule(baseline.items, block)}));
+        return outcome.ok ? {ok: true} : {ok: false, failure: outcome.failure};
+    },
+
+    /** The review overlay's rule builder's view of this import (D25), or null when nothing is staged for a dry run. */
+    ruleSource(): RuleSource | null {
+        const run = dryRun.value;
+        const body = runBody();
+        if (run === null || !run.ok || body === null) return null;
+        return {
+            records: run.records,
+            fileLabel: baseName(body.csvPath) || "this file",
+            rulesLabel: baseName(body.rulesId),
+            preview: (rule, signal) => importStore.rulePreview(rule, signal),
+            save: (rule) => importStore.saveReviewRule(rule),
+            refresh: async () => {
+                await importStore.refreshDryRun();
+                const error = importStore.dryRunError;
+                if (error !== null) return error.message;
+                const run = importStore.dryRun;
+                return run !== null && !run.ok ? run.stderr.trim() || "hledger could not regenerate the import." : null;
+            },
+        };
+    },
+
+    /** Let go of held overrides (the panel's "Discard" on flagged edits), then show the import without them. */
+    async discardOverrides(refs: readonly StagedRef[]): Promise<void> {
+        for (const ref of refs) edits.discard(ref);
+        await this.runDryRun();
     },
 
     // --- commit -----------------------------------------------------------
@@ -527,8 +697,7 @@ export const importStore = {
      * Write.
      *
      * With a rules file chosen that is the CSV plus the real import; without
-     * one it is the CSV alone, on its own route. The engine refuses either when
-     * git blocks; so does the button.
+     * one it is the CSV alone, on its own route.
      */
     async writeChanges(): Promise<void> {
         const url = settings.serverUrl;
@@ -538,6 +707,21 @@ export const importStore = {
         sortMoved = null;
         sortError = null;
         await committed.load(url, request);
+        if (committed.error === null && committed.query === request) {
+            // Landed: the edits are in the journal now, and belong to no import.
+            if (request.kind === "import") edits.clear();
+        } else if (
+            committed.error !== null &&
+            classify(committed.error).kind === "conflict" &&
+            request.kind === "import" &&
+            request.body.overrides !== undefined
+        ) {
+            // A review edit went stale between the preview and the press:
+            // regenerate and replay, so the next press sends what is current.
+            // The refusal stays on screen: the re-run must not hide it.
+            await this.runDryRun();
+            writeRequested = true;
+        }
     },
 
     // --- creating a rules file --------------------------------------------
@@ -686,16 +870,7 @@ export const importStore = {
         sorting = true;
         sortError = null;
         try {
-            const sorted = decodeSortResult(await client.importSort(target));
-            sortMoved = sorted.moved;
-            // A re-sort git did not take leaves the journal rewritten and
-            // uncommitted — which dismantles the safety net the import's own
-            // commit established moments earlier: `git revert` of the import no
-            // longer restores the file. Reported through the same line a failed
-            // sort uses, because what the user has to do about it is the same.
-            if (sorted.git !== null && !sorted.git.committed) {
-                sortError = `The journal was re-sorted, but git did not commit the change. Commit ${target} yourself — until you do, this import can no longer be undone with \`git revert\`.`;
-            }
+            sortMoved = decodeSortResult(await client.importSort(target)).moved;
         } catch (error) {
             sortError = failureMessage(error);
         } finally {
@@ -776,9 +951,7 @@ export const importStore = {
         prefsSaving = true;
         prefsError = null;
         try {
-            prefs = decodePrefs(
-                await new LedgelineApi(url).putPrefs({hledgerPath: trimmed === "" ? null : trimmed, gitAutocommit: prefs?.gitAutocommit ?? null})
-            );
+            prefs = decodePrefs(await new LedgelineApi(url).putPrefs({hledgerPath: trimmed === "" ? null : trimmed}));
             await this.reloadCapabilities(url);
             return true;
         } catch (error) {

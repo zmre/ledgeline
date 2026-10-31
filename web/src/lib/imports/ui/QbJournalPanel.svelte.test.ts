@@ -150,7 +150,7 @@ describe("COMPONENT QbJournalPanel — the commit flow", () => {
     it("shows the imported count once the write succeeds", async () => {
         const stageId = "commit-1";
         const idMatches = {new: 2, unchanged: 0, conflicting: [], conflictingTotal: 0};
-        const commit = {imported: 2, updated: 0, idMatches, ordering: {inOrder: true, files: []}, git: null};
+        const commit = {imported: 2, updated: 0, idMatches, ordering: {inOrder: true, files: []}};
         await connectFakeEngine({
             [`/api/import/qb-journal/${stageId}`]: {...previewMapped(stageId), idMatches},
             "/api/import/qb-journal/commit": commit,
@@ -177,13 +177,12 @@ describe("COMPONENT QbJournalPanel — the commit flow", () => {
                 inOrder: false,
                 files: [{journalId: "main.journal", inOrder: false, moves: [{date: "2020-01-01", description: "Old entry", fromLine: 40, toLine: 4}]}],
             },
-            git: null,
         };
         const fetchMock = vi.fn((url: string) => {
             if (url.endsWith("/version")) return Promise.resolve(json("1.52"));
             if (url.endsWith(`/qb-journal/${stageId}`)) return Promise.resolve(json({...previewMapped(stageId), idMatches}));
             if (url.endsWith("/qb-journal/commit")) return Promise.resolve(json(commitOutOfOrder));
-            if (url.endsWith("/api/import/sort")) return Promise.resolve(json({moved: 1, git: null}));
+            if (url.endsWith("/api/import/sort")) return Promise.resolve(json({moved: 1}));
             return Promise.resolve(new Response("no route", {status: 404}));
         });
         vi.stubGlobal("fetch", fetchMock);
@@ -227,7 +226,7 @@ describe("COMPONENT QbJournalPanel — the commit flow", () => {
     it("asks for changed rows to be updated only when the box is ticked, and reports how many were", async () => {
         const stageId = "commit-update";
         const idMatches = {new: 0, unchanged: 0, conflicting: [{id: "7720", diffs: []}], conflictingTotal: 1};
-        const commit = {imported: 0, updated: 1, idMatches, ordering: {inOrder: true, files: []}, git: null};
+        const commit = {imported: 0, updated: 1, idMatches, ordering: {inOrder: true, files: []}};
         const fetchMock = vi.fn((url: string) => {
             if (url.endsWith("/version")) return Promise.resolve(json("1.52"));
             if (url.endsWith(`/qb-journal/${stageId}`)) return Promise.resolve(json({...previewMapped(stageId), idMatches}));

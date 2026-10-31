@@ -27,6 +27,7 @@
     import {blankTag, defaultTargetFile, deleteSaveRequest, isDirty, mergedRows, SPECIAL_TAGS, toForm, toSaveRequest, validateForm} from "../model";
     import type {AccountForm} from "../model";
     import type {AccountEntry} from "../types";
+    import {createRevealArm, reveal} from "#lib/ui/reveal.js";
 
     let {accountNames}: {accountNames: string[]} = $props();
 
@@ -117,7 +118,14 @@
         savedAt = null;
     }
 
+    /**
+     * Save's errors are listed below the form, under the button that was
+     * pressed; `reveal` scrolls them into view, armed by that press.
+     */
+    const arm = createRevealArm();
+
     async function save(): Promise<void> {
+        arm.arm();
         if (form === null) return;
         serverError = null;
 
@@ -422,14 +430,23 @@
                         </div>
 
                         {#if clientErrors.length > 0}
-                            <ul class="alert list-inside list-disc rounded-box py-2 text-sm alert-error" data-testid="settings-account-client-errors">
+                            <ul
+                                class="alert list-inside list-disc rounded-box py-2 text-sm alert-error"
+                                use:reveal={{arm, key: clientErrors}}
+                                data-testid="settings-account-client-errors"
+                            >
                                 {#each clientErrors as problem (problem)}
                                     <li>{problem}</li>
                                 {/each}
                             </ul>
                         {/if}
                         {#if serverError !== null}
-                            <div class="alert items-start rounded-box py-2 text-sm alert-error" role="alert" data-testid="settings-account-server-error">
+                            <div
+                                class="alert items-start rounded-box py-2 text-sm alert-error"
+                                role="alert"
+                                use:reveal={{arm, key: serverError}}
+                                data-testid="settings-account-server-error"
+                            >
                                 <span>{serverError}</span>
                             </div>
                         {/if}

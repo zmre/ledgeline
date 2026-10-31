@@ -23,11 +23,6 @@
 //!   proved without hledger, and pretending otherwise with a stub would only test
 //!   the stub.
 //!
-//! git-dependent tests **skip if absent** rather than opting in, matching
-//! `tests/git_commit.rs`: git is on every machine that can clone this repository,
-//! and "an import never touches your unrelated work" is too important to sit
-//! behind a variable nobody exports.
-//!
 //! # The one that matters most
 //!
 //! [`concatenation_and_two_f_flags_disagree_and_two_f_is_wrong`] is the
@@ -88,17 +83,6 @@ macro_rules! require_hledger {
     () => {
         if std::env::var_os(IMPORT_CHECK).is_none() {
             eprintln!("skipping: set {IMPORT_CHECK}=1 (or run `just hledger-checks`)");
-            return;
-        }
-    };
-}
-
-/// Skip, loudly, on a machine with no git. See the module docs for why this is
-/// skip-if-absent rather than opt-in.
-macro_rules! require_git {
-    () => {
-        if Command::new("git").arg("--version").output().is_err() {
-            eprintln!("skipping: no `git` on PATH");
             return;
         }
     };
@@ -619,8 +603,10 @@ async fn capabilities_describes_what_the_screen_may_offer() {
         "the accepted formats are the contract's list, in order"
     );
     assert_eq!(body["editable"], json!(true), "a bound journal is editable");
-    assert!(body["git"]["available"].is_boolean());
-    assert!(body["git"]["autocommit"].is_boolean());
+    assert!(
+        body.get("git").is_none(),
+        "the git safety net is gone: {body}"
+    );
 
     // The journal projection: one file, holding one transaction, and it is the
     // root. No filename was inspected to work any of that out.
@@ -682,7 +668,7 @@ async fn prefs_round_trip_child() {
 
     let (status, body) = get(&tree, "/api/prefs").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, json!({"hledgerPath": null, "gitAutocommit": null}));
+    assert_eq!(body, json!({"hledgerPath": null}));
 
     // A stored value comes back verbatim: it is the caller's own input, which is
     // the one thing an `/api/*` body may legitimately echo.
@@ -690,11 +676,11 @@ async fn prefs_round_trip_child() {
     let (status, body) = put(
         &tree,
         "/api/prefs",
-        json!({"hledgerPath": stub.to_string_lossy(), "gitAutocommit": false}),
+        json!({"hledgerPath": stub.to_string_lossy()}),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["gitAutocommit"], json!(false));
+    assert_eq!(body["hledgerPath"], json!(stub.to_string_lossy()));
     let (_, reloaded) = get(&tree, "/api/prefs").await;
     assert_eq!(reloaded, body);
 
@@ -711,7 +697,50 @@ async fn prefs_round_trip_child() {
 
     // …and the rejected write left the good settings alone.
     let (_, after) = get(&tree, "/api/prefs").await;
-    assert_eq!(after["gitAutocommit"], json!(false));
+    assert_eq!(after["hledgerPath"], json!(stub.to_string_lossy()));
+}
+
+/// A `prefs.json` written while the git safety net existed still carries
+/// `gitAutocommit`. `GET /api/prefs` loads it — keeping the `hledgerPath` beside
+/// it — and does not report the retired key. A client still SENDING the key is
+/// refused (the wire body is `deny_unknown_fields`), and nothing is stored.
+#[tokio::test]
+async fn a_legacy_git_autocommit_pref_loads_and_is_refused_on_the_wire() {
+    let app = TempDir::new().expect("app dir");
+    let dirs = ledgeline::AppDirs::under(app.path());
+    dirs.create_all().expect("create the app dirs");
+    let mut tree = Tree::bare();
+    tree.state = tree.state.clone().with_app_dirs(dirs.clone());
+
+    let stub = write_stub(app.path(), "hledger", "hledger 1.52, test");
+    let path = json!(stub.to_string_lossy());
+    let stored = app.path().join("config").join("prefs.json");
+    std::fs::write(
+        &stored,
+        json!({"hledgerPath": path, "gitAutocommit": false}).to_string(),
+    )
+    .expect("write a legacy prefs.json");
+
+    let (status, body) = get(&tree, "/api/prefs").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({"hledgerPath": path}));
+    assert!(
+        !app.path()
+            .join("config")
+            .join("prefs.json.corrupt")
+            .exists(),
+        "a legacy store is not a corrupt one"
+    );
+
+    let before = std::fs::read(&stored).expect("read prefs.json");
+    let (status, _) = put(
+        &tree,
+        "/api/prefs",
+        json!({"hledgerPath": null, "gitAutocommit": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(std::fs::read(&stored).expect("read prefs.json"), before);
 }
 
 /// The `AppDirs` seam (plan 26, A2): a state given its own directories keeps
@@ -726,15 +755,17 @@ async fn injected_app_dirs_hold_the_prefs_and_the_staging_area() {
     let mut tree = Tree::bare();
     tree.state = tree.state.clone().with_app_dirs(dirs.clone());
 
-    let (status, body) = put(&tree, "/api/prefs", json!({"gitAutocommit": false})).await;
+    let stub = write_stub(app.path(), "hledger", "hledger 1.52, test");
+    let path = json!(stub.to_string_lossy());
+    let (status, body) = put(&tree, "/api/prefs", json!({"hledgerPath": path})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let stored = app.path().join("config").join("prefs.json");
     let saved: Value =
         serde_json::from_str(&std::fs::read_to_string(&stored).expect("prefs.json written"))
             .expect("prefs.json is JSON");
-    assert_eq!(saved["gitAutocommit"], json!(false));
+    assert_eq!(saved["hledgerPath"], path);
     let (_, reloaded) = get(&tree, "/api/prefs").await;
-    assert_eq!(reloaded["gitAutocommit"], json!(false));
+    assert_eq!(reloaded["hledgerPath"], path);
 
     let (status, body) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -2345,292 +2376,52 @@ async fn a_back_dated_import_is_detected_and_can_be_re_sorted() {
     assert_eq!(response["moved"], json!(0));
 }
 
-/// A dry-run reports modified targets; a commit **refuses** them. The refusal is
-/// re-checked server-side rather than trusted from the dry-run's response,
-/// because the whole value of the safety net is that the pre-import state was
-/// committed and a client that skips the check must not be able to skip the
-/// guarantee.
+/// A commit writes exactly the three files an import produces — the CSV, the
+/// journal and hledger's dedup marker — and nothing else: a bystander file is
+/// left byte-identical. Neither the dry-run nor the commit reports anything
+/// about version control (the git safety net was removed), and a journal with
+/// unrelated edits in it is imported into rather than refused.
 #[tokio::test]
-async fn a_commit_refuses_while_a_target_is_modified() {
+async fn a_successful_import_writes_only_what_it_should() {
     require_hledger!();
-    require_git!();
     let tree = Tree::with_rules();
-    init_repo(tree.dir.path());
-
-    // Somebody's work in progress, in the journal we are about to import into.
+    // Somebody's own edit in the journal, and an unrelated file beside it.
     std::fs::write(
         tree.path("main.journal"),
-        format!("{OPENING}\n; a note I have not committed yet\n"),
+        format!("{OPENING}\n; a note of my own\n"),
     )
-    .expect("dirty the journal");
-    // …and something unrelated, which must be left exactly as it is.
-    std::fs::write(tree.path("notes.txt"), "edited, and not ours to touch\n")
-        .expect("dirty a bystander");
+    .expect("edit the journal");
+    std::fs::write(tree.path("notes.txt"), "work in progress\n").expect("a bystander");
+    let tree = Tree {
+        state: AppState::from_journal_path(tree.path("main.journal")).expect("reopens"),
+        dir: tree.dir,
+    };
 
     let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
     let id = staged["stageId"].as_str().expect("a stageId");
-
-    let (status, response) = post(
+    let (status, preview) = post(
         &tree,
         "/api/import/dry-run",
         dry_run_body(id, "import/bank.csv.rules"),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{response}");
-    assert_eq!(
-        response["blockedByGit"],
-        json!(["main.journal"]),
-        "a modified journal blocks; an untracked CSV does not"
-    );
+    assert_eq!(status, StatusCode::OK, "{preview}");
+    assert!(preview.get("blockedByGit").is_none(), "{preview}");
 
     let before = tree.snapshot();
     let mut body = dry_run_body(id, "import/bank.csv.rules");
     body["writeAssertion"] = json!(false);
     let (status, response) = post(&tree, "/api/import/commit", body).await;
-    assert_eq!(status, StatusCode::CONFLICT, "{response}");
-    assert!(as_text(&response).contains("main.journal"), "{response}");
-    assert_no_absolute_path(&tree, &as_text(&response), "a git-blocked commit");
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["imported"], json!(3), "{response}");
+    assert!(response.get("git").is_none(), "{response}");
     assert_eq!(
         changed(&before, &tree.snapshot()),
-        Vec::<String>::new(),
-        "a refused commit writes nothing at all"
+        ["import/.latest.bank.csv", "import/bank.csv", "main.journal"],
+        "an import writes the CSV, the journal and the marker, and nothing else"
     );
-}
-
-/// With a clean tree, the import commits exactly the three files it wrote — the
-/// CSV, the journal and hledger's dedup marker — and somebody's unrelated dirty
-/// file is still dirty afterwards.
-#[tokio::test]
-async fn a_successful_import_commits_only_what_it_wrote() {
-    require_hledger!();
-    require_git!();
-    let tree = Tree::with_rules();
-    init_repo(tree.dir.path());
-    // Unrelated work in progress, in a file this import never touches.
-    std::fs::write(tree.path("notes.txt"), "work in progress\n").expect("dirty a bystander");
-
-    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
-    let id = staged["stageId"].as_str().expect("a stageId");
-    let mut body = dry_run_body(id, "import/bank.csv.rules");
-    body["writeAssertion"] = json!(false);
-    let (status, response) = post(&tree, "/api/import/commit", body).await;
-    assert_eq!(status, StatusCode::OK, "{response}");
-    assert_eq!(response["git"]["committed"], json!(true), "{response}");
-    // The dedup marker `--catchup` wrote is in the SAME commit. A revert that
-    // restored the journal and the CSV but left `.latest` ahead of them would
-    // make the next import of this statement propose nothing at all.
-    assert_eq!(
-        response["git"]["paths"],
-        json!(["import/bank.csv", "main.journal", "import/.latest.bank.csv"])
-    );
-
-    // The bystander is STILL DIRTY: nothing swept it up.
-    let porcelain = git(
-        tree.dir.path(),
-        &["status", "--porcelain", "--", "notes.txt"],
-    );
-    assert!(
-        porcelain.contains("notes.txt"),
-        "unrelated work must be left exactly as it was: {porcelain:?}"
-    );
-    // …and the commit really did carry the two files.
-    let committed = git(
-        tree.dir.path(),
-        &["show", "--name-only", "--format=%s", "HEAD"],
-    );
-    assert!(
-        committed.contains("import 3 transactions from bank.csv"),
-        "{committed}"
-    );
-    assert!(committed.contains("main.journal"), "{committed}");
-    assert!(committed.contains("import/bank.csv"), "{committed}");
-    assert!(committed.contains("import/.latest.bank.csv"), "{committed}");
-    assert!(!committed.contains("notes.txt"), "{committed}");
-
-    // Nothing the import touched is left dirty — which is the check that would
-    // have caught the marker going uncommitted.
-    let porcelain = git(tree.dir.path(), &["status", "--porcelain", "--", "import"]);
-    assert!(
-        porcelain.trim().is_empty(),
-        "the import left files uncommitted: {porcelain:?}"
-    );
-}
-
-/// **A gitignored dedup marker neither breaks the commit nor is claimed as
-/// committed.**
-///
-/// `.latest.*` is a very ordinary thing to put in a `.gitignore` — it is derived
-/// state — so this is the common case rather than an edge one. `git add` on an
-/// ignored path fails the whole invocation, which would abort a commit for an
-/// import that has already landed in the journal; `Repo::commit` drops ignored
-/// paths before staging, and what it reports back is what it actually staged.
-#[tokio::test]
-async fn a_gitignored_dedup_marker_is_skipped_and_the_import_still_commits() {
-    require_hledger!();
-    require_git!();
-    let tree = Tree::with_rules();
-    std::fs::write(tree.path(".gitignore"), ".latest.*\n").expect("gitignore");
-    init_repo(tree.dir.path());
-
-    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
-    let id = staged["stageId"].as_str().expect("a stageId").to_string();
-    let mut body = dry_run_body(&id, "import/bank.csv.rules");
-    body["writeAssertion"] = json!(false);
-    let (status, response) = post(&tree, "/api/import/commit", body).await;
-
-    assert_eq!(status, StatusCode::OK, "{response}");
-    assert_eq!(response["imported"], json!(3), "{response}");
-    assert_eq!(response["git"]["committed"], json!(true), "{response}");
-    assert_eq!(
-        response["git"]["paths"],
-        json!(["import/bank.csv", "main.journal"]),
-        "an ignored path must not be reported as committed: {response}"
-    );
-    assert_eq!(
-        response["git"]["skipped"],
-        json!(["import/.latest.bank.csv"]),
-        "…and must be reported as skipped: {response}"
-    );
-
-    // The marker really is on disk and really is untracked.
-    assert!(tree.path("import/.latest.bank.csv").is_file());
-    let head = git(
-        tree.dir.path(),
-        &["show", "--name-only", "--format=%s", "HEAD"],
-    );
-    assert!(!head.contains(".latest"), "{head}");
-}
-
-/// **A dirty dedup marker does not block an import.**
-///
-/// The marker joins the commit set and *only* the commit set. It is hledger's
-/// own bookkeeping rather than a user's work, so an uncommitted one — left by an
-/// earlier import, or by somebody running `hledger import` in a terminal — is
-/// not something `git revert` needs to recover and must not refuse every
-/// subsequent import through the screen. The journal and the CSV still block;
-/// that is [`a_commit_refuses_while_a_target_is_modified`].
-#[tokio::test]
-async fn a_dirty_dedup_marker_does_not_block_an_import() {
-    require_hledger!();
-    require_git!();
-    let tree = Tree::with_rules();
-    // A marker that exists and is committed…
-    std::fs::write(tree.path("import/.latest.bank.csv"), "2026-01-05\n").expect("marker");
-    init_repo(tree.dir.path());
-    // …and is then modified behind Ledgeline's back.
-    std::fs::write(tree.path("import/.latest.bank.csv"), "2026-01-10\n").expect("dirty it");
-
-    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
-    let id = staged["stageId"].as_str().expect("a stageId").to_string();
-
-    let (status, body) = post(
-        &tree,
-        "/api/import/dry-run",
-        dry_run_body(&id, "import/bank.csv.rules"),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(
-        body["blockedByGit"],
-        json!([]),
-        "hledger's own marker is not a blocker: {body}"
-    );
-
-    let mut request = dry_run_body(&id, "import/bank.csv.rules");
-    request["writeAssertion"] = json!(false);
-    let (status, response) = post(&tree, "/api/import/commit", request).await;
-    assert_eq!(status, StatusCode::OK, "{response}");
-    assert_eq!(response["imported"], json!(3), "{response}");
-    assert_eq!(response["git"]["committed"], json!(true), "{response}");
-}
-
-/// **An accepted re-sort commits itself, and on its own.**
-///
-/// The sort rewrites the whole journal in place. Left uncommitted beside an
-/// import that *was* committed, it is the safety net dismantled by the button
-/// offered right after it: `git diff` no longer shows the import and `git
-/// revert` no longer undoes it.
-///
-/// Its own commit, not an amendment to the import's — a user who wants the
-/// ordering back does not want the transactions back out — and it carries the
-/// journal alone, because the CSV and the marker belong to the import.
-#[tokio::test]
-async fn an_accepted_sort_commits_the_journal_on_its_own() {
-    require_hledger!();
-    require_git!();
-    let tree = Tree::with_rules();
-    // An opening entry dated after the statement, so the import lands out of
-    // order and the sort has something to do.
-    std::fs::write(
-        tree.path("main.journal"),
-        "2026-06-01 later than the statement\n    \
-         assets:bank:checking   $1000.00\n    equity:opening\n",
-    )
-    .expect("rewrite the journal");
-    let tree = Tree {
-        state: AppState::from_journal_path(tree.path("main.journal")).expect("reopens"),
-        dir: tree.dir,
-    };
-    init_repo(tree.dir.path());
-
-    let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
-    let id = staged["stageId"].as_str().expect("a stageId").to_string();
-    let mut body = dry_run_body(&id, "import/bank.csv.rules");
-    body["writeAssertion"] = json!(false);
-    let (status, response) = post(&tree, "/api/import/commit", body).await;
-    assert_eq!(status, StatusCode::OK, "{response}");
-    assert_eq!(response["ordering"]["inOrder"], json!(false), "{response}");
-    let import_head = git(tree.dir.path(), &["rev-parse", "HEAD"]);
-
-    let (status, sorted) = post(
-        &tree,
-        "/api/import/sort",
-        json!({"journalId": "main.journal"}),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{sorted}");
-    assert_eq!(sorted["git"]["committed"], json!(true), "{sorted}");
-    assert_eq!(sorted["git"]["paths"], json!(["main.journal"]));
-
-    // A SECOND commit, on top of the import's rather than folded into it.
-    assert_ne!(
-        git(tree.dir.path(), &["rev-parse", "HEAD"]),
-        import_head,
-        "the sort must be its own commit"
-    );
-    let head = git(
-        tree.dir.path(),
-        &["show", "--name-only", "--format=%s", "HEAD"],
-    );
-    assert!(head.contains("sort main.journal into date order"), "{head}");
-    assert!(head.contains("main.journal"), "{head}");
-    assert!(
-        !head.contains("import/bank.csv"),
-        "the CSV belongs to the import's commit: {head}"
-    );
-
-    // And the working tree is clean: nothing at all is left behind.
-    let porcelain = git(tree.dir.path(), &["status", "--porcelain"]);
-    assert!(
-        porcelain.trim().is_empty(),
-        "the sort left the tree dirty: {porcelain:?}"
-    );
-
-    // A sort with nothing to move commits nothing, so an accepted no-op does not
-    // manufacture an empty commit.
-    let head_after_sort = git(tree.dir.path(), &["rev-parse", "HEAD"]);
-    let (_, again) = post(
-        &tree,
-        "/api/import/sort",
-        json!({"journalId": "main.journal"}),
-    )
-    .await;
-    assert_eq!(again["moved"], json!(0), "{again}");
-    assert_eq!(again["git"], json!(null), "{again}");
-    assert_eq!(
-        git(tree.dir.path(), &["rev-parse", "HEAD"]),
-        head_after_sort
-    );
+    let journal = std::fs::read_to_string(tree.path("main.journal")).expect("journal");
+    assert!(journal.contains("; a note of my own"), "{journal}");
 }
 
 // ===========================================================================
@@ -3206,16 +2997,13 @@ async fn save_csv_refuses_a_destination_outside_the_journal_directory() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
-/// A CSV destination with uncommitted changes blocks, for the reason a commit's
-/// targets block: overwriting somebody's edit is the one thing `git diff` could
-/// not have undone.
+/// An existing CSV destination is overwritten with the converted upload, and it
+/// is the only file written. Nothing is refused for having been edited, and the
+/// response says nothing about version control.
 #[tokio::test]
-async fn save_csv_refuses_to_overwrite_an_uncommitted_change() {
-    require_git!();
+async fn save_csv_overwrites_the_destination_and_writes_nothing_else() {
     let tree = Tree::with_rules();
-    std::fs::write(tree.path("import/bank.csv"), "Date,Description\n").expect("seed the csv");
-    init_repo(tree.dir.path());
-    std::fs::write(tree.path("import/bank.csv"), "edited, not committed\n").expect("dirty it");
+    std::fs::write(tree.path("import/bank.csv"), "an earlier, edited copy\n").expect("seed");
 
     let (_, staged) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
     let id = staged["stageId"].as_str().expect("a stageId");
@@ -3226,12 +3014,11 @@ async fn save_csv_refuses_to_overwrite_an_uncommitted_change() {
         json!({"stageId": id, "csvPath": "import/bank.csv"}),
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "{response}");
-    assert_eq!(
-        changed(&before, &tree.snapshot()),
-        Vec::<String>::new(),
-        "a refused save writes nothing"
-    );
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response, json!({"csvWritten": "import/bank.csv"}));
+    assert_eq!(changed(&before, &tree.snapshot()), ["import/bank.csv"]);
+    let csv = std::fs::read_to_string(tree.path("import/bank.csv")).expect("csv");
+    assert!(!csv.contains("an earlier, edited copy"), "{csv}");
 }
 
 // ===========================================================================
@@ -3239,7 +3026,7 @@ async fn save_csv_refuses_to_overwrite_an_uncommitted_change() {
 // ===========================================================================
 
 /// The rule the whole no-disclosure posture rests on, applied to every route
-/// this module added. hledger and git both put absolute paths in their output;
+/// this module added. hledger puts absolute paths in its output;
 /// the responses that carry that output must not.
 #[tokio::test]
 async fn no_import_response_body_contains_an_absolute_path() {
@@ -3417,43 +3204,6 @@ fn run_child(test_name: &str, env: &[(&str, &Path)]) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-}
-
-/// Initialise a repository over the scratch tree and commit everything in it, so
-/// the import starts from a clean state.
-///
-/// Every developer-machine setting is pinned in the repository's OWN config,
-/// which beats the global one: signing would demand a passphrase nobody can
-/// type, a global `core.hooksPath` would hide nothing useful here, and a global
-/// `core.excludesFile` would make files ignored that these tests expect to be
-/// committable. The same neutralisation `tests/git_commit.rs` performs, and for
-/// the same reason.
-fn init_repo(dir: &Path) {
-    git(dir, &["init", "--quiet"]);
-    for setting in [
-        ["user.name", "Ledgeline Test"],
-        ["user.email", "test@ledgeline.invalid"],
-        ["commit.gpgsign", "false"],
-        ["core.excludesFile", ""],
-    ] {
-        git(dir, &["config", setting[0], setting[1]]);
-    }
-    git(dir, &["add", "--all"]);
-    git(dir, &["commit", "--quiet", "--message", "initial"]);
-}
-
-/// Run git in `dir` and return its combined output.
-fn git(dir: &Path, args: &[&str]) -> String {
-    let output = common::git_command()
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .unwrap_or_else(|error| panic!("git {args:?}: {error}"));
-    format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
 }
 
 // ---------------------------------------------------------------------------
@@ -4196,13 +3946,13 @@ async fn a_rules_file_with_no_id_is_left_exactly_as_it_was() {
     assert!(after.contains("ACME PAYROLL"), "{after}");
 }
 
-/// A status flip is a journal write, so it lands in the import's own git commit
-/// and touches nothing else on disk.
+/// A status flip is a journal write, so it lands in the file the import was
+/// already writing and touches nothing else on disk.
 ///
 /// The blast radius is the same three paths a commit has always written — the
 /// CSV, the journal, and hledger's dedup marker — because the flip is confined
 /// to the file this import was already writing to. A fourth path here would mean
-/// the sync had reached a file whose git state this request never checked.
+/// the sync had reached a file this request never named.
 #[tokio::test]
 async fn a_status_sync_writes_only_the_import_s_own_target() {
     require_hledger!();
@@ -4327,9 +4077,8 @@ async fn the_same_statement_under_a_new_name_is_not_imported_twice() {
 /// imported into an `include`d file is still a row this statement must not
 /// import again, and here it is correctly kept out. But the *write* is a
 /// different question with a different answer: `journalId` is the only file
-/// whose git state this request checked before committing and the only one its
-/// git commit carries, so syncing a status into a sibling file would write
-/// somewhere the request had neither permission for nor a way to offer to undo.
+/// this request writes, so syncing a status into a sibling file would write
+/// somewhere the request had no permission for.
 ///
 /// So the match is reported, with `applied: false`, and the sibling file comes
 /// out byte-identical.
@@ -4378,4 +4127,540 @@ async fn a_status_sync_outside_the_target_is_reported_and_not_written() {
     assert!(!root.contains("id:FIT0001"), "no duplicate landed:\n{root}");
     assert!(root.contains("id:FIT0002"), "{root}");
     assert!(root.contains("id:FIT0003"), "{root}");
+}
+
+// ===========================================================================
+// Import review (plan 32 Phase 4): overrides, journal edits, the rule preview,
+// raw records
+// ===========================================================================
+
+/// [`STATEMENT`] plus a row no rule in `match/checking.csv.rules` categorises.
+const REVIEW_STATEMENT: &str = "Date,Description,Withdrawal,Deposit\n\
+                                01/15/2026,ACME PAYROLL,,3000.00\n\
+                                01/16/2026,STARBUCKS,6.45,\n\
+                                01/18/2026,CORNER HARDWARE 4412,42.17,\n\
+                                01/20/2026,LANDLORD LLC,1850.00,\n";
+
+/// Stage `statement` into `tree` and dry-run it with the tree's rules file.
+async fn review_dry_run(tree: &Tree, statement: &str) -> (String, Value) {
+    let (status, staged) = upload(tree, "bank.csv", statement.as_bytes().to_vec()).await;
+    assert_eq!(status, StatusCode::OK, "{staged}");
+    let id = staged["stageId"].as_str().expect("a stageId").to_string();
+    let (status, dry) = post(
+        tree,
+        "/api/import/dry-run",
+        dry_run_body(&id, "import/bank.csv.rules"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{dry}");
+    assert_eq!(dry["ok"], json!(true), "{dry}");
+    (id, dry)
+}
+
+/// The staged transaction whose description contains `needle`.
+fn staged_txn<'a>(dry: &'a Value, needle: &str) -> &'a Value {
+    dry["txns"]
+        .as_array()
+        .expect("txns")
+        .iter()
+        .find(|txn| {
+            txn["description"]
+                .as_str()
+                .is_some_and(|d| d.contains(needle))
+        })
+        .unwrap_or_else(|| panic!("no staged {needle} in {dry}"))
+}
+
+/// A review save on the hardware row: recategorise its unknown leg and stamp
+/// it reviewed.
+fn hardware_override(dry: &Value) -> Value {
+    let txn = staged_txn(dry, "CORNER HARDWARE");
+    json!({
+        "ordinal": txn["ordinal"],
+        "fingerprint": txn["fingerprint"],
+        "ops": [
+            {"op": "setPostingAccount", "posting": 1, "account": "expenses:home:hardware"},
+            {"op": "setTxnTag", "name": "reviewed", "value": "2026-10-31"},
+        ],
+    })
+}
+
+/// The dry run's staged rows: one per proposed transaction, in order, each in
+/// the review queue's shape, with the raw CSV record beside it.
+#[tokio::test]
+async fn a_dry_run_lists_every_staged_transaction_with_its_raw_record() {
+    require_hledger!();
+    let tree = Tree::with_rules();
+    let (_, dry) = review_dry_run(&tree, REVIEW_STATEMENT).await;
+
+    let txns = dry["txns"].as_array().expect("txns");
+    assert_eq!(txns.len(), 4);
+    for (at, txn) in txns.iter().enumerate() {
+        assert_eq!(txn["ordinal"], json!(at));
+        assert_eq!(txn["index"], json!(at + 1));
+        assert_eq!(txn["overridden"], json!(false));
+        assert!(
+            txn["fingerprint"].as_str().is_some_and(|f| !f.is_empty()),
+            "{txn}"
+        );
+        assert!(txn["suggestions"].is_array(), "{txn}");
+    }
+    let hardware = staged_txn(&dry, "CORNER HARDWARE");
+    assert_eq!(hardware["unknown"], json!(true));
+    assert_eq!(hardware["reviewed"], json!(false));
+    assert_eq!(hardware["key"], json!("corner hardware"));
+    assert_eq!(staged_txn(&dry, "ACME")["unknown"], json!(false));
+
+    let records = &dry["records"];
+    assert_eq!(records["aligned"], json!(true), "{records}");
+    assert_eq!(
+        records["header"],
+        json!(["Date", "Description", "Withdrawal", "Deposit"])
+    );
+    assert_eq!(
+        records["fields"],
+        json!(["date", "description", "amount-out", "amount-in"])
+    );
+    let rows = records["rows"].as_array().expect("rows");
+    assert_eq!(rows.len(), 4);
+    for (row, txn) in rows.iter().zip(txns) {
+        assert_eq!(
+            row[1], txn["description"],
+            "record and transaction disagree"
+        );
+    }
+    assert_eq!(
+        rows[2],
+        json!(["01/18/2026", "CORNER HARDWARE 4412", "42.17", ""])
+    );
+    assert_eq!(dry["overrides"], json!(0));
+    assert_eq!(dry["cliNote"], Value::Null);
+}
+
+/// D23: an override changes the bytes the commit appends, and the dry run's
+/// `entries` with that override are exactly those bytes.
+#[tokio::test]
+async fn an_override_changes_the_appended_bytes_and_the_preview_is_those_bytes() {
+    require_hledger!();
+    let tree = Tree::with_rules();
+    let (id, dry) = review_dry_run(&tree, REVIEW_STATEMENT).await;
+    let generated = staged_txn(&dry, "CORNER HARDWARE")["fingerprint"].clone();
+
+    let mut body = dry_run_body(&id, "import/bank.csv.rules");
+    body["overrides"] = json!([hardware_override(&dry)]);
+    let (status, reviewed) = post(&tree, "/api/import/dry-run", body.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{reviewed}");
+    let entries = reviewed["entries"].as_str().expect("entries");
+    assert!(
+        entries.contains("CORNER HARDWARE 4412  ; reviewed:2026-10-31"),
+        "{entries}"
+    );
+    assert!(entries.contains("expenses:home:hardware"), "{entries}");
+    assert!(!entries.contains("expenses:unknown"), "{entries}");
+    // Everything else is hledger's own text, untouched.
+    let before = dry["entries"].as_str().expect("entries");
+    assert!(entries.contains("2026-01-16 STARBUCKS\n"), "{entries}");
+    assert_eq!(entries.lines().count(), before.lines().count());
+    assert_eq!(reviewed["overrides"], json!(1));
+    assert_eq!(reviewed["cliNote"], json!("plus 1 reviewed edit"));
+    let hardware = staged_txn(&reviewed, "CORNER HARDWARE");
+    assert_eq!(hardware["overridden"], json!(true));
+    assert_eq!(hardware["unknown"], json!(false));
+    assert_eq!(hardware["reviewed"], json!(true));
+    // The override key stays the GENERATED text's.
+    assert_eq!(hardware["fingerprint"], generated);
+
+    body["writeAssertion"] = json!(false);
+    let (status, commit) = post(&tree, "/api/import/commit", body).await;
+    assert_eq!(status, StatusCode::OK, "{commit}");
+    assert_eq!(commit["imported"], json!(4));
+    assert_eq!(commit["overrides"], json!(1));
+    assert_eq!(commit["journalEdited"], json!(0));
+    let journal = std::fs::read_to_string(tree.path("main.journal")).expect("read journal");
+    assert_eq!(
+        journal,
+        format!("{OPENING}\n{}\n", entries.trim_end_matches('\n')),
+        "the bytes appended are the bytes previewed"
+    );
+}
+
+/// A stale fingerprint is a `409` naming the transaction — from the dry run
+/// and from the commit — and the commit writes nothing at all, not even the
+/// CSV.
+#[tokio::test]
+async fn a_stale_override_is_a_conflict_and_writes_nothing() {
+    require_hledger!();
+    let tree = Tree::with_rules();
+    let (id, dry) = review_dry_run(&tree, REVIEW_STATEMENT).await;
+    let before = tree.snapshot();
+
+    let mut stale = hardware_override(&dry);
+    stale["fingerprint"] = staged_txn(&dry, "STARBUCKS")["fingerprint"].clone();
+    let mut body = dry_run_body(&id, "import/bank.csv.rules");
+    body["overrides"] = json!([stale]);
+    let (status, response) = post(&tree, "/api/import/dry-run", body.clone()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{response}");
+    assert!(
+        as_text(&response).contains("staged transaction 2"),
+        "{response}"
+    );
+
+    body["writeAssertion"] = json!(false);
+    let (status, response) = post(&tree, "/api/import/commit", body).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{response}");
+    assert!(as_text(&response).contains("CORNER HARDWARE"), "{response}");
+    assert_eq!(changed(&before, &tree.snapshot()), Vec::<String>::new());
+
+    // An ordinal past the end is stale too: the proposal holds fewer now.
+    let mut gone = hardware_override(&dry);
+    gone["ordinal"] = json!(9);
+    let mut body = dry_run_body(&id, "import/bank.csv.rules");
+    body["overrides"] = json!([gone]);
+    let (status, _) = post(&tree, "/api/import/dry-run", body).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
+/// The fingerprint of the one journal transaction this tree starts with
+/// (the opening balances), from the review queue.
+async fn opening_fingerprint(tree: &Tree) -> (u64, String) {
+    let (status, queue) = get(
+        tree,
+        "/api/review/queue?kind=recents&today=2026-12-31&maxDays=0",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{queue}");
+    let opening = queue["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|item| item["description"] == json!("opening balances"))
+        .unwrap_or_else(|| panic!("no opening balances in {queue}"));
+    (
+        opening["index"].as_u64().expect("index"),
+        opening["fingerprint"]
+            .as_str()
+            .expect("fingerprint")
+            .to_string(),
+    )
+}
+
+/// D24: `journalEdits` and the append land together, in ONE write: after the
+/// commit the journal carries both, and the files on disk that changed are
+/// exactly the import's own three.
+#[tokio::test]
+async fn journal_edits_and_the_append_land_together() {
+    require_hledger!();
+    let tree = Tree::with_rules();
+    let (id, dry) = review_dry_run(&tree, REVIEW_STATEMENT).await;
+    let (index, fingerprint) = opening_fingerprint(&tree).await;
+    let before = tree.snapshot();
+
+    let mut body = dry_run_body(&id, "import/bank.csv.rules");
+    body["writeAssertion"] = json!(false);
+    body["overrides"] = json!([hardware_override(&dry)]);
+    body["journalEdits"] = json!([{
+        "index": index,
+        "fingerprint": fingerprint,
+        "ops": [{"op": "setTxnTag", "name": "reviewed", "value": "2026-10-31"}],
+    }]);
+    let (status, commit) = post(&tree, "/api/import/commit", body).await;
+    assert_eq!(status, StatusCode::OK, "{commit}");
+    assert_eq!(commit["journalEdited"], json!(1));
+    assert_eq!(commit["imported"], json!(4), "{commit}");
+    assert!(commit.get("git").is_none(), "{commit}");
+
+    let journal = std::fs::read_to_string(tree.path("main.journal")).expect("read journal");
+    assert!(
+        journal.starts_with("2026-01-01 opening balances  ; reviewed:2026-10-31\n"),
+        "{journal}"
+    );
+    assert!(
+        journal.contains("CORNER HARDWARE 4412  ; reviewed:2026-10-31"),
+        "{journal}"
+    );
+    assert_eq!(
+        changed(&before, &tree.snapshot()),
+        ["import/.latest.bank.csv", "import/bank.csv", "main.journal"],
+        "the edits and the append land in the journal; nothing else is written"
+    );
+
+    // The editor saw both: the edited opening has left Recents, and the
+    // imported rows are there to edit.
+    let (status, queue) = get(
+        &tree,
+        "/api/review/queue?kind=recents&today=2026-12-31&maxDays=0",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{queue}");
+    assert_eq!(queue["total"], json!(3), "{queue}");
+}
+
+/// A cancelled import writes nothing: reviewing (dry runs with overrides, rule
+/// previews) touches no file, and a commit refused for a stale journal edit
+/// leaves every file — the CSV included — as it was.
+#[tokio::test]
+async fn a_cancelled_or_refused_import_writes_nothing() {
+    require_hledger!();
+    let tree = Tree::with_rules();
+    let before = tree.snapshot();
+    let (id, dry) = review_dry_run(&tree, REVIEW_STATEMENT).await;
+    let mut body = dry_run_body(&id, "import/bank.csv.rules");
+    body["overrides"] = json!([hardware_override(&dry)]);
+    let (status, _) = post(&tree, "/api/import/dry-run", body.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    let mut preview = dry_run_body(&id, "import/bank.csv.rules");
+    preview["rule"] = json!({
+        "matchers": [{"field": "description", "pattern": "corner hardware"}],
+        "assignments": [{"field": "account2", "value": "expenses:home:hardware"}],
+    });
+    let (status, _) = post(&tree, "/api/import/rule-preview", preview).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(changed(&before, &tree.snapshot()), Vec::<String>::new());
+
+    let (index, _) = opening_fingerprint(&tree).await;
+    body["writeAssertion"] = json!(false);
+    body["journalEdits"] = json!([{
+        "index": index,
+        "fingerprint": "not-the-fingerprint",
+        "ops": [{"op": "setTxnTag", "name": "reviewed", "value": "2026-10-31"}],
+    }]);
+    let (status, response) = post(&tree, "/api/import/commit", body).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{response}");
+    assert_eq!(changed(&before, &tree.snapshot()), Vec::<String>::new());
+}
+
+/// The new fields are explicit: anything else is still refused.
+#[tokio::test]
+async fn review_fields_are_explicit_and_typos_are_still_refused() {
+    let tree = Tree::bare();
+    let mut body = dry_run_body("0123456789abcdef0123456789abcdef", "import/bank.csv.rules");
+    body["overide"] = json!([]);
+    let (status, _) = post(&tree, "/api/import/dry-run", body).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // `journalEdits` belongs to the commit, not the dry run.
+    let mut body = dry_run_body("0123456789abcdef0123456789abcdef", "import/bank.csv.rules");
+    body["journalEdits"] = json!([]);
+    let (status, _) = post(&tree, "/api/import/dry-run", body).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let mut body = dry_run_body("0123456789abcdef0123456789abcdef", "import/bank.csv.rules");
+    body["overrides"] = json!([{"ordinal": 0, "fingerprint": "x", "ops": [], "extra": 1}]);
+    let (status, _) = post(&tree, "/api/import/dry-run", body).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// The live check's counts (D25) on `fixtures/rules/simple/checking.csv.rules`.
+#[tokio::test]
+async fn rule_preview_counts_on_the_simple_checking_rules() {
+    require_hledger!();
+    let tree = Tree::bare();
+    std::fs::copy(
+        fixtures_dir().join("rules/simple/checking.csv.rules"),
+        tree.path("import/bank.csv.rules"),
+    )
+    .expect("copy the rules fixture");
+    let statement =
+        std::fs::read_to_string(fixtures_dir().join("rules/simple/checking.csv")).expect("csv");
+    let (id, dry) = review_dry_run(&tree, &statement).await;
+    assert_eq!(dry["count"], json!(5));
+    let before = tree.snapshot();
+
+    let preview = |rule: Value| {
+        let mut body = dry_run_body(&id, "import/bank.csv.rules");
+        body["rule"] = rule;
+        body
+    };
+    // The one unknown row.
+    let (status, hardware) = post(
+        &tree,
+        "/api/import/rule-preview",
+        preview(json!({
+            "matchers": [{"pattern": "HARDWARE"}],
+            "assignments": [{"field": "account2", "value": "expenses:home:supplies"}],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{hardware}");
+    assert_eq!(hardware["ok"], json!(true), "{hardware}");
+    assert_eq!(
+        (
+            &hardware["matched"],
+            &hardware["total"],
+            &hardware["alreadyCategorised"],
+            &hardware["changedTotal"]
+        ),
+        (&json!(1), &json!(5), &json!(0), &json!(1))
+    );
+    let change = &hardware["changed"][0];
+    assert_eq!(change["ordinal"], json!(4));
+    assert!(
+        change["before"]
+            .as_str()
+            .is_some_and(|t| t.contains("expenses:unknown")),
+        "{change}"
+    );
+    assert!(
+        change["after"]
+            .as_str()
+            .is_some_and(|t| t.contains("expenses:home:supplies")),
+        "{change}"
+    );
+
+    // Two rows another rule already put there: matched, already categorised,
+    // and nothing changes.
+    let (status, coffee) = post(
+        &tree,
+        "/api/import/rule-preview",
+        preview(json!({
+            "matchers": [{"field": "description", "pattern": "starbucks|peets"}],
+            "assignments": [{"field": "account2", "value": "expenses:food:coffee"}],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{coffee}");
+    assert_eq!(
+        (
+            &coffee["matched"],
+            &coffee["alreadyCategorised"],
+            &coffee["changedTotal"]
+        ),
+        (&json!(2), &json!(2), &json!(0))
+    );
+    assert_eq!(coffee["changed"], json!([]));
+
+    // A pattern the rules model refuses is a 400; one hledger refuses is its
+    // own words, as a dry run's are.
+    let (status, _) = post(
+        &tree,
+        "/api/import/rule-preview",
+        preview(json!({"matchers": [{"pattern": "(x"}], "assignments": [{"field": "account2", "value": "a"}]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, refused) = post(
+        &tree,
+        "/api/import/rule-preview",
+        preview(json!({"matchers": [{"pattern": "[x"}], "assignments": [{"field": "account2", "value": "a"}]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{refused}");
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    assert!(
+        !as_text(&refused).contains(&tree.dir.path().to_string_lossy().to_string()),
+        "{refused}"
+    );
+
+    // A preview writes nothing the user owns.
+    assert_eq!(changed(&before, &tree.snapshot()), Vec::<String>::new());
+}
+
+/// D25's alignment: ordinal N is record N after the rules file's own `skip`,
+/// in file order even when the file is newest first.
+#[tokio::test]
+async fn records_line_up_through_a_skipped_preamble_and_a_newest_first_file() {
+    require_hledger!();
+    // `skip 3` written for the bank's preamble, which the conversion stripped.
+    let tree = preamble_tree();
+    let (_, dry) = review_dry_run(&tree, PREAMBLE_STATEMENT).await;
+    assert_eq!(dry["records"]["aligned"], json!(true), "{}", dry["records"]);
+    let rows = dry["records"]["rows"].as_array().expect("rows");
+    let descriptions: Vec<&Value> = rows.iter().map(|row| &row[1]).collect();
+    assert_eq!(
+        descriptions,
+        [
+            &json!("ACME PAYROLL"),
+            &json!("STARBUCKS"),
+            &json!("LANDLORD LLC")
+        ]
+    );
+
+    // Newest first: hledger proposes oldest first, and each still gets its own
+    // record.
+    let tree = Tree::with_rules();
+    let newest_first = "Date,Description,Withdrawal,Deposit\n\
+                        01/20/2026,LANDLORD LLC,1850.00,\n\
+                        01/18/2026,CORNER HARDWARE 4412,42.17,\n\
+                        01/16/2026,STARBUCKS,6.45,\n\
+                        01/15/2026,ACME PAYROLL,,3000.00\n";
+    let (_, dry) = review_dry_run(&tree, newest_first).await;
+    assert_eq!(dry["records"]["aligned"], json!(true), "{}", dry["records"]);
+    let txns = dry["txns"].as_array().expect("txns");
+    assert_eq!(txns[0]["description"], json!("ACME PAYROLL"));
+    for (row, txn) in dry["records"]["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .zip(txns)
+    {
+        assert_eq!(row[1], txn["description"]);
+    }
+}
+
+/// When records and transactions cannot be lined up — a `skip` rule drops a
+/// row — the dry run says so, and the rule builder falls back to whole-record
+/// matching.
+#[tokio::test]
+async fn a_skip_rule_breaks_the_alignment_and_says_so() {
+    require_hledger!();
+    let tree = Tree::with_rules();
+    let mut rules = std::fs::read_to_string(tree.path("import/bank.csv.rules")).expect("rules");
+    rules.push_str("\nif STARBUCKS\n    skip\n");
+    std::fs::write(tree.path("import/bank.csv.rules"), rules).expect("write rules");
+    let (_, dry) = review_dry_run(&tree, REVIEW_STATEMENT).await;
+    assert_eq!(dry["count"], json!(3));
+    assert_eq!(dry["txns"].as_array().map(Vec::len), Some(3));
+    assert_eq!(dry["records"]["aligned"], json!(false));
+    assert_eq!(dry["records"]["rows"], json!([]));
+    assert_eq!(
+        dry["records"]["header"],
+        json!(["Date", "Description", "Withdrawal", "Deposit"])
+    );
+}
+
+/// D25: a rules file edited during the import ("Remember as a rule") is what
+/// the commit imports with — the rule saved a moment ago applies to the rows
+/// appended now. The commit itself writes only the import's own three files;
+/// the rules file was written by its own save.
+#[tokio::test]
+async fn a_rules_file_edited_during_the_import_applies_to_its_commit() {
+    require_hledger!();
+    let tree = Tree::with_rules();
+    let (id, _) = review_dry_run(&tree, REVIEW_STATEMENT).await;
+
+    // "Remember as a rule": the ordinary rules save, during the import.
+    let (status, doc) = get(&tree, "/api/rules/import/bank.csv.rules").await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let mut items: Vec<Value> = doc["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .map(|item| json!({"kind": "keep", "id": item["id"]}))
+        .collect();
+    items.push(json!({
+        "kind": "ifBlock",
+        "groups": [{"matchers": [{"pattern": "CORNER HARDWARE"}]}],
+        "assignments": [{"field": "account2", "value": "expenses:home:hardware"}],
+    }));
+    let (status, saved) = put(
+        &tree,
+        "/api/rules/import/bank.csv.rules",
+        json!({"revision": doc["revision"], "items": items}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+
+    let before = tree.snapshot();
+    let mut body = dry_run_body(&id, "import/bank.csv.rules");
+    body["writeAssertion"] = json!(false);
+    let (status, commit) = post(&tree, "/api/import/commit", body).await;
+    assert_eq!(status, StatusCode::OK, "{commit}");
+    assert!(commit.get("git").is_none(), "{commit}");
+    let journal = std::fs::read_to_string(tree.path("main.journal")).expect("journal");
+    assert!(
+        journal.contains("expenses:home:hardware"),
+        "the new rule applied: {journal}"
+    );
+    assert_eq!(
+        changed(&before, &tree.snapshot()),
+        ["import/.latest.bank.csv", "import/bank.csv", "main.journal"],
+    );
 }

@@ -36,9 +36,9 @@
 //! - **Containment at the boundary.** A [`VaultPath`] cannot name anything
 //!   outside the vault lexically, so a value of that type is the proof that a
 //!   path was checked.
-//! - **`local_path` for subprocesses.** `hledger -f` and `git` need a real path.
+//! - **`local_path` for subprocesses.** `hledger -f` needs a real path.
 //!   [`Vault::local_path`] returns one where it exists; a vault without one
-//!   (iOS, [`MemVault`]) cannot run them, and callers say so.
+//!   (iOS, [`MemVault`]) cannot run it, and callers say so.
 //!
 //! # Keys
 //!
@@ -395,7 +395,7 @@ pub trait Vault: Send + Sync + fmt::Debug {
     fn request_download(&self, _paths: &[VaultPath]) {}
 
     /// A real filesystem path for `path`, when one exists — what `hledger -f`
-    /// and `git` are handed. `None` means "only reachable through the vault".
+    /// is handed. `None` means "only reachable through the vault".
     fn local_path(&self, _path: &VaultPath) -> Option<PathBuf> {
         None
     }

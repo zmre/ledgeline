@@ -11,9 +11,10 @@ use ledgeline_core::auto;
 use ledgeline_core::model::{Journal, Tindex};
 use ledgeline_core::parse_journal;
 use ledgeline_core::review::{
-    CERTAIN, MAX_SUGGESTIONS, QueueKind, QueueOpts, ReviewIndex, ReviewState, SIMILAR_CAP, STRONG,
-    SuggestionSource, is_unknown, similarity_key, top_chip,
+    self, CERTAIN, MAX_SUGGESTIONS, QueueKind, QueueOpts, ReviewIndex, ReviewState, SIMILAR_CAP,
+    STRONG, SuggestionSource, is_unknown, similarity_key, top_chip,
 };
+use ledgeline_core::rules::RulesDoc;
 use ledgeline_core::view::Classes;
 use ledgeline_core::view::checks::local_findings;
 use proptest::prelude::*;
@@ -883,5 +884,109 @@ fn similarity_key_folds_compatibility_forms_through_nfkc() {
     assert_eq!(
         similarity_key("Shell \u{2460}\u{2461}").as_deref(),
         Some("shell")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Staged transactions (plan 32 Phase 4): suggest_staged, rule-file
+// precedent (D13a source 2), similar_by_key (D24)
+// ---------------------------------------------------------------------------
+
+/// A journal with a coffee history, and a staged (not-in-the-journal)
+/// transaction for the same payee.
+fn coffee_history() -> (Journal, Journal) {
+    let journal = inline(
+        "2026-01-01 SQ *BLUE BOTTLE 4412 OAKLAND\n    expenses:food:coffee  $5\n    assets:checking\n\n\
+         2026-02-01 SQ *BLUE BOTTLE 0917 OAKLAND\n    expenses:food:coffee  $6\n    assets:checking\n\n\
+         2026-03-01 SQ *BLUE BOTTLE 1234 OAKLAND\n    expenses:unknown  $7\n    assets:checking\n",
+    );
+    let staged = inline(
+        "2026-04-01 SQ *BLUE BOTTLE 8812 OAKLAND\n    assets:checking  $-4\n    expenses:unknown\n\n\
+         2026-04-02 HARDWARE STORE\n    assets:checking  $-9\n    expenses:unknown\n",
+    );
+    (journal, staged)
+}
+
+#[test]
+fn a_staged_transaction_gets_the_journals_precedent() {
+    let (journal, staged) = coffee_history();
+    let (classes, index) = indexed(&journal);
+    let suggestions = index.suggest_staged(&journal, &classes, &staged.transactions[0], Vec::new());
+    assert_eq!(suggestions.len(), 1, "{suggestions:?}");
+    assert_eq!(suggestions[0].account, "expenses:food:coffee");
+    assert_eq!(suggestions[0].source, SuggestionSource::ExactKey);
+    // Nothing is excluded: the staged one is not in the journal, so both
+    // categorised transactions vote.
+    assert_eq!(suggestions[0].count, 2);
+    assert_eq!(suggestions[0].confidence, CERTAIN);
+}
+
+#[test]
+fn rule_file_precedent_names_the_rule_that_did_not_fire() {
+    let (journal, staged) = coffee_history();
+    let (classes, index) = indexed(&journal);
+    // The HARDWARE block is AND-ed with an amount this row does not have, so
+    // hledger did not fire it — but it still names the payee.
+    let doc = RulesDoc::parse(
+        "fields date, description, amount\n\n\
+         if HARDWARE\n& %amount -999\n    account2 expenses:home:supplies\n    description Hardware Store\n\n\
+         if NEVER\n    account2 expenses:other\n\n\
+         if HARD\n    account2 %3\n\n\
+         if hardware\n    account2 expenses:unknown\n\n\
+         if HARDWARE\n    skip\n",
+    );
+    let found = review::rule_file_suggestions(&doc, &staged.transactions[1].description, &classes);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].account, "expenses:home:supplies");
+    assert_eq!(found[0].description.as_deref(), Some("Hardware Store"));
+    assert_eq!(found[0].source, SuggestionSource::RuleFile);
+    assert!(found[0].is_strong());
+
+    // Ranked with the journal's own sources.
+    let ranked = index.suggest_staged(&journal, &classes, &staged.transactions[1], found);
+    assert_eq!(ranked[0].source, SuggestionSource::RuleFile);
+    assert_eq!(ranked[0].account, "expenses:home:supplies");
+}
+
+#[test]
+fn rule_file_precedent_is_shared_between_disagreeing_rules() {
+    let (journal, _) = coffee_history();
+    let classes = Classes::of(&journal);
+    let doc = RulesDoc::parse(
+        "if BOTTLE\n    account2 expenses:food:coffee\n\nif OAKLAND\n    account2 expenses:travel\n\nif (unclosed\n    account2 expenses:never\n",
+    );
+    let found = review::rule_file_suggestions(&doc, "SQ *BLUE BOTTLE 8812 OAKLAND", &classes);
+    let accounts: Vec<&str> = found.iter().map(|s| s.account.as_str()).collect();
+    assert_eq!(accounts, ["expenses:food:coffee", "expenses:travel"]);
+    assert!(
+        found
+            .iter()
+            .all(|s| s.confidence == found[0].confidence && !s.is_strong())
+    );
+}
+
+#[test]
+fn similar_by_key_is_similar_without_a_transaction_to_leave_out() {
+    let (journal, _) = coffee_history();
+    let (classes, index) = indexed(&journal);
+    let by_key = index.similar_by_key(&journal, &classes, "sq blue bottle oakland");
+    assert_eq!(
+        by_key.total, 3,
+        "every unreviewed one with the key: {by_key:?}"
+    );
+    let precedent = by_key.precedent.expect("a precedent");
+    assert_eq!(
+        (precedent.account.as_str(), precedent.count, precedent.of),
+        ("expenses:food:coffee", 2, 2)
+    );
+
+    // The journal-transaction form leaves the card itself out.
+    let card = find(&journal, "2026-03-01", "BLUE BOTTLE");
+    assert_eq!(index.similar(&journal, &classes, card).total, 2);
+    assert_eq!(
+        index
+            .similar_by_key(&journal, &classes, "no such payee")
+            .total,
+        0
     );
 }
