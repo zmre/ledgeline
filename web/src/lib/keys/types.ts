@@ -14,9 +14,21 @@
  * only keyboard surface, and once the tab strip added a second one, that
  * would have filed one feature under two headings.
  */
-export type KeyGroup = "Global" | "Navigation" | "Journal" | "Holdings" | "Projections" | "Reports" | "Imports" | "Settings" | "Filters";
+export type KeyGroup = "Global" | "Navigation" | "Journal" | "Review" | "Holdings" | "Projections" | "Reports" | "Imports" | "Settings" | "Filters";
 
-export const GROUP_ORDER: readonly KeyGroup[] = ["Global", "Navigation", "Journal", "Holdings", "Projections", "Reports", "Imports", "Settings", "Filters"];
+/** "Review" (plan 32 D16) sits right after "Journal", the page the review overlay opens from. */
+export const GROUP_ORDER: readonly KeyGroup[] = [
+    "Global",
+    "Navigation",
+    "Journal",
+    "Review",
+    "Holdings",
+    "Projections",
+    "Reports",
+    "Imports",
+    "Settings",
+    "Filters",
+];
 
 /**
  * Layer priorities. Higher wins; registration order breaks ties (later beats

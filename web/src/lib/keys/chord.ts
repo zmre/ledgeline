@@ -105,6 +105,13 @@ const DISPLAY_NAMES: Record<string, string> = {
 };
 
 /**
+ * What sits between a chord's modifiers and its key: `⌘-Shift-Enter` on macOS,
+ * `Ctrl+Shift+Enter` elsewhere (each platform's own convention). Never nothing:
+ * run together, `⌘ShiftEnter` and `Ctrld` read as one word.
+ */
+export const MODIFIER_JOINER = IS_MAC ? "-" : "+";
+
+/**
  * Render `keys` for the help sheet: one token per chord STEP, each already
  * carrying its own modifiers. The sheet prints these adjacent with no `+`
  * between them, which is the standard "press these in sequence" form.
@@ -112,7 +119,7 @@ const DISPLAY_NAMES: Record<string, string> = {
 export function formatKeys(keys: string): KeyToken[] {
     return steps(keys).map((step) => {
         const pieces = step.split("+");
-        const text = pieces.map((p) => DISPLAY_NAMES[p] ?? p).join(IS_MAC ? "" : "+");
+        const text = pieces.map((p) => DISPLAY_NAMES[p] ?? p).join(MODIFIER_JOINER);
         return {text};
     });
 }

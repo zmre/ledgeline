@@ -12,6 +12,8 @@
     import TotalsFooter from "#lib/journal/TotalsFooter.svelte";
     import TransactionTable from "#lib/journal/TransactionTable.svelte";
     import TransactionModal from "#lib/journal/edit/TransactionModal.svelte";
+    import ReviewOverlay from "#lib/review/ui/ReviewOverlay.svelte";
+    import {reviewLaunch} from "#lib/review/ui/launch.svelte.js";
     import {periodLabel} from "#lib/journal/rowModel.js";
     import {editing} from "#lib/stores/editing.svelte.js";
     import {filters} from "#lib/stores/filters.svelte.js";
@@ -142,6 +144,11 @@
 
 <!-- The add/edit-all transaction popup (mounted once; driven by the txnModal store). -->
 <TransactionModal />
+
+<!-- The review overlay (plan 32): mounted while a run is open, so its modal key layer exists exactly then. -->
+{#if reviewLaunch.kind !== null}
+    <ReviewOverlay kind={reviewLaunch.kind} />
+{/if}
 
 {#if editing.conflict}
     <div class="toast toast-center toast-top z-40">

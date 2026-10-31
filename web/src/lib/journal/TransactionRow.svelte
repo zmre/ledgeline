@@ -13,6 +13,7 @@
     import type {Transaction} from "#lib/domain/types.js";
     import {editing} from "#lib/stores/editing.svelte.js";
     import type {ColumnConfig} from "#lib/stores/settings.svelte.js";
+    import {rowShadow, stripeColor, type RowMarker} from "#lib/review/card.js";
     import AccountsCell from "./AccountsCell.svelte";
     import AmountCell from "./AmountCell.svelte";
     import CommentIndicator from "./CommentIndicator.svelte";
@@ -28,7 +29,17 @@
         flags = [],
         pulse = false,
         cursor = false,
-    }: {txn: Transaction; columns: ColumnConfig; mode?: "row" | "card"; flags?: Problem[]; pulse?: boolean; cursor?: boolean} = $props();
+        marker = null,
+    }: {
+        txn: Transaction;
+        columns: ColumnConfig;
+        mode?: "row" | "card";
+        flags?: Problem[];
+        pulse?: boolean;
+        cursor?: boolean;
+        /** The review stripe (plan 32 D20): unknown, unreviewed-in-window, or none. */
+        marker?: RowMarker;
+    } = $props();
 
     const amounts = $derived(txnFlowAmounts(txn));
     const flagTip = $derived(flags.map((problem) => problem.message).join("; "));
@@ -39,7 +50,10 @@
     // repaint. Inset box-shadow on the first <td> rather than a border on the
     // <tr>, because daisyUI's `.table` is border-collapse:separate (where row
     // borders are not painted) and a border-l would shift the content 4px.
-    const cursorClass = "bg-primary/25 [&>td:first-child]:shadow-[inset_3px_0_0_0_var(--color-primary)]";
+    // The rule itself is part of `rowShadow`, stacked inside the review stripe
+    // (plan 32 D20) so the two coexist.
+    const cursorClass = "bg-primary/25";
+    const shadow = $derived(rowShadow(marker, cursor));
     const cursorCardClass = "ring-primary ring-2 ring-inset";
     // Mutually exclusive, and in this order. `hover:` carries a pseudo-class, so
     // it beats a plain background utility regardless of source order — hovering
@@ -137,7 +151,13 @@
          precedent in RulesFileList. `aria-selected` would only be meaningful
          inside a role="grid", which would drag required row/gridcell roles
          across a <tbody> that also contains aria-hidden spacer rows. -->
-    <tr class="h-10 {rowClass}" aria-current={cursor ? "true" : undefined} data-txn={txn.index}>
+    <tr
+        class="h-10 {rowClass} [&>td:first-child]:[box-shadow:var(--row-shadow)]"
+        style:--row-shadow={shadow}
+        aria-current={cursor ? "true" : undefined}
+        data-txn={txn.index}
+        data-review-marker={marker ?? undefined}
+    >
         {#if columns.date}
             <td class="py-1 font-mono text-xs whitespace-nowrap text-base-content/80">{txn.date}</td>
         {/if}
@@ -156,7 +176,15 @@
     </tr>
 {:else}
     <!-- A ring, not a background: the card already has `bg-base-200`. -->
-    <article class="card mb-2 h-24 overflow-hidden bg-base-200 {cardClass}" aria-current={cursor ? "true" : undefined} data-txn={txn.index}>
+    <article
+        class="card relative mb-2 h-24 overflow-hidden bg-base-200 {cardClass}"
+        aria-current={cursor ? "true" : undefined}
+        data-txn={txn.index}
+        data-review-marker={marker ?? undefined}
+    >
+        {#if marker !== null}
+            <span class="absolute inset-y-0 left-0 w-[3px]" style:background={stripeColor(marker)} aria-hidden="true"></span>
+        {/if}
         <div class="card-body gap-1 p-3">
             <div class="flex items-center justify-between gap-2">
                 <div class="flex min-w-0 items-center gap-1.5">

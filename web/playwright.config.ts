@@ -29,6 +29,20 @@ export default defineConfig({
             url: "http://127.0.0.1:5099/",
             reuseExistingServer: false,
         },
+        {
+            // The transaction-review engine (plan 32, e2e/review.e2e.ts), over
+            // fixtures/review/ so sample.journal's totals never move. Same
+            // cross-origin opt-in as the engine above.
+            //
+            // It runs over a SCRATCH COPY (target/e2e-review/, gitignored): the
+            // review spec saves, and a save must never rewrite a committed
+            // fixture. Re-staged on every run, so each run starts from the
+            // fixture's bytes. `review-2025.journal` is the main file's include.
+            command: `rm -rf ../target/e2e-review && mkdir -p ../target/e2e-review && cp ../fixtures/review/review.journal ../fixtures/review/review-2025.journal ../target/e2e-review/ && exec ${process.env.LEDGELINE_BIN ?? "../target/debug/ledgeline"} --server ../target/e2e-review/review.journal --port 5098 --allow-origin http://localhost:4173`,
+            env: {LEDGELINE_TOKEN: API_TOKEN, LEDGELINE_IGNORE_USER_HLEDGER_CONF: "1"},
+            url: "http://127.0.0.1:5098/",
+            reuseExistingServer: false,
+        },
         {command: "bun run build && bun run preview", port: 4173},
     ],
     // With multiple webServers playwright does not infer baseURL from `port`.

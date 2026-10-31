@@ -16,6 +16,8 @@
     import type {WireBalanceAssertion, WirePostingType} from "#lib/api/native.js";
     import DateInput from "#lib/components/DateInput.svelte";
     import {dismissible} from "#lib/keys/dismissible.js";
+    import ModalKeyLayer from "#lib/keys/ModalKeyLayer.svelte";
+    import {reviewBadge} from "#lib/review/card.js";
     import {localToday} from "#lib/stores/filters.svelte.js";
     import {editing} from "#lib/stores/editing.svelte.js";
     import type {Transaction} from "#lib/domain/types.js";
@@ -84,6 +86,8 @@
     const awaitingTarget = $derived(txnModal.mode === "edit" && txnModal.target === null);
 
     const title = $derived(txnModal.mode === "edit" ? "Edit transaction" : "Add transaction");
+    /** D21: whether the transaction being edited is reviewed. Informational — the tag itself is edited in the comment. */
+    const badge = $derived(txnModal.mode === "edit" && txnModal.target !== null ? reviewBadge(txnModal.target.tags) : null);
     const submitLabel = $derived(txnModal.mode === "edit" ? "Save changes" : "Add transaction");
 
     function addRow(): void {
@@ -176,8 +180,25 @@
     tabindex="-1"
     use:dismissible={{active: txnModal.open, trap: true, onDismiss: () => !submitting && txnModal.close()}}
 >
+    {#if txnModal.open}
+        <!-- Plan 32 D16: while the popup is up, nothing below it (the journal's
+             j/k/x) can fire, even with focus on one of its buttons. -->
+        <ModalKeyLayer id="transaction-modal" />
+    {/if}
     <div class="modal-box max-w-2xl">
-        <h3 class="mb-3 text-lg font-semibold">{title}</h3>
+        <div class="mb-3 flex items-center gap-2">
+            <h3 class="text-lg font-semibold">{title}</h3>
+            {#if badge !== null}
+                <span
+                    class={[
+                        "badge badge-sm",
+                        badge.kind === "reviewed" ? "badge-soft badge-success" : badge.kind === "ignored" ? "badge-soft badge-neutral" : "badge-ghost",
+                    ]}
+                    data-testid="modal-review-badge"
+                    title="The reviewed: tag — edit it in the comment field">{badge.label}</span
+                >
+            {/if}
+        </div>
         {#if awaitingTarget}
             <p class="mb-3 flex items-center gap-2 text-sm text-base-content/60" role="status">
                 {#if txnModal.loadError === null}

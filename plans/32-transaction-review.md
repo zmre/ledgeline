@@ -246,7 +246,16 @@ block because inline code collapses the double space:
 
 **D3. Unknown.** A transaction with any posting that `checks.rs
 is_uncategorized` flags. It's the same predicate as the Problems drawer, so
-the two counts always agree. Generated (`=` rule) postings are excluded.
+the two counts always agree. **(P, 2026-10-30)**
+
+- **Postings added by `=` auto rules to real journal transactions count, in
+  review and in the drawer.**
+  - A generated posting can't be edited on the card. The card marks it "from
+    automatic posting rule `= …`" and links to Settings → Automatic postings.
+  - **Reviewed** stays disabled while that posting is unknown, so the fix is
+    to edit the rule.
+- **Forecast transactions from `~` periodic rules, including any auto postings
+  applied to them, are ignored everywhere** (review and the drawer).
 
 **D4. The two queues.** Both are computed in the engine from the current
 snapshot, and both share **one lookback window**: dated within the last
@@ -518,8 +527,8 @@ also fixes the bleed-through noted above for this overlay.
 | <kbd>⌘⇧↵</kbd> / <kbd>Ctrl⇧↵</kbd> | any  | Accept the top suggestion, mark reviewed, save, next (D13) |
 | <kbd>y</kbd> / <kbd>↵</kbd>  | card   | Same as ⌘↵                                                   |
 | <kbd>Y</kbd>                 | card   | Same as ⌘⇧↵                                                  |
-| <kbd>→</kbd> / <kbd>n</kbd>  | card   | Skip                                                         |
-| <kbd>←</kbd> / <kbd>p</kbd>  | card   | Previous card                                                |
+| <kbd>→</kbd> / <kbd>n</kbd> / <kbd>l</kbd> | card | Skip                                              |
+| <kbd>←</kbd> / <kbd>p</kbd> / <kbd>h</kbd> | card | Previous card                                     |
 | <kbd>z</kbd>                 | card   | Revert changes                                               |
 | <kbd>d</kbd>                 | card   | Edit description                                             |
 | <kbd>a</kbd>                 | card   | Edit the first unknown account (or the first posting)        |
@@ -1225,6 +1234,8 @@ It is sized after Phases 1–5 land and have been used for real.
 - Plan written 2026-10-30 and revised the same day after Patrick's review.
 - **Phase 1: built 2026-10-30.** `just engine-check` and `just engine-test` are green (3283 passed, 60 new). Not committed. Amendments are in `32-amendments-p1.md`.
   Bench at 200k transactions: queue 1.4ms, similar 1.7ms, batch of 50 404ms, single PATCH 403ms.
+- **Phase 2: built 2026-10-30.** All five recipes are green (engine 3306, web 2793, live integration included). Amendments are in `32-amendments-p2.md`.
+- **Phase 3: built 2026-10-30.** `just check`, `just test` and `bun run lint` are green. The e2e spec (`web/e2e/review.e2e.ts`, engine on :5098) has not been run yet. Amendments are in `32-amendments-p3.md`.
 
 ## Contract amendments made during implementation
 
