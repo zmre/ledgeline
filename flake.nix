@@ -319,7 +319,7 @@
         # Intel Macs, for the x86_64 half of the release matrix. Produced by a
         # release-workflow dry run under Rosetta, which is the only machine that
         # can generate it — see docs/development/releasing.md.
-        x86_64-darwin = "sha256-xdaapCi0qH8gthiuidzTk8hjo6t5nm8nE2X4+hDJz68=";
+        x86_64-darwin = "sha256-144A9MQzynvHnoze2aNAJpRmVqxb0rQq91nqPCps8qo=";
       };
 
       spaNodeModules = pkgs.stdenv.mkDerivation {
