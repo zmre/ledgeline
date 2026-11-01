@@ -503,6 +503,19 @@ struct Area {
     stages: Vec<(StageId, Arc<Stage>)>,
 }
 
+impl Area {
+    /// The session root, made on first use.
+    fn session_root(&mut self, temp_dir: &Path) -> std::io::Result<PathBuf> {
+        if let Some(root) = &self.root {
+            return Ok(root.clone());
+        }
+        let root = session_root(temp_dir)?;
+        create_private_dir(&root)?;
+        self.root = Some(root.clone());
+        Ok(root)
+    }
+}
+
 impl StageArea {
     /// An empty area whose session root will be created under `temp_dir` on
     /// the first upload. Nothing touches the filesystem until then.
@@ -529,15 +542,7 @@ impl StageArea {
         upload_name: &str,
     ) -> std::io::Result<(StageId, Arc<Stage>)> {
         let mut area = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-        let root = match &area.root {
-            Some(root) => root.clone(),
-            None => {
-                let root = session_root(&self.temp_dir)?;
-                create_private_dir(&root)?;
-                area.root = Some(root.clone());
-                root
-            }
-        };
+        let root = area.session_root(&self.temp_dir)?;
 
         let id = StageId::mint().ok_or_else(|| {
             std::io::Error::other("the operating system's random source is unavailable")
@@ -560,6 +565,28 @@ impl StageArea {
             let _ = std::fs::remove_dir_all(&evicted.dir);
         }
         Ok((id, stage))
+    }
+
+    /// A fresh private directory under the session root, removed when the
+    /// returned [`Scratch`] drops: where the Journal view's rule preview (plan
+    /// 32 D27) writes its temporary copies of a rules file. Its name is
+    /// minted, never a client string.
+    ///
+    /// # Errors
+    /// [`std::io::Error`] if the session root or the directory could not be
+    /// made, or the OS CSPRNG refused.
+    pub(crate) fn scratch(&self) -> std::io::Result<Scratch> {
+        let root = self
+            .inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .session_root(&self.temp_dir)?;
+        let id = StageId::mint().ok_or_else(|| {
+            std::io::Error::other("the operating system's random source is unavailable")
+        })?;
+        let dir = root.join(format!("{SCRATCH_PREFIX}{}", id.as_str()));
+        create_private_dir(&dir)?;
+        Ok(Scratch(dir))
     }
 
     /// The stage `id` names, or `None`.
@@ -587,6 +614,28 @@ impl Drop for StageArea {
         }
     }
 }
+
+/// A scratch directory [`StageArea::scratch`] made. Removed, best effort, on
+/// drop; the session root goes with the process anyway.
+#[derive(Debug)]
+pub(crate) struct Scratch(PathBuf);
+
+impl Scratch {
+    /// The directory.
+    pub(crate) fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The prefix of a [`Scratch`] directory's name, so it can never be mistaken
+/// for a stage (whose names are bare ids).
+const SCRATCH_PREFIX: &str = "scratch-";
 
 /// A fresh, unguessable session root under `temp_dir` (on the desktop, the OS
 /// temp directory).

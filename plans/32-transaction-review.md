@@ -1088,6 +1088,281 @@ unswallowed): a second engine on
 
 It is sized after Phases 1–5 land and have been used for real.
 
+## Phase 7 — The review card becomes the only transaction editor
+
+### The ask (Patrick, 2026-11-01)
+
+> Make a plan for a phase 7 to [replace the journal transaction editor with the
+> review editor]. For the reviewed behavior, when in single edit mode, offer a
+> checkbox for whether to mark it as reviewed. The suggestions and ability to
+> make rules or affect other transactions are the big wins here, and the
+> keyboard shortcuts are another win. But we'll need the edits and display to
+> be more complete.
+
+### What is true today (the gap list)
+
+**Where the old editor opens.** `TransactionModal.svelte` is opened from four
+places, all through `journal/edit/modalState.svelte.ts`:
+
+- a row's edit button (`TransactionRow.svelte:137`);
+- **Enter** on the cursor (`TransactionTable.svelte:208`);
+- **n** and the **Add transaction** button (`:214`, `:317`);
+- the review overlay's "Open in full editor" (`ReviewOverlay.svelte:473`).
+
+**What the review card can't do yet.**
+
+| Gap                       | Journal editor today                     | Review card today                                       |
+| ------------------------- | ---------------------------------------- | ------------------------------------------------------- |
+| Secondary date (`date2`)  | Editable                                 | Kept, not editable                                      |
+| Status                    | Editable                                 | Kept, not editable                                      |
+| Code                      | Editable                                 | Kept, not editable                                      |
+| Date                      | A field                                  | Behind ⋯ → Edit date. A change forces a whole-transaction rewrite |
+| Posting commodity         | Editable                                 | Shown only                                              |
+| Posting comment           | Editable                                 | Kept, not editable                                      |
+| Balance assertion         | Can be removed                           | Kept, can't be removed                                  |
+| Multi-line comment        | One raw box                              | Only the header's same-line free text (`SetTxnComment`) |
+| Delete                    | Yes, with confirm or keep                | No                                                      |
+| Add a new transaction     | Yes                                      | No                                                      |
+| Opening one transaction   | It's a dialog                            | Only inside a queue run (deck, progress, Skip)          |
+
+**The card's advantages, which carry over:**
+
+- surgical saves that keep formatting and elided amounts;
+- payee and tag autocomplete;
+- suggestions and ⌘⇧↵;
+- similar-apply;
+- Remember as a rule;
+- the two-mode keyboard model.
+
+### Decisions
+
+**D31. A single-transaction mode for the card. (P)** `ReviewOverlay` gains a
+`single` run. It's the same card component and the same fields, with no queue:
+
+- **The header** shows "Edit transaction" or "Add transaction". There's no
+  "N of M", no progress bar and no peeks.
+- **No Skip or Back.** Esc goes field → card → close, asking first if the card
+  is dirty, as now.
+- **Motion.** The card opens like a dialog (scale and fade, about 140ms). On
+  save it closes with a short ✓ flash; it doesn't fly off the screen. The deck
+  motion stays for queue runs.
+- **Sizing.** The same `max-w-4xl` card, at its natural height. A short
+  transaction makes a short card.
+- **Loading.** The card needs one transaction fetch (`GET
+  /api/transactions/{index}`). Suggestions, the similar set and rules-for load
+  in parallel after it, so the card is editable before they arrive.
+
+**D32. The Reviewed checkbox. (P)** In single mode the footer reads:
+
+```
+[ Save  ⌘-Enter ]   ☐ Mark reviewed  v            [ ✕ Revert Changes  z ]
+```
+
+- **It shows the state you want, not an action.** It starts checked when the
+  transaction already has a `reviewed:` tag, and unchecked otherwise
+  (**Q13, answered by Patrick 2026-11-01:** yes, and an existing review date
+  is left in place).
+  - Checking an unreviewed one stamps `reviewed:<today>`.
+  - Unchecking a reviewed one removes the tag.
+  - Leaving a reviewed one checked keeps its original date. The tag isn't
+    restamped.
+  - `reviewed:ignore` shows as checked with the label "Ignored". Unchecking it
+    removes the tag.
+- **Disabled while any posting is unknown**, with the same tooltip as the
+  queue card's Reviewed button.
+- **Key `v`** in card mode toggles it.
+- **Toggling it counts as a change**, so on its own it enables Save.
+- **⌘⇧↵** (accept the suggestion and save) honours the checkbox. It doesn't
+  force reviewed in single mode.
+- **Add mode** has the same checkbox, unchecked by default.
+
+**D33. Everything on the card is editable.**
+
+- **A header details row** under the hero, compact:
+  - **Date:** an inline field. Key `D`.
+  - **Status:** a pill that cycles unmarked → pending → cleared on click or
+    `!`, matching the Journal's cycle-status behaviour.
+  - **Code:** an inline field. Key `#`.
+  - **Secondary date:** shown when set. Added from ⋯ → Add secondary date.
+  - Single mode shows the row always. Queue runs keep it collapsed to one line
+    of text ("Oct 12 · cleared · #1042") that expands on click or `D`, so
+    review cards stay as uncluttered as they are now.
+- **Postings:**
+  - **Commodity:** an inline prefix field on the amount, with commodity
+    autocomplete from the journal's commodities.
+  - **Posting comment:** a ⋯ per posting row reveals a comment line. A posting
+    that already has a comment shows it as a muted line under the row,
+    editable in place.
+  - **Balance assertion:** shown as a chip on the row (`== $500.00`) with ×
+    to remove it.
+  - **Cost:** stays read-only, as in both editors today.
+- **Comment:** the card's comment box becomes a growing textarea that edits
+  the whole transaction comment, continuation lines included. Tags stay chips;
+  the textarea holds the free text only.
+- **Auto-rule postings:** read-only, naming the rule, as now.
+
+**D34. Every header and posting field gets a surgical save.** The new
+`EditOp`s each rewrite only their own line, through the existing
+`rebuild_header`:
+
+- **header:** `SetDate`, `SetDate2`, `SetStatus` (wrapping the existing
+  `set_status`), `SetCode`;
+- **posting:** `SetPostingComment`, `SetPostingAssertion(None)`;
+- **comment:** `SetTxnComment` extended to the full comment, continuation lines
+  included.
+
+So a date, status or comment change no longer forces a whole-transaction
+rewrite. `Replace` is left for amount, commodity and posting add or remove,
+as today.
+
+**D35. Elision survives amount edits. (Q14, Patrick 2026-11-01: "yes, definitely".)** With the card as
+the only editor, the accepted elision bug (an untouched auto-balanced amount
+written out explicitly on any rewrite) would hit every amount edit.
+
+- **The fix**, as recorded when the bug was accepted: the parser's balancer
+  marks inferred amounts on `model.rs` `Posting`, the wire emits the marker
+  (`poriginal` instead of the hard-coded `None`), `normalize.ts` and
+  `txnToForm` keep the elided leg blank, and `formToBody` writes it back
+  without an amount.
+- **The result:** changing one amount leaves the auto-balanced leg
+  auto-balanced.
+- If you'd rather not now, it stays accepted and D34 already removes most of
+  the rewrites that trigger it.
+
+**D36. Add mode.** `n` and **Add transaction** open a blank single card:
+
+- the date is today and the status unmarked;
+- there are two posting rows;
+- focus starts in the description, not on the card.
+
+The big win is suggestions while you type:
+
+- Picking a payee from autocomplete offers that payee's usual category as a
+  chip: the "payee picked → category" route Phase 3 left out (p3
+  amendment 8). A new `GET /api/review/suggest?description=…` runs
+  `review::suggest` on a description instead of an existing transaction.
+- ⌘⇧↵ accepts it and adds the transaction.
+- If the description matches recurring history (D13a source 4), the amount
+  and the funding account are offered too: "Netflix · $15.49 from Visa".
+
+Similar-apply and Remember as a rule don't apply to a transaction that
+doesn't exist yet, so both are hidden in add mode.
+
+**D37. Delete.** It lives in ⋯ → **Delete transaction** (key `⇧X`), with the
+same two-step confirm as the journal table's `x`: the button turns into
+"Confirm delete / Keep". It isn't offered in queue runs, where a missed key
+costs too much; Ignore is the queue's way out.
+
+**D38. Similar-apply, rules and suggestions in single mode.** All three work
+exactly as on a queue card: the similar set loads from the transaction's
+original description, Remember as a rule appears when D27 inference finds a
+file, and the chips show. That's the point of the change. Applied similar
+transactions are still not marked reviewed, whatever the checkbox says.
+
+**D39. Replacing the modal.**
+
+- `modalState.svelte.ts` keeps `openAdd()` / `openEdit(index)` as the public
+  entry point, but they open the single card. The four callers don't change.
+- "Open in full editor" leaves the queue card's ⋯ menu, because the card is
+  the full editor now.
+- `TransactionModal.svelte` and its tests are deleted once the parity tests
+  below pass. It isn't kept behind a flag: two editors drift apart.
+- The table's inline editors (`e` description, `c` category, `s` status, `x`
+  delete) stay. They're faster for one-field edits, and they already save
+  surgically.
+
+**D40. Keys.** The overlay's single mode adds `D` (date), `!` (status), `#`
+(code), `v` (Mark reviewed) and `⇧X` (delete). It keeps `d`, `a`, `1`–`9`,
+`$`, `t`, `m`, `s`, `R`, `⌘↵` and `⌘⇧↵`, and drops Skip and Back. `?` lists
+the active set.
+
+### Scope
+
+**In:** D31–D40, plus docs and screenshots.
+
+**Out:**
+
+- editing a cost annotation (still read-only, as in both editors today);
+- a posting's own status and date;
+- periodic and auto-posting rule entries, which keep their own editors in
+  Settings and Projections.
+
+### Phase 7a — Engine and wire (PR)
+
+- **Core:**
+  - the D34 ops in `edit.rs`, as header and posting surgical rewrites, all
+    applied atomically through `apply_batch`;
+  - `SetTxnComment` covering continuation lines;
+  - D35 elision tracking (parser balancer → `Posting` → wire);
+  - `review::suggest_for_description`.
+- **Server:**
+  - the wire ops in the batch route;
+  - `GET /api/review/suggest?description=&today=`;
+  - an add route that accepts batch-style follow-ups if needed: adding plus
+    stamping reviewed should be one write.
+- **Tests:**
+  - byte-exact tests for each op, including CRLF files, continuation lines,
+    and a header that has date2 plus code plus a comment;
+  - elision kept through an amount edit;
+  - endpoint tests, a golden update, and a live test.
+
+### Phase 7b — The complete card (PR)
+
+- The details row, commodity, posting comment, assertion chip and comment
+  textarea (D33), on queue and single cards alike. Queue cards keep their
+  collapsed details line.
+- `formToOps` maps every field to D34 ops. A Replace happens only for amount,
+  commodity or postings.
+- **Tests:** a parity matrix component test. Each field the old modal could
+  edit is edited on the card, and the test asserts the batch it sends.
+
+### Phase 7c — Single mode, add, delete, and the switch (PR)
+
+- D31, D32, D36, D37, D39, D40.
+- `modalState` points to the single card, and `TransactionModal` is deleted.
+- **Tests:**
+  - component tests for the checkbox states (unreviewed, reviewed, ignored,
+    unknown-disabled, `v`, and ⌘⇧↵ honouring it), add mode (focus,
+    suggestion on payee pick, ⌘⇧↵ adds), delete two-step, and the
+    single-mode keys;
+  - the existing e2e that drive the modal (`e2e/keys.e2e.ts`,
+    `e2e/journalWindow.e2e.ts`) move to the card;
+  - a new e2e: Enter on a row → edit status, code and a posting comment → Save
+    with Mark reviewed → check the bytes on disk; then `n` → pick a payee →
+    ⌘⇧↵ → the new transaction is in the file.
+
+### Phase 7d — Docs and screenshots (PR or a follow-up)
+
+- `docs/journal/index.md`'s "Editing transactions" is rewritten around the
+  card. Re-shoot `transaction-editor.png`, and replace
+  `review-editor-badge.png` with the checkbox.
+- `docs/journal/review.md` links to it.
+- `keyboard.md` gets a "Transaction editor" section.
+- `MANIFEST.md` rows. No spec presses Save.
+
+### Mockup: single mode
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│ Edit transaction                                         ⋯   ✕      │
+├──────────────────────────────────────────────────────────────────────┤
+│   Blue Bottle Coffee                                     −$6.75     │
+│   D [Oct 12, 2026]  ! (cleared)  # [1042]   + secondary date         │
+│  ─────────────────────────────────────────────────────────────────── │
+│  d  Description  [ Blue Bottle Coffee                          ▾ ]   │
+│  a  Postings                                                         │
+│  1  [ expenses:food:coffee     ]   [$] [   6.75 ]  ⋯  ×              │
+│        ; paid with the gift card                                     │
+│  2  [ liabilities:visa         ]   [$] [  -6.75 ]  ⋯  ×  (== $0 ×)   │
+│  t  Tags      ( receipt:0042 × )  [+ tag ]                           │
+│  m  Comment   [ split with Sam                                   ]   │
+│                                                                      │
+│  ▸ Similar unreviewed · 3            ⚡ Remember as a rule  ⇧R        │
+├──────────────────────────────────────────────────────────────────────┤
+│ [ Save  ⌘-Enter ]   ☑ Mark reviewed  v          [ ✕ Revert  z ]     │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
 ## Mockups
 
 ### Clean card (an unknown, with a suggestion)
@@ -1210,6 +1485,12 @@ It is sized after Phases 1–5 land and have been used for real.
     description actually changes. Worth it, or should rename suggestions be
     skipped? *Default: write it.*
 
+13. **(Q13) The Mark reviewed checkbox's starting state.** Answered
+    2026-11-01: unchecked without the tag, checked with it, and an existing
+    review date is kept.
+14. **(Q14) Fix the elision bug in Phase 7.** Answered 2026-11-01: yes,
+    definitely.
+
 ## Resolved with Patrick (2026-10-30)
 
 1. **Header comments use two spaces before `;`.** The engine already writes
@@ -1244,7 +1525,9 @@ It is sized after Phases 1–5 land and have been used for real.
 - **Phase 5: committed 2026-10-31.** Docs pages, the `review` docs-screenshot set on :5214 with
   `review.docs.ts`, two import-review shots in `imports.docs.ts`, and the RuleBuilder's `%` warning. The PNGs were generated and reviewed.
   Amendments are in `32-amendments-p5.md`.
-- **Phase 6** (rules from the Journal view, D27) waits for user testing of Phases 1–5.
+- Also committed: `05f6b0f`, which stops a Recents run from growing (p5 amendment).
+- **Phase 6: committed 2026-11-01.** 6a (engine, server and wire) and 6b (UI). Amendments are in `32-amendments-p6.md`.
+- **Phase 7: planned 2026-11-01** (the review card becomes the only transaction editor). Q13 and Q14 are answered. **7a in progress.**
 
 ## Contract amendments made during implementation
 

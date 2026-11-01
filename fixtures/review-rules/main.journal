@@ -1,0 +1,64 @@
+; Rules-file inference fixture (plan 32 D27). Every unknown here came from one
+; of the rules files below `import/` or `bank/`, and each exercises one
+; selection rule — see README.md. Read as of 2026-10-30.
+
+account assets             ; type: A
+account assets:bank:chase  ; type: C
+account assets:bank:wells  ; type: C
+account assets:bank:schwab ; type: C
+account assets:venmo       ; type: C
+account assets:cash        ; type: C
+account liabilities        ; type: L
+account liabilities:credit-card:citi
+account liabilities:amex
+account expenses           ; type: X
+account expenses:unknown
+account expenses:auto:fuel
+account income             ; type: R
+account income:interest
+
+commodity $1,000.00
+
+2025-11-05 BLUE BOTTLE COFFEE 1001
+    expenses:unknown                      $4.25
+    liabilities:credit-card:citi
+
+2026-01-10 VENMO FRIEND
+    expenses:unknown                     $20.00
+    assets:venmo
+
+2026-02-10 BLUE BOTTLE COFFEE 4412
+    expenses:unknown                      $4.50
+    liabilities:credit-card:citi
+
+2026-02-11 CHASE THING  ; id:FIT-0001
+    expenses:unknown                     $12.00
+    assets:bank:chase
+
+2026-02-12 AMEX STORE
+    expenses:unknown                     $30.00
+    liabilities:amex
+
+2026-02-13 WELLS ATM  ; id:W-1
+    expenses:unknown                     $60.00
+    assets:bank:wells
+
+2026-02-14 WELLS BRANCH
+    expenses:unknown                     $15.00
+    assets:bank:wells
+
+2026-02-20 SHELL OIL 77
+    expenses:auto:fuel                   $40.00
+    liabilities:credit-card:citi
+
+2026-03-01 SCHWAB FEE
+    expenses:unknown                      $5.00
+    assets:bank:schwab
+
+2026-03-02 CORNER STORE
+    expenses:unknown                      $3.00
+    assets:cash
+
+2026-03-31 SCHWAB INTEREST
+    assets:bank:schwab                    $1.10
+    income:interest

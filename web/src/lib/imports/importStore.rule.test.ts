@@ -76,13 +76,14 @@ async function dryRunReady(): Promise<void> {
 }
 
 describe("UNIT importStore — the rule builder's source (D25)", () => {
-    it("is the dry run's records, its file and its rules file", async () => {
+    it("prefills from the dry run's records, and names its file and its rules file", async () => {
         engine();
         await importStore.offerFile(upload("bank.csv"));
         expect(importStore.ruleSource()).toBeNull();
         await importStore.runDryRun();
         const source = importStore.ruleSource();
-        expect(source?.records).toEqual(RECORDS);
+        expect(source?.prefill.fields).toEqual(["date", "description", "amount"]);
+        expect(source?.prefill.field).toBe("description");
         expect(source?.fileLabel).toBe("bank.csv");
         expect(source?.rulesLabel).toBe("bank.csv.rules");
     });

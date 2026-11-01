@@ -37,9 +37,9 @@ import {
 } from "#lib/api/nativeDecode.js";
 import {createSaveRequest, defaultRulesId, draftForm} from "./createModel";
 import type {RulesDraft} from "./types";
-import {appendRule, blankRule, toForm, toSaveRequest, type FormItem, type IfBlockItem, type RulesForm} from "./model";
-import {baseName} from "./ruleBuilder";
-import {rulesStore} from "./rulesStore.svelte";
+import type {FormItem, RulesForm} from "./model";
+import {baseName, importPrefill} from "./ruleBuilder";
+import {appendRuleTo} from "./ruleSave";
 import {dataView, type DataView} from "#lib/stores/loadState.js";
 import {createResource} from "#lib/stores/resource.svelte.js";
 import {settings} from "#lib/stores/settings.svelte.js";
@@ -617,20 +617,7 @@ export const importStore = {
         const url = settings.serverUrl;
         const id = runBody()?.rulesId ?? null;
         if (url === null || id === null) return {ok: false, failure: {kind: "unavailable", message: "This import has no rules file to add a rule to."}};
-        let baseline: RulesForm;
-        try {
-            baseline = toForm(decodeRulesDoc(await new LedgelineApi(url).getRules(id)));
-        } catch (error) {
-            return {ok: false, failure: classify(error)};
-        }
-        const block: IfBlockItem = {
-            ...blankRule(),
-            // One group per matcher: OR-ed, hledger's stacked `if` lines.
-            groups: rule.matchers.map((matcher) => ({matchers: [{field: matcher.field ?? "", pattern: matcher.pattern}]})),
-            assignments: rule.assignments.map((assignment) => ({field: assignment.field, value: assignment.value})),
-        };
-        const outcome = await rulesStore.save(id, toSaveRequest(baseline, {...baseline, items: appendRule(baseline.items, block)}));
-        return outcome.ok ? {ok: true} : {ok: false, failure: outcome.failure};
+        return appendRuleTo(url, id, rule);
     },
 
     /** The review overlay's rule builder's view of this import (D25), or null when nothing is staged for a dry run. */
@@ -639,7 +626,7 @@ export const importStore = {
         const body = runBody();
         if (run === null || !run.ok || body === null) return null;
         return {
-            records: run.records,
+            prefill: importPrefill(run.records),
             fileLabel: baseName(body.csvPath) || "this file",
             rulesLabel: baseName(body.rulesId),
             preview: (rule, signal) => importStore.rulePreview(rule, signal),

@@ -198,13 +198,50 @@ An [automatic posting rule](automatic-postings.md) can add postings to a transac
 
 If a rule adds a posting to an unknown account, the card counts as uncategorized and can't be marked reviewed. Fix the rule instead. The link opens Settings → Automatic postings and closes the review, dropping any unsaved edits on the card.
 
+## Remember as a rule from the Journal
+
+A journal card can save its change as an `if` rule too, in the rules file the transaction was most likely imported with, so the next statement arrives categorized. The toggle reads **Remember as a rule**. It appears once you change the description or an account, as during an import, and only when Ledgeline finds a rules file the transaction could have come from. Press <kbd>Shift</kbd>+<kbd>R</kbd> or click it. It starts off on every card.
+
+### How the rules file is chosen
+
+The journal doesn't record which rules file wrote a transaction, and Ledgeline doesn't add a tag to track it. It works the file out from what is already in your files:
+
+- **The account.** Each rules file names the account it imports into on its `account1` line. A transaction paid from `liabilities:credit-card:citi` can only have come from a rules file whose `account1` is `liabilities:credit-card:citi`. A cash purchase matches no rules file, so its card has no toggle.
+- **Transaction ids.** A transaction with an `id:` tag points to a rules file that writes one, such as `comment id:%fitid`. A transaction without one points to a file that doesn't.
+- **hledger's `.latest` files.** `hledger import` leaves a `.latest.citi-2026.csv` file beside each statement, holding the newest date it imported. A rules file whose imports stop before the transaction's date can't have written it.
+
+Many setups keep one rules file per year, such as `citi-2025.csv.rules` and `citi-2026.csv.rules`. Files whose names differ only by a year or a date form one family. That holds in one folder, and across sibling year folders such as `2025/citi.csv.rules` and `2026/citi.csv.rules`. Within a family, Ledgeline picks the file named for the transaction's year. Without one, it picks the newest year before the transaction. A family with no years in its names goes by the newest `.latest` date, then by when the file last changed.
+
+When a 2025 transaction has its 2025 file but a 2026 file exists too, the 2026 file is listed second, in case you are importing ahead.
+
+The line above **Match** names the file it picked, for example "Saving to citi-2026.csv.rules (newest of 2 for citi)". With more than one candidate, the file name is a menu, and picking another file starts the rule again from that file's fields. **Why?** lists every candidate with the reasons Ledgeline found for it.
+
+### When two files fit equally well
+
+Two rules files can import into the same account and fit equally well, such as `amex.csv.rules` and `amex-business.csv.rules`. Ledgeline doesn't guess between them. The line reads **Choose a rules file** with nothing selected, and Match, Then set and the live check stay disabled until you pick one.
+
+<kbd>Shift</kbd>+<kbd>R</kbd> puts focus on that menu, so you can choose without the mouse. Saving the card with the rule on is blocked until you choose, with a message under the rule. Turn the rule off to save the card on its own.
+
+### Match, Then set and the live check
+
+Match and Then set work as they do during an import. See [Remember as a rule](../imports/new-transactions.md#remember-as-a-rule). The pattern comes from the card's description, because an uncategorized transaction matched no categorizing rule and usually still carries the bank's text. Then set uses the field the rules file writes each posting with. The rules file's own account is always `account1`, whatever order the postings are in the journal, so the category on the other side is usually `account2`.
+
+The live check needs something to test the rule against:
+
+- When the rules file's statement is still on disk, the check runs the rule over it, as in "Matches 2 of 3 rows in citi-2026.csv · 0 already categorised". Ledgeline looks for the statement where the rules file's `source` line points, or beside the rules file under the same name without `.rules`. When `source` matches several files, it uses the newest.
+- With no statement found, the check counts journal transactions instead, as in "Matches 3 of 9 transactions from liabilities:credit-card:citi (no statement file found to test against)". It counts the transactions from the rules file's account whose description the pattern matches.
+
+When the pattern matches no row of the statement, another rule may have renamed this transaction's description on the way in. The card then shows a name the bank never sent. The check says so. Change the pattern to match the text in the statement.
+
+The rule is saved first, at the end of the rules file, then the card. If the rule can't be saved, the card keeps your edits and the reason shows under the rule. A new rule changes nothing already in the journal. It applies from the next import. To change similar transactions now, use [Similar](#similar-transactions).
+
 ## Keys
 
 Every key the review uses is listed under "Review" in [Keyboard shortcuts](keyboard.md#review). Press <kbd>?</kbd> in the review to see them on screen.
 
 ## Reviewing during an import
 
-The same review runs on an import before it is written, with **Review Unknowns** and **Review All**. There it can also save a change as a rule in the rules file, so the next statement arrives categorized. See [Review before writing](../imports/new-transactions.md#review-before-writing).
+The same review runs on an import before it is written, with **Review Unknowns** and **Review All**. There, **Remember as a rule** saves to the import's own rules file, and the live check runs over the statement you are importing. See [Review before writing](../imports/new-transactions.md#review-before-writing).
 
 ## Related pages
 

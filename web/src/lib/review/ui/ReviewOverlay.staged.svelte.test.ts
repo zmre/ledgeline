@@ -10,6 +10,7 @@ import {decodeCsvStagedTxn, decodeQbStagedTxn} from "#lib/api/importReviewDecode
 import type {EditResult} from "#lib/api/editFailure.js";
 import {keymap} from "#lib/keys/keymap.svelte.js";
 import type {RulePreview, RuleSource, StagedSave, StagedTxn} from "#lib/imports/reviewTypes.js";
+import {importPrefill} from "#lib/imports/ruleBuilder.js";
 import {resetReview, review, type StagedKind} from "#lib/stores/review.svelte.js";
 import {connectFakeEngine} from "#lib/testing/fakeEngine.js";
 import {
@@ -67,7 +68,7 @@ async function open(kind: StagedKind, options: {items?: StagedTxn[]; rules?: boo
     const saves: StagedSave[] = [];
     const closed: boolean[] = [];
     const rules = {
-        records: RECORDS,
+        prefill: importPrefill(RECORDS),
         fileLabel: "checking.csv",
         rulesLabel: "checking.csv.rules",
         preview: vi.fn().mockResolvedValue(PREVIEW),

@@ -709,6 +709,59 @@ impl Discovery {
         })
     }
 
+    /// The data file the rules file `id` reads — its `source` (the newest match
+    /// of a glob), else the sibling its name implies — through exactly the
+    /// guards [`Discovery::preview`] applies. `None` when `id` does not resolve
+    /// or no such file passes them. Plan 32 D27's live check runs a candidate
+    /// rule against it.
+    #[must_use]
+    pub fn data_file(&self, id: &str) -> Option<VaultPath> {
+        self.locate(self.resolve(id)?).ok()
+    }
+
+    /// The newest date the `.latest.NAME` dedup marker for `id`'s data file
+    /// records, `YYYY-MM-DD` (plan 32 D27: the marker bounds which
+    /// transactions the rules file can have produced).
+    ///
+    /// hledger keeps the marker beside the data file, keyed to its name. When
+    /// the data file is gone (statements are often moved away after an
+    /// import), a rules file with no `source` still names it — its sibling —
+    /// and the marker is looked for there. Read under the vault's pinned,
+    /// capped read, like the rules files themselves; anything that is not a
+    /// plain, small file of dates reads as no marker.
+    #[must_use]
+    pub fn latest_date(&self, id: &str) -> Option<String> {
+        /// A marker repeats its newest date once per record that shares it; a
+        /// statement has thousands of rows at most.
+        const MAX_MARKER_BYTES: u64 = 256 * 1024;
+        let file = self.resolve(id)?;
+        let data = match self.locate(file) {
+            Ok(path) => path,
+            Err(_) if file.hints.source.is_none() => file
+                .path
+                .path
+                .parent()?
+                .child(&sibling_data_name(id)?)
+                .ok()?,
+            Err(_) => return None,
+        };
+        let marker = data
+            .parent()?
+            .child(&format!(".latest.{}", data.file_name()?))
+            .ok()?;
+        let (bytes, _) = self
+            .vault
+            .read_pinned(&marker, Some(MAX_MARKER_BYTES))
+            .ok()?;
+        String::from_utf8(bytes)
+            .ok()?
+            .lines()
+            .map(str::trim)
+            .filter(|line| is_iso_date(line))
+            .max()
+            .map(str::to_string)
+    }
+
     /// Resolve the data file `file` describes, applying every guard, and return
     /// the **canonical** path to read.
     ///
@@ -1296,6 +1349,15 @@ fn sibling_data_name(id: &str) -> Option<String> {
     name.get(..name.len().checked_sub(SUFFIX.len())?)
         .filter(|stem| !stem.is_empty())
         .map(str::to_string)
+}
+
+/// Whether `value` is shaped `YYYY-MM-DD` — what a `.latest.NAME` line is.
+fn is_iso_date(value: &str) -> bool {
+    value.len() == 10
+        && value.bytes().enumerate().all(|(at, byte)| match at {
+            4 | 7 => byte == b'-',
+            _ => byte.is_ascii_digit(),
+        })
 }
 
 /// The two glob metacharacters supported in a `source`. `[a-z]` classes and `**`

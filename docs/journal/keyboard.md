@@ -80,7 +80,7 @@ These work in the [review](review.md) of the journal or of an import. Most are s
 | <kbd>s</kbd> | Open or close Similar |
 | <kbd>Space</kbd> | Check or uncheck the focused similar row, while Similar is open |
 | <kbd>Shift</kbd>+<kbd>A</kbd> | Check or uncheck every similar row |
-| <kbd>Shift</kbd>+<kbd>R</kbd> | Remember as a rule (CSV imports only) |
+| <kbd>Shift</kbd>+<kbd>R</kbd> | Remember as a rule, when a rules file fits the card. Not for QuickBooks imports. |
 | <kbd>i</kbd> | Ignore: tag `reviewed:ignore` and move on |
 | <kbd>o</kbd> | Open in the full editor (journal only) |
 | <kbd>Esc</kbd> | Leave the field. With no field focused, close the review. |

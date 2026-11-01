@@ -125,7 +125,12 @@ user's first click on "All time".
 
 - feat: File -> New
   - Here I'm assuming we're setting up a new set of journal files, chart of accounts, etc. Probably we prompt with some questions and use an empty folder as a starting point and then create a skeleton so someone can start using us to track things. We should have a default chart of accounts for individuals and another for businesses and then we should allow them to start with an empty set of accounts to add their own.
-- feat: saved report filters?
+
+## Search
+
+- Our search should line up better with hledger search so you can copy an hledger query in and get the same results
+  - This especially means smarting handling of tags when searching
+- feat: saved report filters (needs to remember dates as absolute or relative as part of this, not just the search filter)
 
 ## Budgeting / planning / modeling
 

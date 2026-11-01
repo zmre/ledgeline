@@ -55,6 +55,16 @@
     // description or account changed also offers "Remember as a rule" (D25),
     // whose rule is saved BEFORE the card, so the dry run that follows sees both.
     // There is no full editor for a transaction that is not in a file yet.
+    //
+    // # Rules from the Journal (plan 32 D27)
+    //
+    // A journal card offers "Remember as a rule" too, when the engine finds a
+    // rules file the transaction could have come from. The choice is asked for
+    // in the background as each card appears (aborted if it leaves first) and
+    // kept per card for the run. The file line above Match preselects the
+    // engine's recommendation; when the engine can't decide (`needsChoice`)
+    // nothing is selected, and no rule is saved until the user picks. The save
+    // order is the import's: the rule, then the card (the usual batch).
     import {flushSync, tick, untrack} from "svelte";
     import {cardChange, cardOps, isSplit, reviewFormOf} from "#lib/api/editMapping.js";
     import {openAutoRule} from "#lib/autoRules/openRule.js";
@@ -65,11 +75,12 @@
     import {PRIORITY} from "#lib/keys/types.js";
     import {localToday} from "#lib/stores/filters.svelte.js";
     import {journal} from "#lib/stores/journal.svelte.js";
-    import type {RuleSpec, StagedTxn} from "#lib/imports/reviewTypes.js";
+    import type {RuleChoice, RuleSource, RuleSpec} from "#lib/imports/reviewTypes.js";
     import {review, type ReviewCard, type StagedKind} from "#lib/stores/review.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
     import {acceptChip, changeSummary, chipsFor, cycleChip, footerState, hasUnknown, isDirty, similarRows, type Chips} from "../card";
     import type {Transaction} from "#lib/domain/types.js";
+    import {loadRuleChoice} from "../journalRules";
     import type {QueueKind, ReviewForm} from "../types";
     import {reviewLaunch, type StagedLaunch} from "./launch.svelte";
     import {
@@ -94,6 +105,7 @@
     import ReviewIcon from "./ReviewIcon.svelte";
     import ReviewSettings from "./ReviewSettings.svelte";
     import RuleBuilder from "./RuleBuilder.svelte";
+    import RuleFilePicker from "./RuleFilePicker.svelte";
     import SimilarSection from "./SimilarSection.svelte";
 
     let {
@@ -147,6 +159,16 @@
     let checkedStaged = $state<number[]>([]);
     /** Remember as a rule (D25), per card. */
     let ruleOn = $state(false);
+    /**
+     * A journal card's rules files (D27), once its load lands: null while
+     * loading, and for good when there are none or the request failed.
+     */
+    let ruleChoice = $state<RuleChoice | null>(null);
+    /** The file the user picked on this card; null takes the recommendation. */
+    let rulePick = $state<string | null>(null);
+    /** Every journal card's answer this run, by index (null: no toggle). An aborted load leaves no entry, so coming back asks again. */
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- a cache the load effect reads untracked on purpose: a landing load must not re-run (and abort) itself
+    const ruleChoices = new Map<number, RuleChoice | null>();
     let ruleError = $state<string | null>(null);
     /**
      * Why the import failed to regenerate after a rule was saved. Shown on top
@@ -183,8 +205,18 @@
     const rows = $derived(similarSet === null || split ? [] : similarRows(similarSet.candidates, similarSet.inQueue, change));
     /** D24's "in this import": the run's other cards with the same key. They are all in the run, so none is marked "in this run". */
     const stagedRows = $derived(source === null || txn === null || split ? [] : similarRows(review.stagedSimilar(txn.index), [], change));
-    /** D25: offered on a CSV import's card whose description or account changed (`change` is null for a split). */
-    const ruleItem = $derived(source?.rules != null && current !== null && change !== null ? (current.item as StagedTxn) : null);
+    const cardIndex = $derived(txn?.index ?? null);
+    /** D27: the file a journal card's rule goes to — the user's pick, else the engine's recommendation. Null: still to be chosen. */
+    const rulePicked = $derived(rulePick ?? ruleChoice?.recommended ?? null);
+    const journalRules = $derived(ruleChoice === null || rulePicked === null ? null : ruleChoice.source(rulePicked));
+    /** Where a saved rule goes: the import's rules file, or the journal card's pick. */
+    const ruleSource = $derived<RuleSource | null>(source !== null ? (source.rules ?? null) : journalRules);
+    /**
+     * Remember as a rule is offered on a card whose description or account
+     * changed (`change` is null for a split): a CSV import's (D25), or a
+     * journal card with rules files to choose from (D27).
+     */
+    const ruleOffered = $derived(current !== null && change !== null && (source !== null ? source.rules != null : ruleChoice !== null));
     const updatedFrom = $derived.by(() => {
         const from = current?.updatedFrom;
         if (from === null || from === undefined) return null;
@@ -228,6 +260,24 @@
         });
     });
 
+    // D27: each journal card's rules files, asked for as it appears and
+    // aborted if it leaves first. Kept for the run, a failed request as "none".
+    $effect(() => {
+        const index = source === null ? cardIndex : null;
+        if (index === null) return;
+        const known = ruleChoices.get(index);
+        ruleChoice = known ?? null;
+        if (known !== undefined) return;
+        const controller = new AbortController();
+        const settleWith = (found: RuleChoice | null): void => {
+            if (controller.signal.aborted) return;
+            ruleChoices.set(index, found);
+            if (review.current?.item.txn.index === index) ruleChoice = found;
+        };
+        loadRuleChoice(index, controller.signal).then(settleWith, () => settleWith(null));
+        return () => controller.abort();
+    });
+
     // The run follows the journal: a change made elsewhere re-validates the
     // queue (D5a), and the completion lists follow the generation (D15).
     $effect(() => {
@@ -247,6 +297,7 @@
         stagedOpen = false;
         checkedStaged = [];
         ruleOn = false;
+        rulePick = null;
         ruleError = null;
         showDate = false;
         confirmClose = false;
@@ -293,21 +344,26 @@
             return;
         }
         if (phase === "clean-unknown" || current.status === "saving" || ruleSaving) return;
-        if (ruleItem !== null && ruleOn) return void saveWithRule();
+        if (ruleOffered && ruleOn) return void saveWithRule();
         save();
     }
 
     /**
      * D25: "Remember as a rule" is on. The rule is written FIRST — if it is
      * refused the card stays, edits and all, with the reason under the rule —
-     * then the card is saved into the import as usual, then the import is
-     * regenerated: the card's override replays over what the rule now writes.
+     * then the card is saved as usual (into the import, or the journal's
+     * batch), then an import is regenerated: the card's override replays over
+     * what the rule now writes. A journal card's refresh does nothing (D27).
      */
     async function saveWithRule(): Promise<void> {
-        const rules = source?.rules ?? null;
-        const rule = ruleBuilder?.currentRule() ?? null;
+        const rules = ruleSource;
         const index = txn?.index ?? null;
-        if (rules === null || index === null) return;
+        if (index === null) return;
+        if (rules === null) {
+            ruleError = "choose a rules file for it first, or turn Remember as a rule off.";
+            return;
+        }
+        const rule = ruleBuilder?.currentRule() ?? null;
         if (rule === null) {
             ruleError = "give it a pattern and something to set, or turn it off.";
             return;
@@ -440,10 +496,19 @@
         for (const section of sections) section.setAll(on);
     }
 
-    /** `R` (D25): turn "Remember as a rule" on or off. */
-    function toggleRule(): void {
-        if (ruleItem === null || ruleSaving) return;
+    /** `R` (D25): turn "Remember as a rule" on or off. Turned on with its file still to be chosen (D27), the picker takes focus. */
+    async function toggleRule(): Promise<void> {
+        if (!ruleOffered || ruleSaving) return;
         ruleOn = !ruleOn;
+        ruleError = null;
+        if (!ruleOn || ruleSource !== null) return;
+        await tick();
+        (currentCard() ?? root)?.querySelector<HTMLSelectElement>("[data-testid='review-rule-file-select']")?.focus();
+    }
+
+    /** D27: the user chose the file a journal card's rule goes to. */
+    function pickRuleFile(rulesId: string): void {
+        rulePick = rulesId;
         ruleError = null;
     }
 
@@ -556,7 +621,7 @@
                 run: () => void activateFocused(),
             },
             {keys: "A", label: "Check or uncheck all similar", group: "Review", enabled: onCard, run: toggleAllSimilar},
-            {keys: "R", label: "Remember as a rule", group: "Review", enabled: () => onCard() && ruleItem !== null, run: toggleRule},
+            {keys: "R", label: "Remember as a rule", group: "Review", enabled: () => onCard() && ruleOffered, run: () => void toggleRule()},
             {keys: "i", label: "Ignore (never ask again)", group: "Review", enabled: onCard, run: ignore},
             {keys: "o", label: "Open in the full editor", group: "Review", enabled: () => onCard() && source === null, run: openEditor},
             {keys: "Escape", label: "Leave the field, or close", group: "Review", run: requestClose},
@@ -816,17 +881,23 @@
                                 {:else if rows.length > 0}
                                     <SimilarSection bind:this={similarSection} {rows} bind:checked bind:open={similarOpen} applying={changeSummary(change)} />
                                 {/if}
-                                {#if ruleItem !== null && source?.rules != null && change !== null}
+                                {#if ruleOffered && change !== null}
                                     <RuleBuilder
                                         bind:this={ruleBuilder}
                                         bind:on={ruleOn}
-                                        source={source.rules}
-                                        item={ruleItem}
+                                        source={ruleSource}
+                                        item={current.item}
                                         original={txn}
                                         {change}
                                         error={ruleError}
                                         busy={ruleSaving}
+                                        file={source === null && ruleChoice !== null ? fileLine : undefined}
                                     />
+                                    {#snippet fileLine()}
+                                        {#if ruleChoice !== null}
+                                            <RuleFilePicker choice={ruleChoice} picked={rulePicked} onPick={pickRuleFile} disabled={ruleSaving} />
+                                        {/if}
+                                    {/snippet}
                                 {/if}
                             </div>
 

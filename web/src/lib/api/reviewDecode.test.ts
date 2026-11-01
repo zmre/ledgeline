@@ -7,7 +7,7 @@ import {queueItemWire, queuePageWire, reviewTxnWire, similarWire, txnFixture} fr
 import {wireRow} from "#lib/testing/journalViewFixture.js";
 import {ApiShapeError} from "./client";
 import {decodeJournalSummary, decodeRow} from "./journalViewDecode";
-import {decodeBatchResult, decodePayees, decodeQueuePage, decodeSimilarSet, decodeTags} from "./reviewDecode";
+import {decodeBatchResult, decodePayees, decodeQueuePage, decodeRulesFor, decodeSimilarSet, decodeTags} from "./reviewDecode";
 
 const CARD = txnFixture(12, "SQ *BLUE BOTTLE 4412 OAKLAND");
 const SUGGESTION = {account: "expenses:food:coffee", description: "Blue Bottle Coffee", source: "exactKey", confidence: 7500, strong: true, count: 3};
@@ -78,5 +78,53 @@ describe("UNIT review decoders", () => {
         const counts = {unknown: 8, unreviewedRecent: 17, notEditable: 0, notEditableRecent: 0};
         expect(decodeJournalSummary({...base, review: counts}).review).toEqual(counts);
         expect(() => decodeJournalSummary({...base, review: {...counts, unknown: undefined}})).toThrow(ApiShapeError);
+    });
+});
+
+describe("UNIT review decoders — rules for a journal transaction (D27)", () => {
+    const candidate = (rulesId: string, recommended: boolean, extra: Record<string, unknown> = {}) => ({
+        rulesId,
+        label: rulesId.replace(/^.*\//, "").replace(/\.csv\.rules$/, ""),
+        family: "citi",
+        familySize: 2,
+        year: 2026,
+        account1: "liabilities:credit-card:citi",
+        reasons: ["Imports into liabilities:credit-card:citi, this transaction's account"],
+        recommended,
+        matchField: "description",
+        fields: ["date", "description", "amount"],
+        ...extra,
+    });
+
+    it("decodes the candidates, best first, with the one recommended", () => {
+        const found = decodeRulesFor({
+            index: 3,
+            needsChoice: false,
+            candidates: [
+                candidate("import/citi-2026.csv.rules", true),
+                candidate("import/citi-2025.csv.rules", false, {year: null, fields: null, matchField: null}),
+            ],
+        });
+        expect(found.index).toBe(3);
+        expect(found.needsChoice).toBe(false);
+        expect(found.candidates.map((c) => c.rulesId)).toEqual(["import/citi-2026.csv.rules", "import/citi-2025.csv.rules"]);
+        expect(found.candidates[0]).toMatchObject({recommended: true, year: 2026, familySize: 2, matchField: "description"});
+        expect(found.candidates[1]).toMatchObject({recommended: false, year: null, fields: null, matchField: null});
+        expect(Object.isFrozen(found.candidates[0])).toBe(true);
+    });
+
+    it("decodes no candidates, and a tie that needs a choice", () => {
+        expect(decodeRulesFor({index: 9, needsChoice: false, candidates: []}).candidates).toEqual([]);
+        const tie = decodeRulesFor({index: 5, needsChoice: true, candidates: [candidate("a.rules", false), candidate("b.rules", false)]});
+        expect(tie.needsChoice).toBe(true);
+    });
+
+    it("refuses a body whose recommendation and needsChoice disagree", () => {
+        const two = [candidate("a.rules", true), candidate("b.rules", true)];
+        expect(() => decodeRulesFor({index: 1, needsChoice: false, candidates: two})).toThrow(ApiShapeError);
+        expect(() => decodeRulesFor({index: 1, needsChoice: false, candidates: [candidate("a.rules", false)]})).toThrow(ApiShapeError);
+        expect(() => decodeRulesFor({index: 1, needsChoice: true, candidates: [candidate("a.rules", true)]})).toThrow(ApiShapeError);
+        expect(() => decodeRulesFor({index: 1, needsChoice: true, candidates: []})).toThrow(ApiShapeError);
+        expect(() => decodeRulesFor({index: 1, needsChoice: false, candidates: [candidate("a.rules", true, {reasons: "x"})]})).toThrow(ApiShapeError);
     });
 });

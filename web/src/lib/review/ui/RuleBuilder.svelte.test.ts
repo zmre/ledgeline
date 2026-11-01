@@ -1,8 +1,11 @@
 // "Remember as a rule" (plan 32 D25) mounted on its own: the prefilled match,
 // what it sets, and the live check — debounced, each newer check aborting the
 // last, and every answer it can give (a count and the rows it changes,
-// hledger's refusal, a failed request, no rules file). Saving it is the
-// overlay's job, in `ReviewOverlay.staged.svelte.test.ts`.
+// hledger's refusal, a failed request, no rules file). Then a journal card's
+// (D27): the count over the journal when there is no statement, the
+// statement's own name, the "renamed by a rule" hint, and the builder locked
+// while the rules file is still to be picked. Saving it is the overlay's job,
+// in `ReviewOverlay.staged.svelte.test.ts` and `ReviewOverlay.rules.svelte.test.ts`.
 
 import {fireEvent, render, screen} from "@testing-library/svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
@@ -10,7 +13,7 @@ import {cardChange, reviewFormOf, type CardChange} from "#lib/api/editMapping.js
 import {decodeCsvStagedTxn} from "#lib/api/importReviewDecode.js";
 import type {RulePreview, RuleSource, RuleSpec, StagedRecords, StagedTxn} from "#lib/imports/reviewTypes.js";
 import {stagedTxnWire, txnFixture} from "#lib/testing/reviewFixture.js";
-import {RULE_PREVIEW_DEBOUNCE_MS} from "#lib/imports/ruleBuilder.js";
+import {descriptionPrefill, importPrefill, RULE_PREVIEW_DEBOUNCE_MS} from "#lib/imports/ruleBuilder.js";
 import RuleBuilder from "./RuleBuilder.svelte";
 
 const RECORDS: StagedRecords = {
@@ -51,10 +54,17 @@ const OK: RulePreview = {
 };
 
 function sourceWith(preview: RuleSource["preview"], records: StagedRecords = RECORDS): RuleSource {
-    return {records, fileLabel: "checking.csv", rulesLabel: "checking.csv.rules", preview, save: vi.fn(), refresh: vi.fn(async () => null)};
+    return {
+        prefill: importPrefill(records),
+        fileLabel: "checking.csv",
+        rulesLabel: "checking.csv.rules",
+        preview,
+        save: vi.fn(),
+        refresh: vi.fn(async () => null),
+    };
 }
 
-function mount(props: {source: RuleSource; on?: boolean; change?: CardChange; item?: StagedTxn}) {
+function mount(props: {source: RuleSource | null; on?: boolean; change?: CardChange; item?: StagedTxn}) {
     return render(RuleBuilder, {
         props: {source: props.source, item: props.item ?? ITEM, original: (props.item ?? ITEM).txn, change: props.change ?? changeOf(), on: props.on ?? true},
     });
@@ -213,5 +223,75 @@ describe("COMPONENT RuleBuilder — the live check", () => {
         mount({source: sourceWith(vi.fn().mockResolvedValue(null))});
         await vi.advanceTimersByTimeAsync(RULE_PREVIEW_DEBOUNCE_MS);
         expect(check()).toContain("needs a rules file and a journal");
+    });
+});
+
+/** A journal card's source (D27): prefilled from the description, with the account the file books to. */
+function journalSource(preview: RuleSource["preview"]): RuleSource {
+    return {
+        prefill: descriptionPrefill({fields: ["date", "description", "amount"], matchField: "description"}),
+        fileLabel: "citi-2026",
+        rulesLabel: "citi-2026.csv.rules",
+        account: "liabilities:credit-card:citi",
+        preview,
+        save: vi.fn(),
+        refresh: vi.fn(async () => null),
+    };
+}
+
+describe("COMPONENT RuleBuilder — on a journal card (D27)", () => {
+    it("counts the journal's transactions from the file's account when there is no statement", async () => {
+        mount({source: journalSource(vi.fn().mockResolvedValue({ok: true, basis: "journal", matched: 3, total: 9}))});
+        await vi.advanceTimersByTimeAsync(RULE_PREVIEW_DEBOUNCE_MS);
+        expect(screen.getByTestId("review-rule-count").textContent?.replace(/\s+/g, " ").trim()).toBe(
+            "Matches 3 of 9 transactions from liabilities:credit-card:citi (no statement file found to test against)"
+        );
+        expect(screen.queryByTestId("review-rule-changes-toggle")).toBeNull();
+    });
+
+    it("warns when no journal transaction matches", async () => {
+        mount({source: journalSource(vi.fn().mockResolvedValue({ok: true, basis: "journal", matched: 0, total: 9}))});
+        await vi.advanceTimersByTimeAsync(RULE_PREVIEW_DEBOUNCE_MS);
+        expect(check()).toContain("No transaction from it matches");
+    });
+
+    it("names the statement it ran the rule on", async () => {
+        mount({source: journalSource(vi.fn().mockResolvedValue({...OK, basis: "csv", file: "citi-2026.csv", noCsvMatch: false}))});
+        await vi.advanceTimersByTimeAsync(RULE_PREVIEW_DEBOUNCE_MS);
+        expect(screen.getByTestId("review-rule-count").textContent?.replace(/\s+/g, " ").trim()).toBe(
+            "Matches 2 of 5 rows in citi-2026.csv · 1 already categorised"
+        );
+        expect(screen.queryByTestId("review-rule-renamed")).toBeNull();
+    });
+
+    it("says the description may have been renamed when no row of the statement matches", async () => {
+        const preview = vi.fn().mockResolvedValue({...OK, basis: "csv", file: "citi-2026.csv", noCsvMatch: true, matched: 0, changed: [], changedTotal: 0});
+        mount({source: journalSource(preview)});
+        await vi.advanceTimersByTimeAsync(RULE_PREVIEW_DEBOUNCE_MS);
+        expect(screen.getByTestId("review-rule-renamed").textContent?.replace(/\s+/g, " ").trim()).toBe(
+            "No rows in citi-2026.csv match — this description may have been renamed by another rule; try matching the bank's original text."
+        );
+        expect(check()).not.toContain("No row in this import matches");
+    });
+
+    it("is locked, and checks nothing, while the rules file is still to be picked", async () => {
+        const {component} = mount({source: null});
+        expect(pattern().disabled).toBe(true);
+        expect(field().disabled).toBe(true);
+        for (const box of screen.getAllByTestId("review-rule-target") as HTMLInputElement[]) expect(box.disabled).toBe(true);
+        expect(screen.getByTestId("review-rule-unpicked").textContent).toContain("Choose a rules file first");
+        expect(component.currentRule()).toBeNull();
+        expect(screen.getByTestId("review-rule").textContent).toContain("Choose the rules file to add it to");
+    });
+
+    it("starts the rule again from the new file when the source changes", async () => {
+        const first = journalSource(vi.fn().mockResolvedValue({ok: true, basis: "journal", matched: 1, total: 2}));
+        const second: RuleSource = {...first, prefill: descriptionPrefill({fields: null, matchField: null}), rulesLabel: "citi-2025.csv.rules"};
+        const view = mount({source: first});
+        await fireEvent.input(pattern(), {target: {value: "hardware"}});
+        await view.rerender({source: second});
+        expect(field().value).toBe("");
+        expect(pattern().value).toBe("hardware.*store");
+        expect(screen.getByTestId("review-rule").textContent).toContain("Added to the end of citi-2025.csv.rules");
     });
 });

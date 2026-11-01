@@ -162,3 +162,125 @@ test("review unknowns from the keyboard: suggestion, similar, skip and back — 
     );
     expect(card).toMatch(/\n {4}liabilities:visa$/);
 });
+
+// ---------------------------------------------------------------------------
+// Remember as a rule from the Journal (plan 32 D27)
+// ---------------------------------------------------------------------------
+//
+// Against the journal-rules engine on :5096: a scratch copy of
+// fixtures/review-rules/ (see playwright.config.ts and the fixture's README),
+// whose unknowns each came from a rules file beside the journal. At TODAY the
+// Unknowns queue is, newest first: #10 CORNER STORE (assets:cash, no rules
+// file), #9 SCHWAB FEE, #7 WELLS BRANCH, #6 WELLS ATM, #5 AMEX STORE (two
+// families for liabilities:amex: the user must choose), #4 CHASE THING, #3
+// BLUE BOTTLE COFFEE 4412 (citi-2026 recommended; its statement citi-2026.csv
+// has 3 rows, 2 of them Blue Bottle), #2, #1. Every card lists the expense
+// first and the funding account second, so the rule must set `account2`, the
+// slot the rules file writes it to.
+
+const RULES_API = "http://127.0.0.1:5096";
+/**
+ * The live check waits on an hledger subprocess (`print` over the statement).
+ * Alone it answers in well under a second; under the full suite's parallel
+ * engines it has overrun the default 5s, so these assertions wait longer.
+ */
+const LIVE_CHECK_TIMEOUT = 15_000;
+const RULES_COPY = resolve(import.meta.dirname, "../../target/e2e-review-rules");
+
+test.describe("remember as a rule from the Journal", () => {
+    test.beforeEach(async ({page}) => {
+        // Registered after the file's own init script, so this server wins.
+        await page.addInitScript(
+            ([url, token]) => localStorage.setItem("ledgeline.settings.v1", JSON.stringify({serverUrl: url, serverToken: token, insightsOpen: false})),
+            [RULES_API, API_TOKEN]
+        );
+    });
+
+    /** Recategorise the card's first posting and come back to card mode. */
+    async function recategorise(page: Page, index: number, account: string): Promise<void> {
+        const card = cardOf(page, index);
+        await card.getByLabel("Account for posting 1").fill(account);
+        // Escape closes the completion list if it is open, then leaves the field (D16).
+        for (let tries = 0; tries < 3 && !(await card.evaluate((element) => element === document.activeElement)); tries += 1) {
+            await page.keyboard.press("Escape");
+        }
+        await expect(card).toBeFocused();
+    }
+
+    test("hidden with no rules file; a picker when it's ambiguous; the recommendation otherwise — and the bytes on disk", async ({page}) => {
+        // All dates: the fixture's transactions predate the Journal's default
+        // 90-day window (the review queues use their own 365-day lookback).
+        await page.goto("/?preset=all");
+        await expect(page.locator("tbody tr[data-txn]").first()).toBeVisible();
+        await expect(page.getByTestId("review-unknowns-count")).toHaveText("9");
+
+        // 1. CORNER STORE is paid in cash: no rules file books to it, so no toggle.
+        const cornerRules = page.waitForResponse((response) => response.url().includes("/api/review/rules-for/10"));
+        await page.keyboard.press("u");
+        await expect(position(page)).toHaveText("1 of 9");
+        await cornerRules;
+        await recategorise(page, 10, "expenses:auto:fuel");
+        await expect(cardOf(page, 10).getByTestId("review-rule")).toHaveCount(0);
+        await page.keyboard.press("z");
+        for (let skips = 0; skips < 4; skips += 1) await page.keyboard.press("n");
+
+        // 2. AMEX STORE: two equally likely files. R opens the rule with the
+        //    picker focused and nothing chosen; the rule is locked, and the
+        //    card can't be saved with it on until a file is picked.
+        const amex = cardOf(page, 5);
+        await expect(position(page)).toHaveText("5 of 9");
+        await expect(amex).toBeFocused();
+        await recategorise(page, 5, "expenses:auto:fuel");
+        await expect(amex.getByTestId("review-rule")).toBeVisible();
+        await page.keyboard.press("Shift+R");
+        const amexFile = amex.getByTestId("review-rule-file-select");
+        await expect(amexFile).toBeFocused();
+        await expect(amexFile).toHaveValue("");
+        await expect(amex.getByTestId("review-rule-pattern")).toBeDisabled();
+        await page.keyboard.press("ControlOrMeta+Enter");
+        await expect(amex.getByTestId("review-rule-save-error")).toContainText("choose a rules file for it first");
+        await expect(position(page)).toHaveText("5 of 9");
+
+        // No statement beside amex.csv.rules: the check counts the journal.
+        await amexFile.selectOption("import/amex.csv.rules");
+        await expect(amexFile).toBeFocused();
+        await expect(amex.getByTestId("review-rule-file")).toContainText("Saving to");
+        await expect(amex.getByTestId("review-rule-pattern")).toHaveValue("amex.*store");
+        await expect(amex.getByTestId("review-rule-count")).toHaveText(
+            /Matches\s+1\s+of\s+1\s+transactions from\s+liabilities:amex\s+\(no statement file found to test against\)/,
+            {timeout: LIVE_CHECK_TIMEOUT}
+        );
+        await page.keyboard.press("ControlOrMeta+Enter");
+        await expect(cardOf(page, 4)).toBeFocused();
+        await expect(async () => {
+            const rules = readFileSync(resolve(RULES_COPY, "import/amex.csv.rules"), "utf8");
+            expect(rules).toMatch(/if %description amex\.\*store\n\s+account2 expenses:auto:fuel/);
+        }).toPass();
+        expect(readFileSync(resolve(RULES_COPY, "import/amex-business.csv.rules"), "utf8")).not.toContain("amex.*store");
+        await expect(async () => {
+            const text = readFileSync(resolve(RULES_COPY, "main.journal"), "utf8").replaceAll("\r\n", "\n");
+            const at = text.indexOf("2026-02-12 AMEX STORE");
+            const written = text.slice(at, text.indexOf("\n\n", at));
+            expect(written).toContain("reviewed:2026-10-30");
+            expect(written).toMatch(/expenses:auto:fuel\s+\$30\.00/);
+        }).toPass();
+
+        // 3. BLUE BOTTLE COFFEE 4412: the 2026 file is recommended, and the
+        //    check runs on its statement. The picker is in the Tab order.
+        await page.keyboard.press("n");
+        const blue = cardOf(page, 3);
+        await expect(blue).toBeFocused();
+        await recategorise(page, 3, "expenses:auto:fuel");
+        await page.keyboard.press("Shift+R");
+        await expect(blue).toBeFocused();
+        const blueFile = blue.getByTestId("review-rule-file-select");
+        await expect(blueFile).toHaveValue("import/citi-2026.csv.rules");
+        await expect(blue.getByTestId("review-rule-file-reason")).toHaveText("(newest of 2 for citi)");
+        await expect(blue.getByTestId("review-rule-count")).toHaveText(/Matches\s+2\s+of\s+3\s+rows in citi-2026\.csv\s+·\s+0\s+already categorised/, {
+            timeout: LIVE_CHECK_TIMEOUT,
+        });
+        await blue.getByTestId("review-rule-toggle").focus();
+        await page.keyboard.press("Tab");
+        await expect(blueFile).toBeFocused();
+    });
+});

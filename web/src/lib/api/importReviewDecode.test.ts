@@ -4,7 +4,8 @@
 
 import {describe, expect, it} from "vitest";
 import {qbStagedTxnWire, stagedTxnWire, txnFixture} from "#lib/testing/reviewFixture.js";
-import {decodeCsvStagedTxn, decodeQbStagedTxn, decodeRulePreview, decodeStagedRecords} from "./importReviewDecode";
+import {ApiShapeError} from "./client";
+import {decodeCsvStagedTxn, decodeJournalRulePreview, decodeQbStagedTxn, decodeRulePreview, decodeStagedRecords} from "./importReviewDecode";
 import {decodeCommitResult, decodeDryRun, decodeQbPreview} from "./nativeDecode";
 import {decodeKeySimilarSet, decodeSimilarSet} from "./reviewDecode";
 
@@ -126,6 +127,32 @@ describe("UNIT importReviewDecode — the rule builder's live check", () => {
 
     it("refuses a body missing its counts", () => {
         expect(() => decodeRulePreview({ok: true, matched: 1})).toThrow();
+    });
+});
+
+describe("UNIT importReviewDecode — a journal card's live check (D27)", () => {
+    const rows = {ok: true, matched: 2, total: 3, alreadyCategorised: 0, changed: [{ordinal: 0, before: "a", after: "b"}], changedTotal: 2};
+
+    it("decodes the CSV basis with its file, and flags a pattern that met no row", () => {
+        expect(decodeJournalRulePreview({...rows, basis: "csv", file: "citi-2026.csv"})).toEqual({
+            ...rows,
+            basis: "csv",
+            file: "citi-2026.csv",
+            noCsvMatch: false,
+        });
+        const none = decodeJournalRulePreview({...rows, matched: 0, changed: [], changedTotal: 0, basis: "csv", file: "citi-2026.csv"});
+        expect(none.ok && none.basis === "csv" && none.noCsvMatch).toBe(true);
+    });
+
+    it("decodes the journal fallback", () => {
+        expect(decodeJournalRulePreview({ok: true, basis: "journal", matched: 1, total: 2})).toEqual({ok: true, basis: "journal", matched: 1, total: 2});
+    });
+
+    it("carries hledger's refusal, and refuses an unknown basis or a CSV basis without its file", () => {
+        expect(decodeJournalRulePreview({ok: false, stderr: "bad regex"})).toEqual({ok: false, stderr: "bad regex"});
+        expect(() => decodeJournalRulePreview({...rows, basis: "pdf", file: "x"})).toThrow(ApiShapeError);
+        expect(() => decodeJournalRulePreview({...rows, basis: "csv"})).toThrow(ApiShapeError);
+        expect(() => decodeJournalRulePreview({ok: true, basis: "journal", matched: 1})).toThrow(ApiShapeError);
     });
 });
 

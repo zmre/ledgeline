@@ -77,9 +77,24 @@ export interface RuleChange {
     readonly after: string;
 }
 
-/** `POST /api/import/rule-preview` → 200 ok: "Matches 7 of 112 rows (3 already categorised)". */
+/**
+ * `POST /api/import/rule-preview` → 200 ok: "Matches 7 of 112 rows (3 already
+ * categorised)". Also the Journal view's live check (D27) when it ran against
+ * the rules file's newest statement (`basis: "csv"`).
+ */
 export interface RulePreviewOk {
     readonly ok: true;
+    /** Absent for an import's own preview; `"csv"` for the Journal view's check against the rules file's newest statement. */
+    readonly basis?: "csv";
+    /** `basis: "csv"`: the statement's file name. */
+    readonly file?: string;
+    /**
+     * `basis: "csv"`: the pattern met no row of the statement. On a journal card
+     * the pattern comes from the transaction's description, which a
+     * description-only rule may have renamed from the bank's text (D27's
+     * caveat), so this is the builder's cue to say so.
+     */
+    readonly noCsvMatch?: boolean;
     /** Rows of this import the rule's matchers select. */
     readonly matched: number;
     /** Rows in this import. */
@@ -97,7 +112,22 @@ export interface RulePreviewFailed {
     readonly stderr: string;
 }
 
-export type RulePreview = RulePreviewOk | RulePreviewFailed;
+/**
+ * `POST /api/review/rule-preview` with no statement at hand (D27's fallback):
+ * of the journal's transactions funded from the rules file's `account1`
+ * (`total`), how many have a description the rule's patterns match.
+ */
+export interface RulePreviewJournal {
+    readonly ok: true;
+    readonly basis: "journal";
+    readonly matched: number;
+    readonly total: number;
+}
+
+export type RulePreview = RulePreviewOk | RulePreviewJournal | RulePreviewFailed;
+
+/** What an import's own preview (`POST /api/import/rule-preview`) can answer. */
+export type ImportRulePreview = RulePreviewOk | RulePreviewFailed;
 
 /**
  * One review edit to a staged transaction, as the import store holds it.
@@ -146,27 +176,96 @@ export interface StagedSink {
 }
 
 /**
- * What the review overlay's rule builder (D25) needs from the import it is
- * reviewing: the raw records to build a matcher from, the live check, and the
- * rules-file write. Only a CSV import has one; a QuickBooks run has none, so
- * "Remember as a rule" is not offered there (D30).
+ * How the rule builder starts a new rule's MATCH: the fields it may scope to,
+ * the one it starts on, and the pattern for a card. An import builds the
+ * pattern from the raw CSV cell (`importPrefill`); a journal card from its own
+ * description (`descriptionPrefill`, D27), since it has no CSV record.
+ */
+export interface RulePrefill {
+    /** The rules file's `fields` names, once each: the select's options besides "whole record". */
+    readonly fields: readonly string[];
+    /** The scope a new rule starts with: a field name, or null for the whole record. */
+    readonly field: string | null;
+    /** The pattern a new rule for `item` starts with, scoped to `field` (null: the whole record). */
+    pattern(item: QueueItem, field: string | null): string;
+}
+
+/**
+ * What the review overlay's rule builder (D25) needs: how to start the rule,
+ * the live check, and the rules-file write — always for ONE rules file. An
+ * import has one (`importStore.ruleSource()`); a QuickBooks run has none, so
+ * "Remember as a rule" is not offered there (D30). A journal card picks one
+ * from its `RuleChoice` (D27).
  */
 export interface RuleSource {
-    readonly records: StagedRecords;
+    readonly prefill: RulePrefill;
     /** The statement's file name, for "Matches 7 of 112 rows in checking.csv". */
     readonly fileLabel: string;
     /** The rules file a saved rule is appended to, as the import names it. */
     readonly rulesLabel: string;
+    /**
+     * A journal card's (D27): the account the rules file books to, for the
+     * live check's "of M transactions from <account>" when there is no
+     * statement to test against. Absent for an import.
+     */
+    readonly account?: string;
     /** The live check. Null when the import names no rules file or journal. Rejects with the abort when `signal` fires. */
     preview(rule: RuleSpec, signal?: AbortSignal): Promise<RulePreview | null>;
-    /** Append `rule` to the import's rules file (the existing rules PUT). Writes nothing else. */
+    /** Append `rule` to the rules file (the existing rules PUT). Writes nothing else. */
     save(rule: RuleSpec): Promise<EditResult>;
     /**
      * Regenerate the import after the rule and the card's override are in,
      * replaying the held overrides. Resolves to why the regenerated import
      * failed (the engine's words, or hledger's stderr), or null when it is
      * fine — so the overlay can say so on top, not leave it to the panel
-     * underneath.
+     * underneath. A journal card's resolves null: a new rule changes no
+     * transaction already in the journal (the card's own save still does).
      */
     refresh(): Promise<string | null>;
+}
+
+/** One rules file that could have produced a journal transaction (D27), from `GET /api/review/rules-for/{index}`. */
+export interface RulesCandidate {
+    readonly rulesId: string;
+    readonly label: string;
+    /** The family's name (`citi` for `citi-2026.csv.rules`). */
+    readonly family: string;
+    /** How many candidates share the family. */
+    readonly familySize: number;
+    /** The year the file is named for, or null. */
+    readonly year: number | null;
+    /** The account that made it a candidate. */
+    readonly account1: string;
+    /** Which signals matched, in plain words. */
+    readonly reasons: readonly string[];
+    /** The file to save to unless the user picks another. At most one per list. */
+    readonly recommended: boolean;
+    /** `description` when the file's `fields` names it, else null (match the whole record). */
+    readonly matchField: string | null;
+    /** The file's `fields` names, or null. */
+    readonly fields: readonly string[] | null;
+}
+
+/** `GET /api/review/rules-for/{index}`. */
+export interface RulesFor {
+    readonly index: number;
+    /** Candidates exist and none is recommended: the user must pick before a rule can be saved. */
+    readonly needsChoice: boolean;
+    /** Best first. Empty: no rules file books to the transaction's account, so the toggle is hidden. */
+    readonly candidates: readonly RulesCandidate[];
+}
+
+/**
+ * "Remember as a rule" on a JOURNAL card (D27): the rules files it may go to,
+ * and the builder's source for whichever is picked. Built by
+ * `review/journalRules.ts`; null there when there are no candidates.
+ */
+export interface RuleChoice {
+    readonly candidates: readonly RulesCandidate[];
+    /** The candidate to preselect, or null when `needsChoice`. */
+    readonly recommended: string | null;
+    /** No preselection: show the picker empty, and save no rule until one is picked. */
+    readonly needsChoice: boolean;
+    /** The builder's source for saving to `rulesId`. Throws for an id not among `candidates`. */
+    source(rulesId: string): RuleSource;
 }

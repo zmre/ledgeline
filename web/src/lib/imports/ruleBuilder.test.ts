@@ -3,18 +3,23 @@
 
 import {describe, expect, it} from "vitest";
 import {cardChange, reviewFormOf} from "#lib/api/editMapping.js";
-import {txnFixture} from "#lib/testing/reviewFixture.js";
+import {decodeCsvStagedTxn} from "#lib/api/importReviewDecode.js";
+import {decodeQueueItem} from "#lib/api/reviewDecode.js";
+import {queueItemWire, stagedTxnWire, txnFixture} from "#lib/testing/reviewFixture.js";
 import {
     baseName,
     changedLines,
     defaultMatchField,
+    descriptionPrefill,
     escapeRegex,
     fieldReferences,
+    importPrefill,
     keyTokens,
     matchFields,
     rulePattern,
     ruleSpec,
     ruleTargets,
+    rulesFileLabel,
     sourceText,
 } from "./ruleBuilder";
 import type {StagedRecords} from "./reviewTypes";
@@ -28,6 +33,20 @@ const RECORDS: StagedRecords = {
         ["01/19/2024", "HARDWARE STORE #0042", "-62.13"],
     ],
 };
+
+describe("UNIT ruleBuilder — rulesFileLabel", () => {
+    it("names a rules file by its file name when that is unique among the candidates", () => {
+        expect(rulesFileLabel("import/citi-2026.csv.rules", ["import/citi-2025.csv.rules", "import/citi-2026.csv.rules"])).toBe("citi-2026.csv.rules");
+        expect(rulesFileLabel("import/citi.csv.rules", ["import/citi.csv.rules"])).toBe("citi.csv.rules");
+    });
+
+    it("adds the relative path when another candidate has the same file name", () => {
+        const all = ["2025/citi.csv.rules", "2026/citi.csv.rules", "import/amex.csv.rules"];
+        expect(rulesFileLabel("2025/citi.csv.rules", all)).toBe("2025/citi.csv.rules");
+        expect(rulesFileLabel("2026/citi.csv.rules", all)).toBe("2026/citi.csv.rules");
+        expect(rulesFileLabel("import/amex.csv.rules", all)).toBe("amex.csv.rules");
+    });
+});
 
 describe("UNIT ruleBuilder — keyTokens", () => {
     it("keeps what the engine's similarity key keeps (D10)", () => {
@@ -100,6 +119,18 @@ describe("UNIT ruleBuilder — what the rule sets", () => {
         const change = cardChange(unknownSecond, form);
         if (change === null) throw new Error("expected a change");
         expect(ruleTargets(unknownSecond, change)).toEqual([{field: `account${at + 1}`, value: "expenses:home:supplies", defaultOn: true}]);
+    });
+
+    it("on a journal card, counts slots from the posting booked to the rules file's account1 (D27)", () => {
+        // Written by hand with the expense first: the rules file still generates its account1 first.
+        const form = reviewFormOf(original);
+        (form.postings[0] as {account: string}).account = "expenses:home:supplies";
+        const change = cardChange(original, form);
+        if (change === null) throw new Error("expected a change");
+        expect(ruleTargets(original, change)).toEqual([{field: "account1", value: "expenses:home:supplies", defaultOn: true}]);
+        expect(ruleTargets(original, change, "liabilities:visa")).toEqual([{field: "account2", value: "expenses:home:supplies", defaultOn: true}]);
+        // An account1 no posting holds leaves the order as written.
+        expect(ruleTargets(original, change, "assets:elsewhere")).toEqual([{field: "account1", value: "expenses:home:supplies", defaultOn: true}]);
     });
 
     it("offers the new description, checked only when it is the whole change", () => {
@@ -179,5 +210,37 @@ describe("UNIT ruleBuilder — the live check's rows", () => {
         expect(baseName("imports/2026/checking.csv")).toBe("checking.csv");
         expect(baseName("checking.csv.rules")).toBe("checking.csv.rules");
         expect(baseName("")).toBe("");
+    });
+});
+
+describe("UNIT ruleBuilder — prefills (D25 import, D27 journal)", () => {
+    const records = {
+        aligned: true,
+        header: ["Date", "Description", "Amount"],
+        fields: ["date", "description", "amount"],
+        rows: [["01/19/2024", "HARDWARE STORE #0042", "-62.13"]],
+    };
+
+    it("an import's starts on its description field and patterns on the card's own CSV cell", () => {
+        const prefill = importPrefill(records);
+        expect(prefill.fields).toEqual(["date", "description", "amount"]);
+        expect(prefill.field).toBe("description");
+        const staged = decodeCsvStagedTxn(stagedTxnWire(txnFixture(1, "Hardware Store"), {ordinal: 0, key: "hardware store"}), "card");
+        expect(prefill.pattern(staged, "description")).toBe("hardware.*store");
+        // A whole-record match is prefilled from the description's cell too.
+        expect(prefill.pattern(staged, null)).toBe("hardware.*store");
+        expect(importPrefill({...records, aligned: false}).field).toBeNull();
+    });
+
+    it("a journal card's patterns on its own description, scoped to the candidate's match field", () => {
+        const prefill = descriptionPrefill({fields: ["date", "description", "amount"], matchField: "description"});
+        expect(prefill.fields).toEqual(["date", "description", "amount"]);
+        expect(prefill.field).toBe("description");
+        const item = decodeQueueItem(queueItemWire(txnFixture(4, "BLUE BOTTLE COFFEE 4412"), {key: "blue bottle coffee"}), "card");
+        expect(prefill.pattern(item, "description")).toBe("blue.*bottle.*coffee");
+        const whole = descriptionPrefill({fields: null, matchField: null});
+        expect(whole.fields).toEqual([]);
+        expect(whole.field).toBeNull();
+        expect(whole.pattern(item, null)).toBe("blue.*bottle.*coffee");
     });
 });

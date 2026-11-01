@@ -8,7 +8,7 @@
 // import, so it goes through `reviewDecode.ts`'s own item decoder: one reading
 // of the row shape for the journal overlay and the import one.
 
-import type {QbClassification, RulePreview, StagedRecords, StagedRef, StagedTxn} from "#lib/imports/reviewTypes.js";
+import type {ImportRulePreview, QbClassification, RulePreview, RulePreviewOk, StagedRecords, StagedRef, StagedTxn} from "#lib/imports/reviewTypes.js";
 import {ApiShapeError} from "./client";
 import {arr, bool, num, obj, str} from "./journalViewDecode";
 import {decodeQueueItem} from "./reviewDecode";
@@ -86,10 +86,39 @@ export function decodeStagedRecords(raw: unknown, context: string, txnCount: num
 }
 
 /** `POST /api/import/rule-preview` → how the candidate rule would change this import, or hledger's refusal. */
-export function decodeRulePreview(raw: unknown): RulePreview {
+export function decodeRulePreview(raw: unknown): ImportRulePreview {
     const body = obj(raw, "rule preview");
     const ok = bool(body.ok, "rule preview ok");
     if (!ok) return Object.freeze({ok: false as const, stderr: str(body.stderr, "rule preview stderr")});
+    return decodePreviewedRows(body);
+}
+
+/**
+ * `POST /api/review/rule-preview` (D27): the import preview's numbers over the
+ * rules file's newest statement (`basis: "csv"`, with its file name), or the
+ * journal fallback's count (`basis: "journal"`), or hledger's refusal.
+ * `noCsvMatch` is derived: a CSV-basis check whose pattern met no row.
+ */
+export function decodeJournalRulePreview(raw: unknown): RulePreview {
+    const body = obj(raw, "rule preview");
+    const ok = bool(body.ok, "rule preview ok");
+    if (!ok) return Object.freeze({ok: false as const, stderr: str(body.stderr, "rule preview stderr")});
+    const basis = str(body.basis, "rule preview basis");
+    if (basis === "journal") {
+        return Object.freeze({
+            ok: true as const,
+            basis: "journal" as const,
+            matched: count(body.matched, "rule preview matched"),
+            total: count(body.total, "rule preview total"),
+        });
+    }
+    if (basis !== "csv") throw new ApiShapeError(`rule preview: unknown basis ${basis}`);
+    const rows = decodePreviewedRows(body);
+    return Object.freeze({...rows, basis: "csv" as const, file: str(body.file, "rule preview file"), noCsvMatch: rows.matched === 0});
+}
+
+/** The rows half of a preview: shared by the import's and the Journal view's CSV basis. */
+function decodePreviewedRows(body: Record<string, unknown>): RulePreviewOk {
     const changed = arr(body.changed, "rule preview changed").map((entry, i) => {
         const value = obj(entry, `rule preview changed[${i}]`);
         return Object.freeze({

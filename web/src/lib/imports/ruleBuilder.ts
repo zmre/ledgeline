@@ -7,7 +7,8 @@
 
 import {txnToForm, type CardChange} from "#lib/api/editMapping.js";
 import type {Transaction} from "#lib/domain/types.js";
-import type {RuleSpec, StagedRecords} from "./reviewTypes";
+import type {QueueItem} from "#lib/review/types.js";
+import type {RulePrefill, RuleSpec, RulesCandidate, StagedRecords, StagedTxn} from "./reviewTypes";
 
 /** How long a candidate rule must sit still before its live check runs (D25: debounced). */
 export const RULE_PREVIEW_DEBOUNCE_MS = 250;
@@ -89,6 +90,41 @@ export function sourceText(records: StagedRecords, ordinal: number, field: strin
     return at < 0 ? null : (records.rows[ordinal]?.[at] ?? null);
 }
 
+/** A staged CSV card's ordinal in its import, or -1 for any other card. */
+function csvOrdinal(item: QueueItem): number {
+    const ref = (item as Partial<StagedTxn>).ref;
+    return ref?.kind === "csv" ? ref.ordinal : -1;
+}
+
+/**
+ * An import's prefill (D25): scoped to `description` when the dry run lined
+ * the CSV records up and the rules file names it, and patterned on the card's
+ * own raw CSV cell for that field (the description's, for a whole-record
+ * match).
+ */
+export function importPrefill(records: StagedRecords): RulePrefill {
+    return {
+        fields: matchFields(records),
+        field: defaultMatchField(records),
+        pattern: (item, field) => rulePattern(item.key, sourceText(records, csvOrdinal(item), field ?? DESCRIPTION_FIELD)),
+    };
+}
+
+/**
+ * A journal card's prefill (D27): there is no CSV record, so the pattern is
+ * built from the transaction's own description — usually the bank's text,
+ * because an unknown matched no categorising rule. Scoped to the candidate's
+ * `matchField` (`description` when its `fields` names one, else the whole
+ * record).
+ */
+export function descriptionPrefill(candidate: Pick<RulesCandidate, "fields" | "matchField">): RulePrefill {
+    return {
+        fields: matchFields({aligned: false, header: null, fields: candidate.fields, rows: []}),
+        field: candidate.matchField,
+        pattern: (item) => rulePattern(item.key, item.txn.description),
+    };
+}
+
 /** One thing a rule built from a card can set. */
 export interface RuleTarget {
     /** The rules-file field: `account2`, `account1`, `description`. */
@@ -103,14 +139,22 @@ export interface RuleTarget {
  * card moved, as the `accountN` slot of the posting that held it (hledger
  * writes posting N from `accountN`), and the new description.
  *
+ * An import's transaction is hledger's own output, so its postings are in slot
+ * order. A journal card's (D27) may have been reordered by hand, so with
+ * `account1` (the rules file's own) the posting booked to it is slot 1 and the
+ * rest follow in order — what the rules file would generate.
+ *
  * The accounts are checked to begin with. The description is checked only
  * when it is the whole change: a rename alongside a recategorisation is as
  * often this one transaction's tidy-up as it is the payee's name, and a rule
  * that renames every match is the bigger commitment.
  */
-export function ruleTargets(original: Transaction, change: CardChange): RuleTarget[] {
+export function ruleTargets(original: Transaction, change: CardChange, account1: string | null = null): RuleTarget[] {
     const targets: RuleTarget[] = [];
-    txnToForm(original).postings.forEach((posting, at) => {
+    const postings = txnToForm(original).postings;
+    const first = account1 === null ? -1 : postings.findIndex((posting) => posting.account === account1);
+    const slots = first < 0 ? postings : [...postings.slice(first, first + 1), ...postings.filter((_, at) => at !== first)];
+    slots.forEach((posting, at) => {
         const to = change.accounts.get(posting.account);
         const field = `account${at + 1}`;
         if (to !== undefined && !targets.some((target) => target.field === field)) targets.push({field, value: to, defaultOn: true});
@@ -177,4 +221,15 @@ export function changedLines(before: string, after: string): ChangedLines {
 export function baseName(path: string): string {
     const parts = path.split(/[/\\]/);
     return parts[parts.length - 1] || path;
+}
+
+/**
+ * How to name `rulesId` among `all`: its file name, unless another of `all`
+ * has the same file name (`2025/citi.csv.rules` beside `2026/citi.csv.rules`),
+ * then its path relative to the journal, which is the rules id itself
+ * (Patrick, 2026-11-01).
+ */
+export function rulesFileLabel(rulesId: string, all: readonly string[]): string {
+    const name = baseName(rulesId);
+    return all.some((other) => other !== rulesId && baseName(other) === name) ? rulesId : name;
 }

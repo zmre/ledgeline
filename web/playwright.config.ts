@@ -56,6 +56,19 @@ export default defineConfig({
             url: "http://127.0.0.1:5097/",
             reuseExistingServer: false,
         },
+        {
+            // The journal-rules engine (plan 32 D27, "Remember as a rule from
+            // the Journal" in e2e/review.e2e.ts), over fixtures/review-rules/:
+            // the only fixture whose journal's unknowns came from rules files
+            // beside it. fixtures/review/ has none, so the review engine above
+            // never offers the toggle. The test saves a rule and a card, so
+            // this is a scratch copy too (target/e2e-review-rules/, gitignored),
+            // staged fresh on every run. `cp -R` keeps the `.latest.*` markers.
+            command: `rm -rf ../target/e2e-review-rules && mkdir -p ../target && cp -R ../fixtures/review-rules ../target/e2e-review-rules && exec ${process.env.LEDGELINE_BIN ?? "../target/debug/ledgeline"} --server ../target/e2e-review-rules/main.journal --port 5096 --allow-origin http://localhost:4173`,
+            env: {LEDGELINE_TOKEN: API_TOKEN, LEDGELINE_IGNORE_USER_HLEDGER_CONF: "1"},
+            url: "http://127.0.0.1:5096/",
+            reuseExistingServer: false,
+        },
         {command: "bun run build && bun run preview", port: 4173},
     ],
     // With multiple webServers playwright does not infer baseURL from `port`.

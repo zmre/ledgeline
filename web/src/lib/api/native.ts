@@ -420,6 +420,13 @@ export interface ImportRulePreviewBody {
     rule: WireRuleSpec;
 }
 
+/** `POST /api/review/rule-preview` — a journal card's transaction, the rules file picked for it, and the candidate rule (D27). */
+export interface ReviewRulePreviewBody {
+    index: number;
+    rulesId: string;
+    rule: WireRuleSpec;
+}
+
 /** A candidate `if` block. A matcher with no `field` matches the whole CSV record. */
 export interface WireRuleSpec {
     matchers: {field?: string | null; pattern: string}[];
@@ -1635,6 +1642,26 @@ export class LedgelineApi {
      */
     reviewSimilarKey(key: string, today: string): Promise<unknown> {
         return this.getJson(`/api/review/similar-key${queryString({key, today})}`);
+    }
+
+    /**
+     * The rules files that could have produced journal transaction `index`
+     * (plan 32 D27; decode with `decodeRulesFor`), best first. `no-store`: a
+     * rules file can change without the journal changing.
+     */
+    reviewRulesFor(index: number): Promise<unknown> {
+        return this.getJson(`/api/review/rules-for/${index}`);
+    }
+
+    /**
+     * The live check for a rule built on a journal card (D27; decode with
+     * `decodeJournalRulePreview`): against the rules file's newest statement,
+     * or the journal when there is none. `ok:false` is a 200 with hledger's
+     * stderr. Writes nothing. Pass an AbortSignal in the constructor's options
+     * to cancel a superseded one.
+     */
+    reviewRulePreview(body: ReviewRulePreviewBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/review/rule-preview", 200, body);
     }
 
     /** Every payee with its use count and newest date (decode with `decodePayees`). */

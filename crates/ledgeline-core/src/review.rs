@@ -885,7 +885,7 @@ fn is_category(account: &str, classes: &Classes) -> bool {
 
 /// The accounts `txn` was paid from or into: every written posting that is
 /// neither a category nor uncategorized.
-fn funding_accounts<'j>(txn: &'j Transaction, classes: &Classes) -> Vec<&'j str> {
+pub(crate) fn funding_accounts<'j>(txn: &'j Transaction, classes: &Classes) -> Vec<&'j str> {
     written(txn)
         .map(|posting| posting.account.0.as_str())
         .filter(|account| !is_category(account, classes) && !is_uncategorized(account, classes))
@@ -1077,11 +1077,16 @@ pub fn rule_file_suggestions(
 /// hledger reads it: a case-insensitive regex. A pattern this engine cannot
 /// compile matches nothing.
 fn matcher_matches(pattern: &str, description: &str) -> bool {
+    matcher_regex(pattern).is_ok_and(|regex| regex.is_match(description))
+}
+
+/// A rules-file matcher pattern compiled the way hledger reads it: a
+/// case-insensitive regex, under the engine's size limit.
+pub(crate) fn matcher_regex(pattern: &str) -> Result<regex::Regex, regex::Error> {
     regex::RegexBuilder::new(pattern)
         .case_insensitive(true)
         .size_limit(MAX_MATCHER_REGEX_BYTES)
         .build()
-        .is_ok_and(|regex| regex.is_match(description))
 }
 
 /// Merge suggestions from every source: one per account at its best

@@ -699,10 +699,10 @@ struct WireRename {
 /// ours would.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct WireDryRunFailed {
+pub(crate) struct WireDryRunFailed {
     /// Always `false`.
-    ok: bool,
-    stderr: String,
+    pub(crate) ok: bool,
+    pub(crate) stderr: String,
 }
 
 /// What `.latest` dedup would drop, and from when.
@@ -1022,7 +1022,7 @@ pub(crate) struct WireConfRequest {
 /// `{:?}` escapes control characters, so a NUL or an ANSI escape sequence in a
 /// hostile handle reaches a terminal or a dialog as `\u{0}` rather than as
 /// itself. Byte-for-byte the argument `rules_api::quoted` makes.
-fn quoted(value: &str) -> String {
+pub(crate) fn quoted(value: &str) -> String {
     /// Long enough for any real handle, short enough that a hostile one cannot
     /// make a response large.
     const MAX_QUOTED_CHARS: usize = 120;
@@ -1220,7 +1220,7 @@ fn argument_field(value: &str, what: &str) -> Result<String, AppError> {
 /// **Identical for every cause**, so the route cannot be used to tell "not
 /// there" from "not a regular file" from "outside the root". It names the
 /// caller's own handle and nothing else.
-fn unresolved(what: &str, id: &str) -> AppError {
+pub(crate) fn unresolved(what: &str, id: &str) -> AppError {
     AppError::NotFound(format!(
         "no {what} {} is available beside this journal",
         quoted(id)
@@ -1338,7 +1338,7 @@ fn resolve_destination(location: &JournalLocation, csv_path: &str) -> Result<Vau
 /// Resolve a `rulesId` through the discovery scan — the only id → rules-file
 /// resolution in this codebase, by exact string equality against a set scanned
 /// in this request.
-fn resolve_rules(discovery: &Discovery, id: &str) -> Result<RulesPath, AppError> {
+pub(crate) fn resolve_rules(discovery: &Discovery, id: &str) -> Result<RulesPath, AppError> {
     validate_relative_id(id, "rules file id", Some(".rules"))?;
     discovery
         .resolve(id)
@@ -1600,7 +1600,7 @@ fn hledger_unavailable(error: &HledgerError) -> AppError {
 }
 
 /// A resolved hledger, or the `501`.
-fn resolve_hledger(dirs: &AppDirs) -> Result<Hledger, AppError> {
+pub(crate) fn resolve_hledger(dirs: &AppDirs) -> Result<Hledger, AppError> {
     Hledger::resolve(&prefs::load(dirs), dirs).map_err(|error| hledger_unavailable(&error))
 }
 
@@ -1782,7 +1782,7 @@ fn appended_text(entries: &str) -> String {
 /// anywhere in this codebase to quote for. `ledgeline_core::aliases::forward`
 /// has already refused any alias carrying a control character or exceeding its
 /// length caps, and bounded how many there may be.
-fn alias_flags(aliases: &[String]) -> Vec<std::ffi::OsString> {
+pub(crate) fn alias_flags(aliases: &[String]) -> Vec<std::ffi::OsString> {
     aliases
         .iter()
         .map(|alias| std::ffi::OsString::from(format!("--alias={alias}")))
@@ -2460,6 +2460,7 @@ fn rank_candidates(
                     modified: found.modified,
                 },
                 CandidateExtras {
+                    newest: newest_printed_date(&json),
                     sample: sample_from_json(&json),
                     account1: found.account1.clone(),
                     account2: found.account2.clone(),
@@ -2475,7 +2476,14 @@ fn rank_candidates(
         .iter()
         .map(|(ranking, _)| ranking.clone())
         .collect();
-    matching::rank(&mut ordered);
+    // Among equally good files of one family (`checking-2025.csv.rules`,
+    // `checking-2026.csv.rules`), the statement's year decides — the same
+    // order the Journal view's rules inference uses (plan 32 D27).
+    let statement_date = rankings
+        .iter()
+        .filter_map(|(_, extras)| extras.newest.clone())
+        .max();
+    matching::rank_in_families(&mut ordered, statement_date.as_deref());
     ordered
         .into_iter()
         .map(|ranking| {
@@ -2501,9 +2509,20 @@ fn rank_candidates(
 /// the sample transactions, and the rules file's own default accounts.
 #[derive(Default)]
 struct CandidateExtras {
+    /// The newest transaction date the candidate read from the statement.
+    newest: Option<String>,
     sample: Vec<WireProposed>,
     account1: Option<String>,
     account2: Option<String>,
+}
+
+/// The newest `tdate` in `hledger print -O json` output.
+fn newest_printed_date(json: &Value) -> Option<String> {
+    json.as_array()?
+        .iter()
+        .filter_map(|txn| txn.get("tdate").and_then(Value::as_str))
+        .max()
+        .map(str::to_string)
 }
 
 /// A [`Score`] as the number the wire carries.
@@ -2545,19 +2564,32 @@ fn score_value(score: Score) -> f32 {
 /// total of `$-20.00`. There is nothing here for the flag to suppress, so it is
 /// not passed; a candidate is never lost to an assertion.
 fn print_json(hledger: &Hledger, data: &Path, rules: &Path, aliases: &[String]) -> Option<Value> {
-    let output = hledger
-        .invoke(alias_flags(aliases))
-        .args(["print".as_ref(), "-f".as_ref(), data.as_os_str()])
-        .arg("--rules")
-        .arg(rules)
+    let output = print_invocation(hledger, data, rules, aliases)
         .args(["-O", "json"])
-        .timeout(IMPORT_TIMEOUT)
         .run()
         .ok()?;
     output
         .success()
         .then(|| serde_json::from_str(&output.stdout_lossy()).ok())
         .flatten()
+}
+
+/// `hledger [--alias=…]… print -f DATA --rules RULES`: the CSV read through
+/// the rules file, with no `.latest` dedup and no journal — what candidate
+/// scoring reads (with `-O json`), and the Journal view's rule preview (plan
+/// 32 D27) as journal text.
+pub(crate) fn print_invocation(
+    hledger: &Hledger,
+    data: &Path,
+    rules: &Path,
+    aliases: &[String],
+) -> Invocation {
+    hledger
+        .invoke(alias_flags(aliases))
+        .args(["print".as_ref(), "-f".as_ref(), data.as_os_str()])
+        .arg("--rules")
+        .arg(rules)
+        .timeout(IMPORT_TIMEOUT)
 }
 
 /// The first couple of transactions out of `hledger print -O json`, flattened
@@ -2695,19 +2727,74 @@ fn run_rule_preview(
         },
     )?;
     if import_review::has_include(&plan.rules_doc) {
-        return Ok(WireRulePreview::Failed(WireDryRunFailed {
-            ok: false,
-            stderr: format!(
-                "{} includes another rules file, so a rule cannot be tried on a copy of it",
-                quoted(&request.rules_id)
-            ),
-        }));
+        return Ok(WireRulePreview::Failed(include_refusal(&request.rules_id)));
     }
     let (candidate, probe) = import_review::preview_rules(&plan.rules_doc, &request.rule)?;
     let slot = plan.staged.preview_slot();
     let previewed = preview_in(state, &plan, &slot, &candidate, &probe, &request.rules_id);
     plan.staged.discard(&slot);
     previewed
+}
+
+/// A rule preview's answer for a rules file that `include`s another: not
+/// previewed, because the temporary copy would resolve the include from the
+/// wrong directory. Shared with the Journal view's preview (plan 32 D27).
+pub(crate) fn include_refusal(rules_id: &str) -> WireDryRunFailed {
+    WireDryRunFailed {
+        ok: false,
+        stderr: format!(
+            "{} includes another rules file, so a rule cannot be tried on a copy of it",
+            quoted(rules_id)
+        ),
+    }
+}
+
+/// Run a rule preview's three hledger invocations in parallel — the rules file
+/// as it is, with the candidate rule, and with the probe, in that order — and
+/// return their stdout, or hledger's refusal (stderr through `redactor`) as
+/// the preview's answer. `invoke` builds the invocation for one rules file.
+/// Shared by the import's preview and the Journal view's (plan 32 D27).
+pub(crate) fn run_previews<F>(
+    rules: [&Path; 3],
+    invoke: F,
+    redactor: &Redactor,
+) -> Result<Result<[String; 3], WireDryRunFailed>, AppError>
+where
+    F: Fn(&Path) -> Invocation + Sync,
+{
+    let outputs: Vec<Result<Output, AppError>> = std::thread::scope(|scope| {
+        let runs: Vec<_> = rules
+            .iter()
+            .map(|rules| {
+                let invoke = &invoke;
+                scope.spawn(move || run(invoke(rules), "try a rule"))
+            })
+            .collect();
+        runs.into_iter()
+            .map(|run| {
+                run.join().unwrap_or_else(|_| {
+                    Err(AppError::Internal(
+                        "a rule preview run panicked".to_string(),
+                    ))
+                })
+            })
+            .collect()
+    });
+    let mut proposals = Vec::with_capacity(outputs.len());
+    for output in outputs {
+        let output = output?;
+        if !output.success() {
+            return Ok(Err(WireDryRunFailed {
+                ok: false,
+                stderr: redactor.apply(&output.stderr_lossy()),
+            }));
+        }
+        proposals.push(output.stdout_lossy());
+    }
+    let [before, after, probe]: [String; 3] = proposals
+        .try_into()
+        .map_err(|_| AppError::Internal("a rule preview lost a run".to_string()))?;
+    Ok(Ok([before, after, probe]))
 }
 
 /// Run the three previews of [`rule_preview`] in the run directory `slot`.
@@ -2746,47 +2833,23 @@ fn preview_in(
         .hide(&probe_path, rules_id);
 
     let rules = [plan.rules.as_path(), &candidate_path, &probe_path];
-    let outputs: Vec<Result<Output, AppError>> = std::thread::scope(|scope| {
-        let runs: Vec<_> = rules
-            .iter()
-            .map(|rules| {
-                let csv = &csv;
-                scope.spawn(move || {
-                    run(
-                        import_invocation(
-                            &plan.hledger,
-                            &plan.target,
-                            rules,
-                            csv,
-                            &plan.aliases.merged,
-                            ImportRun::Preview,
-                        ),
-                        "try a rule",
-                    )
-                })
-            })
-            .collect();
-        runs.into_iter()
-            .map(|run| {
-                run.join().unwrap_or_else(|_| {
-                    Err(AppError::Internal(
-                        "a rule preview run panicked".to_string(),
-                    ))
-                })
-            })
-            .collect()
-    });
-    let mut proposals = Vec::with_capacity(outputs.len());
-    for output in outputs {
-        let output = output?;
-        if !output.success() {
-            return Ok(WireRulePreview::Failed(WireDryRunFailed {
-                ok: false,
-                stderr: redactor.apply(&output.stderr_lossy()),
-            }));
-        }
-        proposals.push(output.stdout_lossy());
-    }
+    let proposals = match run_previews(
+        rules,
+        |rules| {
+            import_invocation(
+                &plan.hledger,
+                &plan.target,
+                rules,
+                &csv,
+                &plan.aliases.merged,
+                ImportRun::Preview,
+            )
+        },
+        &redactor,
+    )? {
+        Ok(proposals) => proposals,
+        Err(failed) => return Ok(WireRulePreview::Failed(failed)),
+    };
 
     // The rows THIS import would write, as the dry run counts them: what the
     // journal already holds by id taken out.
@@ -2823,6 +2886,35 @@ fn preview_in(
         },
         WireRulePreview::Previewed,
     ))
+}
+
+/// Both homes an account alias can live in — the `hledger.conf` in force and
+/// the journal's own `alias` directives — and the `--alias` arguments they
+/// give an invocation that reads a CSV. See [`AliasArguments::merge`] for why
+/// the config's come first.
+fn alias_sources(
+    state: &AppState,
+    location: &JournalLocation,
+) -> (Option<ConfInForce>, Vec<aliases::Forwarded>, AliasArguments) {
+    let conf = conf_in_force(location, &state.app_dirs().hledger_conf);
+    let declared = aliases::forward(&state.snapshot().journal);
+    let arguments = AliasArguments::merge(
+        declared
+            .iter()
+            .filter_map(|alias| alias.argument().map(str::to_string))
+            .collect(),
+        conf.as_ref()
+            .map(|conf| conf.aliases.clone())
+            .unwrap_or_default(),
+    );
+    (conf, declared, arguments)
+}
+
+/// The `--alias` arguments every invocation that reads a CSV gets, for a
+/// caller outside the import's [`Plan`] (the Journal view's rule preview,
+/// plan 32 D27).
+pub(crate) fn csv_aliases(state: &AppState, location: &JournalLocation) -> Vec<String> {
+    alias_sources(state, location).2.merged
 }
 
 /// Everything a dry-run and a commit both have to resolve, resolved once.
@@ -2950,17 +3042,7 @@ impl Plan {
         let hledger = resolve_hledger(state.app_dirs())?;
         // Both homes an account alias can live in — see `AliasArguments::merge`
         // for why the config's come first.
-        let conf = conf_in_force(&location, &state.app_dirs().hledger_conf);
-        let declared = aliases::forward(&state.snapshot().journal);
-        let aliases = AliasArguments::merge(
-            declared
-                .iter()
-                .filter_map(|alias| alias.argument().map(str::to_string))
-                .collect(),
-            conf.as_ref()
-                .map(|conf| conf.aliases.clone())
-                .unwrap_or_default(),
-        );
+        let (conf, declared, aliases) = alias_sources(state, &location);
 
         let redactor = Redactor::default()
             // hledger echoes its own argv[0] in a usage dump — which is what an

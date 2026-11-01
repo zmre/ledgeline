@@ -66,6 +66,7 @@ pub mod recents;
 mod redact;
 mod reports_api;
 mod review_api;
+mod review_rules_api;
 mod rules_api;
 mod security;
 mod sidecar;
@@ -1220,6 +1221,18 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         .route("/api/review/queue", get(review_api::queue))
         .route("/api/review/similar/{index}", get(review_api::similar))
         .route("/api/review/similar-key", get(review_api::similar_key))
+        // Plan 32 D27: "Remember as a rule" from the Journal view — which
+        // rules file a transaction came from, and the live check against its
+        // statement (see `review_rules_api`). Above the `route_layer`: the
+        // preview runs hledger over files in the journal's directory.
+        .route(
+            "/api/review/rules-for/{index}",
+            get(review_rules_api::rules_for),
+        )
+        .route(
+            "/api/review/rule-preview",
+            post(review_rules_api::rule_preview),
+        )
         .route("/api/payees", get(review_api::payees))
         .route("/api/tags", get(review_api::tags))
         // CSV import rules (Imports, steps 7-8): list, read, preview, save.

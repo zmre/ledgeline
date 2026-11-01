@@ -315,6 +315,79 @@ pub fn rank(rankings: &mut [Ranking]) {
     });
 }
 
+/// [`rank`], then the family tie-break (plan 32 D27) for a statement whose
+/// newest transaction is dated `date`.
+///
+/// Among candidates of EQUAL score that are one family
+/// ([`super::families::family_of`]: `citi-2025.csv.rules`,
+/// `citi-2026.csv.rules`), the family's own order
+/// ([`super::families::order_family`]) replaces the mtime order: the file for
+/// the statement's year first, then the newest when importing ahead. Every
+/// other candidate keeps the exact place [`rank`] gave it — the family's
+/// members only trade the slots they already held — so files of different
+/// families, and different scores, rank as they always did. With no `date`,
+/// this is [`rank`].
+///
+/// The import's ranking and the journal's rules-file inference
+/// ([`super::infer`]) share `order_family`, so they never disagree about which
+/// file of a family comes first.
+pub fn rank_in_families(rankings: &mut [Ranking], date: Option<&str>) {
+    use super::families::{Member, family_of, order_family};
+    rank(rankings);
+    if date.is_none() {
+        return;
+    }
+    let mut start = 0;
+    while start < rankings.len() {
+        let score = rankings[start].candidate.score;
+        let end = start
+            + rankings[start..]
+                .iter()
+                .take_while(|ranking| ranking.candidate.score == score)
+                .count();
+        let families: Vec<_> = rankings[start..end]
+            .iter()
+            .map(|ranking| family_of(&ranking.candidate.id))
+            .collect();
+        let mut done = vec![false; families.len()];
+        for at in 0..families.len() {
+            if done[at] {
+                continue;
+            }
+            let slots: Vec<usize> = (at..families.len())
+                .filter(|&other| families[other].key == families[at].key)
+                .collect();
+            for &slot in &slots {
+                done[slot] = true;
+            }
+            if slots.len() < 2 {
+                continue;
+            }
+            let members: Vec<Member<'_>> = slots
+                .iter()
+                .map(|&slot| Member {
+                    id: &rankings[start + slot].candidate.id,
+                    stamp: families[slot].stamp,
+                    latest: None,
+                    modified: rankings[start + slot].modified,
+                })
+                .collect();
+            let order: Vec<usize> = order_family(&members, date)
+                .into_iter()
+                .map(|(member, _)| slots[member])
+                .collect();
+            let reordered: Vec<Ranking> = order
+                .iter()
+                .map(|&slot| rankings[start + slot].clone())
+                .collect();
+            for (&slot, ranking) in slots.iter().zip(reordered) {
+                rankings[start + slot] = ranking;
+            }
+        }
+        start = end;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------

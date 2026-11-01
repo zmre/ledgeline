@@ -160,6 +160,17 @@ pub(crate) struct WireRule {
     assignments: Vec<WireRuleAssignment>,
 }
 
+impl WireRule {
+    /// Every matcher's pattern, in order — what the Journal view's fallback
+    /// check (plan 32 D27) tests descriptions against.
+    pub(crate) fn patterns(&self) -> Vec<&str> {
+        self.matchers
+            .iter()
+            .map(|matcher| matcher.pattern.as_str())
+            .collect()
+    }
+}
+
 /// One row the previewed rule would change.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

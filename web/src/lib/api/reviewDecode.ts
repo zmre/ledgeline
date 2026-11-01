@@ -22,7 +22,8 @@ import type {
     TagUse,
 } from "#lib/review/types.js";
 import {ApiShapeError} from "./client";
-import {arr, bool, decodeRow, num, obj, str} from "./journalViewDecode";
+import type {RulesCandidate, RulesFor} from "#lib/imports/reviewTypes.js";
+import {arr, bool, decodeRow, num, obj, str, strings} from "./journalViewDecode";
 
 const SOURCES: ReadonlySet<string> = new Set<SuggestionSource>(["exactKey", "ruleFile", "payeePrefix", "recurring"]);
 
@@ -176,4 +177,37 @@ export function decodeTags(raw: unknown): TagList {
         });
     });
     return Object.freeze({generation: str(body.generation, "tags generation"), tags: Object.freeze(tags) as TagUse[]});
+}
+
+function decodeRulesCandidate(raw: unknown, context: string): RulesCandidate {
+    const value = obj(raw, context);
+    const year = value.year === null || value.year === undefined ? null : count(value.year, `${context}.year`);
+    return Object.freeze({
+        rulesId: str(value.rulesId, `${context}.rulesId`),
+        label: str(value.label, `${context}.label`),
+        family: str(value.family, `${context}.family`),
+        familySize: index(value.familySize, `${context}.familySize`),
+        year,
+        account1: str(value.account1, `${context}.account1`),
+        reasons: Object.freeze(strings(value.reasons, `${context}.reasons`)),
+        recommended: bool(value.recommended, `${context}.recommended`),
+        matchField: nullableStr(value.matchField, `${context}.matchField`),
+        fields: value.fields === null || value.fields === undefined ? null : Object.freeze(strings(value.fields, `${context}.fields`)),
+    });
+}
+
+/**
+ * `GET /api/review/rules-for/{index}` (D27) → the rules files that could have
+ * produced the transaction, best first. At most one may be `recommended`, and
+ * `needsChoice` must agree with there being none: a body that says otherwise
+ * is refused rather than preselecting the wrong file.
+ */
+export function decodeRulesFor(raw: unknown): RulesFor {
+    const body = obj(raw, "rules for");
+    const candidates = arr(body.candidates, "rules for candidates").map((candidate, i) => decodeRulesCandidate(candidate, `rules for candidates[${i}]`));
+    const needsChoice = bool(body.needsChoice, "rules for needsChoice");
+    const recommended = candidates.filter((candidate) => candidate.recommended).length;
+    if (recommended > 1) throw new ApiShapeError("rules for: more than one candidate is recommended");
+    if (needsChoice !== (candidates.length > 0 && recommended === 0)) throw new ApiShapeError("rules for: needsChoice disagrees with the recommendation");
+    return Object.freeze({index: index(body.index, "rules for index"), needsChoice, candidates: Object.freeze(candidates)});
 }

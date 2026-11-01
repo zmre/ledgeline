@@ -286,7 +286,9 @@
 /// starting from a [`DiscoveredRules`], so it is confined to the same root
 /// without a second containment argument.
 mod discovery;
+pub mod families;
 pub mod generate;
+pub mod infer;
 pub mod matching;
 
 pub use discovery::{
