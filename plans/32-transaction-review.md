@@ -1238,7 +1238,13 @@ It is sized after Phases 1–5 land and have been used for real.
   with Patrick, which produced the card deck and the visual tweaks. Amendments are in
   `32-amendments-p3.md`.
 - Also on this branch: `721edb0`, the Projections scroll fix (not part of plan 32).
-- **Phase 4: in progress.** It's split into 4a (server and wire) and 4b (UI).
+- **Phase 4: committed 2026-10-31** (`a4bc8ad`), as 4a (server and wire) and 4b (UI). The same commit carries the
+  off-screen 409 fix, the git-integration removal (Patrick, 2026-10-31) and "Test Import" with `use:reveal`.
+  Amendments are in `32-amendments-p4.md`.
+- **Phase 5: committed 2026-10-31.** Docs pages, the `review` docs-screenshot set on :5214 with
+  `review.docs.ts`, two import-review shots in `imports.docs.ts`, and the RuleBuilder's `%` warning. The PNGs were generated and reviewed.
+  Amendments are in `32-amendments-p5.md`.
+- **Phase 6** (rules from the Journal view, D27) waits for user testing of Phases 1–5.
 
 ## Contract amendments made during implementation
 

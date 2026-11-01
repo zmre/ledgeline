@@ -56,6 +56,16 @@ The **Import** button stays disabled until every account in the export is mapped
 
 ![The disabled Import button with its note: Map every account above before importing.](images/quickbooks-import-button.png)
 
+## Review before importing
+
+Once every account is mapped, **Review Unknowns** and **Review All** appear above **Import**. They open the same card-by-card [review](../journal/review.md) as a CSV import, over the transactions the export would write. Press <kbd>u</kbd> or <kbd>r</kbd> to open them from the keyboard.
+
+A QuickBooks transaction counts as uncategorized when its account maps to an unknown account, such as an alias that sends QuickBooks' Uncategorized Expense to `expenses:unknown`. You can categorize, rename and mark transactions reviewed, and fix similar ones already in your journal. Nothing is written until you press **Import**, and **Import** is always available. See [Review before writing](new-transactions.md#review-before-writing) for how the write applies your edits.
+
+**Remember as a rule** isn't offered here, because a QuickBooks import has no rules file. Change the mapping in [Account Aliases](../settings/account-aliases.md) instead.
+
+The cards always show each transaction as the export has it, even one you edited in an earlier review of the same import. Your edits are kept and written with the import.
+
 ## What gets written
 
 Press **Import**. Ledgeline writes each new transaction into the journal file where its date belongs. In a journal split into yearly `include`d files, a multi-year export lands in the right year files.

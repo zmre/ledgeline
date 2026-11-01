@@ -111,6 +111,22 @@ describe("COMPONENT RuleBuilder — the prefilled rule", () => {
         expect(component.currentRule()).toBeNull();
         expect(check()).toContain("Give the rule a pattern and something to set");
     });
+
+    it("warns while a ticked value holds a %name hledger would read as a field", async () => {
+        mount({source: sourceWith(vi.fn().mockResolvedValue(OK)), change: changeOf("expenses:home:supplies", "Hardware 50%off")});
+        // The rename starts unticked, so the rule as offered writes no `%`.
+        expect(screen.queryByTestId("review-rule-percent")).toBeNull();
+        const description = (screen.getAllByTestId("review-rule-target") as HTMLInputElement[])[1] as HTMLInputElement;
+        await fireEvent.click(description);
+        expect(screen.getByTestId("review-rule-percent").textContent).toContain("%off");
+        await fireEvent.click(description);
+        expect(screen.queryByTestId("review-rule-percent")).toBeNull();
+    });
+
+    it("says nothing about a % that hledger keeps literal", () => {
+        mount({source: sourceWith(vi.fn().mockResolvedValue(OK)), change: changeOf("expenses:home:supplies", "Hardware 50% off")});
+        expect(screen.queryByTestId("review-rule-percent")).toBeNull();
+    });
 });
 
 describe("COMPONENT RuleBuilder — the live check", () => {

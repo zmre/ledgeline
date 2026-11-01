@@ -16,7 +16,7 @@ at the changed PNGs and commit them with the UI change that moved them.
 ## How it works
 
 - `playwright.docs.config.ts` starts one engine per fixture set (`sample`,
-  `budget`, `subscriptions`) on ports 5211–5213. Each engine serves the SPA it
+  `budget`, `subscriptions`, `review`) on ports 5211–5214. Each engine serves the SPA it
   embeds, same-origin, so `just docs-screenshots` builds the SPA before the
   binary.
 - `stage.ts` copies each set into `target/docs-screenshots/<set>/` first. The
@@ -25,7 +25,8 @@ at the changed PNGs and commit them with the UI change that moved them.
   and three `alias` lines that no posting uses.
 - `harness.ts` pins the clock to 2026-07-08 and the timezone to America/Denver,
   and fills the same date into the two Projections requests that otherwise use
-  the engine's own clock. It also provides:
+  the engine's own clock. A spec can move the clock with `test.use({now})`:
+  the `review` set is read as of 2026-10-30. It also provides:
     - `annotate(page, specs)`: draws `circle`, `box` and `arrow` (with an
       optional `label` pill) marks from locator boxes in a fixed SVG overlay, and
       returns the drawn bounds. `clear(page)` removes them.
@@ -35,6 +36,9 @@ at the changed PNGs and commit them with the UI change that moved them.
       `docs/images/budget-<name>.png`. `clip` takes locators and rects; pass the
       `annotate` result too so the marks stay in frame.
     - `around(targets)`: one rect covering several controls.
+    - `finishMotion(page)`: ends every running animation and waits for the
+      review deck's outgoing card to leave, so a shot never catches a card
+      mid-flight.
 - Viewport 1280×800 at 2× scale. The app has a single (dark) theme.
 
 ## Add a shot
@@ -47,4 +51,5 @@ at the changed PNGs and commit them with the UI change that moved them.
    the page text is about one control.
 3. Run the spec, open the PNG, fix the crop, and add a row to `MANIFEST.md`.
 
-Nothing in a spec should press Save, Import, Map accounts or Update prices.
+Nothing in a spec should press Save, Import, Write changes, Map accounts or
+Update prices. Test Import is fine: it only runs the dry run.

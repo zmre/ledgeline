@@ -127,6 +127,21 @@ export function ruleSpec(field: string | null, pattern: string, targets: readonl
     return {matchers: [{field, pattern: trimmed}], assignments};
 }
 
+/**
+ * The `%name` / `%N` field references hledger would find in an assignment
+ * value. hledger reads `%` followed by a letter, digit, `_` or `-` as a CSV
+ * field reference and substitutes that field, or nothing when there is no
+ * such field. A `%` before a space, a dot or a bracket stays literal.
+ *
+ * There is no escape. Checked against hledger 1.52: `%%desc` gives `%` and
+ * then the field, and `\%desc` keeps the backslash and still substitutes. So a
+ * rule that sets "50%off" writes "50" and the builder can only warn
+ * (`importReviewLive.integration.test.ts` pins the substitution).
+ */
+export function fieldReferences(value: string): string[] {
+    return [...value.matchAll(/%[\p{L}\p{N}_-]+/gu)].map((match) => match[0]);
+}
+
 /** A changed row of the live check, as a header line and the lines the rule takes away and adds. */
 export interface ChangedLines {
     readonly title: string;

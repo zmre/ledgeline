@@ -34,6 +34,8 @@ Each row is one transaction. The columns are:
 
 Hover the comment marker to read the comments. Hover a problem dot to read what the check found.
 
+A thin stripe on a row's left edge marks work left to do: amber for an uncategorized transaction, faint for one you haven't reviewed. Both mark only transactions inside the review window, the last 365 days unless you change it. See [Reviewing transactions](review.md#row-stripes-and-the-editor-badge).
+
 The gear menu at the right of the table toolbar turns columns on and off. Ledgeline remembers the choice. In a narrow window the table switches to one card per transaction.
 
 The table only draws the rows on screen, so it stays fast on journals with tens of thousands of transactions.
@@ -79,6 +81,10 @@ The dialog keeps parts of a posting it doesn't let you edit:
 
 Ledgeline refuses a transaction that doesn't balance and shows the reason in the dialog. A new transaction goes into the file that holds its neighbours by date. If your journal `include`s one file per year, a 2026 transaction lands in the 2026 file.
 
+### Reviewing transactions
+
+**Review Unknowns** and **Review Recents**, next to **Add transaction**, bring up uncategorized and unreviewed transactions one card at a time. You can categorize, rename and mark each one reviewed from the keyboard, and fix similar transactions in the same step. See [Reviewing transactions](review.md).
+
 ### Deleting a transaction
 
 There are two ways to delete:
@@ -117,6 +123,7 @@ A dash means the filtered postings net to exactly zero, or there are none.
 ## Related pages
 
 - [Filtering the journal](filtering.md)
+- [Reviewing transactions](review.md)
 - [Problems](problems.md)
 - [Keyboard shortcuts](keyboard.md)
 - [Exporting the journal](export.md)

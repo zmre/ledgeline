@@ -4,7 +4,19 @@
 import {describe, expect, it} from "vitest";
 import {cardChange, reviewFormOf} from "#lib/api/editMapping.js";
 import {txnFixture} from "#lib/testing/reviewFixture.js";
-import {baseName, changedLines, defaultMatchField, escapeRegex, keyTokens, matchFields, rulePattern, ruleSpec, ruleTargets, sourceText} from "./ruleBuilder";
+import {
+    baseName,
+    changedLines,
+    defaultMatchField,
+    escapeRegex,
+    fieldReferences,
+    keyTokens,
+    matchFields,
+    rulePattern,
+    ruleSpec,
+    ruleTargets,
+    sourceText,
+} from "./ruleBuilder";
 import type {StagedRecords} from "./reviewTypes";
 
 const RECORDS: StagedRecords = {
@@ -118,6 +130,23 @@ describe("UNIT ruleBuilder — what the rule sets", () => {
         expect(ruleSpec(null, "hardware", targets, new Set(["account2", "description"]))?.assignments).toHaveLength(2);
         expect(ruleSpec("description", "  ", targets, new Set(["account2"]))).toBeNull();
         expect(ruleSpec("description", "hardware", targets, new Set())).toBeNull();
+    });
+});
+
+describe("UNIT ruleBuilder — field references in a value", () => {
+    it("finds what hledger reads as a field reference", () => {
+        expect(fieldReferences("50%off")).toEqual(["%off"]);
+        expect(fieldReferences("Store %1 and %description")).toEqual(["%1", "%description"]);
+        expect(fieldReferences("%_x %-x %Ü")).toEqual(["%_x", "%-x", "%Ü"]);
+        // `%%` is no escape: the second `%` still starts a reference.
+        expect(fieldReferences("%%desc")).toEqual(["%desc"]);
+    });
+
+    it("leaves a % that hledger keeps literal", () => {
+        expect(fieldReferences("50% off")).toEqual([]);
+        expect(fieldReferences("100%")).toEqual([]);
+        expect(fieldReferences("a %.x %(desc) %{desc}")).toEqual([]);
+        expect(fieldReferences("Blue Bottle Coffee")).toEqual([]);
     });
 });
 

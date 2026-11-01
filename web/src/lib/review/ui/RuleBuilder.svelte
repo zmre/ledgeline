@@ -28,6 +28,7 @@
     import {
         changedLines,
         defaultMatchField,
+        fieldReferences,
         matchFields,
         RULE_PREVIEW_DEBOUNCE_MS,
         rulePattern,
@@ -83,6 +84,8 @@
     const targets = $derived(ruleTargets(original, change));
     const checkedFields = $derived(new Set(targets.filter((target) => ticked[target.field] ?? target.defaultOn).map((target) => target.field)));
     const spec = $derived(ruleSpec(field, pattern, targets, checkedFields));
+    /** Checked values hledger would read `%name` in as a CSV field (it has no escape for a literal `%`). */
+    const references = $derived(targets.filter((target) => checkedFields.has(target.field)).flatMap((target) => fieldReferences(target.value)));
     /** A string, so the live check reruns only when the rule itself changes, not on every edit elsewhere on the card. */
     const signature = $derived(spec === null ? null : JSON.stringify(spec));
 
@@ -219,6 +222,12 @@
                         </li>
                     {/each}
                 </ul>
+                {#if references.length > 0}
+                    <p class="col-start-2 text-xs text-warning" role="alert" data-testid="review-rule-percent">
+                        hledger reads <code>{references.join(" ")}</code> as a CSV field and puts that field's value, or nothing, in its place. It has no way to write
+                        a literal %. Reword the change, or untick that line.
+                    </p>
+                {/if}
             </div>
 
             <!-- The live check. -->

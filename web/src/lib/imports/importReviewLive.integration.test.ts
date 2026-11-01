@@ -101,6 +101,31 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live import r
         expect(preview.changed[0]?.after).toContain("expenses:home:supplies");
     });
 
+    // Why the RuleBuilder warns about `%` (ruleBuilder.ts `fieldReferences`):
+    // hledger substitutes a field for `%name` in an assignment value, and
+    // `%%` is no escape. If hledger ever gains one, this fails, and the
+    // builder should escape instead of warning.
+    it("reads %name in a rule's value as a CSV field, with no escape for a literal %", async () => {
+        const run = await body();
+        const preview = async (value: string) => {
+            const answer = decodeRulePreview(
+                await api().importRulePreview({
+                    stageId: run.stageId,
+                    rulesId: run.rulesId,
+                    csvPath: run.csvPath,
+                    journalId: run.journalId,
+                    rule: {matchers: [{field: null, pattern: "HARDWARE"}], assignments: [{field: "description", value}]},
+                })
+            );
+            if (!answer.ok) throw new Error(answer.stderr);
+            return answer.changed[0]?.after.split("\n")[0] ?? "";
+        };
+        expect(await preview("Tools %description")).toBe("2024-01-19 Tools HARDWARE STORE");
+        expect(await preview("Tools 50%%description")).toBe("2024-01-19 Tools 50%HARDWARE STORE");
+        expect(await preview("Tools 50%off")).toBe("2024-01-19 Tools 50");
+        expect(await preview("Tools 50% off")).toBe("2024-01-19 Tools 50% off");
+    });
+
     it("finds journal transactions similar to a staged one by its key", async () => {
         const set = decodeKeySimilarSet(await api().reviewSimilarKey("hardware store", "2026-07-08"));
         expect(set.index).toBe(0);
