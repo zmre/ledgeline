@@ -48,3 +48,17 @@ docs, the screenshots, and the `%` gap from amendment 26 of
    journal page and Problems. The keyboard page's Review table is the
    overlay's `registerKeys`, row for row, plus Tab (handled in the account
    field, not the keymap). `u`/`r` are added to the Journal and Imports tables.
+
+7. **A Recents run never grows** (Patrick, 2026-10-31: a 50-card run
+    showed "60 of 90"). This corrects p2 amendment 10's "new queue items are
+    appended", which now applies to Unknowns only.
+    - **Why it grew.** The background re-validation after each save re-read
+      the server's top N unreviewed transactions. The one just reviewed had
+      left that list, so the next one moved into it and was appended: one
+      extra card per save.
+    - **Now.** Recents is fixed when the run opens. Re-validation still
+      refreshes changed cards and drops departed ones. It re-reads N plus the
+      run's length, so newer arrivals can't push a held card out and make it
+      look gone.
+    - Unknowns keeps appending, because that queue has no count limit.
+    - **Test.** `review.save.svelte.test.ts`: "never grows a Recents run".

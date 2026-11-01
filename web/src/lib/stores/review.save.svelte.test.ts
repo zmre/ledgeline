@@ -168,6 +168,23 @@ describe("UNIT review saves", () => {
         expect(review.cards[2]?.item.fingerprint).toBe("fp-3-9");
     });
 
+    it("never grows a Recents run: the transaction a save lets into the top N is not appended", async () => {
+        let after = false;
+        serveReview({
+            // Before: the top 3 are 1–3. After 1 is reviewed, 4 slides into the top 3.
+            queue: () => (after ? page("recents", [2, 3, 4], "g2") : page("recents", [1, 2, 3])),
+            batch: (body) => {
+                after = true;
+                return landed(body.edits, "g2", {reviewed: true});
+            },
+        });
+        await review.open("recents", {limit: 3});
+        await review.save([TAG]);
+        await vi.waitFor(() => expect(review.generation).toBe("g2"));
+        expect(review.cards.map((card) => card.item.txn.index)).toEqual([1, 2, 3]);
+        expect(review.count).toBe(3);
+    });
+
     it("re-validates in the background after a save", async () => {
         let after = false;
         const seen = serveReview({

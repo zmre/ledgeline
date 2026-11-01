@@ -344,7 +344,12 @@ function startDrain(): void {
  * - A held card whose text changed underneath is refreshed, and its draft
  *   dropped (it was made against text that no longer exists), except on the
  *   card on screen, which keeps it.
- * - Queue items the run has not seen are appended.
+ * - Queue items the run has not seen are appended — in Unknowns only.
+ *   Recents is "the N most recent unreviewed", fixed when the run opens:
+ *   each save drops a card out of the server's top N and lets the next one
+ *   in, so appending made a 50-card run grow by one per save (Patrick saw
+ *   "60 of 90"). Unknowns has no count limit, so its newcomers really are
+ *   more of the same queue.
  */
 async function revalidate(): Promise<void> {
     const target = run;
@@ -355,7 +360,12 @@ async function revalidate(): Promise<void> {
         const page = decodeQueuePage(
             await api(target.serverUrl).reviewQueue(target.kind as QueueKind, {
                 today: target.today,
-                limit: Math.max(target.fetched, target.limit ?? 0) || undefined,
+                // Recents re-reads past its own size, so newer arrivals pushing
+                // a held card out of the top N don't read as "it left".
+                limit:
+                    target.kind === "recents"
+                        ? Math.max(target.fetched, target.limit ?? 0) + cards.length
+                        : Math.max(target.fetched, target.limit ?? 0) || undefined,
                 maxDays: target.maxDays,
             })
         );
@@ -374,7 +384,7 @@ async function revalidate(): Promise<void> {
             } else next.push({...held, item});
         }
         const held = new Set(cards.map(indexOf));
-        for (const item of page.items) if (!held.has(item.txn.index)) next.push(cardOf(item));
+        if (target.kind !== "recents") for (const item of page.items) if (!held.has(item.txn.index)) next.push(cardOf(item));
         replaceCards(next);
         run = {...run, generation: page.generation, total: page.total, notEditable: page.notEditable, fetched: Math.max(run.fetched, page.items.length)};
         prefetch();
