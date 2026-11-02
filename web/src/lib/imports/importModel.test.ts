@@ -62,6 +62,8 @@ import {
     shows,
     signalLines,
     skippedWarning,
+    statementChoiceDetail,
+    statementChoiceLabel,
     statementFacts,
     validateCsvPath,
     visibleSections,
@@ -98,7 +100,7 @@ const STAGE_JSON = {
             account2: "expenses:unknown",
         },
     ],
-    defaults: {csvPath: "import/2026/bank.csv", journalId: "2026/2026.journal"},
+    defaults: {csvPath: "import/2026/bank.csv", uploadCsvPath: "import/2026/bank.csv", journalId: "2026/2026.journal"},
 };
 
 /** A copy of `obj` with one key removed — for asserting a decoder NOTICES an absent field rather than defaulting it. (As `nativeDecode.test.ts`.) */
@@ -211,7 +213,7 @@ describe("UNIT import wire decoders", () => {
         expect(file.notes).toEqual([{kind: "preambleSkipped", lines: 4}]);
         expect(file.candidates[0]!.signals.amountlessPostings).toBe(0);
         expect(file.candidates[0]!.sample[0]!.postings).toHaveLength(2);
-        expect(file.defaults).toEqual({csvPath: "import/2026/bank.csv", journalId: "2026/2026.journal"});
+        expect(file.defaults).toEqual({csvPath: "import/2026/bank.csv", uploadCsvPath: "import/2026/bank.csv", journalId: "2026/2026.journal"});
     });
 
     it("decodes every ConvertNote variant the engine can emit", () => {
@@ -253,6 +255,34 @@ describe("UNIT import wire decoders", () => {
         });
         expect(file.notes).toEqual([{kind: "raggedRows", count: 2}]);
         expect(file.unknownNoteCount).toBe(1);
+    });
+
+    it("reads the accounts of a multi-account upload, and none from an older engine", () => {
+        const file = decodeStagedFile({
+            ...STAGE_JSON,
+            statements: [
+                {accountHint: "7592", accountType: "CHECKING", currency: "USD", ledgerBalance: "7033.77", transactions: 12},
+                {accountHint: "8485", accountType: "SAVINGS", currency: "USD", ledgerBalance: "25.00", transactions: 0},
+            ],
+            statementIndex: 1,
+        });
+        expect(file.statements.map((choice) => choice.accountHint)).toEqual(["7592", "8485"]);
+        expect(file.statementIndex).toBe(1);
+
+        const older = decodeStagedFile(STAGE_JSON);
+        expect(older.statements).toEqual([]);
+        expect(older.statementIndex).toBe(0);
+        // …and its CSV default stands in for the upload-named one it never sent.
+        expect(older.defaults.uploadCsvPath).toBe(older.defaults.csvPath);
+    });
+
+    it("names each account by its kind and last four", () => {
+        const checking = {accountHint: "7592", accountType: "CHECKING", currency: "USD", ledgerBalance: "7033.77", transactions: 12};
+        expect(statementChoiceLabel(checking, 0)).toBe("Checking …7592");
+        expect(statementChoiceDetail(checking)).toBe("12 transactions · 7033.77 USD");
+        const bare = {accountHint: null, accountType: "BROKERAGE", currency: null, ledgerBalance: null, transactions: 1};
+        expect(statementChoiceLabel(bare, 2)).toBe("Brokerage 3");
+        expect(statementChoiceDetail(bare)).toBe("1 transaction");
     });
 
     it("reads an absent statement as null rather than an empty one", () => {
@@ -627,12 +657,12 @@ describe("UNIT destination derivation", () => {
         // Switching candidate is the user saying "read it as this instead"; the
         // previous candidate's file name staying in the box is how a credit-card
         // statement gets written over checking.csv.
-        const defaults = {csvPath: "import/2026/bank.csv", journalId: "2026/2026.journal"};
+        const defaults = {csvPath: "import/2026/bank.csv", uploadCsvPath: "import/2026/bank.csv", journalId: "2026/2026.journal"};
         expect(deriveCsvPath(defaults, "import/2026/creditcard.csv.rules")).toBe("import/2026/creditcard.csv");
     });
 
     it("falls back to the server default with no rules file, or an id carrying no convention", () => {
-        const defaults = {csvPath: "import/2026/bank.csv", journalId: null};
+        const defaults = {csvPath: "import/2026/bank.csv", uploadCsvPath: "import/2026/bank.csv", journalId: null};
         expect(deriveCsvPath(defaults, null)).toBe("import/2026/bank.csv");
         expect(deriveCsvPath(defaults, "weird-handle")).toBe("import/2026/bank.csv");
     });
@@ -648,17 +678,17 @@ describe("UNIT destination derivation", () => {
 
     it("prefers the staged default journal when it is one that can be written", () => {
         const journals = [journal({id: "a.journal"}), journal({id: "2026/2026.journal"})];
-        expect(defaultJournalId({csvPath: "x.csv", journalId: "2026/2026.journal"}, journals)).toBe("2026/2026.journal");
+        expect(defaultJournalId({csvPath: "x.csv", uploadCsvPath: "x.csv", journalId: "2026/2026.journal"}, journals)).toBe("2026/2026.journal");
     });
 
     it("falls back to the engine's top-ranked writable journal", () => {
         const journals = [journal({id: "prices.journal", writable: false}), journal({id: "a.journal"})];
-        expect(defaultJournalId({csvPath: "x.csv", journalId: "gone.journal"}, journals)).toBe("a.journal");
-        expect(defaultJournalId({csvPath: "x.csv", journalId: null}, journals)).toBe("a.journal");
+        expect(defaultJournalId({csvPath: "x.csv", uploadCsvPath: "x.csv", journalId: "gone.journal"}, journals)).toBe("a.journal");
+        expect(defaultJournalId({csvPath: "x.csv", uploadCsvPath: "x.csv", journalId: null}, journals)).toBe("a.journal");
     });
 
     it("has no default when nothing offered can be written", () => {
-        expect(defaultJournalId({csvPath: "x.csv", journalId: null}, [journal({writable: false})])).toBeNull();
+        expect(defaultJournalId({csvPath: "x.csv", uploadCsvPath: "x.csv", journalId: null}, [journal({writable: false})])).toBeNull();
     });
 
     it("makes the engine's ranking legible in the option label", () => {
@@ -775,11 +805,11 @@ describe("UNIT ConvertNote rendering", () => {
         [{kind: "sheetChosen", name: "Statement", of: 3} as const, 'Read the sheet "Statement" — the workbook has 3.'],
         [{kind: "sheetChosen", name: "Sheet1", of: 1} as const, 'Read the sheet "Sheet1".'],
         // A multi-account OFX download. The other statements are not merged in
-        // (they belong to other accounts), so the note is the only thing that
-        // stops them being discarded in silence.
+        // (they belong to other accounts); the note points at the picker that
+        // reads each of them in turn.
         [
             {kind: "statementChosen", of: 2} as const,
-            "This file holds 2 statements, one per account. Only the first was read — import the others by downloading them separately.",
+            "This file holds 2 accounts. Each one is imported on its own, with its own rules file — choose which above.",
         ],
         [{kind: "datesFromSerial", count: 12} as const, "12 dates were stored as spreadsheet serial numbers and were read as dates."],
         [{kind: "preambleSkipped", lines: 4} as const, "4 rows of preamble above the header were skipped."],
@@ -846,7 +876,7 @@ describe("UNIT actions", () => {
     });
 
     it("names what blocks the action, one fixable thing at a time", () => {
-        const ok = {csvPath: "import/bank.csv", journalId: "2026.journal", balance: "", balanceAccount: ""};
+        const ok = {csvPath: "import/bank.csv", uploadCsvPath: "import/bank.csv", journalId: "2026.journal", balance: "", balanceAccount: ""};
         expect(actionBlocker("testImport", ok)).toBeNull();
         expect(actionBlocker("testImport", {...ok, csvPath: ""})).toMatch(/name/);
         expect(actionBlocker("testImport", {...ok, journalId: null})).toMatch(/journal/);
@@ -855,7 +885,7 @@ describe("UNIT actions", () => {
     });
 
     it("refuses a balance with no account to assert it against", () => {
-        const draft = {csvPath: "bank.csv", journalId: "j", balance: "2945.05", balanceAccount: ""};
+        const draft = {csvPath: "bank.csv", uploadCsvPath: "bank.csv", journalId: "j", balance: "2945.05", balanceAccount: ""};
         expect(actionBlocker("testImport", draft)).toMatch(/account/);
         expect(actionBlocker("testImport", {...draft, balanceAccount: "assets:bank"})).toBeNull();
         // A blank balance needs no account.
@@ -881,7 +911,7 @@ describe("UNIT actions", () => {
         // seed the account from — and its route takes `{stageId, csvPath}` and
         // nothing else. Blocking it over the prefilled balance dead-ended the
         // only button that path has.
-        const prefilled = {csvPath: "import/2026/bank.csv", journalId: null, balance: "-3238.65", balanceAccount: ""};
+        const prefilled = {csvPath: "import/2026/bank.csv", uploadCsvPath: "import/2026/bank.csv", journalId: null, balance: "-3238.65", balanceAccount: ""};
         expect(actionBlocker("saveCsv", prefilled)).toBeNull();
         // The CSV path is the one thing that request DOES carry, so it still speaks up.
         expect(actionBlocker("saveCsv", {...prefilled, csvPath: "  "})).toMatch(/name/);

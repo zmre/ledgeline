@@ -898,18 +898,21 @@ async fn the_cross_origin_upload_preflight_allows_the_filename_header() {
             (header::ACCESS_CONTROL_REQUEST_METHOD, "POST"),
             (
                 header::ACCESS_CONTROL_REQUEST_HEADERS,
-                "authorization,content-type,x-ledgeline-filename",
+                "authorization,content-type,x-ledgeline-filename,x-ledgeline-statement",
             ),
         ],
     )
     .await;
     assert!(status.is_success(), "preflight refused: {status}");
-    assert!(
-        header_of(&headers, "access-control-allow-headers")
-            .unwrap_or_default()
-            .contains("x-ledgeline-filename"),
-        "the upload's filename header must be allowed: {headers:?}"
-    );
+    let allowed = header_of(&headers, "access-control-allow-headers").unwrap_or_default();
+    // The statement header picks one account of a multi-account `.qbo`; without
+    // it on the list, choosing the second account fails the same way.
+    for name in ["x-ledgeline-filename", "x-ledgeline-statement"] {
+        assert!(
+            allowed.contains(name),
+            "the upload's {name} header must be allowed: {headers:?}"
+        );
+    }
 }
 
 /// SEC-13. The shell's body used to carry the access token, and nothing may

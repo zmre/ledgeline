@@ -79,6 +79,7 @@
 //! `PUT` can name. `every_drafted_item_can_be_written_back` pins it.
 
 use crate::convert::Tabular;
+use crate::reimport::ID_TAG;
 use crate::rules::matching;
 use crate::rules::{
     ControlField, DirectiveName, DirectiveValue, EditPlan, HledgerField, ItemBody, MatchScope,
@@ -194,7 +195,8 @@ struct Synonym {
 /// - **`reference` / `id` / `fitid`** — plausible `code` columns, but `code`
 ///   puts the value in parentheses on every description line, and a bank
 ///   reference number is noise there. They stay unmapped-but-named, so
-///   `%fitid` is available to a rule the user writes later.
+///   `%fitid` is available to a rule the user writes later — and a `fitid`
+///   column is written into the row's `id:` tag ([`id_column`]).
 /// - **`payment`** — means money *out* on a bank statement and money *in* on a
 ///   credit-card one. A synonym that is backwards half the time is worse than
 ///   no synonym.
@@ -1359,6 +1361,16 @@ pub fn draft(
         },
         DEFAULT_ACCOUNT2,
     ));
+    // The bank's own transaction id, as the row's `id:` tag: what re-download
+    // matching (`reimport.rs`) keys on. A drafted file that skipped this line
+    // would import a re-downloaded statement by date alone — the gap the id
+    // exists to close — and nothing on screen would say so.
+    if let Some(name) = id_column(columns) {
+        order.push(assignment(
+            HledgerField::Comment,
+            &format!("{ID_TAG}:%{name}"),
+        ));
+    }
     // The exclusions go last, where a rules file's rules go. Position among
     // them is free — a `skip` block moved relative to other rules changes not
     // one imported row (verified against 1.52) — and a draft has no other rules
@@ -1380,6 +1392,27 @@ pub fn draft(
     };
     let text = empty.apply(&plan)?;
     Ok(RulesDoc::parse(&text))
+}
+
+/// The column holding the bank's own transaction id, if the data has one.
+///
+/// `fitid` is what the OFX lane names `FITID` (OFX, QFX and QuickBooks Web
+/// Connect alike), and it is unique per transaction by the spec, which is the
+/// only property `comment id:%fitid` needs. Only a name hledger can
+/// interpolate verbatim is used: `%NAME` is resolved against the `fields`
+/// list, and this module would rather emit nothing than a reference that
+/// quietly resolves to an empty tag.
+fn id_column(columns: &[ColumnGuess]) -> Option<&str> {
+    columns
+        .iter()
+        .filter(|column| column.field.is_none())
+        .map(|column| column.name.as_str())
+        .find(|name| {
+            normalize(name) == "fitid"
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        })
 }
 
 /// The commodity the source format volunteered, when it did.
@@ -1774,6 +1807,36 @@ mod tests {
         );
         assert_eq!(columns[1].field, None);
         assert_eq!(columns[1].name, "fitid", "so `%fitid` is reachable");
+    }
+
+    #[test]
+    fn a_fitid_column_becomes_the_rows_id_tag() {
+        let data = table(
+            &["date", "amount", "name", "fitid"],
+            &[&["2026-01-02", "-4.50", "COFFEE", "FIT0001"]],
+        );
+        let drafted = generate(&data, "assets:bank").expect("drafts");
+        assert!(
+            text(&drafted.doc)
+                .lines()
+                .any(|line| line == "comment id:%fitid"),
+            "{}",
+            text(&drafted.doc)
+        );
+    }
+
+    #[test]
+    fn no_id_column_means_no_id_tag() {
+        let data = table(
+            &["Date", "Description", "Amount"],
+            &[&["2026-01-02", "COFFEE", "-4.50"]],
+        );
+        let drafted = generate(&data, "assets:bank").expect("drafts");
+        assert!(
+            !text(&drafted.doc).contains("comment"),
+            "{}",
+            text(&drafted.doc)
+        );
     }
 
     #[test]

@@ -36,7 +36,10 @@
 
 use super::delimited::MAX_ROWS;
 use super::encoding::{self, Decoded, Guess};
-use super::{ConvertError, ConvertNote, MAX_INPUT_BYTES, SourceFormat, StatementMeta, Tabular};
+use super::{
+    ConvertError, ConvertNote, MAX_INPUT_BYTES, SourceFormat, StatementMeta, StatementSummary,
+    Tabular,
+};
 use crate::decimal::{Dec, MAX_RENDER_PLACES};
 use encoding_rs::{Encoding, UTF_8, WINDOWS_1252};
 use std::borrow::Cow;
@@ -49,6 +52,10 @@ use std::borrow::Cow;
 const COLUMNS: [&str; 7] = [
     "date", "amount", "name", "memo", "trntype", "fitid", "checknum",
 ];
+
+/// The two statement aggregates. Citi delivers a credit card as `STMTRS`, so
+/// both are read wherever they appear; see the module docs.
+const STATEMENT_TAGS: &[&str] = &["STMTRS", "CCSTMTRS"];
 
 /// Column index of `amount` within [`COLUMNS`], used by the balance check.
 const AMOUNT_COLUMN: usize = 1;
@@ -85,15 +92,34 @@ pub fn looks_like_ofx(bytes: &[u8]) -> bool {
 
 /// Parse an OFX/QFX statement into a [`Tabular`], one row per `STMTTRN`.
 ///
+/// Reads the document's first statement; [`parse_statement`] reads any other.
+///
+/// # Errors
+/// See [`parse_statement`].
+pub fn parse(bytes: &[u8]) -> Result<Tabular, ConvertError> {
+    parse_statement(bytes, 0)
+}
+
+/// Parse the `index`th statement (zero-based, document order) of an OFX/QFX
+/// document into a [`Tabular`], one row per `STMTTRN`.
+///
+/// A "download all my accounts" file — QuickBooks Web Connect does this —
+/// carries one `STMTRS`/`CCSTMTRS` per account. Each is read **on its own**,
+/// never merged: a rules file names one `account1` for the whole import, so a
+/// merge would post one account's money to another. When there is more than
+/// one, [`Tabular::statements`] describes them all so the caller can offer the
+/// rest.
+///
 /// # Errors
 /// - [`ConvertError::Empty`] when the input holds nothing but whitespace.
 /// - [`ConvertError::TooLarge`] past [`MAX_INPUT_BYTES`], so a caller that
 ///   bypasses the HTTP layer still cannot blow the cap.
 /// - [`ConvertError::InvestmentStatement`] when the file holds an `INVSTMTRS`
 ///   and no bank or credit-card statement — refused by name, not mis-parsed.
-/// - [`ConvertError::Malformed`] when no statement can be found. The detail is
-///   a fixed sanitised phrase: it never quotes a path, an offset, or user data.
-pub fn parse(bytes: &[u8]) -> Result<Tabular, ConvertError> {
+/// - [`ConvertError::Malformed`] when no statement can be found, or `index` is
+///   past the last one. The detail is a fixed sanitised phrase: it never
+///   quotes a path, an offset, or user data.
+pub fn parse_statement(bytes: &[u8], index: usize) -> Result<Tabular, ConvertError> {
     if bytes.len() > MAX_INPUT_BYTES {
         return Err(ConvertError::TooLarge {
             limit: MAX_INPUT_BYTES,
@@ -106,8 +132,17 @@ pub fn parse(bytes: &[u8]) -> Result<Tabular, ConvertError> {
     let decoded = decode(bytes);
     let root = scan(&decoded.text);
 
-    let statement = match find_aggregate(&root, &["STMTRS", "CCSTMTRS"]) {
-        Some(statement) => statement,
+    // Document order across both tags, so "the first statement" is the one the
+    // file shows first whether it is a bank or a card statement.
+    let statements = collect_aggregates(&root, STATEMENT_TAGS, usize::MAX);
+    let statement = match statements.get(index) {
+        Some(statement) => *statement,
+        None if !statements.is_empty() => {
+            return Err(ConvertError::Malformed {
+                format: SourceFormat::Ofx,
+                detail: "that account is not in this file".to_string(),
+            });
+        }
         // Only refuse when there is nothing else to offer: a brokerage file
         // pairing an investment statement with a cash sub-account still has a
         // bank statement worth importing, and the preview shows what came back.
@@ -128,22 +163,21 @@ pub fn parse(bytes: &[u8]) -> Result<Tabular, ConvertError> {
 
     // Capped while collecting, the same `MAX_ROWS + 1` probe the delimited lane
     // uses: one past the cap is how "exactly at the cap" and "over it" differ.
-    let mut rows: Vec<Vec<String>> = collect_aggregates(statement, "STMTTRN", MAX_ROWS + 1)
+    let mut rows: Vec<Vec<String>> = collect_aggregates(statement, &["STMTTRN"], MAX_ROWS + 1)
         .into_iter()
         .map(row)
         .collect();
     let truncated = rows.len() > MAX_ROWS;
     rows.truncate(MAX_ROWS);
 
-    // Counted over the whole document rather than from the chosen statement, so
-    // a `CCSTMTRS` sitting beside a `STMTRS` counts too — "one of each" is what a
-    // card-plus-checking download looks like.
-    let statements = statement_count(&root);
+    // A `CCSTMTRS` sitting beside a `STMTRS` counts too — "one of each" is what
+    // a card-plus-checking download looks like.
+    let count = statements.len();
     let notes = decoded
         .guessed
         .map(|label| ConvertNote::EncodingGuessed { label })
         .into_iter()
-        .chain((statements > 1).then_some(ConvertNote::StatementChosen { of: statements }))
+        .chain((count > 1).then_some(ConvertNote::StatementChosen { of: count }))
         // A truncated read sums only some of the statement's rows, so checking it
         // against the closing balance would report a mismatch that is ours.
         .chain(
@@ -159,6 +193,12 @@ pub fn parse(bytes: &[u8]) -> Result<Tabular, ConvertError> {
         truncated,
         statement: statement_meta(statement),
         notes,
+        statements: if count > 1 {
+            statements.iter().map(|found| summary(found)).collect()
+        } else {
+            Vec::new()
+        },
+        statement_index: if count > 1 { index } else { 0 },
     })
 }
 
@@ -581,18 +621,22 @@ fn child_leaf<'a>(parent: &'a Aggregate, tag: &str) -> Option<&'a str> {
     })
 }
 
-/// The first `limit` aggregates named `tag` below `parent`, in document order,
-/// without descending into one already matched.
-fn collect_aggregates<'a>(parent: &'a Aggregate, tag: &str, limit: usize) -> Vec<&'a Aggregate> {
+/// The first `limit` aggregates named any of `tags` below `parent`, in
+/// document order, without descending into one already matched.
+fn collect_aggregates<'a>(
+    parent: &'a Aggregate,
+    tags: &[&str],
+    limit: usize,
+) -> Vec<&'a Aggregate> {
     let mut found = Vec::new();
-    gather_aggregates(parent, tag, limit, &mut found);
+    gather_aggregates(parent, tags, limit, &mut found);
     found
 }
 
 /// [`collect_aggregates`]' walk, which stops as soon as `found` holds `limit`.
 fn gather_aggregates<'a>(
     parent: &'a Aggregate,
-    tag: &str,
+    tags: &[&str],
     limit: usize,
     found: &mut Vec<&'a Aggregate>,
 ) {
@@ -601,25 +645,11 @@ fn gather_aggregates<'a>(
             return;
         }
         match child {
-            Node::Aggregate(node) if node.tag == tag => found.push(node),
-            Node::Aggregate(node) => gather_aggregates(node, tag, limit, found),
+            Node::Aggregate(node) if tags.contains(&node.tag.as_str()) => found.push(node),
+            Node::Aggregate(node) => gather_aggregates(node, tags, limit, found),
             Node::Leaf { .. } => {}
         }
     }
-}
-
-/// How many statements the document holds.
-///
-/// A "download all my accounts" file carries one `STMTRS` per account, and only
-/// the first is read — the transactions below it belong to THAT account, and a
-/// rules file names one `account1` for the whole import, so merging them would
-/// post one account's transactions to another. Counting them is what turns the
-/// rest from silently discarded into reported.
-fn statement_count(root: &Aggregate) -> usize {
-    ["STMTRS", "CCSTMTRS"]
-        .iter()
-        .map(|tag| collect_aggregates(root, tag, usize::MAX).len())
-        .sum()
 }
 
 // ---------------------------------------------------------------------------
@@ -643,18 +673,64 @@ fn row(txn: &Aggregate) -> Vec<String> {
         .or_else(|| child_aggregate(txn, &["PAYEE"]).and_then(|payee| child_leaf(payee, "NAME")))
         .unwrap_or_default();
 
+    let fitid = tag_safe(child_leaf(txn, "FITID").unwrap_or_default());
+
     [
         date.as_str(),
         child_leaf(txn, "TRNAMT").unwrap_or_default(),
         name,
         child_leaf(txn, "MEMO").unwrap_or_default(),
         child_leaf(txn, "TRNTYPE").unwrap_or_default(),
-        child_leaf(txn, "FITID").unwrap_or_default(),
+        fitid.as_str(),
         child_leaf(txn, "CHECKNUM").unwrap_or_default(),
     ]
     .iter()
     .map(|cell| (*cell).to_string())
     .collect()
+}
+
+/// A `FITID` as it can travel inside an hledger tag.
+///
+/// The `fitid` column exists to become `; id:%fitid`, and an hledger tag value
+/// **ends at the first comma** — verified against 1.52, and `parse::parse_tags`
+/// splits the same way. Real FITIDs carry them: one credit union writes
+/// `20261031 212165 90 1,388,265`, which hledger reads back as the id
+/// `20261031 212165 90`. That is not cosmetic: every transaction sharing the
+/// prefix then shares an id, and re-download matching treats the second as
+/// already imported and leaves it out. So commas are removed, and whitespace
+/// runs (a stray line break would end the comment line) collapse to one space.
+///
+/// A FITID is opaque — nothing reads digits out of it — so the only property
+/// that matters is that distinct ids stay distinct, which dropping a separator
+/// from a digit group preserves.
+fn tag_safe(fitid: &str) -> String {
+    fitid
+        .split_whitespace()
+        .map(|word| word.replace(',', ""))
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// One statement of a multi-statement document, for the caller to offer.
+fn summary(statement: &Aggregate) -> StatementSummary {
+    let meta = statement_meta(statement).unwrap_or_default();
+    let account_type = if statement.tag == "CCSTMTRS" {
+        Some("CREDITCARD".to_string())
+    } else {
+        child_aggregate(statement, &["BANKACCTFROM"])
+            .and_then(|account| child_leaf(account, "ACCTTYPE"))
+            .map(str::trim)
+            .filter(|kind| !kind.is_empty())
+            .map(str::to_ascii_uppercase)
+    };
+    StatementSummary {
+        account_hint: meta.account_hint,
+        account_type,
+        currency: meta.currency,
+        ledger_balance: meta.ledger_balance,
+        transactions: collect_aggregates(statement, &["STMTTRN"], usize::MAX).len(),
+    }
 }
 
 /// What the statement said about itself, or `None` when it volunteered nothing.
@@ -745,7 +821,7 @@ fn balance_note(statement: &Aggregate, rows: &[Vec<String>]) -> Option<ConvertNo
 /// loosely and its `VALUE` read.
 fn opening_balance(statement: &Aggregate) -> Option<&str> {
     let list = child_aggregate(statement, &["BALLIST"])?;
-    collect_aggregates(list, "BAL", usize::MAX)
+    collect_aggregates(list, &["BAL"], usize::MAX)
         .into_iter()
         .find(|entry| {
             ["NAME", "DESC"]
@@ -913,6 +989,17 @@ mod tests {
         // Every scale a bank actually writes is far below the clamp, so no real
         // balance changes shape.
         assert_eq!(render(Dec::new(225_783, 2)), "2257.83");
+    }
+
+    #[test]
+    fn a_fitid_loses_the_commas_an_hledger_tag_would_end_at() {
+        assert_eq!(
+            tag_safe("20261031 212165 90 1,388,265"),
+            "20261031 212165 90 1388265"
+        );
+        assert_eq!(tag_safe("FIT0001"), "FIT0001");
+        assert_eq!(tag_safe("  a\n b,  , c "), "a b c");
+        assert_eq!(tag_safe(""), "");
     }
 
     #[test]

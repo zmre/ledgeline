@@ -290,10 +290,149 @@ pub struct Ranking {
     /// [`super::DiscoveredRules::modified`]. **Ranking only** — read that field's
     /// own comment before using this for anything else.
     pub modified: Option<SystemTime>,
+    /// How well the rules file's NAME fits the statement ([`NameHints::affinity`]).
+    /// **Ranking only**, and consulted only between candidates whose scores
+    /// read as the same percentage.
+    pub affinity: u32,
+}
+
+/// What a statement's name says about which rules file it wants: words from
+/// the uploaded file's name, and the account's last four digits.
+///
+/// The case this exists for is QuickBooks Web Connect. Every `.qbo` converts
+/// to the same seven columns, so every rules file written for one scores the
+/// same against all of them, and nothing in the data can say which bank's
+/// file to use. The names can: `amex-activity.qbo` wants `amex.csv.rules`,
+/// and account `…7592` wants the rules file whose name or `account1` carries
+/// `7592`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NameHints {
+    words: Vec<String>,
+    account: Option<String>,
+}
+
+/// Words that say nothing about WHICH account a file is for: extensions, and
+/// the generic names banks give every download.
+const GENERIC_WORDS: &[&str] = &[
+    "csv",
+    "tsv",
+    "ssv",
+    "qbo",
+    "qfx",
+    "ofx",
+    "xls",
+    "xlsx",
+    "rules",
+    "export",
+    "exported",
+    "download",
+    "downloads",
+    "transaction",
+    "transactions",
+    "statement",
+    "statements",
+    "activity",
+    "history",
+    "account",
+    "accounts",
+    "data",
+    "file",
+    "journal",
+    "imports",
+    "import",
+];
+
+impl NameHints {
+    /// Hints from an uploaded file's bare `name` and the statement's masked
+    /// `account_hint`.
+    ///
+    /// Numbers in the file name are dropped: they are dates and years
+    /// (`2026-11-02.qbo`), and `citi-2026.csv.rules` sharing a year with an
+    /// Amex download is no reason to prefer it. The account's digits are the
+    /// one number that does identify something, so they are kept separately.
+    #[must_use]
+    pub fn new(name: &str, account_hint: Option<&str>) -> Self {
+        let words = name_words(name)
+            .into_iter()
+            .filter(|word| word.len() >= 2 && !word.chars().all(|c| c.is_ascii_digit()))
+            .filter(|word| !GENERIC_WORDS.contains(&word.as_str()))
+            .collect();
+        let account = account_hint
+            .map(|hint| hint.trim().to_ascii_lowercase())
+            .filter(|hint| hint.len() >= 3 && hint.chars().all(|c| c.is_ascii_alphanumeric()));
+        Self { words, account }
+    }
+
+    /// How many hints the rules file `id` (and its `account1`) carries.
+    ///
+    /// An account-number match counts double: a file name says which bank, the
+    /// last four say which account at that bank, and the second is the finer
+    /// of the two. A word matches a whole word only — `el` is not `elevations`
+    /// — and the account matches the end of a run of digits, so `7592` finds
+    /// `checking-7592` and a full `1002000837592` alike.
+    #[must_use]
+    pub fn affinity(&self, id: &str, account1: Option<&str>) -> u32 {
+        let theirs: Vec<String> = name_words(id)
+            .into_iter()
+            .chain(account1.map(name_words).unwrap_or_default())
+            .collect();
+        let words = self
+            .words
+            .iter()
+            .filter(|word| theirs.contains(word))
+            .count();
+        let account = self
+            .account
+            .as_ref()
+            .is_some_and(|account| theirs.iter().any(|word| word.ends_with(account.as_str())));
+        u32::try_from(words)
+            .unwrap_or(u32::MAX)
+            .saturating_add(if account { 2 } else { 0 })
+    }
+}
+
+/// Lower-cased runs of letters and runs of digits: `Amex_Gold2026.qbo` is
+/// `amex`, `gold`, `2026`, `qbo`.
+fn name_words(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .flat_map(|run| {
+            // Split each alphanumeric run where letters meet digits.
+            let chars: Vec<char> = run.chars().collect();
+            chars
+                .chunk_by(|a, b| a.is_ascii_digit() == b.is_ascii_digit())
+                .map(|word| word.iter().collect::<String>().to_lowercase())
+                .collect::<Vec<_>>()
+        })
+        .filter(|word| !word.is_empty())
+        .collect()
+}
+
+/// A score as the candidate list shows it: a whole percentage.
+///
+/// Two candidates that read the same on screen are tied as far as the person
+/// choosing is concerned, so that is where the name gets a say.
+fn shown_percent(score: Score) -> u32 {
+    // In 0..=100 by `Score`'s own clamp, so the cast cannot truncate.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let percent = (score.value() * 100.0).round() as u32;
+    percent
+}
+
+/// The part of a ranking that counts as a tie: the percentage shown, and the
+/// name's affinity.
+fn tie_key(ranking: &Ranking) -> (u32, u32) {
+    (shown_percent(ranking.candidate.score), ranking.affinity)
 }
 
 /// Sort candidates best-first: **score descending, then modification time
-/// descending**, then `id` ascending.
+/// descending**, then `id` ascending — except that between scores that read
+/// as the same percentage, the better [`Ranking::affinity`] goes first.
+///
+/// The affinity tie-break is for statements the data cannot tell apart: every
+/// QuickBooks Web Connect file converts to the same columns, so an Amex rules
+/// file and a Chase one score alike against either, and the file's name (or
+/// the account's last four) is all there is to go on. It is consulted only
+/// within one shown percentage, so a name never outranks a better fit.
 ///
 /// The mtime tie-break is the point. A real user has rules files going back
 /// years — `checking-2024.csv.rules`, `checking-2025.csv.rules` — which are near
@@ -307,9 +446,9 @@ pub struct Ranking {
 /// reproducibility rule the discovery scan follows.
 pub fn rank(rankings: &mut [Ranking]) {
     rankings.sort_by(|a, b| {
-        b.candidate
-            .score
-            .cmp(&a.candidate.score)
+        tie_key(b)
+            .cmp(&tie_key(a))
+            .then_with(|| b.candidate.score.cmp(&a.candidate.score))
             .then_with(|| b.modified.cmp(&a.modified))
             .then_with(|| a.candidate.id.cmp(&b.candidate.id))
     });
@@ -318,7 +457,8 @@ pub fn rank(rankings: &mut [Ranking]) {
 /// [`rank`], then the family tie-break (plan 32 D27) for a statement whose
 /// newest transaction is dated `date`.
 ///
-/// Among candidates of EQUAL score that are one family
+/// Among TIED candidates (the same shown percentage and the same name
+/// affinity — see [`rank`]) that are one family
 /// ([`super::families::family_of`]: `citi-2025.csv.rules`,
 /// `citi-2026.csv.rules`), the family's own order
 /// ([`super::families::order_family`]) replaces the mtime order: the file for
@@ -339,11 +479,11 @@ pub fn rank_in_families(rankings: &mut [Ranking], date: Option<&str>) {
     }
     let mut start = 0;
     while start < rankings.len() {
-        let score = rankings[start].candidate.score;
+        let tie = tie_key(&rankings[start]);
         let end = start
             + rankings[start..]
                 .iter()
-                .take_while(|ranking| ranking.candidate.score == score)
+                .take_while(|ranking| tie_key(ranking) == tie)
                 .count();
         let families: Vec<_> = rankings[start..end]
             .iter()
@@ -1182,6 +1322,55 @@ mod tests {
         assert!(!is_unknown("expenses:unknowable"));
         assert!(!is_unknown("expenses:food"));
         assert!(!is_unknown(""));
+    }
+
+    #[test]
+    fn names_split_into_words_and_digit_runs() {
+        assert_eq!(
+            name_words("2026/imports/Amex_Gold2026.csv.rules"),
+            ["2026", "imports", "amex", "gold", "2026", "csv", "rules"]
+        );
+        assert_eq!(name_words("liabilities:amex"), ["liabilities", "amex"]);
+    }
+
+    #[test]
+    fn the_file_name_and_the_account_pick_out_a_rules_file() {
+        let amex = NameHints::new("Amex-Activity-2026-10.qbo", None);
+        assert_eq!(amex.affinity("amex.csv.rules", None), 1);
+        assert_eq!(
+            amex.affinity("2026/chase.csv.rules", None),
+            0,
+            "a shared year is no hint"
+        );
+        assert_eq!(
+            amex.affinity("cards.csv.rules", Some("liabilities:amex")),
+            1
+        );
+
+        let account = NameHints::new("el.qbo", Some("7592"));
+        assert_eq!(
+            account.affinity("elevations-checking-7592.csv.rules", None),
+            2
+        );
+        assert_eq!(
+            account.affinity("bank.csv.rules", Some("assets:checking:1002000837592")),
+            2
+        );
+        assert_eq!(
+            account.affinity("elevations-savings-8485.csv.rules", None),
+            0
+        );
+        assert_eq!(
+            account.affinity("elevations.csv.rules", None),
+            0,
+            "`el` is a word, not a prefix"
+        );
+    }
+
+    #[test]
+    fn generic_names_hint_at_nothing() {
+        let hints = NameHints::new("export.qbo", None);
+        assert_eq!(hints.affinity("export.csv.rules", None), 0);
     }
 
     #[test]

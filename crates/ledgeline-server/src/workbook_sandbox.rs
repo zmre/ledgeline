@@ -117,14 +117,20 @@ const WORKER_UNAVAILABLE: &str = "the workbook reader could not be started";
 // The three entry points the import paths call
 // ---------------------------------------------------------------------------
 
-/// [`convert::convert`], with every spreadsheet format parsed in the worker.
+/// [`convert::convert_statement`], with every spreadsheet format parsed in the
+/// worker.
 ///
 /// Delimited and OFX input never reaches `calamine` and is converted in this
-/// process exactly as before. So are an empty or oversize workbook, which
-/// `convert` refuses before parsing anything.
-pub(crate) fn convert(format: SourceFormat, bytes: &[u8]) -> Result<Tabular, ConvertError> {
+/// process exactly as before — `statement` picks one statement of a
+/// multi-statement OFX, and means nothing to any other format. So are an empty
+/// or oversize workbook, which `convert` refuses before parsing anything.
+pub(crate) fn convert_statement(
+    format: SourceFormat,
+    bytes: &[u8],
+    statement: usize,
+) -> Result<Tabular, ConvertError> {
     if !format.is_spreadsheet() || bytes.is_empty() || bytes.len() > MAX_INPUT_BYTES {
-        return convert::convert(format, bytes);
+        return convert::convert_statement(format, bytes, statement);
     }
     // The worker answers with the whole `Result`; named, because inference
     // would otherwise decode a bare `Tabular` and call every answer garbled.

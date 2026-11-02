@@ -25,10 +25,12 @@ function staged(format: string): StagedFile {
         format,
         preview: {header: null, rows: [], rowCount: 0, truncated: false},
         statement: null,
+        statements: [],
+        statementIndex: 0,
         notes: [],
         unknownNoteCount: 0,
         candidates: [],
-        defaults: {csvPath: "", journalId: null},
+        defaults: {csvPath: "", uploadCsvPath: "", journalId: null},
     };
 }
 

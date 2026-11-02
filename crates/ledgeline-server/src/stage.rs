@@ -218,6 +218,9 @@ pub(crate) struct Stage {
     format: SourceFormat,
     /// The name the upload ARRIVED under — see [`Stage::upload_name`].
     upload_name: String,
+    /// Which statement of a multi-statement OFX this stage holds (zero-based),
+    /// or `None` for a file with only one — see [`Stage::statement`].
+    statement: Option<usize>,
     /// Hands out [`Stage::preview_slot`]s.
     previews: AtomicU64,
 }
@@ -242,6 +245,16 @@ impl Stage {
     /// separators, `..` and control characters.
     pub(crate) fn upload_name(&self) -> &str {
         &self.upload_name
+    }
+
+    /// Which statement of a multi-statement upload this stage converted
+    /// (zero-based), or `None` when the upload held only one.
+    ///
+    /// Kept for the same reason as [`Stage::upload_name`]: `--input` alone no
+    /// longer says which rows a `.qbo` holding three accounts imported, so the
+    /// command line `import_api::cli_argv` renders needs it too.
+    pub(crate) fn statement(&self) -> Option<usize> {
+        self.statement
     }
 
     /// A fresh run-directory name for one rule preview: this module's own
@@ -530,7 +543,9 @@ impl StageArea {
     ///
     /// `upload_name` is the name the file arrived under — already validated as a
     /// bare file name by the caller — and is kept only to be reported back; see
-    /// [`Stage::upload_name`]. Nothing on disk is named after it.
+    /// [`Stage::upload_name`]. Nothing on disk is named after it. `statement`
+    /// likewise: which statement of a multi-statement upload `csv` holds, kept
+    /// to be reported back; see [`Stage::statement`].
     ///
     /// # Errors
     /// [`std::io::Error`] if the session root, the stage directory or the CSV
@@ -540,6 +555,7 @@ impl StageArea {
         csv: &str,
         format: SourceFormat,
         upload_name: &str,
+        statement: Option<usize>,
     ) -> std::io::Result<(StageId, Arc<Stage>)> {
         let mut area = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         let root = area.session_root(&self.temp_dir)?;
@@ -555,6 +571,7 @@ impl StageArea {
             dir,
             format,
             upload_name: upload_name.to_string(),
+            statement,
             previews: AtomicU64::new(0),
         });
         area.stages.push((id.clone(), Arc::clone(&stage)));
@@ -728,7 +745,7 @@ mod tests {
     fn a_stage_holds_the_csv_it_was_given() {
         let area = area();
         let (id, stage) = area
-            .put("a,b\n1,2\n", SourceFormat::Csv, "statement.xlsx")
+            .put("a,b\n1,2\n", SourceFormat::Csv, "statement.xlsx", None)
             .expect("stage");
         assert_eq!(
             std::fs::read_to_string(stage.data()).expect("read back"),
@@ -755,7 +772,12 @@ mod tests {
     fn a_stage_remembers_the_name_the_upload_arrived_under() {
         let area = area();
         let (_, stage) = area
-            .put("a\n1\n", SourceFormat::Xlsx, "Statement Feb 2026.xlsx")
+            .put(
+                "a\n1\n",
+                SourceFormat::Xlsx,
+                "Statement Feb 2026.xlsx",
+                None,
+            )
             .expect("stage");
         assert_eq!(stage.upload_name(), "Statement Feb 2026.xlsx");
         // Not the stored name, and not a name derived from the format.
@@ -769,7 +791,7 @@ mod tests {
         let mine = area();
         let theirs = area();
         let (id, _) = theirs
-            .put("a\n1\n", SourceFormat::Csv, "bank.csv")
+            .put("a\n1\n", SourceFormat::Csv, "bank.csv", None)
             .expect("stage");
         assert!(mine.get(&id).is_none());
     }
@@ -781,7 +803,7 @@ mod tests {
     fn materializing_carries_the_destinations_latest_marker() {
         let area = area();
         let (_, stage) = area
-            .put("a\n1\n", SourceFormat::Csv, "bank.csv")
+            .put("a\n1\n", SourceFormat::Csv, "bank.csv", None)
             .expect("stage");
 
         let dest = std::env::temp_dir().join(format!(
@@ -851,7 +873,7 @@ mod tests {
     fn a_multi_line_latest_marker_is_copied_verbatim() {
         let area = area();
         let (_, stage) = area
-            .put("a\n1\n", SourceFormat::Csv, "bank.csv")
+            .put("a\n1\n", SourceFormat::Csv, "bank.csv", None)
             .expect("stage");
         let dest = scratch_destination();
 
@@ -894,7 +916,7 @@ mod tests {
     fn a_state_file_for_thousands_of_same_day_records_is_still_carried() {
         let area = area();
         let (_, stage) = area
-            .put("a\n1\n", SourceFormat::Csv, "bank.csv")
+            .put("a\n1\n", SourceFormat::Csv, "bank.csv", None)
             .expect("stage");
         let dest = scratch_destination();
 
@@ -975,7 +997,7 @@ mod tests {
     fn materializing_refuses_to_drop_unusable_dedup_state() {
         let area = area();
         let (_, stage) = area
-            .put("a\n1\n", SourceFormat::Csv, "bank.csv")
+            .put("a\n1\n", SourceFormat::Csv, "bank.csv", None)
             .expect("stage");
         let dest = scratch_destination();
         std::fs::create_dir(dest.join(".latest.bank.csv")).expect("not a regular file");
@@ -1006,7 +1028,7 @@ mod tests {
     fn materializing_refuses_anything_but_a_bare_name() {
         let area = area();
         let (_, stage) = area
-            .put("a\n1\n", SourceFormat::Csv, "bank.csv")
+            .put("a\n1\n", SourceFormat::Csv, "bank.csv", None)
             .expect("stage");
         for name in ["../escape.csv", "sub/bank.csv", "", ".", "..", "a\u{0}.csv"] {
             assert!(
@@ -1029,7 +1051,9 @@ mod tests {
     fn every_copy_hledger_reads_is_aligned_and_the_canonical_one_is_not() {
         let area = area();
         let csv = "Date,Description,Amount\n2026-01-05,A,-1.00\n";
-        let (_, stage) = area.put(csv, SourceFormat::Csv, "bank.csv").expect("stage");
+        let (_, stage) = area
+            .put(csv, SourceFormat::Csv, "bank.csv", None)
+            .expect("stage");
 
         assert_eq!(
             std::fs::read_to_string(stage.data()).expect("canonical"),
@@ -1068,7 +1092,7 @@ mod tests {
         let area = area();
         let ids: Vec<StageId> = (0..=MAX_LIVE_STAGES)
             .map(|n| {
-                area.put(&format!("a\n{n}\n"), SourceFormat::Csv, "bank.csv")
+                area.put(&format!("a\n{n}\n"), SourceFormat::Csv, "bank.csv", None)
                     .expect("stage")
                     .0
             })
@@ -1085,7 +1109,7 @@ mod tests {
     fn dropping_the_area_removes_every_stage() {
         let area = area();
         let (_, stage) = area
-            .put("a\n1\n", SourceFormat::Csv, "bank.csv")
+            .put("a\n1\n", SourceFormat::Csv, "bank.csv", None)
             .expect("stage");
         let root = stage
             .data()

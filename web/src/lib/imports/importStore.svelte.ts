@@ -35,7 +35,7 @@ import {
     decodeSortResult,
     decodeStagedFile,
 } from "#lib/api/nativeDecode.js";
-import {createSaveRequest, defaultRulesId, draftForm} from "./createModel";
+import {createSaveRequest, draftForm, newRulesId} from "./createModel";
 import type {RulesDraft} from "./types";
 import type {FormItem, RulesForm} from "./model";
 import {baseName, importPrefill} from "./ruleBuilder";
@@ -64,6 +64,8 @@ import {createStagedEdits} from "./stagedEdits.svelte";
 export interface StageQuery {
     readonly file: File;
     readonly attempt: number;
+    /** Which account of a multi-account upload to read — an index into `StagedFile.statements`. 0 for every other file. */
+    readonly statement: number;
 }
 
 export const capabilities = createResource<string, ImportCapabilities>(async (serverUrl) =>
@@ -74,7 +76,10 @@ export const staged = createResource<StageQuery, StagedFile>(async (serverUrl, q
     // `arrayBuffer()` is the only place the file's bytes exist in this process;
     // they are handed straight to `fetch` and never held in a rune.
     const bytes = await query.file.arrayBuffer();
-    return decodeStagedFile(await new LedgelineApi(serverUrl).stageImport(headerFilename(query.file.name), bytes));
+    // The header is only sent for a later account, so every ordinary upload is
+    // the request it always was.
+    const statement = query.statement === 0 ? undefined : query.statement;
+    return decodeStagedFile(await new LedgelineApi(serverUrl).stageImport(headerFilename(query.file.name), bytes, statement));
 });
 
 export const dryRun = createResource<ImportRunBody, DryRunResult>(async (serverUrl, body) =>
@@ -201,6 +206,8 @@ let stageAttempt = 0;
  * a retry is most wanted.
  */
 let offeredFile: File | null = null;
+/** Which account of `offeredFile` was asked for, so Retry and a rules-file save re-read the same one. */
+let offeredStatement = 0;
 
 /** The engine, or null when no server is configured yet. */
 function api(): LedgelineApi | null {
@@ -389,7 +396,7 @@ export const importStore = {
      * Take a dropped or picked file: refuse what the engine cannot read, upload
      * the rest, and seed the form from the answer.
      */
-    async offerFile(file: File): Promise<void> {
+    async offerFile(file: File, statement = 0): Promise<void> {
         const url = settings.serverUrl;
         if (url === null) return;
         const refusal = refuseFile(file.name, capabilities.value?.formats ?? []);
@@ -397,9 +404,10 @@ export const importStore = {
         if (refusal !== null) return;
         resetFlow();
         offeredFile = file;
+        offeredStatement = statement;
         stageAttempt += 1;
         const attempt = stageAttempt;
-        await staged.load(url, {file, attempt});
+        await staged.load(url, {file, attempt, statement});
         const result = staged.value;
         if (result === null || staged.query?.attempt !== attempt) return;
         seedFrom(result, capabilities.value?.journals ?? []);
@@ -414,7 +422,21 @@ export const importStore = {
      */
     async retryStage(): Promise<void> {
         const file = offeredFile;
-        if (file !== null) await this.offerFile(file);
+        if (file !== null) await this.offerFile(file, offeredStatement);
+    },
+
+    /**
+     * Read another account of a multi-account upload.
+     *
+     * A fresh staging of the same file, not a filter over the old one: each
+     * account is its own import, with its own rules file, CSV and balance, so
+     * everything downstream of the old staging is reset exactly as a new drop
+     * resets it.
+     */
+    async chooseStatement(statement: number): Promise<void> {
+        const file = offeredFile;
+        if (file === null || statement === offeredStatement) return;
+        await this.offerFile(file, statement);
     },
 
     // --- the form ---------------------------------------------------------
@@ -750,7 +772,11 @@ export const importStore = {
         if (file === null) return;
         creating = true;
         createdId = null;
-        createId = defaultRulesId(csvPath);
+        createId = newRulesId(
+            csvPath,
+            file.defaults.uploadCsvPath,
+            file.candidates.map((candidate) => candidate.id)
+        );
         await this.redraft();
     },
 
@@ -826,6 +852,10 @@ export const importStore = {
             const written = saved.id;
             await this.retryStage();
             createdId = written;
+            // The file was made FOR this statement, so it is the one to read it
+            // with — even when an older file scores as well or better (which is
+            // the usual reason to make a new one).
+            if (staged.value?.candidates.some((candidate) => candidate.id === written) === true) this.selectCandidate(written);
             return true;
         } catch (error) {
             createError = failureMessage(error);

@@ -306,6 +306,25 @@ async fn upload_to(router: &axum::Router, name: &str, bytes: Vec<u8>) -> (Status
     (status, json_or_text(&text))
 }
 
+/// [`upload_to`], choosing one statement of a multi-statement file.
+async fn upload_statement(
+    tree: &Tree,
+    name: &str,
+    bytes: Vec<u8>,
+    statement: &str,
+) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/import/stage")
+        .header(HeaderName::from_static(FILENAME), name)
+        .header(HeaderName::from_static("x-ledgeline-statement"), statement)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .body(Body::from(bytes))
+        .expect("request builds");
+    let (status, text) = send(tree.router(), request).await;
+    (status, json_or_text(&text))
+}
+
 /// A JSON body as a `Value`, or a plain-text error body as a JSON string — so
 /// one helper covers both and every assertion below reads the same way.
 fn json_or_text(body: &str) -> Value {
@@ -480,6 +499,54 @@ async fn a_pdf_is_refused_with_its_own_message() {
 /// that minted it holds. A perfectly well-formed id from a DIFFERENT server
 /// session is a stranger — which is what keeps one window's staged bank
 /// statement out of another's.
+#[tokio::test]
+async fn each_account_of_a_web_connect_download_stages_on_its_own() {
+    // A `.qbo` holding three accounts: the stage lists all three, converts the
+    // one asked for, and defaults its CSV to a per-account name so the three
+    // imports never share a `.latest` marker.
+    let tree = Tree::with_rules();
+    let bytes = std::fs::read(fixtures_dir().join("import/ofx/web-connect-accounts.qbo"))
+        .expect("fixture readable");
+
+    let (status, first) = upload(&tree, "el.qbo", bytes.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert_eq!(
+        first["statements"].as_array().map(Vec::len),
+        Some(3),
+        "{first}"
+    );
+    assert_eq!(first["statementIndex"], json!(0));
+    assert_eq!(first["statements"][2]["accountHint"], json!("3333"));
+    assert_eq!(first["statements"][2]["accountType"], json!("SAVINGS"));
+    assert_eq!(first["statements"][1]["transactions"], json!(2));
+    assert_eq!(first["preview"]["rowCount"], json!(3));
+
+    let (status, second) = upload_statement(&tree, "el.qbo", bytes.clone(), "1").await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(second["statementIndex"], json!(1));
+    assert_eq!(second["statement"]["accountHint"], json!("2222"));
+    assert_eq!(second["preview"]["rowCount"], json!(2));
+    // With no rules file to name the CSV after, the upload's name does — per
+    // account. (A matching rules file names it instead, as it always has.)
+    if second["candidates"].as_array().is_some_and(Vec::is_empty) {
+        assert_eq!(
+            second["defaults"]["csvPath"],
+            json!("el-2222.csv"),
+            "{second}"
+        );
+    }
+
+    for bad in ["3", "two", "-1"] {
+        let (status, body) = upload_statement(&tree, "el.qbo", bytes.clone(), bad).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {body}");
+    }
+
+    // A single-statement file lists nothing to choose between.
+    let (status, single) = upload(&tree, "bank.csv", STATEMENT.as_bytes().to_vec()).await;
+    assert_eq!(status, StatusCode::OK, "{single}");
+    assert_eq!(single["statements"], json!([]));
+}
+
 #[tokio::test]
 async fn a_stage_from_another_session_is_unreadable() {
     let theirs = Tree::with_rules();

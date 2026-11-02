@@ -1,6 +1,6 @@
 import {describe, expect, it} from "vitest";
 import {decodeRulesDoc, decodeRulesDraft} from "#lib/api/nativeDecode.js";
-import {checkRulesId, createBlocker, createSaveRequest, defaultRulesId, draftForm, draftLines, NEW_FILE_REVISION} from "./createModel";
+import {checkRulesId, createBlocker, createSaveRequest, defaultRulesId, draftForm, draftLines, NEW_FILE_REVISION, newRulesId} from "./createModel";
 import {fieldNames, toForm, withFieldNames, withSetting} from "./model";
 import type {RulesDocument} from "./types";
 
@@ -73,6 +73,18 @@ describe("defaultRulesId", () => {
         expect(checkRulesId(defaultRulesId("   "))).toBeNull();
         expect(checkRulesId(defaultRulesId("/leading/slash.csv"))).toBeNull();
         expect(checkRulesId(defaultRulesId("no-extension"))).toBeNull();
+    });
+});
+
+describe("newRulesId", () => {
+    it("follows the CSV destination when that name is free", () => {
+        expect(newRulesId("import/bank.csv", "import/el-7592.csv", [])).toBe("import/bank.csv.rules");
+    });
+
+    it("falls back to the upload's own name when the destination names a candidate", () => {
+        // A candidate is selected, so the destination is ITS csv, and a new file
+        // under that name would be refused as taken.
+        expect(newRulesId("import/bank.csv", "import/el-7592.csv", ["import/bank.csv.rules"])).toBe("import/el-7592.csv.rules");
     });
 });
 

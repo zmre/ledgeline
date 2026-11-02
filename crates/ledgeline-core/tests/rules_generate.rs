@@ -578,6 +578,56 @@ fn hledger_reads_what_the_generator_drafts() {
     }
 }
 
+#[test]
+fn a_drafted_web_connect_file_tags_every_row_with_its_whole_fitid() {
+    // The draft writes `comment id:%fitid`, and the converter strips the
+    // commas an hledger tag value would end at -- so the id hledger reads back
+    // is the bank's whole id, and two rows whose FITIDs share everything up to
+    // a digit-group comma are still two ids.
+    let path = common::fixtures_dir().join("import/ofx/web-connect-accounts.qbo");
+    let bytes = std::fs::read(&path).expect("fixture readable");
+    let table = convert::convert(SourceFormat::Qbo, &bytes).expect("converts");
+    let drafted = generate::generate(&table, ACCOUNT1).expect("drafts");
+    assert!(
+        drafted
+            .doc
+            .text()
+            .lines()
+            .any(|line| line == "comment id:%fitid"),
+        "{}",
+        drafted.doc.text()
+    );
+
+    if std::env::var_os(OPT_IN).is_none_or(|value| value.is_empty()) {
+        eprintln!("skipping the hledger half: set {OPT_IN}=1");
+        return;
+    }
+    let scratch = Scratch::new("web-connect");
+    let json = print_with(&scratch, "accounts.csv", &table, drafted.doc.text());
+    // `print` sorts by date, so compared as a set.
+    let mut ids: Vec<&str> = json
+        .as_array()
+        .expect("an array")
+        .iter()
+        .map(|txn| {
+            txn["ttags"]
+                .as_array()
+                .and_then(|tags| tags.iter().find(|tag| tag[0] == "id"))
+                .and_then(|tag| tag[1].as_str())
+                .unwrap_or_else(|| panic!("an id tag on {txn}"))
+        })
+        .collect();
+    ids.sort_unstable();
+    assert_eq!(
+        ids,
+        [
+            "20260227 212165 561516 1041790",
+            "20260227 212165 561777 1041791",
+            "20261031 212165 90 1388265",
+        ]
+    );
+}
+
 /// hledger's parsed value for transaction `at`'s first posting, as
 /// `(mantissa, decimal places)` — the pair that says what the number *is*.
 fn parsed_amount(json: &serde_json::Value, at: usize) -> (i64, i64) {

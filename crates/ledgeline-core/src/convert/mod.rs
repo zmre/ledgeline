@@ -53,6 +53,32 @@ pub struct Tabular {
     /// retype their statement.
     pub statement: Option<StatementMeta>,
     pub notes: Vec<ConvertNote>,
+    /// Every statement in a document that holds more than one (an OFX "all my
+    /// accounts" download), in document order, so the caller can offer the
+    /// others. Empty for a single-statement file and for every non-OFX format.
+    #[serde(default)]
+    pub statements: Vec<StatementSummary>,
+    /// Which of [`Tabular::statements`] the rows came from. Zero whenever
+    /// `statements` is empty.
+    #[serde(default)]
+    pub statement_index: usize,
+}
+
+/// One statement of a multi-statement document, described well enough for a
+/// person to pick it: the account's last four, what kind of account, and how
+/// much is in it.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct StatementSummary {
+    /// Masked to the last four characters, as [`StatementMeta::account_hint`].
+    pub account_hint: Option<String>,
+    /// `ACCTTYPE` as the bank wrote it (`CHECKING`, `SAVINGS`, `CREDITLINE`),
+    /// or `CREDITCARD` for a `CCSTMTRS`, which has no `ACCTTYPE`.
+    pub account_type: Option<String>,
+    pub currency: Option<String>,
+    /// Verbatim, as [`StatementMeta::ledger_balance`].
+    pub ledger_balance: Option<String>,
+    /// How many `STMTTRN`s the statement holds.
+    pub transactions: usize,
 }
 
 /// What a format told us about the statement as a whole, as opposed to its rows.
@@ -74,14 +100,15 @@ pub struct StatementMeta {
 pub enum ConvertNote {
     /// A workbook had more than one candidate sheet and we picked this one.
     SheetChosen { name: String, of: usize },
-    /// An OFX document held more than one statement and only the first was read.
+    /// An OFX document held more than one statement and only one was read.
     ///
     /// The others are not merged in: each statement's transactions belong to its
     /// own account, and a rules file names one `account1` for the whole import,
     /// so merging would post one account's money to another. Without this note
-    /// the rest are discarded in silence — and the arithmetic check cannot catch
-    /// it, because the first statement reconciles perfectly against its own
-    /// closing balance.
+    /// the rest are passed over in silence — and the arithmetic check cannot
+    /// catch it, because the chosen statement reconciles perfectly against its
+    /// own closing balance. [`Tabular::statements`] lists them so each can be
+    /// imported in turn.
     StatementChosen { of: usize },
     /// Cells were stored as spreadsheet date serials and were rendered as dates.
     DatesFromSerial { count: usize },
@@ -309,6 +336,21 @@ pub fn detect(name: &str, bytes: &[u8]) -> Result<SourceFormat, ConvertError> {
 /// # Errors
 /// See [`ConvertError`]. Errors never carry a path or raw user data.
 pub fn convert(format: SourceFormat, bytes: &[u8]) -> Result<Tabular, ConvertError> {
+    convert_statement(format, bytes, 0)
+}
+
+/// [`convert`], reading the `statement`th statement of a multi-statement OFX
+/// document (zero-based, document order). Every other format has exactly one
+/// table, so `statement` is ignored for them.
+///
+/// # Errors
+/// See [`ConvertError`]; an OFX `statement` past the last one is
+/// [`ConvertError::Malformed`].
+pub fn convert_statement(
+    format: SourceFormat,
+    bytes: &[u8],
+    statement: usize,
+) -> Result<Tabular, ConvertError> {
     if bytes.is_empty() {
         return Err(ConvertError::Empty);
     }
@@ -318,7 +360,7 @@ pub fn convert(format: SourceFormat, bytes: &[u8]) -> Result<Tabular, ConvertErr
         });
     }
     match format {
-        f if f.is_ofx() => ofx::parse(bytes),
+        f if f.is_ofx() => ofx::parse_statement(bytes, statement),
         f if f.is_spreadsheet() => spreadsheet::parse(bytes, f),
         f => delimited::parse(bytes, f),
     }

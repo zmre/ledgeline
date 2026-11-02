@@ -262,6 +262,7 @@ where
         truncated,
         statement: None,
         notes: notes(&name, names.len(), candidates, &table.dropped, serial_dates),
+        ..Tabular::default()
     })
 }
 

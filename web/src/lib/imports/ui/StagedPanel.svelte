@@ -19,6 +19,7 @@
     import CreateRulesPanel from "./CreateRulesPanel.svelte";
     import DestinationForm from "./DestinationForm.svelte";
     import PreviewTable from "./PreviewTable.svelte";
+    import StatementPicker from "./StatementPicker.svelte";
     import type {RulesDraft} from "../types";
     import type {FormItem, RulesForm} from "../model";
     import {reveal, revealArm} from "#lib/ui/reveal.js";
@@ -52,6 +53,7 @@
         writeAssertion,
         busy,
         onRetry,
+        onStatement,
         onSelect,
         onCsvPath,
         onJournal,
@@ -90,6 +92,8 @@
         /** A dry run or a write is in flight, so the form is frozen and the button is not pressable. */
         busy: boolean;
         onRetry: () => void;
+        /** Read another account of a multi-account upload. */
+        onStatement: (index: number) => void;
         onSelect: (id: string | null) => void;
         onCsvPath: (value: string) => void;
         onJournal: (value: string | null) => void;
@@ -109,6 +113,9 @@
     {#snippet children(file)}
         <div class="flex flex-col gap-3">
             {#if shows(sections, "preview")}
+                {#if file.statements.length > 1}
+                    <StatementPicker statements={file.statements} selected={file.statementIndex} disabled={busy} onChoose={onStatement} />
+                {/if}
                 <PreviewTable staged={file} />
             {/if}
 

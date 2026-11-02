@@ -217,6 +217,7 @@
                         writeAssertion={importStore.writeAssertion}
                         busy={importStore.formBusy}
                         onRetry={pressed(() => void importStore.retryStage())}
+                        onStatement={pressed((index: number) => void importStore.chooseStatement(index))}
                         onSelect={(id) => importStore.selectCandidate(id)}
                         onCsvPath={(value) => importStore.setCsvPath(value)}
                         onJournal={(value) => importStore.setJournalId(value)}

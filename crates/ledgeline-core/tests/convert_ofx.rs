@@ -7,7 +7,8 @@
 //! silently deletes the test.
 
 use ledgeline_core::convert::{
-    ConvertError, ConvertNote, MAX_INPUT_BYTES, SourceFormat, StatementMeta, Tabular, ofx,
+    ConvertError, ConvertNote, MAX_INPUT_BYTES, SourceFormat, StatementMeta, StatementSummary,
+    Tabular, ofx,
 };
 use proptest::prelude::*;
 use std::path::PathBuf;
@@ -77,8 +78,9 @@ fn statement_with_cp1252_memo(memo: &str) -> Vec<u8> {
         .collect()
 }
 
-const EVERY_FIXTURE: [&str; 9] = [
+const EVERY_FIXTURE: [&str; 10] = [
     "bank-v1.ofx",
+    "web-connect-accounts.qbo",
     "two-accounts.ofx",
     "bank-v2.ofx",
     "creditcard.qfx",
@@ -466,10 +468,14 @@ fn a_lone_closing_balance_makes_no_arithmetic_claim() {
     // `two-accounts.ofx` is excluded from the note assertion rather than from
     // the balance one: it carries a `StatementChosen`, which is the whole reason
     // it exists, and its first statement's balance is still recorded normally.
-    for name in EVERY_FIXTURE
-        .iter()
-        .filter(|n| !["balances.ofx", "two-accounts.ofx"].contains(n))
-    {
+    for name in EVERY_FIXTURE.iter().filter(|n| {
+        ![
+            "balances.ofx",
+            "two-accounts.ofx",
+            "web-connect-accounts.qbo",
+        ]
+        .contains(n)
+    }) {
         let tabular = parsed(name);
         assert!(
             tabular
@@ -911,6 +917,99 @@ fn a_download_of_several_accounts_reads_the_first_and_says_so() {
     // The one that WAS read is the one the metadata describes.
     let meta = table.statement.expect("statement metadata");
     assert_eq!(meta.account_hint.as_deref(), Some("1111"));
+}
+
+#[test]
+fn every_statement_of_a_web_connect_download_can_be_read_in_turn() {
+    // QuickBooks Web Connect from a credit union: one `.qbo`, three accounts.
+    // Each statement is read on its own -- never merged -- and the table
+    // describes all of them so the screen can offer the others.
+    let bytes = fixture("web-connect-accounts.qbo");
+    let first = ofx::parse(&bytes).expect("first statement");
+    let expected = vec![
+        StatementSummary {
+            account_hint: Some("1111".to_string()),
+            account_type: Some("CHECKING".to_string()),
+            currency: Some("USD".to_string()),
+            ledger_balance: Some("1200.45".to_string()),
+            transactions: 3,
+        },
+        StatementSummary {
+            account_hint: Some("2222".to_string()),
+            account_type: Some("CHECKING".to_string()),
+            currency: Some("USD".to_string()),
+            ledger_balance: Some("8016.80".to_string()),
+            transactions: 2,
+        },
+        StatementSummary {
+            account_hint: Some("3333".to_string()),
+            account_type: Some("SAVINGS".to_string()),
+            currency: Some("USD".to_string()),
+            ledger_balance: Some("25.00".to_string()),
+            transactions: 0,
+        },
+    ];
+    assert_eq!(first.statements, expected);
+    assert_eq!(first.statement_index, 0);
+    assert_eq!(first.rows.len(), 3);
+
+    let second = ofx::parse_statement(&bytes, 1).expect("second statement");
+    assert_eq!(
+        second.statements, expected,
+        "the list does not depend on the pick"
+    );
+    assert_eq!(second.statement_index, 1);
+    assert_eq!(
+        second
+            .rows
+            .iter()
+            .map(|r| cell(r, "name"))
+            .collect::<Vec<_>>(),
+        ["PAYROLL", "GROCERY STORE"],
+        "only the second account's rows"
+    );
+    let meta = second.statement.expect("statement metadata");
+    assert_eq!(meta.account_hint.as_deref(), Some("2222"));
+    assert_eq!(meta.ledger_balance.as_deref(), Some("8016.80"));
+    assert!(
+        second
+            .notes
+            .contains(&ConvertNote::StatementChosen { of: 3 })
+    );
+
+    // An account with no activity is still an account: zero rows, not an error.
+    let third = ofx::parse_statement(&bytes, 2).expect("third statement");
+    assert!(third.rows.is_empty());
+
+    assert!(matches!(
+        ofx::parse_statement(&bytes, 3),
+        Err(ConvertError::Malformed { .. })
+    ));
+}
+
+#[test]
+fn a_single_statement_lists_no_statements() {
+    let table = parsed("bank-v1.ofx");
+    assert!(table.statements.is_empty());
+    assert_eq!(table.statement_index, 0);
+}
+
+#[test]
+fn a_fitid_with_commas_survives_as_a_whole_hledger_tag() {
+    // hledger ends a tag value at the first comma, so `id:20260227 212165
+    // 561,516 1,041,790` was read back as `20260227 212165 561` -- and the
+    // fixture's next row, `561,777 ...`, as the very same id.
+    let table = parsed("web-connect-accounts.qbo");
+    let ids: Vec<&str> = table.rows.iter().map(|r| cell(r, "fitid")).collect();
+    assert_eq!(
+        ids,
+        [
+            "20261031 212165 90 1388265",
+            "20260227 212165 561516 1041790",
+            "20260227 212165 561777 1041791",
+        ]
+    );
+    assert!(ids.iter().all(|id| !id.contains(',')));
 }
 
 #[test]
