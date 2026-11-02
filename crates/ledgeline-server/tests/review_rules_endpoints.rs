@@ -5,6 +5,11 @@
 //! included). The selection rules themselves are pinned in `ledgeline-core`'s
 //! `tests/rules_infer.rs`; these pin the wire, both preview bases, the
 //! refusals, and that a preview writes nothing.
+//!
+//! The CSV-basis preview shells out to a real `hledger` (`print` over the
+//! statement), so those tests are gated behind `LEDGELINE_HLEDGER_IMPORT_CHECK=1`
+//! like `import_endpoints.rs`, and run by `just hledger-checks`. Everything
+//! else here is hermetic.
 
 mod common;
 
@@ -15,6 +20,20 @@ use axum::http::{Request, StatusCode, header};
 use ledgeline::{AppState, router_with_state};
 use serde_json::{Value, json};
 use tower::ServiceExt;
+
+/// Opts in to the checks that shell out to a real `hledger`. Set by
+/// `just hledger-checks`.
+const IMPORT_CHECK: &str = "LEDGELINE_HLEDGER_IMPORT_CHECK";
+
+/// Skip, loudly, unless the opt-in variable is set.
+macro_rules! require_hledger {
+    () => {
+        if std::env::var_os(IMPORT_CHECK).is_none() {
+            eprintln!("skipping: set {IMPORT_CHECK}=1 (or run `just hledger-checks`)");
+            return;
+        }
+    };
+}
 
 /// A copy of the fixture tree, removed on drop.
 struct Tree {
@@ -200,6 +219,7 @@ async fn no_file_for_the_account_is_an_empty_list_and_a_missing_index_a_404() {
 
 #[tokio::test]
 async fn the_csv_basis_previews_the_rule_against_the_newest_statement() {
+    require_hledger!();
     let tree = tree();
     let before = std::fs::read(tree.path("import/citi-2026.csv.rules")).expect("rules");
     let (status, body) = preview(
@@ -269,6 +289,7 @@ async fn the_csv_basis_previews_the_rule_against_the_newest_statement() {
 
 #[tokio::test]
 async fn hledgers_refusal_is_reported_without_a_temporary_path() {
+    require_hledger!();
     let tree = tree();
     let (status, body) = preview(
         &tree,
