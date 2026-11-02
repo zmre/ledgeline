@@ -44,6 +44,15 @@ export interface Resource<Q, T> {
     readonly view: DataView;
     /** Fetch for `query`; a response superseded by a newer load is discarded. */
     load(serverUrl: string, query: Q): Promise<void>;
+    /**
+     * Like `load`, but `task` does the fetching and says which query its answer
+     * belongs to: for a load that may settle on a different query than it began
+     * with, its intermediate failures never shown (the import dry run, which
+     * answers a stale review edit with a 409 it then resolves by replaying).
+     * Only what `task` returns, or the error it finally throws, reaches `value`
+     * / `error`.
+     */
+    run(task: () => Promise<{query: Q; value: T}>): Promise<void>;
 }
 
 /**
@@ -58,6 +67,23 @@ export function createResource<Q, T>(fetcher: (serverUrl: string, query: Q) => P
     let status = $state<LoadStatus>("idle");
     let error = $state<Error | null>(null);
     let seq = 0;
+
+    // A local, not a method: `load` is also called detached from the object.
+    async function run(task: () => Promise<{query: Q; value: T}>): Promise<void> {
+        const token = ++seq;
+        status = "loading";
+        try {
+            const next = await task();
+            if (token !== seq) return;
+            loaded = next;
+            status = "ready";
+            error = null;
+        } catch (cause) {
+            if (token !== seq) return;
+            status = "error";
+            error = cause instanceof Error ? cause : new Error(String(cause));
+        }
+    }
 
     return {
         get value(): T | null {
@@ -76,19 +102,8 @@ export function createResource<Q, T>(fetcher: (serverUrl: string, query: Q) => P
             return dataView(status, loaded !== null);
         },
         async load(serverUrl: string, query: Q): Promise<void> {
-            const token = ++seq;
-            status = "loading";
-            try {
-                const next = await fetcher(serverUrl, query);
-                if (token !== seq) return;
-                loaded = {query, value: next};
-                status = "ready";
-                error = null;
-            } catch (cause) {
-                if (token !== seq) return;
-                status = "error";
-                error = cause instanceof Error ? cause : new Error(String(cause));
-            }
+            await run(async () => ({query, value: await fetcher(serverUrl, query)}));
         },
+        run,
     };
 }

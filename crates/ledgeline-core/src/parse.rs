@@ -1595,6 +1595,18 @@ fn parse_year_directive(line: &str) -> Result<i32, ParseError> {
 /// Normalize a journal date to ISO `YYYY-MM-DD`: accept `-`/`/`/`.` separators,
 /// zero-pad the components, and expand a yearless `MM-DD` date using
 /// `default_year` (from a `Y` directive). hledger emits all dates in this form.
+/// Whether `value` is a real calendar date written exactly `YYYY-MM-DD`: the
+/// shape an editor writes, judged by the same calendar check the parser
+/// applies to a journal's own dates ([`normalize_date`], PARSE-6).
+pub(crate) fn is_iso_date(value: &str) -> bool {
+    let shaped = value.len() == 10
+        && value.bytes().enumerate().all(|(at, byte)| match at {
+            4 | 7 => byte == b'-',
+            _ => byte.is_ascii_digit(),
+        });
+    shaped && normalize_date(value, None).is_ok_and(|date| date == value)
+}
+
 fn normalize_date(token: &str, default_year: Option<i32>) -> Result<String, ParseError> {
     let comps: Vec<&str> = token.split(['-', '/', '.']).collect();
     let (year, month, day) = match comps.len() {
@@ -2669,40 +2681,6 @@ fn parse_posting(line: &str, line_no: u32, amt: AmountCtx) -> Result<RawPosting,
     })
 }
 
-/// Whether a posting source line **elides its amount**, leaving the value for
-/// the balancing pass to infer.
-///
-/// # Why the write path asks
-/// An elided amount is not cosmetic. Once the inferred value is written out
-/// explicitly, that leg can no longer disagree with the others, so hledger's own
-/// imbalance detection is permanently disabled for the transaction — the very
-/// check that catches a mistyped amount.
-///
-/// # What counts as elided
-/// A bare account, and also a posting whose only content after the account is a
-/// balance assertion (`assets:cash    = $99.00`, the reconcile-to-statement
-/// idiom): [`parse_amount_and_assertion`] records `amount: None` for that too.
-///
-/// Shares [`split_comment`] and [`split_account_amount`] with [`parse_posting`],
-/// so the answer is by construction the one the parser reached. A second,
-/// independent notion of "has an amount" would be exactly the drift this exists
-/// to prevent.
-pub(crate) fn posting_line_elides_amount(line: &str) -> bool {
-    let (main, _) = split_comment(line);
-    let trimmed = main.trim_start();
-    let after_status = trimmed
-        .strip_prefix(['*', '!'])
-        .map_or(trimmed, str::trim_start);
-    let amount_expr = split_account_amount(after_status).1.trim();
-    // Mirrors `parse_amount_and_assertion`: the written amount is whatever
-    // precedes the first `=`.
-    amount_expr
-        .find('=')
-        .map_or(amount_expr, |eq| &amount_expr[..eq])
-        .trim()
-        .is_empty()
-}
-
 /// Classify a posting's account field by its wrapping brackets and return the
 /// bare account name: `(a)` -> unbalanced virtual, `[a]` -> balanced virtual,
 /// anything else (including parens/brackets in the middle) -> regular.
@@ -3159,6 +3137,9 @@ pub(crate) fn cost_value(amount: &Amount) -> Result<(&Commodity, Dec, &AmountSty
 }
 
 fn finalize_posting(raw: RawPosting, sums: &[CommoditySum]) -> Result<Posting, ParseError> {
+    // Read before the match moves the amount: this is the one place that
+    // knows whether the file wrote the value or the balancer supplied it.
+    let elided = raw.amount.is_none();
     let amounts = match raw.amount {
         Some(amount) => vec![amount],
         // PARSE-9: a commodity that nets to exactly zero is still part of the
@@ -3194,6 +3175,7 @@ fn finalize_posting(raw: RawPosting, sums: &[CommoditySum]) -> Result<Posting, P
         comment: raw.comment,
         tags: raw.tags,
         generated: None,
+        elided,
     })
 }
 
@@ -3512,7 +3494,10 @@ fn looks_zero(residual: Dec, precision: u32) -> bool {
 
 /// Split a line at its first `;`, returning `(before, Some(after))` or
 /// `(line, None)`.
-fn split_comment(line: &str) -> (&str, Option<&str>) {
+///
+/// `pub(crate)` for the editor's surgical comment ops ([`crate::edit`]), which
+/// must find a header's comment exactly where this parser does.
+pub(crate) fn split_comment(line: &str) -> (&str, Option<&str>) {
     match line.find(';') {
         Some(pos) => (&line[..pos], Some(&line[pos + 1..])),
         None => (line, None),

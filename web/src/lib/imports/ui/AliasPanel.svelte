@@ -33,6 +33,7 @@
     import type {AliasDraft, AliasForm} from "../aliasModel";
     import {aliasListing, aliasStore} from "../aliasStore.svelte";
     import type {AliasFile} from "../importTypes";
+    import {createRevealArm, reveal} from "#lib/ui/reveal.js";
 
     let selectedId = $state<string | null>(null);
     let baseFile = $state<AliasFile | null>(null);
@@ -119,7 +120,14 @@
         savedAt = null;
     }
 
+    /**
+     * Save's errors are listed below the form, under the button that was
+     * pressed; `reveal` scrolls them into view, armed by that press.
+     */
+    const arm = createRevealArm();
+
     async function save(): Promise<void> {
+        arm.arm();
         if (form === null || baseline === null) return;
         clientErrors = validateForm(form);
         serverError = null;
@@ -289,14 +297,23 @@
                 </div>
 
                 {#if clientErrors.length > 0}
-                    <ul class="alert list-inside list-disc rounded-box py-2 text-sm alert-error" data-testid="imports-alias-client-errors">
+                    <ul
+                        class="alert list-inside list-disc rounded-box py-2 text-sm alert-error"
+                        use:reveal={{arm, key: clientErrors}}
+                        data-testid="imports-alias-client-errors"
+                    >
                         {#each clientErrors as problem (problem)}
                             <li>{problem}</li>
                         {/each}
                     </ul>
                 {/if}
                 {#if serverError !== null}
-                    <div class="alert items-start rounded-box py-2 text-sm alert-error" role="alert" data-testid="imports-alias-server-error">
+                    <div
+                        class="alert items-start rounded-box py-2 text-sm alert-error"
+                        role="alert"
+                        use:reveal={{arm, key: serverError}}
+                        data-testid="imports-alias-server-error"
+                    >
                         <span>{serverError}</span>
                     </div>
                 {/if}

@@ -24,6 +24,7 @@ use super::Classes;
 use super::cash::{BalanceKind, cash_balances};
 use super::wire::{js_trim, plain_decimal};
 use crate::model::{Journal, Status, Transaction};
+use crate::projections::is_generated;
 use crate::reports::AccountType;
 use crate::wire::{self, WireDiagnostic};
 use serde::Serialize;
@@ -134,7 +135,10 @@ pub fn engine_findings(journal: &Journal) -> Vec<Finding> {
 /// `*:unknown`, `*:uncategorized` (any depth, including bare), or a bare
 /// top-level account whose TYPE is expense or revenue — decided by type, so a
 /// chart of accounts rooted at `cogs:` or `gastos:` is caught too.
-fn is_uncategorized(account: &str, classes: &Classes) -> bool {
+///
+/// `pub(crate)` for [`crate::review`], whose "unknown" must be this exact
+/// predicate so the review queue and the Problems drawer count the same rows.
+pub(crate) fn is_uncategorized(account: &str, classes: &Classes) -> bool {
     let lowered = account.to_lowercase();
     let mut segments = lowered.split(':');
     let depth = segments.clone().count();
@@ -245,9 +249,21 @@ fn future_date(position: usize, txn: &Transaction, today: &str) -> Option<Findin
 
 /// The five local rules over `journal`, in rule order (all `pending` findings,
 /// then all `uncategorized`, …), as of the client's `today`.
+///
+/// A forecast transaction (one a `~` rule generated, tagged
+/// `generated-transaction`) is nobody's to fix — it is re-made from its rule
+/// on every read — so no transaction rule looks at it, whatever its postings
+/// (an `=` rule's output on it included). A posting an `=` rule generated on a
+/// REAL transaction is checked like any other (plan 32 amendment A).
 #[must_use]
 pub fn local_findings(journal: &Journal, classes: &Classes, today: &str) -> Vec<Finding> {
-    let txns = || journal.transactions.iter().enumerate();
+    let txns = || {
+        journal
+            .transactions
+            .iter()
+            .enumerate()
+            .filter(|(_, txn)| !is_generated(txn))
+    };
     let pending = txns().filter_map(|(at, txn)| pending(at, txn));
     let mut verdicts: HashMap<&str, bool> = HashMap::new();
     let uncategorized: Vec<Finding> = txns()

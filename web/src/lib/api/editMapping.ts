@@ -14,7 +14,8 @@
 // style is NOT sent — the engine infers it from the journal when rendering.
 
 import type {Dec} from "#lib/domain/money.js";
-import type {Amount, Posting, Transaction, TxnStatus} from "#lib/domain/types.js";
+import type {Amount, ISODate, Posting, Transaction, TxnStatus} from "#lib/domain/types.js";
+import type {ReviewForm} from "#lib/review/types.js";
 import {isIsoDate} from "#lib/url/params.js";
 import type {
     AddTransactionBody,
@@ -23,6 +24,7 @@ import type {
     WireBalanceAssertion,
     WireCost,
     WireDec,
+    WireEditOp,
     WirePostingAmount,
     WirePostingInput,
     WirePostingType,
@@ -100,6 +102,18 @@ export interface PostingForm {
      * dropped from the file it cannot be recovered.
      */
     balanceAssertion: WireBalanceAssertion | null;
+    /**
+     * The file writes this posting with NO amount (plan 32 D35): `amount`
+     * starts blank, and a blank amount is written back blank, so the leg keeps
+     * auto-balancing. Typing an amount writes it out. Absent on new rows.
+     */
+    elided?: boolean;
+    /**
+     * What the engine inferred for an elided leg, as input text (`"-6.75"`),
+     * for a placeholder: `amount` itself stays blank. `""` when the inferred
+     * amount is not one commodity. Absent on rows that are not elided.
+     */
+    inferred?: string;
 }
 
 /** The whole-transaction popup form (add-blank or edit-prefilled). */
@@ -150,11 +164,20 @@ function assertionToWire(assertion: NonNullable<Posting["balanceAssertion"]>): W
     };
 }
 
+/** A balance assertion as the journal writes it, e.g. `== $500.00` or `=* 10 EUR`. */
+export function assertionLabel(assertion: WireBalanceAssertion): string {
+    const op = `${assertion.total ? "==" : "="}${assertion.inclusive ? "*" : ""}`;
+    const qty = decToInput({m: BigInt(assertion.amount.quantity.mantissa), p: assertion.amount.quantity.places});
+    return `${op} ${assertion.amount.commodity}${qty}`;
+}
+
 function postingToForm(posting: Posting): PostingForm {
     const first = posting.amounts[0];
-    return {
+    const row: PostingForm = {
         account: posting.account,
-        amount: first === undefined ? "" : decToInput(first.qty),
+        // An elided leg stays blank (D35): prefilling the inferred value would
+        // write it out on save and stop the leg auto-balancing.
+        amount: first === undefined || posting.elided === true ? "" : decToInput(first.qty),
         commodity: first === undefined ? "" : first.commodity,
         status: posting.status,
         comment: posting.comment,
@@ -162,12 +185,18 @@ function postingToForm(posting: Posting): PostingForm {
         type: posting.type ?? "regular",
         balanceAssertion: posting.balanceAssertion !== undefined ? assertionToWire(posting.balanceAssertion) : null,
     };
+    if (posting.elided === true) {
+        row.elided = true;
+        row.inferred = first !== undefined && posting.amounts.length === 1 ? decToInput(first.qty) : "";
+    }
+    return row;
 }
 
 /**
  * Prefill the popup form from an existing transaction (EDIT-ALL → PUT). `date2`
  * defaults to "" when the txn has no secondary date; `comment` carries the
  * transaction's FULL comment text (tags included) so nothing is lost on save.
+ * An elided posting's amount is left blank (D35; see `PostingForm.elided`).
  */
 export function txnToForm(txn: Transaction): TxnForm {
     return {
@@ -188,8 +217,11 @@ export function txnToForm(txn: Transaction): TxnForm {
 /**
  * Form → the whole-transaction wire body (shared by ADD and REPLACE). Rows with
  * a blank account are dropped; a row with a blank/invalid amount becomes the
- * elided leg (no `amount` field). Optional string fields are omitted when empty
- * so the body stays minimal.
+ * elided leg (no `amount` field) — which is how an untouched elided leg stays
+ * elided through a re-render (D35), while one whose amount the user typed is
+ * written out. Optional string fields are omitted when empty so the body stays
+ * minimal. Comments lose only their trailing whitespace: a comment that starts
+ * on its own `;` line (a leading `\n`) keeps it, and stays there.
  *
  * A posting amount NEVER carries a blank commodity: a bare number re-parses
  * under a journal `D` default-commodity directive (or is inferred) to a
@@ -204,7 +236,9 @@ export function txnToForm(txn: Transaction): TxnForm {
  * save (DL-2). `type` is omitted when `"regular"` (the engine's default) purely
  * to keep the body minimal; the assertion rides only a row that still has an
  * amount, because an assertion cannot be written on the inferred leg —
- * `validateForm` refuses that combination rather than let it drop silently.
+ * `validateForm` refuses that combination rather than let it drop silently —
+ * except on a leg the file already writes blank with an assertion
+ * (`assets:cash  = $99.00`), which goes back exactly so.
  */
 export function formToBody(form: TxnForm, defaultCommodity: string, position?: InsertPosition): AddTransactionBody {
     const fallbackCommodity = defaultCommodity.trim() || "$";
@@ -214,7 +248,7 @@ export function formToBody(form: TxnForm, defaultCommodity: string, position?: I
         if (account === "") continue;
         const posting: WirePostingInput = {account};
         if (row.status !== "unmarked") posting.status = row.status;
-        if (row.comment.trim() !== "") posting.comment = row.comment.trim();
+        if (row.comment.trim() !== "") posting.comment = row.comment.trimEnd();
         if (row.type !== "regular") posting.type = row.type;
         const qty = parseAmountInput(row.amount);
         if (qty !== null) {
@@ -222,8 +256,8 @@ export function formToBody(form: TxnForm, defaultCommodity: string, position?: I
             const amount: WirePostingAmount = {commodity, quantity: encodeDec(qty)};
             if (row.cost !== null) amount.cost = row.cost;
             posting.amount = amount;
-            if (row.balanceAssertion !== null) posting.balanceAssertion = row.balanceAssertion;
         }
+        if (row.balanceAssertion !== null && (qty !== null || row.elided === true)) posting.balanceAssertion = row.balanceAssertion;
         postings.push(posting);
     }
     const body: AddTransactionBody = {date: form.date.trim(), postings};
@@ -231,7 +265,7 @@ export function formToBody(form: TxnForm, defaultCommodity: string, position?: I
     if (form.status !== "unmarked") body.status = form.status;
     if (form.code.trim() !== "") body.code = form.code.trim();
     if (form.description.trim() !== "") body.description = form.description.trim();
-    if (form.comment.trim() !== "") body.comment = form.comment.trim();
+    if (form.comment.trim() !== "") body.comment = form.comment.trimEnd();
     if (position !== undefined) body.position = position;
     return body;
 }
@@ -246,7 +280,8 @@ export function formToBody(form: TxnForm, defaultCommodity: string, position?: I
  * an asserted posting would silently discard its reconciliation anchor — the
  * DL-2 failure, arrived at from the other direction. Destroying an anchor has
  * to be a deliberate act (the popup's "remove" control), never a side effect of
- * clearing a number.
+ * clearing a number. A leg the FILE already writes blank with an assertion
+ * (`elided`) is fine: it goes back exactly as it was.
  */
 export function validateForm(form: TxnForm): string[] {
     const errors: string[] = [];
@@ -259,7 +294,7 @@ export function validateForm(form: TxnForm): string[] {
         if (row.amount.trim() !== "" && parseAmountInput(row.amount) === null) {
             errors.push(`"${row.amount}" is not a valid amount.`);
         }
-        if (row.balanceAssertion !== null && parseAmountInput(row.amount) === null) {
+        if (row.balanceAssertion !== null && parseAmountInput(row.amount) === null && row.elided !== true) {
             errors.push(`"${row.account.trim()}" has a balance assertion, which needs an amount on that posting — give it an amount, or remove the assertion.`);
         }
     }
@@ -304,4 +339,306 @@ export function postingIndicesForAccount(txn: Transaction, account: string): num
  */
 export function accountPatch(txn: Transaction, oldAccount: string, newAccount: string): PatchTransactionBody {
     return {postings: postingIndicesForAccount(txn, oldAccount).map((index) => ({index, account: newAccount}))};
+}
+
+// ---------------------------------------------------------------------------
+// Review card → batch ops (plan 32 D9, D11)
+// ---------------------------------------------------------------------------
+
+/** The tag a reviewed transaction carries (D1). */
+export const REVIEWED_TAG = "reviewed";
+/** The tag a rename from the review card records the ORIGINAL similarity key in (D13a, Q12). */
+export const PAYEE_KEY_TAG = "payee-key";
+
+/**
+ * Tags the card never shows as chips: hledger's hidden twins (`_name`) and
+ * the ones `--auto` and the forecast stamp on a transaction at read time,
+ * which are not in the file to edit.
+ */
+const MACHINE_TAGS: ReadonlySet<string> = new Set(["modified-transaction", "generated-transaction"]);
+
+function isCardTag(name: string): boolean {
+    return !name.startsWith("_") && !MACHINE_TAGS.has(name);
+}
+
+/**
+ * The engine's reading of one comma segment (`parse.rs tag_in_segment`): a
+ * tag when any word precedes its first `:` — the last such word is the name.
+ */
+function isTagSegment(segment: string): boolean {
+    const colon = segment.indexOf(":");
+    return colon >= 0 && segment.slice(0, colon).trim() !== "";
+}
+
+/** The free text of ONE comment line: its non-tag comma segments, trimmed, joined with `", "`. */
+function lineFreeText(line: string): string {
+    return line
+        .trim()
+        .split(",")
+        .filter((segment) => !isTagSegment(segment))
+        .map((segment) => segment.trim())
+        .filter((segment) => segment !== "")
+        .join(", ");
+}
+
+/**
+ * The FREE TEXT of a transaction comment, one line per comment line that has
+ * any: each line's non-tag comma segments, trimmed and rejoined with `", "`;
+ * lines holding only tags (or nothing) are left out. Exactly what
+ * `setTxnComment` reads and writes (`edit.rs comment_free_text`).
+ */
+export function commentFreeText(comment: string): string {
+    return comment
+        .split("\n")
+        .map(lineFreeText)
+        .filter((line) => line !== "")
+        .join("\n");
+}
+
+/**
+ * Free text as typed → the form `commentFreeText` gives it: each line's comma
+ * segments trimmed and rejoined with `", "`, blank lines dropped. Tag-looking
+ * text is kept, not filtered: the engine refuses it rather than this silently
+ * dropping what the user typed.
+ */
+function normalizedFreeText(text: string): string {
+    return text
+        .split(/\r?\n/)
+        .map((line) =>
+            line
+                .split(",")
+                .map((segment) => segment.trim())
+                .filter((segment) => segment !== "")
+                .join(", ")
+        )
+        .filter((line) => line !== "")
+        .join("\n");
+}
+
+/** The review card's form for `txn` (D8, D33): the header, free-text comment, tag chips, and the written postings. */
+export function reviewFormOf(txn: Transaction): ReviewForm {
+    return {
+        date: txn.date,
+        date2: txn.date2 ?? "",
+        status: txn.status,
+        code: txn.code,
+        description: txn.description,
+        comment: commentFreeText(txn.comment),
+        tags: txn.tags.filter(([name]) => isCardTag(name)).map(([name, value]) => [name, value]),
+        postings: txnToForm(txn).postings,
+    };
+}
+
+/**
+ * The comment a NEW transaction is written with (D36), from the card's free
+ * text and tag chips: the first free-text line, then every tag as
+ * `name:value`, joined `", "` on the header's comment line; later free-text
+ * lines follow, one per line. A checked Mark reviewed is a chip here, so the
+ * stamp rides the one POST (p7 amendment 13).
+ */
+export function addComment(form: ReviewForm): string {
+    const [first = "", ...rest] = normalizedFreeText(form.comment).split("\n");
+    const head = [first, ...form.tags.map(([name, value]) => `${name.trim()}:${value.trim()}`)].filter((part) => part !== "").join(", ");
+    return [head, ...rest].join("\n").trim();
+}
+
+/** Two typed amounts denote the same number (`5.5` and `5.50` do; blank only equals blank). */
+function sameAmount(a: string, b: string): boolean {
+    const x = parseAmountInput(a);
+    const y = parseAmountInput(b);
+    if (x === null || y === null) return x === y && a.trim() === b.trim();
+    const places = Math.max(x.p, y.p);
+    return x.m * 10n ** BigInt(places - x.p) === y.m * 10n ** BigInt(places - y.p);
+}
+
+function sameJson(a: unknown, b: unknown): boolean {
+    return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** A posting comment as the wire sends it: trailing whitespace off, `null` when blank. */
+function postingComment(comment: string): string | null {
+    return comment.trim() === "" ? null : comment.trimEnd();
+}
+
+/**
+ * Whether `form` changes `original`'s postings in a way no surgical op can
+ * write (D11's "split", D34): an amount, a commodity, a posting's status, type
+ * or cost, an assertion other than removed, or a posting added or removed.
+ * Such a save re-renders the transaction (`replace`), and is never applied to
+ * similar transactions. An elided amount left blank is not a change, and
+ * neither is an account, a posting comment or a removed assertion — each has
+ * its own op.
+ */
+export function isSplit(original: Transaction, form: ReviewForm): boolean {
+    const before = txnToForm(original).postings;
+    if (before.length !== form.postings.length) return true;
+    return before.some((was, at) => {
+        const now = form.postings[at];
+        return (
+            now === undefined ||
+            !sameAmount(was.amount, now.amount) ||
+            (parseAmountInput(now.amount) !== null && was.commodity.trim() !== now.commodity.trim()) ||
+            was.status !== now.status ||
+            was.type !== now.type ||
+            !sameJson(was.cost, now.cost) ||
+            (now.balanceAssertion !== null && !sameJson(was.balanceAssertion, now.balanceAssertion))
+        );
+    });
+}
+
+/** The first value of each tag name, in order. */
+function firstValues(tags: readonly (readonly [string, string])[]): Map<string, string> {
+    const values = new Map<string, string>();
+    for (const [name, value] of tags) if (!values.has(name)) values.set(name, value);
+    return values;
+}
+
+/** `setTxnTag` ops turning `before`'s tags into `after`'s: changed or added ones set, missing ones removed. */
+function tagOps(before: readonly (readonly [string, string])[], after: readonly (readonly [string, string])[]): WireEditOp[] {
+    const was = firstValues(before);
+    const now = firstValues(after);
+    const ops: WireEditOp[] = [];
+    for (const [name, value] of now) if (was.get(name) !== value) ops.push({op: "setTxnTag", name, value});
+    for (const name of was.keys()) if (!now.has(name)) ops.push({op: "setTxnTag", name, value: null});
+    return ops;
+}
+
+/** The surgical header ops turning `original`'s header into `form`'s (D34). */
+function headerOps(original: Transaction, form: ReviewForm): WireEditOp[] {
+    const ops: WireEditOp[] = [];
+    const date = form.date.trim();
+    if (date !== original.date) ops.push({op: "setDate", date});
+    const date2 = form.date2.trim() === "" ? null : form.date2.trim();
+    if (date2 !== (original.date2 ?? null)) ops.push({op: "setDate2", date2});
+    if (form.status !== original.status) ops.push({op: "setStatus", status: form.status});
+    const code = form.code.trim();
+    if (code !== original.code) ops.push({op: "setCode", code: code === "" ? null : code});
+    if (form.description.trim() !== original.description) ops.push({op: "setDescription", description: form.description.trim()});
+    return ops;
+}
+
+/** The surgical posting ops turning `before`'s rows into `form`'s, row for row (no split). */
+function postingOps(before: readonly PostingForm[], form: ReviewForm): WireEditOp[] {
+    const ops: WireEditOp[] = [];
+    form.postings.forEach((row, posting) => {
+        const was = before[posting];
+        if (was === undefined) return;
+        const account = row.account.trim();
+        if (account !== "" && account !== was.account) ops.push({op: "setPostingAccount", posting, account});
+        const comment = postingComment(row.comment);
+        if (comment !== postingComment(was.comment)) ops.push({op: "setPostingComment", posting, comment});
+        if (was.balanceAssertion !== null && row.balanceAssertion === null) ops.push({op: "removePostingAssertion", posting});
+    });
+    return ops;
+}
+
+/**
+ * The batch ops that save `form` over `original` (D9, D34), in the order the
+ * engine wants them:
+ *
+ * - **No split:** one surgical op per changed field — `setDate`, `setDate2`,
+ *   `setStatus`, `setCode`, `setDescription`, and per posting
+ *   `setPostingAccount`, `setPostingComment` and `removePostingAssertion` —
+ *   so the rest of the text (an elided amount, a hand-aligned column, a
+ *   comment's spacing) is untouched.
+ * - **A split** (`isSplit`: an amount, a commodity, a posting added or
+ *   removed): `replace` first, re-rendering the one transaction from the
+ *   form's header and rows with its comment as it was. An elided leg left
+ *   blank is written blank (D35).
+ * - **Then, either way,** `setTxnTag` for each tag chip changed, added or
+ *   removed, and `setTxnComment` when the free text changed — surgical over
+ *   whichever text the ops before left.
+ *
+ * Empty when nothing changed. Positions are the form's rows: the postings the
+ * file writes.
+ */
+export function formToOps(original: Transaction, form: ReviewForm, defaultCommodity = "$"): WireEditOp[] {
+    const before = reviewFormOf(original);
+    const ops: WireEditOp[] = [];
+    if (isSplit(original, form)) {
+        const body = formToBody(
+            {
+                date: form.date,
+                date2: form.date2,
+                status: form.status,
+                code: form.code,
+                description: form.description,
+                comment: original.comment,
+                postings: form.postings,
+            },
+            defaultCommodity
+        );
+        ops.push({op: "replace", transaction: body});
+    } else {
+        ops.push(...headerOps(original, form), ...postingOps(before.postings, form));
+    }
+    ops.push(...tagOps(before.tags, form.tags));
+    const comment = normalizedFreeText(form.comment);
+    if (comment !== before.comment) ops.push({op: "setTxnComment", comment});
+    return ops;
+}
+
+/**
+ * The ops a review save sends for its own card: `formToOps`, plus — when the
+ * description changed — `payee-key:<original key>` so the rename can be
+ * suggested once the raw text is gone (Q12), plus `reviewed:<date>` when the
+ * card is being marked reviewed.
+ */
+export function cardOps(
+    original: Transaction,
+    form: ReviewForm,
+    options: {key: string | null; reviewedOn: ISODate | null; defaultCommodity?: string}
+): WireEditOp[] {
+    const ops = formToOps(original, form, options.defaultCommodity);
+    const renamed = form.description.trim() !== original.description;
+    const hasKey = (tags: readonly (readonly [string, string])[]): boolean => tags.some(([name]) => name === PAYEE_KEY_TAG);
+    if (renamed && options.key !== null && !hasKey(original.tags) && !hasKey(form.tags)) {
+        ops.push({op: "setTxnTag", name: PAYEE_KEY_TAG, value: options.key});
+    }
+    if (options.reviewedOn !== null) ops.push({op: "setTxnTag", name: REVIEWED_TAG, value: options.reviewedOn});
+    return ops;
+}
+
+/** What a card's save changes that may be applied to similar transactions (D11). */
+export interface CardChange {
+    /** The new description, or null when it is unchanged. */
+    description: string | null;
+    /** Old account → new account, for each account the card moved. */
+    accounts: ReadonlyMap<string, string>;
+}
+
+/**
+ * What `form` changes over `original` that similar transactions could take:
+ * the description and the accounts. Null for a split (D11: never applied to
+ * similar transactions) and when nothing applicable changed.
+ */
+export function cardChange(original: Transaction, form: ReviewForm): CardChange | null {
+    if (isSplit(original, form)) return null;
+    const before = txnToForm(original).postings;
+    const accounts = new Map<string, string>();
+    form.postings.forEach((row, at) => {
+        const was = before[at]?.account;
+        const now = row.account.trim();
+        if (was !== undefined && now !== "" && now !== was && !accounts.has(was)) accounts.set(was, now);
+    });
+    const description = form.description.trim() !== original.description ? form.description.trim() : null;
+    return description === null && accounts.size === 0 ? null : {description, accounts};
+}
+
+/**
+ * The ops that apply `change` to one similar `candidate`: its description set,
+ * and every WRITTEN posting on a moved account moved. Empty when nothing
+ * applies (the candidate has none of the accounts and the description is
+ * unchanged or already that). Never marks it reviewed (D11).
+ */
+export function similarOps(candidate: Transaction, change: CardChange): WireEditOp[] {
+    const ops: WireEditOp[] = [];
+    if (change.description !== null && candidate.description !== change.description) ops.push({op: "setDescription", description: change.description});
+    candidate.postings
+        .filter((posting) => posting.generated === undefined)
+        .forEach((posting, written) => {
+            const account = change.accounts.get(posting.account);
+            if (account !== undefined) ops.push({op: "setPostingAccount", posting: written, account});
+        });
+    return ops;
 }

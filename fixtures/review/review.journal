@@ -1,0 +1,131 @@
+; Transaction-review fixture (plan 32). Read as of TODAY = 2026-10-30, so the
+; default 365-day window starts 2025-10-30 (inclusive).
+;
+; What is here, and which test leans on it (crates/ledgeline-core/tests/review.rs):
+; - a Blue Bottle family keyed `sq blue bottle oakland` with varying store
+;   numbers: three untagged unknowns in the window, one old (2024) and one
+;   future-dated unknown, one ignored unknown, and categorised history
+;   (coffee twice, groceries once, one reviewed) — similar + precedent;
+; - a reviewed rename carrying `payee-key:` — the description suggestion;
+; - a Berkeley store with no history of its own — the payee-prefix source;
+; - a Netflix subscription on the Visa and a renamed `NFLX` charge — the
+;   recurring source;
+; - `reviewed:<date>` on an unknown (Unknowns, not Recents), `reviewed:yes`
+;   with free text before it, the window boundary on both sides;
+; - elided amounts on almost every transaction;
+; - an include (review-2025.journal) holding in-window transactions, so a
+;   batch can span two files and a read-only include can be counted. It also
+;   holds an `=` rule posting to the unknown account (fires only under
+;   `--auto`); with the `~` rule below: generated postings count, forecasts
+;   don't (plan 32 amendment A).
+;
+; Not loaded by sample.journal's e2e: its totals must not move.
+
+account assets:checking  ; type: C
+account liabilities:visa  ; type: L
+account equity:opening  ; type: E
+account expenses:food:coffee  ; type: X
+account expenses:food:groceries  ; type: X
+account expenses:streaming  ; type: X
+account expenses:unknown  ; type: X
+
+include review-2025.journal
+
+; A periodic rule posting to the unknown account. Its forecast transactions
+; are nobody's to review: not in a queue, not in the Problems drawer.
+~ monthly from 2026-11-01
+    expenses:unknown  $9.99
+    liabilities:visa
+
+2024-03-10 SQ *BLUE BOTTLE 9999 OAKLAND
+    expenses:unknown  $4.50
+    liabilities:visa
+
+2025-10-29 Corner Store 78
+    expenses:unknown  $3.00
+    assets:checking
+
+2025-10-30 Corner Store 77
+    expenses:unknown  $3.00
+    assets:checking
+
+2026-04-14 Netflix
+    expenses:streaming  $15.49
+    liabilities:visa
+
+2026-05-01 SQ *BLUE BOTTLE 4400 OAKLAND  ; reviewed:ignore
+    expenses:unknown  $5.00
+    liabilities:visa
+
+2026-05-14 Netflix
+    expenses:streaming  $15.49
+    liabilities:visa
+
+2026-06-14 Netflix
+    expenses:streaming  $15.49
+    liabilities:visa
+
+2026-06-20 SQ *BLUE BOTTLE 3300 OAKLAND
+    expenses:food:groceries  $12.00
+    liabilities:visa
+
+2026-07-14 Netflix
+    expenses:streaming  $15.49
+    liabilities:visa
+
+2026-07-15 SQ *BLUE BOTTLE 2200 OAKLAND
+    expenses:food:coffee  $5.25
+    liabilities:visa
+
+2026-08-02 SQ *BLUE BOTTLE 1100 OAKLAND  ; reviewed:2026-08-03
+    expenses:food:coffee  $6.00
+    liabilities:visa
+
+2026-08-14 Netflix
+    expenses:streaming  $15.49
+    liabilities:visa
+
+2026-09-01 Blue Bottle Coffee  ; reviewed:2026-09-02, payee-key:sq blue bottle oakland
+    expenses:food:coffee  $7.00
+    liabilities:visa
+
+2026-09-14 Netflix
+    expenses:streaming  $15.49
+    liabilities:visa
+
+2026-09-28 SQ *BLUE BOTTLE 0233 OAKLAND
+    expenses:unknown  $7.25
+    liabilities:visa
+
+2026-10-03 SQ *BLUE BOTTLE 0917 OAKLAND
+    expenses:unknown  $5.50
+    liabilities:visa
+
+2026-10-05 SQ *BLUE BOTTLE 0001 BERKELEY
+    expenses:unknown  $4.00
+    liabilities:visa
+
+2026-10-12 SQ *BLUE BOTTLE 4412 OAKLAND
+    ; receipt: 0042
+    expenses:unknown  $6.75
+    liabilities:visa
+
+2026-10-14 NFLX DIGITAL 8812
+    expenses:unknown  $15.49
+    liabilities:visa
+
+2026-10-18 * Safeway  ; groceries, reviewed:yes
+    expenses:food:groceries  $82.10
+    assets:checking
+
+2026-10-20 Venmo payment 8812  ; reviewed:2026-10-21
+    expenses:unknown  $40.00
+    assets:checking
+
+2026-10-25 Safeway  ; weekly shop: produce
+    expenses:food:groceries  $54.30
+    assets:checking
+
+2026-11-15 SQ *BLUE BOTTLE 5555 OAKLAND
+    expenses:unknown  $6.00
+    liabilities:visa

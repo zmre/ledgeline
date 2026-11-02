@@ -16,7 +16,7 @@ Ledgeline imports the **Journal** report from QuickBooks Online. That report is 
 > 2. Set the report period. **All dates** is a good choice. Re-importing skips transactions that are already in your journal, matched by QuickBooks' transaction number (Trans #), which Ledgeline stores as an `id:` tag.
 > 3. Optionally, use **Customize** to add the **Vendor**, **Customer** and **Class** columns. Ledgeline keeps them as tags when they are present.
 > 4. Run the report.
-> 5. Choose **Export**, then **Export to Excel**, to download an `.xlsx` file. Use the Excel export rather than CSV.
+> 5. Choose **Export**, then **Export to Excel**, to download an `.xlsx` file. Use the Excel export rather than CSV as it includes more data that we need.
 
 ## Import the file
 
@@ -56,6 +56,16 @@ The **Import** button stays disabled until every account in the export is mapped
 
 ![The disabled Import button with its note: Map every account above before importing.](images/quickbooks-import-button.png)
 
+## Review before importing
+
+Once every account is mapped, **Review Unknowns** and **Review All** appear above **Import**. They open the same card-by-card [review](../journal/review.md) as a CSV import, over the transactions the export would write. Press <kbd>u</kbd> or <kbd>r</kbd> to open them from the keyboard.
+
+A QuickBooks transaction counts as uncategorized when its account maps to an unknown account, such as an alias that sends QuickBooks' Uncategorized Expense to `expenses:unknown`. You can categorize, rename and mark transactions reviewed, and fix similar ones already in your journal. Nothing is written until you press **Import**, and **Import** is always available. See [Review before writing](new-transactions.md#review-before-writing) for how the write applies your edits.
+
+**Remember as a rule** isn't offered here, because a QuickBooks import has no rules file. Change the mapping in [Account Aliases](../settings/account-aliases.md) instead.
+
+The cards always show each transaction as the export has it, even one you edited in an earlier review of the same import. Your edits are kept and written with the import.
+
 ## What gets written
 
 Press **Import**. Ledgeline writes each new transaction into the journal file where its date belongs. In a journal split into yearly `include`d files, a multi-year export lands in the right year files.
@@ -77,8 +87,6 @@ Each transaction carries:
 Every line of a QuickBooks transaction becomes its own posting, even when several lines use the same account. Lines are combined only when they have the same account, memo and tags. Such lines would read identically anyway, and combining them avoids writing a row of `$0.00` postings.
 
 The result panel says how many transactions were imported. If any journal file ended up out of date order, it offers to re-sort that file.
-
-If your journal is in a git repository, the import refuses to start while any journal file has uncommitted changes. Afterwards it commits only the files it wrote, as described in [the git safety net](new-transactions.md#the-git-safety-net).
 
 ## Importing again
 
@@ -104,6 +112,6 @@ The same import runs without the window:
 ledgeline import -i Journal.xlsx -j main.journal
 ```
 
-Ledgeline detects the QuickBooks format from the file. The `-o`, `-r` and balance options are refused for this format, because there is no CSV, rules file or single statement balance. Every account still has to be mapped first. `ledgeline import --help` lists the remaining options, including `--dry-run`, `--no-git` and `--update-changed`.
+Ledgeline detects the QuickBooks format from the file. The `-o`, `-r` and balance options are refused for this format, because there is no CSV, rules file or single statement balance. Every account still has to be mapped first. `ledgeline import --help` lists the remaining options, including `--dry-run` and `--update-changed`.
 
 The design notes for this importer are in [plan 17](https://github.com/zmre/ledgeline/blob/main/plans/17-quickbooks-journal-import.md).

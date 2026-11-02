@@ -1853,7 +1853,8 @@ describe("UNIT nativeDecode — QuickBooks Journal preview (qb_journal_api.rs, W
     };
 
     it("decodes the parsed groups and which accounts are unmapped", () => {
-        expect(decodeQbPreview(PREVIEW)).toEqual(PREVIEW);
+        // An engine that predates review (plan 32 D30) sends no `txns`: read as none.
+        expect(decodeQbPreview(PREVIEW)).toEqual({...PREVIEW, txns: []});
     });
 
     it("decodes idMatches once every account resolves — null while any account is still unmapped", () => {
@@ -1897,19 +1898,18 @@ describe("UNIT nativeDecode — QuickBooks Journal commit result", () => {
             inOrder: false,
             files: [{journalId: "2026/2026.journal", inOrder: false, moves: [{date: "2026-01-05", description: "Deposit", fromLine: 10, toLine: 4}]}],
         },
-        git: {committed: true, paths: ["2026/2026.journal"], skipped: []},
     };
 
-    it("decodes what was written, per-file ordering, and the git report", () => {
-        expect(decodeQbCommitResult(COMMIT)).toEqual({...COMMIT, git: {...COMMIT.git, message: null}});
+    it("decodes what was written and the per-file ordering", () => {
+        expect(decodeQbCommitResult(COMMIT)).toEqual({...COMMIT, overrides: 0, journalEdited: 0});
     });
 
     it("idMatches is REQUIRED here, unlike the preview's nullable copy — an absent value is a broken contract", () => {
         expect(() => decodeQbCommitResult(without(COMMIT, "idMatches"))).toThrow(ApiShapeError);
     });
 
-    it("git is null when nothing touched was under version control", () => {
-        expect(decodeQbCommitResult({...COMMIT, git: null}).git).toBeNull();
+    it("ignores the git report an older engine still sends", () => {
+        expect(decodeQbCommitResult({...COMMIT, git: {committed: true, paths: [], skipped: []}})).not.toHaveProperty("git");
     });
 
     it("throws on a body missing the ordering report", () => {

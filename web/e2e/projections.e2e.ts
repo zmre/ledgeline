@@ -206,15 +206,15 @@ test("projections: the runway and statements render, the runway in words and the
     await expect(page.getByTestId("projection-cf").getByTestId("projected-label").first()).toHaveText("Projected");
 });
 
-test("projections: picking a reading brings its tab strip to the top of the window, just under the pinned header", async ({page}) => {
+test("projections: picking a reading brings the interval/depth controls to the top of the window, just under the pinned header", async ({page}) => {
     await page.setViewportSize({width: 1280, height: 800});
     await page.goto("/projections?tab=bs");
     await expect(page.getByTestId("projection-bs").getByTestId("balance-sheet")).toBeVisible();
-    const strip = page.getByRole("tablist", {name: "Projection report"});
+    const controls = page.getByTestId("projection-controls");
     const header = page.getByTestId("app-header");
     // From the bottom of a long balance sheet to Journal, whose panel is a
     // one-line placeholder until its run lands: the page must not shrink out
-    // from under the strip and leave it at the bottom of the viewport.
+    // from under the controls and leave them at the bottom of the viewport.
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
     for (const name of ["Journal", "Income statement", "Runway"]) {
         await page.getByRole("tab", {name}).click();
@@ -222,10 +222,10 @@ test("projections: picking a reading brings its tab strip to the top of the wind
         await expect
             .poll(
                 async () => {
-                    const [s, h] = [await strip.boundingBox(), await header.boundingBox()];
-                    return s === null || h === null ? Infinity : Math.abs(Math.round(s.y - (h.y + h.height)));
+                    const [c, h] = [await controls.boundingBox(), await header.boundingBox()];
+                    return c === null || h === null ? Infinity : Math.abs(Math.round(c.y - (h.y + h.height)));
                 },
-                {message: `${name}: strip just under the header`}
+                {message: `${name}: controls just under the header`}
             )
             .toBeLessThanOrEqual(1);
     }

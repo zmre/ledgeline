@@ -1,0 +1,29 @@
+; Included by review.journal: an earlier file whose last transactions fall
+; inside the review window, so a batch can span two files and a read-only
+; include can be counted as "not editable".
+;
+; An `=` rule whose output is uncategorised. Only `--auto` applies it (the
+; core tests that read the journal as written never see it fire): then the
+; reviewed `Blue Bottle Coffee` rename (2026-09-01, in review.journal) gains
+; generated `(expenses:unknown)` postings and is unknown again (plan 32
+; amendment A). It lives here rather than in review.journal so the main file
+; keeps no `=` rule of its own: an included file's rules apply journal-wide.
+
+= desc:coffee$
+    (expenses:unknown)  *1
+
+2025-01-05 Opening balance
+    assets:checking  $5000.00
+    equity:opening
+
+2025-01-15 Safeway
+    expenses:food:groceries  $61.20
+    assets:checking
+
+2025-12-02 SQ *BLUE BOTTLE 7777 OAKLAND
+    expenses:unknown  $5.75
+    liabilities:visa
+
+2025-12-20 Safeway
+    expenses:food:groceries  $70.00
+    assets:checking

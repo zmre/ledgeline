@@ -44,10 +44,9 @@ path = "src/main.rs"
 # - `watcher` — live reload from a `notify` file watcher over the journal's
 #   real directories. Without it, a host calls `AppState::refresh()` (a
 #   vault-based content check) when it wants to pick up external edits.
-# - `external-tools` — running `hledger` (imports, rules previews) and `git`
-#   (the import safety net) as subprocesses. They need a real path for the
-#   journal (`Vault::local_path`); without the feature they report that this
-#   build cannot run them.
+# - `external-tools` — running `hledger` (imports, rules previews) as a
+#   subprocess. It needs a real path for the journal (`Vault::local_path`);
+#   without the feature it reports that this build cannot run it.
 #
 # `--no-default-features` builds the bare engine + HTTP server with none of
 # them. The headless server CI and Linux hosts run is

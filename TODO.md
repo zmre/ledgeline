@@ -96,14 +96,14 @@ user's first click on "All time".
 
 ## Import improvements
 
-- chore: `AmountStyle.digit_groups` is cloned per amount. The payload is bounded
-  (`MAX_DIGIT_GROUPS`) so there is no amplification, but the real fix is
-  `digit_groups: Option<Arc<DigitGroups>>` in `model.rs` — deferred because it is a cross-cutting
-  change to a widely-used type. There is a `TODO:` at the field.
-- Can we setup auto-syncing using SimpleFIN / SimpleFIN Bridge?
+- chore: `AmountStyle.digit_groups` is cloned per amount. The payload is bounded (`MAX_DIGIT_GROUPS`) so there is no amplification, but the real fix is `digit_groups: Option<Arc<DigitGroups>>` in `model.rs` — deferred because it is a cross-cutting change to a widely-used type. There is a `TODO:` at the field.
+- **Syncing:** Can we setup auto-syncing using SimpleFIN / SimpleFIN Bridge?
   - Is that still maintained?  Does it still work?
   - Do we have any other reasonable sync approaches?
   - Can we run it ourselves?
+- **Matching:** Quickbooks is pretty good at matching and proposing matches when dollar amounts are the same and something is a payment or a transfer or something (where we see the money out when importing from our bank, then see it land as a payment when importing from our credit card, or vice versa).  hledger doesn't do this so right now I have a lot of rules that send things to escrow-like accounts like transfers:internal-bank or transfers:creditcard-payment so that independent rules in each place can work.  An alternative would have been for me to make an automatic assumption from one side or the other, which is something I could do for the credit cards, but which is much harder for internal bank transfers.
+  - Ideally in our journal we'd have a button to search for matches.  Maybe we have some settings that control this on things like how far it looks back and whether its filtered to those escrow accounts or not.  Essentially we could import with the escrows but then the matcher can find when `$X -> account1 -> escrow` matches with a `escrow -> $X -> account2`.  We could also just look for any two transactions that are near to each other with the same amounts, but I suspect there will be more false positives that way.  Still, if a list of escrow accounts (or parents like in my case, `transfers` isn't specified, then it would do the general match.
+  - For found matches approved by the user, we could click a button that would merge them.  When there are two dates, we'd use one as the secondary.
 
 ## AI
 
@@ -123,17 +123,18 @@ user's first click on "All time".
 
 ## Ledger 
 
-- feat: intelligent category suggestions
-  - only real way to do this is with some sort of lookback comparing similar descriptions in the past and seeing associated expense or revenue accounts
-  - need to remove random numbers from description and maybe do a predominance calculation or a vector comparison rather than full equality.  if we're doing equality and removing numbers, we need to normalize some by lowercasing.  but in a perfect world, "netflix.com" might see a previous "netflix" and guess category based on that.  the more exact the match and the more recent, the higher the sort ranking
-  - feat: remember categorization functionality — write a chosen category back into the rules file as a new `if` rule (the rules editor and its write path are done; this is the one-click path into them)
 - feat: File -> New
   - Here I'm assuming we're setting up a new set of journal files, chart of accounts, etc. Probably we prompt with some questions and use an empty folder as a starting point and then create a skeleton so someone can start using us to track things. We should have a default chart of accounts for individuals and another for businesses and then we should allow them to start with an empty set of accounts to add their own.
-- feat: saved report filters?
+
+## Search
+
+- Our search should line up better with hledger search so you can copy an hledger query in and get the same results
+  - This especially means smarting handling of tags when searching
+- feat: saved report filters (needs to remember dates as absolute or relative as part of this, not just the search filter)
 
 ## Budgeting / planning / modeling
 
-- feat: personal planning calculators a la quicken financial planner; see inspiration from [credit karma](https://www.creditkarma.com/calculators/money) and [nerdwallet](https://www.nerdwallet.com/investing/calculators)
+- feat: personal planning calculators a la quicken financial planner; see inspiration from [credit karma](https://www.creditkarma.com/calculators/money) and [nerdwallet](https://www.nerdwallet.com/investing/calculators). Monarch also has some interesting calculators you can use even when not logged in like: [1](https://www.monarch.com/calculators/financial-health-calculator), [2])(https://www.monarch.com/calculators/debt-payoff-calculator), [3](https://www.monarch.com/calculators/mortgage-calculator) and probably more if you have an account
   - great free tools with details at [engaging-data](https://engaging-data.com/early-retirement-calculators-and-tools/)
   - [ ] investigate [projection lab](https://projectionlab.com) to understand if that's worthwhile or anything there we want to learn from. from a friend: "really nice stuff built on top of it (roth conversions, drawdown simulation, flex spending, tax strategy, "what if" checkpointing to compare decisions, nice milestone tools to setup when costs are known to change and how, etc"
   - [ ] Investigate [monarch](https://monarch.com) as a suggestion from others

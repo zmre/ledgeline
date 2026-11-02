@@ -38,6 +38,13 @@ ledgeline-core = { path = "crates/ledgeline-core", version = "0.2.1" }
 # criterion. Default features off: no Unicode tables beyond case folding.
 regex = { version = "1.13", default-features = false, features = ["std", "perf", "unicode-case", "unicode-perl"] }
 
+# Plan 32 (amendment B): the review similarity key folds a payee through
+# Unicode NFKC, so `ﬁ`, fullwidth `ＳＱ` and other compatibility forms a bank
+# export emits key the same as their plain spellings. `unicode-normalization`
+# is the unicode-rs crate (pure Rust, no unsafe in its tables, `no_std`
+# capable, so it builds for the FFI/iOS target).
+unicode-normalization = "0.1"
+
 # Phase 5 write path: `ropey` is the text-rope over the journal file. Pinned to
 # the stable 1.6 line — 1.6.1 (2023-10-18) is the latest stable release and the
 # project's recommended LTS; 2.0 is still alpha/beta (2.0.0-beta.1, 2025-08-02)

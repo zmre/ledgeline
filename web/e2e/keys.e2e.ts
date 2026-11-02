@@ -251,41 +251,37 @@ test.describe("the journal cursor", () => {
 });
 
 test.describe("account completion", () => {
-    /** The popup itself. Everything below is scoped to it. */
+    /** The editor (the review card's add mode, plan 32 D36). Everything below is scoped to it. */
     const popup = (page: Page) => page.getByRole("dialog", {name: "Add transaction"});
 
     /**
-     * The first posting's account combobox.
-     *
-     * `exact: true` matters: `getByLabel` matches on SUBSTRING by default, and
-     * the account-tree filter's input is labelled "Search accounts" — which
-     * contains "account". A loose match resolved to that instead, a hidden input
-     * inside a closed <details>, and every test here timed out clicking it.
+     * The first posting's account combobox, by its own label: the account-tree
+     * filter's input is labelled "Search accounts", which a loose "Account"
+     * match also finds (a hidden input inside a closed <details>).
      */
-    const accountField = (page: Page) => popup(page).getByLabel("Account", {exact: true}).first();
+    const accountField = (page: Page) => popup(page).getByLabel("Account for posting 1", {exact: true});
 
     const descriptionField = (page: Page) => popup(page).getByLabel("Description", {exact: true});
 
     /**
-     * Open the add-transaction popup and put the caret in its first account field.
+     * Open the add card and put the caret in its first account field.
      *
-     * Opened with `n` rather than by clicking the toolbar button — this is a
-     * keyboard suite, and the button's accessible name ("Add transaction") is
-     * shared with the popup's own submit control, so clicking it is ambiguous the
-     * moment the popup exists. The dialog assertion keeps a failure here readable
-     * as "the popup did not open" rather than as a combobox bug.
+     * Opened with `n` rather than by clicking the toolbar button, because this
+     * is a keyboard suite. The dialog assertion keeps a failure here readable
+     * as "the editor did not open" rather than as a combobox bug.
      */
     async function openPopup(page: Page): Promise<void> {
         await page.goto("/");
         await journalReady(page);
         // The toolbar button appearing is the signal that `editing.canEdit` has
-        // resolved — `n` is gated on it, and pressing before the write probe
-        // answers would silently do nothing. `.first()` because the popup's own
-        // submit control shares this accessible name.
-        await expect(page.getByRole("button", {name: "Add transaction"}).first()).toBeVisible();
+        // resolved: `n` is gated on it, and pressing before the write probe
+        // answers would silently do nothing.
+        await expect(page.getByRole("button", {name: "Add transaction"})).toBeVisible();
 
         await page.keyboard.press("n");
         await expect(popup(page)).toBeVisible();
+        // The add card starts in the description (D36).
+        await expect(descriptionField(page)).toBeFocused();
         await accountField(page).click();
     }
 
@@ -299,9 +295,9 @@ test.describe("account completion", () => {
         await expect(account).toHaveValue(/^expenses/);
     });
 
-    test("the suggestion list is not clipped by the modal box", async ({page}) => {
-        // `.modal-box` is overflow-y:auto with max-height:100vh, and per CSS spec
-        // that computes the other axis to auto too — so an absolutely-positioned
+    test("the suggestion list is not clipped by the card", async ({page}) => {
+        // The card's body scrolls inside it (`overflow-y: auto`), which per CSS
+        // spec computes the other axis to auto too, so an absolutely-positioned
         // popup would be cut off. This is the assertion that the fixed-position
         // portal is doing its job, and it needs real layout.
         await openPopup(page);
@@ -312,7 +308,7 @@ test.describe("account completion", () => {
 
     test("REGRESSION: Escape closes the suggestions, not the whole transaction", async ({page}) => {
         // The bug: AccountInput was passed no onCancel, so Escape did nothing
-        // locally and bubbled to the modal, which closed and discarded
+        // locally and bubbled to the editor, which closed and discarded
         // everything typed.
         await openPopup(page);
         await descriptionField(page).fill("Plumber");
@@ -323,21 +319,28 @@ test.describe("account completion", () => {
 
         await expect(page.getByRole("listbox")).toBeHidden();
         await expect(descriptionField(page)).toHaveValue("Plumber");
+        await expect(popup(page)).toBeVisible();
     });
 
-    test("a second Escape closes the popup", async ({page}) => {
+    test("Escape walks out: the suggestions, the field, then the card, asking first", async ({page}) => {
+        // D31: field → card → close, and a card with edits asks before it is
+        // thrown away.
         await openPopup(page);
         await accountField(page).fill("ex");
 
         await page.keyboard.press("Escape");
+        await expect(page.getByRole("listbox")).toBeHidden();
         await page.keyboard.press("Escape");
+        await expect(popup(page).getByTestId("review-card")).toBeFocused();
+        await page.keyboard.press("Escape");
+        await popup(page).getByRole("button", {name: "Discard and close"}).click();
 
         await expect(popup(page)).toBeHidden();
     });
 
     test("REGRESSION: Shift+Tab escapes the field rather than cycling", async ({page}) => {
         // The anti-trap guarantee. If Tab is claimed unconditionally there is no
-        // way out of this field and the popup becomes a keyboard trap — and only
+        // way out of this field and the editor becomes a keyboard trap — and only
         // a real browser has focus traversal to prove it against.
         await openPopup(page);
         const account = accountField(page);

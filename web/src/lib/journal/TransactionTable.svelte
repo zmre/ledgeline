@@ -13,10 +13,16 @@
     import {statusPatch} from "#lib/api/editMapping.js";
     import type {Transaction} from "#lib/domain/types.js";
     import type {JournalRow} from "#lib/journalView/types.js";
+    import {dismissible} from "#lib/keys/dismissible.js";
     import {registerKeys} from "#lib/keys/keymap.svelte.js";
     import {PRIORITY} from "#lib/keys/types.js";
+    import {rowMarker, type RowMarker} from "#lib/review/card.js";
+    import {REVIEW_BUTTON} from "#lib/review/ui/buttons.js";
+    import {reviewLaunch} from "#lib/review/ui/launch.svelte.js";
+    import ReviewIcon from "#lib/review/ui/ReviewIcon.svelte";
+    import ReviewSettings from "#lib/review/ui/ReviewSettings.svelte";
     import {editing} from "#lib/stores/editing.svelte.js";
-    import {filters} from "#lib/stores/filters.svelte.js";
+    import {filters, localToday} from "#lib/stores/filters.svelte.js";
     import {journalView} from "#lib/stores/journalView.svelte.js";
     import {problems} from "#lib/stores/problems.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
@@ -69,6 +75,23 @@
         untrack(() => journalView.ensure(start, end));
     });
     const columns = $derived(settings.columns);
+
+    // Review (plan 32 D18–D20): the badges' counts come with the view's summary
+    // (they ignore the filter); the stripes' window test runs here, against
+    // each row's date, so changing the setting needs no refetch.
+    const reviewCounts = $derived(journalView.summary?.review ?? null);
+    const unknownCount = $derived(reviewCounts?.unknown ?? 0);
+    const recentCount = $derived(reviewCounts?.unreviewedRecent ?? 0);
+    const today = localToday();
+    const markerOf = (row: JournalRow): RowMarker => rowMarker(row, today, settings.reviewMaxDays, settings.reviewMarkers);
+    let reviewMenuOpen = $state(false);
+
+    /** Open a review run — the D17 keys are disabled exactly when the button is. */
+    function launchReview(kind: "unknowns" | "recents"): void {
+        if (!editing.canEdit || (kind === "unknowns" ? unknownCount : recentCount) === 0) return;
+        reviewMenuOpen = false;
+        reviewLaunch.open(kind);
+    }
     const colCount = $derived(Object.values(columns).filter(Boolean).length);
 
     // The keyboard cursor.
@@ -189,6 +212,8 @@
             {keys: "s", label: "Cycle status", group: "Journal", enabled: canEdit, run: () => void cycleStatus()},
             {keys: "x", label: "Delete transaction", group: "Journal", enabled: canEdit, run: armOrConfirmDelete},
             {keys: "n", label: "Add transaction", group: "Journal", enabled: canEdit, run: () => txnModal.openAdd()},
+            {keys: "u", label: "Review unknowns", group: "Journal", enabled: () => canEdit() && unknownCount > 0, run: () => launchReview("unknowns")},
+            {keys: "r", label: "Review recents", group: "Journal", enabled: () => canEdit() && recentCount > 0, run: () => launchReview("recents")},
         ],
     });
 
@@ -264,14 +289,79 @@
         void scrollToTxn(request.txnIndex);
         problems.clearFocus();
     });
+
+    // EFFECT 4 — a review run closed: the cursor lands on the last transaction
+    // it saved (plan 32 Phase 3 "Focus"), so `j` carries on from there.
+    $effect(() => {
+        const request = reviewLaunch.returnTo;
+        if (request === null) return;
+        void scrollToTxn(request.txnIndex);
+        reviewLaunch.clearReturn();
+    });
+
+    // The review settings move the badges' counts: re-read the summary (not
+    // on mount — the view's own load already asked with them).
+    let reviewSettingsSeen = `${settings.reviewRecentLimit}:${settings.reviewMaxDays}`;
+    $effect(() => {
+        const seen = `${settings.reviewRecentLimit}:${settings.reviewMaxDays}`;
+        if (seen === reviewSettingsSeen) return;
+        reviewSettingsSeen = seen;
+        untrack(() => journalView.refreshSummary());
+    });
 </script>
 
 <section class="flex min-h-0 grow flex-col">
     <div class="flex items-center justify-between gap-2 pb-1">
         {#if editing.canEdit}
-            <button type="button" class="btn gap-1 btn-primary btn-sm" onclick={() => txnModal.openAdd()}>
-                <span class="text-base leading-none">+</span> Add transaction
-            </button>
+            <div class="flex items-center gap-2">
+                <button type="button" class="btn gap-1 btn-primary btn-sm" onclick={() => txnModal.openAdd()}>
+                    <span class="text-base leading-none">+</span> Add transaction
+                </button>
+                <!-- Review (plan 32 D18): a count badge on each, disabled at zero. -->
+                <span
+                    class="tooltip tooltip-bottom"
+                    data-tip={unknownCount === 0 ? "No uncategorised transactions in the review window" : "Review Unknowns (u)"}
+                >
+                    <button
+                        type="button"
+                        class="{REVIEW_BUTTON} gap-1.5"
+                        disabled={unknownCount === 0}
+                        onclick={() => launchReview("unknowns")}
+                        data-testid="review-unknowns-button"
+                    >
+                        Review Unknowns
+                        <span class={["badge badge-sm tabular-nums", unknownCount > 0 ? "badge-warning" : "badge-ghost"]} data-testid="review-unknowns-count"
+                            >{unknownCount}</span
+                        >
+                    </button>
+                </span>
+                <div class="flex">
+                    <span class="tooltip tooltip-bottom" data-tip={recentCount === 0 ? "Nothing unreviewed in the review window" : "Review Recents (r)"}>
+                        <button
+                            type="button"
+                            class="{REVIEW_BUTTON} gap-1.5 rounded-r-none"
+                            disabled={recentCount === 0}
+                            onclick={() => launchReview("recents")}
+                            data-testid="review-recents-button"
+                        >
+                            Review Recents
+                            <span class="badge badge-ghost badge-sm tabular-nums" data-testid="review-recents-count">{recentCount}</span>
+                        </button>
+                    </span>
+                    <details
+                        class="dropdown"
+                        bind:open={reviewMenuOpen}
+                        use:dismissible={{active: reviewMenuOpen, outside: true, onDismiss: () => (reviewMenuOpen = false)}}
+                    >
+                        <summary class="{REVIEW_BUTTON} rounded-l-none border-l-base-content/20 px-1.5" aria-label="Review settings" title="Review settings">
+                            <ReviewIcon name="chevron-down" class="h-3.5 w-3.5" />
+                        </summary>
+                        <div class="dropdown-content z-20 mt-1 rounded-box border border-base-300 bg-base-200 p-3 shadow-lg">
+                            <ReviewSettings />
+                        </div>
+                    </details>
+                </div>
+            </div>
         {:else}
             <span></span>
         {/if}
@@ -348,6 +438,7 @@
                                 flags={slot.row.flags}
                                 pulse={pulseIndex === slot.row.txn.index}
                                 cursor={cursor.index === slot.position}
+                                marker={markerOf(slot.row)}
                             />
                         {/if}
                     {/each}
@@ -369,6 +460,7 @@
                             flags={slot.row.flags}
                             pulse={pulseIndex === slot.row.txn.index}
                             cursor={cursor.index === slot.position}
+                            marker={markerOf(slot.row)}
                         />
                     {/if}
                 {/each}

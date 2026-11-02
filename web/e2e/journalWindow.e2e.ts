@@ -3,7 +3,7 @@
 //
 // The client no longer holds the journal: rows arrive in 200-row blocks, a jump
 // asks the engine where a transaction sits (`/api/journal/position`), and the
-// edit popup fetches the one transaction it edits (`/api/transactions/{index}`).
+// editor fetches the one transaction it edits (`/api/review/item/{index}`).
 // These are the flows that changed shape; the footer counts and the cursor keys
 // are covered in smoke.e2e.ts and keys.e2e.ts.
 
@@ -44,7 +44,7 @@ test("journal: a problem in the drawer jumps to its row, wherever it sits", asyn
     await expect(cursored).toBeInViewport();
 });
 
-test("journal: the edit popup opens on the transaction the engine has now", async ({page}) => {
+test("journal: the editor opens on the transaction the engine has now", async ({page}) => {
     await page.goto("/");
     await expect(page.locator("tbody tr[data-txn]").first()).toBeVisible();
     // Edit keys wait on the write probe, like the toolbar button.
@@ -55,10 +55,13 @@ test("journal: the edit popup opens on the transaction the engine has now", asyn
     const description = (await row.locator('button[title^="Click to edit"]').innerText()).trim();
     await page.keyboard.press("Enter");
 
+    // The review card in single mode (plan 32 D31), fetched by index.
     const popup = page.getByRole("dialog", {name: "Edit transaction"});
     await expect(popup).toBeVisible();
     await expect(popup.getByLabel("Description", {exact: true})).toHaveValue(description);
-    await popup.getByRole("button", {name: "Cancel"}).click();
+    await expect(popup.getByTestId("review-card")).toBeFocused();
+    // Nothing changed, so Escape closes it without asking.
+    await page.keyboard.press("Escape");
     await expect(popup).toBeHidden();
 });
 

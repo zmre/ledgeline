@@ -86,6 +86,19 @@ interface PersistedSettings {
      * default, because each one is a request that may reach Yahoo Finance.
      */
     benchmarks: string[];
+    /**
+     * Review Recents' cap (plan 32 D19): how many unreviewed transactions one
+     * run takes, newest first. Default 50.
+     */
+    reviewRecentLimit: number;
+    /**
+     * Both review queues' lookback window in days, and the window the journal's
+     * faint "unreviewed" row stripe marks (D4, D20). `0` means no limit.
+     * Default 365.
+     */
+    reviewMaxDays: number;
+    /** The journal's review stripes (D20). On by default. */
+    reviewMarkers: boolean;
 }
 
 /** Keep only catalog symbols, once each, in catalog order. */
@@ -97,6 +110,19 @@ interface PersistedSettings {
  * it asks (`catalogOrder`).
  */
 const TICKER = /^[A-Z0-9.^=-]{1,12}$/;
+
+/** Review Recents' default cap, and the queues' default window (D19). */
+export const REVIEW_RECENT_LIMIT = 50;
+export const REVIEW_MAX_DAYS = 365;
+/** Bounds the two review numbers are clamped to: a run of 1–1000, a window of 0 (no limit)–36500 days. */
+const REVIEW_LIMIT_RANGE = [1, 1000] as const;
+const REVIEW_DAYS_RANGE = [0, 36500] as const;
+
+/** A persisted whole number inside `range`, or `fallback` for anything else (a stale blob, a hand edit). */
+function wholeIn(value: unknown, range: readonly [number, number], fallback: number): number {
+    if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+    return Math.min(range[1], Math.max(range[0], Math.round(value)));
+}
 function cleanBenchmarks(value: unknown): string[] {
     const picked = Array.isArray(value) ? value.filter((v): v is string => typeof v === "string" && TICKER.test(v)) : [];
     return [...new Set(picked)];
@@ -117,6 +143,9 @@ const defaults = (): PersistedSettings => ({
     holdingsPieDimension: "holding",
     lastProjectionId: null,
     benchmarks: [],
+    reviewRecentLimit: REVIEW_RECENT_LIMIT,
+    reviewMaxDays: REVIEW_MAX_DAYS,
+    reviewMarkers: true,
 });
 
 /**
@@ -179,6 +208,11 @@ function load(): PersistedSettings {
             // Validated against the catalog: a symbol the server no longer
             // offers would otherwise be a checkbox-less request that 400s.
             benchmarks: cleanBenchmarks(parsed.benchmarks),
+            // Added with plan 32: a blob saved before then has none of these
+            // and gets the defaults; an out-of-range number is clamped.
+            reviewRecentLimit: wholeIn(parsed.reviewRecentLimit, REVIEW_LIMIT_RANGE, REVIEW_RECENT_LIMIT),
+            reviewMaxDays: wholeIn(parsed.reviewMaxDays, REVIEW_DAYS_RANGE, REVIEW_MAX_DAYS),
+            reviewMarkers: typeof parsed.reviewMarkers === "boolean" ? parsed.reviewMarkers : true,
         };
     } catch (cause) {
         storageError = `Saved settings couldn't be read (${cause instanceof Error ? cause.message : String(cause)}) — starting from defaults.`;
@@ -219,6 +253,9 @@ function persist(): void {
             holdingsPieDimension: state.holdingsPieDimension,
             lastProjectionId: state.lastProjectionId,
             benchmarks: state.benchmarks,
+            reviewRecentLimit: state.reviewRecentLimit,
+            reviewMaxDays: state.reviewMaxDays,
+            reviewMarkers: state.reviewMarkers,
         })
     );
 }
@@ -330,6 +367,30 @@ export const settings = {
     toggleBenchmark(symbol: string, on: boolean): void {
         const others = state.benchmarks.filter((s) => s !== symbol);
         state.benchmarks = cleanBenchmarks(on ? [...others, symbol] : others);
+        persist();
+    },
+    /** Review Recents' cap (D19), 1–1000. */
+    get reviewRecentLimit(): number {
+        return state.reviewRecentLimit;
+    },
+    set reviewRecentLimit(limit: number) {
+        state.reviewRecentLimit = wholeIn(limit, REVIEW_LIMIT_RANGE, REVIEW_RECENT_LIMIT);
+        persist();
+    },
+    /** The review window in days (D19); 0 = no limit. */
+    get reviewMaxDays(): number {
+        return state.reviewMaxDays;
+    },
+    set reviewMaxDays(days: number) {
+        state.reviewMaxDays = wholeIn(days, REVIEW_DAYS_RANGE, REVIEW_MAX_DAYS);
+        persist();
+    },
+    /** Whether the journal draws review stripes (D20). */
+    get reviewMarkers(): boolean {
+        return state.reviewMarkers;
+    },
+    set reviewMarkers(on: boolean) {
+        state.reviewMarkers = on;
         persist();
     },
     /** The cross-origin engine token, if one was entered. Null in embedded mode. */

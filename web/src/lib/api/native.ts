@@ -176,6 +176,69 @@ export interface DeleteResult {
 }
 
 // ---------------------------------------------------------------------------
+// Transaction review (plan 32): `POST /api/transactions/batch`.
+// ---------------------------------------------------------------------------
+
+/**
+ * One edit to one transaction, tagged by `op`. Every op but `replace` is
+ * SURGICAL: it rewrites only the text it names, so an elided amount stays
+ * elided. `replace` re-renders the whole transaction from a PUT-shaped body
+ * and must be the entry's first op; ops after it apply to the re-rendered text.
+ *
+ * `setPostingAccount.posting` counts the postings the FILE writes (the form's
+ * rows, `txnToForm`'s), not the served ones — a posting an `=` rule generated
+ * cannot be addressed. (`PATCH`'s `postings[].index` counts served postings;
+ * the two differ only with `--auto` in force.)
+ */
+export type WireEditOp =
+    | {op: "setDescription"; description: string}
+    | {op: "setPostingAccount"; posting: number; account: string}
+    /** `value: null` removes every occurrence of the tag. */
+    | {op: "setTxnTag"; name: string; value: string | null}
+    /**
+     * The whole transaction comment's FREE TEXT, one line per `\n`: the
+     * header's same-line comment and the `;` lines above the first posting.
+     * Each tag stays on the line it is on (`commentFreeText` reads it back).
+     */
+    | {op: "setTxnComment"; comment: string}
+    /** The primary date, `YYYY-MM-DD`. */
+    | {op: "setDate"; date: string}
+    /** The secondary date, `YYYY-MM-DD`; `null` removes it. */
+    | {op: "setDate2"; date2: string | null}
+    | {op: "setStatus"; status: WireStatus}
+    /** The `(CODE)`; `null` removes it. No `)` or `;`, no surrounding spaces. */
+    | {op: "setCode"; code: string | null}
+    /**
+     * A written posting's WHOLE comment, verbatim (tags included): line 0 on
+     * the posting's line (empty: none), each later line one `;` line under
+     * it. `null` removes it.
+     */
+    | {op: "setPostingComment"; posting: number; comment: string | null}
+    /** Drop a written posting's balance assertion, keeping its amount or its elision. */
+    | {op: "removePostingAssertion"; posting: number}
+    | {op: "replace"; transaction: ReplaceTransactionBody};
+
+/** One transaction's edits, with the fingerprint of the text the client was shown. */
+export interface WireBatchEdit {
+    index: number;
+    fingerprint: string;
+    ops: WireEditOp[];
+}
+
+/** `POST /api/transactions/batch` body: every edit applied as one, all or nothing. */
+export interface BatchTransactionsBody {
+    edits: WireBatchEdit[];
+}
+
+/** The review queues' shared settings (D4/D19): the client's date, Recents' cap and the lookback window. */
+export interface ReviewWindowQuery {
+    today: string;
+    limit?: number;
+    /** 0 = no limit. */
+    maxDays?: number;
+}
+
+// ---------------------------------------------------------------------------
 // CSV import rules write path (`PUT /api/rules/{*id}`).
 //
 // The body is the COMPLETE intended shape of the document, and the engine
@@ -329,11 +392,64 @@ export interface ImportRunBody {
     journalId: string;
     balance: string | null;
     balanceAccount: string | null;
+    /**
+     * Review edits to staged transactions (plan 32 D23), applied by the engine
+     * to the regenerated entries before they are shown or appended. Omitted
+     * when there are none, so a body without review edits is byte-for-byte the
+     * one an older client sent.
+     */
+    overrides?: WireStagedOverride[];
+}
+
+/**
+ * One review edit to a STAGED CSV transaction (plan 32 D23): the 0-based
+ * position in the dry run's `entries`, the fingerprint of the GENERATED text
+ * it was made on, and the batch route's ops. A fingerprint the regenerated
+ * transaction no longer has is a 409 naming the ordinal.
+ */
+export interface WireStagedOverride {
+    ordinal: number;
+    fingerprint: string;
+    ops: WireEditOp[];
+}
+
+/** The QuickBooks twin of {@link WireStagedOverride}, keyed by Trans # (D30). */
+export interface WireQbOverride {
+    id: string;
+    fingerprint: string;
+    ops: WireEditOp[];
 }
 
 /** `POST /api/import/commit` — the dry-run body plus whether to write the balance assertion. */
 export interface ImportCommitBody extends ImportRunBody {
     writeAssertion: boolean;
+    /**
+     * Edits to similar EXISTING journal transactions (D24), applied under the
+     * same lock and in the same write as the append. Omitted when none.
+     */
+    journalEdits?: WireBatchEdit[];
+}
+
+/** `POST /api/import/rule-preview` — the dry run's four handles plus the candidate rule (D25). */
+export interface ImportRulePreviewBody {
+    stageId: string;
+    rulesId: string;
+    csvPath: string;
+    journalId: string;
+    rule: WireRuleSpec;
+}
+
+/** `POST /api/review/rule-preview` — a journal card's transaction, the rules file picked for it, and the candidate rule (D27). */
+export interface ReviewRulePreviewBody {
+    index: number;
+    rulesId: string;
+    rule: WireRuleSpec;
+}
+
+/** A candidate `if` block. A matcher with no `field` matches the whole CSV record. */
+export interface WireRuleSpec {
+    matchers: {field?: string | null; pattern: string}[];
+    assignments: {field: string; value: string}[];
 }
 
 /**
@@ -341,7 +457,7 @@ export interface ImportCommitBody extends ImportRunBody {
  *
  * Two fields, and that is the whole request: there is no rules file, so there is
  * no journal, no balance and no assertion. The response is
- * `{csvWritten, git}` and decodes through `decodeCommitResult`, whose absent
+ * `{csvWritten}` and decodes through `decodeCommitResult`, whose absent
  * `journalWritten` already means "no journal was touched".
  */
 export interface ImportSaveCsvBody {
@@ -436,10 +552,9 @@ export interface SaveBudgetLinesBody {
     change: BudgetChange;
 }
 
-/** `PUT /api/prefs`. Both fields are tri-state: null means "unset", not "off". */
+/** `PUT /api/prefs`. `hledgerPath: null` means "unset": discover hledger. */
 export interface PrefsBody {
     hledgerPath: string | null;
-    gitAutocommit: boolean | null;
 }
 
 /**
@@ -455,6 +570,10 @@ export interface QbJournalCommitBody {
     stageId: string;
     /** Replace transactions the journal already holds differently with the export's version. Omitted means off. */
     updateChanged?: boolean;
+    /** Review edits to staged QuickBooks transactions, by Trans # (D30). Omitted when none. */
+    overrides?: WireQbOverride[];
+    /** Edits to similar existing journal transactions (D24), in the same write. Omitted when none. */
+    journalEdits?: WireBatchEdit[];
 }
 
 /**
@@ -1040,9 +1159,15 @@ export class LedgelineApi {
         return this.getJson(`/api/journal/rows${queryString({...filterParams(filter), ...window})}`);
     }
 
-    /** The filtered view's footer total, big numbers and chart selectors (decode with `decodeJournalSummary`). */
-    journalSummary(filter: JournalQueryFilter): Promise<unknown> {
-        return this.getJson(`/api/journal/summary${queryString(filterParams(filter))}`);
+    /**
+     * The filtered view's footer total, big numbers and chart selectors (decode
+     * with `decodeJournalSummary`), plus the review queues' sizes for the
+     * toolbar badges (D18) — as of `review.today` when given, which the counts
+     * depend on (they ignore the filter).
+     */
+    journalSummary(filter: JournalQueryFilter, review?: ReviewWindowQuery): Promise<unknown> {
+        const window = review === undefined ? {} : {today: review.today, reviewLimit: review.limit, reviewMaxDays: review.maxDays};
+        return this.getJson(`/api/journal/summary${queryString({...filterParams(filter), ...window})}`);
     }
 
     /** The insights pie or line for the filtered view (decode with `decodeChart`). */
@@ -1501,6 +1626,93 @@ export class LedgelineApi {
     }
 
     /**
+     * Apply every edit as ONE (plan 32 D14): one lock, one re-parse, one save.
+     * → 200 `{generation, edited}` (decode with `decodeBatchResult`). A stale
+     * fingerprint is a 409 (`ConflictError`) naming the transaction; an op the
+     * engine cannot take is a 400 (`ValidationError`) starting
+     * `transaction #N:`. Nothing is written on any failure.
+     */
+    batchTransactions(body: BatchTransactionsBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/transactions/batch", 200, body);
+    }
+
+    /**
+     * One page of a review queue, newest first (decode with `decodeQueuePage`):
+     * full rows with fingerprints, similarity keys and suggestions. `limit`
+     * defaults to 100 for unknowns and 50 for recents.
+     */
+    reviewQueue(kind: "unknowns" | "recents", window: ReviewWindowQuery & {offset?: number}): Promise<unknown> {
+        return this.getJson(`/api/review/queue${queryString({kind, ...window})}`);
+    }
+
+    /**
+     * The transactions similar to `index` (decode with `decodeSimilarSet`):
+     * unreviewed ones with the same similarity key, the precedent, and which of
+     * them are among `queue` (the client's run).
+     */
+    reviewSimilar(index: number, today: string, queue: readonly number[] = []): Promise<unknown> {
+        return this.getJson(`/api/review/similar/${index}${queryString({today, queue: queue.join(",")})}`);
+    }
+
+    /**
+     * The journal transactions sharing similarity `key` (decode with
+     * `decodeKeySimilarSet`): the staged-card twin of `reviewSimilar`, for a
+     * transaction that is not in the journal yet. Its body's `index` is 0.
+     */
+    reviewSimilarKey(key: string, today: string): Promise<unknown> {
+        return this.getJson(`/api/review/similar-key${queryString({key, today})}`);
+    }
+
+    /**
+     * One transaction as a queue item, whether or not a queue holds it (plan
+     * 32 D31; decode with `decodeReviewItem`): its row, fingerprint,
+     * similarity key and suggestions, for the card's single-transaction mode.
+     */
+    reviewItem(index: number, today: string): Promise<unknown> {
+        return this.getJson(`/api/review/item/${index}${queryString({today})}`);
+    }
+
+    /**
+     * A queue item's suggestions for a DESCRIPTION alone (plan 32 D36; decode
+     * with `decodeDescriptionSuggestions`): the add form's "payee picked →
+     * category". A suggestion a recurring charge backs carries `recurring`,
+     * its usual amount and funding account.
+     */
+    reviewSuggest(description: string, today: string): Promise<unknown> {
+        return this.getJson(`/api/review/suggest${queryString({description, today})}`);
+    }
+
+    /**
+     * The rules files that could have produced journal transaction `index`
+     * (plan 32 D27; decode with `decodeRulesFor`), best first. `no-store`: a
+     * rules file can change without the journal changing.
+     */
+    reviewRulesFor(index: number): Promise<unknown> {
+        return this.getJson(`/api/review/rules-for/${index}`);
+    }
+
+    /**
+     * The live check for a rule built on a journal card (D27; decode with
+     * `decodeJournalRulePreview`): against the rules file's newest statement,
+     * or the journal when there is none. `ok:false` is a 200 with hledger's
+     * stderr. Writes nothing. Pass an AbortSignal in the constructor's options
+     * to cancel a superseded one.
+     */
+    reviewRulePreview(body: ReviewRulePreviewBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/review/rule-preview", 200, body);
+    }
+
+    /** Every payee with its use count and newest date (decode with `decodePayees`). */
+    payees(): Promise<unknown> {
+        return this.getJson("/api/payees");
+    }
+
+    /** Every transaction tag name with its commonest values (decode with `decodeTags`). */
+    tags(): Promise<unknown> {
+        return this.getJson("/api/tags");
+    }
+
+    /**
      * Cheap capability probe for the write path: the engine registers the
      * mutating verbs (POST/PUT/PATCH/DELETE) on `/api/transactions` but not GET,
      * so a GET yields 405 (route present ⇒ editing available). A plain
@@ -1527,7 +1739,7 @@ export class LedgelineApi {
     // none of it derives from the journal snapshot, so none of it is ETagged.
     // -----------------------------------------------------------------------
 
-    /** What the screen may offer at all: hledger's version, the formats, the journal targets, git. */
+    /** What the screen may offer at all: hledger's version, the formats, the journal targets. */
     importCapabilities(): Promise<unknown> {
         return this.getJson("/api/import/capabilities");
     }
@@ -1549,7 +1761,16 @@ export class LedgelineApi {
         return this.mutate<unknown>("POST", "/api/import/dry-run", 200, body);
     }
 
-    /** Write the CSV, run the real import, report ordering and git. */
+    /**
+     * How a candidate rule would change THIS import (D25's live check; decode
+     * with `decodeRulePreview`). `ok:false` is a 200 with hledger's stderr. Pass
+     * an AbortSignal in the constructor's options to cancel a superseded one.
+     */
+    importRulePreview(body: ImportRulePreviewBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/import/rule-preview", 200, body);
+    }
+
+    /** Write the CSV, run the real import, report ordering. */
     importCommit(body: ImportCommitBody): Promise<unknown> {
         return this.mutate<unknown>("POST", "/api/import/commit", 200, body);
     }
@@ -1607,7 +1828,7 @@ export class LedgelineApi {
         return this.mutate<unknown>("POST", "/api/import/hledger-conf", 200, {revision});
     }
 
-    /** The preferences store (the resolved hledger path, the git-autocommit opt-out). */
+    /** The preferences store (the resolved hledger path). */
     getPrefs(): Promise<unknown> {
         return this.getJson("/api/prefs");
     }

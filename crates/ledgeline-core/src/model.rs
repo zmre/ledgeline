@@ -237,6 +237,18 @@ pub struct Posting {
     /// tag text is a user-writable comment and is never trusted for this.
     /// Behind an [`Arc`] so a cloned posting costs one pointer, not a copy.
     pub generated: Option<Arc<RuleRef>>,
+    /// The file writes this posting WITHOUT an amount (plan 32 D35): what
+    /// [`Self::amounts`] holds was inferred by the parser's balancer (or, for a
+    /// `(virtual)` leg, is empty). A posting whose only content after the
+    /// account is a balance assertion (`assets:cash  = $99.00`) counts too —
+    /// hledger reads no amount there either.
+    ///
+    /// The wire carries it so an editor can leave the leg blank, and a save
+    /// that re-renders the transaction keeps it auto-balancing instead of
+    /// freezing the inferred value into the file. `false` for every posting
+    /// that is not read from a file (a request body says it directly, with an
+    /// empty `amounts`).
+    pub elided: bool,
 }
 
 /// Which `= QUERY` rule generated a posting ([`Posting::generated`]).

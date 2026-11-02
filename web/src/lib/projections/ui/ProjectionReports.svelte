@@ -55,6 +55,7 @@
         styles,
         fallbackCommodity,
         scenarioName = "",
+        scrollTarget,
     }: {
         tab: ProjectionTab;
         /** The Accounts tab: whether accounts with nothing in any column are rows too. */
@@ -70,6 +71,12 @@
         fallbackCommodity: string;
         /** The scenario's display name, for the downloaded workbook's title and filename. */
         scenarioName?: string;
+        /**
+         * What picking a reading brings to the top of the window: the page's
+         * controls bar (interval, periods, depth), so they stay in view above
+         * the strip. Without one, the strip itself.
+         */
+        scrollTarget?: HTMLElement;
     } = $props();
 
     const commodity = $derived(chartCommodity(projection, fallbackCommodity));
@@ -110,16 +117,18 @@
     );
 
     /**
-     * Open a report and bring its tab strip to the top of the window, so the
-     * reading fills the screen. The panels differ a lot in height (Journal and
-     * Accounts are a one-line placeholder until their run lands), and without
-     * this a shorter panel clamped the page's scroll and left the strip at the
-     * bottom of the viewport. `min-h-dvh` on the wrapper below is what lets the
-     * strip reach the top even under the shortest panel.
+     * Open a report and bring the page's controls (`scrollTarget`), or the tab
+     * strip when there are none, to the top of the window, so the interval and
+     * depth stay in view above the strip and the reading fills the rest. The
+     * panels differ a lot in height (Journal and Accounts are a one-line
+     * placeholder until their run lands), and without this a shorter panel
+     * clamped the page's scroll and left the strip at the bottom of the
+     * viewport. `min-h-dvh` on the wrapper below is what lets the target reach
+     * the top even under the shortest panel.
      */
     function select(next: ProjectionTab): void {
         tab = next;
-        strip?.scrollIntoView({block: "start", behavior: "smooth"});
+        (scrollTarget ?? strip)?.scrollIntoView({block: "start", behavior: "smooth"});
     }
 
     // Digits, as on the Reports and Holdings strips: page-local, so they appear

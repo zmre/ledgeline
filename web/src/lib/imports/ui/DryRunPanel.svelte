@@ -26,9 +26,10 @@
     //     the "warn that it changed and how" half of the feature — the engine
     //     already refuses to overwrite a conflicting row, but silently refusing
     //     is not the same as telling anyone it happened.
-    //  6. The git block. A modified target refuses the import until it is
-    //     committed, and the ENGINE enforces that too; this panel is not the
-    //     only thing standing between an import and an unrecoverable overwrite.
+    //  6. Review before writing (plan 32 D26): Review Unknowns / Review All
+    //     above the write button, with `u`/`r`, and what review has queued
+    //     beside it. Optional, and never a gate on the write. Absent when the
+    //     host passes no `review` (the panel's own tests, an older engine).
     //  7. The equivalent command line. Everything above is a choice the user has
     //     just made in a wizard, and next month they will make the same one
     //     again; `run.cliCommand` is those choices as a `ledgeline import` line
@@ -45,9 +46,12 @@
     // as narrow side-by-side columns without it. `routes/alertStacking.test.ts`
     // enforces that across every component.
     import AsyncSection from "#lib/components/AsyncSection.svelte";
-    import {balanceVerdict, canWrite, conflictDetail, gitBlockMessage, idMatchesSummary, skippedWarning} from "../importModel";
+    import {balanceVerdict, canWrite, conflictDetail, idMatchesSummary, skippedWarning} from "../importModel";
     import type {AliasEntry, ConfWritten, DryRunResult} from "../importTypes";
+    import type {StagedReviewProps} from "../stagedReview";
     import AliasEffectPanel from "./AliasEffectPanel.svelte";
+    import StagedEditsNote from "./StagedEditsNote.svelte";
+    import StagedReviewButtons from "./StagedReviewButtons.svelte";
 
     let {
         view,
@@ -62,6 +66,7 @@
         onRetry,
         onWrite,
         onInstallConf,
+        review = null,
     }: {
         view: import("#lib/stores/loadState.js").DataView;
         result: DryRunResult | null;
@@ -79,6 +84,8 @@
         onRetry: () => void;
         onWrite: () => void;
         onInstallConf: (revision: string) => void;
+        /** Review before writing (D26): the counts, the queued edits and the launch. Null hides it. */
+        review?: StagedReviewProps | null;
     } = $props();
 
     /** The "Copy"/"Copied!" latch for the equivalent command line. */
@@ -180,27 +187,17 @@
                     </div>
                 {/if}
 
-                {#if gitBlockMessage(run.blockedByGit) !== null}
-                    <!-- `flex` before `flex-col`: `.alert` is a grid with
-                         `grid-auto-flow:column`, so without it the sentence and
-                         the list of blocked paths become two thin columns.
-                         See `routes/alertStacking.test.ts`. -->
-                    <div class="alert flex flex-col items-start gap-2 rounded-box py-2 text-sm alert-warning" role="alert" data-testid="imports-git-blocked">
-                        <span>{gitBlockMessage(run.blockedByGit)}</span>
-                        <ul class="list-inside list-disc font-mono text-xs break-all">
-                            {#each run.blockedByGit as path (path)}
-                                <li>{path}</li>
-                            {/each}
-                        </ul>
-                    </div>
-                {/if}
-
                 <div>
                     <h3 class="mb-1 text-xs font-semibold tracking-tight">
                         {run.count} transaction{run.count === 1 ? "" : "s"} would be added
                     </h3>
                     <pre class="max-h-96 overflow-auto rounded-box bg-base-300 p-3 text-xs" data-testid="imports-dry-run-entries">{run.entries}</pre>
                 </div>
+
+                {#if review !== null && run.txns.length > 0}
+                    <!-- (7) Review before writing. Above the write, never in its way. -->
+                    <StagedReviewButtons unknowns={review.unknowns} all={review.all} onReview={review.onReview} />
+                {/if}
 
                 <div class="flex items-center gap-2">
                     <button
@@ -217,8 +214,17 @@
                         <span class="text-xs text-base-content/60">There is nothing new to import — every row is already in your journal.</span>
                     {/if}
                 </div>
+                {#if review !== null}
+                    <StagedEditsNote
+                        overrideCount={review.overrideCount}
+                        journalEditCount={review.journalEditCount}
+                        flagged={review.flagged}
+                        busy={writing}
+                        onDiscard={review.onDiscard}
+                    />
+                {/if}
 
-                <!-- (7) The same import, as a command. VERBATIM from the engine:
+                <!-- (8) The same import, as a command. VERBATIM from the engine:
                      see the head of this file for why nothing here builds it. -->
                 <div>
                     <h3 class="mb-1 text-xs font-semibold tracking-tight">Do this again from a terminal</h3>
@@ -233,6 +239,12 @@
                             {copied ? "Copied!" : "Copy"}
                         </button>
                     </div>
+                    {#if run.cliNote !== null}
+                        <!-- Q8: the command reproduces hledger's import; review edits are this screen's own, and the engine says how many. -->
+                        <p class="mt-1 text-xs text-warning" data-testid="imports-cli-note">
+                            {run.cliNote} — the command line imports without them.
+                        </p>
+                    {/if}
                 </div>
             {/if}
         </section>

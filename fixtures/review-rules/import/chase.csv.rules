@@ -1,0 +1,7 @@
+skip 1
+fields date, description, amount, fitid
+date-format %Y-%m-%d
+currency $
+account1 assets:bank:chase
+account2 expenses:unknown
+comment id:%fitid

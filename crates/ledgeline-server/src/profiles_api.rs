@@ -21,8 +21,7 @@
 //!   tag takes effect immediately with no refetch.
 //! - A found profile is reused for [`FOUND_TTL`], a "no such ticker" (a
 //!   private fund, a 401(k) trust) for [`NOT_FOUND_TTL`].
-//! - It is never `include`d, never parsed as journal, never committed by the
-//!   import's git step (which stages explicit paths only), and does not wake
+//! - It is never `include`d, never parsed as journal, and does not wake
 //!   the live-reload watcher (which filters on the journal's own files).
 //! - It is loaded once and kept in memory, written through atomically only when
 //!   this server may write at all, and safe to delete: [`crate::sidecar`] has

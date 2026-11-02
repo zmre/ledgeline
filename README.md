@@ -150,7 +150,7 @@ The [development section of the manual](https://zmre.github.io/ledgeline/develop
 Three layers:
 
 - **`ledgeline-core`**: the product. Journal storage behind a `Vault` trait, parsing, safe in-place edits, and every report and view (exact decimals throughout). No platform code, no HTTP.
-- **`ledgeline-server`**: a tokio/axum API over core, with immutable journal snapshots and injected app directories. Cargo features add the desktop window (`gui`), a file watcher (`watcher`) and the `hledger`/`git` subprocesses (`external-tools`).
+- **`ledgeline-server`**: a tokio/axum API over core, with immutable journal snapshots and injected app directories. Cargo features add the desktop window (`gui`), a file watcher (`watcher`) and the `hledger` subprocess (`external-tools`).
 - **Hosts**: the desktop app opens the native OS webview (via wry, part of the tauri project) on a loopback port and shows the embedded Svelte app; `--server` runs the same API headless; `ledgeline-ffi` runs the router in-process for a future iOS app.
 
 The Svelte app only presents what the API computes. All assets are built into the single binary, which is pretty snappy. See [Architecture](https://zmre.github.io/ledgeline/development/architecture/) in the manual for the details.

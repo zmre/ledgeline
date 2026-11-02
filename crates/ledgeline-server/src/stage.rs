@@ -83,6 +83,7 @@
 use ledgeline_core::convert::{self, SourceFormat};
 use ledgeline_core::vault::{Vault, VaultPath};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 /// The largest upload accepted, enforced by an axum `DefaultBodyLimit` on the
@@ -145,6 +146,13 @@ pub(crate) const RUN_WITH_LATEST: &str = "with-latest";
 /// The run directory used for the second, `.latest`-free dry-run whose count
 /// difference is how many rows dedup would silently drop.
 pub(crate) const RUN_BARE: &str = "bare";
+
+/// The prefix of a rule-preview's run directory (plan 32 D25). Each preview
+/// gets its OWN directory — [`Stage::preview_slot`] — because a live check is
+/// debounced but can still overlap the next one, and [`Stage::materialize`]
+/// recreates its directory: two previews sharing one would delete each
+/// other's CSV out from under hledger.
+const RUN_RULE_PREVIEW: &str = "rule-preview";
 
 /// An opaque handle to one staged upload.
 ///
@@ -210,6 +218,8 @@ pub(crate) struct Stage {
     format: SourceFormat,
     /// The name the upload ARRIVED under — see [`Stage::upload_name`].
     upload_name: String,
+    /// Hands out [`Stage::preview_slot`]s.
+    previews: AtomicU64,
 }
 
 impl Stage {
@@ -232,6 +242,21 @@ impl Stage {
     /// separators, `..` and control characters.
     pub(crate) fn upload_name(&self) -> &str {
         &self.upload_name
+    }
+
+    /// A fresh run-directory name for one rule preview: this module's own
+    /// prefix plus a per-stage counter, never a client string.
+    pub(crate) fn preview_slot(&self) -> String {
+        let n = self.previews.fetch_add(1, Ordering::Relaxed);
+        format!("{RUN_RULE_PREVIEW}-{n}")
+    }
+
+    /// Remove a run directory [`materialize`](Self::materialize) made. Best
+    /// effort: the whole stage goes when it is evicted or the process exits.
+    pub(crate) fn discard(&self, slot: &str) {
+        if is_bare_name(slot) {
+            let _ = std::fs::remove_dir_all(self.dir.join(slot));
+        }
     }
 
     /// The **canonical** converted CSV: header on line 1, nothing prepended.
@@ -478,6 +503,19 @@ struct Area {
     stages: Vec<(StageId, Arc<Stage>)>,
 }
 
+impl Area {
+    /// The session root, made on first use.
+    fn session_root(&mut self, temp_dir: &Path) -> std::io::Result<PathBuf> {
+        if let Some(root) = &self.root {
+            return Ok(root.clone());
+        }
+        let root = session_root(temp_dir)?;
+        create_private_dir(&root)?;
+        self.root = Some(root.clone());
+        Ok(root)
+    }
+}
+
 impl StageArea {
     /// An empty area whose session root will be created under `temp_dir` on
     /// the first upload. Nothing touches the filesystem until then.
@@ -504,15 +542,7 @@ impl StageArea {
         upload_name: &str,
     ) -> std::io::Result<(StageId, Arc<Stage>)> {
         let mut area = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-        let root = match &area.root {
-            Some(root) => root.clone(),
-            None => {
-                let root = session_root(&self.temp_dir)?;
-                create_private_dir(&root)?;
-                area.root = Some(root.clone());
-                root
-            }
-        };
+        let root = area.session_root(&self.temp_dir)?;
 
         let id = StageId::mint().ok_or_else(|| {
             std::io::Error::other("the operating system's random source is unavailable")
@@ -525,6 +555,7 @@ impl StageArea {
             dir,
             format,
             upload_name: upload_name.to_string(),
+            previews: AtomicU64::new(0),
         });
         area.stages.push((id.clone(), Arc::clone(&stage)));
         // Evict from the front, so the stage a user is actively working with —
@@ -534,6 +565,28 @@ impl StageArea {
             let _ = std::fs::remove_dir_all(&evicted.dir);
         }
         Ok((id, stage))
+    }
+
+    /// A fresh private directory under the session root, removed when the
+    /// returned [`Scratch`] drops: where the Journal view's rule preview (plan
+    /// 32 D27) writes its temporary copies of a rules file. Its name is
+    /// minted, never a client string.
+    ///
+    /// # Errors
+    /// [`std::io::Error`] if the session root or the directory could not be
+    /// made, or the OS CSPRNG refused.
+    pub(crate) fn scratch(&self) -> std::io::Result<Scratch> {
+        let root = self
+            .inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .session_root(&self.temp_dir)?;
+        let id = StageId::mint().ok_or_else(|| {
+            std::io::Error::other("the operating system's random source is unavailable")
+        })?;
+        let dir = root.join(format!("{SCRATCH_PREFIX}{}", id.as_str()));
+        create_private_dir(&dir)?;
+        Ok(Scratch(dir))
     }
 
     /// The stage `id` names, or `None`.
@@ -561,6 +614,28 @@ impl Drop for StageArea {
         }
     }
 }
+
+/// A scratch directory [`StageArea::scratch`] made. Removed, best effort, on
+/// drop; the session root goes with the process anyway.
+#[derive(Debug)]
+pub(crate) struct Scratch(PathBuf);
+
+impl Scratch {
+    /// The directory.
+    pub(crate) fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The prefix of a [`Scratch`] directory's name, so it can never be mistaken
+/// for a stage (whose names are bare ids).
+const SCRATCH_PREFIX: &str = "scratch-";
 
 /// A fresh, unguessable session root under `temp_dir` (on the desktop, the OS
 /// temp directory).

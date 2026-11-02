@@ -21,26 +21,31 @@
 //! new snapshot with an empty cache, so nothing here can go stale.
 
 use crate::error::AppError;
+use crate::location::JournalLocation;
 use crate::reports_api::{self, parse_date, parse_opt_date, today_utc};
+use crate::review_api::{self, ReviewRow, ReviewWindow};
 use crate::{AppState, Snapshot, generation_of, if_none_match_hits};
 use axum::body::{Body, Bytes};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use ledgeline_core::Journal;
 use ledgeline_core::reports::Interval;
+use ledgeline_core::review::ReviewIndex;
 use ledgeline_core::view::Classes;
 use ledgeline_core::view::cash::cash_balances_view;
 use ledgeline_core::view::checks::{
     Diagnostics, Finding, WireFlag, diagnostics_body, engine_findings, local_findings,
 };
 use ledgeline_core::view::filter::{JournalFilter, display_order, filter_positions};
-use ledgeline_core::view::rows::{Row, RowContext, haystack};
+use ledgeline_core::view::rows::{RowContext, haystack};
 use ledgeline_core::view::series::{
     ChartMode, ChartSpec, JournalView, SignTable, chart, parse_category, sign_table, summary,
 };
 use ledgeline_core::view::wire::DeclaredStyles;
+use ledgeline_core::{Journal, journals};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 /// How many distinct `today`s keep their problem list cached per snapshot. One
@@ -76,6 +81,17 @@ pub(crate) struct ViewCache {
     signs: OnceLock<Arc<SignTable>>,
     /// Recent filter results, most recently used last ([`FILTER_CACHE`]).
     filters: Mutex<Vec<(JournalFilter, Arc<Vec<u32>>)>>,
+    /// Where the journal lives, for the review index's "can this file be
+    /// written?" question. `None` for a journal with no backing file, whose
+    /// transactions are then all "not editable".
+    storage: Option<Arc<JournalLocation>>,
+    /// The review index (plan 32 D14): every transaction's review state,
+    /// whether it is unknown and editable, and the similarity-key buckets.
+    review: OnceLock<Arc<ReviewIndex>>,
+    /// The `GET /api/payees` body.
+    pub(crate) payees: OnceLock<Bytes>,
+    /// The `GET /api/tags` body.
+    pub(crate) tags: OnceLock<Bytes>,
 }
 
 /// How many filter results each snapshot keeps. Scrolling one view asks for
@@ -87,8 +103,14 @@ impl ViewCache {
     /// A fresh cache for `journal`, warmed on a background thread so the
     /// first requests after a load or an edit find the expensive derivations
     /// already built (see [`ViewCache::prewarm`]).
-    pub(crate) fn warmed(journal: &Arc<Journal>) -> Arc<Self> {
-        let cache = Arc::new(Self::default());
+    pub(crate) fn warmed(
+        journal: &Arc<Journal>,
+        storage: Option<Arc<JournalLocation>>,
+    ) -> Arc<Self> {
+        let cache = Arc::new(Self {
+            storage,
+            ..Self::default()
+        });
         let weak = Arc::downgrade(&cache);
         let journal = Arc::clone(journal);
         // A failure to spawn only means the first requests build these
@@ -101,18 +123,20 @@ impl ViewCache {
 
     /// Build, in the order the SPA's first screen asks for them: the display
     /// order and the problem list (every row embeds its flags, and the badge
-    /// counts them), then the summary's inputs, then the search text.
+    /// counts them), then the summary's inputs (its review counts among them),
+    /// then the search text.
     ///
     /// Each step re-checks that the snapshot still exists: an edit publishes a
     /// new snapshot, and warming a superseded one is wasted work. Everything is
     /// a `OnceLock`, so a request racing a step simply shares its answer.
     fn prewarm(cache: &std::sync::Weak<Self>, journal: &Journal) {
         let today = today_utc();
-        let steps: [&dyn Fn(&Self); 5] = [
+        let steps: [&dyn Fn(&Self); 6] = [
             &|view| drop(view.order(journal)),
             &|view| drop(view.diagnostics(journal, &today)),
             &|view| drop(view.signs(journal)),
             &|view| drop(view.declared(journal)),
+            &|view| drop(view.review(journal)),
             &|view| drop(view.haystacks(journal)),
         ];
         for step in steps {
@@ -138,8 +162,28 @@ impl ViewCache {
         }))
     }
 
-    fn classes(&self, journal: &Journal) -> Arc<Classes> {
+    pub(crate) fn classes(&self, journal: &Journal) -> Arc<Classes> {
         Arc::clone(self.classes.get_or_init(|| Arc::new(Classes::of(journal))))
+    }
+
+    /// The review index for `journal`, built on first use. A transaction is
+    /// editable when its file is one a write may target
+    /// ([`journals::writable_sources`] — the same judgement as every journal
+    /// file API's `writable` flag).
+    pub(crate) fn review(&self, journal: &Journal) -> Arc<ReviewIndex> {
+        Arc::clone(self.review.get_or_init(|| {
+            let writable: HashSet<PathBuf> = self
+                .storage
+                .as_deref()
+                .map_or_else(HashSet::new, |location| {
+                    journals::writable_sources(&**location.vault(), journal)
+                });
+            Arc::new(ReviewIndex::build(
+                journal,
+                &self.classes(journal),
+                |file| writable.contains(file),
+            ))
+        }))
     }
 
     /// Every finding for `today`: the date-free engine half memoized for the
@@ -243,14 +287,14 @@ impl ViewCache {
 /// depends on the date as well as the journal. A request that omits `today`
 /// defaults to the server's date, which moves at midnight with the URL
 /// unchanged — the suffix keeps a cached answer from outliving its day.
-fn dated_etag(snapshot: &Snapshot, today: &str) -> HeaderValue {
+pub(crate) fn dated_etag(snapshot: &Snapshot, today: &str) -> HeaderValue {
     let opaque = snapshot.etag.to_str().unwrap_or_default().trim_matches('"');
     HeaderValue::from_str(&format!("\"{opaque}-{today}\""))
         .unwrap_or_else(|_| snapshot.etag.clone())
 }
 
 /// A `200` JSON body carrying `etag`.
-fn ok_json(etag: HeaderValue, body: Bytes) -> Response {
+pub(crate) fn ok_json(etag: HeaderValue, body: Bytes) -> Response {
     Response::builder()
         .status(StatusCode::OK)
         .header(header::ETAG, etag)
@@ -264,7 +308,7 @@ fn ok_json(etag: HeaderValue, body: Bytes) -> Response {
 }
 
 /// The `304` for a client already holding the answer tagged `etag`.
-fn not_modified(etag: HeaderValue) -> Response {
+pub(crate) fn not_modified(etag: HeaderValue) -> Response {
     Response::builder()
         .status(StatusCode::NOT_MODIFIED)
         .header(header::ETAG, etag)
@@ -275,7 +319,7 @@ fn not_modified(etag: HeaderValue) -> Response {
 
 /// Answer from `job` on the blocking pool, or `304` without running it when
 /// the client already holds this snapshot's body for this URL.
-async fn conditional<F>(
+pub(crate) async fn conditional<F>(
     snapshot: Arc<Snapshot>,
     headers: &HeaderMap,
     job: F,
@@ -288,7 +332,7 @@ where
 }
 
 /// [`conditional`] with an explicit validator (see [`dated_etag`]).
-async fn conditional_tagged<F>(
+pub(crate) async fn conditional_tagged<F>(
     snapshot: Arc<Snapshot>,
     etag: HeaderValue,
     headers: &HeaderMap,
@@ -305,7 +349,7 @@ where
 }
 
 /// Serialize a body, mapping the (unreachable) serializer error to a `500`.
-fn to_bytes<T: serde::Serialize>(value: &T) -> Result<Bytes, AppError> {
+pub(crate) fn to_bytes<T: serde::Serialize>(value: &T) -> Result<Bytes, AppError> {
     serde_json::to_vec(value)
         .map(Bytes::from)
         .map_err(|error| AppError::Internal(format!("serializing the response failed: {error}")))
@@ -439,7 +483,7 @@ struct RowsBody<'a> {
     generation: &'a str,
     total: usize,
     offset: usize,
-    rows: Vec<Row<'a>>,
+    rows: Vec<ReviewRow<'a>>,
 }
 
 /// Whether a request asked for ascending (oldest-first) order.
@@ -454,7 +498,7 @@ fn ascending(order: Option<&str>) -> Result<bool, AppError> {
 }
 
 /// The flags for the transaction at `position`, as a row embeds them.
-fn flags_of(diagnostics: &Diagnostics, position: usize) -> Vec<WireFlag<'_>> {
+pub(crate) fn flags_of(diagnostics: &Diagnostics, position: usize) -> Vec<WireFlag<'_>> {
     diagnostics
         .for_position(position)
         .map(WireFlag::from)
@@ -491,6 +535,7 @@ pub(crate) async fn rows(
         let positions = view.filtered(&snapshot.journal, &filter);
         let entry = view.diagnostics(&snapshot.journal, &today);
         let declared = view.declared(&snapshot.journal);
+        let review = view.review(&snapshot.journal);
         let context = RowContext::new(&snapshot.journal, &declared);
         let window: Box<dyn Iterator<Item = &u32>> = if ascending {
             Box::new(positions.iter().rev().skip(offset).take(limit))
@@ -500,9 +545,13 @@ pub(crate) async fn rows(
         let rows = window
             .map(|position| {
                 let at = *position as usize;
-                context.row(
-                    &snapshot.journal.transactions[at],
-                    flags_of(&entry.diagnostics, at),
+                ReviewRow::at(
+                    &review,
+                    at,
+                    context.row(
+                        &snapshot.journal.transactions[at],
+                        flags_of(&entry.diagnostics, at),
+                    ),
                 )
             })
             .collect();
@@ -516,14 +565,18 @@ pub(crate) async fn rows(
     .await
 }
 
-/// `?from&to&accounts&q` — the filter alone.
+/// `?from&to&accounts&q&today&reviewLimit&reviewMaxDays` — the filter, plus
+/// the client's date and review settings for the (unfiltered) review counts.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct FilterQuery {
+pub(crate) struct SummaryQuery {
     from: Option<String>,
     to: Option<String>,
     accounts: Option<String>,
     q: Option<String>,
+    today: Option<String>,
+    review_limit: Option<usize>,
+    review_max_days: Option<u32>,
 }
 
 /// `{generation, …Summary}`.
@@ -548,14 +601,27 @@ fn journal_view<'a>(
     }
 }
 
+/// `{generation, …Summary, review}`.
+#[derive(Serialize)]
+struct SummaryBody<'a, T: Serialize> {
+    generation: &'a str,
+    #[serde(flatten)]
+    body: T,
+    review: review_api::ReviewCounts,
+}
+
 /// `GET /api/journal/summary` — for the filtered view: the count, the
 /// footer's visible net, every commodity's income/expenses/net with its style
 /// and categories, the commodities ranked by use, and the deepest account
 /// ([`ledgeline_core::view::series::summary`]). Sign conventions are detected
 /// over the whole journal and memoized per snapshot.
+///
+/// Plus `review` (plan 32 D18): the two review queues' sizes as of the
+/// client's `today`, which IGNORE the filter (D4 Q3) — the Journal toolbar's
+/// button badges. Because they depend on the date, the `ETag` does too.
 pub(crate) async fn summary_route(
     State(state): State<AppState>,
-    Query(query): Query<FilterQuery>,
+    Query(query): Query<SummaryQuery>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let filter = journal_filter(
@@ -564,7 +630,10 @@ pub(crate) async fn summary_route(
         query.accounts.as_deref(),
         query.q.as_deref(),
     )?;
-    conditional(state.snapshot(), &headers, move |snapshot| {
+    let review = ReviewWindow::resolve(query.today, query.review_limit, query.review_max_days)?;
+    let snapshot = state.snapshot();
+    let etag = dated_etag(&snapshot, &review.today);
+    conditional_tagged(snapshot, etag, &headers, move |snapshot| {
         let cache = &snapshot.view;
         let positions = cache.filtered(&snapshot.journal, &filter);
         let (classes, signs, declared) = (
@@ -572,13 +641,14 @@ pub(crate) async fn summary_route(
             cache.signs(&snapshot.journal),
             cache.declared(&snapshot.journal),
         );
-        to_bytes(&WithGeneration {
+        to_bytes(&SummaryBody {
             generation: generation_of(&snapshot.etag),
             body: summary(
                 journal_view(snapshot, &classes, &signs, &declared),
                 &positions,
                 &filter,
             ),
+            review: review.counts(&snapshot.journal, &cache.review(&snapshot.journal)),
         })
     })
     .await
@@ -673,7 +743,7 @@ pub(crate) async fn chart_route(
 /// The position of the transaction with `tindex` in `journal.transactions`.
 /// Tindexes are assigned in file order, so the fast path is one probe; the
 /// scan is the fallback should that ever not hold.
-fn position_of(snapshot: &Snapshot, tindex: u32) -> Option<usize> {
+pub(crate) fn position_of(snapshot: &Snapshot, tindex: u32) -> Option<usize> {
     let txns = &snapshot.journal.transactions;
     let guess = usize::try_from(tindex).ok()?.checked_sub(1)?;
     if txns.get(guess).is_some_and(|txn| txn.index.0 == tindex) {
@@ -766,10 +836,15 @@ pub(crate) async fn transaction(
     conditional_tagged(snapshot, etag, &headers, move |snapshot| {
         let entry = snapshot.view.diagnostics(&snapshot.journal, &today);
         let declared = snapshot.view.declared(&snapshot.journal);
+        let review = snapshot.view.review(&snapshot.journal);
         let context = RowContext::new(&snapshot.journal, &declared);
-        to_bytes(&context.row(
-            &snapshot.journal.transactions[at],
-            flags_of(&entry.diagnostics, at),
+        to_bytes(&ReviewRow::at(
+            &review,
+            at,
+            context.row(
+                &snapshot.journal.transactions[at],
+                flags_of(&entry.diagnostics, at),
+            ),
         ))
     })
     .await

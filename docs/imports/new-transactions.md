@@ -44,7 +44,7 @@ Ledgeline checks the balance against your journal plus the new transactions. It 
 
 ## Preview before writing
 
-Press **Save and Import** to run a dry run. hledger works out what it would add and Ledgeline shows the result under "Nothing has been written yet". The panel shows:
+Press **Test Import** to run a dry run. It writes nothing: hledger works out what it would add, and Ledgeline shows the result under "Nothing has been written yet". The panel shows:
 
 - hledger's own status line, and the proposed transactions exactly as they will be appended;
 - a warning if hledger would silently drop rows dated on or before the last import from this CSV;
@@ -56,17 +56,74 @@ Press **Save and Import** to run a dry run. hledger works out what it would add 
 
 If hledger rejects the import, the panel shows hledger's error output unedited. It usually names the row it failed on.
 
+## Review before writing
+
+Once the dry run is ready, two buttons sit between the proposed transactions and **Write changes**. They open the same card-by-card [review](../journal/review.md) the Journal uses, over the transactions this import would add.
+
+![The dry-run panel's review strip, boxed: Review Unknowns 1 and Review All 5, a note that review is optional, and the Write changes button below it](images/review-before-write.png)
+
+- **Review Unknowns** brings up the transactions no rule categorized. Its count leaves out any you have already fixed.
+- **Review All** brings up every transaction in the import.
+
+Press <kbd>u</kbd> or <kbd>r</kbd> to open them from the keyboard.
+
+Review here is optional, and nothing you do in it is written until you press **Write changes**. Categorizing, renaming, tagging, **Reviewed** and **Ignore** all become edits that **Write changes** applies along with the import. When you close the review after saving a card, the dry run runs again, and the proposed transactions show your edits exactly as they will be written. **Reviewed** writes the transaction with `reviewed:` and today's date. Transactions you don't review are written without the tag.
+
+**Write changes** is always available. You can close the review halfway, or never open it, and the import writes whatever is left as hledger proposed it. Uncategorized rows stay in your fallback account, as they would without review.
+
+A line under **Write changes** counts what the write will apply, for example "2 reviewed edits · 3 existing transactions edited". If the import changed under an edit, for example because the rules file was edited in another tab, the line adds "K need another look". Open it to see each such edit with what it does, and discard it or keep it.
+
+The `ledgeline import …` command below doesn't carry review edits. When you have some, a note under it says how many, and that the command line imports without them.
+
+### Similar transactions in two places
+
+On an import card, Similar has two groups, each with its own count and its own check-all box.
+
+- **Similar in this import** lists other transactions in the same statement. Checking them changes what the import writes.
+- **Similar already in the journal** lists unreviewed transactions you imported before. Checking them edits those existing transactions.
+
+Edits to transactions already in the journal are held until **Write changes**, and then applied in the same write as the import. If you leave without writing, the journal is untouched. If the write fails, Ledgeline puts every file it changed back the way it was.
+
+The ⋯ menu on an import card has no **Open in full editor**, because the transaction isn't in a file yet, and no **Settings**, because the review always covers the whole import.
+
+## Remember as a rule
+
+A card whose description or account you changed can save that change as a rule in the import's rules file, so the next statement arrives already categorized. The toggle reads **Remember as a rule**. Press <kbd>Shift</kbd>+<kbd>R</kbd> or click it. It starts off on every card, so rules are only written when you ask.
+
+![An import card for HARDWARE STORE recategorized to expenses:home:supplies, with Remember as a rule on: Match description against hardware.*store, Then set account2 to expenses:home:supplies, Matches 1 of 5 rows in checking.csv, and the changed row expanded](images/review-rule.png)
+
+**Match** says which column the rule tests and the pattern it looks for.
+
+- The column defaults to `description` when the rules file names one in its `fields` line. You can pick any other field name, or **whole record** to test the whole CSV row.
+- The pattern is a regular expression, matched case-insensitively anywhere in that column. Ledgeline fills it in from the statement's raw text for this row, without the numbers, joined with `.*`. `SQ *BLUE BOTTLE 4412 OAKLAND` becomes `sq.*blue.*bottle.*oakland`, which also matches the next visit with a different store number. Edit it to make it broader or narrower.
+
+**Then set** lists what the rule assigns, one line per change on the card.
+
+- Each account you changed is set through the field hledger uses for that posting. The second posting is `account2`. Account lines start ticked.
+- A new description is set as `description`. It starts ticked only when the rename is the card's only change, because a rule that renames every match is a bigger step than one tidy-up.
+
+The values follow the card. To change one, change the card.
+
+Under that, a live check runs the import again with the rule added to a temporary copy of the rules file: "Matches 1 of 5 rows in checking.csv · 0 already categorised". The count covers the rows this import would add. "Already categorised" counts the matching rows another rule already handles. Expand "N would change" to see each affected row's lines before and after. A pattern that matches nothing gets a warning.
+
+The rule is saved when you save the card. Ledgeline adds it at the end of the rules file, because in hledger the last matching rule wins:
+
+```
+if %description hardware.*store
+    account2 expenses:home:supplies
+```
+
+A **whole record** match has no field name: `if hardware.*store`. A ticked description adds a `description Hardware Store` line.
+
+After saving, the dry run runs again with the new rule. Review edits the rule now covers are dropped, because the import produces them by itself. If the import can't be regenerated with the new rule, the review shows hledger's message above the cards. The rule is saved either way, and you can fix it under [Edit Rules](rules-editor.md). If the rule can't be saved, the card keeps your edits and the reason shows under the rule.
+
+hledger reads `%` followed by a letter, digit, `_` or `-` in a rule's value as a CSV field reference. `%description` puts the row's description there, and an unknown name such as `%off` puts nothing there. hledger has no way to write a literal `%` before a letter, so a description such as "50%off" can't be set by a rule. The builder warns when a ticked line contains one. A `%` before a space, such as "50% off", is written as it is.
+
 ## Write the changes
 
-Press **Write changes**. Ledgeline appends the text you just saw, unaltered, to the journal you chose. It then tells hledger to record the import so the same rows aren't proposed again. If that last step fails, Ledgeline restores the journal to how it was and reports the whole import as failed.
+Press **Write changes**. Ledgeline appends the text you just saw, unaltered, to the journal you chose. Any review edits to transactions already in the journal are applied in the same write. It then tells hledger to record the import so the same rows aren't proposed again. If that last step fails, Ledgeline restores the journal to how it was and reports the whole import as failed.
 
 The result panel lists every file it wrote.
-
-### The git safety net
-
-If your journal is in a git repository, an import refuses to start while a file it will write has uncommitted changes. It names those files, so you can commit them first. Once the import is written, Ledgeline commits the CSV and the journal with a generated message. `git diff` and `git revert` then undo an import cleanly.
-
-Ledgeline only stages the files the import wrote. Other work in progress, including files you have already staged, is left alone. If the commit itself fails, for example because of a pre-commit hook or a signing prompt, the import is still written and the result panel shows git's message.
 
 ### Re-sorting by date
 

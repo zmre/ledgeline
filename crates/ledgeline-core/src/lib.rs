@@ -35,6 +35,9 @@
 //! - `accounts` — `account NAME  ; tags...` declarations: the format-preserving
 //!   span editor over them (Account list editor; see
 //!   `plans/18-account-list-editor.md`)
+//! - `review` — the transaction-review model: `reviewed:` state, the
+//!   unknowns/recents queues, similar transactions and category suggestions
+//!   (see `plans/32-transaction-review.md`)
 
 pub mod accounts;
 pub mod aliases;
@@ -66,6 +69,7 @@ pub mod qb_journal;
 pub mod query;
 pub mod reimport;
 pub mod reports;
+pub mod review;
 pub mod rules;
 pub mod sort;
 pub mod title;
@@ -75,7 +79,8 @@ pub mod wire;
 
 pub use decimal::{Dec, DecError};
 pub use edit::{
-    EditError, Fingerprint, InsertPosition, JournalEditor, format_transaction, render_amount,
+    EditError, EditOp, Fingerprint, InsertPosition, JournalEditor, format_transaction,
+    render_amount, upsert_tag,
 };
 pub use model::Journal;
 pub use parse::{ParseError, parse_journal};

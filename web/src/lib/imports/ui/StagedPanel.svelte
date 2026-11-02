@@ -21,6 +21,7 @@
     import PreviewTable from "./PreviewTable.svelte";
     import type {RulesDraft} from "../types";
     import type {FormItem, RulesForm} from "../model";
+    import {reveal, revealArm} from "#lib/ui/reveal.js";
 
     let {
         sections,
@@ -101,6 +102,7 @@
     const action = $derived(importAction(selectedRulesId));
     const draft = $derived({csvPath, journalId, balance, balanceAccount});
     const blocker = $derived(actionBlocker(action, draft));
+    const arm = revealArm();
 </script>
 
 <AsyncSection {view} value={staged} {error} testid="imports-stage-error" label="that file" loadingLabel="Converting the file" {onRetry}>
@@ -126,20 +128,24 @@
                  that list but is not part of it, and it stays open across the
                  re-stage its own save triggers. -->
             {#if creating}
-                <CreateRulesPanel
-                    draft={createDraft}
-                    form={createForm}
-                    id={createId}
-                    drafting={createDrafting}
-                    saving={createSaving}
-                    error={createError}
-                    {accountNames}
-                    onId={onCreateId}
-                    onItems={onCreateItems}
-                    onSave={onCreateSave}
-                    onRetry={onCreateRetry}
-                    onCancel={onCreateClose}
-                />
+                <!-- Below the candidate list, often below the fold: shown when
+                     it opens, and again when the draft replaces its spinner. -->
+                <div use:reveal={{arm, key: createDrafting}}>
+                    <CreateRulesPanel
+                        draft={createDraft}
+                        form={createForm}
+                        id={createId}
+                        drafting={createDrafting}
+                        saving={createSaving}
+                        error={createError}
+                        {accountNames}
+                        onId={onCreateId}
+                        onItems={onCreateItems}
+                        onSave={onCreateSave}
+                        onRetry={onCreateRetry}
+                        onCancel={onCreateClose}
+                    />
+                </div>
             {/if}
 
             {#if shows(sections, "destinations")}
@@ -147,7 +153,7 @@
                     {csvPath}
                     {journals}
                     {journalId}
-                    needsJournal={action === "saveAndImport"}
+                    needsJournal={action === "testImport"}
                     problems={validateCsvPath(csvPath)}
                     disabled={busy}
                     {onCsvPath}
@@ -179,7 +185,7 @@
                          dead-ends. Every blocker names a field just above it. -->
                     {#if blocker !== null}
                         <span class="text-sm text-warning" role="status">{blocker}</span>
-                    {:else if action === "saveAndImport"}
+                    {:else if action === "testImport"}
                         <span class="text-sm text-base-content/60">Nothing is written until you have seen what it proposes.</span>
                     {/if}
                 </div>

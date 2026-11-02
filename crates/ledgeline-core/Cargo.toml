@@ -28,6 +28,7 @@ itertools = { workspace = true }
 ropey = { workspace = true }
 csv = { workspace = true }
 regex = { workspace = true }
+unicode-normalization = { workspace = true }
 # Statement preprocessors (WP-11) — see the workspace Cargo.toml for why each.
 calamine = { workspace = true }
 encoding_rs = { workspace = true }
@@ -56,6 +57,13 @@ criterion = { version = "0.8", default-features = false, features = ["cargo_benc
 [[bench]]
 name = "engine"
 path = "benches/engine.rs"
+harness = false
+
+# Plan 32's review engine (queue, similar, suggest, batch) against its D14
+# budget.
+[[bench]]
+name = "review"
+path = "benches/review.rs"
 harness = false
 
 [lib]

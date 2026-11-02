@@ -480,7 +480,7 @@ describe("UNIT LedgelineApi — the rest of the import routes", () => {
         // The no-rules-file path is its OWN route: a dry-run with no rules file
         // has nothing to propose, so `ImportRunBody`'s handles are not nullable
         // and this request cannot be expressed as a commit.
-        const fetchMock = vi.fn().mockResolvedValue(jsonResponse({csvWritten: "import/bank.csv", git: null}));
+        const fetchMock = vi.fn().mockResolvedValue(jsonResponse({csvWritten: "import/bank.csv"}));
         vi.stubGlobal("fetch", fetchMock);
         await new LedgelineApi("http://127.0.0.1:5000").importSaveCsv({stageId: "t", csvPath: "import/bank.csv"});
         expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/import/save-csv");
@@ -496,20 +496,20 @@ describe("UNIT LedgelineApi — the rest of the import routes", () => {
     });
 
     it("reads and writes the preferences blob, keeping nulls as nulls", async () => {
-        const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({hledgerPath: null, gitAutocommit: null})));
+        const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({hledgerPath: null})));
         vi.stubGlobal("fetch", fetchMock);
         const api = new LedgelineApi("http://127.0.0.1:5000");
         await api.getPrefs();
         expect(lastUrl(fetchMock)).toBe("http://127.0.0.1:5000/api/prefs");
-        await api.putPrefs({hledgerPath: "/usr/bin/hledger", gitAutocommit: null});
+        await api.putPrefs({hledgerPath: "/usr/bin/hledger"});
         expect(lastInit(fetchMock).method).toBe("PUT");
-        expect(JSON.parse(lastInit(fetchMock).body as string)).toEqual({hledgerPath: "/usr/bin/hledger", gitAutocommit: null});
+        expect(JSON.parse(lastInit(fetchMock).body as string)).toEqual({hledgerPath: "/usr/bin/hledger"});
     });
 
     it("surfaces the engine's 400 when it rejects a stored hledger path", async () => {
         // Validated at store time, so a bad value is a refusal here rather than
         // a persisted value that fails on the next import.
         vi.stubGlobal("fetch", vi.fn().mockResolvedValue(textResponse("/nope is not an executable file", 400)));
-        await expect(new LedgelineApi("http://127.0.0.1:5000").putPrefs({hledgerPath: "/nope", gitAutocommit: null})).rejects.toThrow("not an executable");
+        await expect(new LedgelineApi("http://127.0.0.1:5000").putPrefs({hledgerPath: "/nope"})).rejects.toThrow("not an executable");
     });
 });

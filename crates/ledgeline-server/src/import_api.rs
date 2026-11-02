@@ -23,14 +23,14 @@
 //! decision that could damage a user's file was made in the engine
 //! ([`convert`](ledgeline_core::convert), [`matching`](ledgeline_core::rules::matching),
 //! [`sort`](ledgeline_core::sort), [`journals`](ledgeline_core::journals)) or in
-//! the two subprocess modules ([`hledger`](crate::hledger), [`git`](crate::git)),
-//! where it is unit-testable. What lives here is **sequencing**, and the
+//! the subprocess module ([`hledger`](crate::hledger)), where it is
+//! unit-testable. What lives here is **sequencing**, and the
 //! sequencing is the part that is easy to get subtly and silently wrong.
 //!
-//! # The five sequencing rules the SERVER owns
+//! # The four sequencing rules the SERVER owns
 //!
 //! None of these may be left to the UI. A browser is not a security boundary,
-//! and three of the five are wrong-answer bugs rather than error bugs — they
+//! and three of the four are wrong-answer bugs rather than error bugs — they
 //! produce a plausible number nobody questions.
 //!
 //! 1. **A stage is materialised under the destination's own file name, with the
@@ -49,14 +49,10 @@
 //!    there**, so hledger writes `.latest` next to the file it will look for next
 //!    time. Importing the temp copy and moving the CSV afterwards leaves the
 //!    dedup state in a directory that is about to be deleted.
-//! 3. **A non-empty `blockedByGit` makes `commit` refuse**, re-checked here
-//!    rather than trusted from the dry-run's response. The whole value of the git
-//!    safety net is that the pre-import state was committed; a client that skips
-//!    the check must not be able to skip the guarantee.
-//! 4. **Balance verification concatenates. Never two `-f` flags.** This is fact 3
+//! 3. **Balance verification concatenates. Never two `-f` flags.** This is fact 3
 //!    in `plans/11-enhanced-import.md` and it is the sharpest edge in the whole
 //!    feature — see [`verify_balance`].
-//! 5. **A balance assertion carries its commodity, and is refused before the
+//! 4. **A balance assertion carries its commodity, and is refused before the
 //!    import is applied.** A bare `= 2949.80` asserts a balance in the *empty*
 //!    commodity, computes 0 and fails forever — fact 4 again, in our own output.
 //!    See [`assertion_lines`] for the commodity, [`preflight_assertion`] for the
@@ -85,12 +81,12 @@
 //!    a journal are hledger's own, plus (on request) one assertion transaction
 //!    built from typed fields and verified by `hledger check` *before* it is
 //!    written.
-//! 5. **No absolute path is ever echoed.** hledger and git both put absolute
-//!    paths in their diagnostics — `imported N new transactions from bank.csv to
+//! 5. **No absolute path is ever echoed.** hledger puts absolute
+//!    paths in its diagnostics — `imported N new transactions from bank.csv to
 //!    /Users/…/main.journal` is real output — and those diagnostics are far too
 //!    useful to withhold, so they are passed through a [`Redactor`] that rewrites
 //!    the paths *we* supplied back into the relative handles the client already
-//!    has. Same trade, and the same mechanism, as `git.rs`'s `scrub`.
+//!    has.
 //!
 //! # Why nothing here is cached in [`AppState`]
 //!
@@ -98,8 +94,7 @@
 //! requests. Both are cheap (one `stat`-guarded spawn and one small file read),
 //! and both describe *the machine*, not the journal: a user who installs hledger,
 //! or points the preference at a different binary, must not be told for the rest
-//! of the session that nothing changed. `git::git_available` documents the same
-//! decision for the same reason.
+//! of the session that nothing changed.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -133,12 +128,16 @@ use crate::alias_api::WireAlias;
 use crate::app_dirs::AppDirs;
 use crate::edit_api::json_body;
 use crate::error::AppError;
-use crate::git::{GitStatus, Repo};
 use crate::hledger::{Hledger, HledgerError, Invocation, Output};
+use crate::import_review::{
+    self, StagedPlace, StagedText, WireOverride, WireRecords, WireRule, WireRulePreviewed,
+    WireStagedTxn,
+};
 use crate::location::JournalLocation;
 use crate::prefs::{self, Prefs};
 use crate::redact::Redactor;
 use crate::reports_api::compute;
+use crate::review_api::BatchEditIn;
 use crate::security::no_store_json as no_store;
 use crate::stage::{self, RUN_BARE, RUN_WITH_LATEST, Stage, StageId};
 use crate::workbook_sandbox;
@@ -245,7 +244,6 @@ struct WireCapabilities {
     hledger: WireHledger,
     formats: Vec<&'static str>,
     journals: Vec<WireJournal>,
-    git: WireGit,
     /// Every `alias` directive the journal declares, in file order, each saying
     /// whether it will be forwarded to this import and why not.
     ///
@@ -336,14 +334,6 @@ impl From<&JournalTarget> for WireJournal {
             writable: target.writable,
         }
     }
-}
-
-/// Whether the import can commit around itself, and whether it is meant to.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WireGit {
-    available: bool,
-    autocommit: bool,
 }
 
 /// `POST /api/import/stage` — the converted upload, ranked against the user's
@@ -546,8 +536,6 @@ struct WireProposal {
     /// What the journal's `alias` directives did to *these* entries, or `null`
     /// when none is in force. See [`alias_effect`].
     aliases: Option<WireAliasEffect>,
-    /// Targets git reports as modified. Non-empty means `commit` will refuse.
-    blocked_by_git: Vec<String>,
     /// The `ledgeline import …` command line that reproduces this import
     /// non-interactively, for the panel's copy affordance.
     ///
@@ -575,6 +563,18 @@ struct WireProposal {
     /// holds is not in the proposal this preview shows, and therefore not in the
     /// bytes the commit appends.
     id_matches: Option<WireIdMatches>,
+    /// Every transaction in `entries`, in order, in the review queue's row
+    /// shape (plan 32 D23) — with the request's overrides applied, while each
+    /// one's `fingerprint` is its GENERATED text's, the key an override echoes.
+    txns: Vec<WireStagedTxn>,
+    /// The raw CSV record behind each of `txns` (D25), or `aligned: false`.
+    records: WireRecords,
+    /// How many of the request's overrides were applied — all of them, on a
+    /// `200`. `entries` and `txns` already carry them.
+    overrides: usize,
+    /// What [`cli_command`](Self::cli_command) does NOT repeat (Q8): `plus N
+    /// reviewed edits` when overrides were applied, else `null`.
+    cli_note: Option<String>,
 }
 
 /// The account rewrites the forwarded aliases performed on this import.
@@ -699,10 +699,10 @@ struct WireRename {
 /// ours would.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct WireDryRunFailed {
+pub(crate) struct WireDryRunFailed {
     /// Always `false`.
-    ok: bool,
-    stderr: String,
+    pub(crate) ok: bool,
+    pub(crate) stderr: String,
 }
 
 /// What `.latest` dedup would drop, and from when.
@@ -764,10 +764,9 @@ struct WireStatusChange {
     /// Always `false` on a **dry-run**, which previews and writes nothing — the
     /// same rule the rest of this screen follows. On a **commit** it is `false`
     /// only for a transaction that lives outside the file this import writes to:
-    /// the flip is confined to `journalId`, the one file whose git state was
-    /// checked before the commit and whose new bytes the commit's own git commit
-    /// carries. Syncing a status into some other included file would write
-    /// somewhere this request had neither permission for nor a way to undo.
+    /// the flip is confined to `journalId`, the one file this commit writes.
+    /// Syncing a status into some other included file would write somewhere this
+    /// request had no permission for.
     applied: bool,
 }
 
@@ -823,13 +822,16 @@ struct WireCommit {
     journal_written: String,
     imported: usize,
     ordering: WireOrdering,
-    /// `null` when neither target is under version control.
-    git: Option<WireGitResult>,
     /// What matching this statement's rows against the journal by id found, or
     /// `null` when the rules file declares no id. See [`WireIdMatches`]. The
     /// same type the dry-run carries, so one decoder serves both; here its
     /// `statusChanged[].applied` reports what was actually written.
     id_matches: Option<WireIdMatches>,
+    /// How many overrides the appended transactions carry (plan 32 D23).
+    overrides: usize,
+    /// How many existing journal transactions `journalEdits` changed, in the
+    /// same write (D24).
+    journal_edited: usize,
 }
 
 /// `POST /api/import/save-csv` — the CSV was kept, and nothing else happened.
@@ -843,8 +845,6 @@ struct WireCommit {
 #[serde(rename_all = "camelCase")]
 struct WireSavedCsv {
     csv_written: String,
-    /// `null` when the destination is not under version control.
-    git: Option<WireGitResult>,
 }
 
 /// Whether the journal is still in date order after the import, and what a
@@ -881,34 +881,11 @@ impl From<&sort::Move> for WireMove {
     }
 }
 
-/// What the git safety net did.
-///
-/// **Contract amendment:** `message` is not in the WP-11 wire table. `git.rs`
-/// requires that a failed commit "surfaces its stderr in the result panel", and
-/// the specified object — `{committed, paths, skipped}` — has nowhere to put it,
-/// so a rejecting pre-commit hook would have reached the user as a silent
-/// `committed: false`. Additive and omitted on success.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct WireGitResult {
-    pub(crate) committed: bool,
-    /// Paths actually committed, relative to their repository toplevel.
-    paths: Vec<String>,
-    /// Targets not committed: outside any repository, or gitignored.
-    skipped: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) message: Option<String>,
-}
-
 /// `POST /api/import/sort` — how many transactions moved.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WireSorted {
     moved: usize,
-    /// What the git safety net did with the re-sorted journal, on the same terms
-    /// as [`WireCommit::git`]. `null` when the journal is not under version
-    /// control, when autocommit is off, or when nothing moved.
-    git: Option<WireGitResult>,
 }
 
 /// `GET`/`PUT /api/prefs`.
@@ -921,8 +898,6 @@ struct WireSorted {
 pub(crate) struct WirePrefs {
     #[serde(default)]
     hledger_path: Option<String>,
-    #[serde(default)]
-    git_autocommit: Option<bool>,
 }
 
 impl From<&Prefs> for WirePrefs {
@@ -932,7 +907,6 @@ impl From<&Prefs> for WirePrefs {
                 .hledger_path
                 .as_ref()
                 .map(|path| path.to_string_lossy().into_owned()),
-            git_autocommit: prefs.git_autocommit,
         }
     }
 }
@@ -958,10 +932,16 @@ pub(crate) struct WireDryRunRequest {
     balance: Option<String>,
     #[serde(default)]
     balance_account: Option<String>,
+    /// Review edits to staged transactions (plan 32 D23), applied to the
+    /// regenerated proposal after a fingerprint check. Absent means none.
+    #[serde(default)]
+    overrides: Vec<WireOverride>,
 }
 
 /// The `commit` body: the dry-run's, plus whether to write the statement balance
-/// into the journal as an assertion.
+/// into the journal as an assertion, plus review edits to EXISTING journal
+/// transactions (plan 32 D24) — the batch route's `edits`, applied under the
+/// same lock and in the same write as the append.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct WireCommitRequest {
@@ -969,6 +949,30 @@ pub(crate) struct WireCommitRequest {
     plan: WireDryRunRequest,
     #[serde(default)]
     write_assertion: bool,
+    #[serde(default)]
+    journal_edits: Vec<BatchEditIn>,
+}
+
+/// The `rule-preview` body (plan 32 D25): the dry-run's four handles — the
+/// stage, the rules file, and the destination and journal that decide which
+/// rows are in THIS import — plus the candidate rule.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct WireRulePreviewRequest {
+    stage_id: String,
+    rules_id: String,
+    csv_path: String,
+    journal_id: String,
+    rule: WireRule,
+}
+
+/// `POST /api/import/rule-preview` — a preview, or hledger's refusal of the
+/// rules file with the candidate in it (a bad regex, most often), verbatim.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum WireRulePreview {
+    Previewed(WireRulePreviewed),
+    Failed(WireDryRunFailed),
 }
 
 /// The `save-csv` body: a staged upload and where to keep it.
@@ -1018,7 +1022,7 @@ pub(crate) struct WireConfRequest {
 /// `{:?}` escapes control characters, so a NUL or an ANSI escape sequence in a
 /// hostile handle reaches a terminal or a dialog as `\u{0}` rather than as
 /// itself. Byte-for-byte the argument `rules_api::quoted` makes.
-fn quoted(value: &str) -> String {
+pub(crate) fn quoted(value: &str) -> String {
     /// Long enough for any real handle, short enough that a hostile one cannot
     /// make a response large.
     const MAX_QUOTED_CHARS: usize = 120;
@@ -1216,7 +1220,7 @@ fn argument_field(value: &str, what: &str) -> Result<String, AppError> {
 /// **Identical for every cause**, so the route cannot be used to tell "not
 /// there" from "not a regular file" from "outside the root". It names the
 /// caller's own handle and nothing else.
-fn unresolved(what: &str, id: &str) -> AppError {
+pub(crate) fn unresolved(what: &str, id: &str) -> AppError {
     AppError::NotFound(format!(
         "no {what} {} is available beside this journal",
         quoted(id)
@@ -1237,7 +1241,7 @@ fn books(state: &AppState, what: &str, id: &str) -> Result<Arc<JournalLocation>,
         .ok_or_else(|| unresolved(what, id))
 }
 
-/// A real filesystem path for `path`, for handing to `hledger` or `git` — the
+/// A real filesystem path for `path`, for handing to `hledger` — the
 /// only reason this module ever asks for one. Every read and write of the
 /// journal tree itself goes through the vault.
 fn native(location: &JournalLocation, path: &VaultPath) -> Result<PathBuf, AppError> {
@@ -1334,31 +1338,12 @@ fn resolve_destination(location: &JournalLocation, csv_path: &str) -> Result<Vau
 /// Resolve a `rulesId` through the discovery scan — the only id → rules-file
 /// resolution in this codebase, by exact string equality against a set scanned
 /// in this request.
-fn resolve_rules(discovery: &Discovery, id: &str) -> Result<RulesPath, AppError> {
+pub(crate) fn resolve_rules(discovery: &Discovery, id: &str) -> Result<RulesPath, AppError> {
     validate_relative_id(id, "rules file id", Some(".rules"))?;
     discovery
         .resolve(id)
         .map(|found| found.path().clone())
         .ok_or_else(|| unresolved("rules file", id))
-}
-
-/// What a rules file's own `skip` says, or `0` when it says nothing.
-///
-/// The number every copy of the staged CSV hledger reads has to be aligned to —
-/// see [`convert::align_to_skip`], and [`Plan::skip`] for where it is kept.
-/// `skip` is **first-one-wins**, unlike almost every other directive, and
-/// `RulesDoc::settings` already knows that; reading the raw text for a `skip`
-/// line here instead would get it wrong on the file that says it twice.
-///
-/// An unreadable file answers `0`, which means no padding, which is exactly
-/// today's behaviour — and the import is about to fail on its own terms anyway,
-/// with hledger's message rather than a guess of ours. So does one past the
-/// discovery scan's size cap, which [`RulesPath::read_text`] re-applies here.
-fn rules_skip(rules: &RulesPath) -> u32 {
-    rules
-        .read_text()
-        .and_then(|text| RulesDoc::parse(&text).settings().skip)
-        .map_or(0, |setting| setting.value)
 }
 
 /// Resolve a `stageId` through the staging area — see [`crate::stage`].
@@ -1587,8 +1572,8 @@ impl AliasArguments {
 // Security layer 5: no absolute path is ever echoed
 // ===========================================================================
 
-// Done by `crate::redact::Redactor`, the one redactor shared with the edit,
-// QuickBooks-journal and git paths.
+// Done by `crate::redact::Redactor`, the one redactor shared with the edit and
+// QuickBooks-journal paths.
 
 // ===========================================================================
 // hledger invocations
@@ -1615,7 +1600,7 @@ fn hledger_unavailable(error: &HledgerError) -> AppError {
 }
 
 /// A resolved hledger, or the `501`.
-fn resolve_hledger(dirs: &AppDirs) -> Result<Hledger, AppError> {
+pub(crate) fn resolve_hledger(dirs: &AppDirs) -> Result<Hledger, AppError> {
     Hledger::resolve(&prefs::load(dirs), dirs).map_err(|error| hledger_unavailable(&error))
 }
 
@@ -1797,7 +1782,7 @@ fn appended_text(entries: &str) -> String {
 /// anywhere in this codebase to quote for. `ledgeline_core::aliases::forward`
 /// has already refused any alias carrying a control character or exceeding its
 /// length caps, and bounded how many there may be.
-fn alias_flags(aliases: &[String]) -> Vec<std::ffi::OsString> {
+pub(crate) fn alias_flags(aliases: &[String]) -> Vec<std::ffi::OsString> {
     aliases
         .iter()
         .map(|alias| std::ffi::OsString::from(format!("--alias={alias}")))
@@ -2178,191 +2163,15 @@ fn reconcile(statement: &str, computed: Option<String>) -> WireBalance {
 }
 
 // ===========================================================================
-// git
-// ===========================================================================
-
-/// Whether the git safety net is switched on: `None` means "commit when a repo
-/// is present", which is the default posture `git.rs` implements.
-///
-/// `pub(crate)`: `qb_journal_api` follows the same preference for its own
-/// commit route rather than growing a second reading of it.
-pub(crate) fn autocommit_enabled(prefs: &Prefs) -> bool {
-    prefs.git_autocommit.unwrap_or(true)
-}
-
-/// Whether THIS run may use the git safety net at all, before the preferences
-/// are even consulted.
-///
-/// Every HTTP caller passes [`FromPrefs`](Self::FromPrefs), which is exactly the
-/// behaviour that existed before this type: the stored preference decides. It is
-/// a parameter rather than another read of `prefs::load` because
-/// `ledgeline import --no-git` has to turn the net off for **one invocation**
-/// without writing anything into a store that outlives it — a CLI flag that
-/// silently edited the desktop app's preferences would be a considerably worse
-/// bargain than the one the flag offers.
-///
-/// Both halves of the net move together, deliberately: with [`Off`](Self::Off)
-/// a dirty target no longer blocks the commit AND nothing is committed
-/// afterwards. Suppressing only the second would leave the refusal in place
-/// with no safety left to justify it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum GitPolicy {
-    /// Ask the preferences store, as every `/api/import/*` request does.
-    FromPrefs,
-    /// Off for this run only, whatever the preferences say (`--no-git`).
-    Off,
-}
-
-impl GitPolicy {
-    /// Is the safety net live for this run?
-    pub(crate) fn enabled(self, prefs: &Prefs) -> bool {
-        self == Self::FromPrefs && autocommit_enabled(prefs)
-    }
-}
-
-/// Which of `targets` git reports as MODIFIED, repository by repository.
-///
-/// Untracked never blocks — a brand-new CSV is expected to be untracked. A
-/// target outside any repository, or a git that cannot be run at all, contributes
-/// nothing: there is no safety net to lose, and refusing the import over its
-/// absence would be worse than not having it.
-///
-/// Returns the caller's own relative handles rather than git's repo-relative
-/// paths, so the UI names the files with the same strings the form does.
-///
-/// `pub(crate)`: `qb_journal_api`'s commit route re-checks the same "is any
-/// target dirty" question server-side, for the same reason (sequencing rule 3)
-/// this module does.
-pub(crate) fn blocked_by_git(targets: &[(&Path, &str)]) -> Vec<String> {
-    targets
-        .iter()
-        .filter(|(path, _)| !git_status(path).dirty.is_empty())
-        .map(|(_, handle)| (*handle).to_string())
-        .collect()
-}
-
-/// What git thinks of one target, degrading uniformly to
-/// [`GitStatus::unavailable`].
-///
-/// "No repository here", "git is not installed" and "git could not answer" mean
-/// the same thing to this module — there is no safety net for this file — and
-/// collapsing them is what keeps a missing git from *blocking* an import rather
-/// than merely not protecting it. `dirty` is git.rs's own precomputed
-/// [`FileState::Modified`] subset, which is the only state that blocks.
-fn git_status(path: &Path) -> GitStatus {
-    Repo::discover(path).map_or_else(GitStatus::unavailable, |repo| {
-        repo.status(&[path])
-            .unwrap_or_else(|_| GitStatus::unavailable())
-    })
-}
-
-/// Commit exactly the paths this import wrote, grouped by repository.
-///
-/// Each target is resolved on its own, because the CSV destination and the
-/// journal may live in different repositories or one may be outside version
-/// control entirely — `git.rs` makes [`Repo`] `Eq` for exactly this grouping. A
-/// target with no repository is reported as skipped, not as a failure.
-///
-/// `pub(crate)`: the same "commit exactly what was written" safety net
-/// `qb_journal_api`'s commit route offers, reused rather than re-implemented.
-pub(crate) fn commit_targets(
-    targets: &[(&Path, &str)],
-    message: &str,
-    redactor: &Redactor,
-) -> WireGitResult {
-    let (in_repo, outside): (Vec<_>, Vec<_>) = targets
-        .iter()
-        .map(|(path, handle)| (Repo::discover(path), *path, *handle))
-        .partition(|(repo, _, _)| repo.is_some());
-
-    let mut committed = Vec::new();
-    let mut skipped: Vec<String> = outside
-        .iter()
-        .map(|(_, _, handle)| (*handle).to_string())
-        .collect();
-    let mut message_out = None;
-
-    // Group by repository, preserving first-seen order so the result is stable.
-    let repos: Vec<Repo> = in_repo.iter().filter_map(|(repo, _, _)| repo.clone()).fold(
-        Vec::new(),
-        |mut seen, repo| {
-            if !seen.contains(&repo) {
-                seen.push(repo);
-            }
-            seen
-        },
-    );
-    for repo in &repos {
-        let group: Vec<(&Path, &str)> = in_repo
-            .iter()
-            .filter(|(candidate, _, _)| candidate.as_ref() == Some(repo))
-            .map(|(_, path, handle)| (*path, *handle))
-            .collect();
-        let paths: Vec<&Path> = group.iter().map(|(path, _)| *path).collect();
-        match repo.commit(&paths, message) {
-            // What came back is what was STAGED, which is what went in minus
-            // whatever the repository ignores — a `.latest.*` or a statements
-            // directory the user deliberately keeps out of version control. The
-            // rest is `skipped`, which is what that field has always promised;
-            // reporting them all as committed would be a claim `git log`
-            // contradicts, and it stopped being hypothetical when the dedup
-            // marker joined this set.
-            Ok(staged) => {
-                let was_staged =
-                    |path: &Path| repo.relative(path).is_ok_and(|name| staged.contains(&name));
-                committed.extend(
-                    group
-                        .iter()
-                        .filter(|(path, _)| was_staged(path))
-                        .map(|(_, handle)| (*handle).to_string()),
-                );
-                skipped.extend(
-                    group
-                        .iter()
-                        .filter(|(path, _)| !was_staged(path))
-                        .map(|(_, handle)| (*handle).to_string()),
-                );
-            }
-            Err(error) => {
-                skipped.extend(group.iter().map(|(_, handle)| (*handle).to_string()));
-                // The FIRST failure's words, not the last: a second repository
-                // failing for a different reason is rarer than the same hook
-                // rejecting both, and the first one is the one the user acts on.
-                //
-                // Redacted against this repository's own toplevel as well as the
-                // journal's paths. `git.rs` already scrubs the toplevel out of
-                // the errors it builds from git's output, and `Repo::toplevel`
-                // exists precisely because that path "must never reach a
-                // user-facing string" — so layer 5 is asserted here rather than
-                // inherited.
-                let scrubbed = redactor
-                    .clone()
-                    .hide_prefix(repo.toplevel())
-                    .apply(&error.to_string());
-                message_out.get_or_insert(scrubbed);
-            }
-        }
-    }
-
-    WireGitResult {
-        committed: !committed.is_empty(),
-        paths: committed,
-        skipped,
-        message: message_out,
-    }
-}
-
-// ===========================================================================
 // Handlers
 // ===========================================================================
 
-/// `GET /api/import/capabilities` — hledger, formats, target journals, git.
+/// `GET /api/import/capabilities` — hledger, formats, target journals.
 pub(crate) async fn capabilities(State(state): State<AppState>) -> Result<Response, AppError> {
     let editable = state.editing_enabled();
     let snapshot = state.snapshot();
-    // Through `compute`: resolving hledger spawns a process and probing git
-    // spawns another, which is exactly the blocking work the semaphore and the
-    // blocking pool exist for.
+    // Through `compute`: resolving hledger spawns a process, which is exactly
+    // the blocking work the semaphore and the blocking pool exist for.
     let aliases = state.clone();
     let Json(body) = compute(move || {
         let prefs = prefs::load(state.app_dirs());
@@ -2374,10 +2183,6 @@ pub(crate) async fn capabilities(State(state): State<AppState>) -> Result<Respon
                 .iter()
                 .map(WireJournal::from)
                 .collect(),
-            git: WireGit {
-                available: crate::git::git_available(),
-                autocommit: autocommit_enabled(&prefs),
-            },
             // The same builder the alias editor uses, so the two screens cannot
             // disagree about what is in force — which would make the whole
             // point of showing it moot.
@@ -2655,6 +2460,7 @@ fn rank_candidates(
                     modified: found.modified,
                 },
                 CandidateExtras {
+                    newest: newest_printed_date(&json),
                     sample: sample_from_json(&json),
                     account1: found.account1.clone(),
                     account2: found.account2.clone(),
@@ -2670,7 +2476,14 @@ fn rank_candidates(
         .iter()
         .map(|(ranking, _)| ranking.clone())
         .collect();
-    matching::rank(&mut ordered);
+    // Among equally good files of one family (`checking-2025.csv.rules`,
+    // `checking-2026.csv.rules`), the statement's year decides — the same
+    // order the Journal view's rules inference uses (plan 32 D27).
+    let statement_date = rankings
+        .iter()
+        .filter_map(|(_, extras)| extras.newest.clone())
+        .max();
+    matching::rank_in_families(&mut ordered, statement_date.as_deref());
     ordered
         .into_iter()
         .map(|ranking| {
@@ -2696,9 +2509,20 @@ fn rank_candidates(
 /// the sample transactions, and the rules file's own default accounts.
 #[derive(Default)]
 struct CandidateExtras {
+    /// The newest transaction date the candidate read from the statement.
+    newest: Option<String>,
     sample: Vec<WireProposed>,
     account1: Option<String>,
     account2: Option<String>,
+}
+
+/// The newest `tdate` in `hledger print -O json` output.
+fn newest_printed_date(json: &Value) -> Option<String> {
+    json.as_array()?
+        .iter()
+        .filter_map(|txn| txn.get("tdate").and_then(Value::as_str))
+        .max()
+        .map(str::to_string)
 }
 
 /// A [`Score`] as the number the wire carries.
@@ -2740,19 +2564,32 @@ fn score_value(score: Score) -> f32 {
 /// total of `$-20.00`. There is nothing here for the flag to suppress, so it is
 /// not passed; a candidate is never lost to an assertion.
 fn print_json(hledger: &Hledger, data: &Path, rules: &Path, aliases: &[String]) -> Option<Value> {
-    let output = hledger
-        .invoke(alias_flags(aliases))
-        .args(["print".as_ref(), "-f".as_ref(), data.as_os_str()])
-        .arg("--rules")
-        .arg(rules)
+    let output = print_invocation(hledger, data, rules, aliases)
         .args(["-O", "json"])
-        .timeout(IMPORT_TIMEOUT)
         .run()
         .ok()?;
     output
         .success()
         .then(|| serde_json::from_str(&output.stdout_lossy()).ok())
         .flatten()
+}
+
+/// `hledger [--alias=…]… print -f DATA --rules RULES`: the CSV read through
+/// the rules file, with no `.latest` dedup and no journal — what candidate
+/// scoring reads (with `-O json`), and the Journal view's rule preview (plan
+/// 32 D27) as journal text.
+pub(crate) fn print_invocation(
+    hledger: &Hledger,
+    data: &Path,
+    rules: &Path,
+    aliases: &[String],
+) -> Invocation {
+    hledger
+        .invoke(alias_flags(aliases))
+        .args(["print".as_ref(), "-f".as_ref(), data.as_os_str()])
+        .arg("--rules")
+        .arg(rules)
+        .timeout(IMPORT_TIMEOUT)
 }
 
 /// The first couple of transactions out of `hledger print -O json`, flattened
@@ -2842,8 +2679,242 @@ pub(crate) async fn dry_run(
     payload: Result<Json<WireDryRunRequest>, JsonRejection>,
 ) -> Result<Response, AppError> {
     let request = json_body(payload)?;
-    let Json(body) = compute(move || run_dry_run(&state, &request, GitPolicy::FromPrefs)).await?;
+    let Json(body) = compute(move || run_dry_run(&state, &request)).await?;
     Ok(no_store(body))
+}
+
+/// `POST /api/import/rule-preview` — what one candidate rule would do to this
+/// import (plan 32 D25): how many rows its matchers select, how many of those
+/// another rule had already categorised, and the rows whose generated text it
+/// changes.
+///
+/// The rule is appended to a TEMPORARY copy of the rules file — rendered by
+/// the rules model, never by hand — and the dry run is repeated with it, so
+/// the answer is hledger's own. Nothing the user owns is written.
+///
+/// # Cost
+///
+/// Three `hledger import --dry-run`s — the file as it is, with the rule, and
+/// with a probe that shows which rows the rule's matchers select — run in
+/// parallel, so a preview costs about one dry run's wall time (tens of
+/// milliseconds on the fixtures). It cannot be cancelled once started; the
+/// client debounces it and drops a superseded answer, and each preview gets
+/// its own run directory, so overlapping ones cannot disturb each other.
+pub(crate) async fn rule_preview(
+    State(state): State<AppState>,
+    payload: Result<Json<WireRulePreviewRequest>, JsonRejection>,
+) -> Result<Response, AppError> {
+    let request = json_body(payload)?;
+    let Json(body) = compute(move || run_rule_preview(&state, &request)).await?;
+    Ok(no_store(body))
+}
+
+/// The whole of `rule-preview`, synchronously.
+fn run_rule_preview(
+    state: &AppState,
+    request: &WireRulePreviewRequest,
+) -> Result<WireRulePreview, AppError> {
+    let plan = Plan::resolve(
+        state,
+        &WireDryRunRequest {
+            stage_id: request.stage_id.clone(),
+            rules_id: request.rules_id.clone(),
+            csv_path: request.csv_path.clone(),
+            journal_id: request.journal_id.clone(),
+            balance: None,
+            balance_account: None,
+            overrides: Vec::new(),
+        },
+    )?;
+    if import_review::has_include(&plan.rules_doc) {
+        return Ok(WireRulePreview::Failed(include_refusal(&request.rules_id)));
+    }
+    let (candidate, probe) = import_review::preview_rules(&plan.rules_doc, &request.rule)?;
+    let slot = plan.staged.preview_slot();
+    let previewed = preview_in(state, &plan, &slot, &candidate, &probe, &request.rules_id);
+    plan.staged.discard(&slot);
+    previewed
+}
+
+/// A rule preview's answer for a rules file that `include`s another: not
+/// previewed, because the temporary copy would resolve the include from the
+/// wrong directory. Shared with the Journal view's preview (plan 32 D27).
+pub(crate) fn include_refusal(rules_id: &str) -> WireDryRunFailed {
+    WireDryRunFailed {
+        ok: false,
+        stderr: format!(
+            "{} includes another rules file, so a rule cannot be tried on a copy of it",
+            quoted(rules_id)
+        ),
+    }
+}
+
+/// Run a rule preview's three hledger invocations in parallel — the rules file
+/// as it is, with the candidate rule, and with the probe, in that order — and
+/// return their stdout, or hledger's refusal (stderr through `redactor`) as
+/// the preview's answer. `invoke` builds the invocation for one rules file.
+/// Shared by the import's preview and the Journal view's (plan 32 D27).
+pub(crate) fn run_previews<F>(
+    rules: [&Path; 3],
+    invoke: F,
+    redactor: &Redactor,
+) -> Result<Result<[String; 3], WireDryRunFailed>, AppError>
+where
+    F: Fn(&Path) -> Invocation + Sync,
+{
+    let outputs: Vec<Result<Output, AppError>> = std::thread::scope(|scope| {
+        let runs: Vec<_> = rules
+            .iter()
+            .map(|rules| {
+                let invoke = &invoke;
+                scope.spawn(move || run(invoke(rules), "try a rule"))
+            })
+            .collect();
+        runs.into_iter()
+            .map(|run| {
+                run.join().unwrap_or_else(|_| {
+                    Err(AppError::Internal(
+                        "a rule preview run panicked".to_string(),
+                    ))
+                })
+            })
+            .collect()
+    });
+    let mut proposals = Vec::with_capacity(outputs.len());
+    for output in outputs {
+        let output = output?;
+        if !output.success() {
+            return Ok(Err(WireDryRunFailed {
+                ok: false,
+                stderr: redactor.apply(&output.stderr_lossy()),
+            }));
+        }
+        proposals.push(output.stdout_lossy());
+    }
+    let [before, after, probe]: [String; 3] = proposals
+        .try_into()
+        .map_err(|_| AppError::Internal("a rule preview lost a run".to_string()))?;
+    Ok(Ok([before, after, probe]))
+}
+
+/// Run the three previews of [`rule_preview`] in the run directory `slot`.
+fn preview_in(
+    state: &AppState,
+    plan: &Plan,
+    slot: &str,
+    candidate: &str,
+    probe: &str,
+    rules_id: &str,
+) -> Result<WireRulePreview, AppError> {
+    let (latest_vault, latest_dir) = plan.latest_dir();
+    let csv = plan
+        .staged
+        .materialize(
+            slot,
+            &plan.csv_name,
+            Some((latest_vault, &latest_dir)),
+            plan.skip,
+        )
+        .map_err(stage_failed)?;
+    let dir = csv
+        .parent()
+        .ok_or_else(|| AppError::Internal("a staged copy has no directory".to_string()))?;
+    let candidate_path = dir.join("candidate.rules");
+    let probe_path = dir.join("probe.rules");
+    for (path, text) in [(&candidate_path, candidate), (&probe_path, probe)] {
+        std::fs::write(path, text).map_err(stage_failed)?;
+    }
+    // hledger names the rules file it is reading in its complaints; every copy
+    // is reported as the file the user chose.
+    let redactor = plan
+        .redactor
+        .clone()
+        .hide(&candidate_path, rules_id)
+        .hide(&probe_path, rules_id);
+
+    let rules = [plan.rules.as_path(), &candidate_path, &probe_path];
+    let proposals = match run_previews(
+        rules,
+        |rules| {
+            import_invocation(
+                &plan.hledger,
+                &plan.target,
+                rules,
+                &csv,
+                &plan.aliases.merged,
+                ImportRun::Preview,
+            )
+        },
+        &redactor,
+    )? {
+        Ok(proposals) => proposals,
+        Err(failed) => return Ok(WireRulePreview::Failed(failed)),
+    };
+
+    // The rows THIS import would write, as the dry run counts them: what the
+    // journal already holds by id taken out.
+    let snapshot = state.snapshot();
+    let index = reimport::build_index(&snapshot.journal, reimport::ID_TAG);
+    let importable = |proposal: &str| -> Result<(String, ledgeline_core::Journal), AppError> {
+        let unreadable =
+            || AppError::Internal("a rule preview's proposal could not be read back".to_string());
+        let parsed =
+            ledgeline_core::parse_journal(proposal, "proposed").map_err(|_| unreadable())?;
+        let kept = reimport::retain_new(proposal, &parsed.transactions, &index, reimport::ID_TAG)
+            .into_owned();
+        let parsed = ledgeline_core::parse_journal(&kept, "proposed").map_err(|_| unreadable())?;
+        Ok((kept, parsed))
+    };
+    let [before, after, probed] =
+        [&proposals[0], &proposals[1], &proposals[2]].map(|p| importable(p));
+    let (before, after, (_, probed)) = (before?, after?, probed?);
+    let classes = snapshot.view.classes(&snapshot.journal);
+    Ok(import_review::compare_runs(
+        (&before.0, &before.1),
+        (&after.0, &after.1),
+        &probed,
+        &classes,
+    )
+    .map_or_else(
+        || {
+            WireRulePreview::Failed(WireDryRunFailed {
+                ok: false,
+                stderr: "that rule changes which rows this import holds, so it cannot be \
+                         previewed row by row"
+                    .to_string(),
+            })
+        },
+        WireRulePreview::Previewed,
+    ))
+}
+
+/// Both homes an account alias can live in — the `hledger.conf` in force and
+/// the journal's own `alias` directives — and the `--alias` arguments they
+/// give an invocation that reads a CSV. See [`AliasArguments::merge`] for why
+/// the config's come first.
+fn alias_sources(
+    state: &AppState,
+    location: &JournalLocation,
+) -> (Option<ConfInForce>, Vec<aliases::Forwarded>, AliasArguments) {
+    let conf = conf_in_force(location, &state.app_dirs().hledger_conf);
+    let declared = aliases::forward(&state.snapshot().journal);
+    let arguments = AliasArguments::merge(
+        declared
+            .iter()
+            .filter_map(|alias| alias.argument().map(str::to_string))
+            .collect(),
+        conf.as_ref()
+            .map(|conf| conf.aliases.clone())
+            .unwrap_or_default(),
+    );
+    (conf, declared, arguments)
+}
+
+/// The `--alias` arguments every invocation that reads a CSV gets, for a
+/// caller outside the import's [`Plan`] (the Journal view's rule preview,
+/// plan 32 D27).
+pub(crate) fn csv_aliases(state: &AppState, location: &JournalLocation) -> Vec<String> {
+    alias_sources(state, location).2.merged
 }
 
 /// Everything a dry-run and a commit both have to resolve, resolved once.
@@ -2870,9 +2941,9 @@ pub(crate) async fn dry_run(
 ///
 /// Each file this plan touches is held twice: as a [`VaultPath`] in
 /// [`location`](Self::location)'s vault, which is how it is **read and written**,
-/// and as the real path `hledger` and `git` are handed (`target`, `rules`,
+/// and as the real path `hledger` is handed (`target`, `rules`,
 /// `destination`, `root_journal`, `root_dir`). The real paths exist only because
-/// the subprocesses need them; a vault with no local path cannot import at all
+/// the subprocess needs them; a vault with no local path cannot import at all
 /// ([`native`]), and says so.
 struct Plan {
     hledger: Hledger,
@@ -2905,6 +2976,11 @@ struct Plan {
     /// [`aliases`](Self::aliases) is: the dry-run and the commit must not be
     /// able to disagree about it.
     skip: u32,
+    /// The chosen rules file as it was read at resolve time: the source of
+    /// [`skip`](Self::skip), of the rule-file suggestions (plan 32 D13a source
+    /// 2), of the `fields` list the rule builder scopes a matcher by, and of
+    /// the document a rule preview appends to.
+    rules_doc: RulesDoc,
     destination: PathBuf,
     /// The destination's bare file name — what the staged copy is named, and what
     /// `.latest.NAME` is keyed to.
@@ -2946,7 +3022,13 @@ impl Plan {
         let rules = rules_file
             .local_path()
             .ok_or_else(|| crate::location::no_local_path("importing a statement"))?;
-        let skip = rules_skip(&rules_file);
+        // Read ONCE: the skip and the document describe the same bytes. `skip` is first-one-wins, which `RulesDoc::settings`
+        // already knows. An unreadable file (or one past the scan's size cap,
+        // which `read_text` re-applies) reads as empty: skip 0, no padding —
+        // and the import fails on hledger's terms a moment later.
+        let rules_text = rules_file.read_text().unwrap_or_default();
+        let rules_doc = RulesDoc::parse(&rules_text);
+        let skip = rules_doc.settings().skip.map_or(0, |setting| setting.value);
         let destination_path = resolve_destination(&location, &request.csv_path)?;
         let destination = native(&location, &destination_path)?;
         let csv_name = destination_path
@@ -2960,17 +3042,7 @@ impl Plan {
         let hledger = resolve_hledger(state.app_dirs())?;
         // Both homes an account alias can live in — see `AliasArguments::merge`
         // for why the config's come first.
-        let conf = conf_in_force(&location, &state.app_dirs().hledger_conf);
-        let declared = aliases::forward(&state.snapshot().journal);
-        let aliases = AliasArguments::merge(
-            declared
-                .iter()
-                .filter_map(|alias| alias.argument().map(str::to_string))
-                .collect(),
-            conf.as_ref()
-                .map(|conf| conf.aliases.clone())
-                .unwrap_or_default(),
-        );
+        let (conf, declared, aliases) = alias_sources(state, &location);
 
         let redactor = Redactor::default()
             // hledger echoes its own argv[0] in a usage dump — which is what an
@@ -2994,6 +3066,7 @@ impl Plan {
             root_journal,
             rules,
             skip,
+            rules_doc,
             destination,
             csv_name,
             aliases,
@@ -3028,55 +3101,10 @@ impl Plan {
     fn root_journal_id(&self) -> Option<&str> {
         self.root_journal.file_name().and_then(|name| name.to_str())
     }
-
-    /// The dedup marker `hledger import --catchup` maintains beside the
-    /// destination, with the relative handle to report it by — or `None` when
-    /// there is no file there yet.
-    ///
-    /// Existence is checked, and that is not defensive: `git add` on a path that
-    /// does not exist fails the **whole** invocation, so a first import — which
-    /// has no marker until the catch-up runs — would take the journal and the
-    /// CSV down with it.
-    fn marker_target(&self, csv_path: &str) -> Option<(PathBuf, String)> {
-        let name = stage::latest_name(&self.csv_name);
-        let (vault, dir) = self.latest_dir();
-        let marker = dir.child(&name).ok()?;
-        if !vault.is_file(&marker) {
-            return None;
-        }
-        // `git add` needs the real path; the existence check above is the
-        // vault's, and never follows a link.
-        let path = vault.local_path(&marker)?;
-        let handle = match csv_path.rsplit_once('/') {
-            Some((parent, _)) => format!("{parent}/{name}"),
-            None => name.clone(),
-        };
-        Some((path, handle))
-    }
-
-    /// The two targets an import **writes**, each with the handle to report it
-    /// by — and the two it blocks on.
-    ///
-    /// These are the files that hold a user's own work, so this is the set
-    /// `blocked_by_git` refuses a dirty member of. The dedup marker is written
-    /// too but is not in here: it is hledger's bookkeeping rather than anybody's
-    /// work, and it joins the commit set separately in [`run_commit`]. Widening
-    /// this to include it would let a marker left dirty by a terminal
-    /// `hledger import` block every import through the screen.
-    fn targets<'a>(&'a self, request: &'a WireDryRunRequest) -> Vec<(&'a Path, &'a str)> {
-        vec![
-            (self.destination.as_path(), request.csv_path.as_str()),
-            (self.target.as_path(), request.journal_id.as_str()),
-        ]
-    }
 }
 
 /// The whole of `dry-run`, synchronously.
-fn run_dry_run(
-    state: &AppState,
-    request: &WireDryRunRequest,
-    git: GitPolicy,
-) -> Result<WireDryRun, AppError> {
+fn run_dry_run(state: &AppState, request: &WireDryRunRequest) -> Result<WireDryRun, AppError> {
     let plan = Plan::resolve(state, request)?;
     let (latest_vault, latest_dir) = plan.latest_dir();
     let staged = plan
@@ -3131,6 +3159,13 @@ fn run_dry_run(
                 .unwrap_or(0),
         ),
     };
+    // The review edits (plan 32 D23), applied to what hledger just proposed —
+    // and from here on THIS is the proposal: the balance, the preview text and
+    // the rows all read it, so what the screen shows is what a commit with the
+    // same overrides appends.
+    let reviewed = reviewed(state, entries, count, &request.overrides)?;
+    let entries = reviewed.text.as_str();
+    let count = reviewed.count;
 
     let balance = request
         .balance
@@ -3155,6 +3190,20 @@ fn run_dry_run(
         })
         .transpose()?;
 
+    // The choices this REQUEST carries and no others: a dry-run has not been
+    // asked whether to sort or to write an assertion, so the command it
+    // advertises is the plain import it is previewing.
+    let cli = CliRun {
+        input: plan.staged.upload_name(),
+        plan: request,
+        root_journal: plan
+            .root_journal_id()
+            .filter(|id| id != &request.journal_id),
+        write_assertion: false,
+        sort: false,
+        dry_run: false,
+        reviewed_edits: request.overrides.len(),
+    };
     Ok(WireDryRun::Proposed(Box::new(WireProposal {
         ok: true,
         entries: plan.redactor.apply(entries),
@@ -3168,29 +3217,112 @@ fn run_dry_run(
         // renames would silently vanish. What an alias rewrites is a property of
         // the rules file, not of which rows are new.
         aliases: alias_effect(&plan, &staged, &proposal)?,
-        blocked_by_git: if git.enabled(&prefs::load(state.app_dirs())) {
-            blocked_by_git(&plan.targets(request))
-        } else {
-            Vec::new()
-        },
-        // The choices this REQUEST carries and no others: a dry-run has not been
-        // asked whether to sort or to write an assertion, so the command it
-        // advertises is the plain import it is previewing.
-        cli_command: cli_invocation(&CliRun {
-            input: plan.staged.upload_name(),
-            plan: request,
-            root_journal: plan
-                .root_journal_id()
-                .filter(|id| id != &request.journal_id),
-            write_assertion: false,
-            sort: false,
-            dry_run: false,
-            no_git: false,
-        }),
+        cli_command: cli_invocation(&cli),
         // `applied: false` throughout: a dry-run previews and writes nothing,
         // the same rule every other field on this screen follows.
         id_matches: ids.as_ref().map(|ids| ids.wire(&plan.redactor, false)),
+        txns: reviewed.staged.as_ref().map_or_else(Vec::new, |staged| {
+            import_review::wire_txns(
+                &state.snapshot(),
+                staged,
+                Some(&plan.rules_doc),
+                StagedPlace::Csv,
+            )
+        }),
+        records: records_for(&plan, &staged, reviewed.staged.as_ref()),
+        overrides: request.overrides.len(),
+        cli_note: cli_note(cli.reviewed_edits),
     })))
+}
+
+/// An import's proposal with a request's review overrides applied (plan 32
+/// D23): the text to show and append, how many transactions it holds, and the
+/// staged editor the rows are read from.
+struct Reviewed {
+    /// `None` only when our parser cannot read hledger's proposal, which leaves
+    /// nothing to review — and is refused outright if there were overrides.
+    staged: Option<StagedText>,
+    text: String,
+    count: usize,
+}
+
+/// Apply `overrides` to `entries` (the deduped, id-filtered proposal), whose
+/// own `count` is passed through when there is nothing to apply.
+///
+/// With no overrides `text` IS `entries`, byte for byte: an import nobody
+/// reviewed appends exactly what it always did. With them, every
+/// untouched transaction is still hledger's own bytes and the edited ones are
+/// the engine's surgical rewrites — see [`StagedText`].
+///
+/// # Errors
+/// `409` naming a staged transaction whose fingerprint is stale; `400` for a
+/// refused op; `500` when overrides were sent for a proposal our parser cannot
+/// read.
+fn reviewed(
+    state: &AppState,
+    entries: &str,
+    count: usize,
+    overrides: &[WireOverride],
+) -> Result<Reviewed, AppError> {
+    import_review::check_override_count(overrides.len())?;
+    let mut staged = match StagedText::parse(entries) {
+        Ok(staged) => staged,
+        Err(_) if overrides.is_empty() => {
+            return Ok(Reviewed {
+                staged: None,
+                text: entries.to_string(),
+                count,
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    if overrides.is_empty() {
+        return Ok(Reviewed {
+            staged: Some(staged),
+            text: entries.to_string(),
+            count,
+        });
+    }
+    let edits = import_review::csv_edits(&staged, overrides);
+    // A `replace` op's amounts take the OPEN journal's styles, as the batch
+    // route's do.
+    staged.apply(&edits, &state.snapshot().raw)?;
+    Ok(Reviewed {
+        count: staged.len(),
+        text: staged.text(),
+        staged: Some(staged),
+    })
+}
+
+/// The raw CSV record behind each staged transaction (plan 32 D25) — one more
+/// `hledger print -O json` over the same copy of the CSV the dry run read,
+/// with the same rules file and aliases. See [`import_review::align_records`].
+fn records_for(plan: &Plan, csv: &Path, staged: Option<&StagedText>) -> WireRecords {
+    let fields = plan
+        .rules_doc
+        .settings()
+        .fields
+        .map(|setting| setting.value);
+    let canonical = std::fs::read_to_string(plan.staged.data()).unwrap_or_default();
+    let printed =
+        staged.and_then(|_| print_json(&plan.hledger, csv, &plan.rules, &plan.aliases.merged));
+    import_review::align_records(
+        printed.as_ref(),
+        &canonical,
+        plan.skip,
+        staged.map(StagedText::generated),
+        fields,
+        clip_row,
+    )
+}
+
+/// What the "equivalent command" panel adds under [`cli_invocation`]'s line
+/// when the import carries review edits (plan 32 Q8): the command line does
+/// not repeat them, so it is no longer exactly this import. Takes
+/// [`CliRun::reviewed_edits`].
+fn cli_note(reviewed_edits: usize) -> Option<String> {
+    let plural = if reviewed_edits == 1 { "" } else { "s" };
+    (reviewed_edits > 0).then(|| format!("plus {reviewed_edits} reviewed edit{plural}"))
 }
 
 /// The same import proposed **without** hledger's date-based dedup: the run in a
@@ -3449,10 +3581,8 @@ fn reconcile_ids(
 /// `PATCH /api/transactions/{index}` has always used. Nothing new writes a
 /// journal.
 ///
-/// Confined to [`Plan::target`]. That file is the one whose git state was
-/// checked before the commit, and the one the commit's own git commit carries,
-/// so a flip cannot land anywhere this request had neither permission for nor a
-/// way to undo. A status-only match in some other included file is reported with
+/// Confined to [`Plan::target`], the one file this commit writes, so a flip
+/// cannot land anywhere this request had no permission for. A status-only match in some other included file is reported with
 /// `applied: false` rather than written.
 ///
 /// Runs **after** the append and the catch-up, so it is the last write and a
@@ -3800,7 +3930,7 @@ pub(crate) async fn commit(
     // mutex the clone locks is the one the closure's state would have locked.
     let guard = state.clone();
     let _write = guard.import_writes().lock().await;
-    let Json(body) = compute(move || run_commit(&state, &request, GitPolicy::FromPrefs)).await?;
+    let Json(body) = compute(move || run_commit(&state, &request)).await?;
     Ok(no_store(body))
 }
 
@@ -3840,35 +3970,33 @@ pub(crate) async fn commit(
 /// established for a mistyped balance. If the roll-back itself fails, the error
 /// says so in as many words and names the duplication risk, because that is a
 /// state a person has to be told about rather than one to paper over.
-fn run_commit(
-    state: &AppState,
-    request: &WireCommitRequest,
-    git: GitPolicy,
-) -> Result<WireCommit, AppError> {
+fn run_commit(state: &AppState, request: &WireCommitRequest) -> Result<WireCommit, AppError> {
     let plan = Plan::resolve(state, &request.plan)?;
-    let targets = plan.targets(&request.plan);
-    let prefs = prefs::load(state.app_dirs());
+    // Plan 32 D24: the review edits to EXISTING journal transactions, checked
+    // as the batch route checks them — and every index must name a transaction
+    // the journal holds — before anything is written.
+    crate::review_api::check_edits(&request.journal_edits)?;
+    import_review::check_override_count(request.plan.overrides.len())?;
+    check_journal_edit_indices(state, &request.journal_edits)?;
 
-    // Sequencing rule 3: re-checked HERE. The dry-run's answer is a report, not
-    // an authorization, and the UI is not a security boundary.
-    let blocked = if git.enabled(&prefs) {
-        blocked_by_git(&targets)
-    } else {
-        Vec::new()
-    };
-    if !blocked.is_empty() {
-        return Err(AppError::Conflict(format!(
-            "these files have uncommitted changes, so an import could not be undone with `git \
-             revert`: {}. Commit them first, or turn off the git safety net in Preferences.",
-            blocked.join(", ")
-        )));
-    }
-
-    // Sequencing rule 5: a statement balance that would not hold refuses the
+    // Sequencing rule 4: a statement balance that would not hold refuses the
     // WHOLE commit, before the CSV is written and before the import runs. See
     // `preflight_assertion`.
     if request.write_assertion {
         preflight_assertion(&plan, &request.plan)?;
+    }
+
+    // Plan 32: stale review edits refuse the WHOLE commit before anything is
+    // written, the CSV included. The overrides are checked against the same
+    // proposal the dry run regenerates (one more preview, only when there are
+    // overrides); the journal edits' fingerprints against the editor. Both are
+    // checked again at the point of writing, under the locks that make it
+    // stick — this is so a stale edit costs nothing, not what makes it safe.
+    if !request.plan.overrides.is_empty() {
+        preflight_overrides(state, &plan, &request.plan)?;
+    }
+    if !request.journal_edits.is_empty() {
+        preflight_journal_edits(state, &request.journal_edits)?;
     }
 
     // Sequencing rule 2: the CSV goes to its FINAL destination first, so the
@@ -3929,8 +4057,7 @@ fn run_commit(
     // …and the same id reconciliation the dry-run ran, for the same reason: the
     // two must not be able to disagree about which rows are new. It is run here
     // rather than trusted from the preview's response because the UI is not a
-    // security boundary — sequencing rule 3's argument, applied to a second
-    // thing a client could otherwise skip.
+    // security boundary.
     let bare = bare_proposal(&plan)?;
     let ids = reconcile_ids(state, &plan, &proposal, bare.as_ref());
     let (entries, imported) = match &ids {
@@ -3943,26 +4070,61 @@ fn run_commit(
         ),
     };
 
-    let appended = appended_text(entries);
+    // The review overrides (D23), on the regenerated proposal: the same
+    // function the dry run applied them with, so these are the bytes it showed.
+    let reviewed = reviewed(state, entries, imported, &request.plan.overrides)?;
+    let imported = reviewed.count;
+    let appended = appended_text(&reviewed.text);
+
+    // The review edits to existing transactions (D24), saved FIRST and under
+    // the editor lock, which is then held until the append and the catch-up
+    // have landed: one lock, and either all of it lands or none of it does.
+    // `undo` holds each edited file's bytes from before, for the roll-back.
+    let journal_edited = request.journal_edits.len();
+    let mut held = if request.journal_edits.is_empty() {
+        None
+    } else {
+        Some(save_journal_edits(state, &request.journal_edits)?)
+    };
+    // The edits may have rewritten the target itself; the append must build on
+    // what is there now. (The editor's save refused a target changed since it
+    // was read, so this is the bytes the edits produced.)
+    let (before, pin) = match &held {
+        Some(edits) if edits.touched(&plan.target_path) => {
+            match vault.read_pinned(&plan.target_path, None) {
+                Ok(read) => read,
+                Err(error) => {
+                    return Err(undone(state, &mut held, journal_unreadable(error.into())));
+                }
+            }
+        }
+        _ => (before, pin),
+    };
+
     let pin = if appended.is_empty() {
         pin
     } else {
         let combined = [before.as_slice(), appended.as_bytes()].concat();
-        vault
-            .replace(&plan.target_path, &combined, &pin)
-            .map_err(|error| match error {
-                VaultError::Changed { .. } => AppError::Conflict(format!(
-                    "{} changed on disk while the import was being prepared, so nothing was \
+        let appended =
+            vault
+                .replace(&plan.target_path, &combined, &pin)
+                .map_err(|error| match error {
+                    VaultError::Changed { .. } => AppError::Conflict(format!(
+                        "{} changed on disk while the import was being prepared, so nothing was \
                      added to it. The CSV was saved; reload and import again.",
-                    quoted(&request.plan.journal_id),
-                )),
-                other => AppError::Internal(format!(
-                    "{} could not be written: {}. The CSV was saved and the journal is \
+                        quoted(&request.plan.journal_id),
+                    )),
+                    other => AppError::Internal(format!(
+                        "{} could not be written: {}. The CSV was saved and the journal is \
                      unchanged.",
-                    quoted(&request.plan.journal_id),
-                    other.kind()
-                )),
-            })?
+                        quoted(&request.plan.journal_id),
+                        other.kind()
+                    )),
+                });
+        match appended {
+            Ok(pin) => pin,
+            Err(error) => return Err(undone(state, &mut held, error)),
+        }
     };
 
     // hledger's own dedup state, recorded by hledger. Verified byte-identical to
@@ -3983,13 +4145,16 @@ fn run_commit(
         Err(error) => Some(error.to_string()),
     };
     if let Some(complaint) = complaint {
-        return Err(catchup_failed(
-            &plan,
-            &request.plan,
-            &before,
-            &pin,
-            &complaint,
-        ));
+        let error = catchup_failed(&plan, &request.plan, &before, &pin, &complaint);
+        return Err(undone(state, &mut held, error));
+    }
+    // Landed. The editor still holds the journal as the edits left it, so it is
+    // re-read now, under its own lock, before anyone else can edit against the
+    // pre-append text; a failure is the file watcher's to retry.
+    if let Some(edits) = held.take()
+        && let Err(error) = edits.release(state)
+    {
+        eprintln!("ledgeline: the journal could not be re-read after an import: {error}");
     }
 
     if request.write_assertion {
@@ -3999,9 +4164,8 @@ fn run_commit(
     // The status sync, and it is deliberately the LAST write: the rows it
     // touches are ones this import did not import, so nothing above depends on
     // it, and a failure here leaves an import that landed rather than a journal
-    // half-written. Both reads below then see the flipped bytes — the ordering
-    // check because it reads the file, and the git commit because the target is
-    // already in its path set. See `apply_status_flips`.
+    // half-written. The ordering check below then sees the flipped bytes,
+    // because it reads the file. See `apply_status_flips`.
     apply_status_flips(state, &plan, ids.as_ref())?;
 
     // The ordering check reads the TARGET, and correctly so: date order is a
@@ -4025,43 +4189,6 @@ fn run_commit(
         },
     };
 
-    // The dedup marker hledger wrote a moment ago belongs in the SAME commit as
-    // the journal and the CSV. `git revert` of an import has to put all three
-    // back together: a revert that restores the journal but leaves the marker
-    // ahead of it makes the next import of that statement propose nothing, and
-    // one that leaves the marker behind makes it propose rows twice.
-    //
-    // The COMMIT set only — never `blocked_by_git` above. A marker left dirty by
-    // an earlier import, or by somebody running `hledger import` in a terminal,
-    // is not a reason to refuse every future import through this screen; it is
-    // hledger's own bookkeeping, not a user's work that a revert would have to
-    // recover. That is why this is a second set rather than a wider `targets`.
-    //
-    // A marker that does not exist yet (the first import of this name) and one
-    // the repository ignores are both non-events: the first is filtered here,
-    // the second by `Repo::commit`, which drops ignored paths before staging.
-    let marker = plan.marker_target(&request.plan.csv_path);
-    let committed: Vec<(&Path, &str)> = targets
-        .iter()
-        .copied()
-        .chain(
-            marker
-                .iter()
-                .map(|(path, handle)| (path.as_path(), handle.as_str())),
-        )
-        .collect();
-
-    let git = git
-        .enabled(&prefs)
-        .then(|| {
-            commit_targets(
-                &committed,
-                &commit_message(&request.plan.csv_path, imported),
-                &plan.redactor,
-            )
-        })
-        .filter(|result| result.committed || result.message.is_some());
-
     // The journal changed underneath the editor, so re-open it: otherwise the
     // next transaction edit sees a stale fingerprint and reports a conflict the
     // user did not cause. A failure here is reported to the log rather than to
@@ -4075,25 +4202,182 @@ fn run_commit(
         journal_written: request.plan.journal_id.clone(),
         imported,
         ordering,
-        git,
         // `applied: true` for every flip that was in range — `apply_status_flips`
         // above returned `Ok`, so those landed, and the ones out of range are
         // reported unwritten.
         id_matches: ids.as_ref().map(|ids| ids.wire(&plan.redactor, true)),
+        overrides: request.plan.overrides.len(),
+        journal_edited,
     })
 }
 
-/// The generated commit message: what was imported and how much of it.
-fn commit_message(csv_path: &str, imported: usize) -> String {
-    let name = csv_path.rsplit('/').next().unwrap_or(csv_path);
-    let plural = if imported == 1 { "" } else { "s" };
-    format!("import {imported} transaction{plural} from {name}")
+/// Every index in `edits` (an import's `journalEdits`) names a transaction
+/// the journal holds, or a `404` — checked before anything is written.
+fn check_journal_edit_indices(state: &AppState, edits: &[BatchEditIn]) -> Result<(), AppError> {
+    let snapshot = state.snapshot();
+    let transactions = &snapshot.raw.transactions;
+    edits.iter().map(BatchEditIn::index).try_for_each(|index| {
+        transactions
+            .iter()
+            .any(|txn| txn.index == index)
+            .then_some(())
+            .ok_or_else(|| AppError::NotFound(format!("no transaction with index {}", index.0)))
+    })
 }
 
-/// The generated commit message for a CSV kept without an import.
-fn save_message(csv_path: &str) -> String {
-    let name = csv_path.rsplit('/').next().unwrap_or(csv_path);
-    format!("save {name}")
+/// The commit's override check, before anything is written: the proposal the
+/// dry run would regenerate right now, with the overrides applied (and
+/// discarded). See [`run_commit`].
+fn preflight_overrides(
+    state: &AppState,
+    plan: &Plan,
+    request: &WireDryRunRequest,
+) -> Result<(), AppError> {
+    let (latest_vault, latest_dir) = plan.latest_dir();
+    let staged = plan
+        .staged
+        .materialize(
+            RUN_WITH_LATEST,
+            &plan.csv_name,
+            Some((latest_vault, &latest_dir)),
+            plan.skip,
+        )
+        .map_err(stage_failed)?;
+    let output = run(
+        import_invocation(
+            &plan.hledger,
+            &plan.target,
+            &plan.rules,
+            &staged,
+            &plan.aliases.merged,
+            ImportRun::Preview,
+        ),
+        "preview the import",
+    )?;
+    // A refusal here is the real import's refusal too, and it says so better.
+    if !output.success() {
+        return Ok(());
+    }
+    let proposal = output.stdout_lossy();
+    let bare = bare_proposal(plan)?;
+    let ids = reconcile_ids(state, plan, &proposal, bare.as_ref());
+    let entries = ids
+        .as_ref()
+        .map_or(proposal.as_str(), |ids| ids.entries.as_str());
+    reviewed(state, entries, 0, &request.overrides).map(|_| ())
+}
+
+/// The commit's journal-edit check, before anything is written: every
+/// fingerprint still current, every index there. Cheap — no op is built.
+fn preflight_journal_edits(state: &AppState, edits: &[BatchEditIn]) -> Result<(), AppError> {
+    let guard = crate::edit_api::lock_editor(state)?;
+    let editor = guard.as_ref().ok_or_else(crate::error::editing_disabled)?;
+    let indices: Vec<_> = edits.iter().map(BatchEditIn::index).collect();
+    for (edit, current) in edits.iter().zip(editor.transaction_fingerprints(&indices)) {
+        crate::review_api::check_fingerprint(edit, current.as_ref())?;
+    }
+    Ok(())
+}
+
+/// The review edits a commit saved, and what it takes to take them back: the
+/// editor lock (held, so nobody edits between the save and the append), and
+/// each edited file's bytes from before.
+struct HeldEdits<'a> {
+    guard: std::sync::MutexGuard<'a, Option<ledgeline_core::JournalEditor>>,
+    undo: Vec<(VaultPath, Vec<u8>)>,
+    vault: Arc<dyn Vault>,
+}
+
+impl HeldEdits<'_> {
+    /// Whether the edits rewrote `path`.
+    fn touched(&self, path: &VaultPath) -> bool {
+        self.undo.iter().any(|(edited, _)| edited == path)
+    }
+
+    /// The import landed: re-read the editor from disk (it has not seen the
+    /// append) and let go of it.
+    fn release(mut self, state: &AppState) -> Result<(), AppError> {
+        crate::edit_api::resync_from_disk(state, &mut self.guard)
+    }
+
+    /// Something after the save failed: put every edited file back, pinned to
+    /// what the save wrote (so an edit made since is never overwritten), and
+    /// re-read the editor. Returns what could not be put back.
+    fn undo(mut self, state: &AppState) -> Vec<String> {
+        let failed: Vec<String> = self
+            .undo
+            .iter()
+            .filter_map(|(path, bytes)| {
+                let restored = self
+                    .vault
+                    .read_pinned(path, None)
+                    .and_then(|(_, revision)| {
+                        self.vault.replace(path, bytes, &revision).map(|_| ())
+                    });
+                restored
+                    .err()
+                    .map(|error| format!("{} ({})", path, error.kind()))
+            })
+            .collect();
+        let _ = crate::edit_api::resync_from_disk(state, &mut self.guard);
+        failed
+    }
+}
+
+/// Apply and save an import's `journalEdits` (plan 32 D24) — the batch
+/// route's edits — keeping the editor locked for the rest of the commit.
+fn save_journal_edits<'a>(
+    state: &'a AppState,
+    edits: &[BatchEditIn],
+) -> Result<HeldEdits<'a>, AppError> {
+    let mut guard = crate::edit_api::lock_editor(state)?;
+    let editor = crate::edit_api::bound(&mut guard)?;
+    // In memory, all or nothing: on any error the editor is unchanged.
+    crate::review_api::apply_edits(editor, edits)?;
+    let vault = Arc::clone(editor.vault());
+    let undo = editor
+        .dirty_sources()
+        .into_iter()
+        .map(|path| {
+            let (bytes, _) = vault.read_pinned(&path, None).map_err(|error| {
+                AppError::Internal(format!(
+                    "a file the review edits change could not be read: {}; nothing was written",
+                    error.kind()
+                ))
+            })?;
+            Ok((path, bytes))
+        })
+        .collect::<Result<Vec<_>, AppError>>();
+    let undo = match undo {
+        Ok(undo) => undo,
+        Err(error) => {
+            crate::edit_api::resync_from_disk(state, &mut guard)?;
+            return Err(error);
+        }
+    };
+    // Re-syncs from disk itself on a failed save, which writes nothing.
+    crate::edit_api::save_and_publish(state, &mut guard)?;
+    Ok(HeldEdits { guard, undo, vault })
+}
+
+/// `error`, after putting back any review edits `held` saved — saying so when
+/// they could not all be put back.
+fn undone(state: &AppState, held: &mut Option<HeldEdits<'_>>, error: AppError) -> AppError {
+    let Some(edits) = held.take() else {
+        return error;
+    };
+    let failed = edits.undo(state);
+    if failed.is_empty() {
+        let message = format!("{error} The review edits to existing transactions were undone too.");
+        error.with_message(message)
+    } else {
+        let message = format!(
+            "{error} The review edits to existing transactions could NOT all be undone: {} still \
+             carries them.",
+            failed.join(", ")
+        );
+        error.with_message(message)
+    }
 }
 
 /// `POST /api/import/save-csv` — keep the converted CSV, import nothing.
@@ -4127,38 +4411,10 @@ pub(crate) async fn save_csv(
 /// not have: the `csvPath` is validated on shape, resolved through
 /// [`resolve_destination`] and confined to the include root, and the only bytes
 /// written are [`convert::to_csv`]'s own output over a staged upload.
-///
-/// The git rule is the commit's too, and for the commit's reason: a destination
-/// git reports as **modified** blocks, because overwriting somebody's
-/// uncommitted edit is the one thing `git diff` could not have undone. An
-/// untracked CSV — the ordinary case, a statement saved for the first time —
-/// does not block.
 fn run_save_csv(state: &AppState, request: &WireSaveCsvRequest) -> Result<WireSavedCsv, AppError> {
     let staged = resolve_stage(state, &request.stage_id)?;
     let location = books(state, "CSV destination", &request.csv_path)?;
     let destination_path = resolve_destination(&location, &request.csv_path)?;
-    // Real paths only for git, below; the write itself goes through the vault.
-    let root = native(&location, &location.root_dir())?;
-    let destination = native(&location, &destination_path)?;
-    let redactor = Redactor::default()
-        .hide(&destination, &request.csv_path)
-        .hide_prefix(&root)
-        .hide_prefix(&state.app_dirs().temp_dir);
-
-    let prefs = prefs::load(state.app_dirs());
-    let targets = vec![(destination.as_path(), request.csv_path.as_str())];
-    if autocommit_enabled(&prefs) {
-        let blocked = blocked_by_git(&targets);
-        if !blocked.is_empty() {
-            return Err(AppError::Conflict(format!(
-                "these files have uncommitted changes, so overwriting them could not be undone \
-                 with `git revert`: {}. Commit them first, or turn off the git safety net in \
-                 Preferences.",
-                blocked.join(", ")
-            )));
-        }
-    }
-
     let csv = std::fs::read_to_string(staged.data()).map_err(stage_failed)?;
     location
         .vault()
@@ -4171,12 +4427,8 @@ fn run_save_csv(state: &AppState, request: &WireSaveCsvRequest) -> Result<WireSa
             ))
         })?;
 
-    let git = autocommit_enabled(&prefs)
-        .then(|| commit_targets(&targets, &save_message(&request.csv_path), &redactor))
-        .filter(|result| result.committed || result.message.is_some());
     Ok(WireSavedCsv {
         csv_written: request.csv_path.clone(),
-        git,
     })
 }
 
@@ -4554,35 +4806,12 @@ pub(crate) async fn sort_journal(
     }
     let guard = state.clone();
     let _write = guard.import_writes().lock().await;
-    let Json(body) = compute(move || run_sort(&state, &request, GitPolicy::FromPrefs)).await?;
+    let Json(body) = compute(move || run_sort(&state, &request)).await?;
     Ok(no_store(body))
 }
 
 /// The whole of `sort`, synchronously.
-///
-/// # It commits, and it commits SEPARATELY
-///
-/// A re-sort rewrites the whole journal in place; leaving that uncommitted next
-/// to an import that *was* committed means `git diff` no longer shows the import
-/// and `git revert` no longer undoes it — the safety net the commit route exists
-/// to provide, dismantled by the button offered immediately after it.
-///
-/// Its own commit rather than an amendment to the import's, because the two are
-/// separately undoable and a user who wants the ordering back does not want the
-/// transactions back out. Only the journal this call rewrote is in it; the CSV
-/// and the dedup marker were not touched here and belong to the import's commit.
-///
-/// There is deliberately **no `blocked_by_git` pre-flight**. A commit refuses a
-/// dirty target because overwriting somebody's uncommitted edit is what a revert
-/// could not undo; here the file was just written by the import a moment ago and
-/// the user has explicitly asked for this rewrite of it. Blocking would refuse
-/// the sort precisely when the import that dirtied the file could not be
-/// committed, which is the case where it helps least.
-fn run_sort(
-    state: &AppState,
-    request: &WireSortRequest,
-    git: GitPolicy,
-) -> Result<WireSorted, AppError> {
+fn run_sort(state: &AppState, request: &WireSortRequest) -> Result<WireSorted, AppError> {
     let location = books(state, "journal", &request.journal_id)?;
     let (journal_path, _) = resolve_journal(state, &location, &request.journal_id)?;
     let vault = location.vault();
@@ -4590,10 +4819,7 @@ fn run_sort(
     let (text, pin) = read_text_pinned(&**vault, &journal_path).map_err(journal_unreadable)?;
     let plan = sort::plan(&text).map_err(|error| AppError::BadRequest(error.to_string()))?;
     if plan.unchanged {
-        return Ok(WireSorted {
-            moved: 0,
-            git: None,
-        });
+        return Ok(WireSorted { moved: 0 });
     }
     let sorted =
         sort::apply(&text, &plan).map_err(|error| AppError::BadRequest(error.to_string()))?;
@@ -4617,43 +4843,9 @@ fn run_sort(
         eprintln!("ledgeline: the journal could not be re-read after a sort: {error}");
     }
 
-    // git is handed real paths. A vault with none has no repository to commit
-    // into, so the sort stands uncommitted rather than failing after it landed.
-    let journal = location.vault().local_path(&journal_path);
-    let root = location.vault().local_path(&location.root_dir());
-    let redactor = match (&journal, &root) {
-        (Some(journal), Some(root)) => Redactor::default()
-            .hide(journal, &request.journal_id)
-            .hide_prefix(root),
-        _ => Redactor::default(),
-    }
-    .hide_prefix(&state.app_dirs().temp_dir);
-    let targets: Vec<(&Path, &str)> = journal
-        .iter()
-        .map(|journal| (journal.as_path(), request.journal_id.as_str()))
-        .collect();
-    let git = git
-        .enabled(&prefs::load(state.app_dirs()))
-        .then(|| {
-            commit_targets(
-                &targets,
-                &sort_message(&request.journal_id, plan.moves.len()),
-                &redactor,
-            )
-        })
-        .filter(|result| result.committed || result.message.is_some());
-
     Ok(WireSorted {
         moved: plan.moves.len(),
-        git,
     })
-}
-
-/// The generated commit message for a confirmed re-sort.
-fn sort_message(journal_id: &str, moved: usize) -> String {
-    let name = journal_id.rsplit('/').next().unwrap_or(journal_id);
-    let plural = if moved == 1 { "" } else { "s" };
-    format!("sort {name} into date order, moving {moved} transaction{plural}")
 }
 
 // ===========================================================================
@@ -4696,7 +4888,10 @@ struct CliRun<'a> {
     write_assertion: bool,
     sort: bool,
     dry_run: bool,
-    no_git: bool,
+    /// How many review overrides the screen's import carries (plan 32 D23).
+    /// They have no command-line spelling, so a non-zero count is reported
+    /// beside the command rather than in it — see [`cli_note`].
+    reviewed_edits: usize,
 }
 
 /// The argument vector that reproduces `run`, `ledgeline` first.
@@ -4734,7 +4929,6 @@ fn cli_argv(run: &CliRun<'_>) -> Vec<String> {
         (run.write_assertion, "--write-assertion"),
         (run.sort, "--sort"),
         (run.dry_run, "--dry-run"),
-        (run.no_git, "--no-git"),
     ] {
         if chosen {
             argv.push(flag.to_string());
@@ -4865,10 +5059,6 @@ pub struct CliImport {
     /// Report what would be imported and write nothing at all.
     #[arg(long)]
     dry_run: bool,
-
-    /// Do not commit to git around this import, whatever the preferences say.
-    #[arg(long)]
-    no_git: bool,
 
     /// QuickBooks Journal exports only: overwrite transactions already
     /// imported (matched by `id:`) that the export now shows differently,
@@ -5034,8 +5224,8 @@ pub struct CliQbWritten {
 /// the import sequence is re-implemented here, and there is no second code path
 /// that could import differently: `docs/development/imports-internals.md` describes one pipeline, and
 /// this is a second caller of it rather than a second copy of it. In particular
-/// every subprocess still goes through `hledger.rs`/`git.rs`, which stay the only
-/// two modules in this crate that may spawn one.
+/// every subprocess still goes through `hledger.rs`, which stays the only
+/// module in this crate that may spawn one.
 ///
 /// The only genuinely new work is turning command-line **paths** into the
 /// journal-relative **handles** the engine speaks, and it is done by asking the
@@ -5197,11 +5387,8 @@ fn cli_import_csv(
         journal_id: journal_id.to_string(),
         balance: args.balance.clone(),
         balance_account: args.balance_account.clone(),
-    };
-    let git = if args.no_git {
-        GitPolicy::Off
-    } else {
-        GitPolicy::FromPrefs
+        // A command line has no review step.
+        overrides: Vec::new(),
     };
     let command = cli_invocation(&CliRun {
         input: name,
@@ -5210,10 +5397,10 @@ fn cli_import_csv(
         write_assertion: args.write_assertion,
         sort: args.sort,
         dry_run: args.dry_run,
-        no_git: args.no_git,
+        reviewed_edits: 0,
     });
 
-    let (count, status, balance) = match run_dry_run(state, &request, git)? {
+    let (count, status, balance) = match run_dry_run(state, &request)? {
         WireDryRun::Failed(failed) => {
             return Err(AppError::BadRequest(format!(
                 "the import preview failed and nothing was written. hledger said:\n{}",
@@ -5261,13 +5448,12 @@ fn cli_import_csv(
         &WireCommitRequest {
             plan: request,
             write_assertion: args.write_assertion,
+            journal_edits: Vec::new(),
         },
-        git,
     )?;
 
     // Only when it is both asked for and needed. `run_sort` is a no-op on a
-    // journal already in order, but saying so costs a whole-file read and a
-    // second git commit message about nothing.
+    // journal already in order, but saying so costs a whole-file read.
     let sorted = match (args.sort, commit.ordering.in_order) {
         (true, false) => Some(
             run_sort(
@@ -5275,7 +5461,6 @@ fn cli_import_csv(
                 &WireSortRequest {
                     journal_id: journal_id.clone(),
                 },
-                git,
             )?
             .moved,
         ),
@@ -5318,7 +5503,7 @@ fn missing_sentence(missing: &[&str]) -> String {
 ///
 /// # No second write path
 ///
-/// The unmapped-accounts check, the build, the classify, the git-check, the
+/// The unmapped-accounts check, the build, the classify, the
 /// write, and the post-write ordering report are exactly
 /// `qb_journal_api::commit_journal`'s body — the same function `commit`'s
 /// HTTP handler now calls too (see that function's own docs). This function
@@ -5378,18 +5563,12 @@ fn cli_import_qb_journal(
     let parsed = workbook_sandbox::qb_parse(bytes)
         .map_err(|error| AppError::BadRequest(error.to_string()))?;
 
-    let git = if args.no_git {
-        GitPolicy::Off
-    } else {
-        GitPolicy::FromPrefs
-    };
     let command = qb_cli_invocation(
         name,
         journal_id,
         (root_id != journal_id).then_some(root_id),
         args.sort,
         args.dry_run,
-        args.no_git,
         args.update_changed,
     );
 
@@ -5420,7 +5599,12 @@ fn cli_import_qb_journal(
         });
     }
 
-    let commit = crate::qb_journal_api::commit_journal(state, &parsed, git, args.update_changed)?;
+    let commit = crate::qb_journal_api::commit_journal(
+        state,
+        &parsed,
+        args.update_changed,
+        &crate::qb_journal_api::QbReview::default(),
+    )?;
     let journals: Vec<String> = commit
         .ordering
         .files
@@ -5442,7 +5626,6 @@ fn cli_import_qb_journal(
                 &WireSortRequest {
                     journal_id: file.journal_id.clone(),
                 },
-                git,
             )?
             .moved;
         }
@@ -5484,7 +5667,6 @@ fn qb_cli_invocation(
     root_journal: Option<&str>,
     sort: bool,
     dry_run: bool,
-    no_git: bool,
     update_changed: bool,
 ) -> String {
     let mut argv: Vec<String> = ["ledgeline", "import", "-i", input, "-j", journal_id]
@@ -5500,9 +5682,6 @@ fn qb_cli_invocation(
     }
     if dry_run {
         argv.push("--dry-run".to_string());
-    }
-    if no_git {
-        argv.push("--no-git".to_string());
     }
     if update_changed {
         argv.push("--update-changed".to_string());
@@ -5819,7 +5998,6 @@ pub(crate) async fn prefs_put(
     let Json(body) = compute(move || {
         let prefs = Prefs {
             hledger_path: request.hledger_path.as_deref().map(PathBuf::from),
-            git_autocommit: request.git_autocommit,
         };
         prefs::store(state.app_dirs(), &prefs)
             .map_err(|error| AppError::BadRequest(error.to_string()))?;
@@ -6216,19 +6394,6 @@ mod tests {
                 "the default {derived:?} must itself be a valid destination"
             );
         }
-    }
-
-    /// The commit message names the file and the count, and never a path.
-    #[test]
-    fn the_commit_message_names_the_statement_and_the_count() {
-        assert_eq!(
-            commit_message("import/2026/bank.csv", 3),
-            "import 3 transactions from bank.csv"
-        );
-        assert_eq!(
-            commit_message("bank.csv", 1),
-            "import 1 transaction from bank.csv"
-        );
     }
 
     /// The concatenation is ONE journal with ONE `-f`, and the journal is
@@ -6669,6 +6834,7 @@ mod tests {
             journal_id: "2026/2026.journal".to_string(),
             balance: balance.map(str::to_string),
             balance_account: account.map(str::to_string),
+            overrides: Vec::new(),
         }
     }
 
@@ -6702,7 +6868,7 @@ mod tests {
             write_assertion: false,
             sort: false,
             dry_run: false,
-            no_git: false,
+            reviewed_edits: 0,
         });
         assert_eq!(
             argv,
@@ -6727,7 +6893,7 @@ mod tests {
                 write_assertion: false,
                 sort: false,
                 dry_run: false,
-                no_git: false,
+                reviewed_edits: 0,
             }),
             "ledgeline import -i bank.csv -o import/bank.csv -r import/bank.csv.rules \
              -j 2026/2026.journal"
@@ -6747,7 +6913,7 @@ mod tests {
             write_assertion: true,
             sort: true,
             dry_run: true,
-            no_git: true,
+            reviewed_edits: 0,
         });
         assert_eq!(
             argv,
@@ -6771,7 +6937,6 @@ mod tests {
                 "--write-assertion",
                 "--sort",
                 "--dry-run",
-                "--no-git",
             ]
         );
     }
@@ -6789,7 +6954,7 @@ mod tests {
             write_assertion: true,
             sort: true,
             dry_run: false,
-            no_git: true,
+            reviewed_edits: 0,
         };
         let parsed = reparse(&cli_argv(&run));
 
@@ -6811,7 +6976,6 @@ mod tests {
         assert!(parsed.write_assertion);
         assert!(parsed.sort);
         assert!(!parsed.dry_run);
-        assert!(parsed.no_git);
 
         // …and re-rendering the re-parsed run reproduces the string, so the loop
         // is closed rather than merely one-way.
@@ -6823,7 +6987,7 @@ mod tests {
                 write_assertion: parsed.write_assertion,
                 sort: parsed.sort,
                 dry_run: parsed.dry_run,
-                no_git: parsed.no_git,
+                reviewed_edits: 0,
             }),
             cli_argv(&run)
         );
@@ -6843,7 +7007,7 @@ mod tests {
             write_assertion: false,
             sort: false,
             dry_run: false,
-            no_git: false,
+            reviewed_edits: 0,
         };
         assert!(
             cli_argv(&run).contains(&"Statement Feb 2026.xlsx".to_string()),

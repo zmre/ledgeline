@@ -219,12 +219,12 @@ fn untouched_transactions_stay_byte_identical_through_a_delete() {
 // Elided amounts
 // ---------------------------------------------------------------------------
 
-/// A leg the user wrote blank must come back blank.
+/// A leg the user wrote blank must come back blank (plan 32 D35).
 ///
-/// The SPA reads a transaction (with the parser's inferred amount filled in) and
-/// PUTs every posting back with an explicit amount, so a full replace used to
-/// harden `assets:bank:checking` into `$-1800.00`. That is not cosmetic: once
-/// the inferred leg is written out, it can no longer disagree with the others,
+/// The parser marks the inferred leg `elided`, the wire carries the mark, and
+/// the SPA sends that leg back with no amount — so a full replace writes it
+/// blank and it keeps auto-balancing. Writing the inferred value out is not
+/// cosmetic: once it is explicit it can no longer disagree with the others,
 /// and hledger's own imbalance detection is permanently disabled for that
 /// transaction.
 #[test]
@@ -238,14 +238,14 @@ fn an_elided_leg_survives_a_full_replace() {
     let journal = scratch.write("main.journal", text);
     let mut editor = JournalEditor::open(&journal).expect("open journal");
 
-    // What the edit API sends back: the parsed transaction, every amount
-    // explicit, with one field changed.
     let mut edited: Transaction = editor.journal().transactions[0].clone();
+    assert!(!edited.postings[0].elided && edited.postings[1].elided);
     assert_eq!(
         edited.postings[1].amounts.len(),
         1,
-        "the parser fills the elided leg in, which is what the SPA round-trips"
+        "the parser fills the elided leg in, and marks it"
     );
+    edited.postings[1].amounts.clear();
     edited.description = "Landlord | rent (Feb)".into();
 
     editor
@@ -259,6 +259,61 @@ fn an_elided_leg_survives_a_full_replace() {
          expenses:housing:rent  $1800.00\n    assets:bank:checking\n",
         "the blank leg must stay blank"
     );
+    assert!(editor.journal().transactions[0].postings[1].elided);
+}
+
+/// A caller holding a fully-explicit copy — every inferred value filled in,
+/// as the QuickBooks import builds one — keeps the file's elision through
+/// [`JournalEditor::with_elisions_restored`].
+#[test]
+fn a_fully_explicit_copy_keeps_the_elision_through_the_restore() {
+    let scratch = Scratch::new("elision-restore");
+    let text = "\
+2026-01-01 * Landlord | rent
+    expenses:housing:rent  $1800.00
+    assets:bank:checking
+";
+    let journal = scratch.write("main.journal", text);
+    let mut editor = JournalEditor::open(&journal).expect("open journal");
+
+    let mut edited: Transaction = editor.journal().transactions[0].clone();
+    edited.description = "Landlord | rent (Feb)".into();
+    let restored = editor
+        .with_elisions_restored(Tindex(1), &edited)
+        .into_owned();
+    assert!(restored.postings[1].amounts.is_empty());
+    editor
+        .replace_transaction(Tindex(1), &restored)
+        .expect("replace");
+    assert!(
+        editor.text().ends_with("    assets:bank:checking\n"),
+        "got:\n{}",
+        editor.text()
+    );
+}
+
+/// An amount the user typed on a leg the file used to leave blank is written
+/// out: the client sends an amount only for a leg the user filled in.
+#[test]
+fn a_typed_amount_on_an_elided_leg_is_written() {
+    let scratch = Scratch::new("elision-typed");
+    let text = "\
+2026-01-01 * Landlord | rent
+    expenses:housing:rent  $1800.00
+    assets:bank:checking
+";
+    let journal = scratch.write("main.journal", text);
+    let mut editor = JournalEditor::open(&journal).expect("open journal");
+    let edited: Transaction = editor.journal().transactions[0].clone();
+    editor
+        .replace_transaction(Tindex(1), &edited)
+        .expect("replace");
+    assert!(
+        editor.text().contains("assets:bank:checking   $-1800.00"),
+        "got:\n{}",
+        editor.text()
+    );
+    assert!(!editor.journal().transactions[0].postings[1].elided);
 }
 
 /// An elided leg carrying a balance assertion keeps BOTH: the leg stays blank
@@ -289,11 +344,11 @@ fn an_elided_leg_keeps_its_balance_assertion() {
         edited.postings[1].balance_assertion.is_some(),
         "the fixture must carry an assertion"
     );
-    assert_eq!(
-        edited.postings[1].amounts.len(),
-        1,
-        "the parser infers the leg, which is what the SPA round-trips back"
+    assert!(
+        edited.postings[1].elided,
+        "an assertion-only posting writes no amount"
     );
+    edited.postings[1].amounts.clear();
     edited.description = "Rent (Feb)".into();
     editor
         .replace_transaction(Tindex(2), &edited)

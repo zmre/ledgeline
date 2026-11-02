@@ -27,11 +27,10 @@ const DRY_RUN = {
     status: "would import 3",
     skipped: null,
     balance: null,
-    blockedByGit: [],
     cliCommand: "ledgeline import -i bank.csv -o import/bank.csv -r bank.csv.rules -j 2026/2026.journal",
 };
 
-const COMMIT = {csvWritten: "import/2026/bank.csv", journalWritten: "2026/2026.journal", imported: 3, ordering: {inOrder: true, moves: []}, git: null};
+const COMMIT = {csvWritten: "import/2026/bank.csv", journalWritten: "2026/2026.journal", imported: 3, ordering: {inOrder: true, moves: []}};
 
 const json = (body: unknown): Response => new Response(JSON.stringify(body), {status: 200, headers: {"Content-Type": "application/json"}});
 
@@ -383,7 +382,7 @@ describe("UNIT importStore — writing", () => {
     });
 
     it("takes the save-csv route, with a two-field body, when no rules file is chosen", async () => {
-        const fetchMock = routes({...BASE_ROUTES, "/api/import/stage": STAGE, "/api/import/save-csv": {csvWritten: "import/2026/whatever.csv", git: null}});
+        const fetchMock = routes({...BASE_ROUTES, "/api/import/stage": STAGE, "/api/import/save-csv": {csvWritten: "import/2026/whatever.csv"}});
         vi.stubGlobal("fetch", fetchMock);
         await importStore.offerFile(upload("bank.csv"));
         importStore.selectCandidate(null);
@@ -427,28 +426,6 @@ describe("UNIT importStore — writing", () => {
         expect(importStore.sortMoved).toBe(3);
         expect(importStore.sortError).toBeNull();
     });
-
-    it("says so when the re-sort landed but git would not commit it", async () => {
-        // The dangerous quiet case: the journal is rewritten, the import's own
-        // commit is already in history, and `git revert` of it no longer
-        // restores the file. Silence here would be the safety net failing
-        // without a word.
-        const outOfOrder = {...COMMIT, ordering: {inOrder: false, moves: [{date: "2026-01-20", description: "x", fromLine: 812, toLine: 540}]}};
-        const fetchMock = routes({
-            ...BASE_ROUTES,
-            "/api/import/stage": STAGE,
-            "/api/import/dry-run": DRY_RUN,
-            "/api/import/commit": outOfOrder,
-            "/api/import/sort": {moved: 3, git: {committed: false, paths: [], skipped: ["2026/2026.journal"]}},
-        });
-        vi.stubGlobal("fetch", fetchMock);
-        await importStore.offerFile(upload("bank.csv"));
-        await importStore.writeChanges();
-        await importStore.resort();
-        expect(importStore.sortMoved).toBe(3);
-        expect(importStore.sortError).toContain("git did not commit");
-        expect(importStore.sortError).toContain("2026/2026.journal");
-    });
 });
 
 describe("UNIT importStore — the hledger path control", () => {
@@ -458,10 +435,22 @@ describe("UNIT importStore — the hledger path control", () => {
         await importStore.reloadCapabilities("http://engine.test");
         expect(importStore.capabilities?.hledger.available).toBe(false);
 
-        vi.stubGlobal("fetch", routes({...BASE_ROUTES, "/api/prefs": {hledgerPath: "/opt/hledger", gitAutocommit: null}}));
+        vi.stubGlobal("fetch", routes({...BASE_ROUTES, "/api/prefs": {hledgerPath: "/opt/hledger"}}));
         await expect(importStore.saveHledgerPath("/opt/hledger")).resolves.toBe(true);
         expect(importStore.capabilities?.hledger.available).toBe(true);
         expect(importStore.prefs?.hledgerPath).toBe("/opt/hledger");
+    });
+
+    it("never sends the retired gitAutocommit, even when an older engine reports one", async () => {
+        // `PUT /api/prefs` is `deny_unknown_fields`: echoing a stale key back
+        // would turn every hledger-path save into a 400.
+        const fetchMock = routes({...BASE_ROUTES, "/api/prefs": {hledgerPath: null, gitAutocommit: false}});
+        vi.stubGlobal("fetch", fetchMock);
+        await importStore.loadPrefs();
+        expect(importStore.prefs).toEqual({hledgerPath: null});
+        await expect(importStore.saveHledgerPath("/opt/hledger")).resolves.toBe(true);
+        const put = calls(fetchMock).find(([url, init]) => url.endsWith("/api/prefs") && init?.method === "PUT");
+        expect(JSON.parse(put?.[1]?.body as string)).toEqual({hledgerPath: "/opt/hledger"});
     });
 
     it("shows the engine's own refusal when it rejects the path", async () => {

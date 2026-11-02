@@ -294,7 +294,7 @@ impl AddRequest {
 /// Transaction clearing status on the wire.
 #[derive(Deserialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
-enum StatusIn {
+pub(crate) enum StatusIn {
     Cleared,
     Pending,
     Unmarked,
@@ -540,7 +540,7 @@ pub(crate) fn bound(slot: &mut Option<JournalEditor>) -> Result<&mut JournalEdit
 /// handler boundaries rather than at each `?`, so no future failure inside the
 /// locked operations can bypass it (SEC-15). The redaction is built only on the
 /// error path, so a successful edit pays nothing for it.
-fn redacted<T>(state: &AppState, outcome: Result<T, AppError>) -> Result<T, AppError> {
+pub(crate) fn redacted<T>(state: &AppState, outcome: Result<T, AppError>) -> Result<T, AppError> {
     outcome.map_err(|error| Redactor::for_journal(state).redact_error(error))
 }
 
@@ -649,7 +649,7 @@ fn patch_transaction_locked(
 }
 
 /// A `409` for a full replace that carries a posting an `=` rule generated.
-fn refuse_generated(request: &AddRequest) -> Result<(), AppError> {
+pub(crate) fn refuse_generated(request: &AddRequest) -> Result<(), AppError> {
     match request
         .postings
         .iter()
@@ -804,7 +804,7 @@ pub(crate) struct Replacement {
 /// a loop, is `O(N)` full reparses of an ever-growing journal). Returns the
 /// files [`JournalEditor::dirty_files`] reported just before the save, so a
 /// caller that has to know which files were actually touched (the QuickBooks
-/// import's git safety net) does not have to guess from
+/// import's per-file ordering report) does not have to guess from
 /// [`InsertPosition::DateOrdered`]'s placement rule itself.
 ///
 /// On ANY failure the editor is re-synced from disk exactly as
@@ -845,15 +845,31 @@ pub(crate) struct Replacement {
 /// order, so each index it returns stays valid across the replacements before
 /// it.
 ///
+/// # Editing, first
+///
+/// `edits` — the batch route's edits to EXISTING transactions, a QuickBooks
+/// import review's `journalEdits` (plan 32 D24) — are applied before
+/// anything else, under the same lock and in the same save, so they land with
+/// the import or not at all.
+///
 /// Returns the touched files and how many transactions were replaced.
 pub(crate) fn add_and_replace_transactions(
     state: &AppState,
+    edits: &[crate::review_api::BatchEditIn],
     transactions: &[Transaction],
     labels: &[String],
     position: InsertPosition,
     replace: &dyn Fn(&Journal) -> Vec<Replacement>,
 ) -> Result<(Vec<std::path::PathBuf>, usize), AppError> {
     let mut guard = lock_editor(state)?;
+    let editor = bound(&mut guard)?;
+    // Plan 32 D24: the review's edits to EXISTING transactions go first, while
+    // every index they name still means what it meant when the client read
+    // it — the additions below shift them. In memory and atomic; any later
+    // failure re-syncs from disk, which discards them with the rest.
+    if !edits.is_empty() {
+        crate::review_api::apply_edits(editor, edits)?;
+    }
     let editor = bound(&mut guard)?;
     let added = if transactions.is_empty() {
         Ok(())
@@ -902,8 +918,15 @@ fn apply_replacements(
     replacements: &[Replacement],
 ) -> Result<(), (String, EditError)> {
     replacements.iter().try_for_each(|replacement| {
+        // A replacement is built whole from the export, every amount
+        // explicit; a leg the journal leaves blank stays blank (plan 32 D35
+        // moved this choice out of the core replace, which now writes what
+        // it is given).
+        let transaction = editor
+            .with_elisions_restored(replacement.index, &replacement.transaction)
+            .into_owned();
         editor
-            .replace_transaction(replacement.index, &replacement.transaction)
+            .replace_transaction(replacement.index, &transaction)
             .map_err(|error| (replacement.label.clone(), error))
     })
 }
@@ -1151,20 +1174,20 @@ fn insertion_index(journal: &Journal, txn: &Transaction, position: InsertPositio
 // journal and echoed back by the edit popup always fits; small enough that a
 // hostile body cannot turn one header into megabytes of journal. The account
 // cap is the one the budget rules' posting lines already use.
-const MAX_DATE_BYTES: usize = 32;
-const MAX_CODE_BYTES: usize = 256;
-const MAX_DESCRIPTION_BYTES: usize = 1024;
-const MAX_COMMENT_BYTES: usize = 4096;
+pub(crate) const MAX_DATE_BYTES: usize = 32;
+pub(crate) const MAX_CODE_BYTES: usize = 256;
+pub(crate) const MAX_DESCRIPTION_BYTES: usize = 1024;
+pub(crate) const MAX_COMMENT_BYTES: usize = 4096;
 const MAX_COMMODITY_BYTES: usize = 128;
 
 /// The ASCII control characters a field may carry, beyond none at all.
-const NONE: &[char] = &[];
+pub(crate) const NONE: &[char] = &[];
 /// A tab is inert inside a description or code: it cannot end the line.
-const TAB: &[char] = &['\t'];
+pub(crate) const TAB: &[char] = &['\t'];
 /// A comment may also span lines: the model joins a multi-line comment's lines
 /// with `\n` (the read API hands that back, and the edit popup echoes it), and
 /// the writer renders each line as its own indented `; …` line.
-const COMMENT: &[char] = &['\t', '\n'];
+pub(crate) const COMMENT: &[char] = &['\t', '\n'];
 
 /// No ASCII control character outside `allowed`, and no more than `cap` bytes.
 ///
@@ -1175,7 +1198,12 @@ const COMMENT: &[char] = &['\t', '\n'];
 /// `P` price directive — and the post-edit guards compare the transaction, not
 /// the lines around it. `\r` goes with it (a lone one is invisible damage), as
 /// does the rest of the control range, which has no meaning in a journal.
-fn check_text(what: &str, value: &str, cap: usize, allowed: &[char]) -> Result<(), AppError> {
+pub(crate) fn check_text(
+    what: &str,
+    value: &str,
+    cap: usize,
+    allowed: &[char],
+) -> Result<(), AppError> {
     if let Some(control) = value
         .chars()
         .find(|c| c.is_ascii_control() && !allowed.contains(c))
@@ -1197,7 +1225,10 @@ fn check_text(what: &str, value: &str, cap: usize, allowed: &[char]) -> Result<(
 // Build a `core::Transaction` from the request (with inferred styles)
 // ===========================================================================
 
-fn build_transaction(journal: &Journal, request: &AddRequest) -> Result<Transaction, AppError> {
+pub(crate) fn build_transaction(
+    journal: &Journal,
+    request: &AddRequest,
+) -> Result<Transaction, AppError> {
     if request.date.trim().is_empty() {
         return Err(AppError::BadRequest(
             "a transaction needs a date".to_string(),
@@ -1272,7 +1303,7 @@ fn build_posting(journal: &Journal, input: &PostingIn) -> Result<Posting, AppErr
     let balance_assertion = input
         .balance_assertion
         .as_ref()
-        .map(|assertion| build_assertion(journal, assertion, &input.account, amounts.is_empty()))
+        .map(|assertion| build_assertion(journal, assertion, &input.account))
         .transpose()?;
     Ok(Posting {
         status: input.status.map_or(Status::Unmarked, Status::from),
@@ -1285,6 +1316,7 @@ fn build_posting(journal: &Journal, input: &PostingIn) -> Result<Posting, AppErr
         comment: comment_string(input.comment.as_deref()),
         tags: Vec::new(),
         generated: None,
+        elided: false,
     })
 }
 
@@ -1297,28 +1329,21 @@ fn build_posting(journal: &Journal, input: &PostingIn) -> Result<Posting, AppErr
 ///   *different* commodity. That is a silent change of which balance is being
 ///   anchored, and the round-trip guard cannot see it as one because the text it
 ///   wrote is the text it reads back.
-/// * **An assertion with no amount on the same posting.** hledger accepts
-///   `assets:cash  = $99.00`, but this writer cannot produce it: the formatter
-///   emits an assertion only alongside a posting's first amount line, so an
-///   amount-less posting would drop it on the floor — the exact silent loss
-///   DL-2 is about. Refusing is the honest answer; the SPA always sends the
-///   balanced amount, so this is unreachable from the popup.
+///
+/// An assertion on a posting with NO amount (`assets:cash  = $99.00`, the
+/// reconcile-to-statement idiom) is accepted: the formatter writes it after
+/// the bare account, and the round-trip guard compares it. That used to be
+/// refused, back when the formatter dropped it; since the SPA leaves an elided
+/// leg blank (plan 32 D35), it is how such a leg round-trips.
 fn build_assertion(
     journal: &Journal,
     input: &BalanceAssertionIn,
     account: &str,
-    posting_has_no_amount: bool,
 ) -> Result<BalanceAssertion, AppError> {
     if input.amount.commodity.trim().is_empty() {
         return Err(AppError::BadRequest(format!(
             "the balance assertion on '{account}' needs a commodity: a bare asserted number \
              would re-read as whatever commodity the journal defaults to"
-        )));
-    }
-    if posting_has_no_amount {
-        return Err(AppError::BadRequest(format!(
-            "the balance assertion on '{account}' needs an amount on the same posting: an \
-             assertion cannot be written on the inferred (elided) leg"
         )));
     }
     Ok(BalanceAssertion {
@@ -1330,12 +1355,18 @@ fn build_assertion(
     })
 }
 
-/// Normalize an optional wire comment into the model's stored form: the trimmed
-/// text with a single trailing newline (matching the parser's `build_comment`),
-/// or empty when absent or blank. The formatter re-adds the `  ; ` prefix.
+/// Normalize an optional wire comment into the model's stored form: the text
+/// with a single trailing newline (matching the parser's `build_comment`), or
+/// empty when absent or blank. The formatter re-adds the `  ; ` prefix and
+/// trims each line.
+///
+/// Only the END is trimmed. The model's first line is the same-line comment,
+/// so a comment that starts with a line break (`"\nid:7"`, what the read API
+/// serves for a comment written on its own `;` line) must keep it, or a
+/// re-render would hoist that line onto the header or posting line.
 fn comment_string(raw: Option<&str>) -> String {
     match raw {
-        Some(text) if !text.trim().is_empty() => format!("{}\n", text.trim()),
+        Some(text) if !text.trim().is_empty() => format!("{}\n", text.trim_end()),
         _ => String::new(),
     }
 }
@@ -1676,6 +1707,7 @@ mod tests {
             comment: String::new(),
             tags: vec![],
             generated: None,
+            elided: false,
         }
     }
 
@@ -1737,6 +1769,7 @@ mod tests {
 
         let error = add_and_replace_transactions(
             &state,
+            &[],
             &[good, bad],
             &labels,
             InsertPosition::Append,
@@ -1784,7 +1817,7 @@ mod tests {
         );
 
         let error =
-            add_and_replace_transactions(&state, &[bad], &[], InsertPosition::Append, &|_| {
+            add_and_replace_transactions(&state, &[], &[bad], &[], InsertPosition::Append, &|_| {
                 Vec::new()
             })
             .expect_err("unbalanced");

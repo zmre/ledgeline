@@ -19,7 +19,6 @@ export const CAPABILITIES = {
         {id: "2026/2026.journal", label: "2026.journal", txnCount: 412, lastTxnDate: "2026-08-01", isRoot: false, writable: true},
         {id: "2025/2025.journal", label: "2025.journal", txnCount: 900, lastTxnDate: "2025-12-31", isRoot: false, writable: true},
     ],
-    git: {available: true, autocommit: true},
     editable: true,
 };
 

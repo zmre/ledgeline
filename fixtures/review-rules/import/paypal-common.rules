@@ -1,0 +1,5 @@
+skip 1
+fields date, description, amount
+date-format %Y-%m-%d
+currency $
+account1 assets:paypal

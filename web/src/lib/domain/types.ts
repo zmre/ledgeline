@@ -70,6 +70,13 @@ export interface Posting {
      * plan 30) — never written in a file, never editable. Absent otherwise.
      */
     generated?: GeneratedBy;
+    /**
+     * `true` when the file writes this posting with NO amount: `amounts` is
+     * what the engine's balancer inferred (plan 32 D35). An editor leaves such
+     * a leg blank so a save keeps it auto-balancing. Absent otherwise — and
+     * from an engine that predates the marker, which reads as "written".
+     */
+    elided?: true;
 }
 
 /** The `=` auto-posting rule that generated a posting. */

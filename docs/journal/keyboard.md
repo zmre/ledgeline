@@ -52,10 +52,70 @@ These need a cursor row. <kbd>j</kbd> or <kbd>k</kbd> puts one on the table, and
 | <kbd>s</kbd>                                         | Cycle status: unmarked, pending, cleared     |
 | <kbd>x</kbd>                                         | Delete. Press <kbd>x</kbd> again to confirm. |
 | <kbd>n</kbd>                                         | Add a transaction                            |
+| <kbd>u</kbd>                                         | Review Unknowns                              |
+| <kbd>r</kbd>                                         | Review Recents                               |
 
-The editing keys (<kbd>Enter</kbd>, <kbd>e</kbd>, <kbd>c</kbd>, <kbd>s</kbd>, <kbd>x</kbd>, <kbd>n</kbd>) only work when the journal can be edited. See [The journal](index.md#editing-transactions).
+The editing keys (<kbd>Enter</kbd>, <kbd>e</kbd>, <kbd>c</kbd>, <kbd>s</kbd>, <kbd>x</kbd>, <kbd>n</kbd>, <kbd>u</kbd>, <kbd>r</kbd>) only work when the journal can be edited. See [The journal](index.md#editing-transactions). <kbd>u</kbd> and <kbd>r</kbd> don't need a cursor row, and each is off when its button is disabled.
 
-In the transaction dialog, <kbd>Enter</kbd> or <kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+<kbd>Enter</kbd> saves and <kbd>Esc</kbd> closes without saving. In an inline description or account edit, <kbd>Enter</kbd> saves and <kbd>Esc</kbd> cancels.
+<kbd>Enter</kbd> and <kbd>n</kbd> open the [transaction editor](#transaction-editor). In an inline description or account edit, <kbd>Enter</kbd> saves and <kbd>Esc</kbd> cancels.
+
+## Review
+
+These work in the [review](review.md) of the journal or of an import. Most are single keys, which work when no field has focus. Press <kbd>Esc</kbd> to leave a field first. The keys with <kbd>Cmd</kbd> also work while you type. <kbd>Cmd</kbd> is <kbd>Ctrl</kbd> on Linux and Windows.
+
+| Keys | Action |
+| --- | --- |
+| <kbd>Cmd</kbd>+<kbd>Enter</kbd>, <kbd>y</kbd> or <kbd>Enter</kbd> | Reviewed, or save the changes (the left footer button) |
+| <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> or <kbd>Y</kbd> | Accept the selected suggestion, mark reviewed, save, next |
+| <kbd>→</kbd>, <kbd>n</kbd> or <kbd>l</kbd> | Skip |
+| <kbd>←</kbd>, <kbd>p</kbd> or <kbd>h</kbd> | Previous card |
+| <kbd>z</kbd> | Revert the card's changes |
+| <kbd>d</kbd> | Edit the description |
+| <kbd>a</kbd> | Edit the unknown account, or the first posting's |
+| <kbd>1</kbd> to <kbd>9</kbd> | Edit that posting's account |
+| <kbd>$</kbd> | Edit the first posting's amount |
+| <kbd>t</kbd> | Add a tag |
+| <kbd>m</kbd> | Edit the comment. <kbd>Enter</kbd> in it starts a new line. |
+| <kbd>Shift</kbd>+<kbd>D</kbd> | Edit the date, status, code and secondary date |
+| <kbd>!</kbd> | Cycle the status: unmarked, pending, cleared |
+| <kbd>#</kbd> | Edit the code |
+| <kbd>Tab</kbd> | In a field, accept the completion. In an unknown account, fill in the selected suggestion, then cycle to the next. |
+| <kbd>s</kbd> | Open or close Similar |
+| <kbd>Space</kbd> | Check or uncheck the focused similar row, while Similar is open |
+| <kbd>Shift</kbd>+<kbd>A</kbd> | Check or uncheck every similar row |
+| <kbd>Shift</kbd>+<kbd>R</kbd> | Remember as a rule, when a rules file fits the card. Not for QuickBooks imports. |
+| <kbd>i</kbd> | Ignore: tag `reviewed:ignore` and move on |
+| <kbd>Esc</kbd> | Leave the field. With no field focused, close the review. |
+| <kbd>?</kbd> | Show the keyboard shortcuts |
+
+<kbd>Enter</kbd> presses the focused button or checkbox when one has focus. <kbd>Esc</kbd> on a card with unsaved edits asks before closing. A second <kbd>Esc</kbd> keeps editing.
+
+## Transaction editor
+
+The [transaction editor](index.md#the-transaction-editor) is the review card on its own, so it takes the same keys for its fields. It has no queue, so it has no Skip, previous card or Ignore. These are its keys:
+
+| Keys | Action |
+| --- | --- |
+| <kbd>Cmd</kbd>+<kbd>Enter</kbd> or <kbd>Enter</kbd> | Save (Add, for a new transaction) |
+| <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> | Accept the selected suggestion and save. The Mark reviewed box stays as it is. |
+| <kbd>v</kbd> | Check or uncheck Mark reviewed |
+| <kbd>Shift</kbd>+<kbd>X</kbd> | Delete the transaction. Press it again to confirm. |
+| <kbd>z</kbd> | Revert the changes |
+| <kbd>d</kbd> | Edit the description |
+| <kbd>a</kbd> | Edit the unknown account, or the first posting's |
+| <kbd>1</kbd> to <kbd>9</kbd> | Edit that posting's account |
+| <kbd>$</kbd> | Edit the first posting's amount |
+| <kbd>t</kbd> | Add a tag |
+| <kbd>m</kbd> | Edit the comment |
+| <kbd>Shift</kbd>+<kbd>D</kbd> | Edit the date |
+| <kbd>!</kbd> | Cycle the status: unmarked, pending, cleared |
+| <kbd>#</kbd> | Edit the code |
+| <kbd>s</kbd>, <kbd>Space</kbd>, <kbd>Shift</kbd>+<kbd>A</kbd> | Open Similar, check a row, check every row |
+| <kbd>Shift</kbd>+<kbd>R</kbd> | Remember as a rule, when a rules file fits the transaction |
+| <kbd>Esc</kbd> | Leave the field. With no field focused, close the editor. |
+| <kbd>?</kbd> | Show the keyboard shortcuts |
+
+A new transaction opens with the description focused, so you can start typing at once. <kbd>Shift</kbd>+<kbd>X</kbd>, Similar and Remember as a rule only apply to a transaction that's already in the journal.
 
 ## Filters
 
@@ -125,8 +185,10 @@ On the Balance Sheet and P&L, <kbd>Enter</kbd> on a group row expands it and on 
 | <kbd>K</kbd>                 | Move the rule up                         |
 | <kbd>Enter</kbd>             | Open or close the rule                   |
 | <kbd>Esc</kbd>               | Close the open rule, or clear the cursor |
+| <kbd>u</kbd>                 | Review this import's unknowns            |
+| <kbd>r</kbd>                 | Review all of this import                |
 
-The rule keys work in the rules list on the Edit Rules tab.
+The rule keys work in the rules list on the Edit Rules tab. <kbd>u</kbd> and <kbd>r</kbd> work once a dry run is ready on New Transactions. See [Review before writing](../imports/new-transactions.md#review-before-writing).
 
 ## Settings
 
@@ -150,4 +212,5 @@ The desktop window adds menu shortcuts. <kbd>Cmd</kbd> on macOS is <kbd>Ctrl</kb
 ## Related pages
 
 - [The journal](index.md)
+- [Reviewing transactions](review.md)
 - [Filtering the journal](filtering.md)

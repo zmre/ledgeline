@@ -59,4 +59,4 @@ hledger accepts many mistakes in a rules file without complaint, so Ledgeline li
 
 If the new file still doesn't match the statement, the list says so. Open it in [Edit Rules](rules-editor.md) and check the column mapping.
 
-Rows that no rule matches land in your fallback category. Add `if` rules for them in [Edit Rules](rules-editor.md) once the file exists.
+Rows that no rule matches land in your fallback category. Add `if` rules for them in [Edit Rules](rules-editor.md) once the file exists, or make them during an import: [Remember as a rule](new-transactions.md#remember-as-a-rule) turns a change on a review card into an `if` rule at the end of the file.

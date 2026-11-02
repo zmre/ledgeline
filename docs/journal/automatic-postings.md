@@ -52,7 +52,7 @@ Applying the rules never changes your journal files. The added postings exist on
 
 A transaction a rule changed still shows its own accounts as `source → destination`, and its own amount. A muted **+2 auto** badge after the account chips counts the postings rules added. Hover it to see which rules. Click it to open the first of those rules in Settings.
 
-The transaction dialog lists the added postings read-only, below the postings you can edit, each with a **⚙ from rule** link. Saving the dialog writes only your own postings.
+The [transaction editor](index.md#the-transaction-editor) lists the added postings read-only, below the postings you can edit, each with a link that names its rule. Saving writes only your own postings.
 
 You can't edit an added posting directly. To change it, change its rule. If an edit tries to reach one anyway, Ledgeline refuses it and names the rule.
 

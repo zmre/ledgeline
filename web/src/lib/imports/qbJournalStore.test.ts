@@ -14,6 +14,7 @@
 // `importStore.test.ts`'s own "fresh store" test guards against.
 
 import {afterEach, describe, expect, it, vi} from "vitest";
+import {qbStagedTxnWire, txnFixture} from "#lib/testing/reviewFixture.js";
 
 const json = (body: unknown): Response => new Response(JSON.stringify(body), {status: 200, headers: {"Content-Type": "application/json"}});
 
@@ -85,7 +86,6 @@ const COMMIT = {
         inOrder: false,
         files: [{journalId: "main.journal", inOrder: false, moves: [{date: "2026-01-05", description: "Deposit", fromLine: 10, toLine: 4}]}],
     },
-    git: null,
 };
 
 describe("UNIT qbJournalStore — preview", () => {
@@ -272,22 +272,12 @@ describe("UNIT qbJournalStore — commit", () => {
 
 describe("UNIT qbJournalStore — the post-commit re-sort", () => {
     it("reports how many transactions moved for the file that was sorted", async () => {
-        const {store} = await freshStore({"/api/import/sort": {moved: 3, git: null}});
+        const {store} = await freshStore({"/api/import/sort": {moved: 3}});
         await store.resortFile("http://engine.test", "main.journal");
 
         expect(store.sortMovedFor("main.journal")).toBe(3);
         expect(store.sortErrorFor("main.journal")).toBeNull();
         expect(store.sortingJournalId).toBeNull();
-    });
-
-    it("warns when the re-sort happened but git did not commit it", async () => {
-        const {store} = await freshStore({
-            "/api/import/sort": {moved: 1, git: {committed: false, paths: [], skipped: [], message: "pre-commit hook rejected"}},
-        });
-        await store.resortFile("http://engine.test", "main.journal");
-
-        expect(store.sortMovedFor("main.journal")).toBe(1);
-        expect(store.sortErrorFor("main.journal")).toMatch(/git did not commit/);
     });
 
     it("reports a failed re-sort as an error, without throwing", async () => {
@@ -297,5 +287,57 @@ describe("UNIT qbJournalStore — the post-commit re-sort", () => {
 
         expect(store.sortErrorFor("main.journal")).not.toBeNull();
         expect(store.sortMovedFor("main.journal")).toBeNull();
+    });
+});
+
+describe("UNIT qbJournalStore — review edits (plan 32 D30)", () => {
+    const REVIEWED = {op: "setTxnTag", name: "reviewed", value: "2026-10-30"} as const;
+    const PREVIEW_STAGED = {...PREVIEW_MAPPED, txns: [qbStagedTxnWire(txnFixture(1, "Office supplies"), "1042")]};
+
+    it("offers the preview's built transactions as staged cards", async () => {
+        const {store} = await freshStore({"/api/import/qb-journal/s1": PREVIEW_STAGED});
+        await store.ensurePreview("http://engine.test", "s1");
+        expect(store.stagedTxns.map((txn) => txn.ref)).toEqual([{kind: "qb", id: "1042"}]);
+    });
+
+    it("sends overrides by Trans # and journal edits with the commit, then forgets them", async () => {
+        const {store, fetchMock} = await freshStore({
+            "/api/import/qb-journal/s1": PREVIEW_STAGED,
+            "/api/import/qb-journal/commit": {...COMMIT, overrides: 1, journalEdited: 1},
+        });
+        await store.ensurePreview("http://engine.test", "s1");
+        const [card] = store.stagedTxns;
+        if (card === undefined) throw new Error("no card");
+        store.reviewSink.stage({overrides: [{item: card, ops: [REVIEWED]}], journalEdits: [{index: 7, fingerprint: "j7", ops: [REVIEWED]}]});
+        expect(store.overrideCount).toBe(1);
+        await store.commitStage("http://engine.test", "s1");
+        expect(bodyOf(fetchMock, "/api/import/qb-journal/commit")).toEqual({
+            stageId: "s1",
+            updateChanged: false,
+            overrides: [{id: "1042", fingerprint: "qb-1042", ops: [REVIEWED]}],
+            journalEdits: [{index: 7, fingerprint: "j7", ops: [REVIEWED]}],
+        });
+        expect(store.commitResult?.journalEdited).toBe(1);
+        expect(store.overrideCount).toBe(0);
+        expect(store.journalEditCount).toBe(0);
+    });
+
+    it("replays the held overrides when the preview is rebuilt", async () => {
+        const {store} = await freshStore({"/api/import/qb-journal/s1": PREVIEW_STAGED});
+        await store.ensurePreview("http://engine.test", "s1");
+        const [card] = store.stagedTxns;
+        if (card === undefined) throw new Error("no card");
+        store.reviewSink.stage({overrides: [{item: card, ops: [REVIEWED]}], journalEdits: []});
+        // An alias save rebuilt the transaction: same Trans #, new text.
+        vi.stubGlobal(
+            "fetch",
+            routes({
+                "/version": "1.52",
+                "/api/import/qb-journal/s1": {...PREVIEW_STAGED, txns: [qbStagedTxnWire(txnFixture(1, "Office supplies"), "1042", {fingerprint: "qb-1042-b"})]},
+            })
+        );
+        await store.refreshPreview("http://engine.test", "s1");
+        expect(store.overrides.map((override) => override.fingerprint)).toEqual(["qb-1042-b"]);
+        expect(store.lastReplay?.kept).toHaveLength(1);
     });
 });

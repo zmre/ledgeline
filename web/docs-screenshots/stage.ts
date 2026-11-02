@@ -56,6 +56,14 @@ const SETS: Readonly<Record<string, FixtureSet>> = {
     },
     budget: {files: [["budget/basic.journal", "basic.journal"]]},
     subscriptions: {files: [["subscriptions/basic.journal", "basic.journal"]]},
+    // Transaction review (plan 32), read as of the fixture's TODAY, 2026-10-30.
+    // `review-2025.journal` is the main file's include.
+    review: {
+        files: [
+            ["review/review.journal", "review.journal"],
+            ["review/review-2025.journal", "review-2025.journal"],
+        ],
+    },
 };
 
 const stage = (name: string): string => {

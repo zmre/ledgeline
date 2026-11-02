@@ -48,8 +48,8 @@
 
 use crate::model::Journal;
 use crate::vault::{LocalVault, Vault, VaultPath};
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 /// One journal file an import could be written to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,12 +105,7 @@ pub fn targets(journal: &Journal) -> Vec<JournalTarget> {
 /// whose source-file keys are [`Vault::key`]s.
 #[must_use]
 pub fn targets_in(vault: &dyn Vault, journal: &Journal) -> Vec<JournalTarget> {
-    let include_root = journal
-        .source_files
-        .first()
-        .and_then(|main| vault.vault_path(main).ok())
-        .and_then(|main| main.parent())
-        .unwrap_or_default();
+    let include_root = include_root(vault, journal);
     let tallies = tally(journal);
 
     let mut targets: Vec<JournalTarget> = journal
@@ -123,10 +118,7 @@ pub fn targets_in(vault: &dyn Vault, journal: &Journal) -> Vec<JournalTarget> {
                 .map_or((0, None), |&(count, last)| {
                     (count, last.map(str::to_string))
                 });
-            let path = vault
-                .vault_path(key)
-                .ok()
-                .filter(|path| path.starts_with(&include_root) && *path != include_root);
+            let path = below_root(vault, &include_root, key);
             let id = identify(&include_root, path.as_ref(), key);
             JournalTarget {
                 label: id.rsplit('/').next().unwrap_or(&id).to_string(),
@@ -148,6 +140,40 @@ pub fn targets_in(vault: &dyn Vault, journal: &Journal) -> Vec<JournalTarget> {
             .then_with(|| b.last_txn_date.cmp(&a.last_txn_date))
     });
     targets
+}
+
+/// The source files of `journal` a write may target — exactly the keys whose
+/// [`JournalTarget::writable`] [`targets_in`] would report — for a caller that
+/// asks per transaction rather than per file (the review queues, plan 32 D4).
+#[must_use]
+pub fn writable_sources(vault: &dyn Vault, journal: &Journal) -> HashSet<PathBuf> {
+    let include_root = include_root(vault, journal);
+    journal
+        .source_files
+        .iter()
+        .filter(|key| {
+            below_root(vault, &include_root, key).is_some_and(|path| vault.is_file(&path))
+        })
+        .cloned()
+        .collect()
+}
+
+/// The include root: the main file's own directory, in `vault`.
+fn include_root(vault: &dyn Vault, journal: &Journal) -> VaultPath {
+    journal
+        .source_files
+        .first()
+        .and_then(|main| vault.vault_path(main).ok())
+        .and_then(|main| main.parent())
+        .unwrap_or_default()
+}
+
+/// `key`'s vault path when it sits strictly below `root`.
+fn below_root(vault: &dyn Vault, root: &VaultPath, key: &Path) -> Option<VaultPath> {
+    vault
+        .vault_path(key)
+        .ok()
+        .filter(|path| path.starts_with(root) && path != root)
 }
 
 /// Per source file: how many transactions it holds, and the newest date among
@@ -267,5 +293,9 @@ mod tests {
             !by_id("hosts").writable,
             "nothing outside the root is writable"
         );
+        // The per-key form agrees with the per-target flag, file for file.
+        let writable = writable_sources(&vault, &journal);
+        assert_eq!(writable.len(), 2);
+        assert!(!writable.contains(std::path::Path::new("/etc/hosts")));
     }
 }

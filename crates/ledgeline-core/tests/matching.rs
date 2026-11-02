@@ -29,7 +29,7 @@ mod common;
 use ledgeline_core::convert::{SourceFormat, Tabular, delimited};
 use ledgeline_core::rules::RulesDoc;
 use ledgeline_core::rules::matching::{
-    Candidate, MatchError, Ranking, Score, Signals, prefilter, rank, score,
+    Candidate, MatchError, Ranking, Score, Signals, prefilter, rank, rank_in_families, score,
     signals_from_hledger_json,
 };
 use proptest::prelude::*;
@@ -774,4 +774,131 @@ fn hledger_still_produces_the_committed_goldens() {
         );
     }
     eprintln!("{} goldens confirmed against a live hledger", cases.len());
+}
+
+// ---------------------------------------------------------------------------
+// The family tie-break (plan 32 D27), shared with the journal's inference
+// ---------------------------------------------------------------------------
+
+fn order_of(rankings: &[Ranking]) -> Vec<&str> {
+    rankings
+        .iter()
+        .map(|ranking| ranking.candidate.id.as_str())
+        .collect()
+}
+
+/// The three ranking scenarios above, every one through `rank_in_families`
+/// with a date: the orders they pin are unchanged.
+#[test]
+fn the_family_tie_break_leaves_the_existing_rankings_as_they_were() {
+    let at = |seconds: u64| Some(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds));
+    let impostors = || {
+        vec![
+            Ranking {
+                candidate: candidate("garbage-success.rules", "garbage-success", Some("$"), true),
+                modified: at(3_000),
+            },
+            Ranking {
+                candidate: candidate("no-currency.rules", "no-currency", Some("$"), true),
+                modified: at(4_000),
+            },
+            Ranking {
+                candidate: candidate("checking.csv.rules", "checking", Some("$"), true),
+                modified: at(1_000),
+            },
+        ]
+    };
+    let years = || {
+        let same = |id: &str| candidate(id, "checking", Some("$"), true);
+        vec![
+            Ranking {
+                candidate: same("checking-2024.csv.rules"),
+                modified: at(1_000),
+            },
+            Ranking {
+                candidate: same("checking-2026.csv.rules"),
+                modified: at(3_000),
+            },
+            Ranking {
+                candidate: same("checking-2025.csv.rules"),
+                modified: at(2_000),
+            },
+            Ranking {
+                candidate: same("checking-undated.csv.rules"),
+                modified: None,
+            },
+        ]
+    };
+    let ids = || -> Vec<Ranking> {
+        ["c.rules", "a.rules", "b.rules"]
+            .iter()
+            .map(|id| Ranking {
+                candidate: candidate(id, "checking", Some("$"), true),
+                modified: None,
+            })
+            .collect()
+    };
+    for scenario in [impostors(), years(), ids()] {
+        let mut plain = scenario.clone();
+        rank(&mut plain);
+        for date in [None, Some("2026-04-01")] {
+            let mut families = scenario.clone();
+            rank_in_families(&mut families, date);
+            assert_eq!(order_of(&families), order_of(&plain), "{date:?}");
+        }
+    }
+}
+
+#[test]
+fn an_older_statement_goes_to_its_years_file_and_nothing_else_moves() {
+    let at = |seconds: u64| Some(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds));
+    let same = |id: &str| candidate(id, "checking", Some("$"), true);
+    let mut rankings = vec![
+        Ranking {
+            candidate: same("checking-2024.csv.rules"),
+            modified: at(1_000),
+        },
+        // Unrelated, same score, newest of all: keeps its slot.
+        Ranking {
+            candidate: same("savings.csv.rules"),
+            modified: at(9_000),
+        },
+        Ranking {
+            candidate: same("checking-2026.csv.rules"),
+            modified: at(3_000),
+        },
+        Ranking {
+            candidate: same("checking-2025.csv.rules"),
+            modified: at(2_000),
+        },
+        // Same family, lower score: stays below every better score.
+        Ranking {
+            candidate: candidate("checking-2023.csv.rules", "no-currency", Some("$"), true),
+            modified: at(500),
+        },
+    ];
+    let mut plain = rankings.clone();
+    rank(&mut plain);
+    assert_eq!(
+        order_of(&plain),
+        [
+            "savings.csv.rules",
+            "checking-2026.csv.rules",
+            "checking-2025.csv.rules",
+            "checking-2024.csv.rules",
+            "checking-2023.csv.rules",
+        ]
+    );
+    rank_in_families(&mut rankings, Some("2025-08-31"));
+    assert_eq!(
+        order_of(&rankings),
+        [
+            "savings.csv.rules",
+            // The statement's year first, then the newest (importing ahead).
+            "checking-2025.csv.rules",
+            "checking-2026.csv.rules",
+            "checking-2024.csv.rules",
+            "checking-2023.csv.rules",
+        ]
+    );
 }

@@ -22,7 +22,7 @@ bench = false
 # The iOS app's surface: the in-process HTTP server behind the app's custom
 # scheme handler (`LedgelineApp`). Pulls in the server WITHOUT its default
 # features — no `gui` (wry/tao), no `watcher` (a sandboxed app gets no change
-# events; the host calls `refresh()`), no `external-tools` (no hledger or git
+# events; the host calls `refresh()`), no `external-tools` (no hledger
 # to spawn). Off by default, so the workspace build compiles only the storage
 # half (`CoordinatedVault` and friends), which needs nothing but core.
 mobile = [

@@ -174,13 +174,7 @@ fn a_quickbooks_journal_export_is_detected_and_committed_from_the_cli() {
     let before = tree.snapshot();
     let input = qb_fixture_path("simple.xlsx");
 
-    let output = tree.import(&[
-        "-i",
-        input.to_str().expect("utf-8"),
-        "-j",
-        "main.journal",
-        "--no-git",
-    ]);
+    let output = tree.import(&["-i", input.to_str().expect("utf-8"), "-j", "main.journal"]);
     assert!(output.status.success(), "{}", transcript(&output));
 
     let text = tree.journal_text();
@@ -206,7 +200,7 @@ fn a_quickbooks_journal_export_is_detected_and_committed_from_the_cli() {
         stdout(&output)
     );
     assert!(
-        stderr(&output).contains("ledgeline import -i simple.xlsx -j main.journal --no-git"),
+        stderr(&output).contains("ledgeline import -i simple.xlsx -j main.journal"),
         "the run echoes its own re-runnable command line:\n{}",
         stderr(&output)
     );
@@ -240,7 +234,6 @@ fn output_and_rules_flags_are_refused_for_a_quickbooks_journal_export() {
         "import/bank.csv",
         "-r",
         "import/bank.csv.rules",
-        "--no-git",
     ]);
     assert!(!output.status.success(), "{}", transcript(&output));
     let said = stderr(&output);
@@ -273,7 +266,6 @@ fn balance_flags_are_refused_for_a_quickbooks_journal_export() {
         "--balance-account",
         "assets:bank:checking",
         "--write-assertion",
-        "--no-git",
     ]);
     assert!(!output.status.success(), "{}", transcript(&output));
     let said = stderr(&output);
@@ -302,13 +294,7 @@ fn unmapped_accounts_refuse_and_list_them_from_the_cli() {
     let before = tree.snapshot();
     let input = qb_fixture_path("simple.xlsx");
 
-    let output = tree.import(&[
-        "-i",
-        input.to_str().expect("utf-8"),
-        "-j",
-        "main.journal",
-        "--no-git",
-    ]);
+    let output = tree.import(&["-i", input.to_str().expect("utf-8"), "-j", "main.journal"]);
     assert!(!output.status.success(), "{}", transcript(&output));
     let said = stderr(&output);
     assert!(
@@ -343,7 +329,6 @@ fn dry_run_reports_and_writes_nothing_for_a_quickbooks_journal_export() {
         "-j",
         "main.journal",
         "--dry-run",
-        "--no-git",
     ]);
     assert!(output.status.success(), "{}", transcript(&output));
     assert!(
@@ -377,13 +362,7 @@ fn dry_run_reports_and_writes_nothing_for_a_quickbooks_journal_export() {
 fn a_second_cli_commit_of_the_same_export_imports_nothing_new() {
     let tree = Tree::with_aliases();
     let input = qb_fixture_path("simple.xlsx");
-    let args = [
-        "-i",
-        input.to_str().expect("utf-8"),
-        "-j",
-        "main.journal",
-        "--no-git",
-    ];
+    let args = ["-i", input.to_str().expect("utf-8"), "-j", "main.journal"];
 
     let first = tree.import(&args);
     assert!(first.status.success(), "{}", transcript(&first));
@@ -420,13 +399,7 @@ fn without_sort_the_cli_notes_the_file_is_out_of_order() {
     let tree = Tree::with_aliases_out_of_order();
     let input = qb_fixture_path("simple.xlsx");
 
-    let output = tree.import(&[
-        "-i",
-        input.to_str().expect("utf-8"),
-        "-j",
-        "main.journal",
-        "--no-git",
-    ]);
+    let output = tree.import(&["-i", input.to_str().expect("utf-8"), "-j", "main.journal"]);
     assert!(output.status.success(), "{}", transcript(&output));
     assert!(
         stdout(&output).contains("no longer in date order"),
@@ -449,7 +422,6 @@ fn sort_restores_date_order_after_a_quickbooks_commit() {
         "-j",
         "main.journal",
         "--sort",
-        "--no-git",
     ]);
     assert!(output.status.success(), "{}", transcript(&output));
     assert!(stdout(&output).contains("re-sorted"), "{}", stdout(&output));
@@ -488,13 +460,7 @@ fn a_multi_line_journal_entry_keeps_every_line_and_its_memo() {
     let tree = Tree::write(&format!("{RECOGNITION_ALIASES}\n{OPENING}"));
     let input = qb_fixture_path("revenue-recognition.xlsx");
 
-    let output = tree.import(&[
-        "-i",
-        input.to_str().expect("utf-8"),
-        "-j",
-        "main.journal",
-        "--no-git",
-    ]);
+    let output = tree.import(&["-i", input.to_str().expect("utf-8"), "-j", "main.journal"]);
     assert!(output.status.success(), "{}", transcript(&output));
 
     let text = tree.journal_text();
@@ -552,13 +518,7 @@ fn a_conflicting_reimport_names_the_id_and_what_differs() {
     let input = qb_fixture_path("revenue-recognition.xlsx");
 
     for dry_run in [true, false] {
-        let mut args = vec![
-            "-i",
-            input.to_str().expect("utf-8"),
-            "-j",
-            "main.journal",
-            "--no-git",
-        ];
+        let mut args = vec!["-i", input.to_str().expect("utf-8"), "-j", "main.journal"];
         if dry_run {
             args.push("--dry-run");
         }
@@ -595,7 +555,6 @@ fn update_changed_replaces_a_stale_entry_with_the_exports_version() {
         input.to_str().expect("utf-8"),
         "-j",
         "main.journal",
-        "--no-git",
         "--update-changed",
     ];
 

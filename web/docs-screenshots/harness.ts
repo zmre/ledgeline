@@ -15,8 +15,8 @@ export const FIXED_NOW = new Date(2026, 6, 8, 12, 0, 0);
 
 const engineUrl = (journal: DocsJournal) => `http://127.0.0.1:${DOCS_ENGINES[journal]}`;
 
-/** FIXED_NOW as the engine's `YYYY-MM-DD`. */
-const FIXED_TODAY = "2026-07-08";
+/** A local date as the engine's `YYYY-MM-DD`. */
+const isoDay = (when: Date): string => `${when.getFullYear()}-${String(when.getMonth() + 1).padStart(2, "0")}-${String(when.getDate()).padStart(2, "0")}`;
 
 /**
  * `page.clock` pins the BROWSER's today, but Projections leaves its date to the
@@ -25,17 +25,17 @@ const FIXED_TODAY = "2026-07-08";
  * label in the projection shots moves with the day the harness runs. So the
  * two requests get the pinned date filled in when the SPA leaves it out.
  */
-const pinEngineToday = async (page: Page): Promise<void> => {
+const pinEngineToday = async (page: Page, today: string): Promise<void> => {
     await page.route("**/api/projections/seed*", async (route) => {
         const url = new URL(route.request().url());
         if (url.searchParams.has("end")) return route.continue();
-        url.searchParams.set("end", FIXED_TODAY);
+        url.searchParams.set("end", today);
         return route.continue({url: url.toString()});
     });
     await page.route("**/api/projections/run", async (route) => {
         const body = route.request().postDataJSON() as Record<string, unknown> | null;
         if (route.request().method() !== "POST" || body === null || "asOf" in body) return route.continue();
-        return route.continue({postData: JSON.stringify({...body, asOf: FIXED_TODAY})});
+        return route.continue({postData: JSON.stringify({...body, asOf: today})});
     });
 };
 
@@ -44,20 +44,26 @@ type DocsOptions = {
     journal: DocsJournal;
     /** Extra `ledgeline.settings.v1` keys (e.g. `insightsOpen: false`). */
     settings: Readonly<Record<string, unknown>>;
+    /**
+     * The pinned clock. FIXED_NOW unless a fixture set is read as of another
+     * day (the `review` set's TODAY is 2026-10-30).
+     */
+    now: Date;
 };
 
 export const test = base.extend<DocsOptions>({
     journal: ["sample", {option: true}],
     settings: [{}, {option: true}],
+    now: [FIXED_NOW, {option: true}],
     // Same-origin: the page is served by the very engine it talks to.
     baseURL: async ({journal}, use) => use(engineUrl(journal)),
-    page: async ({page, journal, settings}, use) => {
-        await page.clock.setFixedTime(FIXED_NOW);
+    page: async ({page, journal, settings, now}, use) => {
+        await page.clock.setFixedTime(now);
         // ONE key holding everything: seeding serverUrl and the token separately
         // leaves the app with no server and the first-run modal over the page.
         const seeded = {...settings, serverUrl: engineUrl(journal), serverToken: DOCS_TOKEN};
         await page.addInitScript((value) => localStorage.setItem("ledgeline.settings.v1", value), JSON.stringify(seeded));
-        await pinEngineToday(page);
+        await pinEngineToday(page, isoDay(now));
         await use(page);
     },
 });
@@ -265,4 +271,29 @@ export const settle = async (page: Page): Promise<void> => {
         await document.fonts.ready;
         await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     });
+};
+
+/**
+ * Ends every running animation at its last frame, and waits until the review
+ * deck's outgoing card is gone (Svelte marks an outroing card `inert` and
+ * removes it when its animation ends). The deck's transitions start a frame
+ * after the keystroke that caused them, so this finishes over a few frames.
+ * The same rule as the overlay's own `finishMotion`; an infinite animation
+ * (the saving dot) is left alone.
+ */
+export const finishMotion = async (page: Page): Promise<void> => {
+    for (let pass = 0; pass < 3; pass += 1) {
+        await page.evaluate(async () => {
+            await new Promise((r) => requestAnimationFrame(() => r(null)));
+            for (const animation of document.getAnimations()) {
+                if (animation.effect?.getComputedTiming().iterations === Infinity) continue;
+                try {
+                    animation.finish();
+                } catch {
+                    // Not finishable (no end): not motion a shot cares about.
+                }
+            }
+        });
+    }
+    await expect(page.locator("[data-review-card][inert]")).toHaveCount(0);
 };

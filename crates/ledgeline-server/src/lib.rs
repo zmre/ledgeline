@@ -51,9 +51,9 @@ mod commodity_profile;
 mod conf_api;
 mod edit_api;
 mod error;
-mod git;
 mod hledger;
 mod import_api;
+mod import_review;
 mod journal_api;
 mod location;
 mod prefs;
@@ -65,6 +65,8 @@ mod qb_journal_api;
 pub mod recents;
 mod redact;
 mod reports_api;
+mod review_api;
+mod review_rules_api;
 mod rules_api;
 mod security;
 mod sidecar;
@@ -264,13 +266,11 @@ impl Snapshot {
     ) -> Self {
         // Minted FIRST, because `/api/journal` carries it as `generation`.
         let etag = next_etag();
-        let auto = auto_api::auto_setting(
-            location
-                .clone()
-                .or_else(|| JournalLocation::of_parsed(&raw).map(Arc::new))
-                .as_deref(),
-            user,
-        );
+        // Where the journal lives, judged the way `Snapshot::storage` does.
+        let storage = location
+            .clone()
+            .or_else(|| JournalLocation::of_parsed(&raw).map(Arc::new));
+        let auto = auto_api::auto_setting(storage.as_deref(), user);
         let journal = if auto.in_force && !raw.auto_rules.is_empty() {
             Arc::new(ledgeline_core::auto::apply_journal(&raw))
         } else {
@@ -297,7 +297,7 @@ impl Snapshot {
             commodities,
             accounts,
             journal_info,
-            view: journal_api::ViewCache::warmed(&journal),
+            view: journal_api::ViewCache::warmed(&journal, storage),
             projections: projection_cache::ProjectionCache::default(),
             conf: std::sync::OnceLock::new(),
             journal,
@@ -1211,6 +1211,32 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
                 .put(edit_api::replace_transaction)
                 .patch(edit_api::patch_transaction),
         )
+        // Plan 32: save a review card and every similar transaction it was
+        // applied to as ONE edit (see `review_api`). A static segment, so it
+        // wins over `{index}` above; it writes the journal, so it stays above
+        // the `route_layer` with the rest of the write path.
+        .route("/api/transactions/batch", post(review_api::batch))
+        // Plan 32: the review queues, similar transactions, and the payee and
+        // tag completions (see `review_api`).
+        .route("/api/review/queue", get(review_api::queue))
+        .route("/api/review/item/{index}", get(review_api::item))
+        .route("/api/review/similar/{index}", get(review_api::similar))
+        .route("/api/review/similar-key", get(review_api::similar_key))
+        .route("/api/review/suggest", get(review_api::suggest))
+        // Plan 32 D27: "Remember as a rule" from the Journal view — which
+        // rules file a transaction came from, and the live check against its
+        // statement (see `review_rules_api`). Above the `route_layer`: the
+        // preview runs hledger over files in the journal's directory.
+        .route(
+            "/api/review/rules-for/{index}",
+            get(review_rules_api::rules_for),
+        )
+        .route(
+            "/api/review/rule-preview",
+            post(review_rules_api::rule_preview),
+        )
+        .route("/api/payees", get(review_api::payees))
+        .route("/api/tags", get(review_api::tags))
         // CSV import rules (Imports, steps 7-8): list, read, preview, save.
         //
         // THESE MUST STAY ABOVE the `route_layer` below. `route_layer` covers
@@ -1264,6 +1290,9 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
             )),
         )
         .route("/api/import/dry-run", post(import_api::dry_run))
+        // Plan 32 D25: a dry run with one candidate rule appended to a temp
+        // copy of the rules file. Writes nothing the user owns.
+        .route("/api/import/rule-preview", post(import_api::rule_preview))
         .route("/api/import/commit", post(import_api::commit))
         // The no-rules-file path: keep the converted CSV, import nothing. Its
         // own route rather than a commit with null handles — a dry-run with no

@@ -28,6 +28,7 @@ import type {Transaction} from "#lib/domain/types.js";
 import type {JournalRow, JournalSummary, RowPosition} from "#lib/journalView/types.js";
 import {localToday} from "./filters.svelte";
 import {journal} from "./journal.svelte";
+import {settings} from "./settings.svelte";
 
 /** Rows per block: one request's worth, and the granularity of the cache. */
 export const BLOCK_SIZE = 200;
@@ -77,10 +78,15 @@ function failed(cause: unknown): void {
     error = cause instanceof Error ? cause.message : String(cause);
 }
 
+/** The review badges' window (plan 32 D18/D19): as of the browser's today, with the user's limit and lookback. */
+function reviewWindow(): {today: string; limit: number; maxDays: number} {
+    return {today: localToday(), limit: settings.reviewRecentLimit, maxDays: settings.reviewMaxDays};
+}
+
 async function loadSummary(target: ViewQuery, targetKey: string): Promise<void> {
     const token = ++summaryToken;
     try {
-        const value = decodeJournalSummary(await api(target.serverUrl).journalSummary(target.filter));
+        const value = decodeJournalSummary(await api(target.serverUrl).journalSummary(target.filter, reviewWindow()));
         if (token !== summaryToken || targetKey !== key) return;
         summary = {key: targetKey, value};
         total = value.total;
@@ -186,6 +192,14 @@ export const journalView = {
         for (let block = Math.max(0, first - 1); block <= Math.min(last + 1, limit - 1); block += 1) {
             if (blocks.get(block)?.generation !== target.generation) void loadBlock(target, block);
         }
+    },
+
+    /**
+     * Re-read the summary for the current view — the review settings changed,
+     * and with them the badges' counts (they are not part of the view's key).
+     */
+    refreshSummary(): void {
+        if (query !== null && key !== null) void loadSummary(query, key);
     },
 
     /** Where the transaction with tindex `index` sits in the current view (null position: filtered out). */

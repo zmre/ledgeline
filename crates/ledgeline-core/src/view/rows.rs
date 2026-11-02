@@ -12,7 +12,8 @@
 //! - comments are right-trimmed; a posting's tags include the account- and
 //!   commodity-directive tags hledger attaches (`wire::posting_tags`);
 //! - a regular posting has no `type` and an unasserting one no
-//!   `balanceAssertion`, so the common case stays small.
+//!   `balanceAssertion`, so the common case stays small; likewise only an
+//!   elided posting carries `elided: true` (plan 32 D35).
 
 use super::checks::WireFlag;
 use super::wire::{DeclaredStyles, WireDec, WireStyle, js_trim_end};
@@ -69,6 +70,13 @@ pub struct RowPosting {
     /// costs nothing on the wire unless `--auto` is in force.
     #[serde(skip_serializing_if = "Option::is_none")]
     generated: Option<RowRuleRef>,
+    /// `true` when the file writes no amount here and `amounts` is the
+    /// balancer's inference ([`Posting::elided`], plan 32 D35), so an editor
+    /// leaves the leg blank and a re-render keeps it auto-balancing. Absent
+    /// otherwise — additive, so a client that does not know it reads the
+    /// inferred amounts exactly as before.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    elided: bool,
 }
 
 /// Which `=` rule generated a posting: its position in the journal's rule list
@@ -171,6 +179,7 @@ impl<'a> RowContext<'a> {
                 rule: origin.rule,
                 query: origin.query.clone(),
             }),
+            elided: posting.elided,
         }
     }
 

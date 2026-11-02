@@ -4,7 +4,7 @@
 // bug and it fails silently — hence the tests.
 
 import {describe, expect, it} from "vitest";
-import {canonical, chordToken, formatKeys, isPrefixOf, matchesKeys, steps} from "./chord";
+import {canonical, chordToken, formatKeys, MODIFIER_JOINER, isPrefixOf, matchesKeys, steps} from "./chord";
 
 function press(key: string, mods: Partial<{ctrlKey: boolean; altKey: boolean; metaKey: boolean; shiftKey: boolean}> = {}) {
     return {key, ctrlKey: false, altKey: false, metaKey: false, shiftKey: false, ...mods};
@@ -38,6 +38,16 @@ describe("UNIT steps and canonical", () => {
         expect(canonical("G")).not.toBe(canonical("g"));
     });
 
+    it("parses mod+shift+Enter, and a Cmd/Ctrl+Shift+Enter press matches it (plan 32 D16)", () => {
+        // `mod` resolves per platform; `shift+` survives because Enter is a named key.
+        const spelled = canonical("mod+shift+Enter");
+        expect(["meta+shift+Enter", "ctrl+shift+Enter"]).toContain(spelled);
+        const pressed = spelled.startsWith("meta") ? press("Enter", {metaKey: true, shiftKey: true}) : press("Enter", {ctrlKey: true, shiftKey: true});
+        expect(matchesKeys("mod+shift+Enter", chordToken(pressed))).toBe(true);
+        // …and plain mod+Enter stays a different binding.
+        expect(canonical("mod+Enter")).not.toBe(spelled);
+    });
+
     it("drops a hand-written shift+ from a printable key so it can still match", () => {
         // Nothing produces "shift+?" at runtime, so a binding spelled that way
         // would be dead. Normalize rather than let it fail silently.
@@ -68,5 +78,10 @@ describe("UNIT formatKeys", () => {
     it("renders arrows and named keys as symbols", () => {
         expect(formatKeys("ArrowDown")[0].text).toBe("↓");
         expect(formatKeys("Escape")[0].text).toBe("Esc");
+    });
+
+    it("separates a chord's modifiers and key, so ⌘⇧↵ never reads as one word", () => {
+        expect(formatKeys("mod+shift+Enter")[0].text.split(MODIFIER_JOINER)).toHaveLength(3);
+        expect(MODIFIER_JOINER).not.toBe("");
     });
 });
