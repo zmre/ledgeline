@@ -1965,6 +1965,7 @@ pub fn virtual_posting(account: AccountName, amount: Amount) -> Posting {
         comment: String::new(),
         tags: Vec::new(),
         generated: None,
+        elided: false,
     }
 }
 

@@ -9,6 +9,7 @@ import {
     barIn,
     cardIn,
     cardOut,
+    dialogIn,
     DURATIONS,
     enterDuration,
     exitDuration,
@@ -165,5 +166,22 @@ describe("UNIT review deck motion", () => {
         finishMotion(root);
         expect(finish).toHaveBeenCalledTimes(2);
         expect(() => finishMotion(null)).not.toThrow();
+    });
+});
+
+describe("UNIT review motion — single mode (D31)", () => {
+    it("opens like a dialog: scale and fade over 140ms, with no travel", () => {
+        const config = dialogIn(node, {reduced: false});
+        expect(config.duration).toBe(DURATIONS.dialog);
+        expect(DURATIONS.dialog).toBe(140);
+        expect(config.css?.(0, 1)).toBe("transform: scale(0.96); opacity: 0");
+        expect(config.css?.(1, 0)).toBe("transform: scale(1); opacity: 1");
+        expect(config.css?.(0.5, 0.5)).not.toContain("translate");
+    });
+
+    it("is the usual cross-fade under reduced motion", () => {
+        const config = dialogIn(node, {reduced: true});
+        expect(config.duration).toBe(DURATIONS.reduced);
+        expect(config.css?.(0.5, 0.5)).toBe("opacity: 0.5");
     });
 });

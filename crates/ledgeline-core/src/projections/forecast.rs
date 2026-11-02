@@ -1874,6 +1874,7 @@ fn posting(account: &str, amount: &MixedAmount, style: &AmountStyle) -> Option<P
         comment: String::new(),
         tags: Vec::new(),
         generated: None,
+        elided: false,
     })
 }
 

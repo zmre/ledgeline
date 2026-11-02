@@ -3,11 +3,12 @@
 // and where they land, what a similar row will receive, and which stripe a
 // journal row wears. No Svelte, no DOM — the `unit` vitest project tests these.
 
-import {formToOps, similarOps, REVIEWED_TAG, type CardChange} from "#lib/api/editMapping.js";
+import {decToInput, emptyPosting, formToOps, parseAmountInput, similarOps, REVIEWED_TAG, type CardChange, type PostingForm} from "#lib/api/editMapping.js";
 import {accountTypeOf, type AccountClasses} from "#lib/domain/accountClass.js";
-import {add, neg} from "#lib/domain/money.js";
+import {add, neg, type Dec} from "#lib/domain/money.js";
 import type {Amount, ISODate, Posting, Transaction} from "#lib/domain/types.js";
 import {txnFlowAmounts, writtenPostings} from "#lib/journal/rowModel.js";
+import {isIsoDate} from "#lib/url/params.js";
 import type {QueueItem, ReviewForm, ReviewTxn, Suggestion} from "./types";
 
 // ---------------------------------------------------------------------------
@@ -128,6 +129,70 @@ export function longDate(date: ISODate): string {
 /** `2026-10-12` → "Oct 12". */
 export function shortDate(date: ISODate): string {
     return new Intl.DateTimeFormat("en-US", {month: "short", day: "numeric", timeZone: "UTC"}).format(utcDay(date));
+}
+
+// ---------------------------------------------------------------------------
+// The details row (D33)
+// ---------------------------------------------------------------------------
+
+/** Whether `form` changes a header field the details row edits: the date, the secondary date, the status or the code. */
+export function detailsDirty(original: ReviewForm, form: ReviewForm): boolean {
+    return form.date.trim() !== original.date || form.date2.trim() !== original.date2 || form.status !== original.status || form.code.trim() !== original.code;
+}
+
+/**
+ * The collapsed details line (D33), part by part: "Oct 12, 2026", then
+ * "secondary Oct 14, 2026", the status when it is marked, and "#1042" — from
+ * the FORM, so an edit shows. A date that is not a whole ISO day (a cleared
+ * field) reads "no date".
+ */
+export function detailsSummary(form: ReviewForm): string[] {
+    const day = (date: string): string => (isIsoDate(date.trim()) ? longDate(date.trim()) : "no date");
+    const parts = [day(form.date)];
+    if (form.date2.trim() !== "") parts.push(`secondary ${day(form.date2)}`);
+    if (form.status !== "unmarked") parts.push(form.status);
+    if (form.code.trim() !== "") parts.push(`#${form.code.trim()}`);
+    return parts;
+}
+
+// ---------------------------------------------------------------------------
+// The balancing leg's hint (D35, p7 amendment 18)
+// ---------------------------------------------------------------------------
+
+/**
+ * The placeholder of posting row `at` when its amount is blank: what that leg
+ * will balance to, as "auto · -6.75", so the user sees the value while the
+ * field stays blank (and the leg stays elided).
+ *
+ * - Worked out from the form when it can be: `at` is the one blank row with
+ *   an account, and every other such row is a plain amount (regular, no cost)
+ *   in one commodity. So the hint follows an amount being typed elsewhere.
+ * - Otherwise the engine's inferred value (`PostingForm.inferred`), but only
+ *   while no other row's amount or commodity differs from `original`; with
+ *   one changed it may no longer hold.
+ * - Else plain "auto".
+ */
+export function balancingHint(original: readonly PostingForm[], postings: readonly PostingForm[], at: number): string {
+    const row = postings[at];
+    if (row === undefined || row.amount.trim() !== "") return "auto";
+    const others = postings.filter((other, index) => index !== at && other.account.trim() !== "");
+    const amounts = others.map((other) => parseAmountInput(other.amount));
+    const commodities = new Set(others.map((other) => other.commodity.trim()));
+    const plain = others.every((other) => other.type === "regular" && other.cost === null);
+    const sameCommodity = commodities.size === 1 && (row.commodity.trim() === "" || commodities.has(row.commodity.trim()));
+    if (row.type === "regular" && plain && sameCommodity && others.length > 0 && amounts.every((amount) => amount !== null)) {
+        // At least the precision the engine showed for this leg: 7.5 against a $6.75 leg reads -7.50.
+        const shown = parseAmountInput(row.inferred ?? "")?.p ?? 0;
+        const total = amounts.reduce<Dec>((sum, amount) => add(sum, amount ?? {m: 0n, p: 0}), {m: 0n, p: shown});
+        return `auto · ${decToInput(neg(total))}`;
+    }
+    const unchanged = postings.every(
+        (other, index) =>
+            index === at || (original[index] !== undefined && original[index].amount === other.amount && original[index].commodity === other.commodity)
+    );
+    return unchanged && original.length === postings.length && row.elided === true && row.inferred !== undefined && row.inferred !== ""
+        ? `auto · ${row.inferred}`
+        : "auto";
 }
 
 // ---------------------------------------------------------------------------
@@ -297,6 +362,110 @@ export function reviewBadge(tags: readonly (readonly [string, string])[]): Revie
     if (value === "ignore") return {kind: "ignored", label: "Ignored"};
     if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return {kind: "reviewed", on: value, label: `Reviewed ${shortDate(value)}`};
     return {kind: "reviewed", on: null, label: "Reviewed"};
+}
+
+// ---------------------------------------------------------------------------
+// Single mode: the Mark reviewed checkbox (D32)
+// ---------------------------------------------------------------------------
+
+/**
+ * The single card's Mark reviewed checkbox, read from the FORM's tag chips,
+ * which is what a save writes: checked when the form carries a `reviewed:`
+ * tag, labelled "Ignored" when that tag says `ignore`.
+ */
+export function reviewedBox(form: ReviewForm): {checked: boolean; label: string} {
+    const tag = form.tags.find(([name]) => name === REVIEWED_TAG);
+    return {checked: tag !== undefined, label: tag?.[1].trim() === "ignore" ? "Ignored" : "Mark reviewed"};
+}
+
+/**
+ * The tags after toggling the checkbox (D32). Unchecking removes the tag.
+ * Checking puts back the one the transaction had (so its date, or `ignore`,
+ * is kept), else stamps `today`.
+ */
+export function toggleReviewed(form: ReviewForm, original: ReviewForm, today: ISODate): [string, string][] {
+    if (reviewedBox(form).checked) return form.tags.filter(([name]) => name !== REVIEWED_TAG);
+    const had = original.tags.find(([name]) => name === REVIEWED_TAG);
+    return [...form.tags, [REVIEWED_TAG, had?.[1] ?? today]];
+}
+
+// ---------------------------------------------------------------------------
+// Add mode (D36)
+// ---------------------------------------------------------------------------
+
+/** The index an add card's transaction carries: it is in no file yet. */
+export const NEW_TXN = -1;
+
+/** The card a new transaction starts as: today, unmarked, nothing else. Not editable as a transaction (no fingerprint). */
+export function blankItem(today: ISODate): QueueItem {
+    return {
+        txn: {index: NEW_TXN, date: today, status: "unmarked", description: "", code: "", comment: "", tags: [], postings: []},
+        flags: [],
+        unknown: false,
+        reviewed: false,
+        fingerprint: null,
+        key: null,
+        suggestions: [],
+    };
+}
+
+/** The add card's form (D36): today, unmarked, two blank posting rows. */
+export function blankReviewForm(today: ISODate, defaultCommodity: string): ReviewForm {
+    return {
+        date: today,
+        date2: "",
+        status: "unmarked",
+        code: "",
+        description: "",
+        comment: "",
+        tags: [],
+        postings: [emptyPosting(defaultCommodity), emptyPosting(defaultCommodity)],
+    };
+}
+
+/** Whether an add card has anything typed in it (it is dirty against the form it opened with). */
+export function addDirty(blank: ReviewForm, form: ReviewForm): boolean {
+    return JSON.stringify(blank) !== JSON.stringify(form);
+}
+
+/**
+ * The add card's chips (D36): the payee's suggestions, on the first posting
+ * row, which is where its category goes. The top one is pre-selected when
+ * it is strong, as on an unknown card.
+ */
+export function addChips(item: QueueItem, classes: AccountClasses): Chips {
+    const chips = item.suggestions.filter((suggestion) => !isUncategorized(suggestion.account, classes)).slice(0, 3);
+    if (chips.length === 0) return NO_CHIPS;
+    return {chips, target: 0, initial: chips[0]?.strong === true ? 0 : null, mode: "fix"};
+}
+
+/**
+ * The form with an add card's chip accepted on row `target`: its account,
+ * and, when a recurring charge backs it (D36), that charge's amount on the
+ * row and its funding account on the first other row with no account. Only
+ * blank fields are filled: what the user typed stays.
+ */
+export function acceptAddChip(form: ReviewForm, target: number, chip: Suggestion): ReviewForm {
+    const fill = chip.recurring;
+    const funding = fill === undefined ? -1 : form.postings.findIndex((row, at) => at !== target && row.account.trim() === "");
+    const postings = form.postings.map((row, at): PostingForm => {
+        if (at === target) {
+            const amount = fill !== undefined && row.amount.trim() === "" ? {amount: decToInput(fill.amount.qty), commodity: fill.amount.commodity} : {};
+            return {...row, account: chip.account, ...amount};
+        }
+        return at === funding && fill !== undefined ? {...row, account: fill.account} : row;
+    });
+    const description = chip.description !== null && form.description.trim() === "" ? chip.description : form.description;
+    return {...form, postings, description};
+}
+
+/** "$15.49 from liabilities:visa": what accepting a recurring chip fills in. */
+export function recurringLabel(chip: Suggestion): string | null {
+    const fill = chip.recurring;
+    if (fill === undefined) return null;
+    const qty = decToInput(fill.amount.qty);
+    const amount = fill.amount.commodity.length === 1 ? `${fill.amount.commodity}${qty}` : `${qty} ${fill.amount.commodity}`;
+    return `${amount} from ${fill.account}`;
 }
 
 // ---------------------------------------------------------------------------

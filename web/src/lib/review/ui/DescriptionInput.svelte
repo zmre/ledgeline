@@ -19,7 +19,16 @@
         today,
         disabled = false,
         placeholder = "payee | note",
-    }: {value?: string; payees: readonly PayeeUse[]; today: string; disabled?: boolean; placeholder?: string} = $props();
+        onPick,
+    }: {
+        value?: string;
+        payees: readonly PayeeUse[];
+        today: string;
+        disabled?: boolean;
+        placeholder?: string;
+        /** A payee was picked from the list (the add card asks for its suggestions, D36). */
+        onPick?: (payee: string) => void;
+    } = $props();
 
     const VISIBLE_ROWS = 8;
     const ROW_HEIGHT = 30;
@@ -57,6 +66,7 @@
         value = bar < 0 ? payee : `${payee} ${value.slice(bar)}`;
         hide();
         field?.focus();
+        onPick?.(payee);
     }
 
     function onKeydown(event: KeyboardEvent): void {

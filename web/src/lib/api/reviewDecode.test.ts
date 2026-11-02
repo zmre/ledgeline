@@ -7,7 +7,7 @@ import {queueItemWire, queuePageWire, reviewTxnWire, similarWire, txnFixture} fr
 import {wireRow} from "#lib/testing/journalViewFixture.js";
 import {ApiShapeError} from "./client";
 import {decodeJournalSummary, decodeRow} from "./journalViewDecode";
-import {decodeBatchResult, decodePayees, decodeQueuePage, decodeRulesFor, decodeSimilarSet, decodeTags} from "./reviewDecode";
+import {decodeBatchResult, decodeDescriptionSuggestions, decodePayees, decodeQueuePage, decodeRulesFor, decodeSimilarSet, decodeTags} from "./reviewDecode";
 
 const CARD = txnFixture(12, "SQ *BLUE BOTTLE 4412 OAKLAND");
 const SUGGESTION = {account: "expenses:food:coffee", description: "Blue Bottle Coffee", source: "exactKey", confidence: 7500, strong: true, count: 3};
@@ -78,6 +78,57 @@ describe("UNIT review decoders", () => {
         const counts = {unknown: 8, unreviewedRecent: 17, notEditable: 0, notEditableRecent: 0};
         expect(decodeJournalSummary({...base, review: counts}).review).toEqual(counts);
         expect(() => decodeJournalSummary({...base, review: {...counts, unknown: undefined}})).toThrow(ApiShapeError);
+    });
+});
+
+describe("UNIT review decoders — plan 32 Phase 7a", () => {
+    const FILL = {amount: {commodity: "$", quantity: {mantissa: "1549", places: 2}}, account: "liabilities:visa"};
+
+    it("decodes a description's suggestions, with a recurring fill only where one is sent", () => {
+        const body = decodeDescriptionSuggestions({
+            generation: "g3",
+            key: "netflix",
+            suggestions: [{...SUGGESTION, account: "expenses:streaming", recurring: FILL}, SUGGESTION],
+        });
+        expect(body.generation).toBe("g3");
+        expect(body.key).toBe("netflix");
+        expect(body.suggestions[0]?.recurring).toEqual({amount: {commodity: "$", qty: {m: 1549n, p: 2}}, account: "liabilities:visa"});
+        expect(body.suggestions[1]).toEqual(SUGGESTION);
+        expect("recurring" in (body.suggestions[1] ?? {})).toBe(false);
+        expect(Object.isFrozen(body.suggestions[0]?.recurring)).toBe(true);
+        expect(decodeDescriptionSuggestions({generation: "g3", key: null, suggestions: []}).key).toBeNull();
+    });
+
+    it.each<[string, unknown]>([
+        ["a missing key", {generation: "g", suggestions: []}],
+        ["a fill with no account", {generation: "g", key: "k", suggestions: [{...SUGGESTION, recurring: {amount: FILL.amount}}]}],
+        [
+            "a fill with a float mantissa",
+            {
+                generation: "g",
+                key: "k",
+                suggestions: [{...SUGGESTION, recurring: {...FILL, amount: {commodity: "$", quantity: {mantissa: "15.49", places: 2}}}}],
+            },
+        ],
+        [
+            "a fill with no commodity",
+            {generation: "g", key: "k", suggestions: [{...SUGGESTION, recurring: {...FILL, amount: {quantity: {mantissa: "1", places: 0}}}}]},
+        ],
+    ])("refuses a description's suggestions with %s", (_, body) => {
+        expect(() => decodeDescriptionSuggestions(body)).toThrow(ApiShapeError);
+    });
+
+    it("keeps a row posting's elided marker, and only a true one", () => {
+        const wire = wireRow(CARD);
+        const postings = wire.postings as Record<string, unknown>[];
+        postings[1] = {...postings[1], elided: true};
+        const row = decodeRow(wire);
+        expect(row.txn.postings[1]?.elided).toBe(true);
+        expect(row.txn.postings[0]).not.toHaveProperty("elided");
+        postings[1] = {...postings[1], elided: false};
+        expect(decodeRow(wire).txn.postings[1]).not.toHaveProperty("elided");
+        postings[1] = {...postings[1], elided: "yes"};
+        expect(() => decodeRow(wire)).toThrow(ApiShapeError);
     });
 });
 

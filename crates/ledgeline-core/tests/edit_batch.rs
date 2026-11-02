@@ -655,6 +655,9 @@ fn a_replace_then_a_tag_rerenders_once_and_keeps_the_elision() {
     let before = "2026-10-12 Safeway\n    expenses:food    $82.10\n    assets:checking\n\n2026-10-13 Other\n    expenses:food  $1.00\n    assets:checking\n";
     let mut editor = editor(before);
     let mut body: Transaction = editor.journal().transactions[0].clone();
+    assert!(body.postings[1].elided, "the parser marks the inferred leg");
+    // What the review card sends: the elided leg left blank (plan 32 D35).
+    body.postings[1].amounts.clear();
     body.status = Status::Cleared;
     body.postings[0].account.0 = "expenses:food:groceries".to_string();
     let fingerprint = editor.transaction_fingerprint(Tindex(1)).expect("exists");

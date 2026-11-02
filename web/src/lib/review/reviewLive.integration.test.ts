@@ -9,8 +9,9 @@
 
 import {describe, expect, it} from "vitest";
 import {decodeJournalSummary, decodeRowsPage} from "#lib/api/journalViewDecode.js";
-import {ConflictError, LedgelineApi, ValidationError} from "#lib/api/native.js";
-import {decodePayees, decodeQueuePage, decodeSimilarSet, decodeTags} from "#lib/api/reviewDecode.js";
+import {ConflictError, LedgelineApi, ValidationError, type WireEditOp} from "#lib/api/native.js";
+import {decodeDescriptionSuggestions, decodePayees, decodeQueuePage, decodeReviewItem, decodeSimilarSet, decodeTags} from "#lib/api/reviewDecode.js";
+import {formToBody, formToOps, reviewFormOf, txnToForm} from "#lib/api/editMapping.js";
 
 const apiUrl = process.env.LEDGELINE_API_URL;
 const TODAY = "2026-07-08";
@@ -39,6 +40,22 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live review r
         expect(windowed.review?.unreviewedRecent).toBe(Math.min(recents.total, 50));
     });
 
+    it("serves one transaction as the queue item the queue serves (the editor's single mode)", async () => {
+        const recents = decodeQueuePage(await api().reviewQueue("recents", {today: TODAY, limit: 50}));
+        const queued = recents.items[0]!;
+        const {generation, item} = decodeReviewItem(await api().reviewItem(queued.txn.index, TODAY));
+        expect(generation).toBe(recents.generation);
+        expect(item).toEqual(queued);
+        // A reviewed transaction no queue holds is served too, with its fingerprint.
+        const page = decodeRowsPage(await api().journalRows(ALL, {offset: 0, limit: 200, today: TODAY}));
+        const reviewed = page.rows.find((row) => row.reviewed);
+        if (reviewed !== undefined) {
+            const single = decodeReviewItem(await api().reviewItem(reviewed.txn.index, TODAY)).item;
+            expect(single.txn.index).toBe(reviewed.txn.index);
+            expect(typeof single.fingerprint).toBe("string");
+        }
+    });
+
     it("serves a similar set for a queued card", async () => {
         const recents = decodeQueuePage(await api().reviewQueue("recents", {today: TODAY, limit: 50}));
         const keyed = recents.items.find((item) => item.key !== null);
@@ -58,6 +75,46 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live review r
         decodeTags(await api().tags());
         const page = decodeRowsPage(await api().journalRows(ALL, {offset: 0, limit: 20, today: TODAY}));
         expect(page.rows.every((row) => typeof row.unknown === "boolean" && typeof row.reviewed === "boolean")).toBe(true);
+    });
+
+    it("marks elided legs on the rows; the form leaves them blank and writes them back blank (D35)", async () => {
+        const page = decodeRowsPage(await api().journalRows(ALL, {offset: 0, limit: 200, today: TODAY}));
+        const row = page.rows.find((candidate) => candidate.txn.postings.some((posting) => posting.elided === true));
+        expect(row).toBeDefined();
+        const txn = row!.txn;
+        const at = txn.postings.findIndex((posting) => posting.elided === true);
+        // The engine still serves the inferred amount, for everything that reads it.
+        expect(txn.postings[at]!.amounts.length).toBeGreaterThan(0);
+        const form = txnToForm(txn);
+        expect(form.postings[at]).toMatchObject({amount: "", elided: true});
+        expect(formToBody(form, "$").postings[at]!.amount).toBeUndefined();
+        // Untouched, the review card saves nothing at all.
+        expect(formToOps(txn, reviewFormOf(txn))).toEqual([]);
+    });
+
+    it("suggests for a description alone, in the queue items' shape (D36)", async () => {
+        const payees = decodePayees(await api().payees());
+        const payee = payees.payees.find((use) => /[a-z]/i.test(use.payee));
+        expect(payee).toBeDefined();
+        const found = decodeDescriptionSuggestions(await api().reviewSuggest(payee!.payee, TODAY));
+        expect(typeof found.generation).toBe("string");
+        expect(found.key).not.toBeNull();
+        expect(found.suggestions.length).toBeLessThanOrEqual(3);
+        const none = decodeDescriptionSuggestions(await api().reviewSuggest("12345", TODAY));
+        expect(none).toMatchObject({key: null, suggestions: []});
+    });
+
+    it("refuses the new header ops' bad input (400) and a stale one (409) without writing", async () => {
+        const recents = decodeQueuePage(await api().reviewQueue("recents", {today: TODAY, limit: 1}));
+        const card = recents.items[0]!;
+        const edit = (op: WireEditOp, fingerprint = card.fingerprint ?? "") =>
+            api().batchTransactions({edits: [{index: card.txn.index, fingerprint, ops: [op]}]});
+        await expect(edit({op: "setDate", date: "2026-02-30"})).rejects.toBeInstanceOf(ValidationError);
+        await expect(edit({op: "setCode", code: "a)b"})).rejects.toBeInstanceOf(ValidationError);
+        await expect(edit({op: "setStatus", status: "pending"}, "stale")).rejects.toBeInstanceOf(ConflictError);
+        const again = decodeQueuePage(await api().reviewQueue("recents", {today: TODAY, limit: 1}));
+        expect(again.generation).toBe(recents.generation);
+        expect(again.items[0]?.fingerprint).toBe(card.fingerprint);
     });
 
     it("refuses a stale fingerprint (409) and an empty batch (400) without writing", async () => {

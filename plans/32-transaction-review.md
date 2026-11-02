@@ -1527,7 +1527,7 @@ the active set.
   Amendments are in `32-amendments-p5.md`.
 - Also committed: `05f6b0f`, which stops a Recents run from growing (p5 amendment).
 - **Phase 6: committed 2026-11-01.** 6a (engine, server and wire) and 6b (UI). Amendments are in `32-amendments-p6.md`.
-- **Phase 7: planned 2026-11-01** (the review card becomes the only transaction editor). Q13 and Q14 are answered. **7a in progress.**
+- **Phase 7: committed 2026-11-01.** The review card is the only transaction editor (7a engine and wire, 7b the complete card, 7c single mode, add, delete and the switch, 7d docs and screenshots). Amendments are in `32-amendments-p7.md`.
 
 ## Contract amendments made during implementation
 

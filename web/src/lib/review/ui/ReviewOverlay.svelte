@@ -9,7 +9,7 @@
     // the keymap ignores keys in fields by rule, so single keys type. Escape
     // walks back out: field → card → close (asking first when the card has
     // unsaved edits). ⌘↵ and ⌘⇧↵ work from both, because this element handles
-    // them itself (the TransactionModal rule) before the keymap sees them.
+    // them itself before the keymap sees them.
     //
     // # Keys
     //
@@ -56,6 +56,20 @@
     // whose rule is saved BEFORE the card, so the dry run that follows sees both.
     // There is no full editor for a transaction that is not in a file yet.
     //
+    // # One transaction (plan 32 D31–D40)
+    //
+    // `kind` "edit" or "add" is SINGLE mode: the Journal's transaction editor.
+    // The same card on its own, opened like a dialog, with no queue: no
+    // position, no peeks, no Skip or Back. The details row is always open.
+    // The footer saves (not optimistic: the card waits, then flashes a ✓ and
+    // closes), with a Mark reviewed checkbox that shows the `reviewed:` tag
+    // the save will write. An edit can be deleted (⋯, ⇧X, a two-step confirm
+    // in the footer). An add card starts blank, with focus in the
+    // description; picking a payee asks for its suggestions, and a recurring
+    // charge's chip fills the amount and the funding account too. Similar
+    // and Remember as a rule apply to an edit as on a queue card, and are
+    // hidden on an add card, which is no transaction yet.
+    //
     // # Rules from the Journal (plan 32 D27)
     //
     // A journal card offers "Remember as a rule" too, when the engine finds a
@@ -66,19 +80,38 @@
     // nothing is selected, and no rule is saved until the user picks. The save
     // order is the import's: the rule, then the card (the usual batch).
     import {flushSync, tick, untrack} from "svelte";
-    import {cardChange, cardOps, isSplit, reviewFormOf} from "#lib/api/editMapping.js";
+    import {addComment, cardChange, cardOps, formToBody, isSplit, reviewFormOf, validateForm} from "#lib/api/editMapping.js";
     import {openAutoRule} from "#lib/autoRules/openRule.js";
     import {txnModal} from "#lib/journal/edit/modalState.svelte.js";
     import {dismissible} from "#lib/keys/dismissible.js";
     import {keymap, registerKeys} from "#lib/keys/keymap.svelte.js";
     import {isTypingTarget, type TargetLike} from "#lib/keys/target.js";
-    import {PRIORITY} from "#lib/keys/types.js";
+    import {PRIORITY, type Binding} from "#lib/keys/types.js";
     import {localToday} from "#lib/stores/filters.svelte.js";
     import {journal} from "#lib/stores/journal.svelte.js";
     import type {RuleChoice, RuleSource, RuleSpec} from "#lib/imports/reviewTypes.js";
-    import {review, type ReviewCard, type StagedKind} from "#lib/stores/review.svelte.js";
+    import {review, type ReviewCard, type SingleMode, type SingleOutcome, type StagedKind} from "#lib/stores/review.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
-    import {acceptChip, changeSummary, chipsFor, cycleChip, footerState, hasUnknown, isDirty, similarRows, type Chips} from "../card";
+    import {nextStatus} from "#lib/journal/rowModel.js";
+    import {
+        acceptAddChip,
+        acceptChip,
+        addChips,
+        addDirty,
+        blankItem,
+        blankReviewForm,
+        changeSummary,
+        chipsFor,
+        cycleChip,
+        detailsDirty,
+        footerState,
+        hasUnknown,
+        isDirty,
+        reviewedBox,
+        similarRows,
+        toggleReviewed,
+        type Chips,
+    } from "../card";
     import type {Transaction} from "#lib/domain/types.js";
     import {loadRuleChoice} from "../journalRules";
     import type {QueueKind, ReviewForm} from "../types";
@@ -88,6 +121,8 @@
         barIn,
         cardIn,
         cardOut,
+        dialogIn,
+        DURATIONS,
         finishMotion,
         layerOut,
         PEEK_DEPTH,
@@ -99,6 +134,7 @@
         type CardExit,
         type MotionParams,
     } from "./motion";
+    import ReviewDetails from "./ReviewDetails.svelte";
     import ReviewFields from "./ReviewFields.svelte";
     import ReviewFooter from "./ReviewFooter.svelte";
     import ReviewHero from "./ReviewHero.svelte";
@@ -107,19 +143,33 @@
     import RuleBuilder from "./RuleBuilder.svelte";
     import RuleFilePicker from "./RuleFilePicker.svelte";
     import SimilarSection from "./SimilarSection.svelte";
+    import SingleFooter from "./SingleFooter.svelte";
 
     let {
         kind,
         staged = null,
+        index = null,
     }: {
-        kind: QueueKind | StagedKind;
+        /** A journal queue, an import's run, or single mode: "edit" one transaction, "add" a new one (D31, D36). */
+        kind: QueueKind | StagedKind | SingleMode;
         /** An import's transactions to review before they are written. Null: the journal's queue `kind`. */
         staged?: StagedLaunch | null;
+        /** The transaction an "edit" opens on. */
+        index?: number | null;
     } = $props();
 
-    const TITLES: Record<QueueKind | StagedKind, string> = {unknowns: "Review Unknowns", recents: "Review Recents", all: "Review All"};
+    const TITLES: Record<QueueKind | StagedKind | SingleMode, string> = {
+        unknowns: "Review Unknowns",
+        recents: "Review Recents",
+        all: "Review All",
+        edit: "Edit transaction",
+        add: "Add transaction",
+    };
     /** Fixed per mount: the page mounts the overlay for one run and unmounts it when it closes. */
     const source = untrack(() => staged);
+    /** Single mode (D31), fixed per mount too. */
+    const single: SingleMode | null = untrack(() => (kind === "edit" || kind === "add" ? kind : null));
+    const adding = single === "add";
     const writeLabel = source?.writeLabel ?? "Write changes";
     const NO_CHIPS: Chips = {chips: [], target: null, initial: null, mode: "fix"};
     /**
@@ -150,7 +200,7 @@
     let similarSection = $state<SimilarHandle | null>(null);
     let stagedSection = $state<SimilarHandle | null>(null);
     let ruleBuilder = $state<{currentRule: () => RuleSpec | null} | null>(null);
-    let form = $state<ReviewForm>({date: today, description: "", comment: "", tags: [], postings: []});
+    let form = $state<ReviewForm>({date: today, date2: "", status: "unmarked", code: "", description: "", comment: "", tags: [], postings: []});
     let selected = $state<number | null>(null);
     let similarOpen = $state(false);
     let checked = $state<number[]>([]);
@@ -177,8 +227,19 @@
      */
     let importNotice = $state<string | null>(null);
     let ruleSaving = $state(false);
-    let showDate = $state(false);
+    /** The details row (D33) opened on this card. It also stays open while one of its fields is changed. */
+    let detailsOpen = $state(false);
+    /** The secondary date's field is up: the card has one, or "+ secondary date" asked for it. */
+    let date2Shown = $state(false);
     let confirmClose = $state(false);
+    /** Single mode: ⋯ → Delete (or ⇧X) armed the delete; the footer asks to confirm it (D37). */
+    let confirmDelete = $state(false);
+    /** Single mode: the save landed and the ✓ is showing; the layer closes next. Keys are off. */
+    let finishing = $state(false);
+    /** A save was tried: the form's problems show, and follow the edits. */
+    let showErrors = $state(false);
+    /** The form an add card opened with, which it is dirty against. */
+    let addBlank = $state.raw(blankReviewForm(today, "$"));
     let menuOpen = $state(false);
     let settingsOpen = $state(false);
     /** The card showing the ✓ stamp as it leaves. */
@@ -194,13 +255,29 @@
     const classes = $derived(journal.accountClasses);
     const current = $derived(review.current);
     const txn = $derived(current?.item.txn ?? null);
-    const original = $derived(txn === null ? null : reviewFormOf(txn));
-    const chips = $derived(current !== null && original !== null ? chipsFor(current.item, original, classes) : NO_CHIPS);
-    const dirty = $derived(txn !== null && isDirty(txn, form));
+    const original = $derived(txn === null ? null : adding ? addBlank : reviewFormOf(txn));
+    const chips = $derived(
+        current === null || original === null ? NO_CHIPS : adding ? addChips(current.item, classes) : chipsFor(current.item, original, classes)
+    );
+    const dirty = $derived(txn !== null && (adding ? addDirty(addBlank, form) : isDirty(txn, form)));
     const unknown = $derived(txn !== null && hasUnknown(txn, form, classes));
     const phase = $derived(footerState(dirty, unknown));
-    const split = $derived(txn !== null && isSplit(txn, form));
-    const change = $derived(txn === null ? null : cardChange(txn, form));
+    const split = $derived(txn !== null && !adding && isSplit(txn, form));
+    const detailsChanged = $derived(original !== null && detailsDirty(original, form));
+    /** Single mode shows the details row always (D33). */
+    const detailsExpanded = $derived(single !== null || detailsOpen || detailsChanged);
+    const errors = $derived(showErrors ? validateForm(form) : []);
+    /** D32: the Mark reviewed checkbox, read from the form's tags. */
+    const box = $derived(reviewedBox(form));
+    /** The hero of an add card follows the description as it is typed. */
+    const heroTxn = $derived(txn !== null && adding ? {...txn, description: form.description, date: form.date} : txn);
+    /** What a commodity field completes from: the journal's main commodity, the card's own, then every other the journal posts. */
+    const commodities = $derived([
+        journal.dominantCommodity,
+        ...(original?.postings.map((posting) => posting.commodity) ?? []),
+        ...journal.reportStyles.keys(),
+    ]);
+    const change = $derived(txn === null || adding ? null : cardChange(txn, form));
     const similarSet = $derived(txn === null ? null : review.similar(txn.index));
     const rows = $derived(similarSet === null || split ? [] : similarRows(similarSet.candidates, similarSet.inQueue, change));
     /** D24's "in this import": the run's other cards with the same key. They are all in the run, so none is marked "in this run". */
@@ -228,12 +305,16 @@
     const failure = $derived(review.failure !== null && txn !== null && review.failure.index === txn.index ? review.failure.failure.message : null);
     const progress = $derived(review.count === 0 ? 0 : Math.min(1, review.position / review.count));
     /** The cards waiting beneath the top one, nearest first. None past the last card: the summary lies there. */
-    const peeks = $derived(current === null ? [] : review.cards.slice(review.cursor + 1, review.cursor + 1 + PEEK_DEPTH));
+    const peeks = $derived(current === null || single !== null ? [] : review.cards.slice(review.cursor + 1, review.cursor + 1 + PEEK_DEPTH));
 
     // One run per mount: the page mounts this when a run opens and unmounts it when it closes.
     untrack(() => {
         if (source !== null) review.openStaged(source.kind, source.items, source.sink);
-        else if (kind === "recents") void review.open(kind, {limit: settings.reviewRecentLimit, maxDays: settings.reviewMaxDays});
+        else if (single === "add") review.openAdd(blankItem(today));
+        else if (single === "edit") {
+            if (index === null) review.close();
+            else void review.openEdit(index);
+        } else if (kind === "recents") void review.open(kind, {limit: settings.reviewRecentLimit, maxDays: settings.reviewMaxDays});
         else if (kind === "unknowns") void review.open(kind, {maxDays: settings.reviewMaxDays});
     });
 
@@ -256,14 +337,15 @@
             // not the refreshed one (which differs from the form by definition).
             if (sameCard && seededTxn !== null && isDirty(seededTxn, form)) return;
             seed(card);
-            if (!sameCard) void focusCard();
+            // An add card starts in the description (D36); every other card in card mode.
+            if (!sameCard) void (adding ? focusDescription() : focusCard());
         });
     });
 
     // D27: each journal card's rules files, asked for as it appears and
     // aborted if it leaves first. Kept for the run, a failed request as "none".
     $effect(() => {
-        const index = source === null ? cardIndex : null;
+        const index = source === null && !adding ? cardIndex : null;
         if (index === null) return;
         const known = ruleChoices.get(index);
         ruleChoice = known ?? null;
@@ -290,8 +372,10 @@
 
     function seed(card: ReviewCard): void {
         seededTxn = card.item.txn;
-        form = card.draft === null ? reviewFormOf(card.item.txn) : structuredClone($state.snapshot(card.draft) as ReviewForm);
-        selected = chipsFor(card.item, reviewFormOf(card.item.txn), classes).initial;
+        if (adding) addBlank = blankReviewForm(today, journal.dominantCommodity);
+        const start = adding ? structuredClone(addBlank) : reviewFormOf(card.item.txn);
+        form = card.draft === null ? start : structuredClone($state.snapshot(card.draft) as ReviewForm);
+        selected = adding ? addChips(card.item, classes).initial : chipsFor(card.item, start, classes).initial;
         similarOpen = false;
         checked = [];
         stagedOpen = false;
@@ -299,8 +383,11 @@
         ruleOn = false;
         rulePick = null;
         ruleError = null;
-        showDate = false;
+        detailsOpen = false;
+        date2Shown = form.date2 !== "";
         confirmClose = false;
+        confirmDelete = false;
+        showErrors = false;
         stamped = null;
     }
 
@@ -320,13 +407,25 @@
         (target ?? root)?.focus({preventScroll: true});
     }
 
+    async function focusDescription(): Promise<void> {
+        await tick();
+        focusField("description");
+    }
+
+    /** Focus field `name`: the control marked `data-review-focus` in it (an amount, not its commodity), else its first. */
     function focusField(name: string): void {
-        (currentCard() ?? root)?.querySelector<HTMLInputElement>(`[data-review-field="${name}"] input`)?.focus();
+        const field = (currentCard() ?? root)?.querySelector<HTMLElement>(`[data-review-field="${name}"]`);
+        (field?.querySelector<HTMLElement>("[data-review-focus]") ?? field?.querySelector<HTMLElement>("input, textarea"))?.focus();
     }
 
     /** Remember the card's edits as it is left (D5: they survive ← and →). */
     function stash(): void {
         if (current !== null) review.setDraft(dirty ? ($state.snapshot(form) as ReviewForm) : null);
+    }
+
+    /** The top card's arrival: a dialog's in single mode (D31), else the deck's. */
+    function enter(node: Element, params: MotionParams) {
+        return single !== null ? dialogIn(node, {reduced}) : cardIn(node, params);
     }
 
     function exitAs(exit: CardExit): void {
@@ -343,9 +442,23 @@
             if (finished || empty) close();
             return;
         }
-        if (phase === "clean-unknown" || current.status === "saving" || ruleSaving) return;
+        if (current.status === "saving" || ruleSaving || finishing) return;
+        if (single !== null ? !dirty : phase === "clean-unknown") return;
+        if (!valid()) return;
         if (ruleOffered && ruleOn) return void saveWithRule();
-        save();
+        commit();
+    }
+
+    /** Whether the form can be saved; once a save is tried, its problems show (and follow the edits). */
+    function valid(): boolean {
+        showErrors = true;
+        return validateForm(form).length === 0;
+    }
+
+    /** Save the card: into the run (a queue or an import), or, in single mode, write it now. */
+    function commit(): void {
+        if (single !== null) void saveSingle();
+        else save();
     }
 
     /**
@@ -378,7 +491,7 @@
         }
         // Nothing can move the card while the rule saves (the keys are off),
         // but a run closed underneath has no card left to save.
-        if (review.current?.item.txn.index === index) save();
+        if (review.current?.item.txn.index === index) commit();
         importNotice = await rules.refresh();
     }
 
@@ -409,6 +522,70 @@
         void review.save(ops, similar);
     }
 
+    /**
+     * Single mode's save (D31, D32, D36): an edit as one batch with its
+     * checked similar rows, or an add as one POST. The `reviewed:` tag is
+     * whatever the checkbox left in the form's tags, so nothing is stamped
+     * here, and similar rows never are (D38). A save that lands flashes a ✓
+     * and closes, the journal's cursor going to the transaction. A conflict
+     * closes too: the page's banner says the journal changed.
+     */
+    async function saveSingle(): Promise<void> {
+        if (current === null || txn === null) return;
+        const commodity = journal.dominantCommodity;
+        let outcome: SingleOutcome;
+        if (adding) {
+            const {date, date2, status, code, description, postings} = form;
+            outcome = await review.addSingle(formToBody({date, date2, status, code, description, comment: addComment(form), postings}, commodity));
+        } else {
+            const ops = cardOps(txn, form, {key: current.item.key, reviewedOn: null, defaultCommodity: commodity});
+            const picked = new Set(checked);
+            const similar = change === null ? [] : rows.filter((row) => picked.has(row.txn.txn.index)).map((row) => ({txn: row.txn, ops: row.ops}));
+            outcome = await review.saveSingle(ops, similar);
+        }
+        if (outcome.ok) return finish(outcome.index);
+        if (outcome.failure.kind === "conflict") close();
+    }
+
+    /** The save landed: a short ✓ on the card, then close, with the journal's cursor going to `index`. */
+    function finish(index: number | null): void {
+        const shown = txn?.index ?? null;
+        lastSaved = index;
+        finishing = true;
+        flushSync(() => (stamped = shown));
+        setTimeout(close, DURATIONS.flash);
+    }
+
+    /** `v` (D32): toggle Mark reviewed. Not while a posting is unknown. */
+    function toggleReviewedBox(): void {
+        if (original === null || unknown || current?.status === "saving") return;
+        form.tags = toggleReviewed(form, original, today);
+    }
+
+    /** ⋯ → Delete transaction, `⇧X` (D37): arm it; asked again (the button, or ⇧X), delete. */
+    function armDelete(): void {
+        if (single !== "edit" || current === null || current.status === "saving") return;
+        menuOpen = false;
+        if (confirmDelete) return void deleteTxn();
+        confirmDelete = true;
+    }
+
+    /** Delete the transaction, then close. The journal's cursor stays where it is, as after the table's `x`. */
+    async function deleteTxn(): Promise<void> {
+        confirmDelete = false;
+        const outcome = await review.deleteSingle();
+        if (outcome.ok || outcome.failure.kind === "conflict") {
+            lastSaved = null;
+            close();
+        }
+    }
+
+    /** An add card's payee was picked (D36): ask for its suggestions, and select the strong one. */
+    async function pickPayee(payee: string): Promise<void> {
+        await review.suggestFor(payee);
+        selected = chips.initial;
+    }
+
     /** ⌘⇧↵ / `Y`: take the selected suggestion, then do what ⌘↵ does. With no chip selected it IS ⌘↵. */
     function accept(): void {
         if (selected !== null) pick(selected);
@@ -419,6 +596,13 @@
     function pick(at: number): void {
         const chip = chips.chips[at];
         if (txn === null || chips.target === null || chip === undefined) return;
+        if (adding) {
+            const filled = acceptAddChip(form, chips.target, chip);
+            filled.postings.forEach((row, at) => form.postings[at] !== undefined && Object.assign(form.postings[at], row));
+            form.description = filled.description;
+            selected = at;
+            return;
+        }
         const next = acceptChip(txn, form, chips.target, chip);
         const row = form.postings[chips.target];
         if (row !== undefined) row.account = next.postings[chips.target]?.account ?? row.account;
@@ -466,13 +650,6 @@
         void review.ignore();
     }
 
-    function openEditor(): void {
-        if (txn === null || source !== null) return;
-        const index = txn.index;
-        close();
-        txnModal.openEdit(index);
-    }
-
     function openRule(rule: number): void {
         close();
         void openAutoRule(rule);
@@ -512,10 +689,38 @@
         ruleError = null;
     }
 
-    function editDate(): void {
+    /** `D`, `#`, a click on the details line: open the details row (D33) and put the caret in `field`. */
+    async function openDetails(field: "date" | "code" | "date2"): Promise<void> {
+        if (current === null) return;
+        detailsOpen = true;
+        await tick();
+        focusField(field);
+    }
+
+    /** `!` (D33): the next status in the Journal's cycle, unmarked → pending → cleared. The row opens, so the change shows. */
+    function cycleStatus(): void {
+        if (current === null || current.status === "saving") return;
+        detailsOpen = true;
+        form.status = nextStatus(form.status);
+    }
+
+    /** ⋯ → Add secondary date, or the row's "+ secondary date". */
+    function addDate2(): void {
         menuOpen = false;
-        showDate = true;
-        void tick().then(() => focusField("date"));
+        date2Shown = true;
+        void openDetails("date2");
+    }
+
+    function removeDate2(): void {
+        form.date2 = "";
+        date2Shown = false;
+    }
+
+    /** Fold the details back to their line; only offered while none of them is changed. */
+    function collapseDetails(): void {
+        detailsOpen = false;
+        date2Shown = form.date2 !== "";
+        void focusCard();
     }
 
     function editAccount(at: number | null): void {
@@ -525,6 +730,7 @@
 
     function close(): void {
         confirmClose = false;
+        confirmDelete = false;
         // The layer fades and drops as one; the cards do nothing of their own,
         // and the outgoing one stays in the grid's flow (see the styles).
         finishMotion(stack);
@@ -532,10 +738,16 @@
         root?.setAttribute("data-closing", "");
         review.close();
         reviewLaunch.close(lastSaved);
+        if (single !== null) txnModal.close();
     }
 
     /** Escape in card mode, ✕, the backdrop: close — but ask first if the card has unsaved edits. */
     function requestClose(): void {
+        if (finishing) return;
+        if (confirmDelete) {
+            confirmDelete = false;
+            return void focusCard();
+        }
         if (confirmClose) {
             confirmClose = false;
             return void focusCard();
@@ -580,25 +792,56 @@
 
     // -- the key layer -----------------------------------------------------
 
-    const live = (): boolean => !keymap.helpOpen && !confirmClose && !ruleSaving;
+    const live = (): boolean => !keymap.helpOpen && !confirmClose && !confirmDelete && !ruleSaving && !finishing;
     const onCard = (): boolean => live() && review.current !== null;
+    /** Keys that walk a queue (D16), or that only make sense in one (Reviewed-and-next, Ignore). Single mode has none of them (D40). */
+    const queueKeys: Binding[] =
+        single !== null
+            ? []
+            : [
+                  {keys: "y", label: "Reviewed (or save the changes)", group: "Review", enabled: live, run: primary},
+                  {keys: "Y", label: "Accept the suggestion, mark reviewed, next", group: "Review", enabled: onCard, run: accept},
+                  {keys: "ArrowRight", label: "Skip", group: "Review", enabled: onCard, run: skip},
+                  {keys: "n", label: "Skip", group: "Review", enabled: onCard, run: skip},
+                  {keys: "l", label: "Skip", group: "Review", enabled: onCard, run: skip},
+                  {keys: "ArrowLeft", label: "Previous card", group: "Review", enabled: live, run: back},
+                  {keys: "p", label: "Previous card", group: "Review", enabled: live, run: back},
+                  {keys: "h", label: "Previous card", group: "Review", enabled: live, run: back},
+                  {keys: "i", label: "Ignore (never ask again)", group: "Review", enabled: onCard, run: ignore},
+              ];
+    /** Single mode's own keys (D40): Mark reviewed, and delete on an edit. */
+    const singleKeys: Binding[] =
+        single === null
+            ? []
+            : [
+                  {keys: "v", label: "Mark reviewed, or not", group: "Review", enabled: onCard, run: toggleReviewedBox},
+                  ...(single === "edit"
+                      ? [
+                            {
+                                keys: "X",
+                                label: "Delete the transaction (press again to confirm)",
+                                group: "Review" as const,
+                                enabled: () => !keymap.helpOpen && !confirmClose && !finishing && review.current !== null,
+                                run: armDelete,
+                            },
+                        ]
+                      : []),
+              ];
+    const closeLabel = single === null ? "Close review" : "Close the editor";
+    const saveLabel = single === null ? "Reviewed (or save the changes)" : adding ? "Add the transaction" : "Save";
+    const acceptLabel =
+        single === null ? "Accept the suggestion, mark reviewed, next" : adding ? "Accept the suggestion and add" : "Accept the suggestion and save";
 
     registerKeys({
         id: "review-overlay",
         priority: PRIORITY.overlay,
         modal: true,
         bindings: [
-            {keys: "mod+Enter", label: "Reviewed (or save the changes)", group: "Review", enabled: live, run: primary},
-            {keys: "mod+shift+Enter", label: "Accept the suggestion, mark reviewed, next", group: "Review", enabled: onCard, run: accept},
-            {keys: "y", label: "Reviewed (or save the changes)", group: "Review", enabled: live, run: primary},
-            {keys: "Enter", label: "Reviewed (or save the changes)", group: "Review", enabled: live, run: () => activateFocused() || primary()},
-            {keys: "Y", label: "Accept the suggestion, mark reviewed, next", group: "Review", enabled: onCard, run: accept},
-            {keys: "ArrowRight", label: "Skip", group: "Review", enabled: onCard, run: skip},
-            {keys: "n", label: "Skip", group: "Review", enabled: onCard, run: skip},
-            {keys: "l", label: "Skip", group: "Review", enabled: onCard, run: skip},
-            {keys: "ArrowLeft", label: "Previous card", group: "Review", enabled: live, run: back},
-            {keys: "p", label: "Previous card", group: "Review", enabled: live, run: back},
-            {keys: "h", label: "Previous card", group: "Review", enabled: live, run: back},
+            {keys: "mod+Enter", label: saveLabel, group: "Review", enabled: live, run: primary},
+            {keys: "mod+shift+Enter", label: acceptLabel, group: "Review", enabled: onCard, run: accept},
+            {keys: "Enter", label: saveLabel, group: "Review", enabled: live, run: () => activateFocused() || primary()},
+            ...queueKeys,
+            ...singleKeys,
             {keys: "z", label: "Revert changes", group: "Review", enabled: onCard, run: revert},
             {keys: "d", label: "Edit description", group: "Review", enabled: onCard, run: () => focusField("description")},
             {keys: "a", label: "Edit the unknown account", group: "Review", enabled: onCard, run: () => editAccount(null)},
@@ -610,6 +853,9 @@
                 run: () => editAccount(n - 1),
             })),
             {keys: "$", label: "Edit the first amount", group: "Review", enabled: onCard, run: () => focusField("amount-0")},
+            {keys: "D", label: "Edit the date (and the other details)", group: "Review", enabled: onCard, run: () => void openDetails("date")},
+            {keys: "!", label: "Cycle the status: unmarked, pending, cleared", group: "Review", enabled: onCard, run: cycleStatus},
+            {keys: "#", label: "Edit the code", group: "Review", enabled: onCard, run: () => void openDetails("code")},
             {keys: "t", label: "Add a tag", group: "Review", enabled: onCard, run: () => focusField("tags")},
             {keys: "m", label: "Edit comment", group: "Review", enabled: onCard, run: () => focusField("comment")},
             {keys: "s", label: "Open or close Similar", group: "Review", enabled: onCard, run: () => void toggleSimilar()},
@@ -622,8 +868,6 @@
             },
             {keys: "A", label: "Check or uncheck all similar", group: "Review", enabled: onCard, run: toggleAllSimilar},
             {keys: "R", label: "Remember as a rule", group: "Review", enabled: () => onCard() && ruleOffered, run: () => void toggleRule()},
-            {keys: "i", label: "Ignore (never ask again)", group: "Review", enabled: onCard, run: ignore},
-            {keys: "o", label: "Open in the full editor", group: "Review", enabled: () => onCard() && source === null, run: openEditor},
             {keys: "Escape", label: "Leave the field, or close", group: "Review", run: requestClose},
             {keys: "?", label: "Show keyboard shortcuts", group: "Review", run: () => keymap.toggleHelp()},
         ],
@@ -649,7 +893,7 @@
             in:barIn|global={{reduced}}
         >
             <h2 class="text-sm font-semibold tracking-wide">{TITLES[kind]}</h2>
-            {#if review.count > 0}
+            {#if review.count > 0 && single === null}
                 <span class="text-sm text-base-content/65 tabular-nums" data-testid="review-position" aria-live="polite">
                     {review.position} of {review.count}
                 </span>
@@ -667,7 +911,7 @@
                     ></div>
                 </div>
             {/if}
-            {#if review.saving > 0}
+            {#if review.saving > 0 && single === null}
                 <span class="flex items-center gap-1.5 text-xs text-base-content/60" data-testid="review-saving" role="status">
                     <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-success"></span> saving…
                 </span>
@@ -687,23 +931,30 @@
                         <button type="button" class="btn mt-2 w-full btn-ghost btn-xs" onclick={() => (settingsOpen = false)}>Done</button>
                     {:else}
                         <ul class="menu w-60 p-0 text-sm">
-                            <li>
-                                <button type="button" onclick={ignore} disabled={current === null}>
-                                    <ReviewIcon name="ban" /> Ignore — never ask again <kbd class="ml-auto kbd kbd-xs">i</kbd>
-                                </button>
-                            </li>
-                            {#if source === null}
-                                <!-- A staged transaction is in no file yet: there is nothing for the full editor to open. -->
+                            {#if single === null}
+                                <!-- Single mode has its Mark reviewed checkbox instead (D32). -->
                                 <li>
-                                    <button type="button" onclick={openEditor} disabled={current === null}>
-                                        <ReviewIcon name="pencil" /> Open in full editor <kbd class="ml-auto kbd kbd-xs">o</kbd>
+                                    <button type="button" onclick={ignore} disabled={current === null}>
+                                        <ReviewIcon name="ban" /> Ignore — never ask again <kbd class="ml-auto kbd kbd-xs">i</kbd>
                                     </button>
                                 </li>
                             {/if}
-                            <li>
-                                <button type="button" onclick={editDate} disabled={current === null}>Edit date</button>
-                            </li>
-                            {#if source === null}
+                            {#if form.date2 === "" && !date2Shown}
+                                <li>
+                                    <button type="button" onclick={addDate2} disabled={current === null}>
+                                        <ReviewIcon name="calendar" /> Add secondary date
+                                    </button>
+                                </li>
+                            {/if}
+                            {#if single === "edit"}
+                                <!-- D37: only here, never in a queue run, where a missed key costs too much. -->
+                                <li>
+                                    <button type="button" class="text-error" onclick={armDelete} disabled={current === null} data-testid="review-delete">
+                                        <ReviewIcon name="x" /> Delete transaction <kbd class="ml-auto kbd kbd-xs">⇧X</kbd>
+                                    </button>
+                                </li>
+                            {/if}
+                            {#if source === null && single === null}
                                 <!-- The window and the limit shape the journal's queues; an import's run is the whole import. -->
                                 <li>
                                     <button type="button" onclick={() => (settingsOpen = true)}><ReviewIcon name="sliders" /> Settings</button>
@@ -716,7 +967,7 @@
             <button
                 type="button"
                 class="btn btn-square btn-ghost text-base-content/80 btn-sm hover:bg-base-content/10"
-                aria-label="Close review"
+                aria-label={closeLabel}
                 title="Close (Esc)"
                 onclick={requestClose}
             >
@@ -743,11 +994,14 @@
         >
             {#if review.loading}
                 <div class="{PANEL} flex items-center justify-center gap-2 py-16 text-sm text-base-content/60" role="status">
-                    <span class="loading loading-sm loading-spinner"></span> Loading the queue…
+                    <span class="loading loading-sm loading-spinner"></span>
+                    {single !== null ? "Loading the transaction…" : "Loading the queue…"}
                 </div>
             {:else if review.error !== null}
                 <div class="{PANEL} p-5 sm:p-8" role="alert">
-                    <div class="alert alert-error"><span>Couldn't load the queue: {review.error}</span></div>
+                    <div class="alert alert-error">
+                        <span>{single !== null ? "Couldn't load the transaction" : "Couldn't load the queue"}: {review.error}</span>
+                    </div>
                 </div>
             {:else if empty}
                 <div
@@ -822,12 +1076,26 @@
                             data-testid="review-card"
                             tabindex="-1"
                             aria-label="{txn.date} {txn.description}"
-                            in:cardIn|global={motion}
+                            in:enter|global={motion}
                             out:cardOut|global={motion}
                         >
                             <!-- The card's body scrolls inside the card, so the deck never clips it. -->
                             <div class="flex min-h-0 flex-col gap-6 overflow-y-auto overscroll-contain p-5 sm:p-8">
-                                <ReviewHero {txn} {classes} {updatedFrom} />
+                                <ReviewHero txn={heroTxn ?? txn} {classes} {updatedFrom} detailsBlock={detailsExpanded}>
+                                    {#snippet details()}
+                                        <ReviewDetails
+                                            bind:form
+                                            mode={detailsExpanded ? "editor" : "summary"}
+                                            showDate2={date2Shown || form.date2 !== ""}
+                                            canCollapse={single === null && !detailsChanged}
+                                            disabled={current.status === "saving"}
+                                            onExpand={() => void openDetails("date")}
+                                            onCollapse={collapseDetails}
+                                            onAddDate2={addDate2}
+                                            onRemoveDate2={removeDate2}
+                                        />
+                                    {/snippet}
+                                </ReviewHero>
                                 <div class="border-t border-dashed border-base-content/15"></div>
                                 {#if failure !== null}
                                     <div class="alert py-2 text-sm alert-error" role="alert" data-testid="review-failure">
@@ -845,13 +1113,21 @@
                                     {today}
                                     {chips}
                                     {selected}
-                                    {showDate}
+                                    {commodities}
                                     defaultCommodity={journal.dominantCommodity}
                                     disabled={current.status === "saving"}
                                     onTabChip={tabChip}
                                     onPickChip={pick}
                                     onRule={openRule}
+                                    onPayeePick={adding ? (payee) => void pickPayee(payee) : undefined}
                                 />
+                                {#if errors.length > 0}
+                                    <ul class="-mt-2 list-inside list-disc text-sm text-error" role="alert" data-testid="review-errors">
+                                        {#each errors as message (message)}
+                                            <li>{message}</li>
+                                        {/each}
+                                    </ul>
+                                {/if}
                                 {#if split}
                                     <p class="text-xs text-base-content/50" data-testid="review-split-note">Splits aren't applied to similar transactions.</p>
                                 {:else if source !== null}
@@ -915,6 +1191,34 @@
                                         <button type="button" class="btn btn-sm btn-warning" onclick={close}>Discard and close</button>
                                     </span>
                                 </div>
+                            {:else if confirmDelete}
+                                <div
+                                    class="flex min-h-[4.5rem] shrink-0 items-center justify-between gap-3 border-t border-error/30 bg-error/10 px-5 py-3 text-sm sm:px-8"
+                                    role="alert"
+                                    data-testid="review-confirm-delete"
+                                >
+                                    <span>Delete this transaction from the journal?</span>
+                                    <span class="flex gap-2">
+                                        <button type="button" class="btn btn-error btn-sm" onclick={() => void deleteTxn()}
+                                            >Confirm delete <kbd class="kbd kbd-xs">⇧X</kbd></button
+                                        >
+                                        <button type="button" class="btn btn-ghost btn-sm" onclick={() => ((confirmDelete = false), void focusCard())}
+                                            >Keep</button
+                                        >
+                                    </span>
+                                </div>
+                            {:else if single !== null}
+                                <SingleFooter
+                                    {adding}
+                                    {dirty}
+                                    busy={current.status === "saving" || ruleSaving || finishing}
+                                    reviewed={box.checked}
+                                    reviewedLabel={box.label}
+                                    {unknown}
+                                    onSave={primary}
+                                    onToggleReviewed={toggleReviewedBox}
+                                    onRevert={revert}
+                                />
                             {:else}
                                 <ReviewFooter
                                     {phase}
@@ -926,7 +1230,21 @@
                                 />
                             {/if}
 
-                            {#if stamped === txn.index}
+                            {#if stamped === txn.index && single !== null}
+                                <!-- Single mode (D31): a short ✓ in the middle of the card, then the layer closes. -->
+                                <div
+                                    class="pointer-events-none absolute inset-0 grid place-items-center bg-base-100/50"
+                                    data-testid="review-flash"
+                                    aria-hidden="true"
+                                >
+                                    <span
+                                        class="grid h-16 w-16 place-items-center rounded-full bg-success text-success-content shadow-lg"
+                                        in:stampPop={{reduced}}
+                                    >
+                                        <ReviewIcon name="check" class="h-8 w-8" />
+                                    </span>
+                                </div>
+                            {:else if stamped === txn.index}
                                 <div
                                     class="pointer-events-none absolute top-6 right-8 grid h-24 w-24 -rotate-12 place-items-center rounded-full border-4 border-double border-success/80 text-success"
                                     data-testid="review-stamp"
@@ -947,7 +1265,7 @@
     <button
         type="button"
         class="absolute inset-0 z-0 h-full w-full cursor-default bg-black/70 backdrop-blur-sm"
-        aria-label="Close review"
+        aria-label={closeLabel}
         onclick={requestClose}
         in:backdrop|global={{reduced}}
         out:backdrop|global={{reduced, closing: true}}

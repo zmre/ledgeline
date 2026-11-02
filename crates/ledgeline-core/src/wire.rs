@@ -211,6 +211,10 @@ fn posting_to_wire(
         pcomment: posting.comment.clone(),
         pdate: posting.date.clone(),
         pdate2: posting.date2.clone(),
+        // hledger's own JSON leaves this null for a balancer-inferred amount
+        // too (checked against `hledger print -O json`, 1.52), so the
+        // hledger-shaped wire does as well. Elision reaches the SPA on the
+        // native row instead (`view::rows`, `Posting::elided`, plan 32 D35).
         poriginal: None,
         pstatus: status_str(posting.status),
         ptags: posting_tags(posting, account_tags, commodity_tags),

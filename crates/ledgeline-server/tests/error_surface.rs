@@ -300,27 +300,22 @@ async fn malformed_balance_assertion_is_a_400_explaining_the_risk() {
     );
 }
 
-/// An assertion on the elided leg would be dropped by the formatter — the
-/// silent loss DL-2 is about.
+/// An assertion on the elided leg is written after the bare account (plan 32
+/// D35: the SPA now sends that leg blank). It used to be a `400`, from when
+/// the formatter dropped it.
 #[tokio::test]
-async fn assertion_on_the_elided_leg_is_a_400() {
+async fn assertion_on_the_elided_leg_is_written() {
     let body = json!({
         "date": "2026-01-01",
         "postings": [
             {"account": "expenses:a",
              "amount": {"commodity": "$", "quantity": {"mantissa": "100", "places": 2}}},
             {"account": "assets:bank",
-             "balanceAssertion": {"amount": {"commodity": "$", "quantity": {"mantissa": "9900", "places": 2}}}},
+             "balanceAssertion": {"amount": {"commodity": "$", "quantity": {"mantissa": "-100", "places": 2}}}},
         ],
     });
-    assert_eq!(
-        editing("POST", "/api/transactions", Some(body)).await,
-        expect(
-            StatusCode::BAD_REQUEST,
-            "the balance assertion on 'assets:bank' needs an amount on the same posting: an \
-             assertion cannot be written on the inferred (elided) leg",
-        )
-    );
+    let response = editing("POST", "/api/transactions", Some(body)).await;
+    assert_eq!(response.status, StatusCode::CREATED, "{}", response.body);
 }
 
 /// SEC-5: `places` beyond what the PARSER stores would commit an amount that

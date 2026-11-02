@@ -42,16 +42,18 @@ The review opens over the journal. A bar at the top shows the queue's name, your
 
 The top of the card says who and how much: the payee in large type, the amount, the date, and the account the money came from or went to. The amount is green for money coming in, blue for a transfer between your own accounts, and plain for money going out.
 
+The date line also shows the status and the code when they're set. Click it, or press `D`, to edit the date, the status, the code and a secondary date. Press `!` to cycle the status (unmarked, pending, cleared) and `#` to edit the code. The line stays open while you've changed any of them.
+
 Below that are the fields you can change:
 
 - **Description.** It completes from the payees already in your journal.
-- **Postings.** One row per posting with its account and amount. An uncategorized account is outlined in amber. You can add and remove postings.
+- **Postings.** One row per posting with its account, its commodity and its amount. An uncategorized account is outlined in amber. You can add and remove postings. A posting the journal leaves blank shows the amount it balances to in grey, and stays blank unless you type one. Its comment shows under the row; ⋯ adds one. A balance assertion is a chip such as `== $500.00`, and its × removes it.
 - **Tags.** Each tag is a chip. Type a name, then `:` and a value. Both complete from the tags in your journal.
-- **Comment.** The free text of the transaction's comment.
+- **Comment.** The free text of the transaction's comment, one line per comment line. Enter starts a new line.
 
-Every field's label shows the key that jumps to it. The date is under the ⋯ menu as **Edit date**, because it rarely needs changing. For anything the card can't edit, **Open in full editor** in the same menu opens the [transaction dialog](index.md#the-transaction-dialog) and closes the review. Unsaved edits on the card are dropped when you do that.
+Every field's label shows the key that jumps to it. **Add secondary date** is in the ⋯ menu. The same card, on its own, is the Journal's [transaction editor](index.md#the-transaction-editor).
 
-Cost annotations, balance assertions and virtual postings are kept as written and shown under their posting.
+Cost annotations and virtual postings are kept as written and shown under their posting.
 
 ## Reviewed, Skip and Ignore
 
@@ -164,7 +166,7 @@ When you change a description in the review, Ledgeline also writes `payee-key:` 
 
 ### How a save changes the file
 
-Changes to the description, accounts, tags and comment rewrite only those parts of the transaction. Amounts left blank stay blank, and the layout stays as you wrote it. A change to an amount, or an added or removed posting, rewrites that one transaction in Ledgeline's standard layout, as the [transaction dialog](index.md#the-transaction-dialog) does.
+Changes to the description, accounts, tags and comment rewrite only those parts of the transaction. Amounts left blank stay blank, and the layout stays as you wrote it. A change to an amount, or an added or removed posting, rewrites that one transaction in Ledgeline's standard layout.
 
 ## Settings
 
@@ -178,7 +180,7 @@ The ▾ beside **Review Recents** opens the review settings. In the review, ⋯ 
 
 The settings are stored in this browser or app window, not in the journal. The button counts and the stripes follow a change at once.
 
-## Row stripes and the editor badge
+## Row stripes and Mark reviewed
 
 The journal table marks rows with a thin stripe on their left edge:
 
@@ -188,9 +190,9 @@ The journal table marks rows with a thin stripe on their left edge:
 
 Old history stays unmarked. The same stripe shows on the left edge of each card in the narrow-window layout. Turn the stripes off under [settings](#settings).
 
-The transaction dialog shows the review state next to its title: "Reviewed Sep 2", "Ignored" or "Unreviewed". The badge is information only. To change the state, edit the tag in the dialog's comment field.
+The [transaction editor](index.md#mark-reviewed) shows the review state in its **Mark reviewed** checkbox. The box is checked for a reviewed transaction, and checked and labelled **Ignored** for an ignored one. Checking it stamps today's date and unchecking it removes the tag. A transaction that stays checked keeps its date.
 
-![The Edit transaction dialog's title with the Reviewed Sep 2 badge circled](images/review-editor-badge.png)
+![The Edit transaction card's footer with Mark reviewed checked and circled](images/transaction-editor-reviewed.png)
 
 ## Postings from automatic posting rules
 

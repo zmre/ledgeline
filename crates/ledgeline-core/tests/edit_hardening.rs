@@ -112,6 +112,7 @@ fn leg(account: &str, amount: Option<Amount>) -> Posting {
         comment: String::new(),
         tags: vec![],
         generated: None,
+        elided: false,
     }
 }
 

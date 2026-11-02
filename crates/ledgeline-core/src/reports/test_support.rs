@@ -56,6 +56,7 @@ fn posting(account: &str, amounts: Vec<Amount>) -> Posting {
         comment: String::new(),
         tags: Vec::new(),
         generated: None,
+        elided: false,
     }
 }
 

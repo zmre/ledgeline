@@ -914,6 +914,7 @@ mod tests {
             comment: String::new(),
             tags: Vec::new(),
             generated: None,
+            elided: false,
         }
     }
 

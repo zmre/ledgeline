@@ -244,6 +244,7 @@ fn rows_and_haystacks_match_the_captured_typescript() {
     let journals = golden["cases"].as_array().expect("cases");
     assert!(journals.len() >= 60, "the rows golden lost cases");
     let mut rows = 0;
+    let mut elided = 0;
     for entry in journals {
         let rel = entry["journal"].as_str().expect("journal");
         let fixture = Fixture::load(rel);
@@ -261,6 +262,19 @@ fn rows_and_haystacks_match_the_captured_typescript() {
             let mut ours = serde_json::to_value(context.row(txn, Vec::new())).expect("serializes");
             assert_eq!(ours["flags"], json!([]), "{label}");
             ours.as_object_mut().expect("object").remove("flags");
+            // The capture predates plan 32 D35's `elided` marker, which the
+            // TypeScript never had: take it off before comparing, and hold it
+            // to the model it comes from instead.
+            for (posting, wire) in txn.postings.iter().zip(
+                ours["postings"]
+                    .as_array_mut()
+                    .expect("postings")
+                    .iter_mut(),
+            ) {
+                let marker = wire.as_object_mut().expect("posting").remove("elided");
+                assert_eq!(marker.is_some(), posting.elided, "{label}: elided");
+                elided += usize::from(posting.elided);
+            }
             let mut want = want.clone();
             let haystack = want
                 .as_object_mut()
@@ -273,4 +287,5 @@ fn rows_and_haystacks_match_the_captured_typescript() {
         }
     }
     assert!(rows > 400, "too few rows compared: {rows}");
+    assert!(elided > 100, "too few elided postings marked: {elided}");
 }

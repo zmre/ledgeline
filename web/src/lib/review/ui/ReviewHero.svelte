@@ -6,12 +6,34 @@
     //
     // `peek` is the same hero on a card waiting beneath the top one. It carries
     // no test ids, so `review-payee` and the rest always name the top card.
+    //
+    // The top card passes `details` (plan 32 D33): the editable date, status
+    // and code take the place of the plain date and status. Collapsed, they
+    // stay in the line with the funding account; expanded (`detailsBlock`),
+    // they get a line of their own under it.
+    import type {Snippet} from "svelte";
     import type {AccountClasses} from "#lib/domain/accountClass.js";
     import {formatAmount, neg} from "#lib/domain/money.js";
     import type {Transaction} from "#lib/domain/types.js";
     import {heroOf, longDate, type HeroTone} from "../card";
 
-    let {txn, classes, updatedFrom = null, peek = false}: {txn: Transaction; classes: AccountClasses; updatedFrom?: number | null; peek?: boolean} = $props();
+    let {
+        txn,
+        classes,
+        updatedFrom = null,
+        peek = false,
+        details,
+        detailsBlock = false,
+    }: {
+        txn: Transaction;
+        classes: AccountClasses;
+        updatedFrom?: number | null;
+        peek?: boolean;
+        /** The details row, in place of the date and status. */
+        details?: Snippet;
+        /** The details are the editor: a line of their own. */
+        detailsBlock?: boolean;
+    } = $props();
 
     const hero = $derived(heroOf(txn, classes));
     const TONE: Record<HeroTone, string> = {out: "text-base-content", in: "text-success", transfer: "text-info"};
@@ -26,17 +48,26 @@
             {hero.payee || "(no description)"}
             {#if hero.note !== ""}<span class="font-normal text-base-content/45">| {hero.note}</span>{/if}
         </h2>
-        <p class="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-base-content/60">
-            <span class="tabular-nums">{longDate(txn.date)}</span>
-            {#if hero.funding !== null}
-                <span aria-hidden="true" class="text-base-content/25">·</span>
-                <span>{hero.funding.preposition} <span class="font-medium text-base-content/85">{hero.funding.account}</span></span>
-            {/if}
-            {#if txn.status !== "unmarked"}
-                <span aria-hidden="true" class="text-base-content/25">·</span>
-                <span class={txn.status === "pending" ? "text-warning" : ""}>{txn.status}</span>
-            {/if}
-        </p>
+        {#if details === undefined || !detailsBlock || hero.funding !== null}
+            <div class="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-base-content/60">
+                {#if details === undefined}
+                    <span class="tabular-nums">{longDate(txn.date)}</span>
+                {:else if !detailsBlock}
+                    {@render details()}
+                {/if}
+                {#if hero.funding !== null}
+                    {#if details === undefined || !detailsBlock}<span aria-hidden="true" class="text-base-content/25">·</span>{/if}
+                    <span>{hero.funding.preposition} <span class="font-medium text-base-content/85">{hero.funding.account}</span></span>
+                {/if}
+                {#if details === undefined && txn.status !== "unmarked"}
+                    <span aria-hidden="true" class="text-base-content/25">·</span>
+                    <span class={txn.status === "pending" ? "text-warning" : ""}>{txn.status}</span>
+                {/if}
+            </div>
+        {/if}
+        {#if details !== undefined && detailsBlock}
+            <div class="mt-3">{@render details()}</div>
+        {/if}
         {#if updatedFrom !== null && !peek}
             <p class="mt-2 inline-flex items-center gap-1.5 rounded-full bg-info/10 px-2 py-0.5 text-xs text-info" data-testid="review-updated-from">
                 updated from card {updatedFrom}

@@ -83,7 +83,16 @@ describe("UNIT review run — staged", () => {
         const {saves, sink} = recordingSink();
         const items = ITEMS();
         review.openStaged("unknowns", items, sink);
-        const draft = {date: "2026-10-01", description: "HARDWARE STORE 1", comment: "", tags: [], postings: []};
+        const draft = {
+            date: "2026-10-01",
+            date2: "",
+            status: "unmarked" as const,
+            code: "",
+            description: "HARDWARE STORE 1",
+            comment: "",
+            tags: [],
+            postings: [],
+        };
         review.setDraft(draft);
         const journal = decodeReviewTxn(reviewTxnWire(txnFixture(40, "HARDWARE STORE 9")));
         const result = await review.save(

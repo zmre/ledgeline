@@ -260,6 +260,7 @@ function decodePosting(raw: unknown, context: string): Posting {
         }
         posting.generated = Object.freeze({rule, query: str(generated.query, `${context}.generated.query`)});
     }
+    if (value.elided !== undefined && bool(value.elided, `${context}.elided`)) posting.elided = true;
     if (value.balanceAssertion !== undefined) {
         const assertion = obj(value.balanceAssertion, `${context}.balanceAssertion`);
         posting.balanceAssertion = Object.freeze({

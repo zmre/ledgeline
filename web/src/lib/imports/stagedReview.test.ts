@@ -60,5 +60,15 @@ describe("UNIT stagedReview — the edits line", () => {
                 {op: "setTxnComment", comment: ""},
             ])
         ).toEqual(["posting 1 → expenses:home:supplies", "renamed “Hardware”", "reviewed", "ignored", "tag trip removed", "comment cleared"]);
+        expect(
+            describeOps([
+                {op: "setDate", date: "2026-10-02"},
+                {op: "setDate2", date2: null},
+                {op: "setStatus", status: "pending"},
+                {op: "setCode", code: "7"},
+                {op: "setPostingComment", posting: 1, comment: "x"},
+                {op: "removePostingAssertion", posting: 0},
+            ])
+        ).toEqual(["dated 2026-10-02", "secondary date removed", "marked pending", "code 7", "posting 2 comment edited", "posting 1 assertion removed"]);
     });
 });

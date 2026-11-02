@@ -469,6 +469,7 @@ fn generate(
                 comment: auto.comment.clone(),
                 tags,
                 generated: Some(Arc::clone(&origin)),
+                elided: false,
             })
         })
         .collect::<Result<Vec<_>, DecError>>()?;

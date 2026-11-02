@@ -195,8 +195,27 @@ export type WireEditOp =
     | {op: "setPostingAccount"; posting: number; account: string}
     /** `value: null` removes every occurrence of the tag. */
     | {op: "setTxnTag"; name: string; value: string | null}
-    /** The header comment's FREE TEXT; its tags are kept. */
+    /**
+     * The whole transaction comment's FREE TEXT, one line per `\n`: the
+     * header's same-line comment and the `;` lines above the first posting.
+     * Each tag stays on the line it is on (`commentFreeText` reads it back).
+     */
     | {op: "setTxnComment"; comment: string}
+    /** The primary date, `YYYY-MM-DD`. */
+    | {op: "setDate"; date: string}
+    /** The secondary date, `YYYY-MM-DD`; `null` removes it. */
+    | {op: "setDate2"; date2: string | null}
+    | {op: "setStatus"; status: WireStatus}
+    /** The `(CODE)`; `null` removes it. No `)` or `;`, no surrounding spaces. */
+    | {op: "setCode"; code: string | null}
+    /**
+     * A written posting's WHOLE comment, verbatim (tags included): line 0 on
+     * the posting's line (empty: none), each later line one `;` line under
+     * it. `null` removes it.
+     */
+    | {op: "setPostingComment"; posting: number; comment: string | null}
+    /** Drop a written posting's balance assertion, keeping its amount or its elision. */
+    | {op: "removePostingAssertion"; posting: number}
     | {op: "replace"; transaction: ReplaceTransactionBody};
 
 /** One transaction's edits, with the fingerprint of the text the client was shown. */
@@ -1642,6 +1661,25 @@ export class LedgelineApi {
      */
     reviewSimilarKey(key: string, today: string): Promise<unknown> {
         return this.getJson(`/api/review/similar-key${queryString({key, today})}`);
+    }
+
+    /**
+     * One transaction as a queue item, whether or not a queue holds it (plan
+     * 32 D31; decode with `decodeReviewItem`): its row, fingerprint,
+     * similarity key and suggestions, for the card's single-transaction mode.
+     */
+    reviewItem(index: number, today: string): Promise<unknown> {
+        return this.getJson(`/api/review/item/${index}${queryString({today})}`);
+    }
+
+    /**
+     * A queue item's suggestions for a DESCRIPTION alone (plan 32 D36; decode
+     * with `decodeDescriptionSuggestions`): the add form's "payee picked →
+     * category". A suggestion a recurring charge backs carries `recurring`,
+     * its usual amount and funding account.
+     */
+    reviewSuggest(description: string, today: string): Promise<unknown> {
+        return this.getJson(`/api/review/suggest${queryString({description, today})}`);
     }
 
     /**

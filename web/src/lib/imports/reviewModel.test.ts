@@ -48,6 +48,48 @@ describe("UNIT reviewModel — mergeOps", () => {
     });
 });
 
+describe("UNIT reviewModel — the D34 ops (plan 32 Phase 7a)", () => {
+    const DATED: WireEditOp = {op: "setDate", date: "2026-10-02"};
+    const COMMENTED: WireEditOp = {op: "setPostingComment", posting: 0, comment: "receipt in the drawer"};
+
+    it("gives every header and posting op its own slot", () => {
+        const merged = mergeOps(
+            [DATED, {op: "setStatus", status: "cleared"}, {op: "setCode", code: "1"}, COMMENTED, {op: "removePostingAssertion", posting: 0}],
+            [
+                {op: "setDate", date: "2026-10-03"},
+                {op: "setDate2", date2: "2026-10-04"},
+                {op: "setCode", code: null},
+                {op: "setPostingComment", posting: 1, comment: null},
+            ]
+        );
+        // The winners in the order they were written: the later save's last.
+        expect(merged).toEqual([
+            {op: "setStatus", status: "cleared"},
+            COMMENTED,
+            {op: "removePostingAssertion", posting: 0},
+            {op: "setDate", date: "2026-10-03"},
+            {op: "setDate2", date2: "2026-10-04"},
+            {op: "setCode", code: null},
+            {op: "setPostingComment", posting: 1, comment: null},
+        ]);
+    });
+
+    it("drops a date or posting comment a regenerated text already has, and flags a date the user never saw", () => {
+        const item = staged(0, "fp-a");
+        const already = staged(0, "fp-b", (txn) => {
+            txn.date = "2026-10-02";
+            txn.postings[0]!.comment = "receipt in the drawer";
+        });
+        const covered = replayOverrides([override(item, [DATED, COMMENTED])], [already]);
+        expect(covered.kept).toEqual([]);
+        const moved = staged(0, "fp-c", (txn) => {
+            txn.date = "2026-09-30";
+        });
+        const report = replayOverrides([override(item, [COMMENTED])], [moved]);
+        expect(report.kept[0]).toMatchObject({ops: [COMMENTED], flagged: true});
+    });
+});
+
 describe("UNIT reviewModel — replayOverrides (D25)", () => {
     it("keeps an override whose text is unchanged", () => {
         const item = staged(2, "fp-a");

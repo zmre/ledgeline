@@ -76,6 +76,7 @@ pub fn posting(account: &str, amounts: Vec<Amount>, tags: &[(&str, &str)]) -> Po
             .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
             .collect(),
         generated: None,
+        elided: false,
     }
 }
 

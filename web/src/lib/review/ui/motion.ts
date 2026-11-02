@@ -74,6 +74,10 @@ export const DURATIONS = {
     counter: 300,
     /** The reduced-motion cross-fade, standing in for every move above. */
     reduced: 120,
+    /** Single mode (D31): the card opens like a dialog. */
+    dialog: 140,
+    /** Single mode: the ✓ shows this long after a save, then the layer closes. */
+    flash: 260,
 } as const;
 
 /** One pose in the pile: how far down, how small and how dim a card sits. */
@@ -227,6 +231,21 @@ export function cardIn(_node: Element, params: MotionParams): TransitionConfig {
     const peek = PEEKS[0] as Pose;
     const hold = holdFor(exit);
     return {duration, css: (t) => poseCss(peek, TOP, cubicOut(afterHold(t, hold, duration)))};
+}
+
+/**
+ * Single mode's card (D31) as the editor opens: a dialog's scale and fade, from
+ * 0.96, with no travel. Reduced motion is the usual cross-fade.
+ */
+export function dialogIn(_node: Element, params: {reduced: boolean}): TransitionConfig {
+    if (params.reduced) return fade();
+    return {
+        duration: DURATIONS.dialog,
+        css: (t) => {
+            const q = cubicOut(t);
+            return `transform: scale(${r(0.96 + 0.04 * q)}); opacity: ${r(q)}`;
+        },
+    };
 }
 
 /**

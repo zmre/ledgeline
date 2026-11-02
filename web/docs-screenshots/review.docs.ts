@@ -116,18 +116,20 @@ test("review settings popover", async ({page}) => {
     await shot(page, SECTION, "review-settings", {clip: [page.getByTestId("review-recents-button"), toggle, popover], padding: 14});
 });
 
-test("editor badge", async ({page}) => {
-    // #17, "Blue Bottle Coffee", carries reviewed:2026-09-02.
+test("editor: Mark reviewed", async ({page}) => {
+    // #17, "Blue Bottle Coffee", carries reviewed:2026-09-02: the editor's
+    // checkbox starts checked, and leaving it so keeps that date (D32).
     const row = page.locator("tr[data-txn='17']");
     await row.hover();
     await row.getByRole("button", {name: "Edit whole transaction"}).click();
-    const dialog = page.getByRole("dialog");
-    await expect(dialog).toBeVisible();
-    const badge = dialog.getByTestId("modal-review-badge");
-    await expect(badge).toHaveText(/^Reviewed Sep/);
-    // The date field takes focus on open; a focus ring in a manual reads as "click here".
-    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-    const box = await around([dialog.locator(".modal-box")]);
-    const drawn = await annotate(page, [{kind: "circle", target: badge, pad: 2}]);
-    await shot(page, SECTION, "review-editor-badge", {clip: [{...box, height: Math.min(box.height, 150)}, drawn], padding: 0});
+    const dialog = page.getByRole("dialog", {name: "Edit transaction"});
+    const card = dialog.getByTestId("review-card");
+    await expect(card).toBeFocused();
+    const box = dialog.getByTestId("review-mark-reviewed");
+    await expect(box).toBeChecked();
+    await page.mouse.move(2, 2);
+    await finishMotion(page);
+    const footer = card.getByTestId("review-footer");
+    const drawn = await annotate(page, [{kind: "circle", target: box.locator("xpath=ancestor::label[1]"), pad: 4}]);
+    await shot(page, SECTION, "transaction-editor-reviewed", {clip: [footer, drawn], padding: 8});
 });

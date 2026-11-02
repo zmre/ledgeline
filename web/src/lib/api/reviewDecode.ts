@@ -8,12 +8,15 @@
 
 import type {
     BatchResult,
+    DescriptionSuggestions,
     PayeeList,
     PayeeUse,
     Precedent,
     QueueItem,
     QueueKind,
     QueuePage,
+    RecurringFill,
+    ReviewItem,
     ReviewTxn,
     SimilarSet,
     Suggestion,
@@ -24,6 +27,7 @@ import type {
 import {ApiShapeError} from "./client";
 import type {RulesCandidate, RulesFor} from "#lib/imports/reviewTypes.js";
 import {arr, bool, decodeRow, num, obj, str, strings} from "./journalViewDecode";
+import {decodeDec} from "./nativeDecode";
 
 const SOURCES: ReadonlySet<string> = new Set<SuggestionSource>(["exactKey", "ruleFile", "payeePrefix", "recurring"]);
 
@@ -60,17 +64,44 @@ export function decodeReviewTxn(raw: unknown, context = "review txn"): ReviewTxn
     return Object.freeze({...decodeRow(value, context), fingerprint: nullableStr(value.fingerprint, `${context}.fingerprint`)});
 }
 
+/** `{amount: {commodity, quantity: {mantissa, places}}, account}` (D36). */
+function decodeRecurringFill(raw: unknown, context: string): RecurringFill {
+    const value = obj(raw, context);
+    const amount = obj(value.amount, `${context}.amount`);
+    return Object.freeze({
+        amount: Object.freeze({
+            commodity: str(amount.commodity, `${context}.amount.commodity`),
+            qty: decodeDec(amount.quantity as Parameters<typeof decodeDec>[0], `${context}.amount.quantity`),
+        }),
+        account: str(value.account, `${context}.account`),
+    });
+}
+
 function decodeSuggestion(raw: unknown, context: string): Suggestion {
     const value = obj(raw, context);
     const source = str(value.source, `${context}.source`);
     if (!SOURCES.has(source)) throw new ApiShapeError(`${context}: unknown source ${JSON.stringify(source)}`);
-    return Object.freeze({
+    const suggestion: Suggestion = {
         account: str(value.account, `${context}.account`),
         description: nullableStr(value.description, `${context}.description`),
         source: source as SuggestionSource,
         confidence: count(value.confidence, `${context}.confidence`),
         strong: bool(value.strong, `${context}.strong`),
         count: count(value.count, `${context}.count`),
+    };
+    // Additive (D36): only the description route sends it.
+    if (value.recurring !== undefined) suggestion.recurring = decodeRecurringFill(value.recurring, `${context}.recurring`);
+    return Object.freeze(suggestion);
+}
+
+/** `GET /api/review/suggest` → a description's suggestions (D36), in the queue item's shape. */
+export function decodeDescriptionSuggestions(raw: unknown): DescriptionSuggestions {
+    const body = obj(raw, "suggest");
+    const suggestions = arr(body.suggestions, "suggest suggestions").map((s, i) => decodeSuggestion(s, `suggest suggestions[${i}]`));
+    return Object.freeze({
+        generation: str(body.generation, "suggest generation"),
+        key: nullableStr(body.key, "suggest key"),
+        suggestions: Object.freeze(suggestions) as Suggestion[],
     });
 }
 
@@ -83,6 +114,12 @@ export function decodeQueueItem(raw: unknown, context: string): QueueItem {
         key: nullableStr(value.key, `${context}.key`),
         suggestions: Object.freeze(suggestions) as Suggestion[],
     });
+}
+
+/** `GET /api/review/item/{index}` → one transaction as a queue item (D31). */
+export function decodeReviewItem(raw: unknown): ReviewItem {
+    const body = obj(raw, "review item");
+    return Object.freeze({generation: str(body.generation, "review item generation"), item: decodeQueueItem(body.item, "review item")});
 }
 
 /** `GET /api/review/queue` → one page of a queue. */

@@ -1,7 +1,7 @@
 // Description and tag completion (plan 32 D15).
 
 import {describe, expect, it} from "vitest";
-import {parseTag, payeeWeight, rankPayees, tagCompletions} from "./complete";
+import {parseTag, payeeWeight, rankCommodities, rankPayees, tagCompletions} from "./complete";
 import type {PayeeUse, TagUse} from "./types";
 
 const TODAY = "2026-10-30";
@@ -60,5 +60,27 @@ describe("UNIT tag completion", () => {
         expect(parseTag("two words:x")).toBeNull();
         expect(parseTag("a:b,c")).toBeNull();
         expect(parseTag(":x")).toBeNull();
+    });
+});
+
+describe("UNIT rankCommodities", () => {
+    const COMMODITIES = ["$", "EUR", "VTSAX", "GBP", "BTC", "AAPL", "EUR"];
+
+    it("offers every commodity, once each and in order, for an empty field", () => {
+        expect(rankCommodities("", COMMODITIES)).toEqual(["$", "EUR", "VTSAX", "GBP", "BTC", "AAPL"]);
+    });
+
+    it("puts the commodities a query prefixes ahead of those it appears in, ignoring case", () => {
+        expect(rankCommodities("a", COMMODITIES)).toEqual(["AAPL", "VTSAX"]);
+        expect(rankCommodities("eu", COMMODITIES)).toEqual(["EUR"]);
+    });
+
+    it("does not offer back what is typed exactly, nor a blank commodity", () => {
+        expect(rankCommodities("EUR", COMMODITIES)).toEqual([]);
+        expect(rankCommodities("", ["", "$"])).toEqual(["$"]);
+    });
+
+    it("stops at the limit", () => {
+        expect(rankCommodities("", COMMODITIES, 2)).toEqual(["$", "EUR"]);
     });
 });

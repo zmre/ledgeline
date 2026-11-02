@@ -1385,8 +1385,12 @@ function frozen<T>(items: T[]): T[] {
     return Object.freeze(items) as T[];
 }
 
-/** {mantissa, places} → frozen Dec, guarding the JS safe-integer range like normalize.ts. */
-function decodeDec(raw: RawDec | undefined, context: string): Dec {
+/**
+ * {mantissa, places} → frozen Dec, guarding the JS safe-integer range like
+ * normalize.ts. Exported for the review decoders, whose recurring fill (plan 32
+ * D36) carries an edit-wire amount.
+ */
+export function decodeDec(raw: RawDec | undefined, context: string): Dec {
     if (raw === undefined || raw === null || typeof raw.mantissa !== "string" || typeof raw.places !== "number") {
         throw new ApiShapeError(`${context}: missing mantissa/places`);
     }

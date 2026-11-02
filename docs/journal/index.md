@@ -34,7 +34,7 @@ Each row is one transaction. The columns are:
 
 Hover the comment marker to read the comments. Hover a problem dot to read what the check found.
 
-A thin stripe on a row's left edge marks work left to do: amber for an uncategorized transaction, faint for one you haven't reviewed. Both mark only transactions inside the review window, the last 365 days unless you change it. See [Reviewing transactions](review.md#row-stripes-and-the-editor-badge).
+A thin stripe on a row's left edge marks work left to do: amber for an uncategorized transaction, faint for one you haven't reviewed. Both mark only transactions inside the review window, the last 365 days unless you change it. See [Reviewing transactions](review.md#row-stripes-and-mark-reviewed).
 
 The gear menu at the right of the table toolbar turns columns on and off. Ledgeline remembers the choice. In a narrow window the table switches to one card per transaction.
 
@@ -56,30 +56,48 @@ Three edits happen in place, without opening a dialog:
 
 The same edits have [keyboard shortcuts](keyboard.md): <kbd>e</kbd> for the description, <kbd>c</kbd> for the category, and <kbd>s</kbd> for status, all on the row under the cursor.
 
-### The transaction dialog
+### The transaction editor
 
-The **Add transaction** button above the table opens an empty dialog. The pencil button that appears when you hover a description opens the same dialog filled in with that transaction. <kbd>n</kbd> and <kbd>Enter</kbd> do the same from the keyboard.
+Press <kbd>Enter</kbd> on the row under the cursor, or click the pencil button that appears when you hover a description, to open the transaction in the editor. **Add transaction** above the table, or <kbd>n</kbd>, opens a blank one. The editor is the [review](review.md) card on its own, without a queue around it.
 
-![The Edit transaction dialog for a paycheck with four postings: salary, federal tax, state tax and checking](images/transaction-editor.png)
+![The Edit transaction card for a paycheck with four postings: salary, federal tax, state tax and checking](images/transaction-editor.png)
 
-The dialog has these fields:
+The top of the card shows the payee, the amount and a row of details: the date, the status, the code and an optional secondary date. Click the status to cycle it from unmarked to pending to cleared. Below that you can edit:
 
-- Date and an optional secondary date.
-- Status: unmarked, pending (`!`) or cleared (`*`).
-- An optional code.
-- Description. hledger reads `payee | note` as a payee and a note.
-- Comment / tags. A `key:value` pair such as `category:food` becomes an hledger tag.
-- One row per posting, with an account, an amount, a commodity and an optional posting comment.
+- the description, which completes from the payees in your journal. hledger reads `payee | note` as a payee and a note;
+- one row per posting, with an account, a commodity, an amount and a posting comment (⋯ adds one);
+- tags, one chip each;
+- the comment, which can run over several lines.
 
-Leave one posting's amount blank and hledger infers it, as it would in the file. **Add posting** adds a row and the ✕ removes one. <kbd>Enter</kbd> in any field saves, and so does <kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+<kbd>Enter</kbd>. <kbd>Esc</kbd> closes the dialog without saving.
+Leave one posting's amount blank and hledger infers it, as it would in the file. The blank amount shows the value it balances to in grey and stays blank when you save. Its commodity can't be changed until you type an amount. **Add posting** adds a row and the ✕ removes one.
 
-The dialog keeps parts of a posting it doesn't let you edit:
+The editor keeps parts of a posting it doesn't let you edit:
 
 - A cost annotation (`@` or `@@`) is written back unchanged.
 - A virtual posting stays virtual, in `(account)` or `[account]` form.
-- A balance assertion stays on the posting. A **Remove** button drops it. An assertion needs an amount on its posting, and the dialog says so if you clear the amount.
+- A balance assertion shows as a chip such as `== $500.00`. Its × removes it.
+- Postings an [automatic posting rule](automatic-postings.md) adds are listed under the others, read-only, with a link to the rule.
 
-Ledgeline refuses a transaction that doesn't balance and shows the reason in the dialog. A new transaction goes into the file that holds its neighbours by date. If your journal `include`s one file per year, a 2026 transaction lands in the 2026 file.
+**Save**, or <kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+<kbd>Enter</kbd>, writes your changes and closes the editor. <kbd>Esc</kbd> leaves a field, and a second <kbd>Esc</kbd> closes the editor. If you changed something, it asks before throwing the change away. The editor's own keys are listed under [Keyboard shortcuts](keyboard.md#transaction-editor).
+
+#### Mark reviewed
+
+The **Mark reviewed** checkbox in the footer shows whether the transaction has a `reviewed:` tag, and a save writes what it shows:
+
+- Checking it adds `reviewed:` with today's date.
+- Unchecking it removes the tag.
+- A transaction that was already reviewed keeps its original date while the box stays checked.
+- An ignored transaction (`reviewed:ignore`) shows the box checked and labelled **Ignored**.
+
+The box is disabled while a posting is uncategorized. <kbd>v</kbd> toggles it. A new transaction starts unchecked.
+
+#### Suggestions
+
+The card suggests a category the way a review card does. On a new transaction, pick a payee from the description's list and the card offers the category that payee usually gets. If the payee is a recurring charge, the suggestion also carries its usual amount and the account it's paid from, for example "streaming · $15.49 from liabilities:visa". Click it, or press <kbd>Tab</kbd> in the first account, to fill those in. <kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> takes the selected suggestion and saves in one step. It doesn't change the Mark reviewed box.
+
+When you edit an existing transaction, the card also offers [Similar](review.md#similar-transactions) transactions to apply the same change to, and **Remember as a rule** when the transaction came from an import. Neither appears on a new transaction.
+
+Ledgeline refuses a transaction that doesn't balance and shows the reason on the card. A new transaction goes into the file that holds its neighbours by date. If your journal `include`s one file per year, a 2026 transaction lands in the 2026 file.
 
 ### Reviewing transactions
 
@@ -90,7 +108,7 @@ Ledgeline refuses a transaction that doesn't balance and shows the reason in the
 There are two ways to delete:
 
 - In the table, put the cursor on the row and press <kbd>x</kbd>. A bar above the table names the transaction and offers **Delete** and **Keep**. Press <kbd>x</kbd> again to confirm, or <kbd>Esc</kbd> to back out.
-- In the edit dialog, press **Delete**, then **Confirm delete**.
+- In the editor, choose ⋯ → **Delete transaction**, or press <kbd>Shift</kbd>+<kbd>X</kbd>. The footer asks you to **Confirm delete** or **Keep**. Press <kbd>Shift</kbd>+<kbd>X</kbd> again to confirm, or <kbd>Esc</kbd> to back out.
 
 ## The insights panel
 

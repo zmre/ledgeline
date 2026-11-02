@@ -419,6 +419,62 @@ async fn similar_answers_404_for_a_missing_transaction_and_400_for_a_bad_queue()
 }
 
 // ---------------------------------------------------------------------------
+// GET /api/review/item/{index}
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn item_serves_one_transaction_as_its_queue_item() {
+    let dir = fixture_copy(None);
+    let state = state_in(&dir);
+    let queued = queue(&state, "unknowns", "").await;
+    let card = item(&queued["items"], "2026-10-12", "4412");
+    let index = card["index"].as_u64().expect("index");
+    let body = get(&state, &format!("/api/review/item/{index}?today={TODAY}")).await;
+    assert!(body["generation"].is_string());
+    assert_eq!(
+        &body["item"], card,
+        "the same row, fingerprint, key and suggestions"
+    );
+}
+
+#[tokio::test]
+async fn item_serves_a_transaction_no_queue_holds() {
+    let dir = fixture_copy(None);
+    let state = state_in(&dir);
+    let rows = get(
+        &state,
+        &format!("/api/journal/rows?today={TODAY}&limit=100"),
+    )
+    .await;
+    let reviewed = rows["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .find(|row| row["reviewed"] == true && row["unknown"] == false)
+        .expect("a reviewed, categorised row");
+    let index = reviewed["index"].as_u64().expect("index");
+    let body = get(&state, &format!("/api/review/item/{index}?today={TODAY}")).await;
+    assert_eq!(body["item"]["index"], index);
+    assert_eq!(body["item"]["reviewed"], true);
+    assert!(
+        body["item"]["fingerprint"]
+            .as_str()
+            .is_some_and(|f| !f.is_empty())
+    );
+    assert!(body["item"]["suggestions"].is_array());
+}
+
+#[tokio::test]
+async fn item_answers_404_for_a_missing_transaction_and_400_for_a_bad_date() {
+    let dir = fixture_copy(None);
+    let state = state_in(&dir);
+    let (status, _, _) = send(&state, "GET", "/api/review/item/9999", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = send(&state, "GET", "/api/review/item/1?today=nope", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+// ---------------------------------------------------------------------------
 // GET /api/payees, GET /api/tags
 // ---------------------------------------------------------------------------
 
@@ -766,4 +822,238 @@ async fn a_batch_needs_an_editor() {
     let state = AppState::from_journal(&journal);
     let (status, _, _) = batch(&state, json!([{"index": 1, "fingerprint": "x", "ops": []}])).await;
     assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+}
+
+// ---------------------------------------------------------------------------
+// Plan 32 Phase 7a: the surgical header and posting ops, elision on the wire,
+// suggestions for a description, and adding a reviewed transaction
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_batch_applies_every_surgical_header_and_posting_op() {
+    let dir = fixture_copy(None);
+    let state = state_in(&dir);
+    let before = queue(&state, "unknowns", "").await;
+    let card = item(&before["items"], "2026-10-12", "4412");
+    let main = read(&dir, "review.journal");
+    let (status, body, text) = batch(
+        &state,
+        json!([{"index": card["index"], "fingerprint": card["fingerprint"], "ops": [
+            {"op": "setDate", "date": "2026-10-11"},
+            {"op": "setDate2", "date2": "2026-10-13"},
+            {"op": "setStatus", "status": "cleared"},
+            {"op": "setCode", "code": "1042"},
+            {"op": "setTxnComment", "comment": "split with Sam\nsecond"},
+            {"op": "setPostingComment", "posting": 1, "comment": "paid"},
+            {"op": "removePostingAssertion", "posting": 0},
+        ]}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let edited = &body["edited"][0];
+    assert_eq!(edited["date"], "2026-10-11");
+    assert_eq!(edited["date2"], "2026-10-13");
+    assert_eq!(edited["status"], "cleared");
+    assert_eq!(edited["code"], "1042");
+    assert_eq!(edited["postings"][1]["elided"], true, "{edited}");
+    assert!(edited["postings"][0].get("elided").is_none());
+
+    // Only the card's own lines changed, and its elided leg is still blank.
+    assert_eq!(
+        read(&dir, "review.journal"),
+        main.replace(
+            "2026-10-12 SQ *BLUE BOTTLE 4412 OAKLAND\n    ; receipt: 0042\n    expenses:unknown  $6.75\n    liabilities:visa\n",
+            "2026-10-11=2026-10-13 * (1042) SQ *BLUE BOTTLE 4412 OAKLAND  ; split with Sam\n    ; receipt: 0042\n    ; second\n    expenses:unknown  $6.75\n    liabilities:visa  ; paid\n"
+        )
+    );
+
+    // Each op with null removes what it set.
+    let fingerprint = edited["fingerprint"].clone();
+    let (status, _, text) = batch(
+        &state,
+        json!([{"index": card["index"], "fingerprint": fingerprint, "ops": [
+            {"op": "setDate2", "date2": null},
+            {"op": "setCode", "code": null},
+            {"op": "setStatus", "status": "unmarked"},
+            {"op": "setTxnComment", "comment": ""},
+            {"op": "setPostingComment", "posting": 1, "comment": null},
+        ]}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(
+        read(&dir, "review.journal"),
+        main.replace(
+            "2026-10-12 SQ *BLUE BOTTLE 4412",
+            "2026-10-11 SQ *BLUE BOTTLE 4412"
+        )
+    );
+}
+
+#[tokio::test]
+async fn the_new_ops_refuse_bad_input_as_400s_and_write_nothing() {
+    let dir = fixture_copy(None);
+    let state = state_in(&dir);
+    let before = queue(&state, "unknowns", "").await;
+    let card = item(&before["items"], "2026-10-12", "4412");
+    let main = read(&dir, "review.journal");
+    for op in [
+        json!({"op": "setDate", "date": "2026-02-30"}),
+        json!({"op": "setDate", "date": "10/12/2026"}),
+        json!({"op": "setDate2", "date2": "soon"}),
+        json!({"op": "setCode", "code": "a)b"}),
+        json!({"op": "setCode", "code": ""}),
+        json!({"op": "setStatus", "status": "bogus"}),
+        json!({"op": "setTxnComment", "comment": "fine\nnote: tag"}),
+        json!({"op": "setTxnComment", "comment": "a\rb"}),
+        json!({"op": "setPostingComment", "posting": 0, "comment": "a\u{0}b"}),
+        json!({"op": "removePostingAssertion"}),
+    ] {
+        let (status, _, text) = batch(
+            &state,
+            json!([{"index": card["index"], "fingerprint": card["fingerprint"], "ops": [op]}]),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{op}: {text}");
+        assert_eq!(read(&dir, "review.journal"), main, "{op} wrote nothing");
+    }
+    // A posting that is not there is a 404, as for `setPostingAccount`.
+    let (status, _, text) = batch(
+        &state,
+        json!([{"index": card["index"], "fingerprint": card["fingerprint"],
+                "ops": [{"op": "setPostingComment", "posting": 9, "comment": "x"}]}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{text}");
+    assert_eq!(read(&dir, "review.journal"), main);
+}
+
+#[tokio::test]
+async fn rows_mark_the_elided_leg_and_only_it() {
+    let dir = fixture_copy(None);
+    let state = state_in(&dir);
+    let before = queue(&state, "unknowns", "").await;
+    let card = item(&before["items"], "2026-10-12", "4412");
+    assert_eq!(card["postings"][1]["elided"], true, "{card}");
+    assert!(card["postings"][0].get("elided").is_none());
+    let single = get(&state, &format!("/api/transactions/{}", card["index"])).await;
+    assert_eq!(single["postings"][1]["elided"], true);
+    // The amount is still there for anything that reads it.
+    assert_eq!(single["postings"][1]["amounts"][0]["qty"]["m"], "-675");
+}
+
+#[tokio::test]
+async fn suggest_answers_a_description_with_the_queue_s_suggestion_shape() {
+    let dir = fixture_copy(None);
+    let state = state_in(&dir);
+    let body = get(
+        &state,
+        &format!("/api/review/suggest?description=Netflix&today={TODAY}"),
+    )
+    .await;
+    assert_eq!(body["key"], "netflix");
+    assert!(body["generation"].is_string());
+    let top = &body["suggestions"][0];
+    assert_eq!(top["account"], "expenses:streaming");
+    assert_eq!(top["source"], "exactKey");
+    assert_eq!(top["strong"], true);
+    assert_eq!(
+        top["recurring"],
+        json!({"amount": {"commodity": "$", "quantity": {"mantissa": "1549", "places": 2}},
+               "account": "liabilities:visa"})
+    );
+
+    // A queued card's suggestions carry no `recurring` at all.
+    let queued = queue(&state, "unknowns", "").await;
+    let card = item(&queued["items"], "2026-10-12", "4412");
+    let typed = get(
+        &state,
+        &format!(
+            "/api/review/suggest?description=SQ%20*BLUE%20BOTTLE%209999%20OAKLAND&today={TODAY}"
+        ),
+    )
+    .await;
+    assert_eq!(typed["key"], card["key"]);
+    let accounts = |list: &Value| -> Vec<Value> {
+        list.as_array()
+            .expect("suggestions")
+            .iter()
+            .map(|s| s["account"].clone())
+            .collect()
+    };
+    assert_eq!(
+        accounts(&typed["suggestions"]),
+        accounts(&card["suggestions"])
+    );
+    assert!(
+        card["suggestions"]
+            .as_array()
+            .expect("suggestions")
+            .iter()
+            .all(|s| s.get("recurring").is_none())
+    );
+
+    // No key, no suggestions; bounds and dates are checked.
+    let empty = get(&state, &format!("/api/review/suggest?today={TODAY}")).await;
+    assert_eq!(empty["key"], Value::Null);
+    assert_eq!(empty["suggestions"], json!([]));
+    let long = "x".repeat(1_025);
+    let (status, _, _) = send(
+        &state,
+        "GET",
+        &format!("/api/review/suggest?description={long}&today={TODAY}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _, _) = send(
+        &state,
+        "GET",
+        "/api/review/suggest?description=Netflix&today=2026-02-30",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// D36: adding a transaction stamped reviewed is ONE write — the tag rides
+/// the add's own `comment`, which the header carries.
+#[tokio::test]
+async fn adding_a_reviewed_transaction_is_one_post() {
+    let dir = fixture_copy(None);
+    let state = state_in(&dir);
+    let (status, _, body) = send(
+        &state,
+        "POST",
+        "/api/transactions",
+        Some(json!({
+            "date": "2026-10-30",
+            "description": "Netflix",
+            "comment": "family plan, reviewed:2026-10-30",
+            "position": "append",
+            "postings": [
+                {"account": "expenses:streaming",
+                 "amount": {"commodity": "$", "quantity": {"mantissa": "1549", "places": 2}}},
+                {"account": "liabilities:visa"},
+            ],
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    let added: Value = serde_json::from_slice(&body).expect("json");
+    assert!(
+        read(&dir, "review.journal").ends_with(
+            "2026-10-30 Netflix  ; family plan, reviewed:2026-10-30\n    expenses:streaming  $15.49\n    liabilities:visa\n"
+        ),
+        "{}",
+        read(&dir, "review.journal")
+    );
+    let row = get(&state, &format!("/api/transactions/{}", added["index"])).await;
+    assert_eq!(row["reviewed"], true);
+    assert_eq!(row["postings"][1]["elided"], true);
 }

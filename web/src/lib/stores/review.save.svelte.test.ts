@@ -114,7 +114,16 @@ describe("UNIT review saves", () => {
             batch: () => hold.promise,
         });
         await review.open("unknowns");
-        const draft: ReviewForm = {date: "2026-10-01", description: "Blue Bottle", comment: "", tags: [], postings: []};
+        const draft: ReviewForm = {
+            date: "2026-10-01",
+            date2: "",
+            status: "unmarked",
+            code: "",
+            description: "Blue Bottle",
+            comment: "",
+            tags: [],
+            postings: [],
+        };
         review.setDraft(draft);
         const one = review.save([TAG]);
         const second: ReviewForm = {...draft, description: "Second"};
@@ -150,9 +159,9 @@ describe("UNIT review saves", () => {
         });
         await review.open("unknowns");
         review.skip();
-        review.setDraft({date: "2026-10-01", description: "typing", comment: "", tags: [], postings: []});
+        review.setDraft({date: "2026-10-01", date2: "", status: "unmarked", code: "", description: "typing", comment: "", tags: [], postings: []});
         review.go(2);
-        review.setDraft({date: "2026-10-01", description: "stale", comment: "", tags: [], postings: []});
+        review.setDraft({date: "2026-10-01", date2: "", status: "unmarked" as const, code: "", description: "stale", comment: "", tags: [], postings: []});
         review.go(1);
         generation = "g9";
         review.syncGeneration("g1");

@@ -58,7 +58,7 @@ describe("UNIT review run", () => {
     it("keeps a card's draft while moving away from it and back", async () => {
         serveReview({queue: () => queuePageWire("unknowns", items(2))});
         await review.open("unknowns");
-        const draft = {date: "2026-10-01", description: "Renamed", comment: "", tags: [], postings: []};
+        const draft = {date: "2026-10-01", date2: "", status: "unmarked" as const, code: "", description: "Renamed", comment: "", tags: [], postings: []};
         review.setDraft(draft);
         review.skip();
         review.back();

@@ -47,6 +47,7 @@ export function wireRow(txn: Transaction, flags: Pick<Problem, "rule" | "severit
                       },
                   }),
             ...(posting.generated === undefined ? {} : {generated: posting.generated}),
+            ...(posting.elided === true ? {elided: true} : {}),
         })),
         flags,
     };

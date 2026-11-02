@@ -803,6 +803,7 @@ fn build_posting(
         comment: posting_comment(posting),
         tags: Vec::new(),
         generated: None,
+        elided: false,
     }
 }
 
@@ -1313,6 +1314,7 @@ mod tests {
             comment: comment.to_string(),
             tags: Vec::new(),
             generated: None,
+            elided: false,
         }
     }
 

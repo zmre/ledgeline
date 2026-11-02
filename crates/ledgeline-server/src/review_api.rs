@@ -10,11 +10,15 @@
 //!   — one page of a queue, every item a full row (D14: stepping between cards
 //!   never waits on the network) with its fingerprint, similarity key and
 //!   suggestions.
+//! - `GET /api/review/item/{index}?today` — one transaction as a queue item,
+//!   for the card's single-transaction mode (D31).
 //! - `GET /api/review/similar/{index}?today&queue=1,2,3` — the unreviewed
 //!   transactions sharing `index`'s similarity key, the precedent among the
 //!   categorised ones, and which candidates are in the client's queue.
 //! - `GET /api/review/similar-key?key&today` — the same for a similarity key
 //!   with no journal transaction behind it (a staged import's, plan 32 D24).
+//! - `GET /api/review/suggest?description&today` — a queue item's
+//!   suggestions for a description alone, for the add form (D36).
 //! - `GET /api/payees`, `GET /api/tags` — autocomplete vocabularies (D15),
 //!   one body per snapshot.
 //! - `POST /api/transactions/batch` — `{edits: [{index, fingerprint, ops}]}`,
@@ -57,8 +61,9 @@
 //! [`EditOp::SetPostingAccount`].
 
 use crate::edit_api::{
-    AddRequest, MAX_COMMENT_BYTES, MAX_DESCRIPTION_BYTES, NONE, TAB, bound, build_transaction,
-    check_text, json_body, lock_editor, redacted, refuse_generated, save_and_publish,
+    AddRequest, COMMENT, MAX_CODE_BYTES, MAX_COMMENT_BYTES, MAX_DATE_BYTES, MAX_DESCRIPTION_BYTES,
+    NONE, StatusIn, TAB, bound, build_transaction, check_text, json_body, lock_editor, redacted,
+    refuse_generated, save_and_publish,
 };
 use crate::error::AppError;
 use crate::journal_api::{
@@ -358,12 +363,40 @@ pub(crate) struct WireSuggestion {
     strong: bool,
     /// How many transactions back it up.
     count: usize,
+    /// A recurring charge's usual amount and funding account, for a
+    /// transaction that does not exist yet (D36). Only
+    /// `GET /api/review/suggest` fills it in, and it is left off otherwise,
+    /// so a queue item's suggestions read exactly as before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recurring: Option<WireRecurringFill>,
+}
+
+/// `{amount: {commodity, quantity}, account}`: what an add form fills in
+/// from a recurring charge. The amount is the edit wire's own shape, so it
+/// goes straight back into a posting.
+#[derive(Serialize)]
+pub(crate) struct WireRecurringFill {
+    amount: WireFillAmount,
+    account: String,
+}
+
+#[derive(Serialize)]
+struct WireFillAmount {
+    commodity: String,
+    quantity: reports_api::WireDec,
 }
 
 impl From<Suggestion> for WireSuggestion {
     fn from(suggestion: Suggestion) -> Self {
         Self {
             strong: suggestion.is_strong(),
+            recurring: suggestion.recurring.map(|fill| WireRecurringFill {
+                amount: WireFillAmount {
+                    commodity: fill.commodity.0,
+                    quantity: fill.quantity.into(),
+                },
+                account: fill.account,
+            }),
             source: match suggestion.source {
                 SuggestionSource::ExactKey => "exactKey",
                 SuggestionSource::RuleFile => "ruleFile",
@@ -398,6 +431,37 @@ struct QueueBody<'a> {
     offset: usize,
     not_editable: usize,
     items: Vec<QueueItem<'a>>,
+}
+
+/// The queue items for `indices` (with `fingerprints`, same order): each
+/// row with its similarity key and suggestions. An index the snapshot no
+/// longer holds is skipped.
+fn queue_items<'e>(
+    snapshot: &Snapshot,
+    entry: &'e DiagnosticsEntry,
+    indices: &[Tindex],
+    fingerprints: Vec<Option<String>>,
+) -> Vec<QueueItem<'e>> {
+    let journal = &snapshot.journal;
+    let (classes, review) = (
+        snapshot.view.classes(journal),
+        snapshot.view.review(journal),
+    );
+    review_txns(snapshot, entry, indices, fingerprints)
+        .into_iter()
+        .map(|(at, txn)| {
+            let current = &journal.transactions[at];
+            QueueItem {
+                txn,
+                key: similarity_key(&current.description),
+                suggestions: review
+                    .suggest(journal, &classes, current.index)
+                    .into_iter()
+                    .map(WireSuggestion::from)
+                    .collect(),
+            }
+        })
+        .collect()
 }
 
 fn queue_kind(raw: Option<&str>) -> Result<(QueueKind, &'static str), AppError> {
@@ -444,27 +508,8 @@ pub(crate) async fn queue(
                 .queue(&snapshot.journal, &opts);
             Ok((page.items.clone(), page))
         })?;
-        let journal = &snapshot.journal;
-        let (classes, review) = (
-            snapshot.view.classes(journal),
-            snapshot.view.review(journal),
-        );
-        let entry = snapshot.view.diagnostics(journal, today);
-        let items = review_txns(&snapshot, &entry, &indices, fingerprints)
-            .into_iter()
-            .map(|(at, txn)| {
-                let current = &journal.transactions[at];
-                QueueItem {
-                    txn,
-                    key: similarity_key(&current.description),
-                    suggestions: review
-                        .suggest(journal, &classes, current.index)
-                        .into_iter()
-                        .map(WireSuggestion::from)
-                        .collect(),
-                }
-            })
-            .collect();
+        let entry = snapshot.view.diagnostics(&snapshot.journal, today);
+        let items = queue_items(&snapshot, &entry, &indices, fingerprints);
         let body = to_bytes(&QueueBody {
             generation: generation_of(&snapshot.etag),
             kind: kind_name,
@@ -472,6 +517,62 @@ pub(crate) async fn queue(
             offset: opts.offset,
             not_editable: page.not_editable,
             items,
+        })?;
+        Ok((Arc::clone(&snapshot), body))
+    })
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/review/item/{index}
+// ---------------------------------------------------------------------------
+
+/// `?today` — the client's date.
+#[derive(Deserialize)]
+pub(crate) struct ItemQuery {
+    today: Option<String>,
+}
+
+/// `{generation, item}`.
+#[derive(Serialize)]
+struct ItemBody<'a> {
+    generation: &'a str,
+    item: QueueItem<'a>,
+}
+
+/// `GET /api/review/item/{index}?today` — one transaction as a queue item
+/// (its row, fingerprint, similarity key and suggestions), whether or not it
+/// is in a queue: what the card opens on to edit a single transaction (plan
+/// 32 D31). A transaction that is not there is a `404`.
+pub(crate) async fn item(
+    State(state): State<AppState>,
+    Path(index): Path<u32>,
+    Query(query): Query<ItemQuery>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let today = parse_date("today", query.today, today_utc)?;
+    answer(state, &headers, today, move |state, today| {
+        let Picked {
+            snapshot,
+            indices,
+            fingerprints,
+            ..
+        } = fingerprinted(state, |snapshot| {
+            if position_of(snapshot, index).is_none() {
+                return Err(AppError::NotFound(format!(
+                    "no transaction with index {index}"
+                )));
+            }
+            Ok((vec![Tindex(index)], ()))
+        })?;
+        let entry = snapshot.view.diagnostics(&snapshot.journal, today);
+        let item = queue_items(&snapshot, &entry, &indices, fingerprints)
+            .into_iter()
+            .next()
+            .ok_or_else(|| AppError::NotFound(format!("no transaction with index {index}")))?;
+        let body = to_bytes(&ItemBody {
+            generation: generation_of(&snapshot.etag),
+            item,
         })?;
         Ok((Arc::clone(&snapshot), body))
     })
@@ -673,6 +774,69 @@ pub(crate) async fn similar_key(
 }
 
 // ---------------------------------------------------------------------------
+// GET /api/review/suggest
+// ---------------------------------------------------------------------------
+
+/// `?description&today` — the description typed so far, and the client's
+/// date.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SuggestQuery {
+    description: Option<String>,
+    today: Option<String>,
+}
+
+/// `{generation, key, suggestions}`.
+#[derive(Serialize)]
+struct SuggestBody<'a> {
+    generation: &'a str,
+    /// The description's similarity key (D10), or null when it has none —
+    /// and then no suggestions.
+    key: Option<String>,
+    suggestions: Vec<WireSuggestion>,
+}
+
+/// `GET /api/review/suggest?description&today` — D36's "payee picked →
+/// category": the suggestions a queue item would carry, for a transaction
+/// that does not exist yet ([`ReviewIndex::suggest_for_description`]). A
+/// suggestion backed by a recurring charge also carries `recurring`, its
+/// usual amount and funding account.
+///
+/// Descriptions over 1 KB are a `400`.
+pub(crate) async fn suggest(
+    State(state): State<AppState>,
+    Query(query): Query<SuggestQuery>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let today = parse_date("today", query.today, today_utc)?;
+    let description = query.description.unwrap_or_default();
+    if description.len() > MAX_KEY_BYTES {
+        return Err(AppError::BadRequest(format!(
+            "description may be at most {MAX_KEY_BYTES} bytes, got {}",
+            description.len()
+        )));
+    }
+    answer(state, &headers, today, move |state, _| {
+        let snapshot = state.snapshot();
+        let journal = &snapshot.journal;
+        let suggestions = snapshot
+            .view
+            .review(journal)
+            .suggest_for_description(journal, &snapshot.view.classes(journal), &description)
+            .into_iter()
+            .map(WireSuggestion::from)
+            .collect();
+        let body = to_bytes(&SuggestBody {
+            generation: generation_of(&snapshot.etag),
+            key: similarity_key(&description),
+            suggestions,
+        })?;
+        Ok((snapshot, body))
+    })
+    .await
+}
+
+// ---------------------------------------------------------------------------
 // GET /api/payees, GET /api/tags
 // ---------------------------------------------------------------------------
 
@@ -790,9 +954,22 @@ fn cached(
 /// {"op": "setPostingAccount", "posting": 0, "account": "expenses:food:coffee"}
 /// {"op": "setTxnTag", "name": "reviewed", "value": "2026-10-30"}
 /// {"op": "setTxnTag", "name": "reviewed", "value": null}
-/// {"op": "setTxnComment", "comment": "birthday"}
+/// {"op": "setTxnComment", "comment": "birthday\nsplit with Sam"}
+/// {"op": "setDate", "date": "2026-10-12"}
+/// {"op": "setDate2", "date2": "2026-10-14"}
+/// {"op": "setDate2", "date2": null}
+/// {"op": "setStatus", "status": "cleared"}
+/// {"op": "setCode", "code": "1042"}
+/// {"op": "setCode", "code": null}
+/// {"op": "setPostingComment", "posting": 1, "comment": "gift card\nask Sam"}
+/// {"op": "setPostingComment", "posting": 1, "comment": null}
+/// {"op": "removePostingAssertion", "posting": 1}
 /// {"op": "replace", "transaction": { …the PUT /api/transactions/{index} body… }}
 /// ```
+///
+/// A `null` (or absent) `date2`, `code` or posting `comment` removes it.
+/// `setTxnComment` and `setPostingComment` take several lines, joined by
+/// `\n`.
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 pub(crate) enum EditOpIn {
@@ -810,6 +987,28 @@ pub(crate) enum EditOpIn {
     },
     SetTxnComment {
         comment: String,
+    },
+    SetDate {
+        date: String,
+    },
+    SetDate2 {
+        #[serde(default)]
+        date2: Option<String>,
+    },
+    SetStatus {
+        status: StatusIn,
+    },
+    SetCode {
+        #[serde(default)]
+        code: Option<String>,
+    },
+    SetPostingComment {
+        posting: usize,
+        #[serde(default)]
+        comment: Option<String>,
+    },
+    RemovePostingAssertion {
+        posting: usize,
     },
     Replace {
         transaction: AddRequest,
@@ -883,8 +1082,25 @@ pub(crate) fn check_op_list(ops: &[EditOpIn]) -> Result<(), AppError> {
                 }
             }
             EditOpIn::SetTxnComment { comment } => {
-                check_text("a comment", comment, MAX_COMMENT_BYTES, NONE)?;
+                check_text("a comment", comment, MAX_COMMENT_BYTES, COMMENT)?;
             }
+            EditOpIn::SetDate { date } => check_text("a date", date, MAX_DATE_BYTES, NONE)?,
+            EditOpIn::SetDate2 { date2 } => {
+                if let Some(date2) = date2 {
+                    check_text("a secondary date", date2, MAX_DATE_BYTES, NONE)?;
+                }
+            }
+            EditOpIn::SetCode { code } => {
+                if let Some(code) = code {
+                    check_text("a code", code, MAX_CODE_BYTES, TAB)?;
+                }
+            }
+            EditOpIn::SetPostingComment { comment, .. } => {
+                if let Some(comment) = comment {
+                    check_text("a comment", comment, MAX_COMMENT_BYTES, COMMENT)?;
+                }
+            }
+            EditOpIn::SetStatus { .. } | EditOpIn::RemovePostingAssertion { .. } => {}
             EditOpIn::Replace { transaction } => refuse_generated(transaction)?,
         }
     }
@@ -909,6 +1125,17 @@ pub(crate) fn engine_ops(journal: &Journal, ops: &[EditOpIn]) -> Result<Vec<Edit
                     value: value.clone(),
                 },
                 EditOpIn::SetTxnComment { comment } => EditOp::SetTxnComment(comment.clone()),
+                EditOpIn::SetDate { date } => EditOp::SetDate(date.clone()),
+                EditOpIn::SetDate2 { date2 } => EditOp::SetDate2(date2.clone()),
+                EditOpIn::SetStatus { status } => EditOp::SetStatus((*status).into()),
+                EditOpIn::SetCode { code } => EditOp::SetCode(code.clone()),
+                EditOpIn::SetPostingComment { posting, comment } => EditOp::SetPostingComment {
+                    posting: *posting,
+                    comment: comment.clone(),
+                },
+                EditOpIn::RemovePostingAssertion { posting } => {
+                    EditOp::RemovePostingAssertion { posting: *posting }
+                }
                 EditOpIn::Replace { transaction } => {
                     EditOp::Replace(Box::new(build_transaction(journal, transaction)?))
                 }

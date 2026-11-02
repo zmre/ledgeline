@@ -1219,8 +1219,10 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         // Plan 32: the review queues, similar transactions, and the payee and
         // tag completions (see `review_api`).
         .route("/api/review/queue", get(review_api::queue))
+        .route("/api/review/item/{index}", get(review_api::item))
         .route("/api/review/similar/{index}", get(review_api::similar))
         .route("/api/review/similar-key", get(review_api::similar_key))
+        .route("/api/review/suggest", get(review_api::suggest))
         // Plan 32 D27: "Remember as a rule" from the Journal view — which
         // rules file a transaction came from, and the live check against its
         // statement (see `review_rules_api`). Above the `route_layer`: the

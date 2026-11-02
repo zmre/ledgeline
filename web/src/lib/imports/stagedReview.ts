@@ -57,6 +57,18 @@ export function describeOps(ops: readonly WireEditOp[]): string[] {
             case "setTxnTag":
                 if (op.name === "reviewed") return op.value === "ignore" ? "ignored" : "reviewed";
                 return op.value === null ? `tag ${op.name} removed` : `tag ${op.name}:${op.value}`;
+            case "setDate":
+                return `dated ${op.date}`;
+            case "setDate2":
+                return op.date2 === null ? "secondary date removed" : `secondary date ${op.date2}`;
+            case "setStatus":
+                return `marked ${op.status}`;
+            case "setCode":
+                return op.code === null ? "code removed" : `code ${op.code}`;
+            case "setPostingComment":
+                return op.comment === null ? `posting ${op.posting + 1} comment cleared` : `posting ${op.posting + 1} comment edited`;
+            case "removePostingAssertion":
+                return `posting ${op.posting + 1} assertion removed`;
             case "replace":
                 return "amounts or postings edited";
         }

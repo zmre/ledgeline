@@ -1,6 +1,7 @@
 import {describe, expect, it} from "vitest";
 import type {Amount, AmountStyle, BalanceAssertion, Posting, PostingType, Transaction, TxnStatus} from "#lib/domain/types.js";
 import {
+    assertionLabel,
     accountPatch,
     blankForm,
     decToInput,
@@ -339,6 +340,17 @@ describe("UNIT editMapping — DL-2 balance assertions and posting types round-t
     });
 });
 
+describe("UNIT editMapping — assertionLabel", () => {
+    const at = (mantissa: string, total: boolean, inclusive: boolean) => ({amount: {commodity: "$", quantity: {mantissa, places: 2}}, total, inclusive});
+
+    it("writes the assertion as the journal does", () => {
+        expect(assertionLabel(at("50000", true, false))).toBe("== $500.00");
+        expect(assertionLabel(at("0", false, false))).toBe("= $0.00");
+        expect(assertionLabel(at("-1050", false, true))).toBe("=* $-10.50");
+        expect(assertionLabel({amount: {commodity: "EUR", quantity: {mantissa: "10", places: 0}}, total: true, inclusive: true})).toBe("==* EUR10");
+    });
+});
+
 describe("UNIT editMapping — validateForm", () => {
     it("passes a dated form with at least one account", () => {
         const form = blankForm("2026-07-20", "$");
@@ -390,5 +402,85 @@ describe("UNIT editMapping — PATCH builders", () => {
     it("yields no posting edits when the old account is absent (caller skips the request)", () => {
         const t = txn(1, "x", [posting("assets:cash", [])]);
         expect(accountPatch(t, "expenses:missing", "expenses:new")).toEqual({postings: []});
+    });
+});
+
+/**
+ * Plan 32 D35: a leg the file writes blank stays blank through the popup (and
+ * the review card's replace), and a leg whose amount the user typed is written.
+ * The engine serves the inferred amount AND marks it `elided`.
+ */
+describe("UNIT editMapping — elided legs (D35)", () => {
+    const inferred = (account: string, amounts: Amount[], extra: Parameters<typeof posting>[2] = {}): Posting => ({
+        ...posting(account, amounts, extra),
+        elided: true,
+    });
+
+    it("prefills an elided leg blank, with the inferred value as its placeholder", () => {
+        const t = txn(4, "Coffee", [posting("expenses:coffee", [amount("$", 500n, 2)]), inferred("assets:cash", [amount("$", -500n, 2)])]);
+        const form = txnToForm(t);
+        expect(form.postings[0]).toMatchObject({amount: "5.00"});
+        expect(form.postings[0].elided).toBeUndefined();
+        expect(form.postings[1]).toMatchObject({amount: "", commodity: "$", elided: true, inferred: "-5.00"});
+    });
+
+    it("an engine that predates the marker still prefills the amount it served", () => {
+        const t = txn(4, "Coffee", [posting("expenses:coffee", [amount("$", 500n, 2)]), posting("assets:cash", [amount("$", -500n, 2)])]);
+        expect(txnToForm(t).postings[1].amount).toBe("-5.00");
+    });
+
+    it("a mixed-commodity inferred leg is blank with no single placeholder", () => {
+        const t = txn(4, "Two", [
+            posting("expenses:a", [amount("$", 1000n, 2)]),
+            posting("expenses:b", [amount("EUR", 500n, 2)]),
+            inferred("assets:bank", [amount("$", -1000n, 2), amount("EUR", -500n, 2)]),
+        ]);
+        expect(txnToForm(t).postings[2]).toMatchObject({amount: "", elided: true, inferred: ""});
+        // Untouched, it goes back with no amount — the only way to write it at all.
+        expect(formToBody(txnToForm(t), "$").postings[2]).toEqual({account: "assets:bank"});
+    });
+
+    it("writes an untouched elided leg back blank, through another leg's amount change", () => {
+        const t = txn(4, "Coffee", [posting("expenses:coffee", [amount("$", 500n, 2)]), inferred("assets:cash", [amount("$", -500n, 2)])]);
+        const form = txnToForm(t);
+        form.postings[0].amount = "6.00";
+        form.postings[0].account = "expenses:food:coffee";
+        expect(formToBody(form, "$").postings).toEqual([
+            {account: "expenses:food:coffee", amount: {commodity: "$", quantity: {mantissa: "600", places: 2}}},
+            {account: "assets:cash"},
+        ]);
+    });
+
+    it("writes an amount the user typed on the elided leg", () => {
+        const t = txn(4, "Coffee", [posting("expenses:coffee", [amount("$", 500n, 2)]), inferred("assets:cash", [amount("$", -500n, 2)])]);
+        const form = txnToForm(t);
+        form.postings[1].amount = "-5.00";
+        expect(formToBody(form, "$").postings[1]).toEqual({account: "assets:cash", amount: {commodity: "$", quantity: {mantissa: "-500", places: 2}}});
+    });
+
+    it("keeps an elided leg's own assertion, and does not refuse it", () => {
+        const anchor: BalanceAssertion = {amount: amount("$", 9900n, 2), inclusive: false, total: false};
+        const t = txn(4, "Rent", [
+            posting("expenses:rent", [amount("$", 180000n, 2)]),
+            inferred("assets:cash", [amount("$", -180000n, 2)], {balanceAssertion: anchor}),
+        ]);
+        const form = txnToForm(t);
+        expect(validateForm(form)).toEqual([]);
+        expect(formToBody(form, "$").postings[1]).toEqual({
+            account: "assets:cash",
+            balanceAssertion: {amount: {commodity: "$", quantity: {mantissa: "9900", places: 2}}, inclusive: false, total: false},
+        });
+    });
+
+    it("keeps a comment that starts on its own line there", () => {
+        const t = txn(
+            4,
+            "Coffee",
+            [posting("expenses:coffee", [amount("$", 500n, 2)], {comment: "\nown line"}), inferred("assets:cash", [amount("$", -500n, 2)])],
+            {comment: "\nid:7"}
+        );
+        const body = formToBody(txnToForm(t), "$");
+        expect(body.comment).toBe("\nid:7");
+        expect(body.postings[0].comment).toBe("\nown line");
     });
 });

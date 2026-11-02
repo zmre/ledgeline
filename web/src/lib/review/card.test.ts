@@ -6,11 +6,19 @@ import type {AccountClass, AccountClasses} from "#lib/domain/accountClass.js";
 import {dec} from "#lib/domain/money.js";
 import type {Amount, Posting, Transaction} from "#lib/domain/types.js";
 import {
+    acceptAddChip,
     acceptChip,
+    addChips,
+    addDirty,
+    balancingHint,
+    blankItem,
+    blankReviewForm,
     changeSummary,
     checkState,
     chipsFor,
     cycleChip,
+    detailsDirty,
+    detailsSummary,
     footerState,
     hasUnknown,
     heroOf,
@@ -18,11 +26,15 @@ import {
     isUncategorized,
     longDate,
     minusDays,
+    NEW_TXN,
+    recurringLabel,
     reviewBadge,
+    reviewedBox,
     rowMarker,
     rowShadow,
     similarRows,
     splitDescription,
+    toggleReviewed,
 } from "./card";
 import type {QueueItem, ReviewTxn, Suggestion} from "./types";
 
@@ -176,6 +188,67 @@ describe("UNIT footer and dirty", () => {
     });
 });
 
+describe("UNIT details row (D33)", () => {
+    it("summarises the form's header, leaving out what is unset", () => {
+        const form = reviewFormOf(coffee);
+        expect(detailsSummary(form)).toEqual(["Oct 12, 2026"]);
+        expect(detailsSummary({...form, date2: "2026-10-14", status: "cleared", code: " 1042 "})).toEqual([
+            "Oct 12, 2026",
+            "secondary Oct 14, 2026",
+            "cleared",
+            "#1042",
+        ]);
+        expect(detailsSummary({...form, date: ""})).toEqual(["no date"]);
+    });
+
+    it("is dirty when the date, secondary date, status or code moves, and only then", () => {
+        const original = reviewFormOf(coffee);
+        expect(detailsDirty(original, {...original, description: "Blue Bottle"})).toBe(false);
+        expect(detailsDirty(original, {...original, date: "2026-10-13"})).toBe(true);
+        expect(detailsDirty(original, {...original, date2: "2026-10-14"})).toBe(true);
+        expect(detailsDirty(original, {...original, status: "pending"})).toBe(true);
+        expect(detailsDirty(original, {...original, code: "7"})).toBe(true);
+        expect(detailsDirty(original, {...original, code: "  "})).toBe(false);
+    });
+});
+
+describe("UNIT balancingHint (D35)", () => {
+    const elided = txn(9, "Blue Bottle", [posting("expenses:food:coffee", 675), posting("liabilities:visa", -675, {elided: true})]);
+    const original = (): ReturnType<typeof reviewFormOf>["postings"] => reviewFormOf(elided).postings;
+
+    it("shows what the blank leg balances to, and follows an amount typed elsewhere", () => {
+        const rows = original();
+        expect(balancingHint(original(), rows, 1)).toBe("auto · -6.75");
+        (rows[0] as (typeof rows)[number]).amount = "7.5";
+        expect(balancingHint(original(), rows, 1)).toBe("auto · -7.50");
+    });
+
+    it("is plain auto on a row with an amount, and while another row is blank too", () => {
+        const rows = original();
+        expect(balancingHint(original(), rows, 0)).toBe("auto");
+        (rows[0] as (typeof rows)[number]).amount = "";
+        expect(balancingHint(original(), rows, 1)).toBe("auto");
+    });
+
+    it("falls back to the engine's value while nothing changed, when the form can't work it out", () => {
+        const priced = txn(10, "Buy", [
+            posting("assets:broker", null, {amounts: [{commodity: "VTI", qty: dec(2, 0), style, cost: {commodity: "$", qty: dec(10000, 2), per: true}}]}),
+            posting("assets:cash", -20000, {elided: true}),
+        ]);
+        const rows = reviewFormOf(priced).postings;
+        expect(balancingHint(reviewFormOf(priced).postings, rows, 1)).toBe("auto · -200.00");
+        (rows[0] as (typeof rows)[number]).amount = "3";
+        expect(balancingHint(reviewFormOf(priced).postings, rows, 1)).toBe("auto");
+    });
+
+    it("works nothing out across commodities", () => {
+        const rows = original();
+        (rows[1] as (typeof rows)[number]).commodity = "EUR";
+        (rows[0] as (typeof rows)[number]).amount = "7.5";
+        expect(balancingHint(original(), rows, 1)).toBe("auto");
+    });
+});
+
 describe("UNIT suggestion chips", () => {
     it("offers an unknown card's suggestions on its unknown row, pre-selecting only a strong top one", () => {
         const strong = chipsFor(
@@ -289,5 +362,104 @@ describe("UNIT row stripes (D20)", () => {
         expect(rowShadow("unreviewed", true)).toBe(
             "inset 3px 0 0 0 color-mix(in oklab, var(--color-base-content) 15%, transparent), inset 6px 0 0 0 var(--color-primary)"
         );
+    });
+});
+
+describe("UNIT review card — Mark reviewed (D32)", () => {
+    const withTags = (tags: [string, string][]) => ({...blankReviewForm("2026-11-01", "$"), tags});
+
+    it("reads the form's reviewed tag: unchecked, checked, or checked as Ignored", () => {
+        expect(reviewedBox(withTags([]))).toEqual({checked: false, label: "Mark reviewed"});
+        expect(reviewedBox(withTags([["reviewed", "2026-10-30"]]))).toEqual({checked: true, label: "Mark reviewed"});
+        expect(reviewedBox(withTags([["reviewed", "ignore"]]))).toEqual({checked: true, label: "Ignored"});
+    });
+
+    it("checking stamps today; unchecking removes the tag", () => {
+        const none = withTags([["trip", "nyc"]]);
+        expect(toggleReviewed(none, none, "2026-11-01")).toEqual([
+            ["trip", "nyc"],
+            ["reviewed", "2026-11-01"],
+        ]);
+        const done = withTags([["reviewed", "2026-10-30"]]);
+        expect(toggleReviewed(done, done, "2026-11-01")).toEqual([]);
+    });
+
+    it("checking again puts back the tag the transaction had, date or ignore", () => {
+        for (const value of ["2026-10-30", "ignore"]) {
+            const original = withTags([["reviewed", value]]);
+            expect(toggleReviewed(withTags([]), original, "2026-11-01")).toEqual([["reviewed", value]]);
+        }
+    });
+});
+
+describe("UNIT review card — add mode (D36)", () => {
+    const fill = {amount: {commodity: "$", qty: dec(1549, 2)}, account: "liabilities:visa"};
+    const recurring = (extra: Partial<Suggestion> = {}): Suggestion => ({
+        account: "expenses:streaming",
+        description: null,
+        source: "recurring",
+        confidence: 6000,
+        strong: true,
+        count: 4,
+        recurring: fill,
+        ...extra,
+    });
+    const classes: AccountClasses = new Map();
+
+    it("starts blank: today, unmarked, two rows, in no file", () => {
+        const item = blankItem("2026-11-01");
+        expect(item.txn.index).toBe(NEW_TXN);
+        expect(item.fingerprint).toBeNull();
+        const form = blankReviewForm("2026-11-01", "€");
+        expect(form).toMatchObject({date: "2026-11-01", status: "unmarked", description: "", tags: []});
+        expect(form.postings.map((row) => [row.account, row.amount, row.commodity])).toEqual([
+            ["", "", "€"],
+            ["", "", "€"],
+        ]);
+        expect(addDirty(form, structuredClone(form))).toBe(false);
+        expect(addDirty(form, {...form, description: "x"})).toBe(true);
+    });
+
+    it("offers the suggestions on the first row, the strong one selected", () => {
+        const item = {
+            ...blankItem("2026-11-01"),
+            suggestions: [recurring(), recurring({account: "expenses:unknown"}), recurring({account: "expenses:tv", strong: false})],
+        };
+        const chips = addChips(item, classes);
+        expect(chips.chips.map((chip) => chip.account)).toEqual(["expenses:streaming", "expenses:tv"]);
+        expect(chips).toMatchObject({target: 0, initial: 0, mode: "fix"});
+        expect(addChips(blankItem("2026-11-01"), classes).chips).toEqual([]);
+    });
+
+    it("accepting a recurring chip fills the amount and the funding account, and only blank fields", () => {
+        const blank = blankReviewForm("2026-11-01", "$");
+        const filled = acceptAddChip(blank, 0, recurring());
+        expect(filled.postings.map((row) => [row.account, row.amount, row.commodity])).toEqual([
+            ["expenses:streaming", "15.49", "$"],
+            ["liabilities:visa", "", "$"],
+        ]);
+        const typed = {...blank, postings: blank.postings.map((row, at) => (at === 0 ? {...row, amount: "17.99"} : {...row, account: "assets:checking"}))};
+        expect(acceptAddChip(typed, 0, recurring()).postings.map((row) => [row.account, row.amount])).toEqual([
+            ["expenses:streaming", "17.99"],
+            ["assets:checking", ""],
+        ]);
+    });
+
+    it("a chip with no recurring charge sets the account alone, and a rename only on a blank description", () => {
+        const blank = blankReviewForm("2026-11-01", "$");
+        const chip = recurring({recurring: undefined, description: "Netflix"});
+        const filled = acceptAddChip(blank, 0, chip);
+        expect(filled.postings.map((row) => [row.account, row.amount])).toEqual([
+            ["expenses:streaming", ""],
+            ["", ""],
+        ]);
+        expect(filled.description).toBe("Netflix");
+        expect(acceptAddChip({...blank, description: "NFLX"}, 0, chip).description).toBe("NFLX");
+    });
+
+    it("labels what a recurring chip fills in", () => {
+        expect(recurringLabel(recurring())).toBe("$15.49 from liabilities:visa");
+        expect(recurringLabel(recurring({recurring: {...fill, amount: {commodity: "EUR", qty: dec(9, 0)}}}))).toBe("9 EUR from liabilities:visa");
+        expect(recurringLabel(recurring({recurring: undefined}))).toBeNull();
     });
 });

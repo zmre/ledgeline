@@ -1080,9 +1080,9 @@ async fn unknown_posting_type_is_400_and_file_unchanged() {
 
 /// A malformed balance assertion is a `400` before it can reach the core: a
 /// blank commodity (which would render as a bare number and re-read as whatever
-/// the journal defaults to), an assertion on the elided leg (which the writer
-/// would drop on the floor), and the SEC-5 amount bounds applied to the asserted
-/// amount as well as the posting amount.
+/// the journal defaults to), and the SEC-5 amount bounds applied to the asserted
+/// amount as well as the posting amount. (An assertion on the elided leg is
+/// not malformed: see [`an_assertion_on_the_elided_leg_round_trips`].)
 #[tokio::test]
 async fn malformed_balance_assertion_is_400_and_file_unchanged() {
     let (state, path) = state_for(ASSERTIONS_AND_VIRTUALS);
@@ -1104,8 +1104,6 @@ async fn malformed_balance_assertion_is_400_and_file_unchanged() {
             ]
         })
     };
-    let dollars = json!({ "commodity": "$", "quantity": { "mantissa": "9900", "places": 2 } });
-
     let cases: Vec<(&str, Value)> = vec![
         (
             "blank commodity",
@@ -1113,10 +1111,6 @@ async fn malformed_balance_assertion_is_400_and_file_unchanged() {
                 json!({ "amount": { "commodity": "  ", "quantity": { "mantissa": "9900", "places": 2 } } }),
                 true,
             ),
-        ),
-        (
-            "assertion on the elided leg",
-            cash_with_assertion(json!({ "amount": dollars }), false),
         ),
         (
             "oversized asserted mantissa",
@@ -1441,4 +1435,39 @@ async fn no_edit_response_body_contains_an_absolute_path() {
     }
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The SPA now leaves an elided leg blank (plan 32 D35), so a `PUT` that
+/// echoes `assets:cash  = $99.00` sends an assertion with no amount. The
+/// writer keeps both: the leg stays elided and the anchor stays written.
+#[tokio::test]
+async fn an_assertion_on_the_elided_leg_round_trips() {
+    let journal = "\
+2025-12-31 Opening balances
+    assets:cash  $100.00
+    equity:opening
+
+2026-01-01 A
+    expenses:a  $1.00
+    assets:cash  = $99.00
+";
+    let (state, path) = state_for(journal);
+    let body = json!({
+        "date": "2026-01-01",
+        "description": "A renamed",
+        "postings": [
+            { "account": "expenses:a",
+              "amount": { "commodity": "$", "quantity": { "mantissa": "100", "places": 2 } } },
+            { "account": "assets:cash",
+              "balanceAssertion": { "amount": { "commodity": "$", "quantity": { "mantissa": "9900", "places": 2 } } } }
+        ]
+    });
+    let (status, response) = request(&state, "PUT", "/api/transactions/2", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        journal.replace("2026-01-01 A\n", "2026-01-01 A renamed\n"),
+        "the leg stays elided and keeps its assertion"
+    );
+    let _ = std::fs::remove_file(&path);
 }

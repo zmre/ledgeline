@@ -3,7 +3,8 @@
 // them lives in `crates/ledgeline-core/src/review.rs` and the routes in
 // `crates/ledgeline-server/src/review_api.rs`.
 
-import type {ISODate} from "#lib/domain/types.js";
+import type {Dec} from "#lib/domain/money.js";
+import type {ISODate, TxnStatus} from "#lib/domain/types.js";
 import type {JournalRow} from "#lib/journalView/types.js";
 import type {PostingForm} from "#lib/api/editMapping.js";
 
@@ -37,6 +38,28 @@ export interface Suggestion {
     strong: boolean;
     /** How many transactions back it up. */
     count: number;
+    /**
+     * A recurring charge's usual amount and funding account, for a
+     * transaction that does not exist yet (D36: "Netflix · $15.49 from
+     * Visa"). Only `GET /api/review/suggest` sends it; absent otherwise.
+     */
+    recurring?: RecurringFill;
+}
+
+/** What an add form fills in from a recurring charge (D36). */
+export interface RecurringFill {
+    /** The typical charge, positive, as the category leg carries it. */
+    amount: {commodity: string; qty: Dec};
+    /** The account the newest such charge was paid from. */
+    account: string;
+}
+
+/** `GET /api/review/suggest` — a queue item's suggestions for a description alone (D36). */
+export interface DescriptionSuggestions {
+    generation: string;
+    /** The description's similarity key, or null (then there are no suggestions). */
+    key: string | null;
+    suggestions: Suggestion[];
 }
 
 /** One queued card. */
@@ -45,6 +68,12 @@ export interface QueueItem extends ReviewTxn {
     key: string | null;
     /** Best first, at most 3: the chip and its runners-up. */
     suggestions: Suggestion[];
+}
+
+/** `GET /api/review/item/{index}` — one transaction as a queue item, for the card's single mode (D31). */
+export interface ReviewItem {
+    generation: string;
+    item: QueueItem;
 }
 
 /** `GET /api/review/queue` — one page of a queue. */
@@ -134,11 +163,29 @@ export interface ReviewCounts {
  */
 export interface ReviewForm {
     date: ISODate;
+    /** The secondary date (`DATE=DATE2`), `YYYY-MM-DD`; `""` when there is none. Saved with `setDate2`. */
+    date2: string;
+    /** The transaction's status. Saved with `setStatus`. */
+    status: TxnStatus;
+    /** The `(CODE)`; `""` when there is none. Saved with `setCode`. */
+    code: string;
     description: string;
-    /** The same-line header comment's free text (not its tags, not its continuation lines). */
+    /**
+     * The whole transaction comment's FREE TEXT, one line per comment line
+     * that has any (`commentFreeText`): the header's same-line comment and the
+     * `;` lines above the first posting, tags left out. Saved with
+     * `setTxnComment`, which keeps every tag on its own line.
+     */
     comment: string;
     /** The header's tags as `[name, value]`, in order; hidden and machine tags left out. */
     tags: [string, string][];
-    /** The postings the file writes (generated ones are read-only and not here), as `txnToForm` builds them. */
+    /**
+     * The postings the file writes (generated ones are read-only and not
+     * here), as `txnToForm` builds them. An elided leg's `amount` is `""`.
+     * A row's `comment` is its whole comment (`setPostingComment`); setting a
+     * row's `balanceAssertion` to null removes it (`removePostingAssertion`).
+     * Any other change to a row — amount, commodity, status — or a row added
+     * or removed is a re-render (`replace`).
+     */
     postings: PostingForm[];
 }

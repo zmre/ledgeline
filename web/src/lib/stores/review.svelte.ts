@@ -25,6 +25,13 @@
 // already in the journal, D24) — never to the network. Similar is fetched by
 // the card's similarity key, since a staged card has no journal index.
 //
+// A run may also be SINGLE (plan 32 D31): one transaction, opened from the
+// Journal to edit it (`openEdit`) or to add a new one (`openAdd`). There is
+// no queue: nothing pages or revalidates, the similar set is fetched for the
+// one card, and a save is not optimistic. It goes through `editing` (a batch,
+// an add or a delete), which refreshes the journal and raises the page's
+// conflict banner on a 409, as every other journal edit does.
+//
 // The run lives in module state like every store here (one overlay at a
 // time); `resetReview` is the test seam.
 
@@ -32,16 +39,27 @@
    immutable snapshot replaced wholesale (`$state.raw`); `inflight` is plain
    bookkeeping no template or effect observes. */
 import {classify, type EditFailure, type EditResult} from "#lib/api/editFailure.js";
-import {LedgelineApi, type WireBatchEdit, type WireEditOp} from "#lib/api/native.js";
-import {decodeBatchResult, decodeKeySimilarSet, decodeQueuePage, decodeSimilarSet} from "#lib/api/reviewDecode.js";
+import {LedgelineApi, type AddTransactionBody, type WireBatchEdit, type WireEditOp} from "#lib/api/native.js";
+import {
+    decodeBatchResult,
+    decodeDescriptionSuggestions,
+    decodeKeySimilarSet,
+    decodeQueuePage,
+    decodeReviewItem,
+    decodeSimilarSet,
+} from "#lib/api/reviewDecode.js";
 import type {StagedSink, StagedTxn} from "#lib/imports/reviewTypes.js";
 import type {QueueItem, QueueKind, ReviewForm, ReviewTxn, SimilarSet} from "#lib/review/types.js";
+import {editing} from "./editing.svelte";
 import {localToday} from "./filters.svelte";
 import {journal} from "./journal.svelte";
 import {settings} from "./settings.svelte";
 
 /** What a staged run covers: the import's unknowns, or every transaction it would write (D26's "Review All"). */
 export type StagedKind = "unknowns" | "all";
+
+/** A single-transaction run (D31): editing one transaction, or adding one. */
+export type SingleMode = "edit" | "add";
 
 /** Where a run's cards come from and where its saves go. */
 export type ReviewSource = "journal" | "staged";
@@ -84,7 +102,9 @@ export interface SaveFailure {
 interface Run {
     serverUrl: string;
     source: ReviewSource;
-    kind: QueueKind | StagedKind;
+    kind: QueueKind | StagedKind | SingleMode;
+    /** A single-transaction run (D31), or null for a queue or an import's run. */
+    single: SingleMode | null;
     /** A staged run's save target; null for a journal run. */
     sink: StagedSink | null;
     today: string;
@@ -121,6 +141,8 @@ let saving = $state(0);
 
 /** Bumped on every open/reset; a response from an older epoch is dropped. */
 let epoch = 0;
+/** Bumped per add-mode suggestion request; only the latest one lands. */
+let suggestion = 0;
 let revalidation = 0;
 const inflight = new Map<number, Promise<SimilarSet | null>>();
 let queue: PendingSave[] = [];
@@ -213,6 +235,8 @@ async function fetchSimilar(index: number): Promise<SimilarSet | null> {
 
 /** D12: the card on screen and the next one have their similar sets on the way. */
 function prefetch(): void {
+    // An add card is no transaction yet: it has nothing similar to it.
+    if (run?.single === "add") return;
     for (const card of [cards[cursor], cards[cursor + 1]]) {
         if (card !== undefined && card.status !== "saved") void fetchSimilar(indexOf(card));
     }
@@ -222,7 +246,15 @@ function prefetch(): void {
 /** Unknowns are paged: fetch the next page when the cursor nears the end of the held cards. */
 async function pageAhead(): Promise<void> {
     const target = run;
-    if (target === null || target.source === "staged" || paging || target.fetched >= target.total || cursor < cards.length - PAGE_AHEAD) return;
+    if (
+        target === null ||
+        target.source === "staged" ||
+        target.single !== null ||
+        paging ||
+        target.fetched >= target.total ||
+        cursor < cards.length - PAGE_AHEAD
+    )
+        return;
     paging = true;
     const started = epoch;
     try {
@@ -353,7 +385,7 @@ function startDrain(): void {
  */
 async function revalidate(): Promise<void> {
     const target = run;
-    if (target === null || target.source === "staged" || queue.length > 0) return;
+    if (target === null || target.source === "staged" || target.single !== null || queue.length > 0) return;
     const token = ++revalidation;
     const started = epoch;
     try {
@@ -395,9 +427,13 @@ async function revalidate(): Promise<void> {
 }
 
 export const review = {
-    /** The queue the run is working through, or null when no run is open. */
-    get kind(): QueueKind | StagedKind | null {
+    /** The queue the run is working through (or the single run's mode), or null when no run is open. */
+    get kind(): QueueKind | StagedKind | SingleMode | null {
         return run?.kind ?? null;
+    },
+    /** A single-transaction run's mode (D31), or null. */
+    get single(): SingleMode | null {
+        return run?.single ?? null;
     },
     /** Where the run's cards come from: the journal's queues, or an import's staged transactions. */
     get source(): ReviewSource | null {
@@ -478,6 +514,7 @@ export const review = {
                 serverUrl,
                 source: "journal",
                 kind,
+                single: null,
                 sink: null,
                 today,
                 limit: options.limit,
@@ -517,6 +554,7 @@ export const review = {
             serverUrl,
             source: "staged",
             kind,
+            single: null,
             sink,
             today: localToday(),
             limit: undefined,
@@ -541,6 +579,116 @@ export const review = {
         const key = cards.find((card) => indexOf(card) === index)?.item.key ?? null;
         if (key === null) return [];
         return cards.filter((card) => indexOf(card) !== index && card.item.key === key && card.status !== "saved").map((card) => card.item as StagedTxn);
+    },
+
+    /**
+     * Open a single-transaction run on journal transaction `index` (D31): one
+     * fetch for the card (its row, fingerprint, key and suggestions), then
+     * its similar set behind it, so the card is editable before that lands.
+     */
+    async openEdit(index: number): Promise<void> {
+        const serverUrl = settings.serverUrl;
+        resetReview();
+        if (serverUrl === null) {
+            error = "No server is configured.";
+            return;
+        }
+        const started = epoch;
+        const today = localToday();
+        loading = true;
+        try {
+            const {generation, item} = decodeReviewItem(await api(serverUrl).reviewItem(index, today));
+            if (started !== epoch) return;
+            run = singleRun(serverUrl, "edit", today, generation);
+            cards = [cardOf(item)];
+            cursor = 0;
+            error = null;
+            prefetch();
+        } catch (cause) {
+            if (started === epoch) error = cause instanceof Error ? cause.message : String(cause);
+        } finally {
+            if (started === epoch) loading = false;
+        }
+    },
+
+    /**
+     * Open a single-transaction run for a NEW transaction (D36). Its card is
+     * `blank`, a transaction that is in no file: index -1, no fingerprint, no
+     * key and no suggestions until `suggestFor` is asked.
+     */
+    openAdd(blank: QueueItem): void {
+        const serverUrl = settings.serverUrl;
+        resetReview();
+        if (serverUrl === null) {
+            error = "No server is configured.";
+            return;
+        }
+        run = singleRun(serverUrl, "add", localToday(), "");
+        cards = [cardOf(blank)];
+        cursor = 0;
+        error = null;
+    },
+
+    /**
+     * D36: the suggestions for `description` (a payee just picked), put on
+     * the add card. A failure leaves the card as it was: suggestions are an
+     * aid. Only the latest request lands.
+     */
+    async suggestFor(description: string): Promise<void> {
+        const target = run;
+        if (target === null || target.single !== "add") return;
+        const token = ++suggestion;
+        const started = epoch;
+        try {
+            const found = decodeDescriptionSuggestions(await api(target.serverUrl).reviewSuggest(description, target.today));
+            if (token !== suggestion || started !== epoch) return;
+            cards = cards.map((held) => ({...held, item: Object.freeze({...held.item, key: found.key, suggestions: found.suggestions})}));
+        } catch {
+            // Keep the card as it is.
+        }
+    },
+
+    /**
+     * Save a single run's card: `ops` on it, plus `similar` (D38), as one
+     * batch through `editing`. Not optimistic: the card waits, marked
+     * "saving". Answers the transaction's index as it now reads. A failure
+     * other than a conflict is the run's `failure`; a conflict is the page's
+     * banner.
+     */
+    async saveSingle(ops: readonly WireEditOp[], similar: readonly SimilarEntry[] = []): Promise<SingleOutcome> {
+        const card = cards[cursor];
+        if (card === undefined || run?.single !== "edit") return notSaved("There is no transaction to save.");
+        const entries = [{txn: card.item, ops}, ...similar.filter((entry) => entry.ops.length > 0)];
+        if (entries.some((entry) => entry.txn.fingerprint === null)) return notSaved("Editing is not enabled on this server.", "unavailable");
+        const edits: WireBatchEdit[] = entries.map((entry) => ({
+            index: entry.txn.txn.index,
+            fingerprint: entry.txn.fingerprint as string,
+            ops: [...entry.ops],
+        }));
+        return settleSingle(card, async () => {
+            const result = await editing.batch(edits);
+            return result.ok ? {ok: true, index: result.value.edited[0]?.txn.index ?? indexOf(card)} : result;
+        });
+    },
+
+    /** Add the single run's new transaction (D36): one POST, its reviewed stamp, if any, in `body`'s comment. Answers its index. */
+    addSingle(body: AddTransactionBody): Promise<SingleOutcome> {
+        const card = cards[cursor];
+        if (card === undefined || run?.single !== "add") return Promise.resolve(notSaved("There is no transaction to add."));
+        return settleSingle(card, async () => {
+            const result = await editing.add(body);
+            return result.ok ? {ok: true, index: result.value} : result;
+        });
+    },
+
+    /** Delete the single run's transaction (D37). */
+    deleteSingle(): Promise<SingleOutcome> {
+        const card = cards[cursor];
+        if (card === undefined || run?.single !== "edit") return Promise.resolve(notSaved("There is no transaction to delete."));
+        return settleSingle(card, async () => {
+            const result = await editing.remove(indexOf(card));
+            return result.ok ? {ok: true, index: null} : result;
+        });
     },
 
     /** Close the run (the overlay's ✕): forget it. Saves already sent still land. */
@@ -622,7 +770,8 @@ export const review = {
      */
     syncGeneration(generation: string | null): void {
         // A staged run's cards come from the import, not the journal's queue.
-        if (run?.source === "staged") return;
+        // A single run's one card is checked by its save's fingerprint.
+        if (run?.source === "staged" || (run?.single ?? null) !== null) return;
         if (run === null || generation === null || generation === run.generation || queue.length > 0) return;
         void revalidate();
     },
@@ -679,6 +828,48 @@ function saveStaged(card: ReviewCard, ops: readonly WireEditOp[], similar: reado
     return {ok: true};
 }
 
+/** What a single run's write did: the transaction's index afterwards (null once deleted), or why it failed. */
+export type SingleOutcome = {ok: true; index: number | null} | {ok: false; failure: EditFailure};
+
+function notSaved(message: string, kind: EditFailure["kind"] = "unknown"): SingleOutcome {
+    return {ok: false, failure: {kind, message}};
+}
+
+function singleRun(serverUrl: string, mode: SingleMode, today: string, generation: string): Run {
+    return {
+        serverUrl,
+        source: "journal",
+        kind: mode,
+        single: mode,
+        sink: null,
+        today,
+        limit: undefined,
+        maxDays: undefined,
+        generation,
+        total: 1,
+        notEditable: 0,
+        fetched: 1,
+    };
+}
+
+/** Mark `card` saving while `write` runs, then saved, or open again with the failure (a conflict is the page's banner, not the card's). */
+async function settleSingle(card: ReviewCard, write: () => Promise<SingleOutcome>): Promise<SingleOutcome> {
+    const started = epoch;
+    const self = indexOf(card);
+    const mark = (status: CardStatus): void => {
+        cards = cards.map((held) => (indexOf(held) === self ? {...held, status} : held));
+    };
+    failure = null;
+    mark("saving");
+    saving = 1;
+    const result = await write();
+    if (started !== epoch) return result;
+    saving = 0;
+    mark(result.ok ? "saved" : "open");
+    if (!result.ok && result.failure.kind !== "conflict") failure = {index: self, failure: result.failure};
+    return result;
+}
+
 /** Test seam: forget the run (vitest runs every test against one module instance). */
 export function resetReview(): void {
     epoch += 1;
@@ -696,4 +887,5 @@ export function resetReview(): void {
     for (const save of queue) save.resolve({ok: false, failure: {kind: "unknown", message: "The review was closed."}});
     queue = [];
     paging = false;
+    suggestion += 1;
 }

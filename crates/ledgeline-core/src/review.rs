@@ -34,7 +34,7 @@
 //! display only.
 
 use crate::decimal::Dec;
-use crate::model::{Journal, Posting, Tindex, Transaction};
+use crate::model::{Commodity, Journal, Posting, Tindex, Transaction};
 use crate::projections::is_generated;
 use crate::reports::AccountType;
 use crate::reports::periods::add_days;
@@ -330,6 +330,25 @@ pub struct Suggestion {
     pub confidence: u32,
     /// How many transactions back it up.
     pub count: usize,
+    /// What the recurring charge behind it (D13a source 4) is usually paid
+    /// with, for a transaction that does not exist yet (D36: "Netflix ·
+    /// $15.49 from Visa"). Only [`ReviewIndex::suggest_for_description`]
+    /// fills it in; an existing transaction already has its amount and its
+    /// funding account.
+    pub recurring: Option<RecurringFill>,
+}
+
+/// A recurring charge's usual amount and funding account (D36): what an add
+/// form fills in when the description matches one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecurringFill {
+    /// The typical charge — the subscription's median, positive, as the
+    /// category leg carries it.
+    pub quantity: Dec,
+    /// Its commodity: the one the newest such charge spent in.
+    pub commodity: Commodity,
+    /// The account the newest such charge was paid from.
+    pub account: String,
 }
 
 impl Suggestion {
@@ -606,6 +625,32 @@ impl ReviewIndex {
         self.suggest_inner(journal, classes, txn, None, rule_file)
     }
 
+    /// Suggested categories for a transaction that does not exist yet, from
+    /// its description alone (D36: the add form's "payee picked → category").
+    ///
+    /// Sources 1 and 3 of D13a work as for [`suggest`](Self::suggest), with
+    /// nothing excluded. Source 4 cannot match by amount and billing day
+    /// before there is an amount or a day, so it matches the recurring
+    /// charges whose payee has this description's similarity key, at the same
+    /// flat confidence, and each carries a [`RecurringFill`]: the charge's
+    /// typical amount and the account the newest such charge was paid from.
+    /// Ranked together exactly as [`suggest`](Self::suggest) ranks its own; an
+    /// account two sources name keeps the fill.
+    #[must_use]
+    pub fn suggest_for_description(
+        &self,
+        journal: &Journal,
+        classes: &Classes,
+        description: &str,
+    ) -> Vec<Suggestion> {
+        let Some(key) = similarity_key(description) else {
+            return Vec::new();
+        };
+        let mut found = self.precedent(journal, classes, &key, None);
+        found.extend(self.recurring_by_key(journal, classes, &key));
+        rank(found)
+    }
+
     fn suggest_inner(
         &self,
         journal: &Journal,
@@ -618,6 +663,27 @@ impl ReviewIndex {
             return Vec::new();
         };
         let mut found: Vec<Suggestion> = extra;
+        found.extend(self.precedent(journal, classes, &key, exclude));
+
+        // 4. A known recurring charge this one matches.
+        found.extend(self.recurring_matches(journal, classes, txn));
+
+        rank(found)
+    }
+
+    /// D13a sources 1 and 3 for `key`: the exact key's categorised precedent,
+    /// or — only when that is silent — the longest shared payee prefix's.
+    /// `exclude` is the transaction being reviewed, which is no precedent for
+    /// itself.
+    fn precedent(
+        &self,
+        journal: &Journal,
+        classes: &Classes,
+        key: &str,
+        exclude: Option<usize>,
+    ) -> Vec<Suggestion> {
+        let mut found: Vec<Suggestion> = Vec::new();
+        let key = key.to_string();
 
         // 1. Exact-key precedent; 3. payee-prefix only when that is silent.
         let exact = self.tally(
@@ -634,6 +700,7 @@ impl ReviewIndex {
                 source: SuggestionSource::ExactKey,
                 confidence: vote.confidence(exact.total_weight, 1, 1),
                 count: vote.count,
+                recurring: None,
             }));
         } else if let Some((shared, prefix)) = self.prefix_tally(journal, classes, &key, exclude) {
             let tokens = key.split(' ').count();
@@ -647,13 +714,10 @@ impl ReviewIndex {
                     100 * tokens as u64,
                 ),
                 count: vote.count,
+                recurring: None,
             }));
         }
-
-        // 4. A known recurring charge this one matches.
-        found.extend(self.recurring_matches(journal, classes, txn));
-
-        rank(found)
+        found
     }
 
     /// Every position in `bucket` (a key's transactions), skipping any that
@@ -783,7 +847,70 @@ impl ReviewIndex {
         classes: &Classes,
         txn: &Transaction,
     ) -> Vec<Suggestion> {
-        let recurring = self.recurring.get_or_init(|| {
+        let recurring = self.subscriptions(journal);
+        let funding = funding_accounts(txn, classes);
+        let Some((_, amount)) = spend(txn, classes) else {
+            return Vec::new();
+        };
+        let day = crate::reports::periods::parts(&txn.date).2;
+        let matches: Vec<&Subscription> = recurring
+            .iter()
+            .filter(|sub| {
+                sub.funding
+                    .iter()
+                    .any(|account| funding.contains(&account.as_str()))
+            })
+            .filter(|sub| within_tolerance(amount, sub.typical_amount))
+            .filter(|sub| {
+                day_distance(day, crate::reports::periods::parts(&sub.last_seen).2)
+                    <= RECURRING_DAY_TOLERANCE
+            })
+            .collect();
+        recurring_suggestions(&matches, classes, |_| None)
+    }
+
+    /// D36's source 4 for a description: the recurring charges whose payee
+    /// keys to `key`, each with the fill an add form takes from it.
+    fn recurring_by_key(&self, journal: &Journal, classes: &Classes, key: &str) -> Vec<Suggestion> {
+        let matches: Vec<&Subscription> = self
+            .subscriptions(journal)
+            .iter()
+            .filter(|sub| similarity_key(&sub.payee).as_deref() == Some(key))
+            .collect();
+        if matches.is_empty() {
+            return Vec::new();
+        }
+        // The key's real transactions, newest first: the charges themselves.
+        let mut pool: Vec<usize> = self
+            .key_pool(journal, key)
+            .into_iter()
+            .filter(|&position| self.real.get(position) == Some(&true))
+            .collect();
+        pool.sort_by(|&a, &b| {
+            journal.transactions[b]
+                .date
+                .cmp(&journal.transactions[a].date)
+                .then(b.cmp(&a))
+        });
+        recurring_suggestions(&matches, classes, |sub| {
+            pool.iter().find_map(|&position| {
+                let txn = &journal.transactions[position];
+                let account = funding_accounts(txn, classes)
+                    .into_iter()
+                    .find(|account| sub.funding.iter().any(|funding| funding == account))?;
+                let (commodity, _) = spend(txn, classes)?;
+                Some(RecurringFill {
+                    quantity: sub.typical_amount,
+                    commodity: commodity.clone(),
+                    account: account.to_string(),
+                })
+            })
+        })
+    }
+
+    /// The journal's recurring charges, detected on the first lookup.
+    fn subscriptions(&self, journal: &Journal) -> &[Subscription] {
+        self.recurring.get_or_init(|| {
             // As of the newest charge on file, so the detector's staleness
             // test is measured against the data rather than the calendar.
             let as_of = journal
@@ -799,53 +926,50 @@ impl ReviewIndex {
             detect_subscriptions(journal, &opts)
                 .map(|report| report.monthly.into_iter().chain(report.annual).collect())
                 .unwrap_or_default()
-        });
-        let funding = funding_accounts(txn, classes);
-        let Some(amount) = spend(txn, classes) else {
-            return Vec::new();
-        };
-        let day = crate::reports::periods::parts(&txn.date).2;
-        let matches: Vec<(&Subscription, Vec<&str>)> = recurring
-            .iter()
-            .filter(|sub| {
-                sub.funding
-                    .iter()
-                    .any(|account| funding.contains(&account.as_str()))
-            })
-            .filter(|sub| within_tolerance(amount, sub.typical_amount))
-            .filter(|sub| {
-                day_distance(day, crate::reports::periods::parts(&sub.last_seen).2)
-                    <= RECURRING_DAY_TOLERANCE
-            })
-            .map(|sub| {
-                let accounts = sub
-                    .accounts
-                    .iter()
-                    .map(String::as_str)
-                    .filter(|account| !is_uncategorized(account, classes))
-                    .collect();
-                (sub, accounts)
-            })
-            .filter(|(_, accounts): &(_, Vec<&str>)| !accounts.is_empty())
-            .collect();
-        let shares = matches
-            .iter()
-            .map(|(_, accounts)| accounts.len())
-            .sum::<usize>();
-        let share = u32::try_from(shares).unwrap_or(u32::MAX).max(1);
-        matches
-            .into_iter()
-            .flat_map(|(sub, accounts)| {
-                accounts.into_iter().map(move |account| Suggestion {
-                    account: account.to_string(),
-                    description: None,
-                    source: SuggestionSource::Recurring,
-                    confidence: RECURRING_CONFIDENCE / share,
-                    count: sub.occurrences,
-                })
-            })
-            .collect()
+        })
     }
+}
+
+/// One [`SuggestionSource::Recurring`] suggestion per category account of
+/// each matched charge, the flat confidence split among them all, each with
+/// the fill `fill` gives its charge.
+fn recurring_suggestions(
+    matches: &[&Subscription],
+    classes: &Classes,
+    fill: impl Fn(&Subscription) -> Option<RecurringFill>,
+) -> Vec<Suggestion> {
+    let matches: Vec<(&Subscription, Vec<&str>)> = matches
+        .iter()
+        .map(|sub| {
+            let accounts = sub
+                .accounts
+                .iter()
+                .map(String::as_str)
+                .filter(|account| !is_uncategorized(account, classes))
+                .collect();
+            (*sub, accounts)
+        })
+        .filter(|(_, accounts): &(_, Vec<&str>)| !accounts.is_empty())
+        .collect();
+    let shares = matches
+        .iter()
+        .map(|(_, accounts)| accounts.len())
+        .sum::<usize>();
+    let share = u32::try_from(shares).unwrap_or(u32::MAX).max(1);
+    matches
+        .into_iter()
+        .flat_map(|(sub, accounts)| {
+            let fill = fill(sub);
+            accounts.into_iter().map(move |account| Suggestion {
+                account: account.to_string(),
+                description: None,
+                source: SuggestionSource::Recurring,
+                confidence: RECURRING_CONFIDENCE / share,
+                count: sub.occurrences,
+                recurring: fill.clone(),
+            })
+        })
+        .collect()
 }
 
 /// The position of the transaction with `index` in `journal.transactions`. A
@@ -892,9 +1016,9 @@ pub(crate) fn funding_accounts<'j>(txn: &'j Transaction, classes: &Classes) -> V
         .collect()
 }
 
-/// The positive total `txn` spends on its category and uncategorized side, if
-/// that side is in one commodity.
-fn spend(txn: &Transaction, classes: &Classes) -> Option<Dec> {
+/// The positive total `txn` spends on its category and uncategorized side, and
+/// its commodity, if that side is in one commodity.
+fn spend<'t>(txn: &'t Transaction, classes: &Classes) -> Option<(&'t Commodity, Dec)> {
     let mut commodity = None;
     let mut total = Dec::zero();
     for posting in written(txn) {
@@ -911,7 +1035,8 @@ fn spend(txn: &Transaction, classes: &Classes) -> Option<Dec> {
             total = total.add(amount.quantity).ok()?;
         }
     }
-    (total.mantissa > 0).then_some(total)
+    let commodity = commodity?;
+    (total.mantissa > 0).then_some((commodity, total))
 }
 
 /// Whether `amount` is within [`RECURRING_AMOUNT_TOLERANCE_PCT`] of `typical`,
@@ -1069,6 +1194,7 @@ pub fn rule_file_suggestions(
             source: SuggestionSource::RuleFile,
             confidence: RULE_FILE_CONFIDENCE / share,
             count: hits.iter().filter(|(hit, _)| hit == account).count(),
+            recurring: None,
         })
         .collect()
 }
@@ -1090,10 +1216,11 @@ pub(crate) fn matcher_regex(pattern: &str) -> Result<regex::Regex, regex::Error>
 }
 
 /// Merge suggestions from every source: one per account at its best
-/// confidence, ranked by confidence, then source, then name, and capped.
+/// confidence, ranked by confidence, then source, then name, and capped. A
+/// [`RecurringFill`] survives the merge whichever source wins the account.
 fn rank(found: Vec<Suggestion>) -> Vec<Suggestion> {
     let mut best: Vec<Suggestion> = Vec::new();
-    for suggestion in found {
+    for mut suggestion in found {
         match best
             .iter_mut()
             .find(|kept| kept.account == suggestion.account)
@@ -1102,9 +1229,16 @@ fn rank(found: Vec<Suggestion>) -> Vec<Suggestion> {
                 if (suggestion.confidence, std::cmp::Reverse(suggestion.source))
                     > (kept.confidence, std::cmp::Reverse(kept.source)) =>
             {
+                if suggestion.recurring.is_none() {
+                    suggestion.recurring = kept.recurring.take();
+                }
                 *kept = suggestion;
             }
-            Some(_) => {}
+            Some(kept) => {
+                if kept.recurring.is_none() {
+                    kept.recurring = suggestion.recurring;
+                }
+            }
             None => best.push(suggestion),
         }
     }
@@ -1269,6 +1403,7 @@ mod tests {
             source,
             confidence,
             count: 1,
+            recurring: None,
         };
         let ranked = rank(vec![
             suggestion("a", SuggestionSource::ExactKey, 4_000),

@@ -27,6 +27,18 @@ function slot(op: WireEditOp): string | null {
             return `tag:${op.name}`;
         case "setPostingAccount":
             return `posting:${op.posting}`;
+        case "setDate":
+            return "date";
+        case "setDate2":
+            return "date2";
+        case "setStatus":
+            return "status";
+        case "setCode":
+            return "code";
+        case "setPostingComment":
+            return `posting-comment:${op.posting}`;
+        case "removePostingAssertion":
+            return `posting-assertion:${op.posting}`;
         case "replace":
             return null;
     }
@@ -77,19 +89,40 @@ function isNoOp(op: WireEditOp, txn: Transaction): boolean {
             return op.value === null ? firstTag(txn, op.name) === undefined : firstTag(txn, op.name) === op.value;
         case "setPostingAccount":
             return written(txn)[op.posting]?.account === op.account;
+        case "setDate":
+            return txn.date === op.date;
+        case "setDate2":
+            return (txn.date2 ?? null) === op.date2;
+        case "setStatus":
+            return txn.status === op.status;
+        case "setCode":
+            return txn.code === (op.code ?? "");
+        case "setPostingComment":
+            return (written(txn)[op.posting]?.comment.trimEnd() ?? "") === (op.comment ?? "");
+        case "removePostingAssertion":
+            return written(txn)[op.posting]?.balanceAssertion === undefined;
         case "replace":
             return false;
     }
 }
 
+/** `JSON.stringify`'s replacer for domain values: amounts are `Dec`s with bigint mantissas. */
+function bigints(_: string, value: unknown): unknown {
+    return typeof value === "bigint" ? value.toString() : value;
+}
+
 /**
  * Everything that differs between two readings of one transaction, in the
  * same vocabulary as {@link slot}, plus `other` for whatever no surgical op
- * writes (the date, the status, an amount, a posting added or removed).
+ * writes (an amount, a posting's status, a posting added or removed).
  */
 function differences(before: Transaction, after: Transaction): Set<string> {
     const found = new Set<string>();
     if (before.description !== after.description) found.add("description");
+    if (before.date !== after.date) found.add("date");
+    if ((before.date2 ?? null) !== (after.date2 ?? null)) found.add("date2");
+    if (before.status !== after.status) found.add("status");
+    if (before.code !== after.code) found.add("code");
     if (commentFreeText(before.comment) !== commentFreeText(after.comment)) found.add("comment");
     for (const name of new Set([...before.tags, ...after.tags].map(([tag]) => tag))) {
         if (firstTag(before, name) !== firstTag(after, name)) found.add(`tag:${name}`);
@@ -97,21 +130,23 @@ function differences(before: Transaction, after: Transaction): Set<string> {
     const was = written(before);
     const now = written(after);
     was.forEach((posting, at) => {
-        if (now[at] !== undefined && now[at].account !== posting.account) found.add(`posting:${at}`);
+        const later = now[at];
+        if (later === undefined) return;
+        if (later.account !== posting.account) found.add(`posting:${at}`);
+        if (later.comment.trimEnd() !== posting.comment.trimEnd()) found.add(`posting-comment:${at}`);
+        if (posting.balanceAssertion !== undefined && later.balanceAssertion === undefined) found.add(`posting-assertion:${at}`);
+        else if (JSON.stringify(posting.balanceAssertion, bigints) !== JSON.stringify(later.balanceAssertion, bigints)) found.add("other");
     });
-    const rest = (txn: Transaction, postings: Posting[]): string =>
+    const rest = (postings: Posting[]): string =>
         JSON.stringify(
             {
-                date: txn.date,
-                date2: txn.date2 ?? null,
-                status: txn.status,
-                code: txn.code,
-                postings: postings.map((posting) => ({...posting, account: null})),
+                // A posting's tags follow its comment, and a removed assertion
+                // is its own slot; what is left only a `replace` writes.
+                postings: postings.map((posting) => ({...posting, account: null, comment: null, tags: null, balanceAssertion: null})),
             },
-            // Amounts are `Dec`s with bigint mantissas.
-            (_, value: unknown) => (typeof value === "bigint" ? value.toString() : value)
+            bigints
         );
-    if (was.length !== now.length || rest(before, was) !== rest(after, now)) found.add("other");
+    if (was.length !== now.length || rest(was) !== rest(now)) found.add("other");
     return found;
 }
 

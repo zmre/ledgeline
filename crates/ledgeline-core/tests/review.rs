@@ -990,3 +990,77 @@ fn similar_by_key_is_similar_without_a_transaction_to_leave_out() {
         0
     );
 }
+
+// ---------------------------------------------------------------------------
+// Suggestions for a description alone (plan 32 D36)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_description_gets_the_precedent_and_the_recurring_fill() {
+    let journal = fixture();
+    let (classes, index) = indexed(&journal);
+    let suggestions = index.suggest_for_description(&journal, &classes, "Netflix");
+    let top = top_chip(&suggestions).expect("a strong suggestion");
+    assert_eq!(top.account, "expenses:streaming");
+    // The exact key wins the account (100%), and keeps the recurring
+    // charge's fill.
+    assert_eq!(top.source, SuggestionSource::ExactKey);
+    assert_eq!(top.confidence, CERTAIN);
+    let fill = top.recurring.as_ref().expect("a recurring fill");
+    assert_eq!(fill.quantity, ledgeline_core::Dec::new(1_549, 2));
+    assert_eq!(fill.commodity.0, "$");
+    assert_eq!(fill.account, "liabilities:visa");
+}
+
+#[test]
+fn a_description_matches_what_a_queued_transaction_with_it_gets() {
+    let journal = fixture();
+    let (classes, index) = indexed(&journal);
+    let oakland = find(&journal, "2026-10-12", "4412 OAKLAND");
+    let queued = index.suggest(&journal, &classes, oakland);
+    let typed = index.suggest_for_description(&journal, &classes, "SQ *BLUE BOTTLE 9999 OAKLAND");
+    assert!(!queued.is_empty());
+    // Same accounts and sources; the queued one is excluded from its own
+    // precedent, which a typed description has none of to exclude.
+    let accounts = |found: &[review::Suggestion]| -> Vec<(String, SuggestionSource)> {
+        found
+            .iter()
+            .map(|s| (s.account.clone(), s.source))
+            .collect()
+    };
+    assert_eq!(accounts(&typed), accounts(&queued));
+    assert!(typed.iter().all(|s| s.recurring.is_none()));
+    // No key, no suggestions.
+    assert!(
+        index
+            .suggest_for_description(&journal, &classes, "12345")
+            .is_empty()
+    );
+    assert!(
+        index
+            .suggest_for_description(&journal, &classes, "")
+            .is_empty()
+    );
+}
+
+#[test]
+fn the_recurring_fill_takes_the_newest_charge_s_funding_account() {
+    let months: String = (4..=9)
+        .map(|month| {
+            let card = if month < 8 {
+                "liabilities:visa"
+            } else {
+                "liabilities:amex"
+            };
+            format!("2026-{month:02}-14 Streamco\n    expenses:streaming  $15.49\n    {card}\n\n")
+        })
+        .collect();
+    let journal = inline(&format!(
+        "account expenses:streaming  ; type: X\naccount liabilities:visa  ; type: L\n\
+         account liabilities:amex  ; type: L\n\n{months}"
+    ));
+    let (classes, index) = indexed(&journal);
+    let suggestions = index.suggest_for_description(&journal, &classes, "STREAMCO");
+    let fill = suggestions[0].recurring.as_ref().expect("a recurring fill");
+    assert_eq!(fill.account, "liabilities:amex");
+}

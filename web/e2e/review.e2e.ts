@@ -1,4 +1,4 @@
-// Transaction review, end to end (plan 32 Phase 3), against the review engine
+// Transaction review, end to end (plan 32 Phases 3 and 7), against the review engine
 // on :5098 — a scratch copy of fixtures/review/ (see playwright.config.ts),
 // so the saves here never touch a committed fixture or sample.journal's totals.
 //
@@ -164,6 +164,95 @@ test("review unknowns from the keyboard: suggestion, similar, skip and back — 
 });
 
 // ---------------------------------------------------------------------------
+// The card as the transaction editor (plan 32 Phase 7c, D31–D40)
+// ---------------------------------------------------------------------------
+//
+// Untouched by the test above: #26 "2026-10-25 Safeway  ; weekly shop:
+// produce" (categorised, unreviewed, its checking leg elided) and the
+// Netflix history (six monthly charges of $15.49 on the Visa, so a new
+// "Netflix" gets expenses:streaming with the recurring amount and account).
+
+/** Put the journal's cursor on the row whose text includes `text`, with `j`. */
+async function cursorTo(page: Page, text: string): Promise<void> {
+    const cursored = page.locator("tr[aria-current='true']");
+    for (let moves = 0; moves < 30; moves += 1) {
+        await page.keyboard.press("j");
+        if (((await cursored.textContent()) ?? "").includes(text)) return;
+    }
+    throw new Error(`no row with "${text}" under the cursor`);
+}
+
+test("the transaction editor: edit with Mark reviewed, then add from a payee — and the bytes on disk", async ({page}) => {
+    await page.goto("/");
+    await expect(page.locator("tbody tr[data-txn]").first()).toBeVisible();
+    await expect(page.getByRole("button", {name: "Add transaction"})).toBeVisible();
+
+    // 1. Enter on a row opens the card on it, in card mode, details open.
+    await cursorTo(page, "2026-10-25");
+    await expect(page.locator("tr[aria-current='true']")).toContainText("Safeway");
+    await page.keyboard.press("Enter");
+    const editor = page.getByRole("dialog", {name: "Edit transaction"});
+    await expect(editor).toBeVisible();
+    const card = editor.getByTestId("review-card");
+    await expect(card).toBeFocused();
+    await expect(editor.getByTestId("review-position")).toHaveCount(0);
+    await expect(editor.getByTestId("review-details")).toBeVisible();
+    const box = editor.getByTestId("review-mark-reviewed");
+    await expect(box).not.toBeChecked();
+
+    // 2. Status (`!`), code (`#`), a posting comment (⋯), Mark reviewed (`v`), ⌘↵.
+    await page.keyboard.press("!"); // the character itself: Playwright's "Shift+1" sends key "1" with Shift held, not "!"
+    await expect(editor.getByLabel(/^Status: pending/)).toBeVisible();
+    await page.keyboard.press("#");
+    await expect(editor.getByLabel("Code")).toBeFocused();
+    await page.keyboard.type("1042");
+    await page.keyboard.press("Escape");
+    await expect(card).toBeFocused();
+    await editor.getByRole("button", {name: "Add a comment to posting 1"}).click();
+    await expect(editor.getByLabel("Comment for posting 1")).toBeFocused();
+    await page.keyboard.type("split with Sam");
+    await page.keyboard.press("Escape");
+    await expect(card).toBeFocused();
+    await page.keyboard.press("v");
+    await expect(box).toBeChecked();
+    await page.keyboard.press("ControlOrMeta+Enter");
+    await expect(editor).toBeHidden();
+    await expect(page.locator("tr[aria-current='true']")).toContainText("Safeway");
+
+    const safeway = block("review.journal", "2026-10-25 ! (1042) Safeway");
+    expect(safeway.split("\n")[0]).toContain("weekly shop: produce");
+    expect(safeway.split("\n")[0]).toContain("reviewed:2026-10-30");
+    expect(safeway).toMatch(/\n {4}expenses:food:groceries\s+\$54\.30\s+; split with Sam\n/);
+    // The elided leg stays elided.
+    expect(safeway).toMatch(/\n {4}assets:checking\s*$/);
+
+    // 3. `n` opens a blank card with focus in the description. Picking a
+    //    payee offers its category with the recurring amount and account;
+    //    ⌘⇧↵ takes it and adds the transaction.
+    await page.keyboard.press("n");
+    const adder = page.getByRole("dialog", {name: "Add transaction"});
+    await expect(adder).toBeVisible();
+    const description = adder.getByLabel("Description", {exact: true});
+    await expect(description).toBeFocused();
+    await page.keyboard.type("Netf");
+    await expect(page.getByRole("option", {name: /Netflix/})).toBeVisible();
+    await page.keyboard.press("Enter");
+    await expect(description).toHaveValue("Netflix");
+    const chip = adder.getByTestId("review-chip").first();
+    await expect(chip).toHaveAttribute("aria-pressed", "true");
+    await expect(chip).toContainText("streaming");
+    await expect(chip.getByTestId("review-chip-fill")).toHaveText("$15.49 from liabilities:visa");
+    await page.keyboard.press("ControlOrMeta+Shift+Enter");
+    await expect(adder).toBeHidden();
+    await expect(page.locator("tr[aria-current='true']")).toContainText("Netflix");
+
+    const added = block("review.journal", "2026-10-30 Netflix");
+    expect(added).toMatch(/\n {4}expenses:streaming\s+\$15\.49\n/);
+    expect(added).toMatch(/\n {4}liabilities:visa\s*$/);
+    expect(added).not.toContain("reviewed:");
+});
+
+// ---------------------------------------------------------------------------
 // Remember as a rule from the Journal (plan 32 D27)
 // ---------------------------------------------------------------------------
 //
@@ -271,6 +360,8 @@ test.describe("remember as a rule from the Journal", () => {
         const blue = cardOf(page, 3);
         await expect(blue).toBeFocused();
         await recategorise(page, 3, "expenses:auto:fuel");
+        // The toggle (and `R`) arrive with the card's rules-for answer.
+        await expect(blue.getByTestId("review-rule")).toBeVisible();
         await page.keyboard.press("Shift+R");
         await expect(blue).toBeFocused();
         const blueFile = blue.getByTestId("review-rule-file-select");

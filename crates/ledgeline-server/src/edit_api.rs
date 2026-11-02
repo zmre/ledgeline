@@ -294,7 +294,7 @@ impl AddRequest {
 /// Transaction clearing status on the wire.
 #[derive(Deserialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
-enum StatusIn {
+pub(crate) enum StatusIn {
     Cleared,
     Pending,
     Unmarked,
@@ -918,8 +918,15 @@ fn apply_replacements(
     replacements: &[Replacement],
 ) -> Result<(), (String, EditError)> {
     replacements.iter().try_for_each(|replacement| {
+        // A replacement is built whole from the export, every amount
+        // explicit; a leg the journal leaves blank stays blank (plan 32 D35
+        // moved this choice out of the core replace, which now writes what
+        // it is given).
+        let transaction = editor
+            .with_elisions_restored(replacement.index, &replacement.transaction)
+            .into_owned();
         editor
-            .replace_transaction(replacement.index, &replacement.transaction)
+            .replace_transaction(replacement.index, &transaction)
             .map_err(|error| (replacement.label.clone(), error))
     })
 }
@@ -1167,8 +1174,8 @@ fn insertion_index(journal: &Journal, txn: &Transaction, position: InsertPositio
 // journal and echoed back by the edit popup always fits; small enough that a
 // hostile body cannot turn one header into megabytes of journal. The account
 // cap is the one the budget rules' posting lines already use.
-const MAX_DATE_BYTES: usize = 32;
-const MAX_CODE_BYTES: usize = 256;
+pub(crate) const MAX_DATE_BYTES: usize = 32;
+pub(crate) const MAX_CODE_BYTES: usize = 256;
 pub(crate) const MAX_DESCRIPTION_BYTES: usize = 1024;
 pub(crate) const MAX_COMMENT_BYTES: usize = 4096;
 const MAX_COMMODITY_BYTES: usize = 128;
@@ -1180,7 +1187,7 @@ pub(crate) const TAB: &[char] = &['\t'];
 /// A comment may also span lines: the model joins a multi-line comment's lines
 /// with `\n` (the read API hands that back, and the edit popup echoes it), and
 /// the writer renders each line as its own indented `; …` line.
-const COMMENT: &[char] = &['\t', '\n'];
+pub(crate) const COMMENT: &[char] = &['\t', '\n'];
 
 /// No ASCII control character outside `allowed`, and no more than `cap` bytes.
 ///
@@ -1296,7 +1303,7 @@ fn build_posting(journal: &Journal, input: &PostingIn) -> Result<Posting, AppErr
     let balance_assertion = input
         .balance_assertion
         .as_ref()
-        .map(|assertion| build_assertion(journal, assertion, &input.account, amounts.is_empty()))
+        .map(|assertion| build_assertion(journal, assertion, &input.account))
         .transpose()?;
     Ok(Posting {
         status: input.status.map_or(Status::Unmarked, Status::from),
@@ -1309,6 +1316,7 @@ fn build_posting(journal: &Journal, input: &PostingIn) -> Result<Posting, AppErr
         comment: comment_string(input.comment.as_deref()),
         tags: Vec::new(),
         generated: None,
+        elided: false,
     })
 }
 
@@ -1321,28 +1329,21 @@ fn build_posting(journal: &Journal, input: &PostingIn) -> Result<Posting, AppErr
 ///   *different* commodity. That is a silent change of which balance is being
 ///   anchored, and the round-trip guard cannot see it as one because the text it
 ///   wrote is the text it reads back.
-/// * **An assertion with no amount on the same posting.** hledger accepts
-///   `assets:cash  = $99.00`, but this writer cannot produce it: the formatter
-///   emits an assertion only alongside a posting's first amount line, so an
-///   amount-less posting would drop it on the floor — the exact silent loss
-///   DL-2 is about. Refusing is the honest answer; the SPA always sends the
-///   balanced amount, so this is unreachable from the popup.
+///
+/// An assertion on a posting with NO amount (`assets:cash  = $99.00`, the
+/// reconcile-to-statement idiom) is accepted: the formatter writes it after
+/// the bare account, and the round-trip guard compares it. That used to be
+/// refused, back when the formatter dropped it; since the SPA leaves an elided
+/// leg blank (plan 32 D35), it is how such a leg round-trips.
 fn build_assertion(
     journal: &Journal,
     input: &BalanceAssertionIn,
     account: &str,
-    posting_has_no_amount: bool,
 ) -> Result<BalanceAssertion, AppError> {
     if input.amount.commodity.trim().is_empty() {
         return Err(AppError::BadRequest(format!(
             "the balance assertion on '{account}' needs a commodity: a bare asserted number \
              would re-read as whatever commodity the journal defaults to"
-        )));
-    }
-    if posting_has_no_amount {
-        return Err(AppError::BadRequest(format!(
-            "the balance assertion on '{account}' needs an amount on the same posting: an \
-             assertion cannot be written on the inferred (elided) leg"
         )));
     }
     Ok(BalanceAssertion {
@@ -1354,12 +1355,18 @@ fn build_assertion(
     })
 }
 
-/// Normalize an optional wire comment into the model's stored form: the trimmed
-/// text with a single trailing newline (matching the parser's `build_comment`),
-/// or empty when absent or blank. The formatter re-adds the `  ; ` prefix.
+/// Normalize an optional wire comment into the model's stored form: the text
+/// with a single trailing newline (matching the parser's `build_comment`), or
+/// empty when absent or blank. The formatter re-adds the `  ; ` prefix and
+/// trims each line.
+///
+/// Only the END is trimmed. The model's first line is the same-line comment,
+/// so a comment that starts with a line break (`"\nid:7"`, what the read API
+/// serves for a comment written on its own `;` line) must keep it, or a
+/// re-render would hoist that line onto the header or posting line.
 fn comment_string(raw: Option<&str>) -> String {
     match raw {
-        Some(text) if !text.trim().is_empty() => format!("{}\n", text.trim()),
+        Some(text) if !text.trim().is_empty() => format!("{}\n", text.trim_end()),
         _ => String::new(),
     }
 }
@@ -1700,6 +1707,7 @@ mod tests {
             comment: String::new(),
             tags: vec![],
             generated: None,
+            elided: false,
         }
     }
 

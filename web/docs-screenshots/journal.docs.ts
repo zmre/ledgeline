@@ -1,7 +1,7 @@
 // docs/journal/ — the journal view, its filter bar, the editor, the problems
 // drawer and the export. Engine: the staged copy of fixtures/sample.journal.
 import type {Page} from "@playwright/test";
-import {annotate, around, expect, shot, test} from "./harness";
+import {annotate, around, expect, finishMotion, shot, test} from "./harness";
 
 const SECTION = "journal";
 
@@ -44,14 +44,17 @@ test("filter bar: account picker open", async ({page}) => {
 });
 
 test("transaction editor", async ({page}) => {
+    // The review card in single mode (plan 32 D31): the edit button opens it on the paycheck.
     const row = page.locator("tbody tr").filter({hasText: "Acme"}).first();
     await row.hover();
     await row.getByRole("button", {name: "Edit whole transaction"}).click();
-    const dialog = page.getByRole("dialog");
-    await expect(dialog).toBeVisible();
-    // The date field takes focus on open; a focus ring in a manual reads as "click here".
-    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-    await shot(page, SECTION, "transaction-editor", {clip: dialog.locator(".modal-box"), padding: 0});
+    const dialog = page.getByRole("dialog", {name: "Edit transaction"});
+    const card = dialog.getByTestId("review-card");
+    await expect(card).toBeFocused();
+    await expect(dialog.getByTestId("review-details")).toBeVisible();
+    await page.mouse.move(2, 2);
+    await finishMotion(page);
+    await shot(page, SECTION, "transaction-editor", {clip: card, padding: 0});
 });
 
 test("problems badge", async ({page}) => {

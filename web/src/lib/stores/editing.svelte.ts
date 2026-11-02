@@ -6,7 +6,9 @@
 // conflict banner (409 ⇒ the file changed on disk) and a transient toast for
 // inline-edit failures.
 
-import {LedgelineApi, type AddTransactionBody, type PatchTransactionBody, type ReplaceTransactionBody} from "#lib/api/native.js";
+import {LedgelineApi, type AddTransactionBody, type PatchTransactionBody, type ReplaceTransactionBody, type WireBatchEdit} from "#lib/api/native.js";
+import {decodeBatchResult} from "#lib/api/reviewDecode.js";
+import type {BatchResult} from "#lib/review/types.js";
 import {classify, type EditFailure, type EditResult} from "#lib/api/editFailure.js";
 import {journal} from "./journal.svelte";
 import {settings} from "./settings.svelte";
@@ -17,6 +19,9 @@ import {settings} from "./settings.svelte";
 export type {EditFailure, EditFailureKind, EditResult} from "#lib/api/editFailure.js";
 
 const OK: EditResult = {ok: true};
+
+/** An edit's outcome with what the engine answered. */
+export type WriteResult<T> = {ok: true; value: T} | {ok: false; failure: EditFailure};
 
 let canEdit = $state(false);
 /** Non-null when the last probe could not REACH the server, so `canEdit` is stale rather than known. */
@@ -39,18 +44,24 @@ function client(): LedgelineApi | null {
  * (501/non-native) turns editing off. Returns a typed result for the caller.
  */
 async function run(action: (api: LedgelineApi) => Promise<unknown>): Promise<EditResult> {
+    const result = await runFor(action);
+    return result.ok ? OK : result;
+}
+
+/** `run`, keeping what the write answered (the new transaction's index, a batch's result). */
+async function runFor<T>(action: (api: LedgelineApi) => Promise<T>): Promise<WriteResult<T>> {
     const api = client();
     if (api === null) return {ok: false, failure: {kind: "unavailable", message: "No server is configured."}};
     busy = true;
     try {
-        await action(api);
+        const value = await action(api);
         // `force`: a refresh already in flight issued its GETs BEFORE this
         // write, so joining it would confirm the edit against pre-write data
         // and then bank that as the current fingerprint — which suppresses the
         // swap for the correct data when it does arrive (FE-5e).
         await journal.refresh({force: true});
         conflict = false;
-        return OK;
+        return {ok: true, value};
     } catch (error) {
         const failure = classify(error);
         if (failure.kind === "conflict") {
@@ -125,11 +136,19 @@ export const editing = {
         }
     },
 
-    /** ADD a whole transaction (popup, add mode). */
-    add(body: AddTransactionBody): Promise<EditResult> {
-        return run((api) => api.addTransaction(body));
+    /** ADD a whole transaction (the card's add mode). Answers the new transaction's index. */
+    add(body: AddTransactionBody): Promise<WriteResult<number>> {
+        return runFor(async (api) => (await api.addTransaction(body)).index);
     },
-    /** REPLACE a whole transaction (popup, edit mode). */
+    /**
+     * Apply `edits` as ONE write (the card's single mode, plan 32 D31): the
+     * edited transactions as they now read. A 409 sets `conflict`, as every
+     * other edit here does.
+     */
+    batch(edits: WireBatchEdit[]): Promise<WriteResult<BatchResult>> {
+        return runFor(async (api) => decodeBatchResult(await api.batchTransactions({edits})));
+    },
+    /** REPLACE a whole transaction. */
     replace(index: number, body: ReplaceTransactionBody): Promise<EditResult> {
         return run((api) => api.replaceTransaction(index, body));
     },
@@ -137,7 +156,7 @@ export const editing = {
     patch(index: number, patch: PatchTransactionBody): Promise<EditResult> {
         return run((api) => api.patchTransaction(index, patch));
     },
-    /** DELETE a transaction (popup delete action). */
+    /** DELETE a transaction (the table's `x`, the card's delete). */
     remove(index: number): Promise<EditResult> {
         return run((api) => api.deleteTransaction(index));
     },

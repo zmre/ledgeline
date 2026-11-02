@@ -53,6 +53,7 @@ fn leg(account: &str, amount: Option<Amount>) -> Posting {
         comment: String::new(),
         tags: vec![],
         generated: None,
+        elided: false,
     }
 }
 
@@ -602,7 +603,12 @@ fn header_rewrite_keeps_a_multi_line_comment_on_its_own_lines() {
 #[test]
 fn replace_writes_every_comment_line_as_an_indented_comment() {
     let mut editor = JournalEditor::from_text("mem.journal", MULTI_LINE_COMMENTS).unwrap();
-    let txn = editor.journal().transactions[0].clone();
+    let mut txn = editor.journal().transactions[0].clone();
+    // What a client sends back: the elided leg blank (plan 32 D35).
+    txn.postings
+        .iter_mut()
+        .filter(|posting| posting.elided)
+        .for_each(|posting| posting.amounts.clear());
     editor.replace_transaction(Tindex(1), &txn).unwrap();
     assert_eq!(editor.text(), MULTI_LINE_COMMENTS);
 

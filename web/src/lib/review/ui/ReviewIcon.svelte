@@ -14,7 +14,8 @@
         | "pencil"
         | "sliders"
         | "warning"
-        | "bolt";
+        | "bolt"
+        | "calendar";
 </script>
 
 <script lang="ts">
@@ -67,5 +68,8 @@
         <path d="M8 2.5 14 13H2zM8 6.5v3M8 11.5v.01" />
     {:else if name === "bolt"}
         <path d="M9 2 3.5 9H8l-1 5 5.5-7H8z" />
+    {:else if name === "calendar"}
+        <rect x="2.5" y="3.5" width="11" height="10" rx="1.5" />
+        <path d="M2.5 6.5h11M5.5 2v3M10.5 2v3" />
     {/if}
 </svg>

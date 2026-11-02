@@ -52,6 +52,22 @@ export function rankPayees(query: string, payees: readonly PayeeUse[], today: IS
     return scored.slice(0, limit).map((entry) => entry.use);
 }
 
+/**
+ * The commodities a posting's commodity field offers (plan 32 D33), for what
+ * is typed: those it prefixes, then those it appears in, each in the order
+ * given (the caller lists the journal's, most used first). Case-insensitive,
+ * because `eur` should find `EUR`. An empty query lists them all; the query
+ * itself, typed exactly, is not offered back.
+ */
+export function rankCommodities(query: string, commodities: readonly string[], limit = COMPLETION_LIMIT): string[] {
+    const typed = query.trim();
+    const needle = typed.toLowerCase();
+    const unique = [...new Set(commodities)].filter((commodity) => commodity !== "" && commodity !== typed);
+    const prefix = unique.filter((commodity) => commodity.toLowerCase().startsWith(needle));
+    const inner = unique.filter((commodity) => !commodity.toLowerCase().startsWith(needle) && commodity.toLowerCase().includes(needle));
+    return [...prefix, ...inner].slice(0, limit);
+}
+
 /** One tag completion: what the popup shows and what choosing it puts in the field. */
 export interface TagCompletion {
     label: string;
