@@ -21,7 +21,7 @@ The button only appears when nothing fits. To build a second rules file for data
 
 ### File name
 
-The name defaults to your CSV destination with `.rules` added, so `bank.csv` gets `bank.csv.rules`. hledger finds a rules file by that naming convention, so keep the pair together. The name is relative to your journal's folder, must end in `.rules`, and can't be hidden or step outside that folder.
+The name defaults to your CSV destination with `.rules` added, so `bank.csv` gets `bank.csv.rules`. When an existing rules file is selected, the destination is that file's own CSV, so the default comes from the statement's file name instead (with the account's last four digits for a file holding several accounts). hledger finds a rules file by that naming convention, so keep the pair together. The name is relative to your journal's folder, must end in `.rules`, and can't be hidden or step outside that folder.
 
 ### This file's account and fallback category
 
@@ -39,7 +39,7 @@ The mapping table lists every column with its header, an example value, and the 
 
 Every import needs a `date` and an amount. That is either `amount`, or `amount-in` and `amount-out` for banks that use two money columns. Any other name labels the column for later rules. A column named `cat` can be used as `comment category:%cat`.
 
-Columns Ledgeline can't identify keep their own header as the name. An OFX file's `fitid` column stays available that way. Add `comment id:%fitid` later to make [re-downloads safe](new-transactions.md#re-downloading-a-statement).
+Columns Ledgeline can't identify keep their own header as the name. When the data has a `fitid` column, as every OFX, QFX and QBO file does, the draft also writes `comment id:%fitid`, which makes [re-downloads safe](new-transactions.md#re-downloading-a-statement).
 
 ## Warnings worth reading
 

@@ -19,13 +19,19 @@ Ledgeline converts the file to a CSV and shows a short preview of the rows it re
 
 If the file is a QuickBooks Online Journal export, a different panel takes over. See [Importing from QuickBooks](quickbooks.md).
 
+### A file with several accounts
+
+Some banks put every account in one download, especially QuickBooks Web Connect (`.qbo`) files. Ledgeline lists the accounts above the preview, each with the last four digits of its number, its type, how many transactions it holds and its balance. It reads one account at a time. Import the first, then choose the next and import that. Each account gets its own rules file and its own CSV, and the CSV name includes the last four digits (`download-7592.csv`). That keeps each account's `.latest` record separate.
+
 ## Choose a rules file
 
 Under **Read it with**, Ledgeline lists the `*.rules` files beside your journal that fit this data, best match first. Each card shows a score, the signals behind it (for example, whether the columns and dates line up), and a sample of the transactions that file would produce. Pick the one whose sample looks right.
 
 The last option, **Don't import, just save the CSV**, writes the converted file and leaves your journal alone.
 
-If no rules file fits, the list says so and offers **Create rules file…**. That drafts a new one from your data. See [Creating a rules file](create-rules.md).
+If no rules file fits, the list says so and offers **Create rules file…**. That drafts a new one from your data. See [Creating a rules file](create-rules.md). The same button sits under the list when files do fit, as **Create a new rules file…**. Use it when a file fits the columns but belongs to a different account. Every QBO file has the same columns, so a rules file written for one bank's QBO fits every other bank's too.
+
+When files score the same percentage, the one whose name or `account1` shares a word with the statement's file name, or the account's last four digits, is listed first. With `amex-activity.qbo`, `amex.csv.rules` comes before `chase.csv.rules`.
 
 ## Where it goes
 
@@ -139,7 +145,7 @@ Ledgeline can match rows by the bank's own transaction id instead. Add this line
 comment id:%fitid
 ```
 
-OFX, QFX and QBO files carry a `FITID` for every transaction, and Ledgeline exposes it as the `fitid` column. With that line in place, every imported transaction carries an `id:` tag, and the dry run sorts each incoming row into one of four outcomes.
+OFX, QFX and QBO files carry a `FITID` for every transaction, and Ledgeline exposes it as the `fitid` column. A rules file Ledgeline drafts from one of those files already has the line. Commas are removed from the id on the way in (`561,516` becomes `561516`), because hledger ends a tag's value at the first comma. Without that, two transactions whose ids differ only after a comma would look like the same transaction. With that line in place, every imported transaction carries an `id:` tag, and the dry run sorts each incoming row into one of four outcomes.
 
 | Outcome | What happens |
 | --- | --- |
@@ -154,4 +160,4 @@ Status changes only apply when the rules file sets a `status` field, and only to
 
 ## Doing it from a terminal
 
-The dry-run panel shows a `ledgeline import` command for the import on screen. Run it from the folder that holds your journal to repeat the same import later with a new statement. `ledgeline import --help` lists the options.
+The dry-run panel shows a `ledgeline import` command for the import on screen. Run it from the folder that holds your journal to repeat the same import later with a new statement. For a file with several accounts, the command includes `--statement N`, which picks the Nth account, counting from 1. `ledgeline import --help` lists the options.

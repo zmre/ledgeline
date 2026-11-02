@@ -86,6 +86,7 @@ import type {
     StagedFile,
     StageDefaults,
     StagePreview,
+    StatementChoice,
     StatementMeta,
     StatusChange,
 } from "#lib/imports/importTypes.js";
@@ -1189,6 +1190,7 @@ interface RawRulesCandidate {
 
 interface RawStageDefaults {
     csvPath?: string;
+    uploadCsvPath?: string;
     journalId?: string | null;
 }
 
@@ -1197,9 +1199,19 @@ interface RawStagedFile {
     format?: string;
     preview?: RawStagePreview;
     statement?: RawStatementMeta | null;
+    statements?: RawStatementChoice[];
+    statementIndex?: number;
     notes?: RawConvertNote[];
     candidates?: RawRulesCandidate[];
     defaults?: RawStageDefaults;
+}
+
+interface RawStatementChoice {
+    accountHint?: string;
+    accountType?: string;
+    currency?: string;
+    ledgerBalance?: string;
+    transactions?: number;
 }
 
 interface RawSkippedRows {
@@ -3979,6 +3991,17 @@ function decodeStatementMeta(raw: RawStatementMeta | null | undefined, context: 
     });
 }
 
+function decodeStatementChoice(raw: RawStatementChoice | undefined, context: string): StatementChoice {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing statement`);
+    return Object.freeze({
+        accountHint: optStr(raw.accountHint, `${context} accountHint`),
+        accountType: optStr(raw.accountType, `${context} accountType`),
+        currency: optStr(raw.currency, `${context} currency`),
+        ledgerBalance: optStr(raw.ledgerBalance, `${context} ledgerBalance`),
+        transactions: num(raw.transactions, `${context} transactions`),
+    });
+}
+
 function decodeProposedTxn(raw: RawProposedTxn | undefined, context: string): ProposedTxn {
     if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing transaction`);
     return Object.freeze({
@@ -4023,7 +4046,13 @@ function decodeCandidate(raw: RawRulesCandidate | undefined, context: string): R
 
 function decodeStageDefaults(raw: RawStageDefaults | undefined, context: string): StageDefaults {
     if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing defaults`);
-    return Object.freeze({csvPath: str(raw.csvPath, `${context} csvPath`), journalId: optStr(raw.journalId, `${context} journalId`)});
+    const csvPath = str(raw.csvPath, `${context} csvPath`);
+    return Object.freeze({
+        csvPath,
+        // Absent from an older engine, where `csvPath` is the best name there is.
+        uploadCsvPath: raw.uploadCsvPath === undefined ? csvPath : str(raw.uploadCsvPath, `${context} uploadCsvPath`),
+        journalId: optStr(raw.journalId, `${context} journalId`),
+    });
 }
 
 /** `POST /api/import/stage` → the converted file, its preview, and the rules files that fit it. */
@@ -4039,6 +4068,10 @@ export function decodeStagedFile(raw: unknown): StagedFile {
         format: str(staged.format, "staged file format"),
         preview: decodeStagePreview(staged.preview, "staged file preview"),
         statement: decodeStatementMeta(staged.statement, "staged file statement"),
+        // Absent from an engine older than multi-account uploads, which only
+        // ever staged one statement: nothing to choose between.
+        statements: frozen((staged.statements ?? []).map((choice, i) => decodeStatementChoice(choice, `staged file statements[${i}]`))),
+        statementIndex: staged.statementIndex === undefined ? 0 : num(staged.statementIndex, "staged file statementIndex"),
         notes: frozen(notes.filter((note): note is ConvertNote => note !== null)),
         unknownNoteCount: notes.filter((note) => note === null).length,
         candidates: frozen(staged.candidates.map((candidate, i) => decodeCandidate(candidate, `staged file candidates[${i}]`))),

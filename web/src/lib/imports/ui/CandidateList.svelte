@@ -10,6 +10,11 @@
     // all of it. A percentage alone cannot convey that; two real transactions
     // and a line saying "12 amounts with no currency" can.
     //
+    // Creating a rules file is offered here too, not only when nothing fits.
+    // QuickBooks Web Connect files all convert to the same columns, so a rules
+    // file written for one bank "fits" every other bank's download — and a
+    // match is exactly what used to hide the only way to make the right one.
+    //
     // The last card is always "just save the CSV". Deselecting has to be
     // reachable — it is what turns the action button into `Save CSV` — and a
     // radio group with no way back to "none" is a trap.
@@ -120,5 +125,12 @@
                 <span class="text-xs text-base-content/60">Writes the converted file to the destination below and leaves your journal alone.</span>
             </span>
         </label>
+
+        <div class="flex flex-wrap items-center gap-2 px-1">
+            <button type="button" class="btn btn-ghost btn-sm" disabled={disabled || creating} onclick={onCreate} data-testid="imports-create-rules">
+                Create a new rules file…
+            </button>
+            <span class="text-xs text-base-content/50">when none of these is the right one for this statement</span>
+        </div>
     {/if}
 </section>

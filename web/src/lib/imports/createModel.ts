@@ -50,6 +50,17 @@ const RULES_SUFFIX = ".csv.rules";
  * be anything the user has typed so far. An empty or suffix-less one falls back
  * to a plain name rather than producing something that is not a rules id.
  */
+/**
+ * The name the Create panel opens with: after the CSV destination, unless that
+ * name is already one of `taken` — the usual case when candidates exist, since
+ * the destination then follows the chosen candidate's own file — in which case
+ * after the upload itself (`uploadCsvPath`).
+ */
+export function newRulesId(csvPath: string, uploadCsvPath: string, taken: readonly string[]): string {
+    const preferred = defaultRulesId(csvPath);
+    return taken.includes(preferred) ? defaultRulesId(uploadCsvPath) : preferred;
+}
+
 export function defaultRulesId(csvPath: string): string {
     const trimmed = csvPath.trim().replace(/^\/+/, "");
     if (trimmed === "") return "import.csv.rules";

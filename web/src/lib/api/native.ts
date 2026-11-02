@@ -1751,9 +1751,12 @@ export class LedgelineApi {
      * what makes it one. The engine sanitises it again (it has to; a client is
      * not a check), and uses it only for format detection and the destination
      * default.
+     *
+     * `statement` picks one account of an upload that holds several (an index
+     * into the stage response's own `statements`); omitted, the first.
      */
-    stageImport(filename: string, bytes: ArrayBuffer | Uint8Array): Promise<unknown> {
-        return this.upload("/api/import/stage", filename, bytes);
+    stageImport(filename: string, bytes: ArrayBuffer | Uint8Array, statement?: number): Promise<unknown> {
+        return this.upload("/api/import/stage", filename, bytes, statement === undefined ? {} : {"X-Ledgeline-Statement": String(statement)});
     }
 
     /** Proposed transactions + balance reconciliation. `ok:false` is a 200 with hledger's stderr. */
@@ -1870,7 +1873,7 @@ export class LedgelineApi {
      * The size check is local courtesy only: the engine's `DefaultBodyLimit`
      * answers 413 and that is the actual enforcement, mapped below.
      */
-    private async upload<T>(route: string, filename: string, bytes: ArrayBuffer | Uint8Array): Promise<T> {
+    private async upload<T>(route: string, filename: string, bytes: ArrayBuffer | Uint8Array, extraHeaders: Record<string, string> = {}): Promise<T> {
         const size = bytes.byteLength;
         if (size > MAX_UPLOAD_BYTES) {
             throw new ValidationError(`That file is ${Math.round(size / (1024 * 1024))} MB; Ledgeline accepts up to ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB.`);
@@ -1880,6 +1883,7 @@ export class LedgelineApi {
             Accept: "application/json",
             "Content-Type": "application/octet-stream",
             "X-Ledgeline-Filename": filename,
+            ...extraHeaders,
         });
         // A Uint8Array view is passed through as-is: BodyInit accepts it, and
         // copying to an ArrayBuffer would double the peak memory for a 16 MiB file.

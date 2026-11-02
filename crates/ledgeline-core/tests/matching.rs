@@ -29,8 +29,8 @@ mod common;
 use ledgeline_core::convert::{SourceFormat, Tabular, delimited};
 use ledgeline_core::rules::RulesDoc;
 use ledgeline_core::rules::matching::{
-    Candidate, MatchError, Ranking, Score, Signals, prefilter, rank, rank_in_families, score,
-    signals_from_hledger_json,
+    Candidate, MatchError, NameHints, Ranking, Score, Signals, prefilter, rank, rank_in_families,
+    score, signals_from_hledger_json,
 };
 use proptest::prelude::*;
 use serde_json::{Value, json};
@@ -503,14 +503,17 @@ fn the_right_rules_file_ranks_first_and_the_impostors_rank_last() {
         Ranking {
             candidate: candidate("garbage-success.rules", "garbage-success", Some("$"), true),
             modified: at(3_000),
+            affinity: 0,
         },
         Ranking {
             candidate: candidate("no-currency.rules", "no-currency", Some("$"), true),
             modified: at(4_000),
+            affinity: 0,
         },
         Ranking {
             candidate: candidate("checking.csv.rules", "checking", Some("$"), true),
             modified: at(1_000),
+            affinity: 0,
         },
     ];
     rank(&mut rankings);
@@ -544,18 +547,22 @@ fn equal_scores_are_broken_by_the_most_recently_touched_file() {
         Ranking {
             candidate: same("checking-2024.csv.rules"),
             modified: at(1_000),
+            affinity: 0,
         },
         Ranking {
             candidate: same("checking-2026.csv.rules"),
             modified: at(3_000),
+            affinity: 0,
         },
         Ranking {
             candidate: same("checking-2025.csv.rules"),
             modified: at(2_000),
+            affinity: 0,
         },
         Ranking {
             candidate: same("checking-undated.csv.rules"),
             modified: None,
+            affinity: 0,
         },
     ];
     rank(&mut rankings);
@@ -577,12 +584,51 @@ fn equal_scores_are_broken_by_the_most_recently_touched_file() {
 }
 
 #[test]
+fn a_shown_tie_goes_to_the_rules_file_the_name_points_at() {
+    // QuickBooks Web Connect: every `.qbo` converts to the same columns, so
+    // two banks' rules files score alike and only the name can choose. The
+    // Chase file is the more recently touched one, which used to decide it.
+    let at = |seconds: u64| Some(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds));
+    let hints = NameHints::new("Amex-Activity.qbo", None);
+    let ranked = |id: &str, modified| Ranking {
+        candidate: candidate(id, "checking", Some("$"), true),
+        modified,
+        affinity: hints.affinity(id, None),
+    };
+    let mut rankings = vec![
+        ranked("chase.csv.rules", at(9_000)),
+        ranked("amex.csv.rules", at(1_000)),
+    ];
+    rank(&mut rankings);
+    assert_eq!(rankings[0].candidate.id, "amex.csv.rules");
+}
+
+#[test]
+fn a_name_never_outranks_a_better_shown_score() {
+    let mut rankings = vec![
+        Ranking {
+            candidate: candidate("no-currency.rules", "no-currency", Some("$"), true),
+            modified: None,
+            affinity: 5,
+        },
+        Ranking {
+            candidate: candidate("checking.csv.rules", "checking", Some("$"), true),
+            modified: None,
+            affinity: 0,
+        },
+    ];
+    rank(&mut rankings);
+    assert_eq!(rankings[0].candidate.id, "checking.csv.rules");
+}
+
+#[test]
 fn the_id_makes_the_order_total_so_two_runs_agree() {
     let mut rankings: Vec<Ranking> = ["c.rules", "a.rules", "b.rules"]
         .iter()
         .map(|id| Ranking {
             candidate: candidate(id, "checking", Some("$"), true),
             modified: None,
+            affinity: 0,
         })
         .collect();
     rank(&mut rankings);
@@ -797,14 +843,17 @@ fn the_family_tie_break_leaves_the_existing_rankings_as_they_were() {
             Ranking {
                 candidate: candidate("garbage-success.rules", "garbage-success", Some("$"), true),
                 modified: at(3_000),
+                affinity: 0,
             },
             Ranking {
                 candidate: candidate("no-currency.rules", "no-currency", Some("$"), true),
                 modified: at(4_000),
+                affinity: 0,
             },
             Ranking {
                 candidate: candidate("checking.csv.rules", "checking", Some("$"), true),
                 modified: at(1_000),
+                affinity: 0,
             },
         ]
     };
@@ -814,18 +863,22 @@ fn the_family_tie_break_leaves_the_existing_rankings_as_they_were() {
             Ranking {
                 candidate: same("checking-2024.csv.rules"),
                 modified: at(1_000),
+                affinity: 0,
             },
             Ranking {
                 candidate: same("checking-2026.csv.rules"),
                 modified: at(3_000),
+                affinity: 0,
             },
             Ranking {
                 candidate: same("checking-2025.csv.rules"),
                 modified: at(2_000),
+                affinity: 0,
             },
             Ranking {
                 candidate: same("checking-undated.csv.rules"),
                 modified: None,
+                affinity: 0,
             },
         ]
     };
@@ -835,6 +888,7 @@ fn the_family_tie_break_leaves_the_existing_rankings_as_they_were() {
             .map(|id| Ranking {
                 candidate: candidate(id, "checking", Some("$"), true),
                 modified: None,
+                affinity: 0,
             })
             .collect()
     };
@@ -857,24 +911,29 @@ fn an_older_statement_goes_to_its_years_file_and_nothing_else_moves() {
         Ranking {
             candidate: same("checking-2024.csv.rules"),
             modified: at(1_000),
+            affinity: 0,
         },
         // Unrelated, same score, newest of all: keeps its slot.
         Ranking {
             candidate: same("savings.csv.rules"),
             modified: at(9_000),
+            affinity: 0,
         },
         Ranking {
             candidate: same("checking-2026.csv.rules"),
             modified: at(3_000),
+            affinity: 0,
         },
         Ranking {
             candidate: same("checking-2025.csv.rules"),
             modified: at(2_000),
+            affinity: 0,
         },
         // Same family, lower score: stays below every better score.
         Ranking {
             candidate: candidate("checking-2023.csv.rules", "no-currency", Some("$"), true),
             modified: at(500),
+            affinity: 0,
         },
     ];
     let mut plain = rankings.clone();

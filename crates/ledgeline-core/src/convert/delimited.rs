@@ -230,6 +230,7 @@ pub fn parse(bytes: &[u8], format: SourceFormat) -> Result<Tabular, ConvertError
         truncated,
         statement: None,
         notes: notes(&decoded, delimiter, margins, blank.len(), ragged),
+        ..Tabular::default()
     })
 }
 

@@ -96,7 +96,7 @@ use base64::Engine as _;
 use sha2::{Digest, Sha256};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
-use crate::import_api::FILENAME_HEADER;
+use crate::import_api::{FILENAME_HEADER, STATEMENT_HEADER};
 
 /// Environment variable holding a caller-chosen token. Set it when a
 /// cross-origin client (vite dev, the Playwright e2e harness) has to know the
@@ -352,8 +352,10 @@ impl Security {
                     header::AUTHORIZATION,
                     header::CONTENT_TYPE,
                     header::ACCEPT,
-                    // File uploads (`POST /api/import/stage`) carry the name here.
+                    // File uploads (`POST /api/import/stage`) carry the name here,
                     HeaderName::from_static(FILENAME_HEADER),
+                    // and which account of a multi-account file to read.
+                    HeaderName::from_static(STATEMENT_HEADER),
                 ])
                 .max_age(PREFLIGHT_MAX_AGE),
         )

@@ -104,7 +104,7 @@ use axum::http::{HeaderMap, HeaderName};
 use axum::response::Response;
 use ledgeline_core::aliases;
 use ledgeline_core::convert::{
-    self, ConvertError, ConvertNote, SourceFormat, StatementMeta, Tabular,
+    self, ConvertError, ConvertNote, SourceFormat, StatementMeta, StatementSummary, Tabular,
 };
 use ledgeline_core::decimal::{Dec, MAX_RENDER_PLACES};
 use ledgeline_core::edit::Fingerprint;
@@ -148,6 +148,11 @@ use crate::workbook_sandbox;
 
 /// The upload header carrying the dropped file's name.
 pub(crate) const FILENAME_HEADER: &str = "x-ledgeline-filename";
+
+/// The optional upload header choosing which statement of a multi-statement
+/// OFX/QFX/QBO to convert: a zero-based index into the stage response's own
+/// `statements` list. Absent means the first, which is every file's only one.
+pub(crate) const STATEMENT_HEADER: &str = "x-ledgeline-statement";
 
 /// How many preview rows one stage response carries.
 ///
@@ -346,9 +351,38 @@ struct WireStage {
     format: &'static str,
     preview: WirePreview,
     statement: Option<WireStatement>,
+    /// Every statement of a multi-statement upload, in file order, or empty
+    /// when it held one. The UI offers these; re-uploading with
+    /// `X-Ledgeline-Statement: N` stages the `N`th.
+    statements: Vec<WireStatementChoice>,
+    /// Which of `statements` this stage converted. Zero when there is one.
+    statement_index: usize,
     notes: Vec<WireNote>,
     candidates: Vec<WireCandidate>,
     defaults: WireDefaults,
+}
+
+/// One statement of a multi-statement upload, as a choice to offer.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireStatementChoice {
+    account_hint: Option<String>,
+    account_type: Option<String>,
+    currency: Option<String>,
+    ledger_balance: Option<String>,
+    transactions: usize,
+}
+
+impl From<&StatementSummary> for WireStatementChoice {
+    fn from(summary: &StatementSummary) -> Self {
+        Self {
+            account_hint: summary.account_hint.clone(),
+            account_type: summary.account_type.clone(),
+            currency: summary.currency.clone(),
+            ledger_balance: summary.ledger_balance.clone(),
+            transactions: summary.transactions,
+        }
+    }
 }
 
 /// The first rows of the converted CSV, clipped for display.
@@ -500,6 +534,12 @@ struct WireProposed {
 #[serde(rename_all = "camelCase")]
 struct WireDefaults {
     csv_path: String,
+    /// A CSV named after the UPLOAD (per account, for a multi-account one),
+    /// beside the top candidate's rules file — never after that rules file.
+    /// What a NEW rules file is named from when candidates already exist:
+    /// `csv_path` then names the candidate's own file, and a create under that
+    /// name is refused because it is taken.
+    upload_csv_path: String,
     journal_id: Option<String>,
 }
 
@@ -2216,18 +2256,44 @@ pub(crate) async fn stage(
     body: Bytes,
 ) -> Result<Response, AppError> {
     let name = bare_filename(&headers)?;
+    let statement = statement_index(&headers)?;
     if body.len() > stage::MAX_UPLOAD_BYTES {
         return Err(AppError::BadRequest(format!(
             "this file is larger than the {} MiB import limit",
             stage::MAX_UPLOAD_BYTES / (1024 * 1024)
         )));
     }
-    let Json(body) = compute(move || stage_upload(&state, &name, &body)).await?;
+    let Json(body) = compute(move || stage_upload(&state, &name, &body, statement)).await?;
     Ok(no_store(body))
 }
 
+/// [`STATEMENT_HEADER`], or `0` when it is absent.
+fn statement_index(headers: &HeaderMap) -> Result<usize, AppError> {
+    headers
+        .get(HeaderName::from_static(STATEMENT_HEADER))
+        .map_or(Ok(0), |value| {
+            value
+                .to_str()
+                .ok()
+                .and_then(|text| text.trim().parse::<usize>().ok())
+                .ok_or_else(|| {
+                    AppError::BadRequest(format!(
+                        "{STATEMENT_HEADER} must be a statement number from this file's own list"
+                    ))
+                })
+        })
+}
+
 /// The whole of `stage`, synchronously, on the blocking pool.
-fn stage_upload(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireStage, AppError> {
+///
+/// `statement` picks one statement of a multi-statement OFX (zero-based); see
+/// [`STATEMENT_HEADER`].
+fn stage_upload(
+    state: &AppState,
+    name: &str,
+    bytes: &[u8],
+    statement: usize,
+) -> Result<WireStage, AppError> {
     // WP-17: a QuickBooks Online "Journal" report cannot go through the
     // `convert`/CSV-rules pipeline at all (see `qb_journal`'s module docs), so
     // it is detected and diverted before `convert::detect` gets a look.
@@ -2238,12 +2304,17 @@ fn stage_upload(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireStage,
         return stage_qb_journal(state, name, bytes);
     }
     let format = convert::detect(name, bytes).map_err(convert_error)?;
-    let tabular = workbook_sandbox::convert(format, bytes).map_err(convert_error)?;
+    let tabular =
+        workbook_sandbox::convert_statement(format, bytes, statement).map_err(convert_error)?;
     let csv = convert::to_csv(&tabular);
+    let chosen = (!tabular.statements.is_empty()).then_some(tabular.statement_index);
 
-    let (id, staged) = state.stages().put(&csv, format, name).map_err(|error| {
-        AppError::Internal(format!("could not stage this upload: {}", error.kind()))
-    })?;
+    let (id, staged) = state
+        .stages()
+        .put(&csv, format, name, chosen)
+        .map_err(|error| {
+            AppError::Internal(format!("could not stage this upload: {}", error.kind()))
+        })?;
 
     // Candidate scoring needs the journal's own directory to scan for rules
     // files. Without a journal there is nothing to score against — which is not
@@ -2268,12 +2339,19 @@ fn stage_upload(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireStage,
         .unwrap_or_default();
     let candidates = match (&location, resolve_hledger(state.app_dirs())) {
         (Some(location), Ok(hledger)) => {
-            rank_candidates(&hledger, location, &staged, &tabular, &aliases)
+            let hints = matching::NameHints::new(name, account_hint(&tabular));
+            rank_candidates(&hledger, location, &staged, &tabular, &aliases, &hints)
         }
         _ => Vec::new(),
     };
 
-    let defaults = defaults_for(state, name, candidates.first().map(|c| c.id.as_str()));
+    // One CSV per account: `.latest.NAME` is keyed to the CSV's name, so two
+    // statements of one upload saved under one name would share a dedup marker,
+    // and the account whose statement ends earlier would have rows dropped.
+    let upload = chosen
+        .and(account_hint(&tabular))
+        .map_or_else(|| name.to_string(), |hint| per_account_name(name, hint));
+    let defaults = defaults_for(state, &upload, candidates.first().map(|c| c.id.as_str()));
     // Materialise under the default destination now, so a dry-run that accepts
     // the defaults already has the right dedup state beside it; a dry-run that
     // changes the destination re-materialises under the new name.
@@ -2300,10 +2378,33 @@ fn stage_upload(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireStage,
         format: staged.format().as_str(),
         preview: preview_of(&tabular),
         statement: tabular.statement.as_ref().map(WireStatement::from),
+        statements: tabular
+            .statements
+            .iter()
+            .map(WireStatementChoice::from)
+            .collect(),
+        statement_index: tabular.statement_index,
         notes: tabular.notes.iter().map(WireNote::from).collect(),
         candidates,
         defaults,
     })
+}
+
+/// The statement's masked account number, when it gave one.
+fn account_hint(tabular: &Tabular) -> Option<&str> {
+    tabular
+        .statement
+        .as_ref()
+        .and_then(|meta| meta.account_hint.as_deref())
+}
+
+/// `el.qbo` read for account `…7592` is `el-7592.qbo`: the name the CSV
+/// destination default is derived from when one upload holds several accounts.
+fn per_account_name(upload: &str, hint: &str) -> String {
+    match upload.rsplit_once('.') {
+        Some((stem, ext)) => format!("{stem}-{hint}.{ext}"),
+        None => format!("{upload}-{hint}"),
+    }
 }
 
 /// The QuickBooks Journal branch of [`stage_upload`] (WP-17 Phase B).
@@ -2338,11 +2439,14 @@ fn stage_qb_journal(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireSt
             truncated: false,
         },
         statement: None,
+        statements: Vec::new(),
+        statement_index: 0,
         notes: Vec::new(),
         candidates: Vec::new(),
         defaults: WireDefaults {
             // No CSV is ever written by this pipeline.
             csv_path: String::new(),
+            upload_csv_path: String::new(),
             journal_id: defaults_for(state, name, None).journal_id,
         },
     })
@@ -2400,6 +2504,7 @@ fn rank_candidates(
     staged: &Stage,
     data: &Tabular,
     aliases: &[String],
+    hints: &matching::NameHints,
 ) -> Vec<WireCandidate> {
     let discovery = rules::discover_in(Arc::clone(location.vault()), location.main());
     // Each candidate's own `skip` is carried alongside its prefilter result,
@@ -2458,6 +2563,7 @@ fn rank_candidates(
                         signals,
                     },
                     modified: found.modified,
+                    affinity: hints.affinity(&found.id, found.account1.as_deref()),
                 },
                 CandidateExtras {
                     newest: newest_printed_date(&json),
@@ -2647,6 +2753,7 @@ fn defaults_for(state: &AppState, upload: &str, rules_id: Option<&str>) -> WireD
     let targets = targets_of(&state.snapshot());
     WireDefaults {
         csv_path: default_csv_path(upload, rules_id),
+        upload_csv_path: upload_csv_path(upload, rules_id),
         journal_id: targets
             .iter()
             .find(|target| target.writable)
@@ -2661,16 +2768,16 @@ fn default_csv_path(upload: &str, rules_id: Option<&str>) -> String {
     rules_id
         .and_then(|id| id.strip_suffix(".rules"))
         .filter(|stem| ends_with_suffix(stem, ".csv"))
-        .map_or_else(
-            || {
-                let stem = upload.rsplit_once('.').map_or(upload, |(stem, _)| stem);
-                let directory = rules_id
-                    .and_then(|id| id.rsplit_once('/'))
-                    .map_or(String::new(), |(dir, _)| format!("{dir}/"));
-                format!("{directory}{stem}.csv")
-            },
-            str::to_string,
-        )
+        .map_or_else(|| upload_csv_path(upload, rules_id), str::to_string)
+}
+
+/// The upload's own name as a CSV, in `rules_id`'s directory when there is one.
+fn upload_csv_path(upload: &str, rules_id: Option<&str>) -> String {
+    let stem = upload.rsplit_once('.').map_or(upload, |(stem, _)| stem);
+    let directory = rules_id
+        .and_then(|id| id.rsplit_once('/'))
+        .map_or(String::new(), |(dir, _)| format!("{dir}/"));
+    format!("{directory}{stem}.csv")
 }
 
 /// `POST /api/import/dry-run` — what would be imported, and what it costs.
@@ -3195,6 +3302,7 @@ fn run_dry_run(state: &AppState, request: &WireDryRunRequest) -> Result<WireDryR
     // advertises is the plain import it is previewing.
     let cli = CliRun {
         input: plan.staged.upload_name(),
+        statement: plan.staged.statement(),
         plan: request,
         root_journal: plan
             .root_journal_id()
@@ -4879,6 +4987,10 @@ struct CliRun<'a> {
     /// outside the journal's tree, and the only honest answer available: a
     /// dropped upload has a name, not a location.
     input: &'a str,
+    /// Which statement of a multi-statement `input` (zero-based), or `None`
+    /// when it holds one — see [`Stage::statement`]. Rendered 1-based, as
+    /// `--statement` takes it.
+    statement: Option<usize>,
     /// The four handles plus the balance, exactly as resolved.
     plan: &'a WireDryRunRequest,
     /// The root journal's handle, and `None` when it IS the file being written
@@ -4913,6 +5025,9 @@ fn cli_argv(run: &CliRun<'_>) -> Vec<String> {
         argv.push(value.to_string());
     };
     push("-i", run.input);
+    if let Some(statement) = run.statement {
+        push("--statement", &(statement + 1).to_string());
+    }
     push("-o", &run.plan.csv_path);
     push("-r", &run.plan.rules_id);
     push("-j", &run.plan.journal_id);
@@ -4997,6 +5112,13 @@ pub struct CliImport {
     /// absent.
     #[arg(short = 'i', long)]
     input: PathBuf,
+
+    /// Which account to import from a file that holds several — a "download
+    /// all accounts" `.qbo`/`.ofx` — counting from 1 in file order. The first
+    /// when omitted. Each account is its own import, with its own rules file
+    /// and its own `--output`.
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    statement: Option<u64>,
 
     /// Where to keep the converted CSV. Must be inside the journal's own
     /// directory, and is also the file `hledger` keys its de-duplication state
@@ -5378,7 +5500,11 @@ fn cli_import_csv(
     let rules_id = cli_rules_id(&discovery, location, rules)?;
     let csv_path = cli_csv_path(location, output)?;
 
-    let staged = stage_upload(state, name, bytes)?;
+    let statement = args
+        .statement
+        .map_or(0, |n| usize::try_from(n - 1).unwrap_or(usize::MAX));
+    let staged = stage_upload(state, name, bytes, statement)?;
+    let chosen = (!staged.statements.is_empty()).then_some(staged.statement_index);
 
     let request = WireDryRunRequest {
         stage_id: staged.stage_id,
@@ -5392,6 +5518,7 @@ fn cli_import_csv(
     };
     let command = cli_invocation(&CliRun {
         input: name,
+        statement: chosen,
         plan: &request,
         root_journal: (root_id != request.journal_id).then_some(root_id),
         write_assertion: args.write_assertion,
@@ -6863,6 +6990,7 @@ mod tests {
         let request = plan_request(None, None);
         let argv = cli_argv(&CliRun {
             input: "bank.csv",
+            statement: None,
             plan: &request,
             root_journal: None,
             write_assertion: false,
@@ -6888,6 +7016,7 @@ mod tests {
         assert_eq!(
             cli_invocation(&CliRun {
                 input: "bank.csv",
+                statement: None,
                 plan: &request,
                 root_journal: None,
                 write_assertion: false,
@@ -6908,6 +7037,7 @@ mod tests {
         let request = plan_request(Some("2949.80"), Some("assets:bank:checking"));
         let argv = cli_argv(&CliRun {
             input: "Statement.xlsx",
+            statement: None,
             plan: &request,
             root_journal: Some("main.journal"),
             write_assertion: true,
@@ -6941,6 +7071,36 @@ mod tests {
         );
     }
 
+    /// One account of a multi-account upload is named 1-based, and parses back
+    /// to the statement the screen staged.
+    #[test]
+    fn a_chosen_statement_round_trips_through_clap() {
+        let request = plan_request(None, None);
+        let run = CliRun {
+            input: "el.qbo",
+            statement: Some(1),
+            plan: &request,
+            root_journal: None,
+            write_assertion: false,
+            sort: false,
+            dry_run: false,
+            reviewed_edits: 0,
+        };
+        let argv = cli_argv(&run);
+        assert_eq!(argv[2..6], ["-i", "el.qbo", "--statement", "2"]);
+        assert_eq!(reparse(&argv).statement, Some(2));
+    }
+
+    #[test]
+    fn each_account_of_one_upload_defaults_to_its_own_csv() {
+        assert_eq!(per_account_name("el.qbo", "7592"), "el-7592.qbo");
+        assert_eq!(per_account_name("download", "7592"), "download-7592");
+        assert_eq!(
+            default_csv_path(&per_account_name("el.qbo", "7592"), None),
+            "el-7592.csv"
+        );
+    }
+
     /// The whole point of the feature: the string the GUI SHOWS parses back into
     /// the flags the CLI would RUN. One builder, both ends, proved by clap's own
     /// derive rather than by inspection.
@@ -6949,6 +7109,7 @@ mod tests {
         let request = plan_request(Some("-3238.65"), Some("liabilities:card"));
         let run = CliRun {
             input: "statement.qfx",
+            statement: None,
             plan: &request,
             root_journal: Some("main.journal"),
             write_assertion: true,
@@ -6982,6 +7143,7 @@ mod tests {
         assert_eq!(
             cli_argv(&CliRun {
                 input: "statement.qfx",
+                statement: None,
                 plan: &request,
                 root_journal: parsed.root_journal.as_deref().and_then(Path::to_str),
                 write_assertion: parsed.write_assertion,
@@ -7002,6 +7164,7 @@ mod tests {
         let request = plan_request(None, None);
         let run = CliRun {
             input: "Statement Feb 2026.xlsx",
+            statement: None,
             plan: &request,
             root_journal: None,
             write_assertion: false,

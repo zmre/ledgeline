@@ -401,6 +401,8 @@ $ hledger print -f bank.csv --rules bank.csv.rules -O json | jq '.[0].ttags'
 [["id","FIT0001"]]
 ```
 
+A `FITID` reaches the `fitid` column **with its commas removed**. An hledger tag value ends at the first comma (verified against 1.52), and our own `parse::parse_tags` splits the same way. One credit union's Web Connect file writes `20260227 212165 561,516 1,041,790`, which hledger reads back as `20260227 212165 561`. Every row sharing that prefix then shares an id, so the second is classified against the first and silently left out. `convert::ofx::tag_safe` strips the commas and collapses whitespace runs, and `a_fitid_with_commas_survives_as_a_whole_hledger_tag` pins it. A draft from `rules/generate.rs` writes `comment id:%fitid` whenever the data has a `fitid` column, so a rules file made by Ledgeline is on this path from its first import.
+
 …and, the half that actually matters, through **our own** parser: `parse.rs`'s tag extraction lands
 `("id", "FIT0001")` in `Transaction.tags`, which is what `reimport.rs` reads. hledger's JSON is
 never consulted at runtime. The tag key is plain `id` rather than a Ledgeline-private spelling,
@@ -474,6 +476,19 @@ run and finds nothing to drop it hands back the borrowed input, so the untouched
 by a byte. `fixtures/import/reimport/pending-then-cleared/` carries `no-id.csv.rules` beside
 `bank.csv.rules` — the same file minus that one line — precisely so the two can be run against the
 same statement and compared.
+
+## One upload, several accounts
+
+A "download all accounts" OFX holds one `STMTRS`/`CCSTMTRS` per account. QuickBooks Web Connect files from credit unions are the common case. They are never merged: a rules file names one `account1`, and `.latest.NAME` is keyed to the CSV's name. If two accounts shared a CSV, the account whose statement ends earlier would lose rows to the other's marker. So one stage reads **one** statement:
+
+- `convert::ofx::parse_statement(bytes, index)` reads the `index`th statement in document order, and `Tabular::statements` describes them all (last four, `ACCTTYPE`, currency, balance, row count) when there is more than one.
+- `POST /api/import/stage` takes the index as `X-Ledgeline-Statement`, which is on the CORS allow-list beside `X-Ledgeline-Filename`. The response carries `statements` and `statementIndex`, and the SPA's account picker re-stages the same file with another index.
+- `Stage::statement` remembers the index, so the dry run's `ledgeline import` line carries `--statement N` (1-based), and `cli_argv` stays the one place that spells it.
+- The CSV default gets the account's last four (`el.qbo` gives `el-7592.csv`) whenever no rules file names it.
+
+## Ranking ties, and the names that break them
+
+Every QBO converts to the same seven columns, so a rules file written for one bank's Web Connect file scores the same against every bank's. `matching::rank` therefore treats candidates whose scores **show as the same percentage** as tied. Among them, `Ranking::affinity` comes first, ahead of the raw score and the mtime. `NameHints` takes the words of the upload's name, dropping extensions, generic words such as `export` and `activity`, and every number, because a year shared with the wrong file is no hint. It also takes the account's last four. Affinity counts the words that appear in the rules file's id or `account1`, and adds 2 when a run of digits there ends in the account's last four. A word matches only a whole word, so `el` does not match `elevations`. A name never outranks a better shown score, and the family order of plan 32 D27 applies inside the same tie.
 
 ## The one invariant everything rests on
 

@@ -37,6 +37,7 @@ import type {
     SkippedRows,
     StagedFile,
     StageDefaults,
+    StatementChoice,
     StatementMeta,
 } from "./importTypes";
 
@@ -397,7 +398,7 @@ export function noteText(note: ConvertNote): string {
         case "sheetChosen":
             return note.of <= 1 ? `Read the sheet "${note.name}".` : `Read the sheet "${note.name}" — the workbook has ${note.of}.`;
         case "statementChosen":
-            return `This file holds ${note.of} statements, one per account. Only the first was read — import the others by downloading them separately.`;
+            return `This file holds ${note.of} accounts. Each one is imported on its own, with its own rules file — choose which above.`;
         case "datesFromSerial":
             return `${note.count} date${note.count === 1 ? " was" : "s were"} stored as spreadsheet serial numbers and ${note.count === 1 ? "was" : "were"} read as dates.`;
         case "encodingGuessed":
@@ -443,6 +444,33 @@ export function statementFacts(statement: StatementMeta | null): {label: string;
     if (statement.ledgerBalance !== null) facts.push({label: "Statement balance", value: statement.ledgerBalance});
     if (statement.balanceAsOf !== null) facts.push({label: "as of", value: statement.balanceAsOf});
     return facts;
+}
+
+/** `Checking …7592` — how one account of a multi-account upload is named in its picker. */
+export function statementChoiceLabel(choice: StatementChoice, index: number): string {
+    const kind = choice.accountType === null ? "Account" : (ACCOUNT_TYPE_NAMES[choice.accountType] ?? titleCase(choice.accountType));
+    return choice.accountHint === null ? `${kind} ${index + 1}` : `${kind} …${choice.accountHint}`;
+}
+
+/** `3 transactions · 7033.77 USD` — what tells two accounts of one upload apart at a glance. */
+export function statementChoiceDetail(choice: StatementChoice): string {
+    const count = `${choice.transactions} transaction${choice.transactions === 1 ? "" : "s"}`;
+    if (choice.ledgerBalance === null) return count;
+    return `${count} · ${choice.ledgerBalance}${choice.currency === null ? "" : ` ${choice.currency}`}`;
+}
+
+/** OFX's `ACCTTYPE` words as a person says them. */
+const ACCOUNT_TYPE_NAMES: Record<string, string> = {
+    CHECKING: "Checking",
+    SAVINGS: "Savings",
+    MONEYMRKT: "Money market",
+    CREDITLINE: "Credit line",
+    CREDITCARD: "Credit card",
+    CD: "CD",
+};
+
+function titleCase(word: string): string {
+    return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
 }
 
 // ---------------------------------------------------------------------------

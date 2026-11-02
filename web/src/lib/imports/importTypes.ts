@@ -149,6 +149,21 @@ export interface StatementMeta {
     readonly balanceAsOf: string | null;
 }
 
+/**
+ * One account of an upload that holds several — a "download all accounts"
+ * `.qbo`/`.ofx`. Each is its own import, with its own rules file and its own CSV.
+ */
+export interface StatementChoice {
+    /** Masked to the last four characters by the engine. */
+    readonly accountHint: string | null;
+    /** As the bank wrote it: `CHECKING`, `SAVINGS`, `CREDITLINE`, or `CREDITCARD`. */
+    readonly accountType: string | null;
+    readonly currency: string | null;
+    /** Verbatim decimal TEXT, as `StatementMeta.ledgerBalance`. */
+    readonly ledgerBalance: string | null;
+    readonly transactions: number;
+}
+
 /** One transaction a rules file would produce, rendered by the engine for display only. */
 export interface ProposedTxn {
     readonly date: string;
@@ -201,6 +216,12 @@ export interface RulesCandidate {
 /** The destinations the engine suggests. `journalId` is null when the journal offered none. */
 export interface StageDefaults {
     readonly csvPath: string;
+    /**
+     * The CSV named after the UPLOAD (per account, for a multi-account one),
+     * never after a rules file — what a new rules file is named from when
+     * `csvPath` already names an existing one.
+     */
+    readonly uploadCsvPath: string;
     readonly journalId: string | null;
 }
 
@@ -212,6 +233,10 @@ export interface StagedFile {
     readonly format: string;
     readonly preview: StagePreview;
     readonly statement: StatementMeta | null;
+    /** Every account of a multi-account upload, in file order. EMPTY when it held one. */
+    readonly statements: readonly StatementChoice[];
+    /** Which of `statements` this stage converted. Zero when there is one. */
+    readonly statementIndex: number;
     readonly notes: readonly ConvertNote[];
     /**
      * Notes whose `kind` this build does not know, counted rather than dropped.
