@@ -887,9 +887,11 @@
 >
     <!-- Bar and deck float on the backdrop; empty space passes clicks through to it. -->
     <div class="pointer-events-none relative z-10 flex h-full flex-col items-center gap-3 px-3 pt-3 sm:gap-4 sm:px-6 sm:pt-5" out:layerOut|global={{reduced}}>
-        <!-- Top bar: queue, position, progress, saving, ⋯, ✕ -->
+        <!-- Top bar: queue, position, progress, saving, ⋯, ✕. `backdrop-blur` makes
+             it a stacking context, so it needs a z-index above the deck's cards
+             (z-5/z-6) or the ⋯ menu opens beneath the card. -->
         <div
-            class="pointer-events-auto flex w-full max-w-4xl shrink-0 items-center gap-3 rounded-box border border-base-content/10 bg-base-300/95 py-1.5 pr-1.5 pl-4 text-base-content shadow-lg backdrop-blur"
+            class="pointer-events-auto relative z-20 flex w-full max-w-4xl shrink-0 items-center gap-3 rounded-box border border-base-content/10 bg-base-300/95 py-1.5 pr-1.5 pl-4 text-base-content shadow-lg backdrop-blur"
             in:barIn|global={{reduced}}
         >
             <h2 class="text-sm font-semibold tracking-wide">{TITLES[kind]}</h2>

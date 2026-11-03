@@ -14,55 +14,110 @@
 
 </div>
 
-A fast, local, privacy-centric desktop app for [hledger](https://hledger.org) plain-text accounting. Ledgeline is a **single binary** that opens a native window showing a modern, fast UI. It parses your journal file directly and reproduces hledger's numbers exactly.
+A fast, local, privacy-centric desktop app for [hledger](https://hledger.org) / [ledger](https://ledger-cli.org) plain-text accounting. It is 100% compatible with hledger, but adds graphical views, enhanced reports, forecasts, and expanded import capabilities in a keyboard-first UI.
+
+## Why
+
+I built this because I was dissatisfied with existing GUIs. They often hard code expectations for where files are and how they link. Or they're ugly. They rarely handle stocks well. If they allow editing, it's limited and buggy. 
+
+I love the command line and editing in the terminal, but sometimes I want graphs, something pretty, and something my wife (in personal context) and coworkers (in business context) can use. 
+
+Ledgeline scratches that itch.
+
+> [!Note]
+> I built this for myself and based it on patterns I've built by hand in the past (see [mbr](https://github.com/zmre/mbr-markdown-browser/)), but this project heavily leveraged AI for development.
+
+
+## Features
+
+In most cases, changes to files in a separate editor show up right away in the UI across all interfaces.
+
+There are no preconceived notions on how accounts are setup or where things live or are organized.  If it works in hledger, it should work in Ledgeline.
+
+### The [Journal](https://zmre.github.io/ledgeline/journal/) Tab
 
 ![The Journal tab: filter bar, transaction table and totals footer](docs/journal/images/overview.png)
 
-I built this because I was dissatisfied with existing GUIs. They often hard code expectations for where files are and how they link. Or they're old and ugly. They rarely handle stocks well. If they even allow editing, it's problematic and buggy. I love the command line and editing in the terminal, but sometimes I want graphs, something pretty, and something my wife (in personal context) and coworkers (in business context) can use. Ledgeline scratches that itch.
+A quick way to browse or find transactions, with some graphics to summarize what's loaded.  Frankly, the command line does much of this (minus the graphs) as well or better.
 
-> [!WARNING]
-> Disclaimer: I built this for myself and based it on patterns I've built by hand in the past (see [mbr](https://github.com/zmre/mbr-markdown-browser/)), but this project heavily leveraged AI for development.
+Where the journal gets interesting is the editor and the review system.  I want categorizing and reviewing to be fast and efficient.
 
-As this project has evolved, I've worked to fix issues that I have with hledger, particularly around import limitations. For example, you can't import a binary file even if you have a script that can transform it from, say, Excel to CSV.  It can't work with QuickBooks exports or QFX format, which I find superior to CSV since it usually has transaction IDs that make for better and more granular duplicate checks vs. simple date assumptions.  And the way stocks are handled, which is basically the same as currency, makes sense in a lot of ways, but makes a lot of reports hard to read if you don't filter appropriately.
+Ledgeline recommends accounts based on previous transactions. And it gives you a chance to apply changes to description or account to similar transactions so you can operate in batch. And you can make such changes into rules for the next import.
 
-Finally, I have very different needs for my business as I do for my personal stuff, yet there is also broad overlap.  The balance sheet and P&L needs to be more granular with more categories in business, tracking things like shareholder equity, but the basics are the same.  Managing Journal entries and subscriptions is the same.  To some extent, budgeting is the same.  But future forecasting is very different.  My goal is to accommodate all these needs in one flexible tool, just as hledger and double-entry accounting are themselves super flexible.  But with lots of insights, charts, graphs, and planning helpers.
+Other Journal features:
+
+* [Live filtering](https://zmre.github.io/ledgeline/journal/filtering/)
+* [Export](https://zmre.github.io/ledgeline/journal/export/) filtered journal entries to Excel
+* Background checks for [problems](https://zmre.github.io/ledgeline/journal/problems/)
+* Quick [balances](https://zmre.github.io/ledgeline/journal/) for cash accounts
+
+
+### The [Holdings](https://zmre.github.io/ledgeline/holdings/) Tab
+
+![The Holdings tab: market value, cost basis and gain, allocation by holding, top gainers and value over time](docs/holdings/images/stocks.png)
+
+Contains two sub tabs: Stocks and Other.
+
+* Stocks: track value over time, download [updated prices](https://zmre.github.io/ledgeline/holdings/prices/), view graphs showing [allocation](https://zmre.github.io/ledgeline/holdings/allocation/) by holding, asset class, sector, and more. Also shows top gainers and losers.
+* Lets you [compare](https://zmre.github.io/ledgeline/holdings/benchmarks/) to the markets.
+* Other: other investments and assets including property, vehicles, partnerships, etc. In a business context, tracks equipment, inventory, and so on.  Tracks value over time.
+
+### The [Budget](https://zmre.github.io/ledgeline/budget/) Tab
+
+Edit periodic rules (hledger `~` rules) as budgets then compare how you're doing compared to your goals. Visual progress bars.
+
+### The [Projections](https://zmre.github.io/ledgeline/projections/) Tab
+
+Lets you create files of periodic rules similar to budgets, but used to project transactions into the future for scenario modeling and forecasting.
+
+It agrees with hledger's `--forecast` projections in most ways, but has one extra trick: you can set a compounding rate and time period to model increases in asset values, expenses, or whatever, over time.
+
+Reports that project into the future:
+
+* Runway (useful for businesses / startups)
+* Balance sheet
+* Income statement
+* Cash flow
+* Accounts (balances and sums)
+* Journal (projected transactions)
+
+### The [Reports](https://zmre.github.io/ledgeline/reports/) Tab
+
+Most of these reproduce what you can do with hledger in the terminal. Subscriptions is an analysis finding where you have recurring payments and that's unique. Each of the reports has a graphical aspect and an ability to customize groupings using account tags. This lets you make more sophisticated reports that align with different types of businesses and needs.
+
+* **[Insights](https://zmre.github.io/ledgeline/reports/insights/)** is a dashboard showing useful stats and summaries like total revenue, expenses, net worth, investment performance, biggest changes, top transactions, etc., for a chosen timeframe and compared to the prior timeframe.
+* **[Balance sheet](https://zmre.github.io/ledgeline/reports/balance-sheet/)** lines up with hledger by default. However, there are tags that can be added to group accounts so they better line up with existing balance sheets from other tools like Quickbooks. Supports export to Excel.
+* **[Profit and Loss](https://zmre.github.io/ledgeline/reports/income-statement/)** shows sources of revenue and expenses, rolled up and compared to previous periods, either as one total or split into monthly, quarterly or yearly columns with % change. Sankey diagrams visualize inflows and outflows.  You can tag accounts to customize how they show up in the P&L to make things prettier or to make more sophisticated business statements. Supports export Excel.
+* **[Cash Flow](https://zmre.github.io/ledgeline/reports/cash-flow/)** captures net income, adjusted by the change in receivables, payables, deferred revenue, equipment, loans and every other non-cash balance-sheet account, sorted into operating, investing and financing, and reconciled to cash balances. Customizable with tags on accounts. Exportable to Excel.
+* **[Net Worth](https://zmre.github.io/ledgeline/reports/net-worth/)** uses shows assets and liabilities over time, with relevant values. A chart above the table stacks the accounts.
+* **[Subscriptions](https://zmre.github.io/ledgeline/reports/subscriptions/)** looks through journal entries to find recurring entries of similar description and price that happen monthly or annually to sum up what you're getting charged for on a recurring basis. Variable cost items like utility bills may not be caught, but for the things it detects, it says when the next charge is and how much it costs annually.
+
+### The [Imports](https://zmre.github.io/ledgeline/imports/) Tab
+
+This is where Ledgeline deviates from hledger the most.  Ledgeline actually calls out to hledger for most imports, but it adds a few tricks.
+
+For example, in hledger, you can't import a binary file even if you have a script that can transform it from, say, Excel to CSV.  hledger also doesn't work with QuickBooks exports or QFX format (both XML), which I find superior to CSV since they have transaction IDs that make for better duplicate checks. hledger uses a simple date assumptions that can lead to issues.  
+
+So the import tab will take a much wider set of file types and will then try to find an existing rules file that lines up.  User chooses from options or makes a new one. User gets a preview of what's going to happen, can sort after writing, and then, to make scripting easier, is told the command line arguments to ledgeline that would reproduce the import and all the choices that were made.
+
+QuickBooks Online Journal exports have [their own importer](https://zmre.github.io/ledgeline/imports/quickbooks/) in case you're moving over from QuickBooks or keeping a plaintext accounting copy of what you have there.  These files can't be simplified down to simple CSVs because they can get quite complicated.
+
+### Keyboard Driven
+
+I abhor having to use the mouse, even in GUIs.  Which is why you can navigate everything in Ledgeline (hopefully... file an issue if you spot something I missed) just with the keyboard.  I'm a vim user so expect <kbd>j</kbd>/<kbd>k</kbd> type options to help you move up and down lists and <kbd>/</kbd> to trigger a search field. And like vim, we sometimes use sequences. For example, <kbd>gb</kbd> (`g` followed by `b`) will switch to the budget tab.
+
+The most important thing to know though is that <kbd>?</kbd> will show you the currently relevant keyboard shortcuts, which will change depending on the tab you're in. The full list is in the [keyboard shortcuts docs](https://zmre.github.io/ledgeline/journal/keyboard/).
 
 ## Documentation
 
 The user manual is published at **<https://zmre.github.io/ledgeline/>**. The same pages are in [`docs/`](docs/index.md) in this repository, so you can also read them on GitHub.
 
-## What it does so far
-
-- **[Journal](https://zmre.github.io/ledgeline/journal/)** with live [filtering](https://zmre.github.io/ledgeline/journal/filtering/) and a flexible editor. Background checks flag [problems](https://zmre.github.io/ledgeline/journal/problems/): mistakes hledger would reject, and things it accepts that probably aren't what you meant. The filtered journal can be [exported to XLSX](https://zmre.github.io/ledgeline/journal/export/) in a QuickBooks-style layout.
-- **Quick insights** in the journal view reflect the selected time range and show visually where money is going.
-- **Balances** is the second tab of that same insights box, answering the other basic question: how much cash do I have right now, and where is it.  Cash on hand, short-term liabilities and net cash across the top, then each bank and card account with its balance and the date it last moved — marked *checked* where a balance assertion in the journal confirms the figure, so you can see at a glance what needs updating.  It reads the whole journal as of today whatever the filter bar says, one currency at a time, and no price directive is involved.  An overdrawn cash account shows red here and turns up in Problems.  Membership follows the same `type:` and `bsterm:` tags the balance sheet uses — cash and *current* liabilities only, so a mortgage stays out of your short-term picture.  If you haven't tagged anything, a short list of words (`mortgage`, `heloc`, `student`, `pension`) is guessed as long-term; the guess never overrides a tag, and the view names whatever it excluded that way so you can correct it.  See [the insights panel docs](https://zmre.github.io/ledgeline/journal/).
-- **[Holdings](https://zmre.github.io/ledgeline/holdings/)** allows for visual exploration of all non-cash assets split into two groups: Stocks and Other. Other has things like your home and car (or for business: inventory, equipment, etc.) and stocks get their own thing that shows top gainers, losers, value over time, [allocation](https://zmre.github.io/ledgeline/holdings/allocation/), [benchmarks](https://zmre.github.io/ledgeline/holdings/benchmarks/), and a quick way to [fetch updated market prices](https://zmre.github.io/ledgeline/holdings/prices/). And export to xlsx, too. While Ledgeline attempts to be smart about classifying things for the Holdings tabs, you can use the [`holdings` tag](https://zmre.github.io/ledgeline/holdings/tags/) to force things to show up in particular places or not at all.  And because you may use accounts to capture unrealized gains, you can hint about that with tags, too. This allows for fancier investments tracked using multiple subaccounts (think partnerships) to roll up and get summarized appropriately.
-- **[Budget](https://zmre.github.io/ledgeline/budget/)** edits goals that live in your journal as ordinary hledger `~` periodic rules, then shows how you're pacing against each one.
-- **[Projections](https://zmre.github.io/ledgeline/projections/)** runs what-if scenarios for cash runway and net worth, driven by a plain-text [scenario file](https://zmre.github.io/ledgeline/projections/file-format/) with [asset rows](https://zmre.github.io/ledgeline/projections/asset-rows/) that compound a balance at a rate.
-- **[Reports](https://zmre.github.io/ledgeline/reports/)** starts with more [insights](https://zmre.github.io/ledgeline/reports/insights/) including year over year (or any period) comparisons highlighting biggest changes, transactions, revenue, expenses and net worth at a glance.  Then use the sub tabs (or the keyboard shortcuts) to navigate to the balance sheet, income statement, cash flow, net worth, and subscriptions reports. Each can be exported as XLSX. The end date you pick carries across the report tabs.
-  - **Balance sheet** is built with flexibility. Tag accounts to customize the balance sheet.  The in-app experience rolls things up intelligently with drill downs at each line while the XLSX export is a more standard view to share. See **[the balance sheet docs](https://zmre.github.io/ledgeline/reports/balance-sheet/)** for grouping rules, valuation, and to explain the built-in checks.
-  - **Profit and Loss** shows sources of revenue and expenses, rolled up and compared to previous periods, either as one total or split into monthly, quarterly or yearly columns with % change. Sankey diagrams visualize inflows and outflows.  As with the balance sheet, you can tag accounts to customize how they show up in the P&L to make things prettier or to make more sophisticated business statements. Again, the XLSX download gives a more standard report for sharing. See **[the income statement docs](https://zmre.github.io/ledgeline/reports/income-statement/)** for the attribution rule, the links that are not drawn, and why colour tracks the account.
-  - **Cash Flow** is a statement of cash flows: net income, adjusted by the change in receivables, payables, deferred revenue, equipment, loans and every other non-cash balance-sheet account, sorted into operating, investing and financing, and reconciled to your cash balances. Monthly, quarterly or yearly columns with a Total. Tag accounts with `cfsection:` and `cfgroup:` to move or group lines. A stacked chart shows each section per period with the net change in cash as a line. See **[the cash flow docs](https://zmre.github.io/ledgeline/reports/cash-flow/)**.
-  - **Net Worth** uses pricing and other signals to show assets and liabilities over time, with relevant values, by default annually. A chart above the table stacks exactly the table's accounts, each asset above zero and each liability below it, with net worth drawn as a line. See **[the net worth docs](https://zmre.github.io/ledgeline/reports/net-worth/)**.
-  - **[Subscriptions](https://zmre.github.io/ledgeline/reports/subscriptions/)** looks through journal entries to find recurring entries of similar description and price that happen monthly or annually to sum up what you're getting charged for on a recurring basis. Variable cost items like utility bills may not be caught, but for the things it detects, it says when the next charge is and how much it costs annually.
-  - _All reports are computed in Rust with exact decimal math and hledger parity._
-- **[Imports](https://zmre.github.io/ledgeline/imports/)** looks for existing import rules files (`*.rules`) and tries to match them with any file you want to import regardless of its name or location. By default, we use hledger to do the import, but in some cases we do pre-processing, for example if we're importing QIF, QFX/QBO/OFX, or XLSX files. Rules can be [created](https://zmre.github.io/ledgeline/imports/create-rules/) and [edited](https://zmre.github.io/ledgeline/imports/rules-editor/) in the GUI or from the command line, but in the GUI you can see your options for field mapping, default accounts, date format, etc. For fancy rules that the GUI doesn't support, we preserve them as-is so nothing is ever messed up. QuickBooks Online Journal exports have [their own importer](https://zmre.github.io/ledgeline/imports/quickbooks/).
-- **[Settings](https://zmre.github.io/ledgeline/settings/)** lets you [declare accounts and their types](https://zmre.github.io/ledgeline/settings/accounts/) and manage [account aliases](https://zmre.github.io/ledgeline/settings/account-aliases/) without hand-editing directives.
-- **No preconceived notions** on how accounts are setup or where things live or how they're organized.
-
-![The Holdings tab: market value, cost basis and gain, allocation by holding, top gainers and value over time](docs/holdings/images/stocks.png)
 
 It is a local app, but it uses a web UI for cross-platform reasons that also let us bring in good charting libraries. It serves a same-origin API that is hledger-web compatible for everything that hledger-web does (ie, `/version`, `/transactions`, `/prices`), but then adds a bunch of endpoints under `/api` for reports, budget, and editing capabilities. A special token is needed so the API stays private, but you could still, if desired, expose it for a remote view.
 
-## Keyboard Driven
-
-I abhor having to use the mouse, even in GUIs.  Which is why you can navigate everything in Ledgeline (hopefully... file an issue if you spot something we missed) just with the keyboard.  I'm a vim user so expect <kbd>j</kbd>/<kbd>k</kbd> type options to help you move up and down lists and <kbd>/</kbd> to trigger a search field. And like vim, we sometimes use sequences. For example, <kbd>gb</kbd> (`g` followed by `b`) will switch to the budget tab.
-
-The most important thing to know though is that <kbd>?</kbd> will show you the currently relevant keyboard shortcuts, which will change depending on the tab you're in. The full list is in the [keyboard shortcuts docs](https://zmre.github.io/ledgeline/journal/keyboard/).
-
 ## Install
 
-There are three ways in. The [install section of the manual](https://zmre.github.io/ledgeline/) has the same instructions.
+The [install section of the manual](https://zmre.github.io/ledgeline/) has detailed instructions.
 
 **macOS.** Download the `.dmg` for your Mac from the [latest GitHub release](https://github.com/zmre/ledgeline/releases/latest): `arm64` for Apple silicon, `x86_64` for Intel. The app is signed and notarized and bundles its own `hledger`. Drag it to Applications.
 
