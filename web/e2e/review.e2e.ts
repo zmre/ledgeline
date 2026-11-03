@@ -182,6 +182,30 @@ async function cursorTo(page: Page, text: string): Promise<void> {
     throw new Error(`no row with "${text}" under the cursor`);
 }
 
+test("the editor's ⋯ menu opens above the card, not beneath it", async ({page}) => {
+    await page.goto("/");
+    await expect(page.locator("tbody tr[data-txn]").first()).toBeVisible();
+    await cursorTo(page, "2026-10-25");
+    await page.keyboard.press("Enter");
+    const editor = page.getByRole("dialog", {name: "Edit transaction"});
+    await expect(editor.getByTestId("review-card")).toBeFocused();
+
+    await editor.getByLabel("More actions").click();
+    const item = editor.getByRole("button", {name: "Add secondary date"});
+    await expect(item).toBeVisible();
+    // toBeVisible passes even when the card paints over the menu; the hit test
+    // at the item's centre is what sees the stacking.
+    const box = await item.boundingBox();
+    expect(box).not.toBeNull();
+    const hit = await page.evaluate(
+        ([x, y]) => document.elementFromPoint(x, y)?.closest("button")?.textContent?.trim() ?? null,
+        [box!.x + box!.width / 2, box!.y + box!.height / 2]
+    );
+    expect(hit).toBe("Add secondary date");
+    await item.click();
+    await expect(editor.getByRole("button", {name: "Remove the secondary date"})).toBeVisible();
+});
+
 test("the transaction editor: edit with Mark reviewed, then add from a payee — and the bytes on disk", async ({page}) => {
     await page.goto("/");
     await expect(page.locator("tbody tr[data-txn]").first()).toBeVisible();
