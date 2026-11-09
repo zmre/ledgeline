@@ -825,7 +825,7 @@ export function renderBody(scenario: Scenario, key: string, item?: WireLayoutIte
  */
 export function runBody(
     scenario: Scenario,
-    window: {interval: string; count: number; lookback: number; depth: number; accounts?: AccountsRequest | null; journal?: boolean}
+    window: {interval: string; count: number; lookback: number; depth: number; accounts?: AccountsRequest | null; journal?: boolean; compare?: boolean}
 ): RunProjectionBody {
     return {
         scenario: scenarioToWire(projectable(scenario)),
@@ -836,6 +836,7 @@ export function runBody(
         // Sent only when asked for, so a run for the other tabs is the body it always was.
         ...(window.accounts != null ? {accounts: {empty: window.accounts.empty}} : {}),
         ...(window.journal === true ? {journal: true} : {}),
+        ...(window.compare === true ? {compare: true} : {}),
     };
 }
 

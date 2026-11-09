@@ -401,6 +401,46 @@ export interface Projection {
     accounts: AccountReport | null;
     /** The generated transactions, when the run asked for them; null otherwise. */
     journal: ForecastJournal | null;
+    // MERGE SEAM: plan 34.
+    /** Compare vs actuals, when the run asked for it; null otherwise. With it, `accounts` and `journal` above are null and this carries them. */
+    compare: Comparison | null;
+}
+
+/** The runway's two series over the actual periods (plan 34). */
+export interface CompareCash {
+    /** Real cash the day before the first actual day. */
+    opening: MixedAmount;
+    /** Real closing cash per actual period (the forward run's `cash.history`). */
+    actual: MixedAmount[];
+    /** Closing cash per period as projected on the first actual day. */
+    projected: MixedAmount[];
+}
+
+/**
+ * Compare vs actuals (plan 34): the N actual periods, then the same periods as
+ * the scenario on screen would have projected them on their first day. Every
+ * statement holds `2 × columns` columns, the actual block first; the
+ * as-projected block's keys are prefixed `projected:` (labels and dates are
+ * the actual block's). Their Total-like fields span both blocks and mean
+ * nothing, so no reading shows them.
+ */
+export interface Comparison {
+    /** The first actual day: where the projection is made from. */
+    from: ISODate;
+    /** The forward run's cutoff; the window ends the day before. */
+    actualsEnd: ISODate;
+    /** N, the actual periods compared. */
+    columns: number;
+    cash: CompareCash;
+    balanceSheet: BalanceSheetColumns;
+    incomeStatement: IncomeStatementReport;
+    cashFlow: CashFlowStatement;
+    /** Both blocks of the Accounts reading, when the run asked for it. */
+    accounts: AccountReport | null;
+    /** The as-projected run's generated transactions, when the run asked for them. */
+    journal: ForecastJournal | null;
+    /** The as-projected run's warnings the forward run does not already hold. */
+    warnings: string[];
 }
 
 /** What the run is asked to compute beyond the four readings every run carries. */

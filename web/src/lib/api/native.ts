@@ -968,6 +968,8 @@ export interface RunProjectionBody {
     accounts?: {empty: boolean};
     /** Ask for the generated transactions (`journal` is null in the answer otherwise). */
     journal?: boolean;
+    /** Compare vs actuals (plan 34; `compare` is null in the answer otherwise). Sent only when true, so an older engine still answers an unticked page. */
+    compare?: true;
 }
 
 /**

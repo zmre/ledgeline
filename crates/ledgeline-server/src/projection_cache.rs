@@ -169,6 +169,30 @@ account equity:opening   ; type: E
         assert!(Arc::ptr_eq(&first, &again));
     }
 
+    /// Plan 34: a comparison holds the backtest side under its own key, so it
+    /// adds exactly one side, and every later edit hits both.
+    #[test]
+    fn a_comparison_adds_one_side_and_an_edit_hits_both() {
+        let cache = ProjectionCache::default();
+        let journal = journal();
+        let facts = cache.facts(&journal).unwrap();
+        let key = facts.key("2026-10-20", Interval::Monthly, 2, None).unwrap();
+        let main = cache.side(&journal, &facts, &key).unwrap();
+        assert_eq!(cache.lock().len(), 1);
+        let backtest_key = key.backtest().unwrap().expect("a backtest");
+        let backtest = cache.side(&journal, &facts, &backtest_key).unwrap();
+        assert_eq!(cache.lock().len(), 2);
+        assert!(Arc::ptr_eq(
+            &main,
+            &cache.side(&journal, &facts, &key).unwrap()
+        ));
+        assert!(Arc::ptr_eq(
+            &backtest,
+            &cache.side(&journal, &facts, &backtest_key).unwrap()
+        ));
+        assert_eq!(cache.lock().len(), 2);
+    }
+
     #[test]
     fn a_new_day_in_the_same_period_hits_and_the_next_period_misses() {
         let cache = ProjectionCache::default();

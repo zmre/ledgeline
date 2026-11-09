@@ -2097,6 +2097,53 @@ const PROJECTION_RUN = {
     },
 };
 
+// Plan 34's `compare` block: two actual months, then the same two as
+// projected, built from the statements above by picking columns. Every array
+// that runs per column is re-picked, and a picked column in the second block
+// gets its key prefixed `projected:` as the engine prefixes it.
+const COLUMN_ARRAYS = new Set(["buckets", "columns", "periods", "values", "own", "inclusive", "total", "totals", "netWorth", "check", "balanced"]);
+function pickColumns(raw: unknown, width: number, pick: number[]): unknown {
+    const prefixed = (column: unknown, at: number): unknown => {
+        if (at < pick.length / 2) return column;
+        if (typeof column === "string") return `projected:${column}`;
+        if (typeof column === "object" && column !== null && "key" in column) {
+            return {...column, key: `projected:${String((column as {key: unknown}).key)}`};
+        }
+        return column;
+    };
+    const walk = (node: unknown, key: string | null): unknown => {
+        if (Array.isArray(node)) {
+            if (key !== null && COLUMN_ARRAYS.has(key) && node.length === width) {
+                const keyed = key === "buckets" || key === "columns" || key === "periods";
+                return pick.map((index, at) => (keyed ? prefixed(node[index], at) : walk(node[index], null)));
+            }
+            return node.map((item) => walk(item, null));
+        }
+        if (typeof node === "object" && node !== null) {
+            return Object.fromEntries(Object.entries(node).map(([k, v]) => [k, walk(v, k)]));
+        }
+        return node;
+    };
+    return walk(raw, null);
+}
+const COMPARE = {
+    from: "2026-08-01",
+    actualsEnd: "2026-10-01",
+    columns: 2,
+    cash: {
+        opening: {$: dec(500000, 2)},
+        actual: [{$: dec(80000, 2)}, {$: dec(-340000, 2)}],
+        projected: [{$: dec(90000, 2)}, {$: dec(-300000, 2)}],
+    },
+    balanceSheet: pickColumns(PROJECTION_RUN.balanceSheet, 3, [1, 2, 1, 2]),
+    incomeStatement: pickColumns(PROJECTION_RUN.incomeStatement, 7, [5, 6, 5, 6]),
+    cashFlow: pickColumns(PROJECTION_RUN.cashFlow, 3, [1, 2, 1, 2]),
+    accounts: pickColumns(PROJECTION_RUN.accounts, 3, [1, 2, 1, 2]),
+    journal: PROJECTION_RUN.journal,
+    warnings: ["the actual periods are valued in $ and the projection would have valued in EUR"],
+};
+Object.assign(PROJECTION_RUN, {compare: COMPARE});
+
 /**
  * `GET /api/projections` — the scenario picker's list (plan 22, Phase 3).
  *
@@ -2506,6 +2553,30 @@ describe("UNIT nativeDecode — a projection run", () => {
         expect(cash.rows[0].inclusive).toHaveLength(3);
         expect(sheet.balanced).toEqual([true, true, false]);
         expect(sheet.meta?.unpriced).toEqual(["GLD"]);
+    });
+
+    it("decodes the compare block (plan 34), and null when not asked, never absent", () => {
+        const {compare} = decodeProjection(PROJECTION_RUN);
+        expect(compare).not.toBeNull();
+        expect(compare?.columns).toBe(2);
+        expect(compare?.from).toBe("2026-08-01");
+        expect(compare?.cash.projected).toHaveLength(2);
+        expect(compare?.incomeStatement.buckets?.map((bucket) => bucket.key)).toEqual(["2026-06", "2026-07", "projected:2026-06", "projected:2026-07"]);
+        expect(compare?.balanceSheet.columns.map((column) => column.key)).toEqual(["2026-08", "2026-09", "projected:2026-08", "projected:2026-09"]);
+        expect(compare?.accounts?.buckets).toEqual(["2026-08", "2026-09", "projected:2026-08", "projected:2026-09"]);
+        expect(compare?.warnings).toHaveLength(1);
+        expect(decodeProjection({...PROJECTION_RUN, compare: null}).compare).toBeNull();
+        expect(() => decodeProjection({...PROJECTION_RUN, compare: undefined})).toThrow(ApiShapeError);
+    });
+
+    it("a compare statement or cash series of the wrong width is refused", () => {
+        const wrong = (patch: Record<string, unknown>) => () => decodeProjection({...PROJECTION_RUN, compare: {...COMPARE, ...patch}});
+        expect(wrong({columns: 3})).toThrow(ApiShapeError);
+        expect(wrong({columns: 0})).toThrow(ApiShapeError);
+        expect(wrong({cash: {...COMPARE.cash, projected: COMPARE.cash.projected.slice(1)}})).toThrow(ApiShapeError);
+        expect(wrong({cashFlow: PROJECTION_RUN.cashFlow})).toThrow(ApiShapeError);
+        expect(wrong({balanceSheet: PROJECTION_RUN.balanceSheet})).toThrow(ApiShapeError);
+        expect(wrong({accounts: PROJECTION_RUN.accounts})).toThrow(ApiShapeError);
     });
 
     it("decodes the inferred defaults the table greys out", () => {

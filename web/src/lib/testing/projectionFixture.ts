@@ -72,6 +72,7 @@ export function projectionFixture(overrides: Partial<Projection> = {}): Projecti
         defaults: {cash: "assets:bank:checking", gains: "equity:unrealized gains", lines: new Map(), events: new Map()},
         accounts: null,
         journal: null,
+        compare: null,
         ...overrides,
     };
 }
@@ -111,6 +112,7 @@ export function rawProjectionRun(): Record<string, unknown> {
         // Asked for by neither: `null`, never absent.
         accounts: null,
         journal: null,
+        compare: null,
     };
 }
 

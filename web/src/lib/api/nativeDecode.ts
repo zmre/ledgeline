@@ -114,6 +114,7 @@ import type {
     AssetRow,
     AutoRule,
     BalanceSeries,
+    Comparison,
     EventPosting,
     FixedPiece,
     LayoutItem,
@@ -670,6 +671,20 @@ interface RawProjection {
     defaults?: RawForecastDefaults;
     accounts?: unknown;
     journal?: RawForecastJournal | null;
+    compare?: RawComparison | null;
+}
+
+interface RawComparison {
+    from?: string;
+    actualsEnd?: string;
+    columns?: number;
+    cash?: {opening?: unknown; actual?: unknown[]; projected?: unknown[]};
+    balanceSheet?: RawBalanceSheetColumns;
+    incomeStatement?: unknown;
+    cashFlow?: unknown;
+    accounts?: unknown;
+    journal?: RawForecastJournal | null;
+    warnings?: unknown[];
 }
 
 interface RawForecastJournal {
@@ -2837,6 +2852,56 @@ export function decodeProjection(raw: unknown): Projection {
         // Null unless the run asked; ABSENT is still a broken contract.
         accounts: decodeNullable(projection.accounts, "projection accounts", (value) => decodeAccountReport(value)),
         journal: decodeNullable(projection.journal, "projection journal", decodeForecastJournal),
+        // MERGE SEAM: plan 34. Null unless asked; absent is a broken contract.
+        compare: decodeNullable(projection.compare, "projection compare", decodeComparison),
+    });
+}
+
+/**
+ * Plan 34's `compare` block. Every statement must hold exactly `2 × columns`
+ * columns and each cash series `columns` figures: a block that came back
+ * short would put actual figures under the "as projected" heading.
+ */
+function decodeComparison(raw: RawComparison): Comparison {
+    if (typeof raw !== "object") throw new ApiShapeError("projection compare: expected an object");
+    const context = "projection compare";
+    const columns = decodeCount(raw.columns, `${context} columns`);
+    if (columns < 1) throw new ApiShapeError(`${context} columns: expected at least 1`);
+    const cash = raw.cash;
+    if (cash === undefined || cash === null || !Array.isArray(cash.actual) || !Array.isArray(cash.projected)) {
+        throw new ApiShapeError(`${context} cash: missing actual/projected`);
+    }
+    const series = (values: unknown[], name: string): MixedAmount[] => {
+        if (values.length !== columns) throw new ApiShapeError(`${context} cash ${name}: ${values.length} figures for ${columns} columns`);
+        return frozen(values.map((value, i) => decodeMixed(value as RawMixed, `${context} cash ${name}[${i}]`)));
+    };
+    const width = (count: number, name: string): void => {
+        if (count !== 2 * columns) throw new ApiShapeError(`${context} ${name}: ${count} columns, expected ${2 * columns}`);
+    };
+    const balanceSheet = decodeBalanceSheetColumns(raw.balanceSheet);
+    width(balanceSheet.columns.length, "balanceSheet");
+    const incomeStatement = decodeIncomeStatementReport(raw.incomeStatement);
+    width(incomeStatement.buckets?.length ?? 0, "incomeStatement");
+    const cashFlow = decodeCashFlowStatement(raw.cashFlow);
+    width(cashFlow.buckets.length, "cashFlow");
+    const accounts = decodeNullable(raw.accounts, `${context} accounts`, (value) => decodeAccountReport(value));
+    if (accounts !== null) width(accounts.buckets.length, "accounts");
+    if (!Array.isArray(raw.warnings)) throw new ApiShapeError(`${context} warnings: expected an array`);
+    return Object.freeze({
+        from: str(raw.from, `${context} from`) as ISODate,
+        actualsEnd: str(raw.actualsEnd, `${context} actualsEnd`) as ISODate,
+        columns,
+        cash: Object.freeze({
+            opening: decodeMixed(cash.opening as RawMixed, `${context} cash opening`),
+            actual: series(cash.actual, "actual"),
+            projected: series(cash.projected, "projected"),
+        }),
+        balanceSheet,
+        incomeStatement,
+        cashFlow,
+        accounts,
+        journal: decodeNullable(raw.journal, `${context} journal`, decodeForecastJournal),
+        warnings: frozen(decodeStrings(raw.warnings, `${context} warnings`)),
     });
 }
 

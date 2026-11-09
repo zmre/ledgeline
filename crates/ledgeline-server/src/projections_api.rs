@@ -75,6 +75,10 @@ use ledgeline_core::projections::{
     label_for, latest_real_date, line_section, project_cached, projected_accounts,
     projected_statements, seed_scenario, upgrade_legacy_counters, virtual_posting,
 };
+// MERGE SEAM: plan 34 (Compare vs actuals) imports, kept in their own block.
+use ledgeline_core::projections::{
+    ComparedStatements, backtest_warnings, compared_accounts, compared_statements, project_backtest,
+};
 use ledgeline_core::reports::account_types::{AccountType, AccountTypes, parse_account_type_tag};
 use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
@@ -833,6 +837,49 @@ pub(crate) struct WireProjection {
     /// The generated transactions, when the request asked with `journal`;
     /// `null` otherwise.
     journal: Option<WireForecastJournal>,
+    // MERGE SEAM: plan 34.
+    /// Compare vs actuals, when the request asked with `compare`; `null`
+    /// otherwise. With it, `accounts` and `journal` above are `null` and
+    /// this block carries them.
+    compare: Option<WireComparison>,
+}
+
+/// Plan 34: the actual periods beside the scenario as projected on their
+/// first day. Every statement holds `2 × columns` columns: the actual block,
+/// then the as-projected block, whose keys are prefixed `projected:` (labels
+/// and dates unchanged). Each is a valid report of its type; its Total-like
+/// fields span both blocks and mean nothing, so no reading shows them.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireComparison {
+    /// `F`: the first actual day, the backtest's cutoff.
+    from: String,
+    /// `C`: the forward run's cutoff; the window ends the day before.
+    actuals_end: String,
+    /// `N`, the actual periods compared.
+    columns: usize,
+    cash: WireCompareCash,
+    balance_sheet: WireBalanceSheetColumns,
+    income_statement: WireIncomeStatementReport,
+    cash_flow: WireCashFlow,
+    /// The Accounts reading over both blocks, when `accounts` was asked.
+    accounts: Option<WireAccountReport>,
+    /// The BACKTEST's generated transactions, when `journal` was asked.
+    journal: Option<WireForecastJournal>,
+    /// The backtest's warnings the forward run's list does not already hold.
+    warnings: Vec<String>,
+}
+
+/// The runway's two series over the actual periods.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireCompareCash {
+    /// Real cash the day before `from`.
+    opening: WireMixed,
+    /// Real closing cash per period: the forward run's `cash.history`.
+    actual: Vec<WireMixed>,
+    /// The backtest's closing cash per period.
+    projected: Vec<WireMixed>,
 }
 
 /// The three official statements over `real ++ forecast`, on the wire.
@@ -924,7 +971,18 @@ impl WireProjection {
             defaults: WireForecastDefaults::from(&projection.forecast.defaults),
             accounts: None,
             journal: None,
+            compare: None,
         }
+    }
+}
+
+/// The joined statements, as one [`ProjectedStatements`] over `2N` columns.
+fn compared_as_projected(compared: ComparedStatements) -> ProjectedStatements {
+    ProjectedStatements {
+        spans: compared.spans(),
+        balance_sheet: compared.balance_sheet,
+        income_statement: compared.income_statement,
+        cash_flow: compared.cash_flow,
     }
 }
 
@@ -1227,6 +1285,13 @@ pub(crate) struct RunRequest {
     /// Ask for the generated transactions. Off by default for the same reason.
     #[serde(default)]
     journal: bool,
+    // MERGE SEAM: plan 34. Keep beside `journal`; a client sends it only when
+    // true, so an older engine (`deny_unknown_fields`) still answers an
+    // unticked page.
+    /// Compare vs actuals (plan 34): also run the scenario as projected on the
+    /// first actual day and answer `compare`. Needs `lookback >= 1`.
+    #[serde(default)]
+    compare: bool,
 }
 
 /// `accounts` in a run request: which reading of the columns, and whether
@@ -1252,6 +1317,26 @@ fn checked_lookback(lookback: Option<usize>, count: usize) -> Result<usize, AppE
         Some(columns) if columns <= MAX_BUCKETS => Ok(lookback),
         _ => Err(AppError::BadRequest(format!(
             "lookback {lookback} plus count {count} is more than {MAX_BUCKETS} columns"
+        ))),
+    }
+}
+
+/// Plan 34 D6: a comparison needs an actual period to compare, and its
+/// statements carry `2 × lookback` columns, held to [`MAX_BUCKETS`].
+fn checked_compare(compare: bool, lookback: usize) -> Result<(), AppError> {
+    if !compare {
+        return Ok(());
+    }
+    if lookback == 0 {
+        return Err(AppError::BadRequest(
+            "compare needs at least one actual period (lookback is 0)".to_string(),
+        ));
+    }
+    match lookback.checked_mul(2) {
+        Some(columns) if columns <= MAX_BUCKETS => Ok(()),
+        _ => Err(AppError::BadRequest(format!(
+            "compare with lookback {lookback} is {} columns, more than {MAX_BUCKETS}",
+            lookback.saturating_mul(2)
         ))),
     }
 }
@@ -1831,7 +1916,8 @@ fn checked_layout(scenario: Scenario) -> Result<Scenario, AppError> {
 
 /// `POST /api/projections/run` — project a scenario forward.
 ///
-/// Body: `{scenario, asOf?, interval?, count?, lookback?, depth?, valueIn?}`.
+/// Body: `{scenario, asOf?, interval?, count?, lookback?, depth?, valueIn?,
+/// accounts?, journal?, compare?}`.
 /// The scenario travels in the body precisely so that UNSAVED edits project;
 /// nothing here touches the filesystem.
 ///
@@ -1846,6 +1932,11 @@ fn checked_layout(scenario: Scenario) -> Result<Scenario, AppError> {
 /// - `valueIn=$` — the commodity balances are valued into. The cash series
 ///   adds generated flows unvalued, and warns about a scenario in another
 ///   commodity; the statements value every column as the Reports tab does.
+/// - `compare: true` (plan 34) — also answer `compare`: the `lookback` actual
+///   periods beside the scenario as projected on their first day (its own
+///   cached real side), `2 × lookback` columns per statement. `400` at
+///   lookback 0 or past [`MAX_BUCKETS`]. With it, `accounts` and `journal`
+///   ride inside `compare` and the top-level ones are `null`.
 pub(crate) async fn run(
     State(state): State<AppState>,
     payload: Result<Json<RunRequest>, JsonRejection>,
@@ -1860,6 +1951,7 @@ pub(crate) async fn run(
         request.depth,
     )?;
     let lookback = checked_lookback(request.lookback, window.count)?;
+    checked_compare(request.compare, lookback)?; // MERGE SEAM: plan 34
     let value_in = request
         .value_in
         .map(|symbol| symbol.trim().to_string())
@@ -1909,35 +2001,88 @@ pub(crate) async fn run(
                 cf_depth: window.depth,
             },
         )?;
+        // MERGE SEAM: plan 34 reads `scenario` again below for the backtest.
         // The Accounts reading: every account per column over `lookback ++
         // buckets` (`hledger balance -M --forecast`, `-H` for balances,
         // `-E --declared` for empty accounts), as written: no valuation,
         // natural signs. With `empty`, the known accounts are
         // `known_accounts`: hledger's `-E --declared`, widened to every
         // account the journal ever posts to.
-        let accounts = request
-            .accounts
-            .as_ref()
-            .map(|accounts| {
-                projected_accounts(
-                    &real,
-                    &facts,
-                    &projection.forecast,
-                    &AccountsOpts {
-                        depth: window.depth,
-                        empty: accounts.empty,
-                    },
-                )
-                .map(|report| WireAccountReport::from(&report))
+        let statement_opts = StatementOpts {
+            valuation: Valuation::Market,
+            bs_depth: None,
+            is_depth: Some(window.depth),
+            cf_depth: window.depth,
+        };
+        // MERGE SEAM: plan 34. With `compare`, the Accounts and Journal
+        // readings are the comparison's, so the forward ones are not built.
+        let accounts_opts = request.accounts.as_ref().map(|accounts| AccountsOpts {
+            depth: window.depth,
+            empty: accounts.empty,
+        });
+        let accounts = accounts_opts
+            .filter(|_| !request.compare)
+            .map(|opts| {
+                projected_accounts(&real, &facts, &projection.forecast, &opts)
+                    .map(|report| WireAccountReport::from(&report))
             })
             .transpose()?;
-        let forecast_journal = request.journal.then(|| {
-            let declared = snapshot.view.declared(journal);
-            forecast_journal(&projection, &RowContext::new(journal, &declared), &declared)
-        });
+        // Built only when the Journal reading is asked for.
+        let declared = request.journal.then(|| snapshot.view.declared(journal));
+        let journal_of = |projection: &Projection| {
+            declared.as_ref().map(|declared| {
+                forecast_journal(projection, &RowContext::new(journal, declared), declared)
+            })
+        };
+        let generated = if request.compare {
+            None
+        } else {
+            journal_of(&projection)
+        };
+        // Plan 34: the projection made on the first actual day, from its own
+        // cached real side, beside the forward run's actual columns.
+        let compare = match key.backtest()?.filter(|_| request.compare) {
+            None => None,
+            Some(backtest_key) => {
+                let backtest = cache.side(journal, &facts, &backtest_key)?;
+                let as_projected = project_backtest(&scenario, &real, &backtest, window.depth)?;
+                let compared = compared_statements(
+                    &real,
+                    &backtest,
+                    &facts,
+                    &as_projected.forecast,
+                    &statement_opts,
+                )?;
+                let accounts = accounts_opts
+                    .map(|opts| {
+                        compared_accounts(&real, &backtest, &facts, &as_projected.forecast, &opts)
+                            .map(|report| WireAccountReport::from(&report))
+                    })
+                    .transpose()?;
+                let (balance_sheet, income_statement, cash_flow) =
+                    wire_statements(&compared_as_projected(compared));
+                Some(WireComparison {
+                    from: backtest_key.cutoff.clone(),
+                    actuals_end: projection.start.clone(),
+                    columns: lookback,
+                    cash: WireCompareCash {
+                        opening: wire_mixed(&as_projected.cash.opening),
+                        actual: projection.cash.history.iter().map(wire_mixed).collect(),
+                        projected: as_projected.cash.values.iter().map(wire_mixed).collect(),
+                    },
+                    balance_sheet,
+                    income_statement,
+                    cash_flow,
+                    accounts,
+                    journal: journal_of(&as_projected),
+                    warnings: backtest_warnings(&projection, &as_projected),
+                })
+            }
+        };
         Ok(WireProjection {
             accounts,
-            journal: forecast_journal,
+            journal: generated,
+            compare,
             ..WireProjection::new(&projection, wire_statements(&statements))
         })
     })

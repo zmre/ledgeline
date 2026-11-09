@@ -4682,3 +4682,208 @@ async fn a_file_that_changes_before_the_first_write_writes_nothing_at_all() {
         "the target was never written"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Compare vs actuals (plan 34, Phase 3)
+// ---------------------------------------------------------------------------
+
+/// `rent_line` with its counter named, so the backtest equals a run made on
+/// the first actual day exactly (plan 34 D1).
+fn rent_paid_from_checking() -> Value {
+    let mut line = rent_line();
+    line["counter"] = json!("assets:bank:checking");
+    line
+}
+
+/// A comparison over May and June 2026 (`asOf` 2026-07-08, lookback 2).
+async fn compare_run(extra: Value) -> Value {
+    let mut body = json!({
+        "scenario": scenario_with(vec![rent_paid_from_checking()], vec![]),
+        "asOf": "2026-07-08",
+        "count": 3,
+        "lookback": 2,
+        "compare": true
+    });
+    for (key, value) in extra.as_object().expect("an object") {
+        body[key] = value.clone();
+    }
+    run(body).await
+}
+
+fn column_keys(columns: &Value) -> Vec<String> {
+    columns
+        .as_array()
+        .expect("columns")
+        .iter()
+        .map(|column| column["key"].as_str().expect("key").to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn compare_is_null_unless_asked_and_never_absent() {
+    let projection = run(json!({
+        "scenario": scenario_with(vec![rent_line()], vec![]),
+        "asOf": "2026-07-08",
+        "count": 2
+    }))
+    .await;
+    assert!(
+        projection.get("compare").is_some(),
+        "the key is always present"
+    );
+    assert!(projection["compare"].is_null());
+    let asked = compare_run(json!({})).await;
+    assert!(asked["compare"].is_object());
+}
+
+#[tokio::test]
+async fn compare_needs_an_actual_period_and_fits_max_buckets() {
+    let (status, text) = post(json!({
+        "scenario": scenario_with(vec![rent_line()], vec![]),
+        "asOf": "2026-07-08",
+        "lookback": 0,
+        "compare": true
+    }))
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    assert!(text.contains("at least one actual period"), "{text}");
+    assert!(text.contains("lookback is 0"), "{text}");
+
+    let (status, text) = post(json!({
+        "scenario": scenario_with(vec![rent_line()], vec![]),
+        "asOf": "2026-07-08",
+        "count": 1,
+        "lookback": 601,
+        "compare": true
+    }))
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    assert!(text.contains("601") && text.contains("1200"), "{text}");
+}
+
+#[tokio::test]
+async fn compare_columns_are_both_blocks_with_prefixed_unique_keys() {
+    let projection = compare_run(json!({"accounts": {"empty": false}})).await;
+    let compare = &projection["compare"];
+    assert_eq!(compare["columns"], 2);
+    assert_eq!(compare["from"], "2026-05-01");
+    assert_eq!(compare["actualsEnd"], "2026-07-01");
+    let want = [
+        "2026-05",
+        "2026-06",
+        "projected:2026-05",
+        "projected:2026-06",
+    ];
+    assert_eq!(column_keys(&compare["balanceSheet"]["columns"]), want);
+    assert_eq!(column_keys(&compare["incomeStatement"]["buckets"]), want);
+    assert_eq!(column_keys(&compare["cashFlow"]["buckets"]), want);
+    assert_eq!(compare["accounts"]["buckets"], json!(want));
+    // The projected block's labels and dates are the actual block's.
+    let buckets = &compare["incomeStatement"]["buckets"];
+    assert_eq!(buckets[2]["label"], buckets[0]["label"]);
+    assert_eq!(buckets[2]["label"], "May 2026");
+    assert_eq!(buckets[3]["from"], "2026-06-01");
+    assert_eq!(buckets[3]["to"], "2026-06-30");
+    assert_eq!(compare["accounts"]["periods"][2]["label"], "May 2026");
+    assert_eq!(compare["accounts"]["periods"][2]["start"], "2026-05-01");
+    assert_eq!(
+        compare["incomeStatement"]["netIncome"]["values"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+    assert_eq!(compare["cash"]["actual"].as_array().unwrap().len(), 2);
+    assert_eq!(compare["cash"]["projected"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn the_actual_block_is_the_forward_runs_lookback_columns() {
+    let projection = compare_run(json!({})).await;
+    let compare = &projection["compare"];
+    let first_two = |values: &Value| values.as_array().expect("values")[..2].to_vec();
+    assert_eq!(compare["cash"]["actual"], projection["cash"]["history"]);
+    assert_eq!(
+        first_two(&compare["balanceSheet"]["netWorth"]),
+        first_two(&projection["balanceSheet"]["netWorth"])
+    );
+    assert_eq!(
+        first_two(&compare["incomeStatement"]["netIncome"]["values"]),
+        first_two(&projection["incomeStatement"]["netIncome"]["values"])
+    );
+    assert_eq!(
+        first_two(&compare["cashFlow"]["netChange"]["values"]),
+        first_two(&projection["cashFlow"]["netChange"]["values"])
+    );
+    // And it is real: May and June's rent is not the scenario's $4,200.
+    assert_ne!(
+        compare["incomeStatement"]["netIncome"]["values"][0],
+        compare["incomeStatement"]["netIncome"]["values"][2]
+    );
+}
+
+#[tokio::test]
+async fn the_projected_block_is_a_run_made_on_the_first_actual_day() {
+    let projection = compare_run(json!({})).await;
+    let compare = &projection["compare"];
+    let on_f = run(json!({
+        "scenario": scenario_with(vec![rent_paid_from_checking()], vec![]),
+        "asOf": "2026-05-01",
+        "count": 2,
+        "lookback": 0
+    }))
+    .await;
+    assert_eq!(on_f["actualsEnd"], "2026-05-01");
+    assert_eq!(compare["cash"]["projected"], on_f["cash"]["values"]);
+    assert_eq!(compare["cash"]["opening"], on_f["cash"]["opening"]);
+    let last_two = |values: &Value| values.as_array().expect("values")[2..].to_vec();
+    assert_eq!(
+        last_two(&compare["balanceSheet"]["netWorth"]),
+        on_f["balanceSheet"]["netWorth"].as_array().unwrap().clone()
+    );
+    assert_eq!(
+        last_two(&compare["incomeStatement"]["netIncome"]["values"]),
+        on_f["incomeStatement"]["netIncome"]["values"]
+            .as_array()
+            .unwrap()
+            .clone()
+    );
+    assert_eq!(
+        last_two(&compare["cashFlow"]["endingCash"]["values"]),
+        on_f["cashFlow"]["endingCash"]["values"]
+            .as_array()
+            .unwrap()
+            .clone()
+    );
+    // The scenario's rent, and nothing real.
+    assert_eq!(
+        last_two(&compare["incomeStatement"]["netIncome"]["values"])
+            .iter()
+            .map(dollars)
+            .collect::<Vec<_>>(),
+        [-4200, -4200]
+    );
+}
+
+#[tokio::test]
+async fn with_compare_the_tabs_readings_are_the_comparisons() {
+    let projection = compare_run(json!({
+        "accounts": {"empty": false},
+        "journal": true
+    }))
+    .await;
+    assert!(projection["accounts"].is_null());
+    assert!(projection["journal"].is_null());
+    let compare = &projection["compare"];
+    assert!(compare["accounts"].is_object());
+    let entries = compare["journal"]["entries"].as_array().expect("entries");
+    // The backtest's generated rent: May and June.
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0]["txn"]["date"], "2026-05-01");
+    assert!(compare["warnings"].is_array());
+
+    // Without either flag, neither is built.
+    let bare = compare_run(json!({})).await;
+    assert!(bare["compare"]["accounts"].is_null());
+    assert!(bare["compare"]["journal"].is_null());
+}

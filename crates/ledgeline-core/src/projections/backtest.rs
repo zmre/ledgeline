@@ -53,8 +53,8 @@ use super::real_side::{
 use super::{Forecast, ForecastWindow, Projection, Scenario, merged_prices, merged_transactions};
 
 /// The prefix on every as-projected column key (`projected:2026-08`), so a
-/// joined report never repeats a key.
-pub const PROJECTED_KEY_PREFIX: &str = "projected:";
+/// joined report never repeats a key. Labels and bounds see through it.
+pub use crate::reports::periods::PROJECTED_KEY_PREFIX;
 
 impl RealKey {
     /// D1: the key of the projection made on the first actual day: cutoff
