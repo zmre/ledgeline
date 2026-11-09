@@ -23,11 +23,13 @@ use ledgeline_core::model::{
 };
 use ledgeline_core::parse::{JournalStyles, parse_period_spec};
 use ledgeline_core::projections::serialize::{
-    ProjectionDoc, new_file, scenario_from_text, scenario_from_text_with_styles, write_scenario,
+    ProjectionDoc, new_file, scenario_from_text, scenario_from_text_with_styles,
+    set_default_marker, write_scenario,
 };
 use ledgeline_core::projections::{
-    CommentStyle, CreateRefusal, Growth, GrowthUnit, ItemKind, LineRole, LineSource, Scenario,
-    ScenarioAutoRule, ScenarioEvent, ScenarioLine, discover, slug_filename, virtual_posting,
+    CommentStyle, CreateRefusal, Discovery, Growth, GrowthUnit, ItemKind, LineRole, LineSource,
+    Scenario, ScenarioAutoRule, ScenarioEvent, ScenarioLine, default_conflict, discover,
+    slug_filename, virtual_posting,
 };
 use ledgeline_core::projections::{
     CounterDefaults, Forecast, ForecastOpts, ForecastOrigin, ForecastWindow, GENERATED_TAG,
@@ -205,6 +207,59 @@ fn only_a_projection_file_has_its_header_read() {
     assert!(!other.is_projection);
     assert_eq!(other.name, None, "its header is deliberately not read");
     assert_eq!(other.label, "other");
+}
+
+#[test]
+fn the_listing_reports_the_default_marker_only_where_it_reads_a_header() {
+    let scratch = Scratch::new("default-marker");
+    let main = scratch.main_journal();
+    let marked = |name: &str| sample(name).replacen("\n\n~", "\n; default-scenario: true\n\n~", 1);
+    scratch.write("projection-a.journal", &marked("A"));
+    scratch.write("projection-b.journal", &sample("B"));
+    // Not a projection file: its header is never read, so it is never the
+    // default however it is marked (plan 33 D5, D19).
+    scratch.write("budget.journal", &marked("Budget"));
+
+    let discovery = discover(&main);
+    let flag = |id: &str| discovery.resolve(id).expect("listed").is_default;
+    assert!(flag("projection-a.journal"));
+    assert!(!flag("projection-b.journal"));
+    assert!(!flag("budget.journal"));
+    assert_eq!(
+        default_conflict(&discovery),
+        None,
+        "one marker is no conflict"
+    );
+
+    // A headerless scan reads nothing, so it reports nothing.
+    let bare = Discovery::without_headers(&main);
+    assert!(bare.files.iter().all(|file| !file.is_default));
+}
+
+#[test]
+fn two_markers_are_a_conflict_the_listing_names() {
+    let scratch = Scratch::new("default-conflict");
+    let main = scratch.main_journal();
+    let marked = |name: &str| sample(name).replacen("\n\n~", "\n; default-scenario: true\n\n~", 1);
+    scratch.write("projection-b.journal", &marked("B"));
+    scratch.write("projection-a.journal", &marked("A"));
+    scratch.write("projection-c.journal", &sample("C"));
+
+    let discovery = discover(&main);
+    let marked_ids: Vec<&str> = discovery
+        .files
+        .iter()
+        .filter(|file| file.is_default)
+        .map(|file| file.id.as_str())
+        .collect();
+    assert_eq!(marked_ids, ["projection-a.journal", "projection-b.journal"]);
+    assert_eq!(
+        default_conflict(&discovery).as_deref(),
+        Some(
+            "2 scenario files are marked as the default (projection-a.journal, \
+             projection-b.journal); the first one opens. Star one to fix it."
+        )
+    );
 }
 
 #[test]
@@ -711,6 +766,7 @@ fn cross_check_scenario() -> Scenario {
         layout: Vec::new(),
         auto_rules: Vec::new(),
         cash: None,
+        is_default: false,
         name: "Cross check".to_string(),
         created: Some("2026-01-01".to_string()),
         updated: Some("2026-01-02".to_string()),
@@ -942,6 +998,50 @@ fn hledger_reads_a_scenario_we_wrote() {
         register.contains("Series A") && register.contains("2000000.00"),
         "the dated one-off did not forecast:\n{register}\n--- the file ---\n{text}"
     );
+}
+
+#[test]
+fn hledger_ignores_the_default_marker() {
+    // Plan 33 D4: `; default-scenario: true` is a top-level comment, so it is
+    // neither a tag nor data. Proven by hledger itself: the same scenario
+    // with and without the line prints, and forecasts, identically.
+    let Some(_) = hledger(&["--version"]) else {
+        eprintln!("skipped: set {OPT_IN}=1 (see `just hledger-checks`)");
+        return;
+    };
+    let scratch = Scratch::new("hledger-default");
+    let plain_path = scratch.path().join("projection-plain.journal");
+    let plain = new_file(
+        &cross_check_scenario(),
+        &plain_path.to_string_lossy(),
+        &declared(),
+    )
+    .expect("it writes");
+    let marked = set_default_marker(&plain, true).expect("adds the marker");
+    assert!(marked.contains("; default-scenario: true"));
+    let marked_path = scratch.path().join("projection-marked.journal");
+    std::fs::write(&plain_path, &plain).expect("write");
+    std::fs::write(&marked_path, &marked).expect("write");
+
+    let print = |path: &Path| {
+        let output = hledger(&[
+            "-f",
+            &path.to_string_lossy(),
+            "print",
+            "--forecast=2027-01-01..2027-07-01",
+        ])
+        .expect("hledger runs");
+        assert!(
+            output.status.success(),
+            "hledger refused {}:\n{}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    let without = print(&plain_path);
+    assert!(!without.trim().is_empty(), "the forecast prints something");
+    assert_eq!(print(&marked_path), without);
 }
 
 #[test]

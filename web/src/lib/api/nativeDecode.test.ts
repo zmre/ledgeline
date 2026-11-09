@@ -19,6 +19,7 @@ import {
     decodeJournalInfo,
     decodeOtherHoldingsReport,
     decodeCashFlowStatement,
+    decodeDefaultChange,
     decodePeriodReport,
     decodeProjection,
     decodeProjectionIndex,
@@ -2123,11 +2124,34 @@ const PROJECTION_INDEX = {
             isProjection: true,
             sizeBytes: 812,
             writable: true,
+            isDefault: true,
         },
-        {id: "budget.journal", label: "budget", name: null, created: null, updated: null, isProjection: false, sizeBytes: 240, writable: false},
+        {
+            id: "budget.journal",
+            label: "budget",
+            name: null,
+            created: null,
+            updated: null,
+            isProjection: false,
+            sizeBytes: 240,
+            writable: false,
+            isDefault: false,
+        },
     ],
     directories: ["", "plans"],
     warnings: ["notes.journal is a symbolic link and was skipped"],
+};
+
+/**
+ * `PUT /api/projections/default` (plan 33 D16). Inline for the reason
+ * `PROJECTION_INDEX` is: it describes writes to a directory tree, which no URI
+ * manifest can replay.
+ */
+const DEFAULT_CHANGE = {
+    changed: [
+        {id: "projection-a.journal", before: "880-aa11", after: "854-bb22", isDefault: false},
+        {id: "projection-b.journal", before: "300-cc33", after: "326-dd44", isDefault: true},
+    ],
 };
 
 /** `GET`/`PUT /api/projections/{*id}` — one file, read as a scenario. */
@@ -2136,6 +2160,10 @@ const SCENARIO_FILE = {
     label: "series-a",
     revision: "812-9f2c1a",
     writable: true,
+    // TRUE, so a rename of the key is caught by the sweep: an absent
+    // `isDefault` decodes as false (an older engine), which a false value
+    // could not tell apart.
+    isDefault: true,
     scenario: {
         name: "Series A with a hiring ramp",
         created: "2026-09-18",
@@ -2353,6 +2381,40 @@ describe("UNIT nativeDecode — the scenario file listing", () => {
     it("a missing files array is a shape error rather than an empty list", () => {
         expect(() => decodeProjectionIndex({...PROJECTION_INDEX, files: undefined})).toThrow(ApiShapeError);
     });
+
+    it("decodes the default marker per file (plan 33)", () => {
+        const index = decodeProjectionIndex(PROJECTION_INDEX);
+        expect(index.defaultSupported).toBe(true);
+        expect(index.files.map((file) => file.isDefault)).toEqual([true, false]);
+    });
+
+    it("an engine that sends no `isDefault` predates the marker: unsupported, nothing marked", () => {
+        const files = PROJECTION_INDEX.files.map((file) => ({...file, isDefault: undefined}));
+        const index = decodeProjectionIndex({...PROJECTION_INDEX, files});
+        expect(index.defaultSupported).toBe(false);
+        expect(index.files.every((file) => !file.isDefault)).toBe(true);
+    });
+
+    it("an `isDefault` that is not a boolean, or present on only some files, is a broken contract", () => {
+        const yes = [{...PROJECTION_INDEX.files[0], isDefault: "yes"}, PROJECTION_INDEX.files[1]];
+        expect(() => decodeProjectionIndex({...PROJECTION_INDEX, files: yes})).toThrow(ApiShapeError);
+        const half = [PROJECTION_INDEX.files[0], {...PROJECTION_INDEX.files[1], isDefault: undefined}];
+        expect(() => decodeProjectionIndex({...PROJECTION_INDEX, files: half})).toThrow(ApiShapeError);
+    });
+});
+
+describe("UNIT nativeDecode — setting the default scenario (plan 33)", () => {
+    it("decodes every changed file with its before and after revisions", () => {
+        expect(decodeDefaultChange(DEFAULT_CHANGE)).toEqual(DEFAULT_CHANGE);
+        expect(decodeDefaultChange({changed: []})).toEqual({changed: []});
+    });
+
+    it("refuses a body without `changed`, or an entry missing a revision", () => {
+        expect(() => decodeDefaultChange({})).toThrow(ApiShapeError);
+        const [first] = DEFAULT_CHANGE.changed;
+        expect(() => decodeDefaultChange({changed: [{...first, before: undefined}]})).toThrow(ApiShapeError);
+        expect(() => decodeDefaultChange({changed: [{...first, isDefault: "true"}]})).toThrow(ApiShapeError);
+    });
 });
 
 describe("UNIT nativeDecode — one scenario file", () => {
@@ -2391,6 +2453,12 @@ describe("UNIT nativeDecode — one scenario file", () => {
         for (const field of ["layout", "comments", "fixed"]) {
             expect(() => decodeScenarioFile(withScenario({[field]: undefined}))).toThrow(ApiShapeError);
         }
+    });
+
+    it("an absent `isDefault` is an older engine's file, never the default", () => {
+        expect(decodeScenarioFile(SCENARIO_FILE).isDefault).toBe(true);
+        expect(decodeScenarioFile({...SCENARIO_FILE, isDefault: undefined}).isDefault).toBe(false);
+        expect(() => decodeScenarioFile({...SCENARIO_FILE, isDefault: "yes"})).toThrow(ApiShapeError);
     });
 
     it("an ABSENT revision is a broken contract, never an empty string", () => {
@@ -2592,6 +2660,7 @@ describe("UNIT nativeDecode — renaming any wire key is detected, not absorbed"
         // load-bearing, and both decoders use required-not-absent guards.
         ["projections-index", decodeProjectionIndex, PROJECTION_INDEX],
         ["projections-file", decodeScenarioFile, SCENARIO_FILE],
+        ["projections-default", decodeDefaultChange, DEFAULT_CHANGE],
         // The ASSET-ROW wire (plan 23, Phase 2), and a real golden rather than a
         // literal: `GET /api/projections/{id}` reads ONE file by id, which IS
         // replayable from a URI manifest — only the directory LISTING is not.
@@ -2639,6 +2708,15 @@ describe("UNIT nativeDecode — renaming any wire key is detected, not absorbed"
         // sample.journal (an insurance premium, a domain renewal).
         "subscriptions $.annual",
         "holdings $.topLosers", // nothing is down as of 2026-07-08 → [] either way
+        // Plan 33 D19: an ABSENT `isDefault` must decode as false, because an
+        // engine from before the marker sends none — so on a golden whose file
+        // is not the default, dropping the key is indistinguishable from
+        // keeping it. Not a gap in the DECODER's coverage: the inline
+        // `projections-file` body runs the same decoder with `isDefault: true`,
+        // and its rename is caught. Closing it here would need the golden's
+        // fixture to be a marked `projection-*.journal`, which would put a
+        // second heading in the e2e picker (see that fixture's own comment).
+        "projections-asset $.isDefault",
         // `incomestatement-grouped $.meta.unpriced` used to sit here: no income
         // or expense account in sample.journal holds an unpriced commodity at
         // ANY range, so the list is `[]` on both sides of that rename. It is

@@ -465,6 +465,13 @@ export interface ProjectionFile {
      * refuse after the fact.
      */
     writable: boolean;
+    /**
+     * `; default-scenario: true` in the header (plan 33 D19) — the raw marker.
+     * Always false for a file whose header the engine does not read (any file
+     * that is not a `projection-*.journal`), and for an engine that predates
+     * the marker (`ProjectionIndex.defaultSupported` is then false).
+     */
+    isDefault: boolean;
 }
 
 /** `GET /api/projections` — the picker's list. */
@@ -479,6 +486,14 @@ export interface ProjectionIndex {
     /** The directories that hold a journal, relative, `""` for the root — what Save As offers instead of a free-text path. */
     directories: string[];
     warnings: string[];
+    /**
+     * Whether this engine knows the default marker (plan 33 D19): false when
+     * the listing's files carry no `isDefault`, which is an older engine. The
+     * star and the Settings control are hidden then, so a `PUT
+     * /api/projections/default` is never sent to an engine that would read it
+     * as a file id.
+     */
+    defaultSupported: boolean;
 }
 
 /** `POST /api/projections/render` — one entry's exact text, as a save would write it (plan 31 C15). */
@@ -498,5 +513,24 @@ export interface ScenarioFile {
     revision: string;
     /** See `ProjectionFile.writable`. */
     writable: boolean;
+    /** Whether the file's header marks it as the default (plan 33). Output only: a save never sends it. */
+    isDefault: boolean;
     scenario: Scenario;
+}
+
+// MERGE SEAM: plan 33's default-scenario wire types end here; plan 34 adds its own below, independently.
+/** One file `PUT /api/projections/default` rewrote (plan 33 D16). */
+export interface DefaultChangedFile {
+    id: string;
+    /** The file's revision before the write. A client holding exactly this one moves to `after` (D17). */
+    before: string;
+    /** The revision of what is on disk now. */
+    after: string;
+    /** Whether the file is now marked. */
+    isDefault: boolean;
+}
+
+/** `PUT /api/projections/default` — every file it changed; empty for a no-op. */
+export interface DefaultChange {
+    changed: DefaultChangedFile[];
 }

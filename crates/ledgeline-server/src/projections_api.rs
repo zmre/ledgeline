@@ -62,8 +62,8 @@ use ledgeline_core::model::{
 use ledgeline_core::parse::{JournalStyles, parse_period_spec};
 use ledgeline_core::projections::serialize::{
     ProjectionDoc, ScenarioRead, SerializeError, attached_raw, check_layout, comment_raw,
-    comment_style, comment_text, legacy_layout, new_file_with_styles, read_scenario_file,
-    render_entry, scenario_account_types, write_scenario,
+    comment_style, comment_text, is_default_marked, legacy_layout, new_file_with_styles,
+    read_scenario_file, render_entry, scenario_account_types, set_default_marker, write_scenario,
 };
 use ledgeline_core::projections::{
     AccountsOpts, AssetRow, BalanceSeries, CommentStyle, CounterDefaults, CreateRefusal,
@@ -71,9 +71,9 @@ use ledgeline_core::projections::{
     ForecastOrigin, Growth, GrowthUnit, History, ItemKind, LayoutItem, LineRole, LineSection,
     LineSource, ProjectedStatements, Projection, ProjectionPath, Runway, Scenario,
     ScenarioAutoRule, ScenarioComment, ScenarioEvent, ScenarioLine, SeedOpts, StatementOpts,
-    auto_rule_account_warnings, discover_in, forecast_cutoff, is_journal_name, label_for,
-    latest_real_date, line_section, project_cached, projected_accounts, projected_statements,
-    seed_scenario, upgrade_legacy_counters, virtual_posting,
+    auto_rule_account_warnings, default_conflict, discover_in, forecast_cutoff, is_journal_name,
+    label_for, latest_real_date, line_section, project_cached, projected_accounts,
+    projected_statements, seed_scenario, upgrade_legacy_counters, virtual_posting,
 };
 use ledgeline_core::reports::account_types::{AccountType, AccountTypes, parse_account_type_tag};
 use ledgeline_core::reports::periods::MAX_BUCKETS;
@@ -1614,6 +1614,9 @@ fn scenario_from_wire(
             lines,
             events,
             cash: optional_account(scenario.cash.as_ref())?,
+            // Never the client's (plan 33 D12): an update carries it from the
+            // file on disk, and a create never has it.
+            is_default: false,
         },
         entries,
     })
@@ -2222,6 +2225,9 @@ struct WireProjectionFile {
     /// a plan of record, and a picker that offered Save over one would be
     /// offering something that is about to be refused.
     writable: bool,
+    /// `; default-scenario: true` in the header (plan 33 D19): the raw marker,
+    /// always `false` for a file whose header the listing does not read.
+    is_default: bool,
 }
 
 /// `GET /api/projections`.
@@ -2271,6 +2277,10 @@ pub(crate) struct WireScenarioFile {
     /// Whether a `PUT` to this id could succeed. See
     /// [`WireProjectionFile::writable`].
     writable: bool,
+    /// Whether the file's header marks it as the default (plan 33 D19) —
+    /// always `false` for a file that is not a `projection-*.journal`, as in
+    /// the listing. Output only: a save never takes it from the client (D12).
+    is_default: bool,
     scenario: WireScenario,
 }
 
@@ -2281,6 +2291,41 @@ pub(crate) struct SaveScenarioRequest {
     /// The revision read with the file, or `""` to CREATE.
     revision: String,
     scenario: ScenarioIn,
+}
+
+/// `PUT /api/projections/default` (plan 33 D10).
+///
+/// `id` is REQUIRED, and `null` means "no default": `deserialize_with` turns
+/// off serde's habit of reading a missing `Option` as `None`, so an empty
+/// `{}` is a `400` rather than a request to clear the default.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SetDefaultRequest {
+    #[serde(deserialize_with = "Option::deserialize")]
+    id: Option<String>,
+}
+
+/// One file `PUT /api/projections/default` rewrote (plan 33 D16).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireChangedFile {
+    id: String,
+    /// The file's revision before the write: what a client holding it must
+    /// match to move its own revision forward (D17).
+    before: String,
+    /// The revision of what is now on disk.
+    after: String,
+    /// Whether the file is now marked.
+    is_default: bool,
+}
+
+/// The answer to `PUT /api/projections/default`: every file it changed,
+/// unmarked files first and the newly marked one last, as they were written.
+/// Empty for a no-op.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WireDefaultChange {
+    changed: Vec<WireChangedFile>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2415,6 +2460,17 @@ fn create_refused(id: &str, refusal: CreateRefusal) -> AppError {
     }
 }
 
+/// Decision 5's refusal: the file is part of the main journal, and the
+/// Projections tab never writes to a plan of record. Shared by a save and by
+/// `PUT /api/projections/default`, so the two cannot word it differently.
+fn plan_of_record(id: &str) -> AppError {
+    AppError::BadRequest(format!(
+        "{} is part of your main journal, and a projection is never saved over a plan of record. \
+         Save it under a new name instead.",
+        quoted(id)
+    ))
+}
+
 /// A [`SerializeError`] as an HTTP failure.
 ///
 /// `Invalid` is the CALLER's — a name with a comma in it, an account that would
@@ -2519,6 +2575,7 @@ fn wire_file(found: &DiscoveredProjection, sources: &[PathBuf]) -> WireProjectio
         is_projection: found.is_projection,
         size_bytes: found.size_bytes,
         writable: writable_path(sources, found.path().as_path()),
+        is_default: found.is_default,
     }
 }
 
@@ -2544,6 +2601,9 @@ fn open_file(
         label: found.label.clone(),
         revision: fingerprint.token(),
         writable,
+        // Gated as the listing is (plan 33 D5, D19): only a projection file's
+        // header is ever read as the default, so the two never disagree.
+        is_default: found.is_projection && is_default_marked(&text),
         scenario,
     })
 }
@@ -2587,7 +2647,17 @@ fn create_scenario(
         .resolve_new(id)
         .map_err(|refusal| create_refused(id, refusal))?;
     let name = path.as_path().to_string_lossy().to_string();
-    let text = new_file_with_styles(scenario, &name, declared, inherited)
+    // A new file is never the default (plan 33 D8), whatever it was saved
+    // from, so Save As cannot make a second one.
+    let scenario = if scenario.is_default {
+        std::borrow::Cow::Owned(Scenario {
+            is_default: false,
+            ..scenario.clone()
+        })
+    } else {
+        std::borrow::Cow::Borrowed(scenario)
+    };
+    let text = new_file_with_styles(&scenario, &name, declared, inherited)
         .map_err(|error| serialize_failed(id, &error))?;
 
     // A brand-new file, refusing to touch one that is already there:
@@ -2628,6 +2698,7 @@ fn create_scenario(
         id: id.to_string(),
         revision: Fingerprint::of_bytes(text.as_bytes()).token(),
         writable: true,
+        is_default: false,
         scenario: written,
         label,
     })
@@ -2686,11 +2757,7 @@ fn update_scenario(
     if !writable_path(sources, path) {
         // Decision 5. A `GET` of this same id works, deliberately — reading the
         // active budget file is what the ask asked for.
-        return Err(AppError::BadRequest(format!(
-            "{} is part of your main journal, and a projection is never saved over a plan of \
-             record. Save it under a new name instead.",
-            quoted(id)
-        )));
+        return Err(plan_of_record(id));
     }
     let name = path.to_string_lossy().to_string();
 
@@ -2704,7 +2771,14 @@ fn update_scenario(
 
     let doc = ProjectionDoc::parse_with_styles(&text, &name, declared, inherited)
         .map_err(|error| serialize_failed(id, &error))?;
-    let scenario = with_file_text(&doc, scenario);
+    let mut scenario = with_file_text(&doc, scenario);
+    // The default marker is the FILE's, not the client's (plan 33 D12): read
+    // from the bytes the revision was just checked against, so a save keeps a
+    // star set from anywhere — and one from an older client keeps it too.
+    let marked = is_default_marked(&text);
+    if scenario.is_default != marked {
+        scenario.to_mut().is_default = marked;
+    }
     // The engine's own second opinion: splice, re-parse the whole result as a
     // journal, and require the scenario to read back as the numbers asked for.
     let new_text =
@@ -2730,6 +2804,7 @@ fn update_scenario(
             label: found.label.clone(),
             revision: fingerprint.token(),
             writable: true,
+            is_default: found.is_projection && marked,
             scenario: unchanged,
         });
     }
@@ -2765,8 +2840,170 @@ fn update_scenario(
         label: found.label.clone(),
         revision: Fingerprint::of_bytes(new_text.as_bytes()).token(),
         writable: true,
+        is_default: found.is_projection && marked,
         scenario: written,
     })
+}
+
+// ---------------------------------------------------------------------------
+// The default scenario (plan 33)
+//
+// MERGE SEAM: a self-contained section (plus `set_default` at the end of the
+// file). Plan 34's routes do not depend on it.
+// ---------------------------------------------------------------------------
+
+/// D15's refusal for a file that is not one of Ledgeline's own scenario files
+/// (D5): the listing never reads another journal's header, and writing a
+/// Ledgeline marker into a budget file is out of character.
+fn not_a_scenario_file() -> AppError {
+    AppError::BadRequest(
+        "Only a scenario file Ledgeline saved (projection-….journal) can be the default. Use Save \
+         as to make one."
+            .to_string(),
+    )
+}
+
+/// One file's pre-flighted edit: what is on disk now, and what replaces it.
+struct MarkerEdit<'a> {
+    found: &'a DiscoveredProjection,
+    before: Fingerprint,
+    text: String,
+    on: bool,
+}
+
+/// Read `found` and compute its marker edit, writing nothing. `None` when the
+/// file already reads as asked.
+fn marker_edit(found: &DiscoveredProjection, on: bool) -> Result<Option<MarkerEdit<'_>>, AppError> {
+    let (text, before) = read_file(found.path(), &found.id)?;
+    Ok(set_default_marker(&text, on).map(|text| MarkerEdit {
+        found,
+        before,
+        text,
+        on,
+    }))
+}
+
+/// Why a marker write failed, worded for how far the change had got (D15).
+///
+/// Nothing written yet: the ordinary sentences, and "nothing was written" is
+/// true. Something written: the sentence names every file that lost its mark,
+/// because the user is now looking at a state they did not ask for.
+fn marker_write_failed(
+    written: &[WireChangedFile],
+    edit: &MarkerEdit<'_>,
+    error: VaultError,
+) -> AppError {
+    let id = &edit.found.id;
+    let changed = matches!(error, VaultError::Changed { .. });
+    if written.is_empty() {
+        return if changed {
+            AppError::Conflict(format!(
+                "{} changed on disk while the default was being set. Nothing was written; try \
+                 again.",
+                quoted(id)
+            ))
+        } else {
+            write_failed(id, &path_free(error))
+        };
+    }
+    let reason = if changed {
+        "it changed on disk".to_string()
+    } else {
+        path_free(error).kind().to_string()
+    };
+    let ids = written
+        .iter()
+        .map(|file| quoted(&file.id))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let message = if edit.on {
+        format!(
+            "Removed the default mark from {ids}, but could not mark {}: {reason}. No scenario is \
+             the default now; try again.",
+            quoted(id)
+        )
+    } else {
+        format!(
+            "Removed the default mark from {ids}, but could not remove it from {}: {reason}. Try \
+             again.",
+            quoted(id)
+        )
+    };
+    if changed {
+        AppError::Conflict(message)
+    } else {
+        AppError::Internal(message)
+    }
+}
+
+/// The whole of `PUT /api/projections/default`, synchronously, under the write
+/// lock (plan 33 D13): pre-flight everything, unmark the others, mark the
+/// target last.
+///
+/// A failure part-way leaves too FEW markers rather than too many — "no
+/// default" is today's behaviour, which is safe and visible, while two markers
+/// could open the wrong file on the next launch with no error in sight.
+fn set_default_in(
+    sources: &[PathBuf],
+    discovery: &Discovery,
+    id: Option<&str>,
+) -> Result<WireDefaultChange, AppError> {
+    // 1. Pre-flight, with nothing written.
+    let target = id
+        .map(|id| {
+            let found = discovery.resolve(id).ok_or_else(|| unresolved(id))?;
+            if !found.is_projection {
+                return Err(not_a_scenario_file());
+            }
+            if !writable_path(sources, found.path().as_path()) {
+                return Err(plan_of_record(id));
+            }
+            Ok(found)
+        })
+        .transpose()?;
+    // Every OTHER marked file, in id order. Only a projection file is ever
+    // read as marked, and one the main journal includes is never written
+    // (decision 5) — its marker stays, and the listing keeps saying so.
+    let mut others: Vec<&DiscoveredProjection> = discovery
+        .files
+        .iter()
+        .filter(|file| file.is_default && Some(file.id.as_str()) != id)
+        .filter(|file| writable_path(sources, file.path().as_path()))
+        .collect();
+    others.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut edits = Vec::with_capacity(others.len() + 1);
+    for file in others {
+        edits.extend(marker_edit(file, false)?);
+    }
+    if let Some(found) = target {
+        edits.extend(marker_edit(found, true)?);
+    }
+
+    // 2 and 3. Each write pinned to its own pre-flight read, so a file that
+    // moved since is refused (`Changed`) rather than overwritten.
+    let mut changed: Vec<WireChangedFile> = Vec::with_capacity(edits.len());
+    for edit in &edits {
+        let expected = Revision {
+            fingerprint: edit.before.clone(),
+            identity: edit.found.identity(),
+        };
+        edit.found
+            .path()
+            .vault()
+            .replace(
+                edit.found.path().vault_path(),
+                edit.text.as_bytes(),
+                &expected,
+            )
+            .map_err(|error| marker_write_failed(&changed, edit, error))?;
+        changed.push(WireChangedFile {
+            id: edit.found.id.clone(),
+            before: edit.before.token(),
+            after: Fingerprint::of_bytes(edit.text.as_bytes()).token(),
+            is_default: edit.on,
+        });
+    }
+    Ok(WireDefaultChange { changed })
 }
 
 // ---------------------------------------------------------------------------
@@ -2798,7 +3035,12 @@ pub(crate) async fn index(State(state): State<AppState>) -> Result<Response, App
                 .map(|found| wire_file(found, &sources))
                 .collect(),
             directories: discovery.directories(),
-            warnings: discovery.warnings.clone(),
+            warnings: discovery
+                .warnings
+                .iter()
+                .cloned()
+                .chain(default_conflict(&discovery))
+                .collect(),
         })
     })
     .await?;
@@ -2935,6 +3177,50 @@ pub(crate) async fn save(
                 &snapshot.journal.commodity_styles,
             )
         }
+    })
+    .await?;
+    Ok(no_store(body))
+}
+
+/// `PUT /api/projections/default` — mark one scenario file as the one the
+/// Projections tab opens, or (`{id: null}`) none (plan 33 D10).
+///
+/// The client sends no revision (D14): every write is pinned to the server's
+/// own read moments earlier, so an external edit is refused rather than
+/// overwritten, and the answer's `before`/`after` let a client holding one of
+/// these files move its revision forward without touching its unsaved edits.
+pub(crate) async fn set_default(
+    State(state): State<AppState>,
+    payload: Result<Json<SetDefaultRequest>, JsonRejection>,
+) -> Result<Response, AppError> {
+    let SetDefaultRequest { id } = json_body(payload)?;
+    if let Some(id) = &id {
+        validate_id(id)?;
+    }
+    if !state.editing_enabled() {
+        return Err(editing_disabled());
+    }
+    let snapshot = state.snapshot();
+    let Some(main) = main_journal_file(&snapshot) else {
+        // No journal, no files: nothing can be marked, and there is nothing
+        // to clear.
+        return match id {
+            Some(id) => Err(unresolved(&id)),
+            None => Ok(no_store(WireDefaultChange {
+                changed: Vec::new(),
+            })),
+        };
+    };
+    let sources = snapshot.journal.source_files.clone();
+    // `import_writes`, as a save: several files may be written, and a save of
+    // one of them must not interleave.
+    let _guard = state.import_writes().lock().await;
+    let Json(body) = compute(move || {
+        // WITH headers (`discover_in`), unlike a save: every marked file has
+        // to be found, and that costs the same 4 KiB per projection file the
+        // listing already reads.
+        let discovery = discover_in(Arc::clone(main.vault()), main.main());
+        set_default_in(&sources, &discovery, id.as_deref())
     })
     .await?;
     Ok(no_store(body))

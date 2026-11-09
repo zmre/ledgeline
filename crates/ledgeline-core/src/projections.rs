@@ -100,8 +100,8 @@ mod real_side;
 pub mod serialize;
 
 pub use discovery::{
-    CreateRefusal, DiscoveredProjection, Discovery, ProjectionPath, discover, discover_in,
-    is_journal_name, label_for, slug_filename,
+    CreateRefusal, DiscoveredProjection, Discovery, ProjectionPath, default_conflict, discover,
+    discover_in, is_journal_name, label_for, slug_filename,
 };
 pub use forecast::{
     CounterDefaults, DEFAULT_GAINS_ACCOUNT, DEFAULT_LOOKBACK, Forecast, ForecastDefaults,
@@ -595,6 +595,11 @@ pub struct Scenario {
     /// client from before plan 31, a seed or the FFI, whose save takes
     /// [`serialize::legacy_layout`].
     pub layout: Vec<LayoutItem>,
+    /// `; default-scenario: true` in the header: the Projections tab opens
+    /// this file first (plan 33 D4). Server-owned header metadata: a save
+    /// carries it from the file on disk and never from a client (D12), and a
+    /// new file never has it (D8).
+    pub is_default: bool,
 }
 
 /// One of a scenario's `=` rules, and which of its file's `=` blocks it is.
@@ -1710,6 +1715,7 @@ pub fn seed_scenario(
         lines,
         events: Vec::new(),
         cash: None,
+        is_default: false,
     })
 }
 
@@ -2040,6 +2046,7 @@ mod tests {
             layout: Vec::new(),
             auto_rules: Vec::new(),
             cash: None,
+            is_default: false,
             name: "test".to_string(),
             created: None,
             updated: None,

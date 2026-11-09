@@ -18,7 +18,7 @@ import {styleOf} from "#lib/format/amounts.js";
 import {formatTotals} from "#lib/journal/rowModel.js";
 import {activeScenario, blankLine, cloneScenario, emptyScenario, renderBody, runBody, withQuantity} from "#lib/projections/scenarioModel.js";
 import {dec} from "#lib/domain/money.js";
-import {LedgelineApi} from "./native";
+import {LedgelineApi, ValidationError} from "./native";
 import {
     decodeAccountReport,
     decodeCashFlowStatement,
@@ -30,6 +30,7 @@ import {
     decodeJournalInfo,
     decodePeriodReport,
     decodeProjection,
+    decodeProjectionIndex,
     decodeRenderedEntry,
     decodeScenarioFile,
     decodeSectionedReport,
@@ -446,6 +447,20 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         };
         const text = decodeRenderedEntry(await api.renderProjectionEntry(renderBody(heading, "comment-1"))).text;
         expect(text).toBe(`${";".repeat(22)}\n;; Capital\n`);
+    });
+
+    // Plan 33: the listing carries the marker, and the default route refuses
+    // what it must BEFORE writing anything. This engine serves the committed
+    // fixtures, so nothing here may succeed at a write.
+    it("the listing knows the default marker, and the default route refuses a bad target unwritten", async () => {
+        const api = new LedgelineApi(url);
+        const index = decodeProjectionIndex(await api.listProjections());
+        expect(index.defaultSupported).toBe(true);
+        await expect(api.setProjectionDefault("../x.journal")).rejects.toBeInstanceOf(ValidationError);
+        // Not a projection file: refused in pre-flight, so sample.journal is
+        // never opened for writing.
+        await expect(api.setProjectionDefault("sample.journal")).rejects.toThrow(/Only a scenario file Ledgeline saved/);
+        await expect(api.setProjectionDefault("sample.journal")).rejects.toBeInstanceOf(ValidationError);
     });
 
     it("journal info falls back to the fixture folder's name", async () => {

@@ -119,6 +119,7 @@ import type {
     LayoutItem,
     RenderedEntry,
     ScenarioComment,
+    DefaultChange,
     ForecastDefaults,
     ForecastEntry,
     ForecastJournal,
@@ -601,6 +602,7 @@ interface RawProjectionFile {
     isProjection?: boolean;
     sizeBytes?: number;
     writable?: boolean;
+    isDefault?: boolean;
 }
 
 interface RawProjectionIndex {
@@ -617,7 +619,12 @@ interface RawScenarioFile {
     label?: string;
     revision?: string;
     writable?: boolean;
+    isDefault?: boolean;
     scenario?: RawScenario;
+}
+
+interface RawDefaultChange {
+    changed?: {id?: string; before?: string; after?: string; isDefault?: boolean}[];
 }
 
 interface RawBalanceSeries {
@@ -2846,17 +2853,23 @@ export function decodeProjectionIndex(raw: unknown): ProjectionIndex {
     if (typeof index !== "object" || index === null || !Array.isArray(index.files)) {
         throw new ApiShapeError("projection index: expected a files array");
     }
+    // Feature detection (plan 33 D19): an engine that knows the marker sends
+    // `isDefault` on every file, so one file without it is an older engine.
+    // Once any file has it, every file must — a half-present key is a broken
+    // contract, not an old engine.
+    const defaultSupported = index.files.some((file) => typeof file === "object" && file !== null && file.isDefault !== undefined);
     return Object.freeze({
         rootLabel: str(index.rootLabel, "projection index rootLabel"),
         editable: flag(index.editable, "projection index editable"),
         truncated: flag(index.truncated, "projection index truncated"),
-        files: frozen(index.files.map((file, i) => decodeProjectionFile(file, `projection file #${i}`))),
+        files: frozen(index.files.map((file, i) => decodeProjectionFile(file, `projection file #${i}`, defaultSupported))),
         directories: frozen(decodeStrings(index.directories, "projection index directories")),
         warnings: frozen(decodeStrings(index.warnings, "projection index warnings")),
+        defaultSupported,
     });
 }
 
-function decodeProjectionFile(raw: RawProjectionFile | undefined, context: string): ProjectionFile {
+function decodeProjectionFile(raw: RawProjectionFile | undefined, context: string, defaultSupported: boolean): ProjectionFile {
     if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing file`);
     return Object.freeze({
         id: str(raw.id, `${context} id`),
@@ -2867,6 +2880,7 @@ function decodeProjectionFile(raw: RawProjectionFile | undefined, context: strin
         isProjection: flag(raw.isProjection, `${context} isProjection`),
         sizeBytes: decodeCount(raw.sizeBytes, `${context} sizeBytes`),
         writable: flag(raw.writable, `${context} writable`),
+        isDefault: defaultSupported ? flag(raw.isDefault, `${context} isDefault`) : false,
     });
 }
 
@@ -2886,7 +2900,38 @@ export function decodeScenarioFile(raw: unknown): ScenarioFile {
         label: str(file.label, "scenario file label"),
         revision: str(file.revision, "scenario file revision"),
         writable: flag(file.writable, "scenario file writable"),
+        // Absent from an engine that predates the marker (plan 33), which has
+        // no default to report.
+        isDefault: file.isDefault === undefined ? false : flag(file.isDefault, "scenario file isDefault"),
         scenario: decodeScenario(file.scenario),
+    });
+}
+
+/**
+ * `PUT /api/projections/default` — every file the star rewrote (plan 33 D16).
+ *
+ * `before` is required: it is what lets a client holding that file's revision
+ * move it forward without touching its unsaved edits (D17), and a defaulted
+ * `""` would never match and so silently turn every star into "changed on disk".
+ */
+export function decodeDefaultChange(raw: unknown): DefaultChange {
+    const body = raw as RawDefaultChange;
+    if (typeof body !== "object" || body === null || !Array.isArray(body.changed)) {
+        throw new ApiShapeError("default change: expected a changed array");
+    }
+    return Object.freeze({
+        changed: frozen(
+            body.changed.map((file, i) => {
+                const context = `default change #${i}`;
+                if (typeof file !== "object" || file === null) throw new ApiShapeError(`${context}: expected an object`);
+                return Object.freeze({
+                    id: str(file.id, `${context} id`),
+                    before: str(file.before, `${context} before`),
+                    after: str(file.after, `${context} after`),
+                    isDefault: flag(file.isDefault, `${context} isDefault`),
+                });
+            })
+        ),
     });
 }
 
