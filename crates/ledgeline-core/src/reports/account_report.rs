@@ -194,6 +194,26 @@ pub(crate) fn account_report_from(
         .into_iter()
         .map(|span| span.key)
         .collect();
+    account_report_restarting(direct, opening, None, buckets, opts)
+}
+
+/// [`account_report_from`] over explicit bucket keys, where a balance may
+/// START AGAIN: with `restart = Some((at, opening))`, the balance sections'
+/// columns from `at` on are read from `opening` instead of carrying on from
+/// the columns before. A projection backtest (plan 34) sets an actual block
+/// and an as-projected block side by side this way, each opening from its own
+/// real balances. Change sections, and every row's `summary`, are per-column
+/// sums either way.
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow.
+pub(crate) fn account_report_restarting(
+    direct: Vec<BTreeMap<String, MixedAmount>>,
+    opening: impl FnOnce() -> Result<BTreeMap<String, MixedAmount>, ReportError>,
+    restart: Option<(usize, BTreeMap<String, MixedAmount>)>,
+    buckets: Vec<String>,
+    opts: &AccountReportOpts<'_>,
+) -> Result<AccountReport, ReportError> {
     let section_of = |account: &str| AccountSection::of(account, opts.types);
     let only = |section: AccountSection,
                 map: &BTreeMap<String, MixedAmount>|
@@ -236,7 +256,17 @@ pub(crate) fn account_report_from(
                     );
                 }
                 let start = only(section, opened.as_ref().expect("opened above"));
-                pivot(&cumulative(start, changes)?, opts.depth)?
+                let balances = match &restart {
+                    None => cumulative(start, changes)?,
+                    Some((at, second)) => {
+                        let mut first = changes;
+                        let rest = first.split_off((*at).min(first.len()));
+                        let mut balances = cumulative(start, first)?;
+                        balances.extend(cumulative(only(section, second), rest)?);
+                        balances
+                    }
+                };
+                pivot(&balances, opts.depth)?
             }
         };
         let rows: Vec<AccountReportRow> = shown(rows, known.as_deref(), opts.depth, buckets.len())

@@ -1042,6 +1042,39 @@ pub(crate) fn income_statement_columns_from(
     groups: &BTreeMap<String, String>,
 ) -> Result<IncomeStatementReport<Columns>, ReportError> {
     let buckets = range_buckets(opts.from, opts.to, Some(interval))?;
+    let tables = vec![prices; buckets.len()];
+    income_statement_windows(direct, buckets, &tables, opts, declared, sections, groups)
+}
+
+/// [`income_statement_columns_from`] over explicit columns, each valued
+/// through ITS OWN price table: `direct[i]` is [`window_direct`] over
+/// `buckets[i]`, valued at its end through `prices[i]`. A projection backtest
+/// (plan 34) sets an actual block and an as-projected block side by side this
+/// way, so the sections, `multi_step` and the subtotal ladder are resolved
+/// over both blocks at once. Every bucket key is kept as given. The target is
+/// `opts.value_in`, else the first table's base.
+///
+/// # Errors
+/// [`ReportError::InvalidBucketKey`] when `prices` and `buckets` differ in
+/// length; [`ReportError`] on decimal overflow.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn income_statement_windows(
+    direct: Vec<Totals>,
+    buckets: Vec<BucketSpan>,
+    prices: &[&PriceDb],
+    opts: &IsOpts,
+    declared: &BTreeMap<String, AccountType>,
+    sections: &BTreeMap<String, IsSectionKind>,
+    groups: &BTreeMap<String, String>,
+) -> Result<IncomeStatementReport<Columns>, ReportError> {
+    if prices.len() != buckets.len() || direct.len() != buckets.len() {
+        return Err(ReportError::InvalidBucketKey(format!(
+            "{} columns, {} direct totals and {} price tables",
+            buckets.len(),
+            direct.len(),
+            prices.len()
+        )));
+    }
     let windows: Vec<DateRange> = buckets.iter().map(DateRange::from).collect();
     Ok(IncomeStatementReport {
         buckets,
@@ -1075,9 +1108,10 @@ fn statement<A>(
         .iter()
         .map(|window| window_direct(txns, window, opts.value == Valuation::Cost))
         .collect::<Result<Vec<_>, ReportError>>()?;
+    let db = PriceDb::build(explicit_prices);
     statement_from(
         direct,
-        &PriceDb::build(explicit_prices),
+        &vec![&db; windows.len()],
         opts,
         windows,
         declared,
@@ -1088,11 +1122,12 @@ fn statement<A>(
 }
 
 /// [`statement`] from each window's direct totals: `direct[i]` is
-/// [`window_direct`] over `windows[i]`.
+/// [`window_direct`] over `windows[i]`, valued through `prices[i]` (one table
+/// per window, the same one repeated outside a backtest).
 #[allow(clippy::too_many_arguments)]
 fn statement_from<A>(
     direct: Vec<Totals>,
-    prices: &PriceDb,
+    prices: &[&PriceDb],
     opts: &IsOpts,
     windows: &[DateRange],
     declared: &BTreeMap<String, AccountType>,
@@ -1107,14 +1142,15 @@ fn statement_from<A>(
     let target: Option<Commodity> = opts
         .value_in
         .clone()
-        .or_else(|| prices.base_commodity().cloned());
+        .or_else(|| prices.first().and_then(|db| db.base_commodity().cloned()));
 
     let mut meta = ValuationMeta::default();
     let windows = Windows {
         totals: direct
             .into_iter()
             .zip(windows)
-            .map(|(direct, window)| {
+            .zip(prices)
+            .map(|((direct, window), prices)| {
                 window_totals(
                     direct,
                     window,

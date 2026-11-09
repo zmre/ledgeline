@@ -7,6 +7,10 @@
 //! endpoint's code before plan 29). The candidate is `RealSide::build` once,
 //! then `project_cached`, `projected_statements` and `projected_accounts`.
 //!
+//! Plan 34 adds the comparison: `compared_statements` and `compared_accounts`
+//! (the actual block from the main side's seeds beside a backtest side's
+//! projection) against `reference_compared_*` (both blocks by the full scan).
+//!
 //! "Identical" is compared through `Debug`, which prints every `Dec`'s
 //! mantissa AND scale: `Dec`'s `==` is by value, so `$1.5` and `$1.50` would
 //! pass an `assert_eq!` on the values and still differ on the wire.
@@ -18,9 +22,10 @@ use ledgeline_core::model::Commodity;
 use ledgeline_core::parse_journal;
 use ledgeline_core::projections::serialize::scenario_from_text;
 use ledgeline_core::projections::{
-    AccountsOpts, JournalFacts, ProjectionOpts, RealSide, Scenario, StatementOpts, project,
-    project_cached, projected_accounts, projected_statements, reference_accounts,
-    reference_statements,
+    AccountsOpts, JournalFacts, ProjectionOpts, RealSide, Scenario, StatementOpts,
+    compared_accounts, compared_statements, project, project_backtest, project_cached,
+    projected_accounts, projected_statements, reference_accounts, reference_compared_accounts,
+    reference_compared_statements, reference_statements,
 };
 use ledgeline_core::reports::{Interval, Valuation};
 use proptest::prelude::*;
@@ -66,7 +71,7 @@ const INTERVALS: [Interval; 5] = [
     Interval::Quarterly,
     Interval::Yearly,
 ];
-const LOOKBACKS: [usize; 3] = [0, 2, 7];
+const LOOKBACKS: [usize; 4] = [0, 1, 2, 7];
 const DEPTHS: [usize; 3] = [1, 2, usize::MAX];
 const VALUATIONS: [Valuation; 3] = [Valuation::Market, Valuation::Cost, Valuation::None];
 
@@ -88,7 +93,17 @@ impl Run<'_> {
     /// Every reading, cached vs reference, at every depth and basis.
     fn assert_identical(&self) {
         let label = &self.label;
+        // Plan 34: the backtest side, built once per run as the server does.
+        let backtest = self
+            .real
+            .key()
+            .backtest()
+            .expect("backtest key")
+            .map(|key| RealSide::build(self.journal, self.facts, &key).expect("backtest side"));
         for depth in DEPTHS {
+            if let Some(backtest) = &backtest {
+                self.assert_compared_identical(backtest, depth);
+            }
             let reference = project(
                 self.scenario,
                 &self.journal.transactions,
@@ -138,6 +153,48 @@ impl Run<'_> {
                     .unwrap_or_else(|e| panic!("{label}: cached accounts: {e}"));
                 assert_eq!(exact(&got), exact(&want), "{label} {opts:?}: accounts");
             }
+        }
+    }
+}
+
+impl Run<'_> {
+    /// The comparison at `depth`, cached vs reference, at every basis.
+    fn assert_compared_identical(&self, backtest: &RealSide, depth: usize) {
+        let label = &self.label;
+        let projection = project_backtest(self.scenario, self.real, backtest, depth)
+            .unwrap_or_else(|e| panic!("{label}: backtest: {e}"));
+        let forecast = &projection.forecast;
+        let bs_depth = (depth != usize::MAX).then_some(depth);
+        for valuation in VALUATIONS {
+            let opts = StatementOpts {
+                valuation,
+                bs_depth,
+                is_depth: bs_depth,
+                cf_depth: depth,
+            };
+            let want = reference_compared_statements(
+                self.journal,
+                self.facts,
+                self.real.key(),
+                forecast,
+                &opts,
+            )
+            .unwrap_or_else(|e| panic!("{label}: reference compared: {e}"));
+            let got = compared_statements(self.real, backtest, self.facts, forecast, &opts)
+                .unwrap_or_else(|e| panic!("{label}: compared: {e}"));
+            assert_eq!(exact(&got), exact(&want), "{label} {opts:?}: compared");
+        }
+        for empty in [false, true] {
+            let opts = AccountsOpts { depth, empty };
+            let want = reference_compared_accounts(self.journal, self.real.key(), forecast, &opts)
+                .unwrap_or_else(|e| panic!("{label}: reference compared accounts: {e}"));
+            let got = compared_accounts(self.real, backtest, self.facts, forecast, &opts)
+                .unwrap_or_else(|e| panic!("{label}: compared accounts: {e}"));
+            assert_eq!(
+                exact(&got),
+                exact(&want),
+                "{label} {opts:?}: compared accounts"
+            );
         }
     }
 }

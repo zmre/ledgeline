@@ -27,6 +27,10 @@ use ledgeline_core::projections::serialize::{
     set_default_marker, write_scenario,
 };
 use ledgeline_core::projections::{
+    AccountsOpts, JournalFacts, RealSide, StatementOpts, compared_accounts, compared_statements,
+    project_backtest,
+};
+use ledgeline_core::projections::{
     CommentStyle, CreateRefusal, Discovery, Growth, GrowthUnit, ItemKind, LineRole, LineSource,
     Scenario, ScenarioAutoRule, ScenarioEvent, ScenarioLine, default_conflict, discover,
     slug_filename, virtual_posting,
@@ -37,6 +41,8 @@ use ledgeline_core::projections::{
     merged_prices, merged_transactions, upgrade_legacy_counters,
 };
 use ledgeline_core::reports::account_types::AccountType;
+use ledgeline_core::reports::balance_sheet::BalanceSheetReport;
+use ledgeline_core::reports::income_statement::{Columns, IncomeStatementReport};
 use ledgeline_core::reports::{
     AccountPeriodsOpts, AccountReportOpts, AccountSection, AccountTypes, BalanceMode, BsOpts,
     BsSectionKind, BucketSpan, CfOpts, CfTags, IS_GROUP_TAG, Interval, IsOpts, MixedAmount,
@@ -1456,6 +1462,11 @@ struct Parity {
     txns: Vec<Transaction>,
     prices: Vec<PriceDirective>,
     cadence: Cadence,
+    /// Which "Show empty accounts" settings the Accounts claims run.
+    empties: Vec<bool>,
+    /// Claims a backtest window has nothing to compare in ("is": the income
+    /// statement; "periods": the per-depth `balance` tables).
+    vacuous: Vec<&'static str>,
 }
 
 fn parity_dir() -> PathBuf {
@@ -1473,6 +1484,41 @@ impl Parity {
     /// [`Parity::new`] over `main` written to the scratch tree instead of the
     /// fixture's `main.journal`.
     fn over(main: Option<&str>, file: &'static str, cadence: Cadence) -> Self {
+        Self::build(main, file, cadence, false)
+    }
+
+    /// Plan 34: the BACKTEST of `file` at `cadence` — the projection made on
+    /// the first actual day `F`, over the `cadence.lookback` actual periods —
+    /// against `main.journal` with every `P` dated on or after `F` removed (D8:
+    /// hledger cannot leave a price out by date, so "the journal as it stood
+    /// on F" is that copy). Saved at today's cutoff exactly as
+    /// [`Parity::over`] saves, so every counter is explicit.
+    fn backtest(file: &'static str, cadence: Cadence) -> Self {
+        let main = std::fs::read_to_string(parity_dir().join("main.journal")).expect("main reads");
+        let first = backtest_from(cadence);
+        let truncated: String = main
+            .lines()
+            .filter(|line| {
+                !line
+                    .strip_prefix("P ")
+                    .is_some_and(|rest| rest.get(..10).is_some_and(|date| date >= first.as_str()))
+            })
+            .map(|line| format!("{line}\n"))
+            .collect();
+        assert_ne!(
+            truncated, main,
+            "main.journal holds a P on or after {first}"
+        );
+        Self::build(Some(&truncated), file, cadence, true)
+    }
+
+    /// [`Parity::backtest`] over the untouched `main.journal`, P directives
+    /// inside the window included.
+    fn backtest_untouched(file: &'static str, cadence: Cadence) -> Self {
+        Self::build(None, file, cadence, true)
+    }
+
+    fn build(main: Option<&str>, file: &'static str, cadence: Cadence, backtest: bool) -> Self {
         let scratch = Scratch::new("parity");
         let main_path = main.map_or_else(
             || parity_dir().join("main.journal"),
@@ -1510,12 +1556,25 @@ impl Parity {
         let text = write_scenario(&doc, &upgraded, &scenario).expect("it writes");
         std::fs::write(&path, &text).expect("write");
 
-        // The RUN, over what the next load of that file reads.
+        // The RUN, over what the next load of that file reads. A backtest is
+        // the run made on F: no lookback, the N actual periods forecast.
         let reread = scenario_from_text(&text, &scenario, "parity", &declared).expect("re-reads");
+        let (today, cadence) = if backtest {
+            (
+                backtest_from(cadence),
+                Cadence {
+                    count: cadence.lookback,
+                    lookback: 0,
+                    ..cadence
+                },
+            )
+        } else {
+            (PARITY_TODAY.to_string(), cadence)
+        };
         let forecast = forecast_transactions(
             &reread,
             &ForecastOpts {
-                today: PARITY_TODAY,
+                today: &today,
                 interval: cadence.interval,
                 count: cadence.count,
                 lookback: cadence.lookback,
@@ -1539,6 +1598,8 @@ impl Parity {
             txns,
             prices,
             cadence,
+            empties: vec![false, true],
+            vacuous: Vec::new(),
         }
     }
 
@@ -1630,7 +1691,11 @@ impl Parity {
         if value {
             args.push("--value=end,$".to_string());
         }
-        let csv = self.run(&args);
+        self.table_from_csv(&self.run(&args))
+    }
+
+    /// hledger's `-O csv --layout=bare` output as a [`Table`].
+    fn table_from_csv(&self, csv: &str) -> Table {
         let columns = self.spans().len();
         let mut table = Table::new();
         // `--tree` writes each name relative to its parent, two spaces of
@@ -1690,6 +1755,12 @@ impl Parity {
             &bs_terms(&self.journal),
         )
         .expect("balance sheet columns");
+        self.bs_tables(&sheets)
+    }
+
+    /// Balance sheet rows as (assets + liabilities, equity) tables, one
+    /// column per sheet.
+    fn bs_tables(&self, sheets: &[BalanceSheetReport]) -> (Table, Table) {
         let (mut sheet, mut equity) = (Table::new(), Table::new());
         for (column, report) in sheets.iter().enumerate() {
             assert!(report.balanced, "{}: column {column} unbalanced", self.file);
@@ -1700,7 +1771,7 @@ impl Parity {
                     &mut sheet
                 };
                 for row in section.groups.iter().flat_map(|group| &group.rows) {
-                    put(table, &row.account, &row.own, column, ends.len());
+                    put(table, &row.account, &row.own, column, sheets.len());
                 }
             }
         }
@@ -1726,19 +1797,7 @@ impl Parity {
             &declared_groups(&self.journal, IS_GROUP_TAG),
         )
         .expect("income statement");
-        let columns = report.buckets.len();
-        let mut table = Table::new();
-        for row in report
-            .sections
-            .iter()
-            .flat_map(|section| &section.groups)
-            .flat_map(|group| &group.rows)
-        {
-            for (column, figure) in row.amounts.values.iter().enumerate() {
-                put(&mut table, &row.account, figure, column, columns);
-            }
-        }
-        table
+        is_table(&report, 0)
     }
 
     /// Ledgeline's cash flow statement, reduced to what hledger's `cf` is:
@@ -1927,7 +1986,9 @@ impl Parity {
             .filter(|((account, _), _)| account.starts_with("equity"))
             .collect();
         self.assert_agree("bse equity", &hledger_equity, &equity, &none);
-        self.assert_agree("is", &self.hledger_is_rows(), &self.ledgeline_is(), &none);
+        if !self.vacuous.contains(&"is") {
+            self.assert_agree("is", &self.hledger_is_rows(), &self.ledgeline_is(), &none);
+        }
         self.assert_agree(
             "cf",
             &self.hledger_table("cf", false),
@@ -1935,6 +1996,39 @@ impl Parity {
             &none,
         );
     }
+}
+
+/// An income statement's rows from column `skip` on, one figure per column.
+fn is_table(report: &IncomeStatementReport<Columns>, skip: usize) -> Table {
+    let columns = report.buckets.len() - skip;
+    let mut table = Table::new();
+    for row in report
+        .sections
+        .iter()
+        .flat_map(|section| &section.groups)
+        .flat_map(|group| &group.rows)
+    {
+        for (column, figure) in row.amounts.values.iter().skip(skip).enumerate() {
+            put(&mut table, &row.account, figure, column, columns);
+        }
+    }
+    table
+}
+
+/// `F` for a backtest at `cadence`: the first lookback day of the forward
+/// run at [`PARITY_TODAY`] (plan 34 D1).
+fn backtest_from(cadence: Cadence) -> String {
+    let main = std::fs::read_to_string(parity_dir().join("main.journal")).expect("main reads");
+    let journal = parse_journal(&main, "main.journal").expect("main parses");
+    let cutoff = forecast_cutoff(
+        PARITY_TODAY,
+        latest_real_date(&journal.transactions),
+        cadence.interval,
+    )
+    .expect("cutoff");
+    ForecastWindow::from_cutoff(cutoff, cadence.interval, cadence.lookback, 0)
+        .expect("window")
+        .from
 }
 
 /// Whole cents, the precision both tools display every fixture commodity at
@@ -2089,7 +2183,29 @@ fn parity_with_growth_differs_only_by_the_accepted_deviations() {
         eprintln!("skipped: set {OPT_IN}=1 (see `just hledger-checks`)");
         return;
     }
-    let run = Parity::new("growth.journal", MONTHLY);
+    assert_growth_deviations(&Parity::new("growth.journal", MONTHLY));
+}
+
+/// Plan 34: the same two deviations, and nothing else, over the backtest
+/// window (growth anchored at `F`, prices grown from the last `P` before it).
+#[test]
+fn backtest_parity_with_growth_differs_only_by_the_accepted_deviations() {
+    if hledger(&["--version"]).is_none() {
+        eprintln!("skipped: set {OPT_IN}=1 (see `just hledger-checks`)");
+        return;
+    }
+    // Monthly only, as the forward claim: its figures are per month.
+    let run = Parity::backtest("growth.journal", MONTHLY);
+    assert_growth_deviations(&run);
+    // Not vacuous over two columns: August is the base, September has grown.
+    let rent = &run.ledgeline_is()[&("expenses:rent".to_string(), "$".to_string())];
+    assert_eq!(cents(rent[0]), 200_000);
+    assert_eq!(cents(rent[1]), 204_000);
+}
+
+/// [`parity_with_growth_differs_only_by_the_accepted_deviations`]'s claims
+/// over `run`'s window.
+fn assert_growth_deviations(run: &Parity) {
     // Decision 4: the gains account the main journal lacks is declared in the
     // scenario, so `check --strict` passes over both files.
     assert!(
@@ -2447,7 +2563,7 @@ impl Parity {
     /// AND in which rows are listed.
     fn assert_accounts_parity(&self) {
         for mode in [BalanceMode::Change, BalanceMode::Historical] {
-            for empty in [false, true] {
+            for empty in self.empties.clone() {
                 for depth in DEPTHS {
                     let (theirs, ours) = self.assert_accounts_agree(mode, empty, depth, &|_| false);
                     assert_eq!(
@@ -2469,7 +2585,7 @@ impl Parity {
     fn assert_account_report_parity(&self) {
         let types = AccountTypes::from_declared(self.declared.clone());
         let columns = self.spans().len();
-        for empty in [false, true] {
+        for empty in self.empties.clone() {
             for depth in DEPTHS {
                 let known = empty.then(|| known_accounts(&self.journal, &self.forecast));
                 let report = account_report(
@@ -3471,4 +3587,341 @@ fn hledger_reads_ledgeline_s_tags_and_a_user_s_own_side_by_side() {
         accounts("tag:employer=acme"),
         ["assets:checking", "expenses:food", "expenses:rent"]
     );
+}
+
+// ===========================================================================
+// Plan 34: hledger parity for the backtest window
+// ===========================================================================
+//
+// The projected block of a comparison is the projection made on `F`, the
+// first actual day, over the N actual periods. Its documented command is the
+// forward one with `F` as the cutoff and `C` as the end (D8):
+//
+//   hledger -f <main> -f <scenario> <cmd> --forecast=<F>..<C> --auto \
+//     -b <F> -e <C> -<interval> expr:"NOT (date:<F>.. AND NOT tag:generated)"
+//
+// Valued readings agree over `main` with every `P` dated on or after `F`
+// removed ([`Parity::backtest`]); unvalued ones agree over either.
+
+impl Parity {
+    /// [`compared_statements`] and [`compared_accounts`] — what the run
+    /// endpoint serves — over the backtest `self` describes: the projected
+    /// block equals the full-scan tables the hledger claims were checked
+    /// against, and the expansion is the same one. `forward` is the cadence
+    /// the backtest was made from.
+    fn assert_compared_is_the_window(&self, forward: Cadence) {
+        let facts = JournalFacts::new(&self.journal).expect("facts");
+        let key = facts
+            .key(PARITY_TODAY, forward.interval, forward.lookback, None)
+            .expect("key");
+        let main = RealSide::build(&self.journal, &facts, &key).expect("main side");
+        let backtest_key = key.backtest().expect("key").expect("a backtest");
+        assert_eq!(backtest_key.cutoff, self.window().cutoff, "{}", self.file);
+        let backtest = RealSide::build(&self.journal, &facts, &backtest_key).expect("side");
+        let projection =
+            project_backtest(&self.reread(), &main, &backtest, 99).expect("project_backtest");
+        assert_eq!(
+            format!("{:#?}", projection.forecast.txns),
+            format!("{:#?}", self.forecast.txns),
+            "{} ({forward:?}): the backtest expands differently",
+            self.file
+        );
+        let compared = compared_statements(
+            &main,
+            &backtest,
+            &facts,
+            &projection.forecast,
+            &StatementOpts {
+                valuation: Valuation::Market,
+                bs_depth: None,
+                is_depth: None,
+                cf_depth: 99,
+            },
+        )
+        .expect("compared statements");
+        let n = compared.actual.len();
+        assert_eq!(n, forward.lookback);
+        assert_eq!(
+            self.bs_tables(&compared.balance_sheet[n..]),
+            self.ledgeline_bs(),
+            "{} ({forward:?}): the projected balance sheet",
+            self.file
+        );
+        assert_eq!(
+            is_table(&compared.income_statement, n),
+            self.ledgeline_is(),
+            "{} ({forward:?}): the projected income statement",
+            self.file
+        );
+        let accounts = compared_accounts(
+            &main,
+            &backtest,
+            &facts,
+            &projection.forecast,
+            &AccountsOpts {
+                depth: 99,
+                empty: false,
+            },
+        )
+        .expect("compared accounts");
+        let alone = account_report(
+            &self.txns,
+            &AccountReportOpts {
+                from: &self.window().from,
+                to: &self.window().end,
+                interval: Some(self.cadence.interval),
+                depth: 99,
+                known: None,
+                types: &AccountTypes::from_declared(self.declared.clone()),
+            },
+        )
+        .expect("account report");
+        for section in &alone.sections {
+            for row in &section.rows {
+                let joined = accounts
+                    .sections
+                    .iter()
+                    .flat_map(|section| &section.rows)
+                    .find(|other| other.account == row.account)
+                    .unwrap_or_else(|| panic!("{}: no {} row", self.file, row.account));
+                assert_eq!(
+                    joined.values[n..],
+                    row.values[..],
+                    "{} ({forward:?}): {} in the projected Accounts block",
+                    self.file,
+                    row.account
+                );
+            }
+        }
+    }
+}
+
+/// Every parity claim over the backtest window, for each fixture × cadence.
+fn backtest_parity(files: &[&'static str], cadences: &[Cadence]) {
+    backtest_parity_with(files, cadences, |_| {});
+}
+
+/// [`backtest_parity`], with `adjust` narrowing the claims for a fixture
+/// whose window has nothing to compare in one of them.
+fn backtest_parity_with(files: &[&'static str], cadences: &[Cadence], adjust: fn(&mut Parity)) {
+    if hledger(&["--version"]).is_none() {
+        eprintln!("skipped: set {OPT_IN}=1 (see `just hledger-checks`)");
+        return;
+    }
+    for file in files {
+        for cadence in cadences {
+            let mut run = Parity::backtest(file, *cadence);
+            adjust(&mut run);
+            run.assert_parity();
+            run.assert_journal_parity();
+            if !run.vacuous.contains(&"periods") {
+                run.assert_accounts_parity();
+            }
+            run.assert_account_report_parity();
+            run.assert_compared_is_the_window(*cadence);
+        }
+    }
+}
+
+#[test]
+fn backtest_parity_flows_with_explicit_counters() {
+    backtest_parity(&["flows.journal"], &[MONTHLY, QUARTERLY]);
+}
+
+#[test]
+fn backtest_parity_accrual_settlement_and_equity_raise() {
+    backtest_parity(&["events.journal"], &[MONTHLY, QUARTERLY]);
+}
+
+#[test]
+fn backtest_parity_legacy_rules_once_upgraded_on_save() {
+    backtest_parity(&["legacy.journal"], &[MONTHLY, QUARTERLY]);
+}
+
+/// The savings plan books no revenue or expense and only moves money between
+/// two asset accounts, and a backtest window has no actual columns: there is
+/// no income statement to compare, and every `balance` table rolled up to
+/// `assets` is zero. The sectioned Accounts claim still compares every row.
+#[test]
+fn backtest_parity_asset_row_without_growth() {
+    backtest_parity_with(&["assets.journal"], &[MONTHLY], |run| {
+        run.vacuous = vec!["is", "periods"];
+    });
+}
+
+#[test]
+fn backtest_parity_step_change_with_from_and_to_bounds() {
+    backtest_parity(&["step.journal"], &[MONTHLY, QUARTERLY]);
+}
+
+#[test]
+fn backtest_parity_multi_commodity_lines() {
+    backtest_parity(&["commodities.journal"], &[MONTHLY]);
+}
+
+/// Without "Show empty accounts": the scenario file DECLARES `revenue:sales`,
+/// and hledger's `-E --declared` lists a scenario-declared account that
+/// nothing in the window posts to, while Ledgeline's known accounts are the
+/// main journal's plus the generated ones. The forward run never shows this
+/// because the November sale posts to it. Recorded in plan 34's amendments.
+#[test]
+fn backtest_parity_auto_posting_rules() {
+    backtest_parity_with(&["auto.journal"], &[MONTHLY, QUARTERLY], |run| {
+        run.empties = vec![false];
+    });
+}
+
+#[test]
+fn backtest_parity_every_period_form() {
+    backtest_parity(&["periods.journal"], &[MONTHLY, QUARTERLY]);
+}
+
+/// The ACTUAL block is the Reports tab's command over the same range:
+/// `hledger -f main bs|is -b F -e C -M --value=end,$`.
+#[test]
+fn backtest_parity_actual_block_is_the_reports_command() {
+    if hledger(&["--version"]).is_none() {
+        eprintln!("skipped: set {OPT_IN}=1 (see `just hledger-checks`)");
+        return;
+    }
+    for cadence in [MONTHLY, QUARTERLY] {
+        let run = Parity::backtest_untouched("flows.journal", cadence);
+        let facts = JournalFacts::new(&run.journal).expect("facts");
+        let key = facts
+            .key(PARITY_TODAY, cadence.interval, cadence.lookback, None)
+            .expect("key");
+        let main = RealSide::build(&run.journal, &facts, &key).expect("main");
+        let backtest =
+            RealSide::build(&run.journal, &facts, &key.backtest().unwrap().unwrap()).unwrap();
+        let projection = project_backtest(&run.reread(), &main, &backtest, 99).unwrap();
+        let compared = compared_statements(
+            &main,
+            &backtest,
+            &facts,
+            &projection.forecast,
+            &StatementOpts {
+                valuation: Valuation::Market,
+                bs_depth: None,
+                is_depth: None,
+                cf_depth: 99,
+            },
+        )
+        .unwrap();
+        let n = compared.actual.len();
+        // The window ends the day before C, the forward run's cutoff.
+        assert_eq!(add_days(&run.window().end, 1), key.cutoff);
+        let reports = |command: &str, extra: &[&str]| {
+            let mut args: Vec<String> = [
+                "-f",
+                &run.main,
+                command,
+                "-b",
+                &run.window().from,
+                "-e",
+                &key.cutoff,
+                cadence.flag,
+                "-O",
+                "csv",
+                "--layout=bare",
+                "--value=end,$",
+            ]
+            .map(String::from)
+            .to_vec();
+            args.extend(extra.iter().map(ToString::to_string));
+            run.table_from_csv(&run.run(&args))
+        };
+        let none = |_: &str| false;
+        let (sheet, _) = run.bs_tables(&compared.balance_sheet[..n]);
+        run.assert_agree("actual bs", &reports("bs", &[]), &sheet, &none);
+        let flat = reports("is", &[]);
+        let tree: Table = reports("is", &["--tree"])
+            .into_iter()
+            .filter(|(key, _)| flat.contains_key(key))
+            .collect();
+        let actual_is: Table = is_table(&compared.income_statement, 0)
+            .into_iter()
+            .map(|(key, values)| (key, values[..n].to_vec()))
+            .filter(|(_, values)| values.iter().any(|value| !value.is_zero()))
+            .collect();
+        run.assert_agree("actual is", &tree, &actual_is, &none);
+    }
+}
+
+/// D8's caveat, pinned as fact: against the UNTOUCHED main journal, the
+/// valued balance sheet of the documented command differs from ours by the
+/// EUR holdings revalued at the real 2026-09-15 `P`, in the September column,
+/// and by nothing else.
+#[test]
+fn backtest_parity_an_in_window_price_is_the_only_valued_difference() {
+    if hledger(&["--version"]).is_none() {
+        eprintln!("skipped: set {OPT_IN}=1 (see `just hledger-checks`)");
+        return;
+    }
+    let run = Parity::backtest_untouched("flows.journal", MONTHLY);
+    let theirs = run.hledger_table("bs", true);
+    let (ours, _) = run.ledgeline_bs();
+    let columns: Vec<String> = run.spans().into_iter().map(|span| span.key).collect();
+    assert_eq!(columns, ["2026-08", "2026-09"]);
+    let zeros = vec![Dec::zero(); columns.len()];
+    let mut differences = Vec::new();
+    for key in theirs.keys().chain(ours.keys()).collect::<BTreeSet<_>>() {
+        let (t, o) = (
+            theirs.get(key).unwrap_or(&zeros),
+            ours.get(key).unwrap_or(&zeros),
+        );
+        for (column, label) in columns.iter().enumerate() {
+            if cents(t[column]) != cents(o[column]) {
+                differences.push(format!("{} {} {label}", key.0, key.1));
+            }
+        }
+    }
+    assert!(!differences.is_empty(), "the in-window P moved nothing");
+    assert!(
+        differences
+            .iter()
+            .all(|line| line.starts_with("assets:wise:eur ") && line.ends_with(" 2026-09")),
+        "{differences:#?}"
+    );
+    // Unvalued, the two agree.
+    run.assert_agree(
+        "bs unvalued",
+        &run.hledger_table("bs", false),
+        &{
+            let ends: Vec<String> = run.spans().into_iter().map(|span| span.to).collect();
+            let sheets = balance_sheet_columns(
+                &run.txns,
+                &run.prices,
+                &BsOpts {
+                    as_of: &run.window().end,
+                    depth: None,
+                    value: Valuation::None,
+                    value_in: None,
+                },
+                &ends,
+                &run.declared,
+                &account_groups(&run.journal),
+                &bs_terms(&run.journal),
+            )
+            .unwrap();
+            run.bs_tables(&sheets).0
+        },
+        &|_| false,
+    );
+}
+
+/// The documented command does real work: without the `expr:`, hledger
+/// counts the real August and September transactions on the projected side.
+#[test]
+fn backtest_parity_needs_the_expr() {
+    if hledger(&["--version"]).is_none() {
+        eprintln!("skipped: set {OPT_IN}=1 (see `just hledger-checks`)");
+        return;
+    }
+    let run = Parity::backtest("flows.journal", MONTHLY);
+    let mut args = run.documented("is");
+    args.pop(); // the expr
+    args.extend(["-O", "csv", "--layout=bare", "--value=end,$"].map(String::from));
+    let unfiltered = run.table_from_csv(&run.run(&args));
+    let filtered = run.hledger_table("is", true);
+    assert_ne!(unfiltered, filtered);
 }

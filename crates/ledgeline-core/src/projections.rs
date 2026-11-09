@@ -93,12 +93,18 @@
 /// id → path resolution that decides it. Private for the same reason
 /// `rules::discovery` is: the guarded surface is what `pub use` below
 /// re-exports, and nothing else.
+mod backtest;
 mod discovery;
 mod forecast;
 mod layout;
 mod real_side;
 pub mod serialize;
 
+pub use backtest::{
+    ComparedStatements, PROJECTED_KEY_PREFIX, backtest_warnings, compared_accounts,
+    compared_statements, project_backtest, reference_compared_accounts,
+    reference_compared_statements,
+};
 pub use discovery::{
     CreateRefusal, DiscoveredProjection, Discovery, ProjectionPath, default_conflict, discover,
     discover_in, is_journal_name, label_for, slug_filename,

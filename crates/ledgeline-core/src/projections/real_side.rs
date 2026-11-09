@@ -187,41 +187,41 @@ struct LateTxn {
 /// [`RealKey`]. See the module docs.
 #[derive(Debug, Clone)]
 pub struct RealSide {
-    key: RealKey,
-    declared: BTreeMap<String, AccountType>,
+    pub(super) key: RealKey,
+    pub(super) declared: BTreeMap<String, AccountType>,
     first_index: u32,
 
     // --- The expansion and the series (`project`). ---
     /// Every real price before the cutoff: inferred, then explicit.
     prices: Vec<PriceDirective>,
     db: PriceDb,
-    target: Option<Commodity>,
+    pub(super) target: Option<Commodity>,
     balances: AccountBalances,
     /// Built with no `; cash:` header; each run applies its scenario's.
-    defaults: CounterDefaults,
+    pub(super) defaults: CounterDefaults,
     openings: Openings,
 
     // --- The statements (`merged_transactions`, `merged_prices`). ---
     /// The real EXPLICIT directives before the cutoff, and their table.
     explicit: Vec<PriceDirective>,
-    explicit_db: PriceDb,
+    pub(super) explicit_db: PriceDb,
     /// The commodities `explicit` prices: a forecast price for any other is
     /// left out of the statements.
     priced: BTreeSet<Commodity>,
     /// The lookback columns, oldest first; empty with no lookback.
-    lookback: Vec<BucketSpan>,
+    pub(super) lookback: Vec<BucketSpan>,
     late: Vec<LateTxn>,
     /// The balance sheet at each lookback end, and the running totals after
     /// every early posting.
     sheets: Vec<(String, SheetState)>,
     sheet_running: RunningTotals,
     /// Each lookback window's direct totals, as written and at cost.
-    written: Vec<Totals>,
-    at_cost: Vec<Totals>,
+    pub(super) written: Vec<Totals>,
+    pub(super) at_cost: Vec<Totals>,
     /// The cash flow pass over every early posting, on the lookback columns.
-    cash_flow: CfAccumulator,
+    pub(super) cash_flow: CfAccumulator,
     /// Every account's balance before the first lookback day (Balance mode).
-    before_from: Totals,
+    pub(super) before_from: Totals,
 }
 
 impl RealSide {
@@ -323,7 +323,7 @@ impl RealSide {
 
     /// `forecast`'s statement columns, after checking it was expanded against
     /// this real side: the same cutoff, interval and lookback columns.
-    fn columns(&self, forecast: &Forecast) -> Result<Vec<BucketSpan>, ReportError> {
+    pub(super) fn columns(&self, forecast: &Forecast) -> Result<Vec<BucketSpan>, ReportError> {
         let window = &forecast.window;
         let spans = range_buckets(&window.from, &window.end, Some(window.interval))?;
         let matches = window.cutoff == self.key.cutoff
@@ -340,7 +340,7 @@ impl RealSide {
     }
 
     /// The late real postings, then the forecast: everything after the seed.
-    fn tail<'f>(&self, forecast: &'f Forecast) -> Cow<'f, [Transaction]> {
+    pub(super) fn tail<'f>(&self, forecast: &'f Forecast) -> Cow<'f, [Transaction]> {
         if self.late.is_empty() {
             Cow::Borrowed(&forecast.txns)
         } else {
@@ -357,7 +357,7 @@ impl RealSide {
     /// `merged_prices`' table: the real explicit directives, plus the
     /// forecast's for commodities they price. Without any of the latter it is
     /// the real table as it stands, which is what building it again would give.
-    fn statement_prices(&self, forecast: &Forecast) -> Cow<'_, PriceDb> {
+    pub(super) fn statement_prices(&self, forecast: &Forecast) -> Cow<'_, PriceDb> {
         let extra: Vec<&PriceDirective> = forecast
             .prices
             .iter()
@@ -496,6 +496,21 @@ pub fn project_cached(
     count: usize,
     depth: usize,
 ) -> Result<Projection, ReportError> {
+    run_with(scenario, real, &real.defaults, count, depth, false)
+}
+
+/// The one expansion and roll-forward behind [`project_cached`] and
+/// [`super::project_backtest`]: `scenario` against `real`, with `defaults` as
+/// the counter defaults (a backtest takes the forward run's, plan 34 D1) and
+/// [`RealInputs::backtest`] as given.
+pub(super) fn run_with(
+    scenario: &Scenario,
+    real: &RealSide,
+    defaults: &CounterDefaults,
+    count: usize,
+    depth: usize,
+    backtest: bool,
+) -> Result<Projection, ReportError> {
     let types = AccountTypes::from_declared(real.declared.clone());
     let window = ForecastWindow::from_cutoff(
         real.key.cutoff.clone(),
@@ -512,8 +527,9 @@ pub fn project_cached(
             db: &real.db,
             target: real.target.clone(),
             balances: &real.balances,
-            defaults: &real.defaults,
+            defaults,
             first_index: real.first_index,
+            backtest,
         },
     )?;
     roll_forward(
@@ -578,38 +594,20 @@ pub fn projected_statements(
 ) -> Result<ProjectedStatements, ReportError> {
     let window = &forecast.window;
     let spans = real.columns(forecast)?;
-    let ends: Vec<String> = spans.iter().map(|span| span.to.clone()).collect();
     let tail = real.tail(forecast);
     let db = real.statement_prices(forecast);
     let shape = &facts.shape;
 
-    let balance_sheet = balance_sheet_columns_seeded(
-        &real.sheets,
-        &real.sheet_running,
+    let balance_sheet = seeded_sheets(
+        real,
+        facts,
         &tail,
         &db,
-        &BsOpts {
-            as_of: &window.end,
-            depth: opts.bs_depth,
-            value: opts.valuation,
-            value_in: forecast.target.clone(),
-        },
-        &ends,
-        &shape.declared,
-        &shape.bs_groups,
-        &shape.bs_terms,
+        &spans,
+        forecast.target.clone(),
+        opts,
     )?;
-
-    let cost = opts.valuation == Valuation::Cost;
-    let seeded = if cost { &real.at_cost } else { &real.written };
-    let direct = spans
-        .iter()
-        .enumerate()
-        .map(|(index, span)| match seeded.get(index) {
-            Some(totals) => Ok(totals.clone()),
-            None => window_direct(&tail, &DateRange::from(span), cost),
-        })
-        .collect::<Result<Vec<_>, ReportError>>()?;
+    let direct = seeded_direct(real, &spans, &tail, opts.valuation)?;
     let income_statement = income_statement_columns_from(
         direct,
         &db,
@@ -627,16 +625,7 @@ pub fn projected_statements(
         &shape.is_groups,
     )?;
 
-    let classify = CfClassifier::new(&facts.cf_tags);
-    let mut cash_flow = real.cash_flow.clone();
-    cash_flow.extend(spans.clone(), &window.end);
-    for late in &real.late {
-        cash_flow.add(&late.txn, late.closing, &classify)?;
-    }
-    for txn in &forecast.txns {
-        cash_flow.add(txn, classify.is_closing(txn), &classify)?;
-    }
-    let cash_flow = cash_flow.finish(
+    let cash_flow = cash_flow_pass(real, facts, spans.clone(), forecast)?.finish(
         &facts.cf_tags,
         &CfOpts {
             from: &window.from,
@@ -652,6 +641,89 @@ pub fn projected_statements(
         income_statement,
         cash_flow,
     })
+}
+
+/// The balance sheet at each of `spans`' ends: `real`'s seeds, then `tail`,
+/// valued through `db` into `target`.
+///
+/// # Errors
+/// As [`projected_statements`].
+pub(super) fn seeded_sheets(
+    real: &RealSide,
+    facts: &JournalFacts,
+    tail: &[Transaction],
+    db: &PriceDb,
+    spans: &[BucketSpan],
+    target: Option<Commodity>,
+    opts: &StatementOpts,
+) -> Result<Vec<BalanceSheetReport>, ReportError> {
+    let ends: Vec<String> = spans.iter().map(|span| span.to.clone()).collect();
+    let shape = &facts.shape;
+    balance_sheet_columns_seeded(
+        &real.sheets,
+        &real.sheet_running,
+        tail,
+        db,
+        &BsOpts {
+            // Ignored by the seeded builder: every column has its own end.
+            as_of: ends.last().map_or(real.key.cutoff.as_str(), String::as_str),
+            depth: opts.bs_depth,
+            value: opts.valuation,
+            value_in: target,
+        },
+        &ends,
+        &shape.declared,
+        &shape.bs_groups,
+        &shape.bs_terms,
+    )
+}
+
+/// Each of `spans`' direct income statement totals: a lookback column's from
+/// `real`'s seed, any later one from `tail`. At cost exactly when `valuation`
+/// is [`Valuation::Cost`].
+///
+/// # Errors
+/// [`ReportError`] on decimal overflow.
+pub(super) fn seeded_direct(
+    real: &RealSide,
+    spans: &[BucketSpan],
+    tail: &[Transaction],
+    valuation: Valuation,
+) -> Result<Vec<Totals>, ReportError> {
+    let cost = valuation == Valuation::Cost;
+    let seeded = if cost { &real.at_cost } else { &real.written };
+    spans
+        .iter()
+        .enumerate()
+        .map(|(index, span)| match seeded.get(index) {
+            Some(totals) => Ok(totals.clone()),
+            None => window_direct(tail, &DateRange::from(span), cost),
+        })
+        .collect()
+}
+
+/// The cash flow pass over `spans`: `real`'s seed, then its late postings and
+/// `forecast`'s transactions. Unfinished, so a backtest can set two passes
+/// side by side before finishing them (plan 34).
+///
+/// # Errors
+/// [`ReportError`] on decimal overflow.
+pub(super) fn cash_flow_pass(
+    real: &RealSide,
+    facts: &JournalFacts,
+    spans: Vec<BucketSpan>,
+    forecast: &Forecast,
+) -> Result<CfAccumulator, ReportError> {
+    let classify = CfClassifier::new(&facts.cf_tags);
+    let mut cash_flow = real.cash_flow.clone();
+    cash_flow.extend(spans, &forecast.window.end);
+    for late in &real.late {
+        cash_flow.add(&late.txn, late.closing, &classify)?;
+    }
+    for txn in &forecast.txns {
+        cash_flow.add(txn, classify.is_closing(txn), &classify)?;
+    }
+    Ok(cash_flow)
 }
 
 /// The Accounts reading over `real ++ forecast`, from a cached real side:
@@ -694,7 +766,7 @@ pub fn projected_accounts(
 }
 
 /// [`super::known_accounts`] from the journal's half, already gathered.
-fn known_with(journal: &BTreeSet<String>, forecast: &Forecast) -> Vec<String> {
+pub(super) fn known_with(journal: &BTreeSet<String>, forecast: &Forecast) -> Vec<String> {
     let generated: BTreeSet<&str> = forecast
         .txns
         .iter()
