@@ -65,13 +65,45 @@ let onDisk = fileBody("fa-1", "420000");
 let puts: unknown[] = [];
 /** Set to make the next GET wait until released. */
 let gate: Promise<void> | null = null;
+/** What `PUT /api/projections/default` answers next. */
+let defaultAnswer: Response | (() => Response) = new Response("unset", {status: 500});
+/** How many times the listing was read. */
+let indexReads = 0;
+/** Whether the engine's listing marks the file. */
+let marked = false;
+/** Set to make the next `PUT /api/projections/default` wait until released. */
+let defaultGate: Promise<void> | null = null;
+/** Set to make the next listing read wait until released. */
+let indexGate: Promise<void> | null = null;
 
 beforeEach(async () => {
     onDisk = fileBody("fa-1", "420000");
     puts = [];
     gate = null;
+    defaultGate = null;
+    indexGate = null;
+    indexReads = 0;
+    marked = false;
     await connectFakeEngine();
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+        if (String(url).endsWith("/api/projections/default")) {
+            if (defaultGate !== null) await defaultGate;
+            return typeof defaultAnswer === "function" ? defaultAnswer() : defaultAnswer;
+        }
+        if (String(url).endsWith("/api/projections")) {
+            indexReads += 1;
+            if (indexGate !== null) await indexGate;
+            return Response.json({
+                rootLabel: "books",
+                editable: true,
+                truncated: false,
+                files: [
+                    {id: ID, label: "plan", name: "Plan", created: null, updated: null, isProjection: true, sizeBytes: 1, writable: true, isDefault: marked},
+                ],
+                directories: [""],
+                warnings: [],
+            });
+        }
         if (String(url).endsWith(ROUTE)) {
             if (init?.method === "PUT") {
                 const body = JSON.parse(String(init.body)) as {revision: string};
@@ -162,5 +194,70 @@ describe("COMPONENT fileStore.checkDisk — edits made outside Ledgeline", () =>
     it("has nothing to check when the scenario on screen came from no file", async () => {
         fileStore.forget();
         expect(await fileStore.checkDisk(FAKE_ENGINE)).toEqual({kind: "skipped"});
+    });
+});
+
+describe("COMPONENT fileStore.setDefault — the star, with unsaved edits (plan 33 D17)", () => {
+    /** The engine's answer to a star that rewrote the file from `before` to `after`. */
+    const changed = (before: string, after: string) => () => {
+        marked = true;
+        onDisk = {...onDisk, revision: after};
+        return Response.json({changed: [{id: ID, before, after, isDefault: true}]});
+    };
+
+    it("moves the held revision forward when the engine changed exactly the bytes held, so the next save lands", async () => {
+        const scenario = emptyScenario();
+        defaultAnswer = changed("fa-1", "fa-1-starred");
+        expect(await fileStore.setDefault(FAKE_ENGINE, ID)).toEqual({ok: true});
+        expect(fileStore.currentIsDefault).toBe(true);
+
+        // The next save carries the star's revision, and the engine accepts it.
+        expect((await fileStore.save(FAKE_ENGINE, scenario)).ok).toBe(true);
+        expect(puts).toEqual([expect.objectContaining({revision: "fa-1-starred"})]);
+    });
+
+    it("keeps a stale revision when the file changed some other way first", async () => {
+        // Another program rewrote the file after this tab read it, and the
+        // star then rewrote THAT.
+        onDisk = fileBody("fa-somebody-else", "430000");
+        defaultAnswer = changed("fa-somebody-else", "fa-starred");
+        await fileStore.setDefault(FAKE_ENGINE, ID);
+        expect((await fileStore.save(FAKE_ENGINE, emptyScenario())).ok).toBe(false);
+        expect(puts).toEqual([expect.objectContaining({revision: "fa-1"})]);
+    });
+
+    it("skips the disk check while a star is in flight, and drops one it overtook", async () => {
+        let release = (): void => {};
+        defaultGate = new Promise((resolve) => (release = resolve));
+        defaultAnswer = changed("fa-1", "fa-1-starred");
+        const starring = fileStore.setDefault(FAKE_ENGINE, ID);
+        expect(fileStore.settingDefault).toBe(true);
+        expect(await fileStore.checkDisk(FAKE_ENGINE)).toEqual({kind: "skipped"});
+        release();
+        await starring;
+        expect(fileStore.settingDefault).toBe(false);
+    });
+
+    it("re-reads the listing after a failure, because a partial failure changed files", async () => {
+        await fileStore.reloadIndex(FAKE_ENGINE);
+        const before = indexReads;
+        defaultAnswer = new Response("Removed the default mark from …, but could not mark …", {status: 409});
+        const outcome = await fileStore.setDefault(FAKE_ENGINE, ID);
+        expect(outcome.ok).toBe(false);
+        if (!outcome.ok) expect(outcome.failure.kind).toBe("conflict");
+        await vi.waitFor(() => expect(indexReads).toBe(before + 1));
+    });
+
+    it("marks the listing's copy at once, before the re-read lands", async () => {
+        await fileStore.reloadIndex(FAKE_ENGINE);
+        expect(fileStore.currentIsDefault).toBe(false);
+        // The background re-read hangs, so what is asserted is the patch.
+        let release = (): void => {};
+        indexGate = new Promise((resolve) => (release = resolve));
+        defaultAnswer = changed("fa-1", "fa-1-starred");
+        await fileStore.setDefault(FAKE_ENGINE, ID);
+        expect(fileStore.index.value?.files[0].isDefault).toBe(true);
+        expect(fileStore.currentIsDefault).toBe(true);
+        release();
     });
 });

@@ -69,6 +69,19 @@ export default defineConfig({
             url: "http://127.0.0.1:5096/",
             reuseExistingServer: false,
         },
+        // MERGE SEAM: plan 33's engine (:5095). Another plan's scratch engine
+        // goes beside it, on its own port.
+        {
+            // The default-projection engine (plan 33, e2e/projectionDefault.e2e.ts),
+            // over a SCRATCH COPY of fixtures/projection-default/
+            // (target/e2e-projection-default/, gitignored), staged fresh on every
+            // run: the spec stars, un-stars and saves scenario files, and a write
+            // must never touch a committed fixture.
+            command: `rm -rf ../target/e2e-projection-default && mkdir -p ../target && cp -R ../fixtures/projection-default ../target/e2e-projection-default && exec ${process.env.LEDGELINE_BIN ?? "../target/debug/ledgeline"} --server ../target/e2e-projection-default/main.journal --port 5095 --allow-origin http://localhost:4173`,
+            env: {LEDGELINE_TOKEN: API_TOKEN, LEDGELINE_IGNORE_USER_HLEDGER_CONF: "1"},
+            url: "http://127.0.0.1:5095/",
+            reuseExistingServer: false,
+        },
         {command: "bun run build && bun run preview", port: 4173},
     ],
     // With multiple webServers playwright does not infer baseURL from `port`.

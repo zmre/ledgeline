@@ -1,0 +1,5 @@
+; The budget the main journal includes: a plan of record, readable from the
+; Projections tab and never written by it.
+
+~ monthly  household budget
+    (expenses:food)       $600.00

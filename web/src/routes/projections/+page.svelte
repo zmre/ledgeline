@@ -27,15 +27,22 @@
     //                                `markSaved` if an edit landed meanwhile
     //   seed  → `scenarioStore.ensureSeeded`, which declines over `dirty` work
     //
-    // On first mount the tab reopens whatever was last loaded
+    // On the first mount after a page load (a launch, a reload, a File→Open)
+    // the tab opens the DEFAULT scenario, if one is starred (plan 33 D2): the
+    // file whose header says `; default-scenario: true`. Without one, or if it
+    // cannot be opened, it reopens whatever was last loaded
     // (`settings.lastProjectionId` — decision 10, per-browser view state rather
-    // than `prefs.json`). A remembered id that no longer names a file is not an
-    // error: it is forgotten and the tab seeds instead, which is where a user
-    // who deleted a file outside Ledgeline should end up.
+    // than `prefs.json`), and failing that it seeds. A remembered id that no
+    // longer names a file is not an error: it is forgotten and the tab seeds
+    // instead, which is where a user who deleted a file outside Ledgeline should
+    // end up. Coming back to the tab within a session opens NOTHING: whatever
+    // was on screen, unsaved edits included, is still in `scenarioStore`
+    // (plan 33 D3).
     import {onMount} from "svelte";
     import AsyncSection from "#lib/components/AsyncSection.svelte";
     import DepthSlider from "#lib/insights/DepthSlider.svelte";
     import {fileStore} from "#lib/projections/fileStore.svelte.js";
+    import {defaultBlocker, defaultConflict, effectiveDefault, openingSteps, type OpeningSource} from "#lib/projections/opening.js";
     import {defaultProjectionParams, projectionParamsToSearch, searchToProjectionParams, type ProjectionParams} from "#lib/projections/params.js";
     import {assetRowsByGroup} from "#lib/projections/projectionView.js";
     import {sameProjectionQuery, scenarioStore, scenarioTableView, type ProjectionWindow} from "#lib/projections/scenarioStore.svelte.js";
@@ -103,33 +110,56 @@
     const tableView = $derived(scenarioTableView(scenarioStore.adopted, seed.status, seed.value !== null));
 
     /**
-     * Reopen the last-loaded file, or seed.
+     * Open the default, else the last-loaded file, else seed — once per page
+     * load.
      *
      * The order is load-bearing. The listing comes first because the file
-     * controls need it either way; the remembered file is tried next; and only
-     * if that produces nothing does the journal get read for a seed. Doing it
-     * the other way round would show the user an average of their history for a
-     * moment before replacing it with the scenario they actually left open.
+     * controls need it either way, and because it says which file is the
+     * default. Then, if a scenario is already on screen, NOTHING happens: this
+     * is a tab switch or a reconnect within a session, and reopening would
+     * throw away unsaved edits (plan 33 D3). Then the default and the
+     * remembered file are tried in turn; and only if that produces nothing does
+     * the journal get read for a seed. Doing it the other way round would show
+     * the user an average of their history for a moment before replacing it
+     * with the scenario they actually meant.
      */
     async function start(url: string): Promise<void> {
         await fileStore.ensureIndex(url, settings.serverNonce);
-        const remembered = settings.lastProjectionId;
-        if (fileStore.available && remembered !== null && (await openFile(url, remembered))) return;
+        if (scenarioStore.adopted) return;
+        const starred = effectiveDefault(fileStore.index.value?.files ?? [])?.id ?? null;
+        // A default that cannot be opened says so, and that sentence stays on
+        // screen over whatever opens instead (D9).
+        let defaultFailure: string | null = null;
+        for (const step of openingSteps(starred, settings.lastProjectionId, fileStore.available)) {
+            const opened = await openFile(url, step.id, step.source);
+            if (step.source === "default" && !opened) defaultFailure = fileError;
+            if (opened) {
+                if (defaultFailure !== null) fileError = defaultFailure;
+                return;
+            }
+        }
+        if (defaultFailure !== null) fileError = defaultFailure;
         // At the page's depth: the slider is where a user says how finely they
         // plan, and the seed is where that plan starts. Only where it STARTS —
         // see `canReseed`.
         await scenarioStore.ensureSeeded(url, settings.serverNonce, params.depth);
     }
 
-    /** Load one file into the table. `false` means it could not be opened. */
-    async function openFile(url: string, id: string): Promise<boolean> {
+    /**
+     * Load one file into the table. `false` means it could not be opened.
+     *
+     * `source` is why it is being opened: the default (which is never
+     * forgotten — the marker is in the file, and is the user's to clear), or
+     * the last file this browser opened, which is.
+     */
+    async function openFile(url: string, id: string, source: OpeningSource = "last"): Promise<boolean> {
         const outcome = await fileStore.open(url, id);
         if (!outcome.ok) {
             // A remembered id that no longer resolves must not be retried on
             // every mount, which would put a failure on the screen each time the
             // tab is opened.
-            if (outcome.failure.kind === "notFound" || outcome.failure.kind === "validation") fileStore.forget();
-            fileError = outcome.failure.message;
+            if (source === "last" && (outcome.failure.kind === "notFound" || outcome.failure.kind === "validation")) fileStore.forget();
+            fileError = source === "default" ? `Your default scenario couldn't be opened: ${outcome.failure.message}` : outcome.failure.message;
             return false;
         }
         fileError = null;
@@ -200,7 +230,24 @@
     /** The engine's own sentence from the last failed load or save, or null. */
     let fileError = $state<string | null>(null);
     const fileIndex = $derived(fileStore.index.value);
-    const busy = $derived(fileStore.saving || fileStore.loading);
+    const busy = $derived(fileStore.saving || fileStore.loading || fileStore.settingDefault);
+    const starredId = $derived(effectiveDefault(fileIndex?.files ?? [])?.id ?? null);
+    const starBlocker = $derived(
+        defaultBlocker(fileStore.currentId, fileIndex?.files.find((file) => file.id === fileStore.currentId) ?? null, fileIndex?.editable ?? false)
+    );
+
+    /**
+     * Star the open file, or un-star it (plan 33 D20). Allowed with unsaved
+     * edits: only the marker is written, and the store moves the held revision
+     * forward (D17), so the next Save neither loses the star nor is refused.
+     */
+    async function toggleDefault(): Promise<void> {
+        const url = settings.serverUrl;
+        const id = fileStore.currentId;
+        if (url === null || id === null) return;
+        const outcome = await fileStore.setDefault(url, fileStore.currentIsDefault ? null : id);
+        fileError = outcome.ok ? null : outcome.failure.message;
+    }
 
     function chooseFile(id: string): void {
         const url = settings.serverUrl;
@@ -415,6 +462,12 @@
                 fileError = null;
                 saveAsOpen = true;
             }}
+            defaultSupported={fileIndex.defaultSupported}
+            defaultId={starredId}
+            isDefault={fileStore.currentIsDefault}
+            defaultBlocker={starBlocker}
+            defaultWarning={defaultConflict(fileIndex)}
+            onToggleDefault={() => void toggleDefault()}
         />
     {/if}
 

@@ -3035,6 +3035,9 @@ pub(crate) async fn index(State(state): State<AppState>) -> Result<Response, App
                 .map(|found| wire_file(found, &sources))
                 .collect(),
             directories: discovery.directories(),
+            // The default-conflict warning (plan 33 D6) goes LAST, after the
+            // scan's: the SPA reads it from there (`opening.ts`,
+            // `defaultConflict`) rather than matching on its wording.
             warnings: discovery
                 .warnings
                 .iter()
