@@ -192,6 +192,22 @@ Times are criterion's point estimate (the middle of the `[lo est hi]` triple).
 | `holdings/compute_holdings` | 2.18 ms | 25.3 ms | 131 ms |
 | `holdings/holdings_series_12` | 25.3 ms | 297 ms | **1,567 ms** |
 
+### running — plan 36
+
+Measured 2026-11-09 on the same machine, 200k only
+(`LEDGELINE_BENCH_SIZES=200000 cargo bench -p ledgeline-core --bench engine -- 'running/'`).
+Not part of the 2026-07-27 baseline run above.
+
+| Bench | 200k |
+|---|---|
+| `running/posting_order` (once per snapshot, on the first pin) | 5.69 ms |
+| `running/build_leaf` (`assets:bank:chase:checking`) | 5.93 ms |
+| `running/build_assets` (`assets`, the widest pin the corpus has) | 30.9 ms |
+
+A leaf pin costs about what the plan expected. A whole-root pin like `assets`
+is ~5× that, because it keeps one entry per matching posting; it is built once
+per root and kept (LRU of 4), so only the first request pays.
+
 ### Peak RSS
 
 `/usr/bin/time -l`, one process per stage, so each row is that stage's own peak.

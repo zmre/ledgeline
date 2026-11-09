@@ -1,7 +1,7 @@
 // The journal VIEW store (plan 26 B5): the filtered journal, fetched a window
 // at a time from the engine instead of downloaded whole.
 //
-// One view at a time, keyed on (server, generation, filter):
+// One view at a time, keyed on (server, generation, filter, pin):
 //
 //   - SUMMARY — `/api/journal/summary`: the filtered count, the footer's visible
 //     net, the big numbers and the chart selectors.
@@ -9,7 +9,9 @@
 //     the table scrolls (`ensure`), with the neighbouring block prefetched. A
 //     row not loaded yet reads as null and the table draws a skeleton for it.
 //
-// A FILTER change is a different list: everything is dropped. A GENERATION
+// A FILTER change is a different list: everything is dropped. So is a PIN
+// change (plan 36) — pinning, unpinning or switching the pinned commodity —
+// because every held row's `running` cell describes the old pin. A GENERATION
 // change (an edit, a file change) is the same list, re-read: the held blocks
 // stay on screen, marked stale, until their fresh copies arrive — so an inline
 // edit does not flash the table to skeletons.
@@ -22,7 +24,7 @@
    immutable snapshot replaced wholesale (`$state.raw`), so a SvelteMap would
    add per-key signals nothing reads; `pending` is plain bookkeeping that no
    template or effect observes. */
-import {LedgelineApi, type JournalQueryFilter} from "#lib/api/native.js";
+import {LedgelineApi, type JournalQueryFilter, type RunningPinQuery} from "#lib/api/native.js";
 import {decodeJournalSummary, decodeRowPosition, decodeRowsPage} from "#lib/api/journalViewDecode.js";
 import type {Transaction} from "#lib/domain/types.js";
 import type {JournalRow, JournalSummary, RowPosition} from "#lib/journalView/types.js";
@@ -42,6 +44,8 @@ export interface ViewQuery {
     serverUrl: string;
     generation: string;
     filter: JournalQueryFilter;
+    /** The pinned running balance every row carries, or null. */
+    pin: RunningPinQuery | null;
 }
 
 interface Block {
@@ -49,9 +53,9 @@ interface Block {
     rows: readonly JournalRow[];
 }
 
-/** Filters are compared by value: `accounts` is a Set, so its sorted members stand in for it. */
-export function filterKey(filter: JournalQueryFilter): string {
-    return JSON.stringify([filter.from, filter.to, [...filter.accounts].sort(), filter.query]);
+/** Filters are compared by value: `accounts` is a Set, so its sorted members stand in for it. The pin is part of the key. */
+export function filterKey(filter: JournalQueryFilter, pin: RunningPinQuery | null = null): string {
+    return JSON.stringify([filter.from, filter.to, [...filter.accounts].sort(), filter.query, pin === null ? null : [pin.account, pin.commodity]]);
 }
 
 let query = $state.raw<ViewQuery | null>(null);
@@ -110,7 +114,7 @@ async function loadBlock(target: ViewQuery, block: number): Promise<void> {
     const startedEpoch = epoch;
     try {
         const page = decodeRowsPage(
-            await api(target.serverUrl).journalRows(target.filter, {offset: block * BLOCK_SIZE, limit: BLOCK_SIZE, today: localToday()})
+            await api(target.serverUrl).journalRows(target.filter, {offset: block * BLOCK_SIZE, limit: BLOCK_SIZE, today: localToday()}, target.pin)
         );
         if (startedEpoch !== epoch) return;
         const next = new Map(blocks);
@@ -153,14 +157,14 @@ export const journalView = {
     },
 
     /**
-     * Point the view at (server, generation, filter). Cheap to call on every
-     * reactive tick: nothing happens unless one of the three moved.
+     * Point the view at (server, generation, filter, pin). Cheap to call on
+     * every reactive tick: nothing happens unless one of them moved.
      */
-    sync(serverUrl: string, generation: string, filter: JournalQueryFilter): void {
-        const nextKey = filterKey(filter);
+    sync(serverUrl: string, generation: string, filter: JournalQueryFilter, pin: RunningPinQuery | null = null): void {
+        const nextKey = filterKey(filter, pin);
         const sameList = query !== null && query.serverUrl === serverUrl && key === nextKey;
         if (sameList && query?.generation === generation) return;
-        const target: ViewQuery = {serverUrl, generation, filter};
+        const target: ViewQuery = {serverUrl, generation, filter, pin};
         if (!sameList) {
             // A different list: nothing held describes it.
             epoch += 1;
@@ -215,12 +219,19 @@ export const journalView = {
      * exporting does not evict what the table is showing.
      */
     async allRows(): Promise<Transaction[]> {
+        return (await this.allViewRows()).map((row) => row.txn);
+    },
+
+    /** `allRows` with each row's flags and, while a pin is set, its running-balance cell (the export's Change/Balance). */
+    async allViewRows(): Promise<JournalRow[]> {
         const target = query;
         if (target === null) return [];
-        const out: Transaction[] = [];
+        const out: JournalRow[] = [];
         for (let offset = 0; ; offset += PAGE_SIZE) {
-            const page = decodeRowsPage(await api(target.serverUrl).journalRows(target.filter, {offset, limit: PAGE_SIZE, order: "asc", today: localToday()}));
-            out.push(...page.rows.map((row) => row.txn));
+            const page = decodeRowsPage(
+                await api(target.serverUrl).journalRows(target.filter, {offset, limit: PAGE_SIZE, order: "asc", today: localToday()}, target.pin)
+            );
+            out.push(...page.rows);
             if (page.rows.length < PAGE_SIZE || out.length >= page.total) return out;
         }
     },

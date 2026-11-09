@@ -16,6 +16,14 @@
         `height: calc(100dvh - 7rem)` with only the transaction table scrolling,
         so every pixel this box takes comes straight out of the table.
 
+     4. WHILE AN ACCOUNT IS PINNED, THE PIE IS ITS BALANCE LINE (plan 36
+        amendment A1). The pin decides it — clicking a row pins, ✕ on the pin
+        chip unpins — and there is no separate toggle. Unlike the list, the
+        line follows the journal's DATE range: it describes the rows on screen.
+        It takes the pie's place and its `lg` breakpoint, a little wider. While
+        a new answer loads, the last line for the same account stays up rather
+        than flashing the pie.
+
      Balance maths lives in the engine (`crates/ledgeline-core/src/view/cash.rs`,
      served at `/api/balances/cash`); this file is display only. -->
 <script lang="ts">
@@ -25,13 +33,30 @@
     import {chartColors} from "#lib/format/chartColors.svelte.js";
     import {OTHER_LABEL} from "#lib/format/palette.js";
     import {signClass} from "#lib/format/sign.js";
-    import type {BalanceRow, BalanceSummary, CashBalancesView} from "#lib/journalView/types.js";
+    import type {BalanceRow, BalanceSeries, BalanceSummary, CashBalancesView} from "#lib/journalView/types.js";
+    import {filters} from "#lib/stores/filters.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
     import AccountBalanceRow from "./AccountBalanceRow.svelte";
+    import BalanceTrend from "./BalanceTrend.svelte";
 
     // view: the engine's answer for the WHOLE journal as of today, every
     // commodity at once (`/api/balances/cash`), so switching currency is local.
-    let {view}: {view: CashBalancesView} = $props();
+    // trend: the pinned account's balance line (`/api/journal/running/series`),
+    // the newest answer held — possibly for an older query while a new one
+    // loads; null before the first. trendError: why the newest load failed.
+    let {
+        view,
+        trend = null,
+        trendError = null,
+    }: {
+        view: CashBalancesView;
+        trend?: BalanceSeries | null;
+        trendError?: Error | null;
+    } = $props();
+
+    const pin = $derived(filters.value.pin ?? null);
+    /** The held line, but only when it is about the pinned account: another account's line must never stand in for it. */
+    const pinnedTrend = $derived(pin !== null && trend !== null && trend.account === pin.account ? trend : null);
 
     const asOf = $derived(view.asOf);
     const guessed = $derived(view.guessedLongTerm);
@@ -56,9 +81,20 @@
     const style = $derived(summary.style);
     const cash = $derived(visibleRows(summary.cash, settings.hideZeroBalances));
     const liabilities = $derived(visibleRows(summary.liabilities, settings.hideZeroBalances));
+    /** No cash or short-term liability account holds this commodity at all. */
+    const nothingHeld = $derived(summary.cash.length === 0 && summary.liabilities.length === 0);
     const hiddenCount = $derived(summary.cash.length + summary.liabilities.length - cash.length - liabilities.length);
 
     const fmt = (qty: Dec): string => formatAmount({commodity, qty, style});
+
+    /**
+     * Filter the journal to `account` and pin its running balance; the date
+     * range stays. The commodity on screen comes with it when there is a
+     * choice, so picking EUR here shows the EUR column there.
+     */
+    function openAccount(account: string): void {
+        filters.focusAccount(account, commodities.length > 1 ? commodity : null);
+    }
 
     interface Tile {
         label: string;
@@ -124,7 +160,14 @@
         {:else}
             <ul class="divide-y divide-base-300/60">
                 {#each rows as entry (entry.account)}
-                    <AccountBalanceRow {entry} formatted={fmt(entry.qty)} {negativeIsWrong} dotColor={colorOf.get(entry.account)} />
+                    <AccountBalanceRow
+                        {entry}
+                        formatted={fmt(entry.qty)}
+                        {negativeIsWrong}
+                        dotColor={pin === null ? colorOf.get(entry.account) : undefined}
+                        pinned={pin?.account === entry.account}
+                        onOpen={() => openAccount(entry.account)}
+                    />
                 {/each}
             </ul>
         {/if}
@@ -156,58 +199,68 @@
     <!-- Same `stats` treatment as the activity tab's big numbers so the two
          views read as siblings, but horizontal at every width: three money
          figures fit across a phone, and stacking them cost ~140px of the
-         table's height on exactly the screens with least to spare. -->
-    <div class="stats w-full stats-horizontal bg-base-200 shadow-none">
-        {#each tiles as tile (tile.label)}
-            <div class="stat px-3 py-2" data-testid={tile.testid}>
-                <div class="stat-title text-xs">{tile.label}</div>
-                <div class="stat-value font-mono text-lg tabular-nums md:text-2xl {tile.valueClass}">{tile.value}</div>
-            </div>
-        {/each}
-    </div>
-
-    {#if summary.cash.length === 0 && summary.liabilities.length === 0}
-        <p class="py-6 text-center text-sm text-base-content/60">
-            No cash or short-term liability accounts hold {commodity}. Declare your bank and card accounts with
-            <code class="text-xs">type: C</code>
-            and <code class="text-xs">type: L</code> to see them here.
-        </p>
-    {:else}
-        <div class="flex gap-4">
-            {#if slices.length > 0}
-                <div class="hidden h-48 w-56 shrink-0 lg:block" data-testid="balances-pie">
-                    <PieChart
-                        data={slices}
-                        key="account"
-                        label="account"
-                        value={(d) => d.value}
-                        cRange={slices.map((d) => d.color)}
-                        padAngle={0.02}
-                        legend={false}
-                    >
-                        {#snippet tooltip()}
-                            <Tooltip.Root>
-                                {#snippet children({data})}
-                                    {@const d = data as Slice}
-                                    <div class="flex items-center gap-2 text-xs">
-                                        <span class="inline-block h-2 w-2 rounded-full" style="background:{d.color}"></span>
-                                        <span class="text-base-content/70">{d.account}</span>
-                                        <span class="font-semibold">{d.formatted}</span>
-                                    </div>
-                                {/snippet}
-                            </Tooltip.Root>
-                        {/snippet}
-                    </PieChart>
+         table's height on exactly the screens with least to spare.
+         Hidden while an account is pinned: the view is then about that one
+         account, and whole-journal totals beside its line only confuse. -->
+    {#if pin === null}
+        <div class="stats w-full stats-horizontal bg-base-200 shadow-none">
+            {#each tiles as tile (tile.label)}
+                <div class="stat px-3 py-2" data-testid={tile.testid}>
+                    <div class="stat-title text-xs">{tile.label}</div>
+                    <div class="stat-value font-mono text-lg tabular-nums md:text-2xl {tile.valueClass}">{tile.value}</div>
                 </div>
-            {/if}
+            {/each}
+        </div>
+    {/if}
+
+    <div class="flex gap-4">
+        {#if pin !== null}
+            <!-- The pinned account's line, in the pie's place: hidden below `lg`
+                 like the pie, so the transaction table keeps its height on a
+                 small window; `w-80` against the pie's `w-56`, because a line
+                 needs width more than a circle does. -->
+            <div class="hidden h-48 w-80 shrink-0 lg:block" data-testid="balances-line">
+                {#if pinnedTrend !== null}
+                    <BalanceTrend series={pinnedTrend} />
+                {:else if trendError !== null}
+                    <p class="py-6 text-center text-xs text-error">Couldn't chart {pin.account}: {trendError.message}</p>
+                {:else}
+                    <div class="flex h-full items-center justify-center" aria-label="Loading balance line"><span class="loading loading-spinner"></span></div>
+                {/if}
+            </div>
+        {:else if !nothingHeld && slices.length > 0}
+            <div class="hidden h-48 w-56 shrink-0 lg:block" data-testid="balances-pie">
+                <PieChart data={slices} key="account" label="account" value={(d) => d.value} cRange={slices.map((d) => d.color)} padAngle={0.02} legend={false}>
+                    {#snippet tooltip()}
+                        <Tooltip.Root>
+                            {#snippet children({data})}
+                                {@const d = data as Slice}
+                                <div class="flex items-center gap-2 text-xs">
+                                    <span class="inline-block h-2 w-2 rounded-full" style="background:{d.color}"></span>
+                                    <span class="text-base-content/70">{d.account}</span>
+                                    <span class="font-semibold">{d.formatted}</span>
+                                </div>
+                            {/snippet}
+                        </Tooltip.Root>
+                    {/snippet}
+                </PieChart>
+            </div>
+        {/if}
+        {#if nothingHeld}
+            <p class="flex-1 py-6 text-center text-sm text-base-content/60">
+                No cash or short-term liability accounts hold {commodity}. Declare your bank and card accounts with
+                <code class="text-xs">type: C</code>
+                and <code class="text-xs">type: L</code> to see them here.
+            </p>
+        {:else}
             <!-- The scroll container. Bounded in vh so it shrinks with the
                  window rather than pushing the transaction table off screen. -->
             <div class="max-h-48 min-w-0 flex-1 overflow-y-auto pr-1 sm:max-h-56">
                 {@render list("Cash", cash, true)}
                 {@render list("Liabilities", liabilities, false)}
             </div>
-        </div>
-    {/if}
+        {/if}
+    </div>
 
     <!-- The guess, said out loud. Accounts kept out by their own `bsterm:` tag
          are NOT listed here — the owner wrote that tag and knows. These were

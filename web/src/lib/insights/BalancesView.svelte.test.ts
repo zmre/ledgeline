@@ -12,10 +12,13 @@
 // is `hidden lg:block` and is checked for presence only.
 
 import {render, screen, within} from "@testing-library/svelte";
+import {tick} from "svelte";
 import {beforeEach, describe, expect, it} from "vitest";
 import {add, dec, type Dec} from "#lib/domain/money.js";
 import type {AmountStyle} from "#lib/domain/types.js";
 import type {BalanceRow, BalanceSummary, CashBalancesView} from "#lib/journalView/types.js";
+import {filters} from "#lib/stores/filters.svelte.js";
+import {balanceSeries} from "#lib/testing/balanceSeriesFixture.js";
 import BalancesView from "./BalancesView.svelte";
 
 const USD: AmountStyle = {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]};
@@ -157,5 +160,122 @@ describe("COMPONENT BalancesView", () => {
     it("says what to do instead of showing an empty box when nothing is declared cash", () => {
         mount(view([]));
         expect(screen.queryByText(/No cash or short-term liability accounts/)).not.toBeNull();
+    });
+
+    describe("a row opens the account in the journal with its running balance (plan 36)", () => {
+        beforeEach(() => filters.reset());
+
+        it("filters to the account and pins it on click, keeping the date range", () => {
+            filters.setRange("2026-02-01", "2026-02-28");
+            mount();
+            (listRow("assets:bank:checking").querySelector("button") as HTMLButtonElement).click();
+            expect([...filters.value.accounts]).toEqual(["assets:bank:checking"]);
+            expect(filters.value.pin?.account).toBe("assets:bank:checking");
+            expect({from: filters.value.from, to: filters.value.to}).toEqual({from: "2026-02-01", to: "2026-02-28"});
+        });
+
+        it("is a real button, so Enter and Tab reach it", () => {
+            mount();
+            const button = listRow("liabilities:card").querySelector("button") as HTMLButtonElement;
+            expect(button.type).toBe("button");
+            button.focus();
+            expect(document.activeElement).toBe(button);
+        });
+
+        it("carries the currency on screen when there is a choice", async () => {
+            mount();
+            const select = screen.getByRole("combobox", {name: "Balance currency"}) as HTMLSelectElement;
+            select.value = "EUR";
+            select.dispatchEvent(new Event("change", {bubbles: true}));
+            await tick();
+            (listRow("assets:wallet:eur").querySelector("button") as HTMLButtonElement).click();
+            expect(filters.value.pin).toEqual({account: "assets:wallet:eur", commodity: "EUR"});
+        });
+
+        it("leaves the commodity to the engine when there is only one", () => {
+            mount(view([DOLLARS]));
+            (listRow("assets:bank:savings").querySelector("button") as HTMLButtonElement).click();
+            expect(filters.value.pin).toEqual({account: "assets:bank:savings", commodity: null});
+        });
+    });
+
+    describe("a pinned account's balance line replaces the pie (amendment A1)", () => {
+        beforeEach(() => filters.reset());
+
+        /** The line for `assets:bank:savings`, the account the tests pin. */
+        const SAVINGS = balanceSeries({account: "assets:bank:savings"});
+
+        it("shows the pie with no pin, the line with one, and the pie again on unpin", async () => {
+            const {rerender} = render(BalancesView, {view: VIEW, trend: null});
+            expect(screen.queryByTestId("balances-pie")).not.toBeNull();
+            expect(screen.queryByTestId("balances-line")).toBeNull();
+
+            (listRow("assets:bank:savings").querySelector("button") as HTMLButtonElement).click();
+            await rerender({view: VIEW, trend: SAVINGS});
+            expect(screen.queryByTestId("balances-pie")).toBeNull();
+            expect(screen.getByTestId("balances-line").querySelector('[data-testid="balance-trend"]')).not.toBeNull();
+            expect(screen.getByTestId("balances-line").textContent).toContain("assets:bank:savings");
+
+            filters.unpin();
+            await tick();
+            expect(screen.queryByTestId("balances-line")).toBeNull();
+            expect(screen.queryByTestId("balances-pie")).not.toBeNull();
+        });
+
+        it("hides the whole-journal totals while pinned, and brings them back on unpin", async () => {
+            render(BalancesView, {view: VIEW, trend: null});
+            const totals = ["balances-cash", "balances-liabilities", "balances-net"];
+            for (const id of totals) expect(screen.queryByTestId(id), id).not.toBeNull();
+
+            filters.pin("assets:bank:savings");
+            await tick();
+            for (const id of totals) expect(screen.queryByTestId(id), id).toBeNull();
+
+            filters.unpin();
+            await tick();
+            for (const id of totals) expect(screen.queryByTestId(id), id).not.toBeNull();
+        });
+
+        it("highlights the pinned row, and drops the pie's colour dots with the pie", async () => {
+            filters.pin("assets:bank:savings");
+            render(BalancesView, {view: VIEW, trend: SAVINGS});
+            await tick();
+            const pinned = listRow("assets:bank:savings").querySelector("button") as HTMLButtonElement;
+            const other = listRow("assets:bank:checking").querySelector("button") as HTMLButtonElement;
+            expect(pinned.getAttribute("aria-current")).toBe("true");
+            expect(pinned.className).toContain("bg-primary/15");
+            expect(other.getAttribute("aria-current")).toBeNull();
+            expect(other.className).not.toContain("bg-primary/15");
+            expect(listRow("assets:bank:checking").querySelector(".rounded-full")).toBeNull();
+        });
+
+        it("charts an account the list does not show, such as one pinned from a report", () => {
+            filters.pin("assets:brokerage");
+            render(BalancesView, {view: VIEW, trend: balanceSeries({account: "assets:brokerage"})});
+            expect(screen.getByTestId("balances-line").textContent).toContain("assets:brokerage");
+        });
+
+        it("waits rather than showing another account's line", () => {
+            filters.pin("assets:bank:checking");
+            render(BalancesView, {view: VIEW, trend: SAVINGS});
+            const slot = screen.getByTestId("balances-line");
+            expect(slot.querySelector('[data-testid="balance-trend"]')).toBeNull();
+            expect(slot.querySelector('[aria-label="Loading balance line"]')).not.toBeNull();
+            // ... and never falls back to the pie while it waits.
+            expect(screen.queryByTestId("balances-pie")).toBeNull();
+        });
+
+        it("says why when the line could not be loaded", () => {
+            filters.pin("assets:bank:checking");
+            render(BalancesView, {view: VIEW, trend: null, trendError: new Error("no posting is in the account")});
+            expect(screen.getByTestId("balances-line").textContent).toContain("Couldn't chart assets:bank:checking");
+        });
+
+        it("still charts a pin when no cash account holds the commodity", () => {
+            filters.pin("assets:bank:savings");
+            render(BalancesView, {view: view([]), trend: SAVINGS});
+            expect(screen.queryByText(/No cash or short-term liability accounts/)).not.toBeNull();
+            expect(screen.getByTestId("balances-line").querySelector('[data-testid="balance-trend"]')).not.toBeNull();
+        });
     });
 });

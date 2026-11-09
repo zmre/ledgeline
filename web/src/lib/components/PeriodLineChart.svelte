@@ -12,7 +12,8 @@
        A continuous scale over 0..n-1 otherwise puts a tick at 2.5 and labels it
        with whichever bucket rounds to it.
      - `points` ONLY AT 31 BUCKETS OR FEWER. Past that the markers touch and the
-       line disappears inside its own dots.
+       line disappears inside its own dots. A narrow chart lowers that with
+       `maxPoints` (the Balances tab's line, about 230px of plot, uses 12).
      - ONE SERIES GETS NO LEGEND — `heading` names it, and a box with a single
        swatch only restates the heading (dataviz single-series rule). Two or
        more always get one: identity is never colour-alone.
@@ -36,6 +37,16 @@
        dataviz rule against dashing is about exactly these marks. Neither is a
        channel — the sentence above the chart says what they mean.
 
+     - EXTENSION POINTS, ALL OPTIONAL AND OFF BY DEFAULT. A caller that needs
+       more than lines draws it itself rather than forking this file:
+       `overlay` is a snippet drawn ABOVE the marks, handed the chart's own
+       scales (`x(i)` for a bucket index, `y(n)` for a value) so its marks land
+       exactly on the line's; `extent` lists values it draws that the y-domain
+       must also fit (an overlay point off the line's range would otherwise be
+       clipped); `tooltipLines` adds plain-text lines under a bucket's values
+       in the tooltip; `onPeriodClick` makes a bucket clickable (the tooltip's
+       hovered bucket, so the whole column is the target, not a 6px dot).
+
      The legend is `ChartLegend`, not layerchart's built-in one — see there. -->
 <script lang="ts" module>
     // Declared in a plain .ts file so .ts modules can import it too (tsc cannot
@@ -46,7 +57,7 @@
 
 <script lang="ts">
     import type {Snippet} from "svelte";
-    import {LineChart, Rule} from "layerchart";
+    import {LineChart, Rule, Tooltip} from "layerchart";
     import {chartColors} from "#lib/format/chartColors.svelte.js";
     import ChartHeading from "./ChartHeading.svelte";
     import ChartLegend from "./ChartLegend.svelte";
@@ -64,8 +75,13 @@
         projectedFrom = null,
         empty = "Nothing to chart in this range.",
         height = "h-56 sm:h-64",
+        maxPoints = 31,
         testid,
         actions,
+        overlay,
+        extent = [],
+        tooltipLines,
+        onPeriodClick,
     }: {
         /** Names what is plotted. A single series relies on this instead of a legend. */
         heading: string;
@@ -92,10 +108,28 @@
         empty?: string;
         /** Height utilities for the plot box. */
         height?: string;
+        /** Draw a marker on each point only at this many buckets or fewer. */
+        maxPoints?: number;
         testid?: string;
         /** Controls that change what the chart shows (toggles, pickers), set in the heading row. */
         actions?: Snippet;
+        /** Extra SVG drawn above the marks, positioned with the chart's own scales. */
+        overlay?: Snippet<[PlotScales]>;
+        /** Values `overlay` draws that the y-domain must include. */
+        extent?: readonly number[];
+        /** Extra tooltip lines for a bucket (by index); none for most. */
+        tooltipLines?: (index: number) => readonly string[];
+        /** Called with the bucket index when the plot is clicked over a bucket. */
+        onPeriodClick?: (index: number) => void;
     } = $props();
+
+    /** The chart's scales, in the plot layer's own coordinates. */
+    interface PlotScales {
+        /** A bucket index → its x. */
+        x: (index: number) => number;
+        /** A value → its y. */
+        y: (value: number) => number;
+    }
 
     const axisFormat = $derived(formatAxis ?? formatValue);
 
@@ -122,18 +156,28 @@
      * layerchart's own domain exactly as it was.
      */
     const yDomain = $derived.by<[number, number] | undefined>(() => {
-        if (!includeZero) return undefined;
-        let lo = 0;
-        let hi = 0;
-        for (const r of rows) {
-            for (const n of r.v) {
-                if (n === null) continue;
-                lo = Math.min(lo, n);
-                hi = Math.max(hi, n);
-            }
+        const extra = extent.filter((n) => Number.isFinite(n));
+        if (!includeZero && extra.length === 0) return undefined;
+        let lo = includeZero ? 0 : Infinity;
+        let hi = includeZero ? 0 : -Infinity;
+        for (const n of [...rows.flatMap((r) => r.v), ...extra]) {
+            if (n === null) continue;
+            lo = Math.min(lo, n);
+            hi = Math.max(hi, n);
         }
         return [lo, hi];
     });
+
+    /** The hovered row's bucket index, from whatever layerchart hands a tooltip or click. */
+    const indexOf = (data: unknown): number | null => {
+        const i = (data as Partial<Row> | null | undefined)?.i;
+        return typeof i === "number" && Number.isInteger(i) && i >= 0 && i < rows.length ? i : null;
+    };
+
+    function clickPeriod(_event: MouseEvent, details: {data: unknown}): void {
+        const i = indexOf(details.data);
+        if (i !== null) onPeriodClick?.(i);
+    }
 
     /** Only a marker that lands on a real bucket is drawn. */
     const marker = $derived(markAt !== null && Number.isInteger(markAt) && markAt >= 0 && markAt < rows.length ? markAt : null);
@@ -171,6 +215,30 @@
     );
 </script>
 
+<!-- The tooltip with a caller's extra lines. Passed only when `tooltipLines`
+     is: ANY `tooltip` snippet replaces layerchart's default one, even an empty
+     one, so every other chart keeps the default by never receiving this. -->
+{#snippet linesTooltip()}
+    {#if tooltipLines !== undefined}
+        <Tooltip.Root>
+            {#snippet children({data})}
+                {@const i = indexOf(data)}
+                {#if i !== null}
+                    <Tooltip.Header>{labelOf(i)}</Tooltip.Header>
+                    <Tooltip.List>
+                        {#each series as s, k (k)}
+                            <Tooltip.Item label={s.name} value={tooltipFormat(rows[i].v[k])} color={chartSeries[k].color} />
+                        {/each}
+                    </Tooltip.List>
+                    {#each tooltipLines(i) as line, n (n)}
+                        <div class="mt-1 max-w-64 text-xs" data-tooltip-line>{line}</div>
+                    {/each}
+                {/if}
+            {/snippet}
+        </Tooltip.Root>
+    {/if}
+{/snippet}
+
 <div class="w-full">
     <div class="mb-1 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
         <ChartHeading {heading} {note} />
@@ -179,15 +247,17 @@
     {#if nothingToDraw}
         <p class="py-8 text-center text-sm text-base-content/60">{empty}</p>
     {:else}
-        <div class="w-full {height}" data-testid={testid}>
+        <div class="w-full {height} {onPeriodClick === undefined ? '' : 'cursor-pointer'}" data-testid={testid}>
             <LineChart
                 data={rows}
                 x={(d) => d.i}
                 series={chartSeries}
-                points={rows.length <= 31}
+                points={rows.length <= maxPoints}
                 brush={false}
                 {yDomain}
-                yNice={includeZero}
+                yNice={includeZero || extent.length > 0}
+                onTooltipClick={onPeriodClick === undefined ? undefined : clickPeriod}
+                tooltip={tooltipLines === undefined ? undefined : linesTooltip}
                 // `right` is half a period label ("Jun 2028" at text-xs): the
                 // x-axis centres each label on its point, so the LAST one would
                 // otherwise hang off the edge and be clipped.
@@ -214,6 +284,11 @@
                     {/if}
                     {#if marker !== null}
                         <Rule x={marker} stroke={chartColors.flowOut} data-rule="mark" />
+                    {/if}
+                {/snippet}
+                {#snippet aboveMarks({context})}
+                    {#if overlay !== undefined}
+                        {@render overlay({x: (i) => context.xScale(i), y: (n) => context.yScale(n)})}
                     {/if}
                 {/snippet}
             </LineChart>

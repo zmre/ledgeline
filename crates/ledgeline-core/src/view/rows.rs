@@ -17,8 +17,11 @@
 
 use super::checks::WireFlag;
 use super::wire::{DeclaredStyles, WireDec, WireStyle, js_trim_end};
+use crate::decimal::Dec;
 use crate::display::{MAX_DISPLAY_DECIMALS, format_amount};
-use crate::model::{Amount, CostKind, Journal, Posting, PostingType, Status, Transaction};
+use crate::model::{
+    Amount, AmountStyle, Commodity, CostKind, Journal, Posting, PostingType, Status, Transaction,
+};
 use crate::wire::{account_tag_map, posting_tags};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -181,6 +184,28 @@ impl<'a> RowContext<'a> {
             }),
             elided: posting.elided,
         }
+    }
+
+    /// `quantity` of `commodity` as a [`RowAmount`], for a figure no posting
+    /// wrote (a running balance, an assertion's calculated value). Displays in
+    /// the declared style when there is one, else in `style` — either way with
+    /// at least `quantity`'s own places, so no digit the sum holds is hidden.
+    #[must_use]
+    pub fn amount_of(
+        &self,
+        commodity: &Commodity,
+        quantity: Dec,
+        style: &AmountStyle,
+    ) -> RowAmount {
+        self.amount(&Amount {
+            commodity: commodity.clone(),
+            quantity,
+            style: AmountStyle {
+                precision: style.precision.max(quantity.places),
+                ..style.clone()
+            },
+            cost: None,
+        })
     }
 
     fn amount(&self, amount: &Amount) -> RowAmount {

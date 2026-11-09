@@ -2,11 +2,15 @@
     // Top filter bar (WP-04): date range + account tree + search in a wrapping
     // row (single row on desktop; controls wrap/stack at 375px, with the
     // account tree in a compact dropdown popover). Removable chips appear when
-    // filters differ from the default.
+    // filters differ from the default. A pinned running balance (plan 36) gets
+    // its own chip, and each account chip a ⚖ button that pins that account.
+    import {registerKeys} from "#lib/keys/keymap.svelte.js";
+    import {PRIORITY} from "#lib/keys/types.js";
     import {defaultFilter, filters} from "#lib/stores/filters.svelte.js";
     import {toggleSubtreeRoot} from "./treeSelect";
     import AccountTreeSelect from "./AccountTreeSelect.svelte";
     import DateRangePicker from "./DateRangePicker.svelte";
+    import RunningPinChip from "./RunningPinChip.svelte";
     import SearchInput from "./SearchInput.svelte";
 
     let {accountNames}: {accountNames: string[]} = $props();
@@ -73,9 +77,35 @@
         }
     });
 
+    const pin = $derived(filters.value.pin ?? null);
+
+    /**
+     * `b`: unpin when pinned; otherwise pin the one account the filter is on.
+     * Off (and so absent from the help sheet) when neither applies — with two
+     * accounts selected there is no telling which one was meant.
+     */
+    function togglePin(): void {
+        if (pin !== null) filters.unpin();
+        else if (accounts.size === 1) filters.pin([...accounts][0]);
+    }
+
+    registerKeys({
+        id: "journal-running-pin",
+        priority: PRIORITY.widget,
+        bindings: [
+            {
+                keys: "b",
+                label: "Pin or unpin the running balance",
+                group: "Filters",
+                enabled: () => pin !== null || accounts.size === 1,
+                run: togglePin,
+            },
+        ],
+    });
+
     const dflt = defaultFilter();
     const rangeChanged = $derived(filters.value.from !== dflt.from || filters.value.to !== dflt.to);
-    const hasChips = $derived(rangeChanged || accounts.size > 0 || filters.value.query !== "");
+    const hasChips = $derived(rangeChanged || accounts.size > 0 || filters.value.query !== "" || pin !== null);
     const rangeLabel = $derived(
         filters.value.from === null && filters.value.to === null ? "All dates" : `${filters.value.from ?? "…"} → ${filters.value.to ?? "…"}`
     );
@@ -103,6 +133,16 @@
             {#each selectedAccounts as name (name)}
                 <span class="badge max-w-full gap-1 badge-outline">
                     <span class="truncate">{name}</span>
+                    {#if pin?.account !== name}
+                        <!-- Pins this account's running balance and keeps the filter: how you pin from inside the journal. -->
+                        <button
+                            type="button"
+                            class="cursor-pointer opacity-60 hover:opacity-100"
+                            title="Show the running balance of {name}"
+                            aria-label="Show running balance of {name}"
+                            onclick={() => filters.pin(name)}>⚖</button
+                        >
+                    {/if}
                     <button type="button" class="cursor-pointer" aria-label="Remove account filter {name}" onclick={() => toggleAccount(name)}>✕</button>
                 </span>
             {/each}
@@ -111,6 +151,9 @@
                     <span class="truncate">“{filters.value.query}”</span>
                     <button type="button" class="cursor-pointer" aria-label="Clear search filter" onclick={() => filters.setQuery("")}>✕</button>
                 </span>
+            {/if}
+            {#if pin !== null}
+                <RunningPinChip {pin} />
             {/if}
             <button type="button" class="btn btn-ghost btn-xs" onclick={resetAll}>Reset all</button>
         </div>

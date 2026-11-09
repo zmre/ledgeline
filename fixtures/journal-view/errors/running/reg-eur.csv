@@ -1,0 +1,4 @@
+"txnidx","date","code","description","account","amount","total"
+"5","2026-01-10","","euro deposit","assets:bank:checking","100,00 EUR","100,00 EUR"
+"8","2026-01-15","","buy euros at a cost","assets:bank:checking","50,00 EUR","150,00 EUR"
+"14","2026-02-03","","euros back out","assets:bank:checking","-150,00 EUR","0"

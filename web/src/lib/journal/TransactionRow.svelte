@@ -11,12 +11,14 @@
     import {descriptionPatch} from "#lib/api/editMapping.js";
     import {maxSeverity, type Problem} from "#lib/checks/engine.js";
     import type {Transaction} from "#lib/domain/types.js";
+    import type {RunningCell} from "#lib/journalView/types.js";
     import {editing} from "#lib/stores/editing.svelte.js";
     import type {ColumnConfig} from "#lib/stores/settings.svelte.js";
     import {rowShadow, stripeColor, type RowMarker} from "#lib/review/card.js";
     import AccountsCell from "./AccountsCell.svelte";
     import AmountCell from "./AmountCell.svelte";
     import CommentIndicator from "./CommentIndicator.svelte";
+    import RunningCells from "./RunningCells.svelte";
     import StatusCell from "./StatusCell.svelte";
     import {txnModal} from "./edit/modalState.svelte";
     import {rowActions} from "./rowAction.svelte";
@@ -30,6 +32,8 @@
         pulse = false,
         cursor = false,
         marker = null,
+        pinned = null,
+        running = null,
     }: {
         txn: Transaction;
         columns: ColumnConfig;
@@ -39,6 +43,10 @@
         cursor?: boolean;
         /** The review stripe (plan 32 D20): unknown, unreviewed-in-window, or none. */
         marker?: RowMarker;
+        /** The pinned running balance's account (plan 36): adds the Change and Balance columns. */
+        pinned?: string | null;
+        /** This row's running-balance cell, while `pinned` is set. */
+        running?: RunningCell | null;
     } = $props();
 
     const amounts = $derived(txnFlowAmounts(txn));
@@ -173,6 +181,9 @@
         {#if columns.amount}
             <td class="py-1"><AmountCell {amounts} /></td>
         {/if}
+        {#if pinned !== null}
+            <RunningCells cell={running} {pinned} txnIndex={txn.index} txnDate={txn.date} />
+        {/if}
     </tr>
 {:else}
     <!-- A ring, not a background: the card already has `bg-base-200`. -->
@@ -196,6 +207,9 @@
             <div class="flex items-center justify-between gap-2">
                 {#if columns.accounts}
                     <div class="min-w-0 overflow-hidden"><AccountsCell {txn} /></div>
+                {/if}
+                {#if pinned !== null}
+                    <RunningCells cell={running} {pinned} txnIndex={txn.index} txnDate={txn.date} mode="card" />
                 {/if}
                 {#if columns.date}
                     <span class="shrink-0 font-mono text-xs whitespace-nowrap text-base-content/60">{txn.date}</span>

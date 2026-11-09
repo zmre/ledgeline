@@ -651,6 +651,16 @@ export interface JournalQueryFilter {
     query: string;
 }
 
+/**
+ * A pinned running balance (plan 36) as `/api/journal/rows` takes it:
+ * `balance=<account>`, plus `balanceCommodity=` when one was chosen (absent: the
+ * engine's default, the commodity with most postings in the subtree).
+ */
+export interface RunningPinQuery {
+    account: string;
+    commodity: string | null;
+}
+
 /** `from`/`to`/`accounts`/`q`, empty parts dropped; accounts sorted so equal filters build equal URLs. */
 export function filterParams(filter: JournalQueryFilter): Record<string, QueryValue> {
     return {
@@ -1155,8 +1165,45 @@ export class LedgelineApi {
      * display order (`desc`, newest first) or its exact reverse (`asc`), each
      * with its check findings as of `today`. `total` is the whole filtered count.
      */
-    journalRows(filter: JournalQueryFilter, window: {offset: number; limit: number; order?: "asc" | "desc"; today: string}): Promise<unknown> {
-        return this.getJson(`/api/journal/rows${queryString({...filterParams(filter), ...window})}`);
+    journalRows(
+        filter: JournalQueryFilter,
+        window: {offset: number; limit: number; order?: "asc" | "desc"; today: string},
+        pin: RunningPinQuery | null = null
+    ): Promise<unknown> {
+        const running = pin === null ? {} : {balance: pin.account, balanceCommodity: pin.commodity ?? undefined};
+        return this.getJson(`/api/journal/rows${queryString({...filterParams(filter), ...window, ...running})}`);
+    }
+
+    /**
+     * The pinned subtree's commodities (most postings first) and its balance
+     * assertions per commodity in evaluation order (decode with
+     * `decodeRunningInfo`) — the pin chip's picker, "first failure" and
+     * "narrow to gap". The whole journal, ignoring every filter. A 400 means
+     * the account matches nothing.
+     */
+    journalRunning(account: string): Promise<unknown> {
+        return this.getJson(`/api/journal/running${queryString({account})}`);
+    }
+
+    /**
+     * The pinned subtree's balance at the end of every period of `from`–`to`
+     * (decode with `decodeBalanceSeries`): the Balances tab's line while an
+     * account is pinned. `commodity` null is the engine's default, exactly as
+     * for the rows' `balanceCommodity`; an open `from` is the subtree's first
+     * posting, an open `to` is `today`. The whole journal counts toward every
+     * value — the range only sets the window. A 400 means the account matches
+     * nothing.
+     */
+    journalRunningSeries(query: {account: string; commodity: string | null; from: string | null; to: string | null; today: string}): Promise<unknown> {
+        return this.getJson(
+            `/api/journal/running/series${queryString({
+                account: query.account,
+                commodity: query.commodity ?? undefined,
+                from: query.from ?? undefined,
+                to: query.to ?? undefined,
+                today: query.today,
+            })}`
+        );
     }
 
     /**

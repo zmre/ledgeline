@@ -19,6 +19,7 @@
     import {filters} from "#lib/stores/filters.svelte.js";
     import {journal} from "#lib/stores/journal.svelte.js";
     import {journalView} from "#lib/stores/journalView.svelte.js";
+    import {running} from "#lib/stores/running.svelte.js";
     import {onServerReady} from "#lib/stores/serverWatch.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
 
@@ -28,12 +29,29 @@
     // charts are fetched from the engine for exactly what is on screen (plan 26
     // B5). A generation change — an edit, a file change the poll noticed —
     // re-reads the same view; a filter change asks for a different one.
+    //
+    // A pinned running balance (plan 36) rides along on the rows. An account
+    // the engine refuses (a stale `bal=` link) is dropped from the request
+    // rather than left to fail every block; the pin chip says why.
     $effect(() => {
         const serverUrl = settings.serverUrl;
         const generation = journal.generation;
         const filter = filters.value;
         if (serverUrl === null || generation === null) return;
-        journalView.sync(serverUrl, generation, filter);
+        const pin = filter.pin ?? null;
+        journalView.sync(serverUrl, generation, filter, pin === null || running.refused(pin.account) ? null : pin);
+    });
+
+    // The pin's facts — its commodities and assertions, for the chip and the
+    // marks — follow (server, generation, pinned account). A derived string, so
+    // filter changes that keep the pin do not refetch them.
+    const pinnedAccount = $derived(filters.value.pin?.account ?? null);
+    $effect(() => {
+        const serverUrl = settings.serverUrl;
+        const generation = journal.generation;
+        const account = pinnedAccount;
+        if (serverUrl === null || generation === null || account === null) return;
+        void running.load(serverUrl, {account, generation});
     });
     const count = $derived(journalView.total ?? 0);
     const total = $derived(journalView.summary?.visibleNet ?? []);
@@ -64,8 +82,20 @@
         const filename = from === null && to === null ? "journal-all-dates.xlsx" : `journal-${from ?? "start"}-to-${to ?? "end"}.xlsx`;
         // Oldest first, as a journal is read (the table shows newest first): the
         // engine pages the filtered view in exactly that order.
-        const ordered = await journalView.allRows();
-        await exportJournalXlsx(ordered, (commodity) => styleOf(styles, commodity), {title: journal.title, period}, filename);
+        const ordered = await journalView.allViewRows();
+        // With a pin, the export carries the Change and Balance columns too: it
+        // is "exactly what the table shows", and the table shows them.
+        const pin = journalView.query?.pin ?? null;
+        const runningColumns =
+            pin === null
+                ? undefined
+                : {account: pin.account, byIndex: new Map(ordered.flatMap((row) => (row.running == null ? [] : [[row.txn.index, row.running] as const])))};
+        await exportJournalXlsx(
+            ordered.map((row) => row.txn),
+            (commodity) => styleOf(styles, commodity),
+            {title: journal.title, period, running: runningColumns},
+            filename
+        );
     }
 
     const loadFailed = $derived(journal.status === "error" && journal.generation === null);

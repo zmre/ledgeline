@@ -59,6 +59,127 @@ export interface JournalRow {
     unknown: boolean;
     /** Review marker: it carries a `reviewed` tag of any value (`ignore` included), so Recents skips it. */
     reviewed: boolean;
+    /**
+     * The pinned account's running balance at this row (plan 36): null when
+     * nothing is pinned, absent on rows from routes that never carry one (the
+     * review queue).
+     */
+    running?: RunningCell | null;
+}
+
+/** A balance assertion's operator, as written: `=` single-commodity, `==` total, `*` inclusive of subaccounts. */
+export type AssertionOp = "=" | "==" | "=*" | "==*";
+
+/**
+ * One balance assertion on a posting in the pinned subtree, as the ENGINE's
+ * assertion checker judged it — never by comparing it to the Balance column,
+ * which sums the whole subtree while a plain `=` on a child asserts only that
+ * child.
+ */
+export interface RunningAssertion {
+    /** The posting's account: the pinned root, or a child of it. */
+    account: string;
+    op: AssertionOp;
+    asserted: Amount;
+    /** What the checker found instead; present exactly when `ok` is false. */
+    calculated: Amount | null;
+    ok: boolean;
+}
+
+/**
+ * The pinned subtree at one row, in one commodity (`GET /api/journal/rows?balance=`).
+ *
+ * The balance is computed over the WHOLE journal in hledger's order (posting
+ * date, then file order), so no filter changes it — filters only choose which
+ * rows are shown, exactly like `hledger reg -H`.
+ */
+export interface RunningCell {
+    /** The subtree's net change in the chosen commodity on this row; null when the row has no posting there. */
+    change: Amount | null;
+    /** The subtree's balance after this row (carried from earlier when it does not touch the subtree). */
+    balance: Amount;
+    /** The row has a posting in the pinned subtree (in any commodity). */
+    touches: boolean;
+    /** The day the subtree's leg is counted on, when a `date:` tag moves it off the row's own date. */
+    postedOn: ISODate | null;
+    assertions: RunningAssertion[];
+}
+
+/** One commodity the pinned subtree holds, and how many postings it has there (the picker's ranking). */
+export interface RunningCommodity {
+    commodity: string;
+    postings: number;
+}
+
+/** One balance assertion in the subtree, in evaluation (chronological) order. */
+export interface RunningAssertionPoint {
+    tindex: number;
+    date: ISODate;
+    ok: boolean;
+}
+
+/** `GET /api/journal/running?account=` — what the pin's chip, picker, "first failure" and "narrow to gap" need. */
+export interface RunningInfo {
+    generation: string;
+    account: string;
+    /** Most postings first; the first is the default. */
+    commodities: RunningCommodity[];
+    /** Per commodity, every assertion in the subtree in hledger's evaluation order. */
+    assertions: Readonly<Record<string, readonly RunningAssertionPoint[]>>;
+}
+
+/** The grain a balance-over-time series is drawn at. */
+export type SeriesInterval = "daily" | "weekly" | "monthly" | "quarterly" | "yearly";
+
+/** A failing balance assertion inside one period of the balance line. */
+export interface BalanceSeriesFailure {
+    tindex: number;
+    /** The day the assertion is checked on (its posting's effective date). */
+    date: ISODate;
+    /** The asserted account: the pinned root, or a child of it. */
+    account: string;
+    op: AssertionOp;
+    asserted: Dec;
+    calculated: Dec;
+    /**
+     * Where the line would be at the period's end had the books matched the
+     * assertion: the point's balance shifted by `asserted − calculated`. For a
+     * plain `=` on a child (which asserts the child alone) this still draws the
+     * GAP from the subtree's line, so the vertical distance always reads "off by".
+     */
+    expected: Dec;
+}
+
+/** One period of the balance line: the subtree's balance at its (window-clamped) end. */
+export interface BalanceSeriesPoint {
+    /** The engine's bucket key (`2026-03`, `2026-W10`, `2026-03-02`). */
+    bucket: string;
+    /** The engine's label for the key ("Mar 2026", "W10 2026"). */
+    label: string;
+    /** The day the balance is taken at. */
+    end: ISODate;
+    balance: Dec;
+    /** The newest transaction counted in the period (what a click scrolls to); null when nothing posted. */
+    tindex: number | null;
+    failures: BalanceSeriesFailure[];
+}
+
+/**
+ * `GET /api/journal/running/series` — the pinned subtree's balance at the end
+ * of every period of the journal filter's date range (plan 36 amendment A1).
+ * Every figure is in `commodity` and displays in `style`.
+ */
+export interface BalanceSeries {
+    generation: string;
+    account: string;
+    /** The commodity drawn: the requested one, or the engine's default for the subtree. */
+    commodity: string;
+    style: AmountStyle;
+    interval: SeriesInterval;
+    /** The window drawn, both ends resolved (an open start is the first posting, an open end today). */
+    from: ISODate;
+    to: ISODate;
+    points: BalanceSeriesPoint[];
 }
 
 /** `GET /api/journal/rows` — one window of the filtered journal. */

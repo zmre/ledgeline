@@ -21,6 +21,16 @@ import type {
     PieDatum,
     RowPosition,
     RowsPage,
+    AssertionOp,
+    BalanceSeries,
+    BalanceSeriesFailure,
+    BalanceSeriesPoint,
+    RunningAssertion,
+    RunningAssertionPoint,
+    RunningCell,
+    RunningCommodity,
+    RunningInfo,
+    SeriesInterval,
 } from "#lib/journalView/types.js";
 import type {ReviewCounts} from "#lib/review/types.js";
 import {ApiShapeError} from "./client";
@@ -303,6 +313,144 @@ export function decodeRow(raw: unknown, context = "row"): JournalRow {
         // forecast rows): nothing to review there. Present, they must be booleans.
         unknown: value.unknown === undefined ? false : bool(value.unknown, `${context}.unknown`),
         reviewed: value.reviewed === undefined ? false : bool(value.reviewed, `${context}.reviewed`),
+        // Present only when the request pinned an account (`balance=`).
+        running: value.running === undefined ? null : decodeRunningCell(value.running, `${context}.running`),
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Running balances (plan 36): `running` on a row, and `/api/journal/running`
+// ---------------------------------------------------------------------------
+
+const ASSERTION_OPS: ReadonlySet<string> = new Set<AssertionOp>(["=", "==", "=*", "==*"]);
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+function isoDate(raw: unknown, context: string): string {
+    const value = str(raw, context);
+    if (!ISO_DATE.test(value)) throw new ApiShapeError(`${context}: ${JSON.stringify(value)} is not a YYYY-MM-DD date`);
+    return value;
+}
+
+function decodeRunningAssertion(raw: unknown, context: string): RunningAssertion {
+    const value = obj(raw, context);
+    const op = str(value.op, `${context}.op`);
+    if (!ASSERTION_OPS.has(op)) throw new ApiShapeError(`${context}: unknown assertion operator ${JSON.stringify(op)}`);
+    const ok = bool(value.ok, `${context}.ok`);
+    // A failure without the figure it found would render as a ✗ with no
+    // explanation, which is the one thing the mark exists to give.
+    if (!ok && value.calculated === undefined) throw new ApiShapeError(`${context}: a failing assertion needs its calculated amount`);
+    return Object.freeze({
+        account: str(value.account, `${context}.account`),
+        op: op as AssertionOp,
+        asserted: decodeAmount(value.asserted, `${context}.asserted`),
+        calculated: value.calculated === undefined ? null : decodeAmount(value.calculated, `${context}.calculated`),
+        ok,
+    });
+}
+
+/** A row's `running` object → the Change/Balance cells and their assertion marks. */
+export function decodeRunningCell(raw: unknown, context = "running"): RunningCell {
+    const value = obj(raw, context);
+    if (value.change === undefined) throw new ApiShapeError(`${context}.change: expected an amount or null`);
+    return Object.freeze({
+        change: value.change === null ? null : decodeAmount(value.change, `${context}.change`),
+        balance: decodeAmount(value.balance, `${context}.balance`),
+        touches: bool(value.touches, `${context}.touches`),
+        postedOn: value.postedOn === undefined ? null : isoDate(value.postedOn, `${context}.postedOn`),
+        assertions: Object.freeze(
+            arr(value.assertions, `${context}.assertions`).map((a, i) => decodeRunningAssertion(a, `${context}.assertions[${i}]`))
+        ) as RunningAssertion[],
+    });
+}
+
+/** `GET /api/journal/running` → the pinned subtree's commodities and its assertions in evaluation order. */
+export function decodeRunningInfo(raw: unknown): RunningInfo {
+    const body = obj(raw, "journal running");
+    const commodities = arr(body.commodities, "journal running commodities").map((entry, i): RunningCommodity => {
+        const context = `journal running commodities[${i}]`;
+        const value = obj(entry, context);
+        const postings = num(value.postings, `${context}.postings`);
+        if (!Number.isSafeInteger(postings) || postings < 0) throw new ApiShapeError(`${context}: invalid postings count ${postings}`);
+        return Object.freeze({commodity: str(value.commodity, `${context}.commodity`), postings});
+    });
+    const assertions: Record<string, readonly RunningAssertionPoint[]> = {};
+    for (const [commodity, list] of Object.entries(obj(body.assertions, "journal running assertions"))) {
+        const context = `journal running assertions[${JSON.stringify(commodity)}]`;
+        assertions[commodity] = Object.freeze(
+            arr(list, context).map((entry, i): RunningAssertionPoint => {
+                const value = obj(entry, `${context}[${i}]`);
+                const tindex = num(value.tindex, `${context}[${i}].tindex`);
+                if (!Number.isSafeInteger(tindex) || tindex < 1) throw new ApiShapeError(`${context}[${i}]: invalid tindex ${tindex}`);
+                return Object.freeze({tindex, date: isoDate(value.date, `${context}[${i}].date`), ok: bool(value.ok, `${context}[${i}].ok`)});
+            })
+        );
+    }
+    return Object.freeze({
+        generation: str(body.generation, "journal running generation"),
+        account: str(body.account, "journal running account"),
+        commodities: Object.freeze(commodities) as RunningCommodity[],
+        assertions: Object.freeze(assertions),
+    });
+}
+
+const SERIES_INTERVALS: ReadonlySet<string> = new Set<SeriesInterval>(["daily", "weekly", "monthly", "quarterly", "yearly"]);
+
+function tindexOf(raw: unknown, context: string): number {
+    const tindex = num(raw, context);
+    if (!Number.isSafeInteger(tindex) || tindex < 1) throw new ApiShapeError(`${context}: invalid tindex ${tindex}`);
+    return tindex;
+}
+
+function decodeSeriesFailure(raw: unknown, context: string): BalanceSeriesFailure {
+    const value = obj(raw, context);
+    const op = str(value.op, `${context}.op`);
+    if (!ASSERTION_OPS.has(op)) throw new ApiShapeError(`${context}: unknown assertion operator ${JSON.stringify(op)}`);
+    return Object.freeze({
+        tindex: tindexOf(value.tindex, `${context}.tindex`),
+        date: isoDate(value.date, `${context}.date`),
+        account: str(value.account, `${context}.account`),
+        op: op as AssertionOp,
+        asserted: decodeViewDec(value.asserted, `${context}.asserted`),
+        calculated: decodeViewDec(value.calculated, `${context}.calculated`),
+        expected: decodeViewDec(value.expected, `${context}.expected`),
+    });
+}
+
+function decodeSeriesPoint(raw: unknown, context: string): BalanceSeriesPoint {
+    const value = obj(raw, context);
+    // Both are omitted rather than empty: a period with no posting has no row
+    // to scroll to, and a healthy period has no failures.
+    const failures =
+        value.failures === undefined ? [] : arr(value.failures, `${context}.failures`).map((f, i) => decodeSeriesFailure(f, `${context}.failures[${i}]`));
+    return Object.freeze({
+        bucket: str(value.bucket, `${context}.bucket`),
+        label: str(value.label, `${context}.label`),
+        end: isoDate(value.end, `${context}.end`),
+        balance: decodeViewDec(value.balance, `${context}.balance`),
+        tindex: value.tindex === undefined ? null : tindexOf(value.tindex, `${context}.tindex`),
+        failures: Object.freeze(failures) as BalanceSeriesFailure[],
+    });
+}
+
+/** `GET /api/journal/running/series` → the pinned subtree's balance line. */
+export function decodeBalanceSeries(raw: unknown): BalanceSeries {
+    const body = obj(raw, "balance series");
+    const interval = str(body.interval, "balance series interval");
+    if (!SERIES_INTERVALS.has(interval)) throw new ApiShapeError(`balance series: unknown interval ${JSON.stringify(interval)}`);
+    const from = isoDate(body.from, "balance series from");
+    const to = isoDate(body.to, "balance series to");
+    if (from > to) throw new ApiShapeError(`balance series: window ${from} – ${to} is backwards`);
+    return Object.freeze({
+        generation: str(body.generation, "balance series generation"),
+        account: str(body.account, "balance series account"),
+        commodity: str(body.commodity, "balance series commodity"),
+        style: decodeViewStyle(body.style, "balance series style"),
+        interval: interval as SeriesInterval,
+        from,
+        to,
+        points: Object.freeze(
+            arr(body.points, "balance series points").map((p, i) => decodeSeriesPoint(p, `balance series points[${i}]`))
+        ) as BalanceSeriesPoint[],
     });
 }
 

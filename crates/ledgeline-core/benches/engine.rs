@@ -40,6 +40,7 @@
 mod corpus;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use ledgeline_core::assertions::posting_order;
 use ledgeline_core::decimal::Dec;
 use ledgeline_core::holdings::SeriesWindow;
 use ledgeline_core::holdings::{HoldingsScope, ScopeMode, compute_holdings, holdings_series};
@@ -58,6 +59,7 @@ use ledgeline_core::reports::{
     declared_types, detect_subscriptions, income_statement, income_statement_columns,
     infer_market_prices, insights, net_worth, range_buckets, resolve_account_type, roll_up,
 };
+use ledgeline_core::view::running::RunningBalance;
 use ledgeline_core::{parse_journal, wire};
 use std::collections::{BTreeMap, BTreeSet};
 use std::hint::black_box;
@@ -957,6 +959,43 @@ fn full_scan_run(fx: &Fixture, scenario: &Scenario) -> usize {
 }
 
 // ---------------------------------------------------------------------------
+// running balance — plan 36
+// ---------------------------------------------------------------------------
+
+/// The journal view's pinned-account column: the shared evaluation order
+/// (built once per snapshot) and one subtree's running balance over it (built
+/// per pinned root, LRU of 4). `assets` is the widest pin the corpus has; the
+/// checking account is the typical one.
+fn bench_running(c: &mut Criterion, fixtures: &[Fixture]) {
+    let mut group = c.benchmark_group("running");
+    heavy(&mut group);
+    for fixture in fixtures {
+        let id = fixture.id();
+        group.throughput(Throughput::Elements(fixture.txns as u64));
+        group.bench_with_input(
+            BenchmarkId::new("posting_order", &id),
+            fixture,
+            |b, fixture| {
+                b.iter(|| posting_order(black_box(&fixture.journal)));
+            },
+        );
+        let order = posting_order(&fixture.journal);
+        for (label, root) in [
+            ("build_leaf", "assets:bank:chase:checking"),
+            ("build_assets", "assets"),
+        ] {
+            group.bench_with_input(BenchmarkId::new(label, &id), fixture, |b, fixture| {
+                b.iter(|| {
+                    RunningBalance::build(black_box(&fixture.journal), black_box(&order), root)
+                        .expect("no overflow")
+                });
+            });
+        }
+    }
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
 
 fn all(c: &mut Criterion) {
     let fixtures = fixtures();
@@ -967,6 +1006,7 @@ fn all(c: &mut Criterion) {
     bench_reports(c, &fixtures);
     bench_holdings(c, &fixtures);
     bench_projections(c, &fixtures);
+    bench_running(c, &fixtures);
 }
 
 criterion_group!(benches, all);

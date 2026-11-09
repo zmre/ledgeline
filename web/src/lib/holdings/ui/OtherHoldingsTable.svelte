@@ -103,7 +103,7 @@
                 run: () => {
                     const holding = cursor.item;
                     // One account per row here, unlike a stock that can span two brokerages.
-                    if (holding !== null) void openJournal({accounts: [holding.account], preset: "all"});
+                    if (holding !== null) void openJournal({accounts: [holding.account], preset: "all", pin: {account: holding.account}});
                 },
             },
         ],

@@ -13,6 +13,9 @@
 //!   and the display order, formerly `journal/rowModel.ts`.
 //! - [`series`] — the insights summary and charts, formerly
 //!   `insights/series.ts`.
+//! - [`running`] — a pinned account's running balance and assertion marks
+//!   (plan 36). New engine logic rather than a port, held to an `hledger reg`
+//!   golden instead.
 //!
 //! Every module is a PORT, held to goldens captured from the TypeScript before
 //! it was deleted (`fixtures/journal-view/*.json`). Behaviour changes belong in
@@ -22,6 +25,7 @@ pub mod cash;
 pub mod checks;
 pub mod filter;
 pub mod rows;
+pub mod running;
 pub mod series;
 pub mod wire;
 

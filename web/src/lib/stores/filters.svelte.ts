@@ -23,6 +23,20 @@ export interface JournalFilter {
      * the range to whenever it was clicked.
      */
     preset?: DatePreset | null;
+    /**
+     * The account whose running balance the table shows (plan 36), or null.
+     * Separate from `accounts` on purpose: pinning sets the account filter too,
+     * but after that the two move independently — changing the filter keeps the
+     * pin, and only `reset()` (or the pin's own ✕) clears it. Optional so every
+     * filter literal that predates it stays a valid filter.
+     */
+    pin?: RunningPin | null;
+}
+
+/** A pinned running balance: the subtree root, and the commodity (null: the engine's default, the one with most postings). */
+export interface RunningPin {
+    account: string;
+    commodity: string | null;
 }
 
 export type DatePreset = "thisMonth" | "lastMonth" | "last90" | "ytd" | "thisYear" | "lastYear" | "all";
@@ -70,7 +84,7 @@ export function presetRange(p: DatePreset, today: ISODate): {from: ISODate | nul
 /** The first-load default: the last 90 days, no accounts, empty query. */
 export function defaultFilter(): JournalFilter {
     const {from, to} = presetRange("last90", localToday());
-    return {from, to, accounts: new Set<string>(), query: "", preset: "last90"};
+    return {from, to, accounts: new Set<string>(), query: "", preset: "last90", pin: null};
 }
 
 let value = $state<JournalFilter>(defaultFilter());
@@ -121,11 +135,41 @@ export const filters = {
     setQuery(q: string): void {
         value = {...value, query: q};
     },
+    /** Pin `account`'s running balance, leaving the account filter as it is. `commodity` null: the engine's default. */
+    pin(account: string, commodity: string | null = null): void {
+        value = {...value, pin: {account, commodity}};
+    },
+    /**
+     * Filter to `account` AND pin it, as one filter change — the Balances view's
+     * click. The date range is kept: the balance is right whatever the range.
+     */
+    focusAccount(account: string, commodity: string | null = null): void {
+        value = {...value, accounts: new Set([account]), pin: {account, commodity}};
+    },
+    /** Switch the pinned commodity (null: back to the engine's default). No-op without a pin. */
+    setPinCommodity(commodity: string | null): void {
+        const pin = value.pin ?? null;
+        if (pin === null || pin.commodity === commodity) return;
+        value = {...value, pin: {account: pin.account, commodity}};
+    },
+    /** Remove the running-balance columns. The account filter stays as it is. */
+    unpin(): void {
+        if ((value.pin ?? null) === null) return;
+        value = {...value, pin: null};
+    },
     reset(): void {
         value = defaultFilter();
     },
     /** Replace the whole filter at once (urlSync startup restore). */
     replace(f: JournalFilter): void {
-        value = {from: f.from, to: f.to, accounts: new Set(f.accounts), query: f.query, preset: f.preset ?? null};
+        const pin = f.pin ?? null;
+        value = {
+            from: f.from,
+            to: f.to,
+            accounts: new Set(f.accounts),
+            query: f.query,
+            preset: f.preset ?? null,
+            pin: pin === null ? null : {account: pin.account, commodity: pin.commodity},
+        };
     },
 };

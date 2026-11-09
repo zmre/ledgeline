@@ -216,7 +216,7 @@ describe("COMPONENT OtherHoldingsTable", () => {
         await press("j");
         await press("Enter");
 
-        expect(openJournal).toHaveBeenCalledWith({accounts: ["assets:property:house"], preset: "all"});
+        expect(openJournal).toHaveBeenCalledWith({accounts: ["assets:property:house"], preset: "all", pin: {account: "assets:property:house"}});
     });
 
     it("files its keys under Holdings, so one feature is not split across two help headings", async () => {

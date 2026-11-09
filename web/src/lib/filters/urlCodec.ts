@@ -9,8 +9,12 @@
 // not re-interpreted against a different month later; an explicitly empty
 // value (`from=`) means an open end (null). Account names are individually
 // percent-encoded before the comma join so names containing commas survive.
+//
+// A pinned running balance (plan 36) is `&bal=<account>`, plus `&balc=<c>` only
+// when a commodity was chosen: an absent `balc` means "the engine's default",
+// so a shared link stays short and keeps meaning "the usual one".
 import type {ISODate} from "#lib/domain/types.js";
-import {localToday, presetRange, type DatePreset, type JournalFilter} from "#lib/stores/filters.svelte.js";
+import {localToday, presetRange, type DatePreset, type JournalFilter, type RunningPin} from "#lib/stores/filters.svelte.js";
 import {safeDecode} from "#lib/url/safeDecode.js";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -32,6 +36,11 @@ export function filterToSearch(f: JournalFilter, dflt: JournalFilter): string {
     }
     if (f.query !== "") {
         params.set("q", f.query);
+    }
+    const pin = f.pin ?? null;
+    if (pin !== null) {
+        params.set("bal", pin.account);
+        if (pin.commodity !== null) params.set("balc", pin.commodity);
     }
     return params.toString();
 }
@@ -56,11 +65,12 @@ export function searchToFilter(search: string, dflt: JournalFilter, today: ISODa
                       .map(safeDecode) // never throws: `?acct=%` must not break the mount (SEC-12)
               );
     const query = params.get("q") ?? dflt.query;
+    const pin = parsePin(params, dflt.pin ?? null);
     const rawPreset = params.get("preset");
     if (rawPreset !== null && PRESETS.has(rawPreset)) {
         const preset = rawPreset as DatePreset;
         const {from, to} = presetRange(preset, today); // live: recomputed against the CURRENT day
-        return {from, to, accounts, query, preset};
+        return {from, to, accounts, query, preset, pin};
     }
     const hasDates = params.get("from") !== null || params.get("to") !== null;
     return {
@@ -69,5 +79,15 @@ export function searchToFilter(search: string, dflt: JournalFilter, today: ISODa
         accounts,
         query,
         preset: hasDates ? null : (dflt.preset ?? null),
+        pin,
     };
+}
+
+/** `bal`/`balc` → a pin. A blank `bal` is no pin; `balc` without `bal` means nothing on its own. */
+function parsePin(params: URLSearchParams, fallback: RunningPin | null): RunningPin | null {
+    const account = params.get("bal");
+    if (account === null) return fallback;
+    if (account === "") return null;
+    const commodity = params.get("balc");
+    return {account, commodity: commodity === null || commodity === "" ? null : commodity};
 }

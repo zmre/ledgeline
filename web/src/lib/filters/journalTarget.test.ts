@@ -63,4 +63,15 @@ describe("UNIT journalSearch", () => {
     it("omits anything left at its default, so links stay short and legible", () => {
         expect(journalSearch({})).toBe("");
     });
+
+    it("carries a pinned running balance as bal (and balc only when a commodity is chosen)", () => {
+        const plain = new URLSearchParams(journalSearch({accounts: ["assets:bank"], preset: "all", pin: {account: "assets:bank"}}));
+        expect(plain.get("bal")).toBe("assets:bank");
+        expect(plain.has("balc")).toBe(false);
+        const shares = new URLSearchParams(
+            journalSearch({accounts: ["assets:broker:vti"], preset: "all", pin: {account: "assets:broker:vti", commodity: "VTI"}})
+        );
+        expect(shares.get("balc")).toBe("VTI");
+        expect(targetToFilter({}).pin).toBeNull();
+    });
 });

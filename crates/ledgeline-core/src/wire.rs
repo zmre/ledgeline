@@ -475,6 +475,18 @@ pub const DIAGNOSTIC_RULES: [&str; 8] = [
 /// the frozen wire contract has no third `rule` to report the failure under.
 #[must_use]
 pub fn journal_to_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
+    let failures = crate::assertions::check_balance_assertions(journal).unwrap_or_default();
+    diagnostics_with_assertions(journal, &failures)
+}
+
+/// [`journal_to_diagnostics`] with the assertion check already run, for a
+/// caller that keeps the raw failures too (the journal view's running-balance
+/// marks) rather than checking the journal twice.
+#[must_use]
+pub fn diagnostics_with_assertions(
+    journal: &Journal,
+    failures: &[crate::assertions::AssertionFailure],
+) -> Vec<WireDiagnostic> {
     let unbalanced = crate::parse::check_transaction_balances(journal)
         .unwrap_or_default()
         .into_iter()
@@ -485,16 +497,13 @@ pub fn journal_to_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
             severity: DIAGNOSTIC_ERROR,
             message: failure.message(),
         });
-    let assertions = crate::assertions::check_balance_assertions(journal)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|failure| WireDiagnostic {
-            txn_index: Some(failure.transaction_index),
-            account: None,
-            rule: "assertion",
-            severity: DIAGNOSTIC_ERROR,
-            message: failure.message(),
-        });
+    let assertions = failures.iter().map(|failure| WireDiagnostic {
+        txn_index: Some(failure.transaction_index),
+        account: None,
+        rule: "assertion",
+        severity: DIAGNOSTIC_ERROR,
+        message: failure.message(),
+    });
     unbalanced.chain(assertions).collect()
 }
 
