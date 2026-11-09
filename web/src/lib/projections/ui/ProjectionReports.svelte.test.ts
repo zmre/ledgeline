@@ -560,7 +560,8 @@ describe("COMPONENT ProjectionReports — Compare vs actuals", () => {
         mountCompare("cf");
         const beginning = screen.getByTestId("cf-cash-beginning");
         const delta = beginning.querySelector("tbody tr [data-column='delta']");
-        expect(delta?.textContent?.trim()).toBe("0");
+        // A zero Δ prints in the row's commodity, like the columns beside it.
+        expect(delta?.textContent?.trim()).toBe("$0.00");
         expect(screen.getByTestId("projection-cf").querySelector('[data-column="total"]')).toBeNull();
     });
 
@@ -572,7 +573,7 @@ describe("COMPONENT ProjectionReports — Compare vs actuals", () => {
         expect(checking?.textContent).toContain("-1,600.00");
         expect(checking?.className).not.toContain("text-error");
         const rent = screen.getByTestId("projection-accounts").querySelector('[data-account="expenses:rent"] [data-column="delta"]');
-        expect(rent?.textContent?.trim()).toBe("0");
+        expect(rent?.textContent?.trim()).toBe("$0.00");
         expect(screen.getByTestId("projection-accounts").querySelector('[data-column="summary"]')).toBeNull();
     });
 
