@@ -2,10 +2,10 @@
 // its own subnav: `?tab=`, restored once on mount and mirrored back with
 // debounced replaceState by the route itself.
 
-export type SettingsTab = "accounts" | "aliases" | "hledgerConf" | "auto";
+export type SettingsTab = "accounts" | "aliases" | "hledgerConf" | "auto" | "projections";
 
-/** "Accounts" is the first (default) tab. */
-export const TAB_ORDER: SettingsTab[] = ["accounts", "aliases", "hledgerConf", "auto"];
+/** "Accounts" is the first (default) tab. Projections is LAST (plan 33 D22), so keys 1–4 keep their tabs. */
+export const TAB_ORDER: SettingsTab[] = ["accounts", "aliases", "hledgerConf", "auto", "projections"];
 
 export const TAB_LABELS: Record<SettingsTab, string> = {
     accounts: "Accounts",
@@ -18,6 +18,8 @@ export const TAB_LABELS: Record<SettingsTab, string> = {
     // hledger's own name for `= QUERY` rules is "auto postings"; spelled out
     // for the same reason as above.
     auto: "Automatic postings",
+    // Which scenario the Projections tab opens by default (plan 33 D22).
+    projections: "Projections",
 };
 
 export interface SettingsParams {

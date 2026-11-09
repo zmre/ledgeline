@@ -18,9 +18,9 @@ describe("UNIT settings/params", () => {
 
     describe("TAB_ORDER", () => {
         it("puts Accounts first and labels every tab", () => {
-            expect(TAB_ORDER).toEqual(["accounts", "aliases", "hledgerConf", "auto"]);
+            expect(TAB_ORDER).toEqual(["accounts", "aliases", "hledgerConf", "auto", "projections"]);
             expect(TAB_ORDER[0]).toBe(DFLT.tab);
-            expect(TAB_ORDER.map((t) => TAB_LABELS[t])).toEqual(["Accounts", "Account Aliases", "hledger config", "Automatic postings"]);
+            expect(TAB_ORDER.map((t) => TAB_LABELS[t])).toEqual(["Accounts", "Account Aliases", "hledger config", "Automatic postings", "Projections"]);
         });
     });
 
@@ -39,6 +39,11 @@ describe("UNIT settings/params", () => {
                 const params: SettingsParams = {tab};
                 expect(searchToParams(paramsToSearch(params), DFLT)).toEqual(params);
             }
+        });
+
+        it("round-trips the Projections tab (plan 33)", () => {
+            expect(paramsToSearch({tab: "projections"})).toBe("tab=projections");
+            expect(searchToParams("?tab=projections", DFLT)).toEqual({tab: "projections"});
         });
 
         it("accepts a search with or without the leading '?'", () => {

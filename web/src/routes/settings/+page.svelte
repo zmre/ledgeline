@@ -1,9 +1,11 @@
 <script lang="ts">
     // Settings route: an outer subnav, same shape as Imports (WP-11) and
-    // Reports. Three screens live under it — "Accounts" (the chart-of-accounts
+    // Reports. Five screens live under it — "Accounts" (the chart-of-accounts
     // editor), "Account Aliases" (moved here from Imports; the panel and
-    // its store are unchanged, only the tab that hosts it moved) and "hledger
-    // config" (the `hledger.conf` in force: --auto and report depths). The tab
+    // its store are unchanged, only the tab that hosts it moved), "hledger
+    // config" (the `hledger.conf` in force: --auto and report depths),
+    // "Automatic postings" (the journal's `=` rules) and "Projections" (which
+    // scenario the Projections tab opens by default, plan 33). The tab
     // lives in the query string via the same three pieces the Imports route
     // uses — `searchToParams` after each navigation behind a `restored` latch,
     // a debounced `replaceState` mirror the other way.
@@ -14,6 +16,7 @@
     import AliasPanel from "#lib/imports/ui/AliasPanel.svelte";
     import HledgerConfPanel from "#lib/settings/ui/HledgerConfPanel.svelte";
     import AutoRulesPanel from "#lib/autoRules/ui/AutoRulesPanel.svelte";
+    import ProjectionSettingsPanel from "#lib/projections/ui/ProjectionSettingsPanel.svelte";
     import {defaultSettingsParams, paramsToSearch, searchToParams, type SettingsParams} from "#lib/settings/params.js";
     import SettingsTabs from "#lib/settings/ui/SettingsTabs.svelte";
     import {journal} from "#lib/stores/journal.svelte.js";
@@ -61,6 +64,8 @@
     {:else if params.tab === "auto"}
         <!-- Plan 30 Phase 5; `rule` is the rule a generated posting linked to. -->
         <AutoRulesPanel focus={params.rule} />
+    {:else if params.tab === "projections"}
+        <ProjectionSettingsPanel />
     {:else}
         <AccountsPanel accountNames={journal.accountNames} />
     {/if}

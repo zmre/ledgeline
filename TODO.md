@@ -43,7 +43,6 @@
 
 ## Budgeting / planning / modeling
 
-- **Default projection:** once I've put a lot of work into a projection, I want to see it when I go to the projections tab without having to load it as a separate step.  I like our default as-is, but maybe we can have a setting that lets us auto-load a default file and use today's behavior if one isn't specified.
 - **Compare projections:** sometimes you want to know how accurate your projection was versus actuals and where it differed so you can improve your projection model. I want a way, for each report, to "compare vs previous" as a checkbox.
   - if that is checked, then for the `actuals` previous periods, compare actuals to what would have been projected if we did our projection at the start of the period.
   - no need to project forward for this, but we do want to be able to do this for each report type.  lets say we have 3 actuals periods: show those three as actuals, then a line, then show those three periods again as projected, then a column showing differences (absolute and percent difference)

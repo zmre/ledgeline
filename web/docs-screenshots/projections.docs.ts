@@ -125,6 +125,15 @@ test.describe("demo scenario", () => {
         await shot(page, SECTION, "editor", {clip: [dialog.locator(".modal-box")], padding: 0});
     });
 
+    // The default star beside the picker (index.md, "Your default scenario").
+    // Circled, not clicked: a click writes the marker into the scenario file,
+    // and nothing here is saved.
+    test("default star", async ({page}) => {
+        const bar = page.getByTestId("projection-file-bar");
+        const drawn = await annotate(page, [{kind: "circle", target: page.getByTestId("projection-default-toggle"), pad: 4}]);
+        await shot(page, SECTION, "default", {clip: [bar, drawn], padding: 8});
+    });
+
     test("asset rows", async ({page}) => {
         const card = investing(page);
         const drawn = await annotate(page, [{kind: "box", target: card.getByTestId("entry-balance").nth(1), pad: 3}]);

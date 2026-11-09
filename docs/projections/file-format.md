@@ -72,13 +72,15 @@ time you save. [What moves cash](cash.md) explains how it picks one.
 
 ## The tag vocabulary
 
-One header tag names the scenario, one names its default cash account, and the
-rest go on postings.
+One header tag names the scenario, one names its default cash account, one
+marks the scenario the Projections tab opens by default, and the rest go on
+postings.
 
 | tag | where | means |
 |---|---|---|
 | `projection: <name>` | a comment at the top of the file | the scenario's display name |
 | `cash: <account>` | a comment at the top of the file | the counter-account for a line your history says nothing about |
+| `default-scenario: true` | a comment at the top of the file | this is the scenario the Projections tab opens when Ledgeline starts |
 | `growth: <rate>/<unit>` | a posting comment | the amount grows by `rate` per completed `unit`; on an asset-typed account it ALSO marks the row as a balance |
 | `line: <id>` | a posting comment | two bounded rules are two steps of ONE change; written only for a step change |
 | `opening: <number>` | an asset row's posting comment | override the journal's balance for that account |
@@ -94,6 +96,16 @@ without it still loads — any journal with budget-like entries can be used as a
 projection — and takes its name from its filename. `; created:` and
 `; updated:` are the dates Ledgeline stamps when it writes the file; you can
 delete them and nothing breaks.
+
+**`; default-scenario: true` marks your default scenario.** The star next to
+the scenario picker writes it and removes it, and so does Settings →
+Projections. Ledgeline writes it as the last line of the header and changes
+nothing else in the file, not even `updated:`. Only `true` counts; any other
+value, or no line at all, means "not the default". hledger ignores it, as it
+ignores the other header lines, because a comment at the top of a file is
+neither a tag nor data. At most one file should carry it. If several do, the
+first by file name is the one that opens, and the tab shows a warning until you
+star one of them. Ledgeline reads it only from `projection-*.journal` files.
 
 **`growth:` reads `3%/yr`, `2.5%/mo`, `-1%/wk` and `0.03/year`.** The percent
 sign is optional and the unit spelling is generous, because this is a tag a

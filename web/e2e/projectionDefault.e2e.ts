@@ -83,6 +83,29 @@ test("projections: the default scenario — star, open, survive a tab switch, re
         expect(onDisk(BETA)).not.toContain(MARKER);
     });
 
+    await test.step("2b. Settings → Projections shows the same default, and can move it", async () => {
+        await page.goto("/settings?tab=projections");
+        const choice = page.getByTestId("settings-projections-default");
+        await expect(choice).toHaveValue(ALPHA);
+        await choice.selectOption(BETA);
+        await expect(choice).toHaveValue(BETA);
+        expect(onDisk(BETA)).toContain(MARKER);
+        expect(onDisk(ALPHA)).not.toContain(MARKER);
+
+        // A page load, so the Projections tab opens the default: Beta, starred.
+        await page.goto("/projections");
+        await expect(picker(page)).toHaveValue(BETA);
+        await expect(star(page)).toHaveAttribute("aria-pressed", "true");
+
+        // Back to Alpha as the default, for the steps below.
+        await pick(page, ALPHA);
+        await expect(star(page)).toHaveAttribute("aria-pressed", "false");
+        await star(page).click();
+        await expect(star(page)).toHaveAttribute("aria-pressed", "true");
+        expect(onDisk(ALPHA)).toContain(MARKER);
+        expect(onDisk(BETA)).not.toContain(MARKER);
+    });
+
     await test.step("3. a tab switch keeps what was open (D2)", async () => {
         await pick(page, BETA);
         await page.getByRole("link", {name: "Reports"}).click();

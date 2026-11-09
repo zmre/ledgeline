@@ -748,8 +748,85 @@ None.
 
 ## Status
 
-- Not started.
+Implemented 2026-11-09 on branch `2026-11-09-default-projection`, one commit
+per phase (PR 3 folded into the same branch).
+
+- **Phase 1 — done.** Marker read/write in core (`parse_header`,
+  `is_header_comment`, `render_header`, `set_default_marker`,
+  `is_default_marked`, `default_conflict`), `isDefault` on the listing and the
+  document, D12's carry-from-disk on save, `PUT /api/projections/default` with
+  D13's pre-flight / unmark / mark order, the D15 sentences, decoders,
+  `setProjectionDefault`. Tests: core table tests, the older-build test, the
+  hledger parity test (`hledger_ignores_the_default_marker`, opt-in as the
+  others), endpoint tests including both partial-failure cases through an
+  injected vault, `error_surface.rs` cases, the regenerated
+  `projections-asset` golden, decoder and live-integration tests.
+- **Phase 2 — done.** `opening.ts`, `fileStore.setDefault` with D17
+  reconciliation, `start()` per D2/D3/D9, the star, `ScenarioOptions.svelte`.
+  The page-level revisit test was written first and failed on the unchanged
+  page ("Alpha" instead of "Alpha, edited"), as expected. e2e spec
+  `web/e2e/projectionDefault.e2e.ts` and fixture
+  `fixtures/projection-default/`, engine on :5095 — written, **not run**
+  (agents do not run Playwright).
+- **Phase 3 — done.** Settings → Projections (`?tab=projections`, key 5),
+  `ProjectionSettingsPanel.svelte`, docs (`file-format.md`, `index.md`
+  "Your default scenario", `settings/index.md`), TODO.md item removed. e2e
+  additions in `settings.e2e.ts` and step 2b of `projectionDefault.e2e.ts`,
+  **not run**.
+- **Left for Patrick:** run `just e2e` (new :5095 engine) and
+  `just docs-screenshots` — the shot `default` is added to
+  `web/docs-screenshots/projections.docs.ts` and `MANIFEST.md`, but
+  `docs/projections/images/default.png` does not exist until it is run, so the
+  image link in `docs/projections/index.md` is broken until then.
 
 ## Contract amendments made during implementation
 
-(none yet)
+1. **Clearing removes every `default-scenario:` line in the file's leading
+   comment block, not only inside `header_span` (D11).** The read
+   (`parse_header`) consults the whole leading comment block, which can be
+   longer than `header_span` (a marker typed below a user's own prose at the
+   top of the file). Clearing only inside `header_span` would leave a file
+   that reads as the default and cannot be un-starred. Setting it removes any
+   existing marker lines first, then inserts `true` after the header, so a
+   hand-merged file whose first marker says `false` (first wins) is still
+   starred by a star.
+2. **The document's `isDefault` is gated on `projection-*.journal`, like the
+   listing's (D19).** Otherwise a marked non-projection file would read as the
+   default from `GET /api/projections/{id}` and not from the listing. A save
+   still carries the raw marker bytes of any file (D12); only the wire flag is
+   gated.
+3. **Unmarking skips a file the main journal includes (decision 5).** A
+   `projection-*.journal` that is `include`d and hand-marked keeps its marker:
+   the tab never writes a plan of record, even to remove a line. The listing
+   keeps reporting it.
+4. **`{id}` is required in `PUT /api/projections/default`.** `{}` is a 400
+   rather than "clear the default" (serde would otherwise read a missing
+   `Option` as `None`).
+5. **D15's partial-failure row has two wordings.** "...but could not mark
+   {id}..." when the target failed (as planned), and "...but could not remove
+   it from {id}..." when a later unmark failed. With nothing yet written, a
+   non-`Changed` I/O failure is the existing `write_failed` 500 ("Nothing was
+   changed").
+6. **The conflict warning is appended LAST to `warnings`,** after the scan's
+   own, and the SPA reads it from there when two or more files are marked
+   (`opening.ts` `defaultConflict`), rather than matching on its wording. The
+   file bar and Settings show only that warning, not the scan's.
+7. **`nativeDecode.test.ts` `TOLERATED` gained `projections-asset $.isDefault`.**
+   D19 requires an absent `isDefault` on a document to decode as `false` (an
+   older engine), so on a golden whose file is not the default the rename is
+   undetectable there. The inline `projections-file` body runs the same
+   decoder with `isDefault: true` and does catch it.
+8. **`ScenarioFileBar` props.** `canBeDefault` is folded into `defaultBlocker`
+   (null means it can be starred); `defaultId` (for the " (default)" suffix)
+   and `defaultWarning` were added. All new props are optional, so existing
+   mounts are unchanged.
+9. **The star's tooltip for `budget.journal` in the e2e fixture is the "not a
+   scenario file" sentence**, since that file is both another journal and
+   read-only, and `defaultBlocker` checks D5's two causes in that order.
+10. **"No default" fallback test uses a 400, not a 404.** A `GET` 404 is
+    classified `unavailable` by `LedgelineApi.getJson` and so is not forgotten
+    today. That is existing behaviour, left as is; the test pins today's
+    behaviour for a remembered file that no longer opens.
+11. **Settings → Projections re-reads the listing on every visit,** because
+    the default lives in the files and may have moved since the Projections
+    tab last read them.
