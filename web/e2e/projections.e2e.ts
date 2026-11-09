@@ -585,9 +585,15 @@ test("projections: an entry turned off is saved commented out, and reloads turne
 // ---------------------------------------------------------------------------
 
 /** A rendered money cell as a number: `$-1,234.56` → -1234.56. */
+/**
+ * The first currency amount in a cell. A multi-commodity cell's text runs its
+ * amounts together ("$213,925.51" then "5.0 GLD"), so only the leading
+ * `$`-amount is the valued figure.
+ */
 function money(text: string | null): number {
-    const cleaned = (text ?? "").split("\n")[0]!.replace(/[^0-9.-]/g, "");
-    return Number(cleaned);
+    const found = /([-−]?)\$([\d,]+(?:\.\d+)?)/.exec(text ?? "");
+    if (found === null) return Number.NaN;
+    return (found[1] === "" ? 1 : -1) * Number(found[2]!.replaceAll(",", ""));
 }
 
 test("projections: Compare vs actuals sets the actual periods beside the projection made on their first day", async ({page}) => {
@@ -623,7 +629,9 @@ test("projections: Compare vs actuals sets the actual periods beside the project
     const lastActual = money(await cells.nth(2).textContent());
     const lastProjected = money(await cells.nth(5).textContent());
     const delta = money(await equity.locator('[data-column="delta"]').textContent());
-    expect(delta).toBeCloseTo(lastActual - lastProjected, 2);
+    // Each printed figure is rounded to the cent on its own, so the printed Δ
+    // can differ from the printed operands' difference by a cent.
+    expect(Math.abs(delta - (lastActual - lastProjected))).toBeLessThanOrEqual(0.011);
 
     // 4. The runway: two legended lines and the sentence.
     await page.getByRole("tab", {name: "Runway"}).click();
@@ -644,6 +652,9 @@ test("projections: Compare vs actuals sets the actual periods beside the project
     await expect(exportIs).toBeVisible();
     const [download] = await Promise.all([page.waitForEvent("download"), exportIs.click()]);
     expect(download.suggestedFilename()).toContain("-compare-");
+    // The URL mirror is debounced: wait for it to record the Income statement
+    // tab, or the reload below reopens the Journal reading.
+    await expect(page).toHaveURL(/tab=is/);
 
     // 5. A reload keeps comparing; Actuals 0 disables the box and brings the
     //    forward columns back; Actuals 2 compares again over 4 columns.
