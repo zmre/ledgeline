@@ -20,6 +20,12 @@
        and `projection.journal` are null otherwise), so a projection held from
        another tab shows a placeholder until the re-run lands.
 
+     COMPARE VS ACTUALS (plans/34): with `comparing`, every reading stops
+     projecting forward and shows the Actuals periods twice — as they happened,
+     then as the scenario on screen would have projected them on their first
+     day — with Δ and Δ% where a Total would be. The runway draws both as two
+     lines with a legend. Until the comparison's run lands each reading says so.
+
      The runway chart plots one commodity (`chartCommodity`) because a mixed
      amount has no single number in it; what that leaves out is named under the
      chart rather than silently dropped. The statements need no such rule: they
@@ -38,6 +44,7 @@
     import IncomeStatementView from "#lib/reports/ui/IncomeStatementView.svelte";
     import type {PeriodInterval} from "#lib/reports/ui/params.js";
     import {PROJECTION_TABS, PROJECTION_TAB_LABELS, type ProjectionTab} from "../params";
+    import {asProjectedLabel, compareRunwayStatement, dayLabel} from "../compareView";
     import {balanceNumbers, chartCommodity, otherCommodities, runwayStatement} from "../projectionView";
     import type {Projection} from "../types";
     import ForecastJournalView from "./ForecastJournalView.svelte";
@@ -56,6 +63,7 @@
         fallbackCommodity,
         scenarioName = "",
         scrollTarget,
+        comparing = false,
     }: {
         tab: ProjectionTab;
         /** The Accounts tab: whether accounts with nothing in any column are rows too. */
@@ -77,6 +85,8 @@
          * the strip. Without one, the strip itself.
          */
         scrollTarget?: HTMLElement;
+        /** Compare vs actuals is on (and Actuals > 0): every reading shows the comparison, or says it is running. */
+        comparing?: boolean;
     } = $props();
 
     const commodity = $derived(chartCommodity(projection, fallbackCommodity));
@@ -91,11 +101,22 @@
      */
     const labels = $derived(projection.balanceSheet.columns.map((column) => column.label));
     const cash = $derived(balanceNumbers(projection.cash, commodity));
-    const statement = $derived(runwayStatement(projection, interval, commodity, format));
+    // Plan 34: the comparison the readings show, null until its run lands.
+    const compare = $derived(comparing ? projection.compare : null);
+    const pending = $derived(comparing && projection.compare === null);
+    const compareLabel = $derived(compare === null ? null : asProjectedLabel(compare));
+    const compareCash = $derived(
+        compare === null ? null : balanceNumbers({opening: compare.cash.opening, values: compare.cash.projected, history: compare.cash.actual}, commodity)
+    );
+    const compareLabels = $derived(compare === null ? [] : compare.balanceSheet.columns.slice(0, compare.columns).map((column) => column.label));
+    const statement = $derived(
+        compare === null ? runwayStatement(projection, interval, commodity, format) : compareRunwayStatement(compare, commodity, format)
+    );
     const unchartedCommodities = $derived(otherCommodities(projection, commodity));
 
     /** The Accounts tab's report narrowed to the chosen accounts: what the table shows and the download holds. */
     const accounts = $derived(projection.accounts === null ? null : filterAccountReport(projection.accounts, accountFilter));
+    const compareAccounts = $derived(compare?.accounts == null ? null : filterAccountReport(compare.accounts, accountFilter));
 
     let strip: HTMLDivElement | undefined = $state();
 
@@ -103,17 +124,20 @@
     let journalQuery = $state("");
     /** The open reading's download; null while it is not on hand (Accounts/Journal before their run). */
     const download = $derived(
-        projectionExport(
-            tab,
-            {...projection, accounts},
-            {
-                scenarioName,
-                runwaySentence: [statement.headline, statement.detail].filter((part) => part !== null).join(" "),
-                base: projection.balanceSheet.base ?? commodity,
-                journalQuery,
-                styleOf: (symbol) => styleOf(styles, symbol),
-            }
-        )
+        pending
+            ? null
+            : projectionExport(
+                  tab,
+                  {...projection, accounts},
+                  {
+                      scenarioName,
+                      runwaySentence: [statement.headline, statement.detail].filter((part) => part !== null).join(" "),
+                      base: projection.balanceSheet.base ?? commodity,
+                      journalQuery,
+                      styleOf: (symbol) => styleOf(styles, symbol),
+                      compare: compare === null ? null : {...compare, accounts: compareAccounts},
+                  }
+              )
     );
 
     /**
@@ -167,7 +191,76 @@
         {/if}
     </div>
 
-    {#if tab === "cash"}
+    {#if pending}
+        <p class="text-sm text-base-content/60" role="status" data-testid="projection-compare-pending">Running the comparison…</p>
+    {:else if compare !== null && tab === "cash" && compareCash !== null}
+        <div class="flex flex-col gap-3" data-testid="projection-cash">
+            <div class="alert items-start py-2 text-sm" role="status" data-testid="projection-runway">
+                <span class="grow">
+                    <span class="font-semibold">{statement.headline}</span>
+                    {#if statement.detail !== null}<span class="text-base-content/70"> {statement.detail}</span>{/if}
+                </span>
+            </div>
+            <PeriodLineChart
+                heading="Cash"
+                note="{compare.columns} actual · as projected from {dayLabel(compare.from)} · opening {format(compareCash.opening)}"
+                labels={compareLabels}
+                series={[
+                    {name: "Actual", values: compareCash.history},
+                    {name: compareLabel ?? "As projected", values: compareCash.values, dashed: true},
+                ]}
+                formatValue={format}
+                {formatAxis}
+                includeZero
+                projectedFrom={null}
+                markAt={null}
+                empty="Nothing to compare over these periods."
+                testid="projection-cash-chart"
+            />
+            {#if unchartedCommodities.length > 0}
+                <p class="text-xs text-base-content/60" data-testid="projection-uncharted">
+                    Charted in {commodity} only. This projection also holds {unchartedCommodities.join(", ")}, which no future price can value into {commodity}.
+                </p>
+            {/if}
+        </div>
+    {:else if compare !== null && tab === "bs"}
+        <div data-testid="projection-bs">
+            <BalanceSheetView report={compare.balanceSheet} {styles} compareFrom={compare.columns} {compareLabel} />
+        </div>
+    {:else if compare !== null && tab === "is"}
+        <div data-testid="projection-is">
+            <IncomeStatementView report={compare.incomeStatement} {styles} compareFrom={compare.columns} {compareLabel} />
+        </div>
+    {:else if compare !== null && tab === "cf"}
+        <div data-testid="projection-cf">
+            <CashFlowStatementView report={compare.cashFlow} {styles} base={projection.balanceSheet.base} compareFrom={compare.columns} {compareLabel} />
+        </div>
+    {:else if compare !== null && tab === "accounts"}
+        <div class="flex flex-col gap-3" data-testid="projection-accounts">
+            <AccountReportControls report={compare.accounts} bind:selected={accountFilter} bind:empty={emptyAccounts} />
+            {#if compareAccounts === null}
+                <p class="text-sm text-base-content/60" role="status" data-testid="projection-accounts-pending">Reading every account…</p>
+            {:else}
+                <AccountReportView
+                    report={compareAccounts}
+                    {styles}
+                    compareFrom={compare.columns}
+                    {compareLabel}
+                    compareBase={projection.balanceSheet.base ?? commodity}
+                    bind:collapsed={accountsCollapsed}
+                    filtered={accountFilter.size > 0}
+                />
+            {/if}
+        </div>
+    {:else if compare !== null && tab === "journal"}
+        <div data-testid="projection-journal">
+            {#if compare.journal === null}
+                <p class="text-sm text-base-content/60" role="status" data-testid="projection-journal-pending">Listing the generated transactions…</p>
+            {:else}
+                <ForecastJournalView journal={compare.journal} bind:query={journalQuery} heading="Generated as if projected on {dayLabel(compare.from)}" />
+            {/if}
+        </div>
+    {:else if tab === "cash"}
         <div class="flex flex-col gap-3" data-testid="projection-cash">
             <!-- The answer, in a sentence, above the picture of it. -->
             <div

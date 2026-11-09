@@ -44,6 +44,9 @@
     import {fileStore} from "#lib/projections/fileStore.svelte.js";
     import {defaultBlocker, defaultConflict, effectiveDefault, openingSteps, type OpeningSource} from "#lib/projections/opening.js";
     import {defaultProjectionParams, projectionParamsToSearch, searchToProjectionParams, type ProjectionParams} from "#lib/projections/params.js";
+    // MERGE SEAM: plan 34 (Compare vs actuals).
+    import {compareActive} from "#lib/projections/params.js";
+    import {comparisonWarnings, dayLabel} from "#lib/projections/compareView.js";
     import {assetRowsByGroup} from "#lib/projections/projectionView.js";
     import {sameProjectionQuery, scenarioStore, scenarioTableView, type ProjectionWindow} from "#lib/projections/scenarioStore.svelte.js";
     import ProjectionReports from "#lib/projections/ui/ProjectionReports.svelte";
@@ -304,6 +307,15 @@
 
     // --- The projection ------------------------------------------------------
 
+    // MERGE SEAM: plan 34. Compare vs actuals takes effect only with Actuals > 0.
+    const comparing = $derived(compareActive(params));
+    /** The first actual day, for the checkbox's hint: off the held projection, omitted before one lands. */
+    const compareFromLabel = $derived.by(() => {
+        const held = scenarioStore.projection.value;
+        const first = held !== null && held.lookback.length > 0 ? held.balanceSheet.columns[0]?.from : undefined;
+        return first === undefined ? null : dayLabel(first);
+    });
+
     // The Accounts and Journal readings ride on the run only while their tab
     // is open: no other tab shows them, and every edit re-runs the projection.
     const projectionWindow = $derived<ProjectionWindow>({
@@ -313,6 +325,9 @@
         depth: params.depth,
         accounts: params.tab === "accounts" ? {empty: params.empty} : null,
         journal: params.tab === "journal",
+        // MERGE SEAM: plan 34. The backtest runs only while the box is ticked
+        // and there is an actual period to compare.
+        compare: comparing,
     });
     // `journal.changes`: projections start from the journal's balances, so a
     // refresh or a change on disk recomputes them.
@@ -374,7 +389,11 @@
         return buckets.length === 0 ? today() : bucketStart(buckets[Math.floor(buckets.length / 2)]);
     });
 
-    const warnings = $derived(current?.warnings ?? []);
+    // MERGE SEAM: plan 34 appends the comparison's lines, prefixed "Comparison:".
+    const warnings = $derived([
+        ...(current?.warnings ?? []),
+        ...(comparing && current?.compare != null ? comparisonWarnings(current.compare, scenarioStore.scenario) : []),
+    ]);
 
     /**
      * The journal's own balance per asset row, for the table's Balance column.
@@ -535,10 +554,11 @@
                 <option value="yearly">Yearly</option>
             </select>
         </label>
-        <label class="form-control">
+        <label class="form-control {comparing ? 'opacity-50' : ''}" title={comparing ? "Not used while comparing" : undefined}>
             <span class="label-text mb-1 block text-xs text-base-content/70">Periods</span>
             <input
                 type="number"
+                aria-disabled={comparing}
                 class="input w-20 input-sm"
                 min="1"
                 max={MAX_COUNT}
@@ -561,6 +581,28 @@
                 aria-label="Actual periods before the projection"
             />
         </label>
+        <!-- MERGE SEAM: plan 34. Compare vs actuals, for every reading at once:
+             the window, the anchor and the run are shared. -->
+        <div class="flex flex-col gap-0.5 self-end">
+            <label class="label cursor-pointer gap-2 text-sm">
+                <input
+                    type="checkbox"
+                    class="checkbox checkbox-sm"
+                    bind:checked={params.compare}
+                    disabled={params.lookback === 0}
+                    aria-describedby="projection-compare-hint"
+                    data-testid="projection-compare"
+                />
+                Compare vs actuals
+            </label>
+            <span id="projection-compare-hint" class="text-xs text-base-content/60" data-testid="projection-compare-hint">
+                {#if params.lookback === 0}
+                    Set Actuals to 1 or more to compare
+                {:else if compareFromLabel !== null}
+                    Re-runs this scenario from {compareFromLabel} and sets it beside what happened
+                {/if}
+            </span>
+        </div>
         <!-- Keyed on maxDepth for the reason the reports bar keys it: the slider
              can mount while accounts are still loading (max=1), and the browser
              clamps the input's value to that max without updating bound state. -->
@@ -620,6 +662,7 @@
                         fallbackCommodity={commodity}
                         scenarioName={scenarioStore.scenario.name}
                         scrollTarget={controls}
+                        {comparing}
                     />
                 {/snippet}
             </AsyncSection>

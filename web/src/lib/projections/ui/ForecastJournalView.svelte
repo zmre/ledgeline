@@ -29,7 +29,9 @@
 
     // `query` is bindable so the reports' Export button downloads exactly what
     // this list shows.
-    let {journal, query = $bindable("")}: {journal: ForecastJournal; query?: string} = $props();
+    // `heading` (plan 34): what these transactions are, when it needs saying —
+    // while comparing they are the projection made on the first actual day.
+    let {journal, query = $bindable(""), heading = null}: {journal: ForecastJournal; query?: string; heading?: string | null} = $props();
 
     const PAGE_SIZE = 100;
     let page = $state(0);
@@ -60,6 +62,9 @@
 {/snippet}
 
 <div class="flex flex-col gap-2" data-testid="forecast-journal">
+    {#if heading !== null}
+        <h3 class="text-sm font-semibold" data-testid="forecast-journal-heading">{heading}</h3>
+    {/if}
     {#if journal.entries.length > 0}
         <input
             type="search"

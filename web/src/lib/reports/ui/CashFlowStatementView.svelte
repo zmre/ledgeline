@@ -29,6 +29,10 @@
     import {listCursor} from "#lib/ui/listCursor.svelte.js";
     import {amountCell, type AmountCell} from "./amountCell";
     import {cfCursorRows, cfDisplayModel, cfFoldKey, type CfDisplayRow} from "./cashFlowRows";
+    import CompareCells from "./CompareCells.svelte";
+    import {AS_PROJECTED_SR} from "./compareColumns";
+    import type {WindowReading} from "./compareColumns";
+    import CompareHeadCells from "./CompareHeadCells.svelte";
     import FigureColgroup from "./FigureColgroup.svelte";
     import ProjectedHeadRow from "./ProjectedHeadRow.svelte";
     import {projectedEdge} from "./projectedColumns";
@@ -36,12 +40,24 @@
 
     // `projectedFrom` (plans/28): the first FORECAST column on the Projections
     // tab, drawn as a divider under "Projected". Null changes nothing.
+    // `compareFrom` (plans/34): a projection comparison; the Total becomes Δ and
+    // Δ% — of the window sum for a flow, of the first beginning cash and the
+    // last ending cash for the two cash blocks.
     let {
         report,
         styles,
         base,
         projectedFrom = null,
-    }: {report: CashFlowStatement; styles: ReadonlyMap<string, AmountStyle>; base: string | null; projectedFrom?: number | null} = $props();
+        compareFrom = null,
+        compareLabel = null,
+    }: {
+        report: CashFlowStatement;
+        styles: ReadonlyMap<string, AmountStyle>;
+        base: string | null;
+        projectedFrom?: number | null;
+        compareFrom?: number | null;
+        compareLabel?: string | null;
+    } = $props();
 
     /** Folds the user has flipped from their starting state, keyed by `cfFoldKey`, so they survive a refetch. */
     let flipped = $state<Record<string, boolean>>({});
@@ -96,6 +112,11 @@
     /** Interval mode: every block on the shared fixed column template (statementGrid.ts). */
     const grid = $derived(buckets !== null);
     const label = $derived(grid ? "truncate" : "w-full");
+    const versus = $derived(compareFrom !== null && buckets !== null);
+    const split = $derived(compareFrom ?? 0);
+    const edgeAt = $derived(versus ? compareFrom : projectedFrom);
+    const band = $derived(versus ? compareLabel : null);
+    const trailing = $derived(versus ? 2 : 1);
 
     /** Static literals so Tailwind's scanner sees every class. */
     const ACCENT: Record<CfSectionKind, {text: string; rule: string}> = {
@@ -112,38 +133,48 @@
     {/if}
 {/snippet}
 
-{#snippet figures(columns: CfColumns, emphasis: string)}
+{#snippet figures(columns: CfColumns, emphasis: string, reading: WindowReading = "flow")}
     {#if buckets !== null}
         {#each columns.values as value, i (i)}
-            <td class="w-28 min-w-28 {projectedEdge(i, projectedFrom)} text-right align-top font-mono whitespace-nowrap tabular-nums"
+            <td class="w-28 min-w-28 {projectedEdge(i, edgeAt)} text-right align-top font-mono whitespace-nowrap tabular-nums"
                 >{@render amount(cell(value), "")}</td
             >
         {/each}
-        <td class="w-32 min-w-32 text-right align-top font-mono whitespace-nowrap tabular-nums" data-column="total">
-            {@render amount(cell(columns.total), emphasis)}
-        </td>
+        {#if versus}
+            <CompareCells values={columns.values} {split} {reading} {base} {styles} cellClass={emphasis} />
+        {:else}
+            <td class="w-32 min-w-32 text-right align-top font-mono whitespace-nowrap tabular-nums" data-column="total">
+                {@render amount(cell(columns.total), emphasis)}
+            </td>
+        {/if}
     {:else}
         <td class="w-32 text-right align-top font-mono whitespace-nowrap tabular-nums">{@render amount(cell(columns.total), emphasis)}</td>
     {/if}
 {/snippet}
 
 {#snippet template()}
-    {#if buckets !== null}<FigureColgroup periods={buckets.length} total={true} />{/if}
+    {#if buckets !== null}<FigureColgroup periods={buckets.length} total={!versus} compare={versus} />{/if}
 {/snippet}
 
 {#snippet figureHeads(name: string)}
     <th class="{label} font-normal"><span class="sr-only">{name}</span></th>
     {#if buckets !== null}
         {#each buckets as bucket, i (bucket.key)}
-            <th class="w-28 min-w-28 {projectedEdge(i, projectedFrom)} text-right font-normal" title="{bucket.from} to {bucket.to}">{bucket.label}</th>
+            <th class="w-28 min-w-28 {projectedEdge(i, edgeAt)} text-right font-normal" title="{bucket.from} to {bucket.to}"
+                >{bucket.label}{#if versus && i >= split}<span class="sr-only">{AS_PROJECTED_SR}</span>{/if}</th
+            >
         {/each}
-        <th class="w-32 min-w-32 text-right font-normal">Total</th>
+        {#if versus}
+            <CompareHeadCells />
+        {:else}
+            <th class="w-32 min-w-32 text-right font-normal">Total</th>
+        {/if}
     {:else}
         <th class="w-32 text-right font-normal">Amount</th>
     {/if}
 {/snippet}
 
-{#snippet rowCells(row: CfDisplayRow)}
+{#snippet rowCells(row: CfDisplayRow, reading: WindowReading = "flow")}
     <tr
         class="scroll-mt-10 {cursor.key === row.key ? 'bg-primary/25' : ''} {row.kind === 'account' ? '' : 'font-medium'}"
         aria-current={cursor.key === row.key ? "true" : undefined}
@@ -172,7 +203,7 @@
                 </span>
             {/if}
         </th>
-        {@render figures(row.amounts, row.kind === "account" ? "text-base-content/70" : "font-medium")}
+        {@render figures(row.amounts, row.kind === "account" ? "text-base-content/70" : "font-medium", reading)}
     </tr>
 {/snippet}
 
@@ -184,7 +215,7 @@
                  two blocks, so it names its own columns. -->
             {#if grid}
                 <thead>
-                    <ProjectedHeadRow columns={buckets?.length ?? 0} {projectedFrom} trailing={1} fixed />
+                    <ProjectedHeadRow columns={buckets?.length ?? 0} projectedFrom={edgeAt} {trailing} fixed compareLabel={band} />
                     <tr class="text-[0.65rem] text-base-content/40">{@render figureHeads(`${title} line`)}</tr>
                 </thead>
             {/if}
@@ -204,7 +235,10 @@
     <!-- Interval mode: one sideways scroller, one width, so every block keeps
          the same column edges. Total mode: `contents`, exactly as before. -->
     <div class={grid ? "overflow-x-auto" : "contents"} data-testid="cf-scroller">
-        <div class={grid ? "flex flex-col gap-4" : "contents"} style:min-width={buckets !== null ? statementMinWidth(buckets.length, true) : undefined}>
+        <div
+            class={grid ? "flex flex-col gap-4" : "contents"}
+            style:min-width={buckets !== null ? statementMinWidth(buckets.length, !versus, versus) : undefined}
+        >
             {#each model.boxes as box (box.kind)}
                 <section class="{grid ? 'overflow-hidden' : 'overflow-x-auto'} rounded-box border border-base-content/10" data-testid="cf-section-{box.kind}">
                     <h3
@@ -215,7 +249,7 @@
                     <table class="table table-sm {grid ? 'table-fixed' : ''}">
                         {@render template()}
                         <thead>
-                            <ProjectedHeadRow columns={buckets?.length ?? 0} {projectedFrom} trailing={1} fixed={grid} />
+                            <ProjectedHeadRow columns={buckets?.length ?? 0} projectedFrom={edgeAt} {trailing} fixed={grid} compareLabel={band} />
                             <tr class="text-[0.65rem] text-base-content/40">{@render figureHeads(`${box.title} line`)}</tr>
                         </thead>
                         <tbody>
@@ -246,16 +280,16 @@
                     <table class="table table-sm {grid ? 'table-fixed' : ''}">
                         {@render template()}
                         <thead>
-                            <ProjectedHeadRow columns={buckets?.length ?? 0} {projectedFrom} trailing={1} fixed={grid} />
+                            <ProjectedHeadRow columns={buckets?.length ?? 0} projectedFrom={edgeAt} {trailing} fixed={grid} compareLabel={band} />
                             <tr class="text-[0.65rem] text-base-content/40">{@render figureHeads(block.title)}</tr>
                         </thead>
                         <tbody>
                             <tr class="text-sm">
                                 <th class="{label} font-semibold tracking-wide uppercase">{block.title}</th>
-                                {@render figures(block.total, "font-semibold")}
+                                {@render figures(block.total, "font-semibold", block.kind === "beginning" ? "opening" : "balance")}
                             </tr>
                             {#each block.rows as row (row.key)}
-                                {@render rowCells(row)}
+                                {@render rowCells(row, block.kind === "beginning" ? "opening" : "balance")}
                             {/each}
                         </tbody>
                     </table>

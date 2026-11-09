@@ -45,6 +45,9 @@
     import {settings} from "#lib/stores/settings.svelte.js";
     import {listCursor} from "#lib/ui/listCursor.svelte.js";
     import {amountCell, fmtPct, isCursorRows, isDisplayModel, isGroupKey, type AmountCell, type IsDisplayRow} from "./incomeStatementRows";
+    import CompareCells from "./CompareCells.svelte";
+    import {AS_PROJECTED_SR} from "./compareColumns";
+    import CompareHeadCells from "./CompareHeadCells.svelte";
     import FigureColgroup from "./FigureColgroup.svelte";
     import ProjectedHeadRow from "./ProjectedHeadRow.svelte";
     import {projectedEdge} from "./projectedColumns";
@@ -59,18 +62,26 @@
     // the panels carry their own tests.
     // `projectedFrom` (plans/28): the first FORECAST bucket on the Projections
     // tab, drawn as a divider under "Projected". Null — every Reports-tab
-    // statement — changes nothing.
+    // statement — changes nothing. `compareFrom` (plans/34): the statement is a
+    // projection comparison — actual buckets, then the same ones as projected
+    // from here on — and the Total column becomes Δ and Δ% of the window sums.
     let {
         report,
         styles,
         flows = null,
         projectedFrom = null,
+        compareFrom = null,
+        compareLabel = null,
         depthSpec = null,
     }: {
         report: IncomeStatementReport;
         styles: ReadonlyMap<string, AmountStyle>;
         flows?: FlowsPanel | null;
         projectedFrom?: number | null;
+        /** Plan 34: the first as-projected bucket of a comparison, or null. */
+        compareFrom?: number | null;
+        /** The band's middle heading while comparing ("As projected from …"). */
+        compareLabel?: string | null;
         /** hledger.conf's `--depth` for `[incomestatement]`: which groups start expanded. Null: all start collapsed. */
         depthSpec?: DepthSpec | null;
     } = $props();
@@ -183,7 +194,13 @@
     const grid = $derived(buckets !== null);
     const label = $derived(grid ? "truncate" : "w-full");
     /** How many figure cells a line has — for the empty-box row's colspan. */
-    const figureColumns = $derived(buckets !== null ? buckets.length + 1 : comparing ? 3 : 1);
+    /** Plan 34: comparing a projection with actuals (interval mode only). */
+    const versus = $derived(compareFrom !== null && buckets !== null);
+    const figureColumns = $derived(buckets !== null ? buckets.length + (versus ? 2 : 1) : comparing ? 3 : 1);
+    const split = $derived(compareFrom ?? 0);
+    const edgeAt = $derived(versus ? compareFrom : projectedFrom);
+    const band = $derived(versus ? compareLabel : null);
+    const trailing = $derived(versus ? 2 : 1);
 
     const valuationLabel = $derived(
         report.value === "market" ? `Market value${report.base === null ? "" : ` in ${report.base}`}` : report.value === "cost" ? "At cost" : "Unvalued"
@@ -213,13 +230,17 @@
 {#snippet figures(amounts: Amounts, pct: number | null, emphasis: string)}
     {#if buckets !== null}
         {#each amounts.values ?? [] as value, i (i)}
-            <td class="w-28 min-w-28 {projectedEdge(i, projectedFrom)} text-right align-top font-mono whitespace-nowrap tabular-nums"
+            <td class="w-28 min-w-28 {projectedEdge(i, edgeAt)} text-right align-top font-mono whitespace-nowrap tabular-nums"
                 >{@render amount(cell(value), "")}</td
             >
         {/each}
-        <td class="w-32 min-w-32 text-right align-top font-mono whitespace-nowrap tabular-nums" data-column="total">
-            {@render amount(cell(amounts.current), emphasis)}
-        </td>
+        {#if versus}
+            <CompareCells values={amounts.values ?? []} {split} reading="flow" base={report.base} {styles} cellClass={emphasis} />
+        {:else}
+            <td class="w-32 min-w-32 text-right align-top font-mono whitespace-nowrap tabular-nums" data-column="total">
+                {@render amount(cell(amounts.current), emphasis)}
+            </td>
+        {/if}
     {:else}
         <td class="w-32 text-right align-top font-mono whitespace-nowrap tabular-nums">{@render amount(cell(amounts.current), emphasis)}</td>
         {#if comparing}
@@ -231,15 +252,21 @@
 
 <!-- The column headings for those figures, in the same order. -->
 {#snippet template()}
-    {#if buckets !== null}<FigureColgroup periods={buckets.length} total={true} />{/if}
+    {#if buckets !== null}<FigureColgroup periods={buckets.length} total={!versus} compare={versus} />{/if}
 {/snippet}
 
 {#snippet figureHeads()}
     {#if buckets !== null}
         {#each buckets as bucket, i (bucket.key)}
-            <th class="w-28 min-w-28 {projectedEdge(i, projectedFrom)} text-right font-normal" title="{bucket.from} to {bucket.to}">{bucket.label}</th>
+            <th class="w-28 min-w-28 {projectedEdge(i, edgeAt)} text-right font-normal" title="{bucket.from} to {bucket.to}"
+                >{bucket.label}{#if versus && i >= split}<span class="sr-only">{AS_PROJECTED_SR}</span>{/if}</th
+            >
         {/each}
-        <th class="w-32 min-w-32 text-right font-normal">Total</th>
+        {#if versus}
+            <CompareHeadCells />
+        {:else}
+            <th class="w-32 min-w-32 text-right font-normal">Total</th>
+        {/if}
     {:else}
         <th class="w-32 text-right font-normal">Amount</th>
         {#if comparing}
@@ -287,7 +314,10 @@
          together. Total mode: both wrappers are `contents`, so the boxes stay
          direct flex children and the page is exactly as it was. -->
     <div class={grid ? "@container overflow-x-auto" : "contents"} data-testid="is-scroller">
-        <div class={grid ? "flex flex-col gap-4" : "contents"} style:min-width={buckets !== null ? statementMinWidth(buckets.length, true) : undefined}>
+        <div
+            class={grid ? "flex flex-col gap-4" : "contents"}
+            style:min-width={buckets !== null ? statementMinWidth(buckets.length, !versus, versus) : undefined}
+        >
             {#each model.boxes as box (box.kind)}
                 {#if flows !== null && box.kind === "revenue"}
                     {@render flowPanel(flows, "Money in", "Where the period's income came from, and which accounts it landed in.", true)}
@@ -310,7 +340,7 @@
                      aligned with the columns under it, and a table with no column
                      headers is a table a screen reader cannot narrate. -->
                         <thead>
-                            <ProjectedHeadRow columns={buckets?.length ?? 0} {projectedFrom} trailing={1} fixed={grid} />
+                            <ProjectedHeadRow columns={buckets?.length ?? 0} projectedFrom={edgeAt} {trailing} fixed={grid} compareLabel={band} />
                             <tr class="text-[0.65rem] text-base-content/40">
                                 <th class="{label} font-normal"><span class="sr-only">{box.title} line</span></th>
                                 {@render figureHeads()}
@@ -389,7 +419,7 @@
                             {@render template()}
                             {#if grid}
                                 <thead>
-                                    <ProjectedHeadRow columns={buckets?.length ?? 0} {projectedFrom} trailing={1} fixed />
+                                    <ProjectedHeadRow columns={buckets?.length ?? 0} projectedFrom={edgeAt} {trailing} fixed compareLabel={band} />
                                     <tr class="text-[0.65rem] text-base-content/40">
                                         <th class="{label} font-normal"><span class="sr-only">{subtotal.label} line</span></th>
                                         {@render figureHeads()}
@@ -427,7 +457,7 @@
                     <table class="table table-fixed table-sm">
                         {@render template()}
                         <thead>
-                            <ProjectedHeadRow columns={buckets.length} {projectedFrom} trailing={1} fixed />
+                            <ProjectedHeadRow columns={buckets.length} projectedFrom={edgeAt} {trailing} fixed compareLabel={band} />
                             <tr class="text-[0.65rem] text-base-content/40">
                                 <th class="{label} font-normal"><span class="sr-only">Net income</span></th>
                                 {@render figureHeads()}

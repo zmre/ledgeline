@@ -1,6 +1,7 @@
 import {describe, expect, it} from "vitest";
 import {MAX_COUNT} from "#lib/reports/ui/params.js";
 import {
+    compareActive,
     DEFAULT_PROJECTION_COUNT,
     defaultProjectionParams,
     projectionParamsToSearch,
@@ -14,7 +15,16 @@ describe("UNIT projections params — the URL codec", () => {
     const dflt = defaultProjectionParams();
 
     it("opens on the runway, monthly, over two years with two periods of actuals", () => {
-        expect(dflt).toEqual({tab: "cash", interval: "monthly", count: DEFAULT_PROJECTION_COUNT, lookback: 2, depth: 2, empty: false, show: "all"});
+        expect(dflt).toEqual({
+            tab: "cash",
+            interval: "monthly",
+            count: DEFAULT_PROJECTION_COUNT,
+            lookback: 2,
+            depth: 2,
+            empty: false,
+            show: "all",
+            compare: false,
+        });
         // The horizon a runway question is asked over, and inside MAX_COUNT.
         expect(DEFAULT_PROJECTION_COUNT).toBe(24);
         expect(DEFAULT_PROJECTION_COUNT).toBeLessThanOrEqual(MAX_COUNT);
@@ -22,13 +32,13 @@ describe("UNIT projections params — the URL codec", () => {
 
     it("round-trips every tab", () => {
         for (const tab of PROJECTION_TABS) {
-            const params: ProjectionParams = {tab, interval: "quarterly", count: 8, lookback: 3, depth: 4, empty: true, show: "off"};
+            const params: ProjectionParams = {tab, interval: "quarterly", count: 8, lookback: 3, depth: 4, empty: true, show: "off", compare: true};
             expect(searchToProjectionParams(projectionParamsToSearch(params), dflt)).toEqual(params);
         }
     });
 
     it("round-trips through a search string with a leading ?", () => {
-        const params: ProjectionParams = {tab: "cash", interval: "yearly", count: 5, lookback: 0, depth: 1, empty: false, show: "notes"};
+        const params: ProjectionParams = {tab: "cash", interval: "yearly", count: 5, lookback: 0, depth: 1, empty: false, show: "notes", compare: false};
         expect(searchToProjectionParams(`?${projectionParamsToSearch(params)}`, dflt)).toEqual(params);
     });
 
@@ -42,7 +52,7 @@ describe("UNIT projections params — the URL codec", () => {
     it("writes every param in full, so a shared link reproduces the same charts", () => {
         // Not only the non-defaults: the defaults are relative to a codebase that
         // can change them, and a link saved today must still open the same page.
-        expect(projectionParamsToSearch(dflt)).toBe("tab=cash&interval=monthly&count=24&lookback=2&depth=2&empty=0&show=all");
+        expect(projectionParamsToSearch(dflt)).toBe("tab=cash&interval=monthly&count=24&lookback=2&depth=2&empty=0&show=all&compare=0");
     });
 
     it("falls back per field rather than wholesale, so one bad param does not discard the rest", () => {
@@ -56,7 +66,21 @@ describe("UNIT projections params — the URL codec", () => {
             depth: 3,
             empty: false,
             show: "all",
+            compare: false,
         });
+    });
+
+    it("reads compare=0|1 (plan 34), a junk value is the default, and it compares only with an actual period", () => {
+        expect(searchToProjectionParams("compare=1", dflt).compare).toBe(true);
+        expect(searchToProjectionParams("compare=0", dflt).compare).toBe(false);
+        expect(searchToProjectionParams("compare=yes", dflt).compare).toBe(false);
+        expect(searchToProjectionParams("compare=yes", {...dflt, compare: true}).compare).toBe(true);
+        // Kept at 1 with no actuals, so raising Actuals brings it back; inactive meanwhile.
+        const noActuals = searchToProjectionParams("compare=1&lookback=0", dflt);
+        expect(noActuals.compare).toBe(true);
+        expect(compareActive(noActuals)).toBe(false);
+        expect(compareActive({compare: true, lookback: 2})).toBe(true);
+        expect(compareActive({compare: false, lookback: 2})).toBe(false);
     });
 
     it("an unknown tab falls back rather than rendering an empty box with no way out", () => {
@@ -108,6 +132,6 @@ describe("UNIT projections params — the URL codec", () => {
 
     it("never carries the scenario — a query string is the one part of a page that gets pasted into chat windows", () => {
         const search = projectionParamsToSearch(dflt);
-        expect([...new URLSearchParams(search).keys()].sort()).toEqual(["count", "depth", "empty", "interval", "lookback", "show", "tab"]);
+        expect([...new URLSearchParams(search).keys()].sort()).toEqual(["compare", "count", "depth", "empty", "interval", "lookback", "show", "tab"]);
     });
 });

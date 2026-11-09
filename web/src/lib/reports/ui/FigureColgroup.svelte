@@ -5,7 +5,8 @@
 <script lang="ts">
     import {PERIOD_REM, TOTAL_REM} from "./statementGrid";
 
-    let {periods, total}: {periods: number; total: boolean} = $props();
+    /** `compare`: the Δ and Δ% columns of a projection comparison (plan 34), in place of a Total. */
+    let {periods, total, compare = false}: {periods: number; total: boolean; compare?: boolean} = $props();
 </script>
 
 <colgroup>
@@ -14,6 +15,10 @@
         <col style="width: {PERIOD_REM}rem" />
     {/each}
     {#if total}
+        <col style="width: {TOTAL_REM}rem" />
+    {/if}
+    {#if compare}
+        <col style="width: {TOTAL_REM}rem" />
         <col style="width: {TOTAL_REM}rem" />
     {/if}
 </colgroup>

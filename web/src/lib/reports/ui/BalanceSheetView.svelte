@@ -48,7 +48,13 @@
      (statementGrid.ts) inside one horizontal scroller, so their period columns
      line up and scroll together. That is also why the tie-out's verdict moves
      into its label cell there: an extra verdict column on the tie-out alone
-     would shift its periods away from the boxes above it. -->
+     would shift its periods away from the boxes above it.
+
+     COMPARE (plans/34). With `compareFrom`, the columns are a projection
+     comparison: the actual period-ends, then the same ends as projected. Every
+     figure row gains Δ and Δ% of its last column in each block (a balance
+     compares the last period); the tie-out row's stay blank, since it repeats
+     Total Assets to carry the per-column verdict. -->
 <script lang="ts">
     import type {MixedAmount} from "#lib/domain/money.js";
     import type {AmountStyle} from "#lib/domain/types.js";
@@ -68,6 +74,9 @@
         type BsDisplayRow,
         type BsSummary,
     } from "./balanceSheetRows";
+    import CompareCells from "./CompareCells.svelte";
+    import {AS_PROJECTED_SR} from "./compareColumns";
+    import CompareHeadCells from "./CompareHeadCells.svelte";
     import FigureColgroup from "./FigureColgroup.svelte";
     import ProjectedHeadRow from "./ProjectedHeadRow.svelte";
     import {projectedEdge} from "./projectedColumns";
@@ -79,6 +88,8 @@
         report,
         styles,
         projectedFrom = null,
+        compareFrom = null,
+        compareLabel = null,
         depthSpec = null,
     }: {
         /** A single-date sheet (the Reports tab) or a multi-column one (Projections). */
@@ -86,6 +97,10 @@
         styles: ReadonlyMap<string, AmountStyle>;
         /** The first FORECAST column, drawn as a divider under "Projected"; null for none. */
         projectedFrom?: number | null;
+        /** Plan 34: the first as-projected column of a comparison, or null. */
+        compareFrom?: number | null;
+        /** The band's middle heading while comparing ("As projected from …"). */
+        compareLabel?: string | null;
         /** hledger.conf's `--depth` for `[balancesheet]`: which groups start expanded. Null: all start collapsed. */
         depthSpec?: DepthSpec | null;
     } = $props();
@@ -93,6 +108,11 @@
     /** Every sheet as columns: one template, whichever shape arrived. */
     const sheet = $derived<BalanceSheetColumns>(report.kind === "balanceSheet" ? asColumns(report) : report);
     const multi = $derived(report.kind === "balanceSheetColumns");
+    const comparing = $derived(compareFrom !== null && multi);
+    const split = $derived(compareFrom ?? 0);
+    const edgeAt = $derived(comparing ? compareFrom : projectedFrom);
+    /** The cells a row with no per-column figure spans. */
+    const span = $derived(sheet.columns.length + (comparing ? 2 : 0));
 
     /**
      * Which groups are open, keyed by `BsDisplayRow.key`.
@@ -225,32 +245,44 @@
 {/snippet}
 
 <!-- One figure per column, divider and all. -->
-{#snippet figures(values: readonly MixedAmount[], emphasis: string)}
+{#snippet figures(values: readonly MixedAmount[], emphasis: string, blankDelta = false)}
     {#each sheet.columns as column, at (column.key)}
         <td
-            class="{figureWidth} {projectedEdge(at, projectedFrom)} text-right align-top font-mono whitespace-nowrap tabular-nums"
+            class="{figureWidth} {projectedEdge(at, edgeAt)} text-right align-top font-mono whitespace-nowrap tabular-nums"
             data-column={multi ? column.key : undefined}
         >
             {@render amount(cell(values[at]), emphasis)}
         </td>
     {/each}
+    {#if comparing}
+        <CompareCells {values} {split} reading="balance" base={sheet.base} {styles} blank={blankDelta} cellClass={emphasis} />
+    {/if}
 {/snippet}
 
 <!-- The column headings: "Amount" on a single-date sheet, each period on a
      multi-column one, under the actual/projected band when there is one. -->
 {#snippet template()}
-    {#if multi}<FigureColgroup periods={sheet.columns.length} total={false} />{/if}
+    {#if multi}<FigureColgroup periods={sheet.columns.length} total={false} compare={comparing} />{/if}
 {/snippet}
 
 {#snippet figureHeads(name: string, verdict: boolean)}
-    <ProjectedHeadRow columns={sheet.columns.length} {projectedFrom} trailing={verdict ? 1 : 0} fixed={multi} />
+    <ProjectedHeadRow
+        columns={sheet.columns.length}
+        projectedFrom={edgeAt}
+        trailing={(verdict ? 1 : 0) + (comparing ? 2 : 0)}
+        fixed={multi}
+        compareLabel={comparing ? compareLabel : null}
+    />
     <tr class="text-[0.65rem] text-base-content/40">
         <th class="{label} font-normal"><span class="sr-only">{name}</span></th>
         {#each sheet.columns as column, at (column.key)}
-            <th class="{figureWidth} {projectedEdge(at, projectedFrom)} text-right font-normal" title={multi ? `as of ${column.to}` : undefined}
-                >{column.label}</th
+            <th class="{figureWidth} {projectedEdge(at, edgeAt)} text-right font-normal" title={multi ? `as of ${column.to}` : undefined}
+                >{column.label}{#if comparing && at >= split}<span class="sr-only">{AS_PROJECTED_SR}</span>{/if}</th
             >
         {/each}
+        {#if comparing}
+            <CompareHeadCells />
+        {/if}
         {#if verdict}
             <th class="font-normal"><span class="sr-only">Balance check</span></th>
         {/if}
@@ -283,7 +315,7 @@
     <!-- Multi-column: one sideways scroller, one width, so every block keeps the
          same column edges. Single-date: `contents`, exactly as before. -->
     <div class={multi ? "overflow-x-auto" : "contents"} data-testid="bs-scroller">
-        <div class={multi ? "flex flex-col gap-4" : "contents"} style:min-width={multi ? statementMinWidth(sheet.columns.length, false) : undefined}>
+        <div class={multi ? "flex flex-col gap-4" : "contents"} style:min-width={multi ? statementMinWidth(sheet.columns.length, false, comparing) : undefined}>
             {#each sheet.sections as section, at (section.kind)}
                 <section class="overflow-hidden rounded-box border border-base-content/10" data-testid="bs-section-{section.kind}">
                     <h3
@@ -328,7 +360,7 @@
                                  reader to look for a difference between them. -->
                                     <tr class="bg-base-200/40" data-bs-row={row.key} data-testid="bs-subsection-{section.kind}-{row.term}">
                                         <th class="{label} pt-3 text-[0.7rem] font-semibold tracking-widest text-base-content/60 uppercase">{row.label}</th>
-                                        <td colspan={sheet.columns.length}></td>
+                                        <td colspan={span}></td>
                                     </tr>
                                 {:else if row.kind === "subtotal"}
                                     <!-- A band's subtotal. A thin rule and semibold, against the
@@ -390,7 +422,7 @@
                             {#if section.groups.length === 0}
                                 <tr>
                                     <th class="{label} font-normal text-base-content/50">No {section.title.toLowerCase()}</th>
-                                    <td colspan={sheet.columns.length}></td>
+                                    <td colspan={span}></td>
                                 </tr>
                             {/if}
                         </tbody>
@@ -441,7 +473,8 @@
                             </th>
                             {@render figures(
                                 summaries.map((summary) => summary.assets),
-                                "font-semibold"
+                                "font-semibold",
+                                true
                             )}
                             <!-- One verdict for the whole row: every column balances, or the
                          warning below names the first that does not. -->

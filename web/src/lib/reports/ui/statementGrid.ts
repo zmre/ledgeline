@@ -25,6 +25,6 @@ export const TOTAL_REM = 9;
  * The width the whole stack is held to: every block in it is then the same
  * width, so with fixed layout and the same colgroup their columns coincide.
  */
-export function statementMinWidth(periods: number, total: boolean): string {
-    return `${LABEL_REM + periods * PERIOD_REM + (total ? TOTAL_REM : 0)}rem`;
+export function statementMinWidth(periods: number, total: boolean, compare = false): string {
+    return `${LABEL_REM + periods * PERIOD_REM + (total ? TOTAL_REM : 0) + (compare ? 2 * TOTAL_REM : 0)}rem`;
 }

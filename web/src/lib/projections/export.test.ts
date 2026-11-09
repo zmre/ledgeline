@@ -5,7 +5,8 @@
 import type {Workbook, Worksheet} from "exceljs";
 import {describe, expect, it} from "vitest";
 import {DEFAULT_AMOUNT_STYLE} from "#lib/format/amounts.js";
-import {accountsFixture, journalFixture, projectionFixture} from "#lib/testing/projectionFixture.js";
+import {AS_PROJECTED_SUFFIX} from "#lib/export/xlsx.js";
+import {accountsFixture, compareFixture, journalFixture, projectionFixture} from "#lib/testing/projectionFixture.js";
 import {markProjected, matchingEntries, PROJECTED_SUFFIX, projectionExport, scenarioSlug, type ExportContext} from "./export";
 import {PROJECTION_TABS, type ProjectionTab} from "./params";
 
@@ -119,5 +120,79 @@ describe("UNIT projections/export", () => {
         expect(cells.some((t) => t.includes("new laptop"))).toBe(true);
         // The rent entries did not match, so they are not in the file.
         expect(cells.some((t) => t === "projection")).toBe(false);
+    });
+});
+
+describe("UNIT projections/export — Compare vs actuals (plan 34)", () => {
+    const COMPARE: ExportContext = {...CONTEXT, compare: compareFixture()};
+
+    async function compared(tab: ProjectionTab) {
+        const download = projectionExport(tab, projectionFixture(), COMPARE);
+        expect(download, tab).not.toBeNull();
+        return {download: download!, workbook: await download!.build()};
+    }
+
+    it("names the file with -compare before the span of the actual periods", () => {
+        const download = projectionExport("is", projectionFixture(), COMPARE)!;
+        expect(download.filename).toBe("projection-series-a-hiring-ramp-income-statement-compare-2026-06-01-to-2026-07-31.xlsx");
+        expect(download.params).toBe("2 actual periods from 2026-06-01, compared with the scenario projected on 2026-06-01");
+        expect(download.title).toBe("Income Statement vs Projection — Series A, hiring ramp");
+    });
+
+    it("every statement: both blocks, the projected one marked, then Δ and Δ % in place of a Total", async () => {
+        // The cash flow fixture is a different quarter; every other reading is Jun–Jul.
+        const months: Record<string, [string, string]> = {
+            bs: ["Jun 2026", "Jul 2026"],
+            is: ["Jun 2026", "Jul 2026"],
+            cf: ["Feb 2026", "Mar 2026"],
+            accounts: ["Jun 2026", "Jul 2026"],
+        };
+        for (const tab of ["bs", "is", "cf", "accounts"] as const) {
+            const {workbook} = await compared(tab);
+            const heads = headers(workbook.worksheets[0]!);
+            const [first, second] = months[tab]!;
+            expect(heads.slice(1, 3), tab).toEqual([first, second]);
+            expect(heads.slice(3, 5), tab).toEqual([`${first}${AS_PROJECTED_SUFFIX}`, `${second}${AS_PROJECTED_SUFFIX}`]);
+            expect(heads.at(-1), tab).toBe("Δ %");
+            expect(heads.at(-2)?.startsWith("Δ"), tab).toBe(true);
+            expect(
+                heads.some((h) => h.startsWith("Total")),
+                tab
+            ).toBe(false);
+        }
+    });
+
+    it("writes Δ % as a numeric fraction under 0.0%, uncapped, and an empty cell when there is none", async () => {
+        const {workbook} = await compared("accounts");
+        const ws = workbook.worksheets[0]!;
+        let numeric = 0;
+        ws.eachRow((row, rowIx) => {
+            if (rowIx < 5) return;
+            const pct = row.getCell(7);
+            if (pct.value === null || pct.value === undefined || pct.value === "") return;
+            expect(typeof pct.value).toBe("number");
+            expect(pct.numFmt).toBe("0.0%");
+            numeric += 1;
+        });
+        expect(numeric).toBeGreaterThan(0);
+        // Checking: $11,600 actual against $13,200 as projected, −12.1%.
+        const checking = [...Array(ws.rowCount).keys()].map((i) => ws.getRow(i + 1)).find((row) => String(row.getCell(1).value).endsWith("checking"));
+        expect(checking?.getCell(6).value).toBe(-1600);
+        expect(checking?.getCell(7).value).toBeCloseTo(-0.121, 6);
+    });
+
+    it("writes the runway as Period | Actual | As projected | Δ | Δ %", async () => {
+        const {workbook} = await compared("cash");
+        const ws = workbook.worksheets[0]!;
+        expect(headers(ws)).toEqual(["Period", "Actual ($)", "As projected ($)", "Δ ($)", "Δ %"]);
+        expect([ws.getCell("A6").value, ws.getCell("B6").value, ws.getCell("C6").value, ws.getCell("D6").value]).toEqual(["Jun 2026", 8000, 9000, -1000]);
+        // +$500 against $9,500: the screen's own 5.3%, as a fraction.
+        expect(ws.getCell("E7").value).toBeCloseTo(0.053, 9);
+    });
+
+    it("the journal is the as-projected run's, said so in its period line", async () => {
+        const {download} = await compared("journal");
+        expect(download.params).toContain("as projected on 2026-06-01");
+        expect(projectionExport("accounts", projectionFixture(), {...CONTEXT, compare: compareFixture({accounts: null})})).toBeNull();
     });
 });
