@@ -51,6 +51,7 @@
         projectedFrom = null,
         compareFrom = null,
         compareLabel = null,
+        compareBase = null,
     }: {
         report: CashFlowStatement;
         styles: ReadonlyMap<string, AmountStyle>;
@@ -58,6 +59,12 @@
         projectedFrom?: number | null;
         compareFrom?: number | null;
         compareLabel?: string | null;
+        /**
+         * The commodity Δ% is figured in when the report itself names no
+         * valuation base (no `P` prices, or not market value): the
+         * projection's dominant commodity. Without it every Δ% read "—".
+         */
+        compareBase?: string | null;
     } = $props();
 
     /** Folds the user has flipped from their starting state, keyed by `cfFoldKey`, so they survive a refetch. */
@@ -142,7 +149,7 @@
             >
         {/each}
         {#if versus}
-            <CompareCells values={columns.values} {split} {reading} {base} {styles} cellClass={emphasis} />
+            <CompareCells values={columns.values} {split} {reading} base={base ?? compareBase} {styles} cellClass={emphasis} />
         {:else}
             <td class="w-32 min-w-32 text-right align-top font-mono whitespace-nowrap tabular-nums" data-column="total">
                 {@render amount(cell(columns.total), emphasis)}

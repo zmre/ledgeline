@@ -91,6 +91,7 @@
         projectedFrom = null,
         compareFrom = null,
         compareLabel = null,
+        compareBase = null,
         depthSpec = null,
     }: {
         /** A single-date sheet (the Reports tab) or a multi-column one (Projections). */
@@ -102,6 +103,12 @@
         compareFrom?: number | null;
         /** The band's middle heading while comparing ("As projected from …"). */
         compareLabel?: string | null;
+        /**
+         * The commodity Δ% is figured in when the report itself names no
+         * valuation base (no `P` prices, or not market value): the
+         * projection's dominant commodity. Without it every Δ% read "—".
+         */
+        compareBase?: string | null;
         /** hledger.conf's `--depth` for `[balancesheet]`: which groups start expanded. Null: all start collapsed. */
         depthSpec?: DepthSpec | null;
     } = $props();
@@ -256,7 +263,7 @@
         </td>
     {/each}
     {#if comparing}
-        <CompareCells {values} {split} reading="balance" base={sheet.base} {styles} blank={blankDelta} cellClass={emphasis} />
+        <CompareCells {values} {split} reading="balance" base={sheet.base ?? compareBase} {styles} blank={blankDelta} cellClass={emphasis} />
     {/if}
 {/snippet}
 

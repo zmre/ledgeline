@@ -90,6 +90,12 @@
     } = $props();
 
     const commodity = $derived(chartCommodity(projection, fallbackCommodity));
+    /**
+     * What every comparison's Δ% is figured in: the statements' valuation base,
+     * else (no `P` prices, so the engine names none) the projection's dominant
+     * commodity. One rule for all four readings.
+     */
+    const compareBase = $derived(projection.balanceSheet.base ?? commodity);
     const style = $derived<AmountStyle>(styleOf(styles, commodity));
     const format = $derived((n: number) => formatChartValue(n, commodity, style));
     const formatAxis = $derived((n: number) => formatCompactChartValue(n, commodity, style));
@@ -225,15 +231,22 @@
         </div>
     {:else if compare !== null && tab === "bs"}
         <div data-testid="projection-bs">
-            <BalanceSheetView report={compare.balanceSheet} {styles} compareFrom={compare.columns} {compareLabel} />
+            <BalanceSheetView report={compare.balanceSheet} {styles} compareFrom={compare.columns} {compareLabel} {compareBase} />
         </div>
     {:else if compare !== null && tab === "is"}
         <div data-testid="projection-is">
-            <IncomeStatementView report={compare.incomeStatement} {styles} compareFrom={compare.columns} {compareLabel} />
+            <IncomeStatementView report={compare.incomeStatement} {styles} compareFrom={compare.columns} {compareLabel} {compareBase} />
         </div>
     {:else if compare !== null && tab === "cf"}
         <div data-testid="projection-cf">
-            <CashFlowStatementView report={compare.cashFlow} {styles} base={projection.balanceSheet.base} compareFrom={compare.columns} {compareLabel} />
+            <CashFlowStatementView
+                report={compare.cashFlow}
+                {styles}
+                base={projection.balanceSheet.base}
+                compareFrom={compare.columns}
+                {compareLabel}
+                {compareBase}
+            />
         </div>
     {:else if compare !== null && tab === "accounts"}
         <div class="flex flex-col gap-3" data-testid="projection-accounts">
@@ -246,7 +259,7 @@
                     {styles}
                     compareFrom={compare.columns}
                     {compareLabel}
-                    compareBase={projection.balanceSheet.base ?? commodity}
+                    {compareBase}
                     bind:collapsed={accountsCollapsed}
                     filtered={accountFilter.size > 0}
                 />

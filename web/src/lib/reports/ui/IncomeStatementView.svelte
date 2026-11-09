@@ -73,6 +73,7 @@
         projectedFrom = null,
         compareFrom = null,
         compareLabel = null,
+        compareBase = null,
         depthSpec = null,
     }: {
         report: IncomeStatementReport;
@@ -83,6 +84,12 @@
         compareFrom?: number | null;
         /** The band's middle heading while comparing ("As projected from …"). */
         compareLabel?: string | null;
+        /**
+         * The commodity Δ% is figured in when the report itself names no
+         * valuation base (no `P` prices, or not market value): the
+         * projection's dominant commodity. Without it every Δ% read "—".
+         */
+        compareBase?: string | null;
         /** hledger.conf's `--depth` for `[incomestatement]`: which groups start expanded. Null: all start collapsed. */
         depthSpec?: DepthSpec | null;
     } = $props();
@@ -236,7 +243,7 @@
             >
         {/each}
         {#if versus}
-            <CompareCells values={amounts.values ?? []} {split} reading="flow" base={report.base} {styles} cellClass={emphasis} />
+            <CompareCells values={amounts.values ?? []} {split} reading="flow" base={report.base ?? compareBase} {styles} cellClass={emphasis} />
         {:else}
             <td class="w-32 min-w-32 text-right align-top font-mono whitespace-nowrap tabular-nums" data-column="total">
                 {@render amount(cell(amounts.current), emphasis)}

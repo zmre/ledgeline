@@ -15,7 +15,7 @@
 // statement lays itself out is its own view's test. Nothing asserts on
 // geometry: jsdom has no layout engine.
 
-import {fireEvent, render, screen} from "@testing-library/svelte";
+import {cleanup, fireEvent, render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {afterEach, describe, expect, it} from "vitest";
 import {dec} from "#lib/domain/money.js";
@@ -543,6 +543,36 @@ describe("COMPONENT ProjectionReports — Compare vs actuals", () => {
         expect(net.querySelector('[data-column="delta-pct"]')).not.toBeNull();
         // The fixture's two blocks are the same months, so nothing differs.
         expect(net.querySelector('[data-column="delta-pct"]')?.textContent?.trim()).toMatch(/^(0\.0%|—)$/);
+    });
+
+    it("figures Δ% in the dominant commodity when the reports name no valuation base (no P prices)", () => {
+        // Without `P` directives the engine sets every statement's `base` to
+        // null. Δ% used to read "—" everywhere then; it falls back to the
+        // projection's commodity, as the Accounts reading always did.
+        const fixture = compareFixture();
+        const compare = {
+            ...fixture,
+            balanceSheet: {...fixture.balanceSheet, base: null},
+            incomeStatement: {...fixture.incomeStatement, base: null},
+        };
+        const forward = projection({compare});
+        for (const tab of ["is", "bs"] as const) {
+            cleanup();
+            render(ProjectionReports, {
+                tab,
+                projection: {...forward, balanceSheet: {...forward.balanceSheet, base: null}},
+                interval: "monthly" as const,
+                styles: STYLES,
+                fallbackCommodity: "$",
+                comparing: true,
+            });
+            const pcts = [...document.querySelectorAll('[data-column="delta-pct"]')].map((cell) => cell.textContent?.trim()).filter((text) => text !== "");
+            expect(pcts.length, tab).toBeGreaterThan(0);
+            expect(
+                pcts.some((text) => text !== "—"),
+                `${tab}: ${pcts.join(" ")}`
+            ).toBe(true);
+        }
     });
 
     it("the balance sheet compares the last period-end of each block, and leaves the tie-out row's Δ blank", () => {
