@@ -27,7 +27,8 @@ This section has four pages:
 - this one: the scenario list, the editor, where scenario files live and how saving works;
 - [The scenario file format](file-format.md): the `~` rules, the tag vocabulary, growth, and reading a scenario with hledger;
 - [What moves cash](cash.md): counter-accounts, the defaults Ledgeline picks, and where a projection starts;
-- [Asset rows](asset-rows.md): balances that compound, contributions, and `opening:` overrides.
+- [Asset rows](asset-rows.md): balances that compound, contributions, and `opening:` overrides;
+- [Comparing with actuals](compare.md): re-running the scenario from the first actual period and setting it beside what happened.
 
 Design notes and the reasoning behind each decision live in
 [`plans/22-projections.md`](https://github.com/zmre/ledgeline/blob/main/plans/22-projections.md).
@@ -191,7 +192,9 @@ exactly where.
 
 **Interval** and **Periods** set the columns for every reading. The depth
 slider rolls up the income statement's and cash flow statement's lines and the
-Accounts rows.
+Accounts rows. **Compare vs actuals** turns every reading into a comparison of
+the actual periods with the scenario as it would have projected them; see
+[Comparing with actuals](compare.md).
 
 **Export .xlsx**, beside the tabs, downloads the reading you're looking at as an
 Excel workbook. In the statements and Accounts, every projected column's heading

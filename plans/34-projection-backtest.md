@@ -1025,6 +1025,98 @@ None. Every question was settled on review (2026-11-09; items 4–9 at the top).
   `just test`, `just check`, `just lint`, `just test-integration`, `just e2e`.
 - Bench numbers are recorded below. Docs and screenshots are published.
 
+## Bench results (2026-11-09)
+
+`LEDGELINE_BENCH_SIZES=5000,50000,200000 cargo bench -p ledgeline-core --bench
+engine -- 'projections/run_(cold|warm)'`, Apple silicon, release. Every compare
+row includes the forward run it rides on.
+
+| id | 5k | 50k | 200k |
+|---|---|---|---|
+| `run_cold` | 11.8 ms | 79.0 ms | 308.8 ms |
+| `run_warm` | 5.2 ms | 6.2 ms | 6.8 ms |
+| `run_cold_compare_n2` | 17.4 ms | 114.9 ms | 478.8 ms |
+| `run_warm_compare_n2` | 6.4 ms | 7.9 ms | 9.1 ms |
+| `run_cold_compare_n12` | 26.6 ms | 136.7 ms | 509.5 ms |
+| `run_warm_compare_n12` | 13.5 ms | 19.2 ms | 23.5 ms |
+
+- Warm compare at N = 2 is **1.29×** warm at 50k (target ≤ 2×), 1.34× at 200k.
+  It grows a little with history (6.4 → 9.1 ms over 40× the journal): the
+  joined statements clone the main side's cash-flow accumulator and sheet
+  states, which grow with the account count, not the transaction count.
+- Cold costs one more `RealSide::build`: +36 ms at 50k and +170 ms at 200k
+  (estimated +50 / +250 ms).
+
+## Contract amendments made during implementation
+
+1. **Cash flow join.** Not two finished statements joined post hoc:
+   `CfAccumulator::beside` sets the actual pass and the as-projected pass side
+   by side as one 2N-column pass (union `investments`, union classes) whose
+   cash balances restart at column N from the second pass's own opening, then
+   `finish` runs once. Sections by kind, lines by `(name, source)`, zero-fill
+   and the `CfColumns` totals all come from the existing `finish`, and
+   `reconciles` is its per-column check over both blocks. Same result as D7's
+   join, with no second copy of the presentation logic.
+2. **Accounts join.** Likewise one build: `account_report_restarting` reads
+   the balance sections' columns from N on from the backtest side's own
+   opening. Rows, chain compression and `summary` are the report's own rule.
+3. **Prefix home.** `PROJECTED_KEY_PREFIX` lives in `reports::periods` (and is
+   re-exported from `projections`) so `bucket_label` and `period_info` see
+   through it. Without that, the wire labels and dates of the as-projected
+   columns would have been the raw key.
+4. **Reference signatures.** `reference_compared_accounts(journal, main_key,
+   forecast, opts)` takes no `facts`. Both references read the actual block
+   from every real transaction dated before C and every `P` before C, and the
+   as-projected block from `merged_transactions` / `merged_prices` over the
+   backtest forecast, through the Reports builders' own posting passes; the
+   joins are shared.
+5. **Views' props.** Each view takes `compareFrom` and `compareLabel` (the
+   band's "As projected from …"); `AccountReportView` also takes
+   `compareBase`, since the Accounts report is unvalued and carries no base.
+6. **Export.** One comparison builder (`buildComparisonWorkbook`,
+   `buildRunwayCompareWorkbook`) fed by the views' own display models
+   (`projections/compareExport.ts`), instead of a `compare` option on each of
+   the four Reports-tab builders. The Reports exports are untouched. Δ % in a
+   workbook is `compareCells`' one-decimal figure as a fraction, uncapped, and
+   without the display-precision check (a workbook has no styles).
+7. **Warnings.** The comparison lines (engine and seed lookahead) are composed
+   on the page (`compareView.comparisonWarnings`), which owns the warnings
+   alert, rather than inside `ProjectionReports`.
+8. **Parity narrowing.** Two backtest parity runs skip a claim that is vacuous
+   in the window, and one records a pre-existing gap:
+   - `assets.journal` books no revenue or expense and its transfer nets to zero
+     at depth 1, so its window has no income statement and no per-depth
+     `balance` table to compare. The sectioned Accounts claim still runs.
+   - `auto.journal` runs without "Show empty accounts". The scenario file
+     DECLARES `revenue:sales`; `hledger -E --declared` lists it even when
+     nothing in the window posts to it, while Ledgeline's known accounts are
+     the main journal's plus the generated ones. The forward run never shows
+     it because the November sale posts there. **This is a pre-existing gap,
+     not a backtest one**: a forward run whose count ends before a declared
+     account's first posting would show it too. Left for a follow-up.
+   - The growth deviations run monthly only, as the forward claim does (its
+     figures are per month).
+9. **Tests placement.** "Adding a real transaction in the window moves only
+   the actual block" is pinned in core (`projection_backtest.rs`); the
+   endpoint harness serves the fixed sample journal. The checkbox's disabled
+   state lives on the page, which has no component test, so the e2e spec
+   covers it. The e2e balance-sheet step reads **Total Equity** (the view has
+   no Net worth row; Total Equity is net worth).
+
 ## Status
 
-Not started.
+Implemented on `2026-11-09-backtest` (2026-11-09), all five phases:
+
+- Phase 1 + 2 (`feat(projections): backtest a scenario over its own actual
+  periods`): core, `tests/projection_backtest.rs` (19), the equivalence suite
+  over compared readings (lookback 1/2/7 added), and the opt-in backtest parity
+  suite (63 tests in `projection_files`, all passing against hledger 1.52).
+- Phase 3 (`feat(projections): serve Compare vs actuals on the run
+  endpoint`): wire, decoder, live integration, benches.
+- Phase 4 + 5 (`feat(projections): Compare vs actuals on every Projections
+  reading`, then the docs commit): the tab, export, e2e spec, docs.
+
+Not run here, for Patrick: `just e2e` (the new test is in
+`web/e2e/projections.e2e.ts`) and `just docs-screenshots` (adds
+`docs/projections/images/compare-is.png` and `compare-runway.png`, which
+`docs/projections/compare.md` already references).
