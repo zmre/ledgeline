@@ -26,5 +26,20 @@ export const TOTAL_REM = 9;
  * width, so with fixed layout and the same colgroup their columns coincide.
  */
 export function statementMinWidth(periods: number, total: boolean, compare = false): string {
-    return `${LABEL_REM + periods * PERIOD_REM + (total ? TOTAL_REM : 0) + (compare ? 2 * TOTAL_REM : 0)}rem`;
+    if (compare) return `${COMPARE_LABEL_REM + periods * COMPARE_PERIOD_REM + (total ? TOTAL_REM : 0) + DELTA_REM + DELTA_PCT_REM}rem`;
+    return `${LABEL_REM + periods * PERIOD_REM + (total ? TOTAL_REM : 0)}rem`;
 }
+
+// A projection comparison (plan 34) draws every period twice plus Δ and Δ%,
+// so it runs on a tighter template: at the usual one, three actual months
+// came to 85rem and pushed Δ% past the 1280px page. On this one they come to
+// 74.5rem and fit; wider windows still scroll (see `HScroll.svelte`).
+
+/** The line-name column's floor while comparing. Long names truncate, as they do at the usual width. */
+export const COMPARE_LABEL_REM = 15;
+/** One period column while comparing: still clears a bold six-figure total. */
+export const COMPARE_PERIOD_REM = 7.5;
+/** The Δ column: an amount, like a Total. */
+export const DELTA_REM = TOTAL_REM;
+/** The Δ% column: at most `>999%` or `-100.0%`. */
+export const DELTA_PCT_REM = 5.5;

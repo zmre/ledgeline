@@ -25,6 +25,7 @@
      Filtering to chosen accounts happens before the report gets here
      (`filterAccountReport`), so the export narrows with it. -->
 <script lang="ts">
+    import HScroll from "#lib/components/HScroll.svelte";
     import type {MixedAmount} from "#lib/domain/money.js";
     import type {AmountStyle} from "#lib/domain/types.js";
     import {formatTotals} from "#lib/journal/rowModel.js";
@@ -116,7 +117,7 @@
             </div>
         {/if}
     </div>
-    <div class="overflow-x-auto" data-testid="accounts-scroller">
+    <HScroll testid="accounts-scroller">
         <section
             class="overflow-hidden rounded-box border border-base-content/10"
             style:min-width={statementMinWidth(periods, !comparing, comparing)}
@@ -236,5 +237,5 @@
                 {/each}
             </table>
         </section>
-    </div>
+    </HScroll>
 </div>

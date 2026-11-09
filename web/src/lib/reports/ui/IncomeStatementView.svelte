@@ -37,6 +37,7 @@
      something on first load rather than nothing — and Enter either opens the
      disclosure (on a group) or drills into the journal (on an account). -->
 <script lang="ts">
+    import HScroll from "#lib/components/HScroll.svelte";
     import type {AmountStyle} from "#lib/domain/types.js";
     import {openJournal} from "#lib/journal/openJournal.js";
     import {registerKeys} from "#lib/keys/keymap.svelte.js";
@@ -313,7 +314,7 @@
          width, so every block keeps the same column edges and they all scroll
          together. Total mode: both wrappers are `contents`, so the boxes stay
          direct flex children and the page is exactly as it was. -->
-    <div class={grid ? "@container overflow-x-auto" : "contents"} data-testid="is-scroller">
+    <HScroll enabled={grid} class="@container" testid="is-scroller">
         <div
             class={grid ? "flex flex-col gap-4" : "contents"}
             style:min-width={buckets !== null ? statementMinWidth(buckets.length, !versus, versus) : undefined}
@@ -506,5 +507,5 @@
                 </div>
             {/if}
         </div>
-    </div>
+    </HScroll>
 </div>

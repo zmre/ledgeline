@@ -56,6 +56,7 @@
      compares the last period); the tie-out row's stay blank, since it repeats
      Total Assets to carry the per-column verdict. -->
 <script lang="ts">
+    import HScroll from "#lib/components/HScroll.svelte";
     import type {MixedAmount} from "#lib/domain/money.js";
     import type {AmountStyle} from "#lib/domain/types.js";
     import {openJournal} from "#lib/journal/openJournal.js";
@@ -314,7 +315,7 @@
 
     <!-- Multi-column: one sideways scroller, one width, so every block keeps the
          same column edges. Single-date: `contents`, exactly as before. -->
-    <div class={multi ? "overflow-x-auto" : "contents"} data-testid="bs-scroller">
+    <HScroll enabled={multi} testid="bs-scroller">
         <div class={multi ? "flex flex-col gap-4" : "contents"} style:min-width={multi ? statementMinWidth(sheet.columns.length, false, comparing) : undefined}>
             {#each sheet.sections as section, at (section.kind)}
                 <section class="overflow-hidden rounded-box border border-base-content/10" data-testid="bs-section-{section.kind}">
@@ -486,7 +487,7 @@
                 </table>
             </div>
         </div>
-    </div>
+    </HScroll>
 
     {#if !allBalanced}
         <div class="alert rounded-box px-3 py-2 text-sm alert-warning" role="alert" data-testid="bs-check">

@@ -671,3 +671,22 @@ test("projections: Compare vs actuals sets the actual periods beside the project
     await expect(page.getByTestId("projection-is").getByTestId("projected-label").first()).toContainText("As projected from");
     await expect(page.getByTestId("projection-is").locator("thead").first().locator("tr:not([data-testid]) th")).toHaveCount(1 + 4 + 2);
 });
+
+test("projections: a comparison too wide for the page says it scrolls, and the chevron scrolls it", async ({page}) => {
+    // Three actual months fit the 1280px page on the comparison's tighter
+    // template: nothing to scroll, so no indicator.
+    await page.goto("/projections?tab=is&lookback=3&compare=1");
+    await expect(page.getByTestId("projection-is").getByTestId("projected-label").first()).toBeVisible();
+    await expect(page.getByTestId("is-scroller-right")).toHaveCount(0);
+
+    // Six do not: the right edge fades and offers a chevron, which scrolls
+    // the statement (not the page) and brings up the left one.
+    await page.goto("/projections?tab=is&lookback=6&compare=1");
+    await expect(page.getByTestId("projection-is").getByTestId("projected-label").first()).toBeVisible();
+    const right = page.getByTestId("is-scroller-right");
+    await expect(right).toBeVisible();
+    await expect(page.getByTestId("is-scroller-left")).toHaveCount(0);
+    await right.click();
+    await expect(page.getByTestId("is-scroller-left")).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+});

@@ -20,6 +20,7 @@
      section lines start closed. Keyboard: j/k walk every visible row, Enter opens
      a line or shows an account's postings for the report's dates. -->
 <script lang="ts">
+    import HScroll from "#lib/components/HScroll.svelte";
     import type {MixedAmount} from "#lib/domain/money.js";
     import type {AmountStyle} from "#lib/domain/types.js";
     import {openJournal} from "#lib/journal/openJournal.js";
@@ -234,7 +235,7 @@
 
     <!-- Interval mode: one sideways scroller, one width, so every block keeps
          the same column edges. Total mode: `contents`, exactly as before. -->
-    <div class={grid ? "overflow-x-auto" : "contents"} data-testid="cf-scroller">
+    <HScroll enabled={grid} testid="cf-scroller">
         <div
             class={grid ? "flex flex-col gap-4" : "contents"}
             style:min-width={buckets !== null ? statementMinWidth(buckets.length, !versus, versus) : undefined}
@@ -296,7 +297,7 @@
                 </section>
             {/each}
         </div>
-    </div>
+    </HScroll>
 
     <!-- A footnote, not a warning: it is almost always a posting date putting
          one side of a transaction in the next period, the Total column still

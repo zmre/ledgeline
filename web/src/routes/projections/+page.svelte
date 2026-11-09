@@ -46,7 +46,7 @@
     import {defaultProjectionParams, projectionParamsToSearch, searchToProjectionParams, type ProjectionParams} from "#lib/projections/params.js";
     // MERGE SEAM: plan 34 (Compare vs actuals).
     import {compareActive} from "#lib/projections/params.js";
-    import {comparisonWarnings, dayLabel} from "#lib/projections/compareView.js";
+    import {comparisonWarnings, dayLabel, seedNote} from "#lib/projections/compareView.js";
     import {assetRowsByGroup} from "#lib/projections/projectionView.js";
     import {sameProjectionQuery, scenarioStore, scenarioTableView, type ProjectionWindow} from "#lib/projections/scenarioStore.svelte.js";
     import ProjectionReports from "#lib/projections/ui/ProjectionReports.svelte";
@@ -390,10 +390,9 @@
     });
 
     // MERGE SEAM: plan 34 appends the comparison's lines, prefixed "Comparison:".
-    const warnings = $derived([
-        ...(current?.warnings ?? []),
-        ...(comparing && current?.compare != null ? comparisonWarnings(current.compare, scenarioStore.scenario) : []),
-    ]);
+    const warnings = $derived([...(current?.warnings ?? []), ...(comparing && current?.compare != null ? comparisonWarnings(current.compare) : [])]);
+    /** The grey seed note under the controls while comparing; null otherwise. */
+    const compareNote = $derived(comparing && current?.compare != null ? seedNote(scenarioStore.scenario) : null);
 
     /**
      * The journal's own balance per asset row, for the table's Balance column.
@@ -616,6 +615,10 @@
             </div>
         {/if}
     </div>
+
+    {#if compareNote !== null}
+        <p class="-mt-4 px-3 text-xs text-base-content/60" data-testid="projection-compare-note">{compareNote}</p>
+    {/if}
 
     {#if warnings.length > 0}
         <!-- Never silent: a line the projection could not enumerate says so here

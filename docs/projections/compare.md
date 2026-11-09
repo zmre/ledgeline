@@ -173,15 +173,18 @@ projection by $1,453.25.
 columns marked **(as projected)**, then **Δ** as money and **Δ %** as a number
 formatted as a percentage. The filename has `-compare` in it.
 
-## Warnings
+## Notes and warnings
+
+While comparing, a grey note under the controls counts the rows that are
+still the seed's 12-month averages, for example "12 rows are 12-month averages
+that include the compared months." That is a fact about how those rows were
+made, not a problem: those averages were computed from history that includes
+the periods being compared, so they had a head start a projection really made
+on F would not have had. The comparison still runs every row exactly as
+written; edit or replace those rows if you want a test without that head start.
 
 The page's warnings box adds lines that start with "Comparison:":
 
-- **Seeded averages.** Rows the seed filled in from your history are averages
-  of the last 12 months, and those months include the periods being compared.
-  They will look more accurate than a forecast made on F could have been. The
-  warning counts them; the comparison still runs them exactly as written.
-  Edit or replace them to get an honest test.
 - **A different valuation commodity.** If your base commodity first appears
   inside the window, the projection made on F would have valued in another
   one. The as-projected columns are shown in the actual columns' commodity,

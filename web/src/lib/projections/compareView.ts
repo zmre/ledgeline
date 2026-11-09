@@ -64,18 +64,24 @@ export function untouchedSeedLines(scenario: Scenario): number {
 /**
  * The comparison's lines for the page's warnings alert, each prefixed
  * "Comparison: ": the engine's (the as-projected run's own, and a valuation
- * target that changed inside the window), then the seed lookahead line (D7),
- * which only the page can see. Only a warning: the scenario is never re-seeded.
+ * target that changed inside the window). The seed note is not one of them —
+ * see `seedNote`.
  */
-export function comparisonWarnings(compare: Comparison, scenario: Scenario): string[] {
+export function comparisonWarnings(compare: Comparison): string[] {
+    return compare.warnings.map((warning) => `Comparison: ${warning}`);
+}
+
+/**
+ * A neutral note, shown in grey beside the comparison rather than in the
+ * warnings alert (Patrick, 2026-11-09): how many rows are still the seed's
+ * 12-month averages, which include the compared months (D7). It states a
+ * fact about how those rows were made; it is not a problem to fix, and the
+ * scenario is never re-seeded or adjusted. Null when there are none.
+ */
+export function seedNote(scenario: Scenario): string | null {
     const seeded = untouchedSeedLines(scenario);
-    const lookahead =
-        seeded === 0
-            ? []
-            : [
-                  `${seeded} ${seeded === 1 ? "row is an average" : "rows are averages"} of the last 12 months, which include the periods being compared, so ${
-                      seeded === 1 ? "it" : "they"
-                  } will look more accurate than a real forecast would have been.`,
-              ];
-    return [...compare.warnings, ...lookahead].map((warning) => `Comparison: ${warning}`);
+    if (seeded === 0) return null;
+    return seeded === 1
+        ? "1 row is a 12-month average that includes the compared months."
+        : `${seeded} rows are 12-month averages that include the compared months.`;
 }

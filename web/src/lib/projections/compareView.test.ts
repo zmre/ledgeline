@@ -1,7 +1,7 @@
 import {describe, expect, it} from "vitest";
 import {dec} from "#lib/domain/money.js";
 import {compareFixture, usd} from "#lib/testing/projectionFixture.js";
-import {comparisonWarnings, compareRunwayStatement, dayLabel, untouchedSeedLines} from "./compareView";
+import {comparisonWarnings, compareRunwayStatement, dayLabel, seedNote, untouchedSeedLines} from "./compareView";
 import {blankLine, emptyScenario, withQuantity} from "./scenarioModel";
 import type {Scenario} from "./types";
 
@@ -45,12 +45,14 @@ describe("UNIT projections/compareView", () => {
         };
         const scenario: Scenario = {...emptyScenario(), lines: [seeded]};
         expect(untouchedSeedLines(scenario)).toBe(1);
-        const warnings = comparisonWarnings(compareFixture({warnings: ["valued in EUR"]}), scenario);
-        expect(warnings[0]).toBe("Comparison: valued in EUR");
-        expect(warnings[1]).toMatch(/^Comparison: 1 row is an average of the last 12 months, which include the periods being compared/);
+        // The engine's lines are warnings; the seed count is a separate grey note.
+        expect(comparisonWarnings(compareFixture({warnings: ["valued in EUR"]}))).toEqual(["Comparison: valued in EUR"]);
+        expect(seedNote(scenario)).toBe("1 row is a 12-month average that includes the compared months.");
+        expect(seedNote({...scenario, lines: [seeded, {...seeded, group: "rule:1"}]})).toBe("2 rows are 12-month averages that include the compared months.");
         // Edited: no longer an untouched average.
         const edited = {...withQuantity(seeded, dec(60000, 2)), served: dec(50000, 2)};
         expect(untouchedSeedLines({...scenario, lines: [edited]})).toBe(0);
-        expect(comparisonWarnings(compareFixture(), emptyScenario())).toEqual([]);
+        expect(seedNote({...scenario, lines: [edited]})).toBeNull();
+        expect(comparisonWarnings(compareFixture())).toEqual([]);
     });
 });
