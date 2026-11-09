@@ -4,6 +4,8 @@
 ## Known issues
 - fix: display issue where pie chart is not round, but oval when the window narrows horizontally or vertically.  Update: seems to be specific to linux as I can't reproduce on mac. Static analysis says the geometry is fine — layerchart computes the radius as `min(width, height) / 2` and emits a true circle with no `viewBox`, and nothing in our CSS scales non-uniformly — so this needs a WebKitGTK repro (dump the `<svg>`'s rendered box, attributes and computed style from devtools on Linux) before anything is changed.
 
+- fix: the desktop app forgets every browser-stored setting on each launch. The GUI binds an ephemeral port (`crates/ledgeline-server/src/gui.rs`), and WebKit keys localStorage by origin, port included, so each launch starts with empty storage. ⌘R and File→Open keep the port, so the settings survive those. Lost on relaunch: `lastProjectionId`, column choices, chart toggles, benchmarks, review limits. `~/Library/WebKit/com.zmre.ledgeline/WebsiteData/Default/` holds one folder per past port. Fix by giving the webview a stable origin (custom scheme or fixed data-store key) or by moving these settings server-side. Found while writing plan 33.
+
 ## Import improvements
 
 - **Syncing:** Can we setup auto-syncing using SimpleFIN / SimpleFIN Bridge? Is that still maintained?  Does it still work? Do we have any other reasonable sync approaches? Can we run it ourselves?
@@ -41,11 +43,10 @@
 
 ## Budgeting / planning / modeling
 
+- **Default projection:** once I've put a lot of work into a projection, I want to see it when I go to the projections tab without having to load it as a separate step.  I like our default as-is, but maybe we can have a setting that lets us auto-load a default file and use today's behavior if one isn't specified.
 - **Compare projections:** sometimes you want to know how accurate your projection was versus actuals and where it differed so you can improve your projection model. I want a way, for each report, to "compare vs previous" as a checkbox.
-  - and if that is checked, then anything to the left of the line where the forecasts starts shows the actual value, but will compare actuals to what would have been projected if we did our projection at the start of the period.
-  - This could get very busy, so we will want to use some tricks to try to make it easier to see.
-  - In any given cell that shows actuals, add a green up arrow to top left of cell or a red down arrow to bottom right. Lets only show it if 5% or more different.  On click or hover (whether there's an arrow or not), pop up the full comparison of projected vs. actual.  Hmmmmm... I don't know what's green versus red. Sort of depends on revenue vs. expense and in some cases it isn't meaningful.  So lets use arrows to represent positive or negative percentages over our threshold and projection / actual not the reverse.
-
+  - if that is checked, then for the `actuals` previous periods, compare actuals to what would have been projected if we did our projection at the start of the period.
+  - no need to project forward for this, but we do want to be able to do this for each report type.  lets say we have 3 actuals periods: show those three as actuals, then a line, then show those three periods again as projected, then a column showing differences (absolute and percent difference)
 - **Personal planning calculators** a la quicken financial planner; see inspiration from [credit karma](https://www.creditkarma.com/calculators/money) and [nerdwallet](https://www.nerdwallet.com/investing/calculators). Monarch also has some interesting calculators you can use even when not logged in like: [1](https://www.monarch.com/calculators/financial-health-calculator), [2])(https://www.monarch.com/calculators/debt-payoff-calculator), [3](https://www.monarch.com/calculators/mortgage-calculator) and probably more if you have an account
   - great free tools with details at [engaging-data](https://engaging-data.com/early-retirement-calculators-and-tools/)
   - [ ] investigate [projection lab](https://projectionlab.com) to understand if that's worthwhile or anything there we want to learn from. from a friend: "really nice stuff built on top of it (roth conversions, drawdown simulation, flex spending, tax strategy, "what if" checkpointing to compare decisions, nice milestone tools to setup when costs are known to change and how, etc"
