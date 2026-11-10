@@ -25,7 +25,7 @@ The suggested file name follows the date range: `journal-2026-01-01-to-2026-03-3
 
 ## The layout
 
-The first three rows are a title band: the journal's name, the word "Journal", and the date range. Row 5 holds the column headers, and it stays frozen while you scroll.
+The first three rows are a title band: the journal's name, the word "Journal", and the date range. With a running balance pinned, the date line also names the pinned account and commodity. Row 5 holds the column headers, and it stays frozen while you scroll.
 
 Each transaction is a group of rows:
 
@@ -48,6 +48,7 @@ A `TOTAL` row with the grand totals closes the sheet, followed by a line saying 
 | Account Name | The hledger account. Virtual postings keep their `(account)` or `[account]` form. |
 | Debit | Positive amounts. |
 | Credit | Negative amounts, shown without the minus sign. |
+| Change, Balance | Only with a [running balance](running-balances.md) pinned: the pinned account's change and balance, on each `Total for` row. |
 | Quantity | Only when some posting has a cost. See below. |
 | Item class, Customer full name, Vendor | Only when some exported transaction has a `class:`, `customer:` or `vendor:` tag. |
 

@@ -123,8 +123,9 @@ A new transaction opens with the description focused, so you can start typing at
 | ------------ | --------------------------------- |
 | <kbd>/</kbd> | Focus the journal search box      |
 | <kbd>a</kbd> | Open the journal's account picker |
+| <kbd>b</kbd> | Pin the one filtered account's running balance, or unpin it |
 
-On the Holdings page, which has no search box, <kbd>/</kbd> opens the account picker instead.
+<kbd>b</kbd> works when exactly one account is in the filter, or when a [running balance](running-balances.md) is already pinned. On the Holdings page, which has no search box, <kbd>/</kbd> opens the account picker instead.
 
 ## Holdings
 

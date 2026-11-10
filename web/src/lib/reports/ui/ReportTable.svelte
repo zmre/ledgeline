@@ -77,7 +77,7 @@
                     // `preset: "all"` because a report's own date range lives in
                     // its controls, not in the row — narrowing the journal to
                     // dates the user cannot see here would look like data loss.
-                    if (row !== null) void openJournal({accounts: [row.account], preset: "all"});
+                    if (row !== null) void openJournal({accounts: [row.account], preset: "all", pin: {account: row.account}});
                 },
             },
         ],

@@ -23,6 +23,7 @@
 use super::Classes;
 use super::cash::{BalanceKind, cash_balances};
 use super::wire::{js_trim, plain_decimal};
+use crate::assertions::{AssertionFailure, check_balance_assertions};
 use crate::model::{Journal, Status, Transaction};
 use crate::projections::is_generated;
 use crate::reports::AccountType;
@@ -92,10 +93,29 @@ impl Finding {
 /// here; the result is in exactly [`wire::journal_to_all_diagnostics`]'s order.
 #[must_use]
 pub fn engine_findings(journal: &Journal) -> Vec<Finding> {
+    engine_checks(journal).findings
+}
+
+/// The engine pass's two outputs: the findings, and the raw balance-assertion
+/// failures they were made from (for the running-balance marks, which need
+/// the figures and must agree with the problem list).
+#[derive(Debug, Default)]
+pub struct EngineChecks {
+    /// [`engine_findings`].
+    pub findings: Vec<Finding>,
+    /// [`check_balance_assertions`]' failures, in evaluation order; empty if
+    /// the check overflowed (as the findings then have none either).
+    pub assertion_failures: Vec<AssertionFailure>,
+}
+
+/// [`engine_findings`], keeping the assertion failures from the same run.
+#[must_use]
+pub fn engine_checks(journal: &Journal) -> EngineChecks {
     let count = journal.transactions.len();
+    let failures = check_balance_assertions(journal).unwrap_or_default();
     let all = std::thread::scope(|scope| {
         let stock = scope.spawn(|| wire::journal_to_stock_diagnostics(journal));
-        let mut all = wire::journal_to_diagnostics(journal);
+        let mut all = wire::diagnostics_with_assertions(journal, &failures);
         all.extend(wire::journal_to_auto_diagnostics(journal));
         all.extend(wire::journal_to_tag_diagnostics(journal));
         // A join fails only on a panic in the pass, which would have failed
@@ -108,7 +128,8 @@ pub fn engine_findings(journal: &Journal) -> Vec<Finding> {
         all
     });
     let mut seen: HashSet<(Option<usize>, &'static str, String)> = HashSet::new();
-    all.into_iter()
+    let findings = all
+        .into_iter()
         .filter_map(|diagnostic: WireDiagnostic| {
             let severity = Severity::from_wire(diagnostic.severity)?;
             if js_trim(&diagnostic.message).is_empty() {
@@ -129,7 +150,11 @@ pub fn engine_findings(journal: &Journal) -> Vec<Finding> {
                     message: diagnostic.message,
                 })
         })
-        .collect()
+        .collect();
+    EngineChecks {
+        findings,
+        assertion_failures: failures,
+    }
 }
 
 /// `*:unknown`, `*:uncategorized` (any depth, including bare), or a bare

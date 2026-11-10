@@ -1889,7 +1889,7 @@ pub(crate) fn today_utc() -> String {
 
 /// Parse a report interval, defaulting to monthly when absent. Returns a `400`
 /// for an unrecognized value.
-fn parse_interval(raw: Option<&str>) -> Result<Interval, AppError> {
+pub(crate) fn parse_interval(raw: Option<&str>) -> Result<Interval, AppError> {
     match raw {
         None => Ok(Interval::Monthly),
         Some("daily") => Ok(Interval::Daily),
@@ -2101,7 +2101,11 @@ fn parse_grain(raw: Option<&str>, default: Option<Interval>) -> Result<Option<In
 /// to 1200 columns, is a plausible-looking answer to a question nobody asked.
 /// The count is measured arithmetically ([`series_count`]) before anything is
 /// walked.
-fn check_range(from: &str, to: &str, interval: Option<Interval>) -> Result<(), AppError> {
+pub(crate) fn check_range(
+    from: &str,
+    to: &str,
+    interval: Option<Interval>,
+) -> Result<(), AppError> {
     if from > to {
         return Err(AppError::BadRequest(format!(
             "from {from} is after to {to}"

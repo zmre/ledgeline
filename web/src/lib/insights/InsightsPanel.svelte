@@ -6,6 +6,8 @@
          keeps in step with the filter) and its chart route.
        Balances — cash and short-term liabilities as of today, from the WHOLE
          journal and ignoring the filter bar entirely (see BalancesView for why).
+         While an account is pinned, its balance line over the filter's DATE
+         range takes the pie's place (plan 36 amendment A1).
 
      Collapsed state persists in settings.insightsOpen and the active tab in
      settings.insightsTab; the header row stays visible with the active view's
@@ -17,7 +19,10 @@
     import {today} from "#lib/reports/periods.js";
     import {cashBalances} from "#lib/stores/cashBalances.svelte.js";
     import {journal} from "#lib/stores/journal.svelte.js";
+    import {filters} from "#lib/stores/filters.svelte.js";
     import {journalView} from "#lib/stores/journalView.svelte.js";
+    import {running} from "#lib/stores/running.svelte.js";
+    import {runningSeries} from "#lib/stores/runningSeries.svelte.js";
     import {settings, type InsightsTab} from "#lib/stores/settings.svelte.js";
     import BalancesView from "./BalancesView.svelte";
     import BigNumbers from "./BigNumbers.svelte";
@@ -46,6 +51,33 @@
         void cashBalances.load(serverUrl, {asOf: today(), generation});
     });
     const balancesView = $derived(cashBalances.value);
+
+    // The pinned account's balance line: the same rule, narrowed further — only
+    // while the box is OPEN on Balances with a pin set, since nothing else (not
+    // the collapsed header) reads it. Keyed on primitives so typing in the
+    // search box, or changing the account filter, does not refetch a line that
+    // depends on neither. An account the engine refused (a stale `bal=` link)
+    // is not asked about again; the pin chip already says why.
+    const pinAccount = $derived(filters.value.pin?.account ?? null);
+    const pinCommodity = $derived(filters.value.pin?.commodity ?? null);
+    const rangeFrom = $derived(filters.value.from);
+    const rangeTo = $derived(filters.value.to);
+    $effect(() => {
+        const serverUrl = settings.serverUrl;
+        const generation = journal.generation;
+        const account = pinAccount;
+        if (serverUrl === null || generation === null || account === null) return;
+        if (!settings.insightsOpen || settings.insightsTab !== "balances" || running.refused(account)) return;
+        void runningSeries.load(serverUrl, {account, commodity: pinCommodity, from: rangeFrom, to: rangeTo, today: today(), generation});
+    });
+    // A refused account is never asked about, so say so rather than spin.
+    const trendError = $derived(
+        pinAccount !== null && running.refused(pinAccount)
+            ? new Error("it is not in this journal")
+            : runningSeries.status === "error"
+              ? runningSeries.error
+              : null
+    );
 
     // The collapsed header's figure follows the active tab, because that is the
     // one number worth a scan for whichever view you left it on.
@@ -118,7 +150,7 @@
             </div>
             {#if settings.insightsTab === "balances"}
                 {#if balancesView !== null}
-                    <BalancesView view={balancesView} />
+                    <BalancesView view={balancesView} trend={runningSeries.value} {trendError} />
                 {:else if cashBalances.status === "error"}
                     <p class="py-6 text-center text-sm text-error">Couldn't load balances: {cashBalances.error?.message ?? "unknown error"}</p>
                 {:else}

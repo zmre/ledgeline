@@ -23,7 +23,12 @@
      This cannot oscillate. The name cell is `flex-1 min-w-0`, i.e.
      `flex-basis: 0%`, so its width comes from the container and the amount
      beside it and never from its own content — a longer label cannot widen the
-     box that decided how long the label may be. -->
+     box that decided how long the label may be.
+
+     The row is a button (plan 36): click or Enter filters the journal to the
+     account AND pins its running balance, keeping the date range. The pinned
+     account's row is highlighted (amendment A1), so the row you clicked is
+     visibly the one the line beside the list charts. -->
 <script lang="ts">
     import AccountLabel from "#lib/components/AccountLabel.svelte";
     import type {BalanceRow} from "#lib/journalView/types.js";
@@ -33,6 +38,8 @@
         formatted,
         negativeIsWrong,
         dotColor,
+        pinned = false,
+        onOpen,
     }: {
         entry: BalanceRow;
         /** The already-formatted amount; formatting needs the commodity and style the list owns. */
@@ -41,6 +48,10 @@
         negativeIsWrong: boolean;
         /** Pie-slice colour for this account, when it has one. */
         dotColor?: string;
+        /** This is the pinned account, whose line the chart beside the list draws. */
+        pinned?: boolean;
+        /** Show this account in the journal with its running balance pinned. */
+        onOpen: () => void;
     } = $props();
 
     /** The name renders at `text-sm`; the measurer has to be told, or it answers for 12px. */
@@ -83,26 +94,43 @@
     const negative = $derived(entry.qty.m < 0n);
 </script>
 
-<li class="flex items-baseline justify-between gap-3 px-1 py-1">
-    <span class="flex min-w-0 flex-1 flex-col">
-        <span class="flex min-w-0 items-baseline gap-1.5">
-            {#if dotColor !== undefined}
-                <span class="inline-block h-2 w-2 shrink-0 rounded-full" style="background:{dotColor}"></span>
-            {/if}
-            <span class="min-w-0 flex-1 text-sm" use:measureName>
-                <AccountLabel name={entry.account} maxWidth={nameWidth > 0 ? nameWidth : undefined} fontSizePx={NAME_FONT_SIZE_PX} budget={FALLBACK_BUDGET} />
+<li>
+    <button
+        type="button"
+        class={[
+            "flex w-full cursor-pointer items-baseline justify-between gap-3 rounded px-1 py-1 text-left hover:bg-base-300/60 focus-visible:bg-primary/25 focus-visible:outline-none",
+            pinned && "bg-primary/15",
+        ]}
+        title="Show {entry.account} in the journal with its running balance"
+        aria-current={pinned ? "true" : undefined}
+        onclick={onOpen}
+        data-account={entry.account}
+    >
+        <span class="flex min-w-0 flex-1 flex-col">
+            <span class="flex min-w-0 items-baseline gap-1.5">
+                {#if dotColor !== undefined}
+                    <span class="inline-block h-2 w-2 shrink-0 rounded-full" style="background:{dotColor}"></span>
+                {/if}
+                <span class="min-w-0 flex-1 text-sm" use:measureName>
+                    <AccountLabel
+                        name={entry.account}
+                        maxWidth={nameWidth > 0 ? nameWidth : undefined}
+                        fontSizePx={NAME_FONT_SIZE_PX}
+                        budget={FALLBACK_BUDGET}
+                    />
+                </span>
             </span>
-        </span>
-        <span class="text-xs text-base-content/50">
-            {#if entry.asOf === null}
-                No activity
-            {:else}
-                <!-- `&nbsp;` and not a plain space: Svelte trims whitespace at an element
+            <span class="text-xs text-base-content/50">
+                {#if entry.asOf === null}
+                    No activity
+                {:else}
+                    <!-- `&nbsp;` and not a plain space: Svelte trims whitespace at an element
                      boundary, so a leading " · " written inside the span rendered as
                      "2026-04-05· checked", with the space eaten. -->
-                As of {entry.asOf}{#if entry.confirmed}<span title="Confirmed by a balance assertion in the journal">&nbsp;· checked</span>{/if}
-            {/if}
+                    As of {entry.asOf}{#if entry.confirmed}<span title="Confirmed by a balance assertion in the journal">&nbsp;· checked</span>{/if}
+                {/if}
+            </span>
         </span>
-    </span>
-    <span class="shrink-0 font-mono text-sm tabular-nums {negative && negativeIsWrong ? 'font-semibold text-error' : ''}">{formatted}</span>
+        <span class="shrink-0 font-mono text-sm tabular-nums {negative && negativeIsWrong ? 'font-semibold text-error' : ''}">{formatted}</span>
+    </button>
 </li>

@@ -92,7 +92,12 @@
         reviewMenuOpen = false;
         reviewLaunch.open(kind);
     }
-    const colCount = $derived(Object.values(columns).filter(Boolean).length);
+    // A pinned running balance (plan 36): the account the rows were fetched
+    // for — the view's, not the filter bar's, so the columns appear and go
+    // with the rows that fill them. Its two columns count toward `colCount`, so
+    // skeleton and spacer rows span them and the layout does not jump.
+    const pinned = $derived(journalView.query?.pin?.account ?? null);
+    const colCount = $derived(Object.values(columns).filter(Boolean).length + (pinned === null ? 0 : 2));
 
     // The keyboard cursor.
     //
@@ -405,6 +410,7 @@
                     {#if columns.description}<col />{/if}
                     {#if columns.accounts}<col />{/if}
                     {#if columns.amount}<col class="w-36" />{/if}
+                    {#if pinned !== null}<col class="w-32" /><col class="w-44" />{/if}
                 </colgroup>
                 <thead class="sticky top-0 z-10 bg-base-200" bind:clientHeight={headHeight}>
                     <tr class="text-base-content/70">
@@ -417,6 +423,10 @@
                              ResizeObserver per row. -->
                         {#if columns.accounts}<th class="text-left" use:measureAccountColumn>Accounts</th>{/if}
                         {#if columns.amount}<th class="text-right">Amount</th>{/if}
+                        {#if pinned !== null}
+                            <th class="text-right" title="What the row did to {pinned}">Change</th>
+                            <th class="text-right" title="{pinned}'s balance after the row, over the whole journal">Balance</th>
+                        {/if}
                     </tr>
                 </thead>
                 <tbody>
@@ -439,6 +449,8 @@
                                 pulse={pulseIndex === slot.row.txn.index}
                                 cursor={cursor.index === slot.position}
                                 marker={markerOf(slot.row)}
+                                {pinned}
+                                running={slot.row.running ?? null}
                             />
                         {/if}
                     {/each}
@@ -461,6 +473,8 @@
                             pulse={pulseIndex === slot.row.txn.index}
                             cursor={cursor.index === slot.position}
                             marker={markerOf(slot.row)}
+                            {pinned}
+                            running={slot.row.running ?? null}
                         />
                     {/if}
                 {/each}

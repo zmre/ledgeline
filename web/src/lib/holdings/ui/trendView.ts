@@ -24,7 +24,7 @@ function dayLabel(date: string, withYear: boolean): string {
  * weekly point is the week's last day (clamped to asOf), which is the date its
  * value is taken at. Coarser buckets keep the engine's label ("Sep 2026").
  */
-export function trendLabels(points: readonly HoldingsPoint[]): string[] {
+export function trendLabels(points: readonly Pick<HoldingsPoint, "bucket" | "date" | "label">[]): string[] {
     const first = points[0]?.date ?? "";
     const last = points.at(-1)?.date ?? "";
     const withYear = first.slice(0, 4) !== last.slice(0, 4);

@@ -90,8 +90,12 @@
                 run: () => {
                     const holding = cursor.item;
                     // A holding can span several accounts (the same stock in two
-                    // brokerages), so all of them go into the filter.
-                    if (holding !== null) void openJournal({accounts: holding.accounts, preset: "all"});
+                    // brokerages), so all of them go into the filter. The running
+                    // balance (plan 36) — in SHARES of this symbol — is pinned only
+                    // for a single account: with two there is no one to pin.
+                    if (holding === null) return;
+                    const only = holding.accounts.length === 1 ? holding.accounts[0] : null;
+                    void openJournal({accounts: holding.accounts, preset: "all", ...(only === null ? {} : {pin: {account: only, commodity: holding.symbol}})});
                 },
             },
         ],

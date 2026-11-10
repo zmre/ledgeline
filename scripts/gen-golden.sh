@@ -19,4 +19,11 @@ hledger -f "$JOURNAL" bal -O json --value=end,'$' --infer-market-prices -e 2026-
 hledger -f "$JOURNAL" bal -O json --value=end,'$' --infer-market-prices --depth 5 -e 2026-07-01 assets liabilities > "$OUT/networth-d5.json"
 hledger --version > "$OUT/HLEDGER_VERSION"
 
+# Running-balance parity (plan 36): `hledger reg -H` over a pinned subtree, one
+# commodity at a time. -I because the fixture deliberately holds a failing
+# assertion. Read by crates/ledgeline-core/tests/running_balance.rs.
+RUNNING=fixtures/journal-view/errors/running
+hledger --no-conf -f "$RUNNING/main.journal" reg -I -H -O csv 'assets:bank' 'cur:\$' > "$RUNNING/reg-usd.csv"
+hledger --no-conf -f "$RUNNING/main.journal" reg -I -H -O csv 'assets:bank' 'cur:EUR' > "$RUNNING/reg-eur.csv"
+
 echo "regenerated $(ls "$OUT" | wc -l | tr -d ' ') files in $OUT ($(cat "$OUT/HLEDGER_VERSION"))"

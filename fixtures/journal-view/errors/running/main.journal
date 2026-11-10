@@ -1,0 +1,72 @@
+; Running-balance fixture (plan 36): the hledger parity golden and the engine
+; tests read this. Root under test: assets:bank (checking + savings + a
+; brokerage-ish EUR leg). Deliberately written OUT of date order, with
+; same-day ties, posting-dated legs, an include, virtual postings, costs and
+; assertions (passing, failing, and an `==` zero-check failure).
+;
+; Under an `errors/` directory because `hledger check` REJECTS it (the failing
+; assertions are the point), so balance_assertions.rs' all-fixtures sweep skips it.
+
+commodity $1,000.00
+commodity 1.000,00 EUR
+
+2026-01-01 opening
+    assets:bank:checking        $1,000.00
+    assets:bank:savings         $5,000.00
+    equity:opening
+
+2026-01-05 coffee (same day 1)
+    expenses:food                  $4.50
+    assets:bank:checking
+
+2026-01-05 lunch (same day 2)
+    expenses:food                 $12.25
+    assets:bank:checking          = $983.25
+
+; written after a later-dated transaction would be: out of file order
+2026-01-20 transfer to savings
+    assets:bank:savings          $200.00
+    assets:bank:checking        $-200.00
+
+2026-01-10 euro deposit
+    assets:bank:checking        100,00 EUR
+    income:gift                -100,00 EUR
+
+2026-01-10 cheque, bank leg clears later
+    expenses:rent                $500.00
+    assets:bank:checking        $-500.00  ; date:2026-01-25
+
+2026-01-12 split clearing dates
+    expenses:misc                 $30.00
+    assets:bank:checking         $-10.00  ; date:2026-01-14
+    assets:bank:savings          $-20.00  ; date:2026-01-22
+
+2026-01-15 buy euros at a cost
+    assets:bank:checking         50,00 EUR @ $1.10
+    assets:bank:checking         $-55.00
+
+2026-01-15 virtual adjustments
+    (assets:bank:checking)         $1.00
+    [assets:bank:savings]          $2.00
+    [equity:adjust]               $-2.00
+
+2026-01-31 month-end statement checks
+    assets:bank:checking           $0.00 = $220.25
+    assets:bank:savings            $0.00 =* $5,182.00
+    assets:bank                    $0.00 =* $5,402.25
+
+2026-01-31 a wrong assertion
+    assets:bank:checking           $0.00 = $300.00
+
+2026-01-31 total assertion, EUR left over
+    assets:bank:checking           $0.00 == $220.25
+
+2026-02-01 untouched by the subtree
+    expenses:food                 $10.00
+    liabilities:card
+
+2026-02-03 euros back out
+    assets:bank:checking       -150,00 EUR = 0,00 EUR
+    expenses:travel             150,00 EUR
+
+include sub.journal

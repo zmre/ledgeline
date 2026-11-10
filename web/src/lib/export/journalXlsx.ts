@@ -11,7 +11,11 @@
 //   end       a `TOTAL` row, then a generation-timestamp footer
 //
 // A transaction with more than two accounts is simply a longer group — that is
-// the point of the layout. Amounts are signed the hledger way, so
+// the point of the layout. With a running balance pinned (plan 36), each
+// group's `Total for` row also carries the pinned account's Change and Balance
+// in two extra columns, and the date-range line names the account: export is
+// "exactly what the table shows", and the table shows them. The headers avoid
+// every word the QuickBooks importer keys on, so the file still reads back. Amounts are signed the hledger way, so
 // `debit = amount > 0`, `credit = -amount` needs no account types.
 //
 // Loaded with `await import(...)` from the journal route ONLY, so neither this
@@ -19,6 +23,7 @@
 
 import {add, mul, neg, roundTo, displayPlaces, MAX_QUANTITY_DECIMALS, formatAmount, toNumber, type Dec} from "#lib/domain/money.js";
 import type {Amount, AmountStyle, Posting, Transaction} from "#lib/domain/types.js";
+import type {RunningCell} from "#lib/journalView/types.js";
 import type {Workbook, Worksheet} from "exceljs"; // type-only: erased at build time
 import {downloadWorkbook, numberFormat} from "./xlsx";
 
@@ -39,6 +44,8 @@ export interface JournalExportMeta {
     period: string;
     /** Generation time for the footer; injectable so tests are deterministic. */
     generatedAt?: Date;
+    /** The pinned running balance, when there is one: the account, and each exported transaction's cell by tindex. */
+    running?: {account: string; byIndex: ReadonlyMap<number, RunningCell>};
 }
 
 /** One posting row's money: the value the debit/credit columns carry, and the as-written amount when they differ. */
@@ -185,6 +192,8 @@ export async function buildJournalWorkbook(
     const rows = groups.flatMap((group) => group.rows);
     const dimensions = DIMENSIONS.filter((_, i) => rows.some((row) => row.dimensions[i] !== ""));
     const withQuantity = rows.some((row) => row.quantity !== "");
+    const running = meta.running;
+    const runningCommodity = running === undefined ? null : ([...running.byIndex.values()][0]?.balance.commodity ?? null);
 
     const headers = [
         "",
@@ -196,6 +205,7 @@ export async function buildJournalWorkbook(
         "Account Name",
         "Debit",
         "Credit",
+        ...(running !== undefined ? ["Change", "Balance"] : []),
         ...(withQuantity ? ["Quantity"] : []),
         ...dimensions.map((d) => d.header),
     ];
@@ -204,7 +214,11 @@ export async function buildJournalWorkbook(
     const CREDIT = col("Credit");
 
     const lastCol = headers.length;
-    [meta.title ?? "Ledgeline", "Journal", meta.period].forEach((text, i) => {
+    const period =
+        running === undefined
+            ? meta.period
+            : `${meta.period} · running balance of ${running.account}${runningCommodity === null ? "" : ` in ${runningCommodity}`}`;
+    [meta.title ?? "Ledgeline", "Journal", period].forEach((text, i) => {
         ws.mergeCells(i + 1, 1, i + 1, lastCol);
         const cell = ws.getCell(i + 1, 1);
         cell.value = text;
@@ -230,6 +244,8 @@ export async function buildJournalWorkbook(
     styleColumn("Account Name", 36);
     styleColumn("Debit", 14);
     styleColumn("Credit", 14);
+    styleColumn("Change", 14);
+    styleColumn("Balance", 16);
     styleColumn("Quantity", 28);
     for (const d of dimensions) styleColumn(d.header, 20);
     ws.views = [{state: "frozen", ySplit: 5}];
@@ -266,6 +282,11 @@ export async function buildJournalWorkbook(
         marker.font = {bold: true};
         setTotal(ws.getCell(rowIx, DEBIT), totals, "debit", styleOf);
         setTotal(ws.getCell(rowIx, CREDIT), totals, "credit", styleOf);
+        const cell = running?.byIndex.get(group.id);
+        if (cell !== undefined) {
+            if (cell.change !== null) setMoney(ws.getCell(rowIx, col("Change")), cell.change.commodity, shown(cell.change.qty, cell.change.style));
+            setMoney(ws.getCell(rowIx, col("Balance")), cell.balance.commodity, shown(cell.balance.qty, cell.balance.style));
+        }
         // Like QuickBooks, a single-commodity total is a live SUM over its rows
         // (with the value cached beside it), so an accountant's edit re-totals.
         if (totals.size === 1 && rowIx > first) {

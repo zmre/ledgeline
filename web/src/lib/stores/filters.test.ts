@@ -136,4 +136,73 @@ describe("UNIT filters", () => {
             expect(filters.value.query).toBe("beer");
         });
     });
+
+    describe("running-balance pin (plan 36)", () => {
+        beforeEach(() => {
+            filters.reset();
+        });
+
+        it("starts unpinned", () => {
+            expect(defaultFilter().pin).toBeNull();
+            expect(filters.value.pin).toBeNull();
+        });
+
+        it("pins without touching the account filter", () => {
+            filters.toggleAccount("expenses:food");
+            filters.pin("assets:bank");
+            expect(filters.value.pin).toEqual({account: "assets:bank", commodity: null});
+            expect([...filters.value.accounts]).toEqual(["expenses:food"]);
+        });
+
+        it("survives every other filter change", () => {
+            filters.pin("assets:bank", "EUR");
+            filters.toggleAccount("income:dividends");
+            filters.setAccounts(new Set(["expenses"]));
+            filters.clearAccounts();
+            filters.setQuery("coffee");
+            filters.setRange("2026-01-01", "2026-01-31");
+            filters.applyPreset("ytd");
+            expect(filters.value.pin).toEqual({account: "assets:bank", commodity: "EUR"});
+        });
+
+        it("focusAccount filters to the account and pins it in one change, keeping the dates", () => {
+            filters.setRange("2026-02-01", "2026-02-28");
+            const before = filters.value;
+            filters.focusAccount("assets:bank:checking");
+            expect(filters.value).not.toBe(before);
+            expect([...filters.value.accounts]).toEqual(["assets:bank:checking"]);
+            expect(filters.value.pin).toEqual({account: "assets:bank:checking", commodity: null});
+            expect({from: filters.value.from, to: filters.value.to}).toEqual({from: "2026-02-01", to: "2026-02-28"});
+        });
+
+        it("switches the commodity, and does nothing without a pin", () => {
+            filters.setPinCommodity("EUR");
+            expect(filters.value.pin).toBeNull();
+            filters.pin("assets:bank");
+            filters.setPinCommodity("EUR");
+            expect(filters.value.pin).toEqual({account: "assets:bank", commodity: "EUR"});
+        });
+
+        it("unpin removes the pin and leaves the account filter alone", () => {
+            filters.focusAccount("assets:bank");
+            filters.unpin();
+            expect(filters.value.pin).toBeNull();
+            expect([...filters.value.accounts]).toEqual(["assets:bank"]);
+        });
+
+        it("reset clears it", () => {
+            filters.pin("assets:bank", "EUR");
+            filters.reset();
+            expect(filters.value.pin).toBeNull();
+        });
+
+        it("replace copies it, so the restored filter does not share the caller's object", () => {
+            const pin = {account: "assets:bank", commodity: "EUR"};
+            filters.replace({...defaultFilter(), pin});
+            expect(filters.value.pin).toEqual(pin);
+            expect(filters.value.pin).not.toBe(pin);
+            filters.replace({from: null, to: null, accounts: new Set(), query: ""});
+            expect(filters.value.pin).toBeNull();
+        });
+    });
 });

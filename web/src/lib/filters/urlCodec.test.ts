@@ -119,4 +119,38 @@ describe("UNIT urlCodec", () => {
         expect(parsed.from).toBe(dflt.from);
         expect(parsed.to).toBe(dflt.to);
     });
+
+    describe("running-balance pin (plan 36)", () => {
+        it("writes bal alone for the engine's default commodity, so a shared link stays short", () => {
+            const params = new URLSearchParams(filterToSearch(filter({pin: {account: "assets:bank:checking", commodity: null}}), dflt));
+            expect(params.get("bal")).toBe("assets:bank:checking");
+            expect(params.has("balc")).toBe(false);
+        });
+
+        it("round-trips a pin with and without a chosen commodity", () => {
+            expect(roundTrip(filter({pin: {account: "assets:broker", commodity: "VTI"}})).pin).toEqual({account: "assets:broker", commodity: "VTI"});
+            expect(roundTrip(filter({pin: {account: "assets:broker", commodity: null}})).pin).toEqual({account: "assets:broker", commodity: null});
+        });
+
+        it("round-trips awkward names: commas, spaces, ampersands, quoted commodities", () => {
+            const pin = {account: "assets:Joint, Savings & Co", commodity: '"ACME 1"'};
+            expect(roundTrip(filter({pin})).pin).toEqual(pin);
+        });
+
+        it("keeps the pin independent of the account filter", () => {
+            const parsed = roundTrip(filter({accounts: new Set(["income:dividends"]), pin: {account: "assets:broker", commodity: null}}));
+            expect([...parsed.accounts]).toEqual(["income:dividends"]);
+            expect(parsed.pin?.account).toBe("assets:broker");
+        });
+
+        it("reads no pin from a link without bal, and ignores balc on its own", () => {
+            expect(searchToFilter("acct=expenses", dflt).pin ?? null).toBeNull();
+            expect(searchToFilter("balc=EUR", dflt).pin ?? null).toBeNull();
+            expect(searchToFilter("bal=", dflt).pin).toBeNull();
+        });
+
+        it("writes nothing for no pin", () => {
+            expect(filterToSearch(filter({pin: null}), dflt)).toBe("");
+        });
+    });
 });

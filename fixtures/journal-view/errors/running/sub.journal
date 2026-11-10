@@ -1,0 +1,10 @@
+; Included at the END of main.journal: same-day ties across the include must
+; stay in read order (main's 2026-02-03 first).
+
+2026-02-03 included same-day
+    assets:bank:savings          $100.00
+    income:interest
+
+2026-01-05 included, early date
+    assets:bank:checking           $1.00
+    income:refund

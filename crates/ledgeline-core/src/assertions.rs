@@ -124,12 +124,7 @@ impl AssertionFailure {
     /// The assertion as written: `=`, `==`, `=*` or `==*`.
     #[must_use]
     pub fn operator(&self) -> &'static str {
-        match (self.total, self.inclusive) {
-            (true, true) => "==*",
-            (true, false) => "==",
-            (false, true) => "=*",
-            (false, false) => "=",
-        }
+        operator(self.total, self.inclusive)
     }
 
     /// The diagnostic body **without** the leading `file:line:col`, for a caller
@@ -188,6 +183,17 @@ pub(crate) fn render_amount(quantity: Dec, commodity: &Commodity, style: &Amount
         (CommoditySide::Left, true) => format!("{symbol} {number}"),
         (CommoditySide::Right, false) => format!("{number}{symbol}"),
         (CommoditySide::Right, true) => format!("{number} {symbol}"),
+    }
+}
+
+/// An assertion's operator as written: `=`, `==`, `=*` or `==*`.
+#[must_use]
+pub fn operator(total: bool, inclusive: bool) -> &'static str {
+    match (total, inclusive) {
+        (true, true) => "==*",
+        (true, false) => "==",
+        (false, true) => "=*",
+        (false, false) => "=",
     }
 }
 
@@ -279,10 +285,78 @@ pub(crate) fn display_styles(journal: &Journal) -> BTreeMap<&Commodity, &AmountS
     styles
 }
 
+/// One posting's place in the journal-wide evaluation order: which
+/// transaction (`position` in [`Journal::transactions`]) and which of its
+/// postings. Borrows nothing, so an ordering can be cached next to the
+/// journal it indexes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PostingRef {
+    /// 0-based position of the transaction in [`Journal::transactions`].
+    pub position: u32,
+    /// 0-based index of the posting in that transaction's `postings`.
+    pub posting: u32,
+}
+
+impl PostingRef {
+    /// The transaction and posting this refers to.
+    ///
+    /// # Panics
+    /// When `self` did not come from [`posting_order`] over `journal`.
+    #[must_use]
+    pub fn resolve<'j>(&self, journal: &'j Journal) -> (&'j Transaction, &'j Posting) {
+        let transaction = &journal.transactions[self.position as usize];
+        (transaction, &transaction.postings[self.posting as usize])
+    }
+
+    /// The posting's effective date: its own `date:` tag, else its
+    /// transaction's primary date.
+    #[must_use]
+    pub fn date<'j>(&self, journal: &'j Journal) -> &'j str {
+        let (transaction, posting) = self.resolve(journal);
+        posting.date.as_deref().unwrap_or(&transaction.date)
+    }
+}
+
+/// Every posting in `journal`, in hledger's evaluation order (see the module
+/// docs): effective date, ties in file read order — transaction order, then
+/// posting order within the transaction.
+///
+/// The one definition of that order, shared by [`check_balance_assertions`]
+/// and the journal view's running balance (`view::running`), so a balance
+/// column can never contradict an assertion mark on the same row.
+#[must_use]
+pub fn posting_order(journal: &Journal) -> Vec<PostingRef> {
+    let mut keyed: Vec<(&str, PostingRef)> = journal
+        .transactions
+        .iter()
+        .enumerate()
+        .flat_map(|(position, transaction)| {
+            let position = u32::try_from(position).unwrap_or(u32::MAX);
+            transaction
+                .postings
+                .iter()
+                .enumerate()
+                .map(move |(posting_index, posting)| {
+                    (
+                        posting.date.as_deref().unwrap_or(&transaction.date),
+                        PostingRef {
+                            position,
+                            posting: u32::try_from(posting_index).unwrap_or(u32::MAX),
+                        },
+                    )
+                })
+        })
+        .collect();
+    // ISO `YYYY-MM-DD` sorts lexically exactly as it sorts chronologically, and
+    // `sort_by_key` is stable — so postings sharing a date keep the order they
+    // were built in, which is transaction read order (`include`d files land at
+    // the point of their `include` directive) then posting order.
+    keyed.sort_by_key(|(date, _)| *date);
+    keyed.into_iter().map(|(_, posting)| posting).collect()
+}
+
 /// One posting placed in the journal-wide evaluation order.
 struct Entry<'a> {
-    /// Effective date: the posting's `date:` tag, else the transaction's date.
-    date: &'a str,
     transaction: &'a Transaction,
     /// 0-based position of `transaction` in `Journal::transactions`, carried
     /// through the sort so a failure can name the row it belongs to.
@@ -326,24 +400,14 @@ struct Entry<'a> {
 pub fn check_balance_assertions(journal: &Journal) -> Result<Vec<AssertionFailure>, DecError> {
     let styles = display_styles(journal);
 
-    let mut entries: Vec<Entry> = journal
-        .transactions
-        .iter()
-        .enumerate()
-        .flat_map(|(transaction_index, transaction)| {
-            transaction.postings.iter().map(move |posting| Entry {
-                date: posting.date.as_deref().unwrap_or(&transaction.date),
-                transaction,
-                transaction_index,
-                posting,
-            })
-        })
-        .collect();
-    // ISO `YYYY-MM-DD` sorts lexically exactly as it sorts chronologically, and
-    // `sort_by_key` is stable — so postings sharing a date keep the order they
-    // were built in, which is transaction read order (`include`d files land at
-    // the point of their `include` directive) then posting order.
-    entries.sort_by_key(|entry| entry.date);
+    let entries = posting_order(journal).into_iter().map(|at| {
+        let (transaction, posting) = at.resolve(journal);
+        Entry {
+            transaction,
+            transaction_index: at.position as usize,
+            posting,
+        }
+    });
 
     let mut balances = Balances::new();
     let mut failures = Vec::new();

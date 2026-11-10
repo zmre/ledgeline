@@ -9,7 +9,7 @@
 //
 // Pure, with no `$app/*` imports, so it is a node test.
 
-import {defaultFilter, type DatePreset, type JournalFilter} from "#lib/stores/filters.svelte.js";
+import {defaultFilter, type DatePreset, type JournalFilter, type RunningPin} from "#lib/stores/filters.svelte.js";
 import {filterToSearch} from "#lib/filters/urlCodec.js";
 import type {ISODate} from "#lib/domain/types.js";
 
@@ -22,6 +22,12 @@ export interface JournalTarget {
     to?: ISODate | null;
     /** A live preset (`"all"`, `"ytd"`, …) instead of frozen dates. */
     preset?: DatePreset | null;
+    /**
+     * Arrive with this account's running balance pinned (plan 36): what a
+     * report or holdings drill-down into ONE account adds, so the Balance
+     * column comes with the rows. `commodity` omitted: the engine's default.
+     */
+    pin?: {account: string; commodity?: string | null};
 }
 
 /** The target as a filter the journal store can be handed directly. */
@@ -33,6 +39,7 @@ export function targetToFilter(target: JournalTarget): JournalFilter {
         accounts: new Set(target.accounts ?? []),
         query: target.query ?? "",
         preset: target.preset ?? (target.from === undefined && target.to === undefined ? base.preset : null),
+        pin: target.pin === undefined ? null : ({account: target.pin.account, commodity: target.pin.commodity ?? null} satisfies RunningPin),
     };
 }
 

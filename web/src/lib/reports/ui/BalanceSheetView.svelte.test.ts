@@ -277,7 +277,7 @@ describe("COMPONENT BalanceSheetView", () => {
 
             // `preset: "all"`, not the report's as-of date: that date lives in the
             // controls, not in the row, so narrowing to it would read as data loss.
-            expect(openJournal).toHaveBeenCalledWith({accounts: ["assets:bank"], preset: "all"});
+            expect(openJournal).toHaveBeenCalledWith({accounts: ["assets:bank"], preset: "all", pin: {account: "assets:bank"}});
         });
 
         it("walks to the last row with G and back to the first with gg", async () => {
@@ -679,7 +679,7 @@ describe("COMPONENT BalanceSheetView — the Reports tab's multi-period sheet", 
         await press("Enter"); // expand the cash group
         await press("j"); // onto its first account
         await press("Enter");
-        expect(openJournal).toHaveBeenCalledWith({accounts: ["assets:bank"], preset: "all"});
+        expect(openJournal).toHaveBeenCalledWith({accounts: ["assets:bank"], preset: "all", pin: {account: "assets:bank"}});
     });
 
     it("keeps the current / non-current bands, each with a subtotal per column", () => {

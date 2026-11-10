@@ -7,12 +7,14 @@ import {vi} from "vitest";
 import type {Dec} from "#lib/domain/money.js";
 import type {Amount, Transaction} from "#lib/domain/types.js";
 import type {Problem} from "#lib/checks/engine.js";
+import type {RunningPinQuery} from "#lib/api/native.js";
 import {journalView, resetJournalView} from "#lib/stores/journalView.svelte.js";
 import {FAKE_ENGINE, routes} from "./fakeEngine";
 
 const wireDec = (d: Dec): {m: string; p: number} => ({m: d.m.toString(), p: d.p});
 
-function wireAmount(amount: Amount): Record<string, unknown> {
+/** A domain amount as the engine serves it inside a row. */
+export function wireAmount(amount: Amount): Record<string, unknown> {
     const out: Record<string, unknown> = {commodity: amount.commodity, qty: wireDec(amount.qty), style: amount.style};
     if (amount.cost !== undefined) out.cost = {commodity: amount.cost.commodity, qty: wireDec(amount.cost.qty), per: amount.cost.per};
     return out;
@@ -63,16 +65,25 @@ export function summaryBody(total: number, overrides: Record<string, unknown> = 
 /**
  * Stub `fetch` so the windowed routes serve `txns` (already in display order)
  * and point the journal view at them; resolves once the first block is in.
- * `extra` adds or overrides routes. Pair with `afterEach(() => vi.unstubAllGlobals())`.
+ * `extra` adds or overrides routes; `pinned` pins a running balance and gives
+ * each row (same order as `txns`) its wire `running` cell. Pair with `afterEach(() => vi.unstubAllGlobals())`.
  */
-export async function showRows(txns: readonly Transaction[], extra: Record<string, unknown> = {}): Promise<void> {
-    const rows = txns.map((txn) => wireRow(txn));
+export async function showRows(
+    txns: readonly Transaction[],
+    extra: Record<string, unknown> = {},
+    pinned: {pin: RunningPinQuery; running: readonly Record<string, unknown>[]} | null = null
+): Promise<void> {
+    const plain = txns.map((txn) => wireRow(txn));
+    // With a pin, each row carries its `running` cell — but only when the
+    // request asked for one (`balance=`), exactly as the engine answers.
+    const withRunning = pinned === null ? plain : plain.map((row, i) => ({...row, running: pinned.running[i]}));
     const table = routes({"/api/journal/summary": summaryBody(txns.length), ...extra});
     vi.stubGlobal("fetch", (input: RequestInfo | URL) => {
         const url = new URL(String(input));
         if (url.pathname.endsWith("/api/journal/rows")) {
             const offset = Number(url.searchParams.get("offset") ?? 0);
             const limit = Number(url.searchParams.get("limit") ?? 200);
+            const rows = url.searchParams.get("balance") === null ? plain : withRunning;
             const ordered = url.searchParams.get("order") === "asc" ? [...rows].reverse() : rows;
             const body = {generation: VIEW_GENERATION, total: rows.length, offset, rows: ordered.slice(offset, offset + limit)};
             return Promise.resolve(new Response(JSON.stringify(body), {status: 200}));
@@ -80,7 +91,7 @@ export async function showRows(txns: readonly Transaction[], extra: Record<strin
         return table(String(input));
     });
     resetJournalView();
-    journalView.sync(FAKE_ENGINE, VIEW_GENERATION, {from: null, to: null, accounts: new Set(), query: ""});
+    journalView.sync(FAKE_ENGINE, VIEW_GENERATION, {from: null, to: null, accounts: new Set(), query: ""}, pinned?.pin ?? null);
     await vi.waitFor(() => {
         if (journalView.total === null) throw new Error("rows not loaded yet");
     });

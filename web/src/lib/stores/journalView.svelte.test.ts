@@ -147,4 +147,50 @@ describe("UNIT journalView", () => {
         );
         expect(await journalView.locate(3)).toEqual({generation: "g1", position: 7, date: "2026-01-01", total: 10});
     });
+
+    describe("a pinned running balance (plan 36)", () => {
+        const PIN = {account: "assets:checking", commodity: null};
+
+        it("asks every block for the pin's columns, and the commodity only when one was chosen", async () => {
+            const {calls} = serve(10);
+            journalView.sync(FAKE_ENGINE, "g1", ALL, PIN);
+            await vi.waitFor(() => expect(journalView.rowAt(0)).not.toBeNull());
+            const rows = calls.find((url) => url.pathname.endsWith("/rows"));
+            expect(rows?.searchParams.get("balance")).toBe("assets:checking");
+            expect(rows?.searchParams.has("balanceCommodity")).toBe(false);
+
+            journalView.sync(FAKE_ENGINE, "g1", ALL, {account: "assets:checking", commodity: "EUR"});
+            await vi.waitFor(() => expect(calls.filter((url) => url.searchParams.get("balanceCommodity") === "EUR")).toHaveLength(1));
+        });
+
+        it("drops the held rows when the pin moves, as a filter change does", async () => {
+            const {calls} = serve(10);
+            journalView.sync(FAKE_ENGINE, "g1", ALL);
+            await vi.waitFor(() => expect(journalView.rowAt(0)).not.toBeNull());
+            for (const pin of [PIN, {...PIN, commodity: "EUR"}, null]) {
+                journalView.sync(FAKE_ENGINE, "g1", ALL, pin);
+                expect(journalView.rowAt(0)).toBeNull();
+                await vi.waitFor(() => expect(journalView.rowAt(0)).not.toBeNull());
+            }
+            expect(rowsCalls(calls)).toEqual([0, 0, 0, 0]);
+            expect(journalView.query?.pin).toBeNull();
+        });
+
+        it("is a no-op for the same pin, compared by value", async () => {
+            const {calls} = serve(10);
+            journalView.sync(FAKE_ENGINE, "g1", ALL, PIN);
+            await vi.waitFor(() => expect(journalView.rowAt(0)).not.toBeNull());
+            journalView.sync(FAKE_ENGINE, "g1", {...ALL, accounts: new Set<string>()}, {...PIN});
+            expect(rowsCalls(calls)).toEqual([0]);
+        });
+
+        it("pages the export with the pin too", async () => {
+            const {calls} = serve(5);
+            journalView.sync(FAKE_ENGINE, "g1", ALL, PIN);
+            await vi.waitFor(() => expect(journalView.total).toBe(5));
+            await journalView.allViewRows();
+            const pages = calls.filter((url) => url.searchParams.get("order") === "asc");
+            expect(pages.every((url) => url.searchParams.get("balance") === "assets:checking")).toBe(true);
+        });
+    });
 });

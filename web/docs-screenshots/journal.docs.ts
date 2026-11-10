@@ -89,3 +89,32 @@ test("keyboard help", async ({page}) => {
     await expect(sheet).toBeVisible();
     await shot(page, SECTION, "keyboard-help", {clip: sheet.locator(".modal-box"), padding: 0});
 });
+
+test("running balance", async ({page}) => {
+    // Plan 36: savings pinned over all dates, with the account filter on it. The
+    // 2026-04-05 transfer carries the fixture's `= $13,500.00` assertion, so
+    // the ✓ mark is in shot; the chip is boxed.
+    await page.goto("/?preset=all&acct=assets%3Abank%3Asavings&bal=assets%3Abank%3Asavings");
+    await expect(page.getByRole("columnheader", {name: "Balance", exact: true})).toBeVisible();
+    await expect(page.getByTestId("running-assertion-ok").first()).toBeVisible();
+    const chip = page.getByTestId("running-pin-chip");
+    await annotate(page, [{kind: "box", target: chip}]);
+    await shot(page, SECTION, "running-balances");
+});
+
+test.describe("balance over time", () => {
+    // Amendment A1: the same pin with Insights open on Balances, so the line
+    // that replaces the cash pie sits above the Balance column it agrees with.
+    test.use({settings: {insightsOpen: true, insightsTab: "balances"}});
+
+    test("running balance with its line", async ({page}) => {
+        await page.goto("/?preset=all&acct=assets%3Abank%3Asavings&bal=assets%3Abank%3Asavings");
+        await expect(page.getByRole("columnheader", {name: "Balance", exact: true})).toBeVisible();
+        await expect(page.getByTestId("running-assertion-ok").first()).toBeVisible();
+        const line = page.getByTestId("balances-line");
+        await expect(line.getByTestId("balance-trend").locator("path.lc-path")).toHaveCount(1);
+        await finishMotion(page);
+        await annotate(page, [{kind: "box", target: line}]);
+        await shot(page, SECTION, "running-balances-line");
+    });
+});

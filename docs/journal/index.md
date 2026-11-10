@@ -31,6 +31,7 @@ Each row is one transaction. The columns are:
 | Description | The description, a comment marker when the transaction or a posting carries a comment, and a coloured dot when the [problems checks](problems.md) flagged it. |
 | Accounts | The accounts involved. A simple two-account transaction reads `source → destination`. A split shows every account as a chip. A **+N auto** badge counts postings that [automatic posting rules](automatic-postings.md) added. |
 | Amount | The size of the transaction: the sum of its positive postings, per commodity. |
+| Change, Balance | Only while an account is pinned: what the row did to that account, and its balance afterwards. See [Running balances](running-balances.md). |
 
 Hover the comment marker to read the comments. Hover a problem dot to read what the check found.
 
@@ -121,7 +122,7 @@ The panel above the table has two tabs. Click the panel's header to collapse it.
 - A commodity picker when the period uses more than one, and a category picker (expenses by default).
 - An **Account depth** slider that rolls the chart up to fewer, broader accounts.
 
-**Balances** answers "how much cash do I have right now". It ignores the filter bar and reads the whole journal as of today. It lists cash on hand, short-term liabilities and net cash, then each bank and card account with its balance and the date it last changed. A balance confirmed by a balance assertion in the journal is marked *checked*.
+**Balances** answers "how much cash do I have right now". It ignores the filter bar and reads the whole journal as of today. It lists cash on hand, short-term liabilities and net cash, then each bank and card account with its balance and the date it last changed. A balance confirmed by a balance assertion in the journal is marked *checked*. Click an account, or press <kbd>Enter</kbd> on it, to filter the journal to that account and add its [running balance](running-balances.md) to the table. While an account is pinned, the totals are hidden and the pie becomes a line of that account's [balance over time](running-balances.md#balance-over-time).
 
 Which accounts count as cash or short-term debt comes from the `type:` and `bsterm:` account tags, the same ones the [balance sheet](../reports/balance-sheet.md) uses. See [Accounts](../settings/accounts.md) for declaring them. A negative cash balance shows in red here and also appears in [Problems](problems.md).
 
@@ -141,6 +142,7 @@ A dash means the filtered postings net to exactly zero, or there are none.
 ## Related pages
 
 - [Filtering the journal](filtering.md)
+- [Running balances](running-balances.md)
 - [Reviewing transactions](review.md)
 - [Problems](problems.md)
 - [Keyboard shortcuts](keyboard.md)

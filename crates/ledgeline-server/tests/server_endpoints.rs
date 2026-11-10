@@ -513,6 +513,8 @@ async fn wire_and_api_routes_require_the_token() {
         "/api/journal/summary",
         "/api/journal/chart?commodity=%24",
         "/api/journal/position?index=1",
+        "/api/journal/running?account=assets",
+        "/api/journal/running/series?account=assets",
         "/api/transactions/1",
     ] {
         let (missing, missing_headers) =

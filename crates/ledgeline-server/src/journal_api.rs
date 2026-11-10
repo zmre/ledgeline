@@ -29,22 +29,27 @@ use axum::body::{Body, Bytes};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use ledgeline_core::model::Commodity;
 use ledgeline_core::reports::Interval;
 use ledgeline_core::review::ReviewIndex;
 use ledgeline_core::view::Classes;
 use ledgeline_core::view::cash::cash_balances_view;
 use ledgeline_core::view::checks::{
-    Diagnostics, Finding, WireFlag, diagnostics_body, engine_findings, local_findings,
+    Diagnostics, EngineChecks, WireFlag, diagnostics_body, engine_checks, local_findings,
 };
 use ledgeline_core::view::filter::{JournalFilter, display_order, filter_positions};
 use ledgeline_core::view::rows::{RowContext, haystack};
+use ledgeline_core::view::running::{
+    AssertionMark, BalanceWindow, PostingRef, RunningBalance, WireBalanceSeries, WireMark,
+    WireRunning, WireRunningSummary, posting_order,
+};
 use ledgeline_core::view::series::{
     ChartMode, ChartSpec, JournalView, SignTable, chart, parse_category, sign_table, summary,
 };
 use ledgeline_core::view::wire::DeclaredStyles;
 use ledgeline_core::{Journal, journals};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
@@ -66,8 +71,10 @@ pub(crate) struct ViewCache {
     /// Every account's engine classification.
     classes: OnceLock<Arc<Classes>>,
     /// The engine diagnostics (unbalanced, assertions, account tags, stock
-    /// findings): whole-journal passes that do not depend on the date.
-    engine: OnceLock<Arc<Vec<Finding>>>,
+    /// findings): whole-journal passes that do not depend on the date. Keeps
+    /// the raw assertion failures from the same run for the running-balance
+    /// marks, so the journal is never checked twice.
+    engine: OnceLock<Arc<EngineChecks>>,
     /// Engine + local findings per client `today`, most recent last.
     diagnostics: Mutex<Vec<Arc<DiagnosticsEntry>>>,
     /// The declared commodity styles every row and summary renders with.
@@ -81,6 +88,13 @@ pub(crate) struct ViewCache {
     signs: OnceLock<Arc<SignTable>>,
     /// Recent filter results, most recently used last ([`FILTER_CACHE`]).
     filters: Mutex<Vec<(JournalFilter, Arc<Vec<u32>>)>>,
+    /// Every posting in hledger's evaluation order (plan 36). Lazy, NOT
+    /// prewarmed: most sessions never pin an account.
+    posting_order: OnceLock<Arc<Vec<PostingRef>>>,
+    /// Recent pinned subtrees' running balances, most recently used last
+    /// ([`RUNNING_CACHE`]). One build covers every commodity, so switching the
+    /// commodity picker costs nothing.
+    running: Mutex<Vec<(String, Arc<Running>)>>,
     /// Where the journal lives, for the review index's "can this file be
     /// written?" question. `None` for a journal with no backing file, whose
     /// transactions are then all "not editable".
@@ -98,6 +112,15 @@ pub(crate) struct ViewCache {
 /// the same filter block after block, and the summary, chart and position
 /// routes ask for it again; a handful covers flipping between recent filters.
 const FILTER_CACHE: usize = 8;
+
+/// How many pinned roots each snapshot keeps a running balance for.
+const RUNNING_CACHE: usize = 4;
+
+/// A pinned subtree's running balance and its assertion marks, built together.
+pub(crate) struct Running {
+    balance: RunningBalance,
+    marks: BTreeMap<Commodity, Vec<AssertionMark>>,
+}
 
 impl ViewCache {
     /// A fresh cache for `journal`, warmed on a background thread so the
@@ -198,12 +221,7 @@ impl ViewCache {
         // The engine half and the local rules are independent passes (the
         // local ones need the account classes first): run them side by side.
         let (engine, local) = std::thread::scope(|scope| {
-            let engine = scope.spawn(|| {
-                Arc::clone(
-                    self.engine
-                        .get_or_init(|| Arc::new(engine_findings(journal))),
-                )
-            });
+            let engine = scope.spawn(|| self.engine(journal));
             let local = local_findings(journal, &self.classes(journal), today);
             let engine = engine
                 .join()
@@ -212,7 +230,7 @@ impl ViewCache {
         });
         let entry = Arc::new(DiagnosticsEntry {
             today: today.to_string(),
-            diagnostics: Arc::new(Diagnostics::new(&engine, local)),
+            diagnostics: Arc::new(Diagnostics::new(&engine.findings, local)),
             full_body: OnceLock::new(),
         });
         let mut entries = self.lock_diagnostics();
@@ -225,6 +243,57 @@ impl ViewCache {
         }
         entries.push(Arc::clone(&entry));
         entry
+    }
+
+    fn engine(&self, journal: &Journal) -> Arc<EngineChecks> {
+        Arc::clone(self.engine.get_or_init(|| Arc::new(engine_checks(journal))))
+    }
+
+    fn posting_order(&self, journal: &Journal) -> Arc<Vec<PostingRef>> {
+        Arc::clone(
+            self.posting_order
+                .get_or_init(|| Arc::new(posting_order(journal))),
+        )
+    }
+
+    /// The running balance of `root`'s subtree — from the cache when a recent
+    /// request pinned the same root. `400` when no posting is in the subtree:
+    /// an empty column would read as a zero balance, which it is not.
+    fn running(&self, journal: &Journal, root: &str) -> Result<Arc<Running>, AppError> {
+        {
+            let mut cache = self.lock_running();
+            if let Some(at) = cache.iter().position(|(key, _)| key == root) {
+                let hit = cache.remove(at);
+                let running = Arc::clone(&hit.1);
+                cache.push(hit);
+                return Ok(running);
+            }
+        }
+        let balance = RunningBalance::build(journal, &self.posting_order(journal), root).map_err(
+            |error| {
+                AppError::Internal(format!(
+                    "the running balance of {root:?} overflowed: {error}"
+                ))
+            },
+        )?;
+        if balance.is_empty() {
+            return Err(AppError::BadRequest(format!(
+                "no posting is in the account {root:?} or under it"
+            )));
+        }
+        let marks = balance.assertion_marks(journal, &self.engine(journal).assertion_failures);
+        let running = Arc::new(Running { balance, marks });
+        let mut cache = self.lock_running();
+        if cache.len() == RUNNING_CACHE {
+            cache.remove(0);
+        }
+        cache.push((root.to_string(), Arc::clone(&running)));
+        Ok(running)
+    }
+
+    fn lock_running(&self) -> std::sync::MutexGuard<'_, Vec<(String, Arc<Running>)>> {
+        // Entries are pushed and removed whole; a poisoned lock is still sound.
+        self.running.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     pub(crate) fn declared(&self, journal: &Journal) -> Arc<DeclaredStyles> {
@@ -463,7 +532,7 @@ const MAX_ROWS: usize = 1000;
 /// Rows per request when `limit` is absent: one client block.
 const DEFAULT_ROWS: usize = 200;
 
-/// `?from&to&accounts&q&offset&limit&order&today`.
+/// `?from&to&accounts&q&offset&limit&order&today&balance&balanceCommodity`.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RowsQuery {
@@ -475,15 +544,91 @@ pub(crate) struct RowsQuery {
     limit: Option<usize>,
     order: Option<String>,
     today: Option<String>,
+    /// The pinned account (plan 36): every row gains a `running` object.
+    balance: Option<String>,
+    /// The pinned commodity; absent or not posted in the subtree = the
+    /// subtree's default.
+    balance_commodity: Option<String>,
 }
 
-/// `{generation, total, offset, rows}`.
+/// `{generation, total, offset, rows}`. Generic over the row so an unpinned
+/// request serializes exactly the type it always did.
 #[derive(Serialize)]
-struct RowsBody<'a> {
+struct RowsBody<'a, R: Serialize> {
     generation: &'a str,
     total: usize,
     offset: usize,
-    rows: Vec<ReviewRow<'a>>,
+    rows: Vec<R>,
+}
+
+/// A row with its pinned-account cells.
+#[derive(Serialize)]
+struct PinnedRow<'a> {
+    #[serde(flatten)]
+    row: ReviewRow<'a>,
+    running: WireRunning<'a>,
+}
+
+/// The pinned column for one request: the cached balance, the commodity
+/// drawn, and its marks by transaction position.
+struct Pin<'a> {
+    running: &'a Running,
+    commodity: &'a Commodity,
+    /// Marks shown on a row: those in `commodity`, plus every zero-check
+    /// failure whatever its commodity.
+    marks: HashMap<u32, Vec<&'a AssertionMark>>,
+}
+
+impl<'a> Pin<'a> {
+    fn new(running: &'a Running, requested: Option<&str>) -> Result<Self, AppError> {
+        let commodity = running
+            .balance
+            .resolve_commodity(requested)
+            .ok_or_else(|| AppError::Internal("an empty running balance was cached".into()))?;
+        let mut marks: HashMap<u32, Vec<&AssertionMark>> = HashMap::new();
+        for mark in running
+            .marks
+            .values()
+            .flatten()
+            .filter(|mark| mark.commodity == *commodity || mark.zero_check)
+        {
+            marks.entry(mark.at.position).or_default().push(mark);
+        }
+        Ok(Self {
+            running,
+            commodity,
+            marks,
+        })
+    }
+
+    fn cell(
+        &self,
+        journal: &'a Journal,
+        context: &RowContext<'_>,
+        position: u32,
+    ) -> Result<WireRunning<'a>, AppError> {
+        let balance = &self.running.balance;
+        let cell = balance
+            .cell(journal, &self.commodity.0, position)
+            .ok_or_else(|| AppError::Internal(format!("no row at position {position}")))?;
+        let style = balance
+            .style(&self.commodity.0)
+            .ok_or_else(|| AppError::Internal("the pinned commodity has no stream".into()))?;
+        let marks = self
+            .marks
+            .get(&position)
+            .into_iter()
+            .flatten()
+            .map(|mark| WireMark::new(mark, context))
+            .collect();
+        Ok(WireRunning::new(
+            cell,
+            self.commodity,
+            style,
+            context,
+            marks,
+        ))
+    }
 }
 
 /// Whether a request asked for ascending (oldest-first) order.
@@ -513,6 +658,12 @@ pub(crate) fn flags_of(diagnostics: &Diagnostics, position: usize) -> Vec<WireFl
 /// its check findings embedded as `flags` (as of the client's `today`).
 /// `total` is the filtered count, so a client can size a scroll area before it
 /// has any rows; `limit` is capped at [`MAX_ROWS`].
+///
+/// With `balance=<account>` (plan 36) every row also carries `running`: the
+/// subtree's change and balance in `balanceCommodity` (or the default) and
+/// the assertion marks on it. Neither the balance nor the marks depend on the
+/// filter. An account with no posting in its subtree is a `400`. Without
+/// `balance` (or with it empty) the body is exactly what it always was.
 pub(crate) async fn rows(
     State(state): State<AppState>,
     Query(query): Query<RowsQuery>,
@@ -528,38 +679,172 @@ pub(crate) async fn rows(
     let today = parse_date("today", query.today, today_utc)?;
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(DEFAULT_ROWS).min(MAX_ROWS);
+    let pin = query.balance.filter(|account| !account.is_empty());
+    let pin_commodity = query.balance_commodity;
     let snapshot = state.snapshot();
     let etag = dated_etag(&snapshot, &today);
     conditional_tagged(snapshot, etag, &headers, move |snapshot| {
+        let journal = &snapshot.journal;
         let view = &snapshot.view;
-        let positions = view.filtered(&snapshot.journal, &filter);
-        let entry = view.diagnostics(&snapshot.journal, &today);
-        let declared = view.declared(&snapshot.journal);
-        let review = view.review(&snapshot.journal);
-        let context = RowContext::new(&snapshot.journal, &declared);
-        let window: Box<dyn Iterator<Item = &u32>> = if ascending {
-            Box::new(positions.iter().rev().skip(offset).take(limit))
+        let running = pin
+            .as_deref()
+            .map(|root| view.running(journal, root))
+            .transpose()?;
+        let positions = view.filtered(journal, &filter);
+        let entry = view.diagnostics(journal, &today);
+        let declared = view.declared(journal);
+        let review = view.review(journal);
+        let context = RowContext::new(journal, &declared);
+        let window: Vec<u32> = if ascending {
+            positions
+                .iter()
+                .rev()
+                .skip(offset)
+                .take(limit)
+                .copied()
+                .collect()
         } else {
-            Box::new(positions.iter().skip(offset).take(limit))
+            positions.iter().skip(offset).take(limit).copied().collect()
         };
+        let row = |position: u32| {
+            let at = position as usize;
+            ReviewRow::at(
+                &review,
+                at,
+                context.row(&journal.transactions[at], flags_of(&entry.diagnostics, at)),
+            )
+        };
+        let generation = generation_of(&snapshot.etag);
+        let Some(running) = running.as_deref() else {
+            return to_bytes(&RowsBody {
+                generation,
+                total: positions.len(),
+                offset,
+                rows: window.into_iter().map(row).collect(),
+            });
+        };
+        let pin = Pin::new(running, pin_commodity.as_deref())?;
         let rows = window
+            .into_iter()
             .map(|position| {
-                let at = *position as usize;
-                ReviewRow::at(
-                    &review,
-                    at,
-                    context.row(
-                        &snapshot.journal.transactions[at],
-                        flags_of(&entry.diagnostics, at),
-                    ),
-                )
+                Ok(PinnedRow {
+                    row: row(position),
+                    running: pin.cell(journal, &context, position)?,
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, AppError>>()?;
         to_bytes(&RowsBody {
-            generation: generation_of(&snapshot.etag),
+            generation,
             total: positions.len(),
             offset,
             rows,
+        })
+    })
+    .await
+}
+
+/// `?account=<root>`.
+#[derive(Deserialize)]
+pub(crate) struct RunningQuery {
+    account: String,
+}
+
+/// `GET /api/journal/running?account=<root>` (plan 36) — what the pinned
+/// account's chip and commodity picker draw: `{generation, account,
+/// commodities, assertions}`.
+///
+/// `commodities` is every commodity the subtree posts with its posting count,
+/// most postings first (ties by commodity); the first is the default
+/// `rows?balance=` uses. `assertions` maps each commodity to its assertion
+/// marks `{tindex, date, ok}` in hledger's evaluation order — every asserting
+/// posting in the subtree under its written commodity, plus each `==`
+/// zero-check failure under the commodity it failed on. An account with no
+/// posting in its subtree is a `400`.
+pub(crate) async fn running_route(
+    State(state): State<AppState>,
+    Query(query): Query<RunningQuery>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let root = query.account;
+    conditional(state.snapshot(), &headers, move |snapshot| {
+        let journal = &snapshot.journal;
+        let running = snapshot.view.running(journal, &root)?;
+        to_bytes(&WithGeneration {
+            generation: generation_of(&snapshot.etag),
+            body: WireRunningSummary::new(journal, &running.balance, &running.marks),
+        })
+    })
+    .await
+}
+
+/// `?account&commodity&from&to&today&interval`.
+#[derive(Deserialize)]
+pub(crate) struct RunningSeriesQuery {
+    account: String,
+    commodity: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+    today: Option<String>,
+    interval: Option<String>,
+}
+
+/// `GET /api/journal/running/series?account&commodity&from&to&today&interval`
+/// (plan 36 amendment A1) — the pinned subtree's balance at the end of every
+/// period of the journal filter's date range: `{generation, account,
+/// commodity, style, interval, from, to, points}`.
+///
+/// Built from the same cached running balance as `rows?balance=`, so pinning
+/// computes it once for both. `commodity` resolves exactly as the rows
+/// route's `balanceCommodity` does (absent or not posted in the subtree = the
+/// default). An open `from` is the subtree's first posting, an open `to` the
+/// client's `today`; `interval` (daily … yearly) defaults to the holdings
+/// chart's automatic choice. Each point is `{bucket, label, end, balance,
+/// tindex?, failures?}`, a failure `{tindex, date, account, op, asserted,
+/// calculated, expected}`. An account with no posting in its subtree, a
+/// backwards range or one with more than `MAX_BUCKETS` periods is a `400`.
+/// The `ETag` is dated by `today`, which an open end depends on.
+pub(crate) async fn running_series_route(
+    State(state): State<AppState>,
+    Query(query): Query<RunningSeriesQuery>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let from = parse_opt_date("from", query.from)?;
+    let to = parse_opt_date("to", query.to)?;
+    let today = parse_date("today", query.today, today_utc)?;
+    let interval = query
+        .interval
+        .filter(|interval| !interval.is_empty())
+        .map(|interval| reports_api::parse_interval(Some(&interval)))
+        .transpose()?;
+    let root = query.account;
+    let requested = query.commodity.filter(|commodity| !commodity.is_empty());
+    let snapshot = state.snapshot();
+    let etag = dated_etag(&snapshot, &today);
+    conditional_tagged(snapshot, etag, &headers, move |snapshot| {
+        let journal = &snapshot.journal;
+        let running = snapshot.view.running(journal, &root)?;
+        let balance = &running.balance;
+        let (Some(commodity), Some(first)) = (
+            balance.resolve_commodity(requested.as_deref()),
+            balance.first_date(journal),
+        ) else {
+            return Err(AppError::Internal(
+                "an empty running balance was cached".into(),
+            ));
+        };
+        let window =
+            BalanceWindow::resolve(first, from.as_deref(), to.as_deref(), &today, interval);
+        reports_api::check_range(&window.from, &window.to, Some(window.interval))?;
+        let marks = running.marks.get(commodity).map_or(&[][..], Vec::as_slice);
+        let points = balance
+            .series(journal, &commodity.0, &window, marks)
+            .map_err(|error| {
+                AppError::Internal(format!("the balance series of {root:?} failed: {error}"))
+            })?;
+        let declared = snapshot.view.declared(journal);
+        to_bytes(&WithGeneration {
+            generation: generation_of(&snapshot.etag),
+            body: WireBalanceSeries::new(journal, balance, commodity, &window, &points, &declared),
         })
     })
     .await

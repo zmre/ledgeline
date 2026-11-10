@@ -1073,6 +1073,11 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         .route("/api/journal/summary", get(journal_api::summary_route))
         .route("/api/journal/chart", get(journal_api::chart_route))
         .route("/api/journal/position", get(journal_api::position_route))
+        .route("/api/journal/running", get(journal_api::running_route))
+        .route(
+            "/api/journal/running/series",
+            get(journal_api::running_series_route),
+        )
         .route("/api/reports/balancesheet", get(reports_api::balancesheet))
         // The grouped/valued three-box balance sheet. A SIBLING route, not a
         // mode of the one above: that one is a flat hledger-parity shape with a

@@ -54,7 +54,9 @@ Matching is case-insensitive and finds the text inside longer words. Press <kbd>
 
 ## Active filter chips
 
-When any filter differs from the default, a row of chips appears under the bar. There is one chip for the date range, one for each selected account and one for the search text. Click a chip's ✕ to remove that filter. **Reset all** returns to the last 90 days, all accounts and no search.
+When any filter differs from the default, a row of chips appears under the bar. There is one chip for the date range, one for each selected account and one for the search text. Click a chip's ✕ to remove that filter. **Reset all** returns to the last 90 days, all accounts and no search, and removes a pinned running balance.
+
+Each account chip also has a ⚖ button. It pins that account's [running balance](running-balances.md), which adds Change and Balance columns to the table. The pinned account gets a chip of its own, and changing the account filter afterwards leaves it in place.
 
 ## Sharing a filtered view
 
@@ -66,6 +68,7 @@ The filters are written into the page URL as you change them:
 | `from`, `to` | A custom range as `YYYY-MM-DD`. An empty value is an open end. |
 | `acct` | Selected accounts, comma-separated. |
 | `q` | The search text. |
+| `bal`, `balc` | A pinned [running balance](running-balances.md#sharing-a-pinned-view): the account, and the commodity when one was picked. |
 
 For example, `?preset=ytd&acct=expenses:food` shows this year's food spending. A link with a preset keeps working as time moves. A link with explicit dates always shows the same range.
 
@@ -73,10 +76,11 @@ This is most useful when you run Ledgeline as a server and open it in a browser.
 
 ## Arriving from another page
 
-Several pages open the journal already filtered. Pressing <kbd>Enter</kbd> on an account row in a [report](../reports/index.md), or on a holding in [Holdings](../holdings/index.md), shows that account's transactions over all dates. The [Problems](problems.md) drawer widens the date range just enough to include the transaction it is taking you to and leaves the other filters alone.
+Several pages open the journal already filtered. Pressing <kbd>Enter</kbd> on an account row in a [report](../reports/index.md), or on a holding in [Holdings](../holdings/index.md), shows that account's transactions over all dates. From the Balance Sheet, Net Worth and Holdings, the account's [running balance](running-balances.md) comes pinned too. Clicking an account in the insights panel's Balances tab filters to it and pins it without changing the date range. The [Problems](problems.md) drawer widens the date range just enough to include the transaction it is taking you to and leaves the other filters alone.
 
 ## Related pages
 
 - [The journal](index.md)
+- [Running balances](running-balances.md)
 - [Keyboard shortcuts](keyboard.md)
 - [Exporting the journal](export.md), which exports exactly what the filters show

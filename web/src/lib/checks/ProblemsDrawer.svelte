@@ -7,6 +7,7 @@
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
     import type {Problem, Severity} from "#lib/checks/engine.js";
+    import {widenRange} from "#lib/journal/runningBalance.js";
     import {filters} from "#lib/stores/filters.svelte.js";
     import {problems} from "#lib/stores/problems.svelte.js";
 
@@ -53,8 +54,7 @@
     /** Widen the date filter just enough to include `date` (accounts/query filters are left alone). */
     function widenDateRange(date: string): void {
         const current = filters.value;
-        const from = current.from !== null && date < current.from ? date : current.from;
-        const to = current.to !== null && date > current.to ? date : current.to;
+        const {from, to} = widenRange(current.from, current.to, date);
         if (from !== current.from || to !== current.to) filters.setRange(from, to);
     }
 

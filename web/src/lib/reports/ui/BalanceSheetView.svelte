@@ -159,7 +159,7 @@
         // `preset: "all"`: the balance sheet's as-of date lives in its controls,
         // not in the row, so narrowing the journal to dates the user cannot see
         // here would read as data loss.
-        if (row.account !== null) void openJournal({accounts: [row.account], preset: "all"});
+        if (row.account !== null) void openJournal({accounts: [row.account], preset: "all", pin: {account: row.account}});
     }
 
     registerKeys({

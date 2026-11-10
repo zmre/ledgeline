@@ -5,6 +5,7 @@ import {describe, expect, it} from "vitest";
 import {Workbook, type Worksheet} from "exceljs";
 import {dec, type Dec} from "#lib/domain/money.js";
 import type {Amount, AmountStyle, Posting, Transaction} from "#lib/domain/types.js";
+import type {RunningCell} from "#lib/journalView/types.js";
 import {buildJournalWorkbook, journalGroups} from "./journalXlsx";
 
 const DOLLARS: AmountStyle = {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]};
@@ -138,5 +139,61 @@ describe("UNIT export/journalXlsx", () => {
             posting("assets:envelope", [amount("$", dec(50, 0))], {type: "balancedVirtual"}),
         ]);
         expect(journalGroups([virtual], styleOf)[0].rows.map((r) => r.account)).toEqual(["(budget:food)", "[assets:envelope]"]);
+    });
+
+    describe("with a running balance pinned (plan 36)", () => {
+        const cell = (change: Dec | null, balance: Dec): RunningCell => ({
+            change: change === null ? null : amount("$", change),
+            balance: amount("$", balance),
+            touches: change !== null,
+            postedOn: null,
+            assertions: [],
+        });
+        const running = {
+            account: "assets:checking",
+            byIndex: new Map([
+                [7, cell(dec(3850, 0), dec(1385000, 2))],
+                [9, cell(dec(-150000, 2), dec(1235000, 2))],
+            ]),
+        };
+
+        async function pinnedSheet(): Promise<Worksheet> {
+            const built = await buildJournalWorkbook([PAYCHECK, BUY], styleOf, {...META, running});
+            const loaded = new Workbook();
+            await loaded.xlsx.load((await built.xlsx.writeBuffer()) as never);
+            return loaded.getWorksheet("Journal")!;
+        }
+
+        it("adds Change and Balance after Credit and names the account in the date line", async () => {
+            const ws = await pinnedSheet();
+            expect(ws.getCell(3, 1).value).toBe("2026-03-01 – 2026-03-31 · running balance of assets:checking in $");
+            const header = values(ws, 5);
+            expect(header.indexOf("Change")).toBe(header.indexOf("Credit") + 1);
+            expect(header.indexOf("Balance")).toBe(header.indexOf("Credit") + 2);
+            // None of the words the QuickBooks importer keys on.
+            for (const label of ["Change", "Balance"])
+                expect(label.toLowerCase()).not.toMatch(/debit|credit|account|date|description|memo|class|type|num|name/);
+        });
+
+        it("puts each transaction's figures on its Total for row", async () => {
+            const ws = await pinnedSheet();
+            const header = values(ws, 5);
+            const change = header.indexOf("Change") + 1;
+            const balance = header.indexOf("Balance") + 1;
+            const totals = [] as number[];
+            ws.eachRow((row, at) => {
+                if (String(row.getCell(1).value).startsWith("Total for")) totals.push(at);
+            });
+            expect(totals).toHaveLength(2);
+            expect(ws.getCell(totals[0], change).value).toBe(3850);
+            expect(ws.getCell(totals[0], balance).value).toBe(13850);
+            expect(ws.getCell(totals[1], change).value).toBe(-1500);
+            expect(ws.getCell(totals[1], balance).value).toBe(12350);
+        });
+
+        it("adds nothing without a pin", async () => {
+            const ws = await sheet([PAYCHECK]);
+            expect(values(ws, 5)).not.toContain("Balance");
+        });
     });
 });
