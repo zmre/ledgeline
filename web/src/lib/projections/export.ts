@@ -17,13 +17,16 @@ import type {AmountStyle} from "#lib/domain/types.js";
 import {
     buildBalanceSheetWorkbook,
     buildCashFlowWorkbook,
+    buildComparisonWorkbook,
     buildIncomeStatementWorkbook,
     buildAccountReportWorkbook,
+    buildRunwayCompareWorkbook,
     buildRunwayWorkbook,
     downloadWorkbook,
 } from "#lib/export/xlsx.js";
+import {accountsCompareRows, balanceSheetCompareRows, cashFlowCompareRows, incomeStatementCompareRows} from "./compareExport";
 import type {ProjectionTab} from "./params";
-import type {ForecastEntry, Projection} from "./types";
+import type {Comparison, ForecastEntry, ForecastJournal, Projection} from "./types";
 
 /** The suffix a forecast column's heading carries in a workbook. */
 export const PROJECTED_SUFFIX = " (projected)";
@@ -67,6 +70,8 @@ export interface ExportContext {
     journalQuery: string;
     /** The display style of a commodity, as the journal workbook writes amounts. */
     styleOf: (commodity: string) => AmountStyle;
+    /** Compare vs actuals (plan 34): the comparison the readings show, or null/absent when not comparing. */
+    compare?: Comparison | null;
 }
 
 /** One reading's download: the workbook's title, its subtitle, the filename, and how to build it. */
@@ -98,6 +103,15 @@ const TAB_SLUGS: Record<ProjectionTab, string> = {
     journal: "journal",
 };
 
+const COMPARE_TITLES: Record<ProjectionTab, string> = {
+    cash: "Runway vs Projection",
+    bs: "Balance Sheet vs Projection",
+    is: "Income Statement vs Projection",
+    cf: "Cash Flow vs Projection",
+    accounts: "Accounts vs Projection",
+    journal: "Journal as Projected",
+};
+
 /** A filename-safe slug of the scenario's name, or `scenario`. */
 export function scenarioSlug(name: string): string {
     const slug = name
@@ -114,6 +128,7 @@ export function scenarioSlug(name: string): string {
  * held from another tab has neither yet).
  */
 export function projectionExport(tab: ProjectionTab, projection: Projection, context: ExportContext): ProjectionExport | null {
+    if (context.compare != null) return compareExport(tab, context.compare, context);
     const columns = projection.balanceSheet.columns;
     const span = columns.length === 0 ? "" : `-${columns[0]!.from}-to-${columns.at(-1)!.to}`;
     const filename = `projection-${scenarioSlug(context.scenarioName)}-${TAB_SLUGS[tab]}${span}.xlsx`;
@@ -167,32 +182,95 @@ export function projectionExport(tab: ProjectionTab, projection: Projection, con
             const labels = markProjected(accounts.periods, actuals).map((period) => period.label);
             return finish(params, () => buildAccountReportWorkbook(accounts, meta(params), labels));
         }
-        case "journal": {
-            const journal = projection.journal;
-            if (journal === null) return null;
-            const listed = matchingEntries(journal.entries, context.journalQuery);
-            const query = context.journalQuery.trim();
-            const params = [
-                `${listed.length} generated transaction${listed.length === 1 ? "" : "s"}`,
-                query === "" ? "" : `matching "${query}"`,
-                journal.truncated ? `from the first ${journal.entries.length} of ${journal.total}` : "",
-            ]
-                .filter((part) => part !== "")
-                .join(" ");
-            const dates = listed.map((entry) => entry.txn.date);
-            return finish(params, async () => {
-                // Loaded on demand, as the Journal route loads it, so it never
-                // reaches the page's initial bundle.
-                const {buildJournalWorkbook} = await import("#lib/export/journalXlsx.js");
-                return buildJournalWorkbook(
-                    listed.map((entry) => entry.txn),
-                    context.styleOf,
-                    {
-                        title: title,
-                        period: dates.length === 0 ? "no transactions" : `${dates[0]} – ${dates.at(-1)} · ${params}`,
-                    }
-                );
-            });
+        case "journal":
+            return projection.journal === null ? null : journalExport(projection.journal, context, title, "", finish);
+    }
+}
+
+/** The Journal reading's download: the listed generated transactions, `note` added to the period line. */
+function journalExport(
+    journal: ForecastJournal,
+    context: ExportContext,
+    title: string,
+    note: string,
+    finish: (params: string, build: () => Promise<import("exceljs").Workbook>) => ProjectionExport
+): ProjectionExport {
+    const listed = matchingEntries(journal.entries, context.journalQuery);
+    const query = context.journalQuery.trim();
+    const params = [
+        `${listed.length} generated transaction${listed.length === 1 ? "" : "s"}`,
+        query === "" ? "" : `matching "${query}"`,
+        journal.truncated ? `from the first ${journal.entries.length} of ${journal.total}` : "",
+        note,
+    ]
+        .filter((part) => part !== "")
+        .join(" ");
+    const dates = listed.map((entry) => entry.txn.date);
+    return finish(params, async () => {
+        // Loaded on demand, as the Journal route loads it, so it never
+        // reaches the page's initial bundle.
+        const {buildJournalWorkbook} = await import("#lib/export/journalXlsx.js");
+        return buildJournalWorkbook(
+            listed.map((entry) => entry.txn),
+            context.styleOf,
+            {
+                title: title,
+                period: dates.length === 0 ? "no transactions" : `${dates[0]} – ${dates.at(-1)} · ${params}`,
+            }
+        );
+    });
+}
+
+/**
+ * The download for `tab` while comparing (plan 34): the N actual periods, the
+ * same N "(as projected)", then Δ and Δ % where a Total would be. The filename
+ * gains `-compare` before the span.
+ */
+function compareExport(tab: ProjectionTab, compare: Comparison, context: ExportContext): ProjectionExport | null {
+    const split = compare.columns;
+    const actual = compare.balanceSheet.columns.slice(0, split);
+    const span = actual.length === 0 ? "" : `-${actual[0]!.from}-to-${actual.at(-1)!.to}`;
+    const filename = `projection-${scenarioSlug(context.scenarioName)}-${TAB_SLUGS[tab]}-compare${span}.xlsx`;
+    const named = context.scenarioName.trim() === "" ? "" : ` — ${context.scenarioName.trim()}`;
+    const title = `${COMPARE_TITLES[tab]}${named}`;
+    const window = `${split} actual period${split === 1 ? "" : "s"} from ${compare.from}, compared with the scenario projected on ${compare.from}`;
+    const meta = (params: string) => ({title, params});
+    const finish = (params: string, build: () => Promise<import("exceljs").Workbook>): ProjectionExport => ({
+        title,
+        params,
+        filename,
+        build,
+        run: async () => downloadWorkbook(await build(), filename),
+    });
+
+    switch (tab) {
+        case "cash": {
+            const params = [context.runwaySentence, window].filter((part) => part !== "").join(" ");
+            const runway = {labels: actual.map((column) => column.label), ...compare.cash};
+            return finish(params, () => buildRunwayCompareWorkbook(runway, meta(params), context.base));
         }
+        case "bs": {
+            const sheet = compare.balanceSheet;
+            const labels = sheet.columns.map((column) => column.label);
+            return finish(window, () => buildComparisonWorkbook(balanceSheetCompareRows(sheet), labels, split, meta(window), sheet.base));
+        }
+        case "is": {
+            const report = compare.incomeStatement;
+            const labels = (report.buckets ?? []).map((bucket) => bucket.label);
+            return finish(window, () => buildComparisonWorkbook(incomeStatementCompareRows(report), labels, split, meta(window), report.base));
+        }
+        case "cf": {
+            const labels = compare.cashFlow.buckets.map((bucket) => bucket.label);
+            return finish(window, () => buildComparisonWorkbook(cashFlowCompareRows(compare.cashFlow), labels, split, meta(window), context.base));
+        }
+        case "accounts": {
+            const accounts = compare.accounts;
+            if (accounts === null) return null;
+            const params = `Assets and liabilities compare the last period's balance; the rest compare the sum. As written, unvalued. ${window}`;
+            const labels = accounts.periods.map((period) => period.label);
+            return finish(params, () => buildComparisonWorkbook(accountsCompareRows(accounts), labels, split, meta(params), context.base));
+        }
+        case "journal":
+            return compare.journal === null ? null : journalExport(compare.journal, context, title, `as projected on ${compare.from}`, finish);
     }
 }

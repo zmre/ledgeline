@@ -29,6 +29,7 @@ const file = (id: string, over: Partial<ProjectionFile> = {}): ProjectionFile =>
     isProjection: id.includes("projection-"),
     sizeBytes: 100,
     writable: true,
+    isDefault: false,
     ...over,
 });
 

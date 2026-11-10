@@ -62,8 +62,8 @@ use ledgeline_core::model::{
 use ledgeline_core::parse::{JournalStyles, parse_period_spec};
 use ledgeline_core::projections::serialize::{
     ProjectionDoc, ScenarioRead, SerializeError, attached_raw, check_layout, comment_raw,
-    comment_style, comment_text, legacy_layout, new_file_with_styles, read_scenario_file,
-    render_entry, scenario_account_types, write_scenario,
+    comment_style, comment_text, is_default_marked, legacy_layout, new_file_with_styles,
+    read_scenario_file, render_entry, scenario_account_types, set_default_marker, write_scenario,
 };
 use ledgeline_core::projections::{
     AccountsOpts, AssetRow, BalanceSeries, CommentStyle, CounterDefaults, CreateRefusal,
@@ -71,9 +71,13 @@ use ledgeline_core::projections::{
     ForecastOrigin, Growth, GrowthUnit, History, ItemKind, LayoutItem, LineRole, LineSection,
     LineSource, ProjectedStatements, Projection, ProjectionPath, Runway, Scenario,
     ScenarioAutoRule, ScenarioComment, ScenarioEvent, ScenarioLine, SeedOpts, StatementOpts,
-    auto_rule_account_warnings, discover_in, forecast_cutoff, is_journal_name, label_for,
-    latest_real_date, line_section, project_cached, projected_accounts, projected_statements,
-    seed_scenario, upgrade_legacy_counters, virtual_posting,
+    auto_rule_account_warnings, default_conflict, discover_in, forecast_cutoff, is_journal_name,
+    label_for, latest_real_date, line_section, project_cached, projected_accounts,
+    projected_statements, seed_scenario, upgrade_legacy_counters, virtual_posting,
+};
+// MERGE SEAM: plan 34 (Compare vs actuals) imports, kept in their own block.
+use ledgeline_core::projections::{
+    ComparedStatements, backtest_warnings, compared_accounts, compared_statements, project_backtest,
 };
 use ledgeline_core::reports::account_types::{AccountType, AccountTypes, parse_account_type_tag};
 use ledgeline_core::reports::periods::MAX_BUCKETS;
@@ -833,6 +837,49 @@ pub(crate) struct WireProjection {
     /// The generated transactions, when the request asked with `journal`;
     /// `null` otherwise.
     journal: Option<WireForecastJournal>,
+    // MERGE SEAM: plan 34.
+    /// Compare vs actuals, when the request asked with `compare`; `null`
+    /// otherwise. With it, `accounts` and `journal` above are `null` and
+    /// this block carries them.
+    compare: Option<WireComparison>,
+}
+
+/// Plan 34: the actual periods beside the scenario as projected on their
+/// first day. Every statement holds `2 × columns` columns: the actual block,
+/// then the as-projected block, whose keys are prefixed `projected:` (labels
+/// and dates unchanged). Each is a valid report of its type; its Total-like
+/// fields span both blocks and mean nothing, so no reading shows them.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireComparison {
+    /// `F`: the first actual day, the backtest's cutoff.
+    from: String,
+    /// `C`: the forward run's cutoff; the window ends the day before.
+    actuals_end: String,
+    /// `N`, the actual periods compared.
+    columns: usize,
+    cash: WireCompareCash,
+    balance_sheet: WireBalanceSheetColumns,
+    income_statement: WireIncomeStatementReport,
+    cash_flow: WireCashFlow,
+    /// The Accounts reading over both blocks, when `accounts` was asked.
+    accounts: Option<WireAccountReport>,
+    /// The BACKTEST's generated transactions, when `journal` was asked.
+    journal: Option<WireForecastJournal>,
+    /// The backtest's warnings the forward run's list does not already hold.
+    warnings: Vec<String>,
+}
+
+/// The runway's two series over the actual periods.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireCompareCash {
+    /// Real cash the day before `from`.
+    opening: WireMixed,
+    /// Real closing cash per period: the forward run's `cash.history`.
+    actual: Vec<WireMixed>,
+    /// The backtest's closing cash per period.
+    projected: Vec<WireMixed>,
 }
 
 /// The three official statements over `real ++ forecast`, on the wire.
@@ -924,7 +971,18 @@ impl WireProjection {
             defaults: WireForecastDefaults::from(&projection.forecast.defaults),
             accounts: None,
             journal: None,
+            compare: None,
         }
+    }
+}
+
+/// The joined statements, as one [`ProjectedStatements`] over `2N` columns.
+fn compared_as_projected(compared: ComparedStatements) -> ProjectedStatements {
+    ProjectedStatements {
+        spans: compared.spans(),
+        balance_sheet: compared.balance_sheet,
+        income_statement: compared.income_statement,
+        cash_flow: compared.cash_flow,
     }
 }
 
@@ -1227,6 +1285,13 @@ pub(crate) struct RunRequest {
     /// Ask for the generated transactions. Off by default for the same reason.
     #[serde(default)]
     journal: bool,
+    // MERGE SEAM: plan 34. Keep beside `journal`; a client sends it only when
+    // true, so an older engine (`deny_unknown_fields`) still answers an
+    // unticked page.
+    /// Compare vs actuals (plan 34): also run the scenario as projected on the
+    /// first actual day and answer `compare`. Needs `lookback >= 1`.
+    #[serde(default)]
+    compare: bool,
 }
 
 /// `accounts` in a run request: which reading of the columns, and whether
@@ -1252,6 +1317,26 @@ fn checked_lookback(lookback: Option<usize>, count: usize) -> Result<usize, AppE
         Some(columns) if columns <= MAX_BUCKETS => Ok(lookback),
         _ => Err(AppError::BadRequest(format!(
             "lookback {lookback} plus count {count} is more than {MAX_BUCKETS} columns"
+        ))),
+    }
+}
+
+/// Plan 34 D6: a comparison needs an actual period to compare, and its
+/// statements carry `2 × lookback` columns, held to [`MAX_BUCKETS`].
+fn checked_compare(compare: bool, lookback: usize) -> Result<(), AppError> {
+    if !compare {
+        return Ok(());
+    }
+    if lookback == 0 {
+        return Err(AppError::BadRequest(
+            "compare needs at least one actual period (lookback is 0)".to_string(),
+        ));
+    }
+    match lookback.checked_mul(2) {
+        Some(columns) if columns <= MAX_BUCKETS => Ok(()),
+        _ => Err(AppError::BadRequest(format!(
+            "compare with lookback {lookback} is {} columns, more than {MAX_BUCKETS}",
+            lookback.saturating_mul(2)
         ))),
     }
 }
@@ -1614,6 +1699,9 @@ fn scenario_from_wire(
             lines,
             events,
             cash: optional_account(scenario.cash.as_ref())?,
+            // Never the client's (plan 33 D12): an update carries it from the
+            // file on disk, and a create never has it.
+            is_default: false,
         },
         entries,
     })
@@ -1828,7 +1916,8 @@ fn checked_layout(scenario: Scenario) -> Result<Scenario, AppError> {
 
 /// `POST /api/projections/run` — project a scenario forward.
 ///
-/// Body: `{scenario, asOf?, interval?, count?, lookback?, depth?, valueIn?}`.
+/// Body: `{scenario, asOf?, interval?, count?, lookback?, depth?, valueIn?,
+/// accounts?, journal?, compare?}`.
 /// The scenario travels in the body precisely so that UNSAVED edits project;
 /// nothing here touches the filesystem.
 ///
@@ -1843,6 +1932,11 @@ fn checked_layout(scenario: Scenario) -> Result<Scenario, AppError> {
 /// - `valueIn=$` — the commodity balances are valued into. The cash series
 ///   adds generated flows unvalued, and warns about a scenario in another
 ///   commodity; the statements value every column as the Reports tab does.
+/// - `compare: true` (plan 34) — also answer `compare`: the `lookback` actual
+///   periods beside the scenario as projected on their first day (its own
+///   cached real side), `2 × lookback` columns per statement. `400` at
+///   lookback 0 or past [`MAX_BUCKETS`]. With it, `accounts` and `journal`
+///   ride inside `compare` and the top-level ones are `null`.
 pub(crate) async fn run(
     State(state): State<AppState>,
     payload: Result<Json<RunRequest>, JsonRejection>,
@@ -1857,6 +1951,7 @@ pub(crate) async fn run(
         request.depth,
     )?;
     let lookback = checked_lookback(request.lookback, window.count)?;
+    checked_compare(request.compare, lookback)?; // MERGE SEAM: plan 34
     let value_in = request
         .value_in
         .map(|symbol| symbol.trim().to_string())
@@ -1906,35 +2001,88 @@ pub(crate) async fn run(
                 cf_depth: window.depth,
             },
         )?;
+        // MERGE SEAM: plan 34 reads `scenario` again below for the backtest.
         // The Accounts reading: every account per column over `lookback ++
         // buckets` (`hledger balance -M --forecast`, `-H` for balances,
         // `-E --declared` for empty accounts), as written: no valuation,
         // natural signs. With `empty`, the known accounts are
         // `known_accounts`: hledger's `-E --declared`, widened to every
         // account the journal ever posts to.
-        let accounts = request
-            .accounts
-            .as_ref()
-            .map(|accounts| {
-                projected_accounts(
-                    &real,
-                    &facts,
-                    &projection.forecast,
-                    &AccountsOpts {
-                        depth: window.depth,
-                        empty: accounts.empty,
-                    },
-                )
-                .map(|report| WireAccountReport::from(&report))
+        let statement_opts = StatementOpts {
+            valuation: Valuation::Market,
+            bs_depth: None,
+            is_depth: Some(window.depth),
+            cf_depth: window.depth,
+        };
+        // MERGE SEAM: plan 34. With `compare`, the Accounts and Journal
+        // readings are the comparison's, so the forward ones are not built.
+        let accounts_opts = request.accounts.as_ref().map(|accounts| AccountsOpts {
+            depth: window.depth,
+            empty: accounts.empty,
+        });
+        let accounts = accounts_opts
+            .filter(|_| !request.compare)
+            .map(|opts| {
+                projected_accounts(&real, &facts, &projection.forecast, &opts)
+                    .map(|report| WireAccountReport::from(&report))
             })
             .transpose()?;
-        let forecast_journal = request.journal.then(|| {
-            let declared = snapshot.view.declared(journal);
-            forecast_journal(&projection, &RowContext::new(journal, &declared), &declared)
-        });
+        // Built only when the Journal reading is asked for.
+        let declared = request.journal.then(|| snapshot.view.declared(journal));
+        let journal_of = |projection: &Projection| {
+            declared.as_ref().map(|declared| {
+                forecast_journal(projection, &RowContext::new(journal, declared), declared)
+            })
+        };
+        let generated = if request.compare {
+            None
+        } else {
+            journal_of(&projection)
+        };
+        // Plan 34: the projection made on the first actual day, from its own
+        // cached real side, beside the forward run's actual columns.
+        let compare = match key.backtest()?.filter(|_| request.compare) {
+            None => None,
+            Some(backtest_key) => {
+                let backtest = cache.side(journal, &facts, &backtest_key)?;
+                let as_projected = project_backtest(&scenario, &real, &backtest, window.depth)?;
+                let compared = compared_statements(
+                    &real,
+                    &backtest,
+                    &facts,
+                    &as_projected.forecast,
+                    &statement_opts,
+                )?;
+                let accounts = accounts_opts
+                    .map(|opts| {
+                        compared_accounts(&real, &backtest, &facts, &as_projected.forecast, &opts)
+                            .map(|report| WireAccountReport::from(&report))
+                    })
+                    .transpose()?;
+                let (balance_sheet, income_statement, cash_flow) =
+                    wire_statements(&compared_as_projected(compared));
+                Some(WireComparison {
+                    from: backtest_key.cutoff.clone(),
+                    actuals_end: projection.start.clone(),
+                    columns: lookback,
+                    cash: WireCompareCash {
+                        opening: wire_mixed(&as_projected.cash.opening),
+                        actual: projection.cash.history.iter().map(wire_mixed).collect(),
+                        projected: as_projected.cash.values.iter().map(wire_mixed).collect(),
+                    },
+                    balance_sheet,
+                    income_statement,
+                    cash_flow,
+                    accounts,
+                    journal: journal_of(&as_projected),
+                    warnings: backtest_warnings(&projection, &as_projected),
+                })
+            }
+        };
         Ok(WireProjection {
             accounts,
-            journal: forecast_journal,
+            journal: generated,
+            compare,
             ..WireProjection::new(&projection, wire_statements(&statements))
         })
     })
@@ -2222,6 +2370,9 @@ struct WireProjectionFile {
     /// a plan of record, and a picker that offered Save over one would be
     /// offering something that is about to be refused.
     writable: bool,
+    /// `; default-scenario: true` in the header (plan 33 D19): the raw marker,
+    /// always `false` for a file whose header the listing does not read.
+    is_default: bool,
 }
 
 /// `GET /api/projections`.
@@ -2271,6 +2422,10 @@ pub(crate) struct WireScenarioFile {
     /// Whether a `PUT` to this id could succeed. See
     /// [`WireProjectionFile::writable`].
     writable: bool,
+    /// Whether the file's header marks it as the default (plan 33 D19) —
+    /// always `false` for a file that is not a `projection-*.journal`, as in
+    /// the listing. Output only: a save never takes it from the client (D12).
+    is_default: bool,
     scenario: WireScenario,
 }
 
@@ -2281,6 +2436,41 @@ pub(crate) struct SaveScenarioRequest {
     /// The revision read with the file, or `""` to CREATE.
     revision: String,
     scenario: ScenarioIn,
+}
+
+/// `PUT /api/projections/default` (plan 33 D10).
+///
+/// `id` is REQUIRED, and `null` means "no default": `deserialize_with` turns
+/// off serde's habit of reading a missing `Option` as `None`, so an empty
+/// `{}` is a `400` rather than a request to clear the default.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SetDefaultRequest {
+    #[serde(deserialize_with = "Option::deserialize")]
+    id: Option<String>,
+}
+
+/// One file `PUT /api/projections/default` rewrote (plan 33 D16).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireChangedFile {
+    id: String,
+    /// The file's revision before the write: what a client holding it must
+    /// match to move its own revision forward (D17).
+    before: String,
+    /// The revision of what is now on disk.
+    after: String,
+    /// Whether the file is now marked.
+    is_default: bool,
+}
+
+/// The answer to `PUT /api/projections/default`: every file it changed,
+/// unmarked files first and the newly marked one last, as they were written.
+/// Empty for a no-op.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WireDefaultChange {
+    changed: Vec<WireChangedFile>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2415,6 +2605,17 @@ fn create_refused(id: &str, refusal: CreateRefusal) -> AppError {
     }
 }
 
+/// Decision 5's refusal: the file is part of the main journal, and the
+/// Projections tab never writes to a plan of record. Shared by a save and by
+/// `PUT /api/projections/default`, so the two cannot word it differently.
+fn plan_of_record(id: &str) -> AppError {
+    AppError::BadRequest(format!(
+        "{} is part of your main journal, and a projection is never saved over a plan of record. \
+         Save it under a new name instead.",
+        quoted(id)
+    ))
+}
+
 /// A [`SerializeError`] as an HTTP failure.
 ///
 /// `Invalid` is the CALLER's — a name with a comma in it, an account that would
@@ -2519,6 +2720,7 @@ fn wire_file(found: &DiscoveredProjection, sources: &[PathBuf]) -> WireProjectio
         is_projection: found.is_projection,
         size_bytes: found.size_bytes,
         writable: writable_path(sources, found.path().as_path()),
+        is_default: found.is_default,
     }
 }
 
@@ -2544,6 +2746,9 @@ fn open_file(
         label: found.label.clone(),
         revision: fingerprint.token(),
         writable,
+        // Gated as the listing is (plan 33 D5, D19): only a projection file's
+        // header is ever read as the default, so the two never disagree.
+        is_default: found.is_projection && is_default_marked(&text),
         scenario,
     })
 }
@@ -2587,7 +2792,17 @@ fn create_scenario(
         .resolve_new(id)
         .map_err(|refusal| create_refused(id, refusal))?;
     let name = path.as_path().to_string_lossy().to_string();
-    let text = new_file_with_styles(scenario, &name, declared, inherited)
+    // A new file is never the default (plan 33 D8), whatever it was saved
+    // from, so Save As cannot make a second one.
+    let scenario = if scenario.is_default {
+        std::borrow::Cow::Owned(Scenario {
+            is_default: false,
+            ..scenario.clone()
+        })
+    } else {
+        std::borrow::Cow::Borrowed(scenario)
+    };
+    let text = new_file_with_styles(&scenario, &name, declared, inherited)
         .map_err(|error| serialize_failed(id, &error))?;
 
     // A brand-new file, refusing to touch one that is already there:
@@ -2628,6 +2843,7 @@ fn create_scenario(
         id: id.to_string(),
         revision: Fingerprint::of_bytes(text.as_bytes()).token(),
         writable: true,
+        is_default: false,
         scenario: written,
         label,
     })
@@ -2686,11 +2902,7 @@ fn update_scenario(
     if !writable_path(sources, path) {
         // Decision 5. A `GET` of this same id works, deliberately — reading the
         // active budget file is what the ask asked for.
-        return Err(AppError::BadRequest(format!(
-            "{} is part of your main journal, and a projection is never saved over a plan of \
-             record. Save it under a new name instead.",
-            quoted(id)
-        )));
+        return Err(plan_of_record(id));
     }
     let name = path.to_string_lossy().to_string();
 
@@ -2704,7 +2916,14 @@ fn update_scenario(
 
     let doc = ProjectionDoc::parse_with_styles(&text, &name, declared, inherited)
         .map_err(|error| serialize_failed(id, &error))?;
-    let scenario = with_file_text(&doc, scenario);
+    let mut scenario = with_file_text(&doc, scenario);
+    // The default marker is the FILE's, not the client's (plan 33 D12): read
+    // from the bytes the revision was just checked against, so a save keeps a
+    // star set from anywhere — and one from an older client keeps it too.
+    let marked = is_default_marked(&text);
+    if scenario.is_default != marked {
+        scenario.to_mut().is_default = marked;
+    }
     // The engine's own second opinion: splice, re-parse the whole result as a
     // journal, and require the scenario to read back as the numbers asked for.
     let new_text =
@@ -2730,6 +2949,7 @@ fn update_scenario(
             label: found.label.clone(),
             revision: fingerprint.token(),
             writable: true,
+            is_default: found.is_projection && marked,
             scenario: unchanged,
         });
     }
@@ -2765,8 +2985,170 @@ fn update_scenario(
         label: found.label.clone(),
         revision: Fingerprint::of_bytes(new_text.as_bytes()).token(),
         writable: true,
+        is_default: found.is_projection && marked,
         scenario: written,
     })
+}
+
+// ---------------------------------------------------------------------------
+// The default scenario (plan 33)
+//
+// MERGE SEAM: a self-contained section (plus `set_default` at the end of the
+// file). Plan 34's routes do not depend on it.
+// ---------------------------------------------------------------------------
+
+/// D15's refusal for a file that is not one of Ledgeline's own scenario files
+/// (D5): the listing never reads another journal's header, and writing a
+/// Ledgeline marker into a budget file is out of character.
+fn not_a_scenario_file() -> AppError {
+    AppError::BadRequest(
+        "Only a scenario file Ledgeline saved (projection-….journal) can be the default. Use Save \
+         as to make one."
+            .to_string(),
+    )
+}
+
+/// One file's pre-flighted edit: what is on disk now, and what replaces it.
+struct MarkerEdit<'a> {
+    found: &'a DiscoveredProjection,
+    before: Fingerprint,
+    text: String,
+    on: bool,
+}
+
+/// Read `found` and compute its marker edit, writing nothing. `None` when the
+/// file already reads as asked.
+fn marker_edit(found: &DiscoveredProjection, on: bool) -> Result<Option<MarkerEdit<'_>>, AppError> {
+    let (text, before) = read_file(found.path(), &found.id)?;
+    Ok(set_default_marker(&text, on).map(|text| MarkerEdit {
+        found,
+        before,
+        text,
+        on,
+    }))
+}
+
+/// Why a marker write failed, worded for how far the change had got (D15).
+///
+/// Nothing written yet: the ordinary sentences, and "nothing was written" is
+/// true. Something written: the sentence names every file that lost its mark,
+/// because the user is now looking at a state they did not ask for.
+fn marker_write_failed(
+    written: &[WireChangedFile],
+    edit: &MarkerEdit<'_>,
+    error: VaultError,
+) -> AppError {
+    let id = &edit.found.id;
+    let changed = matches!(error, VaultError::Changed { .. });
+    if written.is_empty() {
+        return if changed {
+            AppError::Conflict(format!(
+                "{} changed on disk while the default was being set. Nothing was written; try \
+                 again.",
+                quoted(id)
+            ))
+        } else {
+            write_failed(id, &path_free(error))
+        };
+    }
+    let reason = if changed {
+        "it changed on disk".to_string()
+    } else {
+        path_free(error).kind().to_string()
+    };
+    let ids = written
+        .iter()
+        .map(|file| quoted(&file.id))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let message = if edit.on {
+        format!(
+            "Removed the default mark from {ids}, but could not mark {}: {reason}. No scenario is \
+             the default now; try again.",
+            quoted(id)
+        )
+    } else {
+        format!(
+            "Removed the default mark from {ids}, but could not remove it from {}: {reason}. Try \
+             again.",
+            quoted(id)
+        )
+    };
+    if changed {
+        AppError::Conflict(message)
+    } else {
+        AppError::Internal(message)
+    }
+}
+
+/// The whole of `PUT /api/projections/default`, synchronously, under the write
+/// lock (plan 33 D13): pre-flight everything, unmark the others, mark the
+/// target last.
+///
+/// A failure part-way leaves too FEW markers rather than too many — "no
+/// default" is today's behaviour, which is safe and visible, while two markers
+/// could open the wrong file on the next launch with no error in sight.
+fn set_default_in(
+    sources: &[PathBuf],
+    discovery: &Discovery,
+    id: Option<&str>,
+) -> Result<WireDefaultChange, AppError> {
+    // 1. Pre-flight, with nothing written.
+    let target = id
+        .map(|id| {
+            let found = discovery.resolve(id).ok_or_else(|| unresolved(id))?;
+            if !found.is_projection {
+                return Err(not_a_scenario_file());
+            }
+            if !writable_path(sources, found.path().as_path()) {
+                return Err(plan_of_record(id));
+            }
+            Ok(found)
+        })
+        .transpose()?;
+    // Every OTHER marked file, in id order. Only a projection file is ever
+    // read as marked, and one the main journal includes is never written
+    // (decision 5) — its marker stays, and the listing keeps saying so.
+    let mut others: Vec<&DiscoveredProjection> = discovery
+        .files
+        .iter()
+        .filter(|file| file.is_default && Some(file.id.as_str()) != id)
+        .filter(|file| writable_path(sources, file.path().as_path()))
+        .collect();
+    others.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut edits = Vec::with_capacity(others.len() + 1);
+    for file in others {
+        edits.extend(marker_edit(file, false)?);
+    }
+    if let Some(found) = target {
+        edits.extend(marker_edit(found, true)?);
+    }
+
+    // 2 and 3. Each write pinned to its own pre-flight read, so a file that
+    // moved since is refused (`Changed`) rather than overwritten.
+    let mut changed: Vec<WireChangedFile> = Vec::with_capacity(edits.len());
+    for edit in &edits {
+        let expected = Revision {
+            fingerprint: edit.before.clone(),
+            identity: edit.found.identity(),
+        };
+        edit.found
+            .path()
+            .vault()
+            .replace(
+                edit.found.path().vault_path(),
+                edit.text.as_bytes(),
+                &expected,
+            )
+            .map_err(|error| marker_write_failed(&changed, edit, error))?;
+        changed.push(WireChangedFile {
+            id: edit.found.id.clone(),
+            before: edit.before.token(),
+            after: Fingerprint::of_bytes(edit.text.as_bytes()).token(),
+            is_default: edit.on,
+        });
+    }
+    Ok(WireDefaultChange { changed })
 }
 
 // ---------------------------------------------------------------------------
@@ -2798,7 +3180,15 @@ pub(crate) async fn index(State(state): State<AppState>) -> Result<Response, App
                 .map(|found| wire_file(found, &sources))
                 .collect(),
             directories: discovery.directories(),
-            warnings: discovery.warnings.clone(),
+            // The default-conflict warning (plan 33 D6) goes LAST, after the
+            // scan's: the SPA reads it from there (`opening.ts`,
+            // `defaultConflict`) rather than matching on its wording.
+            warnings: discovery
+                .warnings
+                .iter()
+                .cloned()
+                .chain(default_conflict(&discovery))
+                .collect(),
         })
     })
     .await?;
@@ -2935,6 +3325,50 @@ pub(crate) async fn save(
                 &snapshot.journal.commodity_styles,
             )
         }
+    })
+    .await?;
+    Ok(no_store(body))
+}
+
+/// `PUT /api/projections/default` — mark one scenario file as the one the
+/// Projections tab opens, or (`{id: null}`) none (plan 33 D10).
+///
+/// The client sends no revision (D14): every write is pinned to the server's
+/// own read moments earlier, so an external edit is refused rather than
+/// overwritten, and the answer's `before`/`after` let a client holding one of
+/// these files move its revision forward without touching its unsaved edits.
+pub(crate) async fn set_default(
+    State(state): State<AppState>,
+    payload: Result<Json<SetDefaultRequest>, JsonRejection>,
+) -> Result<Response, AppError> {
+    let SetDefaultRequest { id } = json_body(payload)?;
+    if let Some(id) = &id {
+        validate_id(id)?;
+    }
+    if !state.editing_enabled() {
+        return Err(editing_disabled());
+    }
+    let snapshot = state.snapshot();
+    let Some(main) = main_journal_file(&snapshot) else {
+        // No journal, no files: nothing can be marked, and there is nothing
+        // to clear.
+        return match id {
+            Some(id) => Err(unresolved(&id)),
+            None => Ok(no_store(WireDefaultChange {
+                changed: Vec::new(),
+            })),
+        };
+    };
+    let sources = snapshot.journal.source_files.clone();
+    // `import_writes`, as a save: several files may be written, and a save of
+    // one of them must not interleave.
+    let _guard = state.import_writes().lock().await;
+    let Json(body) = compute(move || {
+        // WITH headers (`discover_in`), unlike a save: every marked file has
+        // to be found, and that costs the same 4 KiB per projection file the
+        // listing already reads.
+        let discovery = discover_in(Arc::clone(main.vault()), main.main());
+        set_default_in(&sources, &discovery, id.as_deref())
     })
     .await?;
     Ok(no_store(body))

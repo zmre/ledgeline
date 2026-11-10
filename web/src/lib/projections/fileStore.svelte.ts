@@ -18,6 +18,17 @@
 // the engine is careful about that — dropping the one it returns would throw
 // that care away at the last step.
 //
+// # The default scenario (plan 33)
+//
+// Which file opens by default is a marker in that file's header, set and
+// cleared through `setDefault`. The star writes ONLY the marker, so it is
+// allowed while the open file has unsaved edits: the engine answers with each
+// changed file's revision before and after, and the open file's held revision
+// moves forward only if it is exactly the "before" (D17). Anything else means
+// the file changed some other way first, and the held revision stays stale on
+// purpose, so the disk poll and the next save treat it as the external edit it
+// is.
+//
 // # `available`
 //
 // False once the engine answers 404 for `/api/projections`, which means the
@@ -27,11 +38,12 @@
 
 import {classify, type EditFailure} from "#lib/api/editFailure.js";
 import {LedgelineApi, NativeApiUnavailableError, type SaveScenarioBody} from "#lib/api/native.js";
-import {decodeProjectionIndex, decodeScenarioFile} from "#lib/api/nativeDecode.js";
+import {decodeDefaultChange, decodeProjectionIndex, decodeScenarioFile} from "#lib/api/nativeDecode.js";
 import {createResource} from "#lib/stores/resource.svelte.js";
 import {settings} from "#lib/stores/settings.svelte.js";
+import {effectiveDefault} from "./opening";
 import {scenarioToWire} from "./scenarioModel";
-import type {ProjectionIndex, Scenario, ScenarioFile} from "./types";
+import type {DefaultChange, ProjectionFile, ProjectionIndex, Scenario, ScenarioFile} from "./types";
 
 /** `revision: ""` means CREATE — the engine's `NEW_FILE_REVISION`. */
 const NEW_FILE_REVISION = "";
@@ -47,8 +59,15 @@ let currentId = $state<string | null>(null);
 let revision = $state(NEW_FILE_REVISION);
 /** Whether `currentId` may be saved over. False for a file the main journal includes. */
 let currentWritable = $state(false);
+/** Whether `currentId`'s header carried the default marker when it was last read or written. */
+let currentMarked = $state(false);
+/** A `PUT /api/projections/default` is in flight (plan 33 D17). */
+let settingDefault = $state(false);
 /** The last index load key, so a page visit after a prefetch does not walk the tree twice. */
 let indexKey: string | null = null;
+
+/** Setting the default either lands or fails with a classified reason. */
+export type DefaultOutcome = {ok: true} | {ok: false; failure: EditFailure};
 
 /** A load or a save either lands, or fails with a classified reason the page can explain. */
 export type FileOutcome = {ok: true; file: ScenarioFile} | {ok: false; failure: EditFailure};
@@ -94,6 +113,20 @@ export const fileStore = {
     /** Whether a plain Save (rather than Save As) is possible right now. */
     get canSave(): boolean {
         return currentId !== null && currentWritable;
+    },
+    /** A star or un-star is in flight. */
+    get settingDefault(): boolean {
+        return settingDefault;
+    },
+    /**
+     * Whether the open file is the one the tab opens by default: the
+     * listing's effective default (D6) once there is a listing, and the
+     * file's own marker until then.
+     */
+    get currentIsDefault(): boolean {
+        if (currentId === null) return false;
+        const files = index.value?.files;
+        return files === undefined ? currentMarked : effectiveDefault(files)?.id === currentId;
     },
 
     /** Read the listing once per (server, reconnect). */
@@ -145,10 +178,12 @@ export const fileStore = {
     async checkDisk(serverUrl: string): Promise<DiskCheck> {
         const id = currentId;
         const held = revision;
-        if (id === null || checking || saving || loading) return {kind: "skipped"};
+        if (id === null || checking || saving || loading || settingDefault) return {kind: "skipped"};
         checking = true;
-        // Whether a load or save moved the identity while the read was in flight.
-        const superseded = (): boolean => currentId !== id || revision !== held || saving || loading;
+        // Whether a load, a save or a star moved the identity while the read
+        // was in flight. A star rewrites the file's header, so its new bytes
+        // are ours, not "a change made elsewhere".
+        const superseded = (): boolean => currentId !== id || revision !== held || saving || loading || settingDefault;
         try {
             const file = decodeScenarioFile(await new LedgelineApi(serverUrl).getProjection(id));
             if (superseded()) return {kind: "skipped"};
@@ -209,6 +244,58 @@ export const fileStore = {
     },
 
     /**
+     * Make `id` the default scenario file, or (`null`) clear the default
+     * (plan 33 D10). Writes only the marker, so it is allowed with unsaved
+     * edits: the open file's held revision is reconciled from the answer
+     * (D17), and the scenario and its `dirty` flag are untouched.
+     *
+     * The listing is patched from the answer at once, so the star fills
+     * without waiting, and then re-read in the background as a save does. A
+     * failure re-reads it too: a write that failed part-way (D13) has changed
+     * some files.
+     */
+    async setDefault(serverUrl: string, id: string | null): Promise<DefaultOutcome> {
+        settingDefault = true;
+        try {
+            const change = decodeDefaultChange(await new LedgelineApi(serverUrl).setProjectionDefault(id));
+            // Awaited, so the patched listing lands BEFORE the re-read below
+            // is issued; issued first, the re-read would supersede it.
+            await this.applyDefaultChange(serverUrl, change);
+            return {ok: true};
+        } catch (error) {
+            return {ok: false, failure: classify(error)};
+        } finally {
+            settingDefault = false;
+            void this.reloadIndex(serverUrl);
+        }
+    },
+
+    /**
+     * Fold a `PUT /api/projections/default` answer in (D17, D23): move the
+     * open file's revision forward when the engine changed exactly the bytes
+     * this tab holds, and mark the listing's copy of every changed file.
+     */
+    async applyDefaultChange(serverUrl: string, change: DefaultChange): Promise<void> {
+        for (const file of change.changed) {
+            if (file.id !== currentId) continue;
+            if (file.before === revision) {
+                revision = file.after;
+                currentMarked = file.isDefault;
+            }
+            // Else the file changed some other way first: keep the stale
+            // revision, so the disk poll says so and a save is a 409.
+        }
+        const listing = index.value;
+        if (listing === null || change.changed.length === 0) return;
+        const files: ProjectionFile[] = listing.files.map((file) => {
+            const isDefault = change.changed.find((changed) => changed.id === file.id)?.isDefault;
+            return isDefault === undefined || isDefault === file.isDefault ? file : {...file, isDefault};
+        });
+        const patched: ProjectionIndex = {...listing, files};
+        await index.run(async () => ({query: serverUrl, value: patched}));
+    },
+
+    /**
      * Record that `file` is now the scenario's home.
      *
      * The three fields move TOGETHER and only here, so a revision can never
@@ -220,6 +307,7 @@ export const fileStore = {
         currentId = file.id;
         revision = file.revision;
         currentWritable = file.writable;
+        currentMarked = file.isDefault;
         settings.lastProjectionId = file.id;
     },
 
@@ -235,6 +323,7 @@ export const fileStore = {
         currentId = null;
         revision = NEW_FILE_REVISION;
         currentWritable = false;
+        currentMarked = false;
         settings.lastProjectionId = null;
     },
 };

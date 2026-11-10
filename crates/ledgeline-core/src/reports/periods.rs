@@ -221,6 +221,7 @@ fn parse_bucket_key(key: &str) -> Option<ParsedKey<'_>> {
 /// 2026"`, `"2026-W28" → "W28 2026"`. Yearly and daily keys label themselves.
 #[must_use]
 pub fn bucket_label(key: &str) -> String {
+    let key = unprefixed(key);
     match parse_bucket_key(key) {
         Some(ParsedKey::Month(y, m)) if (1..=12).contains(&m) => {
             format!("{} {y:04}", MONTH_NAMES[(m - 1) as usize])
@@ -251,6 +252,8 @@ pub struct PeriodInfo {
 /// failing the whole report over a header.
 #[must_use]
 pub fn period_info(key: &str) -> PeriodInfo {
+    let full = key;
+    let key = unprefixed(key);
     let (start, end) = key.split_once("..").map_or_else(
         || {
             (
@@ -261,11 +264,21 @@ pub fn period_info(key: &str) -> PeriodInfo {
         |(from, to)| (from.to_string(), to.to_string()),
     );
     PeriodInfo {
-        key: key.to_string(),
+        key: full.to_string(),
         label: bucket_label(key),
         start,
         end,
     }
+}
+
+/// The prefix on a projection comparison's as-projected column keys
+/// (`projected:2026-08`, plan 34), so a report holding both blocks never
+/// repeats a key. A prefixed key labels and bounds itself as the bare key.
+pub const PROJECTED_KEY_PREFIX: &str = "projected:";
+
+/// `key` without [`PROJECTED_KEY_PREFIX`].
+fn unprefixed(key: &str) -> &str {
+    key.strip_prefix(PROJECTED_KEY_PREFIX).unwrap_or(key)
 }
 
 /// First date in a bucket (companion to [`bucket_end`]).

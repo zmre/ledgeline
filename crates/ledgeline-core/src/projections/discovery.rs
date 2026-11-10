@@ -121,6 +121,20 @@ const JOURNAL_SUFFIX: &str = ".journal";
 /// `; projection:` marker, and this is the same policy one level out.
 const PROJECTION_PREFIX: &str = "projection-";
 
+/// The header key that marks the scenario file the Projections tab opens by
+/// default (plan 33 D4): `; default-scenario: true`. Not a bare `default`, so
+/// it cannot be read as the header's "default cash account" (`; cash:`).
+pub(super) const DEFAULT_SCENARIO_KEY: &str = "default-scenario";
+
+/// The one value of [`DEFAULT_SCENARIO_KEY`] that means "yes",
+/// ASCII-case-insensitively. Anything else — `false`, `yes`, empty — means
+/// "not the default", so the read is strict and nothing is ambiguous.
+pub(super) const DEFAULT_SCENARIO_ON: &str = "true";
+
+/// How many of the marked files the conflict warning names before it says
+/// "and N more". The warning is a sentence, not a listing.
+const MAX_CONFLICT_NAMES: usize = 5;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -207,6 +221,11 @@ pub struct DiscoveredProjection {
     pub created: Option<String>,
     /// `; updated: <date>` from the header, verbatim and unvalidated.
     pub updated: Option<String>,
+    /// `; default-scenario: true` in the header (plan 33 D4). Always `false`
+    /// for a file whose header is not read: every file that is not a
+    /// `projection-*.journal`, and every file of a
+    /// [`Discovery::without_headers`] scan.
+    pub is_default: bool,
     /// The file's size as of the scan's `stat`. Display only.
     pub size_bytes: u64,
     /// The absolute path, unforgeable and inaccessible outside this module.
@@ -494,6 +513,43 @@ impl Discovery {
     }
 }
 
+/// The warning for a listing in which more than one file carries
+/// `; default-scenario: true` (plan 33 D6), or `None` when at most one does.
+///
+/// The FIRST marked file in listing order is the one the Projections tab
+/// opens, and the sentence says so. It is surfaced rather than repaired: the
+/// listing is a `GET`, and a `GET` never writes. Starring any file, or
+/// clearing the default, removes every other marker.
+#[must_use]
+pub fn default_conflict(discovery: &Discovery) -> Option<String> {
+    let marked: Vec<&str> = discovery
+        .files
+        .iter()
+        .filter(|file| file.is_default)
+        .map(|file| file.id.as_str())
+        .collect();
+    if marked.len() < 2 {
+        return None;
+    }
+    let shown = marked
+        .iter()
+        .take(MAX_CONFLICT_NAMES)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = marked.len().saturating_sub(MAX_CONFLICT_NAMES);
+    let names = if more == 0 {
+        shown
+    } else {
+        format!("{shown} and {more} more")
+    };
+    Some(format!(
+        "{} scenario files are marked as the default ({names}); the first one opens. Star one to \
+         fix it.",
+        marked.len()
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // One file
 // ---------------------------------------------------------------------------
@@ -522,6 +578,7 @@ fn describe(
         name: header.name,
         created: header.created,
         updated: header.updated,
+        is_default: header.default,
         size_bytes: entry.size,
         path: ProjectionPath::new(vault, entry.path.clone()),
         identity: entry.identity,
@@ -541,6 +598,9 @@ pub(super) struct Header {
     /// `; cash: <account>` — the scenario's default counter-account (plan 28
     /// Decision 7).
     pub(super) cash: Option<String>,
+    /// `; default-scenario: true` (plan 33 D4). The first such line decides,
+    /// as for every other key.
+    pub(super) default: bool,
 }
 
 /// Read the leading comment block of a file and pull the header out of it.
@@ -570,6 +630,7 @@ fn read_header(vault: &dyn Vault, path: &VaultPath) -> Header {
 /// their header with `#` did not mean something different by it.
 pub(super) fn parse_header(text: &str) -> Header {
     let mut header = Header::default();
+    let mut default_seen = false;
     for line in text.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -586,9 +647,19 @@ pub(super) fn parse_header(text: &str) -> Header {
         if value.is_empty() {
             continue;
         }
+        let key = key.trim();
+        if key.eq_ignore_ascii_case(DEFAULT_SCENARIO_KEY) {
+            // First wins here too: a hand-merged file whose first marker says
+            // `false` is not the default, whatever a later line says.
+            if !default_seen {
+                default_seen = true;
+                header.default = value.eq_ignore_ascii_case(DEFAULT_SCENARIO_ON);
+            }
+            continue;
+        }
         // First wins. A file with two `; projection:` lines is a file someone
         // edited by hand, and the first is the one a reader sees at the top.
-        let slot = match key.trim().to_ascii_lowercase().as_str() {
+        let slot = match key.to_ascii_lowercase().as_str() {
             "projection" => &mut header.name,
             "created" => &mut header.created,
             "updated" => &mut header.updated,
@@ -834,6 +905,42 @@ mod tests {
     fn the_first_of_a_repeated_key_wins() {
         let header = parse_header("; projection: first\n; projection: second\n");
         assert_eq!(header.name.as_deref(), Some("first"));
+    }
+
+    #[test]
+    fn the_default_marker_is_true_case_insensitively_and_nothing_else() {
+        for yes in [
+            "; default-scenario: true\n",
+            "; default-scenario: TRUE\n",
+            "; Default-Scenario: True\n",
+            "# default-scenario:true\n",
+        ] {
+            assert!(parse_header(yes).default, "{yes:?} is the default");
+        }
+        for no in [
+            "; default-scenario: false\n",
+            "; default-scenario: yes\n",
+            "; default-scenario:\n",
+            "; default-scenario: true-ish\n",
+            "; default: true\n",
+            "; projection: x\n",
+        ] {
+            assert!(!parse_header(no).default, "{no:?} is not the default");
+        }
+    }
+
+    #[test]
+    fn the_first_default_marker_decides() {
+        assert!(!parse_header("; default-scenario: false\n; default-scenario: true\n").default);
+        assert!(parse_header("; default-scenario: true\n; default-scenario: false\n").default);
+    }
+
+    #[test]
+    fn a_default_marker_below_the_leading_block_is_ignored() {
+        // As `projection:` is: after a directive it is a note on that
+        // directive, not a statement about the file.
+        let header = parse_header("~ monthly\n    a  $1\n    b\n; default-scenario: true\n");
+        assert!(!header.default);
     }
 
     #[test]

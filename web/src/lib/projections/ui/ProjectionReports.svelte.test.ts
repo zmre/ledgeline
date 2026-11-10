@@ -15,14 +15,14 @@
 // statement lays itself out is its own view's test. Nothing asserts on
 // geometry: jsdom has no layout engine.
 
-import {fireEvent, render, screen} from "@testing-library/svelte";
+import {cleanup, fireEvent, render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {afterEach, describe, expect, it} from "vitest";
 import {dec} from "#lib/domain/money.js";
 import type {AmountStyle} from "#lib/domain/types.js";
 import {DEFAULT_AMOUNT_STYLE} from "#lib/format/amounts.js";
 import {keymap} from "#lib/keys/keymap.svelte.js";
-import {accountsFixture, journalFixture, projectionFixture, usd} from "#lib/testing/projectionFixture.js";
+import {accountsFixture, compareFixture, journalFixture, projectionFixture, usd} from "#lib/testing/projectionFixture.js";
 import {expectSharedGrid} from "#lib/testing/statementGrid.js";
 import type {ProjectionTab} from "../params";
 import type {Projection} from "../types";
@@ -474,5 +474,154 @@ describe("COMPONENT ProjectionReports — journal", () => {
     it("says it is listing while a projection held from another tab has no journal yet", () => {
         mount("journal");
         expect(screen.getByTestId("projection-journal-pending")).toBeDefined();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Compare vs actuals (plan 34)
+// ---------------------------------------------------------------------------
+
+function mountCompare(tab: ProjectionTab, compare = compareFixture()) {
+    return render(ProjectionReports, {
+        tab,
+        projection: projection({compare}),
+        interval: "monthly" as const,
+        styles: STYLES,
+        fallbackCommodity: "$",
+        comparing: true,
+    });
+}
+
+/** The figure headings of the first table in `testid` (band row excluded). */
+function compareHeadings(testid: string): string[] {
+    return headings(testid).slice(1);
+}
+
+describe("COMPONENT ProjectionReports — Compare vs actuals", () => {
+    it("says the comparison is running until its run lands, on every reading", () => {
+        for (const tab of ["cash", "bs", "is", "cf", "accounts", "journal"] as const) {
+            const {unmount} = render(ProjectionReports, {
+                tab,
+                projection: projection(),
+                interval: "monthly" as const,
+                styles: STYLES,
+                fallbackCommodity: "$",
+                comparing: true,
+            });
+            expect(screen.getByTestId("projection-compare-pending").textContent).toBe("Running the comparison…");
+            unmount();
+        }
+    });
+
+    it("the runway draws actual and as-projected as two legended lines, the projection dashed, and says how they differ", () => {
+        mountCompare("cash");
+        const legend = screen.getByTestId("projection-cash-chart-legend");
+        const items = [...legend.querySelectorAll("li")];
+        expect(items.map((li) => li.textContent?.trim())).toEqual(["Actual", "As projected from 1 Jun 2026"]);
+        expect(items[0]?.querySelector(".border-dashed")).toBeNull();
+        expect(items[1]?.querySelector(".border-dashed")).not.toBeNull();
+        const sentence = screen.getByTestId("projection-runway").textContent ?? "";
+        expect(sentence).toContain("Cash at the end of Jul 2026 was");
+        expect(sentence).toContain("more than projected on 1 Jun 2026.");
+    });
+
+    it("the income statement shows both blocks under Actual / As projected from … / Difference, with Δ and Δ% and no Total", () => {
+        mountCompare("is");
+        const view = screen.getByTestId("projection-is");
+        const band = view.querySelector('[data-testid="projected-band"]');
+        expect(band?.textContent).toContain("Actual");
+        expect(view.querySelector('[data-testid="projected-label"]')?.textContent).toBe("As projected from 1 Jun 2026");
+        expect(view.querySelector('[data-testid="difference-label"]')?.textContent).toBe("Difference");
+        const heads = view.querySelector("thead tr:not([data-testid])");
+        const labels = [...(heads?.querySelectorAll("th") ?? [])].slice(1).map((th) => th.textContent?.trim());
+        expect(labels).toEqual(["Jun 2026", "Jul 2026", "Jun 2026 as projected", "Jul 2026 as projected", "Δ", "Δ%"]);
+        expect(labels).not.toContain("Total");
+        expect(view.querySelector('[data-column="total"]')).toBeNull();
+        // Every line, a group, the ladder and the bottom line carry the pair.
+        const net = screen.getByTestId("is-net-income");
+        expect(net.querySelector('[data-column="delta"]')).not.toBeNull();
+        expect(net.querySelector('[data-column="delta-pct"]')).not.toBeNull();
+        // The fixture's two blocks are the same months, so nothing differs.
+        expect(net.querySelector('[data-column="delta-pct"]')?.textContent?.trim()).toMatch(/^(0\.0%|—)$/);
+    });
+
+    it("figures Δ% in the dominant commodity when the reports name no valuation base (no P prices)", () => {
+        // Without `P` directives the engine sets every statement's `base` to
+        // null. Δ% used to read "—" everywhere then; it falls back to the
+        // projection's commodity, as the Accounts reading always did.
+        const fixture = compareFixture();
+        const compare = {
+            ...fixture,
+            balanceSheet: {...fixture.balanceSheet, base: null},
+            incomeStatement: {...fixture.incomeStatement, base: null},
+        };
+        const forward = projection({compare});
+        for (const tab of ["is", "bs"] as const) {
+            cleanup();
+            render(ProjectionReports, {
+                tab,
+                projection: {...forward, balanceSheet: {...forward.balanceSheet, base: null}},
+                interval: "monthly" as const,
+                styles: STYLES,
+                fallbackCommodity: "$",
+                comparing: true,
+            });
+            const pcts = [...document.querySelectorAll('[data-column="delta-pct"]')].map((cell) => cell.textContent?.trim()).filter((text) => text !== "");
+            expect(pcts.length, tab).toBeGreaterThan(0);
+            expect(
+                pcts.some((text) => text !== "—"),
+                `${tab}: ${pcts.join(" ")}`
+            ).toBe(true);
+        }
+    });
+
+    it("the balance sheet compares the last period-end of each block, and leaves the tie-out row's Δ blank", () => {
+        mountCompare("bs");
+        expect(compareHeadings("bs-section-assets")).toEqual(["Jun 2026", "Jul 2026", "Jun 2026 as projected", "Jul 2026 as projected", "Δ", "Δ%"]);
+        const tie = screen.getByTestId("bs-tie-out");
+        const cells = [...tie.querySelectorAll('[data-column="delta"], [data-column="delta-pct"]')];
+        expect(cells).toHaveLength(2);
+        expect(cells.every((cell) => cell.textContent?.trim() === "")).toBe(true);
+        const total = screen.getByTestId("bs-section-assets").querySelector("tfoot");
+        expect(total?.querySelector('[data-column="delta"]')?.textContent?.trim()).not.toBe("");
+    });
+
+    it("the cash flow statement compares beginning cash at its first period, which both blocks share", () => {
+        mountCompare("cf");
+        const beginning = screen.getByTestId("cf-cash-beginning");
+        const delta = beginning.querySelector("tbody tr [data-column='delta']");
+        // A zero Δ prints in the row's commodity, like the columns beside it.
+        expect(delta?.textContent?.trim()).toBe("$0.00");
+        expect(screen.getByTestId("projection-cf").querySelector('[data-column="total"]')).toBeNull();
+    });
+
+    it("the Accounts reading compares a balance section by its last period and a change section by the sum", () => {
+        mountCompare("accounts");
+        const assets = screen.getByTestId("projection-accounts").querySelector('[data-section="assets"]');
+        const checking = assets?.querySelector('[data-account="assets:checking"] [data-column="delta"]');
+        // $11,600 actual (Jul) against $13,200 as projected.
+        expect(checking?.textContent).toContain("-1,600.00");
+        expect(checking?.className).not.toContain("text-error");
+        const rent = screen.getByTestId("projection-accounts").querySelector('[data-account="expenses:rent"] [data-column="delta"]');
+        expect(rent?.textContent?.trim()).toBe("$0.00");
+        expect(screen.getByTestId("projection-accounts").querySelector('[data-column="summary"]')).toBeNull();
+    });
+
+    it("the Journal reading lists the as-projected run's transactions under what they are", () => {
+        mountCompare("journal");
+        expect(screen.getByTestId("forecast-journal-heading").textContent).toBe("Generated as if projected on 1 Jun 2026");
+    });
+
+    it("with the box unticked, a held comparison changes nothing", () => {
+        render(ProjectionReports, {
+            tab: "is",
+            projection: projection({compare: compareFixture()}),
+            interval: "monthly" as const,
+            styles: STYLES,
+            fallbackCommodity: "$",
+            comparing: false,
+        });
+        expect(screen.getByTestId("projection-is").querySelector('[data-testid="projected-label"]')?.textContent).toBe("Projected");
+        expect(screen.getByTestId("projection-is").querySelector('[data-column="delta"]')).toBeNull();
     });
 });

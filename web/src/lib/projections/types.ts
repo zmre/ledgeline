@@ -401,6 +401,46 @@ export interface Projection {
     accounts: AccountReport | null;
     /** The generated transactions, when the run asked for them; null otherwise. */
     journal: ForecastJournal | null;
+    // MERGE SEAM: plan 34.
+    /** Compare vs actuals, when the run asked for it; null otherwise. With it, `accounts` and `journal` above are null and this carries them. */
+    compare: Comparison | null;
+}
+
+/** The runway's two series over the actual periods (plan 34). */
+export interface CompareCash {
+    /** Real cash the day before the first actual day. */
+    opening: MixedAmount;
+    /** Real closing cash per actual period (the forward run's `cash.history`). */
+    actual: MixedAmount[];
+    /** Closing cash per period as projected on the first actual day. */
+    projected: MixedAmount[];
+}
+
+/**
+ * Compare vs actuals (plan 34): the N actual periods, then the same periods as
+ * the scenario on screen would have projected them on their first day. Every
+ * statement holds `2 × columns` columns, the actual block first; the
+ * as-projected block's keys are prefixed `projected:` (labels and dates are
+ * the actual block's). Their Total-like fields span both blocks and mean
+ * nothing, so no reading shows them.
+ */
+export interface Comparison {
+    /** The first actual day: where the projection is made from. */
+    from: ISODate;
+    /** The forward run's cutoff; the window ends the day before. */
+    actualsEnd: ISODate;
+    /** N, the actual periods compared. */
+    columns: number;
+    cash: CompareCash;
+    balanceSheet: BalanceSheetColumns;
+    incomeStatement: IncomeStatementReport;
+    cashFlow: CashFlowStatement;
+    /** Both blocks of the Accounts reading, when the run asked for it. */
+    accounts: AccountReport | null;
+    /** The as-projected run's generated transactions, when the run asked for them. */
+    journal: ForecastJournal | null;
+    /** The as-projected run's warnings the forward run does not already hold. */
+    warnings: string[];
 }
 
 /** What the run is asked to compute beyond the four readings every run carries. */
@@ -465,6 +505,13 @@ export interface ProjectionFile {
      * refuse after the fact.
      */
     writable: boolean;
+    /**
+     * `; default-scenario: true` in the header (plan 33 D19) — the raw marker.
+     * Always false for a file whose header the engine does not read (any file
+     * that is not a `projection-*.journal`), and for an engine that predates
+     * the marker (`ProjectionIndex.defaultSupported` is then false).
+     */
+    isDefault: boolean;
 }
 
 /** `GET /api/projections` — the picker's list. */
@@ -479,6 +526,14 @@ export interface ProjectionIndex {
     /** The directories that hold a journal, relative, `""` for the root — what Save As offers instead of a free-text path. */
     directories: string[];
     warnings: string[];
+    /**
+     * Whether this engine knows the default marker (plan 33 D19): false when
+     * the listing's files carry no `isDefault`, which is an older engine. The
+     * star and the Settings control are hidden then, so a `PUT
+     * /api/projections/default` is never sent to an engine that would read it
+     * as a file id.
+     */
+    defaultSupported: boolean;
 }
 
 /** `POST /api/projections/render` — one entry's exact text, as a save would write it (plan 31 C15). */
@@ -498,5 +553,24 @@ export interface ScenarioFile {
     revision: string;
     /** See `ProjectionFile.writable`. */
     writable: boolean;
+    /** Whether the file's header marks it as the default (plan 33). Output only: a save never sends it. */
+    isDefault: boolean;
     scenario: Scenario;
+}
+
+// MERGE SEAM: plan 33's default-scenario wire types end here; plan 34 adds its own below, independently.
+/** One file `PUT /api/projections/default` rewrote (plan 33 D16). */
+export interface DefaultChangedFile {
+    id: string;
+    /** The file's revision before the write. A client holding exactly this one moves to `after` (D17). */
+    before: string;
+    /** The revision of what is on disk now. */
+    after: string;
+    /** Whether the file is now marked. */
+    isDefault: boolean;
+}
+
+/** `PUT /api/projections/default` — every file it changed; empty for a no-op. */
+export interface DefaultChange {
+    changed: DefaultChangedFile[];
 }

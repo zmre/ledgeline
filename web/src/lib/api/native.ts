@@ -978,6 +978,8 @@ export interface RunProjectionBody {
     accounts?: {empty: boolean};
     /** Ask for the generated transactions (`journal` is null in the answer otherwise). */
     journal?: boolean;
+    /** Compare vs actuals (plan 34; `compare` is null in the answer otherwise). Sent only when true, so an older engine still answers an unticked page. */
+    compare?: true;
 }
 
 /**
@@ -1392,6 +1394,17 @@ export class LedgelineApi {
      */
     saveProjection(id: string, body: SaveScenarioBody): Promise<unknown> {
         return this.mutate<unknown>("PUT", `/api/projections/${encodeRulesId(id)}`, 200, body);
+    }
+
+    /**
+     * Make `id` the scenario file the Projections tab opens, or (`null`) none
+     * (plan 33 D10; decode with `decodeDefaultChange`).
+     *
+     * Only call it when the listing said `defaultSupported`: an older engine
+     * has no such route and would read `default` as a file id.
+     */
+    setProjectionDefault(id: string | null): Promise<unknown> {
+        return this.mutate<unknown>("PUT", "/api/projections/default", 200, {id});
     }
 
     /** Insights dashboard (period-over-period core metrics). */

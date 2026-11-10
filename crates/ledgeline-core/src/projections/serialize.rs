@@ -28,7 +28,8 @@
 //! writes:
 //!
 //! 1. the **header** comment lines this module recognizes (the banner,
-//!    `projection:`, `created:`, `updated:`, `cash:`), re-rendered — a user's
+//!    `projection:`, `created:`, `updated:`, `cash:`, `default-scenario:`),
+//!    re-rendered — a user's
 //!    own prose above or between them is a piece of its own and copied
 //!    through;
 //! 2. the original **lead**;
@@ -117,7 +118,7 @@ use crate::model::{
 };
 use crate::parse::{self, ParseError};
 use crate::periodic::{MAX_ACCOUNT_BYTES, MAX_DESCRIPTION_BYTES};
-use crate::projections::discovery::parse_header;
+use crate::projections::discovery::{DEFAULT_SCENARIO_KEY, DEFAULT_SCENARIO_ON, parse_header};
 use crate::projections::forecast::{event_balances, lines_balance};
 use crate::projections::layout::{self, Confirmed, RawKind};
 use crate::projections::{
@@ -481,6 +482,7 @@ fn read_scenario(
         created: header.created.clone(),
         updated: header.updated.clone(),
         cash: header.cash.clone().map(AccountName),
+        is_default: header.default,
         ..Scenario::default()
     };
     let mut rules = rules.into_iter();
@@ -1482,6 +1484,13 @@ impl ProjectionDoc {
         if let Some(cash) = &scenario.cash {
             check_account(&cash.0)?;
             out.push_str(&header_line("cash", &cash.0)?);
+            out.push_str(nl);
+        }
+        // LAST, always (plan 33 D4): an older Ledgeline, which does not know
+        // the key, sees its header end just before this line and keeps it as
+        // an ordinary comment rather than cutting its header short.
+        if scenario.is_default {
+            out.push_str(&header_line(DEFAULT_SCENARIO_KEY, DEFAULT_SCENARIO_ON)?);
             out.push_str(nl);
         }
         // Gains accounts the main journal does not declare, declared HERE
@@ -3106,7 +3115,8 @@ pub(crate) fn check_account(account: &str) -> Result<(), SerializeError> {
 /// The leading run of header comment lines, as a byte range.
 ///
 /// Only lines this module RECOGNIZES — the banner, and `projection:` /
-/// `created:` / `updated:` — plus blank lines between them. It stops at the
+/// `created:` / `updated:` / `cash:` / `default-scenario:` — plus blank lines
+/// between them. It stops at the
 /// first line that is anything else, so a user's own prose at the top of a file
 /// is copied through rather than replaced by a header, and a header written
 /// under that prose is rewritten in place.
@@ -3114,6 +3124,12 @@ pub(crate) fn check_account(account: &str) -> Result<(), SerializeError> {
 /// An empty range at offset 0 means "there is no header", and the save inserts
 /// one there.
 fn header_span(text: &str) -> Range<usize> {
+    header_span_by(text, is_header_comment)
+}
+
+/// [`header_span`] under a given notion of "a header line", so a test can ask
+/// what a build that did not know a key would have made of a file.
+fn header_span_by(text: &str, is_header: fn(&str) -> bool) -> Range<usize> {
     let mut end = 0usize;
     let mut last_recognized = 0usize;
     for line in text.split_inclusive('\n') {
@@ -3127,7 +3143,7 @@ fn header_span(text: &str) -> Range<usize> {
         let Some(comment) = trimmed.strip_prefix([';', '#']) else {
             break;
         };
-        if !is_header_comment(comment.trim()) {
+        if !is_header(comment.trim()) {
             break;
         }
         end += line.len();
@@ -3142,11 +3158,87 @@ fn is_header_comment(comment: &str) -> bool {
         return true;
     }
     comment.split_once(':').is_some_and(|(key, _)| {
-        matches!(
-            key.trim().to_ascii_lowercase().as_str(),
-            "projection" | "created" | "updated" | "cash"
-        )
+        let key = key.trim().to_ascii_lowercase();
+        matches!(key.as_str(), "projection" | "created" | "updated" | "cash")
+            || key == DEFAULT_SCENARIO_KEY
     })
+}
+
+/// Whether a comment's text is a `default-scenario:` line, whatever its value.
+fn is_default_comment(comment: &str) -> bool {
+    comment
+        .split_once(':')
+        .is_some_and(|(key, _)| key.trim().eq_ignore_ascii_case(DEFAULT_SCENARIO_KEY))
+}
+
+// ---------------------------------------------------------------------------
+// The default marker (plan 33)
+// ---------------------------------------------------------------------------
+
+/// Whether `text`'s header marks it as the default scenario
+/// (`; default-scenario: true`, plan 33 D4) — the same read the listing makes.
+#[must_use]
+pub fn is_default_marked(text: &str) -> bool {
+    parse_header(text).default
+}
+
+/// `text` with the default marker turned `on` or off, or `None` when it
+/// already reads that way and nothing needs writing (plan 33 D11).
+///
+/// A surgical header edit, not a save: every other byte is unchanged — line
+/// endings, `#` versus `;`, the header's own order — and `updated:` is NOT
+/// bumped, because starring a file is not an edit of the plan.
+///
+/// - **Off** deletes every `default-scenario:` line in the file's leading
+///   comment block, whatever its value. That is the region the read
+///   ([`is_default_marked`]) consults, so a file that reads as the default can
+///   always be cleared, even one whose marker a user typed below their own
+///   prose at the top of the file.
+/// - **On** does the same, then inserts `; default-scenario: true` and the
+///   file's own line ending right after the last recognised line of the
+///   header ([`header_span`]) — at offset 0 when there is no header. Removing
+///   first is what makes "on" mean on for a hand-merged file whose first
+///   marker says `false`.
+#[must_use]
+pub fn set_default_marker(text: &str, on: bool) -> Option<String> {
+    if on && is_default_marked(text) {
+        return None;
+    }
+    let mut out = String::with_capacity(text.len() + 32);
+    let mut removed = false;
+    let mut leading = true;
+    for line in text.split_inclusive('\n') {
+        if leading {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                match trimmed.strip_prefix([';', '#']) {
+                    Some(comment) if is_default_comment(comment.trim()) => {
+                        removed = true;
+                        continue;
+                    }
+                    Some(_) => {}
+                    None => leading = false,
+                }
+            }
+        }
+        out.push_str(line);
+    }
+    if !on {
+        return removed.then_some(out);
+    }
+    let nl = Newline::detect(text).as_str();
+    let marker = format!("; {DEFAULT_SCENARIO_KEY}: {DEFAULT_SCENARIO_ON}");
+    let at = header_span(&out).end;
+    let insert = if at > 0 && !out[..at].ends_with('\n') {
+        // The header is the whole file and its last line has no terminator:
+        // the marker goes on a line of its own and the file still ends
+        // without one.
+        format!("{nl}{marker}")
+    } else {
+        format!("{marker}{nl}")
+    };
+    out.insert_str(at, &insert);
+    Some(out)
 }
 
 // ===========================================================================
@@ -3651,6 +3743,7 @@ mod tests {
             layout: Vec::new(),
             auto_rules: Vec::new(),
             cash: None,
+            is_default: false,
             name: "Plan B".to_string(),
             created: Some("2026-01-01".to_string()),
             updated: Some("2026-09-20".to_string()),
@@ -5893,5 +5986,252 @@ end comment
                 raw: "account expenses:rent  ; type: X\n".into()
             }]
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // The default marker (plan 33 D4, D11)
+    // -----------------------------------------------------------------------
+
+    const MARKER: &str = "; default-scenario: true";
+
+    const FULL_HEADER: &str = "\
+; Ledgeline projection
+; projection: Plan B
+; created: 2026-09-18
+; updated: 2026-11-09
+; cash: assets:checking
+
+~ monthly  rent
+    (expenses:rent)  $1
+";
+
+    /// `text` with `line` (and its terminator) inserted right after the
+    /// first occurrence of `after`.
+    fn inserted(text: &str, after: &str, line: &str) -> String {
+        let at = text.find(after).expect("anchor") + after.len();
+        format!("{}{line}{}", &text[..at], &text[at..])
+    }
+
+    #[test]
+    fn the_marker_is_added_after_the_last_header_line_and_nowhere_else() {
+        let crlf = FULL_HEADER.replace('\n', "\r\n");
+        let hashed = FULL_HEADER.replace("; ", "# ");
+        let cases: [(&str, String, String); 3] = [
+            (
+                "LF",
+                FULL_HEADER.to_string(),
+                inserted(
+                    FULL_HEADER,
+                    "; cash: assets:checking\n",
+                    &format!("{MARKER}\n"),
+                ),
+            ),
+            (
+                "CRLF",
+                crlf.clone(),
+                inserted(
+                    &crlf,
+                    "; cash: assets:checking\r\n",
+                    &format!("{MARKER}\r\n"),
+                ),
+            ),
+            (
+                "# comments",
+                hashed.clone(),
+                inserted(&hashed, "# cash: assets:checking\n", &format!("{MARKER}\n")),
+            ),
+        ];
+        for (what, text, want) in cases {
+            let got = set_default_marker(&text, true).unwrap_or_else(|| panic!("{what}: adds"));
+            assert_eq!(got, want, "{what}");
+            assert!(is_default_marked(&got), "{what}: reads back as the default");
+            let span = header_span(&got);
+            assert!(
+                got[span].contains(MARKER),
+                "{what}: the header span covers the marker"
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_with_no_header_gets_the_marker_at_the_top() {
+        let text = "~ monthly  rent\n    (expenses:rent)  $1\n";
+        let got = set_default_marker(text, true).expect("adds");
+        assert_eq!(got, format!("{MARKER}\n{text}"));
+        assert_eq!(header_span(&got), 0..MARKER.len() + 1);
+        assert!(is_default_marked(&got));
+        // A user's own prose at the top is not a header, so the marker goes
+        // above it rather than inside it.
+        let prose = "; my own notes\n~ monthly  rent\n    (expenses:rent)  $1\n";
+        assert_eq!(
+            set_default_marker(prose, true).as_deref(),
+            Some(format!("{MARKER}\n{prose}").as_str())
+        );
+    }
+
+    #[test]
+    fn a_header_that_is_the_whole_file_keeps_its_missing_final_newline() {
+        let text = "; Ledgeline projection\n; projection: Bare";
+        assert_eq!(
+            set_default_marker(text, true).as_deref(),
+            Some(format!("{text}\n{MARKER}").as_str())
+        );
+    }
+
+    #[test]
+    fn nothing_changes_when_the_marker_already_reads_as_asked() {
+        let on = inserted(
+            FULL_HEADER,
+            "; cash: assets:checking\n",
+            &format!("{MARKER}\n"),
+        );
+        assert_eq!(set_default_marker(&on, true), None, "already on");
+        assert_eq!(set_default_marker(FULL_HEADER, false), None, "already off");
+        assert_eq!(set_default_marker("", false), None, "an empty file");
+    }
+
+    #[test]
+    fn removing_deletes_the_marker_line_and_nothing_else() {
+        // Mid-header, upper-case, `#`: wherever and however it was written.
+        for line in [
+            "; default-scenario: true\n",
+            "# DEFAULT-SCENARIO: TRUE\n",
+            ";default-scenario:true\n",
+        ] {
+            let marked = inserted(FULL_HEADER, "; created: 2026-09-18\n", line);
+            assert_eq!(
+                set_default_marker(&marked, false).as_deref(),
+                Some(FULL_HEADER),
+                "{line:?}"
+            );
+        }
+        let crlf = FULL_HEADER.replace('\n', "\r\n");
+        let marked = inserted(
+            &crlf,
+            "; cash: assets:checking\r\n",
+            &format!("{MARKER}\r\n"),
+        );
+        assert_eq!(
+            set_default_marker(&marked, false).as_deref(),
+            Some(crlf.as_str())
+        );
+    }
+
+    #[test]
+    fn removing_deletes_every_duplicate() {
+        let twice = inserted(
+            &inserted(
+                FULL_HEADER,
+                "; projection: Plan B\n",
+                &format!("{MARKER}\n"),
+            ),
+            "; cash: assets:checking\n",
+            &format!("{MARKER}\n"),
+        );
+        assert_eq!(
+            set_default_marker(&twice, false).as_deref(),
+            Some(FULL_HEADER)
+        );
+    }
+
+    #[test]
+    fn turning_on_replaces_a_false_marker_that_would_otherwise_win() {
+        let falsy = inserted(
+            FULL_HEADER,
+            "; projection: Plan B\n",
+            "; default-scenario: false\n",
+        );
+        assert!(!is_default_marked(&falsy));
+        let got = set_default_marker(&falsy, true).expect("adds");
+        assert_eq!(
+            got,
+            inserted(
+                FULL_HEADER,
+                "; cash: assets:checking\n",
+                &format!("{MARKER}\n")
+            )
+        );
+    }
+
+    #[test]
+    fn a_marker_below_the_header_block_is_not_touched() {
+        // After the first directive it is a note on that directive, which the
+        // read ignores — so the edit does too.
+        let text = format!("{FULL_HEADER}{MARKER}\n");
+        assert!(!is_default_marked(&text));
+        assert_eq!(set_default_marker(&text, false), None);
+    }
+
+    #[test]
+    fn a_marked_file_saved_as_the_default_is_byte_identical() {
+        let text = set_default_marker(ORDERED, true).expect("adds");
+        let scenario = read(&text);
+        assert!(scenario.is_default, "the read carries the marker");
+        let doc = ProjectionDoc::parse(&text, "p.journal", &declared()).unwrap();
+        assert_eq!(
+            write_scenario(&doc, &scenario, "p.journal").unwrap(),
+            text,
+            "a no-op stays a no-op"
+        );
+        // Rendering it as NOT the default drops exactly that line.
+        let cleared = Scenario {
+            is_default: false,
+            ..scenario
+        };
+        assert_eq!(
+            write_scenario(&doc, &cleared, "p.journal").unwrap(),
+            ORDERED
+        );
+    }
+
+    #[test]
+    fn rendering_the_default_writes_the_marker_last_in_the_header() {
+        let scenario = Scenario {
+            is_default: true,
+            ..read(FULL_HEADER)
+        };
+        let doc = ProjectionDoc::parse(FULL_HEADER, "p.journal", &declared()).unwrap();
+        assert_eq!(
+            write_scenario(&doc, &scenario, "p.journal").unwrap(),
+            inserted(
+                FULL_HEADER,
+                "; cash: assets:checking\n",
+                &format!("{MARKER}\n")
+            )
+        );
+    }
+
+    #[test]
+    fn an_older_build_keeps_the_marker_as_a_comment_and_this_one_takes_it_back() {
+        // `is_header_comment` as it was before plan 33.
+        fn before_plan_33(comment: &str) -> bool {
+            is_header_comment(comment) && !is_default_comment(comment)
+        }
+        let marked = set_default_marker(FULL_HEADER, true).expect("adds");
+
+        // 1. An older build's header ends just before the marker, so the line
+        //    is the first PIECE of the body — an ordinary comment it copies
+        //    through — rather than a header line it would drop or a key that
+        //    cut its header short.
+        let old_end = header_span_by(&marked, before_plan_33).end;
+        assert_eq!(&marked[old_end..old_end + MARKER.len()], MARKER);
+        let pieces = layout::scan(&marked, old_end, &mut |_| None).pieces;
+        let first = pieces.first().expect("a piece");
+        assert_eq!(first.kind, RawKind::Note);
+        assert_eq!(&marked[first.span.clone()], format!("{MARKER}\n"));
+
+        // 2. What its save writes: its own header, then (because the body no
+        //    longer starts with a blank line) a blank line, then the piece.
+        let old_save = format!("{}\n{}", &marked[..old_end], &marked[old_end..]);
+        // 3. This build reads it as the default, takes the line back into the
+        //    header (the blank line is absorbed because a recognised line
+        //    follows it), and its next save has exactly one marker, last.
+        assert!(is_default_marked(&old_save));
+        assert!(header_span(&old_save).end > old_save.find(MARKER).expect("there"));
+        let scenario = read(&old_save);
+        assert!(scenario.is_default);
+        let doc = ProjectionDoc::parse(&old_save, "p.journal", &declared()).unwrap();
+        let resaved = write_scenario(&doc, &scenario, "p.journal").unwrap();
+        assert_eq!(resaved, marked);
     }
 }

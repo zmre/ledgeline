@@ -5,8 +5,10 @@
 // imports) so the round trip is unit-testable under node.
 //
 // Scheme: `?tab=cash|bs|is|cf|accounts|journal&interval=&count=&lookback=&depth=
-// &empty=0|1&show=all|income|liability|…|oneoff|…`. `show` is the scenario list's filter chip
-// (plan 31 C12; one per account type since 2026-10-29), view state like the rest. All six are written in full, never only the non-defaults, so a
+// &empty=0|1&compare=0|1&show=all|income|liability|…|oneoff|…`. `show` is the scenario list's filter chip
+// (plan 31 C12; one per account type since 2026-10-29), view state like the rest. `compare`
+// is the Compare vs actuals checkbox (plan 34), kept at `1` while Actuals is 0 so raising
+// Actuals brings the comparison back. All are written in full, never only the non-defaults, so a
 // shared or reloaded URL reproduces the same readings — the reports codec's
 // rule, for the reason it gives there. `empty` is the Accounts tab's toggle;
 // it is kept while another tab is open, so switching back finds it as it was.
@@ -64,6 +66,8 @@ export interface ProjectionParams {
     empty: boolean;
     /** The scenario list's filter chip (plan 31 C12). */
     show: EntryFilter;
+    /** Compare vs actuals (plan 34). Takes effect only with `lookback > 0` ({@link compareActive}). */
+    compare: boolean;
 }
 
 /**
@@ -103,7 +107,13 @@ export function defaultProjectionParams(): ProjectionParams {
         depth: DEFAULT_PROJECTION_DEPTH,
         empty: false,
         show: "all",
+        compare: false,
     };
+}
+
+/** Whether the readings are comparing (plan 34 D4): the box is ticked AND there is an actual period to compare. */
+export function compareActive(params: Pick<ProjectionParams, "compare" | "lookback">): boolean {
+    return params.compare && params.lookback > 0;
 }
 
 /** Serialize to a query string (no leading "?"). */
@@ -116,6 +126,7 @@ export function projectionParamsToSearch(params: ProjectionParams): string {
     q.set("depth", String(params.depth));
     q.set("empty", params.empty ? "1" : "0");
     q.set("show", params.show);
+    q.set("compare", params.compare ? "1" : "0");
     return q.toString();
 }
 
@@ -139,5 +150,6 @@ export function searchToProjectionParams(search: string, dflt: ProjectionParams)
         depth: clampedInt(q.get("depth"), 1, 99, dflt.depth),
         empty: oneOf(["0", "1"], q.get("empty"), dflt.empty ? "1" : "0") === "1",
         show: oneOf(ENTRY_FILTERS, q.get("show"), dflt.show),
+        compare: oneOf(["0", "1"], q.get("compare"), dflt.compare ? "1" : "0") === "1",
     };
 }

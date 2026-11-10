@@ -721,3 +721,104 @@ async fn a_malformed_json_body_is_a_400_on_every_body_taking_route() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// `PUT /api/projections/default` (plan 33 D15)
+// ---------------------------------------------------------------------------
+
+/// An editing-enabled router over a tree with one projection file the main
+/// journal INCLUDES (so it is a plan of record) and the main journal itself
+/// (so there is a journal that is not a projection file).
+fn default_tree_router() -> axum::Router {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "ledgeline-error-surface-default/{}-{seq}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let main = dir.join("main.journal");
+    std::fs::write(&main, "include projection-inc.journal\n").expect("write main");
+    std::fs::write(
+        dir.join("projection-inc.journal"),
+        "~ monthly  plan\n    (expenses:rent)  $1.00\n",
+    )
+    .expect("write include");
+    router_with_state(AppState::from_journal_path(&main).expect("editor opens"))
+}
+
+async fn put_default(router: axum::Router, id: &str) -> ErrorResponse {
+    send(
+        router,
+        "PUT",
+        "/api/projections/default",
+        Some(json!({ "id": id })),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_default_with_a_malformed_id_is_the_ids_400() {
+    assert_eq!(
+        put_default(default_tree_router(), "../x.journal").await,
+        expect(
+            StatusCode::BAD_REQUEST,
+            "\"../x.journal\" is not a usable projection id: an id is the file's path relative to \
+             the journal directory, forward-slash separated, at most 9 plain components and 1024 \
+             bytes, and it must end in `.journal`",
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_default_that_is_not_there_is_the_ordinary_404() {
+    assert_eq!(
+        put_default(default_tree_router(), "projection-gone.journal").await,
+        expect(
+            StatusCode::NOT_FOUND,
+            "no journal file \"projection-gone.journal\" is available beside this journal",
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_default_that_is_not_a_projection_file_says_to_save_as() {
+    assert_eq!(
+        put_default(default_tree_router(), "main.journal").await,
+        expect(
+            StatusCode::BAD_REQUEST,
+            "Only a scenario file Ledgeline saved (projection-….journal) can be the default. Use \
+             Save as to make one.",
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_default_in_the_main_journal_is_decision_5_s_refusal() {
+    assert_eq!(
+        put_default(default_tree_router(), "projection-inc.journal").await,
+        expect(
+            StatusCode::BAD_REQUEST,
+            "\"projection-inc.journal\" is part of your main journal, and a projection is never \
+             saved over a plan of record. Save it under a new name instead.",
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_default_on_a_read_only_server_is_the_editing_501() {
+    assert_eq!(
+        read_only(
+            "PUT",
+            "/api/projections/default",
+            Some(json!({"id": "projection-x.journal"}))
+        )
+        .await,
+        expect(
+            StatusCode::NOT_IMPLEMENTED,
+            "editing is not enabled: this server was started without a journal file bound to an \
+             editor",
+        )
+    );
+}

@@ -93,6 +93,20 @@ test("journal", async ({page}) => {
     await shot(page, SECTION, "journal", {clip: [readingTabs(page), panel.getByTestId("forecast-journal-count"), entries.nth(3)], padding: 8});
 });
 
+// Compare vs actuals (plan 34): three actual months beside the projection
+// made on the first of them.
+test("compare income statement", async ({page}) => {
+    const panel = await reading(page, "is", "projection-is", "&interval=monthly&count=4&lookback=3&compare=1");
+    await expect(panel.getByTestId("difference-label").first()).toBeVisible({timeout: 30_000});
+    await shot(page, SECTION, "compare-is", {clip: [controlsBar(page), readingTabs(page), panel], padding: 8});
+});
+
+test("compare runway", async ({page}) => {
+    const panel = await reading(page, "cash", "projection-cash", "&interval=monthly&count=4&lookback=3&compare=1");
+    await expect(page.getByTestId("projection-cash-chart-legend")).toBeVisible({timeout: 30_000});
+    await shot(page, SECTION, "compare-runway", {clip: [controlsBar(page), readingTabs(page), panel], padding: 8});
+});
+
 // The demo scenario (fixtures/docs/scenario-demo.journal, staged as
 // projection-series-a.journal): a file written by hand, with section headings,
 // a note, a turned-off alternative, a step change, an asset rule, a one-off,
@@ -123,6 +137,15 @@ test.describe("demo scenario", () => {
         const dialog = page.getByTestId("entry-dialog");
         await expect(dialog.getByTestId("entry-dialog-writes")).toContainText("Savings plan");
         await shot(page, SECTION, "editor", {clip: [dialog.locator(".modal-box")], padding: 0});
+    });
+
+    // The default star beside the picker (index.md, "Your default scenario").
+    // Circled, not clicked: a click writes the marker into the scenario file,
+    // and nothing here is saved.
+    test("default star", async ({page}) => {
+        const bar = page.getByTestId("projection-file-bar");
+        const drawn = await annotate(page, [{kind: "circle", target: page.getByTestId("projection-default-toggle"), pad: 4}]);
+        await shot(page, SECTION, "default", {clip: [bar, drawn], padding: 8});
     });
 
     test("asset rows", async ({page}) => {

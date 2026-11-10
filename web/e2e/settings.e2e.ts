@@ -94,3 +94,16 @@ test("settings: the Automatic postings tab says whether --auto is in force, and 
     await expect(page).toHaveURL(/\/settings\?tab=hledgerConf/);
     await expect(page.getByTestId("settings-hledger-conf-auto")).toBeVisible();
 });
+
+test("settings: the Projections tab offers the default scenario, and changes nothing by being opened", async ({page}) => {
+    // Read-only, like the rest of this spec: no choice is made, because a
+    // choice writes a scenario file's header. The write is
+    // projectionDefault.e2e.ts's, against its own scratch engine.
+    await page.goto("/settings?tab=projections");
+    await expect(page.getByRole("tab", {name: "Projections"})).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByTestId("settings-projections")).toBeVisible();
+    const select = page.getByTestId("settings-projections-default");
+    await expect(select).toBeVisible();
+    await expect(select).toHaveValue("");
+    await expect(select.locator("option").first()).toHaveText("None — reopen the last scenario, or start from your journal");
+});

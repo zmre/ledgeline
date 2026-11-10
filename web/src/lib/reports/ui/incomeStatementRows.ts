@@ -17,10 +17,10 @@
 // design — a grant and a lawsuit settlement can share it — so it is the one box
 // allowed to print a negative total.
 
-import type {Dec, MixedAmount} from "#lib/domain/money.js";
-import {EM_DASH, ZERO} from "#lib/format/amounts.js";
+import {EM_DASH} from "#lib/format/amounts.js";
 import type {Amounts, IncomeStatementReport, IsBucket, IsSection, IsSectionKind, IsSubtotalKind} from "#lib/reports/types.js";
 import {compressIsRows} from "./displayRows";
+import {pctChange} from "./percent";
 
 export {amountCell, type AmountCell} from "./amountCell";
 
@@ -120,53 +120,9 @@ export function isGroupKey(sectionKind: string, groupName: string): string {
     return `${sectionKind}/${groupName}`;
 }
 
-/**
- * Integer division rounded HALF AWAY FROM ZERO — the same convention
- * `roundTo`/`formatDec` apply to every money figure in this app, applied here to
- * a ratio so the percentage column cannot round the other way from the amounts
- * beside it.
- */
-function divRoundHalfAway(numerator: bigint, denominator: bigint): bigint {
-    const negative = numerator < 0n !== denominator < 0n;
-    const a = numerator < 0n ? -numerator : numerator;
-    const b = denominator < 0n ? -denominator : denominator;
-    // floor(a/b + 1/2), done in integers.
-    const quotient = (2n * a + b) / (2n * b);
-    return negative ? -quotient : quotient;
-}
-
-/**
- * `(current − prior) ÷ |prior|`, as a percentage to ONE decimal — the % change
- * column — or null when there is no change to state.
- *
- * Computed from the exact `Dec` values and never from a formatted string
- * ([[journal-refresh-fingerprint]]): the displayed figures are already rounded
- * to cents, and a percentage derived from them would disagree with one derived
- * from the numbers the engine actually sent — visibly so on a large denominator.
- * The arithmetic is BigInt throughout, so nothing here goes through a float
- * until the final tenths-of-a-percent integer, which is exactly representable.
- *
- * The denominator is the prior figure's MAGNITUDE, so the sign always says
- * which way the line moved: an `other` box going from −$100 to −$50 improved,
- * and reads +50.0%, not −50.0%.
- *
- * `Option`-shaped on purpose. A line that was zero (or absent) last period has
- * no percentage change — not 0.0%, not ∞ — and `—` is the honest cell. So does
- * a report with no prior period at all (`prior` undefined: compare off, or
- * interval mode), and `base === null` (a journal with no base commodity), which
- * has no single figure to form a ratio from rather than one picked at random.
- */
-export function pctChange(current: MixedAmount, prior: MixedAmount | undefined, base: string | null): number | null {
-    if (base === null || prior === undefined) return null;
-    const was: Dec | undefined = prior.get(base);
-    if (was === undefined || was.m === 0n) return null;
-    const now: Dec = current.get(base) ?? ZERO;
-    // Both on one scale, then (now − was) / |was| × 1000 = tenths of a percent.
-    const scale = Math.max(now.p, was.p);
-    const nowM = now.m * 10n ** BigInt(scale - now.p);
-    const wasM = was.m * 10n ** BigInt(scale - was.p);
-    return Number(divRoundHalfAway((nowM - wasM) * 1000n, wasM < 0n ? -wasM : wasM)) / 10;
-}
+// `pctChange` moved to `./percent` (plan 34) so the comparison columns share
+// it; re-exported so every caller here is unchanged.
+export {pctChange} from "./percent";
 
 /** `pctChange` of one `Amounts` — the figure the % change column prints for it. */
 export function amountsPct(amounts: Amounts, base: string | null): number | null {

@@ -20,8 +20,19 @@
     // Switching file with `dirty` work shows an inline confirm under the select,
     // the way `RulesFileList` does: it cannot be dismissed by accident and it
     // adds no global behaviour to the SPA for the sake of one screen.
+    //
+    // # The star (plan 33 D20)
+    //
+    // Right after the select: filled when the open file is the one the tab
+    // opens by default, and a click clears it; outlined otherwise, and a click
+    // makes this file the default. Enabled with unsaved edits, because it
+    // writes only the file's marker line (D17). Disabled, with the reason as
+    // its tooltip, for a seed, a file that is not a scenario file, a file the
+    // main journal includes, and a server that cannot write. Hidden on an
+    // engine that predates the marker.
 
     import type {ProjectionFile} from "../types";
+    import ScenarioOptions from "./ScenarioOptions.svelte";
 
     interface Props {
         files: readonly ProjectionFile[];
@@ -39,15 +50,39 @@
         onOpen: (id: string) => void;
         onSave: () => void;
         onSaveAs: () => void;
+        /** Whether this engine knows the default marker; false hides the star (plan 33 D19). */
+        defaultSupported?: boolean;
+        /** The effective default's id, for the picker's " (default)" suffix. */
+        defaultId?: string | null;
+        /** Whether the open file is the effective default: the star is filled. */
+        isDefault?: boolean;
+        /** Why the open scenario cannot be starred, or null when it can. The disabled star's tooltip. */
+        defaultBlocker?: string | null;
+        /** The listing's "several files are marked" warning (D6), or null. */
+        defaultWarning?: string | null;
+        onToggleDefault?: () => void;
     }
 
-    const {files, currentId, canSave, dirty, editable, busy, truncated, onOpen, onSave, onSaveAs}: Props = $props();
+    const {
+        files,
+        currentId,
+        canSave,
+        dirty,
+        editable,
+        busy,
+        truncated,
+        onOpen,
+        onSave,
+        onSaveAs,
+        defaultSupported = false,
+        defaultId = null,
+        isDefault = false,
+        defaultBlocker = null,
+        defaultWarning = null,
+        onToggleDefault = () => {},
+    }: Props = $props();
 
-    const projections = $derived(files.filter((file) => file.isProjection));
-    const others = $derived(files.filter((file) => !file.isProjection));
-
-    /** The picker's label for one file: its `; projection:` name, else its filename label. */
-    const labelOf = (file: ProjectionFile): string => file.name ?? file.label;
+    const starLabel = $derived(isDefault ? "Default scenario — click to stop opening it by default" : "Open this scenario by default");
 
     /** The id the select box is showing — `""` is the seeded, file-less scenario. */
     let pending = $state<string | null>(null);
@@ -85,22 +120,27 @@
                      a label even though choosing it does nothing: a select whose
                      value is not among its options renders blank. -->
                 <option value="">Seeded from your journal</option>
-                {#if projections.length > 0}
-                    <optgroup label="Projections">
-                        {#each projections as file (file.id)}
-                            <option value={file.id}>{labelOf(file)}</option>
-                        {/each}
-                    </optgroup>
-                {/if}
-                {#if others.length > 0}
-                    <optgroup label="Other journals">
-                        {#each others as file (file.id)}
-                            <option value={file.id}>{labelOf(file)}</option>
-                        {/each}
-                    </optgroup>
-                {/if}
+                <ScenarioOptions {files} {defaultId} />
             </select>
         </label>
+
+        {#if defaultSupported}
+            <button
+                type="button"
+                class="btn btn-square btn-ghost btn-sm"
+                class:text-warning={isDefault}
+                aria-pressed={isDefault}
+                aria-label={starLabel}
+                title={defaultBlocker ?? starLabel}
+                disabled={defaultBlocker !== null || busy}
+                onclick={onToggleDefault}
+                data-testid="projection-default-toggle"
+            >
+                <svg viewBox="0 0 24 24" class="h-4 w-4" aria-hidden="true" fill={isDefault ? "currentColor" : "none"} stroke="currentColor" stroke-width="2">
+                    <path stroke-linejoin="round" d="M12 3l2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3 6.4 20.2l1.1-6.2L3 9.6l6.2-.9z" />
+                </svg>
+            </button>
+        {/if}
 
         <div class="flex items-center gap-2">
             <button
@@ -134,6 +174,10 @@
                 >
             </div>
         </div>
+    {/if}
+
+    {#if defaultWarning !== null}
+        <p class="text-xs text-warning" role="status" data-testid="projection-default-conflict">{defaultWarning}</p>
     {/if}
 
     {#if truncated}

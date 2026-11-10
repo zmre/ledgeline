@@ -18,7 +18,7 @@ import {styleOf} from "#lib/format/amounts.js";
 import {formatTotals} from "#lib/journal/rowModel.js";
 import {activeScenario, blankLine, cloneScenario, emptyScenario, renderBody, runBody, withQuantity} from "#lib/projections/scenarioModel.js";
 import {dec} from "#lib/domain/money.js";
-import {LedgelineApi} from "./native";
+import {LedgelineApi, ValidationError} from "./native";
 import {
     decodeAccountReport,
     decodeCashFlowStatement,
@@ -30,6 +30,7 @@ import {
     decodeJournalInfo,
     decodePeriodReport,
     decodeProjection,
+    decodeProjectionIndex,
     decodeRenderedEntry,
     decodeScenarioFile,
     decodeSectionedReport,
@@ -246,6 +247,46 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
     // The projection run (plan 28): the body the tab builds, through the real
     // engine and the real decoder, with the three statements on it. `asOf` is
     // pinned here — the tab sends none, so the engine's clock would decide.
+    // Plan 34: Compare vs actuals through the real engine and the real
+    // decoder. Its projected block is a run made on the first actual day, and
+    // its actual block is the forward run's lookback columns.
+    it("a compare run decodes, and each block is the run it stands for", async () => {
+        const api = new LedgelineApi(url);
+        const rent = {
+            ...withQuantity({...blankLine("rent", "$"), account: "expenses:rent"}, dec(420000, 2)),
+            group: "rule:0",
+            counter: "assets:bank:checking",
+        };
+        const scenario = {name: "", created: null, updated: null, lines: [rent], events: [], cash: null, autoRules: [], layout: [], comments: [], fixed: []};
+        const window = {interval: "monthly", count: 3, lookback: 2, depth: 2, accounts: {empty: false}, journal: true, compare: true};
+        const run = decodeProjection(await api.runProjection({...runBody(scenario, window), asOf: AS_OF}));
+        const compare = run.compare;
+        expect(compare).not.toBeNull();
+        expect(compare?.columns).toBe(2);
+        expect(compare?.from).toBe("2026-05-01");
+        expect(compare?.incomeStatement.buckets?.map((bucket) => bucket.key)).toEqual(["2026-05", "2026-06", "projected:2026-05", "projected:2026-06"]);
+        expect(compare?.incomeStatement.buckets?.map((bucket) => bucket.label)).toEqual(["May 2026", "Jun 2026", "May 2026", "Jun 2026"]);
+        // The comparison carries the tabs' readings; the forward ones are not built.
+        expect(run.accounts).toBeNull();
+        expect(run.journal).toBeNull();
+        expect(compare?.journal?.entries.map((entry) => entry.txn.date)).toEqual(["2026-05-01", "2026-06-01"]);
+        expect(compare?.accounts?.buckets).toHaveLength(4);
+
+        // The actual block is the forward run's lookback columns.
+        expect(compare?.cash.actual).toEqual(run.cash.history);
+        expect(compare?.balanceSheet.netWorth.slice(0, 2)).toEqual(run.balanceSheet.netWorth.slice(0, 2));
+        expect(compare?.incomeStatement.netIncome.values?.slice(0, 2)).toEqual(run.incomeStatement.netIncome.values?.slice(0, 2));
+
+        // The projected block is a run made on the first actual day.
+        const onF = decodeProjection(
+            await api.runProjection({...runBody(scenario, {interval: "monthly", count: 2, lookback: 0, depth: 2}), asOf: compare?.from})
+        );
+        expect(onF.compare).toBeNull();
+        expect(compare?.cash.projected).toEqual(onF.cash.values);
+        expect(compare?.balanceSheet.netWorth.slice(2)).toEqual(onF.balanceSheet.netWorth);
+        expect(compare?.incomeStatement.netIncome.values?.slice(2)).toEqual(onF.incomeStatement.netIncome.values);
+    });
+
     it("a projection run carries the three statements, the cutoff and the defaults", async () => {
         const styles = decodeJournalInfo(await new LedgelineApi(url).journalInfo()).reportStyles;
         const rent = {...withQuantity({...blankLine("rent", "$"), account: "expenses:rent"}, dec(420000, 2)), group: "rule:0"};
@@ -446,6 +487,20 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         };
         const text = decodeRenderedEntry(await api.renderProjectionEntry(renderBody(heading, "comment-1"))).text;
         expect(text).toBe(`${";".repeat(22)}\n;; Capital\n`);
+    });
+
+    // Plan 33: the listing carries the marker, and the default route refuses
+    // what it must BEFORE writing anything. This engine serves the committed
+    // fixtures, so nothing here may succeed at a write.
+    it("the listing knows the default marker, and the default route refuses a bad target unwritten", async () => {
+        const api = new LedgelineApi(url);
+        const index = decodeProjectionIndex(await api.listProjections());
+        expect(index.defaultSupported).toBe(true);
+        await expect(api.setProjectionDefault("../x.journal")).rejects.toBeInstanceOf(ValidationError);
+        // Not a projection file: refused in pre-flight, so sample.journal is
+        // never opened for writing.
+        await expect(api.setProjectionDefault("sample.journal")).rejects.toThrow(/Only a scenario file Ledgeline saved/);
+        await expect(api.setProjectionDefault("sample.journal")).rejects.toBeInstanceOf(ValidationError);
     });
 
     it("journal info falls back to the fixture folder's name", async () => {

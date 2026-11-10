@@ -1157,6 +1157,13 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
             )),
         )
         .route("/api/projections/seed", get(projections_api::seed))
+        // Which scenario file the Projections tab opens (plan 33 D10). A
+        // WRITE, so above the `route_layer` like `{*id}`; a literal segment
+        // like `seed`, so the wildcard below cannot shadow it.
+        .route(
+            "/api/projections/default",
+            axum::routing::put(projections_api::set_default),
+        )
         // Projection scenario FILES (plan 22, Phase 3): list, read, save.
         //
         // THE SAME PLACEMENT TRAP as the rules routes below, and the same
@@ -1170,6 +1177,7 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         // order is not what disambiguates them — but keeping them adjacent and
         // in this order is what makes that readable. An id always ends in
         // `.journal`, so neither literal is a reachable id anyway.
+        // `default` (plan 33) is one more literal of the same kind.
         //
         // A save's body is `{revision, scenario}`: the same scenario `run`
         // takes plus one fingerprint string, so `run`'s limit fits it too and

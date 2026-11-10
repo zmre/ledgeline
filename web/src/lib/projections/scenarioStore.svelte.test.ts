@@ -64,7 +64,7 @@ const SEED_BODY = {
 
 const RUN_BODY = rawProjectionRun();
 
-const WINDOW: ProjectionWindow = {interval: "monthly", count: 24, lookback: 2, depth: 2, accounts: null, journal: false};
+const WINDOW: ProjectionWindow = {interval: "monthly", count: 24, lookback: 2, depth: 2, accounts: null, journal: false, compare: false};
 
 /** Every URL the store asked for, in order. */
 let asked: string[] = [];
@@ -296,6 +296,17 @@ describe("COMPONENT scenarioStore — the payload and the question it answers", 
         const accounts = {...held, accounts: {empty: false}};
         expect(sameProjectionQuery(accounts, {...WINDOW, accounts: {empty: false}, revision})).toBe(true);
         expect(sameProjectionQuery(accounts, {...WINDOW, accounts: {empty: true}, revision})).toBe(false);
+    });
+
+    it("ticking Compare vs actuals is a different question, and the body says so only when asked (plan 34)", async () => {
+        await scenarioStore.runNow(FAKE_ENGINE, WINDOW);
+        const held = scenarioStore.projection.query!;
+        const revision = scenarioStore.revision;
+        expect(sameProjectionQuery(held, {...WINDOW, compare: true, revision})).toBe(false);
+        expect(sameProjectionQuery({...held, compare: true}, {...WINDOW, compare: true, revision})).toBe(true);
+        // Sent only when true: an older engine refuses an unknown key.
+        expect("compare" in runBody(scenarioStore.scenario, WINDOW)).toBe(false);
+        expect(runBody(scenarioStore.scenario, {...WINDOW, compare: true}).compare).toBe(true);
     });
 });
 

@@ -178,6 +178,12 @@ wave.
   following `fixtures/account-types/`.
 - Search text (the haystack), check messages and future UIs depend on it.
 
+- Port the comparison arithmetic the SPA computes from exact engine figures:
+  `reports/ui/percent.ts` `pctChange` (the income statement's % change, with
+  plan 34's opt-in rounds-to-zero precision) and `reports/ui/compareColumns.ts`
+  `compareCells` / `fmtComparePct` (plan 34's Δ and Δ%, about 40 lines).
+  Every view and the workbooks use them.
+
 **B3. Cash balances endpoint**
 
 - `/api/balances/cash?asOf=` ports `reports/cashBalances.ts`.

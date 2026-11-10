@@ -969,6 +969,7 @@ pub(super) fn expand(
             balances: &balances,
             defaults: &defaults,
             first_index: next_index(history.txns),
+            backtest: false,
         },
     )?;
     Ok((forecast, prices, balances))
@@ -1012,6 +1013,10 @@ pub(super) struct RealInputs<'a> {
     pub(super) defaults: &'a CounterDefaults,
     /// [`next_index`].
     pub(super) first_index: u32,
+    /// A backtest (plan 34): every asset row's `opening:` override reads as
+    /// absent, so each account starts from its real balance at the cutoff.
+    /// The scenario itself is never edited.
+    pub(super) backtest: bool,
 }
 
 /// Expand `scenario` against already-read real inputs.
@@ -1031,6 +1036,7 @@ pub(super) fn expand_from(
         balances,
         defaults,
         first_index,
+        backtest,
     } = real;
     let as_of = window.actuals_as_of();
     let header = scenario.cash.as_ref();
@@ -1046,6 +1052,7 @@ pub(super) fn expand_from(
         target: target.as_ref(),
         defaults,
         header,
+        backtest,
         groups: BTreeMap::new(),
         group_order: Vec::new(),
         txns: Vec::new(),
@@ -1212,6 +1219,8 @@ struct Expansion<'a> {
     defaults: &'a CounterDefaults,
     /// The scenario's `; cash:`, applied over `defaults`.
     header: Option<&'a AccountName>,
+    /// [`RealInputs::backtest`].
+    backtest: bool,
     /// group → date → legs.
     groups: BTreeMap<String, BTreeMap<String, DatedLegs>>,
     /// Groups in first-appearance order, so transactions are built in the
@@ -1492,12 +1501,20 @@ impl<'a> Expansion<'a> {
             .to_string();
         let raw = subtree_balance(self.balances, &line.account.0)?;
         let journal_opening = valued(&raw, self.target, self.db, self.as_of, None)?;
+        // A backtest starts every account from its real balance at the cutoff
+        // (plan 34 D2): an override states TODAY's balance, so it is not a
+        // forecasting rule. The row's other rules still run as written.
+        let stated_opening = if self.backtest {
+            None
+        } else {
+            line.opening.as_ref()
+        };
 
         // PRICED holdings grow through their prices (Decision 3). Only without
         // an `opening:` override: an override restates the balance in the row's
         // own commodity, and how much of it is which holding is not a question
         // the journal answers — so an overridden row compounds as one balance.
-        let priced: Vec<(Commodity, Amount)> = match (self.target, &line.opening) {
+        let priced: Vec<(Commodity, Amount)> = match (self.target, stated_opening) {
             (Some(target), None) => raw
                 .iter()
                 .filter(|(commodity, _)| *commodity != target)
@@ -1517,7 +1534,7 @@ impl<'a> Expansion<'a> {
             self.target.map_or_else(MixedAmount::new, |target| {
                 MixedAmount::single(target.clone(), raw.get(target).unwrap_or_else(Dec::zero))
             })
-        } else if let Some(opening) = &line.opening {
+        } else if let Some(opening) = stated_opening {
             let stated = MixedAmount::single(opening.commodity.clone(), opening.quantity);
             let adjustment = stated.ma_add(&journal_opening.ma_neg()?)?;
             self.commodities.insert(opening.commodity.clone());

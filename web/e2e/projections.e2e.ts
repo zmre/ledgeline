@@ -575,3 +575,118 @@ test("projections: an entry turned off is saved commented out, and reloads turne
         fs.rmSync(scratch, {force: true});
     }
 });
+
+// ---------------------------------------------------------------------------
+// Compare vs actuals (plan 34) — READ-ONLY
+//
+// The figures are the engine's (pinned by projection_endpoints.rs and the
+// hledger parity suite); this checks the box drives every reading, the URL,
+// the Δ arithmetic as rendered, and the download's name.
+// ---------------------------------------------------------------------------
+
+/** A rendered money cell as a number: `$-1,234.56` → -1234.56. */
+/**
+ * The first currency amount in a cell. A multi-commodity cell's text runs its
+ * amounts together ("$213,925.51" then "5.0 GLD"), so only the leading
+ * `$`-amount is the valued figure.
+ */
+function money(text: string | null): number {
+    const found = /([-−]?)\$([\d,]+(?:\.\d+)?)/.exec(text ?? "");
+    if (found === null) return Number.NaN;
+    return (found[1] === "" ? 1 : -1) * Number(found[2]!.replaceAll(",", ""));
+}
+
+test("projections: Compare vs actuals sets the actual periods beside the projection made on their first day", async ({page}) => {
+    await page.goto("/projections?tab=is&lookback=3");
+    await expect(page.getByTestId("projection-is")).toBeVisible();
+
+    // 1. Tick the box: the URL records it.
+    const box = page.getByTestId("projection-compare");
+    await expect(box).toBeEnabled();
+    await box.check();
+    await expect(page).toHaveURL(/compare=1/);
+    await expect(page.getByTestId("projection-compare-hint")).toContainText("Re-runs this scenario from");
+
+    // 2. The income statement: 3 actual + 3 as projected, then Δ and Δ%, no Total.
+    const is = page.getByTestId("projection-is");
+    await expect(is.getByTestId("projected-label").first()).toContainText("As projected from");
+    await expect(is.getByTestId("projected-band").first()).toContainText("Actual");
+    await expect(is.getByTestId("difference-label").first()).toHaveText("Difference");
+    const heads = is.locator("thead").first().locator("tr:not([data-testid]) th");
+    await expect(heads).toHaveCount(1 + 6 + 2);
+    await expect(heads.nth(7)).toHaveText("Δ");
+    await expect(heads.nth(8)).toHaveText("Δ%");
+    await expect(is.locator("thead th", {hasText: /^Total$/})).toHaveCount(0);
+    const net = page.getByTestId("is-net-income");
+    await expect(net.locator('[data-column="delta"]')).toHaveCount(1);
+    await expect(net.locator('[data-column="delta-pct"]')).toHaveCount(1);
+
+    // 3. The balance sheet: Total Equity's Δ (= net worth) is the last actual
+    //    column minus the last as-projected one, as the screen prints them.
+    await page.getByRole("tab", {name: "Balance sheet"}).click();
+    const equity = page.getByTestId("bs-summary").locator("tr", {hasText: "Total Equity"}).first();
+    const cells = equity.locator("td");
+    const lastActual = money(await cells.nth(2).textContent());
+    const lastProjected = money(await cells.nth(5).textContent());
+    const delta = money(await equity.locator('[data-column="delta"]').textContent());
+    // Each printed figure is rounded to the cent on its own, so the printed Δ
+    // can differ from the printed operands' difference by a cent.
+    expect(Math.abs(delta - (lastActual - lastProjected))).toBeLessThanOrEqual(0.011);
+
+    // 4. The runway: two legended lines and the sentence.
+    await page.getByRole("tab", {name: "Runway"}).click();
+    const legend = page.getByTestId("projection-cash-chart-legend");
+    await expect(legend).toContainText("Actual");
+    await expect(legend).toContainText("As projected from");
+    await expect(page.getByTestId("projection-runway")).toContainText(/^\s*Cash at the end of/);
+
+    // 6. The Journal reading is the as-projected run's.
+    await page.getByRole("tab", {name: "Journal"}).click();
+    await expect(page.getByTestId("forecast-journal-heading")).toContainText("Generated as if projected on");
+
+    // 7. The download says it is a comparison.
+    const button = page.getByRole("button", {name: "Export Journal as xlsx"});
+    await expect(button).toBeVisible();
+    await page.getByRole("tab", {name: "Income statement"}).click();
+    const exportIs = page.getByRole("button", {name: "Export Income statement as xlsx"});
+    await expect(exportIs).toBeVisible();
+    const [download] = await Promise.all([page.waitForEvent("download"), exportIs.click()]);
+    expect(download.suggestedFilename()).toContain("-compare-");
+    // The URL mirror is debounced: wait for it to record the Income statement
+    // tab, or the reload below reopens the Journal reading.
+    await expect(page).toHaveURL(/tab=is/);
+
+    // 5. A reload keeps comparing; Actuals 0 disables the box and brings the
+    //    forward columns back; Actuals 2 compares again over 4 columns.
+    await page.reload();
+    await expect(page.getByTestId("projection-compare")).toBeChecked();
+    await expect(page.getByTestId("projection-is").getByTestId("projected-label").first()).toContainText("As projected from");
+    await page.getByLabel("Actual periods before the projection").fill("0");
+    await page.getByLabel("Actual periods before the projection").blur();
+    await expect(page.getByTestId("projection-compare")).toBeDisabled();
+    await expect(page.getByTestId("projection-compare-hint")).toHaveText("Set Actuals to 1 or more to compare");
+    await expect(page.getByTestId("projection-is").getByTestId("projected-label").first()).toHaveText("Projected");
+    await page.getByLabel("Actual periods before the projection").fill("2");
+    await page.getByLabel("Actual periods before the projection").blur();
+    await expect(page.getByTestId("projection-is").getByTestId("projected-label").first()).toContainText("As projected from");
+    await expect(page.getByTestId("projection-is").locator("thead").first().locator("tr:not([data-testid]) th")).toHaveCount(1 + 4 + 2);
+});
+
+test("projections: a comparison too wide for the page says it scrolls, and the chevron scrolls it", async ({page}) => {
+    // Three actual months fit the 1280px page on the comparison's tighter
+    // template: nothing to scroll, so no indicator.
+    await page.goto("/projections?tab=is&lookback=3&compare=1");
+    await expect(page.getByTestId("projection-is").getByTestId("projected-label").first()).toBeVisible();
+    await expect(page.getByTestId("is-scroller-right")).toHaveCount(0);
+
+    // Six do not: the right edge fades and offers a chevron, which scrolls
+    // the statement (not the page) and brings up the left one.
+    await page.goto("/projections?tab=is&lookback=6&compare=1");
+    await expect(page.getByTestId("projection-is").getByTestId("projected-label").first()).toBeVisible();
+    const right = page.getByTestId("is-scroller-right");
+    await expect(right).toBeVisible();
+    await expect(page.getByTestId("is-scroller-left")).toHaveCount(0);
+    await right.click();
+    await expect(page.getByTestId("is-scroller-left")).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+});

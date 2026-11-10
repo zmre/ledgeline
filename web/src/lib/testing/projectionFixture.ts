@@ -11,7 +11,7 @@
 import {readFileSync} from "node:fs";
 import {decodeBalanceSheetReport, decodeIncomeStatementReport} from "#lib/api/nativeDecode.js";
 import {dec, type MixedAmount} from "#lib/domain/money.js";
-import type {ForecastEntry, ForecastJournal, ForecastOrigin, Projection} from "#lib/projections/types.js";
+import type {Comparison, ForecastEntry, ForecastJournal, ForecastOrigin, Projection} from "#lib/projections/types.js";
 import type {AccountReport, AccountReportRow, BalanceSheetColumns, IsBucket} from "#lib/reports/types.js";
 import {asColumns} from "#lib/reports/ui/balanceSheetRows.js";
 import {GROUPED_BALANCE_SHEET} from "./balanceSheetFixture";
@@ -72,6 +72,7 @@ export function projectionFixture(overrides: Partial<Projection> = {}): Projecti
         defaults: {cash: "assets:bank:checking", gains: "equity:unrealized gains", lines: new Map(), events: new Map()},
         accounts: null,
         journal: null,
+        compare: null,
         ...overrides,
     };
 }
@@ -111,6 +112,7 @@ export function rawProjectionRun(): Record<string, unknown> {
         // Asked for by neither: `null`, never absent.
         accounts: null,
         journal: null,
+        compare: null,
     };
 }
 
@@ -221,4 +223,71 @@ export function journalFixture(n = 2): ForecastJournal {
     });
     entries.push(forecastEntry(100 + n, "2026-08-20", {kind: "event", key: "laptop"}, "new laptop", "2026-08-20"));
     return {total: entries.length, entries, truncated: false};
+}
+
+// ---------------------------------------------------------------------------
+// Compare vs actuals (plan 34)
+// ---------------------------------------------------------------------------
+
+/** The per-column arrays of a decoded report: re-picked, and a picked column in the second half keyed `projected:`. */
+const COLUMN_ARRAYS = new Set(["buckets", "columns", "periods", "values", "own", "inclusive", "total", "totals", "netWorth", "check", "balanced"]);
+
+/**
+ * `report` with every per-column array (of length `width`) re-picked by
+ * `pick`, the second half's column keys prefixed `projected:` as the engine
+ * prefixes them. Maps (money) are never entered.
+ */
+export function pickColumns<T>(report: T, width: number, pick: readonly number[]): T {
+    const half = pick.length / 2;
+    const keyed = (column: unknown, at: number): unknown => {
+        if (at < half) return column;
+        if (typeof column === "string") return `projected:${column}`;
+        return {...(column as {key: string}), key: `projected:${(column as {key: string}).key}`};
+    };
+    const walk = (node: unknown, key: string | null): unknown => {
+        if (node instanceof Map) return node;
+        if (Array.isArray(node)) {
+            if (key !== null && COLUMN_ARRAYS.has(key) && node.length === width) {
+                const keys = key === "buckets" || key === "columns" || key === "periods";
+                return pick.map((index, at) => (keys ? keyed(node[index], at) : node[index]));
+            }
+            return node.map((item) => walk(item, null));
+        }
+        if (typeof node === "object" && node !== null) return Object.fromEntries(Object.entries(node).map(([k, v]) => [k, walk(v, k)]));
+        return node;
+    };
+    return walk(report, null) as T;
+}
+
+/**
+ * `accountsFixture` as a comparison: its four columns' figures (so checking's
+ * balance differs between the blocks), with the second pair labelled as the
+ * first, as the engine labels an as-projected period.
+ */
+function compareAccounts(): AccountReport {
+    const report = pickColumns(accountsFixture(), 4, [0, 1, 2, 3]);
+    return {...report, periods: report.periods.map((period, at) => (at < 2 ? period : {...report.periods[at - 2]!, key: period.key}))};
+}
+
+/**
+ * A comparison over two actual months (Jun, Jul 2026) and the same two as
+ * projected from 1 Jun: every reading built from the fixtures above, picked
+ * to 2 + 2 columns. Closing cash $8,000 and $10,000 actual against $9,000 and
+ * $9,500 projected.
+ */
+export function compareFixture(overrides: Partial<Comparison> = {}): Comparison {
+    const base = projectionFixture();
+    return {
+        from: "2026-06-01",
+        actualsEnd: "2026-08-01",
+        columns: 2,
+        cash: {opening: usd(7000), actual: [usd(8000), usd(10000)], projected: [usd(9000), usd(9500)]},
+        balanceSheet: pickColumns(base.balanceSheet, 4, [0, 1, 0, 1]),
+        incomeStatement: pickColumns(MONTHLY_INCOME, 7, [5, 6, 5, 6]),
+        cashFlow: pickColumns(CASH_FLOW, 3, [1, 2, 1, 2]),
+        accounts: compareAccounts(),
+        journal: journalFixture(2),
+        warnings: [],
+        ...overrides,
+    };
 }

@@ -27,7 +27,8 @@ This section has four pages:
 - this one: the scenario list, the editor, where scenario files live and how saving works;
 - [The scenario file format](file-format.md): the `~` rules, the tag vocabulary, growth, and reading a scenario with hledger;
 - [What moves cash](cash.md): counter-accounts, the defaults Ledgeline picks, and where a projection starts;
-- [Asset rows](asset-rows.md): balances that compound, contributions, and `opening:` overrides.
+- [Asset rows](asset-rows.md): balances that compound, contributions, and `opening:` overrides;
+- [Comparing with actuals](compare.md): re-running the scenario from the first actual period and setting it beside what happened.
 
 Design notes and the reasoning behind each decision live in
 [`plans/22-projections.md`](https://github.com/zmre/ledgeline/blob/main/plans/22-projections.md).
@@ -191,7 +192,9 @@ exactly where.
 
 **Interval** and **Periods** set the columns for every reading. The depth
 slider rolls up the income statement's and cash flow statement's lines and the
-Accounts rows.
+Accounts rows. **Compare vs actuals** turns every reading into a comparison of
+the actual periods with the scenario as it would have projected them; see
+[Comparing with actuals](compare.md).
 
 **Export .xlsx**, beside the tabs, downloads the reading you're looking at as an
 Excel workbook. In the statements and Accounts, every projected column's heading
@@ -323,6 +326,45 @@ you the resulting path **before** it writes.
 A `; projection:` name may not contain a comma, because hledger ends a tag's
 value at one and the name would read back truncated. Ledgeline refuses the save
 rather than silently shortening it.
+
+### Your default scenario
+
+Once you have put work into a scenario, you can have the tab open it for you.
+Open the scenario and click the star next to the scenario picker. The picker
+then shows it as "<name> (default)". Click the filled star again to stop.
+Settings → Projections shows the same choice and can change it, or set it to
+None.
+
+![The scenario file bar: the picker, the default star circled, Save and Save as](images/default.png)
+
+- **What opens.** When Ledgeline starts, or you reload the page, the tab opens
+  your default scenario. If you go to another tab and come back, it keeps
+  whatever you had open, unsaved edits included. With no default, it behaves
+  as it always has: it reopens the last scenario you had open, or starts from
+  your journal.
+- **The star works while you have unsaved edits.** It writes one line into the
+  file's header (`; default-scenario: true`) and nothing else, so your edits
+  stay on screen, still unsaved, and the next Save keeps both the edits and the
+  star.
+- **Only a scenario file you can save can be the default**: a
+  `projection-*.journal` file that is not part of your main journal. For a
+  budget file or another journal, the star is disabled and says why. Save as
+  makes a scenario file you can star.
+- **Save as does not copy the star.** The new file starts out as not the
+  default.
+- **The default lives in the file.** Renaming the file keeps it as the default.
+  Deleting it leaves you with no default, and the tab goes back to opening the
+  last scenario.
+- **If a default can't be opened** (say, a hand edit broke it), the tab says so
+  and opens the last scenario instead. The file stays marked until you fix it or
+  clear the star.
+- **Two defaults.** If more than one file is marked (two machines syncing the
+  same folder can do this), the first by file name opens, and the tab and
+  Settings say so. Star the one you want, and the others lose their mark.
+
+The line is plain hledger: a comment at the top of the file, which hledger
+ignores. [The scenario file format](file-format.md#the-tag-vocabulary)
+describes it.
 
 ### One normalization to know about
 

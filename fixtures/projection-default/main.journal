@@ -1,0 +1,30 @@
+; The default-projection e2e fixture (plans/33-default-projection.md).
+;
+; web/e2e/projectionDefault.e2e.ts runs against a SCRATCH COPY of this
+; directory (target/e2e-projection-default/, staged fresh by
+; web/playwright.config.ts), because the spec stars, un-stars and saves
+; scenario files. Nothing here is ever written by a test.
+;
+; budget.journal is included, so the Projections tab can load it but never
+; write it — and so it can never be the default (plan 33 D5). The two
+; projection-*.journal files beside it are what the spec stars.
+
+account assets:checking   ; type: C
+account expenses:rent     ; type: X
+account expenses:food     ; type: X
+account revenues:salary   ; type: R
+account equity:opening    ; type: E
+
+include budget.journal
+
+2026-06-01 opening balance
+    assets:checking     $10000.00
+    equity:opening
+
+2026-06-05 rent
+    expenses:rent        $1500.00
+    assets:checking
+
+2026-06-15 paycheck
+    assets:checking      $4000.00
+    revenues:salary

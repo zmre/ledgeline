@@ -27,16 +27,26 @@
     //                                `markSaved` if an edit landed meanwhile
     //   seed  → `scenarioStore.ensureSeeded`, which declines over `dirty` work
     //
-    // On first mount the tab reopens whatever was last loaded
+    // On the first mount after a page load (a launch, a reload, a File→Open)
+    // the tab opens the DEFAULT scenario, if one is starred (plan 33 D2): the
+    // file whose header says `; default-scenario: true`. Without one, or if it
+    // cannot be opened, it reopens whatever was last loaded
     // (`settings.lastProjectionId` — decision 10, per-browser view state rather
-    // than `prefs.json`). A remembered id that no longer names a file is not an
-    // error: it is forgotten and the tab seeds instead, which is where a user
-    // who deleted a file outside Ledgeline should end up.
+    // than `prefs.json`), and failing that it seeds. A remembered id that no
+    // longer names a file is not an error: it is forgotten and the tab seeds
+    // instead, which is where a user who deleted a file outside Ledgeline should
+    // end up. Coming back to the tab within a session opens NOTHING: whatever
+    // was on screen, unsaved edits included, is still in `scenarioStore`
+    // (plan 33 D3).
     import {onMount} from "svelte";
     import AsyncSection from "#lib/components/AsyncSection.svelte";
     import DepthSlider from "#lib/insights/DepthSlider.svelte";
     import {fileStore} from "#lib/projections/fileStore.svelte.js";
+    import {defaultBlocker, defaultConflict, effectiveDefault, openingSteps, type OpeningSource} from "#lib/projections/opening.js";
     import {defaultProjectionParams, projectionParamsToSearch, searchToProjectionParams, type ProjectionParams} from "#lib/projections/params.js";
+    // MERGE SEAM: plan 34 (Compare vs actuals).
+    import {compareActive} from "#lib/projections/params.js";
+    import {comparisonWarnings, dayLabel, seedNote} from "#lib/projections/compareView.js";
     import {assetRowsByGroup} from "#lib/projections/projectionView.js";
     import {sameProjectionQuery, scenarioStore, scenarioTableView, type ProjectionWindow} from "#lib/projections/scenarioStore.svelte.js";
     import ProjectionReports from "#lib/projections/ui/ProjectionReports.svelte";
@@ -103,33 +113,56 @@
     const tableView = $derived(scenarioTableView(scenarioStore.adopted, seed.status, seed.value !== null));
 
     /**
-     * Reopen the last-loaded file, or seed.
+     * Open the default, else the last-loaded file, else seed — once per page
+     * load.
      *
      * The order is load-bearing. The listing comes first because the file
-     * controls need it either way; the remembered file is tried next; and only
-     * if that produces nothing does the journal get read for a seed. Doing it
-     * the other way round would show the user an average of their history for a
-     * moment before replacing it with the scenario they actually left open.
+     * controls need it either way, and because it says which file is the
+     * default. Then, if a scenario is already on screen, NOTHING happens: this
+     * is a tab switch or a reconnect within a session, and reopening would
+     * throw away unsaved edits (plan 33 D3). Then the default and the
+     * remembered file are tried in turn; and only if that produces nothing does
+     * the journal get read for a seed. Doing it the other way round would show
+     * the user an average of their history for a moment before replacing it
+     * with the scenario they actually meant.
      */
     async function start(url: string): Promise<void> {
         await fileStore.ensureIndex(url, settings.serverNonce);
-        const remembered = settings.lastProjectionId;
-        if (fileStore.available && remembered !== null && (await openFile(url, remembered))) return;
+        if (scenarioStore.adopted) return;
+        const starred = effectiveDefault(fileStore.index.value?.files ?? [])?.id ?? null;
+        // A default that cannot be opened says so, and that sentence stays on
+        // screen over whatever opens instead (D9).
+        let defaultFailure: string | null = null;
+        for (const step of openingSteps(starred, settings.lastProjectionId, fileStore.available)) {
+            const opened = await openFile(url, step.id, step.source);
+            if (step.source === "default" && !opened) defaultFailure = fileError;
+            if (opened) {
+                if (defaultFailure !== null) fileError = defaultFailure;
+                return;
+            }
+        }
+        if (defaultFailure !== null) fileError = defaultFailure;
         // At the page's depth: the slider is where a user says how finely they
         // plan, and the seed is where that plan starts. Only where it STARTS —
         // see `canReseed`.
         await scenarioStore.ensureSeeded(url, settings.serverNonce, params.depth);
     }
 
-    /** Load one file into the table. `false` means it could not be opened. */
-    async function openFile(url: string, id: string): Promise<boolean> {
+    /**
+     * Load one file into the table. `false` means it could not be opened.
+     *
+     * `source` is why it is being opened: the default (which is never
+     * forgotten — the marker is in the file, and is the user's to clear), or
+     * the last file this browser opened, which is.
+     */
+    async function openFile(url: string, id: string, source: OpeningSource = "last"): Promise<boolean> {
         const outcome = await fileStore.open(url, id);
         if (!outcome.ok) {
             // A remembered id that no longer resolves must not be retried on
             // every mount, which would put a failure on the screen each time the
             // tab is opened.
-            if (outcome.failure.kind === "notFound" || outcome.failure.kind === "validation") fileStore.forget();
-            fileError = outcome.failure.message;
+            if (source === "last" && (outcome.failure.kind === "notFound" || outcome.failure.kind === "validation")) fileStore.forget();
+            fileError = source === "default" ? `Your default scenario couldn't be opened: ${outcome.failure.message}` : outcome.failure.message;
             return false;
         }
         fileError = null;
@@ -200,7 +233,24 @@
     /** The engine's own sentence from the last failed load or save, or null. */
     let fileError = $state<string | null>(null);
     const fileIndex = $derived(fileStore.index.value);
-    const busy = $derived(fileStore.saving || fileStore.loading);
+    const busy = $derived(fileStore.saving || fileStore.loading || fileStore.settingDefault);
+    const starredId = $derived(effectiveDefault(fileIndex?.files ?? [])?.id ?? null);
+    const starBlocker = $derived(
+        defaultBlocker(fileStore.currentId, fileIndex?.files.find((file) => file.id === fileStore.currentId) ?? null, fileIndex?.editable ?? false)
+    );
+
+    /**
+     * Star the open file, or un-star it (plan 33 D20). Allowed with unsaved
+     * edits: only the marker is written, and the store moves the held revision
+     * forward (D17), so the next Save neither loses the star nor is refused.
+     */
+    async function toggleDefault(): Promise<void> {
+        const url = settings.serverUrl;
+        const id = fileStore.currentId;
+        if (url === null || id === null) return;
+        const outcome = await fileStore.setDefault(url, fileStore.currentIsDefault ? null : id);
+        fileError = outcome.ok ? null : outcome.failure.message;
+    }
 
     function chooseFile(id: string): void {
         const url = settings.serverUrl;
@@ -257,6 +307,15 @@
 
     // --- The projection ------------------------------------------------------
 
+    // MERGE SEAM: plan 34. Compare vs actuals takes effect only with Actuals > 0.
+    const comparing = $derived(compareActive(params));
+    /** The first actual day, for the checkbox's hint: off the held projection, omitted before one lands. */
+    const compareFromLabel = $derived.by(() => {
+        const held = scenarioStore.projection.value;
+        const first = held !== null && held.lookback.length > 0 ? held.balanceSheet.columns[0]?.from : undefined;
+        return first === undefined ? null : dayLabel(first);
+    });
+
     // The Accounts and Journal readings ride on the run only while their tab
     // is open: no other tab shows them, and every edit re-runs the projection.
     const projectionWindow = $derived<ProjectionWindow>({
@@ -266,6 +325,9 @@
         depth: params.depth,
         accounts: params.tab === "accounts" ? {empty: params.empty} : null,
         journal: params.tab === "journal",
+        // MERGE SEAM: plan 34. The backtest runs only while the box is ticked
+        // and there is an actual period to compare.
+        compare: comparing,
     });
     // `journal.changes`: projections start from the journal's balances, so a
     // refresh or a change on disk recomputes them.
@@ -327,7 +389,10 @@
         return buckets.length === 0 ? today() : bucketStart(buckets[Math.floor(buckets.length / 2)]);
     });
 
-    const warnings = $derived(current?.warnings ?? []);
+    // MERGE SEAM: plan 34 appends the comparison's lines, prefixed "Comparison:".
+    const warnings = $derived([...(current?.warnings ?? []), ...(comparing && current?.compare != null ? comparisonWarnings(current.compare) : [])]);
+    /** The grey seed note under the controls while comparing; null otherwise. */
+    const compareNote = $derived(comparing && current?.compare != null ? seedNote(scenarioStore.scenario) : null);
 
     /**
      * The journal's own balance per asset row, for the table's Balance column.
@@ -415,6 +480,12 @@
                 fileError = null;
                 saveAsOpen = true;
             }}
+            defaultSupported={fileIndex.defaultSupported}
+            defaultId={starredId}
+            isDefault={fileStore.currentIsDefault}
+            defaultBlocker={starBlocker}
+            defaultWarning={defaultConflict(fileIndex)}
+            onToggleDefault={() => void toggleDefault()}
         />
     {/if}
 
@@ -482,10 +553,11 @@
                 <option value="yearly">Yearly</option>
             </select>
         </label>
-        <label class="form-control">
+        <label class="form-control {comparing ? 'opacity-50' : ''}" title={comparing ? "Not used while comparing" : undefined}>
             <span class="label-text mb-1 block text-xs text-base-content/70">Periods</span>
             <input
                 type="number"
+                aria-disabled={comparing}
                 class="input w-20 input-sm"
                 min="1"
                 max={MAX_COUNT}
@@ -508,6 +580,28 @@
                 aria-label="Actual periods before the projection"
             />
         </label>
+        <!-- MERGE SEAM: plan 34. Compare vs actuals, for every reading at once:
+             the window, the anchor and the run are shared. -->
+        <div class="flex flex-col gap-0.5 self-end">
+            <label class="label cursor-pointer gap-2 text-sm">
+                <input
+                    type="checkbox"
+                    class="checkbox checkbox-sm"
+                    bind:checked={params.compare}
+                    disabled={params.lookback === 0}
+                    aria-describedby="projection-compare-hint"
+                    data-testid="projection-compare"
+                />
+                Compare vs actuals
+            </label>
+            <span id="projection-compare-hint" class="text-xs text-base-content/60" data-testid="projection-compare-hint">
+                {#if params.lookback === 0}
+                    Set Actuals to 1 or more to compare
+                {:else if compareFromLabel !== null}
+                    Re-runs this scenario from {compareFromLabel} and sets it beside what happened
+                {/if}
+            </span>
+        </div>
         <!-- Keyed on maxDepth for the reason the reports bar keys it: the slider
              can mount while accounts are still loading (max=1), and the browser
              clamps the input's value to that max without updating bound state. -->
@@ -521,6 +615,10 @@
             </div>
         {/if}
     </div>
+
+    {#if compareNote !== null}
+        <p class="-mt-4 px-3 text-xs text-base-content/60" data-testid="projection-compare-note">{compareNote}</p>
+    {/if}
 
     {#if warnings.length > 0}
         <!-- Never silent: a line the projection could not enumerate says so here
@@ -567,6 +665,7 @@
                         fallbackCommodity={commodity}
                         scenarioName={scenarioStore.scenario.name}
                         scrollTarget={controls}
+                        {comparing}
                     />
                 {/snippet}
             </AsyncSection>

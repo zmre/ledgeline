@@ -57,6 +57,8 @@ export interface ProjectionWindow {
     accounts: AccountsRequest | null;
     /** Whether to carry the generated transactions (the Journal tab). Off for the same reason. */
     journal: boolean;
+    /** Compare vs actuals (plan 34): already `compare && lookback > 0`. Runs the backtest only while ticked. */
+    compare: boolean;
 }
 
 /** The exact question a held projection answers. */
@@ -95,6 +97,7 @@ export function sameProjectionQuery(a: ProjectionQuery, b: ProjectionQuery): boo
         a.lookback === b.lookback &&
         a.depth === b.depth &&
         a.journal === b.journal &&
+        a.compare === b.compare &&
         a.accounts?.empty === b.accounts?.empty
     );
 }

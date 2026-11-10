@@ -47,8 +47,8 @@ use ledgeline_core::holdings::{HoldingsScope, ScopeMode, compute_holdings, holdi
 use ledgeline_core::model::{Commodity, Journal, PriceDirective};
 use ledgeline_core::projections::{
     AccountsOpts, JournalFacts, ProjectionOpts, RealKey, RealSide, Scenario, StatementOpts,
-    merged_prices, merged_transactions, project, project_cached, projected_accounts,
-    projected_statements, serialize,
+    compared_accounts, compared_statements, merged_prices, merged_transactions, project,
+    project_backtest, project_cached, projected_accounts, projected_statements, serialize,
 };
 use ledgeline_core::reports::{
     AccountDecl, AccountPeriodsOpts, AccountType, BalanceMode, BsOpts, BudgetOpts, CfOpts, CfTags,
@@ -753,6 +753,10 @@ const PROJECTION_TODAY: &str = "2026-01-10";
 ///   run); `run_warm` is every edit after it (the run against a built
 ///   `RealSide`). The `before` baseline recorded both cold and warm as the
 ///   full scan, which is what they were then.
+/// - `run_cold_compare_nN` / `run_warm_compare_nN` (plan 34): the same run
+///   with Compare vs actuals ticked at lookback N: the forward run, then the
+///   backtest side, `project_backtest`, the joined statements and the joined
+///   Accounts reading. Cold builds both sides; warm reuses them.
 fn bench_projections(c: &mut Criterion, fixtures: &[Fixture]) {
     let mut group = c.benchmark_group("projections");
     heavy(&mut group);
@@ -824,8 +828,74 @@ fn bench_projections(c: &mut Criterion, fixtures: &[Fixture]) {
         group.bench_with_input(BenchmarkId::new("run_warm", fx.id()), fx, |b, _| {
             b.iter(|| black_box(cached_run(&facts, &real, &scenario)));
         });
+        for lookback in [2, 12] {
+            let key = facts
+                .key(PROJECTION_TODAY, Interval::Monthly, lookback, None)
+                .expect("key");
+            let backtest_key = key.backtest().expect("key").expect("a backtest");
+            group.bench_with_input(
+                BenchmarkId::new(format!("run_cold_compare_n{lookback}"), fx.id()),
+                fx,
+                |b, fx| {
+                    b.iter(|| {
+                        let facts = JournalFacts::new(&fx.journal).expect("facts");
+                        let real = RealSide::build(&fx.journal, &facts, &key).expect("real");
+                        let backtest =
+                            RealSide::build(&fx.journal, &facts, &backtest_key).expect("side");
+                        black_box(compare_run(&facts, &real, &backtest, &scenario))
+                    });
+                },
+            );
+            let real = RealSide::build(&fx.journal, &facts, &key).expect("real");
+            let backtest = RealSide::build(&fx.journal, &facts, &backtest_key).expect("side");
+            group.bench_with_input(
+                BenchmarkId::new(format!("run_warm_compare_n{lookback}"), fx.id()),
+                fx,
+                |b, _| b.iter(|| black_box(compare_run(&facts, &real, &backtest, &scenario))),
+            );
+        }
     }
     group.finish();
+}
+
+/// The run handler with `compare` (plan 34): the forward run, then the
+/// comparison against the backtest side.
+fn compare_run(
+    facts: &JournalFacts,
+    real: &RealSide,
+    backtest: &RealSide,
+    scenario: &Scenario,
+) -> usize {
+    let forward = cached_run(facts, real, scenario);
+    let projection = project_backtest(scenario, real, backtest, DEPTH).expect("backtest");
+    let compared = compared_statements(
+        real,
+        backtest,
+        facts,
+        &projection.forecast,
+        &StatementOpts {
+            valuation: Valuation::Market,
+            bs_depth: None,
+            is_depth: None,
+            cf_depth: DEPTH,
+        },
+    )
+    .expect("compared");
+    let accounts = compared_accounts(
+        real,
+        backtest,
+        facts,
+        &projection.forecast,
+        &AccountsOpts {
+            depth: DEPTH,
+            empty: false,
+        },
+    )
+    .expect("accounts");
+    forward
+        + compared.balance_sheet.len()
+        + compared.income_statement.sections.len()
+        + accounts.sections.len()
 }
 
 /// The run's real-side key: the server's default request.

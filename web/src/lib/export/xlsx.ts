@@ -35,6 +35,7 @@ import {cfDisplayModel, type CfDisplayRow} from "#lib/reports/ui/cashFlowRows.js
 import {amountsPct, isSummary} from "#lib/reports/ui/incomeStatementRows.js";
 import {periodTable} from "#lib/reports/ui/periodTable.js";
 import {accountDisplaySections, DELTA, summaryHeading} from "#lib/reports/ui/accountReportRows.js";
+import {compareCells, type WindowReading} from "#lib/reports/ui/compareColumns.js";
 import type {Workbook, Worksheet} from "exceljs"; // type-only: erased at build time
 
 const HEADER_ARGB = "FF1E293B";
@@ -926,6 +927,102 @@ export async function buildAccountReportWorkbook(
 
 export async function exportAccountReportXlsx(report: AccountReport, meta: {title: string; params: string}, filename: string): Promise<void> {
     await downloadWorkbook(await buildAccountReportWorkbook(report, meta), filename);
+}
+
+// ---------------------------------------------------------------------------
+// Compare vs actuals (plans/34)
+// ---------------------------------------------------------------------------
+
+/** One line of a comparison sheet: a heading (`values` null) or 2N figures read one way. */
+export interface CompareSheetRow {
+    label: string;
+    indent: number;
+    bold: boolean;
+    values: readonly MixedAmount[] | null;
+    reading: WindowReading;
+    /** Leave Δ and Δ% empty (the balance sheet's tie-out row). */
+    blankDelta?: boolean;
+}
+
+/** The suffix an as-projected column's heading carries in a comparison workbook. */
+export const AS_PROJECTED_SUFFIX = " (as projected)";
+
+/** A figure in `base` as a real number when that is all it holds, else as text. */
+function setCompareMoney(cell: Cell, ma: MixedAmount, base: string | null): void {
+    const others = [...ma].some(([commodity, qty]) => commodity !== base && qty.m !== 0n);
+    if (base !== null && !others) setDec(cell, base, ma.get(base) ?? ZERO_MONEY);
+    else setAmount(cell, ma);
+}
+
+/** Δ% as a numeric fraction under `0.0%`, uncapped (the screen caps at ±999%), or an empty cell. */
+function setComparePct(cell: Cell, pct: number | null): void {
+    if (pct === null) return;
+    cell.value = pct / 100;
+    cell.numFmt = "0.0%";
+    cell.alignment = {...cell.alignment, horizontal: "right"};
+}
+
+/**
+ * A statement compared with the projection made on its first day: one row per
+ * line, the N actual columns, the same N "(as projected)", then Δ and Δ %
+ * (`compareCells`, the screen's own figures) in place of a Total.
+ */
+export async function buildComparisonWorkbook(
+    rows: readonly CompareSheetRow[],
+    columnLabels: readonly string[],
+    split: number,
+    meta: {title: string; params: string},
+    base: string | null
+): Promise<Workbook> {
+    const {Workbook: ExcelWorkbook} = await import("exceljs");
+    const workbook = new ExcelWorkbook();
+    const ws = workbook.addWorksheet(meta.title);
+    const labels = columnLabels.map((label, at) => (at >= split ? `${label}${AS_PROJECTED_SUFFIX}` : label));
+    const inBase = base === null ? "" : ` (${base})`;
+    addTitleRows(ws, meta, ["Line", ...labels, `Δ${inBase}`, "Δ %"]);
+    ws.views = [{state: "frozen", ySplit: 4, xSplit: 1}];
+    rows.forEach((row, i) => {
+        const rowIx = 5 + i;
+        labelCell(ws, rowIx, row.label, row.indent, row.bold);
+        if (row.values === null) return;
+        row.values.forEach((value, at) => setCompareMoney(ws.getCell(rowIx, at + 2), value, base));
+        if (row.blankDelta !== true) {
+            const cells = compareCells(row.values, split, row.reading, base);
+            setCompareMoney(ws.getCell(rowIx, row.values.length + 2), cells.delta, base);
+            setComparePct(ws.getCell(rowIx, row.values.length + 3), cells.pct);
+        }
+        if (row.bold) for (let col = 2; col <= row.values.length + 3; col += 1) ws.getCell(rowIx, col).font = {bold: true};
+    });
+    return workbook;
+}
+
+/** The runway compared: Period | Actual | As projected | Δ | Δ %, one row per actual period. */
+export async function buildRunwayCompareWorkbook(
+    runway: {labels: readonly string[]; opening: MixedAmount; actual: readonly MixedAmount[]; projected: readonly MixedAmount[]},
+    meta: {title: string; params: string},
+    base: string | null
+): Promise<Workbook> {
+    const {Workbook: ExcelWorkbook} = await import("exceljs");
+    const workbook = new ExcelWorkbook();
+    const ws = workbook.addWorksheet(meta.title);
+    const inBase = base === null ? "" : ` (${base})`;
+    addTitleRows(ws, meta, ["Period", `Actual${inBase}`, `As projected${inBase}`, `Δ${inBase}`, "Δ %"]);
+    ws.views = [{state: "frozen", ySplit: 4}];
+    labelCell(ws, 5, "Opening balance (actual)", 0, true);
+    setCompareMoney(ws.getCell(5, 2), runway.opening, base);
+    setCompareMoney(ws.getCell(5, 3), runway.opening, base);
+    runway.labels.forEach((label, i) => {
+        const rowIx = 6 + i;
+        const actual = runway.actual[i] ?? new Map<string, Dec>();
+        const projected = runway.projected[i] ?? new Map<string, Dec>();
+        const cells = compareCells([actual, projected], 1, "balance", base);
+        labelCell(ws, rowIx, label, 0);
+        setCompareMoney(ws.getCell(rowIx, 2), actual, base);
+        setCompareMoney(ws.getCell(rowIx, 3), projected, base);
+        setCompareMoney(ws.getCell(rowIx, 4), cells.delta, base);
+        setComparePct(ws.getCell(rowIx, 5), cells.pct);
+    });
+    return workbook;
 }
 
 /** Serialize the workbook and trigger a browser download (Blob + anchor). */

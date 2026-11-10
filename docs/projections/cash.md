@@ -185,6 +185,13 @@ or `cf` instead of `bs` for the other statements. If you hold other
 commodities, add `--value=end,$` to value each column at its own end, as the
 tab does.
 
+With **Compare vs actuals** ticked, the as-projected columns are the same
+command with the first actual day in place of the cutoff and the cutoff as the
+end: `--forecast=2026-08-01..2026-10-01 -b 2026-08-01 -e 2026-10-01
+expr:"NOT (date:2026-08-01.. AND NOT tag:generated)"`. [Comparing with
+actuals](compare.md#checking-it-with-hledger) gives it in full, with the one
+caveat about prices it adds.
+
 Per account and per period, hledger then shows the same figures as the tab.
 Two things differ, both because of growth: hledger shows `growth:` amounts at
 their base, and it values a holding whose price a growth rate raises at its

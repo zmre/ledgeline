@@ -19,6 +19,7 @@ import {
     decodeJournalInfo,
     decodeOtherHoldingsReport,
     decodeCashFlowStatement,
+    decodeDefaultChange,
     decodePeriodReport,
     decodeProjection,
     decodeProjectionIndex,
@@ -2096,6 +2097,53 @@ const PROJECTION_RUN = {
     },
 };
 
+// Plan 34's `compare` block: two actual months, then the same two as
+// projected, built from the statements above by picking columns. Every array
+// that runs per column is re-picked, and a picked column in the second block
+// gets its key prefixed `projected:` as the engine prefixes it.
+const COLUMN_ARRAYS = new Set(["buckets", "columns", "periods", "values", "own", "inclusive", "total", "totals", "netWorth", "check", "balanced"]);
+function pickColumns(raw: unknown, width: number, pick: number[]): unknown {
+    const prefixed = (column: unknown, at: number): unknown => {
+        if (at < pick.length / 2) return column;
+        if (typeof column === "string") return `projected:${column}`;
+        if (typeof column === "object" && column !== null && "key" in column) {
+            return {...column, key: `projected:${String((column as {key: unknown}).key)}`};
+        }
+        return column;
+    };
+    const walk = (node: unknown, key: string | null): unknown => {
+        if (Array.isArray(node)) {
+            if (key !== null && COLUMN_ARRAYS.has(key) && node.length === width) {
+                const keyed = key === "buckets" || key === "columns" || key === "periods";
+                return pick.map((index, at) => (keyed ? prefixed(node[index], at) : walk(node[index], null)));
+            }
+            return node.map((item) => walk(item, null));
+        }
+        if (typeof node === "object" && node !== null) {
+            return Object.fromEntries(Object.entries(node).map(([k, v]) => [k, walk(v, k)]));
+        }
+        return node;
+    };
+    return walk(raw, null);
+}
+const COMPARE = {
+    from: "2026-08-01",
+    actualsEnd: "2026-10-01",
+    columns: 2,
+    cash: {
+        opening: {$: dec(500000, 2)},
+        actual: [{$: dec(80000, 2)}, {$: dec(-340000, 2)}],
+        projected: [{$: dec(90000, 2)}, {$: dec(-300000, 2)}],
+    },
+    balanceSheet: pickColumns(PROJECTION_RUN.balanceSheet, 3, [1, 2, 1, 2]),
+    incomeStatement: pickColumns(PROJECTION_RUN.incomeStatement, 7, [5, 6, 5, 6]),
+    cashFlow: pickColumns(PROJECTION_RUN.cashFlow, 3, [1, 2, 1, 2]),
+    accounts: pickColumns(PROJECTION_RUN.accounts, 3, [1, 2, 1, 2]),
+    journal: PROJECTION_RUN.journal,
+    warnings: ["the actual periods are valued in $ and the projection would have valued in EUR"],
+};
+Object.assign(PROJECTION_RUN, {compare: COMPARE});
+
 /**
  * `GET /api/projections` — the scenario picker's list (plan 22, Phase 3).
  *
@@ -2123,11 +2171,34 @@ const PROJECTION_INDEX = {
             isProjection: true,
             sizeBytes: 812,
             writable: true,
+            isDefault: true,
         },
-        {id: "budget.journal", label: "budget", name: null, created: null, updated: null, isProjection: false, sizeBytes: 240, writable: false},
+        {
+            id: "budget.journal",
+            label: "budget",
+            name: null,
+            created: null,
+            updated: null,
+            isProjection: false,
+            sizeBytes: 240,
+            writable: false,
+            isDefault: false,
+        },
     ],
     directories: ["", "plans"],
     warnings: ["notes.journal is a symbolic link and was skipped"],
+};
+
+/**
+ * `PUT /api/projections/default` (plan 33 D16). Inline for the reason
+ * `PROJECTION_INDEX` is: it describes writes to a directory tree, which no URI
+ * manifest can replay.
+ */
+const DEFAULT_CHANGE = {
+    changed: [
+        {id: "projection-a.journal", before: "880-aa11", after: "854-bb22", isDefault: false},
+        {id: "projection-b.journal", before: "300-cc33", after: "326-dd44", isDefault: true},
+    ],
 };
 
 /** `GET`/`PUT /api/projections/{*id}` — one file, read as a scenario. */
@@ -2136,6 +2207,10 @@ const SCENARIO_FILE = {
     label: "series-a",
     revision: "812-9f2c1a",
     writable: true,
+    // TRUE, so a rename of the key is caught by the sweep: an absent
+    // `isDefault` decodes as false (an older engine), which a false value
+    // could not tell apart.
+    isDefault: true,
     scenario: {
         name: "Series A with a hiring ramp",
         created: "2026-09-18",
@@ -2353,6 +2428,40 @@ describe("UNIT nativeDecode — the scenario file listing", () => {
     it("a missing files array is a shape error rather than an empty list", () => {
         expect(() => decodeProjectionIndex({...PROJECTION_INDEX, files: undefined})).toThrow(ApiShapeError);
     });
+
+    it("decodes the default marker per file (plan 33)", () => {
+        const index = decodeProjectionIndex(PROJECTION_INDEX);
+        expect(index.defaultSupported).toBe(true);
+        expect(index.files.map((file) => file.isDefault)).toEqual([true, false]);
+    });
+
+    it("an engine that sends no `isDefault` predates the marker: unsupported, nothing marked", () => {
+        const files = PROJECTION_INDEX.files.map((file) => ({...file, isDefault: undefined}));
+        const index = decodeProjectionIndex({...PROJECTION_INDEX, files});
+        expect(index.defaultSupported).toBe(false);
+        expect(index.files.every((file) => !file.isDefault)).toBe(true);
+    });
+
+    it("an `isDefault` that is not a boolean, or present on only some files, is a broken contract", () => {
+        const yes = [{...PROJECTION_INDEX.files[0], isDefault: "yes"}, PROJECTION_INDEX.files[1]];
+        expect(() => decodeProjectionIndex({...PROJECTION_INDEX, files: yes})).toThrow(ApiShapeError);
+        const half = [PROJECTION_INDEX.files[0], {...PROJECTION_INDEX.files[1], isDefault: undefined}];
+        expect(() => decodeProjectionIndex({...PROJECTION_INDEX, files: half})).toThrow(ApiShapeError);
+    });
+});
+
+describe("UNIT nativeDecode — setting the default scenario (plan 33)", () => {
+    it("decodes every changed file with its before and after revisions", () => {
+        expect(decodeDefaultChange(DEFAULT_CHANGE)).toEqual(DEFAULT_CHANGE);
+        expect(decodeDefaultChange({changed: []})).toEqual({changed: []});
+    });
+
+    it("refuses a body without `changed`, or an entry missing a revision", () => {
+        expect(() => decodeDefaultChange({})).toThrow(ApiShapeError);
+        const [first] = DEFAULT_CHANGE.changed;
+        expect(() => decodeDefaultChange({changed: [{...first, before: undefined}]})).toThrow(ApiShapeError);
+        expect(() => decodeDefaultChange({changed: [{...first, isDefault: "true"}]})).toThrow(ApiShapeError);
+    });
 });
 
 describe("UNIT nativeDecode — one scenario file", () => {
@@ -2391,6 +2500,12 @@ describe("UNIT nativeDecode — one scenario file", () => {
         for (const field of ["layout", "comments", "fixed"]) {
             expect(() => decodeScenarioFile(withScenario({[field]: undefined}))).toThrow(ApiShapeError);
         }
+    });
+
+    it("an absent `isDefault` is an older engine's file, never the default", () => {
+        expect(decodeScenarioFile(SCENARIO_FILE).isDefault).toBe(true);
+        expect(decodeScenarioFile({...SCENARIO_FILE, isDefault: undefined}).isDefault).toBe(false);
+        expect(() => decodeScenarioFile({...SCENARIO_FILE, isDefault: "yes"})).toThrow(ApiShapeError);
     });
 
     it("an ABSENT revision is a broken contract, never an empty string", () => {
@@ -2438,6 +2553,30 @@ describe("UNIT nativeDecode — a projection run", () => {
         expect(cash.rows[0].inclusive).toHaveLength(3);
         expect(sheet.balanced).toEqual([true, true, false]);
         expect(sheet.meta?.unpriced).toEqual(["GLD"]);
+    });
+
+    it("decodes the compare block (plan 34), and null when not asked, never absent", () => {
+        const {compare} = decodeProjection(PROJECTION_RUN);
+        expect(compare).not.toBeNull();
+        expect(compare?.columns).toBe(2);
+        expect(compare?.from).toBe("2026-08-01");
+        expect(compare?.cash.projected).toHaveLength(2);
+        expect(compare?.incomeStatement.buckets?.map((bucket) => bucket.key)).toEqual(["2026-06", "2026-07", "projected:2026-06", "projected:2026-07"]);
+        expect(compare?.balanceSheet.columns.map((column) => column.key)).toEqual(["2026-08", "2026-09", "projected:2026-08", "projected:2026-09"]);
+        expect(compare?.accounts?.buckets).toEqual(["2026-08", "2026-09", "projected:2026-08", "projected:2026-09"]);
+        expect(compare?.warnings).toHaveLength(1);
+        expect(decodeProjection({...PROJECTION_RUN, compare: null}).compare).toBeNull();
+        expect(() => decodeProjection({...PROJECTION_RUN, compare: undefined})).toThrow(ApiShapeError);
+    });
+
+    it("a compare statement or cash series of the wrong width is refused", () => {
+        const wrong = (patch: Record<string, unknown>) => () => decodeProjection({...PROJECTION_RUN, compare: {...COMPARE, ...patch}});
+        expect(wrong({columns: 3})).toThrow(ApiShapeError);
+        expect(wrong({columns: 0})).toThrow(ApiShapeError);
+        expect(wrong({cash: {...COMPARE.cash, projected: COMPARE.cash.projected.slice(1)}})).toThrow(ApiShapeError);
+        expect(wrong({cashFlow: PROJECTION_RUN.cashFlow})).toThrow(ApiShapeError);
+        expect(wrong({balanceSheet: PROJECTION_RUN.balanceSheet})).toThrow(ApiShapeError);
+        expect(wrong({accounts: PROJECTION_RUN.accounts})).toThrow(ApiShapeError);
     });
 
     it("decodes the inferred defaults the table greys out", () => {
@@ -2592,6 +2731,7 @@ describe("UNIT nativeDecode — renaming any wire key is detected, not absorbed"
         // load-bearing, and both decoders use required-not-absent guards.
         ["projections-index", decodeProjectionIndex, PROJECTION_INDEX],
         ["projections-file", decodeScenarioFile, SCENARIO_FILE],
+        ["projections-default", decodeDefaultChange, DEFAULT_CHANGE],
         // The ASSET-ROW wire (plan 23, Phase 2), and a real golden rather than a
         // literal: `GET /api/projections/{id}` reads ONE file by id, which IS
         // replayable from a URI manifest — only the directory LISTING is not.
@@ -2639,6 +2779,15 @@ describe("UNIT nativeDecode — renaming any wire key is detected, not absorbed"
         // sample.journal (an insurance premium, a domain renewal).
         "subscriptions $.annual",
         "holdings $.topLosers", // nothing is down as of 2026-07-08 → [] either way
+        // Plan 33 D19: an ABSENT `isDefault` must decode as false, because an
+        // engine from before the marker sends none — so on a golden whose file
+        // is not the default, dropping the key is indistinguishable from
+        // keeping it. Not a gap in the DECODER's coverage: the inline
+        // `projections-file` body runs the same decoder with `isDefault: true`,
+        // and its rename is caught. Closing it here would need the golden's
+        // fixture to be a marked `projection-*.journal`, which would put a
+        // second heading in the e2e picker (see that fixture's own comment).
+        "projections-asset $.isDefault",
         // `incomestatement-grouped $.meta.unpriced` used to sit here: no income
         // or expense account in sample.journal holds an unpriced commodity at
         // ANY range, so the list is `[]` on both sides of that rename. It is

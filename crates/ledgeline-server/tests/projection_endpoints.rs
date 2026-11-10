@@ -28,6 +28,7 @@ use http_body_util::BodyExt;
 use ledgeline::{AccessToken, AppState, Security, app, router_with_security, router_with_state};
 use serde_json::{Value, json};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tower::ServiceExt;
 
@@ -1531,6 +1532,7 @@ async fn every_projection_route_requires_the_token() {
         ("POST", "/api/projections/run"),
         ("POST", "/api/projections/render"),
         ("GET", "/api/projections/seed"),
+        ("PUT", "/api/projections/default"),
     ] {
         assert_eq!(
             probe(method, uri, None).await,
@@ -2501,6 +2503,7 @@ async fn every_projection_file_route_requires_the_token() {
         ("GET", "/api/projections"),
         ("GET", "/api/projections/sample.journal"),
         ("PUT", "/api/projections/sample.journal"),
+        ("PUT", "/api/projections/default"),
     ] {
         assert_eq!(
             probe(method, uri, None).await,
@@ -4227,4 +4230,660 @@ async fn a_render_signs_as_a_save_does_and_touches_no_file() {
         written.ends_with(&format!("\n\n{rendered}")),
         "the save writes the rendered block:\n{written}\n---\n{rendered}"
     );
+}
+
+// ===========================================================================
+// The default scenario (plan 33) — `PUT /api/projections/default`
+// ===========================================================================
+//
+// The marker is a header line in the scenario file itself
+// (`; default-scenario: true`), so everything asserted here is about bytes on
+// a disk: which files carry it, that a star rewrites exactly one line of each,
+// and that a failure part-way leaves too few markers rather than too many.
+
+const DEFAULT_URI: &str = "/api/projections/default";
+
+/// `text` with the default marker, exactly as the server writes it.
+fn marked(text: &str) -> String {
+    ledgeline_core::projections::serialize::set_default_marker(text, true).expect("adds")
+}
+
+/// The revision token of `text`'s bytes.
+fn token(text: &str) -> String {
+    ledgeline_core::Fingerprint::of_bytes(text.as_bytes()).token()
+}
+
+/// A second projection file, so there is something to move the star to.
+const OTHER: &str = "\
+; Ledgeline projection
+; projection: Other
+
+~ monthly  other
+    (expenses:rent)  $100.00
+";
+
+fn two_plans(a_marked: bool) -> Tree {
+    let a = if a_marked {
+        marked(PLAN)
+    } else {
+        PLAN.to_string()
+    };
+    Tree::new(&[
+        ("projection-a.journal", &a),
+        ("projection-b.journal", OTHER),
+        ("notes.journal", "; nothing recurring here\n"),
+    ])
+}
+
+async fn set_default(state: &AppState, id: Value) -> (StatusCode, Value) {
+    file_json(state, "PUT", DEFAULT_URI, Some(json!({ "id": id }))).await
+}
+
+async fn listed_default(state: &AppState) -> Vec<String> {
+    let (status, index) = file_json(state, "GET", "/api/projections", None).await;
+    assert_eq!(status, StatusCode::OK, "{index}");
+    index["files"]
+        .as_array()
+        .expect("files")
+        .iter()
+        .filter(|file| file["isDefault"] == json!(true))
+        .map(|file| file["id"].as_str().expect("id").to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn the_listing_and_the_document_report_the_marker() {
+    let tree = two_plans(true);
+    let (_, index) = file_json(&tree.state, "GET", "/api/projections", None).await;
+    for file in index["files"].as_array().expect("files") {
+        let want = file["id"] == json!("projection-a.journal");
+        assert_eq!(file["isDefault"], json!(want), "{file}");
+    }
+    assert_eq!(index["warnings"], json!([]), "one marker is no conflict");
+    let (_, doc) = file_json(
+        &tree.state,
+        "GET",
+        "/api/projections/projection-a.journal",
+        None,
+    )
+    .await;
+    assert_eq!(doc["isDefault"], json!(true));
+    let (_, doc) = file_json(
+        &tree.state,
+        "GET",
+        "/api/projections/projection-b.journal",
+        None,
+    )
+    .await;
+    assert_eq!(doc["isDefault"], json!(false));
+}
+
+#[tokio::test]
+async fn starring_a_file_moves_the_marker_and_changes_one_line_of_each() {
+    let tree = two_plans(true);
+    let (status, body) = set_default(&tree.state, json!("projection-b.journal")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // A lost its line and nothing else; B gained it and nothing else.
+    assert_eq!(tree.read("projection-a.journal"), PLAN);
+    assert_eq!(tree.read("projection-b.journal"), marked(OTHER));
+    assert_eq!(
+        body,
+        json!({"changed": [
+            {"id": "projection-a.journal", "before": token(&marked(PLAN)), "after": token(PLAN), "isDefault": false},
+            {"id": "projection-b.journal", "before": token(OTHER), "after": token(&marked(OTHER)), "isDefault": true},
+        ]})
+    );
+    assert_eq!(listed_default(&tree.state).await, ["projection-b.journal"]);
+}
+
+#[tokio::test]
+async fn clearing_unmarks_every_file() {
+    let tree = Tree::new(&[
+        ("projection-a.journal", &marked(PLAN)),
+        ("projection-b.journal", &marked(OTHER)),
+    ]);
+    let (status, body) = set_default(&tree.state, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(tree.read("projection-a.journal"), PLAN);
+    assert_eq!(tree.read("projection-b.journal"), OTHER);
+    assert_eq!(body["changed"].as_array().map(Vec::len), Some(2));
+    assert!(listed_default(&tree.state).await.is_empty());
+
+    // Clearing again is a no-op.
+    let (status, body) = set_default(&tree.state, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({"changed": []}));
+}
+
+#[tokio::test]
+async fn starring_the_only_default_again_writes_nothing() {
+    let tree = two_plans(true);
+    let path = tree.dir.join("projection-a.journal");
+    let mtime = std::fs::metadata(&path)
+        .and_then(|m| m.modified())
+        .expect("mtime");
+    let (status, body) = set_default(&tree.state, json!("projection-a.journal")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({"changed": []}));
+    assert_eq!(
+        std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .expect("mtime"),
+        mtime,
+        "a no-op must not touch the file"
+    );
+}
+
+#[tokio::test]
+async fn two_markers_are_warned_about_and_a_star_repairs_them() {
+    let tree = Tree::new(&[
+        ("projection-a.journal", &marked(PLAN)),
+        ("projection-b.journal", &marked(OTHER)),
+    ]);
+    let (_, index) = file_json(&tree.state, "GET", "/api/projections", None).await;
+    assert_eq!(
+        index["warnings"],
+        json!([
+            "2 scenario files are marked as the default (projection-a.journal, \
+             projection-b.journal); the first one opens. Star one to fix it."
+        ])
+    );
+    assert_eq!(
+        listed_default(&tree.state).await,
+        ["projection-a.journal", "projection-b.journal"]
+    );
+
+    let (status, body) = set_default(&tree.state, json!("projection-b.journal")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["changed"].as_array().map(Vec::len), Some(1), "{body}");
+    let (_, index) = file_json(&tree.state, "GET", "/api/projections", None).await;
+    assert_eq!(index["warnings"], json!([]));
+    assert_eq!(listed_default(&tree.state).await, ["projection-b.journal"]);
+}
+
+#[tokio::test]
+async fn a_save_keeps_the_marker_the_client_never_sent() {
+    // Plan 33 D12: the marker is the file's, so a save that knows nothing
+    // about it — every client before plan 33 — keeps it.
+    let tree = two_plans(true);
+    let uri = "/api/projections/projection-a.journal";
+    let (_, doc) = file_json(&tree.state, "GET", uri, None).await;
+    let mut scenario = doc["scenario"].clone();
+    scenario["lines"][0]["note"] = json!("edited");
+    let (status, saved) = file_json(
+        &tree.state,
+        "PUT",
+        uri,
+        Some(json!({"revision": doc["revision"], "scenario": scenario})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["isDefault"], json!(true));
+    let text = tree.read("projection-a.journal");
+    assert_eq!(
+        text.matches("; default-scenario: true").count(),
+        1,
+        "{text}"
+    );
+    assert_eq!(saved["revision"], json!(token(&text)));
+}
+
+#[tokio::test]
+async fn save_as_never_copies_the_marker() {
+    let tree = two_plans(true);
+    let (_, doc) = file_json(
+        &tree.state,
+        "GET",
+        "/api/projections/projection-a.journal",
+        None,
+    )
+    .await;
+    let mut scenario = doc["scenario"].clone();
+    scenario["name"] = json!("Copy");
+    let (status, created) = file_json(
+        &tree.state,
+        "PUT",
+        "/api/projections/projection-copy.journal",
+        Some(json!({"revision": "", "scenario": scenario})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(created["isDefault"], json!(false));
+    assert!(
+        !tree
+            .read("projection-copy.journal")
+            .contains("default-scenario")
+    );
+    assert_eq!(listed_default(&tree.state).await, ["projection-a.journal"]);
+}
+
+#[tokio::test]
+async fn only_a_writable_projection_file_can_be_the_default() {
+    let tree = two_plans(false);
+    let before_notes = tree.read("notes.journal");
+    let (status, message) = file_text(
+        &tree.state,
+        "PUT",
+        DEFAULT_URI,
+        Some(json!({"id": "notes.journal"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{message}");
+    assert_eq!(
+        message,
+        "Only a scenario file Ledgeline saved (projection-….journal) can be the default. Use Save \
+         as to make one."
+    );
+    assert_eq!(tree.read("notes.journal"), before_notes);
+
+    // A projection file the main journal includes is a plan of record.
+    let mut tree = Tree::new(&[("projection-inc.journal", PLAN)]);
+    let main = tree.dir.join("main.journal");
+    std::fs::write(&main, format!("{MAIN}include projection-inc.journal\n")).expect("write");
+    tree.state = AppState::from_journal_path(&main).expect("editor opens");
+    let (status, message) = file_text(
+        &tree.state,
+        "PUT",
+        DEFAULT_URI,
+        Some(json!({"id": "projection-inc.journal"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{message}");
+    assert!(message.contains("plan of record"), "{message}");
+    assert_eq!(
+        tree.read("projection-inc.journal"),
+        PLAN,
+        "nothing was written"
+    );
+}
+
+#[tokio::test]
+async fn a_bad_or_missing_id_is_refused_before_anything_is_read() {
+    let tree = two_plans(true);
+    let (status, _) = file_text(
+        &tree.state,
+        "PUT",
+        DEFAULT_URI,
+        Some(json!({"id": "projection-gone.journal"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    for body in [
+        json!({"id": "../x.journal"}),
+        json!({"id": "projection-a.journal", "extra": true}),
+        json!({}),
+        json!({"id": 3}),
+    ] {
+        let (status, message) =
+            file_text(&tree.state, "PUT", DEFAULT_URI, Some(body.clone())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {message}");
+    }
+    assert_eq!(
+        tree.read("projection-a.journal"),
+        marked(PLAN),
+        "nothing was written"
+    );
+}
+
+#[tokio::test]
+async fn a_server_with_no_editor_refuses_but_still_reports_the_marker() {
+    let tree = two_plans(true);
+    let main = tree.dir.join("main.journal");
+    let text = std::fs::read_to_string(&main).expect("read journal");
+    let journal = ledgeline_core::parse_journal(&text, &main.to_string_lossy()).expect("parses");
+    let read_only = AppState::from_journal(&journal);
+
+    let (status, _) = set_default(&read_only, json!("projection-b.journal")).await;
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(listed_default(&read_only).await, ["projection-a.journal"]);
+    assert_eq!(tree.read("projection-b.journal"), OTHER);
+}
+
+// ---------------------------------------------------------------------------
+// Partial failure (plan 33 D13): a vault that edits one file behind the
+// server's back just before the server writes it.
+// ---------------------------------------------------------------------------
+
+mod meddling {
+    use ledgeline_core::vault::{Entry, MemVault, Revision, Vault, VaultError, VaultPath};
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// [`MemVault`], except that the first `replace` of `target` is preceded by
+    /// an "external" rewrite of it — a concurrent edit landing between the
+    /// server's pre-flight read and its write.
+    #[derive(Debug)]
+    pub struct Meddling {
+        pub inner: Arc<MemVault>,
+        pub target: String,
+        pub armed: AtomicBool,
+    }
+
+    pub const MEDDLED: &str = "; edited elsewhere\n";
+
+    impl Vault for Meddling {
+        fn root(&self) -> &Path {
+            self.inner.root()
+        }
+        fn stat(&self, path: &VaultPath) -> Result<Option<Entry>, VaultError> {
+            self.inner.stat(path)
+        }
+        fn list_dir(&self, dir: &VaultPath, cap: Option<usize>) -> Result<Vec<Entry>, VaultError> {
+            self.inner.list_dir(dir, cap)
+        }
+        fn canonicalize(&self, path: &VaultPath) -> Result<VaultPath, VaultError> {
+            self.inner.canonicalize(path)
+        }
+        fn read_prefix(&self, path: &VaultPath, max_len: u64) -> Result<Vec<u8>, VaultError> {
+            self.inner.read_prefix(path, max_len)
+        }
+        fn read_pinned(
+            &self,
+            path: &VaultPath,
+            cap: Option<u64>,
+        ) -> Result<(Vec<u8>, Revision), VaultError> {
+            self.inner.read_pinned(path, cap)
+        }
+        fn replace(
+            &self,
+            path: &VaultPath,
+            bytes: &[u8],
+            expected: &Revision,
+        ) -> Result<Revision, VaultError> {
+            if path.as_str() == self.target && self.armed.swap(false, Ordering::SeqCst) {
+                self.inner.modify_in_place(path.as_str(), MEDDLED);
+            }
+            self.inner.replace(path, bytes, expected)
+        }
+        fn write_atomic(&self, path: &VaultPath, bytes: &[u8]) -> Result<Revision, VaultError> {
+            self.inner.write_atomic(path, bytes)
+        }
+        fn create_new(&self, path: &VaultPath, bytes: &[u8]) -> Result<Revision, VaultError> {
+            self.inner.create_new(path, bytes)
+        }
+        fn create_dir_all(&self, path: &VaultPath) -> Result<(), VaultError> {
+            self.inner.create_dir_all(path)
+        }
+        fn remove_file(&self, path: &VaultPath) -> Result<(), VaultError> {
+            self.inner.remove_file(path)
+        }
+    }
+}
+
+/// Books in a [`meddling::Meddling`] vault: A marked, B not, and `target`
+/// rewritten behind the server's back just before its write.
+fn meddled_books(target: &str) -> (Arc<ledgeline_core::vault::MemVault>, AppState) {
+    use ledgeline_core::vault::{MemVault, Vault, VaultPath};
+    let inner = Arc::new(
+        MemVault::new()
+            .with_file("books/main.journal", MAIN)
+            .with_file("books/budget.journal", INCLUDED)
+            .with_file("books/projection-a.journal", marked(PLAN))
+            .with_file("books/projection-b.journal", OTHER),
+    );
+    let vault: Arc<dyn Vault> = Arc::new(meddling::Meddling {
+        inner: Arc::clone(&inner),
+        target: format!("books/{target}"),
+        armed: std::sync::atomic::AtomicBool::new(true),
+    });
+    let main = VaultPath::new("books/main.journal").expect("vault path");
+    (inner, AppState::from_vault(vault, main).expect("opens"))
+}
+
+#[tokio::test]
+async fn a_target_that_changes_after_the_others_were_unmarked_says_so() {
+    let (vault, state) = meddled_books("projection-b.journal");
+    let (status, message) = file_text(
+        &state,
+        "PUT",
+        DEFAULT_URI,
+        Some(json!({"id": "projection-b.journal"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{message}");
+    assert_eq!(
+        message,
+        "Removed the default mark from \"projection-a.journal\", but could not mark \
+         \"projection-b.journal\": it changed on disk. No scenario is the default now; try again."
+    );
+    // Too few markers, never too many: A is unmarked, and B holds the other
+    // writer's bytes, untouched by this server.
+    assert_eq!(
+        vault.text("books/projection-a.journal").as_deref(),
+        Some(PLAN)
+    );
+    assert_eq!(
+        vault.text("books/projection-b.journal").as_deref(),
+        Some(meddling::MEDDLED)
+    );
+}
+
+#[tokio::test]
+async fn a_file_that_changes_before_the_first_write_writes_nothing_at_all() {
+    let (vault, state) = meddled_books("projection-a.journal");
+    let (status, message) = file_text(
+        &state,
+        "PUT",
+        DEFAULT_URI,
+        Some(json!({"id": "projection-b.journal"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{message}");
+    assert_eq!(
+        message,
+        "\"projection-a.journal\" changed on disk while the default was being set. Nothing was \
+         written; try again."
+    );
+    assert_eq!(
+        vault.text("books/projection-b.journal").as_deref(),
+        Some(OTHER),
+        "the target was never written"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Compare vs actuals (plan 34, Phase 3)
+// ---------------------------------------------------------------------------
+
+/// `rent_line` with its counter named, so the backtest equals a run made on
+/// the first actual day exactly (plan 34 D1).
+fn rent_paid_from_checking() -> Value {
+    let mut line = rent_line();
+    line["counter"] = json!("assets:bank:checking");
+    line
+}
+
+/// A comparison over May and June 2026 (`asOf` 2026-07-08, lookback 2).
+async fn compare_run(extra: Value) -> Value {
+    let mut body = json!({
+        "scenario": scenario_with(vec![rent_paid_from_checking()], vec![]),
+        "asOf": "2026-07-08",
+        "count": 3,
+        "lookback": 2,
+        "compare": true
+    });
+    for (key, value) in extra.as_object().expect("an object") {
+        body[key] = value.clone();
+    }
+    run(body).await
+}
+
+fn column_keys(columns: &Value) -> Vec<String> {
+    columns
+        .as_array()
+        .expect("columns")
+        .iter()
+        .map(|column| column["key"].as_str().expect("key").to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn compare_is_null_unless_asked_and_never_absent() {
+    let projection = run(json!({
+        "scenario": scenario_with(vec![rent_line()], vec![]),
+        "asOf": "2026-07-08",
+        "count": 2
+    }))
+    .await;
+    assert!(
+        projection.get("compare").is_some(),
+        "the key is always present"
+    );
+    assert!(projection["compare"].is_null());
+    let asked = compare_run(json!({})).await;
+    assert!(asked["compare"].is_object());
+}
+
+#[tokio::test]
+async fn compare_needs_an_actual_period_and_fits_max_buckets() {
+    let (status, text) = post(json!({
+        "scenario": scenario_with(vec![rent_line()], vec![]),
+        "asOf": "2026-07-08",
+        "lookback": 0,
+        "compare": true
+    }))
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    assert!(text.contains("at least one actual period"), "{text}");
+    assert!(text.contains("lookback is 0"), "{text}");
+
+    let (status, text) = post(json!({
+        "scenario": scenario_with(vec![rent_line()], vec![]),
+        "asOf": "2026-07-08",
+        "count": 1,
+        "lookback": 601,
+        "compare": true
+    }))
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    assert!(text.contains("601") && text.contains("1200"), "{text}");
+}
+
+#[tokio::test]
+async fn compare_columns_are_both_blocks_with_prefixed_unique_keys() {
+    let projection = compare_run(json!({"accounts": {"empty": false}})).await;
+    let compare = &projection["compare"];
+    assert_eq!(compare["columns"], 2);
+    assert_eq!(compare["from"], "2026-05-01");
+    assert_eq!(compare["actualsEnd"], "2026-07-01");
+    let want = [
+        "2026-05",
+        "2026-06",
+        "projected:2026-05",
+        "projected:2026-06",
+    ];
+    assert_eq!(column_keys(&compare["balanceSheet"]["columns"]), want);
+    assert_eq!(column_keys(&compare["incomeStatement"]["buckets"]), want);
+    assert_eq!(column_keys(&compare["cashFlow"]["buckets"]), want);
+    assert_eq!(compare["accounts"]["buckets"], json!(want));
+    // The projected block's labels and dates are the actual block's.
+    let buckets = &compare["incomeStatement"]["buckets"];
+    assert_eq!(buckets[2]["label"], buckets[0]["label"]);
+    assert_eq!(buckets[2]["label"], "May 2026");
+    assert_eq!(buckets[3]["from"], "2026-06-01");
+    assert_eq!(buckets[3]["to"], "2026-06-30");
+    assert_eq!(compare["accounts"]["periods"][2]["label"], "May 2026");
+    assert_eq!(compare["accounts"]["periods"][2]["start"], "2026-05-01");
+    assert_eq!(
+        compare["incomeStatement"]["netIncome"]["values"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+    assert_eq!(compare["cash"]["actual"].as_array().unwrap().len(), 2);
+    assert_eq!(compare["cash"]["projected"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn the_actual_block_is_the_forward_runs_lookback_columns() {
+    let projection = compare_run(json!({})).await;
+    let compare = &projection["compare"];
+    let first_two = |values: &Value| values.as_array().expect("values")[..2].to_vec();
+    assert_eq!(compare["cash"]["actual"], projection["cash"]["history"]);
+    assert_eq!(
+        first_two(&compare["balanceSheet"]["netWorth"]),
+        first_two(&projection["balanceSheet"]["netWorth"])
+    );
+    assert_eq!(
+        first_two(&compare["incomeStatement"]["netIncome"]["values"]),
+        first_two(&projection["incomeStatement"]["netIncome"]["values"])
+    );
+    assert_eq!(
+        first_two(&compare["cashFlow"]["netChange"]["values"]),
+        first_two(&projection["cashFlow"]["netChange"]["values"])
+    );
+    // And it is real: May and June's rent is not the scenario's $4,200.
+    assert_ne!(
+        compare["incomeStatement"]["netIncome"]["values"][0],
+        compare["incomeStatement"]["netIncome"]["values"][2]
+    );
+}
+
+#[tokio::test]
+async fn the_projected_block_is_a_run_made_on_the_first_actual_day() {
+    let projection = compare_run(json!({})).await;
+    let compare = &projection["compare"];
+    let on_f = run(json!({
+        "scenario": scenario_with(vec![rent_paid_from_checking()], vec![]),
+        "asOf": "2026-05-01",
+        "count": 2,
+        "lookback": 0
+    }))
+    .await;
+    assert_eq!(on_f["actualsEnd"], "2026-05-01");
+    assert_eq!(compare["cash"]["projected"], on_f["cash"]["values"]);
+    assert_eq!(compare["cash"]["opening"], on_f["cash"]["opening"]);
+    let last_two = |values: &Value| values.as_array().expect("values")[2..].to_vec();
+    assert_eq!(
+        last_two(&compare["balanceSheet"]["netWorth"]),
+        on_f["balanceSheet"]["netWorth"].as_array().unwrap().clone()
+    );
+    assert_eq!(
+        last_two(&compare["incomeStatement"]["netIncome"]["values"]),
+        on_f["incomeStatement"]["netIncome"]["values"]
+            .as_array()
+            .unwrap()
+            .clone()
+    );
+    assert_eq!(
+        last_two(&compare["cashFlow"]["endingCash"]["values"]),
+        on_f["cashFlow"]["endingCash"]["values"]
+            .as_array()
+            .unwrap()
+            .clone()
+    );
+    // The scenario's rent, and nothing real.
+    assert_eq!(
+        last_two(&compare["incomeStatement"]["netIncome"]["values"])
+            .iter()
+            .map(dollars)
+            .collect::<Vec<_>>(),
+        [-4200, -4200]
+    );
+}
+
+#[tokio::test]
+async fn with_compare_the_tabs_readings_are_the_comparisons() {
+    let projection = compare_run(json!({
+        "accounts": {"empty": false},
+        "journal": true
+    }))
+    .await;
+    assert!(projection["accounts"].is_null());
+    assert!(projection["journal"].is_null());
+    let compare = &projection["compare"];
+    assert!(compare["accounts"].is_object());
+    let entries = compare["journal"]["entries"].as_array().expect("entries");
+    // The backtest's generated rent: May and June.
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0]["txn"]["date"], "2026-05-01");
+    assert!(compare["warnings"].is_array());
+
+    // Without either flag, neither is built.
+    let bare = compare_run(json!({})).await;
+    assert!(bare["compare"]["accounts"].is_null());
+    assert!(bare["compare"]["journal"].is_null());
 }

@@ -460,6 +460,9 @@ pub(crate) struct CfAccumulator {
     /// counts. Empty when there is no base commodity, as on the balance sheet.
     investments: BTreeSet<String>,
     classes: HashMap<String, CfClass>,
+    /// Set by [`CfAccumulator::beside`]: from this column on, each cash
+    /// account starts again from the second pass's own opening balance.
+    restart: Option<(usize, BTreeMap<String, MixedAmount>)>,
 }
 
 impl CfAccumulator {
@@ -477,6 +480,58 @@ impl CfAccumulator {
             exchange: vec![MixedAmount::new(); columns],
             investments: BTreeSet::new(),
             classes: HashMap::new(),
+            restart: None,
+        }
+    }
+
+    /// Two passes side by side as one: `self`'s columns, then `other`'s (a
+    /// projection backtest's actual block, then its as-projected block, plan
+    /// 34). The cash balances start again at `other`'s first column from
+    /// `other`'s own opening, so its block reads as it would alone. Every flow
+    /// is per column, so it is unchanged. Sections are resolved at
+    /// [`CfAccumulator::finish`] over the UNION of both `investments` sets, so
+    /// an account sits in the same section in both blocks, and a line or a
+    /// cash row present in either block is a row of both (zero where absent,
+    /// which is exact for a flow). Neither pass may already be a joined one.
+    #[must_use]
+    pub(crate) fn beside(self, other: Self) -> Self {
+        debug_assert!(self.restart.is_none() && other.restart.is_none());
+        let left = self.buckets.len();
+        let right = other.buckets.len();
+        let join = |mut a: BTreeMap<String, Vec<MixedAmount>>,
+                    b: BTreeMap<String, Vec<MixedAmount>>| {
+            for (account, values) in b {
+                a.entry(account)
+                    .or_insert_with(|| vec![MixedAmount::new(); left])
+                    .extend(values);
+            }
+            for values in a.values_mut() {
+                values.resize(left + right, MixedAmount::new());
+            }
+            a
+        };
+        let concat = |mut a: Vec<MixedAmount>, b: Vec<MixedAmount>| {
+            a.extend(b);
+            a
+        };
+        let mut classes = self.classes;
+        classes.extend(other.classes);
+        Self {
+            buckets: self.buckets.into_iter().chain(other.buckets).collect(),
+            to: other.to,
+            base: self.base,
+            net_income: concat(self.net_income, other.net_income),
+            lines: join(self.lines, other.lines),
+            opening: self.opening,
+            cash_delta: join(self.cash_delta, other.cash_delta),
+            exchange: concat(self.exchange, other.exchange),
+            investments: self
+                .investments
+                .union(&other.investments)
+                .cloned()
+                .collect(),
+            classes,
+            restart: Some((left, other.opening)),
         }
     }
 
@@ -658,8 +713,13 @@ impl CfAccumulator {
 
         // Every cash account with a balance or a movement anywhere in the range.
         let cash_accounts: Vec<&String> = {
-            let mut names: Vec<&String> =
-                self.opening.keys().chain(self.cash_delta.keys()).collect();
+            let restarted = self.restart.iter().flat_map(|(_, opening)| opening.keys());
+            let mut names: Vec<&String> = self
+                .opening
+                .keys()
+                .chain(self.cash_delta.keys())
+                .chain(restarted)
+                .collect();
             names.sort();
             names.dedup();
             names
@@ -670,6 +730,11 @@ impl CfAccumulator {
             let mut beginning = Vec::with_capacity(columns);
             let mut ending = Vec::with_capacity(columns);
             for column in 0..columns {
+                if let Some((at, opening)) = &self.restart
+                    && column == *at
+                {
+                    balance = opening.get(account).cloned().unwrap_or_default();
+                }
                 beginning.push(tidy(balance.clone()));
                 if let Some(delta) = self.cash_delta.get(account) {
                     balance = balance.ma_add(&delta[column])?;
