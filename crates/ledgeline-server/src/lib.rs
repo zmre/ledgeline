@@ -56,6 +56,7 @@ mod import_api;
 mod import_review;
 mod journal_api;
 mod location;
+mod match_api;
 mod prefs;
 mod prices_api;
 mod profiles_api;
@@ -1248,6 +1249,17 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
             "/api/review/rule-preview",
             post(review_rules_api::rule_preview),
         )
+        // Plan 35: transfer matching — the proposed pairs and the writes
+        // that link, reject, unlink, forget and ignore (see `match_api`).
+        // Above the `route_layer`: every POST here writes the journal.
+        .route("/api/matches", get(match_api::proposals))
+        .route("/api/matches/for/{index}", get(match_api::for_transaction))
+        .route("/api/matches/link", post(match_api::link))
+        .route("/api/matches/link-all", post(match_api::link_all))
+        .route("/api/matches/reject", post(match_api::reject))
+        .route("/api/matches/unlink", post(match_api::unlink))
+        .route("/api/matches/forget", post(match_api::forget))
+        .route("/api/matches/ignore", post(match_api::ignore))
         .route("/api/payees", get(review_api::payees))
         .route("/api/tags", get(review_api::tags))
         // CSV import rules (Imports, steps 7-8): list, read, preview, save.

@@ -21,6 +21,7 @@
     // ride on the Import. There is no "Remember as a rule" here: an alias maps a
     // whole QuickBooks account, so there is no payee rule to write.
     import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import ImportMatches from "#lib/matching/ui/ImportMatches.svelte";
     import {reviewLaunch} from "#lib/review/ui/launch.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
     import {canCommitQbJournal, dateFormatNotice, filesNeedingSort, qbIdMatchesSummary, qbReorderOffer} from "../qbJournalModel";
@@ -219,6 +220,9 @@
                                     <p class="text-sm" data-testid="qb-imported">
                                         Imported {result.imported} transaction{result.imported === 1 ? "" : "s"}.
                                     </p>
+                                    <!-- Find Matches (plan 35 D9 "Import"): a QuickBooks import inserts by date,
+                                         so it offers the whole journal's pairs, not only the new ones. -->
+                                    <ImportMatches since={null} imported={result.imported} />
                                     {#if result.updated > 0}
                                         <p class="text-sm" data-testid="qb-updated">
                                             Updated {result.updated} changed transaction{result.updated === 1 ? "" : "s"} from the export.

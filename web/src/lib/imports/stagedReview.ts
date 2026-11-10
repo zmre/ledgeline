@@ -69,6 +69,12 @@ export function describeOps(ops: readonly WireEditOp[]): string[] {
                 return op.comment === null ? `posting ${op.posting + 1} comment cleared` : `posting ${op.posting + 1} comment edited`;
             case "removePostingAssertion":
                 return `posting ${op.posting + 1} assertion removed`;
+            case "setPostingTag":
+                return op.value === null ? `posting ${op.posting + 1} tag ${op.name} removed` : `posting ${op.posting + 1} tag ${op.name}:${op.value}`;
+            case "addPostingTagValue":
+                return `posting ${op.posting + 1} tag ${op.name}:${op.value}`;
+            case "removePostingTagValue":
+                return `posting ${op.posting + 1} tag ${op.name}:${op.value} removed`;
             case "replace":
                 return "amounts or postings edited";
         }

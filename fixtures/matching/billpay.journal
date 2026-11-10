@@ -1,0 +1,43 @@
+; Bill pay: each bank debit from the bill-pay service pays several bills at
+; once. The debits come from the checking feed and the bills from the
+; service's own export; both land on transfers:billpay. Kept in its own file,
+; included last, so the other feeds' transaction numbers do not move.
+
+; One $2,247.50 debit paying a $2,000.00 and a $247.50 bill the same day:
+; the only two bills that sum to it, so Find Matches suggests the three as
+; one combination (plan 35 Amendment A4).
+
+2027-01-12 * BILL.COM PAYABLES
+    assets:checking                 $-2,247.50
+    transfers:billpay                $2,247.50
+
+2027-01-12 * Northside Builders invoice 1042
+    expenses:contractors             $2,000.00
+    transfers:billpay               $-2,000.00
+
+2027-01-12 * City Water & Power
+    expenses:utilities                 $247.50
+    transfers:billpay                 $-247.50
+
+; A $480.00 debit with four bills nearby: $180 + $300 and $230 + $250 both
+; sum to it, so no combination is suggested (it would be a guess).
+
+2027-01-25 * BILL.COM PAYABLES
+    assets:checking                   $-480.00
+    transfers:billpay                  $480.00
+
+2027-01-25 * Greenleaf Landscaping
+    expenses:contractors               $180.00
+    transfers:billpay                 $-180.00
+
+2027-01-25 * Northside Builders invoice 1057
+    expenses:contractors               $300.00
+    transfers:billpay                 $-300.00
+
+2027-01-25 * Harbor Pest Control
+    expenses:contractors               $230.00
+    transfers:billpay                 $-230.00
+
+2027-01-25 * Lakeview Plumbing
+    expenses:contractors               $250.00
+    transfers:billpay                 $-250.00

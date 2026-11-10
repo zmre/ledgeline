@@ -5,11 +5,15 @@ import {
     accountFlow,
     centerOffset,
     computeWindow,
+    displayTotal,
+    expandedWithin,
     formatTotals,
     halfPageRows,
     nearestOffset,
     nextStatus,
     periodLabel,
+    slotAt,
+    slotOf,
     txnComments,
     txnFlowAmounts,
 } from "./rowModel";
@@ -313,5 +317,36 @@ describe("UNIT rowModel", () => {
                 expect(w.padTop + (w.end - w.start) * pitch + w.padBottom).toBe(big.length * pitch);
             }
         });
+    });
+});
+
+describe("expanded transfer slots (plan 35 D11)", () => {
+    it("adds two slots per expanded row, ignoring duplicates and rows past the end", () => {
+        expect(expandedWithin([7, 2, 2, 12, -1], 10)).toEqual([2, 7]);
+        expect(displayTotal(10, [2, 7, 12])).toBe(14);
+        expect(displayTotal(10, [])).toBe(10);
+    });
+
+    it("maps each slot to its row or half, and each row back to its slot", () => {
+        const open = [1, 3];
+        // rows 0..4 → slots: 0, 1, [2 3], 4, 5, [6 7], 8
+        const slots = Array.from({length: displayTotal(5, open)}, (_, at) => slotAt(at, open));
+        expect(slots).toEqual([
+            {position: 0, half: null},
+            {position: 1, half: null},
+            {position: 1, half: 0},
+            {position: 1, half: 1},
+            {position: 2, half: null},
+            {position: 3, half: null},
+            {position: 3, half: 0},
+            {position: 3, half: 1},
+            {position: 4, half: null},
+        ]);
+        for (let position = 0; position < 5; position += 1) expect(slotAt(slotOf(position, open), open)).toEqual({position, half: null});
+    });
+
+    it("is the identity with nothing expanded", () => {
+        expect(slotAt(4, [])).toEqual({position: 4, half: null});
+        expect(slotOf(4, [])).toBe(4);
     });
 });

@@ -99,6 +99,17 @@ interface PersistedSettings {
     reviewMaxDays: number;
     /** The journal's review stripes (D20). On by default. */
     reviewMarkers: boolean;
+    /** Find Matches (plan 35 D8): how many days apart two halves of a transfer may be. Default 10. */
+    matchWindow: number;
+    /** Find Matches: only clearing postings this many days back are proposed. `0` means no limit. Default 365. */
+    matchLookback: number;
+    /**
+     * The "In transit" finding's threshold (D10): a clearing posting with no
+     * partner this many days old is flagged. Default 10. Stored for the
+     * Problems check; the engine applies its own default until the check
+     * takes a parameter.
+     */
+    matchTransitDays: number;
 }
 
 /** Keep only catalog symbols, once each, in catalog order. */
@@ -117,6 +128,14 @@ export const REVIEW_MAX_DAYS = 365;
 /** Bounds the two review numbers are clamped to: a run of 1–1000, a window of 0 (no limit)–36500 days. */
 const REVIEW_LIMIT_RANGE = [1, 1000] as const;
 const REVIEW_DAYS_RANGE = [0, 36500] as const;
+
+/** Find Matches' defaults and bounds (plan 35 D8): a window of 1–60 days, a lookback of 0 (no limit)–36500, in transit after 1–365. */
+export const MATCH_WINDOW = 10;
+export const MATCH_LOOKBACK = 365;
+export const MATCH_TRANSIT_DAYS = 10;
+const MATCH_WINDOW_RANGE = [1, 60] as const;
+const MATCH_LOOKBACK_RANGE = [0, 36500] as const;
+const MATCH_TRANSIT_RANGE = [1, 365] as const;
 
 /** A persisted whole number inside `range`, or `fallback` for anything else (a stale blob, a hand edit). */
 function wholeIn(value: unknown, range: readonly [number, number], fallback: number): number {
@@ -146,6 +165,9 @@ const defaults = (): PersistedSettings => ({
     reviewRecentLimit: REVIEW_RECENT_LIMIT,
     reviewMaxDays: REVIEW_MAX_DAYS,
     reviewMarkers: true,
+    matchWindow: MATCH_WINDOW,
+    matchLookback: MATCH_LOOKBACK,
+    matchTransitDays: MATCH_TRANSIT_DAYS,
 });
 
 /**
@@ -213,6 +235,10 @@ function load(): PersistedSettings {
             reviewRecentLimit: wholeIn(parsed.reviewRecentLimit, REVIEW_LIMIT_RANGE, REVIEW_RECENT_LIMIT),
             reviewMaxDays: wholeIn(parsed.reviewMaxDays, REVIEW_DAYS_RANGE, REVIEW_MAX_DAYS),
             reviewMarkers: typeof parsed.reviewMarkers === "boolean" ? parsed.reviewMarkers : true,
+            // Added with plan 35, the same way.
+            matchWindow: wholeIn(parsed.matchWindow, MATCH_WINDOW_RANGE, MATCH_WINDOW),
+            matchLookback: wholeIn(parsed.matchLookback, MATCH_LOOKBACK_RANGE, MATCH_LOOKBACK),
+            matchTransitDays: wholeIn(parsed.matchTransitDays, MATCH_TRANSIT_RANGE, MATCH_TRANSIT_DAYS),
         };
     } catch (cause) {
         storageError = `Saved settings couldn't be read (${cause instanceof Error ? cause.message : String(cause)}) — starting from defaults.`;
@@ -256,6 +282,9 @@ function persist(): void {
             reviewRecentLimit: state.reviewRecentLimit,
             reviewMaxDays: state.reviewMaxDays,
             reviewMarkers: state.reviewMarkers,
+            matchWindow: state.matchWindow,
+            matchLookback: state.matchLookback,
+            matchTransitDays: state.matchTransitDays,
         })
     );
 }
@@ -391,6 +420,30 @@ export const settings = {
     },
     set reviewMarkers(on: boolean) {
         state.reviewMarkers = on;
+        persist();
+    },
+    /** Find Matches' window in days (plan 35 D8), 1–60. */
+    get matchWindow(): number {
+        return state.matchWindow;
+    },
+    set matchWindow(days: number) {
+        state.matchWindow = wholeIn(days, MATCH_WINDOW_RANGE, MATCH_WINDOW);
+        persist();
+    },
+    /** Find Matches' lookback in days (D8); 0 = no limit. */
+    get matchLookback(): number {
+        return state.matchLookback;
+    },
+    set matchLookback(days: number) {
+        state.matchLookback = wholeIn(days, MATCH_LOOKBACK_RANGE, MATCH_LOOKBACK);
+        persist();
+    },
+    /** Days before an unmatched clearing posting reads as "in transit" (D8, D10), 1–365. */
+    get matchTransitDays(): number {
+        return state.matchTransitDays;
+    },
+    set matchTransitDays(days: number) {
+        state.matchTransitDays = wholeIn(days, MATCH_TRANSIT_RANGE, MATCH_TRANSIT_DAYS);
         persist();
     },
     /** The cross-origin engine token, if one was entered. Null in embedded mode. */

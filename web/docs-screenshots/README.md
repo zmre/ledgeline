@@ -16,7 +16,7 @@ at the changed PNGs and commit them with the UI change that moved them.
 ## How it works
 
 - `playwright.docs.config.ts` starts one engine per fixture set (`sample`,
-  `budget`, `subscriptions`, `review`) on ports 5211–5214. Each engine serves the SPA it
+  `budget`, `subscriptions`, `review`, `matching`) on ports 5211–5215. Each engine serves the SPA it
   embeds, same-origin, so `just docs-screenshots` builds the SPA before the
   binary.
 - `stage.ts` copies each set into `target/docs-screenshots/<set>/` first. The
@@ -26,7 +26,7 @@ at the changed PNGs and commit them with the UI change that moved them.
 - `harness.ts` pins the clock to 2026-07-08 and the timezone to America/Denver,
   and fills the same date into the two Projections requests that otherwise use
   the engine's own clock. A spec can move the clock with `test.use({now})`:
-  the `review` set is read as of 2026-10-30. It also provides:
+  the `review` set is read as of 2026-10-30, and `matching` as of 2027-01-31. It also provides:
     - `annotate(page, specs)`: draws `circle`, `box` and `arrow` (with an
       optional `label` pill) marks from locator boxes in a fixed SVG overlay, and
       returns the drawn bounds. `clear(page)` removes them.

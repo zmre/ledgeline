@@ -65,6 +65,39 @@ export interface JournalRow {
      * review queue).
      */
     running?: RunningCell | null;
+    /**
+     * Plan 35 D11: the transaction has a half in a valid transfer link (the ⇄
+     * icon) — including one in two links, which does not collapse. Absent
+     * (read as false) on every other row, and on rows outside `/api/journal/rows`.
+     */
+    linked?: boolean;
+    /**
+     * Plan 35 D11: this row IS a collapsed linked pair. The row's own `txn` is
+     * the anchoring half (the earliest half the filter keeps); `transfer`
+     * carries both halves for the expanded view. Absent on an ordinary row.
+     */
+    transfer?: TransferRow;
+}
+
+/** One end of a transfer: its transaction and its real (non-clearing) account. */
+export interface TransferEnd {
+    /** The half's transaction index. */
+    index: number;
+    /** The real account on this side, or null when the half has none. */
+    account: string | null;
+    /** Its short label — the last segment, or the full name when both ends' last segments collide. */
+    label: string | null;
+}
+
+/** A linked pair shown as one journal row (plan 35 D11): "Checking → Amex". */
+export interface TransferRow {
+    /** The `match` id both clearing postings carry. */
+    matchId: string;
+    /** Both halves as ordinary rows, earliest (date, index) first. */
+    halves: readonly [JournalRow, JournalRow];
+    /** The source: the half whose real posting is negative. */
+    from: TransferEnd;
+    to: TransferEnd;
 }
 
 /** A balance assertion's operator, as written: `=` single-commodity, `==` total, `*` inclusive of subaccounts. */
@@ -209,7 +242,10 @@ export interface CommoditySummary {
 /** `GET /api/journal/summary` — the footer, the big numbers and the chart selectors for one filter. */
 export interface JournalSummary {
     generation: string;
+    /** Rows, as the journal shows them: a collapsed transfer pair counts once (plan 35 D11). */
     total: number;
+    /** How many of `total` are collapsed transfer pairs; nonzero means "rows", not "transactions". 0 from an older engine. */
+    transfers: number;
     /** The primary commodity's net (0 or 1 entries): the footer's "Visible Journal Total". */
     visibleNet: Amount[];
     /** Most-used first, under the account selection. */

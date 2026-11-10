@@ -14,17 +14,23 @@
 //! - a regular posting has no `type` and an unasserting one no
 //!   `balanceAssertion`, so the common case stays small; likewise only an
 //!   elided posting carries `elided: true` (plan 32 D35).
+//!
+//! It also holds [`Transfers`]: which linked transfer pairs (plan 35 D11)
+//! collapse into one row, where that row sits under a filter, and the search
+//! text it is found by. Every route that counts or positions rows asks it, so
+//! they agree on what a row is.
 
 use super::checks::WireFlag;
 use super::wire::{DeclaredStyles, WireDec, WireStyle, js_trim_end};
 use crate::decimal::Dec;
 use crate::display::{MAX_DISPLAY_DECIMALS, format_amount};
+use crate::matching::{self, PostingRef};
 use crate::model::{
     Amount, AmountStyle, Commodity, CostKind, Journal, Posting, PostingType, Status, Transaction,
 };
 use crate::wire::{account_tag_map, posting_tags};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// A cost annotation: `@` per unit when `per`, `@@` total otherwise; `qty`
 /// always the unsigned magnitude.
@@ -271,4 +277,182 @@ pub fn haystack(txn: &Transaction, declared: &DeclaredStyles) -> String {
         .collect::<Vec<_>>()
         .join("\n")
         .to_lowercase()
+}
+
+// ---------------------------------------------------------------------------
+// Transfer rows (plan 35 D11)
+// ---------------------------------------------------------------------------
+
+/// One end of a [`Transfer`]: its transaction and the real account on its
+/// side of the clearing account.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferEnd {
+    /// The half's position in `journal.transactions`.
+    pub position: u32,
+    /// The half's real (non-clearing) account, when it has one.
+    pub account: Option<String>,
+    /// Its short label (the last segment, or the full name when both ends'
+    /// last segments collide — [`matching::AccountLabels`]).
+    pub label: Option<String>,
+}
+
+/// A valid link shown as ONE journal row (D11).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Transfer {
+    /// The `match` id.
+    pub id: String,
+    /// The two halves' positions, earliest `(date, tindex)` first.
+    pub halves: [u32; 2],
+    /// The source: the half whose real posting is negative.
+    pub from: TransferEnd,
+    /// The destination.
+    pub to: TransferEnd,
+}
+
+impl Transfer {
+    /// The other half's position.
+    #[must_use]
+    pub fn partner(&self, position: u32) -> u32 {
+        if self.halves[0] == position {
+            self.halves[1]
+        } else {
+            self.halves[0]
+        }
+    }
+}
+
+/// Every valid link in a journal, as the journal rows see them (D11).
+///
+/// - A pair **collapses** into one transfer row when neither of its
+///   transactions is in another valid link. A group of three or more
+///   postings (A3) never collapses; its transactions are only linked. A transaction in two links (a
+///   transfer and a fee through the same clearing account) cannot collapse
+///   into either without hiding the other, so it and its partners stay
+///   ordinary rows ([`Self::is_linked`] still marks them for the ⇄ icon).
+/// - The row sits at the **earliest half the filter keeps**
+///   ([`Self::collapse`]).
+/// - Its search text is **both halves'** ([`Self::join_haystacks`]).
+#[derive(Debug, Default)]
+pub struct Transfers {
+    pairs: Vec<Transfer>,
+    /// Each collapsing half's position → its pair in `pairs`.
+    by_position: HashMap<u32, usize>,
+    /// Every position with a half in any valid link.
+    linked: HashSet<u32>,
+}
+
+impl Transfers {
+    /// The links in `journal` ([`matching::links`]).
+    #[must_use]
+    pub fn of(journal: &Journal) -> Self {
+        let index = matching::links(journal);
+        if index.pairs().is_empty() && index.groups().is_empty() {
+            return Self::default();
+        }
+        let clearing = matching::clearing_accounts(journal);
+        let labels = matching::AccountLabels::of(journal);
+        let position = |at: PostingRef| u32::try_from(at.position).unwrap_or(u32::MAX);
+        let mut transfers = Self::default();
+        // A group of three or more (A3) never collapses: its rows carry ⇄,
+        // and a pair sharing a transaction with it stays expanded too
+        // (`link_count`).
+        transfers
+            .linked
+            .extend(index.groups().values().flatten().map(|at| position(*at)));
+        for (id, (a, b)) in index.pairs() {
+            transfers.linked.extend([position(*a), position(*b)]);
+            if index.link_count(a.position) != 1 || index.link_count(b.position) != 1 {
+                continue;
+            }
+            let key = |at: PostingRef| {
+                let txn = &journal.transactions[at.position];
+                (txn.date.as_str(), txn.index.0)
+            };
+            let halves = if key(*a) <= key(*b) {
+                [position(*a), position(*b)]
+            } else {
+                [position(*b), position(*a)]
+            };
+            let [from, to] = matching::direction(journal, *a, *b);
+            let accounts = [from, to].map(|at| matching::real_account(journal, &clearing, at));
+            let [from_label, to_label] = labels.pair(accounts[0], accounts[1]);
+            let at = transfers.pairs.len();
+            transfers.by_position.extend(halves.map(|half| (half, at)));
+            transfers.pairs.push(Transfer {
+                id: id.clone(),
+                halves,
+                from: TransferEnd {
+                    position: position(from),
+                    account: accounts[0].map(str::to_string),
+                    label: from_label,
+                },
+                to: TransferEnd {
+                    position: position(to),
+                    account: accounts[1].map(str::to_string),
+                    label: to_label,
+                },
+            });
+        }
+        transfers
+    }
+
+    /// Whether no pair collapses.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.pairs.is_empty()
+    }
+
+    /// The collapsing pair the transaction at `position` is a half of.
+    #[must_use]
+    pub fn get(&self, position: u32) -> Option<&Transfer> {
+        self.by_position.get(&position).map(|&at| &self.pairs[at])
+    }
+
+    /// Whether the transaction at `position` has a half in any valid link,
+    /// collapsing or not: the row's ⇄ icon.
+    #[must_use]
+    pub fn is_linked(&self, position: u32) -> bool {
+        self.linked.contains(&position)
+    }
+
+    /// The rows of `filtered` (positions in display order): every position,
+    /// except that a collapsing pair with BOTH halves kept shows once, at its
+    /// earliest half. A pair with one half kept shows at that half (the
+    /// partial-filter case), so it is still a transfer row.
+    #[must_use]
+    pub fn collapse(&self, filtered: &[u32]) -> Vec<u32> {
+        if self.is_empty() {
+            return filtered.to_vec();
+        }
+        let kept: HashSet<u32> = filtered
+            .iter()
+            .copied()
+            .filter(|position| self.by_position.contains_key(position))
+            .collect();
+        filtered
+            .iter()
+            .copied()
+            .filter(|&position| {
+                self.get(position).is_none_or(|transfer| {
+                    transfer.halves[0] == position || !kept.contains(&transfer.partner(position))
+                })
+            })
+            .collect()
+    }
+
+    /// Give each collapsing half the search text of both halves (its own
+    /// first), so a query on either description finds the transfer row.
+    /// `haystacks` is indexed by position.
+    pub fn join_haystacks(&self, haystacks: &mut [Box<str>]) {
+        for transfer in &self.pairs {
+            let [a, b] = transfer.halves.map(|half| half as usize);
+            let (Some(first), Some(second)) = (haystacks.get(a), haystacks.get(b)) else {
+                continue;
+            };
+            let joined_a = format!("{first}\n{second}").into_boxed_str();
+            let joined_b = format!("{second}\n{first}").into_boxed_str();
+            haystacks[a] = joined_a;
+            haystacks[b] = joined_b;
+        }
+    }
 }

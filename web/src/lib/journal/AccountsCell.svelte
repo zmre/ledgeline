@@ -24,19 +24,31 @@
     import {flowChipRooms, splitChipRooms} from "./chipGeometry";
     import AccountInput from "./edit/AccountInput.svelte";
     import {rowActions} from "./rowAction.svelte";
-    import {accountFlow, generatedPostings, generatingRules} from "./rowModel";
+    import {type AccountFlow, accountFlow, generatedPostings, generatingRules} from "./rowModel";
 
-    let {txn}: {txn: Transaction} = $props();
+    let {
+        txn,
+        transferEnds,
+    }: {
+        txn: Transaction;
+        /**
+         * A collapsed transfer row (plan 35 D11): the two real accounts, source
+         * first. They render as this cell's ordinary flow chips, read-only — the
+         * accounts live on two different transactions, so neither is this row's
+         * to recategorize inline.
+         */
+        transferEnds?: readonly [string, string];
+    } = $props();
 
     /** Room the "+N auto" badge takes from the chips: its text at `badge-sm` plus the flex gap. */
     const AUTO_BADGE_PX = 60;
-    const flow = $derived(accountFlow(txn));
-    const autoCount = $derived(generatedPostings(txn).length);
+    const flow: AccountFlow = $derived(transferEnds === undefined ? accountFlow(txn) : {kind: "flow", source: transferEnds[0], dest: transferEnds[1]});
+    const autoCount = $derived(transferEnds === undefined ? generatedPostings(txn).length : 0);
     const autoRules = $derived(generatingRules(txn));
     const autoTitle = $derived(
         `${autoCount} ${autoCount === 1 ? "posting" : "postings"} added by ${autoRules.map((rule) => `= ${rule.query}`).join(", ")} — open the rule`
     );
-    const canEdit = $derived(editing.canEdit);
+    const canEdit = $derived(editing.canEdit && transferEnds === undefined);
 
     // Room in px for each chip's text, or null when nothing has measured the
     // column (card layout, server render, first frame) — the labels then fall

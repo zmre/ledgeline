@@ -3,12 +3,20 @@
     // drawer, listing problems grouped by rule. Clicking one closes the drawer,
     // widens the date filter if needed, navigates to the journal, and asks the
     // table (via problems.requestFocus) to scroll to and pulse the row.
+    //
+    // Transfer matching's findings (plan 35 D10, Amendment A2) carry a fix
+    // beside the jump, on an editable journal: "in transit" offers Find match
+    // (Find Matches focused on that transaction, over the journal), and
+    // "broken match" offers Unlink (asks first; removes every broken `match:`
+    // id the transaction carries, from every posting carrying it).
     import {goto} from "$app/navigation";
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
     import type {Problem, Severity} from "#lib/checks/engine.js";
     import {widenRange} from "#lib/journal/runningBalance.js";
+    import {editing} from "#lib/stores/editing.svelte.js";
     import {filters} from "#lib/stores/filters.svelte.js";
+    import {matches} from "#lib/stores/matches.svelte.js";
     import {problems} from "#lib/stores/problems.svelte.js";
 
     const RULE_LABELS: Record<string, string> = {
@@ -36,7 +44,17 @@
         "stock-missing-basis": "Stock with no cost basis",
         "stock-negative": "Negative share count",
         "stock-unpriced": "Stock with no price",
+        // Plan 35 D10: transfer matching.
+        "in-transit": "In transit",
+        "broken-match": "Broken match",
+        "unusual-clearing": "Unusual clearing posting",
     };
+
+    /** The findings a click can fix, and how (plan 35 A2). */
+    const FIXES: Record<string, "find" | "unlink"> = {"in-transit": "find", "broken-match": "unlink"};
+    /** The broken-match finding whose Unlink is armed (by transaction), and the last fix that failed. */
+    let armedUnlink = $state<number | null>(null);
+    let fixFailure = $state<{txnIndex: number; message: string} | null>(null);
 
     const SEVERITY_BADGE: Record<Severity, string> = {error: "badge-error", warning: "badge-warning", info: "badge-info"};
 
@@ -74,6 +92,27 @@
         problems.requestFocus(problem.txnIndex);
     }
 
+    /** Find match: Find Matches focused on the transaction, over the journal (the row is cursored for after). */
+    async function findMatch(problem: Problem): Promise<void> {
+        if (problem.txnIndex === null) return;
+        await jumpTo(problem);
+        matches.openFor(problem.txnIndex);
+    }
+
+    /** Unlink a broken match: arm, then remove every broken `match:` id the transaction carries. */
+    async function unlinkBroken(problem: Problem): Promise<void> {
+        const index = problem.txnIndex;
+        if (index === null || matches.busy) return;
+        if (armedUnlink !== index) {
+            armedUnlink = index;
+            return;
+        }
+        armedUnlink = null;
+        fixFailure = null;
+        const outcome = await matches.unlinkFrom(index, null);
+        if (!outcome.ok && outcome.failure.kind !== "conflict") fixFailure = {txnIndex: index, message: outcome.failure.message};
+    }
+
     /**
      * Svelte `{#each}` key. Two findings can share a message only if they share
      * an anchor, and Svelte throws on a duplicate key, so both halves are in it.
@@ -96,6 +135,31 @@
     {:else}
         <span class="block text-xs text-base-content/60">{problem.message}</span>
     {/if}
+{/snippet}
+
+{#snippet fix(problem: Problem, kind: "find" | "unlink")}
+    <div class="flex flex-wrap items-center gap-2 px-2 pb-2" data-testid="problem-fix">
+        {#if kind === "find"}
+            <button type="button" class="btn btn-xs" onclick={() => void findMatch(problem)} data-testid="problem-find-match">Find match</button>
+        {:else if armedUnlink === problem.txnIndex}
+            <span class="text-xs text-base-content/70">Remove the broken link's tags?</span>
+            <button
+                type="button"
+                class="btn btn-warning btn-xs"
+                disabled={matches.busy}
+                onclick={() => void unlinkBroken(problem)}
+                data-testid="problem-unlink-go">Unlink</button
+            >
+            <button type="button" class="btn btn-ghost btn-xs" onclick={() => (armedUnlink = null)}>Keep</button>
+        {:else}
+            <button type="button" class="btn btn-xs" disabled={matches.busy} onclick={() => void unlinkBroken(problem)} data-testid="problem-unlink"
+                >Unlink</button
+            >
+        {/if}
+        {#if fixFailure !== null && fixFailure.txnIndex === problem.txnIndex}
+            <span class="text-xs text-error" role="alert">{fixFailure.message}</span>
+        {/if}
+    </div>
 {/snippet}
 
 <!-- The `{#if problems.drawerOpen}` is load-bearing, not tidiness. daisyUI hides a
@@ -156,6 +220,9 @@
                                             </span>
                                             {@render messageBody(problem)}
                                         </button>
+                                        {#if editing.canEdit && FIXES[problem.rule] !== undefined}
+                                            {@render fix(problem, FIXES[problem.rule])}
+                                        {/if}
                                     {/if}
                                 </li>
                             {/each}

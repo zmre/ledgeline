@@ -64,6 +64,17 @@ const SETS: Readonly<Record<string, FixtureSet>> = {
             ["review/review-2025.journal", "review-2025.journal"],
         ],
     },
+    // Transfer matching (plan 35), read as of 2027-01-31: one file per bank
+    // feed, included by the main file.
+    matching: {
+        files: [
+            ["matching.journal", "matching.journal"],
+            ["matching/checking.journal", "matching/checking.journal"],
+            ["matching/savings.journal", "matching/savings.journal"],
+            ["matching/amex.journal", "matching/amex.journal"],
+            ["matching/billpay.journal", "matching/billpay.journal"],
+        ],
+    },
 };
 
 const stage = (name: string): string => {

@@ -216,7 +216,9 @@ export const journalView = {
     /**
      * Every row of the current view, oldest first — the journal export. Paged
      * at the engine's per-request cap rather than through the block cache, so
-     * exporting does not evict what the table is showing.
+     * exporting does not evict what the table is showing. Uncollapsed: an
+     * export writes transactions, so both halves of a linked transfer pair
+     * (plan 35 D11) come back as rows of their own.
      */
     async allRows(): Promise<Transaction[]> {
         return (await this.allViewRows()).map((row) => row.txn);
@@ -229,7 +231,11 @@ export const journalView = {
         const out: JournalRow[] = [];
         for (let offset = 0; ; offset += PAGE_SIZE) {
             const page = decodeRowsPage(
-                await api(target.serverUrl).journalRows(target.filter, {offset, limit: PAGE_SIZE, order: "asc", today: localToday()}, target.pin)
+                await api(target.serverUrl).journalRows(
+                    target.filter,
+                    {offset, limit: PAGE_SIZE, order: "asc", today: localToday(), collapse: false},
+                    target.pin
+                )
             );
             out.push(...page.rows);
             if (page.rows.length < PAGE_SIZE || out.length >= page.total) return out;

@@ -1,8 +1,9 @@
 //! Every problem the Problems badge counts and the drawer lists (plan 26 B4):
 //! the engine diagnostics (unbalanced, failed assertions, account tags, the
 //! three stock rules — [`wire::journal_to_all_diagnostics`]) followed by the
-//! five LOCAL rules that used to run in the browser over the whole downloaded
-//! journal (`web/src/lib/checks/rules.ts`):
+//! LOCAL rules: five that used to run in the browser over the whole downloaded
+//! journal (`web/src/lib/checks/rules.ts`), then transfer matching's three
+//! (plan 35 D10):
 //!
 //! | rule                  | severity | anchor      |
 //! |-----------------------|----------|-------------|
@@ -11,6 +12,9 @@
 //! | `negative-cash`       | warning  | account     |
 //! | `missing-description` | info     | transaction |
 //! | `future-date`         | info     | transaction |
+//! | `in-transit`          | info     | transaction |
+//! | `broken-match`        | warning  | transaction |
+//! | `unusual-clearing`    | info     | transaction |
 //!
 //! Two of them read the calendar (`negative-cash` takes balances as of today,
 //! `future-date` compares against it). "Today" is the CLIENT's local date,
@@ -24,6 +28,10 @@ use super::Classes;
 use super::cash::{BalanceKind, cash_balances};
 use super::wire::{js_trim, plain_decimal};
 use crate::assertions::{AssertionFailure, check_balance_assertions};
+use crate::edit::render_amount;
+use crate::matching::{
+    self, BrokenReason, DEFAULT_IN_TRANSIT_DAYS, DEFAULT_WINDOW_DAYS, MATCH_TAG,
+};
 use crate::model::{Journal, Status, Transaction};
 use crate::projections::is_generated;
 use crate::reports::AccountType;
@@ -272,7 +280,81 @@ fn future_date(position: usize, txn: &Transaction, today: &str) -> Option<Findin
     })
 }
 
-/// The five local rules over `journal`, in rule order (all `pending` findings,
+/// Plan 35 D10 "In transit": a clearing posting older than the flag age with
+/// no proposed partner. Uses the default window and flag age (D8): those are
+/// per-browser settings, and this list is computed per journal and `today`,
+/// not per client; the Find Matches overlay applies the client's own.
+fn in_transit(journal: &Journal, today: &str) -> Vec<Finding> {
+    matching::in_transit(journal, DEFAULT_WINDOW_DAYS, DEFAULT_IN_TRANSIT_DAYS, today)
+        .into_iter()
+        .map(|candidate| {
+            Finding::txn(
+                candidate.at.position,
+                "in-transit",
+                Severity::Info,
+                format!(
+                    "{} on {} has been in transit since {} with no matching transfer; \
+                     Find match can link it by hand",
+                    render_amount(candidate.amount),
+                    candidate.account,
+                    candidate.date
+                ),
+            )
+        })
+        .collect()
+}
+
+/// Plan 35 D10 "Broken match": a `match` id that is not a valid link (A3: N ≥ 2
+/// clearing postings on one account, in N transactions, summing to zero). One finding per transaction carrying it.
+fn broken_match(journal: &Journal) -> Vec<Finding> {
+    matching::links(journal)
+        .broken()
+        .iter()
+        .flat_map(|link| {
+            let why = match link.reason {
+                BrokenReason::Count(1) => "is on only one posting".to_string(),
+                BrokenReason::Count(n) => format!("is on {n} postings"),
+                BrokenReason::NotClearing => "is on a posting outside a clearing account".into(),
+                BrokenReason::DifferentAccounts => {
+                    "links postings on different clearing accounts".into()
+                }
+                BrokenReason::SameTransaction => "is on two postings of one transaction".into(),
+                BrokenReason::DoNotCancel => "links amounts that do not sum to zero".into(),
+            };
+            let message = format!("{MATCH_TAG}:{} {why}", link.id);
+            let positions: HashSet<usize> = link.postings.iter().map(|at| at.position).collect();
+            let mut positions: Vec<usize> = positions.into_iter().collect();
+            positions.sort_unstable();
+            positions.into_iter().map(move |position| {
+                Finding::txn(position, "broken-match", Severity::Warning, message.clone())
+            })
+        })
+        .collect()
+}
+
+/// Plan 35 D10 "Unusual clearing posting": a cost or balance assertion on a
+/// clearing posting means it can never be matched.
+fn unusual_clearing(journal: &Journal) -> Vec<Finding> {
+    matching::unusual_clearing_postings(journal)
+        .into_iter()
+        .map(|at| {
+            let account = &journal.transactions[at.position].postings[at.posting]
+                .account
+                .0;
+            Finding::txn(
+                at.position,
+                "unusual-clearing",
+                Severity::Info,
+                format!(
+                    "posting to clearing account \"{account}\" has a cost or balance \
+                     assertion, so it can never be matched"
+                ),
+            )
+        })
+        .collect()
+}
+
+/// The local rules over `journal`, in rule order (all `pending` findings,
 /// then all `uncategorized`, …), as of the client's `today`.
 ///
 /// A forecast transaction (one a `~` rule generated, tagged
@@ -302,6 +384,9 @@ pub fn local_findings(journal: &Journal, classes: &Classes, today: &str) -> Vec<
         .chain(negative)
         .chain(missing)
         .chain(future)
+        .chain(in_transit(journal, today))
+        .chain(broken_match(journal))
+        .chain(unusual_clearing(journal))
         .collect()
 }
 

@@ -1,0 +1,38 @@
+; Transfer matching (plan 35): a small household journal whose bank feeds are
+; imported one file per account. Every transfer between them lands on a
+; clearing account under `transfers`, one half from each feed, and Ledgeline's
+; Find Matches pairs the halves up.
+;
+; Read as of 2027-01-31 (the docs screenshots pin that day). What it holds:
+;
+; - two pairs already linked (`match:`), shown as one transfer row each;
+; - six clear pairs not yet linked, one crossing the year (Dec 31 → Jan 2);
+; - two $200 transfers four days apart whose halves tie (both "check");
+; - a pair rejected with `nomatch:`, each half pairing elsewhere instead;
+; - a $250 transfer to savings whose other half never arrived (in transit);
+; - a link broken by an edit after linking (the amounts no longer cancel);
+; - a bill-pay debit paying two bills, suggested as one combination, and one
+;   whose bills sum to it two ways, not suggested (matching/billpay.journal).
+;
+; web/docs-screenshots/matching.docs.ts and the engine's fixture test
+; (crates/ledgeline-server/tests/match_fixture.rs) read this file. Change the
+; test's expectations with it.
+
+account assets:checking                 ; type: C
+account assets:savings                  ; type: C
+account liabilities:amex                ; type: L
+account income:salary                   ; type: R
+account expenses:groceries              ; type: X
+account expenses:dining                 ; type: X
+account expenses:utilities              ; type: X
+account expenses:contractors            ; type: X
+account equity:opening                  ; type: E
+account transfers                       ; clearing:
+account transfers:internal-bank
+account transfers:creditcard-payment
+account transfers:billpay
+
+include matching/checking.journal
+include matching/savings.journal
+include matching/amex.journal
+include matching/billpay.journal

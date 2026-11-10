@@ -66,5 +66,12 @@ name = "review"
 path = "benches/review.rs"
 harness = false
 
+# Plan 35's transfer matching (propose, links, collapsed rows) on the corpus
+# with its transfers split through a clearing account.
+[[bench]]
+name = "matching"
+path = "benches/matching.rs"
+harness = false
+
 [lib]
 bench = false

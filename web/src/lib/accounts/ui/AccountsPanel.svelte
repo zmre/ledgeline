@@ -24,7 +24,18 @@
     import {onServerReady} from "#lib/stores/serverWatch.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
     import {accountListing, accountsStore} from "../accountsStore.svelte";
-    import {blankTag, defaultTargetFile, deleteSaveRequest, isDirty, mergedRows, SPECIAL_TAGS, toForm, toSaveRequest, validateForm} from "../model";
+    import {
+        blankTag,
+        defaultTargetFile,
+        deleteSaveRequest,
+        inheritedClearing,
+        isDirty,
+        mergedRows,
+        SPECIAL_TAGS,
+        toForm,
+        toSaveRequest,
+        validateForm,
+    } from "../model";
     import type {AccountForm} from "../model";
     import type {AccountEntry} from "../types";
     import {createRevealArm, reveal} from "#lib/ui/reveal.js";
@@ -80,6 +91,14 @@
     });
 
     const dirty = $derived(removalStaged || (form === null ? false : isDirty(baseEntry, form)));
+    /** Plan 35 D2: the ancestor this account inherits `clearing:` from, if any. */
+    const clearingFrom = $derived(form === null || listing === null ? null : inheritedClearing(form.name, listing.files));
+
+    function setClearing(on: boolean): void {
+        if (form === null) return;
+        form = {...form, clearing: on ? (toForm(form.name, baseEntry).clearing ?? "") : null};
+        savedAt = null;
+    }
 
     $effect(() => {
         holdUnsavedEdits("accounts", dirty);
@@ -362,6 +381,41 @@
                                         {/if}
                                     </div>
                                 {/each}
+                            </div>
+
+                            <!-- Transfer matching (plan 35 D2): `clearing:` on the directive. A
+                                 subaccount of a clearing account inherits it, read-only here. -->
+                            <div class="flex flex-wrap items-center gap-x-2 gap-y-1" data-testid="settings-account-clearing">
+                                {#if clearingFrom !== null && form.clearing === null}
+                                    <input
+                                        id="settings-account-clearing"
+                                        type="checkbox"
+                                        class="checkbox checkbox-sm"
+                                        checked
+                                        disabled
+                                        data-testid="settings-account-clearing-box"
+                                    />
+                                {:else}
+                                    <input
+                                        id="settings-account-clearing"
+                                        type="checkbox"
+                                        class="checkbox checkbox-sm"
+                                        checked={form.clearing !== null}
+                                        disabled={disabled || removalStaged}
+                                        onchange={(event) => setClearing(event.currentTarget.checked)}
+                                        data-testid="settings-account-clearing-box"
+                                    />
+                                {/if}
+                                <label class="label-text text-sm" for="settings-account-clearing">Clearing account</label>
+                                {@render help(
+                                    "Transfers between your own accounts pass through it, one import on each side. Find Matches pairs the two halves on it. Its subaccounts are clearing accounts too.",
+                                    "Clearing account"
+                                )}
+                                {#if clearingFrom !== null}
+                                    <span class="text-xs text-base-content/60" data-testid="settings-account-clearing-inherited"
+                                        >inherited from <code>{clearingFrom}</code></span
+                                    >
+                                {/if}
                             </div>
 
                             <div class="flex flex-col gap-2">

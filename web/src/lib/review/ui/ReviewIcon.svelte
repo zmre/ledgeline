@@ -15,7 +15,9 @@
         | "sliders"
         | "warning"
         | "bolt"
-        | "calendar";
+        | "calendar"
+        | "link"
+        | "unlink";
 </script>
 
 <script lang="ts">
@@ -71,5 +73,10 @@
     {:else if name === "calendar"}
         <rect x="2.5" y="3.5" width="11" height="10" rx="1.5" />
         <path d="M2.5 6.5h11M5.5 2v3M10.5 2v3" />
+    {:else if name === "link"}
+        <!-- ⇄: a linked transfer pair (plan 35). -->
+        <path d="M3 5.5h9.5M10 3l2.5 2.5L10 8M13 10.5H3.5M6 8l-2.5 2.5L6 13" />
+    {:else if name === "unlink"}
+        <path d="M3 5.5h9.5M10 3l2.5 2.5L10 8M13 10.5H3.5M6 8l-2.5 2.5L6 13M2.5 2.5l11 11" />
     {/if}
 </svg>

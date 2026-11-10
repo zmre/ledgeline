@@ -244,6 +244,41 @@ pub enum EditOp {
         /// 0-based posting position, counting the postings the file writes.
         posting: usize,
     },
+    /// Set (`Some`) or remove (`None`) one tag on the `posting`-th WRITTEN
+    /// posting, as [`JournalEditor::set_posting_tag`]: setting rewrites the
+    /// first occurrence in place and drops any others, so exactly one value
+    /// is left; removing drops every occurrence.
+    SetPostingTag {
+        /// 0-based posting position, counting the postings the file writes.
+        posting: usize,
+        /// The tag name (`match`).
+        name: String,
+        /// Its new value, or `None` to remove every occurrence.
+        value: Option<String>,
+    },
+    /// Add `name:value` to the `posting`-th WRITTEN posting's same-line
+    /// comment, beside any other values of the same tag (plan 35 D12's
+    /// repeated `nomatch:` tags). A no-op when that exact value is already
+    /// there.
+    AddPostingTagValue {
+        /// 0-based posting position, counting the postings the file writes.
+        posting: usize,
+        /// The tag name (`nomatch`).
+        name: String,
+        /// The value to add.
+        value: String,
+    },
+    /// Remove `name:value` — that exact value only, with its separator — from
+    /// the `posting`-th WRITTEN posting's comment. Other values of the same
+    /// tag stay byte for byte. A no-op when the value is not there.
+    RemovePostingTagValue {
+        /// 0-based posting position, counting the postings the file writes.
+        posting: usize,
+        /// The tag name (`nomatch`).
+        name: String,
+        /// The value to remove.
+        value: String,
+    },
     /// A full re-render from this transaction. Must be the entry's FIRST op:
     /// anything before it would be overwritten. Each posting is written as
     /// given: one with no amount is written blank (elided), one with an
@@ -1817,6 +1852,88 @@ impl JournalEditor {
         self.apply_one(index, EditOp::SetTxnComment(text.to_string()))
     }
 
+    /// Set (`Some`) or remove (`None`) the tag `name` on the `posting`-th
+    /// WRITTEN posting of the transaction with `index` (plan 35 D1), rewriting
+    /// only that posting's comment — its same-line comment and the `;` lines
+    /// under it.
+    ///
+    /// - An existing tag is rewritten where it sits, with its own spacing;
+    ///   any further occurrences of it on the posting are removed, so exactly
+    ///   one value is left.
+    /// - A new tag joins the posting's same-line comment, or starts one
+    ///   written as exactly `"  ; "` after the posting text.
+    /// - `None` removes every occurrence, with its separator. A same-line
+    ///   comment left empty loses its `;` and the gap before it; a `;` line
+    ///   left empty is removed whole.
+    ///
+    /// Nothing else moves: an elided amount stays elided. The result is
+    /// re-parsed and refused unless the posting's tags read back as asked,
+    /// every other tag and the comment's free text are untouched.
+    ///
+    /// # Errors
+    /// As [`set_txn_tag`](Self::set_txn_tag), plus
+    /// [`EditError::PostingNotFound`] for a posting the file does not write.
+    pub fn set_posting_tag(
+        &mut self,
+        index: Tindex,
+        posting: usize,
+        name: &str,
+        value: Option<&str>,
+    ) -> Result<(), EditError> {
+        self.apply_one(
+            index,
+            EditOp::SetPostingTag {
+                posting,
+                name: name.to_string(),
+                value: value.map(str::to_string),
+            },
+        )
+    }
+
+    /// Add `name:value` to the `posting`-th WRITTEN posting
+    /// ([`EditOp::AddPostingTagValue`]); a no-op when that value is present.
+    ///
+    /// # Errors
+    /// As [`set_posting_tag`](Self::set_posting_tag).
+    pub fn add_posting_tag_value(
+        &mut self,
+        index: Tindex,
+        posting: usize,
+        name: &str,
+        value: &str,
+    ) -> Result<(), EditError> {
+        self.apply_one(
+            index,
+            EditOp::AddPostingTagValue {
+                posting,
+                name: name.to_string(),
+                value: value.to_string(),
+            },
+        )
+    }
+
+    /// Remove `name:value` from the `posting`-th WRITTEN posting
+    /// ([`EditOp::RemovePostingTagValue`]), leaving other values of the tag.
+    ///
+    /// # Errors
+    /// As [`set_posting_tag`](Self::set_posting_tag).
+    pub fn remove_posting_tag_value(
+        &mut self,
+        index: Tindex,
+        posting: usize,
+        name: &str,
+        value: &str,
+    ) -> Result<(), EditError> {
+        self.apply_one(
+            index,
+            EditOp::RemovePostingTagValue {
+                posting,
+                name: name.to_string(),
+                value: value.to_string(),
+            },
+        )
+    }
+
     /// One op on one transaction, with no fingerprint to check, reporting the
     /// failure itself rather than a [`EditError::BulkTransaction`] of one.
     fn apply_one(&mut self, index: Tindex, op: EditOp) -> Result<(), EditError> {
@@ -3018,6 +3135,12 @@ struct Expected {
     /// The free-text lines asked of the transaction comment, if an op set it
     /// ([`comment_free_text`]'s form).
     comment: Option<Vec<String>>,
+    /// The postings a posting-tag op touched, with the tag names it touched.
+    /// Their comment is held to the model's with those tags taken out
+    /// ([`comment_without_tags`]), and their tags to the model's as a
+    /// multiset (a tag appended to the same-line comment reads back ahead of
+    /// any on the `;` lines under it), rather than to the exact text.
+    tagged_postings: HashMap<usize, Vec<String>>,
 }
 
 impl Expected {
@@ -3041,22 +3164,28 @@ impl Expected {
                 && parsed.code == model.code
                 && parsed.description == model.description;
             let postings_kept = parsed.postings.len() == model.postings.len()
-                && model
-                    .postings
-                    .iter()
-                    .zip(&parsed.postings)
-                    .all(|(want, got)| {
+                && model.postings.iter().zip(&parsed.postings).enumerate().all(
+                    |(at, (want, got))| {
+                        let comment_kept = match self.tagged_postings.get(&at) {
+                            Some(names) => {
+                                comment_without_tags(&want.comment, names)
+                                    == comment_without_tags(&got.comment, names)
+                                    && sorted_tags(&want.tags) == sorted_tags(&got.tags)
+                            }
+                            None => want.comment == got.comment,
+                        };
                         want.account == got.account
                             && want.ptype == got.ptype
                             && want.status == got.status
                             && want.amounts == got.amounts
                             && want.elided == got.elided
-                            && want.comment == got.comment
+                            && comment_kept
                             && assertions_equivalent(
                                 want.balance_assertion.as_ref(),
                                 got.balance_assertion.as_ref(),
                             )
-                    });
+                    },
+                );
             let untouched = |txn: &'_ Transaction| -> Vec<(String, String)> {
                 txn.tags
                     .iter()
@@ -3082,6 +3211,39 @@ impl Expected {
             Err(EditError::RoundTripMismatch)
         }
     }
+}
+
+/// `tags` in a canonical order, for comparing them as a multiset.
+fn sorted_tags(tags: &[(String, String)]) -> Vec<&(String, String)> {
+    let mut sorted: Vec<&(String, String)> = tags.iter().collect();
+    sorted.sort();
+    sorted
+}
+
+/// A stored posting comment with every tag in `names` removed (as
+/// [`upsert_tag`] removes one): its same-line part, and its other lines with
+/// the empty ones dropped — a `;` line a tag op emptied is deleted from the
+/// file, so it must not count as a difference.
+fn comment_without_tags(comment: &str, names: &[String]) -> (String, Vec<String>) {
+    let strip = |line: &str| {
+        names
+            .iter()
+            .fold(line.to_string(), |mut line, name| {
+                loop {
+                    let next = upsert_tag(&line, name, None);
+                    if next == line {
+                        break line;
+                    }
+                    line = next;
+                }
+            })
+            .trim()
+            .to_string()
+    };
+    let mut lines = comment_lines(comment);
+    let first = lines.next().map(strip).unwrap_or_default();
+    let rest = lines.map(strip).filter(|line| !line.is_empty()).collect();
+    (first, rest)
 }
 
 /// The non-tag, non-empty comma segments of a comment, trimmed — the part a
@@ -3179,6 +3341,7 @@ fn rewrite_transaction(
         replaced: false,
         tags: Vec::new(),
         comment: None,
+        tagged_postings: HashMap::new(),
     };
     for (at, op) in ops.iter().enumerate() {
         match op {
@@ -3259,6 +3422,31 @@ fn rewrite_transaction(
                 let target = written_posting(&mut expected.model, txn.index, *posting)?;
                 text = rewrite_posting_comment(&text, *posting, &lines, terminator)?;
                 target.comment = stored_comment(&lines);
+                target.tags = lines.iter().flat_map(|line| parse_tags(line)).collect();
+            }
+            EditOp::SetPostingTag {
+                posting,
+                name,
+                value,
+            } => {
+                let edit = PostingTagEdit::Set(value.as_deref());
+                text = edit_posting_tag(&mut expected, txn.index, &text, *posting, name, edit)?;
+            }
+            EditOp::AddPostingTagValue {
+                posting,
+                name,
+                value,
+            } => {
+                let edit = PostingTagEdit::Add(value);
+                text = edit_posting_tag(&mut expected, txn.index, &text, *posting, name, edit)?;
+            }
+            EditOp::RemovePostingTagValue {
+                posting,
+                name,
+                value,
+            } => {
+                let edit = PostingTagEdit::Remove(value);
+                text = edit_posting_tag(&mut expected, txn.index, &text, *posting, name, edit)?;
             }
             EditOp::RemovePostingAssertion { posting } => {
                 let target = written_posting(&mut expected.model, txn.index, *posting)?;
@@ -3842,6 +4030,242 @@ fn rewrite_posting_assertion(text: &str, posting: usize) -> Result<String, EditE
     Ok(join_span(&lines))
 }
 
+/// What a posting-tag op does to the tag it names.
+#[derive(Debug, Clone, Copy)]
+enum PostingTagEdit<'a> {
+    /// [`EditOp::SetPostingTag`]: one value (`Some`) or none at all.
+    Set(Option<&'a str>),
+    /// [`EditOp::AddPostingTagValue`].
+    Add(&'a str),
+    /// [`EditOp::RemovePostingTagValue`].
+    Remove(&'a str),
+}
+
+impl PostingTagEdit<'_> {
+    /// `tags` (a posting's own, in the model) as the op leaves them.
+    fn apply_to(self, tags: &mut Vec<(String, String)>, name: &str) {
+        match self {
+            Self::Set(Some(value)) => match tags.iter().position(|(tag, _)| tag == name) {
+                Some(first) => {
+                    tags[first].1 = value.to_string();
+                    let mut at = 0;
+                    tags.retain(|(tag, _)| {
+                        let keep = tag != name || at == first;
+                        at += 1;
+                        keep
+                    });
+                }
+                None => tags.push((name.to_string(), value.to_string())),
+            },
+            Self::Set(None) => tags.retain(|(tag, _)| tag != name),
+            Self::Add(value) => {
+                if !tags.iter().any(|(tag, v)| tag == name && v == value) {
+                    tags.push((name.to_string(), value.to_string()));
+                }
+            }
+            Self::Remove(value) => tags.retain(|(tag, v)| !(tag == name && v == value)),
+        }
+    }
+}
+
+/// One posting-tag op: refuse what hledger could not read back, record what
+/// the reparse must show in `expected`, and return `text` rewritten.
+fn edit_posting_tag(
+    expected: &mut Expected,
+    txn: Tindex,
+    text: &str,
+    posting: usize,
+    name: &str,
+    edit: PostingTagEdit<'_>,
+) -> Result<String, EditError> {
+    let value = match edit {
+        PostingTagEdit::Set(value) => value,
+        PostingTagEdit::Add(value) | PostingTagEdit::Remove(value) => Some(value),
+    };
+    check_tag(name, value)?;
+    let target = written_posting(&mut expected.model, txn, posting)?;
+    edit.apply_to(&mut target.tags, name);
+    let names = expected.tagged_postings.entry(posting).or_default();
+    if !names.iter().any(|touched| touched == name) {
+        names.push(name.to_string());
+    }
+    rewrite_posting_tag(text, posting, name, edit)
+}
+
+/// Every occurrence of the tag `name` in the comment of the posting on
+/// `lines[at]` — its own line, then the `;` lines under it — as
+/// `(line, comma segment, value)`, in file order.
+fn posting_tag_occurrences(
+    lines: &[SpanLine],
+    at: usize,
+    name: &str,
+) -> Vec<(usize, usize, String)> {
+    std::iter::once(at)
+        .chain((at + 1..lines.len()).take_while(|&line| is_comment_content(&lines[line].content)))
+        .filter_map(|line| {
+            let content = &lines[line].content;
+            content.find(';').map(|semi| (line, &content[semi + 1..]))
+        })
+        .flat_map(|(line, body)| {
+            body.split(',')
+                .enumerate()
+                .filter_map(move |(segment, text)| {
+                    tag_in_segment(text)
+                        .filter(|(tag, _)| tag == name)
+                        .map(|(_, value)| (line, segment, value))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// `lines` with comma segment `segment` (a tag `name`) of `lines[line]`'s
+/// comment removed, with its separator. A posting line (`line == at`) left
+/// with an empty comment drops its `;` and the gap before it; a `;` line left
+/// empty goes whole.
+fn remove_posting_tag_segment(
+    lines: &mut Vec<SpanLine>,
+    at: usize,
+    line: usize,
+    segment: usize,
+    name: &str,
+) {
+    let content = lines[line].content.clone();
+    let Some(semi) = content.find(';') else {
+        return;
+    };
+    let segments: Vec<&str> = content[semi + 1..].split(',').collect();
+    let body = without_tag_segment(&segments, segment, name);
+    if !body.trim().is_empty() {
+        lines[line].content = format!("{}{body}", &content[..=semi]);
+    } else if line == at {
+        lines[line].content = content[..semi].trim_end().to_string();
+    } else {
+        lines.remove(line);
+    }
+}
+
+/// `text` with the `posting`-th posting's tag `name` edited as `edit` says
+/// (see [`JournalEditor::set_posting_tag`] and the two value ops). Only the
+/// comma segments that change are touched; a new tag goes on the posting's
+/// own line.
+fn rewrite_posting_tag(
+    text: &str,
+    posting: usize,
+    name: &str,
+    edit: PostingTagEdit<'_>,
+) -> Result<String, EditError> {
+    let mut lines = span_lines(text);
+    let at = posting_line_at(&lines, posting)?;
+    let occurrences = posting_tag_occurrences(&lines, at, name);
+    let append = |lines: &mut Vec<SpanLine>, value: &str| {
+        let content = &lines[at].content;
+        lines[at].content = match content.find(';') {
+            Some(semi) => format!(
+                "{}{}",
+                &content[..=semi],
+                appended_tag(&content[semi + 1..], name, value)
+            ),
+            None => format!("{}  ; {name}:{value}", content.trim_end()),
+        };
+    };
+    // Each removal re-scans, since it shifts the segments (and maybe lines)
+    // after it; every pass removes one occurrence, so this ends.
+    let remove_while = |lines: &mut Vec<SpanLine>, skip: usize, doomed: &dyn Fn(&str) -> bool| {
+        while let Some((line, segment, _)) = posting_tag_occurrences(lines, at, name)
+            .into_iter()
+            .skip(skip)
+            .find(|(_, _, value)| doomed(value))
+        {
+            remove_posting_tag_segment(lines, at, line, segment, name);
+        }
+    };
+    match edit {
+        PostingTagEdit::Set(Some(value)) => match occurrences.first() {
+            None => append(&mut lines, value),
+            Some((line, segment, current)) => {
+                if current != value {
+                    let content = lines[*line].content.clone();
+                    let semi = content.find(';').unwrap_or_default();
+                    let segments: Vec<&str> = content[semi + 1..].split(',').collect();
+                    lines[*line].content = format!(
+                        "{}{}",
+                        &content[..=semi],
+                        with_tag_value(&segments, *segment, value)
+                    );
+                }
+                remove_while(&mut lines, 1, &|_| true);
+            }
+        },
+        PostingTagEdit::Set(None) => remove_while(&mut lines, 0, &|_| true),
+        PostingTagEdit::Add(value) => {
+            if !occurrences.iter().any(|(_, _, current)| current == value) {
+                append(&mut lines, value);
+            }
+        }
+        PostingTagEdit::Remove(value) => remove_while(&mut lines, 0, &|current| current == value),
+    }
+    Ok(join_span(&lines))
+}
+
+/// `comment` (the text after a `;`) with ` name:value` appended as its own
+/// comma segment, whatever tags of that name it already holds.
+fn appended_tag(comment: &str, name: &str, value: &str) -> String {
+    if comment.trim().is_empty() {
+        format!(" {name}:{value}")
+    } else {
+        format!("{}, {name}:{value}", comment.trim_end())
+    }
+}
+
+/// `segments` (a comment split on `,`) rejoined with the tag in segment `at`
+/// given `value`; the name, the spacing around the value and any free text
+/// before the name stay.
+fn with_tag_value(segments: &[&str], at: usize, value: &str) -> String {
+    let segment = segments[at];
+    // The caller found a tag here, so the segment has a `:`.
+    let colon = segment.find(':').unwrap_or(segment.len());
+    let old = segment.get(colon + 1..).unwrap_or("");
+    let (lead, trail) = if old.trim().is_empty() {
+        (old, "")
+    } else {
+        (
+            &old[..old.len() - old.trim_start().len()],
+            &old[old.trim_end().len()..],
+        )
+    };
+    let mut rebuilt: Vec<String> = segments.iter().map(|s| (*s).to_string()).collect();
+    rebuilt[at] = format!("{}:{lead}{value}{trail}", &segment[..colon]);
+    rebuilt.join(",")
+}
+
+/// `segments` (a comment split on `,`) rejoined without the tag `name` in
+/// segment `at`, and its separating comma. Free text that shared its segment
+/// (`groceries reviewed:x`) stays.
+fn without_tag_segment(segments: &[&str], at: usize, name: &str) -> String {
+    let segment = segments[at];
+    let colon = segment.find(':').unwrap_or(segment.len());
+    let mut rebuilt: Vec<String> = segments.iter().map(|s| (*s).to_string()).collect();
+    // The parser's name is the last word of the text before `:`.
+    let head = segment[..colon].trim_end();
+    let prefix = &head[..head.len().saturating_sub(name.len())];
+    if !prefix.trim().is_empty() {
+        rebuilt[at] = prefix.trim_end().to_string();
+    } else if segments.len() == 1 {
+        return String::new();
+    } else if at == 0 {
+        let lead = &segment[..segment.len() - segment.trim_start().len()];
+        rebuilt.remove(0);
+        rebuilt[0] = format!("{lead}{}", rebuilt[0].trim_start());
+    } else {
+        rebuilt.remove(at);
+        if at == segments.len() - 1 {
+            return rebuilt.join(",").trim_end().to_string();
+        }
+    }
+    rebuilt.join(",")
+}
+
 /// Set (`Some`) or remove (`None`) the tag `name` in one comment's text, by
 /// hledger's rules: a comment is comma-separated segments, a segment is a tag
 /// when it holds a `:`, the tag's name is the last word before that `:`, and
@@ -3866,51 +4290,12 @@ fn rewrite_posting_assertion(text: &str, posting: usize) -> Result<String, EditE
 #[must_use]
 pub fn upsert_tag(comment: &str, name: &str, value: Option<&str>) -> String {
     let segments: Vec<&str> = comment.split(',').collect();
-    let Some(at) = tag_segment(&segments, name) else {
-        return match value {
-            Some(value) if comment.trim().is_empty() => format!(" {name}:{value}"),
-            Some(value) => format!("{}, {name}:{value}", comment.trim_end()),
-            None => comment.to_string(),
-        };
-    };
-    let segment = segments[at];
-    // `tag_in_segment` matched, so the segment has a `:`.
-    let colon = segment.find(':').unwrap_or(segment.len());
-    let mut rebuilt: Vec<String> = segments.iter().map(|s| (*s).to_string()).collect();
-    match value {
-        Some(value) => {
-            let old = segment.get(colon + 1..).unwrap_or("");
-            let (lead, trail) = if old.trim().is_empty() {
-                (old, "")
-            } else {
-                (
-                    &old[..old.len() - old.trim_start().len()],
-                    &old[old.trim_end().len()..],
-                )
-            };
-            rebuilt[at] = format!("{}:{lead}{value}{trail}", &segment[..colon]);
-        }
-        None => {
-            // The parser's name is the last word of the text before `:`.
-            let head = segment[..colon].trim_end();
-            let prefix = &head[..head.len().saturating_sub(name.len())];
-            if !prefix.trim().is_empty() {
-                rebuilt[at] = prefix.trim_end().to_string();
-            } else if segments.len() == 1 {
-                return String::new();
-            } else if at == 0 {
-                let lead = &segment[..segment.len() - segment.trim_start().len()];
-                rebuilt.remove(0);
-                rebuilt[0] = format!("{lead}{}", rebuilt[0].trim_start());
-            } else {
-                rebuilt.remove(at);
-                if at == segments.len() - 1 {
-                    return rebuilt.join(",").trim_end().to_string();
-                }
-            }
-        }
+    match (tag_segment(&segments, name), value) {
+        (Some(at), Some(value)) => with_tag_value(&segments, at, value),
+        (Some(at), None) => without_tag_segment(&segments, at, name),
+        (None, Some(value)) => appended_tag(comment, name, value),
+        (None, None) => comment.to_string(),
     }
-    rebuilt.join(",")
 }
 
 /// Render one amount exactly as a journal line writes it.

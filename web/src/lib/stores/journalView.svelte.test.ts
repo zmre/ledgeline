@@ -135,6 +135,9 @@ describe("UNIT journalView", () => {
         expect(rows.at(-1)?.index).toBe(2500);
         const pages = calls.filter((url) => url.searchParams.get("order") === "asc");
         expect(pages.map((url) => url.searchParams.get("limit"))).toEqual(["1000", "1000", "1000"]);
+        // An export writes transactions: transfer pairs (plan 35 D11) are not collapsed.
+        expect(pages.every((url) => url.searchParams.get("collapse") === "false")).toBe(true);
+        expect(calls.filter((url) => url.searchParams.get("order") !== "asc").every((url) => !url.searchParams.has("collapse"))).toBe(true);
     });
 
     it("locates a transaction through the engine", async () => {

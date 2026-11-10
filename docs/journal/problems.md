@@ -23,6 +23,8 @@ Most findings point at a transaction. Click one and Ledgeline closes the drawer,
 
 A few findings are about an account instead of a transaction. Those show the account name and aren't clickable.
 
+Two findings also carry a fix button under them, when the journal can be edited: **Find match** on [In transit](#in-transit) and **Unlink** on [Broken match](#broken-match).
+
 In the journal table, a flagged transaction has a coloured dot before its description. Hover the dot to read the findings.
 
 The checks run on the whole journal, whatever the filter bar says.
@@ -42,6 +44,9 @@ The checks run on the whole journal, whatever the filter bar says.
 | [Negative cash balance](#negative-cash-balance) | warning | account |
 | [Missing description](#missing-description) | info | transaction |
 | [Future date](#future-date) | info | transaction |
+| [In transit](#in-transit) | info | transaction |
+| [Broken match](#broken-match) | warning | transaction |
+| [Unusual clearing posting](#unusual-clearing-posting) | info | transaction |
 
 The first six come from Ledgeline's engine. If you point the app at a plain `hledger-web` server instead, those engine checks are missing, and Ledgeline runs a simpler balance check of its own.
 
@@ -154,6 +159,22 @@ The transaction has no description. Click the description cell or press <kbd>e</
 ### Future date
 
 The transaction is dated after today. That is fine for scheduled payments. Otherwise it is usually a typo in the year or month.
+
+### In transit
+
+A posting on a clearing account is more than 10 days old and Find Matches has no partner to propose for it. The other half of the transfer was never imported, or a rule sent it somewhere else, or it was paid out in several pieces.
+
+Click **Find match** under the finding. Ledgeline goes to the transaction in the journal and opens [Find match](transfer-matching.md#find-match-for-one-transaction) on it, which shows every exact partner at any date, combinations that add up, and nearby postings you can pick by hand. If the other half was never imported, import the missing statement or fix the rule. If the posting really has no other half, click **Ignore this side** there. See [Transfer matching](transfer-matching.md#problems).
+
+### Broken match
+
+A `match:` id isn't a valid link: it's on only one posting, on postings in different clearing accounts or in one transaction, on a posting outside a clearing account, or on postings that no longer add up to zero. Usually one half of a linked transfer was edited or deleted after it was linked.
+
+Click **Unlink** under the finding, then **Unlink** again to confirm. That removes the broken `match:` id from every posting that carries it, and the transactions are otherwise left as they are. Then match them again. See [Transfer matching](transfer-matching.md#problems).
+
+### Unusual clearing posting
+
+A posting on a clearing account has a cost (`@`) or a balance assertion, so Find Matches can never pair it. Move the cost or assertion to the real account's posting.
 
 ## Related pages
 
