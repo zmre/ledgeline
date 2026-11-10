@@ -1,0 +1,73 @@
+; Checking: imported from the bank's CSV feed.
+
+2026-10-01 * Opening balance
+    assets:checking                  $6,000.00
+    equity:opening
+
+2026-10-01 * ACME CORP PAYROLL
+    assets:checking                  $3,200.00
+    income:salary
+
+2026-10-05 * TRANSFER TO SAVINGS
+    assets:checking                   $-500.00
+    transfers:internal-bank            $500.00  ; match:a1b2c3
+
+2026-10-20 * AMEX EPAYMENT ACH PMT
+    assets:checking                 $-1,234.56
+    transfers:creditcard-payment     $1,234.56  ; match:k7f3a2
+
+2026-11-01 * ACME CORP PAYROLL
+    assets:checking                  $3,200.00
+    income:salary
+
+2026-11-05 * TRANSFER TO SAVINGS
+    assets:checking                   $-500.00
+    transfers:internal-bank            $500.00
+
+2026-11-09 * CITY WATER & POWER
+    assets:checking                   $-142.80
+    expenses:utilities
+
+2026-11-14 * TRANSFER TO SAVINGS
+    assets:checking                   $-200.00
+    transfers:internal-bank            $200.00
+
+2026-11-18 * TRANSFER TO SAVINGS
+    assets:checking                   $-200.00
+    transfers:internal-bank            $200.00
+
+2026-11-21 * AMEX EPAYMENT ACH PMT
+    assets:checking                   $-842.17
+    transfers:creditcard-payment       $842.17
+
+2026-12-01 * ACME CORP PAYROLL
+    assets:checking                  $3,200.00
+    income:salary
+
+2026-12-05 * TRANSFER TO SAVINGS
+    assets:checking                   $-500.00
+    transfers:internal-bank            $500.00
+
+2026-12-12 * TRANSFER TO SAVINGS
+    assets:checking                   $-300.00
+    transfers:internal-bank            $300.00  ; nomatch:r4x9q2
+
+2026-12-16 * TRANSFER TO SAVINGS
+    assets:checking                   $-300.00
+    transfers:internal-bank            $300.00
+
+2026-12-28 * TRANSFER TO SAVINGS
+    assets:checking                   $-250.00
+    transfers:internal-bank            $250.00
+
+2026-12-31 * AMEX EPAYMENT ACH PMT
+    assets:checking                   $-500.00
+    transfers:creditcard-payment       $500.00
+
+2027-01-01 * ACME CORP PAYROLL
+    assets:checking                  $3,200.00
+    income:salary
+
+2027-01-08 * AMEX EPAYMENT ACH PMT
+    assets:checking                   $-650.00
+    transfers:creditcard-payment       $650.00  ; match:zz9k1m

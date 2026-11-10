@@ -113,6 +113,7 @@
         type Chips,
     } from "../card";
     import type {Transaction} from "#lib/domain/types.js";
+    import EditorMatchStrip from "#lib/matching/ui/EditorMatchStrip.svelte";
     import {loadRuleChoice} from "../journalRules";
     import type {QueueKind, ReviewForm} from "../types";
     import {reviewLaunch, type StagedLaunch} from "./launch.svelte";
@@ -929,7 +930,7 @@
                 </summary>
                 <div class="dropdown-content z-30 mt-1 rounded-box border border-base-300 bg-base-200 p-2 text-base-content shadow-xl">
                     {#if settingsOpen}
-                        <ReviewSettings />
+                        <ReviewSettings show="review" />
                         <button type="button" class="btn mt-2 w-full btn-ghost btn-xs" onclick={() => (settingsOpen = false)}>Done</button>
                     {:else}
                         <ul class="menu w-60 p-0 text-sm">
@@ -1099,6 +1100,15 @@
                                     {/snippet}
                                 </ReviewHero>
                                 <div class="border-t border-dashed border-base-content/15"></div>
+                                {#if single === "edit"}
+                                    <!-- Plan 35 A2: ⇄ Find match, or the transaction's links with Unlink. -->
+                                    <EditorMatchStrip
+                                        {txn}
+                                        {dirty}
+                                        disabled={current.status === "saving" || finishing}
+                                        onUnlinked={() => txnModal.openEdit(txn.index)}
+                                    />
+                                {/if}
                                 {#if failure !== null}
                                     <div class="alert py-2 text-sm alert-error" role="alert" data-testid="review-failure">
                                         <span class="grow break-words">Not saved: {failure}</span>

@@ -38,7 +38,7 @@ use ledgeline_core::view::checks::{
     Diagnostics, EngineChecks, WireFlag, diagnostics_body, engine_checks, local_findings,
 };
 use ledgeline_core::view::filter::{JournalFilter, display_order, filter_positions};
-use ledgeline_core::view::rows::{RowContext, haystack};
+use ledgeline_core::view::rows::{RowContext, TransferEnd, Transfers, haystack};
 use ledgeline_core::view::running::{
     AssertionMark, BalanceWindow, PostingRef, RunningBalance, WireBalanceSeries, WireMark,
     WireRunning, WireRunningSummary, posting_order,
@@ -82,12 +82,16 @@ pub(crate) struct ViewCache {
     /// Every transaction position in display order (date desc, tindex desc).
     order: OnceLock<Arc<Vec<u32>>>,
     /// Every transaction's lowercase search text, by position — built only
-    /// when a filter first carries a query.
+    /// when a filter first carries a query. A collapsing transfer half's is
+    /// both halves' (plan 35 D11).
     haystacks: OnceLock<Arc<Vec<Box<str>>>>,
+    /// The valid transfer links and which of them collapse into one row
+    /// (plan 35 D11).
+    transfers: OnceLock<Arc<Transfers>>,
     /// Every commodity's sign conventions over the whole journal.
     signs: OnceLock<Arc<SignTable>>,
     /// Recent filter results, most recently used last ([`FILTER_CACHE`]).
-    filters: Mutex<Vec<(JournalFilter, Arc<Vec<u32>>)>>,
+    filters: Mutex<Vec<(JournalFilter, Arc<Filtered>)>>,
     /// Every posting in hledger's evaluation order (plan 36). Lazy, NOT
     /// prewarmed: most sessions never pin an account.
     posting_order: OnceLock<Arc<Vec<PostingRef>>>,
@@ -106,6 +110,16 @@ pub(crate) struct ViewCache {
     pub(crate) payees: OnceLock<Bytes>,
     /// The `GET /api/tags` body.
     pub(crate) tags: OnceLock<Bytes>,
+}
+
+/// What one filter keeps, in display order.
+pub(crate) struct Filtered {
+    /// Every transaction the filter keeps: what totals and charts sum over.
+    pub(crate) positions: Vec<u32>,
+    /// The rows those transactions show as — `positions` with each linked
+    /// transfer pair collapsed to its anchoring half (plan 35 D11): what
+    /// `total`, offsets and positions count.
+    pub(crate) rows: Vec<u32>,
 }
 
 /// How many filter results each snapshot keeps. Scrolling one view asks for
@@ -154,8 +168,9 @@ impl ViewCache {
     /// a `OnceLock`, so a request racing a step simply shares its answer.
     fn prewarm(cache: &std::sync::Weak<Self>, journal: &Journal) {
         let today = today_utc();
-        let steps: [&dyn Fn(&Self); 6] = [
+        let steps: [&dyn Fn(&Self); 7] = [
             &|view| drop(view.order(journal)),
+            &|view| drop(view.transfers(journal)),
             &|view| drop(view.diagnostics(journal, &today)),
             &|view| drop(view.signs(journal)),
             &|view| drop(view.declared(journal)),
@@ -175,14 +190,22 @@ impl ViewCache {
     fn haystacks(&self, journal: &Journal) -> Arc<Vec<Box<str>>> {
         Arc::clone(self.haystacks.get_or_init(|| {
             let declared = self.declared(journal);
-            Arc::new(
-                journal
-                    .transactions
-                    .iter()
-                    .map(|txn| haystack(txn, &declared).into_boxed_str())
-                    .collect(),
-            )
+            let mut haystacks: Vec<Box<str>> = journal
+                .transactions
+                .iter()
+                .map(|txn| haystack(txn, &declared).into_boxed_str())
+                .collect();
+            self.transfers(journal).join_haystacks(&mut haystacks);
+            Arc::new(haystacks)
         }))
+    }
+
+    /// The transfer links of `journal`, built on first use.
+    pub(crate) fn transfers(&self, journal: &Journal) -> Arc<Transfers> {
+        Arc::clone(
+            self.transfers
+                .get_or_init(|| Arc::new(Transfers::of(journal))),
+        )
     }
 
     pub(crate) fn classes(&self, journal: &Journal) -> Arc<Classes> {
@@ -310,9 +333,9 @@ impl ViewCache {
         )
     }
 
-    /// The positions `filter` keeps, in display order — from the cache when a
-    /// recent request asked the same question.
-    fn filtered(&self, journal: &Journal, filter: &JournalFilter) -> Arc<Vec<u32>> {
+    /// The positions `filter` keeps and the rows they show as, in display
+    /// order — from the cache when a recent request asked the same question.
+    fn filtered(&self, journal: &Journal, filter: &JournalFilter) -> Arc<Filtered> {
         {
             let mut cache = self.lock_filters();
             if let Some(at) = cache.iter().position(|(key, _)| key == filter) {
@@ -324,12 +347,14 @@ impl ViewCache {
         }
         let order = self.order(journal);
         let haystacks = (!filter.query().is_empty()).then(|| self.haystacks(journal));
-        let positions = Arc::new(filter_positions(
+        let positions = filter_positions(
             journal,
             &order,
             haystacks.as_deref().map(Vec::as_slice),
             filter,
-        ));
+        );
+        let rows = self.transfers(journal).collapse(&positions);
+        let positions = Arc::new(Filtered { positions, rows });
         let mut cache = self.lock_filters();
         if cache.len() == FILTER_CACHE {
             cache.remove(0);
@@ -338,7 +363,7 @@ impl ViewCache {
         positions
     }
 
-    fn lock_filters(&self) -> std::sync::MutexGuard<'_, Vec<(JournalFilter, Arc<Vec<u32>>)>> {
+    fn lock_filters(&self) -> std::sync::MutexGuard<'_, Vec<(JournalFilter, Arc<Filtered>)>> {
         // Entries are pushed and removed whole; a poisoned lock is still sound.
         self.filters.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -532,7 +557,7 @@ const MAX_ROWS: usize = 1000;
 /// Rows per request when `limit` is absent: one client block.
 const DEFAULT_ROWS: usize = 200;
 
-/// `?from&to&accounts&q&offset&limit&order&today&balance&balanceCommodity`.
+/// `?from&to&accounts&q&offset&limit&order&today&balance&balanceCommodity&collapse`.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RowsQuery {
@@ -549,24 +574,71 @@ pub(crate) struct RowsQuery {
     /// The pinned commodity; absent or not posted in the subtree = the
     /// subtree's default.
     balance_commodity: Option<String>,
+    /// `false`: one row per transaction, no transfer rows — what an export
+    /// that writes transactions reads. Default `true`.
+    collapse: Option<bool>,
 }
 
-/// `{generation, total, offset, rows}`. Generic over the row so an unpinned
-/// request serializes exactly the type it always did.
+/// `{generation, total, offset, rows}`.
 #[derive(Serialize)]
-struct RowsBody<'a, R: Serialize> {
+struct RowsBody<'a> {
     generation: &'a str,
     total: usize,
     offset: usize,
-    rows: Vec<R>,
+    rows: Vec<JournalRow<'a>>,
 }
 
-/// A row with its pinned-account cells.
+/// One `/api/journal/rows` row: a [`ReviewRow`], plus (plan 35 D11)
+///
+/// - `linked: true` when the transaction has a half in any valid transfer
+///   link — the ⇄ icon — including one in two links, which does not
+///   collapse; absent otherwise;
+/// - `transfer` when the row IS a collapsed linked pair: the row itself is
+///   the anchoring half, and `transfer` carries both halves (earliest
+///   first) as full rows, the `match` id, and the two ends;
+/// - `running` when an account is pinned (plan 36): the cell of the row's
+///   own transaction — for a transfer row, the anchoring half's, which is
+///   the half the pin's account filter keeps.
 #[derive(Serialize)]
-struct PinnedRow<'a> {
+pub(crate) struct JournalRow<'a> {
     #[serde(flatten)]
     row: ReviewRow<'a>,
-    running: WireRunning<'a>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    linked: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transfer: Option<WireTransfer<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    running: Option<WireRunning<'a>>,
+}
+
+/// `{matchId, halves: [row, row], from, to}`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireTransfer<'a> {
+    match_id: &'a str,
+    halves: [ReviewRow<'a>; 2],
+    from: WireTransferEnd<'a>,
+    to: WireTransferEnd<'a>,
+}
+
+/// `{index, account, label}`: one end of a transfer — its transaction's
+/// `tindex`, its real account and that account's short label ("checking"),
+/// either null when the half has no real posting.
+#[derive(Serialize)]
+pub(crate) struct WireTransferEnd<'a> {
+    pub(crate) index: u32,
+    pub(crate) account: Option<&'a str>,
+    pub(crate) label: Option<&'a str>,
+}
+
+impl<'a> WireTransferEnd<'a> {
+    fn of(journal: &Journal, end: &'a TransferEnd) -> Self {
+        Self {
+            index: journal.transactions[end.position as usize].index.0,
+            account: end.account.as_deref(),
+            label: end.label.as_deref(),
+        }
+    }
 }
 
 /// The pinned column for one request: the cached balance, the commodity
@@ -659,11 +731,16 @@ pub(crate) fn flags_of(diagnostics: &Diagnostics, position: usize) -> Vec<WireFl
 /// `total` is the filtered count, so a client can size a scroll area before it
 /// has any rows; `limit` is capped at [`MAX_ROWS`].
 ///
+/// Each linked transfer pair is ONE row (plan 35 D11, see [`JournalRow`]),
+/// and `total` and `offset` count those rows. `collapse=false` serves every
+/// kept transaction as its own row instead (still marked `linked`), for a
+/// consumer that needs transactions, not rows.
+///
 /// With `balance=<account>` (plan 36) every row also carries `running`: the
 /// subtree's change and balance in `balanceCommodity` (or the default) and
 /// the assertion marks on it. Neither the balance nor the marks depend on the
 /// filter. An account with no posting in its subtree is a `400`. Without
-/// `balance` (or with it empty) the body is exactly what it always was.
+/// `balance` (or with it empty) there is no `running`.
 pub(crate) async fn rows(
     State(state): State<AppState>,
     Query(query): Query<RowsQuery>,
@@ -681,6 +758,7 @@ pub(crate) async fn rows(
     let limit = query.limit.unwrap_or(DEFAULT_ROWS).min(MAX_ROWS);
     let pin = query.balance.filter(|account| !account.is_empty());
     let pin_commodity = query.balance_commodity;
+    let collapse = query.collapse.unwrap_or(true);
     let snapshot = state.snapshot();
     let etag = dated_etag(&snapshot, &today);
     conditional_tagged(snapshot, etag, &headers, move |snapshot| {
@@ -690,23 +768,17 @@ pub(crate) async fn rows(
             .as_deref()
             .map(|root| view.running(journal, root))
             .transpose()?;
-        let positions = view.filtered(journal, &filter);
+        let pin = running
+            .as_deref()
+            .map(|running| Pin::new(running, pin_commodity.as_deref()))
+            .transpose()?;
+        let filtered = view.filtered(journal, &filter);
         let entry = view.diagnostics(journal, &today);
         let declared = view.declared(journal);
         let review = view.review(journal);
+        let transfers = view.transfers(journal);
         let context = RowContext::new(journal, &declared);
-        let window: Vec<u32> = if ascending {
-            positions
-                .iter()
-                .rev()
-                .skip(offset)
-                .take(limit)
-                .copied()
-                .collect()
-        } else {
-            positions.iter().skip(offset).take(limit).copied().collect()
-        };
-        let row = |position: u32| {
+        let review_row = |position: u32| {
             let at = position as usize;
             ReviewRow::at(
                 &review,
@@ -714,28 +786,40 @@ pub(crate) async fn rows(
                 context.row(&journal.transactions[at], flags_of(&entry.diagnostics, at)),
             )
         };
-        let generation = generation_of(&snapshot.etag);
-        let Some(running) = running.as_deref() else {
-            return to_bytes(&RowsBody {
-                generation,
-                total: positions.len(),
-                offset,
-                rows: window.into_iter().map(row).collect(),
-            });
+        let shown = if collapse {
+            &filtered.rows
+        } else {
+            &filtered.positions
         };
-        let pin = Pin::new(running, pin_commodity.as_deref())?;
+        let window: Box<dyn Iterator<Item = &u32>> = if ascending {
+            Box::new(shown.iter().rev().skip(offset).take(limit))
+        } else {
+            Box::new(shown.iter().skip(offset).take(limit))
+        };
         let rows = window
-            .into_iter()
-            .map(|position| {
-                Ok(PinnedRow {
-                    row: row(position),
-                    running: pin.cell(journal, &context, position)?,
+            .map(|&position| {
+                Ok(JournalRow {
+                    row: review_row(position),
+                    linked: transfers.is_linked(position),
+                    transfer: collapse
+                        .then(|| transfers.get(position))
+                        .flatten()
+                        .map(|transfer| WireTransfer {
+                            match_id: &transfer.id,
+                            halves: transfer.halves.map(review_row),
+                            from: WireTransferEnd::of(journal, &transfer.from),
+                            to: WireTransferEnd::of(journal, &transfer.to),
+                        }),
+                    running: pin
+                        .as_ref()
+                        .map(|pin| pin.cell(journal, &context, position))
+                        .transpose()?,
                 })
             })
             .collect::<Result<Vec<_>, AppError>>()?;
         to_bytes(&RowsBody {
-            generation,
-            total: positions.len(),
+            generation: generation_of(&snapshot.etag),
+            total: shown.len(),
             offset,
             rows,
         })
@@ -886,12 +970,15 @@ fn journal_view<'a>(
     }
 }
 
-/// `{generation, …Summary, review}`.
+/// `{generation, …Summary, transfers, review}`.
 #[derive(Serialize)]
 struct SummaryBody<'a, T: Serialize> {
     generation: &'a str,
     #[serde(flatten)]
     body: T,
+    /// How many of the `total` rows are collapsed transfer pairs (plan 35
+    /// D11): nonzero means `total` counts rows, not transactions.
+    transfers: usize,
     review: review_api::ReviewCounts,
 }
 
@@ -920,19 +1007,28 @@ pub(crate) async fn summary_route(
     let etag = dated_etag(&snapshot, &review.today);
     conditional_tagged(snapshot, etag, &headers, move |snapshot| {
         let cache = &snapshot.view;
-        let positions = cache.filtered(&snapshot.journal, &filter);
+        let filtered = cache.filtered(&snapshot.journal, &filter);
         let (classes, signs, declared) = (
             cache.classes(&snapshot.journal),
             cache.signs(&snapshot.journal),
             cache.declared(&snapshot.journal),
         );
+        let transfers = cache.transfers(&snapshot.journal);
         to_bytes(&SummaryBody {
             generation: generation_of(&snapshot.etag),
+            // The figures sum every kept transaction's postings; the count is
+            // the rows the journal shows.
             body: summary(
                 journal_view(snapshot, &classes, &signs, &declared),
-                &positions,
+                &filtered.positions,
                 &filter,
-            ),
+            )
+            .with_total(filtered.rows.len()),
+            transfers: filtered
+                .rows
+                .iter()
+                .filter(|&&position| transfers.get(position).is_some())
+                .count(),
             review: review.counts(&snapshot.journal, &cache.review(&snapshot.journal)),
         })
     })
@@ -1010,16 +1106,17 @@ pub(crate) async fn chart_route(
     };
     conditional(state.snapshot(), &headers, move |snapshot| {
         let cache = &snapshot.view;
-        let positions = cache.filtered(&snapshot.journal, &filter);
+        let filtered = cache.filtered(&snapshot.journal, &filter);
         let (classes, signs, declared) = (
             cache.classes(&snapshot.journal),
             cache.signs(&snapshot.journal),
             cache.declared(&snapshot.journal),
         );
         let view = journal_view(snapshot, &classes, &signs, &declared);
+        // Postings, never rows: a collapsed transfer still charts both halves.
         to_bytes(&WithGeneration {
             generation: generation_of(&snapshot.etag),
-            body: chart(view, &positions, &filter, &spec, mode),
+            body: chart(view, &filtered.positions, &filter, &spec, mode),
         })
     })
     .await
@@ -1053,12 +1150,14 @@ pub(crate) struct PositionQuery {
 struct PositionBody<'a> {
     generation: &'a str,
     /// 0-based row of the transaction in the filtered display order, or null
-    /// when the filter hides it (or it does not exist).
+    /// when the filter hides it (or it does not exist). A transfer half that
+    /// the filter keeps but whose pair is anchored at its partner is at its
+    /// partner's row (plan 35 D11).
     position: Option<usize>,
     /// The transaction's date, so a client can widen a date filter to reveal
     /// it; null when no transaction has this index.
     date: Option<&'a str>,
-    /// The filtered count.
+    /// The filtered row count.
     total: usize,
 }
 
@@ -1078,17 +1177,22 @@ pub(crate) async fn position_route(
     )?;
     let tindex = query.index;
     conditional(state.snapshot(), &headers, move |snapshot| {
-        let positions = snapshot.view.filtered(&snapshot.journal, &filter);
+        let filtered = snapshot.view.filtered(&snapshot.journal, &filter);
+        let transfers = snapshot.view.transfers(&snapshot.journal);
         let at = position_of(snapshot, tindex);
         let row = at.and_then(|at| {
             let at = u32::try_from(at).ok()?;
-            positions.iter().position(|p| *p == at)
+            let row_of = |position: u32| filtered.rows.iter().position(|p| *p == position);
+            row_of(at).or_else(|| {
+                let partner = transfers.get(at)?.partner(at);
+                filtered.positions.contains(&at).then(|| row_of(partner))?
+            })
         });
         to_bytes(&PositionBody {
             generation: generation_of(&snapshot.etag),
             position: row,
             date: at.map(|at| snapshot.journal.transactions[at].date.as_str()),
-            total: positions.len(),
+            total: filtered.rows.len(),
         })
     })
     .await

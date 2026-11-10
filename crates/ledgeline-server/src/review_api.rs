@@ -96,7 +96,7 @@ const MAX_QUEUE_PAGE: usize = 500;
 
 /// The most transactions one batch may edit: a card plus every similar
 /// candidate ([`review::SIMILAR_CAP`]), with room to spare.
-const MAX_BATCH: usize = 1_000;
+pub(crate) const MAX_BATCH: usize = 1_000;
 
 /// The most indices `?queue=` may list — a generous bound on a review run, so
 /// a hostile URL cannot make the server build an enormous set.
@@ -144,10 +144,10 @@ impl<'a> ReviewRow<'a> {
 /// A row as a review route serves it: a [`ReviewRow`] plus the fingerprint a
 /// batch must echo back to edit it.
 #[derive(Serialize)]
-struct ReviewTxn<'a> {
+pub(crate) struct ReviewTxn<'a> {
     #[serde(flatten)]
-    row: ReviewRow<'a>,
-    fingerprint: Option<String>,
+    pub(crate) row: ReviewRow<'a>,
+    pub(crate) fingerprint: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -236,11 +236,11 @@ impl ReviewWindow {
 
 /// What [`fingerprinted`] read: the snapshot, the transactions picked from it
 /// with their fingerprints (same order), and whatever else the pick found.
-struct Picked<T> {
-    snapshot: Arc<Snapshot>,
-    indices: Vec<Tindex>,
-    fingerprints: Vec<Option<String>>,
-    found: T,
+pub(crate) struct Picked<T> {
+    pub(crate) snapshot: Arc<Snapshot>,
+    pub(crate) indices: Vec<Tindex>,
+    pub(crate) fingerprints: Vec<Option<String>>,
+    pub(crate) found: T,
 }
 
 /// The published snapshot, the transactions `select` picks from it, and their
@@ -249,7 +249,7 @@ struct Picked<T> {
 ///
 /// The lock is held only for the pick and the fingerprint scan; the rows are
 /// built after it is released.
-fn fingerprinted<T>(
+pub(crate) fn fingerprinted<T>(
     state: &AppState,
     select: impl FnOnce(&Snapshot) -> Result<(Vec<Tindex>, T), AppError>,
 ) -> Result<Picked<T>, AppError> {
@@ -279,7 +279,7 @@ fn fingerprinted<T>(
 /// body for this URL and date, else `job` on the blocking pool, tagged with
 /// the snapshot it actually read (which a concurrent edit may have made newer
 /// than the one the `304` check saw).
-async fn answer<F>(
+pub(crate) async fn answer<F>(
     state: AppState,
     headers: &HeaderMap,
     today: String,
@@ -964,10 +964,18 @@ fn cached(
 /// {"op": "setPostingComment", "posting": 1, "comment": "gift card\nask Sam"}
 /// {"op": "setPostingComment", "posting": 1, "comment": null}
 /// {"op": "removePostingAssertion", "posting": 1}
+/// {"op": "setPostingTag", "posting": 1, "name": "match", "value": "k7f3a2"}
+/// {"op": "setPostingTag", "posting": 1, "name": "match", "value": null}
+/// {"op": "addPostingTagValue", "posting": 1, "name": "nomatch", "value": "r4x9q1"}
+/// {"op": "removePostingTagValue", "posting": 1, "name": "nomatch", "value": "r4x9q1"}
 /// {"op": "replace", "transaction": { …the PUT /api/transactions/{index} body… }}
 /// ```
 ///
-/// A `null` (or absent) `date2`, `code` or posting `comment` removes it.
+/// A `null` (or absent) `date2`, `code` or posting `comment` removes it, and
+/// a `null` (or absent) `setPostingTag` value removes every occurrence of the
+/// tag on that posting. The posting-tag ops (plan 35) touch only the tag they
+/// name, on the posting's own comment; `addPostingTagValue` and
+/// `removePostingTagValue` keep a tag's other values (`nomatch:a, nomatch:b`).
 /// `setTxnComment` and `setPostingComment` take several lines, joined by
 /// `\n`.
 #[derive(Deserialize)]
@@ -1010,6 +1018,22 @@ pub(crate) enum EditOpIn {
     RemovePostingAssertion {
         posting: usize,
     },
+    SetPostingTag {
+        posting: usize,
+        name: String,
+        #[serde(default)]
+        value: Option<String>,
+    },
+    AddPostingTagValue {
+        posting: usize,
+        name: String,
+        value: String,
+    },
+    RemovePostingTagValue {
+        posting: usize,
+        name: String,
+        value: String,
+    },
     Replace {
         transaction: AddRequest,
     },
@@ -1048,7 +1072,7 @@ struct BatchBody<'a> {
 }
 
 /// The `409` for a transaction whose text changed since the client read it.
-fn stale(index: u32) -> AppError {
+pub(crate) fn stale(index: u32) -> AppError {
     AppError::Conflict(format!(
         "transaction #{index} changed since it was loaded (another tab or an external edit); \
          nothing was saved — reload it and try again"
@@ -1075,11 +1099,12 @@ pub(crate) fn check_op_list(ops: &[EditOpIn]) -> Result<(), AppError> {
             EditOpIn::SetPostingAccount { account, .. } => {
                 check_text("an account name", account, MAX_ACCOUNT_BYTES, NONE)?;
             }
-            EditOpIn::SetTxnTag { name, value } => {
-                check_text("a tag name", name, MAX_TAG_NAME_BYTES, NONE)?;
-                if let Some(value) = value {
-                    check_text("a tag value", value, MAX_COMMENT_BYTES, NONE)?;
-                }
+            EditOpIn::SetTxnTag { name, value } | EditOpIn::SetPostingTag { name, value, .. } => {
+                check_tag(name, value.as_deref())?;
+            }
+            EditOpIn::AddPostingTagValue { name, value, .. }
+            | EditOpIn::RemovePostingTagValue { name, value, .. } => {
+                check_tag(name, Some(value))?;
             }
             EditOpIn::SetTxnComment { comment } => {
                 check_text("a comment", comment, MAX_COMMENT_BYTES, COMMENT)?;
@@ -1105,6 +1130,15 @@ pub(crate) fn check_op_list(ops: &[EditOpIn]) -> Result<(), AppError> {
         }
     }
     Ok(())
+}
+
+/// A tag name and value checked as [`check_op_list`] checks them.
+fn check_tag(name: &str, value: Option<&str>) -> Result<(), AppError> {
+    check_text("a tag name", name, MAX_TAG_NAME_BYTES, NONE)?;
+    match value {
+        Some(value) => check_text("a tag value", value, MAX_COMMENT_BYTES, NONE),
+        None => Ok(()),
+    }
 }
 
 /// The engine's ops for one wire edit. A `replace` body is built against the
@@ -1136,6 +1170,33 @@ pub(crate) fn engine_ops(journal: &Journal, ops: &[EditOpIn]) -> Result<Vec<Edit
                 EditOpIn::RemovePostingAssertion { posting } => {
                     EditOp::RemovePostingAssertion { posting: *posting }
                 }
+                EditOpIn::SetPostingTag {
+                    posting,
+                    name,
+                    value,
+                } => EditOp::SetPostingTag {
+                    posting: *posting,
+                    name: name.clone(),
+                    value: value.clone(),
+                },
+                EditOpIn::AddPostingTagValue {
+                    posting,
+                    name,
+                    value,
+                } => EditOp::AddPostingTagValue {
+                    posting: *posting,
+                    name: name.clone(),
+                    value: value.clone(),
+                },
+                EditOpIn::RemovePostingTagValue {
+                    posting,
+                    name,
+                    value,
+                } => EditOp::RemovePostingTagValue {
+                    posting: *posting,
+                    name: name.clone(),
+                    value: value.clone(),
+                },
                 EditOpIn::Replace { transaction } => {
                     EditOp::Replace(Box::new(build_transaction(journal, transaction)?))
                 }
@@ -1292,11 +1353,25 @@ fn edited_body(
     indices: &[Tindex],
     fingerprints: Vec<Option<String>>,
 ) -> Result<Bytes, AppError> {
+    to_bytes(&BatchBody {
+        generation: generation_of(&snapshot.etag),
+        edited: edited_txns(snapshot, indices, fingerprints),
+    })
+}
+
+/// Each of `indices` (with `fingerprints`, same order) as a write's response
+/// reads it back from the new `snapshot` — see [`edited_body`]. An index the
+/// snapshot no longer holds is skipped.
+pub(crate) fn edited_txns<'s>(
+    snapshot: &'s Snapshot,
+    indices: &[Tindex],
+    fingerprints: Vec<Option<String>>,
+) -> Vec<ReviewTxn<'s>> {
     let journal = &snapshot.journal;
     let classes = snapshot.view.classes(journal);
     let declared = snapshot.view.declared(journal);
     let context = RowContext::new(journal, &declared);
-    let edited = indices
+    indices
         .iter()
         .zip(fingerprints)
         .filter_map(|(index, fingerprint)| {
@@ -1311,9 +1386,5 @@ fn edited_body(
                 fingerprint,
             })
         })
-        .collect();
-    to_bytes(&BatchBody {
-        generation: generation_of(&snapshot.etag),
-        edited,
-    })
+        .collect()
 }

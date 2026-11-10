@@ -38,6 +38,9 @@
 //! - `review` — the transaction-review model: `reviewed:` state, the
 //!   unknowns/recents queues, similar transactions and category suggestions
 //!   (see `plans/32-transaction-review.md`)
+//! - `matching` — transfer matching: pairing the two halves of a transfer on a
+//!   clearing account and linking them with `match:` posting tags (see
+//!   `plans/35-transfer-matching.md`)
 
 pub mod accounts;
 pub mod aliases;
@@ -59,6 +62,7 @@ pub mod hledger_conf;
 pub mod holdings;
 pub mod journal_meta;
 pub mod journals;
+pub mod matching;
 pub mod model;
 pub mod parse;
 pub mod periodic;

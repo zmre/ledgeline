@@ -224,6 +224,52 @@ export function nearestOffset(
     return scrollTop;
 }
 
+// ---------------------------------------------------------------------------
+// Expanded transfer rows (plan 35 D11)
+//
+// A collapsed transfer row expands IN PLACE into its two halves, each an
+// ordinary row of the same pitch, so the windowing above stays fixed-pitch:
+// the table simply has two more slots per expanded row. The engine's row
+// positions are untouched; these map a DISPLAY slot to the engine row it
+// shows (and which half, for the two slots under an expanded row) and back.
+// ---------------------------------------------------------------------------
+
+/** How many halves an expanded transfer row shows under itself. */
+export const TRANSFER_HALVES = 2;
+
+/** What one display slot shows: engine row `position`, or one of its halves (`half` 0 or 1). */
+export interface DisplaySlot {
+    position: number;
+    half: number | null;
+}
+
+/** Ascending, distinct, and inside `total`: the only `expanded` lists the mappings below are defined over. */
+export function expandedWithin(expanded: readonly number[], total: number): number[] {
+    return [...new Set(expanded)].filter((position) => position >= 0 && position < total).sort((a, b) => a - b);
+}
+
+/** The table's slot count: every engine row, plus two for each expanded one. */
+export function displayTotal(total: number, expanded: readonly number[]): number {
+    return total + TRANSFER_HALVES * expandedWithin(expanded, total).length;
+}
+
+/** The engine row (and half) at display slot `slot`. `expanded` must be `expandedWithin` the total. */
+export function slotAt(slot: number, expanded: readonly number[]): DisplaySlot {
+    let shift = 0;
+    for (const position of expanded) {
+        const at = position + shift;
+        if (slot <= at) break;
+        if (slot <= at + TRANSFER_HALVES) return {position, half: slot - at - 1};
+        shift += TRANSFER_HALVES;
+    }
+    return {position: slot - shift, half: null};
+}
+
+/** The display slot of engine row `position` itself. */
+export function slotOf(position: number, expanded: readonly number[]): number {
+    return position + TRANSFER_HALVES * expanded.filter((open) => open < position).length;
+}
+
 /** Rows in a Ctrl-d / Ctrl-u step. Always at least 1, so the key is never a silent no-op. */
 export function halfPageRows(viewportHeight: number, pitch: number): number {
     if (pitch <= 0) return 1;

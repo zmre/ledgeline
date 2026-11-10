@@ -547,6 +547,51 @@ fn navigation_allowed(base: &str, candidate: &str) -> bool {
     candidate == base.trim_end_matches('/') || candidate.starts_with(base)
 }
 
+/// The published docs site, the one place outside the app the SPA links to.
+const DOCS_HOST: &str = "zmre.github.io";
+const DOCS_PATH: &str = "/ledgeline/";
+
+/// `candidate`, re-serialized, when it is a page of the published docs site —
+/// the only URL the webview hands to the system browser. Everything else stays
+/// blocked: a link the SPA did not mean to show (or one injected into it) must
+/// not become a way to launch arbitrary URLs.
+fn external_docs_url(candidate: &str) -> Option<String> {
+    let url = Url::parse(candidate).ok()?;
+    let is_docs = url.scheme() == "https"
+        && url.host_str() == Some(DOCS_HOST)
+        && url.port().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.path().starts_with(DOCS_PATH);
+    is_docs.then(|| url.to_string())
+}
+
+/// Open a docs page (already vetted by [`external_docs_url`]) in the user's
+/// browser. The URL is one argument to a fixed program — no shell.
+fn open_in_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    let program = "/usr/bin/open";
+    #[cfg(target_os = "linux")]
+    let program = "xdg-open";
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        eprintln!("ledgeline: opening {url} is not supported on this platform");
+        return;
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if let Err(error) = std::process::Command::new(program).arg(url).spawn() {
+        eprintln!("ledgeline: could not open {url}: {error}");
+    }
+}
+
+/// Send `candidate` to the system browser when it is a docs page. Returns
+/// whether it did.
+fn open_if_docs(candidate: &str) -> bool {
+    external_docs_url(candidate)
+        .map(|url| open_in_browser(&url))
+        .is_some()
+}
+
 /// Pick the one journal to open from the URLs macOS delivered with a document
 /// launch ([`Event::Opened`]).
 ///
@@ -581,15 +626,20 @@ fn build_webview(
         .with_url(url)
         .with_navigation_handler(move |candidate| {
             let allowed = navigation_allowed(&base, &candidate);
-            if !allowed {
+            // A docs link leaves the webview where it is and opens in the
+            // user's browser instead.
+            if !allowed && !open_if_docs(&candidate) {
                 eprintln!("ledgeline: blocked navigation to {candidate}");
             }
             allowed
         })
-        // No pop-ups at all. The SPA never opens one, and a new window would be
-        // a second WebView outside the navigation handler above.
+        // No pop-ups at all: a new window would be a second WebView outside the
+        // navigation handler above. A docs link (`target=_blank`) goes to the
+        // user's browser instead.
         .with_new_window_req_handler(|candidate, _features| {
-            eprintln!("ledgeline: blocked new window for {candidate}");
+            if !open_if_docs(&candidate) {
+                eprintln!("ledgeline: blocked new window for {candidate}");
+            }
             NewWindowResponse::Deny
         })
         // Every xlsx export is a browser download. wry's default handler accepts
@@ -1218,9 +1268,32 @@ mod perf {
 
 #[cfg(test)]
 mod tests {
-    use super::{AccessToken, first_journal_path, navigation_allowed, token_init_script};
+    use super::{
+        AccessToken, external_docs_url, first_journal_path, navigation_allowed, token_init_script,
+    };
     use std::path::PathBuf;
     use url::Url;
+
+    #[test]
+    fn only_docs_pages_go_to_the_system_browser() {
+        let docs = "https://zmre.github.io/ledgeline/journal/transfer-matching/";
+        assert_eq!(external_docs_url(docs).as_deref(), Some(docs));
+        assert!(external_docs_url("https://zmre.github.io/ledgeline/").is_some());
+        for refused in [
+            "http://zmre.github.io/ledgeline/journal/",
+            "https://zmre.github.io/other/",
+            "https://zmre.github.io/ledgeline",
+            "https://zmre.github.io.evil.example/ledgeline/",
+            "https://evil.example/ledgeline/",
+            "https://user@zmre.github.io/ledgeline/",
+            "https://zmre.github.io:8443/ledgeline/",
+            "file:///ledgeline/",
+            "javascript:alert(1)",
+            "not a url",
+        ] {
+            assert_eq!(external_docs_url(refused), None, "{refused}");
+        }
+    }
 
     const BASE: &str = "http://127.0.0.1:5000/";
 

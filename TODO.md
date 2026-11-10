@@ -9,9 +9,7 @@
 ## Import improvements
 
 - **Syncing:** Can we setup auto-syncing using SimpleFIN / SimpleFIN Bridge? Is that still maintained?  Does it still work? Do we have any other reasonable sync approaches? Can we run it ourselves?
-- **Matching:** Quickbooks is pretty good at matching and proposing matches when dollar amounts are the same and something is a payment or a transfer or something (where we see the money out when importing from our bank, then see it land as a payment when importing from our credit card, or vice versa).  hledger doesn't do this so right now I have a lot of rules that send things to escrow-like accounts like transfers:internal-bank or transfers:creditcard-payment so that independent rules in each place can work.  An alternative would have been for me to make an automatic assumption from one side or the other, which is something I could do for the credit cards, but which is much harder for internal bank transfers.
-  - Ideally in our journal we'd have a button to search for matches.  Maybe we have some settings that control this on things like how far it looks back and whether its filtered to those escrow accounts or not.  Essentially we could import with the escrows but then the matcher can find when `$X -> account1 -> escrow` matches with a `escrow -> $X -> account2`.  We could also just look for any two transactions that are near to each other with the same amounts, but I suspect there will be more false positives that way.  Still, if a list of escrow accounts (or parents like in my case, `transfers` isn't specified, then it would do the general match.
-  - For found matches approved by the user, we could click a button that would merge them.  When there are two dates, we'd use one as the secondary.
+- **Matching:** done — transfer matching through clearing accounts, linked by `match:` tags; see `plans/35-transfer-matching.md`.
 
 ## AI
 

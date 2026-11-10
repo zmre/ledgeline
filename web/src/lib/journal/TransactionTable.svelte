@@ -9,6 +9,11 @@
     // fetches 200-row blocks from the engine as the window reaches them, and a
     // row whose block has not arrived renders as a skeleton of the same height,
     // so the scroll geometry never moves under the user.
+    //
+    // Transfers (plan 35 D11): the engine serves a linked pair as ONE row. It
+    // expands in place (▸, `l`) into its two halves, two more slots of the same
+    // pitch, so the windowing stays fixed-pitch: `slotAt` maps a display slot
+    // to the engine row (or half) it shows, and the cursor walks slots.
     import {untrack} from "svelte";
     import {statusPatch} from "#lib/api/editMapping.js";
     import type {Transaction} from "#lib/domain/types.js";
@@ -23,7 +28,10 @@
     import ReviewSettings from "#lib/review/ui/ReviewSettings.svelte";
     import {editing} from "#lib/stores/editing.svelte.js";
     import {filters, localToday} from "#lib/stores/filters.svelte.js";
+    import {journal} from "#lib/stores/journal.svelte.js";
     import {journalView} from "#lib/stores/journalView.svelte.js";
+    import {findableClearing, olderLabel} from "#lib/matching/model.js";
+    import {matches} from "#lib/stores/matches.svelte.js";
     import {problems} from "#lib/stores/problems.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
     import {lazyListCursor} from "#lib/ui/listCursor.svelte.js";
@@ -32,7 +40,10 @@
     import {measureAccountColumn} from "./accountColumn.svelte";
     import {txnModal} from "./edit/modalState.svelte";
     import {rowActions} from "./rowAction.svelte";
-    import {centerOffset, computeWindow, halfPageRows, nearestOffset, nextStatus} from "./rowModel";
+    import {centerOffset, computeWindow, displayTotal, expandedWithin, halfPageRows, nearestOffset, nextStatus, slotAt, slotOf} from "./rowModel";
+
+    /** Where the Find Matches docs live (plan 35 Phase 4), for the disabled button's "how". */
+    const MATCHING_DOCS = "https://zmre.github.io/ledgeline/journal/transfer-matching/";
 
     const ROW_PITCH = 40; // h-10 table rows
     const CARD_PITCH = 104; // h-24 card (96px) + mb-2 (8px)
@@ -55,15 +66,56 @@
     const headroom = $derived(mode === "card" ? 0 : headHeight);
     /** Rows the filter keeps; 0 until the engine has said. */
     const total = $derived(journalView.total ?? 0);
-    const win = $derived(computeWindow(scrollTop, viewportHeight, pitch, total, OVERSCAN));
-    /** One slot per rendered position: the row, or null while its block loads (a skeleton). */
-    const visible = $derived.by((): {position: number; row: JournalRow | null}[] => {
-        const slots: {position: number; row: JournalRow | null}[] = [];
-        for (let position = win.start; position < win.end; position += 1) slots.push({position, row: journalView.rowAt(position)});
+
+    /**
+     * The expanded transfer rows, by engine position and the link they showed.
+     * One that no longer shows that link there (an unlink, a write that moved
+     * rows) quietly closes; one whose block is still loading stays open, so
+     * the geometry does not jump while it loads.
+     */
+    let expanded = $state.raw<{position: number; matchId: string}[]>([]);
+    const openPositions = $derived(
+        expandedWithin(
+            expanded
+                .filter(({position, matchId}) => {
+                    const row = journalView.rowAt(position);
+                    return row === null || row.transfer?.matchId === matchId;
+                })
+                .map(({position}) => position),
+            total
+        )
+    );
+    /** Display slots: every row, plus two for each expanded transfer. */
+    const shown = $derived(displayTotal(total, openPositions));
+    const win = $derived(computeWindow(scrollTop, viewportHeight, pitch, shown, OVERSCAN));
+
+    interface Slot {
+        /** The display slot. */
+        at: number;
+        /** The engine row it belongs to. */
+        position: number;
+        /** Which half of that (transfer) row it shows, or null for the row itself. */
+        half: number | null;
+        /** The engine row, or null while its block loads (a skeleton). */
+        row: JournalRow | null;
+        /** What the slot renders: the row, or the half. */
+        shows: JournalRow | null;
+    }
+    function slotFor(at: number): Slot {
+        const {position, half} = slotAt(at, openPositions);
+        const row = journalView.rowAt(position);
+        const shows = half === null ? row : (row?.transfer?.halves[half] ?? null);
+        return {at, position, half, row, shows};
+    }
+    /** One slot per rendered position. */
+    const visible = $derived.by((): Slot[] => {
+        const slots: Slot[] = [];
+        for (let at = win.start; at < win.end; at += 1) slots.push(slotFor(at));
         return slots;
     });
-    /** Svelte `{#each}` key: the transaction once loaded, else its position (a skeleton never collides with a tindex). */
-    const slotKey = (slot: {position: number; row: JournalRow | null}): string => (slot.row === null ? `p${slot.position}` : `t${slot.row.txn.index}`);
+    /** Svelte `{#each}` key: the transaction once loaded (a half by its row's), else its slot (a skeleton never collides with a tindex). */
+    const slotKey = (slot: Slot): string =>
+        slot.row === null || slot.shows === null ? `p${slot.at}` : slot.half === null ? `t${slot.row.txn.index}` : `h${slot.row.txn.index}-${slot.half}`;
 
     // Ask for the rows the window covers. Keyed on the window and on the view's
     // QUERY (a generation change re-reads the same window), deliberately NOT on
@@ -108,8 +160,8 @@
     // focusable is exactly the shape that trips `a11y_interactive_supports_focus`
     // in a codebase with no `svelte-ignore` comments.
     const cursor = lazyListCursor<Transaction>(
-        () => total,
-        (position) => journalView.rowAt(position)?.txn ?? null,
+        () => shown,
+        (at) => slotFor(at).shows?.txn ?? null,
         (txn) => txn.index
     );
     /** The transaction `x` has armed for deletion, or null. */
@@ -118,8 +170,8 @@
     const announcement = $derived.by(() => {
         if (cursor.index === -1) return "";
         const txn = cursor.item;
-        if (txn === null) return `Row ${cursor.index + 1} of ${total}. Loading.`;
-        return `Row ${cursor.index + 1} of ${total}. ${txn.date}, ${txn.description || "no description"}.`;
+        if (txn === null) return `Row ${cursor.index + 1} of ${shown}. Loading.`;
+        return `Row ${cursor.index + 1} of ${shown}. ${txn.date}, ${txn.description || "no description"}.`;
     });
 
     /**
@@ -137,7 +189,7 @@
                   // header in content coordinates. `centerOffset` itself is
                   // unchanged — it is simply being given the right origin now.
                   centerOffset(position, pitch, viewportHeight, topInset + headroom)
-                : nearestOffset(scrollTop, position, pitch, rowHeight, viewportHeight, total, headroom, topInset);
+                : nearestOffset(scrollTop, position, pitch, rowHeight, viewportHeight, shown, headroom, topInset);
         if (top === scrollTop) return;
         if (scroller !== null) scroller.scrollTop = top;
         scrollTop = top;
@@ -169,6 +221,7 @@
     function armOrConfirmDelete(): void {
         const txn = cursor.item;
         if (txn === null || !editing.canEdit) return;
+        armedMatch = null;
         if (armedDelete !== null && armedDelete.index === txn.index) void confirmDelete();
         else armedDelete = txn;
     }
@@ -180,6 +233,89 @@
         const result = await editing.remove(txn.index);
         cursor.reanchor();
         if (!result.ok && result.failure.kind !== "conflict") editing.reportFailure(result.failure);
+    }
+
+    /** Expand or collapse the transfer row at engine `position`; anything else is left alone. */
+    function toggleTransfer(position: number): void {
+        const matchId = journalView.rowAt(position)?.transfer?.matchId;
+        if (matchId === undefined) return;
+        const open = openPositions.includes(position);
+        const before = cursor.index === -1 ? null : slotFor(cursor.index);
+        expanded = open ? expanded.filter((entry) => entry.position !== position) : [...expanded, {position, matchId}];
+        // The cursor stays on what it showed: a half that folds away hands it
+        // to its row, and a row below the toggle moves by the two halves.
+        if (before === null) return;
+        if (open && before.position === position) cursor.to(slotOf(position, openPositions));
+        else if (before.position > position) cursor.move(open ? -2 : 2);
+    }
+
+    /** `l` on a transfer row (or one of its halves): expand or collapse it. */
+    function toggleCursorTransfer(): void {
+        if (cursor.index === -1) return;
+        toggleTransfer(slotFor(cursor.index).position);
+        reveal(cursor.index, "nearest");
+    }
+
+    // Find Matches (plan 35 D9): the badge counts the proposals, read in step
+    // with the journal and the match settings.
+    const matchCount = $derived(matches.count);
+    /** Pairs past the lookback (A1): the button stays usable for its Show all. */
+    const olderCount = $derived(matches.older);
+    const canOpenMatches = $derived(matchCount > 0 || olderCount > 0);
+    const noClearing = $derived(matches.clearing === false);
+    let matchMenuOpen = $state(false);
+    const matchTip = $derived.by(() => {
+        if (noClearing) {
+            return "No clearing account is declared. Tag one in your accounts file — account transfers  ; clearing: — or tick “Clearing account” in Settings › Accounts.";
+        }
+        const older = olderLabel(olderCount);
+        if (matchCount === 0) return older === null ? "No transfer halves to pair up" : `Nothing to pair in the lookback; ${older}`;
+        return older === null ? "Find Matches (m)" : `Find Matches (m) · ${older}`;
+    });
+    $effect(() => {
+        const serverUrl = settings.serverUrl;
+        const generation = journal.generation;
+        void settings.matchWindow;
+        void settings.matchLookback;
+        if (serverUrl === null || generation === null || !editing.canEdit) return;
+        untrack(() => void matches.sync(serverUrl, generation));
+    });
+    function launchMatches(): void {
+        if (!editing.canEdit || !canOpenMatches) return;
+        reviewMenuOpen = false;
+        matchMenuOpen = false;
+        matches.openRun();
+    }
+
+    /** Find match for one transaction (A2): the cursored row, when it has an unlinked clearing posting. */
+    const cursorFindable = (): boolean => {
+        const txn = cursor.index === -1 ? null : slotFor(cursor.index).shows;
+        return txn !== null && txn.transfer === undefined && findableClearing(txn.txn).length > 0;
+    };
+    function findMatchAtCursor(): void {
+        const txn = cursor.item;
+        if (txn === null || !editing.canEdit || !cursorFindable()) return;
+        matches.openFor(txn.index);
+    }
+
+    // Unlink (D5) and Forget rejection (D12) are confirmed in the TOOLBAR, as
+    // a delete is: it cannot unmount mid-confirm, and it can say what goes.
+    type ArmedMatch = {kind: "unlink"; row: JournalRow} | {kind: "forget"; txn: Transaction; value: string};
+    let armedMatch = $state.raw<ArmedMatch | null>(null);
+    let matchFailure = $state<string | null>(null);
+
+    async function confirmMatch(): Promise<void> {
+        const armed = armedMatch;
+        if (armed === null) return;
+        armedMatch = null;
+        matchFailure = null;
+        const result =
+            armed.kind === "unlink"
+                ? armed.row.transfer === undefined
+                    ? null
+                    : await matches.unlink(armed.row.transfer)
+                : await matches.forget(armed.txn.index, armed.value);
+        if (result !== null && !result.ok && result.failure.kind !== "conflict") matchFailure = result.failure.message;
     }
 
     // `enabled` rather than conditional registration, so the help sheet hides
@@ -204,7 +340,12 @@
             {keys: "PageUp", label: "Half page up", group: "Journal", run: () => moveCursor(-halfPageRows(viewportHeight, pitch))},
             {keys: "g g", label: "First transaction", group: "Journal", run: () => (cursor.first(), reveal(cursor.index, "nearest"))},
             {keys: "G", label: "Last transaction", group: "Journal", run: () => (cursor.last(), reveal(cursor.index, "nearest"))},
-            {keys: "Escape", label: "Clear the cursor", group: "Journal", run: () => (armedDelete === null ? cursor.clear() : (armedDelete = null))},
+            {
+                keys: "Escape",
+                label: "Clear the cursor",
+                group: "Journal",
+                run: () => (armedDelete !== null ? (armedDelete = null) : armedMatch !== null ? (armedMatch = null) : cursor.clear()),
+            },
             {
                 keys: "Enter",
                 label: "Edit transaction",
@@ -219,16 +360,24 @@
             {keys: "n", label: "Add transaction", group: "Journal", enabled: canEdit, run: () => txnModal.openAdd()},
             {keys: "u", label: "Review unknowns", group: "Journal", enabled: () => canEdit() && unknownCount > 0, run: () => launchReview("unknowns")},
             {keys: "r", label: "Review recents", group: "Journal", enabled: () => canEdit() && recentCount > 0, run: () => launchReview("recents")},
+            {keys: "m", label: "Find matches", group: "Journal", enabled: () => canEdit() && canOpenMatches, run: launchMatches},
+            {keys: "M", label: "Find a match for this transaction", group: "Journal", enabled: () => canEdit() && cursorFindable(), run: findMatchAtCursor},
+            {
+                keys: "l",
+                label: "Expand or collapse a transfer",
+                group: "Journal",
+                enabled: () => cursor.index !== -1 && slotFor(cursor.index).row?.transfer !== undefined,
+                run: toggleCursorTransfer,
+            },
         ],
     });
 
     /** Keep the cursor in step with the mouse: clicking a row's button cursors that row. */
     function syncCursorFromTarget(target: EventTarget | null): void {
-        const row = (target as HTMLElement | null)?.closest?.("[data-txn]");
+        const row = (target as HTMLElement | null)?.closest?.("[data-slot]");
         if (row === null || row === undefined) return;
-        const index = Number(row.getAttribute("data-txn"));
-        const slot = visible.find((candidate) => candidate.row?.txn.index === index);
-        if (slot !== undefined) cursor.to(slot.position);
+        const at = Number(row.getAttribute("data-slot"));
+        if (Number.isSafeInteger(at)) cursor.to(at);
     }
 
     // EFFECT 1 — when the FILTER changes, jump back to the top: it is a
@@ -246,6 +395,8 @@
         scrollTop = 0;
         cursor.clear();
         armedDelete = null;
+        armedMatch = null;
+        expanded = [];
     });
 
     // WP-08: problems-drawer navigation. Scroll a txn's row into (centered)
@@ -261,7 +412,7 @@
      */
     export async function scrollToTxn(index: number): Promise<void> {
         const found = await journalView.locate(index).catch(() => null);
-        const position = found?.position ?? null;
+        const position = found === null || found.position === null ? null : slotOf(found.position, openPositions);
         if (position === null) return;
         reveal(position, "center");
         // Arriving from the drawer leaves you on that row, so `j` continues from
@@ -315,6 +466,29 @@
     });
 </script>
 
+{#snippet row(slot: Slot, shows: JournalRow, mode: "row" | "card")}
+    <TransactionRow
+        txn={shows.txn}
+        {columns}
+        {mode}
+        flags={shows.flags}
+        pulse={pulseIndex === shows.txn.index}
+        cursor={cursor.index === slot.at}
+        marker={markerOf(shows)}
+        {pinned}
+        running={shows.running ?? null}
+        at={slot.at}
+        transfer={slot.half === null ? shows.transfer : undefined}
+        expanded={openPositions.includes(slot.position)}
+        nested={slot.half !== null}
+        linked={slot.half !== null || shows.linked === true}
+        onToggle={() => toggleTransfer(slot.position)}
+        onUnlink={() => ((armedDelete = null), (armedMatch = {kind: "unlink", row: shows}))}
+        onForget={(value) => ((armedDelete = null), (armedMatch = {kind: "forget", txn: shows.txn, value}))}
+        onFindMatch={() => matches.openFor(shows.txn.index)}
+    />
+{/snippet}
+
 <section class="flex min-h-0 grow flex-col">
     <div class="flex items-center justify-between gap-2 pb-1">
         {#if editing.canEdit}
@@ -366,6 +540,56 @@
                         </div>
                     </details>
                 </div>
+                <!-- Find Matches (plan 35 D9): disabled with nothing to propose, and,
+                     with no clearing account declared (D2), says how to declare one.
+                     Its ▾ (Amendment A1) holds the window and the lookback, as
+                     Review Recents' holds the review settings. -->
+                <div class="flex">
+                    <span class="tooltip tooltip-bottom before:max-w-72 before:whitespace-normal" data-tip={matchTip}>
+                        <button
+                            type="button"
+                            class="{REVIEW_BUTTON} gap-1.5 rounded-r-none"
+                            disabled={!canOpenMatches}
+                            onclick={launchMatches}
+                            data-testid="find-matches-button"
+                        >
+                            <ReviewIcon name="link" class="h-3.5 w-3.5" />
+                            Find Matches
+                            <span class={["badge badge-sm tabular-nums", matchCount > 0 ? "badge-info" : "badge-ghost"]} data-testid="find-matches-count"
+                                >{matchCount}</span
+                            >
+                        </button>
+                    </span>
+                    <details
+                        class="dropdown"
+                        bind:open={matchMenuOpen}
+                        use:dismissible={{active: matchMenuOpen, outside: true, onDismiss: () => (matchMenuOpen = false)}}
+                    >
+                        <summary
+                            class="{REVIEW_BUTTON} rounded-l-none border-l-base-content/20 px-1.5"
+                            aria-label="Find Matches settings"
+                            title="Find Matches settings"
+                            data-testid="find-matches-menu"
+                        >
+                            <ReviewIcon name="chevron-down" class="h-3.5 w-3.5" />
+                        </summary>
+                        <div class="dropdown-content z-20 mt-1 rounded-box border border-base-300 bg-base-200 p-3 shadow-lg">
+                            <ReviewSettings show="matches" />
+                            {#if olderCount > 0 && settings.matchLookback !== 0}
+                                <p class="mt-2 text-xs text-base-content/60" data-testid="find-matches-older">{olderLabel(olderCount)}</p>
+                            {/if}
+                        </div>
+                    </details>
+                </div>
+                {#if noClearing}
+                    <a
+                        class="link text-xs text-base-content/60 link-hover"
+                        href={MATCHING_DOCS}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        data-testid="find-matches-docs">How?</a
+                    >
+                {/if}
             </div>
         {:else}
             <span></span>
@@ -383,6 +607,26 @@
                 </span>
                 <button type="button" class="btn btn-error btn-xs" onclick={() => void confirmDelete()}>Delete</button>
                 <button type="button" class="btn btn-ghost btn-xs" onclick={() => (armedDelete = null)}>Keep</button>
+            </div>
+        {:else if armedMatch !== null}
+            <div class="flex items-center gap-2 rounded border border-base-content/20 px-2 py-1 text-sm" role="alert" data-testid="match-confirm">
+                {#if armedMatch.kind === "unlink"}
+                    {@const transfer = armedMatch.row.transfer}
+                    <span>
+                        Unlink <span class="font-mono">{armedMatch.row.txn.date}</span>
+                        {transfer?.from.label ?? "?"} → {transfer?.to.label ?? "?"}? Both halves stay; only their match tags go.
+                    </span>
+                    <button type="button" class="btn btn-warning btn-xs" onclick={() => void confirmMatch()} data-testid="match-confirm-go">Unlink</button>
+                {:else}
+                    <span>Forget that {armedMatch.txn.description || "this transaction"} is not a match ({armedMatch.value})? It may be proposed again.</span>
+                    <button type="button" class="btn btn-warning btn-xs" onclick={() => void confirmMatch()} data-testid="match-confirm-go">Forget</button>
+                {/if}
+                <button type="button" class="btn btn-ghost btn-xs" onclick={() => (armedMatch = null)}>Keep</button>
+            </div>
+        {:else if matchFailure !== null}
+            <div class="flex items-center gap-2 rounded border border-error/40 px-2 py-1 text-sm" role="alert" data-testid="match-failure">
+                <span>Not saved: {matchFailure}</span>
+                <button type="button" class="btn btn-ghost btn-xs" onclick={() => (matchFailure = null)}>Dismiss</button>
             </div>
         {/if}
         <ColumnMenu />
@@ -434,24 +678,14 @@
                         <tr aria-hidden="true" style="height: {win.padTop}px"><td colspan={colCount} class="p-0"></td></tr>
                     {/if}
                     {#each visible as slot (slotKey(slot))}
-                        {#if slot.row === null}
+                        {#if slot.shows === null}
                             <!-- A row whose block is still loading: same height, no
                                  `data-txn` (nothing to act on), hidden from AT. -->
                             <tr class="h-10" aria-hidden="true" data-skeleton>
                                 <td colspan={colCount} class="py-1"><div class="h-3 w-full skeleton opacity-40"></div></td>
                             </tr>
                         {:else}
-                            <TransactionRow
-                                txn={slot.row.txn}
-                                {columns}
-                                mode="row"
-                                flags={slot.row.flags}
-                                pulse={pulseIndex === slot.row.txn.index}
-                                cursor={cursor.index === slot.position}
-                                marker={markerOf(slot.row)}
-                                {pinned}
-                                running={slot.row.running ?? null}
-                            />
+                            {@render row(slot, slot.shows, "row")}
                         {/if}
                     {/each}
                     {#if win.padBottom > 0}
@@ -462,20 +696,10 @@
         {:else}
             <div class="p-2" style="padding-top: {win.padTop + 8}px; padding-bottom: {win.padBottom + 8}px">
                 {#each visible as slot (slotKey(slot))}
-                    {#if slot.row === null}
+                    {#if slot.shows === null}
                         <div class="mb-2 h-24 skeleton opacity-40" aria-hidden="true" data-skeleton></div>
                     {:else}
-                        <TransactionRow
-                            txn={slot.row.txn}
-                            {columns}
-                            mode="card"
-                            flags={slot.row.flags}
-                            pulse={pulseIndex === slot.row.txn.index}
-                            cursor={cursor.index === slot.position}
-                            marker={markerOf(slot.row)}
-                            {pinned}
-                            running={slot.row.running ?? null}
-                        />
+                        {@render row(slot, slot.shows, "card")}
                     {/if}
                 {/each}
             </div>

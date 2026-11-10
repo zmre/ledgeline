@@ -12,6 +12,7 @@
     import TotalsFooter from "#lib/journal/TotalsFooter.svelte";
     import TransactionTable from "#lib/journal/TransactionTable.svelte";
     import {txnModal} from "#lib/journal/edit/modalState.svelte.js";
+    import MatchOverlay from "#lib/matching/ui/MatchOverlay.svelte";
     import ReviewOverlay from "#lib/review/ui/ReviewOverlay.svelte";
     import {reviewLaunch} from "#lib/review/ui/launch.svelte.js";
     import {periodLabel} from "#lib/journal/rowModel.js";
@@ -20,6 +21,7 @@
     import {journal} from "#lib/stores/journal.svelte.js";
     import {journalView} from "#lib/stores/journalView.svelte.js";
     import {running} from "#lib/stores/running.svelte.js";
+    import {matches} from "#lib/stores/matches.svelte.js";
     import {onServerReady} from "#lib/stores/serverWatch.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
 
@@ -54,6 +56,8 @@
         void running.load(serverUrl, {account, generation});
     });
     const count = $derived(journalView.total ?? 0);
+    /** A collapsed transfer pair is one row (plan 35 D11): with any, the footer counts rows, not transactions. */
+    const countsRows = $derived((journalView.summary?.transfers ?? 0) > 0);
     const total = $derived(journalView.summary?.visibleNet ?? []);
 
     /**
@@ -162,7 +166,7 @@
     {/if}
 
     {#if !loadFailed}
-        <TotalsFooter {count} {period} {total}>
+        <TotalsFooter {count} {period} {total} noun={countsRows ? "row" : "transaction"}>
             {#snippet actions()}
                 {#if count > 0}
                     <ExportButton run={exportJournal} label="Export journal as xlsx" />
@@ -174,7 +178,10 @@
 
 <!-- The review overlay (plan 32): mounted while a run is open, so its modal key layer exists exactly then.
      It is the transaction editor too (D31, D39): the txnModal store opens it on one transaction, or on a blank one. -->
-{#if reviewLaunch.kind !== null}
+{#if matches.open}
+    <!-- Find Matches (plan 35 D9): the same kind of layer, opened from the table's toolbar. -->
+    <MatchOverlay />
+{:else if reviewLaunch.kind !== null}
     <ReviewOverlay kind={reviewLaunch.kind} />
 {:else if txnModal.open}
     {#key txnModal.nonce}

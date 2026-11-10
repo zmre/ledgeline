@@ -271,7 +271,8 @@ pub struct CommoditySummary {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Summary {
-    /// Transactions matching the filter.
+    /// Transactions matching the filter — as rows, so a collapsed transfer
+    /// pair counts once ([`Summary::with_total`]).
     total: usize,
     /// The primary commodity's net, or empty when there is none or it is zero.
     visible_net: Vec<SummaryAmount>,
@@ -311,6 +312,20 @@ fn category_bit(category: RootCategory) -> u8 {
         .position(|candidate| *candidate == category)
         .unwrap_or(CATEGORY_ORDER.len() - 1);
     1 << at
+}
+
+impl Summary {
+    /// This summary counting `rows` rather than the transactions it was
+    /// computed over: the journal's row count once linked transfer pairs
+    /// collapse (plan 35 D11), while every figure still comes from the
+    /// postings of every transaction.
+    #[must_use]
+    pub fn with_total(self, rows: usize) -> Self {
+        Self {
+            total: rows,
+            ..self
+        }
+    }
 }
 
 /// Compute the [`Summary`] for `positions` (display order) under `filter`.

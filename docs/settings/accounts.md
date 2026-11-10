@@ -45,6 +45,8 @@ The first part is a field for each tag a Ledgeline report reads. Most take a fix
 
 Each field has a help icon with a one-line explanation. Pick "(none)" or clear the text to remove the tag.
 
+Below the fields, the **Clearing account** checkbox writes or removes a value-less `clearing:` tag. A clearing account holds both halves of transfers between your own accounts while they are in transit, and Find Matches pairs the halves on it. Subaccounts inherit the tag, so on a subaccount of a clearing account the box shows ticked and greyed out, with the account it comes from. See [Transfer matching](../journal/transfer-matching.md).
+
 The second part is **Other tags**, a name and value row for every other tag on the account, such as `yahoo:` or a tag of your own. Use **Add a tag** for a new row.
 
 The third part is a free-text **Note**, written after the tags in the same comment.

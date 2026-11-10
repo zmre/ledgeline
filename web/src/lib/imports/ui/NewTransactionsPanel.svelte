@@ -25,6 +25,7 @@
     // cannot work. That is the state a new user hits.
     import {onDestroy} from "svelte";
     import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import MatchOverlay from "#lib/matching/ui/MatchOverlay.svelte";
     import {reviewLaunch} from "#lib/review/ui/launch.svelte.js";
     import ReviewOverlay from "#lib/review/ui/ReviewOverlay.svelte";
     import {actionRunsDryRun, importAction, shows, visibleSections} from "../importModel";
@@ -39,6 +40,7 @@
     import ResultPanel from "./ResultPanel.svelte";
     import StagedPanel from "./StagedPanel.svelte";
     import {journal} from "#lib/stores/journal.svelte.js";
+    import {matches} from "#lib/stores/matches.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
     import {provideRevealArm, reveal} from "#lib/ui/reveal.js";
 
@@ -117,8 +119,10 @@
 
     // Leaving the tab mid-run closes the run: the overlay is unmounted with this
     // panel, and a launch left behind would reopen it on the way back.
+    // The same for Find Matches opened from an import's result (plan 35 D9).
     onDestroy(() => {
         if (reviewLaunch.staged !== null) reviewLaunch.close(null);
+        if (matches.open) matches.close();
     });
 
     /** `Test Import` dry-runs first; `Save CSV` has nothing to propose and writes. */
@@ -273,4 +277,7 @@
 <!-- The review overlay over an import (plan 32 Phase 4), CSV or QuickBooks: mounted while a staged run is open. -->
 {#if reviewLaunch.staged !== null}
     <ReviewOverlay kind={reviewLaunch.staged.kind} staged={reviewLaunch.staged} />
+{:else if matches.open}
+    <!-- Find Matches over an import's new transactions (plan 35 D9 "Import"), offered by the result screen. -->
+    <MatchOverlay />
 {/if}

@@ -41,6 +41,30 @@ export function journalInfoBody(overrides: Record<string, unknown> = {}): Record
 
 export const FAKE_JOURNAL_INFO = journalInfoBody();
 
+/**
+ * A minimal `GET /api/matches` body (plan 35): a journal that declares a
+ * clearing account and has nothing to propose. Spread `overrides` over it —
+ * `proposals` with `counts` that agree, or `clearing: false` for a journal
+ * with no clearing account (Find Matches disabled), or `older` for proposals
+ * past the lookback. `transactionMatchesBody` is the same for
+ * `/api/matches/for/{index}`. The write routes
+ * (`/api/matches/link` and friends) answer `{generation, id, edited}`, and
+ * `/api/matches/link-all` `{generation, linked, matchIds}`; route them in the
+ * table like any other.
+ */
+export function matchesBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {generation: "fake-1", clearing: true, counts: {clear: 0, check: 0}, older: 0, proposals: [], ...overrides};
+}
+
+/**
+ * A `GET /api/matches/for/{index}` body (plan 35 A2) for `transaction` (a
+ * review-transaction wire, e.g. `reviewTxnWire`): nothing to offer and no
+ * links unless `overrides` says so.
+ */
+export function transactionMatchesBody(transaction: Record<string, unknown>, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {generation: "fake-1", clearing: true, transaction, postings: [], links: [], ...overrides};
+}
+
 const json = (body: unknown): Response => new Response(JSON.stringify(body), {status: 200, headers: {"Content-Type": "application/json"}});
 
 /**

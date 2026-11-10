@@ -148,6 +148,14 @@ export const editing = {
     batch(edits: WireBatchEdit[]): Promise<WriteResult<BatchResult>> {
         return runFor(async (api) => decodeBatchResult(await api.batchTransactions({edits})));
     },
+    /**
+     * Any other journal write through the same path — the transfer-matching
+     * routes (plan 35): the journal is re-read on success, and a 409 raises
+     * the page's conflict banner, exactly as for every edit above.
+     */
+    write<T>(action: (api: LedgelineApi) => Promise<T>): Promise<WriteResult<T>> {
+        return runFor(action);
+    },
     /** REPLACE a whole transaction. */
     replace(index: number, body: ReplaceTransactionBody): Promise<EditResult> {
         return run((api) => api.replaceTransaction(index, body));

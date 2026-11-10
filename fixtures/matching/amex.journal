@@ -1,0 +1,33 @@
+; Amex: imported from the card's CSV feed.
+
+2026-10-12 * WHOLE FOODS MARKET
+    liabilities:amex                  $-184.12
+    expenses:groceries
+
+2026-10-22 * PAYMENT RECEIVED - THANK YOU
+    liabilities:amex                 $1,234.56
+    transfers:creditcard-payment    $-1,234.56  ; match:k7f3a2
+
+2026-11-12 * TRADER JOE'S
+    liabilities:amex                   $-96.40
+    expenses:groceries
+
+2026-11-23 * PAYMENT RECEIVED - THANK YOU
+    liabilities:amex                   $842.17
+    transfers:creditcard-payment      $-842.17
+
+2026-12-03 * BLUE BOTTLE COFFEE
+    liabilities:amex                   $-14.25
+    expenses:dining
+
+2026-12-18 * WHOLE FOODS MARKET
+    liabilities:amex                  $-211.73
+    expenses:groceries
+
+2027-01-02 * PAYMENT RECEIVED - THANK YOU
+    liabilities:amex                   $500.00
+    transfers:creditcard-payment      $-500.00
+
+2027-01-10 * PAYMENT RECEIVED - THANK YOU
+    liabilities:amex                   $600.00
+    transfers:creditcard-payment      $-600.00  ; match:zz9k1m

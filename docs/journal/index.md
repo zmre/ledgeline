@@ -104,6 +104,10 @@ Ledgeline refuses a transaction that doesn't balance and shows the reason on the
 
 **Review Unknowns** and **Review Recents**, next to **Add transaction**, bring up uncategorized and unreviewed transactions one card at a time. You can categorize, rename and mark each one reviewed from the keyboard, and fix similar transactions in the same step. See [Reviewing transactions](review.md).
 
+### Matching transfers
+
+**Find Matches**, next to the review buttons, pairs the two halves of each transfer between your own accounts, one imported from each bank feed, and links them with a `match:` tag. The journal then shows each linked pair as one row, such as *checking → amex*. See [Transfer matching](transfer-matching.md).
+
 ### Deleting a transaction
 
 There are two ways to delete:
@@ -144,6 +148,7 @@ A dash means the filtered postings net to exactly zero, or there are none.
 - [Filtering the journal](filtering.md)
 - [Running balances](running-balances.md)
 - [Reviewing transactions](review.md)
+- [Transfer matching](transfer-matching.md)
 - [Problems](problems.md)
 - [Keyboard shortcuts](keyboard.md)
 - [Exporting the journal](export.md)

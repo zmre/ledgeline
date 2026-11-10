@@ -177,11 +177,23 @@ export function mergedRows(allNames: readonly string[], files: readonly AccountF
     return [...names].sort((a, b) => a.localeCompare(b)).map((name) => ({name, entry: declared.get(name) ?? null}));
 }
 
+/**
+ * The tag that marks a clearing account for transfer matching (plan 35 D2):
+ * `account transfers  ; clearing:`. Inherited by every subaccount, as hledger
+ * inherits account tags. Exact name, like the engine's.
+ */
+export const CLEARING_TAG = "clearing";
+
 /** The editable form for one account's special tags, other tags, and note. */
 export interface AccountForm {
     readonly name: string;
     /** Keyed by {@link SpecialTagSpec.key}; "" means unset. Always has every key in {@link SPECIAL_TAGS}. */
     special: Record<string, string>;
+    /**
+     * The account's OWN `clearing:` tag value (usually ""), or null when it has
+     * none. Kept as written, so saving another field does not rewrite it.
+     */
+    clearing: string | null;
     /** Every tag NOT in {@link SPECIAL_TAGS}, in file order. */
     tags: AccountTag[];
     note: string;
@@ -197,8 +209,13 @@ export function toForm(name: string, entry: AccountEntry | null): AccountForm {
     for (const spec of SPECIAL_TAGS) special[spec.key] = "";
     const consumed = new Set<string>();
     const rest: AccountTag[] = [];
+    let clearing: string | null = null;
 
     for (const tag of entry?.tags ?? []) {
+        if (tag.name === CLEARING_TAG && clearing === null) {
+            clearing = tag.value;
+            continue;
+        }
         const key = tag.name.toLowerCase();
         const spec = consumed.has(key) ? undefined : specFor(key);
         if (spec === undefined) {
@@ -222,7 +239,7 @@ export function toForm(name: string, entry: AccountEntry | null): AccountForm {
         consumed.add(key);
     }
 
-    return {name, special, tags: rest, note: entry?.note ?? ""};
+    return {name, special, clearing, tags: rest, note: entry?.note ?? ""};
 }
 
 /** `form`'s special tags (in {@link SPECIAL_TAGS} order) followed by its ordinary ones — the shape a save request sends. */
@@ -232,6 +249,7 @@ function combinedTags(form: AccountForm): AccountTag[] {
         const value = form.special[spec.key];
         if (value !== undefined && value !== "") special.push({name: spec.key, value});
     }
+    if (form.clearing !== null) special.push({name: CLEARING_TAG, value: form.clearing});
     const rest = form.tags.filter((tag) => tag.name.trim() !== "");
     return [...special, ...rest];
 }
@@ -318,6 +336,10 @@ export function validateForm(form: AccountForm): string[] {
     }
     for (const tag of form.tags) {
         if (tag.name.trim() === "") continue; // a blank row is not yet a tag; silently dropped on save
+        if (tag.name === CLEARING_TAG) {
+            problems.push(`"${CLEARING_TAG}" is set by the "Clearing account" checkbox — use it instead of an ordinary tag row.`);
+            continue;
+        }
         const special = specFor(tag.name.toLowerCase());
         if (special !== undefined) {
             problems.push(`"${tag.name}" is a special tag — use the "${special.label}" field above instead of an ordinary tag row.`);
@@ -364,4 +386,21 @@ export function blankTag(): AccountTag {
  */
 export function defaultTargetFile(files: readonly AccountFile[]): AccountFile | null {
     return files.length === 0 ? null : (files[files.length - 1] ?? null);
+}
+
+/**
+ * The nearest declared ANCESTOR of `name` that carries the `clearing` tag
+ * (plan 35 D2), or null. Account tags are inherited by subaccounts, so such
+ * an account is a clearing account whether or not it says so itself.
+ */
+export function inheritedClearing(name: string, files: readonly AccountFile[]): string | null {
+    const tagged = new Set<string>();
+    for (const file of files) {
+        for (const entry of file.accounts) if (entry.tags.some((tag) => tag.name === CLEARING_TAG)) tagged.add(entry.name);
+    }
+    for (let cut = name.lastIndexOf(":"); cut > 0; cut = name.lastIndexOf(":", cut - 1)) {
+        const ancestor = name.slice(0, cut);
+        if (tagged.has(ancestor)) return ancestor;
+    }
+    return null;
 }

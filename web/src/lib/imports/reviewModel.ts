@@ -39,6 +39,11 @@ function slot(op: WireEditOp): string | null {
             return `posting-comment:${op.posting}`;
         case "removePostingAssertion":
             return `posting-assertion:${op.posting}`;
+        case "setPostingTag":
+            return `posting-tag:${op.posting}:${op.name}`;
+        case "addPostingTagValue":
+        case "removePostingTagValue":
+            return `posting-tag-value:${op.posting}:${op.name}:${op.value}`;
         case "replace":
             return null;
     }
@@ -78,6 +83,11 @@ function firstTag(txn: Transaction, name: string): string | undefined {
     return txn.tags.find(([tag]) => tag === name)?.[1];
 }
 
+/** Every value of the tag `name` on the `posting`-th written posting. */
+function postingTagValues(txn: Transaction, posting: number, name: string): string[] {
+    return (written(txn)[posting]?.tags ?? []).filter(([tag]) => tag === name).map(([, value]) => value);
+}
+
 /** Whether `op` would leave `txn` as it is. A `replace` is never judged a no-op: its content is the whole transaction. */
 function isNoOp(op: WireEditOp, txn: Transaction): boolean {
     switch (op.op) {
@@ -101,6 +111,14 @@ function isNoOp(op: WireEditOp, txn: Transaction): boolean {
             return (written(txn)[op.posting]?.comment.trimEnd() ?? "") === (op.comment ?? "");
         case "removePostingAssertion":
             return written(txn)[op.posting]?.balanceAssertion === undefined;
+        case "setPostingTag": {
+            const values = postingTagValues(txn, op.posting, op.name);
+            return op.value === null ? values.length === 0 : values.length === 1 && values[0] === op.value;
+        }
+        case "addPostingTagValue":
+            return postingTagValues(txn, op.posting, op.name).includes(op.value);
+        case "removePostingTagValue":
+            return !postingTagValues(txn, op.posting, op.name).includes(op.value);
         case "replace":
             return false;
     }

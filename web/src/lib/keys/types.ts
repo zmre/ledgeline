@@ -14,14 +14,15 @@
  * only keyboard surface, and once the tab strip added a second one, that
  * would have filed one feature under two headings.
  */
-export type KeyGroup = "Global" | "Navigation" | "Journal" | "Review" | "Holdings" | "Projections" | "Reports" | "Imports" | "Settings" | "Filters";
+export type KeyGroup = "Global" | "Navigation" | "Journal" | "Review" | "Matches" | "Holdings" | "Projections" | "Reports" | "Imports" | "Settings" | "Filters";
 
-/** "Review" (plan 32 D16) sits right after "Journal", the page the review overlay opens from. */
+/** "Review" (plan 32 D16) and "Matches" (plan 35) sit right after "Journal", the page their overlays open from. */
 export const GROUP_ORDER: readonly KeyGroup[] = [
     "Global",
     "Navigation",
     "Journal",
     "Review",
+    "Matches",
     "Holdings",
     "Projections",
     "Reports",

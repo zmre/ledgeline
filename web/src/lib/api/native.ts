@@ -216,6 +216,16 @@ export type WireEditOp =
     | {op: "setPostingComment"; posting: number; comment: string | null}
     /** Drop a written posting's balance assertion, keeping its amount or its elision. */
     | {op: "removePostingAssertion"; posting: number}
+    /**
+     * One tag on a written posting's own comment (plan 35): set it to exactly
+     * one value, or (`value: null`) remove every occurrence. Nothing else in
+     * the comment moves.
+     */
+    | {op: "setPostingTag"; posting: number; name: string; value: string | null}
+    /** Add one value of a repeatable posting tag (`nomatch:a, nomatch:b`); a no-op when it is there. */
+    | {op: "addPostingTagValue"; posting: number; name: string; value: string}
+    /** Remove that one value of a posting tag, leaving its other values; a no-op when it is absent. */
+    | {op: "removePostingTagValue"; posting: number; name: string; value: string}
     | {op: "replace"; transaction: ReplaceTransactionBody};
 
 /** One transaction's edits, with the fingerprint of the text the client was shown. */
@@ -228,6 +238,77 @@ export interface WireBatchEdit {
 /** `POST /api/transactions/batch` body: every edit applied as one, all or nothing. */
 export interface BatchTransactionsBody {
     edits: WireBatchEdit[];
+}
+
+// ---------------------------------------------------------------------------
+// Transfer matching (plan 35): `/api/matches`.
+// ---------------------------------------------------------------------------
+
+/** `GET /api/matches` settings (D8). */
+export interface MatchesQuery {
+    today: string;
+    /** Days two halves may be apart: 1–60, default 10. */
+    window?: number;
+    /** Only postings this many days back are proposed: 0 (no limit)–36500, default 365. */
+    lookback?: number;
+    /**
+     * The import entry point (D9): only pairs with a half among the last
+     * COUNT transactions of the journal file JOURNAL_ID, spelled
+     * `JOURNAL_ID:COUNT` — an import commit's `${journalWritten}:${imported}`.
+     */
+    since?: string;
+}
+
+/**
+ * One posting a match write names: the transaction's index, the posting's
+ * position among the postings the FILE writes (a proposal half's `posting`),
+ * the fingerprint it was served with, and optionally a new description for
+ * that transaction, saved in the same write ("Link and Save").
+ */
+export interface WireMatchHalf {
+    index: number;
+    posting: number;
+    fingerprint: string;
+    description?: string;
+}
+
+/** `POST /api/matches/link` and `/reject`. */
+export interface MatchPairBody {
+    a: WireMatchHalf;
+    b: WireMatchHalf;
+}
+
+/**
+ * `POST /api/matches/link` for a group (plan 35 A3): 2–16 postings on one
+ * clearing account, in different transactions, summing to exactly zero —
+ * a suggested combination's `a` plus its `group`, or a hand-picked set.
+ */
+export interface MatchGroupBody {
+    members: WireMatchHalf[];
+}
+
+/** `GET /api/matches/for/{index}` settings (A2). */
+export interface TransactionMatchesQuery {
+    today: string;
+    /** Days either side for `nearby` and the combinations: 1–60, default 10. */
+    window?: number;
+}
+
+/** `POST /api/matches/unlink`: the id, and the postings the client saw carrying it (1–16). */
+export interface UnlinkMatchBody {
+    matchId: string;
+    halves: WireMatchHalf[];
+}
+
+/** `POST /api/matches/forget`: the `nomatch` value, and the postings the client saw carrying it (1–16). */
+export interface ForgetRejectionBody {
+    value: string;
+    halves: WireMatchHalf[];
+}
+
+/** `POST /api/matches/link-all`: pairs only (never a combination), no posting in two. */
+export interface LinkAllMatchesBody {
+    pairs: MatchPairBody[];
 }
 
 /** The review queues' shared settings (D4/D19): the client's date, Recents' cap and the lookback window. */
@@ -1166,14 +1247,19 @@ export class LedgelineApi {
      * One window of the filtered journal (decode with `decodeRowsPage`): rows in
      * display order (`desc`, newest first) or its exact reverse (`asc`), each
      * with its check findings as of `today`. `total` is the whole filtered count.
+     * A linked transfer pair is ONE row (plan 35 D11) unless `collapse` is
+     * false, which serves every transaction as its own row (an export).
      */
     journalRows(
         filter: JournalQueryFilter,
-        window: {offset: number; limit: number; order?: "asc" | "desc"; today: string},
+        window: {offset: number; limit: number; order?: "asc" | "desc"; today: string; collapse?: boolean},
         pin: RunningPinQuery | null = null
     ): Promise<unknown> {
+        const {collapse, ...rest} = window;
         const running = pin === null ? {} : {balance: pin.account, balanceCommodity: pin.commodity ?? undefined};
-        return this.getJson(`/api/journal/rows${queryString({...filterParams(filter), ...window, ...running})}`);
+        return this.getJson(
+            `/api/journal/rows${queryString({...filterParams(filter), ...rest, ...running, collapse: collapse === false ? "false" : undefined})}`
+        );
     }
 
     /**
@@ -1694,6 +1780,65 @@ export class LedgelineApi {
      */
     batchTransactions(body: BatchTransactionsBody): Promise<unknown> {
         return this.mutate<unknown>("POST", "/api/transactions/batch", 200, body);
+    }
+
+    /**
+     * The proposed transfer pairs (plan 35; decode with `decodeMatches`),
+     * earliest first, each half a review row with its fingerprint and
+     * clearing-posting position, plus whether any clearing account is declared.
+     */
+    matches(query: MatchesQuery): Promise<unknown> {
+        return this.getJson(`/api/matches${queryString({today: query.today, window: query.window, lookback: query.lookback, since: query.since})}`);
+    }
+
+    /**
+     * The matcher for one transaction (plan 35 A2; decode with
+     * `decodeTransactionMatches`): per unlinked clearing posting, its exact
+     * partners at any gap, the suggested combinations it is in and the
+     * opposite postings within ± the window, plus the links it already has.
+     * 404 when there is no such transaction.
+     */
+    matchesFor(index: number, query: TransactionMatchesQuery): Promise<unknown> {
+        return this.getJson(`/api/matches/for/${index}${queryString({today: query.today, window: query.window})}`);
+    }
+
+    /**
+     * Link a pair (D1) or a group (A3): a fresh `match` id on every clearing
+     * posting, every rejection any carries cleaned up, and any description
+     * edits — one write. → 200 (decode with `decodeMatchWrite`); 409 for a
+     * stale fingerprint; 400 when the postings are not a legal link.
+     */
+    linkMatch(body: MatchPairBody | MatchGroupBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/matches/link", 200, body);
+    }
+
+    /** "Not a match" (D12): a shared fresh `nomatch` id on both halves, plus any description edits. As `linkMatch`. */
+    rejectMatch(body: MatchPairBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/matches/reject", 200, body);
+    }
+
+    /** Unlink (D5): remove `match:ID` from every posting carrying it. As `linkMatch`. */
+    unlinkMatch(body: UnlinkMatchBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/matches/unlink", 200, body);
+    }
+
+    /** "Forget rejection" (D12): remove `nomatch:VALUE` from every posting carrying it. As `linkMatch`. */
+    forgetRejection(body: ForgetRejectionBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/matches/forget", 200, body);
+    }
+
+    /** "Ignore this side" (D1): `match:ignore` on one posting. As `linkMatch`. */
+    ignoreMatchHalf(half: WireMatchHalf): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/matches/ignore", 200, {half});
+    }
+
+    /**
+     * "Link all clear matches" (D9): every pair checked first (a stale or
+     * illegal one refuses the lot before anything is written), then written
+     * in batch-sized saves. → 200 (decode with `decodeLinkAll`).
+     */
+    linkAllMatches(body: LinkAllMatchesBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/matches/link-all", 200, body);
     }
 
     /**

@@ -434,12 +434,19 @@ impl AccountDoc {
 }
 
 /// Render `{tags, note}` into a comment's content (without the leading `; `):
-/// every tag as `key: value`, comma-joined, then the note as the trailing
-/// segment. Empty when both are empty.
+/// every tag as `key: value` (a value-less tag as `key:`, with no trailing
+/// space), comma-joined, then the note as the trailing segment. Empty when
+/// both are empty.
 fn render_suffix(tags: &[(String, String)], note: &str) -> String {
     let mut parts: Vec<String> = tags
         .iter()
-        .map(|(name, value)| format!("{name}: {value}"))
+        .map(|(name, value)| {
+            if value.is_empty() {
+                format!("{name}:")
+            } else {
+                format!("{name}: {value}")
+            }
+        })
         .collect();
     if !note.is_empty() {
         parts.push(note.to_string());
@@ -853,6 +860,46 @@ mod tests {
         let out = parsed.apply(&plan).unwrap();
         assert_eq!(out, "account a\n");
         parsed.verify(&plan, &out).unwrap();
+    }
+
+    #[test]
+    fn a_value_less_tag_is_written_without_a_trailing_space() {
+        // hledger 1.52 reads `clearing:`, `clearing: ` and `clearing:, note`
+        // alike (`accounts tag:clearing=^$` lists all three).
+        let parsed = doc("account transfers\naccount b  ; old note\n");
+        let plan = AccountPlan {
+            edits: vec![
+                AccountEdit::Replace {
+                    index: 0,
+                    tags: vec![("clearing".to_string(), String::new())],
+                    note: String::new(),
+                },
+                AccountEdit::Replace {
+                    index: 1,
+                    tags: vec![
+                        ("clearing".to_string(), String::new()),
+                        ("type".to_string(), "A".to_string()),
+                    ],
+                    note: "old note".to_string(),
+                },
+                AccountEdit::Declare {
+                    name: "c".to_string(),
+                    tags: vec![("clearing".to_string(), String::new())],
+                    note: String::new(),
+                },
+            ],
+        };
+        let out = parsed.apply(&plan).unwrap();
+        assert_eq!(
+            out,
+            "account transfers  ; clearing:\naccount b  ; clearing:, type: A, old note\naccount c  ; clearing:\n"
+        );
+        parsed.verify(&plan, &out).unwrap();
+        let journal = parse_journal(&out, "t.journal").unwrap();
+        assert_eq!(
+            journal.account_tags("transfers"),
+            Some(&[("clearing".to_string(), String::new())][..])
+        );
     }
 
     #[test]

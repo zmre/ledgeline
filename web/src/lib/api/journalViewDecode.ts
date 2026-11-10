@@ -31,6 +31,8 @@ import type {
     RunningCommodity,
     RunningInfo,
     SeriesInterval,
+    TransferEnd,
+    TransferRow,
 } from "#lib/journalView/types.js";
 import type {ReviewCounts} from "#lib/review/types.js";
 import {ApiShapeError} from "./client";
@@ -306,7 +308,7 @@ export function decodeRow(raw: unknown, context = "row"): JournalRow {
         const problem = decodeProblem({...obj(flag, `${context}.flags[]`), tindex: index});
         return problem === null ? [] : [problem];
     });
-    return Object.freeze({
+    const row: JournalRow = {
         txn: Object.freeze(txn),
         flags: Object.freeze(flags) as Problem[],
         // Absent on a row that is not a journal transaction (a projection's
@@ -315,7 +317,39 @@ export function decodeRow(raw: unknown, context = "row"): JournalRow {
         reviewed: value.reviewed === undefined ? false : bool(value.reviewed, `${context}.reviewed`),
         // Present only when the request pinned an account (`balance=`).
         running: value.running === undefined ? null : decodeRunningCell(value.running, `${context}.running`),
-    });
+    };
+    // Plan 35 D11, additive: only `/api/journal/rows` sends them, and only on a linked row.
+    if (value.linked !== undefined && bool(value.linked, `${context}.linked`)) row.linked = true;
+    if (value.transfer !== undefined) row.transfer = decodeTransfer(value.transfer, `${context}.transfer`, index);
+    return Object.freeze(row);
+}
+
+/** `{index, account, label}`: one end of a transfer (plan 35). Shared with `matchDecode.ts`. */
+export function decodeTransferEnd(raw: unknown, context: string): TransferEnd {
+    const value = obj(raw, context);
+    const index = num(value.index, `${context}.index`);
+    if (!Number.isSafeInteger(index) || index < 1) throw new ApiShapeError(`${context}: invalid index ${index}`);
+    const nullable = (field: unknown, at: string): string | null => (field === null ? null : str(field, at));
+    return Object.freeze({index, account: nullable(value.account, `${context}.account`), label: nullable(value.label, `${context}.label`)});
+}
+
+/**
+ * A collapsed transfer row's pair: both halves (earliest first), one of
+ * which must be the row itself, and two ends naming those two halves.
+ */
+function decodeTransfer(raw: unknown, context: string, anchor: number): TransferRow {
+    const value = obj(raw, context);
+    const halves = arr(value.halves, `${context}.halves`).map((half, i) => decodeRow(half, `${context}.halves[${i}]`));
+    const [first, second] = halves;
+    if (halves.length !== 2 || first === undefined || second === undefined) throw new ApiShapeError(`${context}: expected two halves, got ${halves.length}`);
+    const indices = new Set([first.txn.index, second.txn.index]);
+    if (indices.size !== 2 || !indices.has(anchor)) throw new ApiShapeError(`${context}: the halves must be two transactions, one of them the row`);
+    const from = decodeTransferEnd(value.from, `${context}.from`);
+    const to = decodeTransferEnd(value.to, `${context}.to`);
+    if (from.index === to.index || !indices.has(from.index) || !indices.has(to.index)) {
+        throw new ApiShapeError(`${context}: from and to must name the two halves`);
+    }
+    return Object.freeze({matchId: str(value.matchId, `${context}.matchId`), halves: Object.freeze([first, second] as const), from, to});
 }
 
 // ---------------------------------------------------------------------------
@@ -494,9 +528,12 @@ export function decodeJournalSummary(raw: unknown): JournalSummary {
     const visibleNet = arr(body.visibleNet, "journal summary visibleNet").map((entry, i) => decodeAmount(entry, `journal summary visibleNet[${i}]`));
     const primary = body.primary === null ? null : str(body.primary, "journal summary primary");
     const review = body.review === undefined ? null : decodeReviewCounts(body.review, "journal summary review");
+    const transfers = body.transfers === undefined ? 0 : num(body.transfers, "journal summary transfers");
+    if (!Number.isSafeInteger(transfers) || transfers < 0) throw new ApiShapeError(`journal summary: invalid transfers ${transfers}`);
     return Object.freeze({
         generation: str(body.generation, "journal summary generation"),
         total: num(body.total, "journal summary total"),
+        transfers,
         visibleNet: Object.freeze(visibleNet) as Amount[],
         commodities,
         perCommodity: Object.freeze(perCommodity) as CommoditySummary[],

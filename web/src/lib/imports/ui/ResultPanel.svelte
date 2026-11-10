@@ -13,7 +13,12 @@
     // The sort itself is a PRESSED action with a one-line outcome, so it reports
     // inline rather than replacing this panel with a spinner. The commit it sits
     // inside is the async surface.
+    //
+    // Find Matches (plan 35 D9 "Import") is offered here too, scoped to the
+    // transactions the commit appended, when any of them has a proposed partner.
     import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import {importSince} from "#lib/matching/model.js";
+    import ImportMatches from "#lib/matching/ui/ImportMatches.svelte";
     import {reorderOffer, writtenLines} from "../importModel";
     import {reveal, revealArm} from "#lib/ui/reveal.js";
     import type {CommitResult} from "../importTypes";
@@ -52,6 +57,11 @@
                     <li>{line}</li>
                 {/each}
             </ul>
+
+            <ImportMatches
+                since={importSince(commit.journalWritten, commit.imported, (sortMoved ?? 0) > 0)}
+                imported={commit.journalWritten === null ? 0 : commit.imported}
+            />
 
             {#if reorderOffer(commit) !== null && sortMoved === null}
                 <!-- `flex` before `flex-col`: `.alert` is a grid with
