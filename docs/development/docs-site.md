@@ -11,7 +11,7 @@ This manual is the `docs/` folder, built into a static site by [mbr](https://git
 
 ## Previewing and building
 
-Both recipes run mbr v0.7.1 through `nix run`, the same pinned version CI uses, so nothing has to be installed:
+Both recipes run mbr (pinned to a main commit after v0.7.1, for the link partials in `docs/.mbr/`) through `nix run`, the same pinned version CI uses, so nothing has to be installed:
 
 ```sh
 just docs          # live preview server; mbr prints the URL

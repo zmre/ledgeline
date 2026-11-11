@@ -10,6 +10,12 @@
   <string>Ledgeline</string>
   <key>CFBundleExecutable</key>
   <string>ledgeline</string>
+  <!-- CFBundleIconName names the layered icon compiled into Assets.car
+       (assets/Ledgeline.icon, via scripts/gen-icons.sh); macOS 26+ uses it for
+       the light, dark, clear and tinted appearances. Older macOS ignores it and
+       falls back to CFBundleIconFile, the flat ledgeline.icns. -->
+  <key>CFBundleIconName</key>
+  <string>Ledgeline</string>
   <key>CFBundleIconFile</key>
   <string>ledgeline</string>
   <key>CFBundleIdentifier</key>

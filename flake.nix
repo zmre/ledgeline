@@ -425,17 +425,28 @@
           cargoTestExtraArgs = "-p ledgeline --test spa_shell_csp";
         });
 
-      # 4. Icon: assets/ledgeline.png (2048²) → a multi-resolution
+      # 4. Icon: assets/ledgeline.png (1024²) → a multi-resolution
       #    ledgeline.icns. imagemagick downsizes to each icns slot; png2icns
       #    (libicns) assembles them — no macOS `iconutil` required, so it builds
-      #    in the pure Nix sandbox.
+      #    in the pure Nix sandbox. This is the pre-macOS-26 fallback
+      #    (CFBundleIconFile); macOS 26+ uses the layered icon in
+      #    assets/Assets.car (CFBundleIconName). Both are generated from the
+      #    sources by scripts/gen-icons.sh, which needs Xcode and so runs
+      #    outside the sandbox; its outputs are committed.
+      #
+      #    The ≤48px slots come from assets/ledgeline-small.png, a zoomed-in
+      #    crop of the same art: at list-view sizes the full design is a blur.
+      #    `iconSourceFor` is shared with the Linux hicolor icons below.
+      iconSourceFor = s:
+        if s <= 48
+        then ./assets/ledgeline-small.png
+        else ./assets/ledgeline.png;
+      resizeIcon = s: out: ''magick ${iconSourceFor s} -resize ${toString s}x${toString s} "${out}"'';
       ledgelineIcns =
         pkgs.runCommand "ledgeline.icns" {
           nativeBuildInputs = [pkgs.imagemagick pkgs.libicns];
         } ''
-          for s in 16 32 48 128 256 512 1024; do
-            magick ${./assets/ledgeline.png} -resize "''${s}x''${s}" "icon_''${s}.png"
-          done
+          ${lib.concatMapStringsSep "\n" (s: resizeIcon s "icon_${toString s}.png") [16 32 48 128 256 512 1024]}
           png2icns "$out" icon_16.png icon_32.png icon_48.png icon_128.png \
             icon_256.png icon_512.png icon_1024.png
         '';
@@ -568,6 +579,7 @@
           substitute ${./assets/Info.plist.in} "$app/Contents/Info.plist" \
             --subst-var-by version "${version}"
           cp ${ledgelineIcns} "$app/Contents/Resources/ledgeline.icns"
+          cp ${./assets/Assets.car} "$app/Contents/Resources/Assets.car"
 
           # The bundled hledger, as a SIBLING of our binary in Contents/MacOS/ —
           # which is precisely where `hledger::sibling_hledger` looks. Not
@@ -780,14 +792,16 @@
             --set-default GBM_BACKENDS_PATH         "${gbmBackendsDefault}" \
             --suffix      GBM_BACKENDS_PATH         : "${mesaGbmDir}"
 
-          # assets/ledgeline.png is 2048². Downsize into each hicolor slot rather
-          # than dropping the original into one and claiming a size it is not;
-          # 48x48 is the slot menus actually require.
-          for s in 32 48 64 128 256 512; do
-            dir="$out/share/icons/hicolor/''${s}x''${s}/apps"
-            mkdir -p "$dir"
-            magick ${./assets/ledgeline.png} -resize "''${s}x''${s}" "$dir/ledgeline.png"
-          done
+          # The 1024² sources are downsized into each hicolor slot rather than
+          # dropped into one claiming a size they are not; 48x48 is the slot
+          # menus actually require. ≤48px uses the zoomed-in small variant, as
+          # the icns does (`iconSourceFor`).
+          ${lib.concatMapStringsSep "\n" (s: let
+            dir = "$out/share/icons/hicolor/${toString s}x${toString s}/apps";
+          in ''
+            mkdir -p "${dir}"
+            ${resizeIcon s "${dir}/ledgeline.png"}
+          '') [32 48 64 128 256 512]}
 
           mkdir -p "$out/share/mime/packages"
           cp ${ledgelineMimeXml} "$out/share/mime/packages/ledgeline.xml"

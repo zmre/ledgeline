@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="web/static/ledgeline-icon.png" alt="Ledgeline icon" width="128">
+<img src="web/static/ledgeline-icon.svg" alt="Ledgeline logo" width="128">
 
 # Ledgeline (hledger GUI)
 

@@ -33,7 +33,9 @@ concurrency:
 
 env:
   # Pinned so a new mbr release can't change the site between two tags.
-  MBR_FLAKE: github:zmre/mbr-markdown-browser/v0.7.1#mbr
+  # A main commit (#374) rather than a tag: the header/sidebar link partials in
+  # docs/.mbr/ need mbr main after v0.7.1. Move to the next tag once one exists.
+  MBR_FLAKE: github:zmre/mbr-markdown-browser/841d7790939d8f679760f7c5119070c3b4f8322d#mbr
 
 jobs:
   build:
