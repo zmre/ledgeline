@@ -5,6 +5,8 @@ order: 0
 tags: []
 ---
 
+<img src="images/ledgeline-icon.svg" alt="Ledgeline logo" width="128">
+
 # Ledgeline
 
 Ledgeline is a desktop app for [hledger](https://hledger.org) plain-text accounting. It opens your journal file, shows it in a native window, and lets you browse, edit, import into and report on it. Everything runs on your own machine: one binary holds the engine and the UI, and your journal never leaves your disk.

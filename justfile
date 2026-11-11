@@ -139,6 +139,11 @@ pre-push: version-check spa-hash-check audit engine-check lint check test test-i
 golden:
     ./scripts/gen-golden.sh
 
+# Regenerate the derived logo/icon assets (Assets.car, ledgeline.png, favicons)
+# from graphics-sources/ and assets/Ledgeline.icon. macOS + Xcode 26 only.
+icons:
+    ./scripts/gen-icons.sh
+
 # Assert every fixtures/rules/ file is a rules file real hledger accepts. The
 # Rust round-trip tests only prove we don't damage what we didn't touch; this is
 # what keeps the corpus itself honest.
@@ -377,7 +382,7 @@ perf-probe size="200000":
 # .github/workflows/docs.yml). Same pinned mbr as CI, run through nix so nothing
 # is installed. `--accept-flake-config` lets nix use mbr's binary cache instead
 # of compiling ffmpeg and pdfium.
-mbr := "nix run --accept-flake-config github:zmre/mbr-markdown-browser/v0.7.1#mbr --"
+mbr := "nix run --accept-flake-config github:zmre/mbr-markdown-browser/841d7790939d8f679760f7c5119070c3b4f8322d#mbr --"
 
 # Preview the docs site locally (mbr prints the URL)
 docs:

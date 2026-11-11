@@ -239,8 +239,40 @@ cd .. && cargo build --release # embeds web/build/ into target/release/ledgeline
 — the standard nix-darwin app layout, so it can be dragged to `/Applications`
 or picked up by home-manager / nix-darwin. The bundle holds
 `Contents/MacOS/ledgeline` (the binary), `Contents/MacOS/hledger` (see below),
-`Contents/Info.plist` (version taken from the workspace `Cargo.toml`), and
-`Contents/Resources/ledgeline.icns` (generated from `assets/ledgeline.png`).
+`Contents/Info.plist` (version taken from the workspace `Cargo.toml`), and two
+icons in `Contents/Resources/`:
+
+- `Assets.car` — the layered macOS 26+ icon (light, dark, clear and tinted),
+  compiled from the Icon Composer document `assets/Ledgeline.icon`. Info.plist
+  names it with `CFBundleIconName`.
+- `ledgeline.icns` — the flat fallback for older macOS (`CFBundleIconFile`),
+  built by the flake from `assets/ledgeline.png`.
+
+### Logo and icon assets
+
+The sources live in `graphics-sources/` (the logo SVGs and the Illustrator
+file) and `assets/Ledgeline.icon/` (layer SVGs cut from
+`ledgeline-logo-no-word-no-bg.svg`, with the indigo `#524ED2` background set as
+the document fill in `icon.json`). Open the `.icon` in Icon Composer (bundled
+with Xcode 26) to adjust glass, shadows or per-appearance colours.
+
+Everything else is derived from those sources and committed: `assets/Assets.car`,
+`assets/ledgeline.png`, `assets/ledgeline-small.png`,
+`web/static/ledgeline-icon.svg` (the README logo),
+`web/static/ledgeline-icon-small.svg`, `docs/images/ledgeline-icon.svg` and
+`docs/.mbr/favicon.png`. Regenerate them with `just icons` after changing a
+source.
+
+At 32px and below the full design is unreadable, so there's a **small
+variant**: the same artwork zoomed in on the arrow (the crop is
+`SMALL_VIEWBOX` in `scripts/gen-icons.sh`). It's the app's navbar logo, the
+browser-tab icon, the docs favicon, and the 16–48px slots of `ledgeline.icns`
+and the Linux hicolor icons. It is not in `Assets.car`: Icon Composer has no
+per-size variants, and a `.icon` overrides a same-named `.appiconset`
+completely. On macOS 26 and later, Finder's list view therefore shows the full
+design at 16px. We accepted that to keep the tuned dark, clear and tinted
+appearances. It needs Xcode (`actool` and Icon Composer's `ictool` aren't available
+in the Nix sandbox), so it runs by hand on a Mac rather than in the flake.
 
 ### The bundled `hledger`
 

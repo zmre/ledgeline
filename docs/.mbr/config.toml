@@ -4,6 +4,7 @@ index_file = "index.md"
 ignore_dirs = ["node_modules", ".git", "target", "build", "result"]
 sidebar_style = "single"
 title_prefix = "Ledgeline | "
+theme = "indigo"
 
 # Sort pages and sections by the `order` frontmatter field, then by title.
 [[sort]]
