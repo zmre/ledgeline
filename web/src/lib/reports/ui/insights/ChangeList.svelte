@@ -7,10 +7,12 @@
      the list is empty we distinguish "the previous period has no history to
      compare against" from "nothing moved much". -->
 <script lang="ts">
+    import InfoTip from "#lib/components/InfoTip.svelte";
     import type {AmountStyle} from "#lib/domain/types.js";
     import {NEUTRAL_CLASS, sentimentClass} from "#lib/format/sign.js";
     import type {ChangeRow} from "#lib/reports/insightsTypes.js";
     import {fmt} from "./format";
+    import type {MetricHelp} from "./metricHelp";
 
     let {
         title,
@@ -19,6 +21,7 @@
         styles,
         goodWhenUp,
         hasPrevious,
+        help,
         testid,
     }: {
         title: string;
@@ -28,6 +31,8 @@
         goodWhenUp: boolean;
         /** Whether the previous period had ANY activity in this category. */
         hasPrevious: boolean;
+        /** What the list ranks, behind an (i) after the title. */
+        help?: MetricHelp;
         testid?: string;
     } = $props();
 
@@ -48,7 +53,10 @@
 
 <div class="card border border-base-content/5 bg-base-200 shadow-sm" data-testid={testid}>
     <div class="card-body gap-2 p-4">
-        <div class="text-xs font-semibold tracking-wide text-base-content/60 uppercase">{title}</div>
+        <div class="flex items-center gap-1">
+            <div class="text-xs font-semibold tracking-wide text-base-content/60 uppercase">{title}</div>
+            {#if help !== undefined}<InfoTip {...help} placement="bottom-start" />{/if}
+        </div>
         {#if rows.length === 0}
             <div class="text-sm text-base-content/50">
                 {hasPrevious ? "No notable changes" : "Not enough history — the previous period has nothing to compare against."}

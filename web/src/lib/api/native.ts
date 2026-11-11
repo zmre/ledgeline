@@ -1096,6 +1096,22 @@ export interface InsightsQuery {
     /** Comma-separated account prefixes excluded from cost of living; absent = server default. */
     exclude?: string;
 }
+/** `GET /api/saas` (plans/37): the startup metrics for an Insights span. */
+export interface SaasQuery {
+    /** Inclusive comparison-span start (YYYY-MM-DD), as `/api/insights`. */
+    start?: string;
+    /** Inclusive comparison-span end (YYYY-MM-DD). */
+    end?: string;
+    /** Comma-separated dimension keys to break down by; absent = the server default (`segment,product,class,region`). */
+    dims?: string;
+    /** `"customers"` adds the per-customer monthly matrix (the export's Customer MRR sheet). */
+    detail?: "customers";
+    /**
+     * Today, as the browser sees it (YYYY-MM-DD): a month counts as complete
+     * only if it ends on or before min(end, asOf). Absent = the server's today.
+     */
+    asOf?: string;
+}
 export interface SubscriptionsQuery {
     asOf?: string;
     /** Months of history to scan (default 24). */
@@ -1496,6 +1512,11 @@ export class LedgelineApi {
     /** Insights dashboard (period-over-period core metrics). */
     insights(query: InsightsQuery = {}): Promise<unknown> {
         return this.getJson(`/api/insights${queryString({start: query.start, end: query.end, exclude: query.exclude})}`);
+    }
+
+    /** Startup metrics for an Insights span (decode with `decodeSaasReport`). */
+    saas(query: SaasQuery = {}): Promise<unknown> {
+        return this.getJson(`/api/saas${queryString({start: query.start, end: query.end, dims: query.dims, detail: query.detail, asOf: query.asOf})}`);
     }
 
     /** Recurring monthly/annual charges inferred from expense history. */

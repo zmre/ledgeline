@@ -40,6 +40,13 @@
         // holdings:/valuation: value is outside its closed vocabulary. The tag
         // is ignored and the report falls back, so this is a warning.
         "account-tag": "Unknown account tag value",
+        // Plan 37: startup metrics. A declared `kpi:` on an account of the wrong
+        // type (account-anchored); recurring revenue booked as billings and
+        // moved to deferred revenue (info, anchored to the first such entry);
+        // customer names that differ only by case, punctuation or a legal suffix.
+        "kpi-type-mismatch": "Startup metric role on the wrong type",
+        "recurring-billing-clearing": "Recurring revenue moved to deferred",
+        "customer-name-variants": "Customer name variants",
         // Engine-computed from the holdings engine (wire.rs `stock_rule_of`).
         "stock-missing-basis": "Stock with no cost basis",
         "stock-negative": "Negative share count",

@@ -75,6 +75,7 @@ Each transaction carries:
 - an `id:` tag holding QuickBooks' Trans #;
 - each line's own memo (QuickBooks' Description column) as that posting's comment;
 - `class:`, `customer:` and `vendor:` tags on each posting, when those columns were in the export;
+- a `customer:` tag from the line's Name on revenue, deferred revenue and receivable lines (see [Customer names on each line](#customer-names-on-each-line));
 - the payee name as its description, or the QuickBooks transaction type plus the first memo when there is no payee;
 - amounts in your journal's default commodity (its `D` directive), or else the commodity your journal uses most.
 
@@ -85,6 +86,28 @@ Each transaction carries:
 ```
 
 Every line of a QuickBooks transaction becomes its own posting, even when several lines use the same account. Lines are combined only when they have the same account, memo and tags. Such lines would read identically anyway, and combining them avoids writing a row of `$0.00` postings.
+
+### Customer names on each line
+
+Every line of a QuickBooks journal entry has its own **Name**, and on an invoice or a revenue recognition entry that Name is the customer. When a line has a Name and no Customer column value, Ledgeline writes the Name as a `customer:` tag on that posting, but only if its mapped account is one of these:
+
+- a revenue account
+- an account tagged `kpi: deferred-revenue`
+- a receivable: an account tagged `kpi: receivable`, or an asset account whose last name segment contains `receivable` and that has no other `kpi:` tag
+
+The account is checked against your journal's own declarations, so declare and tag the accounts before importing. Names on expense lines, usually vendors and employees, are left alone as before.
+
+```journal
+2026-01-31 Globex  ; id: 2210
+    liabilities:deferred-revenue          $2,000.00  ; customer: Globex
+    revenue:subscriptions:enterprise     $-2,000.00  ; Annual plan, January, customer: Globex
+```
+
+This is what the [startup metrics](../reports/startup-metrics.md#customer-tags) on Insights read to build per-customer figures, so books kept in QuickBooks get them without editing each import. Lines with different customers are never combined, even when they use the same account and memo.
+
+A tag value ends at a comma in hledger, so commas in a class, customer or vendor name are written as spaces: `Acme, Inc.` becomes `customer: Acme Inc.`.
+
+Re-importing an export made before this version updates those journal entries once. Earlier versions combined same-account lines with the same memo into one posting, so an entry whose lines name different customers now has more postings than your journal's copy (for example 4 → 6). It is reported as changed, and ticking **Update transactions that changed in QuickBooks** (below) splits it into the per-customer lines. After that, re-imports find it unchanged. A Name that only adds a `customer:` tag to a line that wasn't combined is not a change, so those entries keep their old comments.
 
 The result panel says how many transactions were imported. If any journal file ended up out of date order, it offers to re-sort that file.
 

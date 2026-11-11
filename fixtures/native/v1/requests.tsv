@@ -45,6 +45,9 @@ projections-seed	/api/projections/seed?end=2026-07-08&count=12&depth=2
 # response is derived from a clock. See `every_pinned_request_fixes_its_own_dates`.
 projections-asset	/api/projections/asset-growth-scenario.journal
 insights	/api/insights?start=2025-07-01&end=2026-07-08
+# Startup metrics (plans/37). sample.journal has no `kpi:`, so this pins the
+# "nothing available" shape: period, base, available (all false), months.
+saas	/api/saas?start=2025-07-01&end=2026-07-08&asOf=2026-07-08
 subscriptions	/api/subscriptions?asOf=2026-07-08
 holdings	/api/holdings?asOf=2026-07-08
 holdings-series	/api/holdings/series?asOf=2026-07-08&interval=monthly&count=3

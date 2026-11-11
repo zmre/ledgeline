@@ -888,3 +888,118 @@ fn no_other_fixture_reads_as_a_type_contradiction() {
     }
     assert!(hits.is_empty(), "{hits:#?}");
 }
+
+// ---------------------------------------------------------------------------
+// `kpi:` — the closed tag, and `kpi-type-mismatch` (plan 37)
+// ---------------------------------------------------------------------------
+
+/// The findings for `text`, as `(rule, account, message)`.
+fn findings(text: &str) -> Vec<(String, String, String)> {
+    tag_diagnostics(&journal(text))
+        .iter()
+        .map(|d| {
+            (
+                d["rule"].as_str().expect("a rule").to_string(),
+                d["account"].as_str().unwrap_or_default().to_string(),
+                d["message"].as_str().expect("a message").to_string(),
+            )
+        })
+        .collect()
+}
+
+/// An unknown `kpi:` value is an `account-tag` warning listing every accepted
+/// value — exactly `KpiRole::ALL`'s codes, so the list cannot drift from the
+/// parser.
+#[test]
+fn an_unknown_kpi_value_lists_every_role() {
+    let message = only_message("account revenue:subs  ; type: R, kpi: recurrent\n");
+    assert!(message.contains("revenue:subs"), "{message}");
+    assert!(message.contains("kpi: recurrent"), "{message}");
+    let codes: Vec<&str> = ledgeline_core::reports::KpiRole::ALL
+        .iter()
+        .map(|role| role.code())
+        .collect();
+    assert!(message.contains(&codes.join(", ")), "{message}");
+    assert!(
+        message.contains("startup"),
+        "names the consequence: {message}"
+    );
+}
+
+/// Accepted values are trimmed and case-insensitive, like `cfsection:`, and an
+/// empty one is no declaration at all.
+#[test]
+fn kpi_values_are_case_insensitive_and_empty_is_silent() {
+    assert!(
+        messages(
+            "account revenue:subs  ; type: R, kpi:  Recurring \n\
+             account liabilities:deferred  ; type: L, kpi: DEFERRED-REVENUE\n\
+             account expenses:ads  ; kpi:\n"
+        )
+        .is_empty()
+    );
+}
+
+/// A declared role on an account of the wrong root type fires once, naming
+/// the account, the role, and both types.
+#[test]
+fn a_kpi_role_on_the_wrong_type_is_a_mismatch() {
+    let found = findings(
+        "account expenses:hosting  ; type: X, kpi: recurring\n\
+         account expenses:hosting:aws\n\
+         account revenue:fees  ; kpi: deferred-revenue\n",
+    );
+    assert_eq!(found.len(), 2, "{found:#?}");
+    let (rule, account, message) = &found[0];
+    assert_eq!(rule, "kpi-type-mismatch");
+    assert_eq!(account, "expenses:hosting");
+    for part in ["kpi: recurring", "a revenue account", "an expense account"] {
+        assert!(message.contains(part), "{part}: {message}");
+    }
+    // Inferred from the name, `revenue:fees` is still a revenue account.
+    assert_eq!(found[1].1, "revenue:fees");
+    assert!(found[1].2.contains("a liability account"), "{}", found[1].2);
+    assert!(wire::DIAGNOSTIC_RULES.contains(&"kpi-type-mismatch"));
+}
+
+/// Subtypes fold into their root: `kpi: receivable` on a `type: C` account, or
+/// `kpi: recurring` on `type: G`, is not a mismatch.
+#[test]
+fn subtypes_match_their_root_type() {
+    assert!(
+        findings(
+            "account assets:stripe  ; type: C, kpi: receivable\n\
+             account revenue:gains  ; type: G, kpi: usage\n"
+        )
+        .is_empty()
+    );
+}
+
+/// No `kpi:` never fires; a receivable or payable INFERRED from its name
+/// declares nothing, so it never fires the mismatch whatever its type; and an
+/// untyped account has nothing to contradict.
+#[test]
+fn undeclared_and_inferred_roles_never_mismatch() {
+    assert!(
+        findings(
+            "account assets:bank  ; type: C\n\
+             account revenue:subs  ; type: R\n\
+             account assets:accounts receivable  ; type: A\n\
+             account liabilities:accounts payable  ; type: L\n\
+             account mystery  ; kpi: recurring\n"
+        )
+        .is_empty()
+    );
+}
+
+/// An inherited role is the ancestor's finding, not repeated per child.
+#[test]
+fn an_inherited_mismatch_is_reported_once() {
+    let found = findings(
+        "account assets:subs  ; type: A, kpi: recurring\n\
+         account assets:subs:smb\n\
+         account assets:subs:mid\n",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(found[0].1, "assets:subs");
+}

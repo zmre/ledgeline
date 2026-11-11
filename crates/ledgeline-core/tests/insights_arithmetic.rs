@@ -11,6 +11,7 @@ use ledgeline_core::model::Commodity;
 use ledgeline_core::parse_journal;
 use ledgeline_core::reports::{
     InsightsOpts, InsightsReport, Interval, NetWorthOpts, infer_market_prices, insights, net_worth,
+    split_period,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -209,6 +210,46 @@ fn an_odd_day_span_publishes_its_unequal_halves() {
     // place that difference is visible.
     assert_eq!(report.cost_of_living.months_previous, 1);
     assert_eq!(report.cost_of_living.months_current, 1);
+}
+
+#[test]
+fn split_period_is_the_split_insights_reports() {
+    // The shared function the startup metrics use: the odd-day span splits
+    // 16/15 through it exactly as through `insights()`.
+    let period = split_period("2026-01-01", "2026-01-31").expect("splits");
+    assert_eq!(period.mid, "2026-01-16");
+    assert_eq!(period.curr_start, "2026-01-17");
+    assert_eq!((period.prev_days, period.curr_days), (16, 15));
+    assert_eq!(period, run("", "2026-01-01", "2026-01-31").period);
+    // The month-aligned branch is unchanged too.
+    let yoy = split_period("2024-07-01", "2026-06-30").expect("splits");
+    assert_eq!(yoy.mid, "2025-06-30");
+    assert_eq!(yoy, run("", "2024-07-01", "2026-06-30").period);
+}
+
+#[test]
+fn has_holdings_is_false_without_a_portfolio() {
+    let text = "\
+2026-01-05 Salary
+    assets:bank:checking   $1,000.00
+    income:salary
+";
+    assert!(!run(text, "2025-12-01", "2026-01-31").has_holdings);
+}
+
+#[test]
+fn has_holdings_is_true_on_the_sample_journal() {
+    let report = insights(
+        &fixture_journal(),
+        &InsightsOpts {
+            start: "2024-07-01",
+            end: "2026-06-30",
+            cost_exclude: &[],
+            change_min: Dec::zero(),
+        },
+    )
+    .expect("insights succeeds");
+    assert!(report.has_holdings);
 }
 
 #[test]

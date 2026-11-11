@@ -137,3 +137,52 @@ export function portal(node: HTMLElement): {destroy(): void} {
         },
     };
 }
+
+/** Where a help tooltip opens relative to its trigger, before any flipping. */
+export type TipPlacement = "right" | "bottom-start" | "bottom-end";
+
+/** The side a tooltip actually opened on, after flipping to stay on screen. */
+export type TipSide = "right" | "left" | "below" | "above";
+
+/** Gap between a help icon and its tooltip, in px. Wider than [`GAP`]: a tooltip is not part of its trigger. */
+const TIP_GAP = 6;
+
+/**
+ * Where to put a help tooltip of `size` anchored to the trigger `rect`.
+ *
+ * `bottom-start` lines the tooltip's left edge up with the trigger and grows
+ * rightward; `bottom-end` lines up the right edges and grows leftward; `right`
+ * opens beside the trigger, vertically centred on it. Each flips to the
+ * opposite side when its own side cannot hold the whole tooltip but the other
+ * can (`right` falls back to below when neither side has the width), and the
+ * result is always clamped inside the viewport's margin, so a tooltip never
+ * ends up off screen — only, in a viewport smaller than the tooltip, over its
+ * own trigger.
+ *
+ * Unlike [`verticalPlacement`] there is no `maxHeight`: a tooltip is a few
+ * lines and does not scroll.
+ */
+export function tipPosition(
+    rect: Rect,
+    viewport: Viewport,
+    size: {width: number; height: number},
+    placement: TipPlacement
+): {top: number; left: number; side: TipSide} {
+    const right = rect.left + rect.width;
+    const height = rect.bottom - rect.top;
+    const clampLeft = (left: number): number => Math.max(MARGIN, Math.min(left, viewport.width - size.width - MARGIN));
+    const clampTop = (top: number): number => Math.max(MARGIN, Math.min(top, viewport.height - size.height - MARGIN));
+
+    if (placement === "right") {
+        const top = clampTop(rect.top + height / 2 - size.height / 2);
+        if (right + TIP_GAP + size.width <= viewport.width - MARGIN) return {top, left: right + TIP_GAP, side: "right"};
+        if (rect.left - TIP_GAP - size.width >= MARGIN) return {top, left: rect.left - TIP_GAP - size.width, side: "left"};
+    }
+
+    const fitsBelow = rect.bottom + TIP_GAP + size.height <= viewport.height - MARGIN;
+    const fitsAbove = rect.top - TIP_GAP - size.height >= MARGIN;
+    const below = fitsBelow || (!fitsAbove && viewport.height - rect.bottom >= rect.top);
+    const top = clampTop(below ? rect.bottom + TIP_GAP : rect.top - TIP_GAP - size.height);
+    const left = clampLeft(placement === "bottom-end" ? right - size.width : rect.left);
+    return {top, left, side: below ? "below" : "above"};
+}

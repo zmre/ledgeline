@@ -53,6 +53,11 @@ use ledgeline_core::reports::{
     interval_windows, net_worth, pivot_balance_sheets, prices_any_on_sheet, prices_any_on_sheets,
     prices_any_on_statement, range_buckets,
 };
+use ledgeline_core::reports::{
+    BillingCustomers, Bridge, BridgeCustomers, COVERAGE_MIN_DEFAULT, CustomerMove, CustomerRow,
+    DIMENSION_KEYS_DEFAULT, HiddenReason, RunwayBasis, SaasAvailability, SaasMonth, SaasOpts,
+    SaasPeriodMetrics, SaasReport, SegmentBreakdown, TOP_N_DEFAULT, saas_metrics,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
@@ -1465,6 +1470,9 @@ pub(crate) struct WireInsightsReport {
     revenue_changes: Vec<WireChangeRow>,
     movers: Vec<WireMoverRow>,
     top_txns: Vec<WireTopTxn>,
+    /// Anything held at the end of either half — the SPA hides Investment
+    /// Performance when false.
+    has_holdings: bool,
     /// Commodities the valuation had to skip, exactly as `/api/reports/networth`
     /// reports them. Without it the dashboard showed an UNDERSTATED net worth
     /// with no indication at all, while the net-worth endpoint warned about the
@@ -1515,7 +1523,523 @@ impl From<&InsightsReport> for WireInsightsReport {
                 .collect(),
             movers: report.movers.iter().map(WireMoverRow::from).collect(),
             top_txns: report.top_txns.iter().map(WireTopTxn::from).collect(),
+            has_holdings: report.has_holdings,
             meta: report.meta.as_ref().map(WireReportMeta::from),
+        }
+    }
+}
+
+// ===========================================================================
+// Wire representation of the startup metrics (plans/37-startup-metrics.md)
+// ===========================================================================
+//
+// `None` is OMITTED throughout (`skip_serializing_if`), as are empty lists and
+// an empty `unvalued`, so a household journal's response is small: `period`,
+// `base`, `available`, `months` (tier-A fields only) and `current`/`previous`
+// (revenue, burn, cash, runway).
+
+/// Which metrics the journal supports.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireSaasAvailability {
+    recurring: bool,
+    customers: bool,
+    business: bool,
+    cogs: bool,
+    dimensions: Vec<String>,
+    /// `"no-customer-tags" | "low-coverage" | "billing-clearing"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    customers_hidden_reason: Option<&'static str>,
+    /// Attributed share of recurring revenue, 0–100. Present whenever
+    /// `recurring` is true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    coverage_pct: Option<f64>,
+    inferred_customers: bool,
+    /// Customer counts come from billings (plan 37 A1.2).
+    billing_customers: bool,
+    /// The data horizon, `YYYY-MM` (plan 37 A2): the last month holding any
+    /// recurring posting. Present whenever `recurring` is true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    closed_through: Option<String>,
+}
+
+impl From<&SaasAvailability> for WireSaasAvailability {
+    fn from(available: &SaasAvailability) -> Self {
+        Self {
+            recurring: available.recurring,
+            customers: available.customers,
+            business: available.business,
+            cogs: available.cogs,
+            dimensions: available.dimensions.clone(),
+            customers_hidden_reason: available.customers_hidden_reason.map(HiddenReason::code),
+            coverage_pct: available.coverage_pct,
+            inferred_customers: available.inferred_customers,
+            billing_customers: available.billing_customers,
+            closed_through: available.closed_through.clone(),
+        }
+    }
+}
+
+/// An MRR bridge: positive amounts, a signed `other`, and logo counts.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireBridge {
+    new: WireDec,
+    expansion: WireDec,
+    contraction: WireDec,
+    churn: WireDec,
+    reactivation: WireDec,
+    other: WireDec,
+    new_logos: u32,
+    churned_logos: u32,
+    reactivated_logos: u32,
+}
+
+impl From<&Bridge> for WireBridge {
+    fn from(bridge: &Bridge) -> Self {
+        Self {
+            new: bridge.new.into(),
+            expansion: bridge.expansion.into(),
+            contraction: bridge.contraction.into(),
+            churn: bridge.churn.into(),
+            reactivation: bridge.reactivation.into(),
+            other: bridge.other.into(),
+            new_logos: bridge.new_logos,
+            churned_logos: bridge.churned_logos,
+            reactivated_logos: bridge.reactivated_logos,
+        }
+    }
+}
+
+fn wire_opt(value: Option<Dec>) -> Option<WireDec> {
+    value.map(WireDec::from)
+}
+
+/// One calendar month of the span.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireSaasMonth {
+    month: String,
+    partial: bool,
+    /// After the data horizon: the books aren't closed yet. Omitted when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    open: bool,
+    mrr: WireDec,
+    usage: WireDec,
+    unattributed: WireDec,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    customers: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bridge: Option<WireBridge>,
+    revenue: WireDec,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cogs: Option<WireDec>,
+    net_burn: WireDec,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    net_burn_adjusted: Option<WireDec>,
+    cash_end: WireDec,
+    sm: WireDec,
+    rnd: WireDec,
+    ga: WireDec,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deferred_end: Option<WireDec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ar_end: Option<WireDec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ap_end: Option<WireDec>,
+}
+
+impl From<&SaasMonth> for WireSaasMonth {
+    fn from(month: &SaasMonth) -> Self {
+        Self {
+            month: month.month.clone(),
+            partial: month.partial,
+            open: month.open,
+            mrr: month.mrr.into(),
+            usage: month.usage.into(),
+            unattributed: month.unattributed.into(),
+            customers: month.customers,
+            bridge: month.bridge.as_ref().map(WireBridge::from),
+            revenue: month.revenue.into(),
+            cogs: wire_opt(month.cogs),
+            net_burn: month.net_burn.into(),
+            net_burn_adjusted: wire_opt(month.net_burn_adjusted),
+            cash_end: month.cash_end.into(),
+            sm: month.sm.into(),
+            rnd: month.rnd.into(),
+            ga: month.ga.into(),
+            deferred_end: wire_opt(month.deferred_end),
+            ar_end: wire_opt(month.ar_end),
+            ap_end: wire_opt(month.ap_end),
+        }
+    }
+}
+
+/// One half's metrics. Every optional field is omitted when `None`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireSaasPeriodMetrics {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    month: Option<String>,
+    months: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mrr: Option<WireDec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    arr: Option<WireDec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<WireDec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mrr_growth_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cmgr_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    net_new_arr: Option<WireDec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bridge: Option<WireBridge>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    customers: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    customer_growth_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    logo_churn_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    arpa: Option<WireDec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    acv: Option<WireDec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nrr_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    grr_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quick_ratio: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top1_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top5_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top10_pct: Option<f64>,
+    revenue: WireDec,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gross_profit: Option<WireDec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gross_margin_pct: Option<f64>,
+    net_burn: WireDec,
+    /// Σ adjusted net burn over the half (plan 37 A3).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    net_burn_adjusted: Option<WireDec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    net_burn_avg3: Option<WireDec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    net_burn_adjusted_avg3: Option<WireDec>,
+    /// `"adjusted" | "cash"`: which burn the runway uses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runway_basis: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cash: Option<WireDec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runway_months: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cash_out_date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    burn_multiple: Option<f64>,
+    /// `"adjusted" | "cash"`, present whenever `burnMultiple` is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    burn_multiple_basis: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rule_of_40: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sm: Option<WireDec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rnd: Option<WireDec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ga: Option<WireDec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sm_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rnd_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ga_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cac: Option<WireDec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cac_payback_months: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deferred_revenue: Option<WireDec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    billings: Option<WireDec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dso_days: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dpo_days: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    billing_customers: Option<WireBillingCustomers>,
+}
+
+/// Customer counts from billings (plan 37 A1.2).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireBillingCustomers {
+    customers: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    customer_growth_pct: Option<f64>,
+    new_logos: u32,
+    lapsed_logos: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    logo_churn_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    acv: Option<WireDec>,
+    window_short: bool,
+    inferred: bool,
+}
+
+impl From<&BillingCustomers> for WireBillingCustomers {
+    fn from(billed: &BillingCustomers) -> Self {
+        Self {
+            customers: billed.customers,
+            customer_growth_pct: billed.customer_growth_pct,
+            new_logos: billed.new_logos,
+            lapsed_logos: billed.lapsed_logos,
+            logo_churn_pct: billed.logo_churn_pct,
+            acv: wire_opt(billed.acv),
+            window_short: billed.window_short,
+            inferred: billed.inferred,
+        }
+    }
+}
+
+impl From<&SaasPeriodMetrics> for WireSaasPeriodMetrics {
+    fn from(m: &SaasPeriodMetrics) -> Self {
+        Self {
+            month: m.month.clone(),
+            months: m.months,
+            mrr: wire_opt(m.mrr),
+            arr: wire_opt(m.arr),
+            usage: wire_opt(m.usage),
+            mrr_growth_pct: m.mrr_growth_pct,
+            cmgr_pct: m.cmgr_pct,
+            net_new_arr: wire_opt(m.net_new_arr),
+            bridge: m.bridge.as_ref().map(WireBridge::from),
+            customers: m.customers,
+            customer_growth_pct: m.customer_growth_pct,
+            logo_churn_pct: m.logo_churn_pct,
+            arpa: wire_opt(m.arpa),
+            acv: wire_opt(m.acv),
+            nrr_pct: m.nrr_pct,
+            grr_pct: m.grr_pct,
+            quick_ratio: m.quick_ratio,
+            top1_pct: m.top1_pct,
+            top5_pct: m.top5_pct,
+            top10_pct: m.top10_pct,
+            revenue: m.revenue.into(),
+            gross_profit: wire_opt(m.gross_profit),
+            gross_margin_pct: m.gross_margin_pct,
+            net_burn: m.net_burn.into(),
+            net_burn_adjusted: wire_opt(m.net_burn_adjusted),
+            net_burn_avg3: wire_opt(m.net_burn_avg3),
+            net_burn_adjusted_avg3: wire_opt(m.net_burn_adjusted_avg3),
+            runway_basis: m.runway_basis.map(RunwayBasis::code),
+            cash: wire_opt(m.cash),
+            runway_months: m.runway_months,
+            cash_out_date: m.cash_out_date.clone(),
+            burn_multiple: m.burn_multiple,
+            burn_multiple_basis: m.burn_multiple_basis.map(RunwayBasis::code),
+            rule_of_40: m.rule_of_40,
+            sm: wire_opt(m.sm),
+            rnd: wire_opt(m.rnd),
+            ga: wire_opt(m.ga),
+            sm_pct: m.sm_pct,
+            rnd_pct: m.rnd_pct,
+            ga_pct: m.ga_pct,
+            cac: wire_opt(m.cac),
+            cac_payback_months: m.cac_payback_months,
+            deferred_revenue: wire_opt(m.deferred_revenue),
+            billings: wire_opt(m.billings),
+            dso_days: m.dso_days,
+            dpo_days: m.dpo_days,
+            billing_customers: m.billing_customers.as_ref().map(WireBillingCustomers::from),
+        }
+    }
+}
+
+/// One value of a dimension key.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireSegmentRow {
+    value: String,
+    mrr_curr: WireDec,
+    mrr_prev: WireDec,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    customers_curr: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    arpa: Option<WireDec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nrr_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bridge: Option<WireBridge>,
+}
+
+/// One dimension key's rows.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireSegmentBreakdown {
+    key: String,
+    rows: Vec<WireSegmentRow>,
+}
+
+impl From<&SegmentBreakdown> for WireSegmentBreakdown {
+    fn from(breakdown: &SegmentBreakdown) -> Self {
+        Self {
+            key: breakdown.key.clone(),
+            rows: breakdown
+                .rows
+                .iter()
+                .map(|row| WireSegmentRow {
+                    value: row.value.clone(),
+                    mrr_curr: row.mrr_curr.into(),
+                    mrr_prev: row.mrr_prev.into(),
+                    customers_curr: row.customers_curr,
+                    arpa: wire_opt(row.arpa),
+                    nrr_pct: row.nrr_pct,
+                    bridge: row.bridge.as_ref().map(WireBridge::from),
+                })
+                .collect(),
+        }
+    }
+}
+
+/// A customer's contribution to one bridge category.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireCustomerMove {
+    customer: String,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    segment: Option<String>,
+    amount: WireDec,
+    inferred: bool,
+}
+
+fn wire_moves(moves: &[CustomerMove]) -> Vec<WireCustomerMove> {
+    moves
+        .iter()
+        .map(|item| WireCustomerMove {
+            customer: item.customer.clone(),
+            name: item.name.clone(),
+            segment: item.segment.clone(),
+            amount: item.amount.into(),
+            inferred: item.inferred,
+        })
+        .collect()
+}
+
+/// The current half's top customers per category.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireBridgeCustomers {
+    new: Vec<WireCustomerMove>,
+    expansion: Vec<WireCustomerMove>,
+    contraction: Vec<WireCustomerMove>,
+    churn: Vec<WireCustomerMove>,
+    reactivation: Vec<WireCustomerMove>,
+}
+
+impl From<&BridgeCustomers> for WireBridgeCustomers {
+    fn from(moves: &BridgeCustomers) -> Self {
+        Self {
+            new: wire_moves(&moves.new),
+            expansion: wire_moves(&moves.expansion),
+            contraction: wire_moves(&moves.contraction),
+            churn: wire_moves(&moves.churn),
+            reactivation: wire_moves(&moves.reactivation),
+        }
+    }
+}
+
+/// A customer's share of MRR at the current half's last complete month.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireCustomerShare {
+    customer: String,
+    name: String,
+    mrr: WireDec,
+    pct: f64,
+}
+
+/// One row of the export's customer × month matrix.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireCustomerRow {
+    customer: String,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    segment: Option<String>,
+    /// Aligned to `months`.
+    values: Vec<WireDec>,
+}
+
+/// The `/api/saas` payload.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WireSaasReport {
+    period: WireInsightsPeriod,
+    base: String,
+    available: WireSaasAvailability,
+    months: Vec<WireSaasMonth>,
+    current: WireSaasPeriodMetrics,
+    previous: WireSaasPeriodMetrics,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    segments: Vec<WireSegmentBreakdown>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bridge_customers: Option<WireBridgeCustomers>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    top_customers: Vec<WireCustomerShare>,
+    /// Present only with `detail=customers` (and customer metrics available).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    customer_matrix: Option<Vec<WireCustomerRow>>,
+    /// Recurring/usage revenue in commodities with no price to `base`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    unvalued: WireMixed,
+}
+
+impl From<&SaasReport> for WireSaasReport {
+    fn from(report: &SaasReport) -> Self {
+        Self {
+            period: (&report.period).into(),
+            base: report.base.clone(),
+            available: (&report.available).into(),
+            months: report.months.iter().map(WireSaasMonth::from).collect(),
+            current: (&report.current).into(),
+            previous: (&report.previous).into(),
+            segments: report
+                .segments
+                .iter()
+                .map(WireSegmentBreakdown::from)
+                .collect(),
+            bridge_customers: report
+                .bridge_customers
+                .as_ref()
+                .map(WireBridgeCustomers::from),
+            top_customers: report
+                .top_customers
+                .iter()
+                .map(|share| WireCustomerShare {
+                    customer: share.customer.clone(),
+                    name: share.name.clone(),
+                    mrr: share.mrr.into(),
+                    pct: share.pct,
+                })
+                .collect(),
+            customer_matrix: report.customer_matrix.as_ref().map(|rows| {
+                rows.iter()
+                    .map(|row: &CustomerRow| WireCustomerRow {
+                        customer: row.customer.clone(),
+                        name: row.name.clone(),
+                        segment: row.segment.clone(),
+                        values: row.values.iter().copied().map(WireDec::from).collect(),
+                    })
+                    .collect()
+            }),
+            unvalued: wire_mixed(&report.unvalued),
         }
     }
 }
@@ -2693,6 +3217,22 @@ pub(crate) struct InsightsQuery {
     change_min: Option<String>,
 }
 
+/// `?start=&end=&dims=&detail=` — startup metrics.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SaasQuery {
+    start: Option<String>,
+    end: Option<String>,
+    /// Comma-separated dimension keys (default `segment,product,class,region`).
+    dims: Option<String>,
+    /// `customers` adds the customer × month matrix (the export's detail).
+    detail: Option<String>,
+    /// "Today" (default: the server's today, as `/api/subscriptions`): a
+    /// month counts as complete only once its last day is on or before both
+    /// `end` and `asOf`.
+    as_of: Option<String>,
+}
+
 /// `?asOf=&lookback=&minMonthly=&minAnnual=` — subscription detection.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -3705,6 +4245,61 @@ pub(crate) async fn insights_report(
         };
         let report = insights(&snapshot.journal, &opts)?;
         Ok(WireInsightsReport::from(&report))
+    })
+    .await
+}
+
+/// Resolve `/api/saas`'s `dims` (default [`DIMENSION_KEYS_DEFAULT`]). An
+/// explicit value that names no key (`dims=`, `dims=,`) is a `400`: a startup
+/// report with no dimension to consider is a broken request, not a quiet
+/// "no breakdowns".
+fn parse_dims(raw: Option<&str>) -> Result<Vec<String>, AppError> {
+    let dims = parse_csv(raw, &DIMENSION_KEYS_DEFAULT);
+    if dims.is_empty() {
+        return Err(AppError::BadRequest(
+            "dims must name at least one dimension key (e.g. segment,product)".to_string(),
+        ));
+    }
+    Ok(dims)
+}
+
+/// Resolve `/api/saas`'s `detail`: absent, or `customers`. Anything else is a
+/// `400` naming the value.
+fn parse_detail(raw: Option<&str>) -> Result<bool, AppError> {
+    match raw {
+        None => Ok(false),
+        Some("customers") => Ok(true),
+        Some(other) => Err(AppError::BadRequest(format!(
+            "unknown detail '{other}' (expected customers)"
+        ))),
+    }
+}
+
+/// `GET /api/saas` — the startup metrics on Insights. `start`/`end` work
+/// exactly as `/api/insights`'s (same defaults, parsing and errors), and the
+/// span is split into the same halves.
+pub(crate) async fn saas_report(
+    State(state): State<AppState>,
+    Query(query): Query<SaasQuery>,
+) -> Result<Json<WireSaasReport>, AppError> {
+    let snapshot = state.snapshot();
+    let end = parse_date("end", query.end, today_utc)?;
+    let start = parse_date("start", query.start, || default_insights_start(&end))?;
+    let dims = parse_dims(query.dims.as_deref())?;
+    let with_customer_matrix = parse_detail(query.detail.as_deref())?;
+    let as_of = parse_date("asOf", query.as_of, today_utc)?;
+    compute(move || {
+        let opts = SaasOpts {
+            start: &start,
+            end: &end,
+            dims: &dims,
+            coverage_min: COVERAGE_MIN_DEFAULT,
+            top_n: TOP_N_DEFAULT,
+            with_customer_matrix,
+            as_of: Some(&as_of),
+        };
+        let report = saas_metrics(&snapshot.journal, &opts)?;
+        Ok(WireSaasReport::from(&report))
     })
     .await
 }

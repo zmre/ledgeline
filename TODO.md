@@ -40,6 +40,17 @@
   - This especially means smarting handling of tags when searching
 - feat: saved report filters (needs to remember dates as absolute or relative as part of this, not just the search filter)
 
+## Startup metrics (follow-ups to plan 37)
+
+- **Counting commodities (tier D):** headcount (`(kpi:headcount) 1 FTE`), seats, units; revenue per FTE. Find them by a commodity tag, not by name.
+- **Inventory metrics:** `kpi: inventory`, inventory turns, DIO, GMROI, sell-through, built on Holdings' lot/cost logic.
+- **Churn grace period:** treat a customer as churned only after N consecutive zero months (today N = 1, so a credit month shows as churn + reactivation).
+- **Spread-invoices fallback:** for books that can't tag recognition lines, spread each `customer:`-tagged invoice over 12 months (or a `term:` tag) and reconcile against recognised MRR, showing coverage.
+- **Magic number** and a **cohort retention chart**.
+- **Default projection:** extrapolate `kpi: recurring` revenue as run-rate and stop repeating non-recurring revenue.
+- **AR aging** (0–30/31–60/61–90/90+), on top of invoice ↔ payment matching.
+- **Docs screenshot** of the startup section, if the docs-screenshot harness can serve `fixtures/saas/startup.journal`.
+
 ## Budgeting / planning / modeling
 
 - **Compare projections:** sometimes you want to know how accurate your projection was versus actuals and where it differed so you can improve your projection model. I want a way, for each report, to "compare vs previous" as a checkbox.

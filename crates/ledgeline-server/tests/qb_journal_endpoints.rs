@@ -34,11 +34,44 @@ const OPENING: &str = "2026-01-01 opening balances\n\
                        \x20   assets:bank:checking   $1000.00\n\
                        \x20   equity:opening\n";
 
+/// A scratch journal for `ledgeline-export.xlsx`'s recognition entry (plan
+/// 37): its accounts are declared with their types and `kpi:` roles, and every
+/// QuickBooks account the export names is aliased to one of them. Classified
+/// by the DECLARATIONS: `income:subs` is revenue and `liabilities:unearned`
+/// deferred revenue though neither name says so, and `costs` is an expense.
+const CUSTOMER_TARGET: &str = "account income:subs  ; type: R\n\
+     account revenue:salary  ; type: R\n\
+     account liabilities:unearned  ; type: L, kpi: deferred-revenue\n\
+     account liabilities:visa  ; type: L\n\
+     account assets:bank:checking  ; type: C\n\
+     account assets:invest  ; type: A\n\
+     account costs  ; type: X\n\
+     account equity:opening  ; type: E\n\
+     alias revenue:subscriptions = income:subs\n\
+     alias income:salary = revenue:salary\n\
+     alias liabilities:deferred-revenue = liabilities:unearned\n\
+     alias liabilities:card = liabilities:visa\n\
+     alias assets:checking = assets:bank:checking\n\
+     alias assets:brokerage = assets:invest\n\
+     alias expenses = costs\n\
+     2026-01-01 opening balances\n\
+     \x20   assets:bank:checking   $1000.00\n\
+     \x20   equity:opening\n";
+
 impl Tree {
     fn bare() -> Self {
         common::use_built_workbook_worker();
         let dir = TempDir::new().expect("temp dir");
         std::fs::write(dir.path().join("main.journal"), OPENING).expect("write journal");
+        let state = AppState::from_journal_path(dir.path().join("main.journal"))
+            .expect("the scratch journal opens");
+        Self { dir, state }
+    }
+
+    fn with_journal(text: &str) -> Self {
+        common::use_built_workbook_worker();
+        let dir = TempDir::new().expect("temp dir");
+        std::fs::write(dir.path().join("main.journal"), text).expect("write journal");
         let state = AppState::from_journal_path(dir.path().join("main.journal"))
             .expect("the scratch journal opens");
         Self { dir, state }
@@ -958,4 +991,179 @@ async fn quickbooks_journal_edits_land_with_the_import() {
         "{text}"
     );
     assert!(text.contains("id: 77"), "{text}");
+}
+
+// ===========================================================================
+// Per-line Name -> customer: (plan 37)
+// ===========================================================================
+
+/// The posting line of `text` that starts (after indentation) with `account`
+/// and carries `amount`.
+fn posting_line<'a>(text: &'a str, account: &str, amount: &str) -> &'a str {
+    text.lines()
+        .find(|line| line.trim_start().starts_with(account) && line.contains(amount))
+        .unwrap_or_else(|| panic!("no {account} {amount} line in:\n{text}"))
+}
+
+#[tokio::test]
+async fn a_line_name_becomes_customer_only_on_revenue_deferred_and_receivable_lines() {
+    let tree = Tree::with_journal(CUSTOMER_TARGET);
+    let id = staged(&tree, "ledgeline-export.xlsx").await;
+    let (status, body) = post(
+        &tree,
+        "/api/import/qb-journal/commit",
+        json!({ "stageId": id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["imported"], 4, "{body}");
+    let text = tree.journal_text();
+
+    // Revenue and deferred-revenue lines: each line's own Name, and the two
+    // customers' lines to one account stay separate postings.
+    for (account, amount, customer) in [
+        ("liabilities:unearned", "$1000 ", "Initech"),
+        ("income:subs", "$-1000 ", "Initech"),
+        ("liabilities:unearned", "$500 ", "Globex Ltd."),
+        ("income:subs", "$-500 ", "Globex Ltd."),
+    ] {
+        let line = posting_line(&text, account, amount);
+        assert!(
+            line.contains(&format!("customer: {customer}")),
+            "{account} {amount}: {line}"
+        );
+    }
+    // An expense line and a cash line: the vendor's Name is left alone.
+    for (account, amount) in [("costs:hosting", "$20"), ("assets:bank:checking", "$-20")] {
+        let line = posting_line(&text, account, amount);
+        assert!(!line.contains("customer:"), "{line}");
+    }
+    // The paycheck: its revenue line takes the Name, its expense lines do not.
+    assert!(
+        posting_line(&text, "revenue:salary", "$-5000").contains("customer: Acme payroll"),
+        "{text}"
+    );
+    assert!(
+        !posting_line(&text, "costs:taxes:federal", "$900").contains("customer:"),
+        "{text}"
+    );
+    // A Customer column value wins over the Name, on any line.
+    let groceries = posting_line(&text, "costs:food", "$87.2");
+    assert!(groceries.contains("customer: Self"), "{groceries}");
+    assert!(!groceries.contains("Grocery store"), "{groceries}");
+}
+
+#[tokio::test]
+async fn with_no_revenue_declared_the_target_journal_gets_no_customer_tags() {
+    // The same export into the ordinary scratch journal, every account mapped
+    // to `assets:qb:N` — none of which is revenue, deferred or a receivable.
+    let tree = Tree::bare();
+    let id = staged(&tree, "ledgeline-export.xlsx").await;
+    map_every_unmapped_account(&tree, &id).await;
+    let (status, body) = post(
+        &tree,
+        "/api/import/qb-journal/commit",
+        json!({ "stageId": id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let text = tree.journal_text();
+    assert!(!text.contains("customer: Initech"), "{text}");
+    assert!(!text.contains("customer: Acme payroll"), "{text}");
+    assert!(
+        text.contains("customer: Self"),
+        "the column still wins: {text}"
+    );
+}
+
+/// Re-importing an export committed BEFORE per-line Names became `customer:`
+/// (plan 37): that version merged the two customers' same-account lines into
+/// one posting and wrote no `customer:`. The journal's copy now differs from
+/// what the export builds, so the entry is reported as changed, and
+/// `updateChanged` replaces it once with the per-customer lines (2 postings to
+/// each account instead of 1). That is the intended, documented behaviour.
+#[tokio::test]
+async fn reimporting_an_export_written_before_per_line_customers_updates_it_once() {
+    let tree = Tree::with_journal(CUSTOMER_TARGET);
+    let id = staged(&tree, "ledgeline-export.xlsx").await;
+    let (status, first) = post(
+        &tree,
+        "/api/import/qb-journal/commit",
+        json!({ "stageId": id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+
+    // Rewrite the file as the older version wrote it: no derived `customer:`
+    // tags, and the two customers' lines to one account merged.
+    let old: Vec<String> = tree
+        .journal_text()
+        .lines()
+        .filter(|line| !line.contains("customer: Globex Ltd."))
+        .map(|line| {
+            let indent = &line[..line.len() - line.trim_start().len()];
+            if line.contains("customer: Initech") {
+                let account = line.split_whitespace().next().expect("account");
+                let amount = if account == "income:subs" {
+                    "$-1500"
+                } else {
+                    "$1500"
+                };
+                format!("{indent}{account}  {amount}")
+            } else if line.contains("customer: Acme payroll") {
+                line.split("  ;").next().expect("posting").to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect();
+    let old = old.join("\n") + "\n";
+    assert!(!old.contains("customer: Initech") && old.contains("income:subs  $-1500"));
+    std::fs::write(tree.dir.path().join("main.journal"), &old).expect("rewrite");
+    tree.state
+        .rebind_editor(tree.dir.path().join("main.journal"))
+        .expect("rebind after the external edit");
+
+    let (status, second) = post(
+        &tree,
+        "/api/import/qb-journal/commit",
+        json!({ "stageId": id, "updateChanged": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(second["imported"], 0, "{second}");
+    // Only the recognition entry: 4 postings in the journal, 6 from the
+    // export. A tag-only difference (the paycheck's salary line) is not a
+    // change, so that entry keeps its old comment.
+    assert_eq!(second["updated"], 1, "{second}");
+    assert_eq!(
+        second["idMatches"]["conflicting"][0]["diffs"][0]["field"],
+        "postings"
+    );
+    assert_eq!(
+        second["idMatches"]["conflicting"][0]["diffs"][0]["existing"],
+        "4"
+    );
+    assert_eq!(
+        second["idMatches"]["conflicting"][0]["diffs"][0]["incoming"],
+        "6"
+    );
+    let text = tree.journal_text();
+    let subs_postings = text
+        .lines()
+        .filter(|line| line.trim_start().starts_with("income:subs") && line.starts_with(' '))
+        .count();
+    assert_eq!(subs_postings, 2, "{text}");
+    assert!(text.contains("customer: Globex Ltd."), "{text}");
+
+    // Once updated, a further re-import changes nothing.
+    let (status, third) = post(
+        &tree,
+        "/api/import/qb-journal/commit",
+        json!({ "stageId": id, "updateChanged": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{third}");
+    assert_eq!(third["updated"], 0, "{third}");
+    assert_eq!(tree.journal_text(), text);
 }

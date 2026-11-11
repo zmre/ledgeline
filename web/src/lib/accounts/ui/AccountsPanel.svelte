@@ -19,6 +19,7 @@
 <script lang="ts">
     import AccountLabel from "#lib/components/AccountLabel.svelte";
     import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import InfoTip from "#lib/components/InfoTip.svelte";
     import {dataView} from "#lib/stores/loadState.js";
     import {holdUnsavedEdits} from "#lib/stores/refreshAll.js";
     import {onServerReady} from "#lib/stores/serverWatch.svelte.js";
@@ -204,20 +205,6 @@
     }
 </script>
 
-{#snippet help(text: string, label: string)}
-    <span class="tooltip tooltip-right align-middle before:max-w-64 before:whitespace-normal" data-tip={text}>
-        <button type="button" class="cursor-help align-middle text-base-content/50 hover:text-base-content" aria-label={`About ${label}`}>
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="inline h-3.5 w-3.5" aria-hidden="true">
-                <path
-                    fill-rule="evenodd"
-                    d="M8 15A7 7 0 1 0 8 1a7 7 0 0 0 0 14Zm.75-10.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0ZM7 7a.75.75 0 0 0 0 1.5h.25v3a.75.75 0 0 0 1.5 0v-3.75A.75.75 0 0 0 8 7H7Z"
-                    clip-rule="evenodd"
-                />
-            </svg>
-        </button>
-    </span>
-{/snippet}
-
 <AsyncSection
     {view}
     value={listing}
@@ -348,7 +335,7 @@
                                                  reader and ambiguous for `for`-based lookups alike.
                                                  `for`/`id` alone is the whole association. -->
                                             <label class="label-text grow text-xs" for={`settings-account-${spec.key}`}>{spec.label}</label>
-                                            {@render help(spec.help, spec.label)}
+                                            <InfoTip label={spec.label} text={spec.help} />
                                         </span>
                                         {#if spec.kind === "closed"}
                                             <select
@@ -407,10 +394,10 @@
                                     />
                                 {/if}
                                 <label class="label-text text-sm" for="settings-account-clearing">Clearing account</label>
-                                {@render help(
-                                    "Transfers between your own accounts pass through it, one import on each side. Find Matches pairs the two halves on it. Its subaccounts are clearing accounts too.",
-                                    "Clearing account"
-                                )}
+                                <InfoTip
+                                    label="Clearing account"
+                                    text="Transfers between your own accounts pass through it, one import on each side. Find Matches pairs the two halves on it. Its subaccounts are clearing accounts too."
+                                />
                                 {#if clearingFrom !== null}
                                     <span class="text-xs text-base-content/60" data-testid="settings-account-clearing-inherited"
                                         >inherited from <code>{clearingFrom}</code></span

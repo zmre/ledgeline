@@ -29,6 +29,7 @@ import {
     decodeRulesDoc,
     decodeRulesIndex,
     decodeRulesPreview,
+    decodeSaasReport,
     decodeScenario,
     decodeScenarioFile,
     decodeSectionedReport,
@@ -1262,6 +1263,215 @@ describe("UNIT nativeDecode — InsightsReport over the insights golden", () => 
 
     it("throws ApiShapeError when base is missing", () => {
         expect(() => decodeInsightsReport({period: {}})).toThrow(ApiShapeError);
+    });
+
+    // plans/37: Investment Performance hides on `!hasHoldings`, so an absent key
+    // must not quietly read as "no holdings" and hide a real box.
+    it("decodes hasHoldings and refuses its absence", () => {
+        expect(decodeInsightsReport(raw).hasHoldings).toBe(true);
+        expect(decodeInsightsReport({...(raw as object), hasHoldings: false}).hasHoldings).toBe(false);
+        expect(() => decodeInsightsReport(without(raw as {hasHoldings: boolean}, "hasHoldings"))).toThrow(/hasHoldings/);
+    });
+});
+
+describe("UNIT nativeDecode — SaasReport over the saas golden (plans/37)", () => {
+    // sample.journal declares no `kpi:`: the household shape — nothing
+    // available, tier-A months, both halves present for the Runway box.
+    const raw = golden("saas") as Record<string, unknown> & {months: Record<string, unknown>[]; current: Record<string, unknown>};
+
+    it("decodes the household shape: nothing available, tier-A figures only", () => {
+        const report = decodeSaasReport(raw);
+        expect(report.base).toBe("$");
+        expect(report.period.currEnd).toBe("2026-07-08");
+        expect(report.available).toEqual({
+            recurring: false,
+            customers: false,
+            business: false,
+            cogs: false,
+            dimensions: [],
+            customersHiddenReason: null,
+            coveragePct: null,
+            inferredCustomers: false,
+            billingCustomers: false,
+            closedThrough: null,
+        });
+        expect(report.months.every((month) => !month.open)).toBe(true);
+        expect(report.current.burnMultipleBasis).toBeNull();
+        expect(report.current.netBurnAdjusted).toBeNull();
+        // Amendment A1: a household has no deferred revenue or receivable, so
+        // runway is on cash burn and there is no adjusted burn.
+        expect(report.current.runwayBasis).toBe("cash");
+        expect(report.current.netBurnAdjustedAvg3).toBeNull();
+        expect(report.months[0].netBurnAdjusted).toBeNull();
+        expect(report.current.billingCustomers).toBeNull();
+        expect(report.months[0]).toMatchObject({month: "2025-07", partial: false, customers: null, bridge: null, cogs: null, deferredEnd: null});
+        expect(report.months[0].revenue).toEqual({m: 566000n, p: 2});
+        expect(report.months[0].cashEnd).toEqual({m: 31784490000n, p: 6});
+        expect(report.months.at(-1)?.partial).toBe(true);
+        expect(report.current.arr).toBeNull();
+        expect(report.current.bridge).toBeNull();
+        expect(report.segments).toEqual([]);
+        expect(report.bridgeCustomers).toBeNull();
+        expect(report.topCustomers).toEqual([]);
+        expect(report.customerMatrix).toBeNull();
+        expect(report.unvalued.size).toBe(0);
+    });
+
+    it("refuses an absent unconditional field rather than reading it as zero", () => {
+        expect(() => decodeSaasReport(without(raw, "available"))).toThrow(/available/);
+        expect(() => decodeSaasReport({...raw, months: [without(raw.months[0], "netBurn")]})).toThrow(/netBurn/);
+        expect(() => decodeSaasReport({...raw, current: without(raw.current, "revenue")})).toThrow(/revenue/);
+        expect(() => decodeSaasReport({...raw, available: {...(raw.available as object), customersHiddenReason: "nope"}})).toThrow(/customersHiddenReason/);
+    });
+
+    // Literal: the golden is a household. These are the startup tiers'
+    // optional blocks, in the wire shape plans/37 "Implementation notes" fix.
+    it("decodes the startup tiers: bridge, segments, bridge customers, top customers, matrix, unvalued", () => {
+        const bridge = {
+            new: dec(150000, 2),
+            expansion: dec(110000, 2),
+            contraction: dec(15000, 2),
+            churn: dec(80000, 2),
+            reactivation: dec(60000, 2),
+            other: dec(0, 2),
+            newLogos: 1,
+            churnedLogos: 3,
+            reactivatedLogos: 2,
+        };
+        const customer = {customer: "Fjord Studio", name: "Fjord Studio", segment: "smb", amount: dec(35000, 2), inferred: false};
+        const report = decodeSaasReport({
+            ...raw,
+            available: {
+                recurring: true,
+                customers: false,
+                business: true,
+                cogs: true,
+                dimensions: ["segment"],
+                customersHiddenReason: "low-coverage",
+                coveragePct: 62.5,
+                inferredCustomers: true,
+                billingCustomers: false,
+            },
+            months: [{...raw.months[0], customers: 8, bridge, cogs: dec(117000, 2), deferredEnd: dec(1040000, 2)}],
+            current: {
+                ...raw.current,
+                mrr: dec(585000, 2),
+                arr: dec(70200, 0),
+                nrrPct: 120.8,
+                burnMultiple: 1.62,
+                bridge,
+                customers: 8,
+                cashOutDate: "2032-01-01",
+            },
+            segments: [
+                {
+                    key: "segment",
+                    rows: [
+                        {value: "mid", mrrCurr: dec(290000, 2), mrrPrev: dec(110000, 2), customersCurr: 3, nrrPct: 127.3},
+                        {value: "(unassigned)", mrrCurr: dec(0, 0), mrrPrev: dec(0, 0)},
+                    ],
+                },
+            ],
+            bridgeCustomers: {new: [], expansion: [], contraction: [], churn: [customer], reactivation: [{...customer, segment: undefined, inferred: true}]},
+            topCustomers: [{customer: "Granite Health", name: "Granite Health", mrr: dec(150000, 2), pct: 25.6}],
+            customerMatrix: [{customer: "acme-1", name: "Acme", values: [dec(50000, 2)]}],
+            unvalued: {EUR: dec(12000, 2)},
+        });
+        expect(report.available.customersHiddenReason).toBe("low-coverage");
+        expect(report.available.coveragePct).toBe(62.5);
+        expect(report.months[0].bridge?.churnedLogos).toBe(3);
+        expect(report.months[0].deferredEnd).toEqual({m: 1040000n, p: 2});
+        expect(report.current.arr).toEqual({m: 70200n, p: 0});
+        expect(report.current.cashOutDate).toBe("2032-01-01");
+        expect(report.current.grrPct).toBeNull();
+        expect(report.segments[0].rows[0]).toMatchObject({value: "mid", customersCurr: 3, arpa: null, nrrPct: 127.3, bridge: null});
+        expect(report.segments[0].rows[1].customersCurr).toBeNull();
+        expect(report.bridgeCustomers?.churn[0]).toEqual({
+            customer: "Fjord Studio",
+            name: "Fjord Studio",
+            segment: "smb",
+            amount: {m: 35000n, p: 2},
+            inferred: false,
+        });
+        expect(report.bridgeCustomers?.reactivation[0].segment).toBeNull();
+        expect(report.topCustomers[0].pct).toBe(25.6);
+        expect(report.customerMatrix?.[0]).toEqual({customer: "acme-1", name: "Acme", segment: null, values: [{m: 50000n, p: 2}]});
+        expect(report.unvalued.get("EUR")).toEqual({m: 12000n, p: 2});
+    });
+
+    // Amendment A1, in the shape plans/37 "Implementation notes (A1)" fix.
+    it("decodes adjusted burn, the runway basis and customers from billings", () => {
+        const report = decodeSaasReport({
+            ...raw,
+            available: {
+                ...(raw.available as object),
+                recurring: true,
+                business: true,
+                customersHiddenReason: "billing-clearing",
+                coveragePct: 100,
+                billingCustomers: true,
+            },
+            months: [{...raw.months[0], netBurnAdjusted: dec(372000, 2)}],
+            current: {
+                ...raw.current,
+                netBurnAdjustedAvg3: dec(369333, 2),
+                runwayBasis: "adjusted",
+                billingCustomers: {
+                    customers: 2,
+                    customerGrowthPct: -50,
+                    newLogos: 1,
+                    lapsedLogos: 1,
+                    logoChurnPct: 50,
+                    acv: dec(1260000, 2),
+                    windowShort: true,
+                    inferred: false,
+                },
+            },
+            previous: {...(raw.previous as object), billingCustomers: {customers: 4, newLogos: 4, lapsedLogos: 0, windowShort: true, inferred: true}},
+        });
+        expect(report.available.billingCustomers).toBe(true);
+        expect(report.months[0].netBurnAdjusted).toEqual({m: 372000n, p: 2});
+        expect(report.current.netBurnAdjustedAvg3).toEqual({m: 369333n, p: 2});
+        expect(report.current.runwayBasis).toBe("adjusted");
+        expect(report.current.billingCustomers).toEqual({
+            customers: 2,
+            customerGrowthPct: -50,
+            newLogos: 1,
+            lapsedLogos: 1,
+            logoChurnPct: 50,
+            acv: {m: 1260000n, p: 2},
+            windowShort: true,
+            inferred: false,
+        });
+        expect(report.previous.billingCustomers).toMatchObject({customerGrowthPct: null, logoChurnPct: null, acv: null, inferred: true});
+        expect(() => decodeSaasReport({...raw, current: {...raw.current, runwayBasis: "vibes"}})).toThrow(/runwayBasis/);
+        expect(() =>
+            decodeSaasReport({...raw, current: {...raw.current, billingCustomers: {customers: 1, newLogos: 0, lapsedLogos: 0, inferred: false}}})
+        ).toThrow(/windowShort/);
+        expect(() => decodeSaasReport({...raw, available: without(raw.available as {billingCustomers: boolean}, "billingCustomers")})).toThrow(
+            /billingCustomers/
+        );
+    });
+
+    // A2 + A3, in the shape plans/37's implementation notes fix.
+    it("decodes the data horizon, open months and the burn multiple's basis", () => {
+        const report = decodeSaasReport({
+            ...raw,
+            available: {...(raw.available as object), recurring: true, closedThrough: "2026-06"},
+            months: [raw.months[0], {...raw.months[1], partial: true, open: true}],
+            current: {...raw.current, burnMultiple: 1.6322, burnMultipleBasis: "adjusted", netBurnAdjusted: dec(4407000, 2)},
+        });
+        expect(report.available.closedThrough).toBe("2026-06");
+        expect(report.months.map((month) => month.open)).toEqual([false, true]);
+        expect(report.current.burnMultipleBasis).toBe("adjusted");
+        expect(report.current.netBurnAdjusted).toEqual({m: 4407000n, p: 2});
+        expect(() => decodeSaasReport({...raw, available: {...(raw.available as object), closedThrough: "June"}})).toThrow(/closedThrough/);
+        expect(() => decodeSaasReport({...raw, months: [{...raw.months[0], open: "yes"}]})).toThrow(/open/);
+        expect(() => decodeSaasReport({...raw, current: {...raw.current, burnMultipleBasis: "vibes"}})).toThrow(/burnMultipleBasis/);
+    });
+
+    it("refuses a customer matrix row that doesn't line up with the months", () => {
+        expect(() => decodeSaasReport({...raw, customerMatrix: [{customer: "a", name: "a", values: []}]})).toThrow(/monthly values/);
     });
 });
 

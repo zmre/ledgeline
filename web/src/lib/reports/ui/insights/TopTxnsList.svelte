@@ -1,16 +1,21 @@
 <!-- Top Transactions (Box 10): the largest transactions in the current period by
      base-commodity money moved. -->
 <script lang="ts">
+    import InfoTip from "#lib/components/InfoTip.svelte";
     import type {AmountStyle} from "#lib/domain/types.js";
     import type {TopTxn} from "#lib/reports/insightsTypes.js";
     import {fmt} from "./format";
+    import {METRIC_HELP} from "./metricHelp";
 
     let {rows, base, styles, testid}: {rows: TopTxn[]; base: string; styles: ReadonlyMap<string, AmountStyle>; testid?: string} = $props();
 </script>
 
 <div class="card border border-base-content/5 bg-base-200 shadow-sm" data-testid={testid}>
     <div class="card-body gap-2 p-4">
-        <div class="text-xs font-semibold tracking-wide text-base-content/60 uppercase">Top Transactions</div>
+        <div class="flex items-center gap-1">
+            <div class="text-xs font-semibold tracking-wide text-base-content/60 uppercase">Top Transactions</div>
+            <InfoTip {...METRIC_HELP.toptxns} placement="bottom-start" />
+        </div>
         {#if rows.length === 0}
             <div class="text-sm text-base-content/50">No transactions</div>
         {:else}

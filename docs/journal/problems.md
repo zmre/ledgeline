@@ -38,6 +38,9 @@ The checks run on the whole journal, whatever the filter bar says.
 | [Automatic posting rule](#automatic-posting-rule) | error | transaction |
 | [Unknown account in a rule](#unknown-account-in-a-rule) | warning | account |
 | [Unknown account tag value](#unknown-account-tag-value) | warning | account |
+| [Startup metric role on the wrong type](#startup-metric-role-on-the-wrong-type) | warning | account |
+| [Customer name variants](#customer-name-variants) | warning | transaction |
+| [Recurring revenue moved to deferred](#recurring-revenue-moved-to-deferred) | info | transaction |
 | [Stock checks](#stock-checks) | warning | transaction |
 | [Pending](#pending) | warning | transaction |
 | [Uncategorized](#uncategorized) | warning | transaction |
@@ -48,7 +51,7 @@ The checks run on the whole journal, whatever the filter bar says.
 | [Broken match](#broken-match) | warning | transaction |
 | [Unusual clearing posting](#unusual-clearing-posting) | info | transaction |
 
-The first six come from Ledgeline's engine. If you point the app at a plain `hledger-web` server instead, those engine checks are missing, and Ledgeline runs a simpler balance check of its own.
+The first nine come from Ledgeline's engine. If you point the app at a plain `hledger-web` server instead, those engine checks are missing, and Ledgeline runs a simpler balance check of its own.
 
 ### Unbalanced
 
@@ -84,6 +87,7 @@ An `account` directive uses one of Ledgeline's account tags with a value it does
 | `bsterm:` | `current`, `noncurrent` | The account gets the default balance sheet grouping. |
 | `holdings:` | `stocks`, `other`, `none` | The account lands on a Holdings tab by whether it holds a non-currency commodity. |
 | `valuation:` | `cost`, `unrealized`, `depreciation`, `adjustment` | The account counts as cost basis, so any unrealized gain on that holding reads as zero. |
+| `kpi:` | `recurring`, `usage`, `deferred-revenue`, `sales-marketing`, `rnd`, `ga`, `receivable`, `payable` | The account has no role in the [startup metrics](../reports/startup-metrics.md), so the figures that need it leave it out or hide. |
 
 The `valuation:` case matters most, because a zero gain looks like a holding that hasn't moved. Fix the spelling in the `account` directive. An empty value (`; bsterm:`) counts as no tag and is not reported.
 
@@ -120,6 +124,33 @@ A disagreement with the name alone is not reported, because it is often delibera
 This warning is advice. Ledgeline still classifies the account by the type you declared, so until you fix it the account sits on the balance sheet, and anything posted to it directly, including a projection, is booked as an asset. When this warning fires, the separate "tag is ignored" warnings for the same account are left out, since fixing the type fixes those too.
 
 The tags are explained on [Accounts](../settings/accounts.md), [Balance sheet](../reports/balance-sheet.md), [Income statement](../reports/income-statement.md) and [Holdings](../holdings/index.md).
+
+### Startup metric role on the wrong type
+
+An account's `kpi:` tag doesn't fit its type. Each role expects one kind of account:
+
+| `kpi:` | Expected type |
+| --- | --- |
+| `recurring`, `usage` | Revenue |
+| `deferred-revenue`, `payable` | Liability |
+| `sales-marketing`, `rnd`, `ga` | Expense |
+| `receivable` | Asset |
+
+For example, `kpi: recurring` on `expenses:software` counts a cost as subscription revenue. The startup metrics still read the account in the role you gave it, so the figures are wrong until you fix it. The type that decides this is the account's effective type, declared or guessed from its name, and Cash counts as Asset. Usually the tag is on the wrong account, or the account's `type:` is wrong. Move the tag, or fix the type in [Settings → Accounts](../settings/accounts.md).
+
+Only an account that declares `kpi:` itself is checked. A subaccount that inherits the role from its parent never triggers it, and neither does an account Ledgeline treats as a receivable or payable only because of its name. See [Startup metrics](../reports/startup-metrics.md#the-kpi-tag).
+
+### Customer name variants
+
+Two or more `customer:` values look like the same customer spelled differently. Ledgeline compares them after lowercasing, removing punctuation and spaces, and dropping a trailing legal suffix: `inc`, `llc`, `ltd`, `corp`, `co`, `gmbh`, `plc`, `sa` or `bv`. So `Contoso Ltd`, `Contoso Ltd.` and `contoso` are reported together. `Acme` and `Acme Labs` are not, because they differ by more than a suffix. The suffix has to be a separate word, so `Acme Co` reads as `acme` but `Costco` stays `costco`.
+
+The finding lists every spelling in the group, with the date and description of one transaction for each, and points at the first of them. The [startup metrics](../reports/startup-metrics.md#customer-tags) count each spelling as its own customer, so one customer can read as a churn in one month and a new customer in the next. Pick one spelling and change the others, or give every variant the same `customer-id:` tag.
+
+### Recurring revenue moved to deferred
+
+A transaction debits an account tagged `kpi: recurring` and credits one tagged `kpi: deferred-revenue`. That is the "invoice to revenue, then move to deferred revenue" pattern. It is valid bookkeeping, and MRR still comes out right. But any `customer:` tag on the invoice is then on billings, not recognised revenue, so the startup metrics can't build per-customer figures from it.
+
+The finding is reported once per recurring account. It points at the first such transaction, and the message gives how many there are. To get customer metrics, tag the recognition entries with `customer:` instead, or invoice straight to deferred revenue. See [Deferred revenue books](../reports/startup-metrics.md#deferred-revenue-books).
 
 ### Stock checks
 

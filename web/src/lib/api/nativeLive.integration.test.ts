@@ -27,11 +27,13 @@ import {
     decodeHoldingsReport,
     decodeHoldingsSeries,
     decodeIncomeStatementReport,
+    decodeInsightsReport,
     decodeJournalInfo,
     decodePeriodReport,
     decodeProjection,
     decodeProjectionIndex,
     decodeRenderedEntry,
+    decodeSaasReport,
     decodeScenarioFile,
     decodeSectionedReport,
 } from "./nativeDecode";
@@ -501,6 +503,39 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         // never opened for writing.
         await expect(api.setProjectionDefault("sample.journal")).rejects.toThrow(/Only a scenario file Ledgeline saved/);
         await expect(api.setProjectionDefault("sample.journal")).rejects.toBeInstanceOf(ValidationError);
+    });
+
+    // plans/37: Insights' first live coverage, and the startup metrics beside
+    // it. The default Year-over-year span at the pinned clock is
+    // 2024-07-01 … 2026-06-30 (e2e/insights.e2e.ts states the same figures).
+    it("insights: the YoY span's headline figures, and sample.journal has holdings", async () => {
+        const styles = decodeJournalInfo(await new LedgelineApi(url).journalInfo()).reportStyles;
+        const report = decodeInsightsReport(await new LedgelineApi(url).insights({start: "2024-07-01", end: "2026-06-30"}));
+        expect(report.period.currStart).toBe("2025-07-01");
+        expect(dollarLine(report.revenue.current, styles)).toBe("$68,007.50");
+        expect(dollarLine(report.cashBalance.current, styles)).toBe("$50,277.56");
+        expect(report.hasHoldings).toBe(true);
+        expect(report.movers.length).toBeGreaterThan(0);
+    });
+
+    // sample.journal is a household: no `kpi:`, so nothing past tier A is
+    // available and the dashboard keeps Net Worth (no Runway, no section).
+    it("saas: a household journal offers no startup tiers but still carries tier-A figures", async () => {
+        const styles = decodeJournalInfo(await new LedgelineApi(url).journalInfo()).reportStyles;
+        const report = decodeSaasReport(await new LedgelineApi(url).saas({start: "2024-07-01", end: "2026-06-30"}));
+        expect(report.available).toMatchObject({recurring: false, customers: false, business: false, cogs: false, dimensions: []});
+        expect(report.months).toHaveLength(24);
+        expect(report.current.month).toBe("2026-06");
+        expect(report.current.arr).toBeNull();
+        expect(formatAmount({commodity: "$", qty: report.current.revenue, style: styles.get("$")!})).toBe("$68,007.50");
+        // Not burning: the household earns more than it spends.
+        expect(report.current.runwayMonths).toBeNull();
+        expect(report.current.cash).not.toBeNull();
+        expect(report.customerMatrix).toBeNull();
+    });
+
+    it("saas: an unknown detail is a 400 naming the accepted value", async () => {
+        await expect(new LedgelineApi(url).saas({detail: "nope" as "customers"})).rejects.toThrow(/unknown detail 'nope' \(expected customers\)/);
     });
 
     it("journal info falls back to the fixture folder's name", async () => {

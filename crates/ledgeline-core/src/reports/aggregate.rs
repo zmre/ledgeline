@@ -33,6 +33,14 @@ pub struct PostingFilter<'a> {
     pub at_cost: bool,
 }
 
+/// A posting's effective date: its own `date:` tag, else the transaction's —
+/// the date every report (and hledger) files a posting under. Shared so the
+/// startup metrics select postings exactly as the income statement does.
+#[must_use]
+pub fn effective_date<'a>(txn: &'a Transaction, posting: &'a Posting) -> &'a str {
+    posting.date.as_deref().unwrap_or(&txn.date)
+}
+
 /// One pass over all postings, summing per FULL account name.
 ///
 /// The effective posting date is `posting.date ?? txn.date`; the effective
@@ -52,7 +60,7 @@ pub fn account_totals(
     let mut totals: BTreeMap<String, MixedAmount> = BTreeMap::new();
     for txn in txns {
         for posting in &txn.postings {
-            let date = posting.date.as_deref().unwrap_or(&txn.date);
+            let date = effective_date(txn, posting);
             if filter.from.is_some_and(|from| date < from) {
                 continue;
             }

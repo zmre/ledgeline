@@ -178,6 +178,7 @@ mod tests {
             class: None,
             customer: None,
             vendor: None,
+            name: None,
         }
     }
 

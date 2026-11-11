@@ -29,6 +29,7 @@
         label,
         loadingLabel,
         onRetry,
+        quietLoading = false,
         children,
     }: {
         /** Which branch to render — from `dataView`, never hand-rolled. */
@@ -43,6 +44,12 @@
         /** Accessible name for the loading spinner, e.g. "Loading reports". */
         loadingLabel: string;
         onRetry: () => void;
+        /**
+         * Render nothing while loading instead of the full-height spinner: for
+         * a section most payloads decide not to show at all (Insights' startup
+         * metrics), where a spinner would flash for a part that never appears.
+         */
+        quietLoading?: boolean;
         children: Snippet<[T]>;
     } = $props();
 
@@ -67,7 +74,7 @@
     </div>
 {:else if view === "data" && value !== null}
     {@render children(value)}
-{:else}
+{:else if !quietLoading}
     <div class="flex items-center justify-center py-24" aria-label={loadingLabel}>
         <span class="loading loading-lg loading-spinner"></span>
     </div>

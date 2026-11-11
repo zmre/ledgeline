@@ -58,6 +58,8 @@ interface PersistedSettings {
      * state worth remembering.
      */
     budgetGapsOpen: boolean;
+    /** Insights' "More metrics" list under the startup boxes (plans/37). Closed by default. */
+    startupMoreOpen: boolean;
     /**
      * What the Holdings pie is divided by: one slice per holding (the
      * default), or one per asset class / sector / … (see
@@ -159,6 +161,7 @@ const defaults = (): PersistedSettings => ({
     netWorthChartOpen: true,
     cashFlowChartOpen: true,
     budgetGapsOpen: false,
+    startupMoreOpen: false,
     holdingsPieDimension: "holding",
     lastProjectionId: null,
     benchmarks: [],
@@ -217,6 +220,7 @@ function load(): PersistedSettings {
             netWorthChartOpen: typeof parsed.netWorthChartOpen === "boolean" ? parsed.netWorthChartOpen : true,
             cashFlowChartOpen: typeof parsed.cashFlowChartOpen === "boolean" ? parsed.cashFlowChartOpen : true,
             budgetGapsOpen: typeof parsed.budgetGapsOpen === "boolean" ? parsed.budgetGapsOpen : false,
+            startupMoreOpen: typeof parsed.startupMoreOpen === "boolean" ? parsed.startupMoreOpen : false,
             // Validated against the union, like `insightsTab`: a dimension a
             // later version dropped must fall back rather than select nothing.
             holdingsPieDimension: PIE_DIMENSIONS.includes(parsed.holdingsPieDimension as PieDimension)
@@ -276,6 +280,7 @@ function persist(): void {
             netWorthChartOpen: state.netWorthChartOpen,
             cashFlowChartOpen: state.cashFlowChartOpen,
             budgetGapsOpen: state.budgetGapsOpen,
+            startupMoreOpen: state.startupMoreOpen,
             holdingsPieDimension: state.holdingsPieDimension,
             lastProjectionId: state.lastProjectionId,
             benchmarks: state.benchmarks,
@@ -370,6 +375,14 @@ export const settings = {
     },
     set budgetGapsOpen(open: boolean) {
         state.budgetGapsOpen = open;
+        persist();
+    },
+    /** Whether Insights' "More metrics" list is expanded. */
+    get startupMoreOpen(): boolean {
+        return state.startupMoreOpen;
+    },
+    set startupMoreOpen(open: boolean) {
+        state.startupMoreOpen = open;
         persist();
     },
     /** What the Holdings pie is divided by — see the field. */

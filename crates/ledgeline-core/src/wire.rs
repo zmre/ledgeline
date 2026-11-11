@@ -17,9 +17,10 @@ use crate::model::{
 use crate::reports::account_types::{declared_descendant_types, infer_account_type, root_type};
 use crate::reports::{
     ACCOUNT_TYPE_TAG, AccountClass, AccountType, AccountTypes, BS_GROUP_TAG, BS_TERM_TAG, BsTerm,
-    CF_GROUP_TAG, CF_SECTION_TAG, IS_GROUP_TAG, IS_SECTION_TAG, account_classes, account_decls,
-    declared_types, parse_account_type_tag, parse_bs_term_tag, parse_cf_section_tag,
-    parse_is_section_tag,
+    CF_GROUP_TAG, CF_SECTION_TAG, IS_GROUP_TAG, IS_SECTION_TAG, KPI_TAG, KpiRole, account_classes,
+    account_decls, declared_kpi_roles, declared_types, expected_type, kpi_resolver,
+    parse_account_type_tag, parse_bs_term_tag, parse_cf_section_tag, parse_is_section_tag,
+    parse_kpi_tag,
 };
 use crate::title::{journal_title, main_file_name};
 use serde::Serialize;
@@ -445,21 +446,33 @@ const DIAGNOSTIC_ERROR: &str = "error";
 /// are warnings, and never promoted to errors.
 const DIAGNOSTIC_WARNING: &str = "warning";
 
+/// Diagnostic severity for a finding that describes a legitimate bookkeeping
+/// choice with a consequence worth knowing (`recurring-billing-clearing`):
+/// nothing is wrong, but a figure is hidden because of it.
+const DIAGNOSTIC_INFO: &str = "info";
+
 /// Every ENGINE `rule` value, in the order the drawer groups them. The first
 /// two are hledger-level errors; `auto-rule` is an `=` rule hledger `--auto`
 /// would refuse the journal over and `auto-account` one posting to an account
 /// nothing else names ([`journal_to_auto_diagnostics`]); `account-tag` is the
-/// journal's own `account` directives; the last three are the stock findings from the holdings engine.
+/// journal's own `account` directives; `kpi-type-mismatch` is a `kpi:` role on
+/// an account of the wrong type; `recurring-billing-clearing` and
+/// `customer-name-variants` are the startup-metrics findings
+/// ([`journal_to_saas_diagnostics`]); the last three are the stock findings from
+/// the holdings engine.
 ///
 /// `/api/diagnostics` follows these with the five local check rules
 /// (`crate::view::checks`). The SPA no longer allow-lists rule ids (plan 26
 /// B4): the engine is the only producer of every rule.
-pub const DIAGNOSTIC_RULES: [&str; 8] = [
+pub const DIAGNOSTIC_RULES: [&str; 11] = [
     "unbalanced",
     "assertion",
     "auto-rule",
     "auto-account",
     "account-tag",
+    "kpi-type-mismatch",
+    "recurring-billing-clearing",
+    "customer-name-variants",
     "stock-missing-basis",
     "stock-negative",
     "stock-unpriced",
@@ -574,12 +587,14 @@ struct ClosedTag {
 /// findings are reported: broadest classification first. `type:` picks the
 /// statement, `issection:` the P&L box, `cfsection:` the cash-flow section,
 /// `bsterm:` the balance-sheet half,
-/// `holdings:` the tab, `valuation:` the role within it.
+/// `holdings:` the tab, `valuation:` the role within it, and `kpi:` the
+/// account's role in the startup metrics (it changes no statement, so it comes
+/// last).
 ///
-/// All six degrade to "undeclared" when unreadable, which is what lets this be
+/// All seven degrade to "undeclared" when unreadable, which is what lets this be
 /// a warning list rather than a refusal — and each one's `consequence` says
 /// which fallback it landed on.
-const CLOSED_TAGS: [ClosedTag; 6] = [
+const CLOSED_TAGS: [ClosedTag; 7] = [
     ClosedTag {
         tag: ACCOUNT_TYPE_TAG,
         recognizes: |value| parse_account_type_tag(value).is_some(),
@@ -628,6 +643,15 @@ const CLOSED_TAGS: [ClosedTag; 6] = [
         // unrealized" unless the sentence joins the two for them.
         consequence: "the account is treated as cost basis, so any unrealized gain on this \
                       holding will read as zero",
+    },
+    ClosedTag {
+        tag: KPI_TAG,
+        recognizes: |value| parse_kpi_tag(value).is_some(),
+        // `KpiRole::ALL`'s codes, in order — pinned by `tag_diagnostics.rs`.
+        codes: "recurring, usage, deferred-revenue, sales-marketing, rnd, ga, receivable, \
+                payable",
+        consequence: "the account has no startup-metric role of its own, so Insights' startup \
+                      metrics leave it out (or use its parent's role)",
     },
 ];
 
@@ -679,7 +703,250 @@ pub fn journal_to_tag_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
         &contradicted,
     ));
     findings.extend(contradictions.iter().map(TypeContradiction::diagnostic));
+    findings.extend(kpi_type_mismatches(
+        journal,
+        &AccountTypes::from_declared(declared.clone()),
+    ));
     findings
+}
+
+/// `kpi-type-mismatch`: an account that DECLARES a readable `kpi:` role whose
+/// effective root type is not the one the role expects ([`expected_type`]),
+/// one warning per account in declaration order.
+///
+/// Only the declaring account is reported: a subaccount inheriting the role is
+/// the same mistake, and the ancestor's finding already names it. An account
+/// whose role comes from the receivable/payable NAME inference declares
+/// nothing, so it can never fire. An account with no resolvable type has
+/// nothing to contradict and is skipped too.
+fn kpi_type_mismatches(journal: &Journal, types: &AccountTypes) -> Vec<WireDiagnostic> {
+    journal
+        .accounts
+        .iter()
+        .filter_map(|decl| {
+            let role = decl
+                .tags
+                .iter()
+                .find(|(key, _)| key == KPI_TAG)
+                .and_then(|(_, value)| parse_kpi_tag(value))?;
+            let actual = root_type(types.resolve(&decl.name.0)?);
+            let expected = expected_type(role);
+            (actual != expected).then(|| WireDiagnostic {
+                txn_index: None,
+                account: Some(decl.name.0.clone()),
+                rule: "kpi-type-mismatch",
+                severity: DIAGNOSTIC_WARNING,
+                message: format!(
+                    "account '{}' declares `kpi: {}`, which belongs on {} account, but the \
+                     account is {} account; Insights' startup metrics still read it as {}, so \
+                     check the tag or the account's `type:`",
+                    decl.name.0,
+                    role.code(),
+                    with_article(expected),
+                    with_article(actual),
+                    role.code()
+                ),
+            })
+        })
+        .collect()
+}
+
+/// "an asset", "a revenue", … — the type's wire code with its article.
+fn with_article(ty: AccountType) -> String {
+    let code = ty.code();
+    let article = if code.starts_with(['a', 'e', 'i', 'o', 'u']) {
+        "an"
+    } else {
+        "a"
+    };
+    format!("{article} {code}")
+}
+
+/// The startup-metrics findings that read transactions:
+/// `recurring-billing-clearing` first, then `customer-name-variants`. Both are
+/// single passes; a journal without a `kpi: recurring` role or `customer:`
+/// tags gets nothing. (`kpi-type-mismatch` is about `account` directives, so it
+/// is reported with them, by [`journal_to_tag_diagnostics`].)
+#[must_use]
+pub fn journal_to_saas_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
+    let mut findings = billing_clearing_diagnostics(journal);
+    findings.extend(customer_variant_diagnostics(journal));
+    findings
+}
+
+/// True when some posting in `txn` to an account resolving to `role` DEBITS
+/// (positive quantity) or CREDITS (negative) in some commodity.
+fn moves(
+    posting: &Posting,
+    resolve: &dyn Fn(&str) -> Option<KpiRole>,
+    role: KpiRole,
+    debit: bool,
+) -> bool {
+    resolve(&posting.account.0) == Some(role)
+        && posting.amounts.iter().any(|amount| {
+            if debit {
+                amount.quantity.mantissa > 0
+            } else {
+                amount.quantity.mantissa < 0
+            }
+        })
+}
+
+/// `recurring-billing-clearing`: a transaction that DEBITS a `kpi: recurring`
+/// account and CREDITS a `kpi: deferred-revenue` one — the "move to deferred"
+/// half of the invoice → revenue → deferred pattern. One `info` per recurring
+/// account, anchored to the first such transaction, with the count.
+///
+/// Transaction-anchored (the drawer keeps exactly one anchor and the
+/// transaction is the useful one), so the account is named in the message.
+fn billing_clearing_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
+    let declared = declared_kpi_roles(&journal.accounts);
+    if !declared.values().any(|role| *role == KpiRole::Recurring) {
+        return Vec::new();
+    }
+    let types = AccountTypes::new(&account_decls(journal));
+    let resolver = kpi_resolver(&declared, &types);
+    let resolve = |account: &str| resolver(account);
+    // account → (first position, count).
+    let mut seen: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+    for (position, txn) in journal.transactions.iter().enumerate() {
+        if !txn
+            .postings
+            .iter()
+            .any(|posting| moves(posting, &resolve, KpiRole::DeferredRevenue, false))
+        {
+            continue;
+        }
+        let debited: BTreeSet<&str> = txn
+            .postings
+            .iter()
+            .filter(|posting| moves(posting, &resolve, KpiRole::Recurring, true))
+            .map(|posting| posting.account.0.as_str())
+            .collect();
+        for account in debited {
+            seen.entry(account).or_insert((position, 0)).1 += 1;
+        }
+    }
+    let mut rows: Vec<(&str, (usize, usize))> = seen.into_iter().collect();
+    rows.sort_by_key(|&(account, (first, _))| (first, account));
+    rows.into_iter()
+        .map(|(account, (first, count))| {
+            let txn = &journal.transactions[first];
+            WireDiagnostic {
+                txn_index: Some(first),
+                account: None,
+                rule: "recurring-billing-clearing",
+                severity: DIAGNOSTIC_INFO,
+                message: format!(
+                    "recurring-revenue account '{account}' is debited against deferred revenue \
+                     in {count} transaction{} (first: {} {}): revenue is booked at invoice and \
+                     moved to deferred, so per-customer startup metrics there would be \
+                     billings, not MRR; put `customer:` on the recognition lines instead",
+                    if count == 1 { "" } else { "s" },
+                    txn.date,
+                    txn.description
+                ),
+            }
+        })
+        .collect()
+}
+
+/// The legal-form suffixes [`customer_key`] drops.
+const LEGAL_SUFFIXES: [&str; 9] = ["inc", "llc", "ltd", "corp", "co", "gmbh", "plc", "sa", "bv"];
+
+/// The key two `customer:` spellings of the same customer share: lowercased,
+/// split into WORDS on anything that is not a letter or digit, ONE trailing word
+/// dropped when it is a legal suffix ([`LEGAL_SUFFIXES`]) and at least one word
+/// would remain, then the words joined with nothing between them.
+///
+/// Word-wise, not character-wise, on purpose: `Acme Co`, `Acme, Co.` and
+/// `ACME CO` all become `acme`, while `Costco` stays `costco` (its `co` is not a
+/// word) and a customer actually called `Co` keeps its name. Joining without a
+/// separator is what makes `Acme-Labs` and `Acme Labs` agree, and it is also why
+/// `Acme` and `Acme Labs` (`acme` vs `acmelabs`) never do.
+fn customer_key(name: &str) -> String {
+    let lowered = name.to_lowercase();
+    let mut words: Vec<&str> = lowered
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect();
+    if words.len() > 1
+        && words
+            .last()
+            .is_some_and(|last| LEGAL_SUFFIXES.contains(last))
+    {
+        words.pop();
+    }
+    words.concat()
+}
+
+/// `customer-name-variants`: two or more distinct `customer:` values (posting
+/// or transaction tags, trimmed) with the same [`customer_key`]. A posting (or
+/// transaction) that carries `customer-id:` is keyed by its id and is left out
+/// entirely, in both directions. The startup
+/// metrics match customers exactly and never merge these silently, so this
+/// says so — once per group, in first-appearance order, anchored to the first
+/// transaction of the earliest variant and naming every variant with its first
+/// transaction's date and description.
+fn customer_variant_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
+    // Each distinct value with its first position, in first-seen order.
+    let mut first_seen: Vec<(&str, usize)> = Vec::new();
+    let mut known: HashSet<&str> = HashSet::new();
+    for (position, txn) in journal.transactions.iter().enumerate() {
+        // A tag set carrying `customer-id:` is keyed by the id, so its
+        // `customer:` is only a display name and two spellings of it are the
+        // same customer to the startup metrics: never a finding.
+        let named = |tags: &'_ [(String, String)]| {
+            !tags
+                .iter()
+                .any(|(key, value)| key == "customer-id" && !value.trim().is_empty())
+        };
+        let values = std::iter::once(&txn.tags)
+            .chain(txn.postings.iter().map(|posting| &posting.tags))
+            .filter(|tags| named(tags))
+            .flat_map(|tags| tags.iter())
+            .filter(|(key, _)| key == "customer")
+            .map(|(_, value)| value.trim())
+            .filter(|value| !value.is_empty());
+        for value in values {
+            if known.insert(value) {
+                first_seen.push((value, position));
+            }
+        }
+    }
+    let mut groups: Vec<(String, Vec<(&str, usize)>)> = Vec::new();
+    for (value, position) in first_seen {
+        let key = customer_key(value);
+        match groups.iter_mut().find(|(group, _)| *group == key) {
+            Some((_, members)) => members.push((value, position)),
+            None => groups.push((key, vec![(value, position)])),
+        }
+    }
+    groups
+        .into_iter()
+        .filter(|(_, members)| members.len() > 1)
+        .map(|(_, members)| {
+            let listed: Vec<String> = members
+                .iter()
+                .map(|&(value, position)| {
+                    let txn = &journal.transactions[position];
+                    format!("'{value}' ({} {})", txn.date, txn.description)
+                })
+                .collect();
+            WireDiagnostic {
+                txn_index: Some(members[0].1),
+                account: None,
+                rule: "customer-name-variants",
+                severity: DIAGNOSTIC_WARNING,
+                message: format!(
+                    "customer names {} differ only by case, punctuation or a legal suffix; \
+                     startup metrics count them as {} different customers, so use one spelling",
+                    listed.join(", "),
+                    members.len()
+                ),
+            }
+        })
+        .collect()
 }
 
 /// The two statements an account can be reported on. Cash flow is not a third:
@@ -1263,6 +1530,7 @@ pub fn journal_to_all_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
     let mut all = journal_to_diagnostics(journal);
     all.extend(journal_to_auto_diagnostics(journal));
     all.extend(journal_to_tag_diagnostics(journal));
+    all.extend(journal_to_saas_diagnostics(journal));
     all.extend(journal_to_stock_diagnostics(journal));
     all
 }

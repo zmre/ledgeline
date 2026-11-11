@@ -12,7 +12,14 @@
     import {resolve} from "$app/paths";
     import AsyncSection from "#lib/components/AsyncSection.svelte";
     import ErrorToast from "#lib/components/ErrorToast.svelte";
-    import {exportAccountReportXlsx, exportBalanceSheetXlsx, exportCashFlowXlsx, exportIncomeStatementXlsx, exportXlsx} from "#lib/export/xlsx.js";
+    import {
+        exportAccountReportXlsx,
+        exportBalanceSheetXlsx,
+        exportCashFlowXlsx,
+        exportIncomeStatementXlsx,
+        exportSaasXlsx,
+        exportXlsx,
+    } from "#lib/export/xlsx.js";
     import AccountReportControls from "#lib/reports/ui/AccountReportControls.svelte";
     import AccountReportView from "#lib/reports/ui/AccountReportView.svelte";
     import {filterAccountReport} from "#lib/reports/ui/accountReportRows.js";
@@ -44,6 +51,9 @@
     } from "#lib/reports/ui/params.js";
     import type {FlowsPanel} from "#lib/reports/ui/sankeyModel.js";
     import {reportsEnd} from "#lib/stores/reportsEnd.js";
+    import {fetchSaasDetail, saas} from "#lib/stores/saas.svelte.js";
+    import {exportsStartup} from "#lib/reports/ui/insights/startup.js";
+    import {today} from "#lib/reports/periods.js";
     import {flows, loadFlowsWhenWatched} from "#lib/stores/flows.svelte.js";
     import {dataView} from "#lib/stores/loadState.js";
     import {buildReportQuery, reports, sameReportQuery, type AnyReport} from "#lib/stores/reports.svelte.js";
@@ -254,7 +264,8 @@
         switch (params.tab) {
             case "insights":
             case "subs":
-                // Neither has an XLSX export yet; the button is hidden for them.
+                // Self-hosted: Insights' startup export builds its own name
+                // (`runSaasExport`), and Subscriptions has none.
                 return {title: TAB_LABELS[params.tab], params: "", filename: "report.xlsx"};
             case "bs":
                 // No depth: the tab has no such control and asks the engine for
@@ -296,6 +307,23 @@
         }
     });
 
+    /**
+     * Insights exports only its startup metrics (plans/37), and only when the
+     * journal has recurring revenue. The export refetches the span on screen
+     * with the per-customer matrix, which the dashboard never asks for.
+     */
+    const saasExportable = $derived(
+        params.tab === "insights" && exportsStartup(saas.view, saas.query, saas.value, {start: params.insStart, end: params.insEnd})
+    );
+
+    async function runSaasExport(): Promise<void> {
+        // The same asOf the dashboard's report was built with, so the workbook
+        // and the screen agree on which months are complete.
+        const report = await fetchSaasDetail(settings.serverUrl ?? "", {start: params.insStart, end: params.insEnd, asOf: saas.query?.asOf ?? today()});
+        const {start, end} = report.period;
+        await exportSaasXlsx(report, {title: "Startup metrics", params: `${start} to ${end}`}, `startup-metrics-${start}-to-${end}.xlsx`);
+    }
+
     /** Export the current report — the tagged shapes own their builders; nw uses exportXlsx. */
     function runExport(current: AnyReport): Promise<void> {
         const meta = {title: exportInfo.title, params: exportInfo.params};
@@ -322,6 +350,8 @@
         {#if exportable !== null && !selfHosted}
             {@const current = exportable}
             <ExportButton run={() => runExport(current)} />
+        {:else if saasExportable}
+            <ExportButton run={runSaasExport} label="Export startup metrics as xlsx" />
         {/if}
     </div>
 

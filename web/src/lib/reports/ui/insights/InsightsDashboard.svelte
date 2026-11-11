@@ -6,28 +6,49 @@
 <script lang="ts">
     import {journal} from "#lib/stores/journal.svelte.js";
     import AsyncSection from "#lib/components/AsyncSection.svelte";
-    import {maIsZero, sub, toNumber, type Dec} from "#lib/domain/money.js";
+    import {maIsZero} from "#lib/domain/money.js";
     import type {AmountStyle} from "#lib/domain/types.js";
-    import type {InsightsReport, MetricDelta} from "#lib/reports/insightsTypes.js";
+    import type {InsightsReport} from "#lib/reports/insightsTypes.js";
     import type {ReportParams} from "#lib/reports/ui/params.js";
     import {insights} from "#lib/stores/insights.svelte.js";
+    import {dataView} from "#lib/stores/loadState.js";
+    import {saas} from "#lib/stores/saas.svelte.js";
     import ChangeList from "./ChangeList.svelte";
-    import {deltaLine, extras, fmt, fmtBase, fmtSignedAmount, fmtSignedPct, monthlyAverage, signClass} from "./format";
+    import {baseMetric, deltaLine, extras, fmt, fmtBase, fmtSignedAmount, fmtSignedPct, monthlyAverage, signClass} from "./format";
     import MoversList from "./MoversList.svelte";
     import PeriodControl from "./PeriodControl.svelte";
+    import StartupMetrics from "./StartupMetrics.svelte";
     import StatBox from "./StatBox.svelte";
+    import {today} from "#lib/reports/periods.js";
+    import {METRIC_HELP} from "./metricHelp";
+    import {boxVisibility, runwayText, sameSpan, showsStartup} from "./startup";
     import TopTxnsList from "./TopTxnsList.svelte";
 
     let {params = $bindable(), serverUrl, styles}: {params: ReportParams; serverUrl: string | null; styles: ReadonlyMap<string, AmountStyle>} = $props();
 
     // Refetch whenever the span changes, the server is first configured, or the
-    // journal changes (a refresh, an edit on disk).
+    // journal changes (a refresh, an edit on disk). The startup metrics load in
+    // parallel on the same span; each part renders when its own data lands.
     $effect(() => {
         void journal.changes;
         const url = serverUrl;
         if (url === null) return;
-        void insights.load(url, {start: params.insStart, end: params.insEnd});
+        const span = {start: params.insStart, end: params.insEnd};
+        void insights.load(url, span);
+        void saas.load(url, {...span, asOf: today()});
     });
+
+    /**
+     * The startup report, for the hide rules, once it has answered. Until then
+     * (and while it is failing) the dashboard reads the journal as a household:
+     * Net Worth stays. Its failure gets its own banner below, so a broken
+     * /api/saas never takes the rest of Insights down with it.
+     */
+    // Only a saas report for the span the insights report answers counts: one
+    // still held from the previous span reads as "not loaded yet" (FE-1), so
+    // it can neither draw old-span boxes nor keep a stale Runway on screen.
+    const saasView = $derived(dataView(saas.status, saas.value !== null, sameSpan(saas.query, insights.query)));
+    const startup = $derived(saasView === "data" ? saas.value : null);
 
     /**
      * Whether the previous period is actually backed by data. Every box on this
@@ -44,13 +65,6 @@
             return `Comparisons are skewed: the journal starts ${journalStart}, so the previous period (${period.prevStart} → ${period.prevEnd}) is only partly covered.`;
         }
         return null;
-    }
-
-    /** A single-commodity MetricDelta over the base, for the cost-of-living averages. */
-    function baseMetric(current: Dec, previous: Dec, base: string): MetricDelta {
-        const delta = sub(current, previous);
-        const pct = previous.m === 0n ? null : ((toNumber(current) - toNumber(previous)) / Math.abs(toNumber(previous))) * 100;
-        return {current: new Map([[base, current]]), previous: new Map([[base, previous]]), delta: new Map([[base, delta]]), pct};
     }
 </script>
 
@@ -77,6 +91,9 @@
             <!-- Cost of living is averaged at the display boundary (engine keeps totals exact). -->
             {@const colCur = monthlyAverage(report.costOfLiving.currentTotal.get(base), report.costOfLiving.monthsCurrent)}
             {@const colPrev = monthlyAverage(report.costOfLiving.previousTotal.get(base), report.costOfLiving.monthsPrevious)}
+            <!-- plans/37 decision 4: boxes that don't apply hide, and the grid reflows. -->
+            {@const shows = boxVisibility(report, startup)}
+            {@const runway = shows.runway && startup !== null ? runwayText(startup.current, base, styles) : null}
             <div class="text-xs text-base-content/60">
                 Current <span class="font-medium text-base-content/80">{period.currStart} → {period.currEnd}</span>
                 vs previous <span class="font-medium text-base-content/80">{period.prevStart} → {period.prevEnd}</span>
@@ -95,6 +112,7 @@
                     big={fmtBase(report.revenue.current, base, styles)}
                     extras={extras(report.revenue.current, base, styles)}
                     small={deltaLine(report.revenue, base, styles, true)}
+                    help={METRIC_HELP.revenue}
                     testid="insights-box-revenue"
                 />
                 <!-- Box 2: Expenses -->
@@ -103,36 +121,47 @@
                     big={fmtBase(report.expenses.current, base, styles)}
                     extras={extras(report.expenses.current, base, styles)}
                     small={deltaLine(report.expenses, base, styles, false)}
+                    help={METRIC_HELP.expenses}
                     testid="insights-box-expenses"
                 />
-                <!-- Box 3: Net Worth (end of period) -->
-                <StatBox
-                    title="Net Worth"
-                    big={fmtBase(report.netWorth.current, base, styles)}
-                    extras={extras(report.netWorth.current, base, styles)}
-                    small={deltaLine(report.netWorth, base, styles, true)}
-                    testid="insights-box-networth"
-                />
+                <!-- Box 3: Net Worth (end of period), or Runway in its slot for a
+                     business or a negative net worth. -->
+                {#if shows.netWorth}
+                    <StatBox
+                        title="Net Worth"
+                        big={fmtBase(report.netWorth.current, base, styles)}
+                        extras={extras(report.netWorth.current, base, styles)}
+                        small={deltaLine(report.netWorth, base, styles, true)}
+                        help={METRIC_HELP.networth}
+                        testid="insights-box-networth"
+                    />
+                {:else if runway !== null}
+                    <StatBox title="Runway" big={runway.big} small={{text: runway.small}} help={METRIC_HELP.runway} testid="insights-box-runway" />
+                {/if}
 
                 <!-- Box 4: Average Monthly Cost of Living -->
                 <StatBox
                     title="Avg Monthly Costs"
                     big={fmt(base, colCur, styles)}
                     small={deltaLine(baseMetric(colCur, colPrev, base), base, styles, false)}
+                    help={METRIC_HELP.costofliving}
                     testid="insights-box-costofliving"
                 />
 
-                <!-- Box 5: Investment Performance (current big; previous as the small line) -->
-                <StatBox
-                    title="Investment Performance"
-                    big={`${fmtSignedAmount(inv.current.gain, base, styles)} (${fmtSignedPct(inv.current.gainPct)})`}
-                    bigClass={signClass(inv.current.gain === null ? null : inv.current.gain.m)}
-                    small={{
-                        text: `Prev: ${fmtSignedAmount(inv.previous.gain, base, styles)} (${fmtSignedPct(inv.previous.gainPct)})`,
-                        klass: signClass(inv.previous.gain === null ? null : inv.previous.gain.m),
-                    }}
-                    testid="insights-box-investment"
-                />
+                <!-- Box 5: Investment Performance (current big; previous as the small line), only with holdings -->
+                {#if shows.investment}
+                    <StatBox
+                        title="Investment Performance"
+                        big={`${fmtSignedAmount(inv.current.gain, base, styles)} (${fmtSignedPct(inv.current.gainPct)})`}
+                        bigClass={signClass(inv.current.gain === null ? null : inv.current.gain.m)}
+                        small={{
+                            text: `Prev: ${fmtSignedAmount(inv.previous.gain, base, styles)} (${fmtSignedPct(inv.previous.gainPct)})`,
+                            klass: signClass(inv.previous.gain === null ? null : inv.previous.gain.m),
+                        }}
+                        help={METRIC_HELP.investment}
+                        testid="insights-box-investment"
+                    />
+                {/if}
 
                 <!-- Box 6: Cash Balance (end of period) -->
                 <StatBox
@@ -140,9 +169,30 @@
                     big={fmtBase(report.cashBalance.current, base, styles)}
                     extras={extras(report.cashBalance.current, base, styles)}
                     small={deltaLine(report.cashBalance, base, styles, true)}
+                    help={METRIC_HELP.cash}
                     testid="insights-box-cash"
                 />
             </div>
+
+            <!-- Its own tri-state on its own resource: a failed /api/saas is
+                 a banner here, never the whole dashboard. Quiet while loading,
+                 because most journals have no startup section to wait for. -->
+            <AsyncSection
+                view={saasView}
+                value={saas.value}
+                error={saas.error}
+                testid="startup-error"
+                label="startup metrics"
+                loadingLabel="Loading startup metrics"
+                quietLoading
+                onRetry={() => void saas.load(serverUrl ?? "", {start: params.insStart, end: params.insEnd, asOf: today()})}
+            >
+                {#snippet children(held)}
+                    {#if showsStartup(held.available)}
+                        <StartupMetrics report={held} {styles} />
+                    {/if}
+                {/snippet}
+            </AsyncSection>
 
             <!-- Boxes 7–10: the "biggest / top" lists (current period). `hasPrevious`
              lets an empty list say "not enough history" rather than "no changes". -->
@@ -154,9 +204,12 @@
                     {styles}
                     goodWhenUp={false}
                     hasPrevious={!maIsZero(report.expenses.previous)}
+                    help={METRIC_HELP.expensechanges}
                     testid="insights-box-expensechanges"
                 />
-                <MoversList rows={report.movers} {base} {styles} periodStart={period.currStart} testid="insights-box-movers" />
+                {#if shows.movers}
+                    <MoversList rows={report.movers} {base} {styles} periodStart={period.currStart} testid="insights-box-movers" />
+                {/if}
                 <ChangeList
                     title="Biggest Revenue Changes"
                     rows={report.revenueChanges}
@@ -164,6 +217,7 @@
                     {styles}
                     goodWhenUp={true}
                     hasPrevious={!maIsZero(report.revenue.previous)}
+                    help={METRIC_HELP.revenuechanges}
                     testid="insights-box-revenuechanges"
                 />
                 <TopTxnsList rows={report.topTxns} {base} {styles} testid="insights-box-toptxns" />

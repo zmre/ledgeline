@@ -153,4 +153,9 @@ export interface InsightsReport {
     revenueChanges: ChangeRow[];
     movers: MoverRow[];
     topTxns: TopTxn[];
+    /**
+     * Any holdings exist in either period. False hides the Investment
+     * Performance box (plans/37 decision 4) rather than showing a $0.00 gain.
+     */
+    hasHoldings: boolean;
 }
