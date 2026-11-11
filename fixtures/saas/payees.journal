@@ -1,0 +1,54 @@
+; Customers inferred from payees (plans/37-startup-metrics.md).
+;
+; The recurring accounts are tagged, but no posting carries `customer:`. Each
+; invoice has exactly one recurring posting, no deferred-revenue leg and a
+; receivable leg, so its payee (the description before `|`) names the
+; customer. The month-end recognition entry has a deferred-revenue leg, so it
+; must NOT become a customer: it stays unattributed.
+;
+; Expect: customer metrics available through payee inference,
+; `inferred_customers = true`, and the recognition entry unattributed
+; ($50 of each month's MRR).
+
+commodity $1,000.00
+
+account assets:bank                  ; type: C
+account assets:receivable            ; type: A
+account liabilities:deferred-revenue  ; type: L, kpi: deferred-revenue
+account revenue:subscriptions        ; type: R, kpi: recurring
+
+2025-01-01 Aspen Dental | Invoice 2025-01
+    assets:receivable                     $500.00
+    revenue:subscriptions                -$500.00
+
+2025-01-01 Cedar Studio | Invoice 2025-01
+    assets:receivable                     $300.00
+    revenue:subscriptions                -$300.00
+
+2025-01-31 Revenue recognition 2025-01
+    liabilities:deferred-revenue           $50.00
+    revenue:subscriptions                 -$50.00
+
+2025-02-01 Aspen Dental | Invoice 2025-02
+    assets:receivable                     $500.00
+    revenue:subscriptions                -$500.00
+
+2025-02-01 Cedar Studio | Invoice 2025-02
+    assets:receivable                     $400.00
+    revenue:subscriptions                -$400.00
+
+2025-02-01 Deposit | Prepaid support
+    assets:bank                           $600.00
+    liabilities:deferred-revenue         -$600.00
+
+2025-02-28 Revenue recognition 2025-02
+    liabilities:deferred-revenue           $50.00
+    revenue:subscriptions                 -$50.00
+
+2025-03-01 Aspen Dental | Invoice 2025-03
+    assets:receivable                     $500.00
+    revenue:subscriptions                -$500.00
+
+2025-03-31 Revenue recognition 2025-03
+    liabilities:deferred-revenue           $50.00
+    revenue:subscriptions                 -$50.00

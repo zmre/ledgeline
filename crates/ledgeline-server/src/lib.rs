@@ -1114,6 +1114,9 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         .route("/api/reports/accounts", get(reports_api::accounts))
         .route("/api/reports/networth", get(reports_api::networth))
         .route("/api/insights", get(reports_api::insights_report))
+        // The startup metrics under Insights' boxes (plan 37): the same span,
+        // fetched in parallel with `/api/insights`.
+        .route("/api/saas", get(reports_api::saas_report))
         .route("/api/subscriptions", get(reports_api::subscriptions))
         .route("/api/budget", get(reports_api::budget))
         // The unbudgeted categories under those bars. A sibling route, not a

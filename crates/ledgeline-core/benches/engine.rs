@@ -59,6 +59,9 @@ use ledgeline_core::reports::{
     declared_types, detect_subscriptions, income_statement, income_statement_columns,
     infer_market_prices, insights, net_worth, range_buckets, resolve_account_type, roll_up,
 };
+use ledgeline_core::reports::{
+    COVERAGE_MIN_DEFAULT, DIMENSION_KEYS_DEFAULT, SaasOpts, TOP_N_DEFAULT, saas_metrics,
+};
 use ledgeline_core::view::running::RunningBalance;
 use ledgeline_core::{parse_journal, wire};
 use std::collections::{BTreeMap, BTreeSet};
@@ -520,6 +523,25 @@ fn bench_reports(c: &mut Criterion, fixtures: &[Fixture]) {
                 change_min: Dec::zero(),
             };
             b.iter(|| insights(black_box(&fixture.journal), &opts).unwrap());
+        });
+
+        // Plan 37: the startup metrics over the same span, one posting pass
+        // plus the monthly cash-flow statement. Target < 20 ms at 200k.
+        group.bench_with_input(BenchmarkId::new("saas", &id), fixture, |b, fixture| {
+            let dims: Vec<String> = DIMENSION_KEYS_DEFAULT
+                .iter()
+                .map(|key| (*key).to_string())
+                .collect();
+            let opts = SaasOpts {
+                start: INSIGHTS_START,
+                end: AS_OF,
+                dims: &dims,
+                coverage_min: COVERAGE_MIN_DEFAULT,
+                top_n: TOP_N_DEFAULT,
+                with_customer_matrix: false,
+                as_of: None,
+            };
+            b.iter(|| saas_metrics(black_box(&fixture.journal), &opts).unwrap());
         });
     }
     group.finish();

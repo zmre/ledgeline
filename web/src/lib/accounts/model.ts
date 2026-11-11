@@ -45,13 +45,14 @@ export interface SpecialTagSpec {
  * (`type`), which statement box and line it lands in (`issection`/`isgroup`
  * for the income statement, `bsgroup`/`bsterm` for the balance sheet,
  * `cfsection`/`cfgroup` for the cash flow statement), then the
- * holdings-specific pair.
+ * holdings-specific pair, then `kpi` for Insights' startup metrics.
  *
  * Sourced from `reports/account_types.rs::parse_account_type_tag`,
  * `reports/income_statement.rs::parse_is_section_tag`,
  * `reports/account_groups.rs::parse_bs_term_tag`,
  * `reports/cash_flow_statement.rs::parse_cf_section_tag`,
- * `holdings/classify.rs::parse_holdings_tag` and `::parse_valuation_tag`.
+ * `holdings/classify.rs::parse_holdings_tag` and `::parse_valuation_tag`,
+ * and `reports/kpi.rs::parse_kpi_tag`.
  */
 export const SPECIAL_TAGS: readonly SpecialTagSpec[] = [
     {
@@ -148,6 +149,22 @@ export const SPECIAL_TAGS: readonly SpecialTagSpec[] = [
             {value: "depreciation", label: "Depreciation"},
             {value: "adjustment", label: "Adjustment"},
             {value: "mark", label: "Mark"},
+        ],
+    },
+    {
+        key: "kpi",
+        label: "Startup metric role",
+        help: "Marks the account's role in startup metrics on Insights. Doesn't change any statement.",
+        kind: "closed",
+        options: [
+            {value: "recurring", label: "Recurring revenue"},
+            {value: "usage", label: "Usage revenue"},
+            {value: "deferred-revenue", label: "Deferred revenue"},
+            {value: "sales-marketing", label: "Sales & marketing"},
+            {value: "rnd", label: "Research & development"},
+            {value: "ga", label: "General & administrative"},
+            {value: "receivable", label: "Receivable"},
+            {value: "payable", label: "Payable"},
         ],
     },
 ];

@@ -231,6 +231,29 @@ async fn bad_change_min_is_a_400_not_a_silent_default() {
     );
 }
 
+/// `/api/saas`'s two own params are refused in plain text naming the value,
+/// exactly as `/api/insights`'s are.
+#[tokio::test]
+async fn bad_saas_params_are_plain_text_400s() {
+    assert_eq!(
+        read_only("GET", "/api/saas?end=2026-06-30&detail=all", None).await,
+        expect(
+            StatusCode::BAD_REQUEST,
+            "unknown detail 'all' (expected customers)",
+        )
+    );
+    assert_eq!(
+        read_only("GET", "/api/saas?end=2026-06-30&dims=", None).await,
+        expect(
+            StatusCode::BAD_REQUEST,
+            "dims must name at least one dimension key (e.g. segment,product)",
+        )
+    );
+    let response = read_only("GET", "/api/saas?start=garbage", None).await;
+    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert_eq!(response.content_type, PLAIN_TEXT);
+}
+
 // ---------------------------------------------------------------------------
 // Write path — the bodies the SPA shows the user verbatim
 // ---------------------------------------------------------------------------

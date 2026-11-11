@@ -63,6 +63,26 @@ test("insights: is the default reports tab and renders the core metric boxes", a
     await expect(revenueDelta).toContainText("4.9%");
 });
 
+// plans/37: sample.journal is a household (no `kpi:` anywhere), so the startup
+// section never appears and none of today's boxes hide. Waiting for the
+// /api/saas answer first is what makes the absence checks mean something:
+// before it lands, the section is absent on every journal.
+test("insights: a household journal shows no startup section and keeps Net Worth and Investment Performance", async ({page}) => {
+    const saas = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/saas" && response.ok());
+    await page.goto("/reports");
+    await saas;
+    await expect(page.getByTestId("insights-box-revenue-big")).toHaveText("$68,007.50");
+
+    await expect(page.getByTestId("insights-box-networth")).toBeVisible();
+    await expect(page.getByTestId("insights-box-investment")).toBeVisible();
+    await expect(page.getByTestId("insights-box-movers")).toBeVisible();
+    await expect(page.getByTestId("insights-box-runway")).toHaveCount(0);
+    await expect(page.getByTestId("startup-metrics")).toHaveCount(0);
+    await expect(page.getByTestId("startup-error")).toHaveCount(0);
+    // No recurring revenue, so no startup export either.
+    await expect(page.getByRole("button", {name: "Export startup metrics as xlsx"})).toHaveCount(0);
+});
+
 test("insights: list boxes rank leaf accounts, movers, and top transactions", async ({page}) => {
     await page.goto("/reports");
 

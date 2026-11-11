@@ -60,6 +60,9 @@ const SURFACES = [
     // guarantee the holdings route already had.
     {name: "holdings other tab", file: "routes/holdings/+page.svelte", testid: "other-holdings-error"},
     {name: "insights dashboard", file: "lib/reports/ui/insights/InsightsDashboard.svelte", testid: "insights-error"},
+    // plans/37: the startup metrics are a second resource on the same
+    // dashboard, with their own error branch (quiet while loading).
+    {name: "insights startup metrics", file: "lib/reports/ui/insights/InsightsDashboard.svelte", testid: "startup-error"},
     {name: "subscriptions panel", file: "lib/reports/ui/subscriptions/SubscriptionsPanel.svelte", testid: "subscriptions-error"},
     // The rules editor moved out of `routes/imports/+page.svelte` when that
     // became a tab host (WP-11); it is registered HERE, at the file that now

@@ -185,6 +185,15 @@ Times are criterion's point estimate (the middle of the `[lo est hi]` triple).
 | `reports/subscriptions` | 1.43 ms | 15.1 ms | 76.2 ms |
 | `reports/insights` | 22.5 ms | 252 ms | **1,197 ms** |
 
+**Added 2026-11-10 (plan 37), measured later than the rows above on the same machine and corpus:**
+
+| Bench | 5k | 50k | 200k |
+|---|---|---|---|
+| `reports/saas` | 5.21 ms | 31.2 ms | 114 ms |
+| `reports/insights` (same run, for comparison) | 16.3 ms | 183 ms | 890 ms |
+
+`/api/saas` and `/api/insights` load in parallel, so the startup section is never the slower of the two.
+
 ### holdings — PERF-5b
 
 | Bench | 5k | 50k | 200k |

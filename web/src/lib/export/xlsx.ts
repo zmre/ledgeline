@@ -10,7 +10,18 @@
 // 1005/1e3 is stored as 1.00499999999999989…, which Excel prints as 1.00 while
 // the screen prints 1.01.
 
-import {dec, displayPlaces, formatDec, MAX_DISPLAY_DECIMALS, MAX_QUANTITY_DECIMALS, roundTo, toNumber, type Dec, type MixedAmount} from "#lib/domain/money.js";
+import {
+    dec,
+    displayPlaces,
+    formatDec,
+    MAX_DISPLAY_DECIMALS,
+    MAX_QUANTITY_DECIMALS,
+    mul,
+    roundTo,
+    toNumber,
+    type Dec,
+    type MixedAmount,
+} from "#lib/domain/money.js";
 import type {AmountStyle} from "#lib/domain/types.js";
 import type {HoldingsReport} from "#lib/holdings/types.js";
 import {primaryValue} from "#lib/reports/budgetSummary.js";
@@ -36,6 +47,7 @@ import {amountsPct, isSummary} from "#lib/reports/ui/incomeStatementRows.js";
 import {periodTable} from "#lib/reports/ui/periodTable.js";
 import {accountDisplaySections, DELTA, summaryHeading} from "#lib/reports/ui/accountReportRows.js";
 import {compareCells, type WindowReading} from "#lib/reports/ui/compareColumns.js";
+import type {Bridge, PeriodMetrics, RunwayBasis, SaasMonth, SaasReport} from "#lib/reports/saasTypes.js";
 import type {Workbook, Worksheet} from "exceljs"; // type-only: erased at build time
 
 const HEADER_ARGB = "FF1E293B";
@@ -1023,6 +1035,325 @@ export async function buildRunwayCompareWorkbook(
         setComparePct(ws.getCell(rowIx, 5), cells.pct);
     });
     return workbook;
+}
+
+// --- Startup metrics (plans/37) ---------------------------------------------
+
+/** The sheet names, in workbook order. Customer MRR and By segment are left out rather than written empty. */
+export const SAAS_SHEETS = {metrics: "Metrics", periods: "Periods", segments: "By segment", customers: "Customer MRR", definitions: "Definitions"} as const;
+
+/** A percent-units number (62.5) as a real fraction under `0.0%`; null leaves the cell empty. */
+function setPctUnits(cell: Cell, pct: number | null): void {
+    if (pct === null) return;
+    cell.value = pct / 100;
+    cell.numFmt = "0.0%";
+    cell.alignment = {...cell.alignment, horizontal: "right"};
+}
+
+/** A plain number with `places` decimals (counts, ratios, months, days); null leaves the cell empty. */
+function setNumber(cell: Cell, value: number | null, places: number): void {
+    if (value === null) return;
+    cell.value = value;
+    cell.numFmt = places > 0 ? `#,##0.${"0".repeat(places)}` : "#,##0";
+    cell.alignment = {...cell.alignment, horizontal: "right"};
+}
+
+/** One kind of cell a metric row writes. */
+type SaasValue =
+    | {kind: "money"; value: Dec | null}
+    | {kind: "pct"; value: number | null}
+    | {kind: "number"; value: number | null; places: number}
+    | {kind: "text"; value: string | null};
+
+function setSaasValue(cell: Cell, value: SaasValue, base: string): void {
+    switch (value.kind) {
+        case "money":
+            if (value.value !== null) setDec(cell, base, value.value);
+            return;
+        case "pct":
+            return setPctUnits(cell, value.value);
+        case "number":
+            return setNumber(cell, value.value, value.places);
+        case "text":
+            if (value.value !== null) cell.value = value.value;
+    }
+}
+
+const money = (value: Dec | null): SaasValue => ({kind: "money", value});
+const pctUnits = (value: number | null): SaasValue => ({kind: "pct", value});
+const count = (value: number | null): SaasValue => ({kind: "number", value, places: 0});
+const decimal = (value: number | null, places = 1): SaasValue => ({kind: "number", value, places});
+
+const TWELVE: Dec = dec(12, 0);
+
+/** Gross margin % of one month, or null without COGS or revenue. */
+function monthMargin(month: SaasMonth): number | null {
+    if (month.cogs === null || month.revenue.m === 0n) return null;
+    const revenue = toNumber(month.revenue);
+    return ((revenue - toNumber(month.cogs)) / revenue) * 100;
+}
+
+/** The Metrics sheet's rows: one per figure, a cell per month. A row nothing in the span supports is left out. */
+function saasMonthRows(report: SaasReport): [string, (month: SaasMonth) => SaasValue][] {
+    const bridge = (pick: (b: Bridge) => Dec) => (month: SaasMonth) => money(month.bridge === null ? null : pick(month.bridge));
+    // A role row only when the engine resolved that role for either half: the
+    // months carry these as $0 regardless, and a journal tagging only
+    // `kpi: recurring` must not export four rows of zeros.
+    const resolved = (pick: (p: PeriodMetrics) => Dec | null): boolean => pick(report.current) !== null || pick(report.previous) !== null;
+    const rows: [string, (month: SaasMonth) => SaasValue, boolean][] = [
+        ["MRR", (m) => money(m.mrr), true],
+        // Blank for a partial month: its MRR is shown (marked partial in the
+        // header), but annualising part of a month is not a run-rate.
+        ["ARR (MRR × 12)", (m) => money(m.partial ? null : mul(m.mrr, TWELVE)), true],
+        ["Usage", (m) => money(m.usage), resolved((p) => p.usage)],
+        ["Customers", (m) => count(m.customers), report.available.customers],
+        ["New", bridge((b) => b.new), report.available.customers],
+        ["Expansion", bridge((b) => b.expansion), report.available.customers],
+        ["Contraction", bridge((b) => b.contraction), report.available.customers],
+        ["Churn", bridge((b) => b.churn), report.available.customers],
+        ["Reactivation", bridge((b) => b.reactivation), report.available.customers],
+        ["Other", bridge((b) => b.other), report.available.customers],
+        ["Revenue", (m) => money(m.revenue), true],
+        ["Gross margin %", (m) => pctUnits(monthMargin(m)), report.available.cogs],
+        ["Net burn", (m) => money(m.netBurn), true],
+        ["Net burn, adjusted for prepayments", (m) => money(m.netBurnAdjusted), report.months.some((m) => m.netBurnAdjusted !== null)],
+        ["Cash", (m) => money(m.cashEnd), true],
+        ["Deferred revenue", (m) => money(m.deferredEnd), report.months.some((m) => m.deferredEnd !== null)],
+        ["S&M", (m) => money(m.sm), resolved((p) => p.sm)],
+        ["R&D", (m) => money(m.rnd), resolved((p) => p.rnd)],
+        ["G&A", (m) => money(m.ga), resolved((p) => p.ga)],
+    ];
+    return rows.filter(([, , shown]) => shown).map(([label, read]) => [label, read]);
+}
+
+/** Which burn a figure used, in words. */
+function basisText(basis: RunwayBasis | null): SaasValue {
+    return {kind: "text", value: basis === null ? null : basis === "adjusted" ? "adjusted burn" : "cash burn"};
+}
+
+/** The Periods sheet's rows: every PeriodMetrics figure, labelled. */
+const PERIOD_ROWS: [string, (p: PeriodMetrics) => SaasValue][] = [
+    ["Latest complete month", (p) => ({kind: "text", value: p.month})],
+    ["Complete months", (p) => count(p.months)],
+    ["MRR", (p) => money(p.mrr)],
+    ["ARR", (p) => money(p.arr)],
+    ["Usage", (p) => money(p.usage)],
+    ["MRR growth", (p) => pctUnits(p.mrrGrowthPct)],
+    ["CMGR", (p) => pctUnits(p.cmgrPct)],
+    ["Net new ARR", (p) => money(p.netNewArr)],
+    ["New MRR", (p) => money(p.bridge?.new ?? null)],
+    ["New logos", (p) => count(p.bridge?.newLogos ?? null)],
+    ["Expansion MRR", (p) => money(p.bridge?.expansion ?? null)],
+    ["Contraction MRR", (p) => money(p.bridge?.contraction ?? null)],
+    ["Churned MRR", (p) => money(p.bridge?.churn ?? null)],
+    ["Churned logos", (p) => count(p.bridge?.churnedLogos ?? null)],
+    ["Reactivation MRR", (p) => money(p.bridge?.reactivation ?? null)],
+    ["Reactivated logos", (p) => count(p.bridge?.reactivatedLogos ?? null)],
+    ["Other", (p) => money(p.bridge?.other ?? null)],
+    ["Customers", (p) => count(p.customers)],
+    ["Customer growth", (p) => pctUnits(p.customerGrowthPct)],
+    ["Logo churn", (p) => pctUnits(p.logoChurnPct)],
+    ["ARPA", (p) => money(p.arpa)],
+    ["ACV", (p) => money(p.acv)],
+    ["NRR", (p) => pctUnits(p.nrrPct)],
+    ["GRR", (p) => pctUnits(p.grrPct)],
+    ["Quick ratio", (p) => decimal(p.quickRatio, 2)],
+    ["Top customer share", (p) => pctUnits(p.top1Pct)],
+    ["Top 5 customers' share", (p) => pctUnits(p.top5Pct)],
+    ["Top 10 customers' share", (p) => pctUnits(p.top10Pct)],
+    ["Revenue", (p) => money(p.revenue)],
+    ["Gross profit", (p) => money(p.grossProfit)],
+    ["Gross margin", (p) => pctUnits(p.grossMarginPct)],
+    ["Net burn", (p) => money(p.netBurn)],
+    ["Net burn, adjusted for prepayments", (p) => money(p.netBurnAdjusted)],
+    ["Net burn, 3-month average", (p) => money(p.netBurnAvg3)],
+    ["Net burn adjusted for prepayments, 3-month average", (p) => money(p.netBurnAdjustedAvg3)],
+    ["Cash", (p) => money(p.cash)],
+    ["Runway basis", (p) => basisText(p.runwayBasis)],
+    ["Runway (months)", (p) => decimal(p.runwayMonths)],
+    ["Cash-out date", (p) => ({kind: "text", value: p.cashOutDate})],
+    ["Burn multiple", (p) => decimal(p.burnMultiple, 2)],
+    ["Burn multiple basis", (p) => basisText(p.burnMultipleBasis)],
+    ["Rule of 40", (p) => decimal(p.ruleOf40)],
+    ["S&M", (p) => money(p.sm)],
+    ["R&D", (p) => money(p.rnd)],
+    ["G&A", (p) => money(p.ga)],
+    ["S&M % of revenue", (p) => pctUnits(p.smPct)],
+    ["R&D % of revenue", (p) => pctUnits(p.rndPct)],
+    ["G&A % of revenue", (p) => pctUnits(p.gaPct)],
+    ["CAC", (p) => money(p.cac)],
+    ["CAC payback (months)", (p) => decimal(p.cacPaybackMonths)],
+    ["Deferred revenue", (p) => money(p.deferredRevenue)],
+    ["Billings", (p) => money(p.billings)],
+    ["DSO (days)", (p) => decimal(p.dsoDays)],
+    ["DPO (days)", (p) => decimal(p.dpoDays)],
+];
+
+/** The Periods rows for customer counts from billings (Amendment A1.2), written only when either half has them. */
+const BILLING_PERIOD_ROWS: [string, (p: PeriodMetrics) => SaasValue][] = [
+    ["Customers (from billings)", (p) => count(p.billingCustomers?.customers ?? null)],
+    ["Customer growth (from billings)", (p) => pctUnits(p.billingCustomers?.customerGrowthPct ?? null)],
+    ["New customers (from billings)", (p) => count(p.billingCustomers?.newLogos ?? null)],
+    ["Lapsed customers (from billings)", (p) => count(p.billingCustomers?.lapsedLogos ?? null)],
+    ["Logo churn (from billings)", (p) => pctUnits(p.billingCustomers?.logoChurnPct ?? null)],
+    ["ACV (from billings)", (p) => money(p.billingCustomers?.acv ?? null)],
+    ["Under 12 months of history", (p) => ({kind: "text", value: p.billingCustomers === null ? null : p.billingCustomers.windowShort ? "yes" : "no"})],
+];
+
+/** Definitions: metric, formula in words, what feeds it, and which tier it needs. */
+const DEFINITIONS: [string, string, string, "recurring" | "customers" | "business"][] = [
+    ["MRR", "Recurring revenue recognised in the latest complete month", "kpi: recurring", "recurring"],
+    ["ARR", "MRR × 12 (run-rate)", "kpi: recurring", "recurring"],
+    ["Usage", "Usage revenue in the same month; never part of ARR", "kpi: usage", "recurring"],
+    ["Net new ARR", "12 × (MRR at the period's end − MRR in the month before it)", "kpi: recurring", "recurring"],
+    ["CMGR", "Compound monthly growth rate of MRR over the period", "kpi: recurring", "recurring"],
+    ["Customers", "Customers with MRR above zero in the latest complete month", "kpi: recurring + customer: tags", "customers"],
+    [
+        "MRR bridge",
+        "Per customer, month by month: new, expansion, contraction, churn, reactivation; Other is the rest",
+        "kpi: recurring + customer: tags",
+        "customers",
+    ],
+    ["NRR", "MRR now of the customers paying 12 months earlier ÷ their MRR then", "kpi: recurring + customer: tags", "customers"],
+    ["GRR", "NRR with each customer capped at their MRR 12 months earlier", "kpi: recurring + customer: tags", "customers"],
+    ["ARPA", "Attributed MRR ÷ customers, latest complete month", "kpi: recurring + customer: tags", "customers"],
+    ["ACV", "Average of 12 × first-month MRR over the period's new customers", "kpi: recurring + customer: tags", "customers"],
+    ["Logo churn", "Customers lost during the period ÷ customers in the month before it", "kpi: recurring + customer: tags", "customers"],
+    ["Quick ratio", "(new + expansion + reactivation) ÷ (contraction + churn)", "kpi: recurring + customer: tags", "customers"],
+    ["CAC", "Sales and marketing spend ÷ new customers, over the period", "kpi: sales-marketing + customer: tags", "customers"],
+    ["CAC payback", "Months of gross profit from new and expansion MRR to repay S&M spend", "kpi: sales-marketing + issection: cogs", "customers"],
+    ["Revenue", "All revenue over the period", "type: R", "business"],
+    ["Gross margin", "(revenue − cost of goods sold) ÷ revenue", "issection: cogs", "business"],
+    ["Net burn", "−(change in cash − financing cash flow)", "type: C, cfsection: financing", "business"],
+    ["Runway", "Cash ÷ average burn over the last three complete months: adjusted burn when it exists, else net burn", "type: C", "business"],
+    [
+        "Net burn, adjusted for prepayments",
+        "Net burn + change in deferred revenue − change in receivables: burn as if customers paid when served",
+        "type: C + kpi: deferred-revenue / kpi: receivable",
+        "business",
+    ],
+    [
+        "Customers (from billings)",
+        "Customers billed in the 12 months to the latest complete month, when per-customer MRR is hidden",
+        "kpi: recurring / deferred-revenue + customer: on invoices",
+        "business",
+    ],
+    [
+        "ACV (from billings)",
+        "Billings over the last 12 months ÷ customers billed in them",
+        "kpi: recurring / deferred-revenue + customer: on invoices",
+        "business",
+    ],
+    [
+        "Logo churn (from billings)",
+        "Customers lapsing (12 months without a billing) during the period ÷ billed customers before it",
+        "kpi: recurring / deferred-revenue + customer: on invoices",
+        "business",
+    ],
+    [
+        "Burn multiple",
+        "Net burn ÷ net new ARR, over the period; net burn adjusted for prepayments when the books have deferred revenue or receivables, else cash net burn",
+        "type: C + kpi: recurring (+ kpi: deferred-revenue / kpi: receivable)",
+        "recurring",
+    ],
+    [
+        "Closed through",
+        "The last month with any recurring revenue recorded on or before the span's end; later months are marked (open) and no metric uses them",
+        "kpi: recurring",
+        "recurring",
+    ],
+    ["Rule of 40", "Revenue growth % + free cash flow margin %", "type: R, type: C", "business"],
+    ["S&M / R&D / G&A %", "Each kind of spend ÷ revenue, over the period", "kpi: sales-marketing / rnd / ga", "business"],
+    ["DSO", "Receivables at month end ÷ revenue over the period × days", "kpi: receivable (or a *receivable* asset)", "business"],
+    ["DPO", "Payables at month end ÷ expenses over the period × days", "kpi: payable (or a *payable* liability)", "business"],
+    ["Deferred revenue", "Deferred revenue balance at the end of the latest complete month", "kpi: deferred-revenue", "business"],
+    ["Billings", "Revenue over the period + the change in deferred revenue", "kpi: deferred-revenue", "business"],
+];
+
+/**
+ * The startup metrics as a workbook (plans/37): Metrics (one column per month
+ * across the whole span), Periods (current vs previous), By segment, Customer
+ * MRR (needs `detail=customers`), Definitions. Every number is a real number
+ * in the base currency, like the other exports.
+ */
+export async function buildSaasWorkbook(report: SaasReport, meta: {title: string; params: string}): Promise<Workbook> {
+    const {Workbook: ExcelWorkbook} = await import("exceljs");
+    const workbook = new ExcelWorkbook();
+    const base = report.base;
+    // An open month (A2: after the last month with recurring revenue booked) is
+    // also partial; "(open)" says why no metric uses it.
+    const monthHeaders = report.months.map((month) => (month.open ? `${month.month} (open)` : month.partial ? `${month.month} (partial)` : month.month));
+
+    const metrics = workbook.addWorksheet(SAAS_SHEETS.metrics);
+    addTitleRows(metrics, meta, ["Metric", ...monthHeaders]);
+    metrics.views = [{state: "frozen", ySplit: 4, xSplit: 1}];
+    saasMonthRows(report).forEach(([label, read], i) => {
+        labelCell(metrics, 5 + i, label, 0);
+        report.months.forEach((month, at) => setSaasValue(metrics.getCell(5 + i, at + 2), read(month), base));
+    });
+
+    const periods = workbook.addWorksheet(SAAS_SHEETS.periods);
+    const {period} = report;
+    addTitleRows(periods, meta, ["Metric", `Current (${period.currStart} to ${period.currEnd})`, `Previous (${period.prevStart} to ${period.prevEnd})`]);
+    periods.getColumn(2).width = 28;
+    periods.getColumn(3).width = 28;
+    const hasBilling = report.current.billingCustomers !== null || report.previous.billingCustomers !== null;
+    [...PERIOD_ROWS, ...(hasBilling ? BILLING_PERIOD_ROWS : [])].forEach(([label, read], i) => {
+        labelCell(periods, 5 + i, label, 0);
+        setSaasValue(periods.getCell(5 + i, 2), read(report.current), base);
+        setSaasValue(periods.getCell(5 + i, 3), read(report.previous), base);
+    });
+
+    if (report.segments.length > 0) {
+        const segments = workbook.addWorksheet(SAAS_SHEETS.segments);
+        addTitleRows(segments, meta, ["Value", "MRR (current)", "MRR (previous)", "Customers", "ARPA", "NRR"]);
+        let rowIx = 5;
+        for (const breakdown of report.segments) {
+            labelCell(segments, rowIx, breakdown.key, 0, true);
+            rowIx += 1;
+            for (const row of breakdown.rows) {
+                labelCell(segments, rowIx, row.value, 1);
+                setDec(segments.getCell(rowIx, 2), base, row.mrrCurr);
+                setDec(segments.getCell(rowIx, 3), base, row.mrrPrev);
+                setNumber(segments.getCell(rowIx, 4), row.customersCurr, 0);
+                if (row.arpa !== null) setDec(segments.getCell(rowIx, 5), base, row.arpa);
+                setPctUnits(segments.getCell(rowIx, 6), row.nrrPct);
+                rowIx += 1;
+            }
+        }
+    }
+
+    if (report.customerMatrix !== null && report.customerMatrix.length > 0) {
+        const customers = workbook.addWorksheet(SAAS_SHEETS.customers);
+        addTitleRows(customers, meta, ["Customer", "Segment", ...monthHeaders]);
+        customers.views = [{state: "frozen", ySplit: 4, xSplit: 2}];
+        report.customerMatrix.forEach((row, i) => {
+            labelCell(customers, 5 + i, row.name, 0);
+            if (row.segment !== null) customers.getCell(5 + i, 2).value = row.segment;
+            row.values.forEach((value, at) => setDec(customers.getCell(5 + i, at + 3), base, value));
+        });
+    }
+
+    const definitions = workbook.addWorksheet(SAAS_SHEETS.definitions);
+    addTitleRows(definitions, meta, ["Metric", "Definition", "Fed by", "Customer coverage", "Span"]);
+    definitions.getColumn(2).width = 70;
+    definitions.getColumn(3).width = 36;
+    const span = `${period.start} to ${period.end}`;
+    DEFINITIONS.forEach(([label, formula, roles, tier], i) => {
+        const rowIx = 5 + i;
+        labelCell(definitions, rowIx, label, 0);
+        definitions.getCell(rowIx, 2).value = formula;
+        definitions.getCell(rowIx, 3).value = roles;
+        if (tier === "customers") setPctUnits(definitions.getCell(rowIx, 4), report.available.coveragePct);
+        definitions.getCell(rowIx, 5).value = span;
+    });
+
+    return workbook;
+}
+
+/** Build the startup-metrics .xlsx and trigger a browser download. */
+export async function exportSaasXlsx(report: SaasReport, meta: {title: string; params: string}, filename: string): Promise<void> {
+    await downloadWorkbook(await buildSaasWorkbook(report, meta), filename);
 }
 
 /** Serialize the workbook and trigger a browser download (Blob + anchor). */

@@ -7,9 +7,11 @@
      all-time gain since purchase — those rows are marked `startEstimated` and
      flagged here rather than silently passed off as a period return. -->
 <script lang="ts">
+    import InfoTip from "#lib/components/InfoTip.svelte";
     import type {AmountStyle} from "#lib/domain/types.js";
     import type {MoverRow} from "#lib/reports/insightsTypes.js";
     import {fmtSignedAmount, fmtSignedPct, signClass} from "./format";
+    import {METRIC_HELP} from "./metricHelp";
 
     let {
         rows,
@@ -24,7 +26,10 @@
 
 <div class="card border border-base-content/5 bg-base-200 shadow-sm" data-testid={testid}>
     <div class="card-body gap-2 p-4">
-        <div class="text-xs font-semibold tracking-wide text-base-content/60 uppercase">Biggest Movers</div>
+        <div class="flex items-center gap-1">
+            <div class="text-xs font-semibold tracking-wide text-base-content/60 uppercase">Biggest Movers</div>
+            <InfoTip {...METRIC_HELP.movers} placement="bottom-start" />
+        </div>
         {#if rows.length === 0}
             <div class="text-sm text-base-content/50">No priced holdings</div>
         {:else}

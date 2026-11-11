@@ -2644,6 +2644,7 @@ async fn default_params_return_ok() {
         "/api/reports/cashflow",
         "/api/reports/networth",
         "/api/insights",
+        "/api/saas",
         "/api/subscriptions",
         "/api/budget",
     ] {
@@ -2742,7 +2743,7 @@ async fn absent_count_still_uses_the_default() {
 /// unvalidated caller string straight into the engine's lexical `&str` date
 /// comparisons, where a malformed value cannot fail — it just sorts somewhere
 /// wrong and the report comes back plausible-looking with a `200`.
-const DATE_PARAMS: [(&str, &str); 15] = [
+const DATE_PARAMS: [(&str, &str); 18] = [
     ("/api/reports/balancesheet", "asOf"),
     ("/api/reports/balancesheet/grouped", "asOf"),
     ("/api/reports/incomestatement", "from"),
@@ -2754,6 +2755,9 @@ const DATE_PARAMS: [(&str, &str); 15] = [
     ("/api/budget", "end"),
     ("/api/insights", "start"),
     ("/api/insights", "end"),
+    ("/api/saas", "start"),
+    ("/api/saas", "end"),
+    ("/api/saas", "asOf"),
     ("/api/subscriptions", "asOf"),
     ("/api/holdings", "asOf"),
     ("/api/holdings", "gainSince"),
@@ -3101,4 +3105,254 @@ async fn reports_accounts_takes_the_cash_flow_window() {
 
     let (status, _, _) = get_on(&journal, "/api/reports/accounts?to=2026-06-30").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+// ===========================================================================
+// /api/saas — startup metrics (plans/37-startup-metrics.md)
+// ===========================================================================
+
+fn saas_fixture_journal(name: &str) -> Journal {
+    let path = fixtures_dir().join("saas").join(name);
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {name}: {e}"));
+    parse_journal(&text, &path.to_string_lossy()).unwrap_or_else(|e| panic!("parse {name}: {e}"))
+}
+
+/// A wire `Dec` as `f64`, for readable assertions on exact cent values.
+fn wire_dec(value: &Value) -> f64 {
+    let mantissa: f64 = value["mantissa"]
+        .as_str()
+        .expect("string mantissa")
+        .parse()
+        .expect("numeric mantissa");
+    let places = value["places"].as_u64().expect("places") as i32;
+    mantissa / 10f64.powi(places)
+}
+
+/// The Year-over-year preset with the clock at 2026-07-08: the README's
+/// headline figures.
+#[tokio::test]
+async fn saas_headline_figures_over_the_year_over_year_span() {
+    let journal = saas_fixture_journal("startup.journal");
+    let body = body_ok(&journal, "/api/saas?start=2024-07-01&end=2026-06-30").await;
+    assert_eq!(body["period"]["mid"], "2025-06-30");
+    assert_eq!(body["base"], "$");
+    let available = &body["available"];
+    assert_eq!(available["recurring"], true);
+    assert_eq!(available["customers"], true);
+    assert_eq!(available["business"], true);
+    assert_eq!(available["cogs"], true);
+    assert_eq!(
+        available["dimensions"],
+        serde_json::json!(["segment", "product", "class"])
+    );
+    assert!(available.get("customersHiddenReason").is_none());
+
+    let current = &body["current"];
+    assert_eq!(current["month"], "2026-06");
+    assert_eq!(wire_dec(&current["arr"]), 70_200.0);
+    assert_eq!(wire_dec(&current["mrr"]), 5_850.0);
+    assert_eq!(wire_dec(&current["netNewArr"]), 27_000.0);
+    assert_eq!(current["customers"], 8);
+    assert!((current["nrrPct"].as_f64().unwrap() - 4350.0 / 36.0).abs() < 1e-9);
+    assert!((current["burnMultiple"].as_f64().unwrap() - 44_070.0 / 27_000.0).abs() < 1e-9);
+    assert_eq!(current["burnMultipleBasis"], "adjusted");
+    assert_eq!(wire_dec(&current["netBurnAdjusted"]), 44_070.0);
+    assert_eq!(wire_dec(&current["netBurn"]), 43_720.0);
+    assert!((current["grossMarginPct"].as_f64().unwrap() - 54_480.0 / 665.5).abs() < 1e-9);
+    // A1.1: runway on burn adjusted for prepayments and receivables.
+    assert_eq!(current["runwayBasis"], "adjusted");
+    assert_eq!(current["cashOutDate"], "2036-03-31");
+    assert_eq!(wire_dec(&current["netBurnAvg3"]), 6_543.33);
+    assert_eq!(wire_dec(&current["netBurnAdjustedAvg3"]), 3_693.33);
+    assert!((current["runwayMonths"].as_f64().unwrap() - 432_160.0 * 3.0 / 11_080.0).abs() < 1e-9);
+    assert!(body["months"][0]["netBurnAdjusted"].is_object());
+    assert_eq!(body["available"]["billingCustomers"], false);
+    assert_eq!(body["available"]["closedThrough"], "2026-06");
+    assert!(current.get("billingCustomers").is_none());
+    assert_eq!(current["bridge"]["newLogos"], 1);
+    assert_eq!(wire_dec(&current["bridge"]["churn"]), 800.0);
+    // Previous half: no NRR (before the journal), no growth from zero.
+    assert!(body["previous"].get("nrrPct").is_none());
+    assert!(body["previous"].get("mrrGrowthPct").is_none());
+
+    assert_eq!(body["months"].as_array().unwrap().len(), 24);
+    assert_eq!(body["segments"][0]["key"], "segment");
+    assert_eq!(body["segments"][0]["rows"].as_array().unwrap().len(), 3);
+    assert_eq!(body["bridgeCustomers"]["churn"][0]["name"], "Fjord Studio");
+    assert_eq!(body["topCustomers"][0]["name"], "Granite Health");
+}
+
+/// The span `fixtures/native/v1/requests.tsv` pins: not month-aligned at the
+/// end, so the last month is partial and the current half's last complete
+/// month is 2026-06.
+#[tokio::test]
+async fn saas_headline_figures_over_a_custom_span() {
+    let journal = saas_fixture_journal("startup.journal");
+    let body = body_ok(&journal, "/api/saas?start=2025-07-01&end=2026-07-08").await;
+    let months = body["months"].as_array().unwrap();
+    assert_eq!(months.first().unwrap()["month"], "2025-07");
+    let last = months.last().unwrap();
+    assert_eq!(last["month"], "2026-07");
+    assert_eq!(last["partial"], true);
+    assert_eq!(body["current"]["month"], "2026-06");
+    assert_eq!(wire_dec(&body["current"]["arr"]), 70_200.0);
+    // The previous half ends mid-January, so its last complete month is 2025-12.
+    assert_eq!(body["previous"]["month"], "2025-12");
+    assert_eq!(wire_dec(&body["previous"]["mrr"]), 5_050.0);
+}
+
+#[tokio::test]
+async fn saas_detail_customers_adds_the_matrix_and_its_absence_omits_it() {
+    let journal = saas_fixture_journal("startup.journal");
+    let plain = body_ok(&journal, "/api/saas?start=2024-07-01&end=2026-06-30").await;
+    assert!(plain.get("customerMatrix").is_none());
+    let detail = body_ok(
+        &journal,
+        "/api/saas?start=2024-07-01&end=2026-06-30&detail=customers",
+    )
+    .await;
+    let matrix = detail["customerMatrix"].as_array().expect("matrix present");
+    assert_eq!(matrix.len(), 10);
+    let months = detail["months"].as_array().unwrap().len();
+    assert!(
+        matrix
+            .iter()
+            .all(|row| row["values"].as_array().unwrap().len() == months)
+    );
+}
+
+#[tokio::test]
+async fn saas_dims_restricts_the_breakdowns() {
+    let journal = saas_fixture_journal("startup.journal");
+    let body = body_ok(
+        &journal,
+        "/api/saas?start=2024-07-01&end=2026-06-30&dims=product,region",
+    )
+    .await;
+    assert_eq!(
+        body["available"]["dimensions"],
+        serde_json::json!(["product"])
+    );
+}
+
+#[tokio::test]
+async fn saas_on_the_sample_journal_has_nothing_available_but_months() {
+    let journal = sample_journal();
+    let body = body_ok(&journal, "/api/saas?start=2024-07-01&end=2026-06-30").await;
+    let available = &body["available"];
+    for flag in [
+        "recurring",
+        "customers",
+        "business",
+        "cogs",
+        "inferredCustomers",
+    ] {
+        assert_eq!(available[flag], false, "{flag}");
+    }
+    assert_eq!(available["dimensions"], serde_json::json!([]));
+    let months = body["months"].as_array().expect("months present");
+    assert_eq!(months.len(), 24);
+    // Tier-A fields only: no MRR-derived month fields beyond the zero series.
+    assert!(months[0].get("bridge").is_none());
+    assert!(months[0].get("deferredEnd").is_none());
+    assert!(months[0]["revenue"].is_object());
+    assert!(body.get("segments").is_none());
+    assert!(body.get("bridgeCustomers").is_none());
+    assert!(body["current"].get("mrr").is_none());
+}
+
+#[tokio::test]
+async fn saas_bad_detail_and_empty_dims_are_400() {
+    let journal = sample_journal();
+    let (status, message) = get_error(&journal, "/api/saas?detail=everything").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(message, "unknown detail 'everything' (expected customers)");
+    for uri in ["/api/saas?dims=", "/api/saas?dims=,%20,"] {
+        let (status, message) = get_error(&journal, uri).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "GET {uri}");
+        assert!(message.starts_with("dims must name"), "{message}");
+    }
+}
+
+/// `hasHoldings` rides on `/api/insights`: the sample journal holds stocks.
+#[tokio::test]
+async fn insights_reports_has_holdings() {
+    let body = body_ok(
+        &sample_journal(),
+        "/api/insights?start=2024-07-01&end=2026-06-30",
+    )
+    .await;
+    assert_eq!(body["hasHoldings"], true);
+    let startup = saas_fixture_journal("startup.journal");
+    let body = body_ok(&startup, "/api/insights?start=2024-07-01&end=2026-06-30").await;
+    assert_eq!(body["hasHoldings"], false);
+}
+
+/// `asOf` is "today": a month is complete only once its last day is on or
+/// before both `end` and `asOf` and it is not after the data horizon (the last
+/// month with recurring revenue).
+#[tokio::test]
+async fn saas_as_of_and_the_data_horizon_stop_at_the_last_closed_month() {
+    let journal = saas_fixture_journal("startup.journal");
+    let body = body_ok(
+        &journal,
+        "/api/saas?start=2025-01-01&end=2026-12-31&asOf=2026-11-10",
+    )
+    .await;
+    // A2: the books are closed through 2026-06 (the last recurring posting),
+    // so the half stops there and the months after it are open.
+    assert_eq!(body["available"]["closedThrough"], "2026-06");
+    assert_eq!(body["current"]["month"], "2026-06");
+    let months = body["months"].as_array().unwrap();
+    let month = |key: &str| months.iter().find(|m| m["month"] == key).unwrap();
+    assert_eq!(month("2026-07")["open"], true);
+    assert_eq!(month("2026-07")["partial"], true);
+    // November has started by asOf, so it is open too; December hasn't.
+    assert_eq!(month("2026-11")["open"], true);
+    assert!(
+        month("2026-12").get("open").is_none(),
+        "after asOf: unfinished, not open"
+    );
+    assert_eq!(month("2026-12")["partial"], true);
+    assert!(month("2026-06").get("open").is_none());
+    // An asOf after the span's end changes nothing.
+    assert_eq!(
+        body_ok(
+            &journal,
+            "/api/saas?start=2024-07-01&end=2026-06-30&asOf=2026-07-08"
+        )
+        .await,
+        body_ok(
+            &journal,
+            "/api/saas?start=2024-07-01&end=2026-06-30&asOf=2030-01-01"
+        )
+        .await
+    );
+}
+
+/// A1.2 on the wire: the clearing books count customers from billings.
+#[tokio::test]
+async fn saas_counts_customers_from_billings_on_clearing_books() {
+    let journal = saas_fixture_journal("clearing.journal");
+    let body = body_ok(
+        &journal,
+        "/api/saas?start=2025-01-01&end=2025-02-28&asOf=2026-07-08",
+    )
+    .await;
+    assert_eq!(body["available"]["customers"], false);
+    assert_eq!(
+        body["available"]["customersHiddenReason"],
+        "billing-clearing"
+    );
+    assert_eq!(body["available"]["billingCustomers"], true);
+    let billed = &body["current"]["billingCustomers"];
+    assert_eq!(billed["customers"], 2);
+    assert_eq!(billed["newLogos"], 0);
+    assert_eq!(billed["lapsedLogos"], 0);
+    assert_eq!(wire_dec(&billed["acv"]), 12_600.0);
+    assert_eq!(billed["windowShort"], true);
+    assert_eq!(billed["inferred"], false);
+    assert_eq!(body["previous"]["billingCustomers"]["newLogos"], 2);
+    // Receivables resolve, so runway uses the adjusted basis.
+    assert_eq!(body["current"]["runwayBasis"], "adjusted");
 }

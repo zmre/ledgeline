@@ -224,6 +224,13 @@ pub struct QbPosting {
     pub class: Option<String>,
     pub customer: Option<String>,
     pub vendor: Option<String>,
+    /// This row's own `Name` cell. Usually the same on every row of a group
+    /// (and then equal to [`QbTransaction::name`]), but a Journal Entry can
+    /// name a different customer or vendor per line — which is where a
+    /// revenue or deferred-revenue line's customer lives when the export has
+    /// no Customer column value for it.
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 /// One QuickBooks transaction: a marker row, its postings and its closing row.
@@ -884,6 +891,7 @@ fn posting(
             class: cell(row, layout.class),
             customer: cell(row, layout.customer),
             vendor: cell(row, layout.vendor),
+            name: cell(row, layout.name),
         },
         debit,
         credit,

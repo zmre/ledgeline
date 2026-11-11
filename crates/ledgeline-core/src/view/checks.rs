@@ -126,6 +126,7 @@ pub fn engine_checks(journal: &Journal) -> EngineChecks {
         let mut all = wire::diagnostics_with_assertions(journal, &failures);
         all.extend(wire::journal_to_auto_diagnostics(journal));
         all.extend(wire::journal_to_tag_diagnostics(journal));
+        all.extend(wire::journal_to_saas_diagnostics(journal));
         // A join fails only on a panic in the pass, which would have failed
         // the request anyway; resume it here so it surfaces as one.
         all.extend(

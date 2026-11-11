@@ -17,10 +17,14 @@ import {
     buildCashFlowWorkbook,
     buildHoldingsWorkbook,
     buildIncomeStatementWorkbook,
+    buildSaasWorkbook,
     buildWorkbook,
     numberFormat,
+    SAAS_SHEETS,
 } from "./xlsx";
 import {CASH_FLOW, CASH_FLOW_TOTAL} from "#lib/testing/cashFlowFixture.js";
+import type {SaasReport} from "#lib/reports/saasTypes.js";
+import {billingReport, householdReport, startupReport, usd as dollars} from "#lib/testing/saasFixture.js";
 import {periodsOf} from "#lib/reports/test-helpers.js";
 
 const usd = (cents: number): MixedAmount => new Map([["$", dec(cents, 2)]]);
@@ -1117,5 +1121,147 @@ describe("statement of cash flows workbook", () => {
     it("has a single Amount column on Interval = Total", async () => {
         const ws = await readBack(await build(CASH_FLOW_TOTAL), title);
         expect([2, 3].map((col) => ws.getCell(4, col).value)).toEqual(["Amount ($)", "Other commodities"]);
+    });
+});
+
+describe("UNIT export/xlsx — buildSaasWorkbook (plans/37)", () => {
+    const meta = {title: "Startup metrics", params: "2024-07-01 to 2026-06-30"};
+    const column = (ws: Worksheet, from: number, count: number) => Array.from({length: count}, (_, i) => ws.getCell(from + i, 1).value);
+
+    async function loaded(report: SaasReport): Promise<Workbook> {
+        const buffer = await (await buildSaasWorkbook(report, meta)).xlsx.writeBuffer();
+        const book = new Workbook();
+        await book.xlsx.load(buffer as never);
+        return book;
+    }
+
+    const sheet = (book: Workbook, name: string): Worksheet => {
+        const ws = book.getWorksheet(name);
+        if (ws === undefined) throw new Error(`worksheet "${name}" missing`);
+        return ws;
+    };
+
+    /** The row whose first cell reads `label`. */
+    function rowOf(ws: Worksheet, label: string): number {
+        for (let row = 5; row <= ws.rowCount; row += 1) if (ws.getCell(row, 1).value === label) return row;
+        throw new Error(`no row "${label}"`);
+    }
+
+    it("writes the five sheets in order when the matrix is present", async () => {
+        const matrix = [{customer: "Granite Health", name: "Granite Health", segment: "mid", values: [dollars(1500), dollars(1500), dollars(1500)]}];
+        const book = await loaded(startupReport({customerMatrix: matrix}));
+        expect(book.worksheets.map((ws) => ws.name)).toEqual(["Metrics", "Periods", "By segment", "Customer MRR", "Definitions"]);
+        const customers = sheet(book, SAAS_SHEETS.customers);
+        expect([1, 2, 3, 4, 5].map((col) => customers.getCell(4, col).value)).toEqual(["Customer", "Segment", "2026-04", "2026-05", "2026-06"]);
+        expect(customers.getCell(5, 1).value).toBe("Granite Health");
+        expect(customers.getCell(5, 5).value).toBe(1500);
+    });
+
+    it("leaves Customer MRR out, rather than empty, without the matrix", async () => {
+        const book = await loaded(startupReport());
+        expect(book.worksheets.map((ws) => ws.name)).toEqual(["Metrics", "Periods", "By segment", "Definitions"]);
+    });
+
+    it("Metrics: a column per month, partial months marked, real numbers in the base", async () => {
+        const report = startupReport();
+        const months = [...report.months.slice(0, 2), {...report.months[2], partial: true}];
+        const ws = sheet(await loaded(startupReport({months})), SAAS_SHEETS.metrics);
+        expect([2, 3, 4].map((col) => ws.getCell(4, col).value)).toEqual(["2026-04", "2026-05", "2026-06 (partial)"]);
+        expect(ws.getCell(rowOf(ws, "MRR"), 4).value).toBe(5850);
+        // A partial month's MRR is shown, but annualising it is no run-rate.
+        expect(ws.getCell(rowOf(ws, "ARR (MRR × 12)"), 3).value).toBe(70200);
+        expect(ws.getCell(rowOf(ws, "ARR (MRR × 12)"), 4).value).toBeNull();
+        expect(ws.getCell(rowOf(ws, "Customers"), 4).value).toBe(8);
+        // June: revenue $5,950.00 (MRR + usage), COGS $1,170.00.
+        expect(ws.getCell(rowOf(ws, "Gross margin %"), 4).value).toBeCloseTo((5950 - 1170) / 5950, 10);
+        expect(ws.getCell(rowOf(ws, "Gross margin %"), 4).numFmt).toBe("0.0%");
+        expect(ws.getCell(rowOf(ws, "Deferred revenue"), 4).value).toBe(10400);
+    });
+
+    it("Metrics: a household's rows are tier A only", async () => {
+        const ws = sheet(await loaded(householdReport()), SAAS_SHEETS.metrics);
+        const labels = column(ws, 5, 20).filter((label) => label !== null);
+        expect(labels).toContain("Net burn");
+        expect(labels).not.toContain("Customers");
+        expect(labels).not.toContain("Gross margin %");
+    });
+
+    it("Metrics: a journal tagging only kpi: recurring exports no $0 usage or spend rows", async () => {
+        const report = startupReport();
+        const bare = {usage: null, sm: null, rnd: null, ga: null};
+        const ws = sheet(await loaded(startupReport({current: {...report.current, ...bare}, previous: {...report.previous, ...bare}})), SAAS_SHEETS.metrics);
+        const labels = column(ws, 5, 25).filter((label) => label !== null);
+        expect(labels).toContain("MRR");
+        for (const gone of ["Usage", "S&M", "R&D", "G&A"]) expect(labels).not.toContain(gone);
+        // Either half resolving the role keeps its row.
+        const withUsage = sheet(
+            await loaded(startupReport({current: {...report.current, ...bare}, previous: {...report.previous, ...bare, usage: dollars(0)}})),
+            SAAS_SHEETS.metrics
+        );
+        expect(column(withUsage, 5, 25)).toContain("Usage");
+    });
+
+    it("Metrics: marks open months (A2) apart from merely partial ones", async () => {
+        const report = startupReport();
+        const months = [report.months[0], {...report.months[1], partial: true}, {...report.months[2], partial: true, open: true}];
+        const ws = sheet(await loaded(startupReport({months})), SAAS_SHEETS.metrics);
+        expect([2, 3, 4].map((col) => ws.getCell(4, col).value)).toEqual(["2026-04", "2026-05 (partial)", "2026-06 (open)"]);
+        const defs = sheet(await loaded(report), SAAS_SHEETS.definitions);
+        expect(String(defs.getCell(rowOf(defs, "Closed through"), 2).value)).toContain("(open)");
+        expect(String(defs.getCell(rowOf(defs, "Burn multiple"), 2).value)).toContain("adjusted for prepayments");
+    });
+
+    it("Metrics: an adjusted-burn row when the months carry it, none when they don't (Amendment A1.1)", async () => {
+        const ws = sheet(await loaded(startupReport()), SAAS_SHEETS.metrics);
+        expect(ws.getCell(rowOf(ws, "Net burn, adjusted for prepayments"), 4).value).toBe(3720);
+        const months = startupReport().months.map((m) => ({...m, netBurnAdjusted: null}));
+        const bare = sheet(await loaded(startupReport({months})), SAAS_SHEETS.metrics);
+        expect(column(bare, 5, 25)).not.toContain("Net burn, adjusted for prepayments");
+    });
+
+    it("Periods and Definitions: customers from billings when a half has them (Amendment A1.2)", async () => {
+        const book = await loaded(billingReport());
+        const ws = sheet(book, SAAS_SHEETS.periods);
+        expect(ws.getCell(rowOf(ws, "Customers (from billings)"), 2).value).toBe(12);
+        expect(ws.getCell(rowOf(ws, "Lapsed customers (from billings)"), 2).value).toBe(1);
+        expect(ws.getCell(rowOf(ws, "ACV (from billings)"), 2).value).toBe(12600);
+        expect(ws.getCell(rowOf(ws, "Customers (from billings)"), 3).value).toBeNull();
+        const defs = sheet(book, SAAS_SHEETS.definitions);
+        for (const label of ["Net burn, adjusted for prepayments", "Customers (from billings)", "ACV (from billings)", "Logo churn (from billings)"]) {
+            expect(rowOf(defs, label)).toBeGreaterThan(4);
+        }
+    });
+
+    it("Periods: current and previous side by side, from the fixture's figures", async () => {
+        const ws = sheet(await loaded(startupReport()), SAAS_SHEETS.periods);
+        expect(ws.getCell(4, 2).value).toBe("Current (2025-07-01 to 2026-06-30)");
+        expect(ws.getCell(rowOf(ws, "ARR"), 2).value).toBe(70200);
+        expect(ws.getCell(rowOf(ws, "ARR"), 3).value).toBe(43200);
+        expect(ws.getCell(rowOf(ws, "NRR"), 2).value).toBeCloseTo(1.2083333, 6);
+        expect(ws.getCell(rowOf(ws, "NRR"), 3).value).toBeNull();
+        expect(ws.getCell(rowOf(ws, "Cash-out date"), 2).value).toBe("2036-03-31");
+        expect(ws.getCell(rowOf(ws, "Net burn adjusted for prepayments, 3-month average"), 2).value).toBe(3693.33);
+        expect(ws.getCell(rowOf(ws, "Runway basis"), 2).value).toBe("adjusted burn");
+        expect(ws.getCell(rowOf(ws, "Burn multiple basis"), 2).value).toBe("adjusted burn");
+        expect(ws.getCell(rowOf(ws, "Net burn, adjusted for prepayments"), 2).value).toBe(44070);
+        expect(ws.getCell(rowOf(ws, "Burn multiple basis"), 3).value).toBeNull();
+        // No billing-customer rows when neither half has them.
+        expect(() => rowOf(ws, "Customers (from billings)")).toThrow();
+    });
+
+    it("By segment: one block per key, unassigned rows as the engine sent them", async () => {
+        const ws = sheet(await loaded(startupReport()), SAAS_SHEETS.segments);
+        expect(column(ws, 5, 3)).toEqual(["segment", "mid", "enterprise"]);
+        expect(ws.getCell(6, 2).value).toBe(2900);
+        expect(ws.getCell(6, 6).value).toBeCloseTo(1.2727, 4);
+        expect(column(ws, 8, 2)).toEqual(["smb", "product"]);
+    });
+
+    it("Definitions: coverage on the customer metrics, the span on every row", async () => {
+        const ws = sheet(await loaded(startupReport()), SAAS_SHEETS.definitions);
+        const nrr = rowOf(ws, "NRR");
+        expect(ws.getCell(nrr, 4).value).toBeCloseTo(0.9974619, 6);
+        expect(ws.getCell(nrr, 5).value).toBe("2024-07-01 to 2026-06-30");
+        expect(ws.getCell(rowOf(ws, "Runway"), 4).value).toBeNull();
     });
 });

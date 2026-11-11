@@ -12,6 +12,7 @@ Reports holds seven tabs. Ledgeline computes every figure in its Rust engine wit
 | Tab | Shortcut | What it answers | Page |
 | --- | --- | --- | --- |
 | Insights | <kbd>1</kbd> | How did this period compare with the one before it? | [Insights](insights.md) |
+| Startup metrics, on Insights | <kbd>1</kbd> | How fast is recurring revenue growing, and how long will the cash last? | [Startup metrics](startup-metrics.md) |
 | Balance Sheet | <kbd>2</kbd> | What do I own and owe on a given date? | [The balance sheet](balance-sheet.md) |
 | P&L | <kbd>3</kbd> | What came in and went out over a date range? | [The income statement](income-statement.md) |
 | Cash Flow | <kbd>4</kbd> | Where did cash come from and go: operations, investing or financing? | [Cash flow](cash-flow.md) |
@@ -69,9 +70,9 @@ An old bookmark that points at the Budget tab, which used to live here, forwards
 
 ## Exporting to Excel
 
-The **Export .xlsx** button sits to the right of the tabs on the Balance Sheet, P&L, Cash Flow and Net Worth tabs. Insights and Subscriptions have no export.
+The **Export .xlsx** button sits to the right of the tabs on the Balance Sheet, P&L, Cash Flow and Net Worth tabs. Insights has it only when the journal has recurring revenue, and then it exports the [startup metrics](startup-metrics.md#export). Subscriptions has no export.
 
-The workbook holds the report you are looking at, with a title and a line stating the parameters:
+On those four tabs, the workbook holds the report you are looking at, with a title and a line stating the parameters:
 
 | Tab | Parameters line | File name |
 | --- | --- | --- |
@@ -86,4 +87,4 @@ The Balance Sheet and P&L exports use a conventional statement layout meant for 
 
 ## Where the figures come from
 
-Each tab calls an engine endpoint under `/api/reports/` (or `/api/insights` and `/api/subscriptions`). The tab pages describe how each report classifies accounts. Most of them read the declared `type:` on your `account` directives first and fall back to guessing from the account name. [Settings → Accounts](../settings/accounts.md) shows those types and lets you set them.
+Each tab calls an engine endpoint under `/api/reports/` (or `/api/insights`, `/api/saas` and `/api/subscriptions`). The tab pages describe how each report classifies accounts. Most of them read the declared `type:` on your `account` directives first and fall back to guessing from the account name. [Settings → Accounts](../settings/accounts.md) shows those types and lets you set them.

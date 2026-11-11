@@ -85,6 +85,17 @@ export default defineConfig({
             url: "http://127.0.0.1:5095/",
             reuseExistingServer: false,
         },
+        {
+            // The startup-metrics engine (plans/37, e2e/startupMetrics.e2e.ts),
+            // over fixtures/saas/startup.journal: a small SaaS business whose
+            // expected figures are listed in fixtures/saas/README.md. Served in
+            // place, read-only: the spec only reads (and exports) and never
+            // saves, so there is no scratch copy to stage.
+            command: `${process.env.LEDGELINE_BIN ?? "../target/debug/ledgeline"} --server ../fixtures/saas/startup.journal --port 5094 --allow-origin http://localhost:4173`,
+            env: {LEDGELINE_TOKEN: API_TOKEN, LEDGELINE_IGNORE_USER_HLEDGER_CONF: "1"},
+            url: "http://127.0.0.1:5094/",
+            reuseExistingServer: false,
+        },
         {command: "bun run build && bun run preview", port: 4173},
     ],
     // With multiple webServers playwright does not infer baseURL from `port`.

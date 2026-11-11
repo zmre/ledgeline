@@ -109,6 +109,19 @@ fn ledgeline_own_journal_export_reads_back_as_a_quickbooks_journal() {
                     ("liabilities:card", dec("-87.2")),
                 ],
             ),
+            (
+                "15",
+                "2026-03-31",
+                "Journal Entry",
+                vec![
+                    ("liabilities:deferred-revenue", dec("1000")),
+                    ("revenue:subscriptions", dec("-1000")),
+                    ("liabilities:deferred-revenue", dec("500")),
+                    ("revenue:subscriptions", dec("-500")),
+                    ("expenses:hosting", dec("20")),
+                    ("assets:checking", dec("-20")),
+                ],
+            ),
         ]
     );
     let paycheck = &journal.transactions[0];
@@ -120,6 +133,41 @@ fn ledgeline_own_journal_export_reads_back_as_a_quickbooks_journal() {
     assert_eq!(
         journal.transactions[2].postings[0].customer.as_deref(),
         Some("Self")
+    );
+}
+
+/// Plan 37: the `Name` cell is read on EVERY row, not just the group's head,
+/// because a multi-customer Journal Entry names a different customer per line
+/// (with the Customer column empty). The transaction's own `name` stays the
+/// head row's, as the payee.
+#[test]
+fn the_name_cell_is_read_per_line() {
+    let journal = parse("ledgeline-export.xlsx");
+    let recognition = &journal.transactions[3];
+    assert_eq!(recognition.name.as_deref(), Some("Initech"), "head row");
+    let names: Vec<(Option<&str>, Option<&str>)> = recognition
+        .postings
+        .iter()
+        .map(|posting| (posting.name.as_deref(), posting.customer.as_deref()))
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            (Some("Initech"), None),
+            (Some("Initech"), None),
+            (Some("Globex, Ltd."), None),
+            (Some("Globex, Ltd."), None),
+            (Some("Hostco"), None),
+            (Some("Hostco"), None),
+        ]
+    );
+    // A group whose rows all repeat one Name carries it on every posting.
+    let paycheck = &journal.transactions[0];
+    assert!(
+        paycheck
+            .postings
+            .iter()
+            .all(|posting| posting.name.as_deref() == Some("Acme payroll"))
     );
 }
 

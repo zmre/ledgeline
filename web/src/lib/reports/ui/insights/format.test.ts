@@ -2,7 +2,26 @@ import {describe, expect, test} from "vitest";
 import type {Dec, MixedAmount} from "#lib/domain/money.js";
 import type {AmountStyle} from "#lib/domain/types.js";
 import type {MetricDelta} from "#lib/reports/insightsTypes.js";
-import {deltaLine, extras, fmt, fmtBase, fmtSignedAmount, fmtSignedPct, monthlyAverage, signClass} from "./format";
+import {
+    baseMetric,
+    BURN_MULTIPLE_BANDS,
+    burnBand,
+    deltaLine,
+    extras,
+    fmt,
+    fmtBase,
+    fmtDays,
+    fmtMonths,
+    fmtPct,
+    fmtPctPoints,
+    fmtRatio,
+    fmtSignedAmount,
+    fmtSignedPct,
+    growthLine,
+    monthlyAverage,
+    pointsLine,
+    signClass,
+} from "./format";
 
 const USD: AmountStyle = {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]};
 const styles = new Map<string, AmountStyle>([["$", USD]]);
@@ -77,5 +96,72 @@ describe("insights format helpers", () => {
         expect(signClass(0n)).toBe("text-base-content/50");
         expect(signClass(3n)).toBe("text-success");
         expect(signClass(null)).toBe("text-base-content/50");
+    });
+});
+
+describe("startup-metrics format helpers (plans/37)", () => {
+    test("fmtMonths: whole months from 10, one decimal below, singular for exactly one", () => {
+        expect(fmtMonths(66.04584819154356)).toBe("66 months");
+        expect(fmtMonths(186.05)).toBe("186 months");
+        expect(fmtMonths(1234.4)).toBe("1,234 months");
+        expect(fmtMonths(2.46)).toBe("2.5 months");
+        expect(fmtMonths(1)).toBe("1 month");
+        expect(fmtMonths(0.96)).toBe("1 month");
+        expect(fmtMonths(0)).toBe("0 months");
+    });
+
+    test("fmtPctPoints: signed, one decimal, pp", () => {
+        expect(fmtPctPoints(1.8632)).toBe("+1.9 pp");
+        expect(fmtPctPoints(-0.44)).toBe("-0.4 pp");
+        expect(fmtPctPoints(0.04)).toBe("0.0 pp");
+    });
+
+    test("fmtRatio: one decimal and a multiplication sign", () => {
+        expect(fmtRatio(1.6192592592592592)).toBe("1.6×");
+        expect(fmtRatio(3.368)).toBe("3.4×");
+        expect(fmtRatio(0)).toBe("0.0×");
+    });
+
+    test("fmtPct and fmtDays: one decimal, grouped", () => {
+        expect(fmtPct(120.83333333333333)).toBe("120.8%");
+        expect(fmtPct(1234.56)).toBe("1,234.6%");
+        expect(fmtPct(null)).toBe("—");
+        expect(fmtDays(25.50338091660406)).toBe("25.5 days");
+    });
+
+    test("pointsLine: the change in points, coloured by sentiment, null without a comparison", () => {
+        expect(pointsLine(81.8632607062359, 80, true)).toEqual({arrow: "▲", text: "1.9 pp", klass: "text-success"});
+        expect(pointsLine(78, 80, true)).toEqual({arrow: "▼", text: "2.0 pp", klass: "text-error"});
+        expect(pointsLine(80.01, 80, true)?.arrow).toBe("▪");
+        expect(pointsLine(80, null, true)).toBeNull();
+    });
+
+    test("growthLine: a percentage that is itself the change", () => {
+        expect(growthLine(0, true)).toEqual({arrow: "▪", text: "0.0% growth", klass: "text-base-content/50"});
+        expect(growthLine(12.5, true)?.klass).toBe("text-success");
+        expect(growthLine(-12.5, true)).toEqual({arrow: "▼", text: "12.5% growth", klass: "text-error"});
+        expect(growthLine(null, true)).toBeNull();
+    });
+
+    test("burnBand: Sacks's bands, with the boundaries falling the documented way", () => {
+        expect(BURN_MULTIPLE_BANDS.map((band) => band.label)).toEqual(["Very efficient", "Good", "Suspect", "Bad"]);
+        expect(burnBand(0.56).label).toBe("Very efficient");
+        expect(burnBand(0.56).klass).toBe("text-success");
+        expect(burnBand(1).label).toBe("Good");
+        expect(burnBand(1.62).label).toBe("Good");
+        expect(burnBand(1.62).klass).toBe("");
+        expect(burnBand(2).label).toBe("Good");
+        expect(burnBand(2.01).label).toBe("Suspect");
+        expect(burnBand(2.01).klass).toBe("text-warning");
+        expect(burnBand(3).label).toBe("Suspect");
+        expect(burnBand(3.5).label).toBe("Bad");
+        expect(burnBand(3.5).klass).toBe("text-error");
+    });
+
+    test("baseMetric: two Decs as a MetricDelta, null pct from a zero base", () => {
+        const metric = baseMetric(d(70200n, 0), d(43200n, 0), "$");
+        expect(metric.delta.get("$")).toEqual(d(27000n, 0));
+        expect(metric.pct).toBeCloseTo(62.5, 10);
+        expect(baseMetric(d(1n, 0), d(0n, 0), "$").pct).toBeNull();
     });
 });

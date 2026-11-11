@@ -153,6 +153,21 @@ import type {
     SubscriptionsReport,
     TopTxn,
 } from "#lib/reports/insightsTypes.js";
+import {BRIDGE_CATEGORIES, CUSTOMERS_HIDDEN_REASONS, RUNWAY_BASES} from "#lib/reports/saasTypes.js";
+import type {
+    BillingCustomers,
+    Bridge,
+    BridgeCustomer,
+    BridgeCustomers,
+    CustomerMatrixRow,
+    PeriodMetrics,
+    SaasAvailable,
+    SaasMonth,
+    SaasReport,
+    SegmentBreakdown,
+    SegmentRow,
+    TopCustomer,
+} from "#lib/reports/saasTypes.js";
 import type {
     Amounts,
     BalanceSheetColumns,
@@ -881,6 +896,88 @@ interface RawInsightsReport {
     revenueChanges?: RawChangeRow[];
     movers?: RawMoverRow[];
     topTxns?: RawTopTxn[];
+    hasHoldings?: boolean;
+}
+
+// --- Startup metrics (/api/saas, plans/37) ----------------------------------
+// Every `Option` is OMITTED when `None` (serde `skip_serializing_if`), so an
+// absent optional key is the fact "no such figure" and decodes to null. The
+// unconditional keys (the months' money, each half's revenue/netBurn, every
+// `available` flag) stay strict: an absent one is a broken contract.
+
+type RawBridge = Record<"new" | "expansion" | "contraction" | "churn" | "reactivation" | "other", RawDec | undefined> & {
+    newLogos?: number;
+    churnedLogos?: number;
+    reactivatedLogos?: number;
+};
+
+interface RawSaasAvailable {
+    recurring?: boolean;
+    customers?: boolean;
+    business?: boolean;
+    cogs?: boolean;
+    dimensions?: unknown[];
+    customersHiddenReason?: string;
+    coveragePct?: number;
+    inferredCustomers?: boolean;
+    billingCustomers?: boolean;
+    closedThrough?: string;
+}
+
+interface RawSaasMonth {
+    month?: string;
+    partial?: boolean;
+    open?: boolean;
+    mrr?: RawDec;
+    usage?: RawDec;
+    unattributed?: RawDec;
+    customers?: number;
+    bridge?: RawBridge;
+    revenue?: RawDec;
+    cogs?: RawDec;
+    netBurn?: RawDec;
+    netBurnAdjusted?: RawDec;
+    cashEnd?: RawDec;
+    sm?: RawDec;
+    rnd?: RawDec;
+    ga?: RawDec;
+    deferredEnd?: RawDec;
+    arEnd?: RawDec;
+    apEnd?: RawDec;
+}
+
+type RawPeriodMetrics = Record<string, unknown>;
+
+interface RawSegmentRow {
+    value?: string;
+    mrrCurr?: RawDec;
+    mrrPrev?: RawDec;
+    customersCurr?: number;
+    arpa?: RawDec;
+    nrrPct?: number;
+    bridge?: RawBridge;
+}
+
+interface RawBridgeCustomer {
+    customer?: string;
+    name?: string;
+    segment?: string;
+    amount?: RawDec;
+    inferred?: boolean;
+}
+
+interface RawSaasReport {
+    period?: RawInsightsPeriod;
+    base?: string;
+    available?: RawSaasAvailable;
+    months?: RawSaasMonth[];
+    current?: RawPeriodMetrics;
+    previous?: RawPeriodMetrics;
+    segments?: {key?: string; rows?: RawSegmentRow[]}[];
+    bridgeCustomers?: Record<string, RawBridgeCustomer[] | undefined>;
+    topCustomers?: {customer?: string; name?: string; mrr?: RawDec; pct?: number}[];
+    customerMatrix?: {customer?: string; name?: string; segment?: string; values?: RawDec[]}[];
+    unvalued?: Record<string, RawDec>;
 }
 
 // --- CSV import rules (rules_api.rs) ---------------------------------------
@@ -3424,6 +3521,253 @@ export function decodeInsightsReport(raw: unknown): InsightsReport {
         revenueChanges: frozen((report.revenueChanges ?? []).map((row, i) => decodeChangeRow(row, `insights revenueChanges[${i}]`))),
         movers: frozen((report.movers ?? []).map((row, i) => decodeMoverRow(row, `insights movers[${i}]`))),
         topTxns: frozen((report.topTxns ?? []).map((row, i) => decodeTopTxn(row, `insights topTxns[${i}]`))),
+        hasHoldings: decodeBoolean(report.hasHoldings, "insights hasHoldings"),
+    });
+}
+
+// ---------------------------------------------------------------------------
+// SaasReport (startup metrics, plans/37)
+// ---------------------------------------------------------------------------
+
+/** An omitted-when-None Dec: absent is "no such figure". */
+function optSaasDec(raw: unknown, context: string): Dec | null {
+    return raw === undefined || raw === null ? null : decodeDec(raw as RawDec, context);
+}
+
+function decodeBridge(raw: RawBridge | undefined, context: string): Bridge {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing bridge`);
+    return Object.freeze({
+        new: decodeDec(raw.new, `${context} new`),
+        expansion: decodeDec(raw.expansion, `${context} expansion`),
+        contraction: decodeDec(raw.contraction, `${context} contraction`),
+        churn: decodeDec(raw.churn, `${context} churn`),
+        reactivation: decodeDec(raw.reactivation, `${context} reactivation`),
+        other: decodeDec(raw.other, `${context} other`),
+        newLogos: decodeCount(raw.newLogos, `${context} newLogos`),
+        churnedLogos: decodeCount(raw.churnedLogos, `${context} churnedLogos`),
+        reactivatedLogos: decodeCount(raw.reactivatedLogos, `${context} reactivatedLogos`),
+    });
+}
+
+function optBridge(raw: RawBridge | undefined, context: string): Bridge | null {
+    return raw === undefined || raw === null ? null : decodeBridge(raw, context);
+}
+
+function optCount(raw: unknown, context: string): number | null {
+    return raw === undefined || raw === null ? null : decodeCount(raw, context);
+}
+
+function decodeSaasAvailable(raw: RawSaasAvailable | undefined, context: string): SaasAvailable {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing available`);
+    if (!Array.isArray(raw.dimensions)) throw new ApiShapeError(`${context}: expected a dimensions array`);
+    return Object.freeze({
+        recurring: decodeBoolean(raw.recurring, `${context} recurring`),
+        customers: decodeBoolean(raw.customers, `${context} customers`),
+        business: decodeBoolean(raw.business, `${context} business`),
+        cogs: decodeBoolean(raw.cogs, `${context} cogs`),
+        dimensions: frozen(decodeStrings(raw.dimensions, `${context} dimensions`)),
+        customersHiddenReason:
+            raw.customersHiddenReason === undefined
+                ? null
+                : decodeEnum(CUSTOMERS_HIDDEN_REASONS, raw.customersHiddenReason, `${context} customersHiddenReason`),
+        coveragePct: optNum(raw.coveragePct, `${context} coveragePct`),
+        inferredCustomers: decodeBoolean(raw.inferredCustomers, `${context} inferredCustomers`),
+        billingCustomers: decodeBoolean(raw.billingCustomers, `${context} billingCustomers`),
+        closedThrough: decodeOptMonth(raw.closedThrough, `${context} closedThrough`),
+    });
+}
+
+function decodeSaasMonth(raw: RawSaasMonth | undefined, context: string): SaasMonth {
+    if (raw === undefined || raw === null || typeof raw.month !== "string") throw new ApiShapeError(`${context}: missing month`);
+    return Object.freeze({
+        month: raw.month,
+        partial: decodeBoolean(raw.partial, `${context} partial`),
+        // Omitted when false; anything present must be a boolean.
+        open: raw.open === undefined ? false : decodeBoolean(raw.open, `${context} open`),
+        mrr: decodeDec(raw.mrr, `${context} mrr`),
+        usage: decodeDec(raw.usage, `${context} usage`),
+        unattributed: decodeDec(raw.unattributed, `${context} unattributed`),
+        customers: optCount(raw.customers, `${context} customers`),
+        bridge: optBridge(raw.bridge, `${context} bridge`),
+        revenue: decodeDec(raw.revenue, `${context} revenue`),
+        cogs: optSaasDec(raw.cogs, `${context} cogs`),
+        netBurn: decodeDec(raw.netBurn, `${context} netBurn`),
+        netBurnAdjusted: optSaasDec(raw.netBurnAdjusted, `${context} netBurnAdjusted`),
+        cashEnd: decodeDec(raw.cashEnd, `${context} cashEnd`),
+        sm: decodeDec(raw.sm, `${context} sm`),
+        rnd: decodeDec(raw.rnd, `${context} rnd`),
+        ga: decodeDec(raw.ga, `${context} ga`),
+        deferredEnd: optSaasDec(raw.deferredEnd, `${context} deferredEnd`),
+        arEnd: optSaasDec(raw.arEnd, `${context} arEnd`),
+        apEnd: optSaasDec(raw.apEnd, `${context} apEnd`),
+    });
+}
+
+function decodePeriodMetrics(raw: RawPeriodMetrics | undefined, context: string): PeriodMetrics {
+    if (raw === undefined || raw === null || typeof raw !== "object") throw new ApiShapeError(`${context}: missing period metrics`);
+    const money = (key: string): Dec | null => optSaasDec(raw[key], `${context} ${key}`);
+    const number = (key: string): number | null => optNum(raw[key], `${context} ${key}`);
+    return Object.freeze({
+        month: optStr(raw.month, `${context} month`),
+        months: decodeCount(raw.months, `${context} months`),
+        mrr: money("mrr"),
+        arr: money("arr"),
+        usage: money("usage"),
+        mrrGrowthPct: number("mrrGrowthPct"),
+        cmgrPct: number("cmgrPct"),
+        netNewArr: money("netNewArr"),
+        bridge: optBridge(raw.bridge as RawBridge | undefined, `${context} bridge`),
+        customers: optCount(raw.customers, `${context} customers`),
+        customerGrowthPct: number("customerGrowthPct"),
+        logoChurnPct: number("logoChurnPct"),
+        arpa: money("arpa"),
+        acv: money("acv"),
+        nrrPct: number("nrrPct"),
+        grrPct: number("grrPct"),
+        quickRatio: number("quickRatio"),
+        top1Pct: number("top1Pct"),
+        top5Pct: number("top5Pct"),
+        top10Pct: number("top10Pct"),
+        revenue: decodeDec(raw.revenue as RawDec | undefined, `${context} revenue`),
+        grossProfit: money("grossProfit"),
+        grossMarginPct: number("grossMarginPct"),
+        netBurn: decodeDec(raw.netBurn as RawDec | undefined, `${context} netBurn`),
+        netBurnAvg3: money("netBurnAvg3"),
+        netBurnAdjusted: money("netBurnAdjusted"),
+        netBurnAdjustedAvg3: money("netBurnAdjustedAvg3"),
+        cash: money("cash"),
+        runwayBasis: raw.runwayBasis === undefined ? null : decodeEnum(RUNWAY_BASES, raw.runwayBasis as string, `${context} runwayBasis`),
+        runwayMonths: number("runwayMonths"),
+        cashOutDate: optStr(raw.cashOutDate, `${context} cashOutDate`) as ISODate | null,
+        burnMultiple: number("burnMultiple"),
+        burnMultipleBasis:
+            raw.burnMultipleBasis === undefined ? null : decodeEnum(RUNWAY_BASES, raw.burnMultipleBasis as string, `${context} burnMultipleBasis`),
+        ruleOf40: number("ruleOf40"),
+        sm: money("sm"),
+        rnd: money("rnd"),
+        ga: money("ga"),
+        smPct: number("smPct"),
+        rndPct: number("rndPct"),
+        gaPct: number("gaPct"),
+        cac: money("cac"),
+        cacPaybackMonths: number("cacPaybackMonths"),
+        deferredRevenue: money("deferredRevenue"),
+        billings: money("billings"),
+        dsoDays: number("dsoDays"),
+        dpoDays: number("dpoDays"),
+        billingCustomers: decodeBillingCustomers(raw.billingCustomers, `${context} billingCustomers`),
+    });
+}
+
+/** An optional `YYYY-MM`: absent is "none"; anything present must be a month. */
+function decodeOptMonth(raw: unknown, context: string): string | null {
+    if (raw === undefined || raw === null) return null;
+    if (typeof raw !== "string" || !/^\d{4}-\d{2}$/.test(raw)) throw new ApiShapeError(`${context}: expected YYYY-MM, got ${JSON.stringify(raw)}`);
+    return raw;
+}
+
+function decodeBillingCustomers(raw: unknown, context: string): BillingCustomers | null {
+    if (raw === undefined || raw === null) return null;
+    if (typeof raw !== "object") throw new ApiShapeError(`${context}: expected an object`);
+    const b = raw as Record<string, unknown>;
+    return Object.freeze({
+        customers: decodeCount(b.customers, `${context} customers`),
+        customerGrowthPct: optNum(b.customerGrowthPct, `${context} customerGrowthPct`),
+        newLogos: decodeCount(b.newLogos, `${context} newLogos`),
+        lapsedLogos: decodeCount(b.lapsedLogos, `${context} lapsedLogos`),
+        logoChurnPct: optNum(b.logoChurnPct, `${context} logoChurnPct`),
+        acv: optSaasDec(b.acv, `${context} acv`),
+        windowShort: decodeBoolean(b.windowShort as boolean | undefined, `${context} windowShort`),
+        inferred: decodeBoolean(b.inferred as boolean | undefined, `${context} inferred`),
+    });
+}
+
+function decodeSegmentRow(raw: RawSegmentRow | undefined, context: string): SegmentRow {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing segment row`);
+    return Object.freeze({
+        value: str(raw.value, `${context} value`),
+        mrrCurr: decodeDec(raw.mrrCurr, `${context} mrrCurr`),
+        mrrPrev: decodeDec(raw.mrrPrev, `${context} mrrPrev`),
+        customersCurr: optCount(raw.customersCurr, `${context} customersCurr`),
+        arpa: optSaasDec(raw.arpa, `${context} arpa`),
+        nrrPct: optNum(raw.nrrPct, `${context} nrrPct`),
+        bridge: optBridge(raw.bridge, `${context} bridge`),
+    });
+}
+
+function decodeBridgeCustomer(raw: RawBridgeCustomer | undefined, context: string): BridgeCustomer {
+    if (raw === undefined || raw === null) throw new ApiShapeError(`${context}: missing customer`);
+    return Object.freeze({
+        customer: str(raw.customer, `${context} customer`),
+        name: str(raw.name, `${context} name`),
+        segment: optStr(raw.segment, `${context} segment`),
+        amount: decodeDec(raw.amount, `${context} amount`),
+        inferred: decodeBoolean(raw.inferred, `${context} inferred`),
+    });
+}
+
+function decodeBridgeCustomers(raw: RawSaasReport["bridgeCustomers"], context: string): BridgeCustomers | null {
+    if (raw === undefined || raw === null) return null;
+    const out = {} as BridgeCustomers;
+    for (const category of BRIDGE_CATEGORIES) {
+        const rows = raw[category];
+        if (!Array.isArray(rows)) throw new ApiShapeError(`${context}: expected a ${category} array`);
+        out[category] = frozen(rows.map((row, i) => decodeBridgeCustomer(row, `${context} ${category}[${i}]`)));
+    }
+    return Object.freeze(out);
+}
+
+/** `GET /api/saas` → the startup metrics for an Insights span. */
+export function decodeSaasReport(raw: unknown): SaasReport {
+    const report = raw as RawSaasReport;
+    if (typeof report !== "object" || report === null || typeof report.base !== "string") {
+        throw new ApiShapeError("saas report: expected a base commodity");
+    }
+    if (!Array.isArray(report.months)) throw new ApiShapeError("saas report: expected a months array");
+    const months = frozen(report.months.map((month, i) => decodeSaasMonth(month, `saas months[${i}]`)));
+    const segments: SegmentBreakdown[] = (report.segments ?? []).map((segment, i) =>
+        Object.freeze({
+            key: str(segment?.key, `saas segments[${i}] key`),
+            rows: frozen((segment?.rows ?? []).map((row, j) => decodeSegmentRow(row, `saas segments[${i}] rows[${j}]`))),
+        })
+    );
+    const topCustomers: TopCustomer[] = (report.topCustomers ?? []).map((row, i) =>
+        Object.freeze({
+            customer: str(row?.customer, `saas topCustomers[${i}] customer`),
+            name: str(row?.name, `saas topCustomers[${i}] name`),
+            mrr: decodeDec(row?.mrr, `saas topCustomers[${i}] mrr`),
+            pct: num(row?.pct, `saas topCustomers[${i}] pct`),
+        })
+    );
+    const customerMatrix: CustomerMatrixRow[] | null =
+        report.customerMatrix === undefined
+            ? null
+            : report.customerMatrix.map((row, i) => {
+                  const context = `saas customerMatrix[${i}]`;
+                  if (!Array.isArray(row?.values) || row.values.length !== months.length) {
+                      throw new ApiShapeError(`${context}: expected ${months.length} monthly values`);
+                  }
+                  return Object.freeze({
+                      customer: str(row.customer, `${context} customer`),
+                      name: str(row.name, `${context} name`),
+                      segment: optStr(row.segment, `${context} segment`),
+                      values: frozen(row.values.map((value, j) => decodeDec(value, `${context} values[${j}]`))),
+                  });
+              });
+    const unvalued = new Map<string, Dec>();
+    for (const [commodity, value] of Object.entries(report.unvalued ?? {})) unvalued.set(commodity, decodeDec(value, `saas unvalued "${commodity}"`));
+    return Object.freeze({
+        period: decodeInsightsPeriod(report.period, "saas period"),
+        base: report.base,
+        available: decodeSaasAvailable(report.available, "saas available"),
+        months,
+        current: decodePeriodMetrics(report.current, "saas current"),
+        previous: decodePeriodMetrics(report.previous, "saas previous"),
+        segments: frozen(segments),
+        bridgeCustomers: decodeBridgeCustomers(report.bridgeCustomers, "saas bridgeCustomers"),
+        topCustomers: frozen(topCustomers),
+        customerMatrix: customerMatrix === null ? null : frozen(customerMatrix),
+        unvalued,
     });
 }
 

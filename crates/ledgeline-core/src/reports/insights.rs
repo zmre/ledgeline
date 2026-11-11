@@ -27,12 +27,15 @@ use super::account_types::{
     AccountType, AccountTypes, account_decls, cash_predicate, declared_types, resolve_account_type,
 };
 use super::accounts::account_matches;
+use super::aggregate::effective_date;
 use super::aggregate::{PostingFilter, account_totals};
+use super::cash_flow_statement::is_closing_entry;
 use super::income_statement::income_statement;
+use super::kpi::{KpiRole, declared_kpi_roles, kpi_resolver};
 use super::mixed_amount::MixedAmount;
 use super::net_worth::{NetWorthOpts, net_worth_priced};
 use super::periods::{Interval, add_days, add_months, bucket_end, bucket_key, days_between, parts};
-use super::prices::{PriceDb, infer_market_prices};
+use super::prices::{PriceDb, infer_market_prices, value_at};
 use super::types::{PeriodReport, ReportMeta};
 use crate::decimal::Dec;
 use crate::holdings::{HoldingsReport, HoldingsScope, PriceSource, ScopeMode, compute_holdings};
@@ -257,6 +260,9 @@ pub struct InsightsReport {
     pub movers: Vec<MoverRow>,
     /// Box 10: largest transactions in the current period.
     pub top_txns: Vec<TopTxn>,
+    /// True when the portfolio holds anything at the end of either half — the
+    /// SPA hides Investment Performance (Box 5) when it is false.
+    pub has_holdings: bool,
     /// Valuation caveats for the headline [`InsightsReport::net_worth`] figure —
     /// in practice the commodities held at the current period end with no price
     /// to `base`, which are therefore MISSING from it.
@@ -285,7 +291,7 @@ pub struct InsightsReport {
 /// `fixtures/sample.journal`'s gifted GLD lot is priced solely by the `@ 0.005
 /// GLD` annotation on its balancing equity leg, so net worth counted it at
 /// 5 × $200 = $1,000 while holdings reported it unpriced and dropped it.
-fn all_prices(journal: &Journal) -> Result<Vec<PriceDirective>, ReportError> {
+pub(super) fn all_prices(journal: &Journal) -> Result<Vec<PriceDirective>, ReportError> {
     let mut all = infer_market_prices(&journal.transactions)?;
     all.extend_from_slice(&journal.prices);
     Ok(all)
@@ -856,18 +862,75 @@ fn is_bookkeeping_only(txn: &Transaction, types: &AccountTypes) -> bool {
         && !accounts().any(|account| is_operating_leg(account, types))
 }
 
-/// The largest transactions over `[from, to]` by base-commodity magnitude moved
-/// (Box 10): per transaction, the greater of its summed positive and summed
-/// negative base legs.
+/// A transaction's income-and-expense impact (plan 37 A1.3): the larger of
+/// the debit-side and credit-side sums of its revenue- and expense-typed
+/// postings, valued in `base` at the posting's date.
 ///
-/// Bookkeeping artifacts are skipped ([`is_bookkeeping_only`]) — they move no
-/// money, so ranking them by "money moved" is meaningless.
+/// Revenue DEBITS in a transaction that credits deferred revenue are moves to
+/// deferred and are left out, so a combined recognise-and-move entry scores
+/// only what it recognises. Payments, transfers and pure deferral moves touch
+/// no revenue or expense and score zero. A paycheck scores its gross revenue
+/// (the credit side), not revenue plus withholding.
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow.
+fn pnl_impact(
+    txn: &Transaction,
+    base: &Commodity,
+    types: &AccountTypes,
+    kpi: &dyn Fn(&str) -> Option<KpiRole>,
+    db: &PriceDb,
+) -> Result<Dec, ReportError> {
+    let deferred_credit = txn.postings.iter().any(|posting| {
+        kpi(&posting.account.0) == Some(KpiRole::DeferredRevenue)
+            && posting.amounts.iter().any(|a| a.quantity < Dec::zero())
+    });
+    let mut debits = Dec::zero();
+    let mut credits = Dec::zero();
+    for posting in &txn.postings {
+        let account = posting.account.0.as_str();
+        let revenue = types.is_type(account, AccountType::Revenue);
+        if !revenue && !types.is_type(account, AccountType::Expense) {
+            continue;
+        }
+        let date = effective_date(txn, posting);
+        for amount in &posting.amounts {
+            let valued = value_at(
+                &MixedAmount::single(amount.commodity.clone(), amount.quantity),
+                base,
+                db,
+                date,
+                None,
+            )?;
+            if valued > Dec::zero() {
+                if revenue && deferred_credit {
+                    continue;
+                }
+                debits = debits.add(valued)?;
+            } else {
+                credits = credits.sub(valued)?;
+            }
+        }
+    }
+    Ok(debits.max(credits))
+}
+
+/// The largest transactions over `[from, to]` by income-and-expense impact
+/// (Box 10, plan 37 A1.3): [`pnl_impact`], the amount displayed. Ranking by
+/// money MOVED filled the box with near-duplicates of one sale (invoice,
+/// payment, deferral); ranking by what hits the P&L shows each once.
+///
+/// Closing entries and bookkeeping artifacts ([`is_bookkeeping_only`]) are
+/// skipped; anything that scores zero (payments, transfers, pure moves to
+/// deferred revenue) drops out.
 fn top_transactions(
     txns: &[Transaction],
     from: &str,
     to: &str,
     base: &Commodity,
     types: &AccountTypes,
+    kpi: &dyn Fn(&str) -> Option<KpiRole>,
+    db: &PriceDb,
 ) -> Result<Vec<TopTxn>, ReportError> {
     let mut scored: Vec<TopTxn> = Vec::new();
     for txn in txns {
@@ -877,21 +940,10 @@ fn top_transactions(
         if is_bookkeeping_only(txn, types) {
             continue;
         }
-        let mut positive = Dec::zero();
-        let mut negative = Dec::zero();
-        for posting in &txn.postings {
-            for amount in &posting.amounts {
-                if amount.commodity != *base {
-                    continue;
-                }
-                if amount.quantity.mantissa > 0 {
-                    positive = positive.add(amount.quantity)?;
-                } else if amount.quantity.mantissa < 0 {
-                    negative = negative.add(amount.quantity)?;
-                }
-            }
+        if is_closing_entry(txn, types) {
+            continue;
         }
-        let amount = positive.max(negative.abs()?);
+        let amount = pnl_impact(txn, base, types, kpi, db)?;
         if amount.is_zero() {
             continue;
         }
@@ -907,6 +959,31 @@ fn top_transactions(
     Ok(scored)
 }
 
+/// The comparison window for `[start, end]`: the span split at [`split_mid`]
+/// into a previous and a current half, with each half's day count.
+///
+/// Shared by [`insights`] and [`super::saas::saas_metrics`], so the startup
+/// metrics compare exactly the halves the rest of the dashboard does.
+///
+/// # Errors
+/// Never in practice; `Result` so a future validation has somewhere to go
+/// without changing every caller.
+pub fn split_period(start: &str, end: &str) -> Result<InsightsPeriod, ReportError> {
+    let mid = split_mid(start, end);
+    let curr_start = add_days(&mid, 1);
+    Ok(InsightsPeriod {
+        start: start.to_string(),
+        mid: mid.clone(),
+        end: end.to_string(),
+        prev_start: start.to_string(),
+        prev_end: mid.clone(),
+        prev_days: days_inclusive(start, &mid),
+        curr_days: days_inclusive(&curr_start, end),
+        curr_start,
+        curr_end: end.to_string(),
+    })
+}
+
 /// Compute the Insights dashboard's core metrics over `opts`'s span, split at
 /// its midpoint into a previous and current period.
 ///
@@ -916,8 +993,9 @@ fn top_transactions(
 pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport, ReportError> {
     let txns = &journal.transactions;
     let (start, end) = (opts.start, opts.end);
-    let mid = split_mid(start, end);
-    let curr_start = add_days(&mid, 1);
+    let period = split_period(start, end)?;
+    let mid = period.mid.clone();
+    let curr_start = period.curr_start.clone();
 
     // Built ONCE and shared by every priced box, so the holdings boxes and the
     // net-worth box can never disagree about what a position is worth.
@@ -1044,20 +1122,22 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
     let movers_list = movers(journal, &current_window, &mid)?;
 
     // Box 10 — largest transactions in the current period.
-    let top_txns = top_transactions(txns, &curr_start, end, &base, &types)?;
+    let kpi_declared = declared_kpi_roles(&journal.accounts);
+    let kpi = kpi_resolver(&kpi_declared, &types);
+    let top_txns = top_transactions(
+        txns,
+        &curr_start,
+        end,
+        &base,
+        &types,
+        &kpi,
+        &PriceDb::build(&prices),
+    )?;
+
+    let has_holdings = !current_window.holdings.is_empty() || !previous_window.holdings.is_empty();
 
     Ok(InsightsReport {
-        period: InsightsPeriod {
-            start: start.to_string(),
-            mid: mid.clone(),
-            end: end.to_string(),
-            prev_start: start.to_string(),
-            prev_end: mid.clone(),
-            prev_days: days_inclusive(start, &mid),
-            curr_days: days_inclusive(&curr_start, end),
-            curr_start,
-            curr_end: end.to_string(),
-        },
+        period,
         base: base.0,
         journal_start: txns.iter().map(|txn| txn.date.clone()).min(),
         revenue,
@@ -1070,6 +1150,7 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
         revenue_changes,
         movers: movers_list,
         top_txns,
+        has_holdings,
         meta: net_worth_meta,
     })
 }
@@ -1499,11 +1580,11 @@ mod tests {
         assert_eq!(ranked(&report), [1]);
     }
 
-    /// A transaction with NO equity leg and no assertion is untouched by the
-    /// filter even when it only moves money between the user's own accounts —
-    /// this fix narrows Box 10 to bookkeeping artifacts, not to spending.
+    /// A plain transfer between the user's own accounts has no income or
+    /// expense impact, so since plan 37 A1.3 it drops out of Box 10 (it used
+    /// to rank by money moved).
     #[test]
-    fn top_txns_keep_a_plain_transfer_between_asset_accounts() {
+    fn top_txns_drop_a_plain_transfer_between_asset_accounts() {
         let report = run(&journal(vec![txn(
             1,
             "2025-01-08",
@@ -1512,7 +1593,7 @@ mod tests {
                 ("assets:bank:checking", vec![usd(-300_000)]),
             ],
         )]));
-        assert_eq!(ranked(&report), [1]);
+        assert!(ranked(&report).is_empty());
     }
 
     // ---- diagnostics: how movers behave with and without price history ----

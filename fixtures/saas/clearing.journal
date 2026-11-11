@@ -1,0 +1,57 @@
+; The invoice -> revenue -> deferred pattern (plans/37-startup-metrics.md).
+;
+; Each annual invoice is booked straight to revenue with the customer on it,
+; then moved to deferred revenue the same day (a debit to the recurring
+; account), then recognised monthly from deferred with no customer at all.
+; SMB revenue sits on the parent's own postings; enterprise on a leaf.
+;
+; Expect: MRR is right (the invoice and the move net to zero in their month),
+; customer metrics hide with reason `billing-clearing`, and the Problems panel
+; reports `recurring-billing-clearing` on both recurring accounts.
+
+commodity $1,000.00
+
+account assets:bank                  ; type: C
+account assets:receivable            ; type: A, kpi: receivable
+account liabilities:deferred-revenue  ; type: L, kpi: deferred-revenue
+account revenue:sales                ; type: R, kpi: recurring, segment: smb
+account revenue:sales:enterprise     ; segment: enterprise
+
+2025-01-01 Invoice | Alder Bakery annual
+    assets:receivable                   $1,200.00
+    revenue:sales                      -$1,200.00  ; customer: Alder Bakery
+
+2025-01-01 Move to deferred | Alder Bakery
+    revenue:sales                       $1,200.00
+    liabilities:deferred-revenue       -$1,200.00
+
+2025-01-01 Invoice | Birchway Freight annual
+    assets:receivable                  $24,000.00
+    revenue:sales:enterprise          -$24,000.00  ; customer: Birchway Freight
+
+2025-01-01 Move to deferred | Birchway Freight
+    revenue:sales:enterprise           $24,000.00
+    liabilities:deferred-revenue      -$24,000.00
+
+2025-01-31 Payment | Alder Bakery
+    assets:bank                         $1,200.00
+    assets:receivable                  -$1,200.00
+
+2025-01-31 Payment | Birchway Freight
+    assets:bank                        $24,000.00
+    assets:receivable                 -$24,000.00
+
+2025-01-31 Revenue recognition 2025-01
+    liabilities:deferred-revenue        $2,100.00
+    revenue:sales                        -$100.00
+    revenue:sales:enterprise           -$2,000.00
+
+2025-02-28 Revenue recognition 2025-02
+    liabilities:deferred-revenue        $2,100.00
+    revenue:sales                        -$100.00
+    revenue:sales:enterprise           -$2,000.00
+
+2025-03-31 Revenue recognition 2025-03
+    liabilities:deferred-revenue        $2,100.00
+    revenue:sales                        -$100.00
+    revenue:sales:enterprise           -$2,000.00

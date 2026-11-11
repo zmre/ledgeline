@@ -35,8 +35,9 @@ const children = createRawSnippet<[unknown]>((value) => ({
     render: () => `<p data-testid="payload">${String(value())}</p>`,
 }));
 
-function mount(view: DataView, error: Error | null, onRetry = vi.fn()) {
+function mount(view: DataView, error: Error | null, onRetry = vi.fn(), quietLoading = false) {
     render(AsyncSection, {
+        quietLoading,
         view,
         value: view === "data" ? "the report" : null,
         error,
@@ -85,5 +86,16 @@ describe("COMPONENT AsyncSection", () => {
 
         expect(screen.getByLabelText("Loading other holdings")).toBeDefined();
         expect(screen.queryByTestId("payload")).toBeNull();
+    });
+
+    it("renders nothing while loading when asked to be quiet", () => {
+        mount("loading", null, vi.fn(), true);
+        expect(screen.queryByLabelText("Loading other holdings")).toBeNull();
+        expect(screen.queryByTestId("payload")).toBeNull();
+    });
+
+    it("a quiet section still shows its error branch", () => {
+        mount("error", new ApiUnreachableError(BAD_REQUEST), vi.fn(), true);
+        expect(screen.getByTestId("other-holdings-error").textContent).toContain(BAD_REQUEST);
     });
 });

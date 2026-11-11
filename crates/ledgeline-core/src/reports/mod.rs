@@ -35,11 +35,13 @@ pub mod cash_flow_statement;
 pub mod flows;
 pub mod income_statement;
 pub mod insights;
+pub mod kpi;
 pub mod mixed_amount;
 pub mod net_worth;
 pub mod periods;
 pub mod prices;
 pub mod reference;
+pub mod saas;
 mod sections;
 mod statement_shape;
 pub mod subscriptions;
@@ -72,7 +74,7 @@ pub use account_types::{
     parse_account_type_tag, resolve_account_type, signed_entry,
 };
 pub use accounts::{RootCategory, account_matches, categorize};
-pub use aggregate::{PostingFilter, account_totals, at_depth, roll_up};
+pub use aggregate::{PostingFilter, account_totals, at_depth, effective_date, roll_up};
 pub use balance_sheet::{
     BalanceSheetColumns, BalanceSheetReport, BsColumnGroup, BsColumnRow, BsColumnSection,
     BsColumnSubsection, BsGroup, BsOpts, BsSection, BsSectionKind, BsSubsection, Valuation,
@@ -104,7 +106,12 @@ pub use income_statement::{
 };
 pub use insights::{
     ChangeKind, ChangeRow, CostOfLiving, InsightsOpts, InsightsPeriod, InsightsReport,
-    InvestmentPerf, MetricDelta, MoverRow, PerfPoint, TopTxn, insights,
+    InvestmentPerf, MetricDelta, MoverRow, PerfPoint, TopTxn, insights, split_period,
+};
+pub use kpi::{
+    DIMENSION_KEYS_DEFAULT, KPI_TAG, KpiRole, any_kpi_declared, declared_dimension_tags,
+    declared_kpi_roles, expected_type, kpi_resolver, nearest_dimension, parse_kpi_tag,
+    role_is_declared,
 };
 pub use mixed_amount::MixedAmount;
 pub use net_worth::{NetWorthOpts, net_worth};
@@ -115,6 +122,12 @@ pub use periods::{
 };
 pub use prices::{PriceDb, ValuationMeta, infer_market_prices, value_at};
 pub use reference::{AccountHistory, ReferenceOpts, ReferencePeriod, account_reference};
+pub use saas::{
+    BillingCustomers, Bridge, BridgeCustomers, COVERAGE_MIN_DEFAULT, CUSTOMER_ID_TAG, CUSTOMER_TAG,
+    CustomerMove, CustomerRow, CustomerShare, HiddenReason, RunwayBasis, SaasAvailability,
+    SaasMonth, SaasOpts, SaasPeriodMetrics, SaasReport, SegmentBreakdown, SegmentRow,
+    TOP_N_DEFAULT, UNASSIGNED, saas_metrics,
+};
 pub use statement_shape::StatementShape;
 pub use subscriptions::{
     Cadence, DEFAULT_EXCLUDE_DESC, Subscription, SubscriptionOpts, SubscriptionsReport,

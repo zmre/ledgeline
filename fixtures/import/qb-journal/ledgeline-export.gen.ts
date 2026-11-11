@@ -27,6 +27,34 @@ const txns = [
         post("expenses:food", [amt("$", dec(8720, 2))]),
         post("liabilities:card", [amt("$", dec(-8720, 2))]),
     ], {tags: [["customer", "Self"]]}),
+    // Plan 37: a recognition entry whose lines name DIFFERENT customers in the
+    // per-line Name cell and leave the Customer column empty — QuickBooks' own
+    // shape for a multi-customer Journal Entry. The exporter writes the
+    // transaction's description into every row's Name, so the names are
+    // patched in below, after the workbook is built.
+    txn(15, "2026-03-31", "Revenue recognition", [
+        post("liabilities:deferred-revenue", [amt("$", dec(100000, 2))]),
+        post("revenue:subscriptions", [amt("$", dec(-100000, 2))]),
+        post("liabilities:deferred-revenue", [amt("$", dec(50000, 2))]),
+        post("revenue:subscriptions", [amt("$", dec(-50000, 2))]),
+        post("expenses:hosting", [amt("$", dec(2000, 2))]),
+        post("assets:checking", [amt("$", dec(-2000, 2))]),
+    ]),
 ];
+const RECOGNITION_NAMES = ["Initech", "Initech", "Globex, Ltd.", "Globex, Ltd.", "Hostco", "Hostco"];
 const wb = await buildJournalWorkbook(txns as never, styleOf, {title: "Acme Books", period: "2026-03-01 – 2026-03-31", generatedAt: new Date(Date.UTC(2026, 3, 1))});
+{
+    const ws = wb.worksheets[0];
+    let nameCol = 0;
+    ws.eachRow((row) => row.eachCell((cell, col) => {
+        if (nameCol === 0 && cell.value === "Name") nameCol = col;
+    }));
+    if (nameCol === 0) throw new Error("no Name column");
+    let patched = 0;
+    ws.eachRow((row) => {
+        const cell = row.getCell(nameCol);
+        if (cell.value === "Revenue recognition") cell.value = RECOGNITION_NAMES[patched++];
+    });
+    if (patched !== RECOGNITION_NAMES.length) throw new Error(`patched ${patched} Name cells`);
+}
 writeFileSync(process.argv[2], Buffer.from(await wb.xlsx.writeBuffer()));

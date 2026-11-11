@@ -63,6 +63,10 @@ use ledgeline_core::model::{
 use ledgeline_core::qb_import::{self, plain_aliases, resolve_account};
 use ledgeline_core::qb_journal::{QbJournal, QbPosting, QbTransaction};
 use ledgeline_core::reimport::{self, RowClassification};
+use ledgeline_core::reports::{
+    AccountType, AccountTypes, KpiRole, account_decls, declared_kpi_roles, declared_types,
+    kpi_resolver,
+};
 use ledgeline_core::sort;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -561,10 +565,12 @@ fn build_and_classify(
 ) -> Result<Vec<Classified>, AppError> {
     let index = reimport::build_index(journal, reimport::ID_TAG);
     let commodity = commodity_for(journal);
+    let customer_lines = CustomerLines::new(journal);
     transactions
         .iter()
         .map(|qb_txn| {
-            let transaction = build_transaction(journal, qb_txn, aliases, &commodity)?;
+            let transaction =
+                build_transaction(journal, qb_txn, aliases, &commodity, &customer_lines)?;
             // Every built transaction is `Status::Unmarked` (see
             // `WireQbIdMatches`'s docs), so `status_mapped` is always `false`:
             // any status difference from a hand-marked transaction is a
@@ -687,16 +693,51 @@ fn commodity_for(journal: &Journal) -> Commodity {
     }
 }
 
+/// Which of the TARGET journal's accounts a QuickBooks line's per-line `Name`
+/// becomes a `customer:` tag on (plan 37, decision 11): revenue (by resolved
+/// root type), `kpi: deferred-revenue`, and receivables (declared
+/// `kpi: receivable`, or the documented name fallback inside
+/// [`kpi_resolver`]). Classification is by the journal's own declarations,
+/// never by the QuickBooks account's name, so a vendor on an expense line or an
+/// employee on a payroll line is left exactly as it was.
+///
+/// Built once per batch: both maps are read off the journal's `account`
+/// directives, and the type resolution is memoized per account name.
+struct CustomerLines {
+    roles: std::collections::BTreeMap<String, KpiRole>,
+    types: AccountTypes,
+}
+
+impl CustomerLines {
+    fn new(journal: &Journal) -> Self {
+        Self {
+            roles: declared_kpi_roles(&journal.accounts),
+            types: AccountTypes::from_declared(declared_types(&account_decls(journal))),
+        }
+    }
+
+    /// True when a line posting to `account` should carry its `Name` as the
+    /// customer.
+    fn takes_customer(&self, account: &str) -> bool {
+        self.types.is_type(account, AccountType::Revenue)
+            || matches!(
+                kpi_resolver(&self.roles, &self.types)(account),
+                Some(KpiRole::DeferredRevenue | KpiRole::Receivable)
+            )
+    }
+}
+
 fn build_transaction(
     journal: &Journal,
     qb_txn: &QbTransaction,
     aliases: &[&AliasDirective],
     commodity: &Commodity,
+    customer_lines: &CustomerLines,
 ) -> Result<Transaction, AppError> {
     let postings: Vec<Posting> = qb_txn
         .postings
         .iter()
-        .map(|posting| build_posting(journal, posting, aliases, commodity))
+        .map(|posting| build_posting(journal, posting, aliases, commodity, customer_lines))
         .collect();
     let postings = merge_same_account_postings(&qb_txn.id, postings)?;
     Ok(Transaction {
@@ -747,6 +788,10 @@ fn build_transaction(
 /// FIRST occurrence's position. Since only rows with identical comments
 /// merge, there is no "whose comment wins" question.
 ///
+/// That includes a `customer:` DERIVED from the line's own `Name` (plan 37):
+/// it is written into the comment before this runs, so two revenue lines for
+/// different customers can never be summed into one.
+///
 /// # Errors
 /// [`AppError::BadRequest`], naming `id`, if summing two real QuickBooks
 /// amounts overflows `Dec`'s `i128` mantissa — not reachable by any
@@ -783,9 +828,11 @@ fn build_posting(
     posting: &QbPosting,
     aliases: &[&AliasDirective],
     commodity: &Commodity,
+    customer_lines: &CustomerLines,
 ) -> Posting {
     let account = resolve_account(&posting.account, aliases)
         .expect("caller guarantees every account resolves before building a transaction");
+    let name_is_customer = customer_lines.takes_customer(&account);
     let style = infer_style(journal, commodity, posting.amount.places);
     Posting {
         status: Status::Unmarked,
@@ -800,7 +847,7 @@ fn build_posting(
         balance_assertion: None,
         date: None,
         date2: None,
-        comment: posting_comment(posting),
+        comment: posting_comment(posting, name_is_customer),
         tags: Vec::new(),
         generated: None,
         elided: false,
@@ -829,21 +876,43 @@ fn build_posting(
 /// and nothing in the written journal said which customer accounted for which
 /// part of the total. With the memo in the comment, rows with different memos
 /// can never merge.
-fn posting_comment(posting: &QbPosting) -> String {
+///
+/// Every TAG value is made safe twice over: [`qb_import::journal_safe`] for
+/// the line itself, then [`tag_value`] because hledger ends a tag value at a
+/// comma (`customer: Acme, Inc.` reads as `Acme`).
+///
+/// `name_is_customer` (see [`CustomerLines`]): the line posts to a revenue,
+/// deferred-revenue or receivable account, so when it has no Customer column
+/// value its own `Name` cell is written as `customer:` instead. A Customer
+/// column value always wins.
+/// A QuickBooks value made safe as an hledger TAG value: journal-safe, with
+/// every comma turned into a space and runs of spaces collapsed, so
+/// `Acme, Inc.` is written (and read back by hledger) as `Acme Inc.`.
+fn tag_value(value: &str) -> String {
+    qb_import::journal_safe(value)
+        .replace(',', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn posting_comment(posting: &QbPosting, name_is_customer: bool) -> String {
     let memo = posting
         .memo
         .as_deref()
         .filter(|memo| !memo.trim().is_empty())
         .map(|memo| qb_import::journal_safe(memo.trim()));
+    let customer = posting
+        .customer
+        .as_deref()
+        .or_else(|| posting.name.as_deref().filter(|_| name_is_customer));
     let tags = [
         ("class", posting.class.as_deref()),
-        ("customer", posting.customer.as_deref()),
+        ("customer", customer),
         ("vendor", posting.vendor.as_deref()),
     ]
     .into_iter()
-    .filter_map(|(name, value)| {
-        value.map(|value| format!("{name}: {}", qb_import::journal_safe(value)))
-    });
+    .filter_map(|(name, value)| value.map(|value| format!("{name}: {}", tag_value(value))));
     let segments: Vec<String> = memo.into_iter().chain(tags).collect();
     if segments.is_empty() {
         String::new()
@@ -1190,6 +1259,7 @@ mod tests {
             class: None,
             customer: None,
             vendor: None,
+            name: None,
         };
         let txn = QbTransaction {
             id: "1".to_string(),
@@ -1417,6 +1487,7 @@ mod tests {
             class: None,
             customer: None,
             vendor: None,
+            name: None,
         }
     }
 
@@ -1427,7 +1498,10 @@ mod tests {
             1750000,
             Some("Recognized Zephyr Revenue"),
         );
-        assert_eq!(posting_comment(&posting), "Recognized Zephyr Revenue\n");
+        assert_eq!(
+            posting_comment(&posting, false),
+            "Recognized Zephyr Revenue\n"
+        );
     }
 
     #[test]
@@ -1436,7 +1510,7 @@ mod tests {
         posting.customer = Some("Acme".to_string());
         posting.class = Some("Enterprise".to_string());
         assert_eq!(
-            posting_comment(&posting),
+            posting_comment(&posting, false),
             "Annual license, class: Enterprise, customer: Acme\n"
         );
     }
@@ -1444,16 +1518,132 @@ mod tests {
     #[test]
     fn a_blank_memo_writes_no_comment() {
         assert_eq!(
-            posting_comment(&qb_posting("1000 Checking", 100, Some("  "))),
+            posting_comment(&qb_posting("1000 Checking", 100, Some("  ")), false),
             ""
         );
-        assert_eq!(posting_comment(&qb_posting("1000 Checking", 100, None)), "");
+        assert_eq!(
+            posting_comment(&qb_posting("1000 Checking", 100, None), false),
+            ""
+        );
     }
 
     #[test]
     fn a_memo_is_made_journal_safe() {
         let posting = qb_posting("1000 Checking", 100, Some("Smith; Jones\nretainer"));
-        assert_eq!(posting_comment(&posting), "Smith, Jones retainer\n");
+        assert_eq!(posting_comment(&posting, false), "Smith, Jones retainer\n");
+    }
+
+    // -----------------------------------------------------------------------
+    // per-line Name -> customer: (plan 37)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn every_tag_value_loses_its_commas() {
+        let mut posting = qb_posting("4000 Sales", -100, Some("Smith, Jones"));
+        posting.class = Some("East, North".to_string());
+        posting.customer = Some("Acme, Inc.".to_string());
+        posting.vendor = Some("Hooli ,LLC".to_string());
+        // The memo is free text, not a tag: its comma stays.
+        assert_eq!(
+            posting_comment(&posting, false),
+            "Smith, Jones, class: East North, customer: Acme Inc., vendor: Hooli LLC\n"
+        );
+        posting.customer = None;
+        posting.name = Some("Globex, Ltd.".to_string());
+        assert!(posting_comment(&posting, true).contains("customer: Globex Ltd.,"));
+    }
+
+    #[test]
+    fn a_name_becomes_the_customer_only_when_the_line_takes_one() {
+        let mut posting = qb_posting("4000 Sales", -100, None);
+        posting.name = Some("Acme; Corp".to_string());
+        assert_eq!(posting_comment(&posting, true), "customer: Acme Corp\n");
+        assert_eq!(posting_comment(&posting, false), "");
+        // A Customer column value always wins over the Name cell.
+        posting.customer = Some("Globex".to_string());
+        assert_eq!(posting_comment(&posting, true), "customer: Globex\n");
+    }
+
+    #[test]
+    fn customer_lines_classify_by_the_target_journals_declarations() {
+        let journal = journal(
+            "account income:subs      ; type: R\n\
+             account liabilities:unearned  ; type: L, kpi: deferred-revenue\n\
+             account liabilities:loan  ; type: L\n\
+             account assets:trade-ar   ; type: A, kpi: receivable\n\
+             account assets:accounts receivable  ; type: A\n\
+             account assets:bank       ; type: C\n\
+             account costs:payroll     ; type: X\n\
+             account sales             ; type: X\n",
+        );
+        let lines = CustomerLines::new(&journal);
+        for (account, expected) in [
+            ("income:subs:smb", true),
+            ("liabilities:unearned", true),
+            ("assets:trade-ar", true),
+            ("assets:accounts receivable", true),
+            ("liabilities:loan", false),
+            ("assets:bank", false),
+            ("costs:payroll", false),
+            // Named like revenue, declared an expense: the declaration wins.
+            ("sales", false),
+        ] {
+            assert_eq!(lines.takes_customer(account), expected, "{account}");
+        }
+    }
+
+    #[test]
+    fn same_account_lines_naming_different_customers_never_merge() {
+        let journal = journal(
+            "account revenue:sales  ; type: R\n\
+             alias 2500 Deferred Revenue = liabilities:deferred-revenue\n\
+             alias 4000 Sales = revenue:sales\n\
+             account liabilities:deferred-revenue  ; type: L, kpi: deferred-revenue\n\
+             2026-01-01 opening\n    assets:bank  $1000.00\n    equity:opening\n",
+        );
+        let aliases = plain_aliases(&journal);
+        let line = |account: &str, cents: i128, name: &str| {
+            let mut posting = qb_posting(account, cents, None);
+            posting.name = Some(name.to_string());
+            posting
+        };
+        let qb_txn = QbTransaction {
+            id: "77".to_string(),
+            date: "2026-02-28".to_string(),
+            transaction_type: "Journal Entry".to_string(),
+            num: None,
+            name: Some("Acme".to_string()),
+            postings: vec![
+                line("2500 Deferred Revenue", 10000, "Acme"),
+                line("4000 Sales", -10000, "Acme"),
+                line("2500 Deferred Revenue", 5000, "Globex"),
+                line("4000 Sales", -5000, "Globex"),
+                line("2500 Deferred Revenue", 2500, "Acme"),
+                line("4000 Sales", -2500, "Acme"),
+            ],
+        };
+        let built = build_transaction(
+            &journal,
+            &qb_txn,
+            &aliases,
+            &commodity_for(&journal),
+            &CustomerLines::new(&journal),
+        )
+        .expect("builds");
+        let written: Vec<(&str, i128, &str)> = built
+            .postings
+            .iter()
+            .map(|p| (p.account.0.as_str(), cents_of(p), p.comment.as_str()))
+            .collect();
+        assert_eq!(
+            written,
+            [
+                ("liabilities:deferred-revenue", 12500, "customer: Acme\n"),
+                ("revenue:sales", -12500, "customer: Acme\n"),
+                ("liabilities:deferred-revenue", 5000, "customer: Globex\n"),
+                ("revenue:sales", -5000, "customer: Globex\n"),
+            ]
+        );
     }
 
     /// The reported shape: one Journal Entry recognizing revenue for several
@@ -1495,8 +1685,14 @@ mod tests {
             name: None,
             postings,
         };
-        let built = build_transaction(&journal, &qb_txn, &aliases, &commodity_for(&journal))
-            .expect("builds");
+        let built = build_transaction(
+            &journal,
+            &qb_txn,
+            &aliases,
+            &commodity_for(&journal),
+            &CustomerLines::new(&journal),
+        )
+        .expect("builds");
         let written: Vec<(&str, i128, &str)> = built
             .postings
             .iter()

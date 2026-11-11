@@ -38,6 +38,30 @@ const OPENING: &str = "2026-01-01 opening balances\n\
                        \x20   assets:bank:checking   $1000.00\n\
                        \x20   equity:opening\n";
 
+/// A scratch journal for `ledgeline-export.xlsx`'s recognition entry (plan
+/// 37): its accounts are declared with their types and `kpi:` roles, and every
+/// QuickBooks account the export names is aliased to one of them. Classified
+/// by the DECLARATIONS: `income:subs` is revenue and `liabilities:unearned`
+/// deferred revenue though neither name says so, and `costs` is an expense.
+const CUSTOMER_TARGET: &str = "account income:subs  ; type: R\n\
+     account revenue:salary  ; type: R\n\
+     account liabilities:unearned  ; type: L, kpi: deferred-revenue\n\
+     account liabilities:visa  ; type: L\n\
+     account assets:bank:checking  ; type: C\n\
+     account assets:invest  ; type: A\n\
+     account costs  ; type: X\n\
+     account equity:opening  ; type: E\n\
+     alias revenue:subscriptions = income:subs\n\
+     alias income:salary = revenue:salary\n\
+     alias liabilities:deferred-revenue = liabilities:unearned\n\
+     alias liabilities:card = liabilities:visa\n\
+     alias assets:checking = assets:bank:checking\n\
+     alias assets:brokerage = assets:invest\n\
+     alias expenses = costs\n\
+     2026-01-01 opening balances\n\
+     \x20   assets:bank:checking   $1000.00\n\
+     \x20   equity:opening\n";
+
 struct Tree {
     dir: TempDir,
     state: AppState,
@@ -48,6 +72,15 @@ impl Tree {
         common::use_built_workbook_worker();
         let dir = TempDir::new().expect("temp dir");
         std::fs::write(dir.path().join("main.journal"), OPENING).expect("write journal");
+        let state = AppState::from_journal_path(dir.path().join("main.journal"))
+            .expect("the scratch journal opens");
+        Self { dir, state }
+    }
+
+    fn with_journal(text: &str) -> Self {
+        common::use_built_workbook_worker();
+        let dir = TempDir::new().expect("temp dir");
+        std::fs::write(dir.path().join("main.journal"), text).expect("write journal");
         let state = AppState::from_journal_path(dir.path().join("main.journal"))
             .expect("the scratch journal opens");
         Self { dir, state }
@@ -381,5 +414,61 @@ async fn hledger_reads_a_memo_per_posting_on_a_multi_line_journal_entry() {
             "Tamberlane",
         ],
         "{printed}"
+    );
+}
+
+/// Plan 37: the per-line `customer:` tags written from QuickBooks' Name cells
+/// leave a journal the real hledger accepts, and hledger reads them back as
+/// posting tags on exactly the revenue and deferred-revenue lines.
+#[tokio::test]
+async fn hledger_accepts_and_reads_the_per_line_customer_tags() {
+    require_hledger!();
+    let tree = Tree::with_journal(CUSTOMER_TARGET);
+    let id = staged(&tree, "ledgeline-export.xlsx").await;
+    let (status, body) = post(
+        &tree,
+        "/api/import/qb-journal/commit",
+        json!({ "stageId": id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    hledger_check(&tree.journal_path()).expect("hledger check accepts the written journal");
+    let printed =
+        hledger_print_json(&tree.journal_path()).expect("hledger print re-reads the journal");
+    let recognition = printed
+        .as_array()
+        .expect("an array")
+        .iter()
+        .find(|txn| txn["tdate"] == "2026-03-31")
+        .unwrap_or_else(|| panic!("the recognition entry round-trips: {printed}"));
+    let customers: Vec<(String, Option<String>)> = recognition["tpostings"]
+        .as_array()
+        .expect("postings")
+        .iter()
+        .map(|posting| {
+            let customer = posting["ptags"].as_array().and_then(|tags| {
+                tags.iter().find_map(|pair| {
+                    (pair[0] == "customer").then(|| pair[1].as_str().expect("value").to_string())
+                })
+            });
+            (
+                posting["paccount"].as_str().expect("account").to_string(),
+                customer,
+            )
+        })
+        .collect();
+    let named =
+        |account: &str, customer: Option<&str>| (account.to_string(), customer.map(str::to_string));
+    assert_eq!(
+        customers,
+        vec![
+            named("liabilities:unearned", Some("Initech")),
+            named("income:subs", Some("Initech")),
+            named("liabilities:unearned", Some("Globex Ltd.")),
+            named("income:subs", Some("Globex Ltd.")),
+            named("costs:hosting", None),
+            named("assets:bank:checking", None),
+        ]
     );
 }
