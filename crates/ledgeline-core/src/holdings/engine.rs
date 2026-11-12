@@ -1203,6 +1203,36 @@ fn latest_directive_price(
     // The index is keyed by `Commodity`, which does not borrow as `str`; one
     // key per (symbol, date) is noise next to the scan it replaces.
     let key = Commodity(symbol.to_string());
+    if !db.ever_priced_in(&key, base) {
+        // Nothing prices `symbol` in `base` at any date, so the base-priced arm
+        // below can never fire and the answer is just the newest directive whose
+        // own target converts. Asking each of the symbol's few targets once
+        // settles that — "none converts" without touching the prefix at all,
+        // which is what a symbol quoted only in other currencies used to pay a
+        // full in-effect scan for at every series point.
+        let rates: BTreeMap<&Commodity, Dec> = db
+            .price_targets(&key)
+            .filter_map(|target| Some((target, db.lookup_in(target, base, as_of)?.quantity)))
+            .collect();
+        if rates.is_empty() {
+            return Ok(None);
+        }
+        return db
+            .directives_in_effect(&key, as_of)
+            .iter()
+            .rev()
+            .find_map(|directive| {
+                let rate = rates.get(&directive.price.commodity)?;
+                Some(
+                    mul_raw(directive.price.quantity, *rate).map(|qty| DatedPrice {
+                        qty,
+                        date: directive.date.clone(),
+                    }),
+                )
+            })
+            .transpose()
+            .map_err(ReportError::from);
+    }
     let mut converted: Option<DatedPrice> = None;
     for directive in db.directives_in_effect(&key, as_of).iter().rev() {
         if directive.price.commodity == *base {
@@ -2483,6 +2513,75 @@ mod tests {
         scope_since, sell, txn, usd, with_cost,
     };
     use crate::holdings::types::HoldingsReport;
+
+    /// `latest_directive_price` before it learned to skip symbols never priced
+    /// in the base: walk the whole in-effect prefix newest-first.
+    fn latest_directive_price_by_scan(
+        db: &PriceDb,
+        symbol: &str,
+        base: &Commodity,
+        as_of: &str,
+    ) -> Option<DatedPrice> {
+        let key = Commodity(symbol.to_string());
+        let mut converted = None;
+        for directive in db.directives_in_effect(&key, as_of).iter().rev() {
+            if directive.price.commodity == *base {
+                return Some(DatedPrice {
+                    qty: directive.price.quantity,
+                    date: directive.date.clone(),
+                });
+            }
+            if converted.is_none()
+                && let Some(rate) = db.lookup_in(&directive.price.commodity, base, as_of)
+            {
+                converted = Some(DatedPrice {
+                    qty: mul_raw(directive.price.quantity, rate.quantity).expect("no overflow"),
+                    date: directive.date.clone(),
+                });
+            }
+        }
+        converted
+    }
+
+    /// The target index's early exit picks the same price as the full scan,
+    /// at every date, for a symbol priced in the base, one priced only in a
+    /// convertible currency, one in a currency that converts only later, and
+    /// one in a currency that never converts.
+    #[test]
+    fn latest_directive_price_matches_the_full_scan() {
+        let db = PriceDb::build(&[
+            pd("2024-01-01", "EUR", 110, "$"),
+            pd("2024-01-01", "GBP", 115, "EUR"),
+            pd("2024-02-01", "ABC", 1000, "EUR"),
+            pd("2024-03-01", "ABC", 1100, "GBP"),
+            pd("2024-04-01", "ABC", 1200, "EUR"),
+            pd("2024-02-01", "MIX", 500, "EUR"),
+            pd("2024-05-01", "MIX", 600, "$"),
+            pd("2024-06-01", "MIX", 700, "EUR"),
+            pd("2024-02-01", "LATE", 300, "CHF"),
+            pd("2024-06-01", "CHF", 105, "$"),
+            pd("2024-02-01", "NONE", 300, "GBP"),
+        ]);
+        let base = Commodity("$".to_string());
+        for symbol in ["ABC", "MIX", "LATE", "NONE", "UNKNOWN"] {
+            for as_of in [
+                "2023-12-31",
+                "2024-01-01",
+                "2024-02-01",
+                "2024-03-15",
+                "2024-04-01",
+                "2024-05-01",
+                "2024-06-01",
+                "2025-01-01",
+            ] {
+                assert_eq!(
+                    latest_directive_price(&db, symbol, &base, as_of).expect("no overflow"),
+                    latest_directive_price_by_scan(&db, symbol, &base, as_of),
+                    "{symbol} at {as_of}"
+                );
+            }
+        }
+    }
 
     fn only<'a>(report: &'a HoldingsReport, symbol: &str) -> &'a Holding {
         report

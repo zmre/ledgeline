@@ -23,15 +23,25 @@ use std::sync::{Arc, Mutex, PoisonError};
 /// A market-price lookup table built from `P` directives.
 #[derive(Debug, Clone)]
 pub struct PriceDb {
-    /// Directives per priced commodity, stable-sorted ascending by date (so the
-    /// last-declared wins for equal dates on the reverse scan).
-    by_commodity: BTreeMap<Commodity, Vec<PriceDirective>>,
+    /// Directives per priced commodity, plus what each is priced in.
+    by_commodity: BTreeMap<Commodity, Priced>,
     /// Every commodity something is priced IN, ranked most-frequent first with
     /// lexical ties — the candidate valuation targets. Empty when there are no
     /// directives.
     targets: Vec<Commodity>,
     /// The graphs [`PriceDb::graph_at`] has built, by date.
     graphs: GraphMemo,
+}
+
+/// One priced commodity's entry in [`PriceDb`].
+#[derive(Debug, Clone, Default)]
+struct Priced {
+    /// Stable-sorted ascending by date (so the last-declared wins for equal
+    /// dates on the reverse scan).
+    directives: Vec<PriceDirective>,
+    /// Every commodity it is priced in at ANY date — so "is this ever priced in
+    /// that?" is a lookup, not a scan of its directives.
+    targets: BTreeSet<Commodity>,
 }
 
 /// [`PriceDb::graph_at`]'s memo: one [`PriceGraph`] per `as_of` asked for.
@@ -66,16 +76,17 @@ impl PriceDb {
     /// Build a [`PriceDb`] from directives (in journal/declaration order).
     #[must_use]
     pub fn build(directives: &[PriceDirective]) -> PriceDb {
-        let mut by_commodity: BTreeMap<Commodity, Vec<PriceDirective>> = BTreeMap::new();
+        let mut by_commodity: BTreeMap<Commodity, Priced> = BTreeMap::new();
         for directive in directives {
-            by_commodity
-                .entry(directive.commodity.clone())
-                .or_default()
-                .push(directive.clone());
+            let priced = by_commodity.entry(directive.commodity.clone()).or_default();
+            priced.directives.push(directive.clone());
+            if !priced.targets.contains(&directive.price.commodity) {
+                priced.targets.insert(directive.price.commodity.clone());
+            }
         }
         // Stable sort: same-date directives keep journal order.
-        for list in by_commodity.values_mut() {
-            list.sort_by(|a, b| a.date.cmp(&b.date));
+        for priced in by_commodity.values_mut() {
+            priced.directives.sort_by(|a, b| a.date.cmp(&b.date));
         }
 
         // Candidate valuation targets, ranked by how often something is priced in
@@ -95,6 +106,24 @@ impl PriceDb {
             targets,
             graphs: GraphMemo::default(),
         }
+    }
+
+    /// Every commodity `commodity` is priced in by some directive, at any date,
+    /// ascending. Empty when nothing prices it.
+    pub fn price_targets(&self, commodity: &Commodity) -> impl Iterator<Item = &Commodity> {
+        self.by_commodity
+            .get(commodity)
+            .into_iter()
+            .flat_map(|priced| &priced.targets)
+    }
+
+    /// Whether any directive, at any date, prices `commodity` directly in
+    /// `target`.
+    #[must_use]
+    pub fn ever_priced_in(&self, commodity: &Commodity, target: &Commodity) -> bool {
+        self.by_commodity
+            .get(commodity)
+            .is_some_and(|priced| priced.targets.contains(target))
     }
 
     /// The latest directive for `commodity` dated ≤ `as_of` that also satisfies
@@ -130,7 +159,7 @@ impl PriceDb {
     pub fn directives_in_effect(&self, commodity: &Commodity, as_of: &str) -> &[PriceDirective] {
         self.by_commodity
             .get(commodity)
-            .map_or(&[], |directives| in_effect(directives, as_of))
+            .map_or(&[], |priced| in_effect(&priced.directives, as_of))
     }
 
     /// Latest `P` directive for `commodity` dated ≤ `as_of`, regardless of the
@@ -149,9 +178,27 @@ impl PriceDb {
         target: &Commodity,
         as_of: &str,
     ) -> Option<&Amount> {
-        self.latest(commodity, as_of, |directive| {
-            &directive.price.commodity == target
-        })
+        let priced = self.by_commodity.get(commodity)?;
+        let directives = in_effect(&priced.directives, as_of);
+        // The newest directive settles the commonest query — a single-target
+        // book — with no further work.
+        if let Some(newest) = directives.last()
+            && newest.price.commodity == *target
+        {
+            return Some(&newest.price);
+        }
+        // A pair that is never priced at all would otherwise scan the whole
+        // in-effect prefix to find nothing — the commonest miss there is. The
+        // check sits after the newest-directive test because on the hit path it
+        // is pure overhead (measured at ~2% of a `$`-only net worth).
+        if !priced.targets.contains(target) {
+            return None;
+        }
+        directives
+            .iter()
+            .rev()
+            .find(|directive| &directive.price.commodity == target)
+            .map(|directive| &directive.price)
     }
 
     /// Default valuation target (most frequent price commodity; `None` when
@@ -210,8 +257,8 @@ impl PriceDb {
         let pairs: Vec<(&Commodity, &Commodity, Dec)> = self
             .by_commodity
             .iter()
-            .flat_map(|(from, directives)| {
-                let latest: BTreeMap<&Commodity, Dec> = in_effect(directives, as_of)
+            .flat_map(|(from, priced)| {
+                let latest: BTreeMap<&Commodity, Dec> = in_effect(&priced.directives, as_of)
                     .iter()
                     .map(|directive| (&directive.price.commodity, directive.price.quantity))
                     .collect();
