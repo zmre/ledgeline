@@ -149,7 +149,7 @@ impl PriceDb {
     /// The market-price graph in effect at `as_of` — hledger's
     /// `makePriceGraph`. Build it once and reuse it across commodities.
     #[must_use]
-    pub fn graph_at(&self, as_of: &str) -> PriceGraph<'_> {
+    pub fn graph_at(&self, as_of: &str) -> PriceGraph {
         // hledger indexes prices by (from, to) PAIR and takes each pair's
         // latest entry ≤ the date, so at most one edge exists per directed pair.
         // Iterating the date-sorted list and letting later entries overwrite
@@ -160,7 +160,7 @@ impl PriceDb {
         // hledger walks `M.elems` of that pair-keyed map, i.e. ascending by
         // `(from, to)`. A `BTreeMap` of commodities keyed by `from`, each
         // holding a `BTreeMap` keyed by `to`, yields exactly that order.
-        let forward: Vec<Edge<'_>> = self
+        let pairs: Vec<(&Commodity, &Commodity, Dec)> = self
             .by_commodity
             .iter()
             .flat_map(|(from, directives)| {
@@ -168,17 +168,35 @@ impl PriceDb {
                     .iter()
                     .map(|directive| (&directive.price.commodity, directive.price.quantity))
                     .collect();
-                latest
-                    .into_iter()
-                    .map(move |(to, rate)| Edge { from, to, rate })
+                latest.into_iter().map(move |(to, rate)| (from, to, rate))
+            })
+            .collect();
+
+        // Node ids are positions in the sorted commodity list, so ascending
+        // `(from, to)` by id is the same order as by commodity.
+        let nodes: Vec<Commodity> = pairs
+            .iter()
+            .flat_map(|&(from, to, _)| [from, to])
+            .collect::<BTreeSet<&Commodity>>()
+            .into_iter()
+            .cloned()
+            .collect();
+        // Every endpoint is in `nodes` by construction, so the search never misses.
+        let id = |commodity: &Commodity| nodes.binary_search(commodity).unwrap_or_default();
+        let forward: Vec<Edge> = pairs
+            .iter()
+            .map(|&(from, to, rate)| Edge {
+                from: id(from),
+                to: id(to),
+                rate,
             })
             .collect();
 
         // Reverse edges for pairs with no forward edge of their own, appended in
         // forward order (hledger: `forwardprices ++ reverseprices`).
-        let forward_pairs: BTreeSet<(&Commodity, &Commodity)> =
+        let forward_pairs: BTreeSet<(usize, usize)> =
             forward.iter().map(|edge| (edge.from, edge.to)).collect();
-        let all: Vec<Edge<'_>> = forward
+        let all: Vec<Edge> = forward
             .iter()
             .copied()
             .chain(
@@ -195,7 +213,11 @@ impl PriceDb {
             )
             .collect();
 
-        PriceGraph { forward, all }
+        PriceGraph {
+            forward: Adjacency::new(forward, nodes.len()),
+            all: Adjacency::new(all, nodes.len()),
+            nodes,
+        }
     }
 }
 
@@ -231,13 +253,32 @@ pub fn on_or_before<'a, T>(items: &'a [T], as_of: &str, date_of: impl Fn(&T) -> 
     &items[..items.partition_point(|item| date_of(item) <= as_of)]
 }
 
-/// One directed edge of the price graph: one unit of `from` is worth `rate` of
-/// `to`.
+/// One directed edge of the price graph: one unit of node `from` is worth
+/// `rate` of node `to` (ids into [`PriceGraph::nodes`]).
 #[derive(Debug, Clone, Copy)]
-struct Edge<'a> {
-    from: &'a Commodity,
-    to: &'a Commodity,
+struct Edge {
+    from: usize,
+    to: usize,
     rate: Dec,
+}
+
+/// An edge list plus, per node, the indices of its outgoing edges in edge-list
+/// order — so a search reads one node's edges directly instead of filtering
+/// the whole list for them.
+#[derive(Debug, Clone)]
+struct Adjacency {
+    edges: Vec<Edge>,
+    out: Vec<Vec<usize>>,
+}
+
+impl Adjacency {
+    fn new(edges: Vec<Edge>, nodes: usize) -> Adjacency {
+        let mut out: Vec<Vec<usize>> = vec![Vec::new(); nodes];
+        for (index, edge) in edges.iter().enumerate() {
+            out[edge.from].push(index);
+        }
+        Adjacency { edges, out }
+    }
 }
 
 /// The market-price graph in effect on a single date — hledger's `PriceGraph`,
@@ -260,15 +301,17 @@ struct Edge<'a> {
 /// left-most complete path at the first complete length wins. Verified against
 /// hledger 1.52 — see `tests/reports_prices.rs`.
 #[derive(Debug, Clone)]
-pub struct PriceGraph<'a> {
+pub struct PriceGraph {
+    /// Every commodity on an edge, ascending — a node's id is its position.
+    nodes: Vec<Commodity>,
     /// Declared/inferred edges, at most one per directed pair, ordered by
     /// `(from, to)`.
-    forward: Vec<Edge<'a>>,
+    forward: Adjacency,
     /// `forward`, then the reversed edges of pairs that have no forward edge.
-    all: Vec<Edge<'a>>,
+    all: Adjacency,
 }
 
-impl PriceGraph<'_> {
+impl PriceGraph {
     /// What one unit of `from` is worth in `to`, or `None` when no chain of
     /// prices connects them (or when they are the same commodity, which hledger
     /// also reports as "no price" — the caller treats it as identity).
@@ -279,8 +322,13 @@ impl PriceGraph<'_> {
         if from == to {
             return Ok(None);
         }
-        let Some(chain) =
-            shortest_path(from, to, &self.forward).or_else(|| shortest_path(from, to, &self.all))
+        // A commodity on no edge at all has no chain to or from anything.
+        let (Ok(start), Ok(end)) = (self.nodes.binary_search(from), self.nodes.binary_search(to))
+        else {
+            return Ok(None);
+        };
+        let Some(chain) = shortest_path(start, end, &self.forward)
+            .or_else(|| shortest_path(start, end, &self.all))
         else {
             return Ok(None);
         };
@@ -288,84 +336,45 @@ impl PriceGraph<'_> {
     }
 }
 
-/// The commodities reachable from `start` over `edges` (including `start`).
-///
-/// A cheap O(V+E) guard in front of the exhaustive search below. hledger's
-/// breadth-first search enumerates every simple path out of `start` before
-/// concluding there is none, which is the *common* case here — a genuinely
-/// unpriced commodity, hit once per account per period. Skipping it when the
-/// target is unreachable is semantics-preserving (an unreachable target has no
-/// path by definition) and keeps a densely connected FX graph from turning one
-/// unpriced commodity into a combinatorial blow-up.
-fn reachable<'a>(start: &'a Commodity, edges: &[Edge<'a>]) -> BTreeSet<&'a Commodity> {
-    let mut seen: BTreeSet<&Commodity> = BTreeSet::from([start]);
-    let mut pending: Vec<&Commodity> = vec![start];
-    while let Some(node) = pending.pop() {
-        for edge in edges.iter().filter(|edge| edge.from == node) {
-            if seen.insert(edge.to) {
-                pending.push(edge.to);
-            }
-        }
-    }
-    seen
-}
-
-/// A partially explored chain: indices into the edge slice, plus the edges still
-/// usable on this branch (in slice order).
-struct Partial {
-    path: Vec<usize>,
-    unused: Vec<usize>,
-}
-
 /// The rates along the shortest chain of `edges` from `start` to `end`, or
-/// `None` when there is none — a port of hledger's `pricesShortestPath`.
+/// `None` when there is none — hledger's `pricesShortestPath`, in `O(V+E)`.
 ///
-/// Breadth-first, extending the whole frontier one hop at a time and stopping at
-/// the left-most complete path of the first complete length. A branch never
-/// revisits a commodity (hledger drops every edge pointing back into the path's
-/// nodes), so a cycle in the price graph cannot loop forever: chains are simple,
-/// hence at most one hop shorter than the commodity count.
-fn shortest_path(start: &Commodity, end: &Commodity, edges: &[Edge<'_>]) -> Option<Vec<Dec>> {
-    if !reachable(start, edges).contains(end) {
-        return None;
-    }
-    let mut frontier = vec![Partial {
-        path: Vec::new(),
-        unused: (0..edges.len()).collect(),
-    }];
-    loop {
-        let mut extended: Vec<Partial> = Vec::new();
-        for partial in &frontier {
-            let path_end = partial.path.last().map_or(start, |&i| edges[i].to);
-            let (out, rest): (Vec<usize>, Vec<usize>) = partial
-                .unused
-                .iter()
-                .copied()
-                .partition(|&i| edges[i].from == path_end);
-            for step in out {
-                let path: Vec<usize> = partial.path.iter().copied().chain([step]).collect();
-                let visited: Vec<&Commodity> = std::iter::once(start)
-                    .chain(path.iter().map(|&i| edges[i].to))
-                    .collect();
-                let unused = rest
-                    .iter()
-                    .copied()
-                    .filter(|&i| !visited.contains(&edges[i].to))
-                    .collect();
-                extended.push(Partial { path, unused });
+/// hledger enumerates every simple path breadth-first, extending each partial
+/// path by its end node's edges in edge-list order, and takes the left-most
+/// complete path of the first complete length — the lexicographically smallest
+/// sequence of edge indices among the shortest chains. A plain breadth-first
+/// search that visits each node's edges in that same order and remembers, per
+/// node, only the edge that FIRST reached it picks the same chain: nodes are
+/// dequeued in the order of their own smallest shortest chains, so the first
+/// node to reach `end` is the one whose chain sorts first, and every shortest
+/// chain only ever passes through nodes at their own shortest distance. What
+/// it no longer does is enumerate (and clone) every partial path to get there.
+fn shortest_path(start: usize, end: usize, adjacency: &Adjacency) -> Option<Vec<Dec>> {
+    let mut reached_by: Vec<Option<usize>> = vec![None; adjacency.out.len()];
+    let mut seen = vec![false; adjacency.out.len()];
+    seen[start] = true;
+    let mut queue = std::collections::VecDeque::from([start]);
+    while let Some(node) = queue.pop_front() {
+        for &index in &adjacency.out[node] {
+            let next = adjacency.edges[index].to;
+            if seen[next] {
+                continue;
             }
+            seen[next] = true;
+            reached_by[next] = Some(index);
+            if next == end {
+                let mut chain: Vec<Dec> = std::iter::successors(reached_by[end], |&index| {
+                    reached_by[adjacency.edges[index].from]
+                })
+                .map(|index| adjacency.edges[index].rate)
+                .collect();
+                chain.reverse();
+                return Some(chain);
+            }
+            queue.push_back(next);
         }
-        if extended.is_empty() {
-            return None;
-        }
-        if let Some(complete) = extended
-            .iter()
-            .find(|partial| partial.path.last().is_some_and(|&i| edges[i].to == end))
-        {
-            return Some(complete.path.iter().map(|&i| edges[i].rate).collect());
-        }
-        frontier = extended;
     }
+    None
 }
 
 /// Maximum fractional places kept for a rate we DERIVE (a reversed edge or a
@@ -741,7 +750,7 @@ pub fn value_at(
     // leaves the common "everything is priced in the target" journal as fast as
     // it was: 5k `P` directives over 200 accounts × 12 buckets stays ~6ms
     // instead of ~215ms.
-    let mut graph: Option<PriceGraph<'_>> = None;
+    let mut graph: Option<PriceGraph> = None;
     let mut total = Dec::zero();
     for (commodity, qty) in ma.iter() {
         if commodity == target {
@@ -1218,6 +1227,90 @@ mod tests {
         ]);
         // hledger: A>F 2, F>Z 0.2 => 0.4 (not A>R 1/3, R>Z 7 => 2.333…).
         assert_eq!(rate(&db, "A", "Z", "2026-02-01"), Some(Dec::new(4, 1)));
+    }
+
+    /// hledger's `pricesShortestPath` as it was ported before the search went
+    /// breadth-first: enumerate every simple path level by level, extending
+    /// each partial path by its end node's still-unused edges in edge-list
+    /// order, and take the left-most complete path of the first complete
+    /// length. Kept only as the oracle for [`shortest_path`].
+    fn enumerated_path(start: usize, end: usize, edges: &[Edge]) -> Option<Vec<usize>> {
+        let mut frontier: Vec<(Vec<usize>, Vec<usize>)> =
+            vec![(Vec::new(), (0..edges.len()).collect())];
+        loop {
+            let mut extended = Vec::new();
+            for (path, unused) in &frontier {
+                let path_end = path.last().map_or(start, |&i| edges[i].to);
+                let (out, rest): (Vec<usize>, Vec<usize>) =
+                    unused.iter().partition(|&&i| edges[i].from == path_end);
+                for step in out {
+                    let path: Vec<usize> = path.iter().copied().chain([step]).collect();
+                    let visited: Vec<usize> = std::iter::once(start)
+                        .chain(path.iter().map(|&i| edges[i].to))
+                        .collect();
+                    let unused = rest
+                        .iter()
+                        .copied()
+                        .filter(|&i| !visited.contains(&edges[i].to))
+                        .collect();
+                    extended.push((path, unused));
+                }
+            }
+            if extended.is_empty() {
+                return None;
+            }
+            if let Some((path, _)) = extended
+                .iter()
+                .find(|(path, _)| path.last().is_some_and(|&i| edges[i].to == end))
+            {
+                return Some(path.clone());
+            }
+            frontier = extended;
+        }
+    }
+
+    /// The breadth-first [`shortest_path`] picks EXACTLY the chain the
+    /// exhaustive enumeration does — same length, same tie-break — on a few
+    /// thousand dense random graphs, self-loops and two-way pairs included.
+    /// Each edge gets a distinct rate, so equal rate lists mean equal chains.
+    #[test]
+    fn breadth_first_search_picks_the_enumerated_chain() {
+        let mut state: u64 = 0x5EED;
+        let mut next = |n: u64| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 33) % n
+        };
+        for _ in 0..3_000 {
+            let nodes = 2 + usize::try_from(next(6)).unwrap_or(0);
+            let density = 1 + next(4);
+            let pairs: BTreeSet<(usize, usize)> = (0..nodes)
+                .flat_map(|from| (0..nodes).map(move |to| (from, to)))
+                .filter(|_| next(5) < density)
+                .collect();
+            let edges: Vec<Edge> = pairs
+                .iter()
+                .zip(1..)
+                .map(|(&(from, to), rate)| Edge {
+                    from,
+                    to,
+                    rate: Dec::new(rate, 0),
+                })
+                .collect();
+            let adjacency = Adjacency::new(edges.clone(), nodes);
+            for start in 0..nodes {
+                for end in (0..nodes).filter(|&end| end != start) {
+                    let expected = enumerated_path(start, end, &edges)
+                        .map(|path| path.iter().map(|&i| edges[i].rate).collect::<Vec<_>>());
+                    assert_eq!(
+                        shortest_path(start, end, &adjacency),
+                        expected,
+                        "{start}->{end} over {pairs:?}"
+                    );
+                }
+            }
+        }
     }
 
     /// A cycle in the price graph terminates instead of looping, and an
