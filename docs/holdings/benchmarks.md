@@ -24,7 +24,7 @@ the chart's heading and tick any of:
 
 Each ticked benchmark is a dashed line in its own colour — always the same
 colour, whichever others are showing — and the legend under the chart names
-it. Your choices are remembered in this browser. None are ticked by default.
+it. Your choices are saved for this ledger (see [Settings files](../settings/settings-files.md)). None are ticked by default.
 
 ## What the line means
 

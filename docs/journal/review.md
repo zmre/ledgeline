@@ -178,7 +178,7 @@ The ▾ beside **Review Recents** opens the review settings. In the review, ⋯ 
 - **Look back** sets the window both queues use, in days. The default is 365. 0 means no limit.
 - **Mark unreviewed rows in the journal** turns the row stripes on or off.
 
-The settings are stored in this browser or app window, not in the journal. The button counts and the stripes follow a change at once.
+The settings are saved for this ledger in `ledgeline.toml` beside your journal, not in the journal itself. See [Settings files](../settings/settings-files.md). The button counts and the stripes follow a change at once.
 
 ## Row stripes and Mark reviewed
 

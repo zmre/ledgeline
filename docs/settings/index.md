@@ -21,4 +21,6 @@ Settings has five tabs. Press <kbd>1</kbd>–<kbd>5</kbd> to switch between them
 
 Accounts, Account Aliases and Automatic postings write to your journal files directly; hledger config writes to your `hledger.conf`; Projections writes one header line in your scenario files. Each save checks that the file has not changed on disk since Ledgeline read it. If it has, nothing is written, and the screen offers a button to reload and discard your edit. No tab can be changed when Ledgeline was started without a journal open for editing. In that case the tab shows what the journal declares and says it is read-only.
 
+Ledgeline also keeps a few settings of its own in TOML files: the hledger path, and the view settings it remembers for each ledger, such as which columns and panels you left open. See [Settings files](settings-files.md).
+
 Account Aliases used to be a tab on the [Imports](../imports/index.md) screen. An old bookmark to that tab now opens Settings → Account Aliases instead.
