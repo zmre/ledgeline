@@ -15,6 +15,9 @@
 //! done
 //! ```
 //!
+//! The first argument is a v1 transaction count or a corpus shape name — `v2`,
+//! `v2fx` or `v2dfx` (see `corpus::shape_arg`).
+//!
 //! On macOS `/usr/bin/time -l` prints `maximum resident set size` in BYTES; on
 //! Linux use `/usr/bin/time -v` (`Maximum resident set size`, in KB).
 //!
@@ -81,9 +84,10 @@ impl Stage {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let txns: usize = args
+    // A v1 transaction count or a shape name (`v2`, `v2fx`, `v2dfx`).
+    let shape = args
         .first()
-        .map_or(50_000, |a| a.parse().expect("first arg is a txn count"));
+        .map_or_else(|| corpus::V1.with_txns(50_000), |a| corpus::shape_arg(a));
     let stage = args
         .iter()
         .position(|a| a == "--stage")
@@ -92,8 +96,8 @@ fn main() {
             Stage::parse(name).expect("--stage is one of text|parse|clone|value|snapshot")
         });
 
-    let path = corpus::ensure_journal(txns);
-    println!("corpus:  {} ({txns} txns)", path.display());
+    let path = corpus::ensure_journal_for(&shape);
+    println!("corpus:  {} ({} txns)", path.display(), shape.txns);
     println!("stage:   {}", stage.label());
 
     let text = std::fs::read_to_string(&path).expect("corpus is readable");

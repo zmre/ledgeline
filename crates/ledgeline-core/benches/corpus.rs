@@ -37,6 +37,9 @@
 //! commodities and 75 accounts, with 25 commodities sharing each brokerage
 //! account. [`V2_FX`] is the same journal with a MESH price graph rather than a
 //! `$`-star, which is what takes valuation off its direct-lookup fast path.
+//! [`V2_DENSE_FX`] makes that mesh DENSE — eight currencies quoting each other
+//! pairwise, most symbols priced only through them — so `PriceGraph`'s chain
+//! search, not just its lookup, is what gets measured.
 
 #![allow(dead_code)]
 
@@ -96,6 +99,11 @@ pub struct Shape {
     /// Cross-rate currencies plus non-`$`-priced symbols, turning the price
     /// graph from a star into a mesh. See [`write_prices`].
     pub cross_rates: bool,
+    /// A DENSE many-to-many FX graph: the [`MESH_CURRENCIES`] all quote each
+    /// other, only EUR is priced in `$`, and two thirds of the symbols are
+    /// quoted (and half of those also traded) in a mesh currency. See
+    /// [`V2_DENSE_FX`].
+    pub dense_fx: bool,
     // Account-pool sizes. Each slices the head of the matching name pool.
     pub banks: usize,
     pub brokers: usize,
@@ -119,6 +127,7 @@ pub const V1: Shape = Shape {
     price_months: 372,
     symbols_per_position: 1,
     cross_rates: false,
+    dense_fx: false,
     banks: 8,
     brokers: 3,
     card_issuers: 5,
@@ -149,6 +158,7 @@ pub const V2: Shape = Shape {
     price_months: 180,
     symbols_per_position: 25,
     cross_rates: false,
+    dense_fx: false,
     banks: 2,
     brokers: 2,
     card_issuers: 2,
@@ -176,6 +186,29 @@ pub const V2: Shape = Shape {
 pub const V2_FX: Shape = Shape {
     label: "fx",
     cross_rates: true,
+    ..V2
+};
+
+/// [`V2`] with a DENSE many-to-many FX graph — the shape `PriceGraph`'s chain
+/// search actually has to work on. [`V2_FX`] is a star of stars whose chains are
+/// 2–3 hops with a handful of reachable nodes, so `shortest_path` never
+/// enumerates anything there.
+///
+/// 1. **Eight [`MESH_CURRENCIES`] quote each other pairwise** (28 `P` pairs a
+///    month), and **only EUR is priced in `$`**. EUR is quoted in every other
+///    currency but nothing is quoted in EUR, so no currency reaches `$` along
+///    FORWARD edges: every currency valuation misses the direct lookup, fails
+///    the forward search and falls through to the reverse-edge one.
+/// 2. **Two thirds of the symbols are quoted in a mesh currency**, and half of
+///    those are also TRADED in it (paid from the multi-currency EUR wallet), so
+///    they are never priced in `$` at all, not even by cost inference.
+/// 3. **Some expenses are paid in a mesh currency** from the same wallet, so the
+///    per-transaction valuation in `income_statement_flows` misses too.
+/// 4. **FX legs swap mesh currencies for each other**, and the last symbol is
+///    never quoted, as in [`V2_FX`].
+pub const V2_DENSE_FX: Shape = Shape {
+    label: "dfx",
+    dense_fx: true,
     ..V2
 };
 
@@ -970,6 +1003,11 @@ fn write_preamble(jg: &mut Gen) {
             let _ = writeln!(out, "commodity 1.00 {code}");
         }
     }
+    if shape.dense_fx {
+        for code in &MESH_CURRENCIES[1..] {
+            let _ = writeln!(out, "commodity 1.00 {code}");
+        }
+    }
     for symbol in &chart.symbols {
         let _ = writeln!(out, "commodity 1.00 {symbol}");
     }
@@ -994,6 +1032,64 @@ fn write_preamble(jg: &mut Gen) {
 /// before it (GBP in EUR, CHF in GBP) so reaching `$` takes 2 and 3 hops.
 const CROSS_CURRENCIES: [&str; 2] = ["GBP", "CHF"];
 
+/// [`V2_DENSE_FX`]'s currencies. EUR first: it is the only one priced in `$`.
+const MESH_CURRENCIES: [&str; 8] = ["EUR", "GBP", "CHF", "JPY", "CAD", "AUD", "SEK", "NOK"];
+
+/// Under [`Shape::dense_fx`], the mesh currency symbol `i` is QUOTED in, or
+/// `None` for one quoted in `$` (every third symbol).
+fn dense_quote(i: usize) -> Option<&'static str> {
+    (!i.is_multiple_of(3)).then(|| MESH_CURRENCIES[i % MESH_CURRENCIES.len()])
+}
+
+/// Under [`Shape::dense_fx`], the mesh currency symbol `i` is TRADED in, or
+/// `None` for a `$` trade: half the mesh-quoted symbols, which are therefore
+/// never priced in `$` by anything.
+fn dense_trade_currency(i: usize) -> Option<&'static str> {
+    if i % 3 == 2 { dense_quote(i) } else { None }
+}
+
+/// An amount in mesh currency `code`, in that commodity's declared style.
+fn money(cents: i64, code: &str) -> String {
+    if code == "EUR" {
+        eur(cents)
+    } else {
+        plain(cents, code)
+    }
+}
+
+/// A four-decimal rate in a symbol-right, point-decimal commodity:
+/// `12345`, `"GBP"` -> `"1.2345 GBP"`. Never used for EUR (nothing is quoted in
+/// EUR, so its comma style never needs a rate form).
+fn plain4(ten_thousandths: i64, code: &str) -> String {
+    let neg = ten_thousandths < 0;
+    let abs = ten_thousandths.unsigned_abs();
+    let sign = if neg { "-" } else { "" };
+    format!("{sign}{}.{:04} {code}", abs / 10_000, abs % 10_000)
+}
+
+/// Under [`Shape::dense_fx`], the 28 pairwise mesh quotes for one month, given
+/// each currency's `$` value in ten-thousandths. A pair `(a, b)` with `a < b` is
+/// quoted one way only — `a` in `b` when `a + b` is odd, `b` in `a` otherwise —
+/// except that EUR is always the QUOTED side, never the quote currency.
+fn write_mesh_quotes(out: &mut String, date: &str, value: &[i64; 8]) {
+    for a in 0..MESH_CURRENCIES.len() {
+        for b in a + 1..MESH_CURRENCIES.len() {
+            let (from, to) = if a == 0 || (a + b) % 2 == 1 {
+                (a, b)
+            } else {
+                (b, a)
+            };
+            let rate = value[from] * 10_000 / value[to];
+            let _ = writeln!(
+                out,
+                "P {date} {} {}",
+                MESH_CURRENCIES[from],
+                plain4(rate, MESH_CURRENCIES[to])
+            );
+        }
+    }
+}
+
 /// One `P` directive per priced commodity per month end, from January of the
 /// span's first year. [`V1`] emits `4 × 372 = 1,488` of them: EUR plus its three
 /// symbols.
@@ -1007,9 +1103,17 @@ const CROSS_CURRENCIES: [&str; 2] = ["GBP", "CHF"];
 fn write_prices(jg: &mut Gen) {
     let symbols = jg.chart.symbols.clone();
     let cross = jg.shape.cross_rates;
-    // Under cross-rates the last symbol is deliberately left unpriced.
-    let priced = symbols.len().saturating_sub(usize::from(cross));
-    let lines = jg.shape.price_months as usize * (priced + 1 + if cross { 2 } else { 0 });
+    let dense = jg.shape.dense_fx;
+    // Under cross-rates (and the dense mesh) the last symbol is deliberately
+    // left unpriced.
+    let priced = symbols.len().saturating_sub(usize::from(cross || dense));
+    let mesh_pairs = MESH_CURRENCIES.len() * (MESH_CURRENCIES.len() - 1) / 2;
+    let extra = match (cross, dense) {
+        (true, _) => 2,
+        (false, true) => mesh_pairs,
+        (false, false) => 0,
+    };
+    let lines = jg.shape.price_months as usize * (priced + 1 + extra);
     let _ = writeln!(
         jg.out,
         "; ---------- market prices ({} P directives) ----------",
@@ -1018,12 +1122,22 @@ fn write_prices(jg: &mut Gen) {
     // Integer random walks. EUR is quoted at 4dp, everything else at 2dp.
     let mut eur_rate: i64 = 11_500; // $1.1500
     let mut cross_rate: [i64; 2] = [8_600, 11_200]; // GBP in EUR, CHF in GBP
+    // Dense mesh: each currency's `$` value in ten-thousandths. Index 0 (EUR)
+    // tracks `eur_rate`; the rest walk on their own.
+    let mut mesh_value: [i64; 8] = [11_500, 13_000, 10_800, 9_200, 7_400, 6_900, 9_900, 9_500];
     let mut symbol_cents: Vec<i64> = (0..symbols.len()).map(opening_cents).collect();
     let (mut year, mut month) = jg.shape.price_first_month();
     for _ in 0..jg.shape.price_months {
         let date = iso(month_end(year, month));
         eur_rate = (eur_rate + jg.rng.range(-400, 400)).clamp(7_000, 16_000);
         let _ = writeln!(jg.out, "P {date} EUR {}", usd4(eur_rate));
+        if dense {
+            mesh_value[0] = eur_rate;
+            for value in &mut mesh_value[1..] {
+                *value = (*value + jg.rng.range(-300, 300)).clamp(5_000, 20_000);
+            }
+            write_mesh_quotes(&mut jg.out, &date, &mesh_value);
+        }
         if cross {
             for (i, code) in CROSS_CURRENCIES.iter().enumerate() {
                 let quoted_in = if i == 0 {
@@ -1048,7 +1162,10 @@ fn write_prices(jg: &mut Gen) {
             let quote = match (cross, i % 7) {
                 (true, 0) => plain(symbol_cents[i], "EUR"),
                 (true, 3) => plain(symbol_cents[i], "GBP"),
-                _ => usd(symbol_cents[i]),
+                _ => match dense.then(|| dense_quote(i)).flatten() {
+                    Some(code) => money(symbol_cents[i], code),
+                    None => usd(symbol_cents[i]),
+                },
             };
             let _ = writeln!(jg.out, "P {date} {symbol} {quote}");
         }
@@ -1157,13 +1274,25 @@ fn emit_simple_expense(jg: &mut Gen, day: i64, tagged: bool) {
     let payee = *jg.rng.pick(&PAYEES);
     let note = *jg.rng.pick(&NOTES);
     let tag = if tagged { jg.maybe_tag() } else { None };
-    let mut expense = Posting::new(leaf, Some(usd(cents)), cents);
+    let mut expense = Posting::new(leaf.clone(), Some(usd(cents)), cents);
     if tagged && jg.rng.below(100) < 40 {
         let key = *jg.rng.pick(&TAG_KEYS);
         let value = *jg.rng.pick(&TAG_VALUES);
         expense = expense.with_comment(format!("{key}: {value}"));
     }
-    let postings = vec![expense, Posting::new(funder, None, -cents)];
+    let mut postings = vec![expense, Posting::new(funder, None, -cents)];
+    // Dense mesh: one expense in ten is paid abroad, from the currency wallet.
+    if jg.shape.dense_fx && jg.rng.below(10) == 0 {
+        let code = *jg.rng.pick(&MESH_CURRENCIES);
+        let comment = postings[0].comment.take();
+        postings = vec![
+            Posting {
+                comment,
+                ..Posting::new(leaf, Some(money(cents, code)), 0)
+            },
+            Posting::new(jg.chart.eur.clone(), None, 0),
+        ];
+    }
     jg.emit_txn(day, status, payee, note, tag, postings);
 }
 
@@ -1247,12 +1376,30 @@ fn emit_stock_trade(jg: &mut Gen, day: i64) {
     } else {
         (shares, -total)
     };
-    let amount = format!("{share_qty} {symbol} @ {}", usd(unit_cents));
+    // Dense mesh: some symbols trade in a mesh currency, paid from the wallet.
+    let foreign = if jg.shape.dense_fx {
+        let index = jg.chart.symbols.iter().position(|s| *s == symbol);
+        index.and_then(dense_trade_currency)
+    } else {
+        None
+    };
+    let (amount, funder, cash_delta) = match foreign {
+        Some(code) => (
+            format!("{share_qty} {symbol} @ {}", money(unit_cents, code)),
+            jg.chart.eur.clone(),
+            0,
+        ),
+        None => (
+            format!("{share_qty} {symbol} @ {}", usd(unit_cents)),
+            sweep,
+            cash_delta,
+        ),
+    };
     let payee = *jg.rng.pick(&PAYEES);
     let note = if sell { "sell" } else { "buy" };
     let postings = vec![
         Posting::new(account, Some(amount), 0).with_comment(format!("name: {symbol} fund")),
-        Posting::new(sweep, None, cash_delta),
+        Posting::new(funder, None, cash_delta),
     ];
     jg.emit_txn(day, status, payee, note, None, postings);
 }
@@ -1260,6 +1407,29 @@ fn emit_stock_trade(jg: &mut Gen, day: i64) {
 /// An `@@` (total-cost) FX leg — the multi-commodity case.
 fn emit_fx(jg: &mut Gen, day: i64) {
     let status = jg.status();
+    // Dense mesh: seven legs in eight swap one mesh currency for another inside
+    // the wallet; the eighth is the plain EUR-for-`$` leg below.
+    if jg.shape.dense_fx {
+        let bought = jg.rng.below(MESH_CURRENCIES.len());
+        if bought != 0 {
+            let sold =
+                (bought + 1 + jg.rng.below(MESH_CURRENCIES.len() - 1)) % MESH_CURRENCIES.len();
+            let qty = jg.rng.range(5_000, 400_000);
+            let cost = qty * jg.rng.range(80, 125) / 100;
+            let amount = format!(
+                "{} @@ {}",
+                money(qty, MESH_CURRENCIES[bought]),
+                money(cost, MESH_CURRENCIES[sold])
+            );
+            let wallet = jg.chart.eur.clone();
+            let postings = vec![
+                Posting::new(wallet.clone(), Some(amount), 0),
+                Posting::new(wallet, None, 0),
+            ];
+            jg.emit_txn(day, status, "Wise", "fx swap", None, postings);
+            return;
+        }
+    }
     let eur_cents = jg.rng.range(5_000, 400_000);
     let usd_cents = eur_cents * jg.rng.range(105, 125) / 100;
     let account = jg.chart.eur.clone();
@@ -1424,18 +1594,42 @@ pub fn bench_shapes() -> Vec<Shape> {
                 ),
                 None => (name, None),
             };
-            let shape = match name {
-                "v1" => V1.with_txns(5_000),
-                "v2" => V2,
-                "v2fx" => V2_FX,
-                other => panic!("unknown shape {other:?} — expected v1, v2 or v2fx"),
-            };
+            let shape = shape_named(name).unwrap_or_else(|| {
+                panic!("unknown shape {name:?} — expected v1, v2, v2fx or v2dfx")
+            });
             match txns {
                 Some(txns) => shape.with_txns(txns),
                 None => shape,
             }
         })
         .collect()
+}
+
+/// The shape a `LEDGELINE_BENCH_SHAPES` name selects, at its default size.
+#[must_use]
+pub fn shape_named(name: &str) -> Option<Shape> {
+    match name {
+        "v1" => Some(V1.with_txns(5_000)),
+        "v2" => Some(V2),
+        "v2fx" => Some(V2_FX),
+        "v2dfx" => Some(V2_DENSE_FX),
+        _ => None,
+    }
+}
+
+/// One command-line argument as a shape: a shape name (see [`shape_named`]), or
+/// a bare number for a [`V1`] journal of that many transactions.
+///
+/// # Panics
+/// If `arg` is neither.
+#[must_use]
+pub fn shape_arg(arg: &str) -> Shape {
+    shape_named(arg).unwrap_or_else(|| {
+        V1.with_txns(
+            arg.parse()
+                .unwrap_or_else(|e| panic!("not a transaction count or shape name: {arg:?} ({e})")),
+        )
+    })
 }
 
 /// A short label for a shape, used as the criterion benchmark id suffix.

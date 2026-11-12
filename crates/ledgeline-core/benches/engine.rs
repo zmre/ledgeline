@@ -32,6 +32,7 @@
 //! | `reports/net_worth/count_{12,24,60}` | PERF-5 | **must go flat in bucket count** |
 //! | `holdings/holdings_series_12` | PERF-5b | 1,567 → ~150 ms at 200k |
 //! | `reports/insights` | PERF-5c | 1,197 → ~250 ms at 200k |
+//! | `reports/income_statement_flows` on `v2dfx` | plan 38 WP-2 | a price-graph miss per transaction; must not rebuild the graph per call |
 //! | `prices/lookup_{early,late}_date` | PERF-5d | **the pair must converge** |
 //! | `accounts/resolve_account_type_sweep` | PERF-5e | memoization should make it ~free |
 //! | `aggregate/roll_up` | PERF-5f | in-place accumulate instead of clone-per-add — but see `docs/development/perf-baseline.md`: this one is FLAT in journal size, so the win is ~0.15 ms per call, not the 3–10× the framing implies |
@@ -52,12 +53,13 @@ use ledgeline_core::projections::{
 };
 use ledgeline_core::reports::{
     AccountDecl, AccountPeriodsOpts, AccountType, BalanceMode, BsOpts, BudgetOpts, CfOpts, CfTags,
-    IS_GROUP_TAG, InsightsOpts, Interval, IsOpts, MixedAmount, NetWorthOpts, PostingFilter,
-    PriceDb, SubscriptionOpts, Valuation, account_decls, account_groups, account_periods,
-    account_sections, account_totals, balance_sheet, balance_sheet_columns, balance_sheet_grouped,
-    bs_terms, budget_report, cash_flow, cash_flow_statement, cash_predicate, declared_groups,
-    declared_types, detect_subscriptions, income_statement, income_statement_columns,
-    infer_market_prices, insights, net_worth, range_buckets, resolve_account_type, roll_up,
+    FlowOpts, IS_GROUP_TAG, InsightsOpts, Interval, IsOpts, MixedAmount, NetWorthOpts,
+    PostingFilter, PriceDb, SubscriptionOpts, Valuation, account_decls, account_groups,
+    account_periods, account_sections, account_totals, balance_sheet, balance_sheet_columns,
+    balance_sheet_grouped, bs_terms, budget_report, cash_flow, cash_flow_statement, cash_predicate,
+    declared_groups, declared_types, detect_subscriptions, income_statement,
+    income_statement_columns, income_statement_flows, infer_market_prices, insights, net_worth,
+    range_buckets, resolve_account_type, roll_up,
 };
 use ledgeline_core::reports::{
     COVERAGE_MIN_DEFAULT, DIMENSION_KEYS_DEFAULT, SaasOpts, TOP_N_DEFAULT, saas_metrics,
@@ -491,6 +493,35 @@ fn bench_reports(c: &mut Criterion, fixtures: &[Fixture]) {
                         AS_OF,
                         DEPTH,
                         &fixture.declared,
+                    )
+                    .unwrap()
+                });
+            },
+        );
+
+        // The income-statement flow diagram values every transaction's
+        // statement legs at the window end — one `value_at` per (transaction ×
+        // account), so a price-graph miss there is paid per transaction
+        // (plan 38 WP-2).
+        let flow_sections = account_sections(&fixture.journal);
+        let flow_groups = declared_groups(&fixture.journal, IS_GROUP_TAG);
+        group.bench_with_input(
+            BenchmarkId::new("income_statement_flows", &id),
+            fixture,
+            |b, fixture| {
+                let opts = FlowOpts {
+                    from: INSIGHTS_START,
+                    to: AS_OF,
+                    value_in: None,
+                };
+                b.iter(|| {
+                    income_statement_flows(
+                        black_box(&fixture.journal.transactions),
+                        &fixture.journal.prices,
+                        &opts,
+                        &fixture.declared,
+                        &flow_sections,
+                        &flow_groups,
                     )
                     .unwrap()
                 });

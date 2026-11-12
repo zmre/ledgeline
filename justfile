@@ -355,7 +355,8 @@ bench-compare name="baseline":
     LEDGELINE_BENCH_SIZES=5000,50000,200000 cargo bench -p ledgeline-core -- --baseline-lenient {{name}}
 
 # Peak RSS of holding one journal's Snapshot, stage by stage. macOS only
-# (`/usr/bin/time -l`); on Linux swap in `/usr/bin/time -v`.
+# (`/usr/bin/time -l`); on Linux swap in `/usr/bin/time -v`. `size` is a v1
+# transaction count or a corpus shape name (`v2`, `v2fx`, `v2dfx`).
 perf-rss size="200000":
     #!/usr/bin/env bash
     set -euo pipefail
