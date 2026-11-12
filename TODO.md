@@ -59,6 +59,3 @@
 ### Front end
 
 The default filter is last-90-days, which is what hides journal-size problems; the cliff is the user's first click on "All time".
-
-- fix(web): **a slow insights refetch shows stale numbers under the new period control, silently.** `createResource`'s `view` is `dataView(status, loaded !== null)` with `matchesRequest` defaulting to true, and `dataView` returns `"data"` when `status === "loading"` and a payload exists (pinned at `loadState.test.ts:17`). Keeping the old data instead of blanking is the right call for perceived speed — but `InsightsDashboard` has **no pending indicator of any kind** (no dimming, no spinner, `PeriodControl` is not disabled), so for the length of the request the boxes say "Last 3 months" while the control says "Last 12 months" and nothing signals it. Wants a subtle refreshing state, not a blank.
-
