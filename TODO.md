@@ -50,15 +50,6 @@
 - **AR aging** (0–30/31–60/61–90/90+), on top of invoice ↔ payment matching.
 - **Docs screenshot** of the startup section, if the docs-screenshot harness can serve `fixtures/saas/startup.journal`.
 
-## Budgeting / planning / modeling
-
-- **Personal planning calculators** a la quicken financial planner; see inspiration from [credit karma](https://www.creditkarma.com/calculators/money) and [nerdwallet](https://www.nerdwallet.com/investing/calculators). Monarch also has some interesting calculators you can use even when not logged in like: [1](https://www.monarch.com/calculators/financial-health-calculator), [2])(https://www.monarch.com/calculators/debt-payoff-calculator), [3](https://www.monarch.com/calculators/mortgage-calculator) and probably more if you have an account
-  - great free tools with details at [engaging-data](https://engaging-data.com/early-retirement-calculators-and-tools/)
-  - [ ] investigate [projection lab](https://projectionlab.com) to understand if that's worthwhile or anything there we want to learn from. from a friend: "really nice stuff built on top of it (roth conversions, drawdown simulation, flex spending, tax strategy, "what if" checkpointing to compare decisions, nice milestone tools to setup when costs are known to change and how, etc"
-  - [ ] Investigate [monarch](https://monarch.com) as a suggestion from others
-    - ![screencap video](https://stream.mux.com/017Yw7T7QleOQFbHCvL4FHJgZXxbgi003MOxEvUJcqj00I.m3u8)
-  - [ ] Investigate [betterment](https://www.betterment.com) which is just a brokerage with up to $8M FDIC, but particularly fo rtheir retirement forecaster, which is pretty simplistic, but also looks useful and something maybe worth modeling on
-    - ![screenshot](https://www.betterment.com/hubfs/Webpage%20desktop%20dashboard.png)
 
 ## Security
 - chore: **cap-sweep residue.** The import preview's `additions` (`import_api::cli_parity`) are still diffed against the config's *forwarded* aliases, capped at `MAX_CONF_ALIASES`, so past 200 it can list a line the write then (correctly) does not add; the write path uses the full list. And "no ASCII control character" now has five private spellings (`accounts`, `periodic`, `aliases` `has_control`; `rules::check_text`; `edit_api::check_text`) — one shared helper.
