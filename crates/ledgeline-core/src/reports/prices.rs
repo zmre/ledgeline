@@ -18,6 +18,7 @@ use crate::decimal::{Dec, DecError, MAX_PARSE_PLACES};
 use crate::model::{Amount, Commodity, CostKind, PriceDirective, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::{Arc, Mutex, PoisonError};
 
 /// A market-price lookup table built from `P` directives.
 #[derive(Debug, Clone)]
@@ -29,6 +30,36 @@ pub struct PriceDb {
     /// lexical ties — the candidate valuation targets. Empty when there are no
     /// directives.
     targets: Vec<Commodity>,
+    /// The graphs [`PriceDb::graph_at`] has built, by date.
+    graphs: GraphMemo,
+}
+
+/// [`PriceDb::graph_at`]'s memo: one [`PriceGraph`] per `as_of` asked for.
+///
+/// A report values many balances at the same date — `income_statement_flows`
+/// one per transaction, a balance sheet one per account — and each used to
+/// build its own graph, an `O(P)` pass over every directive, on its first
+/// commodity that missed a direct price. The memo lives and dies with its
+/// [`PriceDb`], which is built per request, so it is never shared across
+/// journals. A `Mutex` rather than a `RefCell` keeps `PriceDb` `Sync`.
+#[derive(Default)]
+struct GraphMemo(Mutex<BTreeMap<String, Arc<PriceGraph>>>);
+
+/// Dates [`GraphMemo`] keeps before it starts over — a 60-point series fits, and
+/// a long-lived [`PriceDb`] asked about ever-new dates cannot grow without bound.
+const GRAPH_MEMO_CAP: usize = 64;
+
+impl Clone for GraphMemo {
+    /// A clone starts with an empty memo; graphs are cheap to rebuild once.
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl std::fmt::Debug for GraphMemo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GraphMemo").finish_non_exhaustive()
+    }
 }
 
 impl PriceDb {
@@ -62,6 +93,7 @@ impl PriceDb {
         PriceDb {
             by_commodity,
             targets,
+            graphs: GraphMemo::default(),
         }
     }
 
@@ -147,9 +179,24 @@ impl PriceDb {
     }
 
     /// The market-price graph in effect at `as_of` — hledger's
-    /// `makePriceGraph`. Build it once and reuse it across commodities.
+    /// `makePriceGraph`. Built once per date and memoized on this [`PriceDb`],
+    /// so every valuation at that date shares it (and its rates).
     #[must_use]
-    pub fn graph_at(&self, as_of: &str) -> PriceGraph {
+    pub fn graph_at(&self, as_of: &str) -> Arc<PriceGraph> {
+        let mut memo = self.graphs.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(graph) = memo.get(as_of) {
+            return Arc::clone(graph);
+        }
+        if memo.len() >= GRAPH_MEMO_CAP {
+            memo.clear();
+        }
+        let graph = Arc::new(self.build_graph(as_of));
+        memo.insert(as_of.to_string(), Arc::clone(&graph));
+        graph
+    }
+
+    /// Build the graph [`PriceDb::graph_at`] memoizes.
+    fn build_graph(&self, as_of: &str) -> PriceGraph {
         // hledger indexes prices by (from, to) PAIR and takes each pair's
         // latest entry ≤ the date, so at most one edge exists per directed pair.
         // Iterating the date-sorted list and letting later entries overwrite
@@ -217,6 +264,7 @@ impl PriceDb {
             forward: Adjacency::new(forward, nodes.len()),
             all: Adjacency::new(all, nodes.len()),
             nodes,
+            rates: Mutex::default(),
         }
     }
 }
@@ -300,7 +348,7 @@ impl Adjacency {
 /// edge's position), the breadth-first frontier is extended in order, and the
 /// left-most complete path at the first complete length wins. Verified against
 /// hledger 1.52 — see `tests/reports_prices.rs`.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PriceGraph {
     /// Every commodity on an edge, ascending — a node's id is its position.
     nodes: Vec<Commodity>,
@@ -309,6 +357,10 @@ pub struct PriceGraph {
     forward: Adjacency,
     /// `forward`, then the reversed edges of pairs that have no forward edge.
     all: Adjacency,
+    /// Every `(from, to)` rate [`PriceGraph::rate`] has answered, `None`
+    /// included. The graph is shared by every valuation at its date, and a
+    /// per-transaction report asks for the same few pairs over and over.
+    rates: Mutex<BTreeMap<(usize, usize), Option<Dec>>>,
 }
 
 impl PriceGraph {
@@ -327,12 +379,16 @@ impl PriceGraph {
         else {
             return Ok(None);
         };
-        let Some(chain) = shortest_path(start, end, &self.forward)
+        let mut rates = self.rates.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(rate) = rates.get(&(start, end)) {
+            return Ok(*rate);
+        }
+        let rate = shortest_path(start, end, &self.forward)
             .or_else(|| shortest_path(start, end, &self.all))
-        else {
-            return Ok(None);
-        };
-        chain_rate(&chain).map(Some)
+            .map(|chain| chain_rate(&chain))
+            .transpose()?;
+        rates.insert((start, end), rate);
+        Ok(rate)
     }
 }
 
@@ -742,15 +798,16 @@ pub fn value_at(
     as_of: &str,
     mut meta: Option<&mut ValuationMeta>,
 ) -> Result<Dec, DecError> {
-    // The graph is built lazily, and only for commodities that actually need a
-    // CHAIN. A direct price is a one-hop chain and one hop always wins, so
+    // The graph is fetched lazily, and only for commodities that actually need
+    // a CHAIN. A direct price is a one-hop chain and one hop always wins, so
     // `PriceGraph::rate` would return exactly that price back (see
-    // `a_direct_price_is_returned_unchanged`) — while building the graph costs a
-    // pass over every directive. Keeping the direct hit on the old cheap path
-    // leaves the common "everything is priced in the target" journal as fast as
-    // it was: 5k `P` directives over 200 accounts × 12 buckets stays ~6ms
-    // instead of ~215ms.
-    let mut graph: Option<PriceGraph> = None;
+    // `a_direct_price_is_returned_unchanged`) — while the graph costs a pass
+    // over every directive the first time a date asks for it, and a lock on
+    // [`PriceDb`]'s memo after that. Keeping the direct hit on the old cheap
+    // path leaves the common "everything is priced in the target" journal as
+    // fast as it was: 5k `P` directives over 200 accounts × 12 buckets stays
+    // ~6ms instead of ~215ms.
+    let mut graph: Option<Arc<PriceGraph>> = None;
     let mut total = Dec::zero();
     for (commodity, qty) in ma.iter() {
         if commodity == target {
@@ -1019,6 +1076,21 @@ mod tests {
                 "{explicit:?}"
             );
         }
+    }
+
+    /// `graph_at` builds a date's graph once and hands every later caller the
+    /// same one; another date gets its own, and the memo stays bounded.
+    #[test]
+    fn graph_at_is_memoized_per_date() {
+        let db = PriceDb::build(&directives());
+        let first = db.graph_at("2026-01-15");
+        assert!(Arc::ptr_eq(&first, &db.graph_at("2026-01-15")));
+        assert!(!Arc::ptr_eq(&first, &db.graph_at("2026-07-08")));
+        for day in 0..2 * GRAPH_MEMO_CAP {
+            let _ = db.graph_at(&format!("2027-{day:05}"));
+        }
+        let memo = db.graphs.0.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(memo.len() <= GRAPH_MEMO_CAP);
     }
 
     /// The same prefix drives `graph_at`, so a chain must see exactly the edges
