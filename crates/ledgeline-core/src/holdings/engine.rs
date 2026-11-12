@@ -32,7 +32,7 @@
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::decimal::{Dec, DecError};
 use crate::model::{
@@ -257,10 +257,39 @@ fn commodity_name_map(
 }
 
 /// Journal order: date asc, then txn index asc (input order is never assumed).
-fn journal_order(txns: &[Transaction]) -> Vec<&Transaction> {
-    let mut ordered: Vec<&Transaction> = txns.iter().collect();
+fn journal_order<'a>(txns: impl IntoIterator<Item = &'a Transaction>) -> Vec<&'a Transaction> {
+    let mut ordered: Vec<&Transaction> = txns.into_iter().collect();
     ordered.sort_by(|a, b| a.date.cmp(&b.date).then_with(|| a.index.0.cmp(&b.index.0)));
     ordered
+}
+
+/// [`journal_order`] restricted to the transactions a stock pool can see:
+/// those posting to an account that carries a security (a non-currency amount)
+/// somewhere in the journal.
+///
+/// Every rule the replay, the sole-symbol facts and the cost-price fold apply
+/// reads either a security amount or a currency leg in an account that holds
+/// one, so a transaction with neither changes no state. Dropping it moves no
+/// number: the replay freezes a boundary at the next transaction that does
+/// change state (or at the end), from the same state. On a journal that is
+/// mostly spending, the replay then walks only the transactions that trade.
+fn stock_order<'a>(txns: &'a [Transaction], currencies: &Currencies) -> Vec<&'a Transaction> {
+    let holds_securities: HashSet<&str> = txns
+        .iter()
+        .flat_map(|txn| &txn.postings)
+        .filter(|posting| {
+            posting
+                .amounts
+                .iter()
+                .any(|amount| !currencies.is_currency(&amount.commodity.0))
+        })
+        .map(|posting| posting.account.0.as_str())
+        .collect();
+    journal_order(txns.iter().filter(|txn| {
+        txn.postings
+            .iter()
+            .any(|posting| holds_securities.contains(posting.account.0.as_str()))
+    }))
 }
 
 /// A buy lot's cost in the base commodity, or `None` when it has none (or an
@@ -639,9 +668,10 @@ fn sole_symbols_at(
 /// the price-independent parts once (see [`HoldingsInputs::repriced`]).
 pub(crate) struct HoldingsInputs<'a> {
     txns: &'a [Transaction],
-    /// Journal order: date asc, then txn index asc. The only sort the report
-    /// needs, shared by the replay and by every `latest_cost_prices` scan
-    /// `choose_base` runs per candidate.
+    /// Journal order (date asc, then txn index asc) of the transactions that
+    /// can touch a stock pool ([`stock_order`]). The only sort the report
+    /// needs, shared by the replay, the sole-symbol facts and every
+    /// `latest_cost_prices` scan `choose_base` runs per candidate.
     ordered: Vec<&'a Transaction>,
     /// Borrowed when the caller already holds the database (Insights builds
     /// one per request and shares it across every box), owned otherwise.
@@ -693,13 +723,14 @@ impl<'a> HoldingsInputs<'a> {
         let declared = declared_types(&account_decls_from(accounts));
         let classes = declared_holdings_classes(accounts);
         let currencies = Currencies::from_declared(txns, &declared);
+        let ordered = stock_order(txns, &currencies);
         Ok(Self {
             txns,
-            ordered: journal_order(txns),
             db,
             account_tags: account_tag_map(accounts),
             commodity_names: commodity_name_map(commodity_tags),
-            accounts: stock_accounts(txns, &declared, &classes, &currencies),
+            accounts: stock_accounts(&ordered, &declared, &classes, &currencies),
+            ordered,
             declared,
             classes,
             currencies,
@@ -1316,13 +1347,16 @@ fn held_symbols(
 /// you travelled back a month would make a scope impossible to compose. That is
 /// the rule the SPA's `stockAccounts` already followed.
 ///
+/// `txns` may be the [`stock_order`] subset: only a posting that carries a
+/// security can add an option, and every such posting's transaction is in it.
+///
 /// It is engine-side for the same reason [`super::other::candidate_accounts`]
 /// is: a `holdings: other` account is not a stock account however many
 /// non-currency commodities it holds, and the SPA's account feed carries `type:`
 /// but no tags — so a house booked as `1 HOME` would be offered on a tab where
 /// selecting it can only ever produce an empty report.
 fn stock_accounts(
-    txns: &[Transaction],
+    txns: &[&Transaction],
     declared: &BTreeMap<String, AccountType>,
     classes: &BTreeMap<String, HoldingsClass>,
     currencies: &Currencies,
@@ -1709,20 +1743,61 @@ pub(crate) fn holdings_report(
     inputs: &HoldingsInputs<'_>,
     scope: &HoldingsScope,
 ) -> Result<HoldingsReport, ReportError> {
-    let predicate = scope_predicate(scope, &inputs.classes);
-    let base_commodity = choose_base(inputs, &scope.as_of, scope.value_in.as_ref(), &predicate)?;
     // `gain_since` re-runs the report at the window start, so the facts have to
     // cover the LATER of the two dates; `as_of` is it.
-    let facts = sole_symbol_facts(
-        &inputs.ordered,
-        &scope.as_of,
-        &predicate,
-        &inputs.declared,
-        &inputs.currencies,
-    );
+    let facts = SoleFacts::new(inputs, scope, &scope.as_of);
+    holdings_report_with(inputs, scope, &facts)
+}
+
+/// The sole-symbol facts ([`sole_symbol_facts`]) for one scope's accounts,
+/// capped at a date: built once and shared by every report over that scope
+/// dated on or before the cap, whatever its price database.
+///
+/// Sharing across dates is safe because a later cap never changes an earlier
+/// date's answer (`a_later_facts_cap_does_not_change_an_earlier_answer`). The
+/// wider cap may keep an account the narrower one drops, but only one first
+/// asked about after the earlier date, which a replay stopping at that date
+/// never consults. The facts read neither prices nor the base, so a
+/// [`HoldingsInputs::repriced`] copy may use them too.
+pub(crate) struct SoleFacts {
+    /// The cap: no report dated after it may use these facts.
+    as_of: String,
+    facts: BTreeMap<String, SoleSymbolFacts>,
+}
+
+impl SoleFacts {
+    /// The facts for `scope`'s accounts (its `as_of` is ignored) up to `as_of`.
+    pub(crate) fn new(inputs: &HoldingsInputs<'_>, scope: &HoldingsScope, as_of: &str) -> Self {
+        let predicate = scope_predicate(scope, &inputs.classes);
+        Self {
+            as_of: as_of.to_string(),
+            facts: sole_symbol_facts(
+                &inputs.ordered,
+                as_of,
+                &predicate,
+                &inputs.declared,
+                &inputs.currencies,
+            ),
+        }
+    }
+}
+
+/// [`holdings_report`] over facts built for the same scope's accounts and
+/// capped at or after `scope.as_of`.
+///
+/// # Errors
+/// As [`compute_holdings`].
+pub(crate) fn holdings_report_with(
+    inputs: &HoldingsInputs<'_>,
+    scope: &HoldingsScope,
+    facts: &SoleFacts,
+) -> Result<HoldingsReport, ReportError> {
+    debug_assert!(facts.as_of >= scope.as_of, "facts capped before the report");
+    let predicate = scope_predicate(scope, &inputs.classes);
+    let base_commodity = choose_base(inputs, &scope.as_of, scope.value_in.as_ref(), &predicate)?;
     report_at(
         inputs,
-        &facts,
+        &facts.facts,
         &base_commodity,
         &scope.as_of,
         scope.gain_since.as_deref(),
@@ -1743,14 +1818,21 @@ pub(crate) fn holdings_report(
 /// [`pool_snapshots`] shares a pass under); otherwise this falls back to the two
 /// independent reports, never a different number.
 ///
+/// `facts` must be built for `scope`'s accounts and capped at or after `end`.
+///
 /// # Errors
 /// As [`compute_holdings`].
 pub(crate) fn holdings_window_pair(
     inputs: &HoldingsInputs<'_>,
     scope: &HoldingsScope,
     bounds: [&str; 3],
+    facts: &SoleFacts,
 ) -> Result<(HoldingsReport, HoldingsReport), ReportError> {
     let [start, mid, end] = bounds;
+    debug_assert!(
+        facts.as_of.as_str() >= end,
+        "facts capped before the window"
+    );
     let predicate = scope_predicate(scope, &inputs.classes);
     let value_in = scope.value_in.as_ref();
     let previous_base = choose_base(inputs, mid, value_in, &predicate)?;
@@ -1764,13 +1846,13 @@ pub(crate) fn holdings_window_pair(
             &inputs.currencies,
         )
     };
-    let facts = facts_at(end);
-    let sole = sole_symbols_at(&facts, end);
+    let facts = &facts.facts;
+    let sole = sole_symbols_at(facts, end);
     let shareable = previous_base == current_base
         && start <= mid
         && mid <= end
-        && sole_symbols_at(&facts, start) == sole
-        && sole_symbols_at(&facts, mid) == sole;
+        && sole_symbols_at(facts, start) == sole
+        && sole_symbols_at(facts, mid) == sole;
     if !shareable {
         return Ok((
             report_at(
@@ -1781,7 +1863,7 @@ pub(crate) fn holdings_window_pair(
                 Some(start),
                 &predicate,
             )?,
-            report_at(inputs, &facts, &current_base, end, Some(mid), &predicate)?,
+            report_at(inputs, facts, &current_base, end, Some(mid), &predicate)?,
         ));
     }
 
@@ -5255,7 +5337,9 @@ mod tests {
                     fell_back += 1;
                 }
 
-                let (previous, current) = holdings_window_pair(&inputs, &sc, bounds).unwrap();
+                let (previous, current) =
+                    holdings_window_pair(&inputs, &sc, bounds, &SoleFacts::new(&inputs, &sc, end))
+                        .unwrap();
                 let windowed = |as_of: &str, since: &str| {
                     let one = HoldingsScope {
                         as_of: as_of.to_string(),
