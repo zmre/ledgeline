@@ -7,8 +7,8 @@
 //! # the large-repo fixture: 200 commodities, 75 accounts, 15 years
 //! cargo run --release -p ledgeline-core --example gen_journal -- v2
 //!
-//! # ...and its mesh-price-graph twin
-//! cargo run --release -p ledgeline-core --example gen_journal -- v2fx
+//! # ...and its mesh-price-graph twins (a sparse mesh and a dense one)
+//! cargo run --release -p ledgeline-core --example gen_journal -- v2fx v2dfx
 //! ```
 //!
 //! With no arguments it writes the default v1 bench sizes (see
@@ -22,19 +22,6 @@ mod corpus;
 
 use corpus::Shape;
 
-/// Resolve one command-line argument to a shape: a bare number is a v1
-/// transaction count, a name selects one of the large fixtures.
-fn shape_for(arg: &str) -> Shape {
-    match arg {
-        "v2" => corpus::V2,
-        "v2fx" => corpus::V2_FX,
-        _ => corpus::V1
-            .with_txns(arg.parse().unwrap_or_else(|e| {
-                panic!("not a transaction count or shape name: {arg:?} ({e})")
-            })),
-    }
-}
-
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let shapes: Vec<Shape> = if args.is_empty() {
@@ -43,7 +30,7 @@ fn main() {
             .map(|txns| corpus::V1.with_txns(txns))
             .collect()
     } else {
-        args.iter().map(|arg| shape_for(arg)).collect()
+        args.iter().map(|arg| corpus::shape_arg(arg)).collect()
     };
 
     for shape in shapes {
