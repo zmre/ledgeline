@@ -76,6 +76,7 @@ pub mod reports;
 pub mod review;
 pub mod rules;
 pub mod sort;
+pub mod text;
 pub mod title;
 pub mod vault;
 pub mod view;

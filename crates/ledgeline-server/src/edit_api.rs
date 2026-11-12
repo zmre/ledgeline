@@ -1204,10 +1204,7 @@ pub(crate) fn check_text(
     cap: usize,
     allowed: &[char],
 ) -> Result<(), AppError> {
-    if let Some(control) = value
-        .chars()
-        .find(|c| c.is_ascii_control() && !allowed.contains(c))
-    {
+    if let Some(control) = ledgeline_core::text::first_ascii_control(value, allowed) {
         return Err(AppError::BadRequest(format!(
             "{what} may not contain the control character {control:?}"
         )));

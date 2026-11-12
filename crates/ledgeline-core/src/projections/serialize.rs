@@ -130,6 +130,7 @@ use crate::reports::account_types::{
     AccountType, AccountTypes, account_decls_from, declared_types,
 };
 use crate::rules::Newline;
+use crate::text::has_ascii_control;
 
 /// The indent a posting line gets. Four spaces, which is what hledger's own
 /// documentation and every fixture in this repo use.
@@ -3034,7 +3035,7 @@ fn header_line(key: &str, value: &str) -> Result<String, SerializeError> {
 
 /// Reject text that cannot go on one line of a journal.
 fn check_inline(text: &str, what: &str) -> Result<(), SerializeError> {
-    if text.chars().any(|c| c.is_ascii_control()) {
+    if has_ascii_control(text) {
         return Err(invalid(&format!(
             "{what} may not contain a control character or a line break"
         )));
@@ -3087,7 +3088,7 @@ pub(crate) fn check_account(account: &str) -> Result<(), SerializeError> {
              written and then read back without it",
         );
     }
-    if account.chars().any(|c| c.is_ascii_control()) {
+    if has_ascii_control(account) {
         return bad("may not contain a control character");
     }
     if account.contains(';') || account.contains('#') {

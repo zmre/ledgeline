@@ -1371,7 +1371,7 @@ pub fn resolve_new_in(
                 && !part.starts_with('.')
                 && !part.contains('\\')
                 && !part.contains(':')
-                && !part.chars().any(|c| c.is_ascii_control())
+                && !crate::text::has_ascii_control(part)
         })
         // Every directory component must be one the scan would descend into,
         // and the file name one it would list. See guard 2.
