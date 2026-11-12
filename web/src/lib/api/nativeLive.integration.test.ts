@@ -36,7 +36,9 @@ import {
     decodeSaasReport,
     decodeScenarioFile,
     decodeSectionedReport,
+    decodeUiPrefsState,
 } from "./nativeDecode";
+import {defaultUiPrefs} from "#lib/settings/uiPrefs.js";
 
 const apiUrl = process.env.LEDGELINE_API_URL;
 const AS_OF = "2026-07-08"; // pinned like the e2e clock; the journal ends 2026-07-04 so this == "today"
@@ -560,5 +562,23 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         expect(info.firstDate !== null && info.lastDate !== null && info.firstDate <= info.lastDate).toBe(true);
         expect(info.accounts.get("assets:bank:checking")?.type).toBe("cash");
         expect(info.generation.length).toBeGreaterThan(0);
+    });
+
+    // Plan 38 WP-5. The harness starts the engine with
+    // $LEDGELINE_UI_PREFS_IN_BROWSER (justfile, ci.yml), so nothing is read from
+    // or written beside fixtures/sample.journal: GET is the defaults, and a
+    // PATCH is checked and echoed but kept nowhere. Against an engine started
+    // WITHOUT it, the PATCH half is skipped rather than writing into fixtures/.
+    it("ui-prefs decodes, and a PATCH is checked and answered in the same shape", async () => {
+        const api = new LedgelineApi(url);
+        const state = decodeUiPrefsState(await api.getUiPrefs());
+        expect(state.prefs).toEqual(defaultUiPrefs());
+        expect(state.issues).toEqual([]);
+        if (state.storage !== "browser") return;
+        const patched = decodeUiPrefsState(await api.patchUiPrefs({matchWindow: 21, columns: {status: false}}));
+        expect(patched.prefs.matchWindow).toBe(21);
+        expect(patched.prefs.columns).toEqual({...defaultUiPrefs().columns, status: false});
+        expect(decodeUiPrefsState(await api.getUiPrefs()).prefs.matchWindow).toBe(10);
+        await expect(api.patchUiPrefs({matchWindow: 0})).rejects.toThrow(ValidationError);
     });
 });

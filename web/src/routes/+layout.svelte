@@ -60,6 +60,20 @@
 
     let reconnectOpen = $state(false);
     let storageNoticeDismissed = $state(false);
+    let uiNoticeDismissed = $state(false);
+
+    // The view state (columns, open panels, review numbers, …) lives on the
+    // engine, per ledger (plan 38 WP-5). Loaded once per engine connection —
+    // keyed on the nonce, like the journal refresh below, so a reconnect to a
+    // restarted engine reloads it. The page waits for the FIRST load (it
+    // settles within a few seconds even when the engine cannot answer), so no
+    // screen paints, or fetches for, a panel the ledger has closed.
+    $effect(() => {
+        const serverUrl = settings.serverUrl;
+        void settings.serverNonce;
+        if (serverUrl === null) return;
+        void settings.loadUiPrefs(serverUrl);
+    });
     let lastVerified = settings.serverNonce;
     // Every SUCCESSFUL verification refetches — keyed on settings.serverNonce,
     // not on the URL. Reconnecting to the same address (the overwhelmingly
@@ -211,7 +225,9 @@
             </header>
 
             <main class="mx-auto w-full max-w-7xl grow p-4">
-                {@render children()}
+                {#if settings.serverUrl === null || settings.uiPrefsReady}
+                    {@render children()}
+                {/if}
             </main>
         </div>
     </div>
@@ -228,6 +244,24 @@
         <div class="alert max-w-md alert-warning" data-testid="settings-storage-error">
             <span class="grow break-words">{settings.storageError}</span>
             <button type="button" class="btn shrink-0 btn-sm" onclick={() => (storageNoticeDismissed = true)}>Dismiss</button>
+        </div>
+    </div>
+{/if}
+
+<!-- Settings-file values the engine could not use (a hand edit, a cloned
+     ledgeline.toml), or a view-settings save that failed. -->
+{#if settings.uiPrefsNotices.length > 0 && !uiNoticeDismissed}
+    <div class="toast toast-start z-40">
+        <div class="alert max-w-md alert-warning" data-testid="ui-prefs-notices">
+            <div class="grow break-words">
+                <p>Some view settings were not used as written:</p>
+                <ul class="list-disc pl-5 text-sm">
+                    {#each settings.uiPrefsNotices.slice(0, 5) as notice (notice)}
+                        <li>{notice}</li>
+                    {/each}
+                </ul>
+            </div>
+            <button type="button" class="btn shrink-0 btn-sm" onclick={() => (uiNoticeDismissed = true)}>Dismiss</button>
         </div>
     </div>
 {/if}
