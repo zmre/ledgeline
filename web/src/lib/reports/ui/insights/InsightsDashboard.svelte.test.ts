@@ -19,6 +19,7 @@ const held = vi.hoisted(() => ({
     insights: null as unknown,
     saas: null as unknown,
     saasError: false,
+    refreshing: false,
     insightsQuery: {start: "2024-07-01", end: "2026-06-30"} as {start: string; end: string},
     saasQuery: {start: "2024-07-01", end: "2026-06-30", asOf: "2026-07-08"} as {start: string; end: string; asOf: string},
 }));
@@ -34,6 +35,9 @@ vi.mock("#lib/stores/insights.svelte.js", () => ({
             return held.insightsQuery;
         },
         view: "data",
+        get refreshing() {
+            return held.refreshing;
+        },
         error: null,
         load: vi.fn(),
     },
@@ -102,6 +106,7 @@ function mount(insights: InsightsReport, saas: SaasReport | null): void {
 
 beforeEach(() => {
     held.saasError = false;
+    held.refreshing = false;
     held.insightsQuery = {...SPAN};
     held.saasQuery = {...SPAN, asOf: "2026-07-08"};
 });
@@ -194,5 +199,42 @@ describe("COMPONENT InsightsDashboard — (i) help", () => {
         mount(insightsReport(), startupReport());
         const seen = expectEveryBoxHelped();
         for (const id of ["runway", "arr", "netnewarr", "customers", "nrr", "burnmultiple", "grossmargin"]) expect(seen).toContain(id);
+    });
+});
+
+// TODO.md "a slow insights refetch shows stale numbers": while a new period
+// loads, the previous period's boxes stay (never blank) but must not pass for
+// the answer to the period the control now reads.
+describe("COMPONENT InsightsDashboard — refreshing", () => {
+    it("at rest: no spinner, not busy, not dimmed", () => {
+        mount(insightsReport(), householdReport());
+        const content = screen.getByTestId("insights-content");
+        expect(screen.queryByTestId("insights-refreshing")).toBeNull();
+        expect(content.getAttribute("aria-busy")).toBe("false");
+        expect(content.classList.contains("opacity-60")).toBe(false);
+    });
+
+    it("keeps the old boxes on screen, dimmed and busy, with a status by the period control", () => {
+        held.refreshing = true;
+        mount(insightsReport(), householdReport());
+
+        // Nothing blanks: the held numbers are still there...
+        expect(screen.getByTestId("insights-box-revenue")).toBeTruthy();
+        expect(screen.queryByLabelText("Loading insights")).toBeNull();
+        // ...inside a region that says it is being replaced.
+        const content = screen.getByTestId("insights-content");
+        expect(content.contains(screen.getByTestId("insights-box-revenue"))).toBe(true);
+        expect(content.getAttribute("aria-busy")).toBe("true");
+        expect(content.classList.contains("opacity-60")).toBe(true);
+
+        const status = screen.getByRole("status");
+        expect(status.getAttribute("data-testid")).toBe("insights-refreshing");
+        expect(status.textContent).toContain("Updating");
+        // The spinner is decorative and drops out under reduced motion; the text stays.
+        const spinner = status.querySelector(".loading-spinner");
+        expect(spinner?.classList.contains("motion-reduce:hidden")).toBe(true);
+        expect(spinner?.getAttribute("aria-hidden")).toBe("true");
+        // Sits beside the period control, not inside the dimmed region.
+        expect(content.contains(status)).toBe(false);
     });
 });

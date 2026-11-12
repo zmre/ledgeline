@@ -119,3 +119,48 @@ describe("UNIT createResource.view puts failure ahead of stale data (FE-5)", () 
         expect(resource.view).toBe("error");
     });
 });
+
+describe("UNIT createResource.refreshing marks stale data under a newer request", () => {
+    it("is false before the first load, and during it: there is nothing stale to show", async () => {
+        const first = deferred<string>();
+        const resource = createResource<string, string>(() => first.promise);
+        expect(resource.refreshing).toBe(false);
+
+        const a = resource.load("http://engine", "q");
+        expect(resource.status).toBe("loading");
+        expect(resource.refreshing).toBe(false);
+
+        first.resolve("x");
+        await a;
+        expect(resource.refreshing).toBe(false);
+    });
+
+    it("is true while a refetch is in flight with the old payload still held, then clears", async () => {
+        const pending = [deferred<string>(), deferred<string>()];
+        const [first, second] = pending;
+        const resource = createResource<string, string>(() => pending.shift()!.promise);
+
+        first.resolve("OLD");
+        await resource.load("http://engine", "3m");
+
+        const b = resource.load("http://engine", "12m");
+        // The old answer stays renderable (dataView is unchanged)...
+        expect(resource.view).toBe("data");
+        expect(resource.value).toBe("OLD");
+        // ...but the resource now says it is not the current one.
+        expect(resource.refreshing).toBe(true);
+
+        second.resolve("NEW");
+        await b;
+        expect(resource.refreshing).toBe(false);
+        expect(resource.value).toBe("NEW");
+    });
+
+    it("clears when the refetch fails: the error branch takes over", async () => {
+        const resource = createResource<string, string>((_url, query) => (query === "bad" ? Promise.reject(new Error("500")) : Promise.resolve("x")));
+        await resource.load("http://engine", "good");
+        await resource.load("http://engine", "bad");
+        expect(resource.refreshing).toBe(false);
+        expect(resource.view).toBe("error");
+    });
+});

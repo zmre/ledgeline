@@ -18,7 +18,7 @@ it.
 | `reachable` O(V·E), `shortest_path` clones            | WP-2                        |
 | `latest_directive_price` early exit                   | WP-2                        |
 | `load_rss` takes no `Shape`                           | WP-2                        |
-| Insights refetch shows stale numbers silently         | WP-3                        |
+| Insights refetch shows stale numbers silently         | WP-3 (done)                 |
 | Import preview diffs against the capped alias list    | WP-4                        |
 | ~14 private "no ASCII control char" checks            | WP-4                        |
 | Desktop app loses localStorage settings on relaunch   | WP-5 (redesigned, see below)|
@@ -172,6 +172,15 @@ Expose the "loading with stale data" state from `createResource`, next to
 `view`; don't change `dataView`, which `loadState.test.ts:17` pins. Add a
 component test, and an e2e assertion if the period-control spec makes that
 cheap.
+
+**Status (2026-11-12): done.** `Resource.refreshing` is `status === "loading"`
+with a payload held. The dashboard wraps the main `AsyncSection` in an
+`aria-busy` region that drops to 60% opacity while it is true, and puts a small
+spinner plus "Updating…" (`role="status"`) beside `PeriodControl`. The spinner
+is hidden under reduced motion; the text stays. Unit tests in
+`resource.test.ts`, component tests in `InsightsDashboard.svelte.test.ts`. No
+e2e assertion: the e2e suite intercepts no requests, so holding an
+`/api/insights` response open would need new harness.
 
 ## WP-4 — import parity and one control-character helper
 
