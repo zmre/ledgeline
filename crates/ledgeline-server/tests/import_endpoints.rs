@@ -3446,6 +3446,102 @@ async fn a_config_above_the_journal_directory_is_read_and_reported_relatively() 
     );
 }
 
+/// Post the one-click fix with the revision a preview reported, returning the
+/// write's body.
+async fn write_conf(tree: &Tree, preview: &Value) -> Value {
+    let revision = preview["aliases"]["cli"]["revision"]
+        .as_str()
+        .expect("a revision");
+    let (status, written) = post(
+        tree,
+        "/api/import/hledger-conf",
+        json!({"revision": revision}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{written}");
+    written
+}
+
+/// A config past `hledger_conf::MAX_CONF_ALIASES`: the import is given only the
+/// first 200, so the line past the cap does not reach it and the divergence is
+/// real — but the line IS in the file, so the fix must not offer to add it. The
+/// preview lists exactly what the write then adds: nothing.
+#[tokio::test]
+async fn an_alias_past_the_forwarding_cap_is_not_offered_again() {
+    require_hledger!();
+    let tree = alias_tree();
+    let fillers: String = (0..200)
+        .map(|i| format!("--alias=filler{i}=elsewhere{i}\n"))
+        .collect();
+    std::fs::write(
+        tree.path("hledger.conf"),
+        format!("{fillers}--alias={CONF_ALIAS}\n"),
+    )
+    .expect("write hledger.conf");
+
+    let preview = alias_preview(&tree).await;
+    let cli = &preview["aliases"]["cli"];
+    assert_eq!(cli["matches"], json!(false), "{preview}");
+    assert_eq!(cli["confUnforwarded"], json!(1), "{preview}");
+    assert_eq!(
+        cli["additions"],
+        json!([]),
+        "a line already in the file is not missing, cap or no cap: {preview}"
+    );
+
+    let written = write_conf(&tree, &preview).await;
+    assert_eq!(written["added"], cli["additions"], "{written}");
+    assert_eq!(written["created"], json!(false));
+}
+
+/// A config in force from the PARENT directory already maps one alias, and the
+/// journal declares a second. The fix writes `hledger.conf` beside the journal,
+/// which shadows the parent's entirely — so that new file needs BOTH lines, and
+/// the preview must list both, not just the one the parent lacks.
+#[tokio::test]
+async fn a_parent_config_does_not_shrink_what_the_fix_offers() {
+    require_hledger!();
+    let outer = TempDir::new().expect("temp dir");
+    let books = outer.path().join("books");
+    std::fs::create_dir_all(books.join("import")).expect("books dir");
+    std::fs::write(
+        books.join("main.journal"),
+        format!(
+            "alias PW Roth IRA - 3077 = assets:morganstanley:pw-roth-ira\n\
+             alias income:dividends = income:investing:dividends\n\n{OPENING}"
+        ),
+    )
+    .expect("journal");
+    std::fs::copy(
+        fixtures_dir().join("import/match/statement-account.csv.rules"),
+        books.join("import/bank.csv.rules"),
+    )
+    .expect("copy the rules fixture");
+    std::fs::write(
+        outer.path().join("hledger.conf"),
+        format!("--alias={CONF_ALIAS}\n"),
+    )
+    .expect("write the parent hledger.conf");
+    let state = AppState::from_journal_path(books.join("main.journal")).expect("opens");
+    let tree = Tree { dir: outer, state };
+
+    let preview = alias_preview(&tree).await;
+    let cli = &preview["aliases"]["cli"];
+    assert_eq!(cli["confPath"], json!("../hledger.conf"), "{preview}");
+    assert_eq!(cli["matches"], json!(false), "{preview}");
+    assert_eq!(cli["revision"], json!(""), "no file beside the journal yet");
+    let additions = cli["additions"].as_array().expect("additions");
+    assert_eq!(additions.len(), 2, "{preview}");
+    assert_eq!(additions[0], json!(CONF_ALIAS), "{preview}");
+
+    let written = write_conf(&tree, &preview).await;
+    assert_eq!(written["created"], json!(true), "{written}");
+    assert_eq!(
+        written["added"], cli["additions"],
+        "the preview must list what the write adds: {written}"
+    );
+}
+
 /// **The whole point, end to end.** The one-click fix writes a config file that
 /// a REAL command-line `hledger import` then honours.
 ///

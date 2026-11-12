@@ -680,8 +680,10 @@ struct WireCliParity {
     /// import, past `hledger_conf::MAX_CONF_ALIASES`. A terminal applies them,
     /// so a non-zero count is a divergence of its own. `0` in every real case.
     conf_unforwarded: usize,
-    /// The `--alias` lines the one-click fix would add, shown before it is
-    /// pressed because the conversion widens what the pattern matches.
+    /// The `--alias` lines the one-click fix would add to the journal's own
+    /// `hledger.conf` (the file it writes, whichever config is in force), shown
+    /// before it is pressed because the conversion widens what the pattern
+    /// matches.
     additions: Vec<String>,
     /// Aliases that cannot be expressed in a config file at all, each with the
     /// reason. Reported, never silently dropped.
@@ -1561,6 +1563,25 @@ fn resolve_conf(location: &JournalLocation) -> ConfTarget {
             ..absent(path, false)
         },
         Err(_) => absent(path, false),
+    }
+}
+
+impl ConfTarget {
+    /// The `--alias` lines this file is missing, and the aliases that cannot
+    /// become one — what a write of this file would add.
+    ///
+    /// The preview and the write both ask HERE, so the lines the screen offers
+    /// are the lines the file gets. Two things make that true: it is this file
+    /// (the journal's own) that is compared against, not the config in force,
+    /// which may sit above the journal or in `$HOME` and is never written; and
+    /// it is **every** alias the file declares, not the first
+    /// [`hledger_conf::MAX_CONF_ALIASES`] an import is given, so a line past
+    /// the cap is "already present" too.
+    fn missing(&self, declared: &[aliases::Forwarded]) -> (Vec<String>, Vec<WireConfRefusal>) {
+        conf_additions(
+            declared,
+            &hledger_conf::alias_arguments(&self.text, hledger_conf::IMPORT_COMMAND),
+        )
     }
 }
 
@@ -3887,7 +3908,7 @@ fn cli_parity(plan: &Plan, differences: Vec<WireRename>) -> WireCliParity {
     let (additions, refusals) = if matches {
         (Vec::new(), Vec::new())
     } else {
-        conf_additions(&plan.declared, &plan.aliases.conf)
+        target.missing(&plan.declared)
     };
     WireCliParity {
         matches,
@@ -6032,8 +6053,7 @@ fn run_write_conf(
 
     // Layer 4: recomputed here, never taken from the request.
     let declared = aliases::forward(&state.snapshot().journal);
-    let present = hledger_conf::alias_arguments(&target.text, hledger_conf::IMPORT_COMMAND);
-    let (additions, _) = conf_additions(&declared, &present);
+    let (additions, _) = target.missing(&declared);
     if additions.is_empty() {
         // Nothing to add writes NOTHING — not even byte-identical content, which
         // would still bump mtime and wake somebody's watch loop. The same lesson
