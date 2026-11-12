@@ -42,6 +42,13 @@ export interface Resource<Q, T> {
      * own `matchesRequest`.
      */
     readonly view: DataView;
+    /**
+     * A newer request is in flight while an older payload is still held, so
+     * `view` is "data" but the data may answer the previous query. Surfaces
+     * that keep stale numbers on screen (rather than blanking) use this to say
+     * so — dim them, show a spinner — instead of serving them silently.
+     */
+    readonly refreshing: boolean;
     /** Fetch for `query`; a response superseded by a newer load is discarded. */
     load(serverUrl: string, query: Q): Promise<void>;
     /**
@@ -100,6 +107,9 @@ export function createResource<Q, T>(fetcher: (serverUrl: string, query: Q) => P
         },
         get view(): DataView {
             return dataView(status, loaded !== null);
+        },
+        get refreshing(): boolean {
+            return status === "loading" && loaded !== null;
         },
         async load(serverUrl: string, query: Q): Promise<void> {
             await run(async () => ({query, value: await fetcher(serverUrl, query)}));

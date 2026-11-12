@@ -69,159 +69,178 @@
 </script>
 
 <div class="flex flex-col gap-4" data-testid="insights-dashboard">
-    <PeriodControl bind:start={params.insStart} bind:end={params.insEnd} />
+    <!-- While a new period loads, the previous period's boxes stay on screen
+         (blanking them would flash the whole dashboard on every change) but are
+         dimmed and marked busy, with a spinner here, so they never pass for the
+         answer to the period the control now reads. The spinner is hidden under
+         reduced motion; the "Updating…" text carries the state on its own. -->
+    <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <PeriodControl bind:start={params.insStart} bind:end={params.insEnd} />
+        {#if insights.refreshing}
+            <span class="flex items-center gap-2 text-xs text-base-content/60" role="status" data-testid="insights-refreshing">
+                <span class="loading loading-sm loading-spinner motion-reduce:hidden" aria-hidden="true"></span>
+                Updating…
+            </span>
+        {/if}
+    </div>
 
     <!-- Error before data (FE-5) — ordered once, inside <AsyncSection>: with the
          data branch first, moving the period and hitting a failure left the
          PREVIOUS period's boxes on screen under the new period's dates. -->
-    <AsyncSection
-        view={insights.view}
-        value={insights.value}
-        error={insights.error}
-        testid="insights-error"
-        label="insights"
-        loadingLabel="Loading insights"
-        onRetry={() => void insights.load(serverUrl ?? "", {start: params.insStart, end: params.insEnd})}
+    <div
+        class={["flex flex-col gap-4 transition-opacity duration-200 motion-reduce:transition-none", insights.refreshing && "opacity-60"]}
+        aria-busy={insights.refreshing}
+        data-testid="insights-content"
     >
-        {#snippet children(report)}
-            {@const coverage = coverageNote(report)}
-            {@const base = report.base}
-            {@const period = report.period}
-            {@const inv = report.investment}
-            <!-- Cost of living is averaged at the display boundary (engine keeps totals exact). -->
-            {@const colCur = monthlyAverage(report.costOfLiving.currentTotal.get(base), report.costOfLiving.monthsCurrent)}
-            {@const colPrev = monthlyAverage(report.costOfLiving.previousTotal.get(base), report.costOfLiving.monthsPrevious)}
-            <!-- plans/37 decision 4: boxes that don't apply hide, and the grid reflows. -->
-            {@const shows = boxVisibility(report, startup)}
-            {@const runway = shows.runway && startup !== null ? runwayText(startup.current, base, styles) : null}
-            <div class="text-xs text-base-content/60">
-                Current <span class="font-medium text-base-content/80">{period.currStart} → {period.currEnd}</span>
-                vs previous <span class="font-medium text-base-content/80">{period.prevStart} → {period.prevEnd}</span>
-            </div>
-
-            {#if coverage !== null}
-                <div class="alert rounded-box px-3 py-2 text-sm alert-warning" role="alert" data-testid="insights-coverage-warning">
-                    <span>{coverage}</span>
+        <AsyncSection
+            view={insights.view}
+            value={insights.value}
+            error={insights.error}
+            testid="insights-error"
+            label="insights"
+            loadingLabel="Loading insights"
+            onRetry={() => void insights.load(serverUrl ?? "", {start: params.insStart, end: params.insEnd})}
+        >
+            {#snippet children(report)}
+                {@const coverage = coverageNote(report)}
+                {@const base = report.base}
+                {@const period = report.period}
+                {@const inv = report.investment}
+                <!-- Cost of living is averaged at the display boundary (engine keeps totals exact). -->
+                {@const colCur = monthlyAverage(report.costOfLiving.currentTotal.get(base), report.costOfLiving.monthsCurrent)}
+                {@const colPrev = monthlyAverage(report.costOfLiving.previousTotal.get(base), report.costOfLiving.monthsPrevious)}
+                <!-- plans/37 decision 4: boxes that don't apply hide, and the grid reflows. -->
+                {@const shows = boxVisibility(report, startup)}
+                {@const runway = shows.runway && startup !== null ? runwayText(startup.current, base, styles) : null}
+                <div class="text-xs text-base-content/60">
+                    Current <span class="font-medium text-base-content/80">{period.currStart} → {period.currEnd}</span>
+                    vs previous <span class="font-medium text-base-content/80">{period.prevStart} → {period.prevEnd}</span>
                 </div>
-            {/if}
 
-            <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                <!-- Box 1: Revenue -->
-                <StatBox
-                    title="Revenue"
-                    big={fmtBase(report.revenue.current, base, styles)}
-                    extras={extras(report.revenue.current, base, styles)}
-                    small={deltaLine(report.revenue, base, styles, true)}
-                    help={METRIC_HELP.revenue}
-                    testid="insights-box-revenue"
-                />
-                <!-- Box 2: Expenses -->
-                <StatBox
-                    title="Expenses"
-                    big={fmtBase(report.expenses.current, base, styles)}
-                    extras={extras(report.expenses.current, base, styles)}
-                    small={deltaLine(report.expenses, base, styles, false)}
-                    help={METRIC_HELP.expenses}
-                    testid="insights-box-expenses"
-                />
-                <!-- Box 3: Net Worth (end of period), or Runway in its slot for a
+                {#if coverage !== null}
+                    <div class="alert rounded-box px-3 py-2 text-sm alert-warning" role="alert" data-testid="insights-coverage-warning">
+                        <span>{coverage}</span>
+                    </div>
+                {/if}
+
+                <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                    <!-- Box 1: Revenue -->
+                    <StatBox
+                        title="Revenue"
+                        big={fmtBase(report.revenue.current, base, styles)}
+                        extras={extras(report.revenue.current, base, styles)}
+                        small={deltaLine(report.revenue, base, styles, true)}
+                        help={METRIC_HELP.revenue}
+                        testid="insights-box-revenue"
+                    />
+                    <!-- Box 2: Expenses -->
+                    <StatBox
+                        title="Expenses"
+                        big={fmtBase(report.expenses.current, base, styles)}
+                        extras={extras(report.expenses.current, base, styles)}
+                        small={deltaLine(report.expenses, base, styles, false)}
+                        help={METRIC_HELP.expenses}
+                        testid="insights-box-expenses"
+                    />
+                    <!-- Box 3: Net Worth (end of period), or Runway in its slot for a
                      business or a negative net worth. -->
-                {#if shows.netWorth}
+                    {#if shows.netWorth}
+                        <StatBox
+                            title="Net Worth"
+                            big={fmtBase(report.netWorth.current, base, styles)}
+                            extras={extras(report.netWorth.current, base, styles)}
+                            small={deltaLine(report.netWorth, base, styles, true)}
+                            help={METRIC_HELP.networth}
+                            testid="insights-box-networth"
+                        />
+                    {:else if runway !== null}
+                        <StatBox title="Runway" big={runway.big} small={{text: runway.small}} help={METRIC_HELP.runway} testid="insights-box-runway" />
+                    {/if}
+
+                    <!-- Box 4: Average Monthly Cost of Living -->
                     <StatBox
-                        title="Net Worth"
-                        big={fmtBase(report.netWorth.current, base, styles)}
-                        extras={extras(report.netWorth.current, base, styles)}
-                        small={deltaLine(report.netWorth, base, styles, true)}
-                        help={METRIC_HELP.networth}
-                        testid="insights-box-networth"
+                        title="Avg Monthly Costs"
+                        big={fmt(base, colCur, styles)}
+                        small={deltaLine(baseMetric(colCur, colPrev, base), base, styles, false)}
+                        help={METRIC_HELP.costofliving}
+                        testid="insights-box-costofliving"
                     />
-                {:else if runway !== null}
-                    <StatBox title="Runway" big={runway.big} small={{text: runway.small}} help={METRIC_HELP.runway} testid="insights-box-runway" />
-                {/if}
 
-                <!-- Box 4: Average Monthly Cost of Living -->
-                <StatBox
-                    title="Avg Monthly Costs"
-                    big={fmt(base, colCur, styles)}
-                    small={deltaLine(baseMetric(colCur, colPrev, base), base, styles, false)}
-                    help={METRIC_HELP.costofliving}
-                    testid="insights-box-costofliving"
-                />
+                    <!-- Box 5: Investment Performance (current big; previous as the small line), only with holdings -->
+                    {#if shows.investment}
+                        <StatBox
+                            title="Investment Performance"
+                            big={`${fmtSignedAmount(inv.current.gain, base, styles)} (${fmtSignedPct(inv.current.gainPct)})`}
+                            bigClass={signClass(inv.current.gain === null ? null : inv.current.gain.m)}
+                            small={{
+                                text: `Prev: ${fmtSignedAmount(inv.previous.gain, base, styles)} (${fmtSignedPct(inv.previous.gainPct)})`,
+                                klass: signClass(inv.previous.gain === null ? null : inv.previous.gain.m),
+                            }}
+                            help={METRIC_HELP.investment}
+                            testid="insights-box-investment"
+                        />
+                    {/if}
 
-                <!-- Box 5: Investment Performance (current big; previous as the small line), only with holdings -->
-                {#if shows.investment}
+                    <!-- Box 6: Cash Balance (end of period) -->
                     <StatBox
-                        title="Investment Performance"
-                        big={`${fmtSignedAmount(inv.current.gain, base, styles)} (${fmtSignedPct(inv.current.gainPct)})`}
-                        bigClass={signClass(inv.current.gain === null ? null : inv.current.gain.m)}
-                        small={{
-                            text: `Prev: ${fmtSignedAmount(inv.previous.gain, base, styles)} (${fmtSignedPct(inv.previous.gainPct)})`,
-                            klass: signClass(inv.previous.gain === null ? null : inv.previous.gain.m),
-                        }}
-                        help={METRIC_HELP.investment}
-                        testid="insights-box-investment"
+                        title="Cash Balance"
+                        big={fmtBase(report.cashBalance.current, base, styles)}
+                        extras={extras(report.cashBalance.current, base, styles)}
+                        small={deltaLine(report.cashBalance, base, styles, true)}
+                        help={METRIC_HELP.cash}
+                        testid="insights-box-cash"
                     />
-                {/if}
+                </div>
 
-                <!-- Box 6: Cash Balance (end of period) -->
-                <StatBox
-                    title="Cash Balance"
-                    big={fmtBase(report.cashBalance.current, base, styles)}
-                    extras={extras(report.cashBalance.current, base, styles)}
-                    small={deltaLine(report.cashBalance, base, styles, true)}
-                    help={METRIC_HELP.cash}
-                    testid="insights-box-cash"
-                />
-            </div>
-
-            <!-- Its own tri-state on its own resource: a failed /api/saas is
+                <!-- Its own tri-state on its own resource: a failed /api/saas is
                  a banner here, never the whole dashboard. Quiet while loading,
                  because most journals have no startup section to wait for. -->
-            <AsyncSection
-                view={saasView}
-                value={saas.value}
-                error={saas.error}
-                testid="startup-error"
-                label="startup metrics"
-                loadingLabel="Loading startup metrics"
-                quietLoading
-                onRetry={() => void saas.load(serverUrl ?? "", {start: params.insStart, end: params.insEnd, asOf: today()})}
-            >
-                {#snippet children(held)}
-                    {#if showsStartup(held.available)}
-                        <StartupMetrics report={held} {styles} />
-                    {/if}
-                {/snippet}
-            </AsyncSection>
+                <AsyncSection
+                    view={saasView}
+                    value={saas.value}
+                    error={saas.error}
+                    testid="startup-error"
+                    label="startup metrics"
+                    loadingLabel="Loading startup metrics"
+                    quietLoading
+                    onRetry={() => void saas.load(serverUrl ?? "", {start: params.insStart, end: params.insEnd, asOf: today()})}
+                >
+                    {#snippet children(held)}
+                        {#if showsStartup(held.available)}
+                            <StartupMetrics report={held} {styles} />
+                        {/if}
+                    {/snippet}
+                </AsyncSection>
 
-            <!-- Boxes 7–10: the "biggest / top" lists (current period). `hasPrevious`
+                <!-- Boxes 7–10: the "biggest / top" lists (current period). `hasPrevious`
              lets an empty list say "not enough history" rather than "no changes". -->
-            <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <ChangeList
-                    title="Biggest Expense Changes"
-                    rows={report.expenseChanges}
-                    {base}
-                    {styles}
-                    goodWhenUp={false}
-                    hasPrevious={!maIsZero(report.expenses.previous)}
-                    help={METRIC_HELP.expensechanges}
-                    testid="insights-box-expensechanges"
-                />
-                {#if shows.movers}
-                    <MoversList rows={report.movers} {base} {styles} periodStart={period.currStart} testid="insights-box-movers" />
-                {/if}
-                <ChangeList
-                    title="Biggest Revenue Changes"
-                    rows={report.revenueChanges}
-                    {base}
-                    {styles}
-                    goodWhenUp={true}
-                    hasPrevious={!maIsZero(report.revenue.previous)}
-                    help={METRIC_HELP.revenuechanges}
-                    testid="insights-box-revenuechanges"
-                />
-                <TopTxnsList rows={report.topTxns} {base} {styles} testid="insights-box-toptxns" />
-            </div>
-        {/snippet}
-    </AsyncSection>
+                <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <ChangeList
+                        title="Biggest Expense Changes"
+                        rows={report.expenseChanges}
+                        {base}
+                        {styles}
+                        goodWhenUp={false}
+                        hasPrevious={!maIsZero(report.expenses.previous)}
+                        help={METRIC_HELP.expensechanges}
+                        testid="insights-box-expensechanges"
+                    />
+                    {#if shows.movers}
+                        <MoversList rows={report.movers} {base} {styles} periodStart={period.currStart} testid="insights-box-movers" />
+                    {/if}
+                    <ChangeList
+                        title="Biggest Revenue Changes"
+                        rows={report.revenueChanges}
+                        {base}
+                        {styles}
+                        goodWhenUp={true}
+                        hasPrevious={!maIsZero(report.revenue.previous)}
+                        help={METRIC_HELP.revenuechanges}
+                        testid="insights-box-revenuechanges"
+                    />
+                    <TopTxnsList rows={report.topTxns} {base} {styles} testid="insights-box-toptxns" />
+                </div>
+            {/snippet}
+        </AsyncSection>
+    </div>
 </div>
