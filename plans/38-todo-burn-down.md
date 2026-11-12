@@ -66,10 +66,32 @@ builds `PriceDb` 8 times and replays the journal through holdings 5 times:
    they do, it keeps its own replay; check this before relying on it.
 
 **Done when:**
-- The insights JSON for every fixture is byte-identical before and after. Take
+- [x] The insights JSON for every fixture is byte-identical before and after. Take
   a snapshot of each fixture first.
-- The `insights` bench at 200k is ≤ 400 ms (baseline 968 ms).
-- `docs/development/perf-baseline.md` is updated.
+- [ ] The `insights` bench at 200k is ≤ 400 ms (baseline 968 ms).
+- [x] `docs/development/perf-baseline.md` is updated.
+
+**Status (2026-11-12): implemented; the gate is not met yet.**
+
+- Two `PriceDb` builds per request, down from eight.
+- One `FlowWindow::Chained` replay serves both windows, replacing four replays.
+  This is `holdings_window_pair` in `holdings/engine.rs`.
+- The movers probe reuses the windows' `HoldingsInputs` through `repriced`.
+  It keeps its own replay because the pools read the price DB.
+
+The bench at 200k went from 916 ms to **518 ms**. The pre-change baseline on
+this run was 916 ms, not the 968 ms quoted above.
+
+Identity was checked on 654 captures: every fixture journal at six spans or
+options, plus the 5k/50k/200k bench corpora. All matched before and after.
+`tests/insights_golden.rs` now pins this output; its snapshots were blessed on
+the pre-change code.
+
+The remaining cost is about 16 posting passes; `perf-baseline.md` §3 has the
+breakdown. The next levers are memoizing account classification inside the
+holdings engine, and sharing the sole-symbol facts with the movers probe. Both
+are outside WP-1's approach. The `TODO.md` gate entry stays, with updated
+numbers.
 
 ## WP-2 — price graph at scale
 

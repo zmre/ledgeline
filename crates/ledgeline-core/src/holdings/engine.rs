@@ -30,6 +30,7 @@
 //! rounding is the half-even sell reduction (`div_round_half_even`), matching the
 //! TS `divRoundHalfEven`.
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -632,13 +633,19 @@ fn sole_symbols_at(
 /// Hoisting these is half of PERF-5b: a 12-point series used to rebuild all of
 /// it — including a fresh `PriceDb` and a fresh sort of the whole journal —
 /// twelve times over.
-struct HoldingsInputs<'a> {
+///
+/// `pub(crate)` so a caller that needs several reports over one journal —
+/// Insights' two gain windows plus its explicit-price movers probe — builds
+/// the price-independent parts once (see [`HoldingsInputs::repriced`]).
+pub(crate) struct HoldingsInputs<'a> {
     txns: &'a [Transaction],
     /// Journal order: date asc, then txn index asc. The only sort the report
     /// needs, shared by the replay and by every `latest_cost_prices` scan
     /// `choose_base` runs per candidate.
     ordered: Vec<&'a Transaction>,
-    db: PriceDb,
+    /// Borrowed when the caller already holds the database (Insights builds
+    /// one per request and shares it across every box), owned otherwise.
+    db: Cow<'a, PriceDb>,
     account_tags: HashMap<&'a str, &'a [(String, String)]>,
     commodity_names: HashMap<&'a str, &'a str>,
     declared: BTreeMap<String, AccountType>,
@@ -665,13 +672,31 @@ impl<'a> HoldingsInputs<'a> {
         accounts: &'a [AccountDeclaration],
         commodity_tags: &'a [(Commodity, Vec<(String, String)>)],
     ) -> Result<Self, ReportError> {
+        Self::with_db(
+            txns,
+            Cow::Owned(PriceDb::build(prices)),
+            accounts,
+            commodity_tags,
+        )
+    }
+
+    /// [`HoldingsInputs::build`] over a price database the caller already has.
+    ///
+    /// # Errors
+    /// As [`HoldingsInputs::build`].
+    pub(crate) fn with_db(
+        txns: &'a [Transaction],
+        db: Cow<'a, PriceDb>,
+        accounts: &'a [AccountDeclaration],
+        commodity_tags: &'a [(Commodity, Vec<(String, String)>)],
+    ) -> Result<Self, ReportError> {
         let declared = declared_types(&account_decls_from(accounts));
         let classes = declared_holdings_classes(accounts);
         let currencies = Currencies::from_declared(txns, &declared);
         Ok(Self {
             txns,
             ordered: journal_order(txns),
-            db: PriceDb::build(prices),
+            db,
             account_tags: account_tag_map(accounts),
             commodity_names: commodity_name_map(commodity_tags),
             accounts: stock_accounts(txns, &declared, &classes, &currencies),
@@ -679,6 +704,24 @@ impl<'a> HoldingsInputs<'a> {
             classes,
             currencies,
         })
+    }
+
+    /// These inputs valued with a different price database. Everything else is
+    /// price-independent, so it is copied rather than re-derived: the copies
+    /// are a pointer per transaction plus per-account tables, against the full
+    /// journal passes [`HoldingsInputs::with_db`] makes.
+    pub(crate) fn repriced<'b>(&'b self, db: &'b PriceDb) -> HoldingsInputs<'b> {
+        HoldingsInputs {
+            txns: self.txns,
+            ordered: self.ordered.clone(),
+            db: Cow::Borrowed(db),
+            account_tags: self.account_tags.clone(),
+            commodity_names: self.commodity_names.clone(),
+            declared: self.declared.clone(),
+            classes: self.classes.clone(),
+            accounts: self.accounts.clone(),
+            currencies: self.currencies.clone(),
+        }
     }
 }
 
@@ -717,6 +760,33 @@ fn freeze(
     }
 }
 
+/// Which gain window(s) a [`replay_pools`] pass accumulates `window_flow` over.
+#[derive(Clone, Copy)]
+enum FlowWindow<'a> {
+    /// No window: every pool's `window_flow` stays `Some(0)`.
+    None,
+    /// One window `(start, as_of]`, shared by every snapshot.
+    Since(&'a str),
+    /// Back-to-back windows: snapshot `i` covers `(as_ofs[i - 1], as_ofs[i]]`,
+    /// and snapshot 0 has no in-window flow. Each snapshot is exactly what a
+    /// [`FlowWindow::Since`] replay to `as_ofs[i]` from `as_ofs[i - 1]` would
+    /// have frozen: the flow is reset to that replay's `Some(0)` starting value
+    /// at every boundary, so adjacent gain windows share one pass.
+    Chained,
+}
+
+impl FlowWindow<'_> {
+    /// Called after freezing each boundary: a chained window restarts there,
+    /// at the `Some(0)` a fresh [`FlowWindow::Since`] replay starts from.
+    fn restart(self, pools: &mut BTreeMap<String, SymbolPool>) {
+        if matches!(self, FlowWindow::Chained) {
+            for pool in pools.values_mut() {
+                pool.window_flow = Some(Dec::zero());
+            }
+        }
+    }
+}
+
 /// Build one average-cost pool per stock symbol — plus the latest usable cost
 /// price per symbol — from postings whose account passes `in_scope`, snapshotting
 /// the running state at each date in `as_ofs`. Port of the TS `buildPools`; see
@@ -729,9 +799,9 @@ fn freeze(
 /// [`pool_snapshots`]). This is the other half of PERF-5b: 12 points cost one
 /// pass, not twelve.
 ///
-/// `window_start`, when set, additionally accumulates each pool's
+/// `window`, unless [`FlowWindow::None`], additionally accumulates each pool's
 /// `window_flow`: the value contributed to (or withdrawn from) the symbol over
-/// `(window_start, as_of]`, which the windowed gain subtracts so a paycheck
+/// the gain window, which the windowed gain subtracts so a paycheck
 /// contribution is not reported as a gain.
 ///
 /// `flow_log`, when given, additionally receives every in-window flow as it is
@@ -742,7 +812,7 @@ fn replay_pools(
     inputs: &HoldingsInputs<'_>,
     base: &Commodity,
     as_ofs: &[&str],
-    window_start: Option<&str>,
+    window: FlowWindow<'_>,
     in_scope: &dyn Fn(&str) -> bool,
     sole_symbols: &BTreeMap<String, Option<String>>,
     mut flow_log: Option<&mut Vec<LoggedFlow>>,
@@ -767,6 +837,13 @@ fn replay_pools(
     let Some(&last) = as_ofs.last() else {
         return Ok(snapshots);
     };
+    // A chained window opens at the first snapshot; every later boundary
+    // restarts it below, so "after the first date" is "inside some window".
+    let window_start = match window {
+        FlowWindow::None => None,
+        FlowWindow::Since(start) => Some(start),
+        FlowWindow::Chained => as_ofs.first().copied(),
+    };
 
     for txn in ordered {
         if txn.date.as_str() > last {
@@ -777,6 +854,7 @@ fn replay_pools(
         // common at the start of a long series.
         while snapshots.len() < as_ofs.len() && txn.date.as_str() > as_ofs[snapshots.len()] {
             snapshots.push(freeze(&pools, &per_account, &cost_prices));
+            window.restart(&mut pools);
         }
         fold_cost_prices(txn, db, base, &mut cost_prices, currencies)?;
         // The gain window is half-open: `mv(window_start)` already includes
@@ -999,8 +1077,12 @@ fn replay_pools(
         }
     }
 
+    // Boundaries after the last transaction still restart a chained window:
+    // with nothing dated after `mid`, the end snapshot must not inherit the
+    // previous window's flows.
     while snapshots.len() < as_ofs.len() {
         snapshots.push(freeze(&pools, &per_account, &cost_prices));
+        window.restart(&mut pools);
     }
     Ok(snapshots)
 }
@@ -1035,7 +1117,7 @@ fn pool_snapshots(
                 inputs,
                 base,
                 &run,
-                None,
+                FlowWindow::None,
                 in_scope,
                 &run_symbols,
                 None,
@@ -1052,7 +1134,7 @@ fn pool_snapshots(
             inputs,
             base,
             &run,
-            window_start,
+            window_start.map_or(FlowWindow::None, FlowWindow::Since),
             in_scope,
             &run_symbols,
             log,
@@ -1616,8 +1698,19 @@ pub fn compute_holdings(
     scope: &HoldingsScope,
 ) -> Result<HoldingsReport, ReportError> {
     let inputs = HoldingsInputs::build(txns, prices, accounts, commodity_tags)?;
+    holdings_report(&inputs, scope)
+}
+
+/// [`compute_holdings`] from prebuilt [`HoldingsInputs`].
+///
+/// # Errors
+/// As [`compute_holdings`].
+pub(crate) fn holdings_report(
+    inputs: &HoldingsInputs<'_>,
+    scope: &HoldingsScope,
+) -> Result<HoldingsReport, ReportError> {
     let predicate = scope_predicate(scope, &inputs.classes);
-    let base_commodity = choose_base(&inputs, &scope.as_of, scope.value_in.as_ref(), &predicate)?;
+    let base_commodity = choose_base(inputs, &scope.as_of, scope.value_in.as_ref(), &predicate)?;
     // `gain_since` re-runs the report at the window start, so the facts have to
     // cover the LATER of the two dates; `as_of` is it.
     let facts = sole_symbol_facts(
@@ -1628,13 +1721,118 @@ pub fn compute_holdings(
         &inputs.currencies,
     );
     report_at(
-        &inputs,
+        inputs,
         &facts,
         &base_commodity,
         &scope.as_of,
         scope.gain_since.as_deref(),
         &predicate,
     )
+}
+
+/// [`holdings_report`] for two back-to-back gain windows over one
+/// scope, `bounds = [start, mid, end]`: the reports for `as_of: mid, gain_since:
+/// start` and `as_of: end, gain_since: mid`, every other field taken from
+/// `scope` (whose own `as_of` and `gain_since` are ignored).
+///
+/// Asked for separately those are four replays — each report re-runs itself at
+/// its window start — and two of them are the same replay to `mid`. Here one
+/// [`FlowWindow::Chained`] pass freezes all three dates and each snapshot serves
+/// every report that reads it. That is only valid when both windows resolve the
+/// same base and every date agrees on the sole-symbol map (the same condition
+/// [`pool_snapshots`] shares a pass under); otherwise this falls back to the two
+/// independent reports, never a different number.
+///
+/// # Errors
+/// As [`compute_holdings`].
+pub(crate) fn holdings_window_pair(
+    inputs: &HoldingsInputs<'_>,
+    scope: &HoldingsScope,
+    bounds: [&str; 3],
+) -> Result<(HoldingsReport, HoldingsReport), ReportError> {
+    let [start, mid, end] = bounds;
+    let predicate = scope_predicate(scope, &inputs.classes);
+    let value_in = scope.value_in.as_ref();
+    let previous_base = choose_base(inputs, mid, value_in, &predicate)?;
+    let current_base = choose_base(inputs, end, value_in, &predicate)?;
+    let facts_at = |as_of: &str| {
+        sole_symbol_facts(
+            &inputs.ordered,
+            as_of,
+            &predicate,
+            &inputs.declared,
+            &inputs.currencies,
+        )
+    };
+    let facts = facts_at(end);
+    let sole = sole_symbols_at(&facts, end);
+    let shareable = previous_base == current_base
+        && start <= mid
+        && mid <= end
+        && sole_symbols_at(&facts, start) == sole
+        && sole_symbols_at(&facts, mid) == sole;
+    if !shareable {
+        return Ok((
+            report_at(
+                inputs,
+                &facts_at(mid),
+                &previous_base,
+                mid,
+                Some(start),
+                &predicate,
+            )?,
+            report_at(inputs, &facts, &current_base, end, Some(mid), &predicate)?,
+        ));
+    }
+
+    let base = &current_base;
+    // Three dates in, three snapshots out.
+    let mut snapshots = replay_pools(
+        inputs,
+        base,
+        &bounds,
+        FlowWindow::Chained,
+        &predicate,
+        &sole,
+        None,
+    )?
+    .into_iter();
+    let at_start = snapshots.next().unwrap_or_default();
+    let at_mid = snapshots.next().unwrap_or_default();
+    let at_end = snapshots.next().unwrap_or_default();
+    // A window's baseline is the plain (unwindowed) report at its start, which
+    // never reads `window_flow` — so `at_mid` serves as both the previous
+    // window's end and the current window's start.
+    let values_at = |as_of: &str, snapshot: &PoolSnapshot| {
+        assemble_report(inputs, base, as_of, None, snapshot, &BTreeMap::new()).map(market_values)
+    };
+    let previous = assemble_report(
+        inputs,
+        base,
+        mid,
+        Some(start),
+        &at_mid,
+        &values_at(start, &at_start)?,
+    )?;
+    let current = assemble_report(
+        inputs,
+        base,
+        end,
+        Some(mid),
+        &at_end,
+        &values_at(mid, &at_mid)?,
+    )?;
+    Ok((previous, current))
+}
+
+/// `symbol → market value` for a window-start report: `Some(0)` = not held,
+/// `None` = held but unpriced there.
+fn market_values(report: HoldingsReport) -> BTreeMap<String, Option<Dec>> {
+    report
+        .holdings
+        .into_iter()
+        .map(|holding| (holding.symbol, holding.market_value))
+        .collect()
 }
 
 /// [`compute_holdings`] at each of `as_ofs` (ASCENDING), sharing one replay.
@@ -1854,7 +2052,7 @@ fn report_at(
         inputs,
         base_commodity,
         &[as_of],
-        gain_since,
+        gain_since.map_or(FlowWindow::None, FlowWindow::Since),
         in_scope,
         &sole,
         None,
@@ -1873,11 +2071,14 @@ fn report_at(
     // subtracting a value in one commodity from a value in another is not a gain.
     let start_values: BTreeMap<String, Option<Dec>> = match gain_since {
         None => BTreeMap::new(),
-        Some(start) => report_at(inputs, facts, base_commodity, start, None, in_scope)?
-            .holdings
-            .into_iter()
-            .map(|holding| (holding.symbol, holding.market_value))
-            .collect(),
+        Some(start) => market_values(report_at(
+            inputs,
+            facts,
+            base_commodity,
+            start,
+            None,
+            in_scope,
+        )?),
     };
     assemble_report(
         inputs,
@@ -4967,6 +5168,107 @@ mod tests {
                 assert_eq!(from_full.get(account), Some(sole), "{account} at {as_of}");
             }
         }
+    }
+
+    /// `holdings_window_pair` must be exactly the two `compute_holdings` calls
+    /// it replaces, on its shared single-replay path AND on the fallback it
+    /// takes when the dates disagree about the sole-symbol map. The journal adds
+    /// in-window buys, a sell and a return of capital to the sole-symbol shapes,
+    /// so the chained `window_flow` reset is what the windowed gains rest on.
+    #[test]
+    fn window_pair_matches_two_independent_windowed_reports() {
+        let mut txns = sole_symbol_journal();
+        txns.extend([
+            txn(
+                11,
+                "2025-10-20",
+                vec![
+                    buy("assets:broker:one", "AAPL", 5, 12000, true),
+                    posting("assets:bank", vec![usd(-60_000)], &[]),
+                ],
+                &[],
+            ),
+            txn(
+                12,
+                "2025-11-20",
+                vec![
+                    sell("assets:broker:mixed", "VTI", 4),
+                    posting("assets:bank", vec![usd(44_000)], &[]),
+                ],
+                &[],
+            ),
+            txn(
+                13,
+                "2025-12-05",
+                vec![
+                    posting("assets:broker:late", vec![usd(-900)], &[]),
+                    posting("assets:bank", vec![usd(900)], &[]),
+                ],
+                &[],
+            ),
+        ]);
+        let prices = [
+            pd("2025-01-01", "AAPL", 9000, "$"),
+            pd("2025-06-01", "AAPL", 11000, "$"),
+            pd("2025-11-01", "AAPL", 13000, "$"),
+            pd("2025-03-01", "VTI", 10000, "$"),
+            pd("2025-10-01", "VTI", 10500, "$"),
+            pd("2025-05-01", "GLD", 10000, "$"),
+            pd("2025-12-01", "GLD", 9500, "$"),
+        ];
+        let db = PriceDb::build(&prices);
+        let inputs = HoldingsInputs::with_db(&txns, Cow::Borrowed(&db), &[], &[]).unwrap();
+        let ordered = journal_order(&txns);
+        let declared = BTreeMap::new();
+        let currencies = Currencies::from_declared(&txns, &declared);
+
+        let (mut shared, mut fell_back) = (0, 0);
+        for bounds in [
+            // Every date agrees: one chained replay.
+            ["2025-09-15", "2025-10-31", "2025-12-31"],
+            ["2025-10-01", "2025-11-20", "2025-12-05"],
+            ["2025-10-20", "2025-10-20", "2025-10-20"],
+            // Nothing dated after `mid`: both later boundaries are frozen after
+            // the last transaction, and the current window must still start
+            // from zero flow rather than inherit the previous one's buys.
+            ["2025-10-01", "2026-01-31", "2026-06-30"],
+            ["2025-09-15", "2025-12-31", "2026-12-31"],
+            // `late` is absent before 2025-09-10 and `Some(GLD)` after it: the
+            // windows disagree, so each is reported on its own.
+            ["2025-01-01", "2025-06-01", "2025-12-31"],
+            ["2025-08-01", "2025-09-30", "2025-12-31"],
+        ] {
+            let [start, mid, end] = bounds;
+            for value_in in [None, Some(Commodity("$".to_string()))] {
+                let sc = HoldingsScope {
+                    value_in,
+                    ..scope(end, ScopeMode::Include, &[])
+                };
+                let facts =
+                    sole_symbol_facts(&ordered, end, &scope_accounts(&sc), &declared, &currencies);
+                if [start, mid]
+                    .iter()
+                    .all(|date| sole_symbols_at(&facts, date) == sole_symbols_at(&facts, end))
+                {
+                    shared += 1;
+                } else {
+                    fell_back += 1;
+                }
+
+                let (previous, current) = holdings_window_pair(&inputs, &sc, bounds).unwrap();
+                let windowed = |as_of: &str, since: &str| {
+                    let one = HoldingsScope {
+                        as_of: as_of.to_string(),
+                        gain_since: Some(since.to_string()),
+                        ..sc.clone()
+                    };
+                    compute_holdings(&txns, &prices, &[], &[], &one).unwrap()
+                };
+                assert_eq!(previous, windowed(mid, start), "previous {bounds:?}");
+                assert_eq!(current, windowed(end, mid), "current {bounds:?}");
+            }
+        }
+        assert!(shared > 0 && fell_back > 0, "both paths exercised");
     }
 }
 
