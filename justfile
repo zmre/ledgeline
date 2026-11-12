@@ -32,8 +32,9 @@ test-integration port="5055":
     export LEDGELINE_TOKEN=ledgeline-integration-token
     # The server must never read the developer's own ~/.hledger.conf.
     export LEDGELINE_IGNORE_USER_HLEDGER_CONF=1
-    # The suite PATCHes /api/ui-prefs; over a committed fixture that must not
-    # write fixtures/ledgeline.toml, so UI prefs stay with the client.
+    # The suite PATCHes /api/ui-prefs, which otherwise saves to the developer's
+    # own ui-prefs.toml in the config dir; browser mode reads and writes no
+    # settings file, so UI prefs stay with the client.
     export LEDGELINE_UI_PREFS_IN_BROWSER=1
     cargo build -p ledgeline
     ./target/debug/ledgeline --server fixtures/sample.journal --port {{port}} &

@@ -63,7 +63,7 @@
     let uiNoticeDismissed = $state(false);
 
     // The view state (columns, open panels, review numbers, …) lives on the
-    // engine, per ledger (plan 38 WP-5). Loaded once per engine connection —
+    // engine: global, with per-ledger overrides (plan 38 WP-5). Loaded once per engine connection —
     // keyed on the nonce, like the journal refresh below, so a reconnect to a
     // restarted engine reloads it. The page waits for the FIRST load (it
     // settles within a few seconds even when the engine cannot answer), so no
@@ -249,12 +249,13 @@
 {/if}
 
 <!-- Settings-file values the engine could not use (a hand edit, a cloned
-     ledgeline.toml), or a view-settings save that failed. -->
+     ledgeline.toml), changes it could only keep for the session (a symlinked
+     ui-prefs.toml), or a view-settings save that failed. -->
 {#if settings.uiPrefsNotices.length > 0 && !uiNoticeDismissed}
     <div class="toast toast-start z-40">
         <div class="alert max-w-md alert-warning" data-testid="ui-prefs-notices">
             <div class="grow break-words">
-                <p>Some view settings were not used as written:</p>
+                <p>About your view settings:</p>
                 <ul class="list-disc pl-5 text-sm">
                     {#each settings.uiPrefsNotices.slice(0, 5) as notice (notice)}
                         <li>{notice}</li>

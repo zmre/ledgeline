@@ -384,8 +384,9 @@ jobs:
           # probe gets a 401 and `curl -fsS` exits 22. This server only ever
           # sees fixtures/sample.journal on loopback inside the runner.
           LEDGELINE_TOKEN: ledgeline-ci-contract-token
-          # The contract suite PATCHes /api/ui-prefs; over a committed fixture
-          # that must not write fixtures/ledgeline.toml (plan 38 WP-5).
+          # The contract suite PATCHes /api/ui-prefs, which otherwise saves to
+          # the global ui-prefs.toml in the config dir (plan 38 WP-5); browser
+          # mode reads and writes no settings file.
           LEDGELINE_UI_PREFS_IN_BROWSER: "1"
         run: |
           set -euo pipefail

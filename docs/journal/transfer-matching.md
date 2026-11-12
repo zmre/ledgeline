@@ -229,7 +229,7 @@ A clearing posting that really has no other half, such as an opening balance, sh
 
 ## Settings
 
-The ▾ beside **Find Matches**, the ▾ beside **Review Recents** and the sliders button in the Find Matches bar hold three settings, saved for this ledger (see [Settings files](../settings/settings-files.md)):
+The ▾ beside **Find Matches**, the ▾ beside **Review Recents** and the sliders button in the Find Matches bar hold three settings, saved with your other view settings (see [Settings files](../settings/settings-files.md)):
 
 | Setting | Default | What it does |
 | --- | --- | --- |

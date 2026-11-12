@@ -3,9 +3,10 @@
 //
 // These used to be persisted in localStorage under `ledgeline.settings.v1`. The
 // desktop app's WebView origin carries a port that changes on every launch, so
-// every relaunch forgot them; they now live server-side, in `ledgeline.toml`
-// beside the journal over `ui-prefs.toml` in the config directory
-// (`GET`/`PATCH /api/ui-prefs`, crates/ledgeline-server/src/ui_prefs.rs). Only
+// every relaunch forgot them; they now live server-side, in `ui-prefs.toml` in
+// the config directory, overridden key by key by a hand-made `ledgeline.toml`
+// beside the journal (`GET`/`PATCH /api/ui-prefs`,
+// crates/ledgeline-server/src/ui_prefs.rs). Only
 // `serverUrl`/`serverToken` stay in localStorage: they describe this client,
 // not the ledger.
 //
@@ -110,14 +111,14 @@ export type UiPrefsPatch = Partial<Omit<UiPrefs, "columns">> & {columns?: Partia
 
 /**
  * Where the engine keeps this session's UI preferences.
- *  - `ledger`: `ledgeline.toml` beside the journal (the normal case).
- *  - `memory`: no journal file behind the session; saves last until the engine stops.
+ *  - `files`: the global `ui-prefs.toml`, with a ledger's hand-made
+ *    `ledgeline.toml` overriding the keys it sets (the normal case).
  *  - `browser`: the engine leaves them to this client's localStorage (the e2e
  *    and contract harnesses, and any engine without the route).
  */
-export type UiPrefsStorage = "ledger" | "memory" | "browser";
+export type UiPrefsStorage = "files" | "browser";
 
-export const UI_PREFS_STORAGES: readonly UiPrefsStorage[] = ["ledger", "memory", "browser"];
+export const UI_PREFS_STORAGES: readonly UiPrefsStorage[] = ["files", "browser"];
 
 /** Something in a settings file the engine did not use as written. */
 export interface UiPrefsIssue {
@@ -131,8 +132,11 @@ export interface UiPrefsIssue {
 export interface UiPrefsState {
     readonly prefs: UiPrefs;
     readonly storage: UiPrefsStorage;
-    /** The ledger already has UI preferences; the one-time localStorage migration runs only when it does not. */
-    readonly ledgerHasUi: boolean;
+    /**
+     * The keys the open ledger's own `ledgeline.toml` sets, so a change to them
+     * is saved there rather than globally; a column dotted (`columns.status`).
+     */
+    readonly localKeys: readonly string[];
     readonly issues: readonly UiPrefsIssue[];
 }
 
@@ -263,6 +267,23 @@ export function legacyUiPatch(parsed: Record<string, unknown>): UiPrefsPatch {
 /** `parsed` with every UI preference removed — what stays in localStorage once they live on the engine. */
 export function withoutUiFields(parsed: Record<string, unknown>): Record<string, unknown> {
     return Object.fromEntries(Object.entries(parsed).filter(([key]) => !(UI_PREF_KEYS as readonly string[]).includes(key)));
+}
+
+/**
+ * `patch` without the keys in `localKeys` (wire spelling, a column dotted):
+ * what the one-time migration may move, since a value the ledger's own file
+ * sets is one somebody chose for that ledger, and it wins anyway.
+ */
+export function withoutLocalKeys(patch: UiPrefsPatch, localKeys: readonly string[]): UiPrefsPatch {
+    const kept: Record<string, unknown> = Object.fromEntries(Object.entries(patch).filter(([key]) => key !== "columns" && !localKeys.includes(key)));
+    const columns = Object.fromEntries(Object.entries(patch.columns ?? {}).filter(([member]) => !localKeys.includes(`columns.${member}`)));
+    if (Object.keys(columns).length > 0) kept.columns = columns;
+    return kept as UiPrefsPatch;
+}
+
+/** `prefs` with `patch` applied, `columns` member by member. */
+export function applyPatch(prefs: UiPrefs, patch: UiPrefsPatch): UiPrefs {
+    return {...prefs, ...patch, columns: {...prefs.columns, ...patch.columns}} as UiPrefs;
 }
 
 /** Merge `patch` into `into` (a pending save), `columns` member by member. */

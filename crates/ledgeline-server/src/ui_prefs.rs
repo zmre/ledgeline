@@ -1,4 +1,5 @@
-//! UI preferences, kept in files and per ledger (plan 38, WP-5).
+//! UI preferences, kept in files (plan 38, WP-5; save routing reworked
+//! 2026-11-12).
 //!
 //! The SPA's view state — which columns show, which panels are open, the
 //! Review and Find Matches numbers, the benchmark lines — used to live in the
@@ -6,16 +7,27 @@
 //! that changes on every launch, so every relaunch forgot all of it. It now
 //! lives in two TOML files the engine reads, merged per key:
 //!
-//! 1. `ledgeline.toml` in the MAIN JOURNAL'S DIRECTORY, keys under `[ui]`. The
-//!    app saves here automatically, and only the keys that changed, so the
-//!    file holds exactly what the user changed for this ledger.
+//! 1. `ledgeline.toml` in the MAIN JOURNAL'S DIRECTORY, keys under `[ui]`. A
+//!    person writes this file by hand to give one ledger its own values; the
+//!    app NEVER creates it.
 //! 2. `ui-prefs.toml` in the config directory ([`AppDirs::config_dir`]), the
-//!    same keys at top level. Hand-edited only: the app NEVER writes it.
+//!    same keys at top level. The app's own file: it creates it on the first
+//!    save and edits it after.
 //! 3. The built-in defaults ([`SPECS`]).
 //!
 //! For each key the first layer that holds a USABLE value wins. A value that is
 //! present but unusable is reported as an [`Issue`] and the key falls through
 //! to the next layer, so one bad line never costs the user the rest.
+//!
+//! # Where a save goes
+//!
+//! Per key, and per leaf for a group (`columns.status`): a changed key is
+//! written to `ledgeline.toml` only when that file already exists and its
+//! `[ui]` table already sets that key to a value; everything else goes to
+//! `ui-prefs.toml`. So a ledger overrides exactly the keys someone put in its
+//! file by hand, those keys keep being saved there, and opening or using the
+//! app never makes a file appear in somebody's repository. Reading never
+//! writes anything.
 //!
 //! # `ledgeline.toml` is untrusted
 //!
@@ -32,32 +44,40 @@
 //!   and refused with control characters, ticker lists are filtered.
 //! - The file is capped at [`MAX_FILE_BYTES`] and read without following a
 //!   symlink (`Vault::read_pinned`, `O_NOFOLLOW` on the desktop). A symlinked,
-//!   oversized or unparseable file is ignored on read and REFUSED on write:
-//!   the app never replaces bytes it could not parse.
+//!   oversized or unparseable file is ignored on read and never written: it
+//!   sets no key, so every save goes to the global file.
 //! - Unknown keys are ignored, and kept on write.
 //!
 //! # Writes
 //!
-//! Through the journal's vault, so the desktop gets the pinned primitives
-//! (`ledgeline_core::pinned`): `create_new` (exclusive, `O_NOFOLLOW`,
-//! owner-only) the first time, then `replace` against the revision just read.
-//! A write that loses a race re-reads and re-applies — a patch is a set of
-//! key assignments, so applying it again to newer bytes is exactly right — up
-//! to [`WRITE_ATTEMPTS`] times. The edit goes through `toml_edit`'s document
-//! model, so comments, key order and unknown keys survive.
+//! Both files are written through the pinned primitives
+//! (`ledgeline_core::pinned`, through the journal's vault for the ledger
+//! file): `replace` against the revision just read, and for the global file
+//! `create_new_pinned` (exclusive, `O_NOFOLLOW`, owner-only) the first time. A
+//! write that loses a race re-reads and re-applies — a patch is a set of key
+//! assignments, so applying it again to newer bytes is exactly right — up to
+//! [`WRITE_ATTEMPTS`] times. The edit goes through `toml_edit`'s document
+//! model, so comments, key order and unknown keys survive. A file that exists
+//! but cannot be parsed is never replaced.
+//!
+//! `ui-prefs.toml` is READ through a symlink, because dotfile managers
+//! (home-manager, stow) deliver it as one. It is never WRITTEN through one:
+//! home-manager links into the read-only Nix store, and replacing the link
+//! would quietly take the file out of the manager's hands. A save meant for a
+//! symlinked global file — or for a host with no config directory — is kept
+//! in memory for the life of the process, over the global file, and reported
+//! as an [`Issue`].
 //!
 //! # Where the preferences live, per session ([`Storage`])
 //!
-//! - `ledger`: the journal has storage — the normal case.
-//! - `memory`: no journal file behind the session (a state built from an
-//!   already-parsed journal). Global + defaults, and saves are kept in memory
-//!   for the life of the process.
+//! - `files`: the two files above — the normal case, with or without a
+//!   journal file (with none, there is no `ledgeline.toml` to read).
 //! - `browser`: the headless server was started with
 //!   `$LEDGELINE_UI_PREFS_IN_BROWSER` set. Built-in defaults only, nothing is
 //!   read or written, and the SPA keeps its view state in `localStorage` as it
 //!   used to. For the e2e and live-contract harnesses, which run against
-//!   committed fixtures (a save must not land in `fixtures/`) and rely on each
-//!   browser context starting from its own clean state.
+//!   committed fixtures and rely on each browser context starting from its own
+//!   clean state.
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -76,11 +96,24 @@ use crate::{AppState, JournalLocation};
 /// Env switch for [`Storage::Browser`]. Any non-empty value turns it on.
 pub const UI_PREFS_IN_BROWSER_ENV: &str = "LEDGELINE_UI_PREFS_IN_BROWSER";
 
-/// The per-ledger file, beside the main journal.
+/// The per-ledger override file, beside the main journal. Hand-made only.
 pub(crate) const LEDGER_FILE: &str = "ledgeline.toml";
 
-/// The global, hand-edited file, in the config directory.
+/// The global file, in the config directory: where saves normally go.
 pub(crate) const GLOBAL_FILE: &str = "ui-prefs.toml";
+
+/// The top of a [`GLOBAL_FILE`] the app creates.
+const GLOBAL_HEADER: &str = concat!(
+    "# Ledgeline's view settings for every ledger. Ledgeline saves the keys you\n",
+    "# change here. A ledger's own ledgeline.toml overrides any key its [ui] table\n",
+    "# sets. Comments and keys Ledgeline does not know are kept. Docs: \"Settings files\".\n",
+    "\n",
+);
+
+/// Why a save was kept in memory rather than written to [`GLOBAL_FILE`].
+const KEPT_SYMLINK: &str = "is a symbolic link, so it is managed outside Ledgeline; view settings you change are kept until Ledgeline quits";
+const KEPT_NO_CONFIG_DIR: &str =
+    "has no config folder to live in; view settings you change are kept until Ledgeline quits";
 
 /// The table in [`LEDGER_FILE`] the UI keys live under, leaving the rest of
 /// the file for later per-ledger settings.
@@ -576,24 +609,20 @@ fn read_ledger(location: &JournalLocation, path: &VaultPath) -> LedgerFile {
     }
 }
 
-/// The `[ui]` values of a parsed ledger file, and whether it has a `[ui]`
-/// table at all (what the SPA's one-time `localStorage` migration asks).
-fn ledger_layer(document: &DocumentMut) -> (Layer, bool) {
-    let (mut layer, has_ui) = match document.get(UI_TABLE) {
-        None => (Layer::default(), false),
+/// The `[ui]` values of a parsed ledger file.
+fn ledger_layer(document: &DocumentMut) -> Layer {
+    let mut layer = match document.get(UI_TABLE) {
+        None => Layer::default(),
         Some(item) => match item.as_table_like() {
-            Some(table) => (read_layer(table, LEDGER_FILE, "ui."), true),
-            None => (
-                Layer {
-                    values: Values::new(),
-                    issues: vec![Issue::key(
-                        LEDGER_FILE,
-                        UI_TABLE.to_string(),
-                        "must be a table",
-                    )],
-                },
-                false,
-            ),
+            Some(table) => read_layer(table, LEDGER_FILE, "ui."),
+            None => Layer {
+                values: Values::new(),
+                issues: vec![Issue::key(
+                    LEDGER_FILE,
+                    UI_TABLE.to_string(),
+                    "must be a table",
+                )],
+            },
         },
     };
     let ui = document.get(UI_TABLE).and_then(Item::as_table_like);
@@ -613,7 +642,31 @@ fn ledger_layer(document: &DocumentMut) -> (Layer, bool) {
             }
         }
     }
-    (layer, has_ui)
+    layer
+}
+
+/// Whether a ledger file's `[ui]` table sets `key` (a spec key, dotted for a
+/// group member) to a value — the test that routes a save of `key` to that
+/// file. A value counts even when it is unusable: the person put the key
+/// there, so a save replaces it with a good one. A table where a value belongs
+/// does not count, so the save goes to the global file and nothing a person
+/// wrote is overwritten.
+fn ledger_sets(document: &DocumentMut, key: &str) -> bool {
+    document
+        .get(UI_TABLE)
+        .and_then(Item::as_table_like)
+        .and_then(|ui| lookup(ui, key))
+        .is_some_and(Item::is_value)
+}
+
+/// The spec keys a ledger file's `[ui]` table sets ([`ledger_sets`]), in spec
+/// order.
+fn local_keys(document: &DocumentMut) -> Vec<&'static str> {
+    SPECS
+        .iter()
+        .map(|spec| spec.key)
+        .filter(|key| ledger_sets(document, key))
+        .collect()
 }
 
 /// Every key's value from the first layer that has one, else its default.
@@ -715,56 +768,52 @@ fn unknown_key(key: &str) -> AppError {
     })
 }
 
-/// A new [`LEDGER_FILE`]: a header saying what it is, and an empty `[ui]`.
-///
-/// Rendered as text and parsed so the header is the `[ui]` table's leading
-/// comment — `toml_edit` would otherwise keep a comment-only document's
-/// comment as trailing decor, after everything inserted later.
-fn new_ledger_document() -> DocumentMut {
-    concat!(
-        "# Ledgeline's settings for this ledger. Ledgeline saves your view choices\n",
-        "# to the [ui] table automatically, writing only the keys you change.\n",
-        "# Comments and keys it does not know are kept. Docs: \"Settings files\".\n",
-        "\n",
-        "[ui]\n",
-    )
-    .parse::<DocumentMut>()
-    .unwrap_or_else(|_| DocumentMut::new())
+impl Patch {
+    fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    /// The keys `local` holds, and the rest.
+    fn split(&self, local: impl Fn(&str) -> bool) -> (Self, Self) {
+        let (mine, rest) = self
+            .values
+            .iter()
+            .map(|(key, value)| (*key, value.clone()))
+            .partition(|(key, _)| local(key));
+        (Self { values: mine }, Self { values: rest })
+    }
 }
 
-/// Apply `patch` to `document`'s `[ui]` table, editing values in place so
-/// their comments and positions survive.
+/// Apply `patch` to `table` — the `[ui]` table of [`LEDGER_FILE`], or the root
+/// of [`GLOBAL_FILE`] — editing values in place so their comments and
+/// positions survive. `file` and `prefix` name the table for the error.
 ///
 /// # Errors
-/// [`AppError::Conflict`] when `ui`, or a group in it, exists but is not a
-/// table: rewriting it would destroy something a person wrote.
-fn patch_document(document: &mut DocumentMut, patch: &Patch) -> Result<(), AppError> {
-    let not_a_table = |what: &str| {
-        AppError::Conflict(format!(
-            "{what} in {LEDGER_FILE} is not a table, so Ledgeline will not overwrite it"
-        ))
-    };
-    let ui = document
-        .entry(UI_TABLE)
-        .or_insert_with(|| Item::Table(Table::new()));
-    let ui_inline = ui.is_inline_table();
-    let ui = ui
-        .as_table_like_mut()
-        .ok_or_else(|| not_a_table(UI_TABLE))?;
+/// [`AppError::Conflict`] when a group (`columns`) exists but is not a table:
+/// rewriting it would destroy something a person wrote.
+fn patch_table(
+    table: &mut dyn TableLike,
+    inline: bool,
+    file: &str,
+    prefix: &str,
+    patch: &Patch,
+) -> Result<(), AppError> {
     for (key, value) in &patch.values {
         match key.split_once('.') {
             Some((group, leaf)) => {
-                let item = ui.entry(group).or_insert(if ui_inline {
+                let item = table.entry(group).or_insert(if inline {
                     Item::Value(toml_edit::Value::InlineTable(InlineTable::new()))
                 } else {
                     Item::Table(Table::new())
                 });
-                let members = item
-                    .as_table_like_mut()
-                    .ok_or_else(|| not_a_table(&format!("ui.{group}")))?;
+                let members = item.as_table_like_mut().ok_or_else(|| {
+                    AppError::Conflict(format!(
+                        "{prefix}{group} in {file} is not a table, so Ledgeline will not overwrite it"
+                    ))
+                })?;
                 set_value(members, leaf, value);
             }
-            None => set_value(ui, key, value),
+            None => set_value(table, key, value),
         }
     }
     Ok(())
@@ -786,47 +835,157 @@ fn set_value(table: &mut dyn TableLike, key: &str, value: &PrefValue) {
     }
 }
 
-/// Write `patch` into the ledger file at `path`, creating it if need be.
-fn write_ledger(location: &JournalLocation, patch: &Patch) -> Result<(), AppError> {
-    let path = ledger_path(location)?;
-    let vault = location.vault();
+/// One try at a write: done, or lost a race and worth another.
+enum Attempt<T> {
+    Done(T),
+    Retry,
+}
+
+/// Run `attempt` until it is done, up to [`WRITE_ATTEMPTS`] times.
+fn with_retries<T>(
+    file: &str,
+    mut attempt: impl FnMut() -> Result<Attempt<T>, AppError>,
+) -> Result<T, AppError> {
     for _ in 0..WRITE_ATTEMPTS {
-        let written = match read_ledger(location, &path) {
-            LedgerFile::Unusable(reason) => {
-                return Err(AppError::Conflict(format!(
-                    "{LEDGER_FILE} {reason}, so Ledgeline will not overwrite it"
-                )));
-            }
-            LedgerFile::Missing => {
-                let mut document = new_ledger_document();
-                patch_document(&mut document, patch)?;
-                vault.create_new(&path, document.to_string().as_bytes())
-            }
-            LedgerFile::Present {
-                mut document,
-                revision,
-            } => {
-                patch_document(&mut document, patch)?;
-                vault.replace(&path, document.to_string().as_bytes(), &revision)
-            }
-        };
-        match written {
-            Ok(_) => return Ok(()),
-            // Lost a race (or something appeared under the name): re-read. A
-            // symlink that appeared is caught by the read as `Unusable`.
-            Err(VaultError::Changed { .. }) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => {
-                return Err(AppError::Internal(format!(
-                    "could not save {LEDGER_FILE} ({}); nothing was written",
-                    error.kind()
-                )));
-            }
+        if let Attempt::Done(done) = attempt()? {
+            return Ok(done);
         }
     }
     Err(AppError::Conflict(format!(
-        "{LEDGER_FILE} kept changing while Ledgeline saved to it; nothing was written"
+        "{file} kept changing while Ledgeline saved to it; nothing was written"
     )))
+}
+
+/// A write of `file` that failed outright. Names the error kind, never a path.
+fn write_failed(file: &str, kind: std::io::ErrorKind) -> AppError {
+    AppError::Internal(format!(
+        "could not save {file} ({kind}); nothing was written"
+    ))
+}
+
+/// Write the keys of `patch` that [`LEDGER_FILE`] already sets into it, and
+/// answer the rest, for [`GLOBAL_FILE`]. Never creates the file: a missing or
+/// unusable one sets no key, so the whole patch is answered back.
+///
+/// The split is made on the bytes the write is pinned to, so a hand edit that
+/// lands mid-save is re-read and re-split rather than overwritten.
+fn write_ledger(location: &JournalLocation, patch: &Patch) -> Result<Patch, AppError> {
+    let Ok(path) = ledger_path(location) else {
+        return Ok(patch.clone());
+    };
+    let vault = location.vault();
+    with_retries(LEDGER_FILE, || {
+        let LedgerFile::Present {
+            mut document,
+            revision,
+        } = read_ledger(location, &path)
+        else {
+            return Ok(Attempt::Done(patch.clone()));
+        };
+        let (local, rest) = patch.split(|key| ledger_sets(&document, key));
+        if local.is_empty() {
+            return Ok(Attempt::Done(rest));
+        }
+        let ui = document
+            .get_mut(UI_TABLE)
+            .and_then(Item::as_table_like_mut)
+            .ok_or_else(|| AppError::Internal(format!("{LEDGER_FILE} lost its [ui] table")))?;
+        // Every local key already exists, so no group is created here and
+        // `inline` only matters for the type of a group never inserted.
+        patch_table(ui, false, LEDGER_FILE, "ui.", &local)?;
+        match vault.replace(&path, document.to_string().as_bytes(), &revision) {
+            Ok(_) => Ok(Attempt::Done(rest)),
+            // Lost a race: re-read. A symlink that appeared is caught by the
+            // read as `Unusable`, and its keys go to the global file.
+            Err(VaultError::Changed { .. }) => Ok(Attempt::Retry),
+            Err(error) => Err(write_failed(LEDGER_FILE, error.kind())),
+        }
+    })
+}
+
+/// What [`write_global`] did with a patch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GlobalSave {
+    Written,
+    /// Not written; keep it in memory, for the reason given.
+    Kept(&'static str),
+}
+
+fn is_symlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
+}
+
+/// Write `patch` into [`GLOBAL_FILE`], creating it (and the config directory)
+/// if need be. A symlinked file is left alone ([`GlobalSave::Kept`]); see the
+/// module docs.
+///
+/// # Errors
+/// [`AppError::Conflict`] when the file exists but cannot be safely rewritten
+/// (too large, not TOML, not a regular file, a group that is not a table);
+/// [`AppError::Internal`] when the write itself fails.
+fn write_global(dirs: &AppDirs, patch: &Patch) -> Result<GlobalSave, AppError> {
+    let Some(path) = dirs.config_file(GLOBAL_FILE) else {
+        return Ok(GlobalSave::Kept(KEPT_NO_CONFIG_DIR));
+    };
+    let refuse = |reason: &str| {
+        AppError::Conflict(format!(
+            "{GLOBAL_FILE} {reason}, so Ledgeline will not overwrite it"
+        ))
+    };
+    with_retries(GLOBAL_FILE, || {
+        if is_symlink(&path) {
+            return Ok(Attempt::Done(GlobalSave::Kept(KEPT_SYMLINK)));
+        }
+        // Without following a link, so the bytes edited are the bytes replaced.
+        match ledgeline_core::pinned::read_pinned_capped(&path, MAX_FILE_BYTES) {
+            Ok((bytes, pin)) => {
+                let mut document = String::from_utf8(bytes)
+                    .ok()
+                    .and_then(|text| text.parse::<DocumentMut>().ok())
+                    .ok_or_else(|| refuse("is not valid TOML"))?;
+                patch_table(document.as_table_mut(), false, GLOBAL_FILE, "", patch)?;
+                match ledgeline_core::pinned::replace(&path, document.to_string().as_bytes(), &pin)
+                {
+                    Ok(_) => Ok(Attempt::Done(GlobalSave::Written)),
+                    Err(ledgeline_core::pinned::WriteError::Changed) => Ok(Attempt::Retry),
+                    Err(ledgeline_core::pinned::WriteError::Io(error)) => {
+                        Err(write_failed(GLOBAL_FILE, error.kind()))
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let mut document = DocumentMut::new();
+                patch_table(document.as_table_mut(), false, GLOBAL_FILE, "", patch)?;
+                if let Some(dir) = path.parent() {
+                    std::fs::create_dir_all(dir)
+                        .map_err(|error| write_failed(GLOBAL_FILE, error.kind()))?;
+                }
+                // The header is prepended as text: `toml_edit` keeps a
+                // comment-only document's comment as trailing decor.
+                let text = format!("{GLOBAL_HEADER}{document}");
+                match ledgeline_core::pinned::create_new_pinned(&path, text.as_bytes()) {
+                    Ok(_) => Ok(Attempt::Done(GlobalSave::Written)),
+                    // Something appeared under the name: re-read it.
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        Ok(Attempt::Retry)
+                    }
+                    Err(error) => Err(write_failed(GLOBAL_FILE, error.kind())),
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
+                Err(refuse("is larger than 64 KiB"))
+            }
+            // A symlink swapped in since the check above lands here too.
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {
+                if is_symlink(&path) {
+                    Ok(Attempt::Done(GlobalSave::Kept(KEPT_SYMLINK)))
+                } else {
+                    Err(refuse("is not a regular file"))
+                }
+            }
+            Err(error) => Err(write_failed(GLOBAL_FILE, error.kind())),
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -837,8 +996,7 @@ fn write_ledger(location: &JournalLocation, patch: &Patch) -> Result<(), AppErro
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Storage {
-    Ledger,
-    Memory,
+    Files,
     Browser,
 }
 
@@ -849,11 +1007,18 @@ pub(crate) struct WireUiPrefs {
     /// Every preference's effective value.
     prefs: Json,
     storage: Storage,
-    /// Whether the ledger already has UI preferences (a `[ui]` table, or
-    /// in-memory saves): the SPA migrates its old `localStorage` values only
-    /// when it does not.
-    ledger_has_ui: bool,
+    /// The keys the open ledger's `ledgeline.toml` sets, so a change to them
+    /// is saved there rather than to `ui-prefs.toml`; wire spelling, a group
+    /// member dotted (`columns.status`), in spec order.
+    local_keys: Vec<&'static str>,
     issues: Vec<Issue>,
+}
+
+/// Saves that could not go to [`GLOBAL_FILE`], and why.
+#[derive(Debug, Default)]
+struct Kept {
+    values: Values,
+    reason: Option<&'static str>,
 }
 
 /// Per-[`AppState`] UI-preferences state, shared by every clone.
@@ -861,9 +1026,9 @@ pub(crate) struct WireUiPrefs {
 pub(crate) struct UiPrefsSession {
     /// [`Storage::Browser`] was asked for.
     browser: bool,
-    /// Held across every write, ledger or memory, so two saves never
-    /// interleave; holds the saves of a session with no ledger file.
-    memory: Mutex<Values>,
+    /// Held across every save, so two never interleave; holds the saves that
+    /// could not be written to [`GLOBAL_FILE`] (see the module docs).
+    kept: Mutex<Kept>,
 }
 
 impl UiPrefsSession {
@@ -871,71 +1036,94 @@ impl UiPrefsSession {
     pub(crate) fn browser() -> Self {
         Self {
             browser: true,
-            memory: Mutex::default(),
+            kept: Mutex::default(),
         }
+    }
+
+    fn kept(&self) -> std::sync::MutexGuard<'_, Kept> {
+        self.kept.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
-/// The effective preferences for `state`'s current journal.
+/// The effective preferences for `state`'s current journal. Reads only:
+/// nothing is created or written.
 pub(crate) fn current(state: &AppState) -> WireUiPrefs {
     let session = state.ui_prefs();
     if session.browser {
         return browser_answer(&Values::new());
     }
     let global = global_layer(state.app_dirs());
-    let Some(location) = state.snapshot().storage() else {
-        let memory = session
-            .memory
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        return WireUiPrefs {
-            prefs: prefs_json(&merge(&[&memory, &global.values])),
-            storage: Storage::Memory,
-            ledger_has_ui: !memory.is_empty(),
-            issues: global.issues,
-        };
-    };
-    let (ledger, has_ui) = ledger_path(&location).map_or_else(
-        |_| (Layer::default(), false),
-        |path| match read_ledger(&location, &path) {
-            LedgerFile::Missing => (Layer::default(), false),
-            LedgerFile::Present { document, .. } => ledger_layer(&document),
-            LedgerFile::Unusable(reason) => (
-                Layer {
-                    values: Values::new(),
-                    issues: vec![Issue::file(LEDGER_FILE, reason)],
-                },
-                false,
-            ),
-        },
-    );
+    let (ledger, local_keys) = state
+        .snapshot()
+        .storage()
+        .and_then(|location| ledger_path(&location).ok().map(|path| (location, path)))
+        .map_or_else(
+            || (Layer::default(), Vec::new()),
+            |(location, path)| match read_ledger(&location, &path) {
+                LedgerFile::Missing => (Layer::default(), Vec::new()),
+                LedgerFile::Present { document, .. } => {
+                    (ledger_layer(&document), local_keys(&document))
+                }
+                LedgerFile::Unusable(reason) => (
+                    Layer {
+                        values: Values::new(),
+                        issues: vec![Issue::file(LEDGER_FILE, reason)],
+                    },
+                    Vec::new(),
+                ),
+            },
+        );
+    let kept = session.kept();
+    let kept_issue = kept.reason.map(|reason| Issue::file(GLOBAL_FILE, reason));
     WireUiPrefs {
-        prefs: prefs_json(&merge(&[&ledger.values, &global.values])),
-        storage: Storage::Ledger,
-        ledger_has_ui: has_ui,
-        issues: ledger.issues.into_iter().chain(global.issues).collect(),
+        prefs: prefs_json(&merge(&[&ledger.values, &kept.values, &global.values])),
+        storage: Storage::Files,
+        local_keys,
+        issues: ledger
+            .issues
+            .into_iter()
+            .chain(global.issues)
+            .chain(kept_issue)
+            .collect(),
     }
 }
 
-/// Apply `patch` where `state` keeps its preferences, then answer with the
-/// effective values.
+/// Save `patch` — each key to the ledger's `ledgeline.toml` when it already
+/// sets that key, else to `ui-prefs.toml` — then answer with the effective
+/// values.
 ///
 /// # Errors
-/// [`AppError::Conflict`] when the ledger file cannot be safely rewritten;
-/// [`AppError::Internal`] when the write itself fails.
+/// [`AppError::Conflict`] when a file that should take the save cannot be
+/// safely rewritten; [`AppError::Internal`] when the write itself fails. The
+/// ledger file is written first, so a failure at the global file can leave
+/// the ledger's share saved.
 pub(crate) fn apply(state: &AppState, patch: &Patch) -> Result<WireUiPrefs, AppError> {
     let session = state.ui_prefs();
     if session.browser {
         return Ok(browser_answer(&patch.values));
     }
-    if !patch.values.is_empty() {
-        let mut memory = session
-            .memory
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        match state.snapshot().storage() {
+    if !patch.is_empty() {
+        // Released before `current`, which takes it again.
+        let mut kept = session.kept();
+        let global = match state.snapshot().storage() {
             Some(location) => write_ledger(&location, patch)?,
-            None => memory.extend(patch.values.clone()),
+            None => patch.clone(),
+        };
+        if !global.is_empty() {
+            match write_global(state.app_dirs(), &global)? {
+                // A key that reached the file no longer needs its session copy.
+                GlobalSave::Written => {
+                    kept.values
+                        .retain(|key, _| !global.values.contains_key(key));
+                    if kept.values.is_empty() {
+                        kept.reason = None;
+                    }
+                }
+                GlobalSave::Kept(reason) => {
+                    kept.values.extend(global.values);
+                    kept.reason = Some(reason);
+                }
+            }
         }
     }
     Ok(current(state))
@@ -946,7 +1134,7 @@ fn browser_answer(overrides: &Values) -> WireUiPrefs {
     WireUiPrefs {
         prefs: prefs_json(&merge(&[overrides])),
         storage: Storage::Browser,
-        ledger_has_ui: false,
+        local_keys: Vec::new(),
         issues: Vec::new(),
     }
 }
@@ -961,7 +1149,7 @@ mod tests {
     }
 
     fn effective(ledger: &str, global: &str) -> (Json, Vec<Issue>) {
-        let (ledger, _) = ledger_layer(&parse(ledger));
+        let ledger = ledger_layer(&parse(ledger));
         let global = read_layer(parse(global).as_table(), GLOBAL_FILE, "");
         let issues = ledger.issues.into_iter().chain(global.issues).collect();
         (
@@ -1114,12 +1302,45 @@ unknownKey = { deep = [1, 2] }
     }
 
     #[test]
-    fn a_non_table_ui_is_reported_and_has_no_ui() {
-        let (layer, has_ui) = ledger_layer(&parse("ui = 5\n"));
-        assert!(!has_ui);
-        assert_eq!(layer.issues.len(), 1);
-        let (_, has_ui) = ledger_layer(&parse("[ui]\n"));
-        assert!(has_ui, "an empty [ui] table still counts");
+    fn a_non_table_ui_is_reported_and_sets_no_key() {
+        let document = parse("ui = 5\n");
+        assert_eq!(ledger_layer(&document).issues.len(), 1);
+        assert!(local_keys(&document).is_empty());
+        assert!(local_keys(&parse("[ui]\n")).is_empty());
+    }
+
+    #[test]
+    fn a_ledger_file_sets_the_value_keys_in_its_ui_table_per_leaf() {
+        let document = parse(
+            "matchLookback = 5\n[ui]\nmatchWindow = \"bad\"\ninsightsTab = \"balances\"\n\
+             [ui.reviewMaxDays]\nx = 1\n[ui.columns]\nstatus = false\n",
+        );
+        assert_eq!(
+            local_keys(&document),
+            ["columns.status", "insightsTab", "matchWindow"],
+            "a bad value still counts; a table, a root key and an absent leaf do not"
+        );
+        let inline = parse("ui = { matchWindow = 5, columns = { date = true } }\n");
+        assert_eq!(local_keys(&inline), ["columns.date", "matchWindow"]);
+    }
+
+    #[test]
+    fn a_patch_splits_by_key_and_by_leaf() {
+        let patch = Patch::from_json(&json!({
+            "matchWindow": 7,
+            "matchLookback": 9,
+            "columns": {"status": false, "date": false},
+        }))
+        .expect("patch");
+        let (local, rest) = patch.split(|key| ["matchWindow", "columns.status"].contains(&key));
+        assert_eq!(
+            local.values.keys().copied().collect::<Vec<_>>(),
+            ["columns.status", "matchWindow"]
+        );
+        assert_eq!(
+            rest.values.keys().copied().collect::<Vec<_>>(),
+            ["columns.date", "matchLookback"]
+        );
     }
 
     #[test]
@@ -1180,7 +1401,8 @@ x = 1
             "insightsOpen": false,
         }))
         .expect("patch");
-        patch_document(&mut document, &patch).expect("patched");
+        let ui = document["ui"].as_table_like_mut().expect("[ui]");
+        patch_table(ui, false, LEDGER_FILE, "ui.", &patch).expect("patched");
         let written = document.to_string();
         let expected = "\
 # my notes about this ledger
@@ -1203,64 +1425,44 @@ x = 1
     }
 
     #[test]
-    fn a_new_file_starts_with_its_header_and_only_the_patched_keys() {
-        let mut document = new_ledger_document();
+    fn a_global_document_takes_keys_at_its_root_and_groups_as_tables() {
+        let mut document = parse("# mine\nmatchWindow = 3 # narrow\n");
         let patch =
             Patch::from_json(&json!({"reviewMarkers": false, "columns": {"status": false}}))
                 .expect("patch");
-        patch_document(&mut document, &patch).expect("patched");
-        let written = document.to_string();
-        assert!(
-            written.starts_with("# Ledgeline's settings for this ledger."),
-            "{written}"
+        patch_table(document.as_table_mut(), false, GLOBAL_FILE, "", &patch).expect("patched");
+        assert_eq!(
+            document.to_string(),
+            "# mine\nmatchWindow = 3 # narrow\nreviewMarkers = false\n\n[columns]\nstatus = false\n"
         );
-        assert!(
-            written.contains("[ui]\nreviewMarkers = false\n"),
-            "{written}"
-        );
-        assert!(
-            written.contains("[ui.columns]\nstatus = false\n"),
-            "{written}"
-        );
-        assert!(!written.contains("matchWindow"), "{written}");
-        let (layer, has_ui) = ledger_layer(&parse(&written));
-        assert!(has_ui && layer.issues.is_empty());
-        assert_eq!(layer.values.len(), 2);
+        let layer = read_layer(document.as_table(), GLOBAL_FILE, "");
+        assert!(layer.issues.is_empty());
+        assert_eq!(layer.values.len(), 3);
     }
 
     #[test]
-    fn an_inline_ui_table_is_patched_inline() {
-        let mut document = parse("ui = { matchWindow = 5 }\n");
-        let patch = Patch::from_json(
-            &json!({"columns": {"date": false}, "lastProjectionId": "a/b.journal"}),
-        )
-        .expect("patch");
-        patch_document(&mut document, &patch).expect("patched");
-        let (layer, _) = ledger_layer(&parse(&document.to_string()));
+    fn an_inline_table_is_patched_inline() {
+        let mut document = parse("ui = { matchWindow = 5, columns = { date = true } }\n");
+        let patch = Patch::from_json(&json!({"columns": {"date": false}, "matchWindow": 6}))
+            .expect("patch");
+        let ui = document["ui"].as_table_like_mut().expect("ui");
+        patch_table(ui, true, LEDGER_FILE, "ui.", &patch).expect("patched");
+        let layer = ledger_layer(&parse(&document.to_string()));
         assert_eq!(
             layer.values.get("columns.date"),
             Some(&PrefValue::Flag(false))
         );
-        assert_eq!(
-            layer.values.get("lastProjectionId"),
-            Some(&PrefValue::FileId(Some("a/b.journal".to_string())))
-        );
-        assert_eq!(layer.values.get("matchWindow"), Some(&PrefValue::Whole(5)));
+        assert_eq!(layer.values.get("matchWindow"), Some(&PrefValue::Whole(6)));
     }
 
     #[test]
-    fn a_non_table_ui_or_group_is_never_overwritten() {
+    fn a_non_table_group_is_never_overwritten() {
         let patch = Patch::from_json(&json!({"columns": {"date": false}})).expect("patch");
-        for text in ["ui = 5\n", "[ui]\ncolumns = 3\n"] {
-            let mut document = parse(text);
-            assert!(
-                matches!(
-                    patch_document(&mut document, &patch),
-                    Err(AppError::Conflict(_))
-                ),
-                "{text}"
-            );
-        }
+        let mut document = parse("columns = 3\n");
+        assert!(matches!(
+            patch_table(document.as_table_mut(), false, GLOBAL_FILE, "", &patch),
+            Err(AppError::Conflict(_))
+        ));
     }
 
     #[test]

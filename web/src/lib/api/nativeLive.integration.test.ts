@@ -565,17 +565,19 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
     });
 
     // Plan 38 WP-5. The harness starts the engine with
-    // $LEDGELINE_UI_PREFS_IN_BROWSER (justfile, ci.yml), so nothing is read from
-    // or written beside fixtures/sample.journal: GET is the defaults, and a
-    // PATCH is checked and echoed but kept nowhere. Against an engine started
-    // WITHOUT it, the PATCH half is skipped rather than writing into fixtures/.
+    // $LEDGELINE_UI_PREFS_IN_BROWSER (justfile, ci.yml), so no settings file is
+    // read or written: GET is the defaults, and a PATCH is checked and echoed
+    // but kept nowhere. Against an engine started WITHOUT it, the PATCH half is
+    // skipped rather than saving into somebody's ui-prefs.toml.
     it("ui-prefs decodes, and a PATCH is checked and answered in the same shape", async () => {
         const api = new LedgelineApi(url);
         const state = decodeUiPrefsState(await api.getUiPrefs());
         expect(state.prefs).toEqual(defaultUiPrefs());
         expect(state.issues).toEqual([]);
+        expect(state.localKeys).toEqual([]);
         if (state.storage !== "browser") return;
         const patched = decodeUiPrefsState(await api.patchUiPrefs({matchWindow: 21, columns: {status: false}}));
+        expect(patched.storage).toBe("browser");
         expect(patched.prefs.matchWindow).toBe(21);
         expect(patched.prefs.columns).toEqual({...defaultUiPrefs().columns, status: false});
         expect(decodeUiPrefsState(await api.getUiPrefs()).prefs.matchWindow).toBe(10);

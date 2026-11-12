@@ -6,10 +6,11 @@
 //    stays in localStorage under a versioned key. `setServerUrl` verifies
 //    GET /version before persisting.
 //  - The VIEW STATE — columns, open panels, review and matching numbers,
-//    benchmarks, … (`UiPrefs`) — belongs to the ledger, and lives on the
-//    engine (`GET`/`PATCH /api/ui-prefs`): `ledgeline.toml` beside the journal,
-//    over the global `ui-prefs.toml`, over the defaults. The desktop app's
-//    WebView origin changes every launch, so localStorage forgot all of it.
+//    benchmarks, … (`UiPrefs`) — lives on the engine (`GET`/`PATCH
+//    /api/ui-prefs`): the global `ui-prefs.toml`, overridden key by key by a
+//    hand-made `ledgeline.toml` beside the journal, over the defaults. The
+//    engine decides which file each save goes to. The desktop app's WebView
+//    origin changes every launch, so localStorage forgot all of it.
 //
 // Until `loadUiPrefs` hears from the engine — and for good when the engine says
 // it leaves them to the browser (`storage: "browser"`: the e2e harness, or an
@@ -23,6 +24,7 @@ import {LedgelineApi} from "#lib/api/native.js";
 import {decodeUiPrefsState} from "#lib/api/nativeDecode.js";
 import type {PieDimension} from "#lib/holdings/profileTypes.js";
 import {
+    applyPatch,
     cleanBenchmarks,
     cleanUiPrefs,
     COLUMN_KEYS,
@@ -41,6 +43,7 @@ import {
     REVIEW_RECENT_LIMIT,
     UI_PREF_KEYS,
     wholeIn,
+    withoutLocalKeys,
     withoutUiFields,
     type ColumnConfig,
     type InsightsTab,
@@ -168,8 +171,8 @@ function writeBlob(blob: Record<string, unknown>): void {
 /**
  * Persist to localStorage: the connection always; the view state too in
  * "local" mode. In "server" mode anything else in the blob is left as it is —
- * an old blob's view state is the one-time migration's to consume, and it
- * consumes it only for a ledger with no UI preferences of its own.
+ * an old blob's view state is the one-time migration's to consume, and one it
+ * could not move is kept for the next try.
  */
 function persist(): void {
     if (typeof localStorage === "undefined") return;
@@ -225,9 +228,10 @@ function applyUiPrefs(prefs: UiPrefs): void {
 
 /**
  * Fetch the view state from the engine at `serverUrl` and switch to saving it
- * there; migrate an old localStorage blob's view state into a ledger that has
- * none yet, once. Never throws: an engine that cannot answer leaves the
- * session in "local" mode.
+ * there; move an old localStorage blob's view state to the engine, once —
+ * which file each key lands in is the engine's routing, so normally the global
+ * one. Never throws: an engine that cannot answer leaves the session in
+ * "local" mode.
  */
 async function loadUiPrefs(serverUrl: string): Promise<void> {
     // A save still waiting for the previous engine goes there first.
@@ -239,17 +243,19 @@ async function loadUiPrefs(serverUrl: string): Promise<void> {
             uiMode = "local";
             return;
         }
-        const blob = readBlob();
-        const legacy = legacyUiPatch(blob);
-        let migrated = false;
-        if (Object.keys(legacy).length > 0 && !answer.ledgerHasUi) {
+        const legacy = legacyUiPatch(readBlob());
+        // A key the ledger's own file sets is left out: somebody chose that
+        // value for this ledger, and it wins over the global one anyway.
+        const move = withoutLocalKeys(legacy, answer.localKeys);
+        let migrated = Object.keys(legacy).length > 0 && Object.keys(move).length === 0;
+        if (Object.keys(move).length > 0) {
             try {
-                answer = decodeUiPrefsState(await api.patchUiPrefs(legacy));
+                answer = decodeUiPrefsState(await api.patchUiPrefs(move));
                 migrated = true;
             } catch (cause) {
                 // Keep the blob for next time, and its values for this session.
-                console.warn("[settings] could not move saved view settings to the ledger; keeping them in this browser", cause);
-                answer = {...answer, prefs: cleanUiPrefs({...answer.prefs, ...blob})};
+                console.warn("[settings] could not move saved view settings to the engine; keeping them in this browser", cause);
+                answer = {...answer, prefs: applyPatch(answer.prefs, move)};
             }
         }
         applyUiPrefs(answer.prefs);
