@@ -194,33 +194,61 @@ Times are criterion's point estimate (the middle of the `[lo est hi]` triple).
 
 `/api/saas` and `/api/insights` load in parallel, so the startup section is never the slower of the two.
 
-**Plan 38 WP-1 (2026-11-12, same machine and corpus, rustc 1.99.1):** Insights
-now builds one combined `PriceDb` and one explicit-only `PriceDb` per request,
-down from eight builds. Both gain windows are served from one chained holdings
-replay instead of four, and the movers probe reuses the windows'
-price-independent holdings setup. Output is byte-identical to before; see
-`tests/insights_golden.rs`.
+**Plan 38 WP-1 (2026-11-12, same machine and corpus, rustc 1.99.1):** two
+commits. Output is byte-identical to before; see `tests/insights_golden.rs`.
+
+The first commit builds one combined `PriceDb` and one explicit-only `PriceDb`
+per request, down from eight. One chained holdings replay serves both gain
+windows instead of four, and the movers probe reuses the windows'
+price-independent holdings setup.
+
+The second commit cuts the per-posting work:
+
+- The holdings replay, the sole-symbol facts and `stock_accounts` walk only the
+  transactions that post to an account carrying a security (`stock_order`).
+  That set is built once per request and shared by both windows and the movers
+  probe.
+- One sole-symbol facts scan, capped at the window end, serves all three
+  holdings reports.
+- `is_iso_code` rejects anything that is not three bytes long before its
+  158-way string match. It runs for every amount, most of them `$`.
+- `add_posting` no longer clones the account name per posting.
 
 | Bench | 5k | 50k | 200k |
 |---|---|---|---|
 | `reports/insights` before WP-1 | 16.6 ms | 197 ms | 916 ms |
-| `reports/insights` after WP-1 | 9.20 ms | 106 ms | **518 ms** (−43%) |
+| after the first commit | 9.20 ms | 106 ms | 518 ms |
+| after the second commit | 4.73 ms | 49.9 ms | **293 ms** (−68%) |
 
-That is still above the 400 ms gate. At 200k, about 16 full passes over the
-postings remain, at roughly 30–60 ms each:
+That is under the 400 ms gate. Where the ~270 ms of one 200k request goes now:
 
-- the window-pair holdings setup: `Currencies` and `stock_accounts`, ~85 ms
-- the sole-symbol facts scan, plus the one shared replay, ~120 ms
-- the movers probe's own facts scan and explicit-price replay, ~120 ms
-- `account_totals` ×4, ~85 ms, two of them cumulative from the journal start
-- `net_worth` ×2, ~58 ms
-- `income_statement` ×2, ~10 ms
-- price inference and the `PriceDb` build, ~13 ms
+- `HoldingsInputs` setup, ~75 ms: the `Currencies` money scan, the
+  `stock_order` filter and the declaration tables. These are the only
+  full-journal passes left on the holdings side.
+- `account_totals` ×4, ~82 ms. The two cumulative ones are ~36 ms each.
+- `net_worth` ×2, ~58 ms.
+- Price inference and the `PriceDb` build, ~12 ms.
+- `income_statement` ×2, ~10 ms.
+- The shared facts scan (~5 ms), the window pair (~11 ms), the movers probe
+  (~11 ms) and the top transactions (~3 ms).
 
-The movers replay cannot be shared with the windows' replay: pool basis,
-pure-transfer detection and cost prices all read the price database. Most of
-the holdings cost is per-posting account classification, which is not
-memoized inside the holdings engine. Memoizing it is the next lever.
+The second commit's shared-code changes were benched against the commit
+before it (`reports/`, `holdings/`, `aggregate/` and `accounts/`, at 50k and
+200k):
+
+- Holdings: `compute_holdings` −53% and `holdings_series_*` −58% at 200k.
+- `account_totals` −11% at 200k; cash flow, budget, balance sheet and
+  income statement −2% to −34%.
+- `net_worth` at 50k read +13–25%, but none of its code changed. The unchanged
+  parent commit re-measured +6–10% against the same baseline, so most of that
+  is machine drift; any remainder is codegen layout. At 200k it is flat.
+
+The next levers, if this is ever needed again:
+
+- Fold the two cumulative `account_totals` and the two `net_worth` calls into
+  one bucketed pass each. Every sum is order-independent, as
+  `net_worth_priced` already relies on.
+- Fold the `stock_order` filter into the `Currencies` scan.
 
 ### holdings — PERF-5b
 
@@ -360,7 +388,7 @@ The four benchmarks to gate on, because they are what the user feels:
 | `wire/snapshot_from_journal` | 1,696 ms | ≤ 700 ms (PERF-1) |
 | `reports/net_worth/count_60` | 2,508 ms | ≤ 200 ms, and within 2× of `count_12` (PERF-5) |
 | `holdings/holdings_series_12` | 1,567 ms | ≤ 300 ms (PERF-5b) |
-| `reports/insights` | 1,197 ms | ≤ 400 ms (PERF-5c); 518 ms after plan 38 WP-1, see §3 |
+| `reports/insights` | 1,197 ms | ≤ 400 ms (PERF-5c); **met**: 293 ms after plan 38 WP-1, see §3 |
 
 Plus one pair that must *converge* rather than shrink:
 `prices/lookup_early_date` (8.27 µs) and `prices/lookup_late_date` (23.2 ns)

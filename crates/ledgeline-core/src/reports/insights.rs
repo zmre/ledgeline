@@ -38,7 +38,9 @@ use super::periods::{Interval, add_days, add_months, bucket_end, bucket_key, day
 use super::prices::{PriceDb, infer_market_prices, value_at};
 use super::types::{PeriodReport, ReportMeta};
 use crate::decimal::Dec;
-use crate::holdings::engine::{HoldingsInputs, holdings_report, holdings_window_pair};
+use crate::holdings::engine::{
+    HoldingsInputs, SoleFacts, holdings_report_with, holdings_window_pair,
+};
 use crate::holdings::{HoldingsReport, HoldingsScope, PriceSource, ScopeMode};
 use crate::model::{Commodity, Journal, PriceDirective, Transaction};
 use std::borrow::Cow;
@@ -542,17 +544,22 @@ fn months_between(from: &str, to: &str) -> u32 {
 /// current window and share it (PERF-5c).
 fn window_holdings(
     inputs: &HoldingsInputs<'_>,
+    facts: &SoleFacts,
     base: &Commodity,
     bounds: [&str; 3],
 ) -> Result<(HoldingsReport, HoldingsReport), ReportError> {
-    let scope = HoldingsScope {
+    holdings_window_pair(inputs, &whole_portfolio(bounds[2], base), bounds, facts)
+}
+
+/// Every holdings box's scope: all accounts, valued in `base`, no gain window.
+fn whole_portfolio(as_of: &str, base: &Commodity) -> HoldingsScope {
+    HoldingsScope {
         accounts: BTreeSet::new(),
         mode: ScopeMode::Include,
-        as_of: bounds[2].to_string(),
+        as_of: as_of.to_string(),
         gain_since: None,
         value_in: Some(base.clone()),
-    };
-    holdings_window_pair(inputs, &scope, bounds)
+    }
 }
 
 /// Box 5's figure for one window: the windowed holdings gain,
@@ -717,17 +724,11 @@ fn account_changes(
 /// `inputs`' database in `base` (which must be [`holdings_base`] of it).
 fn portfolio_at(
     inputs: &HoldingsInputs<'_>,
+    facts: &SoleFacts,
     base: &Commodity,
     as_of: &str,
 ) -> Result<HoldingsReport, ReportError> {
-    let scope = HoldingsScope {
-        accounts: BTreeSet::new(),
-        mode: ScopeMode::Include,
-        as_of: as_of.to_string(),
-        gain_since: None,
-        value_in: Some(base.clone()),
-    };
-    holdings_report(inputs, &scope)
+    holdings_report_with(inputs, &whole_portfolio(as_of, base), facts)
 }
 
 /// Biggest stock movers over `(since, as_of]` (Box 8): the whole portfolio's
@@ -742,6 +743,7 @@ fn portfolio_at(
 fn movers(
     journal: &Journal,
     inputs: &HoldingsInputs<'_>,
+    facts: &SoleFacts,
     report: &HoldingsReport,
     since: &str,
 ) -> Result<Vec<MoverRow>, ReportError> {
@@ -756,10 +758,13 @@ fn movers(
     // exactly the holdings it exists to warn about. Explicit-only keeps the flag
     // meaning what it says: "no real market quote existed at the window start".
     //
-    // Only the price database differs, so the journal-wide setup is shared.
+    // Only the price database differs, so the journal-wide setup and the
+    // sole-symbol facts (price-independent, capped at the later window end)
+    // are shared.
     let explicit = PriceDb::build(&journal.prices);
     let estimated: BTreeSet<String> = portfolio_at(
         &inputs.repriced(&explicit),
+        facts,
         &holdings_base(&explicit),
         since,
     )?
@@ -1086,8 +1091,11 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
         &journal.accounts,
         &journal.commodity_tags,
     )?;
+    // One sole-symbol scan, capped at the latest date any holdings box asks
+    // about, serves both windows and the movers probe.
+    let holdings_facts = SoleFacts::new(&holdings_inputs, &whole_portfolio(end, &base), end);
     let (previous_window, current_window) =
-        window_holdings(&holdings_inputs, &base, [start, &mid, end])?;
+        window_holdings(&holdings_inputs, &holdings_facts, &base, [start, &mid, end])?;
     let investment = InvestmentPerf {
         current: perf_of(&current_window),
         previous: perf_of(&previous_window),
@@ -1114,7 +1122,13 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
     )?;
 
     // Box 8 — biggest stock movers over the current period.
-    let movers_list = movers(journal, &holdings_inputs, &current_window, &mid)?;
+    let movers_list = movers(
+        journal,
+        &holdings_inputs,
+        &holdings_facts,
+        &current_window,
+        &mid,
+    )?;
 
     // Box 10 — largest transactions in the current period.
     let kpi_declared = declared_kpi_roles(&journal.accounts);

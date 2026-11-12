@@ -106,7 +106,25 @@ pub(crate) fn add_posting(
     posting: &Posting,
     at_cost: bool,
 ) -> Result<(), DecError> {
-    let entry = totals.entry(posting.account.0.clone()).or_default();
+    // Look the slot up before creating it: `entry` wants an owned key, and
+    // cloning the account name for every posting was one heap allocation per
+    // posting on a slot that almost always exists already.
+    match totals.get_mut(&posting.account.0) {
+        Some(entry) => accumulate_posting(entry, posting, at_cost),
+        None => accumulate_posting(
+            totals.entry(posting.account.0.clone()).or_default(),
+            posting,
+            at_cost,
+        ),
+    }
+}
+
+/// [`add_posting`]'s accumulation into an account's existing slot.
+fn accumulate_posting(
+    entry: &mut MixedAmount,
+    posting: &Posting,
+    at_cost: bool,
+) -> Result<(), DecError> {
     for amount in &posting.amounts {
         let (commodity, quantity) = if at_cost {
             amount.at_cost()?
