@@ -50,10 +50,9 @@ coverage/
 # crashed run cannot pollute git status.
 /fixtures/scratch/
 
-# Per-ledger UI prefs. Running the SPA against a fixture journal (e.g. via
-# `just serve-engine`) auto-saves view settings into ledgeline.toml beside it;
-# a stray one would also break the native wire golden. Tests that need one
-# create it in a temp dir.
+# Per-ledger UI overrides. The app never creates ledgeline.toml, but one made by
+# hand beside a fixture journal (to try an override) would change what the
+# native wire golden sees. Tests that need one create it in a temp dir.
 /fixtures/**/ledgeline.toml
 
 # Editor / OS
