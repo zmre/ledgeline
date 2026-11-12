@@ -8,6 +8,7 @@ import type {WireAutoRuleFormIn} from "#lib/autoRules/ruleForm.js";
 import type {SaveAutoRuleBody} from "#lib/autoRules/types.js";
 import type {BudgetPeriod} from "#lib/budget/types.js";
 import type {SaveHledgerConfBody} from "#lib/settings/hledgerConfTypes.js";
+import type {UiPrefsPatch} from "#lib/settings/uiPrefs.js";
 import {ApiUnreachableError, authHeaders, REQUEST_TIMEOUT_MS, withDeadline} from "./client";
 
 /** The configured server answered, but has no /api/* routes (it is not the Ledgeline engine, or predates the route). */
@@ -2065,6 +2066,25 @@ export class LedgelineApi {
     /** Replace the whole preferences blob. A bad `hledgerPath` is a 400, not a stored-and-fails-later. */
     putPrefs(body: PrefsBody): Promise<unknown> {
         return this.mutate<unknown>("PUT", "/api/prefs", 200, body);
+    }
+
+    /**
+     * The SPA's view state for the open journal (decode with
+     * `decodeUiPrefsState`): every preference's effective value — the
+     * ledger's `ledgeline.toml`, over `ui-prefs.toml`, over the defaults —
+     * and where they are kept.
+     */
+    getUiPrefs(): Promise<unknown> {
+        return this.getJson("/api/ui-prefs");
+    }
+
+    /**
+     * Save just these keys (the engine writes only them); answers as
+     * `getUiPrefs`. A bad value is a `ValidationError`; a `ledgeline.toml` the
+     * engine will not overwrite is a `ConflictError`.
+     */
+    patchUiPrefs(patch: UiPrefsPatch): Promise<unknown> {
+        return this.mutate<unknown>("PATCH", "/api/ui-prefs", 200, patch);
     }
 
     /**
