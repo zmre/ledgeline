@@ -9,7 +9,6 @@
 ## Import improvements
 
 - **Syncing:** Can we setup auto-syncing using SimpleFIN / SimpleFIN Bridge? Is that still maintained?  Does it still work? Do we have any other reasonable sync approaches? Can we run it ourselves?
-- **Matching:** done — transfer matching through clearing accounts, linked by `match:` tags; see `plans/35-transfer-matching.md`.
 
 ## AI
 
@@ -53,9 +52,6 @@
 
 ## Budgeting / planning / modeling
 
-- **Compare projections:** sometimes you want to know how accurate your projection was versus actuals and where it differed so you can improve your projection model. I want a way, for each report, to "compare vs previous" as a checkbox.
-  - if that is checked, then for the `actuals` previous periods, compare actuals to what would have been projected if we did our projection at the start of the period.
-  - no need to project forward for this, but we do want to be able to do this for each report type.  lets say we have 3 actuals periods: show those three as actuals, then a line, then show those three periods again as projected, then a column showing differences (absolute and percent difference)
 - **Personal planning calculators** a la quicken financial planner; see inspiration from [credit karma](https://www.creditkarma.com/calculators/money) and [nerdwallet](https://www.nerdwallet.com/investing/calculators). Monarch also has some interesting calculators you can use even when not logged in like: [1](https://www.monarch.com/calculators/financial-health-calculator), [2])(https://www.monarch.com/calculators/debt-payoff-calculator), [3](https://www.monarch.com/calculators/mortgage-calculator) and probably more if you have an account
   - great free tools with details at [engaging-data](https://engaging-data.com/early-retirement-calculators-and-tools/)
   - [ ] investigate [projection lab](https://projectionlab.com) to understand if that's worthwhile or anything there we want to learn from. from a friend: "really nice stuff built on top of it (roth conversions, drawdown simulation, flex spending, tax strategy, "what if" checkpointing to compare decisions, nice milestone tools to setup when costs are known to change and how, etc"
@@ -65,30 +61,20 @@
     - ![screenshot](https://www.betterment.com/hubfs/Webpage%20desktop%20dashboard.png)
 
 ## Security
-- security: `security::inline_script_hashes` decides "external" by `contains("src=")` on the open tag, so an inline `<script data-src=…>` goes unhashed (and is refused). SvelteKit emits no such tag today, and `tests/spa_shell_csp.rs` (whose scanner parses attribute names) fails if it ever does; still worth matching the attribute name in the production scanner.
-- security: **`hledger` invocations still read the journal by path.** Writes and the rules / projections reads are closed (the vault's `read_pinned`: resolve once, `O_NOFOLLOW`, `(dev, ino)` fingerprint checked through the fd), but every `hledger` run (`-f <journal>`) still opens by path, so a link swapped in mid-request can make a preview describe the link's target — a disclosure into the UI, never a write. Wants a check of the pin after each run.
 - chore: **cap-sweep residue.** The import preview's `additions` (`import_api::cli_parity`) are still diffed against the config's *forwarded* aliases, capped at `MAX_CONF_ALIASES`, so past 200 it can list a line the write then (correctly) does not add; the write path uses the full list. And "no ASCII control character" now has five private spellings (`accounts`, `periodic`, `aliases` `has_control`; `rules::check_text`; `edit_api::check_text`) — one shared helper.
 
 ## Performance
 - perf: **`/api/insights` misses its gate by 2.4×** — 968 ms at 200k against a 400 ms target, and it is the dashboard's landing view, so it is the first number anyone feels. Insights' own dedup work is correct; the cost moved. `compute_holdings` regressed **+57% at 200k / +96% at 50k** under feature accretion (Other-holdings tab, subtree rollups, `valuation:`, cost-basis price-route warnings — each added a pass), and insights calls it 3 times / ~5 engine passes: twice via `window_holdings`, each self-recursing because `gain_since` is set, plus once through `movers` → `portfolio_at`. Holdings work is roughly two-thirds of the 968 ms. Memoizing one holdings replay across the three calls should get insights to ~400-500 ms.
 - perf: **`value_at` rebuilds the entire `PriceGraph` on every call that misses a direct price.** The graph is a function-local, built and dropped per call, and `graph_at` is O(P). Invisible today because a `$`-only book always hits the direct-lookup fast path — the code's own comment records the cliff as ~6 ms vs ~215 ms. Exposure is per call site: `reports/flows.rs:657` sits inside `for txn in txns` × accounts-in-txn, so **up to 150k graph builds per request**. Also `net_worth.rs:253` (A × D builds) and `holdings/other.rs:350` (per bucket). Fix is to hoist the graph to a caller-owned parameter or memoize it on `PriceDb` keyed by `as_of` — a signature change across ~8 call sites, hence not a quick one. This is the difference between "fine" and "unusable" on any journal that is not single-currency.
 - perf: a single `/api/insights` request performs **7 `PriceDb::build`s**, each deep-cloning every directive — ~500k clones per request on the v2 corpus.
-- perf: `choose_base` → `coverage` is where the entire cost of a mesh price graph lands (+39% on `compute_holdings`, +45%/+56% on the holdings series at 200 commodities, and none of it in the reports). It is guarded by "fewer than 2 candidates", so it is free on a `$`-only book and a cliff the moment there is a cross-rate plus any single unpriceable symbol.
 - perf: `reachable` (`reports/prices.rs:274`) re-scans the whole edge slice per popped node, so it is O(V·E), **not the O(V+E) its comment at `prices.rs:272` claims**. `shortest_path` enumerates simple paths with a per-partial `Vec` clone and `PriceGraph::rate` runs it twice. Fine on a `$`-star price graph, super-polynomial on a mesh.
 - perf: **`latest_directive_price` residual.** The reverse walk exits early only on a base-priced directive, so a symbol that is *never* priced in the base scans its whole prefix — the v2fx corpus's 59 such symbols cost 0.60 ms per series-point against v2's 0.20 ms. The index could answer "this symbol has no base-priced directive at all" and let it exit immediately.
 - test: **a third corpus shape with a genuinely DENSE many-to-many FX graph.** This is what the `value_at` / `PriceGraph` finding above actually needs — `v2fx` is a star-of-stars with 2-3 hop chains and low degree, and never exercises `shortest_path`, so that finding is still unmeasured rather than disproved.
 - test: `examples/load_rss` takes a transaction count rather than a `Shape`, so there is **no peak-RSS number for v2 or v2fx** — the memory dimension of the 200-commodity shape is unmeasured.
-
-### Never examined — so "not on the findings list" does not mean "measured and fine"
-- **XLSX export.** The balance-sheet / income-statement / holdings exports run through `exceljs` in the browser and have never been profiled. A large report on a big journal is the obvious risk.
-- **The import/convert path at scale.** `MAX_INPUT_BYTES` is 16 MiB; the converter and the rules matcher have never been benched against a file near that, and `import` shells out to hledger several times per dry-run with a 120 s timeout each.
-- **Concurrency.** Report work runs on `spawn_blocking` behind a core-count semaphore, but there is no HTTP-level benchmark, so behaviour under several simultaneous report requests is untested.
 
 ### Front end
 
 The default filter is last-90-days, which is what hides journal-size problems; the cliff is the user's first click on "All time".
 
 - fix(web): **a slow insights refetch shows stale numbers under the new period control, silently.** `createResource`'s `view` is `dataView(status, loaded !== null)` with `matchesRequest` defaulting to true, and `dataView` returns `"data"` when `status === "loading"` and a payload exists (pinned at `loadState.test.ts:17`). Keeping the old data instead of blanking is the right call for perceived speed — but `InsightsDashboard` has **no pending indicator of any kind** (no dimming, no spinner, `PeriodControl` is not disabled), so for the length of the request the boxes say "Last 3 months" while the control says "Last 12 months" and nothing signals it. Wants a subtle refreshing state, not a blank.
-- perf(web): the whole insights dashboard is **one `AsyncSection`** (`InsightsDashboard.svelte`), so the first load is all-or-nothing: one centred spinner, then every box at once. The endpoint computes the boxes from shared intermediates, so progressive population would mean splitting `/api/insights` — worth it only if the endpoint stays slow.
-- perf(web): **virtualize or cap the Problems drawer list.** The `{#if}` guard moved the cost off every page but did not remove it: building 21,429 findings now happens when the drawer *opens*, measured at 4.3 s in jsdom — much faster in a real browser, but still a visible pause. Virtualize the list the way `TransactionTable` already virtualizes rows.
 
