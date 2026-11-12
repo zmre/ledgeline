@@ -301,7 +301,7 @@ export const fileStore = {
      * The three fields move TOGETHER and only here, so a revision can never
      * belong to a different id than the one it was taken from. Also persists
      * the id, which is what reopens it on the next mount (decision 10 — in
-     * `settings`, not `prefs.json`).
+     * `settings`' per-ledger view state, not `prefs.toml`).
      */
     adopted(file: ScenarioFile): void {
         currentId = file.id;

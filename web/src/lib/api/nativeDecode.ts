@@ -44,7 +44,9 @@ import type {
     OtherHoldingsWarning,
 } from "#lib/holdings/types.js";
 import type {CreatedPricesFile, PriceOutcome, PriceResult, PricesFile, PricesStatus, PricesUpdateResponse} from "#lib/holdings/pricesTypes.js";
-import {CATEGORY_DIMENSIONS} from "#lib/holdings/profileTypes.js";
+import {CATEGORY_DIMENSIONS, PIE_DIMENSIONS} from "#lib/holdings/profileTypes.js";
+import {COLUMN_KEYS, INSIGHTS_TABS, UI_PREFS_STORAGES} from "#lib/settings/uiPrefs.js";
+import type {ColumnConfig, UiPrefs, UiPrefsIssue, UiPrefsState} from "#lib/settings/uiPrefs.js";
 import type {BenchmarkCatalog, BenchmarkLine, BenchmarksResponse} from "#lib/holdings/benchmarks.js";
 import type {Breakdown, CategoryWeight, HoldingsProfiles, SymbolProfile, YahooStatus} from "#lib/holdings/profileTypes.js";
 import type {
@@ -1488,6 +1490,20 @@ interface RawQbCommitResult {
 
 interface RawPrefs {
     hledgerPath?: string | null;
+}
+
+/** `WireUiPrefs` (ui_prefs.rs). `prefs` is keyed exactly as `UiPrefs`. */
+interface RawUiPrefsState {
+    prefs?: Record<string, unknown> | null;
+    storage?: string;
+    ledgerHasUi?: boolean;
+    issues?: unknown[];
+}
+
+interface RawUiPrefsIssue {
+    file?: unknown;
+    key?: unknown;
+    message?: unknown;
 }
 
 interface RawJournalInfo {
@@ -4858,6 +4874,73 @@ export function decodePrefs(raw: unknown): Prefs {
         // Only the known key: a `gitAutocommit` an older engine still reports
         // is dropped here, so the SPA never sends it back on a PUT.
         hledgerPath: optStr(prefs.hledgerPath, "prefs hledgerPath"),
+    });
+}
+
+/** A REQUIRED whole number. */
+function whole(value: unknown, context: string): number {
+    const n = num(value, context);
+    if (!Number.isInteger(n)) throw new ApiShapeError(`${context}: expected a whole number`);
+    return n;
+}
+
+/**
+ * `GET`/`PATCH /api/ui-prefs` → the effective UI preferences (plan 38 WP-5).
+ *
+ * Strict, like every decoder here: the engine always answers EVERY key, so an
+ * absent or mistyped one is a broken contract rather than a default — a
+ * renamed Rust key must not quietly reset someone's columns.
+ */
+export function decodeUiPrefsState(raw: unknown): UiPrefsState {
+    const body = raw as RawUiPrefsState;
+    if (typeof body !== "object" || body === null) throw new ApiShapeError("ui-prefs: expected an object");
+    const prefs = body.prefs;
+    if (typeof prefs !== "object" || prefs === null) throw new ApiShapeError("ui-prefs prefs: expected an object");
+    const rawColumns = prefs.columns as Record<string, unknown> | null | undefined;
+    if (typeof rawColumns !== "object" || rawColumns === null) throw new ApiShapeError("ui-prefs columns: expected an object");
+    const columns = Object.fromEntries(
+        COLUMN_KEYS.map((key) => [key, decodeBoolean(rawColumns[key] as boolean | undefined, `ui-prefs columns.${key}`)])
+    ) as unknown as ColumnConfig;
+    const bool = (key: keyof UiPrefs): boolean => decodeBoolean(prefs[key] as boolean | undefined, `ui-prefs ${key}`);
+    const decoded: UiPrefs = {
+        columns,
+        insightsOpen: bool("insightsOpen"),
+        insightsTab: decodeEnum(INSIGHTS_TABS, prefs.insightsTab as string | undefined, "ui-prefs insightsTab"),
+        hideZeroBalances: bool("hideZeroBalances"),
+        flowsInOpen: bool("flowsInOpen"),
+        flowsOutOpen: bool("flowsOutOpen"),
+        netWorthChartOpen: bool("netWorthChartOpen"),
+        cashFlowChartOpen: bool("cashFlowChartOpen"),
+        budgetGapsOpen: bool("budgetGapsOpen"),
+        startupMoreOpen: bool("startupMoreOpen"),
+        holdingsPieDimension: decodeEnum(PIE_DIMENSIONS, prefs.holdingsPieDimension as string | undefined, "ui-prefs holdingsPieDimension"),
+        lastProjectionId: decodeNullableStr(prefs.lastProjectionId as string | null | undefined, "ui-prefs lastProjectionId"),
+        benchmarks: (() => {
+            if (!Array.isArray(prefs.benchmarks)) throw new ApiShapeError("ui-prefs benchmarks: expected an array");
+            return decodeStrings(prefs.benchmarks, "ui-prefs benchmarks");
+        })(),
+        reviewRecentLimit: whole(prefs.reviewRecentLimit, "ui-prefs reviewRecentLimit"),
+        reviewMaxDays: whole(prefs.reviewMaxDays, "ui-prefs reviewMaxDays"),
+        reviewMarkers: bool("reviewMarkers"),
+        matchWindow: whole(prefs.matchWindow, "ui-prefs matchWindow"),
+        matchLookback: whole(prefs.matchLookback, "ui-prefs matchLookback"),
+        matchTransitDays: whole(prefs.matchTransitDays, "ui-prefs matchTransitDays"),
+    };
+    if (!Array.isArray(body.issues)) throw new ApiShapeError("ui-prefs issues: expected an array");
+    const issues = body.issues.map((rawIssue, i): UiPrefsIssue => {
+        const issue = rawIssue as RawUiPrefsIssue;
+        if (typeof issue !== "object" || issue === null) throw new ApiShapeError(`ui-prefs issues[${i}]: expected an object`);
+        return Object.freeze({
+            file: str(issue.file, `ui-prefs issues[${i}] file`),
+            key: optStr(issue.key, `ui-prefs issues[${i}] key`),
+            message: str(issue.message, `ui-prefs issues[${i}] message`),
+        });
+    });
+    return Object.freeze({
+        prefs: decoded,
+        storage: decodeEnum(UI_PREFS_STORAGES, body.storage, "ui-prefs storage"),
+        ledgerHasUi: decodeBoolean(body.ledgerHasUi, "ui-prefs ledgerHasUi"),
+        issues: Object.freeze(issues),
     });
 }
 

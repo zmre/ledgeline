@@ -73,6 +73,8 @@ mod security;
 mod sidecar;
 mod spa;
 mod stage;
+mod ui_prefs;
+mod ui_prefs_api;
 mod workbook_sandbox;
 mod yahoo;
 mod yahoo_history;
@@ -101,10 +103,13 @@ use tower_http::set_header::SetResponseHeaderLayer;
 
 pub use app_dirs::{AppDirs, CONFIG_DIR_ENV, HLEDGER_ENV, IGNORE_USER_CONF_ENV};
 pub use location::JournalLocation;
+// The switch the e2e and live-contract harnesses set so a headless server
+// leaves UI preferences to the browser (see `ui_prefs`).
 pub use security::{
     AccessToken, ProcessToken, Security, SecurityError, TOKEN_ENV, token_from_env_or_random,
     token_init_script,
 };
+pub use ui_prefs::UI_PREFS_IN_BROWSER_ENV;
 // `ledgeline import` (WP-16 Phase 3). The binary is a SEPARATE crate from this
 // library, so the `pub(crate)` the rest of `import_api` uses would not reach it —
 // these names are the whole of the CLI's surface, and the request/response
@@ -434,6 +439,9 @@ pub struct AppState {
     /// lookups, minus `~/.hledger.conf`); the desktop binary and a sandboxed
     /// host replace it with [`AppState::with_app_dirs`].
     app_dirs: Arc<AppDirs>,
+    /// The SPA's view state (`/api/ui-prefs`): whether it is left to the
+    /// browser, and the lock every save takes. See [`ui_prefs`].
+    ui_prefs: Arc<ui_prefs::UiPrefsSession>,
 }
 
 /// The real Yahoo feeds, over ONE `reqwest::Client` ([`yahoo::http_client`])
@@ -495,6 +503,7 @@ impl AppState {
             history_source: yahoo.history,
             benchmark_cache: Arc::default(),
             app_dirs,
+            ui_prefs: Arc::default(),
         }
     }
 
@@ -547,6 +556,7 @@ impl AppState {
             history_source: yahoo.history,
             benchmark_cache: Arc::default(),
             app_dirs,
+            ui_prefs: Arc::default(),
         }
     }
 
@@ -887,6 +897,20 @@ impl AppState {
             &self.app_dirs.hledger_conf,
         )));
         self
+    }
+
+    /// Leave the SPA's view state to the browser: `/api/ui-prefs` reads and
+    /// writes no file and answers the built-in defaults. For the harnesses
+    /// that run a headless server over committed fixtures; see [`ui_prefs`].
+    #[must_use]
+    pub fn with_ui_prefs_in_browser(mut self) -> Self {
+        self.ui_prefs = Arc::new(ui_prefs::UiPrefsSession::browser());
+        self
+    }
+
+    /// This session's UI-preferences state. See the field's docs.
+    pub(crate) fn ui_prefs(&self) -> &ui_prefs::UiPrefsSession {
+        &self.ui_prefs
     }
 
     /// This session's staging area, shared by all clones. See the field's docs.
@@ -1355,6 +1379,13 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         .route(
             "/api/prefs",
             get(import_api::prefs_get).put(import_api::prefs_put),
+        )
+        // The SPA's view state (plan 38 WP-5): `ledgeline.toml` beside the
+        // journal over `ui-prefs.toml` in the config dir. PATCH, not PUT: a
+        // save names only the keys that changed, and only those are written.
+        .route(
+            "/api/ui-prefs",
+            get(ui_prefs_api::get).patch(ui_prefs_api::patch),
         )
         // Settings › hledger config (plan 30, Decision 10): the config file in
         // force, and `--auto` / `--depth` written into it. THE SAME PLACEMENT

@@ -26,7 +26,7 @@
 //! directory, for the reason `tests/prefs.rs` established: the preferences store
 //! is process-global state, `std::env::set_var` is `unsafe` in edition 2024
 //! because libtest is threaded, and a test must not read — or write — the
-//! developer's real `prefs.json`.
+//! developer's real `prefs.toml`.
 //!
 //! # The two properties worth the most
 //!

@@ -1,26 +1,58 @@
-// Settings store (WP-02): Svelte 5 runes state persisted to localStorage
-// under a versioned key. `setServerUrl` verifies GET /version before persisting.
+// Settings store (WP-02): Svelte 5 runes state.
+//
+// Two halves, kept in two places (plan 38 WP-5):
+//
+//  - The CONNECTION — `serverUrl`, `serverToken` — describes this client, so it
+//    stays in localStorage under a versioned key. `setServerUrl` verifies
+//    GET /version before persisting.
+//  - The VIEW STATE — columns, open panels, review and matching numbers,
+//    benchmarks, … (`UiPrefs`) — belongs to the ledger, and lives on the
+//    engine (`GET`/`PATCH /api/ui-prefs`): `ledgeline.toml` beside the journal,
+//    over the global `ui-prefs.toml`, over the defaults. The desktop app's
+//    WebView origin changes every launch, so localStorage forgot all of it.
+//
+// Until `loadUiPrefs` hears from the engine — and for good when the engine says
+// it leaves them to the browser (`storage: "browser"`: the e2e harness, or an
+// engine without the route) — the view state is read from and saved to the
+// localStorage blob exactly as before WP-5 ("local" mode). Once the engine
+// keeps them ("server" mode), every change is PATCHed, debounced, naming only
+// the keys that changed, and localStorage holds only the connection.
 
 import {HledgerApi, SETTINGS_STORAGE_KEY} from "#lib/api/client.js";
-import {PIE_DIMENSIONS, type PieDimension} from "#lib/holdings/profileTypes.js";
+import {LedgelineApi} from "#lib/api/native.js";
+import {decodeUiPrefsState} from "#lib/api/nativeDecode.js";
+import type {PieDimension} from "#lib/holdings/profileTypes.js";
+import {
+    cleanBenchmarks,
+    cleanUiPrefs,
+    COLUMN_KEYS,
+    defaultUiPrefs,
+    legacyUiPatch,
+    MATCH_LOOKBACK,
+    MATCH_LOOKBACK_RANGE,
+    MATCH_TRANSIT_DAYS,
+    MATCH_TRANSIT_RANGE,
+    MATCH_WINDOW,
+    MATCH_WINDOW_RANGE,
+    mergePatch,
+    REVIEW_DAYS_RANGE,
+    REVIEW_LIMIT_RANGE,
+    REVIEW_MAX_DAYS,
+    REVIEW_RECENT_LIMIT,
+    UI_PREF_KEYS,
+    wholeIn,
+    withoutUiFields,
+    type ColumnConfig,
+    type InsightsTab,
+    type UiPrefs,
+    type UiPrefsIssue,
+    type UiPrefsPatch,
+} from "#lib/settings/uiPrefs.js";
 
-/** Journal table column toggles (defaults per WP-03: Date, Status, Description, Accounts, Amount). */
-export interface ColumnConfig {
-    date: boolean;
-    status: boolean;
-    description: boolean;
-    accounts: boolean;
-    amount: boolean;
-}
+export type {ColumnConfig, InsightsTab} from "#lib/settings/uiPrefs.js";
+export {MATCH_LOOKBACK, MATCH_TRANSIT_DAYS, MATCH_WINDOW, REVIEW_MAX_DAYS, REVIEW_RECENT_LIMIT} from "#lib/settings/uiPrefs.js";
 
-const defaultColumns = (): ColumnConfig => ({date: true, status: true, description: true, accounts: true, amount: true});
-
-/** The insights box's two views. Persisted, so the tab you left it on is the tab you come back to. */
-export type InsightsTab = "activity" | "balances";
-
-const INSIGHTS_TABS: readonly InsightsTab[] = ["activity", "balances"];
-
-interface PersistedSettings {
+interface ConnectionSettings {
     serverUrl: string | null;
     /**
      * Access token for a CROSS-ORIGIN engine (vite dev, the e2e harness), which
@@ -31,147 +63,18 @@ interface PersistedSettings {
      * token was entered.
      */
     serverToken: string | null;
-    columns: ColumnConfig;
-    insightsOpen: boolean;
-    /** Which view the insights box shows. "activity" (the period P&L) is the default; "balances" is the cash snapshot. */
-    insightsTab: InsightsTab;
-    /** Balances view: leave out accounts that currently hold nothing. On by default — a closed account is noise, not news. */
-    hideZeroBalances: boolean;
-    /**
-     * The P&L tab's two Sankey panels, one flag each. They collapse
-     * independently: one flag made both arrows move together.
-     */
-    flowsInOpen: boolean;
-    flowsOutOpen: boolean;
-    /**
-     * The chart panels above the Net Worth and Cash Flow tables, one flag each,
-     * open by default.
-     */
-    netWorthChartOpen: boolean;
-    cashFlowChartOpen: boolean;
-    /**
-     * The Budget tab's "not budgeted" section. Closed by default, and the flag
-     * is what GATES ITS FETCH — a section nobody has opened costs no request.
-     *
-     * One flag for both lists inside it (income and expenses): they answer one
-     * question, and collapsing half of "how much does my budget miss" is not a
-     * state worth remembering.
-     */
-    budgetGapsOpen: boolean;
-    /** Insights' "More metrics" list under the startup boxes (plans/37). Closed by default. */
-    startupMoreOpen: boolean;
-    /**
-     * What the Holdings pie is divided by: one slice per holding (the
-     * default), or one per asset class / sector / … (see
-     * `#lib/holdings/profileTypes.js`). Per-browser view state, like
-     * `insightsTab`.
-     */
-    holdingsPieDimension: PieDimension;
-    /**
-     * The Projections tab's last-loaded scenario FILE, by its relative id
-     * (`plans/projection-series-a.journal`), reopened on the next mount.
-     *
-     * HERE rather than in `prefs.json` (plan 22, decision 10): `WirePrefs` is
-     * `deny_unknown_fields` and `PUT /api/prefs` replaces the whole object with
-     * no PATCH, so any older client that saved preferences would silently clear
-     * the field. This is per-browser view state, which is what this store is
-     * for.
-     *
-     * Null when nothing has been loaded, which is the seed-from-the-journal
-     * case. A stale id that no longer names a file is not an error state — the
-     * tab falls back to seeding and clears it.
-     */
-    lastProjectionId: string | null;
-    /**
-     * Which benchmark lines the Stocks value-over-time chart overlays, by
-     * catalog symbol. Per browser, like every other view toggle here; none by
-     * default, because each one is a request that may reach Yahoo Finance.
-     */
-    benchmarks: string[];
-    /**
-     * Review Recents' cap (plan 32 D19): how many unreviewed transactions one
-     * run takes, newest first. Default 50.
-     */
-    reviewRecentLimit: number;
-    /**
-     * Both review queues' lookback window in days, and the window the journal's
-     * faint "unreviewed" row stripe marks (D4, D20). `0` means no limit.
-     * Default 365.
-     */
-    reviewMaxDays: number;
-    /** The journal's review stripes (D20). On by default. */
-    reviewMarkers: boolean;
-    /** Find Matches (plan 35 D8): how many days apart two halves of a transfer may be. Default 10. */
-    matchWindow: number;
-    /** Find Matches: only clearing postings this many days back are proposed. `0` means no limit. Default 365. */
-    matchLookback: number;
-    /**
-     * The "In transit" finding's threshold (D10): a clearing posting with no
-     * partner this many days old is flagged. Default 10. Stored for the
-     * Problems check; the engine applies its own default until the check
-     * takes a parameter.
-     */
-    matchTransitDays: number;
 }
 
-/** Keep only catalog symbols, once each, in catalog order. */
+type Settings = ConnectionSettings & UiPrefs;
+
+/** How long a save waits for further changes before it is sent (plan 38 WP-5). */
+export const UI_PREFS_SAVE_DELAY_MS = 500;
+
 /**
- * Ticked benchmark symbols as persisted: ticker-shaped strings, deduplicated, in
- * the order they were ticked. Membership in the catalog is NOT checked here — the
- * catalog is the engine's (`/api/holdings/benchmarks/catalog`) and is not known
- * at startup — so the chart restricts these to the catalog, in slot order, before
- * it asks (`catalogOrder`).
+ * How long the first `GET /api/ui-prefs` may take before the app gives up on
+ * it and renders with what it has. The engine answers it from two small files.
  */
-const TICKER = /^[A-Z0-9.^=-]{1,12}$/;
-
-/** Review Recents' default cap, and the queues' default window (D19). */
-export const REVIEW_RECENT_LIMIT = 50;
-export const REVIEW_MAX_DAYS = 365;
-/** Bounds the two review numbers are clamped to: a run of 1–1000, a window of 0 (no limit)–36500 days. */
-const REVIEW_LIMIT_RANGE = [1, 1000] as const;
-const REVIEW_DAYS_RANGE = [0, 36500] as const;
-
-/** Find Matches' defaults and bounds (plan 35 D8): a window of 1–60 days, a lookback of 0 (no limit)–36500, in transit after 1–365. */
-export const MATCH_WINDOW = 10;
-export const MATCH_LOOKBACK = 365;
-export const MATCH_TRANSIT_DAYS = 10;
-const MATCH_WINDOW_RANGE = [1, 60] as const;
-const MATCH_LOOKBACK_RANGE = [0, 36500] as const;
-const MATCH_TRANSIT_RANGE = [1, 365] as const;
-
-/** A persisted whole number inside `range`, or `fallback` for anything else (a stale blob, a hand edit). */
-function wholeIn(value: unknown, range: readonly [number, number], fallback: number): number {
-    if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
-    return Math.min(range[1], Math.max(range[0], Math.round(value)));
-}
-function cleanBenchmarks(value: unknown): string[] {
-    const picked = Array.isArray(value) ? value.filter((v): v is string => typeof v === "string" && TICKER.test(v)) : [];
-    return [...new Set(picked)];
-}
-
-const defaults = (): PersistedSettings => ({
-    serverUrl: null,
-    serverToken: null,
-    columns: defaultColumns(),
-    insightsOpen: true,
-    insightsTab: "activity",
-    hideZeroBalances: true,
-    flowsInOpen: true,
-    flowsOutOpen: true,
-    netWorthChartOpen: true,
-    cashFlowChartOpen: true,
-    budgetGapsOpen: false,
-    startupMoreOpen: false,
-    holdingsPieDimension: "holding",
-    lastProjectionId: null,
-    benchmarks: [],
-    reviewRecentLimit: REVIEW_RECENT_LIMIT,
-    reviewMaxDays: REVIEW_MAX_DAYS,
-    reviewMarkers: true,
-    matchWindow: MATCH_WINDOW,
-    matchLookback: MATCH_LOOKBACK,
-    matchTransitDays: MATCH_TRANSIT_DAYS,
-});
+const UI_PREFS_LOAD_TIMEOUT_MS = 5_000;
 
 /**
  * When the SPA is served in-process by the `ledgeline` binary, that binary
@@ -198,60 +101,39 @@ function embeddedServerUrl(): string | null {
  */
 let storageError: string | null = null;
 
-function load(): PersistedSettings {
-    const embedded = embeddedServerUrl();
-    if (typeof localStorage === "undefined") return {...defaults(), serverUrl: embedded ?? null};
+/** The localStorage blob, parsed; `{}` when there is none or it cannot be read. */
+function readBlob(): Record<string, unknown> {
+    if (typeof localStorage === "undefined") return {};
     try {
         const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
-        const parsed = raw === null ? ({} as Partial<PersistedSettings>) : (JSON.parse(raw) as Partial<PersistedSettings>);
+        const parsed: unknown = raw === null ? {} : JSON.parse(raw);
+        return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+    } catch {
+        return {};
+    }
+}
+
+function load(): Settings {
+    const embedded = embeddedServerUrl();
+    if (typeof localStorage === "undefined") return {...defaultUiPrefs(), serverUrl: embedded ?? null, serverToken: null};
+    try {
+        const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+        const parsed = raw === null ? ({} as Record<string, unknown>) : (JSON.parse(raw) as Record<string, unknown>);
         return {
             // Embedded mode always wins over any persisted URL.
             serverUrl: embedded ?? (typeof parsed.serverUrl === "string" ? parsed.serverUrl : null),
             serverToken: typeof parsed.serverToken === "string" ? parsed.serverToken : null,
-            columns: {...defaultColumns(), ...(typeof parsed.columns === "object" && parsed.columns !== null ? parsed.columns : {})},
-            insightsOpen: typeof parsed.insightsOpen === "boolean" ? parsed.insightsOpen : true,
-            // Validated against the union rather than merely typechecked as a
-            // string: a stale blob naming a tab that no longer exists would
-            // otherwise render an empty box with no way back.
-            insightsTab: INSIGHTS_TABS.includes(parsed.insightsTab as InsightsTab) ? (parsed.insightsTab as InsightsTab) : "activity",
-            hideZeroBalances: typeof parsed.hideZeroBalances === "boolean" ? parsed.hideZeroBalances : true,
-            flowsInOpen: typeof parsed.flowsInOpen === "boolean" ? parsed.flowsInOpen : true,
-            flowsOutOpen: typeof parsed.flowsOutOpen === "boolean" ? parsed.flowsOutOpen : true,
-            netWorthChartOpen: typeof parsed.netWorthChartOpen === "boolean" ? parsed.netWorthChartOpen : true,
-            cashFlowChartOpen: typeof parsed.cashFlowChartOpen === "boolean" ? parsed.cashFlowChartOpen : true,
-            budgetGapsOpen: typeof parsed.budgetGapsOpen === "boolean" ? parsed.budgetGapsOpen : false,
-            startupMoreOpen: typeof parsed.startupMoreOpen === "boolean" ? parsed.startupMoreOpen : false,
-            // Validated against the union, like `insightsTab`: a dimension a
-            // later version dropped must fall back rather than select nothing.
-            holdingsPieDimension: PIE_DIMENSIONS.includes(parsed.holdingsPieDimension as PieDimension)
-                ? (parsed.holdingsPieDimension as PieDimension)
-                : "holding",
-            // Typechecked as a string, like `serverToken` and unlike
-            // `insightsTab`: a file id has no closed set to validate against,
-            // and the server re-validates its shape on every request anyway.
-            // A non-empty string is the only thing worth keeping.
-            lastProjectionId: typeof parsed.lastProjectionId === "string" && parsed.lastProjectionId !== "" ? parsed.lastProjectionId : null,
-            // Validated against the catalog: a symbol the server no longer
-            // offers would otherwise be a checkbox-less request that 400s.
-            benchmarks: cleanBenchmarks(parsed.benchmarks),
-            // Added with plan 32: a blob saved before then has none of these
-            // and gets the defaults; an out-of-range number is clamped.
-            reviewRecentLimit: wholeIn(parsed.reviewRecentLimit, REVIEW_LIMIT_RANGE, REVIEW_RECENT_LIMIT),
-            reviewMaxDays: wholeIn(parsed.reviewMaxDays, REVIEW_DAYS_RANGE, REVIEW_MAX_DAYS),
-            reviewMarkers: typeof parsed.reviewMarkers === "boolean" ? parsed.reviewMarkers : true,
-            // Added with plan 35, the same way.
-            matchWindow: wholeIn(parsed.matchWindow, MATCH_WINDOW_RANGE, MATCH_WINDOW),
-            matchLookback: wholeIn(parsed.matchLookback, MATCH_LOOKBACK_RANGE, MATCH_LOOKBACK),
-            matchTransitDays: wholeIn(parsed.matchTransitDays, MATCH_TRANSIT_RANGE, MATCH_TRANSIT_DAYS),
+            // The blob's view state, for the first paint and for "local" mode.
+            ...cleanUiPrefs(parsed),
         };
     } catch (cause) {
         storageError = `Saved settings couldn't be read (${cause instanceof Error ? cause.message : String(cause)}) — starting from defaults.`;
         console.warn(`[settings] ${storageError}`, cause);
-        return {...defaults(), serverUrl: embedded ?? null};
+        return {...defaultUiPrefs(), serverUrl: embedded ?? null, serverToken: null};
     }
 }
 
-const state = $state<PersistedSettings>(load());
+const state = $state<Settings>(load());
 
 /**
  * Bumped by every SUCCESSFUL `setServerUrl`, including one that verifies the
@@ -264,34 +146,130 @@ const state = $state<PersistedSettings>(load());
  */
 let serverNonce = $state(0);
 
+/**
+ * Where the view state is saved: "local" (the localStorage blob, as before
+ * WP-5) until the engine says it keeps it, then "server". See the file header.
+ */
+let uiMode: "local" | "server" = "local";
+/** True once the first `loadUiPrefs` has settled, either way. */
+let uiReady = $state(false);
+/** What the engine reported about its settings files, plus any failed save. */
+let uiNotices = $state<readonly string[]>([]);
+/** Keys changed since the last save went out, and the engine to send them to. */
+let pending: UiPrefsPatch = {};
+let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+let uiServerUrl: string | null = null;
+
+function writeBlob(blob: Record<string, unknown>): void {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(blob));
+}
+
+/**
+ * Persist to localStorage: the connection always; the view state too in
+ * "local" mode. In "server" mode anything else in the blob is left as it is —
+ * an old blob's view state is the one-time migration's to consume, and it
+ * consumes it only for a ledger with no UI preferences of its own.
+ */
 function persist(): void {
     if (typeof localStorage === "undefined") return;
-    localStorage.setItem(
-        SETTINGS_STORAGE_KEY,
-        JSON.stringify({
-            serverUrl: state.serverUrl,
-            serverToken: state.serverToken,
-            columns: state.columns,
-            insightsOpen: state.insightsOpen,
-            insightsTab: state.insightsTab,
-            hideZeroBalances: state.hideZeroBalances,
-            flowsInOpen: state.flowsInOpen,
-            flowsOutOpen: state.flowsOutOpen,
-            netWorthChartOpen: state.netWorthChartOpen,
-            cashFlowChartOpen: state.cashFlowChartOpen,
-            budgetGapsOpen: state.budgetGapsOpen,
-            startupMoreOpen: state.startupMoreOpen,
-            holdingsPieDimension: state.holdingsPieDimension,
-            lastProjectionId: state.lastProjectionId,
-            benchmarks: state.benchmarks,
-            reviewRecentLimit: state.reviewRecentLimit,
-            reviewMaxDays: state.reviewMaxDays,
-            reviewMarkers: state.reviewMarkers,
-            matchWindow: state.matchWindow,
-            matchLookback: state.matchLookback,
-            matchTransitDays: state.matchTransitDays,
-        })
-    );
+    const connection = {serverUrl: state.serverUrl, serverToken: state.serverToken};
+    if (uiMode === "server") {
+        writeBlob({...readBlob(), ...connection});
+        return;
+    }
+    writeBlob({
+        ...connection,
+        ...Object.fromEntries(UI_PREF_KEYS.map((key) => [key, state[key]])),
+    });
+}
+
+/** Record a change to the view state where this session keeps it. */
+function save(patch: UiPrefsPatch): void {
+    if (uiMode === "local") {
+        persist();
+        return;
+    }
+    pending = mergePatch(pending, patch);
+    if (pendingTimer !== null) clearTimeout(pendingTimer);
+    pendingTimer = setTimeout(() => void flushUiPrefs(), UI_PREFS_SAVE_DELAY_MS);
+}
+
+/** Human-readable lines for the engine's issues: `ledgeline.toml: ui.matchWindow must be a whole number`. */
+function describeIssues(issues: readonly UiPrefsIssue[]): string[] {
+    return issues.map((issue) => `${issue.file}: ${issue.key === null ? "" : `${issue.key} `}${issue.message}`);
+}
+
+/** Send the pending save now. Resolves once it has been answered (or has failed, which is reported, not thrown). */
+async function flushUiPrefs(): Promise<void> {
+    if (pendingTimer !== null) clearTimeout(pendingTimer);
+    pendingTimer = null;
+    const body = pending;
+    pending = {};
+    if (uiServerUrl === null || Object.keys(body).length === 0) return;
+    try {
+        // The answer is NOT applied to the state: the user may have changed
+        // more since this went out, and applying it would undo that.
+        const answer = decodeUiPrefsState(await new LedgelineApi(uiServerUrl).patchUiPrefs(body));
+        uiNotices = describeIssues(answer.issues);
+    } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        uiNotices = [...uiNotices.filter((n) => !n.startsWith("Couldn't save")), `Couldn't save view settings: ${message}`];
+        console.warn("[settings] saving UI preferences failed", cause);
+    }
+}
+
+function applyUiPrefs(prefs: UiPrefs): void {
+    Object.assign(state, prefs);
+}
+
+/**
+ * Fetch the view state from the engine at `serverUrl` and switch to saving it
+ * there; migrate an old localStorage blob's view state into a ledger that has
+ * none yet, once. Never throws: an engine that cannot answer leaves the
+ * session in "local" mode.
+ */
+async function loadUiPrefs(serverUrl: string): Promise<void> {
+    // A save still waiting for the previous engine goes there first.
+    if (uiMode === "server") await flushUiPrefs();
+    const api = new LedgelineApi(serverUrl, {timeoutMs: UI_PREFS_LOAD_TIMEOUT_MS});
+    try {
+        let answer = decodeUiPrefsState(await api.getUiPrefs());
+        if (answer.storage === "browser") {
+            uiMode = "local";
+            return;
+        }
+        const blob = readBlob();
+        const legacy = legacyUiPatch(blob);
+        let migrated = false;
+        if (Object.keys(legacy).length > 0 && !answer.ledgerHasUi) {
+            try {
+                answer = decodeUiPrefsState(await api.patchUiPrefs(legacy));
+                migrated = true;
+            } catch (cause) {
+                // Keep the blob for next time, and its values for this session.
+                console.warn("[settings] could not move saved view settings to the ledger; keeping them in this browser", cause);
+                answer = {...answer, prefs: cleanUiPrefs({...answer.prefs, ...blob})};
+            }
+        }
+        applyUiPrefs(answer.prefs);
+        uiNotices = describeIssues(answer.issues);
+        uiServerUrl = serverUrl;
+        uiMode = "server";
+        if (migrated) writeBlob(withoutUiFields(readBlob()));
+    } catch (cause) {
+        // No route (hledger-web, an older engine) or no answer: the browser's
+        // copy is all there is, as before WP-5.
+        console.warn("[settings] UI preferences unavailable from the engine; using this browser's", cause);
+        uiMode = "local";
+    } finally {
+        uiReady = true;
+    }
+}
+
+/** The members of `next` that differ from `previous`. */
+function changedColumns(previous: ColumnConfig, next: ColumnConfig): Partial<ColumnConfig> {
+    return Object.fromEntries(COLUMN_KEYS.filter((key) => previous[key] !== next[key]).map((key) => [key, next[key]]));
 }
 
 export const settings = {
@@ -307,19 +285,32 @@ export const settings = {
     get storageError(): string | null {
         return storageError;
     },
+    /** Whether the first view-state load from the engine has settled (the layout holds the page until it has). */
+    get uiPrefsReady(): boolean {
+        return uiReady;
+    },
+    /** What the engine said about its settings files, and any save that failed; empty when all is well. */
+    get uiPrefsNotices(): readonly string[] {
+        return uiNotices;
+    },
+    /** Load the view state from the engine at `serverUrl` (see `loadUiPrefs`). */
+    loadUiPrefs,
+    /** Send any debounced view-state save now. */
+    flushUiPrefs,
     get columns(): ColumnConfig {
         return state.columns;
     },
     set columns(columns: ColumnConfig) {
+        const changed = changedColumns(state.columns, columns);
         state.columns = columns;
-        persist();
+        save({columns: changed});
     },
     get insightsOpen(): boolean {
         return state.insightsOpen;
     },
     set insightsOpen(open: boolean) {
         state.insightsOpen = open;
-        persist();
+        save({insightsOpen: open});
     },
     /** Which insights view is showing — see InsightsTab. */
     get insightsTab(): InsightsTab {
@@ -327,7 +318,7 @@ export const settings = {
     },
     set insightsTab(tab: InsightsTab) {
         state.insightsTab = tab;
-        persist();
+        save({insightsTab: tab});
     },
     /** Balances view: hide accounts holding exactly nothing. */
     get hideZeroBalances(): boolean {
@@ -335,7 +326,7 @@ export const settings = {
     },
     set hideZeroBalances(hide: boolean) {
         state.hideZeroBalances = hide;
-        persist();
+        save({hideZeroBalances: hide});
     },
     /** Whether "Money in" is expanded. Also part of what decides the flows are worth fetching. */
     get flowsInOpen(): boolean {
@@ -343,7 +334,7 @@ export const settings = {
     },
     set flowsInOpen(open: boolean) {
         state.flowsInOpen = open;
-        persist();
+        save({flowsInOpen: open});
     },
     /** Whether "Money out" is expanded. */
     get flowsOutOpen(): boolean {
@@ -351,7 +342,7 @@ export const settings = {
     },
     set flowsOutOpen(open: boolean) {
         state.flowsOutOpen = open;
-        persist();
+        save({flowsOutOpen: open});
     },
     /** Whether the Net Worth chart is expanded. */
     get netWorthChartOpen(): boolean {
@@ -359,7 +350,7 @@ export const settings = {
     },
     set netWorthChartOpen(open: boolean) {
         state.netWorthChartOpen = open;
-        persist();
+        save({netWorthChartOpen: open});
     },
     /** Whether the Cash Flow chart is expanded. */
     get cashFlowChartOpen(): boolean {
@@ -367,7 +358,7 @@ export const settings = {
     },
     set cashFlowChartOpen(open: boolean) {
         state.cashFlowChartOpen = open;
-        persist();
+        save({cashFlowChartOpen: open});
     },
     /** Whether the Budget tab's "not budgeted" section is expanded — and thus whether it is fetched. */
     get budgetGapsOpen(): boolean {
@@ -375,7 +366,7 @@ export const settings = {
     },
     set budgetGapsOpen(open: boolean) {
         state.budgetGapsOpen = open;
-        persist();
+        save({budgetGapsOpen: open});
     },
     /** Whether Insights' "More metrics" list is expanded. */
     get startupMoreOpen(): boolean {
@@ -383,7 +374,7 @@ export const settings = {
     },
     set startupMoreOpen(open: boolean) {
         state.startupMoreOpen = open;
-        persist();
+        save({startupMoreOpen: open});
     },
     /** What the Holdings pie is divided by — see the field. */
     get holdingsPieDimension(): PieDimension {
@@ -391,7 +382,7 @@ export const settings = {
     },
     set holdingsPieDimension(dimension: PieDimension) {
         state.holdingsPieDimension = dimension;
-        persist();
+        save({holdingsPieDimension: dimension});
     },
     /** The Projections tab's last-loaded scenario file id — see the field. */
     get lastProjectionId(): string | null {
@@ -399,7 +390,7 @@ export const settings = {
     },
     set lastProjectionId(id: string | null) {
         state.lastProjectionId = id === null || id === "" ? null : id;
-        persist();
+        save({lastProjectionId: state.lastProjectionId});
     },
     /** The benchmark lines overlaid on the Stocks chart, in catalog order. */
     get benchmarks(): readonly string[] {
@@ -409,7 +400,7 @@ export const settings = {
     toggleBenchmark(symbol: string, on: boolean): void {
         const others = state.benchmarks.filter((s) => s !== symbol);
         state.benchmarks = cleanBenchmarks(on ? [...others, symbol] : others);
-        persist();
+        save({benchmarks: [...state.benchmarks]});
     },
     /** Review Recents' cap (D19), 1–1000. */
     get reviewRecentLimit(): number {
@@ -417,7 +408,7 @@ export const settings = {
     },
     set reviewRecentLimit(limit: number) {
         state.reviewRecentLimit = wholeIn(limit, REVIEW_LIMIT_RANGE, REVIEW_RECENT_LIMIT);
-        persist();
+        save({reviewRecentLimit: state.reviewRecentLimit});
     },
     /** The review window in days (D19); 0 = no limit. */
     get reviewMaxDays(): number {
@@ -425,7 +416,7 @@ export const settings = {
     },
     set reviewMaxDays(days: number) {
         state.reviewMaxDays = wholeIn(days, REVIEW_DAYS_RANGE, REVIEW_MAX_DAYS);
-        persist();
+        save({reviewMaxDays: state.reviewMaxDays});
     },
     /** Whether the journal draws review stripes (D20). */
     get reviewMarkers(): boolean {
@@ -433,7 +424,7 @@ export const settings = {
     },
     set reviewMarkers(on: boolean) {
         state.reviewMarkers = on;
-        persist();
+        save({reviewMarkers: on});
     },
     /** Find Matches' window in days (plan 35 D8), 1–60. */
     get matchWindow(): number {
@@ -441,7 +432,7 @@ export const settings = {
     },
     set matchWindow(days: number) {
         state.matchWindow = wholeIn(days, MATCH_WINDOW_RANGE, MATCH_WINDOW);
-        persist();
+        save({matchWindow: state.matchWindow});
     },
     /** Find Matches' lookback in days (D8); 0 = no limit. */
     get matchLookback(): number {
@@ -449,7 +440,7 @@ export const settings = {
     },
     set matchLookback(days: number) {
         state.matchLookback = wholeIn(days, MATCH_LOOKBACK_RANGE, MATCH_LOOKBACK);
-        persist();
+        save({matchLookback: state.matchLookback});
     },
     /** Days before an unmatched clearing posting reads as "in transit" (D8, D10), 1–365. */
     get matchTransitDays(): number {
@@ -457,7 +448,7 @@ export const settings = {
     },
     set matchTransitDays(days: number) {
         state.matchTransitDays = wholeIn(days, MATCH_TRANSIT_RANGE, MATCH_TRANSIT_DAYS);
-        persist();
+        save({matchTransitDays: state.matchTransitDays});
     },
     /** The cross-origin engine token, if one was entered. Null in embedded mode. */
     get serverToken(): string | null {

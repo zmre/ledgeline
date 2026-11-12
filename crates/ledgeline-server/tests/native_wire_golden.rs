@@ -48,7 +48,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use common::{fixture_journal, fixtures_dir};
 use http_body_util::BodyExt;
-use ledgeline::app;
+use ledgeline::{AppDirs, AppState, router_with_state};
 use serde_json::Value;
 use tower::ServiceExt;
 
@@ -78,13 +78,21 @@ fn uri_for(name: &str) -> String {
 
 /// `GET uri` against a fresh app over `fixtures/sample.journal`, returning the
 /// raw response body bytes (what the SPA's `fetch` actually receives).
+///
+/// The app's own directories are a scratch dir, never the developer's config
+/// directory: `/api/ui-prefs` reads `ui-prefs.toml` from there, and the golden
+/// must not depend on what one machine has in it. `just snapshot-native`
+/// points `$LEDGELINE_CONFIG_DIR` at a scratch dir for the same reason.
 async fn body_bytes(uri: &str) -> Vec<u8> {
     let request = Request::builder()
         .method("GET")
         .uri(uri)
         .body(Body::empty())
         .expect("request builds");
-    let response = app(&fixture_journal())
+    let scratch = tempfile::TempDir::new().expect("scratch app dirs");
+    let state =
+        AppState::from_journal(&fixture_journal()).with_app_dirs(AppDirs::under(scratch.path()));
+    let response = router_with_state(state)
         .oneshot(request)
         .await
         .expect("router responds");
@@ -298,6 +306,11 @@ async fn other_holdings_series_matches_the_native_golden() {
     assert_matches_golden("holdings-other-series").await;
 }
 
+#[tokio::test]
+async fn ui_prefs_matches_the_native_golden() {
+    assert_matches_golden("ui-prefs").await;
+}
+
 // ---------------------------------------------------------------------------
 // Meta-tests on the fixture set itself
 // ---------------------------------------------------------------------------
@@ -311,7 +324,7 @@ fn every_manifest_entry_is_covered_by_a_committed_body() {
     let entries = requests();
     assert_eq!(
         entries.len(),
-        22,
+        23,
         "the manifest gained or lost an endpoint; add/remove the matching \
          #[tokio::test] above and update this count"
     );
@@ -352,7 +365,9 @@ fn every_pinned_request_fixes_its_own_dates() {
     ///   `writable` flag — is a function of that file and of
     ///   `Journal::source_files`. There is no window, no as-of and no
     ///   `today_utc()` anywhere in `projections_api::document`.
-    const NO_DATE_TO_PIN: [&str; 1] = ["projections-asset"];
+    /// - `ui-prefs` is the SPA's view state, read from two settings files and
+    ///   the built-in defaults; nothing in `ui_prefs::current` reads a clock.
+    const NO_DATE_TO_PIN: [&str; 2] = ["projections-asset", "ui-prefs"];
 
     for (name, uri) in requests() {
         if NO_DATE_TO_PIN.contains(&name.as_str()) {

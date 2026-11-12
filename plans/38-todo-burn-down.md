@@ -21,7 +21,7 @@ it.
 | Insights refetch shows stale numbers silently         | WP-3 (done)                 |
 | Import preview diffs against the capped alias list    | WP-4                        |
 | ~14 private "no ASCII control char" checks            | WP-4                        |
-| Desktop app loses localStorage settings on relaunch   | WP-5 (redesigned, see below)|
+| Desktop app loses localStorage settings on relaunch   | WP-5 (redesigned, see below) — done |
 | Pie chart oval on Linux                               | Kept in TODO; needs a WebKitGTK repro |
 | CSP `src=` attribute match                            | Deleted                     |
 | hledger `-f` pin check after each run                 | Deleted                     |
@@ -310,8 +310,41 @@ port, and with it the WebKit origin, changes on each launch. Patrick
   `ledgeline.toml` if you don't want UI changes in the repo history.
 
 **Done when:**
-- Relaunching the desktop app keeps the column, chart and benchmark settings.
-- Two ledgers keep different settings.
-- A hand-written comment in `ledgeline.toml` survives an automatic save.
-- An existing `prefs.json` user ends up with `prefs.toml`, and their hledger
-  path still works.
+- [x] Relaunching the desktop app keeps the column, chart and benchmark
+  settings. (They live in `ledgeline.toml` now, so the WebView origin no
+  longer matters. Not yet checked by hand in a packaged build.)
+- [x] Two ledgers keep different settings
+  (`two_ledgers_keep_different_settings_and_opening_one_reloads_them`).
+- [x] A hand-written comment in `ledgeline.toml` survives an automatic save
+  (`a_hand_written_comment_survives_an_automatic_save`).
+- [x] An existing `prefs.json` user ends up with `prefs.toml`, and their
+  hledger path still works (`a_legacy_prefs_json_is_migrated_once_and_kept_aside`).
+
+**Status (2026-11-12): done.** Four commits:
+`feat(prefs): store preferences as TOML`,
+`feat(ui-prefs): per-ledger UI preferences in ledgeline.toml` (engine,
+`GET`/`PATCH /api/ui-prefs`, golden `fixtures/native/v1/ui-prefs.json`), and
+`feat(web): view settings load from and save to the ledger`, then
+`docs: settings files`. Choices made during the work:
+
+- **A third storage mode, `browser`.** `$LEDGELINE_UI_PREFS_IN_BROWSER` makes
+  a headless server read and write no settings file and answer the defaults;
+  the SPA then keeps its view state in localStorage as before. The e2e
+  (`playwright.config.ts`, `playwright.docs.config.ts`) and live-contract
+  (`just test-integration`, `ci.yml`) harnesses set it, because they run over
+  committed fixtures (a save must not write `fixtures/ledgeline.toml`) and
+  every spec seeds its own view state per browser context. One shared
+  server-side file would leak state between specs. The SPA also falls back
+  to this mode when the engine has no `/api/ui-prefs` route.
+- **"No ledger open" is a state with no journal file** (`storage: memory`).
+  Saves stay in memory for the process.
+- **Problems finding:** the diagnostics drawer is journal-derived and
+  snapshot-cached, so there was no cheap hook. Invalid values come back as
+  `issues` on the `/api/ui-prefs` body instead, and the layout shows them in
+  a dismissible notice. Moving them into the Problems drawer is a follow-up.
+- **The localStorage migration only drops fields after a successful PATCH.**
+  When the ledger already has a `[ui]` table, the blob is left alone (it may
+  still migrate into a ledger that has none). When the PATCH fails, the blob
+  is kept and its values used for the session.
+- **Not done:** flushing a pending (≤ 500 ms) save on quit or File→Open. A
+  change made in the last half-second before either can be lost.

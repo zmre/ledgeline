@@ -31,8 +31,8 @@
     // the tab opens the DEFAULT scenario, if one is starred (plan 33 D2): the
     // file whose header says `; default-scenario: true`. Without one, or if it
     // cannot be opened, it reopens whatever was last loaded
-    // (`settings.lastProjectionId` — decision 10, per-browser view state rather
-    // than `prefs.json`), and failing that it seeds. A remembered id that no
+    // (`settings.lastProjectionId` — decision 10, per-ledger view state rather
+    // than `prefs.toml`), and failing that it seeds. A remembered id that no
     // longer names a file is not an error: it is forgotten and the tab seeds
     // instead, which is where a user who deleted a file outside Ledgeline should
     // end up. Coming back to the tab within a session opens NOTHING: whatever
