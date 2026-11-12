@@ -768,9 +768,10 @@ async fn prefs_round_trip_child() {
 }
 
 /// A `prefs.json` written while the git safety net existed still carries
-/// `gitAutocommit`. `GET /api/prefs` loads it — keeping the `hledgerPath` beside
-/// it — and does not report the retired key. A client still SENDING the key is
-/// refused (the wire body is `deny_unknown_fields`), and nothing is stored.
+/// `gitAutocommit`. `GET /api/prefs` migrates it to `prefs.toml` — keeping the
+/// `hledgerPath` beside it — and does not report the retired key. A client
+/// still SENDING the key is refused (the wire body is `deny_unknown_fields`),
+/// and nothing is stored.
 #[tokio::test]
 async fn a_legacy_git_autocommit_pref_loads_and_is_refused_on_the_wire() {
     let app = TempDir::new().expect("app dir");
@@ -791,15 +792,18 @@ async fn a_legacy_git_autocommit_pref_loads_and_is_refused_on_the_wire() {
     let (status, body) = get(&tree, "/api/prefs").await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body, json!({"hledgerPath": path}));
+    let config = app.path().join("config");
     assert!(
-        !app.path()
-            .join("config")
-            .join("prefs.json.corrupt")
-            .exists(),
+        !config.join("prefs.json.corrupt").exists(),
         "a legacy store is not a corrupt one"
     );
+    assert!(
+        config.join("prefs.json.migrated").is_file() && !stored.exists(),
+        "the legacy store is migrated and kept aside, not deleted"
+    );
+    let stored = config.join("prefs.toml");
 
-    let before = std::fs::read(&stored).expect("read prefs.json");
+    let before = std::fs::read(&stored).expect("read prefs.toml");
     let (status, _) = put(
         &tree,
         "/api/prefs",
@@ -807,7 +811,7 @@ async fn a_legacy_git_autocommit_pref_loads_and_is_refused_on_the_wire() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(std::fs::read(&stored).expect("read prefs.json"), before);
+    assert_eq!(std::fs::read(&stored).expect("read prefs.toml"), before);
 }
 
 /// The `AppDirs` seam (plan 26, A2): a state given its own directories keeps
@@ -826,11 +830,15 @@ async fn injected_app_dirs_hold_the_prefs_and_the_staging_area() {
     let path = json!(stub.to_string_lossy());
     let (status, body) = put(&tree, "/api/prefs", json!({"hledgerPath": path})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let stored = app.path().join("config").join("prefs.json");
-    let saved: Value =
-        serde_json::from_str(&std::fs::read_to_string(&stored).expect("prefs.json written"))
-            .expect("prefs.json is JSON");
-    assert_eq!(saved["hledgerPath"], path);
+    let stored = app.path().join("config").join("prefs.toml");
+    let saved: toml_edit::DocumentMut = std::fs::read_to_string(&stored)
+        .expect("prefs.toml written")
+        .parse()
+        .expect("prefs.toml is TOML");
+    assert_eq!(
+        saved.get("hledgerPath").and_then(toml_edit::Item::as_str),
+        path.as_str()
+    );
     let (_, reloaded) = get(&tree, "/api/prefs").await;
     assert_eq!(reloaded["hledgerPath"], path);
 

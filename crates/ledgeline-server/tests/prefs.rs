@@ -210,7 +210,7 @@ fn child_dir() -> Option<PathBuf> {
 #[test]
 fn prefs_round_trip_through_the_store() {
     let dir = TempDir::new().expect("temp dir");
-    let store = dir.path().join("prefs.json");
+    let store = dir.path().join("prefs.toml");
     let stub = write_stub(dir.path(), "hledger", "hledger 1.52, mac-aarch64");
 
     for hledger_path in [Some(stub), None] {
@@ -229,23 +229,23 @@ fn prefs_round_trip_through_the_store() {
 #[test]
 fn a_missing_store_reads_as_defaults() {
     let dir = TempDir::new().expect("temp dir");
-    let store = dir.path().join("prefs.json");
+    let store = dir.path().join("prefs.toml");
 
     assert_eq!(prefs::load_from(&store), Prefs::default());
     assert_eq!(Prefs::default().hledger_path, None);
     assert!(!store.exists(), "reading must not create the store");
     assert!(
-        !store.with_extension("json.corrupt").exists(),
+        !store.with_extension("toml.corrupt").exists(),
         "an absent store is not a corrupt one"
     );
 }
 
-/// The wire names are camelCase, because the SPA reads this same shape off
-/// `/api/prefs`. A rename here silently breaks the settings form.
+/// The stored key is camelCase, matching the `/api/prefs` wire the SPA reads,
+/// and the file is TOML a person can read.
 #[test]
-fn the_stored_json_uses_camel_case_keys() {
+fn the_stored_toml_uses_camel_case_keys() {
     let dir = TempDir::new().expect("temp dir");
-    let store = dir.path().join("prefs.json");
+    let store = dir.path().join("prefs.toml");
     let stub = write_stub(dir.path(), "hledger", "hledger 1.52, mac-aarch64");
 
     prefs::store_in(
@@ -257,80 +257,203 @@ fn the_stored_json_uses_camel_case_keys() {
     .expect("store");
 
     let text = std::fs::read_to_string(&store).expect("read the store back");
-    assert!(text.contains("\"hledgerPath\""), "got: {text}");
+    assert!(text.contains("\nhledgerPath = \""), "got: {text}");
+    assert!(text.starts_with("# Ledgeline preferences."), "got: {text}");
 }
 
 /// Forward compatibility, both directions: a file written by a LATER version
-/// carries fields we have never heard of, and one written by an EARLIER version
-/// is missing fields we now expect. Neither may fail to load — that is what
-/// `#[serde(default)]` plus serde's tolerance of unknown fields buys, and it is
-/// worth a test because adding `deny_unknown_fields` later would look harmless.
+/// carries keys we have never heard of, and one written by an EARLIER version
+/// is missing keys we now expect. Neither may fail to load.
 #[test]
 fn unknown_and_missing_fields_both_load() {
     let dir = TempDir::new().expect("temp dir");
-    let store = dir.path().join("prefs.json");
+    let store = dir.path().join("prefs.toml");
 
-    // A newer version's file: an unknown scalar, an unknown object, and a key
-    // we do know.
     std::fs::write(
         &store,
-        r#"{
-          "hledgerPath": null,
-          "gitAutocommit": true,
-          "futureSetting": "some value",
-          "futureObject": { "nested": [1, 2, 3] }
-        }"#,
+        "futureSetting = \"some value\"\n[futureTable]\nnested = [1, 2, 3]\n",
     )
     .expect("write a forward-compatible store");
 
     assert_eq!(
         prefs::load_from(&store),
         Prefs { hledger_path: None },
-        "unknown fields must be ignored, not rejected"
+        "unknown keys must be ignored, not rejected"
     );
     assert!(
-        !store.with_extension("json.corrupt").exists(),
-        "a readable file with extra fields is not corrupt"
+        !store.with_extension("toml.corrupt").exists(),
+        "a readable file with extra keys is not corrupt"
     );
 
     // An older version's file: no keys at all.
-    std::fs::write(&store, "{}").expect("write an empty object");
+    std::fs::write(&store, "").expect("write an empty file");
     assert_eq!(prefs::load_from(&store), Prefs::default());
 }
 
-/// A `prefs.json` written before the git safety net was removed still carries
-/// `gitAutocommit`. It must load — keeping the `hledgerPath` beside it — and is
-/// not corrupt; the next store simply drops the retired key.
+/// What TOML through `toml_edit` buys over the JSON store: a save from the
+/// settings form keeps a person's comments, the key order, and keys this build
+/// does not know (a newer build's settings), instead of rewriting the file.
 #[test]
-fn a_legacy_git_autocommit_field_is_ignored_and_dropped_on_the_next_store() {
+fn a_store_keeps_comments_and_unknown_keys() {
     let dir = TempDir::new().expect("temp dir");
-    let store = dir.path().join("prefs.json");
+    let store = dir.path().join("prefs.toml");
     let stub = write_stub(dir.path(), "hledger", "hledger 1.52, mac-aarch64");
+    std::fs::write(
+        &store,
+        "# my own note\nfutureSetting = 1   # from a newer build\nhledgerPath = \"/old\" # pinned for work\n\n[futureTable]\nx = true\n",
+    )
+    .expect("write a hand-edited store");
 
+    prefs::store_in(
+        &store,
+        &Prefs {
+            hledger_path: Some(stub.clone()),
+        },
+    )
+    .expect("store");
+    let text = std::fs::read_to_string(&store).expect("read back");
+    let quoted = toml_edit::Value::from(stub.to_str().expect("utf-8 temp path")).to_string();
+    assert_eq!(
+        text,
+        format!(
+            "# my own note\nfutureSetting = 1   # from a newer build\nhledgerPath = {quoted} # pinned for work\n\n[futureTable]\nx = true\n"
+        )
+    );
+
+    // Clearing the path removes just that key.
+    prefs::store_in(&store, &Prefs::default()).expect("clear");
+    let text = std::fs::read_to_string(&store).expect("read back");
+    assert!(!text.contains("hledgerPath"), "got: {text}");
+    assert!(
+        text.contains("# my own note") && text.contains("[futureTable]"),
+        "got: {text}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// prefs: the one-shot migration from prefs.json
+// ---------------------------------------------------------------------------
+
+/// The upgrade path. A `prefs.json` from before WP-5 — still carrying the
+/// retired `gitAutocommit` — becomes `prefs.toml` holding the same hledger
+/// path, and the old file is kept, renamed, byte for byte.
+#[test]
+fn a_legacy_prefs_json_is_migrated_once_and_kept_aside() {
     for legacy in [
         serde_json::json!(true),
         serde_json::json!(false),
         serde_json::Value::Null,
     ] {
-        let text = serde_json::json!({ "hledgerPath": stub, "gitAutocommit": legacy });
-        std::fs::write(&store, text.to_string()).expect("write a legacy store");
+        let dir = TempDir::new().expect("temp dir");
+        let store = dir.path().join("prefs.toml");
+        let json = dir.path().join("prefs.json");
+        let stub = write_stub(dir.path(), "hledger", "hledger 1.52, mac-aarch64");
+        let text = serde_json::json!({ "hledgerPath": stub, "gitAutocommit": legacy }).to_string();
+        std::fs::write(&json, &text).expect("write a legacy store");
 
         assert_eq!(
             prefs::load_from(&store),
             Prefs {
                 hledger_path: Some(stub.clone()),
             },
-            "a legacy `gitAutocommit: {legacy}` must not stop the store loading"
+            "the hledger path survives the migration (gitAutocommit: {legacy})"
         );
+        let toml = std::fs::read_to_string(&store).expect("prefs.toml written");
+        assert!(toml.contains("hledgerPath = "), "got: {toml}");
+        assert!(!toml.contains("gitAutocommit"), "got: {toml}");
         assert!(
-            !store.with_extension("json.corrupt").exists(),
-            "a legacy store is not a corrupt one"
+            !json.exists(),
+            "prefs.json is renamed, not left to migrate again"
         );
-    }
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("prefs.json.migrated"))
+                .expect("the old file is kept"),
+            text
+        );
 
-    prefs::store_in(&store, &prefs::load_from(&store)).expect("store");
-    let text = std::fs::read_to_string(&store).expect("read the store back");
-    assert!(!text.contains("gitAutocommit"), "got: {text}");
+        // Idempotent: a second load reads prefs.toml and touches nothing.
+        assert_eq!(prefs::load_from(&store).hledger_path, Some(stub));
+        assert!(!json.exists());
+    }
+}
+
+/// The migration converts and does not re-validate: probing the binary would
+/// EXECUTE it during a startup read. A stale path survives, as any stale path
+/// survives `load`, and `Hledger::resolve` falls through it.
+#[test]
+fn the_migration_never_probes_the_stored_path() {
+    let dir = TempDir::new().expect("temp dir");
+    let store = dir.path().join("prefs.toml");
+    let counter = dir.path().join("runs");
+    let impostor = dir.path().join("counting-impostor");
+    std::fs::write(
+        &impostor,
+        format!("#!/bin/sh\nprintf 'x\\n' >> '{}'\n", counter.display()),
+    )
+    .expect("write counting stub");
+    make_executable(&impostor);
+    std::fs::write(
+        dir.path().join("prefs.json"),
+        serde_json::json!({ "hledgerPath": impostor }).to_string(),
+    )
+    .expect("write a legacy store");
+
+    assert_eq!(prefs::load_from(&store).hledger_path, Some(impostor));
+    assert!(!counter.exists(), "the migration must not run the binary");
+}
+
+/// `prefs.toml` wins once it exists: a `prefs.json` beside it (restored from a
+/// backup, say) is neither read nor touched.
+#[test]
+fn an_existing_prefs_toml_is_never_overwritten_by_a_migration() {
+    let dir = TempDir::new().expect("temp dir");
+    let store = dir.path().join("prefs.toml");
+    let json = dir.path().join("prefs.json");
+    std::fs::write(&store, "hledgerPath = \"/from/toml\"\n").expect("write prefs.toml");
+    std::fs::write(&json, r#"{"hledgerPath": "/from/json"}"#).expect("write prefs.json");
+
+    assert_eq!(
+        prefs::load_from(&store).hledger_path,
+        Some(PathBuf::from("/from/toml"))
+    );
+    assert_eq!(
+        std::fs::read_to_string(&json).expect("untouched"),
+        r#"{"hledgerPath": "/from/json"}"#
+    );
+}
+
+/// An unparseable `prefs.json` is set aside as corrupt, exactly as the JSON
+/// store did, and no `prefs.toml` is invented from it.
+#[test]
+fn a_corrupt_legacy_prefs_json_is_set_aside_not_migrated() {
+    let dir = TempDir::new().expect("temp dir");
+    let store = dir.path().join("prefs.toml");
+    std::fs::write(dir.path().join("prefs.json"), "{ not json ]").expect("write garbage");
+
+    assert_eq!(prefs::load_from(&store), Prefs::default());
+    assert!(!store.exists());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("prefs.json.corrupt")).expect("kept"),
+        "{ not json ]"
+    );
+}
+
+/// A store through the settings form on a machine that still has only
+/// `prefs.json` migrates first, so the legacy file is not left behind
+/// unmigrated under a new `prefs.toml`.
+#[test]
+fn storing_migrates_a_legacy_file_first() {
+    let dir = TempDir::new().expect("temp dir");
+    let store = dir.path().join("prefs.toml");
+    std::fs::write(
+        dir.path().join("prefs.json"),
+        r#"{"hledgerPath": "/legacy/hledger"}"#,
+    )
+    .expect("write a legacy store");
+
+    prefs::store_in(&store, &Prefs::default()).expect("store");
+    assert!(dir.path().join("prefs.json.migrated").is_file());
+    assert_eq!(prefs::load_from(&store), Prefs::default());
 }
 
 // ---------------------------------------------------------------------------
@@ -344,8 +467,8 @@ fn a_legacy_git_autocommit_field_is_ignored_and_dropped_on_the_next_store() {
 #[test]
 fn a_corrupt_store_is_moved_aside_on_load_and_its_bytes_survive() {
     let dir = TempDir::new().expect("temp dir");
-    let store = dir.path().join("prefs.json");
-    let garbage = "{ not valid json ]";
+    let store = dir.path().join("prefs.toml");
+    let garbage = "hledgerPath = [unclosed";
     std::fs::write(&store, garbage).expect("write garbage");
 
     assert_eq!(
@@ -354,7 +477,7 @@ fn a_corrupt_store_is_moved_aside_on_load_and_its_bytes_survive() {
         "an unreadable store reads as defaults"
     );
 
-    let aside = store.with_extension("json.corrupt");
+    let aside = store.with_extension("toml.corrupt");
     assert_eq!(
         std::fs::read_to_string(&aside).expect("the unreadable bytes are kept"),
         garbage,
@@ -369,8 +492,8 @@ fn a_corrupt_store_is_moved_aside_on_load_and_its_bytes_survive() {
 #[test]
 fn storing_over_a_corrupt_file_preserves_it_too() {
     let dir = TempDir::new().expect("temp dir");
-    let store = dir.path().join("prefs.json");
-    let garbage = "\u{feff}not json at all";
+    let store = dir.path().join("prefs.toml");
+    let garbage = "\u{feff}not toml = = at all";
     std::fs::write(&store, garbage).expect("write garbage");
     let stub = write_stub(dir.path(), "hledger", "hledger 1.52, mac-aarch64");
 
@@ -383,7 +506,7 @@ fn storing_over_a_corrupt_file_preserves_it_too() {
     .expect("store over a corrupt file");
 
     assert_eq!(
-        std::fs::read_to_string(store.with_extension("json.corrupt"))
+        std::fs::read_to_string(store.with_extension("toml.corrupt"))
             .expect("the unreadable bytes are kept"),
         garbage
     );
@@ -394,23 +517,28 @@ fn storing_over_a_corrupt_file_preserves_it_too() {
     );
 }
 
-/// JSON that parses but is the wrong SHAPE (an array, a bare string, a number)
-/// is corrupt too — `serde_json::from_str::<Prefs>` is what draws the line, and
-/// each of these must take the preserve-and-recover path rather than panicking
-/// or reading as defaults-with-the-file-still-there.
+/// TOML that parses but holds a `hledgerPath` of the wrong TYPE (a number, an
+/// array, a table, a boolean) is corrupt too — not something this store wrote
+/// or can interpret — and each must take the preserve-and-recover path rather
+/// than panicking or reading as defaults-with-the-file-still-there.
 #[test]
-fn well_formed_json_of_the_wrong_shape_is_also_corrupt() {
-    for (index, garbage) in ["[1, 2, 3]", "\"a string\"", "42", "null"]
-        .into_iter()
-        .enumerate()
+fn well_formed_toml_of_the_wrong_shape_is_also_corrupt() {
+    for (index, garbage) in [
+        "hledgerPath = 42\n",
+        "hledgerPath = [1, 2, 3]\n",
+        "[hledgerPath]\na = 1\n",
+        "hledgerPath = true\n",
+    ]
+    .into_iter()
+    .enumerate()
     {
         let dir = TempDir::new().expect("temp dir");
-        let store = dir.path().join("prefs.json");
+        let store = dir.path().join("prefs.toml");
         std::fs::write(&store, garbage).expect("write");
 
         assert_eq!(prefs::load_from(&store), Prefs::default(), "case {index}");
         assert_eq!(
-            std::fs::read_to_string(store.with_extension("json.corrupt")).expect("kept"),
+            std::fs::read_to_string(store.with_extension("toml.corrupt")).expect("kept"),
             garbage,
             "case {index}: {garbage} must be preserved, not overwritten"
         );
@@ -429,7 +557,7 @@ fn well_formed_json_of_the_wrong_shape_is_also_corrupt() {
 #[test]
 fn an_unusable_hledger_path_is_rejected_and_nothing_is_written() {
     let dir = TempDir::new().expect("temp dir");
-    let store = dir.path().join("prefs.json");
+    let store = dir.path().join("prefs.toml");
 
     let missing = dir.path().join("no-such-binary");
     let a_directory = dir.path().join("subdir");
@@ -492,7 +620,7 @@ fn a_binary_writable_by_other_users_is_refused() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = TempDir::new().expect("temp dir");
-    let store = dir.path().join("prefs.json");
+    let store = dir.path().join("prefs.toml");
 
     // A perfectly plausible hledger — right banner, execute bit set — that
     // anyone on the machine may rewrite between our check and our exec.
@@ -529,7 +657,7 @@ fn a_binary_writable_by_other_users_is_refused() {
 #[test]
 fn a_binary_that_does_not_answer_like_hledger_is_refused() {
     let dir = TempDir::new().expect("temp dir");
-    let store = dir.path().join("prefs.json");
+    let store = dir.path().join("prefs.toml");
 
     // Owner-only, executable, absolute, a regular file — it passes every check
     // that existed before — and it is not hledger.
@@ -572,7 +700,7 @@ fn a_binary_that_does_not_answer_like_hledger_is_refused() {
 #[test]
 fn the_store_time_probe_runs_the_candidate_exactly_once() {
     let dir = TempDir::new().expect("temp dir");
-    let store = dir.path().join("prefs.json");
+    let store = dir.path().join("prefs.toml");
     let counter = dir.path().join("runs");
     let impostor = dir.path().join("counting-impostor");
     std::fs::write(
@@ -612,7 +740,7 @@ fn the_store_time_probe_runs_the_candidate_exactly_once() {
 #[test]
 fn a_too_old_hledger_is_still_a_valid_preference() {
     let dir = TempDir::new().expect("temp dir");
-    let store = dir.path().join("prefs.json");
+    let store = dir.path().join("prefs.toml");
     let ancient = write_stub(dir.path(), "hledger", "hledger 1.30, ancient");
 
     prefs::store_in(
@@ -631,7 +759,7 @@ fn a_too_old_hledger_is_still_a_valid_preference() {
 #[test]
 fn a_rejection_message_never_names_the_path() {
     let dir = TempDir::new().expect("temp dir");
-    let store = dir.path().join("prefs.json");
+    let store = dir.path().join("prefs.toml");
     let missing = dir.path().join("definitely-not-here");
 
     let error = prefs::store_in(
@@ -657,7 +785,7 @@ fn a_rejection_message_never_names_the_path() {
 #[test]
 fn a_rejected_write_leaves_existing_settings_intact() {
     let dir = TempDir::new().expect("temp dir");
-    let store = dir.path().join("prefs.json");
+    let store = dir.path().join("prefs.toml");
     let stub = write_stub(dir.path(), "hledger", "hledger 1.52, mac-aarch64");
 
     let good = Prefs {
@@ -684,7 +812,7 @@ fn a_rejected_write_leaves_existing_settings_intact() {
 #[test]
 fn clearing_the_hledger_path_is_always_valid() {
     let dir = TempDir::new().expect("temp dir");
-    let store = dir.path().join("prefs.json");
+    let store = dir.path().join("prefs.toml");
     let stub = write_stub(dir.path(), "hledger", "hledger 1.52, mac-aarch64");
 
     prefs::store_in(
@@ -709,7 +837,7 @@ fn clearing_the_hledger_path_is_always_valid() {
 #[test]
 fn the_store_is_written_atomically_and_owner_only() {
     let dir = TempDir::new().expect("temp dir");
-    let store = dir.path().join("prefs.json");
+    let store = dir.path().join("prefs.toml");
 
     prefs::store_in(&store, &Prefs { hledger_path: None }).expect("store");
 
@@ -744,7 +872,7 @@ fn the_store_is_written_atomically_and_owner_only() {
 #[test]
 fn storing_creates_a_missing_config_directory() {
     let dir = TempDir::new().expect("temp dir");
-    let store = dir.path().join("nested").join("deeper").join("prefs.json");
+    let store = dir.path().join("nested").join("deeper").join("prefs.toml");
     let stub = write_stub(dir.path(), "hledger", "hledger 1.52, mac-aarch64");
 
     prefs::store_in(
@@ -778,7 +906,7 @@ fn the_config_dir_env_var_redirects_the_store() {
 
     // Asserted from the PARENT as well, so the child cannot pass by asserting
     // nothing: the file really is where the env var said, under that exact name.
-    let store = dir.path().join("prefs.json");
+    let store = dir.path().join("prefs.toml");
     assert!(
         store.is_file(),
         "the child's `store()` must have written {}",
@@ -817,7 +945,7 @@ fn child_config_dir_env_var_is_honoured() {
         "and load reads back what store wrote"
     );
     assert!(
-        dir.join("prefs.json").is_file(),
+        dir.join("prefs.toml").is_file(),
         "the store must live directly in $LEDGELINE_CONFIG_DIR"
     );
 }

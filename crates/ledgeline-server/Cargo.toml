@@ -117,6 +117,11 @@ arc-swap = "1"
 # Live reload (the `watcher` feature): a file watcher over the journal's real
 # directories. A host without one polls `AppState::refresh()` instead.
 notify = { version = "8", optional = true }
+# Settings files (`prefs.toml`, `ui-prefs.toml`, `ledgeline.toml`) are read and
+# rewritten through toml_edit's document model, so a hand-written comment, the
+# key order and keys this build does not know all survive an automatic save.
+# Already in the graph (0.25, via other crates' build deps), so cargo unifies it.
+toml_edit = "0.25"
 # Locate the per-user config directory for the "recently opened journals" store
 # (used in both the GUI and headless builds).
 dirs = "7"
