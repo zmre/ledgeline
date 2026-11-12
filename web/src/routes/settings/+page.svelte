@@ -38,11 +38,20 @@
     // route, so a mount-only read left the old tab showing under the new URL.
     // The mirror below writes with shallow `replaceState`, which is not a
     // navigation, so this never echoes our own writes back.
-    afterNavigate(() => {
+    //
+    // ALSO read on mount: the layout holds every page until the view settings
+    // load (plan 38 WP-5), so on a cold start this page can mount AFTER the
+    // first navigation has finished, and `afterNavigate` never fires for it.
+    // Restoring twice is harmless — it is the same parse of the same address.
+    function restore(): void {
         Object.assign(params, searchToParams(window.location.search, defaultSettingsParams()));
         restored = true;
+    }
+    afterNavigate(restore);
+    onMount(() => {
+        restore();
+        return () => mirror.stop();
     });
-    onMount(() => () => mirror.stop());
 
     const mirror = searchMirror();
     $effect(() => {
