@@ -6,10 +6,9 @@ export const API_TOKEN = "ledgeline-e2e-token";
 /**
  * Every engine's environment. `LEDGELINE_UI_PREFS_IN_BROWSER` keeps the SPA's
  * view state in each browser context's localStorage, as before plan 38 WP-5:
- * the engines run over committed fixtures (a save must not write a
- * `ledgeline.toml` into fixtures/), and every spec seeds its own view state
- * there and expects to start clean, which one shared server-side file would
- * leak between specs.
+ * otherwise a save lands in the developer's own global `ui-prefs.toml`. Every
+ * spec also seeds its own view state in localStorage and expects to start
+ * clean, which one shared server-side file would leak between specs.
  */
 const ENGINE_ENV = {LEDGELINE_TOKEN: API_TOKEN, LEDGELINE_IGNORE_USER_HLEDGER_CONF: "1", LEDGELINE_UI_PREFS_IN_BROWSER: "1"};
 

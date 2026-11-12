@@ -17,7 +17,7 @@ Net Worth has **End**, **Interval** (Monthly, Quarterly or Yearly; no Total), **
 
 ## The chart
 
-The chart sits in a collapsible panel that is open by default. Whether it is open is saved for this ledger (see [Settings files](../settings/settings-files.md)).
+The chart sits in a collapsible panel that is open by default. Ledgeline remembers whether it is open (see [Settings files](../settings/settings-files.md)).
 
 ## The chart draws exactly its table
 

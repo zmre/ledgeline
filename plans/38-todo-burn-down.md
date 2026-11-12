@@ -236,7 +236,8 @@ port, and with it the WebKit origin, changes on each launch. Patrick
   allow a different theme per entity, so you can tell at a glance which one
   you're in.
 - There is a global file, and each ledger can override it.
-- Automatic saves always go to the ledger's own file.
+- ~~Automatic saves always go to the ledger's own file.~~ Reversed
+  2026-11-12, see "Save routing" below.
 - Settings files are TOML, not JSON, so people can edit them by hand. Recents
   stay JSON.
 
@@ -245,8 +246,8 @@ port, and with it the WebKit origin, changes on each launch. Patrick
 | File                                 | Location                      | Written by          | Holds                                    |
 |--------------------------------------|-------------------------------|---------------------|------------------------------------------|
 | `prefs.toml`                         | config dir (`AppDirs`)        | Settings form (`PUT /api/prefs`) | `hledgerPath` (was `prefs.json`) |
-| `ui-prefs.toml`                      | config dir                    | **Hand-edit only**  | Global UI defaults                       |
-| `ledgeline.toml`                     | the main journal's directory  | App, automatically  | Per-ledger UI overrides                  |
+| `ui-prefs.toml`                      | config dir                    | App (created on first save) and the user | Global UI prefs        |
+| `ledgeline.toml`                     | the main journal's directory  | **The user creates it**; the app only updates keys it already sets | Per-ledger UI overrides |
 | `recents.json`                       | config dir                    | App                 | Unchanged                                |
 
 ### Decisions
@@ -259,32 +260,61 @@ port, and with it the WebKit origin, changes on each launch. Patrick
   theme, without a second file. `ui-prefs.toml` uses the same keys at top
   level.
 - **Only changed keys are written.** An automatic save PATCHes just the keys
-  that changed. `ledgeline.toml` therefore holds only what the user actually
-  changed in that ledger, and defaults for untouched keys still come from the
-  global file.
+  that changed, and each is routed on its own (see "Save routing").
 - **Comments survive.** Writes go through `toml_edit`, so comments,
   key order and unknown keys a person added are kept. This also removes
   `prefs.rs`'s old "unknown fields are not round-tripped" trade-off.
-- **Never automatic.** The app never writes `ui-prefs.toml`.
 - **`ledgeline.toml` is untrusted input.** It travels with a cloned or shared
   repo, so it may hold UI prefs only. Nothing in it is ever executed or
   security-relevant: no `hledgerPath`, no server URL or token. Every value is
   validated when loaded: numbers are clamped, enums checked, the file size is
   capped, and an invalid key falls back to the next layer with a Problems
   finding. Unknown keys are ignored, but kept on write.
-- **Writes use the vault's pinned primitives.** `create_new_pinned` on first
-  write, then `replace` against the pin, with `O_NOFOLLOW`. The client
-  debounces saves (~500 ms).
+- **Writes use the pinned primitives**, for both files. `ui-prefs.toml`:
+  `create_new_pinned` on first write, then `replace` against the pin, with
+  `O_NOFOLLOW`. `ledgeline.toml`: `replace` through the journal's vault, never
+  a create. The client debounces saves (~500 ms).
 - **`serverUrl` and `serverToken` stay in the browser's localStorage.** They
   describe the client, not the ledger.
 - **Migration, done once and without loss:**
   - If `prefs.toml` is absent and `prefs.json` exists, convert it, write
     `prefs.toml`, then rename the old file to `prefs.json.migrated`.
-  - The first time the client loads with a localStorage blob and the ledger
-    has no `[ui]` table, it PATCHes the blob's UI fields (everything except
-    url and token) to the server once, then removes them from localStorage.
-- **No ledger open:** the app uses global prefs plus defaults, and saves stay
-  in memory only.
+  - Whenever the client loads and the localStorage blob still has UI fields
+    (everything except url and token), it PATCHes them once (routed like any
+    save, so normally into `ui-prefs.toml`), then removes them from
+    localStorage. Keys the ledger's `ledgeline.toml` sets are left out.
+- **No ledger open:** global prefs plus defaults, and saves go to
+  `ui-prefs.toml`.
+
+### Save routing (reversed 2026-11-12)
+
+As first built, every save went to `ledgeline.toml`, created beside the
+journal on the first change, and `ui-prefs.toml` was hand-edit only. Patrick
+tried it and didn't want `ledgeline.toml` appearing in repos just from using
+the app. The rules now:
+
+- **Global by default.** The app creates and updates `ui-prefs.toml`.
+- **The app never creates `ledgeline.toml`.** Reading it as an override is
+  unchanged (merge order, validation, untrusted handling).
+- **Per key.** A changed key goes to `ledgeline.toml` only if that file exists
+  and its `[ui]` table already sets the key to a value (a bad value counts; a
+  table in its place doesn't). Anything else goes global. So a future `theme`
+  saves globally even where a `ledgeline.toml` exists, until someone adds
+  `theme` to it by hand; from then on theme changes save there. `columns`
+  routes per leaf.
+- **A symlinked `ui-prefs.toml`** (home-manager links it into the read-only
+  Nix store) is read but never written through or replaced: the change is
+  kept in memory for the process, over the file, with a notice. A symlinked
+  `ledgeline.toml` is still never read or written; like an oversized or
+  unparseable one, it sets no key, so saves go global (no longer a `409`).
+- **Opening the app writes nothing** (apart from the `prefs.json` migration).
+- **Wire:** `storage` is `files` | `browser` (`ledger` and `memory` are gone);
+  `ledgerHasUi` is replaced by `localKeys`, the keys the ledger's file sets
+  (`columns.status` dotted). The SPA uses it only to keep those keys out of the
+  localStorage migration.
+- **Browser mode stays** for the e2e, docs-screenshot and live-contract
+  harnesses; without it they would now write the developer's own
+  `ui-prefs.toml`.
 
 ### Work
 
@@ -306,21 +336,30 @@ port, and with it the WebKit origin, changes on each launch. Patrick
   - The one-time localStorage migration.
   - Settings stops writing those fields to localStorage.
 - **Docs:** a settings-files page covering the three files, the merge order,
-  an annotated example of each, and a suggestion to gitignore
-  `ledgeline.toml` if you don't want UI changes in the repo history.
+  where a save goes, and an annotated example of each. (The original
+  suggestion to gitignore `ledgeline.toml` was dropped with the reversal: it
+  is now a hand-made file people may want to commit.)
 
 **Done when:**
 - [x] Relaunching the desktop app keeps the column, chart and benchmark
-  settings. (They live in `ledgeline.toml` now, so the WebView origin no
+  settings. (They live in `ui-prefs.toml` now, so the WebView origin no
   longer matters. Not yet checked by hand in a packaged build.)
-- [x] Two ledgers keep different settings
-  (`two_ledgers_keep_different_settings_and_opening_one_reloads_them`).
-- [x] A hand-written comment in `ledgeline.toml` survives an automatic save
-  (`a_hand_written_comment_survives_an_automatic_save`).
+- [x] Two ledgers keep different settings where one has its own
+  `ledgeline.toml`
+  (`a_ledgers_own_value_survives_a_global_save_made_in_another_ledger`).
+- [x] Hand-written comments survive an automatic save, in both files
+  (`a_key_the_ledger_file_sets_is_saved_there_and_everything_else_goes_global`,
+  `a_hand_written_comment_in_the_global_file_survives_a_save`).
+- [x] Opening the app creates no file
+  (`opening_with_no_settings_files_answers_the_defaults_and_creates_no_file`),
+  and no save creates `ledgeline.toml`
+  (`a_save_goes_to_the_global_file_and_never_creates_ledgeline_toml`).
 - [x] An existing `prefs.json` user ends up with `prefs.toml`, and their
   hledger path still works (`a_legacy_prefs_json_is_migrated_once_and_kept_aside`).
 
-**Status (2026-11-12): done.** Four commits:
+**Status (2026-11-12): done, then save routing reworked the same day** (see
+"Save routing"; `feat(ui-prefs): save to the global file; ledgeline.toml only
+overrides keys it already sets`). The first pass was four commits:
 `feat(prefs): store preferences as TOML`,
 `feat(ui-prefs): per-ledger UI preferences in ledgeline.toml` (engine,
 `GET`/`PATCH /api/ui-prefs`, golden `fixtures/native/v1/ui-prefs.json`), and
@@ -336,15 +375,15 @@ port, and with it the WebKit origin, changes on each launch. Patrick
   every spec seeds its own view state per browser context. One shared
   server-side file would leak state between specs. The SPA also falls back
   to this mode when the engine has no `/api/ui-prefs` route.
-- **"No ledger open" is a state with no journal file** (`storage: memory`).
-  Saves stay in memory for the process.
+- **"No ledger open" is a state with no journal file.** Saves went to
+  memory; since the reversal they go to `ui-prefs.toml`.
 - **Problems finding:** the diagnostics drawer is journal-derived and
   snapshot-cached, so there was no cheap hook. Invalid values come back as
   `issues` on the `/api/ui-prefs` body instead, and the layout shows them in
   a dismissible notice. Moving them into the Problems drawer is a follow-up.
 - **The localStorage migration only drops fields after a successful PATCH.**
-  When the ledger already has a `[ui]` table, the blob is left alone (it may
-  still migrate into a ledger that has none). When the PATCH fails, the blob
-  is kept and its values used for the session.
+  When the PATCH fails, the blob is kept and its values used for the
+  session. (It was gated on the ledger having no `[ui]` table; since the
+  reversal it runs whenever the blob still has UI fields.)
 - **Not done:** flushing a pending (≤ 500 ms) save on quit or File→Open. A
   change made in the last half-second before either can be lost.

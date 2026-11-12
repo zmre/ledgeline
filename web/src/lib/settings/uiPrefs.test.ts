@@ -3,7 +3,7 @@
 // pending saves to the keys that changed.
 
 import {describe, expect, it} from "vitest";
-import {cleanUiPrefs, defaultUiPrefs, legacyUiPatch, mergePatch, UI_PREF_KEYS, withoutUiFields} from "./uiPrefs";
+import {applyPatch, cleanUiPrefs, defaultUiPrefs, legacyUiPatch, mergePatch, UI_PREF_KEYS, withoutLocalKeys, withoutUiFields} from "./uiPrefs";
 
 describe("UNIT uiPrefs", () => {
     it("names exactly the nineteen fields the localStorage blob used to carry", () => {
@@ -48,6 +48,19 @@ describe("UNIT uiPrefs", () => {
     it("strips every UI field from a blob and keeps the rest", () => {
         const blob = {serverUrl: "http://x", serverToken: "t", insightsOpen: false, columns: {}, cashFlowChartMode: "source"};
         expect(withoutUiFields(blob)).toEqual({serverUrl: "http://x", serverToken: "t", cashFlowChartMode: "source"});
+    });
+
+    it("leaves the ledger's own keys out of a migration, column member by member", () => {
+        const patch = {insightsOpen: false, matchWindow: 60, columns: {status: false, date: false}};
+        expect(withoutLocalKeys(patch, ["matchWindow", "columns.status"])).toEqual({insightsOpen: false, columns: {date: false}});
+        expect(withoutLocalKeys(patch, ["columns.status", "columns.date"])).toEqual({insightsOpen: false, matchWindow: 60});
+        expect(withoutLocalKeys(patch, [])).toEqual(patch);
+    });
+
+    it("applies a patch to a full set of prefs, column member by member", () => {
+        const applied = applyPatch(defaultUiPrefs(), {matchWindow: 6, columns: {amount: false}});
+        expect(applied.matchWindow).toBe(6);
+        expect(applied.columns).toEqual({...defaultUiPrefs().columns, amount: false});
     });
 
     it("merges pending saves key by key and column member by member", () => {

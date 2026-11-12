@@ -13,12 +13,16 @@ function golden(name: string): Record<string, unknown> {
 }
 
 describe("UNIT nativeDecode — UI preferences over the ui-prefs golden", () => {
-    it("decodes the built-in defaults, kept beside the ledger, with no issues", () => {
+    it("decodes the built-in defaults, kept in the settings files, with no local keys and no issues", () => {
         const state = decodeUiPrefsState(golden("ui-prefs"));
         expect(state.prefs).toEqual(defaultUiPrefs());
-        expect(state.storage).toBe("ledger");
-        expect(state.ledgerHasUi).toBe(false);
+        expect(state.storage).toBe("files");
+        expect(state.localKeys).toEqual([]);
         expect(state.issues).toEqual([]);
+    });
+
+    it("decodes the keys the ledger's own file sets", () => {
+        expect(decodeUiPrefsState({...golden("ui-prefs"), localKeys: ["columns.status", "matchWindow"]}).localKeys).toEqual(["columns.status", "matchWindow"]);
     });
 
     it("decodes issues, whole-file and per key", () => {
@@ -55,6 +59,9 @@ describe("UNIT nativeDecode — UI preferences over the ui-prefs golden", () => 
             ["an absent projection id", prefsWithout("lastProjectionId")],
             ["a non-array benchmark list", withPrefs({benchmarks: "SPY"})],
             ["an unknown storage", {...golden("ui-prefs"), storage: "cloud"}],
+            ["the retired ledger storage", {...golden("ui-prefs"), storage: "ledger"}],
+            ["no localKeys array", {...golden("ui-prefs"), localKeys: undefined}],
+            ["a non-string local key", {...golden("ui-prefs"), localKeys: [3]}],
             ["no issues array", {...golden("ui-prefs"), issues: null}],
             ["not an object", []],
         ])("%s", (_label, body) => {

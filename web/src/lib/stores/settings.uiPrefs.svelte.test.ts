@@ -1,9 +1,10 @@
 // The view state on the engine (plan 38 WP-5): `loadUiPrefs` takes the
-// engine's values, migrates an old localStorage blob into a ledger that has no
-// UI preferences yet — once, then drops it — and every later change is one
-// debounced PATCH naming only the keys that changed. An engine that leaves the
-// view state to the browser (the e2e harness) or cannot answer keeps the
-// pre-WP-5 behaviour: localStorage.
+// engine's values, moves an old localStorage blob's view state to the engine —
+// once, then drops it — and every later change is one debounced PATCH naming
+// only the keys that changed. Which file a key lands in is the engine's
+// routing; the SPA only leaves out of the migration the keys the ledger's own
+// file sets. An engine that leaves the view state to the browser (the e2e
+// harness) or cannot answer keeps the pre-WP-5 behaviour: localStorage.
 
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {SETTINGS_STORAGE_KEY} from "#lib/api/client.js";
@@ -17,11 +18,10 @@ interface Call {
 }
 
 /** A fake `/api/ui-prefs`: GET answers `answer`; PATCH merges into it (or fails with `patchStatus`). */
-function engine(options: {storage?: UiPrefsStorage; ledgerHasUi?: boolean; prefs?: Partial<UiPrefs>; patchStatus?: number; getStatus?: number} = {}) {
+function engine(options: {storage?: UiPrefsStorage; localKeys?: string[]; prefs?: Partial<UiPrefs>; patchStatus?: number; getStatus?: number} = {}) {
     const calls: Call[] = [];
     let prefs: UiPrefs = {...defaultUiPrefs(), ...options.prefs};
-    let ledgerHasUi = options.ledgerHasUi ?? false;
-    const answer = () => ({prefs, storage: options.storage ?? "ledger", ledgerHasUi, issues: []});
+    const answer = () => ({prefs, storage: options.storage ?? "files", localKeys: options.localKeys ?? [], issues: []});
     vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
         const method = init?.method ?? "GET";
         const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
@@ -32,7 +32,6 @@ function engine(options: {storage?: UiPrefsStorage; ledgerHasUi?: boolean; prefs
             if (options.patchStatus !== undefined) return Promise.resolve(new Response("ledgeline.toml is not valid TOML", {status: options.patchStatus}));
             const patch = body as Partial<UiPrefs>;
             prefs = {...prefs, ...patch, columns: {...prefs.columns, ...(patch.columns ?? {})}};
-            ledgerHasUi = true;
         }
         return Promise.resolve(new Response(JSON.stringify(answer()), {status: 200}));
     });
@@ -55,19 +54,31 @@ afterEach(() => {
 });
 
 describe("COMPONENT settings — view state on the engine", () => {
-    it("takes the ledger's values over the browser's, and leaves the blob alone when the ledger already has some", async () => {
-        const fake = engine({ledgerHasUi: true, prefs: {matchWindow: 20, columns: {...defaultUiPrefs().columns, amount: false}}});
-        const settings = await loadWith({serverUrl: ENGINE, matchWindow: 5});
+    it("takes the engine's values, and never migrates over a key the ledger's own file sets", async () => {
+        const fake = engine({localKeys: ["matchWindow", "columns.amount"], prefs: {matchWindow: 20, columns: {...defaultUiPrefs().columns, amount: false}}});
+        const settings = await loadWith({serverUrl: ENGINE, matchWindow: 5, insightsOpen: false, columns: {amount: true, date: false}});
         expect(settings.uiPrefsReady).toBe(false);
         await settings.loadUiPrefs(ENGINE);
         expect(settings.uiPrefsReady).toBe(true);
+        expect(fake.calls.map((c) => c.method)).toEqual(["GET", "PATCH"]);
+        expect(fake.calls[1].body).toEqual({insightsOpen: false, columns: {date: false}});
         expect(settings.matchWindow).toBe(20);
         expect(settings.columns.amount).toBe(false);
-        expect(fake.calls.map((c) => c.method)).toEqual(["GET"]);
-        expect(persisted()).toEqual({serverUrl: ENGINE, matchWindow: 5});
+        expect(settings.columns.date).toBe(false);
+        expect(settings.insightsOpen).toBe(false);
+        expect(persisted()).toEqual({serverUrl: ENGINE});
     });
 
-    it("migrates an old blob's view state into a ledger with none, once, then drops it from localStorage", async () => {
+    it("drops a blob whose every view setting the ledger's own file sets, without a PATCH", async () => {
+        const fake = engine({localKeys: ["matchWindow"], prefs: {matchWindow: 20}});
+        const settings = await loadWith({serverUrl: ENGINE, matchWindow: 5});
+        await settings.loadUiPrefs(ENGINE);
+        expect(fake.calls.map((c) => c.method)).toEqual(["GET"]);
+        expect(settings.matchWindow).toBe(20);
+        expect(persisted()).toEqual({serverUrl: ENGINE});
+    });
+
+    it("migrates an old blob's view state to the engine, once, then drops it from localStorage", async () => {
         const fake = engine();
         const settings = await loadWith({serverUrl: ENGINE, serverToken: "tok", insightsOpen: false, columns: {date: false}, matchWindow: 90});
         await settings.loadUiPrefs(ENGINE);

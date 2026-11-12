@@ -1,20 +1,20 @@
 ---
 title: Settings files
-description: "The three TOML files Ledgeline keeps its own settings in: prefs.toml for the hledger path, ui-prefs.toml for your default view settings, and ledgeline.toml beside each journal for that ledger's view settings. How they merge, what each key does, and whether to commit ledgeline.toml."
+description: "The TOML files Ledgeline keeps its own settings in: prefs.toml for the hledger path, ui-prefs.toml for your view settings, and an optional ledgeline.toml you can put beside a journal to give that ledger its own. How they merge, where a change is saved, and what each key does."
 order: 40
 ---
 
 # Settings files
 
-Ledgeline keeps its own settings in three TOML files. You can edit any of them by hand.
+Ledgeline keeps its own settings in TOML files. You can edit any of them by hand.
 
 | File | Where | Written by | Holds |
 | --- | --- | --- | --- |
 | `prefs.toml` | Ledgeline's config folder | The hledger path field on the Imports screen | `hledgerPath`, the hledger program Ledgeline runs |
-| `ui-prefs.toml` | Ledgeline's config folder | You. Ledgeline never writes it | Your default view settings for every ledger |
-| `ledgeline.toml` | The folder of your main journal | Ledgeline, as you use it | This ledger's view settings |
+| `ui-prefs.toml` | Ledgeline's config folder | Ledgeline, as you use it, and you | Your view settings, for every ledger |
+| `ledgeline.toml` | The folder of your main journal | You. Ledgeline never creates it | One ledger's own view settings, overriding `ui-prefs.toml` |
 
-View settings are the choices Ledgeline remembers as you work: which journal columns show, which panels are open, the Review and Find Matches numbers, the benchmark lines on the Stocks chart, and the like. Each ledger keeps its own, so a business ledger and a household ledger can be set up differently.
+View settings are the choices Ledgeline remembers as you work: which journal columns show, which panels are open, the Review and Find Matches numbers, the benchmark lines on the Stocks chart, and the like.
 
 The list of recently opened journals stays in `recent.json`, in the same config folder.
 
@@ -35,18 +35,49 @@ Ledgeline looks up each view setting on its own, in this order, and uses the fir
 2. `ui-prefs.toml` in the config folder;
 3. Ledgeline's built-in default.
 
-When you change something in the app, Ledgeline writes only that key to `ledgeline.toml`. Everything you haven't changed for this ledger keeps coming from `ui-prefs.toml` or the defaults. So to change a default for all your ledgers, edit `ui-prefs.toml`. A ledger that has its own value for that key keeps it.
+Opening a different journal (File → Open, or Open Recent) loads that ledger's `ledgeline.toml`, if it has one.
 
-Opening a different journal (File → Open, or Open Recent) loads that ledger's settings.
+## Where a change is saved
+
+When you change a view setting in the app, Ledgeline saves only that key, and picks the file one key at a time:
+
+- If the open ledger has a `ledgeline.toml` and its `[ui]` table already sets that key, the change is saved there.
+- Otherwise it goes to `ui-prefs.toml`, and applies to every ledger that doesn't set the key itself.
+
+So a `ledgeline.toml` only ever holds the keys someone put in it. Say a later version adds a theme setting. Changing the theme saves it to `ui-prefs.toml`, even in a ledger that has a `ledgeline.toml`. Once you add `theme` to that file's `[ui]` table by hand, theme changes made in that ledger are saved there instead.
+
+The journal columns are decided one column at a time. A change to the Status column is saved in `ledgeline.toml` only if its `[ui.columns]` table already has `status`. The other columns still go to `ui-prefs.toml`.
+
+Opening the app and looking around writes nothing. Ledgeline creates `ui-prefs.toml` the first time you change a view setting, and never creates `ledgeline.toml`.
+
+## `ui-prefs.toml`
+
+The view settings for all your ledgers: the keys from [the table below](#the-keys) at the top level, with `[columns]` for the journal columns. Ledgeline edits the file in place as you change things. Your comments, the order of the keys, and keys it doesn't know are kept, so you can also edit it by hand:
+
+```toml
+# Ledgeline's view settings for every ledger. Ledgeline saves the keys you
+# change here. A ledger's own ledgeline.toml overrides any key its [ui] table
+# sets. Comments and keys Ledgeline does not know are kept. Docs: "Settings files".
+
+hideZeroBalances = false
+reviewMaxDays = 90           # a quarter is plenty
+holdingsPieDimension = "assetClass"
+
+[columns]
+status = false
+```
+
+A symbolic link here is fine for reading, because dotfile managers often install config files that way. Ledgeline won't write through the link or replace it, though: home-manager, for one, links the file into a read-only folder. With a linked `ui-prefs.toml`, a change you make in the app lasts until Ledgeline quits, and a notice says the file is managed outside Ledgeline. To keep the change, put it in your dotfiles.
+
+If the file isn't valid TOML, is larger than 64 KiB, or isn't a regular file, Ledgeline ignores it and won't save over it. Fix or remove the file to start saving again.
 
 ## `ledgeline.toml`
 
-Ledgeline creates this file beside your main journal the first time you change a view setting. Here is one after a few changes, with comments added by hand:
+Give one ledger its own values by creating `ledgeline.toml` in the folder of its main journal. Put the keys under `[ui]`, with `[ui.columns]` for the columns:
 
 ```toml
-# Ledgeline's settings for this ledger. Ledgeline saves your view choices
-# to the [ui] table automatically, writing only the keys you change.
-# Comments and keys it does not know are kept. Docs: "Settings files".
+# This ledger's own view settings. Ledgeline keeps saving changes to these
+# keys here; everything else comes from ui-prefs.toml.
 
 [ui]
 # The business card settles slowly, so look further apart for transfers.
@@ -58,43 +89,22 @@ benchmarks = ["SPY", "QQQ"]
 status = false   # nobody here uses ! and *
 ```
 
-Ledgeline edits the file in place. Your comments, the order of the keys, and keys it does not know are kept. The `[ui]` table is the only part it reads or writes. The rest of the file is left for later per-ledger settings.
+Every key you list there overrides `ui-prefs.toml` in this ledger, and changes you make to those keys in the app are saved back to this file. Ledgeline edits values in place and keeps your comments, the order of the keys, and keys it doesn't know. The `[ui]` table is the only part it reads or writes. The rest of the file is left for later per-ledger settings.
+
+To stop overriding a key, delete its line. The ledger then follows `ui-prefs.toml` for it again.
 
 ### It travels with the ledger
 
-If your books are in a git repository or a shared folder, `ledgeline.toml` goes wherever the journal goes. A file somebody else wrote is treated as untrusted:
+If your books are in a git repository or a shared folder, `ledgeline.toml` goes wherever the journal goes. Since Ledgeline never writes keys you didn't put there, the file only changes when someone changes one of its own settings. That makes it reasonable to commit, so everyone who opens the ledger gets the same layout.
+
+A file somebody else wrote is treated as untrusted:
 
 - It can only hold view settings. Ledgeline never reads the hledger path, a server address or an access token from it. If one of those keys is there, Ledgeline ignores it and says so.
-- Every value is checked. A number outside its range is clamped. A choice that isn't one of the allowed values, or a value of the wrong type, is ignored, and that key falls back to `ui-prefs.toml` or the default.
+- Every value is checked. A number outside its range is clamped. A choice that isn't one of the allowed values, or a value of the wrong type, is ignored, and that key falls back to `ui-prefs.toml` or the default. A change you make to that key in the app replaces the bad value.
 - Unknown keys are ignored, and kept when Ledgeline saves.
-- A file larger than 64 KiB, a file that isn't valid TOML, and a symbolic link are ignored. Ledgeline won't save over any of them. Fix or remove the file to start saving again.
+- A file larger than 64 KiB, a file that isn't valid TOML, and a symbolic link are ignored. Ledgeline won't save to any of them, so your changes go to `ui-prefs.toml` until you fix or remove the file.
 
 When Ledgeline ignores something in either file, a notice in the bottom corner lists what it skipped and why.
-
-### Commit it or ignore it
-
-If your books are under version control, you choose whether view settings belong in the history. Commit `ledgeline.toml` to share a layout with everyone who opens the ledger. If you'd rather not see a change every time someone collapses a panel, add it to your `.gitignore`:
-
-```gitignore
-# Ledgeline's per-ledger view settings
-ledgeline.toml
-```
-
-## `ui-prefs.toml`
-
-The same keys as `[ui]`, at the top level, with `[columns]` for the journal columns. Ledgeline reads this file and never writes it. Create it yourself:
-
-```toml
-# My defaults for every ledger. A ledger's own ledgeline.toml wins key by key.
-hideZeroBalances = false
-reviewMaxDays = 90
-holdingsPieDimension = "assetClass"
-
-[columns]
-status = false
-```
-
-A symbolic link here is fine. Dotfile managers often install config files that way.
 
 ## `prefs.toml`
 
@@ -130,8 +140,12 @@ A path you type into the file by hand isn't checked until Ledgeline runs it. If 
 | `matchLookback` | `365` | 0 to 36500 days. 0 means no limit |
 | `matchTransitDays` | `10` | 1 to 365 days |
 
+## Keeping view settings in the browser
+
+Set `LEDGELINE_UI_PREFS_IN_BROWSER` to any non-empty value when you start `ledgeline --server`, and the server reads and writes no view-settings file at all. It answers the built-in defaults, and the web app keeps its view settings in the browser's storage, as versions before these files did. Ledgeline's own automated tests run this way, so a test never changes your `ui-prefs.toml` and each browser session starts clean. It also suits embedding the server somewhere that should leave no files behind.
+
 ## Upgrading from an earlier version
 
 Earlier versions kept the hledger path in `prefs.json`. The first time Ledgeline starts and finds `prefs.json` but no `prefs.toml`, it writes `prefs.toml` with the same path and renames the old file to `prefs.json.migrated`. Nothing is deleted.
 
-Earlier versions also kept view settings in the browser's storage, which the desktop app lost every time it restarted. The first time you open a ledger that has no `[ui]` table, Ledgeline copies the view settings it still finds in the browser's storage into that ledger's `ledgeline.toml`, then removes them from the browser. The address and access token of a separate Ledgeline server stay in the browser, because they describe your browser, not the ledger.
+Earlier versions also kept view settings in the browser's storage, which the desktop app lost every time it restarted. The first time Ledgeline finds view settings still in the browser's storage, it saves them the usual way, which normally means `ui-prefs.toml`, then removes them from the browser. A key the open ledger's `ledgeline.toml` sets is left out, because that ledger's own value wins anyway. If the save fails, the settings stay in the browser and are tried again next time. The address and access token of a separate Ledgeline server stay in the browser, because they describe your browser, not your books.

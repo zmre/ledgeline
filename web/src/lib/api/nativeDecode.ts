@@ -1496,7 +1496,7 @@ interface RawPrefs {
 interface RawUiPrefsState {
     prefs?: Record<string, unknown> | null;
     storage?: string;
-    ledgerHasUi?: boolean;
+    localKeys?: unknown[];
     issues?: unknown[];
 }
 
@@ -4939,7 +4939,10 @@ export function decodeUiPrefsState(raw: unknown): UiPrefsState {
     return Object.freeze({
         prefs: decoded,
         storage: decodeEnum(UI_PREFS_STORAGES, body.storage, "ui-prefs storage"),
-        ledgerHasUi: decodeBoolean(body.ledgerHasUi, "ui-prefs ledgerHasUi"),
+        localKeys: (() => {
+            if (!Array.isArray(body.localKeys)) throw new ApiShapeError("ui-prefs localKeys: expected an array");
+            return Object.freeze(decodeStrings(body.localKeys, "ui-prefs localKeys"));
+        })(),
         issues: Object.freeze(issues),
     });
 }
