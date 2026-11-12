@@ -1,0 +1,471 @@
+InsightsReport {
+    period: InsightsPeriod {
+        start: "2026-04-01",
+        mid: "2026-05-24",
+        end: "2026-07-16",
+        prev_start: "2026-04-01",
+        prev_end: "2026-05-24",
+        curr_start: "2026-05-25",
+        curr_end: "2026-07-16",
+        prev_days: 54,
+        curr_days: 53,
+    },
+    base: "$",
+    journal_start: Some(
+        "2024-07-01",
+    ),
+    revenue: MetricDelta {
+        current: MixedAmount(
+            {
+                Commodity(
+                    "$",
+                ): Dec {
+                    mantissa: 1132000,
+                    places: 2,
+                },
+            },
+        ),
+        previous: MixedAmount(
+            {
+                Commodity(
+                    "$",
+                ): Dec {
+                    mantissa: 568500,
+                    places: 2,
+                },
+            },
+        ),
+        delta: MixedAmount(
+            {
+                Commodity(
+                    "$",
+                ): Dec {
+                    mantissa: 563500,
+                    places: 2,
+                },
+            },
+        ),
+        pct: Some(
+            99.12049252418646,
+        ),
+    },
+    expenses: MetricDelta {
+        current: MixedAmount(
+            {
+                Commodity(
+                    "$",
+                ): Dec {
+                    mantissa: 1111859,
+                    places: 2,
+                },
+                Commodity(
+                    "EUR",
+                ): Dec {
+                    mantissa: 22875,
+                    places: 2,
+                },
+            },
+        ),
+        previous: MixedAmount(
+            {
+                Commodity(
+                    "$",
+                ): Dec {
+                    mantissa: 597974,
+                    places: 2,
+                },
+            },
+        ),
+        delta: MixedAmount(
+            {
+                Commodity(
+                    "$",
+                ): Dec {
+                    mantissa: 513885,
+                    places: 2,
+                },
+                Commodity(
+                    "EUR",
+                ): Dec {
+                    mantissa: 22875,
+                    places: 2,
+                },
+            },
+        ),
+        pct: Some(
+            85.93768290929037,
+        ),
+    },
+    net_worth: MetricDelta {
+        current: MixedAmount(
+            {
+                Commodity(
+                    "$",
+                ): Dec {
+                    mantissa: 2119514650,
+                    places: 4,
+                },
+            },
+        ),
+        previous: MixedAmount(
+            {
+                Commodity(
+                    "$",
+                ): Dec {
+                    mantissa: 188416661000,
+                    places: 6,
+                },
+            },
+        ),
+        delta: MixedAmount(
+            {
+                Commodity(
+                    "$",
+                ): Dec {
+                    mantissa: 23534804000,
+                    places: 6,
+                },
+            },
+        ),
+        pct: Some(
+            12.490829566287667,
+        ),
+    },
+    cost_of_living: CostOfLiving {
+        current_total: MixedAmount(
+            {
+                Commodity(
+                    "$",
+                ): Dec {
+                    mantissa: 1111859,
+                    places: 2,
+                },
+                Commodity(
+                    "EUR",
+                ): Dec {
+                    mantissa: 22875,
+                    places: 2,
+                },
+            },
+        ),
+        previous_total: MixedAmount(
+            {
+                Commodity(
+                    "$",
+                ): Dec {
+                    mantissa: 597974,
+                    places: 2,
+                },
+            },
+        ),
+        months_current: 2,
+        months_previous: 2,
+    },
+    investment: InvestmentPerf {
+        current: PerfPoint {
+            gain: Some(
+                Dec {
+                    mantissa: 584425,
+                    places: 3,
+                },
+            ),
+            gain_pct: Some(
+                5.328358345033824,
+            ),
+        },
+        previous: PerfPoint {
+            gain: Some(
+                Dec {
+                    mantissa: 78750,
+                    places: 3,
+                },
+            ),
+            gain_pct: Some(
+                0.7231770199596856,
+            ),
+        },
+    },
+    cash_balance: MetricDelta {
+        current: MixedAmount(
+            {
+                Commodity(
+                    "$",
+                ): Dec {
+                    mantissa: 4840256,
+                    places: 2,
+                },
+                Commodity(
+                    "EUR",
+                ): Dec {
+                    mantissa: 56675,
+                    places: 2,
+                },
+            },
+        ),
+        previous: MixedAmount(
+            {
+                Commodity(
+                    "$",
+                ): Dec {
+                    mantissa: 4365244,
+                    places: 2,
+                },
+                Commodity(
+                    "EUR",
+                ): Dec {
+                    mantissa: 79550,
+                    places: 2,
+                },
+            },
+        ),
+        delta: MixedAmount(
+            {
+                Commodity(
+                    "$",
+                ): Dec {
+                    mantissa: 475012,
+                    places: 2,
+                },
+                Commodity(
+                    "EUR",
+                ): Dec {
+                    mantissa: -22875,
+                    places: 2,
+                },
+            },
+        ),
+        pct: Some(
+            10.881682673408394,
+        ),
+    },
+    expense_changes: [
+        ChangeRow {
+            account: "expenses:taxes:federal",
+            current: Dec {
+                mantissa: 230000,
+                places: 2,
+            },
+            previous: Dec {
+                mantissa: 115000,
+                places: 2,
+            },
+            delta: Dec {
+                mantissa: 115000,
+                places: 2,
+            },
+            pct: Some(
+                100.0,
+            ),
+            kind: Changed,
+        },
+        ChangeRow {
+            account: "expenses:taxes:state",
+            current: Dec {
+                mantissa: 62000,
+                places: 2,
+            },
+            previous: Dec {
+                mantissa: 31000,
+                places: 2,
+            },
+            delta: Dec {
+                mantissa: 31000,
+                places: 2,
+            },
+            pct: Some(
+                100.0,
+            ),
+            kind: Changed,
+        },
+        ChangeRow {
+            account: "expenses:food:groceries",
+            current: Dec {
+                mantissa: 24039,
+                places: 2,
+            },
+            previous: Dec {
+                mantissa: 41819,
+                places: 2,
+            },
+            delta: Dec {
+                mantissa: -17780,
+                places: 2,
+            },
+            pct: Some(
+                -42.51655945861929,
+            ),
+            kind: Changed,
+        },
+        ChangeRow {
+            account: "expenses:utilities:electric",
+            current: Dec {
+                mantissa: 11275,
+                places: 2,
+            },
+            previous: Dec {
+                mantissa: 18482,
+                places: 2,
+            },
+            delta: Dec {
+                mantissa: -7207,
+                places: 2,
+            },
+            pct: Some(
+                -38.99469754355589,
+            ),
+            kind: Changed,
+        },
+        ChangeRow {
+            account: "expenses:food:restaurants",
+            current: Dec {
+                mantissa: 4213,
+                places: 2,
+            },
+            previous: Dec {
+                mantissa: 10790,
+                places: 2,
+            },
+            delta: Dec {
+                mantissa: -6577,
+                places: 2,
+            },
+            pct: Some(
+                -60.95458758109361,
+            ),
+            kind: Changed,
+        },
+    ],
+    revenue_changes: [
+        ChangeRow {
+            account: "income:salary",
+            current: Dec {
+                mantissa: 1132000,
+                places: 2,
+            },
+            previous: Dec {
+                mantissa: 566000,
+                places: 2,
+            },
+            delta: Dec {
+                mantissa: 566000,
+                places: 2,
+            },
+            pct: Some(
+                100.0,
+            ),
+            kind: Changed,
+        },
+        ChangeRow {
+            account: "income:dividends",
+            current: Dec {
+                mantissa: 0,
+                places: 0,
+            },
+            previous: Dec {
+                mantissa: 2500,
+                places: 2,
+            },
+            delta: Dec {
+                mantissa: -2500,
+                places: 2,
+            },
+            pct: Some(
+                -100.0,
+            ),
+            kind: Ended,
+        },
+    ],
+    movers: [
+        MoverRow {
+            symbol: "AAPL",
+            name: "Apple Inc.",
+            gain: Some(
+                Dec {
+                    mantissa: 428025,
+                    places: 3,
+                },
+            ),
+            gain_pct: Some(
+                8.840112766814338,
+            ),
+            start_estimated: false,
+        },
+        MoverRow {
+            symbol: "VTI",
+            name: "Vanguard Total Market",
+            gain: Some(
+                Dec {
+                    mantissa: 15640,
+                    places: 2,
+                },
+            ),
+            gain_pct: Some(
+                3.0509036644005967,
+            ),
+            start_estimated: false,
+        },
+        MoverRow {
+            symbol: "GLD",
+            name: "GLD",
+            gain: Some(
+                Dec {
+                    mantissa: 0,
+                    places: 0,
+                },
+            ),
+            gain_pct: Some(
+                0.0,
+            ),
+            start_estimated: true,
+        },
+    ],
+    top_txns: [
+        TopTxn {
+            index: 174,
+            date: "2026-05-27",
+            description: "Acme Corp | May salary",
+            amount: Dec {
+                mantissa: 566000,
+                places: 2,
+            },
+        },
+        TopTxn {
+            index: 184,
+            date: "2026-06-27",
+            description: "Acme Corp | June salary",
+            amount: Dec {
+                mantissa: 566000,
+                places: 2,
+            },
+        },
+        TopTxn {
+            index: 186,
+            date: "2026-06-30",
+            description: "vehicle depreciation FY2026",
+            amount: Dec {
+                mantissa: 350000,
+                places: 2,
+            },
+        },
+        TopTxn {
+            index: 175,
+            date: "2026-06-01",
+            description: "Oakview Properties | rent",
+            amount: Dec {
+                mantissa: 187500,
+                places: 2,
+            },
+        },
+        TopTxn {
+            index: 187,
+            date: "2026-07-01",
+            description: "Oakview Properties | rent",
+            amount: Dec {
+                mantissa: 187500,
+                places: 2,
+            },
+        },
+    ],
+    has_holdings: true,
+    meta: None,
+}

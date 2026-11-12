@@ -194,6 +194,34 @@ Times are criterion's point estimate (the middle of the `[lo est hi]` triple).
 
 `/api/saas` and `/api/insights` load in parallel, so the startup section is never the slower of the two.
 
+**Plan 38 WP-1 (2026-11-12, same machine and corpus, rustc 1.99.1):** Insights
+now builds one combined `PriceDb` and one explicit-only `PriceDb` per request,
+down from eight builds. Both gain windows are served from one chained holdings
+replay instead of four, and the movers probe reuses the windows'
+price-independent holdings setup. Output is byte-identical to before; see
+`tests/insights_golden.rs`.
+
+| Bench | 5k | 50k | 200k |
+|---|---|---|---|
+| `reports/insights` before WP-1 | 16.6 ms | 197 ms | 916 ms |
+| `reports/insights` after WP-1 | 9.20 ms | 106 ms | **518 ms** (−43%) |
+
+That is still above the 400 ms gate. At 200k, about 16 full passes over the
+postings remain, at roughly 30–60 ms each:
+
+- the window-pair holdings setup: `Currencies` and `stock_accounts`, ~85 ms
+- the sole-symbol facts scan, plus the one shared replay, ~120 ms
+- the movers probe's own facts scan and explicit-price replay, ~120 ms
+- `account_totals` ×4, ~85 ms, two of them cumulative from the journal start
+- `net_worth` ×2, ~58 ms
+- `income_statement` ×2, ~10 ms
+- price inference and the `PriceDb` build, ~13 ms
+
+The movers replay cannot be shared with the windows' replay: pool basis,
+pure-transfer detection and cost prices all read the price database. Most of
+the holdings cost is per-posting account classification, which is not
+memoized inside the holdings engine. Memoizing it is the next lever.
+
 ### holdings — PERF-5b
 
 | Bench | 5k | 50k | 200k |
@@ -332,7 +360,7 @@ The four benchmarks to gate on, because they are what the user feels:
 | `wire/snapshot_from_journal` | 1,696 ms | ≤ 700 ms (PERF-1) |
 | `reports/net_worth/count_60` | 2,508 ms | ≤ 200 ms, and within 2× of `count_12` (PERF-5) |
 | `holdings/holdings_series_12` | 1,567 ms | ≤ 300 ms (PERF-5b) |
-| `reports/insights` | 1,197 ms | ≤ 400 ms (PERF-5c) |
+| `reports/insights` | 1,197 ms | ≤ 400 ms (PERF-5c); 518 ms after plan 38 WP-1, see §3 |
 
 Plus one pair that must *converge* rather than shrink:
 `prices/lookup_early_date` (8.27 µs) and `prices/lookup_late_date` (23.2 ns)
@@ -528,9 +556,9 @@ up as a clean 2×, and it is still microseconds. And `prices/lookup_early_date`
   shape.
 - **A dense price graph.** See finding 2 above — the `PriceGraph`/`shortest_path`
   cost needs a many-to-many FX graph, which would be a third shape.
-- **`/api/insights`'s 7 `PriceDb::build`s.** `prices/PriceDb_build` is 5.70 ms on
-  v2 against 1.69 ms on v1 at 200k, so seven of them is ~40 ms per request, but
-  nothing here counts the calls.
+- **`/api/insights`'s `PriceDb::build`s.** `prices/PriceDb_build` is 5.70 ms on
+  v2 against 1.69 ms on v1 at 200k. There were eight builds per request; plan
+  38 WP-1 cut that to two (one combined, one explicit-only), so ~11 ms on v2.
 
 ---
 

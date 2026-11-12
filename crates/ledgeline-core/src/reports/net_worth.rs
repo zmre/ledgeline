@@ -180,6 +180,20 @@ pub(crate) fn net_worth_priced(
     all_prices: &[PriceDirective],
     opts: &NetWorthOpts,
 ) -> Result<PeriodReport, ReportError> {
+    net_worth_with_db(txns, &PriceDb::build(all_prices), opts)
+}
+
+/// [`net_worth_priced`] over the [`PriceDb`] built from that same combined set,
+/// for a caller that values several boxes from it ([`super::insights`]) and so
+/// builds it once rather than per call.
+///
+/// # Errors
+/// As [`net_worth_priced`].
+pub(crate) fn net_worth_with_db(
+    txns: &[Transaction],
+    prices: &PriceDb,
+    opts: &NetWorthOpts,
+) -> Result<PeriodReport, ReportError> {
     let &NetWorthOpts {
         end,
         interval,
@@ -189,7 +203,6 @@ pub(crate) fn net_worth_priced(
         declared,
     } = opts;
     let value_in = value_in.clone();
-    let prices = PriceDb::build(all_prices);
 
     let buckets = last_n_buckets(end, interval, count)?;
     let target: Option<Commodity> = value_in.or_else(|| prices.base_commodity().cloned());
@@ -306,7 +319,7 @@ pub(crate) fn net_worth_priced(
             } else {
                 None
             };
-            values.push(valued(&ma, target.as_ref(), &prices, &bucket.as_of, sink)?);
+            values.push(valued(&ma, target.as_ref(), prices, &bucket.as_of, sink)?);
         }
         rows.push(PeriodRow {
             account: account.clone(),
@@ -327,7 +340,7 @@ pub(crate) fn net_worth_priced(
         totals.push(valued(
             &bucket.total,
             target.as_ref(),
-            &prices,
+            prices,
             &bucket.as_of,
             sink,
         )?);

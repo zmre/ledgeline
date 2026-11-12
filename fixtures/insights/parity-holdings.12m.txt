@@ -1,0 +1,225 @@
+InsightsReport {
+    period: InsightsPeriod {
+        start: "2024-01-01",
+        mid: "2024-06-30",
+        end: "2024-12-31",
+        prev_start: "2024-01-01",
+        prev_end: "2024-06-30",
+        curr_start: "2024-07-01",
+        curr_end: "2024-12-31",
+        prev_days: 182,
+        curr_days: 184,
+    },
+    base: "$",
+    journal_start: Some(
+        "2024-01-02",
+    ),
+    revenue: MetricDelta {
+        current: MixedAmount(
+            {},
+        ),
+        previous: MixedAmount(
+            {
+                Commodity(
+                    "GRANT",
+                ): Dec {
+                    mantissa: 5,
+                    places: 0,
+                },
+                Commodity(
+                    "VEST",
+                ): Dec {
+                    mantissa: 10,
+                    places: 0,
+                },
+            },
+        ),
+        delta: MixedAmount(
+            {
+                Commodity(
+                    "GRANT",
+                ): Dec {
+                    mantissa: -5,
+                    places: 0,
+                },
+                Commodity(
+                    "VEST",
+                ): Dec {
+                    mantissa: -10,
+                    places: 0,
+                },
+            },
+        ),
+        pct: None,
+    },
+    expenses: MetricDelta {
+        current: MixedAmount(
+            {},
+        ),
+        previous: MixedAmount(
+            {},
+        ),
+        delta: MixedAmount(
+            {},
+        ),
+        pct: None,
+    },
+    net_worth: MetricDelta {
+        current: MixedAmount(
+            {
+                Commodity(
+                    "$",
+                ): Dec {
+                    mantissa: 286000,
+                    places: 2,
+                },
+            },
+        ),
+        previous: MixedAmount(
+            {
+                Commodity(
+                    "$",
+                ): Dec {
+                    mantissa: 210000,
+                    places: 2,
+                },
+            },
+        ),
+        delta: MixedAmount(
+            {
+                Commodity(
+                    "$",
+                ): Dec {
+                    mantissa: 76000,
+                    places: 2,
+                },
+            },
+        ),
+        pct: Some(
+            36.19047619047619,
+        ),
+    },
+    cost_of_living: CostOfLiving {
+        current_total: MixedAmount(
+            {},
+        ),
+        previous_total: MixedAmount(
+            {},
+        ),
+        months_current: 6,
+        months_previous: 6,
+    },
+    investment: InvestmentPerf {
+        current: PerfPoint {
+            gain: Some(
+                Dec {
+                    mantissa: 42000,
+                    places: 2,
+                },
+            ),
+            gain_pct: Some(
+                10.909090909090908,
+            ),
+        },
+        previous: PerfPoint {
+            gain: Some(
+                Dec {
+                    mantissa: 20000,
+                    places: 2,
+                },
+            ),
+            gain_pct: Some(
+                7.547169811320755,
+            ),
+        },
+    },
+    cash_balance: MetricDelta {
+        current: MixedAmount(
+            {},
+        ),
+        previous: MixedAmount(
+            {},
+        ),
+        delta: MixedAmount(
+            {},
+        ),
+        pct: None,
+    },
+    expense_changes: [],
+    revenue_changes: [],
+    movers: [
+        MoverRow {
+            symbol: "OPEN",
+            name: "OPEN",
+            gain: Some(
+                Dec {
+                    mantissa: 20000,
+                    places: 2,
+                },
+            ),
+            gain_pct: Some(
+                20.0,
+            ),
+            start_estimated: true,
+        },
+        MoverRow {
+            symbol: "SPLIT",
+            name: "SPLIT",
+            gain: Some(
+                Dec {
+                    mantissa: 10000,
+                    places: 2,
+                },
+            ),
+            gain_pct: Some(
+                10.0,
+            ),
+            start_estimated: true,
+        },
+        MoverRow {
+            symbol: "BUY",
+            name: "BUY",
+            gain: Some(
+                Dec {
+                    mantissa: 5000,
+                    places: 2,
+                },
+            ),
+            gain_pct: Some(
+                8.333333333333332,
+            ),
+            start_estimated: true,
+        },
+        MoverRow {
+            symbol: "XFER",
+            name: "XFER",
+            gain: Some(
+                Dec {
+                    mantissa: 2000,
+                    places: 2,
+                },
+            ),
+            gain_pct: Some(
+                8.0,
+            ),
+            start_estimated: true,
+        },
+        MoverRow {
+            symbol: "ROUND",
+            name: "ROUND",
+            gain: Some(
+                Dec {
+                    mantissa: 5000,
+                    places: 2,
+                },
+            ),
+            gain_pct: Some(
+                5.0,
+            ),
+            start_estimated: true,
+        },
+    ],
+    top_txns: [],
+    has_holdings: true,
+    meta: None,
+}

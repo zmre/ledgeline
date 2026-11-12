@@ -33,13 +33,15 @@ use super::cash_flow_statement::is_closing_entry;
 use super::income_statement::income_statement;
 use super::kpi::{KpiRole, declared_kpi_roles, kpi_resolver};
 use super::mixed_amount::MixedAmount;
-use super::net_worth::{NetWorthOpts, net_worth_priced};
+use super::net_worth::{NetWorthOpts, net_worth_with_db};
 use super::periods::{Interval, add_days, add_months, bucket_end, bucket_key, days_between, parts};
 use super::prices::{PriceDb, infer_market_prices, value_at};
 use super::types::{PeriodReport, ReportMeta};
 use crate::decimal::Dec;
-use crate::holdings::{HoldingsReport, HoldingsScope, PriceSource, ScopeMode, compute_holdings};
+use crate::holdings::engine::{HoldingsInputs, holdings_report, holdings_window_pair};
+use crate::holdings::{HoldingsReport, HoldingsScope, PriceSource, ScopeMode};
 use crate::model::{Commodity, Journal, PriceDirective, Transaction};
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -297,8 +299,8 @@ pub(super) fn all_prices(journal: &Journal) -> Result<Vec<PriceDirective>, Repor
     Ok(all)
 }
 
-/// The valuation commodity for this dashboard's holdings boxes: the price set's
-/// most-frequent target.
+/// The valuation commodity for this dashboard's holdings boxes: the price
+/// database's most-frequent target (`$` when it has none).
 ///
 /// Pinned EXPLICITLY, per price set, because the holdings engine now chooses a
 /// base that actually prices the portfolio (HOLD-3) while this dashboard still
@@ -307,9 +309,8 @@ pub(super) fn all_prices(journal: &Journal) -> Result<Vec<PriceDirective>, Repor
 /// heading naming another. Fixing the dashboard's own choice is HOLD-3's
 /// remaining reach, tracked separately; this keeps insights bit-for-bit as it
 /// was.
-fn holdings_base(prices: &[PriceDirective]) -> Commodity {
-    PriceDb::build(prices)
-        .base_commodity()
+fn holdings_base(db: &PriceDb) -> Commodity {
+    db.base_commodity()
         .cloned()
         .unwrap_or_else(|| Commodity("$".to_string()))
 }
@@ -353,19 +354,20 @@ fn metric_delta(
 /// indication at all, while `/api/reports/networth` — the same engine, the same
 /// number — said so plainly (DRY-5).
 ///
-/// `prices` is the combined set from [`all_prices`] — the same one the public
-/// entry point would derive for itself, handed in so the two calls here do not
-/// re-run `infer_market_prices` over every posting twice (PERF-5c).
+/// `db` is built from the combined set from [`all_prices`] — the same one the
+/// public entry point would derive for itself, handed in so the two calls here
+/// neither re-run `infer_market_prices` over every posting (PERF-5c) nor
+/// rebuild the price database (plan 38 WP-1).
 fn net_worth_at(
     journal: &Journal,
-    prices: &[PriceDirective],
+    db: &PriceDb,
     as_of: &str,
     base: &Commodity,
     declared: &BTreeMap<String, AccountType>,
 ) -> Result<(MixedAmount, Option<ReportMeta>), ReportError> {
-    let report = net_worth_priced(
+    let report = net_worth_with_db(
         &journal.transactions,
-        prices,
+        db,
         &NetWorthOpts {
             end: as_of,
             interval: Interval::Daily,
@@ -526,39 +528,31 @@ fn months_between(from: &str, to: &str) -> u32 {
     u32::try_from(months.max(1)).unwrap_or(1)
 }
 
-/// The whole (unscoped) portfolio over the window `(since, as_of]`, valued in
-/// `base`.
+/// The whole (unscoped) portfolio over the previous window `(start, mid]` and
+/// the current one `(mid, end]`, valued in `base`.
 ///
-/// `prices` is the combined set from [`all_prices`], so this values a position
-/// exactly as the net-worth box does.
+/// `inputs` carry the database built from the combined set from
+/// [`all_prices`], so this values a position exactly as the net-worth box does.
 ///
-/// This is the single most expensive call on the dashboard: `compute_holdings`
-/// RECURSES when `gain_since` is set (it re-runs itself at the window start to
-/// get each position's baseline value), so one call here is two full engine
-/// passes. Boxes 5 and 8 both want the current window and used to ask for it
-/// separately with byte-identical scopes — four passes for one answer. They now
-/// share this one report (PERF-5c).
+/// This is the single most expensive call on the dashboard. A windowed
+/// holdings report re-runs itself at the window start to get each position's
+/// baseline value, so the two windows asked for separately were four full
+/// engine passes, two of them the same replay to `mid`. [`holdings_window_pair`]
+/// serves both from one pass (plan 38 WP-1). Boxes 5 and 8 both read the
+/// current window and share it (PERF-5c).
 fn window_holdings(
-    journal: &Journal,
-    prices: &[PriceDirective],
+    inputs: &HoldingsInputs<'_>,
     base: &Commodity,
-    as_of: &str,
-    since: &str,
-) -> Result<HoldingsReport, ReportError> {
+    bounds: [&str; 3],
+) -> Result<(HoldingsReport, HoldingsReport), ReportError> {
     let scope = HoldingsScope {
         accounts: BTreeSet::new(),
         mode: ScopeMode::Include,
-        as_of: as_of.to_string(),
-        gain_since: Some(since.to_string()),
+        as_of: bounds[2].to_string(),
+        gain_since: None,
         value_in: Some(base.clone()),
     };
-    compute_holdings(
-        &journal.transactions,
-        prices,
-        &journal.accounts,
-        &journal.commodity_tags,
-        &scope,
-    )
+    holdings_window_pair(inputs, &scope, bounds)
 }
 
 /// Box 5's figure for one window: the windowed holdings gain,
@@ -720,10 +714,9 @@ fn account_changes(
 }
 
 /// Snapshot the whole portfolio as of `as_of` (no gain window), valued with
-/// `prices` in `base` (which must be [`holdings_base`] of that same set).
+/// `inputs`' database in `base` (which must be [`holdings_base`] of it).
 fn portfolio_at(
-    journal: &Journal,
-    prices: &[PriceDirective],
+    inputs: &HoldingsInputs<'_>,
     base: &Commodity,
     as_of: &str,
 ) -> Result<HoldingsReport, ReportError> {
@@ -734,13 +727,7 @@ fn portfolio_at(
         gain_since: None,
         value_in: Some(base.clone()),
     };
-    compute_holdings(
-        &journal.transactions,
-        prices,
-        &journal.accounts,
-        &journal.commodity_tags,
-        &scope,
-    )
+    holdings_report(inputs, &scope)
 }
 
 /// Biggest stock movers over `(since, as_of]` (Box 8): the whole portfolio's
@@ -750,9 +737,11 @@ fn portfolio_at(
 /// price directive or fell back to the purchase-cost annotation — see
 /// [`MoverRow::start_estimated`], which the UI surfaces so a lifetime gain is
 /// never mistaken for a period return.
-/// `report` is the window's [`window_holdings`] output, shared with Box 5.
+/// `report` is the window's [`window_holdings`] output, shared with Box 5, and
+/// `inputs` the holdings inputs it was computed from.
 fn movers(
     journal: &Journal,
+    inputs: &HoldingsInputs<'_>,
     report: &HoldingsReport,
     since: &str,
 ) -> Result<Vec<MoverRow>, ReportError> {
@@ -766,10 +755,12 @@ fn movers(
     // cost-priced position as `Directive`-sourced and silently clear the flag on
     // exactly the holdings it exists to warn about. Explicit-only keeps the flag
     // meaning what it says: "no real market quote existed at the window start".
+    //
+    // Only the price database differs, so the journal-wide setup is shared.
+    let explicit = PriceDb::build(&journal.prices);
     let estimated: BTreeSet<String> = portfolio_at(
-        journal,
-        &journal.prices,
-        &holdings_base(&journal.prices),
+        &inputs.repriced(&explicit),
+        &holdings_base(&explicit),
         since,
     )?
     .holdings
@@ -999,11 +990,9 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
 
     // Built ONCE and shared by every priced box, so the holdings boxes and the
     // net-worth box can never disagree about what a position is worth.
-    let prices = all_prices(journal)?;
-    let base = PriceDb::build(&prices)
-        .base_commodity()
-        .cloned()
-        .unwrap_or_else(|| Commodity("$".to_string()));
+    // The database, too, is built once: each build deep-clones every directive.
+    let db = PriceDb::build(&all_prices(journal)?);
+    let base = holdings_base(&db);
     // Declared account types drive EVERY box's classification, so a cost booked
     // outside an `expenses:` root (or in another language) is still a cost.
     let decls = account_decls(journal);
@@ -1068,8 +1057,8 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
     // Box 3 — net worth at each period end (current end vs previous end = mid).
     // The CURRENT end's valuation meta is kept and published: it names the
     // commodities missing from the headline figure.
-    let (net_worth_curr, net_worth_meta) = net_worth_at(journal, &prices, end, &base, &declared)?;
-    let (net_worth_prev, _) = net_worth_at(journal, &prices, &mid, &base, &declared)?;
+    let (net_worth_curr, net_worth_meta) = net_worth_at(journal, &db, end, &base, &declared)?;
+    let (net_worth_prev, _) = net_worth_at(journal, &db, &mid, &base, &declared)?;
     let net_worth_delta = metric_delta(net_worth_curr, net_worth_prev, &base)?;
 
     // Box 6 — cash balance at each period end.
@@ -1091,8 +1080,14 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
     // Box 5 — investment performance (current: since mid; previous: since start).
     // The current window is ALSO what Box 8 ranks, so it is computed once here
     // and shared (PERF-5c) — the two boxes built byte-identical scopes.
-    let current_window = window_holdings(journal, &prices, &base, end, &mid)?;
-    let previous_window = window_holdings(journal, &prices, &base, &mid, start)?;
+    let holdings_inputs = HoldingsInputs::with_db(
+        txns,
+        Cow::Borrowed(&db),
+        &journal.accounts,
+        &journal.commodity_tags,
+    )?;
+    let (previous_window, current_window) =
+        window_holdings(&holdings_inputs, &base, [start, &mid, end])?;
     let investment = InvestmentPerf {
         current: perf_of(&current_window),
         previous: perf_of(&previous_window),
@@ -1119,20 +1114,12 @@ pub fn insights(journal: &Journal, opts: &InsightsOpts) -> Result<InsightsReport
     )?;
 
     // Box 8 — biggest stock movers over the current period.
-    let movers_list = movers(journal, &current_window, &mid)?;
+    let movers_list = movers(journal, &holdings_inputs, &current_window, &mid)?;
 
     // Box 10 — largest transactions in the current period.
     let kpi_declared = declared_kpi_roles(&journal.accounts);
     let kpi = kpi_resolver(&kpi_declared, &types);
-    let top_txns = top_transactions(
-        txns,
-        &curr_start,
-        end,
-        &base,
-        &types,
-        &kpi,
-        &PriceDb::build(&prices),
-    )?;
+    let top_txns = top_transactions(txns, &curr_start, end, &base, &types, &kpi, &db)?;
 
     let has_holdings = !current_window.holdings.is_empty() || !previous_window.holdings.is_empty();
 
