@@ -26,8 +26,8 @@
 use ledgeline_core::hledger_conf::UserConfDirs;
 use std::path::{Path, PathBuf};
 
-/// Env override for the directory holding `prefs.json` and `recent.json`. One
-/// variable moves the whole config, on purpose.
+/// Env override for the directory holding `prefs.toml`, `ui-prefs.toml` and
+/// `recent.json`. One variable moves the whole config, on purpose.
 pub const CONFIG_DIR_ENV: &str = "LEDGELINE_CONFIG_DIR";
 /// Env override naming an `hledger` binary.
 pub const HLEDGER_ENV: &str = "LEDGELINE_HLEDGER";
@@ -46,9 +46,10 @@ const APP_DIR: &str = "ledgeline";
 /// nothing to that.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppDirs {
-    /// Where `prefs.json` and `recent.json` live. `None` when the platform
-    /// exposes no config directory and nothing overrides it — persistence is
-    /// then disabled (recents silently, preferences with an error on save).
+    /// Where `prefs.toml`, `ui-prefs.toml` and `recent.json` live. `None` when
+    /// the platform exposes no config directory and nothing overrides it —
+    /// persistence is then disabled (recents silently, preferences with an
+    /// error on save).
     pub config_dir: Option<PathBuf>,
     /// Where regenerable data may be kept. Nothing writes here yet; it is part
     /// of the seam so the first cache does not have to invent its own lookup.
@@ -161,8 +162,8 @@ mod tests {
         assert_eq!(dirs.hledger_bin, None);
         assert_eq!(dirs.hledger_conf, UserConfDirs::default());
         assert_eq!(
-            dirs.config_file("prefs.json").as_deref(),
-            Some(Path::new("/container/Library/config/prefs.json"))
+            dirs.config_file("prefs.toml").as_deref(),
+            Some(Path::new("/container/Library/config/prefs.toml"))
         );
     }
 

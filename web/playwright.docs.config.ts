@@ -41,7 +41,8 @@ const BIN = process.env.LEDGELINE_BIN ?? "../target/debug/ledgeline";
 
 const engine = (set: DocsJournal) => ({
     command: `bun docs-screenshots/stage.ts ${set} && exec ${BIN} --server ../target/docs-screenshots/${set}/${JOURNAL_FILE[set]} --port ${DOCS_ENGINES[set]}`,
-    env: {LEDGELINE_TOKEN: DOCS_TOKEN},
+    // UI view state stays in the browser, where the shots seed it (plan 38 WP-5).
+    env: {LEDGELINE_TOKEN: DOCS_TOKEN, LEDGELINE_UI_PREFS_IN_BROWSER: "1"},
     url: `http://127.0.0.1:${DOCS_ENGINES[set]}/`,
     reuseExistingServer: false,
 });
