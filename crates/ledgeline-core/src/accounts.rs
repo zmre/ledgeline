@@ -53,6 +53,7 @@
 use crate::model::Journal;
 use crate::parse::{split_account_name, tag_in_segment};
 use crate::rules::Newline;
+use crate::text::has_ascii_control;
 use std::ops::Range;
 use thiserror::Error;
 
@@ -458,10 +459,6 @@ fn render_suffix(tags: &[(String, String)], note: &str) -> String {
 // Value validation
 // ---------------------------------------------------------------------------
 
-fn has_control(text: &str) -> bool {
-    text.chars().any(|c| c.is_ascii_control())
-}
-
 /// Whether `text` contains two-or-more consecutive spaces/tabs — the run
 /// [`split_account_name`] reads as ending an account name early.
 fn contains_whitespace_run(text: &str) -> bool {
@@ -516,7 +513,7 @@ fn check_tag_name(name: &str) -> Result<(), AccountError> {
     if name.contains(',') || name.contains(':') {
         return invalid("may not contain `,` or `:`");
     }
-    if has_control(name) {
+    if has_ascii_control(name) {
         return invalid("may not contain a control character");
     }
     Ok(())
@@ -538,7 +535,7 @@ fn check_tag_value(value: &str) -> Result<(), AccountError> {
             "may not contain `,`: hledger would read whatever follows it as a separate tag",
         );
     }
-    if has_control(value) {
+    if has_ascii_control(value) {
         return invalid("may not contain a control character");
     }
     Ok(())
@@ -562,7 +559,7 @@ fn check_note(note: &str) -> Result<(), AccountError> {
             "a note may not begin or end with whitespace".to_string(),
         ));
     }
-    if has_control(note) {
+    if has_ascii_control(note) {
         return Err(AccountError::Invalid(
             "a note may not contain a control character".to_string(),
         ));
@@ -593,7 +590,7 @@ fn check_name(name: &str) -> Result<(), AccountError> {
     if name.trim() != name {
         return invalid("may not begin or end with whitespace");
     }
-    if has_control(name) {
+    if has_ascii_control(name) {
         return invalid("may not contain a control character");
     }
     if name.contains(';') || name.contains('#') {
