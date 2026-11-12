@@ -4,8 +4,6 @@
 ## Known issues
 - fix: display issue where pie chart is not round, but oval when the window narrows horizontally or vertically.  Update: seems to be specific to linux as I can't reproduce on mac. Static analysis says the geometry is fine — layerchart computes the radius as `min(width, height) / 2` and emits a true circle with no `viewBox`, and nothing in our CSS scales non-uniformly — so this needs a WebKitGTK repro (dump the `<svg>`'s rendered box, attributes and computed style from devtools on Linux) before anything is changed.
 
-- fix: the desktop app forgets every browser-stored setting on each launch. The GUI binds an ephemeral port (`crates/ledgeline-server/src/gui.rs`), and WebKit keys localStorage by origin, port included, so each launch starts with empty storage. ⌘R and File→Open keep the port, so the settings survive those. Lost on relaunch: `lastProjectionId`, column choices, chart toggles, benchmarks, review limits. `~/Library/WebKit/com.zmre.ledgeline/WebsiteData/Default/` holds one folder per past port. Fix by giving the webview a stable origin (custom scheme or fixed data-store key) or by moving these settings server-side. Found while writing plan 33.
-
 ## Import improvements
 
 - **Syncing:** Can we setup auto-syncing using SimpleFIN / SimpleFIN Bridge? Is that still maintained?  Does it still work? Do we have any other reasonable sync approaches? Can we run it ourselves?
