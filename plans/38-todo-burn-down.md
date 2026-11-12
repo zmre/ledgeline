@@ -121,9 +121,44 @@ breakdown, and the `TODO.md` entry is gone.
    in the base.
 
 **Done when:**
-- All existing price and report tests pass unchanged.
-- The dense-shape numbers improve and v2/v2fx don't regress.
-- perf-baseline records the dense shape and the RSS numbers.
+- [x] All existing price and report tests pass unchanged.
+- [x] The dense-shape numbers improve and v2/v2fx don't regress.
+- [x] perf-baseline records the dense shape and the RSS numbers.
+
+**Status (2026-11-12): done.** The work is in four commits:
+
+1. `test(bench): dense many-to-many FX corpus, flows bench, load_rss shapes`:
+   - Adds `V2_DENSE_FX` (`v2dfx`), which passes `hledger check -s`.
+   - Adds a `reports/income_statement_flows` bench.
+   - `load_rss` and `gen_journal` now take a shape name.
+2. `perf(prices): index the price graph and search it breadth-first`. This
+   covers steps 2 and 3. The BFS was checked against the old enumeration on
+   3,000 random graphs.
+3. `perf(prices): memoize the price graph per date on PriceDb` (step 4). It
+   memoizes graphs and their resolved rates, and no signature changed.
+4. `perf(prices): index each commodity's price targets` (step 5). It covers
+   both `lookup_in` and `latest_directive_price`.
+
+On v2dfx:
+
+| Bench | before | after |
+|---|---|---|
+| `income_statement_flows` | 2.43 s | 36 ms |
+| `balance_sheet_columns/one_pass_30` | 4.79 s | 82 ms |
+| `net_worth/count_60` | 4.30 s | 126 ms |
+| `insights` | 793 ms | 480 ms |
+| `holdings_series_60` | 479 ms | 141 ms |
+
+On v2fx, `balance_sheet_columns` went from 193 ms to 79 ms and
+`holdings_series_60` from 145 ms to 120 ms.
+
+v2 is within noise. Interleaved A/B medians are +1% to +4% against a ±5%
+spread, and v2 never builds a graph.
+
+Identity was checked on 127 pretty-`Debug` captures: every parseable fixture
+plus v1-5k, v2, v2fx and v2dfx, across 13 reports. All are byte-identical
+after each commit. `perf-baseline.md` §7.6 has the tables and peak RSS, and
+the five `TODO.md` entries are gone.
 
 ## WP-3 — Insights shows when it is refreshing
 
