@@ -197,6 +197,24 @@ cheap.
    checks alone (`serialize.rs:799`/`:955`/`:2827`, `auto_form.rs:275`); they
    are deliberately different.
 
+**Status (2026-11-12): done.** Two commits:
+
+1. `fix(import): preview the hledger.conf lines the write will add`. The
+   preview and the write now both call `ConfTarget::missing`, which diffs
+   against every alias in the journal's own `hledger.conf`, the file the write
+   targets. So `ConfInForce` needs no uncapped copy, and the config in force
+   (capped, possibly `../hledger.conf`) is used only to measure the
+   divergence. Two new hledger-backed tests in `import_endpoints.rs` cover a
+   line past the 200-alias cap and a parent-directory config. Both failed
+   against the old preview.
+2. `refactor: one ASCII control-character helper`. This adds
+   `ledgeline_core::text::{first_ascii_control, has_ascii_control}`. Every
+   listed site used `char::is_ascii_control`, DEL included, and only
+   `edit_api::check_text` allows any characters, so behaviour is unchanged.
+   `edit_api::check_text` stays as the `AppError` wrapper. Not merged:
+   `projections/discovery.rs` `clip`, which strips controls from a display
+   value rather than refusing them.
+
 ## WP-5 — settings files move to TOML, with per-ledger UI prefs
 
 ### The ask

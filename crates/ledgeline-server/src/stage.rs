@@ -490,7 +490,7 @@ fn is_bare_name(name: &str) -> bool {
         && name != "."
         && name != ".."
         && !name.contains(['/', '\\', ':'])
-        && !name.chars().any(|c| c.is_ascii_control())
+        && !ledgeline_core::text::has_ascii_control(name)
 }
 
 /// The per-session staging area. One per [`AppState`](crate::AppState), shared by

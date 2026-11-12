@@ -1097,7 +1097,7 @@ fn validate_relative_id(id: &str, what: &str, suffix: Option<&str>) -> Result<()
         && !id.starts_with('/')
         && !id.contains('\\')
         && !id.contains(':')
-        && !id.chars().any(|c| c.is_ascii_control())
+        && !ledgeline_core::text::has_ascii_control(id)
         && components.len() <= MAX_ID_COMPONENTS
         && components
             .iter()
@@ -1156,7 +1156,7 @@ fn bare_filename(headers: &HeaderMap) -> Result<String, AppError> {
         && name != "."
         && name != ".."
         && !name.contains(['/', '\\', ':'])
-        && !name.chars().any(|c| c.is_ascii_control());
+        && !ledgeline_core::text::has_ascii_control(name);
     well_formed
         .then(|| name.to_string())
         .ok_or_else(|| malformed(raw))
@@ -5863,7 +5863,7 @@ fn cli_upload_name(input: &Path) -> Result<String, AppError> {
         && name != "."
         && name != ".."
         && !name.contains(['/', '\\', ':'])
-        && !name.chars().any(|c| c.is_ascii_control());
+        && !ledgeline_core::text::has_ascii_control(name);
     well_formed.then(|| name.to_string()).ok_or_else(malformed)
 }
 

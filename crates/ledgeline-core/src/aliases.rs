@@ -84,6 +84,7 @@
 
 use crate::model::{AliasDirective, Journal};
 use crate::rules::Newline;
+use crate::text::has_ascii_control;
 use std::cmp::Reverse;
 use std::ops::Range;
 use std::path::Path;
@@ -222,7 +223,7 @@ fn argument_for(alias: &AliasDirective) -> Result<String, AliasRefusal> {
     if alias.pattern.is_empty() || alias.replacement.is_empty() {
         return Err(AliasRefusal::Empty);
     }
-    if has_control(&alias.pattern) || has_control(&alias.replacement) {
+    if has_ascii_control(&alias.pattern) || has_ascii_control(&alias.replacement) {
         return Err(AliasRefusal::Control);
     }
     if alias.pattern.len() > MAX_PATTERN_BYTES || alias.replacement.len() > MAX_REPLACEMENT_BYTES {
@@ -246,12 +247,6 @@ fn render_pattern(pattern: &str, regex: bool) -> String {
     } else {
         pattern.to_string()
     }
-}
-
-/// Any ASCII control character. Same test, and same reasoning, as
-/// `rules::check_text`.
-fn has_control(text: &str) -> bool {
-    text.chars().any(|c| c.is_ascii_control())
 }
 
 // ---------------------------------------------------------------------------
@@ -808,7 +803,7 @@ fn check_pattern(pattern: &str, regex: bool) -> Result<(), AliasError> {
             pattern.len()
         ));
     }
-    if has_control(pattern) {
+    if has_ascii_control(pattern) {
         return invalid("may not contain a control character");
     }
     if pattern.trim() != pattern {
@@ -862,7 +857,7 @@ fn check_replacement(replacement: &str) -> Result<(), AliasError> {
             replacement.len()
         ));
     }
-    if has_control(replacement) {
+    if has_ascii_control(replacement) {
         return invalid("may not contain a control character");
     }
     if replacement.trim() != replacement {
@@ -999,7 +994,7 @@ fn lock_for(pattern: &str, replacement: &str, regex: bool) -> Option<AliasLock> 
     if pattern.is_empty() || replacement.is_empty() {
         return Some(AliasLock::Empty);
     }
-    if has_control(pattern) || has_control(replacement) {
+    if has_ascii_control(pattern) || has_ascii_control(replacement) {
         return Some(AliasLock::Control);
     }
     if pattern.len() > MAX_PATTERN_BYTES || replacement.len() > MAX_REPLACEMENT_BYTES {

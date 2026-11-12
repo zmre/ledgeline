@@ -94,6 +94,7 @@
 use crate::decimal::{Dec, DecError};
 use crate::model::{Amount, PeriodExpr, PeriodKind, PeriodicTransaction, PostingType};
 use crate::rules::Newline;
+use crate::text::has_ascii_control;
 use std::ops::Range;
 use thiserror::Error;
 
@@ -1385,12 +1386,6 @@ fn render_amount(amount: &Amount) -> String {
     crate::edit::render_amount(amount)
 }
 
-/// Any ASCII control character. Same test, and same reasoning, as
-/// `aliases::has_control`.
-fn has_control(text: &str) -> bool {
-    text.chars().any(|c| c.is_ascii_control())
-}
-
 /// Reject an account name this module will not write into a posting line.
 ///
 /// Every rule is one that would make the written line read back as something
@@ -1407,7 +1402,7 @@ fn check_account(account: &str) -> Result<(), PeriodicError> {
             account.len()
         ));
     }
-    if has_control(account) {
+    if has_ascii_control(account) {
         return invalid("may not contain a control character");
     }
     if account.trim() != account {
@@ -1443,7 +1438,7 @@ fn check_description(description: &str) -> Result<(), PeriodicError> {
             description.len()
         ));
     }
-    if has_control(description) {
+    if has_ascii_control(description) {
         return invalid("may not contain a control character");
     }
     if description.trim() != description {
@@ -1461,7 +1456,7 @@ fn check_amount(amount: &Amount) -> Result<(), PeriodicError> {
     if amount.cost.is_some() {
         return invalid("may not carry an `@` cost annotation");
     }
-    if has_control(&amount.commodity.0) {
+    if has_ascii_control(&amount.commodity.0) {
         return invalid("may not name a commodity containing a control character");
     }
     if amount.commodity.0.contains([';', '#']) {
@@ -1715,7 +1710,7 @@ fn read_account(written: &str) -> (PostingType, String) {
 
 /// Why this posting line is read-only, if it is.
 fn goal_lock(content: &str, amount: &str) -> Option<GoalLock> {
-    if has_control(content) {
+    if has_ascii_control(content) {
         return Some(GoalLock::Control);
     }
     if content.len() > MAX_ACCOUNT_BYTES + MAX_AMOUNT_BYTES + MAX_DESCRIPTION_BYTES {

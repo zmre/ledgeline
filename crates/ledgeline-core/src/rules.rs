@@ -3729,7 +3729,7 @@ enum Placement {
 /// damage rather than intent. (Non-ASCII exotica such as `U+2028` are left
 /// alone: neither this module nor hledger treats them as line breaks.)
 fn check_text(what: &str, value: &str, cap: usize) -> Result<(), RulesError> {
-    if let Some(control) = value.chars().find(char::is_ascii_control) {
+    if let Some(control) = crate::text::first_ascii_control(value, &[]) {
         return Err(RulesError::Invalid(format!(
             "{what} may not contain the control character {control:?}"
         )));

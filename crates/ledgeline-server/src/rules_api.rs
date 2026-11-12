@@ -1143,7 +1143,7 @@ fn validate_id(id: &str) -> Result<(), AppError> {
         && !id.starts_with('\\')
         && !id.contains('\\')
         && !id.contains(':')
-        && !id.chars().any(|c| c.is_ascii_control())
+        && !ledgeline_core::text::has_ascii_control(id)
         && ends_with_rules_suffix(id)
         && components.len() <= MAX_ID_COMPONENTS
         && components

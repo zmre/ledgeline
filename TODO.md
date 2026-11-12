@@ -61,7 +61,6 @@
     - ![screenshot](https://www.betterment.com/hubfs/Webpage%20desktop%20dashboard.png)
 
 ## Security
-- chore: **cap-sweep residue.** The import preview's `additions` (`import_api::cli_parity`) are still diffed against the config's *forwarded* aliases, capped at `MAX_CONF_ALIASES`, so past 200 it can list a line the write then (correctly) does not add; the write path uses the full list. And "no ASCII control character" now has five private spellings (`accounts`, `periodic`, `aliases` `has_control`; `rules::check_text`; `edit_api::check_text`) — one shared helper.
 
 ## Performance
 
