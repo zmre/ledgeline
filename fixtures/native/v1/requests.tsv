@@ -53,3 +53,8 @@ holdings	/api/holdings?asOf=2026-07-08
 holdings-series	/api/holdings/series?asOf=2026-07-08&interval=monthly&count=3
 holdings-other	/api/holdings/other?asOf=2026-07-08
 holdings-other-series	/api/holdings/other/series?asOf=2026-07-08&interval=monthly&count=3
+# The SPA's view state (plan 38 WP-5): no `ledgeline.toml` beside
+# sample.journal and no `ui-prefs.toml` in the (scratch) config dir, so this
+# pins the built-in defaults and the `ledger` storage. No date: nothing in it
+# is derived from a clock (see `every_pinned_request_fixes_its_own_dates`).
+ui-prefs	/api/ui-prefs

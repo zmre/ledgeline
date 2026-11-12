@@ -723,6 +723,15 @@ fn run_server_blocking(cli: &Cli, app_dirs: AppDirs) -> Result<(), AppError> {
             source,
         })?
         .with_app_dirs(app_dirs);
+    // The e2e and live-contract harnesses run this over committed fixtures:
+    // a UI save must not land in `fixtures/`, and each browser context must
+    // start from its own clean view state, so they leave it to the browser.
+    let state =
+        if std::env::var_os(ledgeline::UI_PREFS_IN_BROWSER_ENV).is_some_and(|v| !v.is_empty()) {
+            state.with_ui_prefs_in_browser()
+        } else {
+            state
+        };
     // Remember this journal as the most-recently-opened (canonical path).
     ledgeline::recents::record(state.app_dirs(), &editor_path);
     let host = cli.host.clone();

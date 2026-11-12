@@ -32,6 +32,9 @@ test-integration port="5055":
     export LEDGELINE_TOKEN=ledgeline-integration-token
     # The server must never read the developer's own ~/.hledger.conf.
     export LEDGELINE_IGNORE_USER_HLEDGER_CONF=1
+    # The suite PATCHes /api/ui-prefs; over a committed fixture that must not
+    # write fixtures/ledgeline.toml, so UI prefs stay with the client.
+    export LEDGELINE_UI_PREFS_IN_BROWSER=1
     cargo build -p ledgeline
     ./target/debug/ledgeline --server fixtures/sample.journal --port {{port}} &
     server=$!
@@ -197,11 +200,15 @@ snapshot-native port="5078":
     export LEDGELINE_TOKEN=ledgeline-native-fixture-token
     # The server must never read the developer's own ~/.hledger.conf.
     export LEDGELINE_IGNORE_USER_HLEDGER_CONF=1
+    # Nor their config dir: `/api/ui-prefs` reads ui-prefs.toml from it, and the
+    # golden test runs against a scratch one (native_wire_golden.rs).
+    config=$(mktemp -d)
+    export LEDGELINE_CONFIG_DIR="$config"
     out=fixtures/native/v1
     cargo build -p ledgeline
     ./target/debug/ledgeline --server fixtures/sample.journal --port {{port}} &
     server=$!
-    trap 'kill "$server" 2>/dev/null || true' EXIT
+    trap 'kill "$server" 2>/dev/null || true; rm -rf "$config"' EXIT
     # /version is token-gated too, so the readiness probe has to authenticate.
     auth=(-H "Authorization: Bearer $LEDGELINE_TOKEN")
     for _ in $(seq 1 60); do
