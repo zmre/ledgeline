@@ -52,13 +52,13 @@ Opening the app and looking around writes nothing. Ledgeline creates `ui-prefs.t
 
 ## Keeping a setting for one ledger
 
-The theme and the interface scale can be kept for one ledger from inside the app, so you can tell your business books from your personal ones at a glance. Tick "Use for this ledger only" next to the setting:
+The theme, the interface scale and the automatic price updates can be kept for one ledger from inside the app, so you can tell your business books from your personal ones at a glance, or let only your real books fetch prices. Tick "Use for this ledger only" next to the setting:
 
 - Ledgeline writes the setting's current value into the `[ui]` table of the open ledger's `ledgeline.toml`. If the ledger has no `ledgeline.toml` yet, Ledgeline creates it. This is the only time Ledgeline creates that file, and it only happens because you asked.
 - From then on, changing that setting while this ledger is open saves it in `ledgeline.toml`. Other ledgers keep using `ui-prefs.toml`.
 - Untick the box to go back to the shared value. Ledgeline removes the key from `[ui]`, along with any comment lines directly above it. The rest of the file stays, and Ledgeline never deletes the file, even if nothing is left in it.
 
-Only `theme` and `uiScale` can be kept this way from the app. For any other key, add it to `ledgeline.toml` by hand.
+Only `theme`, `uiScale`, `autoPrices` and `autoPricesWeeks` can be kept this way from the app (the Prices tab keeps the last two together). For any other key, add it to `ledgeline.toml` by hand.
 
 Ledgeline won't write to a `ledgeline.toml` that is a symbolic link, is larger than 64 KiB, or isn't valid TOML. In that case the box can't be ticked, and a notice says why. The checkbox isn't offered when [view settings are kept in the browser](#keeping-view-settings-in-the-browser).
 
@@ -153,6 +153,8 @@ A path you type into the file by hand isn't checked until Ledgeline runs it. If 
 | `matchTransitDays` | `10` | 1 to 365 days |
 | `theme` | `"default"` | The colour theme. A family name follows your system's light or dark setting: `"default"`, `"github"`, `"catppuccin"`, `"gruvbox"`, `"tokyo-night"` or `"solarized"`. A variant always looks the same: `"default-light"`, `"default-dark"`, `"github-light"`, `"github-dark"`, `"catppuccin-latte"`, `"catppuccin-mocha"`, `"gruvbox-light"`, `"gruvbox-dark"`, `"tokyo-night-day"`, `"tokyo-night-night"`, `"solarized-light"`, `"solarized-dark"`, and the dark-only `"one-dark-pro"`, `"dracula"`, `"monokai"` and `"nord"` |
 | `uiScale` | `100` | Interface scale in percent, 50 to 300. The app steps through 70 to 200 |
+| `autoPrices` | `false` | Keep stock prices up to date in the background. See [Automatic price updates](../holdings/prices.md#automatic-price-updates) |
+| `autoPricesWeeks` | `6` | 0 to 52: how many past weeks get a weekly closing price filled in. 0 means the latest close only |
 
 ## Keeping view settings in the browser
 
