@@ -1,6 +1,6 @@
 # Plan 39: Onboarding and offboarding (QIF, posting-row CSV, File → New)
 
-Status: planned 2026-11-12. Research is done (see the Research appendix); don't redo it. Start at Phase 1.
+Status: Phases 1, 2, 4, 5 and 6 implemented 2026-11-12 (see "Implementation notes" at the end). Phase 3, the Banktivity round trip, is Patrick's manual step and is still open. Research is done (see the Research appendix); don't redo it.
 
 ## Context
 
@@ -338,3 +338,39 @@ Record the findings in this plan. This also settles the open questions below.
 **Fixtures:**
 - `fixtures/import/{delimited,spreadsheet,ofx,qb-journal,match,sort,layouts,reimport}`. There are no QIF or other-app fixtures yet.
 - A global `*-journal` gitignore hides files in `fixtures/import/qb-journal/`. Watch for similar traps and use `git add -f`.
+
+---
+
+## Implementation notes (2026-11-12)
+
+### Architecture
+
+Every whole-book importer parses into the QuickBooks journal import's existing shape (`QbJournal` → `QbTransaction` → `QbPosting` in `qb_journal.rs`) and reuses its stage, alias-mapping preview, `id:` dedupe and commit, rather than adding parallel pipelines. `book_import::detect_and_parse` is the single dispatch: QuickBooks, then QIF, then the posting-row CSV presets, then the single-entry presets; anything unclaimed goes on to the statement/rules pipeline. Shared fields added for this: `QbTransaction.status` (`ImportStatus`), `QbJournal.source` (`ImportSource`) and `QbJournal.account_kinds` (`SourceAccountKind`). Internal type names still say `Qb`.
+
+### What was built
+
+| Phase | Code | Docs |
+|-------|------|------|
+| 1 QIF export | `export/qif.rs`, `export/loss.rs`, `ledgeline export --qif`, File → Export → QIF… (`gui_export.rs`) | `docs/exports/qif.md` |
+| 2 QIF import | `qif.rs`, `qif_import.rs`, `book_import.rs` | `docs/imports/qif.md` |
+| 4 posting-row CSV | export `export/csv.rs` (`ledgeline export --csv`, File → Export → CSV); import `grouped_csv.rs` (hledger, Xero, GnuCash) | `docs/exports/csv.md`, `docs/imports/other-apps.md` |
+| 5 single-entry | `single_entry.rs` (YNAB, Monarch, Copilot) | `docs/imports/other-apps.md` |
+| 6 File → New | `new_ledger.rs`, `new_ledger_api.rs`, `web/src/lib/onboarding/`, File → New… (Cmd+N), first run opens the wizard | `docs/new-ledger.md` |
+
+### Decisions and deviations
+
+- **Phase 5 does not use rules generation.** Single-entry exports go through the same multi-posting mapping step as QIF: the account column is the tracked account, the category column the counter-account, and transfer rows are paired into one transaction. One reviewed step maps categories and pairs transfers, which suits a whole-book migration better than a rules file.
+- **hledger 1.52 writes `credit` before `debit`** in `print -O csv`, not the order the Phase 4 text lists. The export matches 1.52 byte for byte (all 120 fixture journals hledger accepts; opt-in check in `just hledger-checks`). The importer reads columns by name, so either order imports.
+- **The account tree is derived and suggested, not written.** The importers record each source account's kind (QIF register types and income categories; single-entry tracked accounts vs. categories, classified by the sign of their money). `qb_import::suggest_accounts` turns that into pre-filled mapping rows: an existing account with the same last segment if there is exactly one, otherwise a name under a standard root (`assets:bank:…`, `liabilities:credit cards:…`, `expenses:…`). GnuCash and hledger names are suggested as written. The user reviews every row before any alias is saved.
+- **QIF transfers are written once** (in the first bank-like register by name). `--mirror-transfers` writes Quicken-style mirrored records for Phase 3 to compare. Status: `*` → `CX`, `!` → `C*`.
+- **Virtual postings** are written by the CSV export (as hledger does) and left out, with a count, by the CSV importer. QIF has no form for them; the loss report counts them.
+- **Fiscal year** from the wizard is recorded only as a comment in `main.journal`; nothing reads it yet.
+- **First run** opens the wizard in the GUI when there is no journal argument, `$LEDGELINE_FIXTURE` or recent journal. `--server` and the dev shell still fall back to `fixtures/sample.journal`. The wizard's "Try with sample data" writes a fresh copy of the embedded sample to the cache folder.
+
+### Known gaps
+
+- **Multi-currency import.** `QbPosting` has no commodity, so QIF amounts all go into the journal's default commodity (a second-currency Banktivity file imports wrongly) and the CSV presets refuse a file mixing commodities.
+- **Ambiguous QIF dates** warn but don't yet let the user pick the other order.
+- **Investments** export and import as cash movement; no `!Type:Invst` output, no lots.
+- **Unverified real-world formats:** Xero's actual Journal Report layout and column names, GnuCash's multi-line first row and localized headers, Copilot's `type` values and sign, Monarch's transfer category names. Synthetic fixtures follow the documented columns.
+- **Not exercised by hand:** the native folder/save dialogs, File → Export, File → New and the first-run window were build- and test-checked only.
