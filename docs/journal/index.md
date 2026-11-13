@@ -39,6 +39,8 @@ A thin stripe on a row's left edge marks work left to do: amber for an uncategor
 
 The gear menu at the right of the table toolbar turns columns on and off. Ledgeline remembers the choice. In a narrow window the table switches to one card per transaction.
 
+The two buttons next to the gear switch between this list and a month [calendar](calendar.md).
+
 The table only draws the rows on screen, so it stays fast on journals with tens of thousands of transactions.
 
 ## Editing transactions

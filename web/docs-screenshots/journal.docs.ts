@@ -118,3 +118,15 @@ test.describe("balance over time", () => {
         await shot(page, SECTION, "running-balances-line");
     });
 });
+
+test("calendar", async ({page}) => {
+    // Plan 40: July 2024. 1 July holds four transactions, one a BUY; the
+    // list/calendar toggle is boxed.
+    await page.goto("/?from=2024-07-01&to=2024-07-31&cal=1");
+    const calendar = page.getByTestId("journal-calendar");
+    await expect(calendar.getByTestId("calendar-month")).toHaveText("July 2024");
+    await expect(page.locator('[data-day="2024-07-01"] [data-testid=calendar-trade]')).toBeVisible();
+    const toggle = page.getByRole("group", {name: "Journal view"});
+    const drawn = await annotate(page, [{kind: "box", target: toggle}]);
+    await shot(page, SECTION, "calendar", {clip: [calendar, drawn], padding: 8});
+});

@@ -265,7 +265,8 @@
                 </div>
             </header>
 
-            <main class="mx-auto w-full max-w-7xl grow p-4">
+            <!-- 100rem: 25% wider than Tailwind's max-w-7xl (80rem), for the calendar and wide tables on big screens. -->
+            <main class="mx-auto w-full max-w-[100rem] grow p-4">
                 {#if settings.serverUrl === null || settings.uiPrefsReady}
                     {@render children()}
                 {/if}
