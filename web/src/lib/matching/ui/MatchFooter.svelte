@@ -75,7 +75,9 @@
                     <summary class="btn btn-square btn-ghost btn-sm" aria-label="More actions" title="More actions" data-testid="match-menu">
                         <ReviewIcon name="ellipsis" />
                     </summary>
-                    <ul class="menu dropdown-content z-30 mb-1 w-72 rounded-box border border-base-300 bg-base-200 p-2 text-sm shadow-xl">
+                    <ul
+                        class="menu dropdown-content z-30 mb-1 w-72 max-w-[calc(100vw-2rem)] rounded-box border border-base-300 bg-base-200 p-2 text-sm shadow-xl"
+                    >
                         {#each sides as label, side (side)}
                             <li>
                                 <button

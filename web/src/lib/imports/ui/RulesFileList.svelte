@@ -43,7 +43,9 @@
 <ul class="menu w-full gap-1 rounded-box bg-base-200 p-2" aria-label="Rules files">
     {#each files as file (file.id)}
         {@const row = fileRow(file)}
-        <li class="tooltip tooltip-right w-full" data-tip={row.detail}>
+        <!-- To the right only beside the editor (EditRulesPanel's `lg` column);
+             full width, a right-hand tip sits past the window's edge and widens the page. -->
+        <li class="tooltip tooltip-bottom w-full lg:tooltip-right" data-tip={row.detail}>
             <!-- `flex` is load-bearing, not redundant with `flex-col`: daisyUI
                  styles a menu item as `display:grid; grid-auto-flow:column`, so
                  `flex-col` alone is a no-op and the two lines lay out side by
