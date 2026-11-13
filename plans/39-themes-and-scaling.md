@@ -107,11 +107,12 @@ doesn't) and folding the section tabs into a menu below `md`.
 
 ### Follow-ups
 
-- In files mode a save is debounced 500 ms; a change made just before quitting
-  (Cmd+= then Cmd+Q) can be lost. Flush on `pagehide`.
-- Desktop first paint: the localStorage boot cache is per origin and the
-  desktop origin changes each launch, so a saved non-default theme can flash
-  once. Inject the effective appearance via wry `with_initialization_script`.
+- ~~Debounced save lost on quit~~ — done: theme and text size save at once
+  (serialized so the last value wins), and other pending saves go out with a
+  `keepalive` PATCH on `pagehide` / hidden.
+- ~~Desktop first-paint flash~~ — done: the engine resolves the saved theme
+  (`ui_prefs::boot_appearance`) and the webview's init script seeds the boot
+  cache once per webview session.
 - Not yet verified in the desktop app (WebKit): one keypress zooms exactly
   once via the View menu; `container-type` on `<body>` behaves as in Chromium.
 - Imperfect at the limits: Find Matches tooltip widens the journal 47 px at

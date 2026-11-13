@@ -109,7 +109,7 @@ pub use security::{
     AccessToken, ProcessToken, Security, SecurityError, TOKEN_ENV, token_from_env_or_random,
     token_init_script,
 };
-pub use ui_prefs::UI_PREFS_IN_BROWSER_ENV;
+pub use ui_prefs::{BootAppearance, UI_PREFS_IN_BROWSER_ENV, boot_appearance};
 // `ledgeline import` (WP-16 Phase 3). The binary is a SEPARATE crate from this
 // library, so the `pub(crate)` the rest of `import_api` uses would not reach it —
 // these names are the whole of the CLI's surface, and the request/response
