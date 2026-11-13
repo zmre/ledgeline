@@ -1,0 +1,40 @@
+; Synthetic book for the posting-row CSV round trip (plan 39 Phase 4).
+; `hledger print -O csv` of this file is hledger-print.csv, and
+; `hledger bal --flat --no-total -O csv` is hledger-print.bal.csv.
+
+2026-01-01 * Opening balances  ; id: open-2026
+    assets:bank:checking          $2,500.00
+    assets:bank:savings          $10,000.00
+    liabilities:cc:visa            $-320.15
+    equity:opening balances
+
+2026-01-03=2026-01-05 * (1042) Corner Grocer | weekly shop  ; id: chk-1042, trip: none
+    expenses:food:groceries         $84.12  ; organic produce
+    expenses:household               $15.88
+    ! assets:bank:checking
+
+2026-01-15 ! Acme Payroll
+    assets:bank:checking          $3,104.55
+    expenses:taxes:federal          $612.30
+    expenses:taxes:state            $183.15
+    income:salary                $-3,900.00
+
+2026-01-16 Transfer to savings
+    assets:bank:savings             $500
+    assets:bank:checking           $-500
+
+2026-01-20 * Visa payment  ; id: visa-jan
+    liabilities:cc:visa            $320.15
+    assets:bank:checking
+
+2026-01-20 Visa payment
+    liabilities:cc:visa              $1.00
+    assets:bank:checking
+
+2026-01-20 Visa payment
+    liabilities:cc:visa              $1.00
+    assets:bank:checking
+
+2026-01-28 * Smith, Jones & Co | retainer
+    expenses:legal                  $250.00  ; matter: 77
+    liabilities:cc:visa

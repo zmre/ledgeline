@@ -1,0 +1,5 @@
+"Date","Transaction ID","Number","Description","Notes","Commodity/Currency","Void Reason","Action","Memo","Full Account Name","Account Name","Amount With Sym","Amount Num.","Value With Sym","Value Num.","Reconcile","Reconcile Date","Rate/Price"
+"05.01.2026","5f1c0a9e2b7d4c3a9e8f7a6b5c4d3e21","101","Eckladen","","CURRENCY::EUR","","","Bio-Gemüse","Aufwendungen:Lebensmittel","Lebensmittel","84,12 €","84,12","84,12 €","84,12","n","","1,00"
+"05.01.2026","5f1c0a9e2b7d4c3a9e8f7a6b5c4d3e21","101","Eckladen","","CURRENCY::EUR","","","","Aktiva:Girokonto","Girokonto","-84,12 €","-84,12","-84,12 €","-84,12","y","31.01.2026","1,00"
+"15.01.2026","9a8b7c6d5e4f30211203f4e5d6c7b8a9","","Gehalt","","CURRENCY::EUR","","","","Aktiva:Girokonto","Girokonto","3.104,55 €","3.104,55","3.104,55 €","3.104,55","c","","1,00"
+"15.01.2026","9a8b7c6d5e4f30211203f4e5d6c7b8a9","","Gehalt","","CURRENCY::EUR","","","","Erträge:Gehalt","Gehalt","-3.104,55 €","-3.104,55","-3.104,55 €","-3.104,55","n","","1,00"

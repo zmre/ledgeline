@@ -1,0 +1,21 @@
+Journal Report
+Demo Company (US)
+For the period 1 January 2026 to 31 January 2026
+
+Journal ID,Date,Posted Date,Account,Account Code,Description,Reference,Source,Debit,Credit
+101,3 Jan 2026,3 Jan 2026,Business Bank Account,090,Office chairs,INV-0042,Spend Money,,"1,250.00"
+101,3 Jan 2026,3 Jan 2026,Office Equipment,710,Office chairs,INV-0042,Spend Money,"1,136.36",
+101,3 Jan 2026,3 Jan 2026,Sales Tax,820,Office chairs,INV-0042,Spend Money,113.64,
+102,10 Jan 2026,10 Jan 2026,Accounts Receivable,610,Consulting January,INV-0007,Receivable Invoice,"4,400.00",
+102,10 Jan 2026,10 Jan 2026,Sales,200,Consulting January,INV-0007,Receivable Invoice,,"4,000.00"
+102,10 Jan 2026,10 Jan 2026,Sales Tax,820,Consulting January,INV-0007,Receivable Invoice,,400.00
+103,31 Jan 2026,31 Jan 2026,Wages and Salaries,477,January payroll,PAY-01,Manual Journal,"6,000.00",
+103,31 Jan 2026,31 Jan 2026,Wages Payable - Payroll,814,January payroll,PAY-01,Manual Journal,,"4,620.00"
+103,31 Jan 2026,31 Jan 2026,PAYG Withholdings Payable,825,January payroll,PAY-01,Manual Journal,,"1,380.00"
+104,3 Jan 2026,14 Jan 2026,Business Bank Account,090,Office chairs (reversal),INV-0042,Spend Money,"1,250.00",
+104,3 Jan 2026,14 Jan 2026,Office Equipment,710,Office chairs (reversal),INV-0042,Spend Money,,"1,136.36"
+104,3 Jan 2026,14 Jan 2026,Sales Tax,820,Office chairs (reversal),INV-0042,Spend Money,,113.64
+105,3 Jan 2026,14 Jan 2026,Business Bank Account,090,Office chairs,INV-0042,Spend Money,,"1,300.00"
+105,3 Jan 2026,14 Jan 2026,Office Equipment,710,Office chairs,INV-0042,Spend Money,"1,181.82",
+105,3 Jan 2026,14 Jan 2026,Sales Tax,820,Office chairs,INV-0042,Spend Money,118.18,
+Total,,,,,,,,"14,200.00","14,200.00"
