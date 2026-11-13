@@ -67,3 +67,59 @@ export function barGeometry(spent: number, budget: number, pace: number): BarGeo
         ratio: s / b,
     };
 }
+
+/**
+ * Where the expense ramp reaches amber, as a fraction of the way to the goal
+ * marker: a line three-quarters spent is the one worth a second look.
+ */
+export const EXPENSE_AMBER_AT = 0.75;
+
+/** Round a stop position so the CSS is stable (and readable in a test). */
+const stop = (pct: number): string => `${Math.round(Math.min(100, Math.max(0, pct)) * 100) / 100}%`;
+
+/**
+ * The wide table's bar colour (plan 41 WP-B): a gradient FIXED TO THE TRACK,
+ * which the fill only reveals.
+ *
+ * The stops are laid out in track coordinates, keyed to the goal marker, so a
+ * bar's colour says how far along it is the way a fuel gauge does: an expense
+ * at 40 % of its goal shows only green, at 85 % it has reached amber, at 100 %
+ * it ends in orange, and anything past the marker is red. Stretching the
+ * gradient over the FILL instead would paint every bar the same green-to-orange
+ * sweep whatever its value, which is decoration rather than information.
+ *
+ * - Expense: success → warning (at {@link EXPENSE_AMBER_AT} of the goal) →
+ *   orange (at the goal) → a hard step to error past it.
+ * - Revenue: the opposite meaning, so a calm info → success ramp with NO red:
+ *   earning more than the target must not read as overspend (plans/20).
+ *
+ * A goal of zero has no ramp to speak of (the marker sits at the end of the
+ * track): any spending against it is all overspend, and any income all win.
+ *
+ * Returns a CSS `background-image`. Colours are theme tokens only — the
+ * `--color-orange` one is derived in `app.css` so every theme has it.
+ */
+export function barGradient(kind: "revenue" | "expense", geom: BarGeometry): string {
+    const marker = geom.markerPct;
+    if (kind === "revenue") {
+        if (geom.ratio === null) return "linear-gradient(to right, var(--color-success), var(--color-success))";
+        return `linear-gradient(to right, var(--color-info) 0%, var(--color-success) ${stop(marker)}, var(--color-success) 100%)`;
+    }
+    if (geom.ratio === null) return "linear-gradient(to right, var(--color-error), var(--color-error))";
+    return (
+        "linear-gradient(to right, var(--color-success) 0%, " +
+        `var(--color-warning) ${stop(marker * EXPENSE_AMBER_AT)}, ` +
+        `var(--color-orange) ${stop(marker)}, ` +
+        `var(--color-error) ${stop(marker)}, var(--color-error) 100%)`
+    );
+}
+
+/**
+ * The CSS that reveals `fillPct` of a full-track layer: `clip-path` rather than
+ * a narrower element, so the gradient underneath keeps the TRACK's width (see
+ * {@link barGradient}) without a `background-size` that divides by the fill —
+ * which a zero-width fill would turn into infinity.
+ */
+export function fillClip(fillPct: number): string {
+    return `inset(0 ${stop(100 - fillPct)} 0 0)`;
+}

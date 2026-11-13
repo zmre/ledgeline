@@ -85,3 +85,20 @@
         container: app / inline-size;
     }
 }
+
+/*
+ * Orange, as a theme token (plan 41 WP-B): the budget table's bars ramp
+ * green → amber → orange → red, and daisyUI has no orange role. Derived, not
+ * picked: an even oklab mix of the theme's own `warning` and `error`, so every
+ * theme — all twenty variants, and any added later — gets an orange that sits
+ * between its amber and its red instead of a hard-coded hex that would clash
+ * with half of them. Declared on `[data-theme]` as well as `:root` so the
+ * `var()`s resolve against the element that names the theme, never against an
+ * ancestor's.
+ */
+@layer base {
+    :root,
+    [data-theme] {
+        --color-orange: color-mix(in oklab, var(--color-warning) 50%, var(--color-error));
+    }
+}
