@@ -1,0 +1,71 @@
+/*
+ * One Dark Pro (github.com/Binaryify/OneDark-Pro), dark only. Bases are the
+ * editor, sidebar and a derived darker step. Its foreground #abb2bf is 6.6:1 on
+ * the editor, kept as published.
+ *
+ * Each variant is a daisyUI custom theme plus its chart block. The chart rules
+ * (slot order, the named tokens, how to validate) are in app.css and
+ * src/lib/format/palette.ts.
+ */
+
+@plugin "daisyui/theme" {
+    name: "one-dark-pro";
+    default: false;
+    prefersdark: false;
+    color-scheme: dark;
+    --color-base-100: #282c34;
+    --color-base-200: #21252b;
+    --color-base-300: #1b1d23;
+    --color-base-content: #abb2bf;
+    --color-primary: #61afef;
+    --color-primary-content: #282c34;
+    --color-secondary: #e06c75;
+    --color-secondary-content: #1b1d23;
+    --color-accent: #e5c07b;
+    --color-accent-content: #282c34;
+    --color-neutral: #3e4451;
+    --color-neutral-content: #abb2bf;
+    --color-info: #61afef;
+    --color-info-content: #282c34;
+    --color-success: #98c379;
+    --color-success-content: #282c34;
+    --color-warning: #d19a66;
+    --color-warning-content: #282c34;
+    --color-error: #be5046;
+    --color-error-content: #ffffff;
+    --radius-selector: 0.5rem;
+    --radius-field: 0.25rem;
+    --radius-box: 0.5rem;
+    --size-selector: 0.25rem;
+    --size-field: 0.25rem;
+    --border: 1px;
+    --depth: 1;
+    --noise: 0;
+}
+
+/*
+ * one-dark-pro: 11 slots, validated on base-100 #282c34 — worst adjacent CVD
+ * ΔE 17.6, worst adjacent normal-vision ΔE 19, every slot ≥ 3:1 contrast (min
+ * 3.07:1). Flow in/out CVD ΔE 9.3. Pins (info/secondary/accent): all-pairs CVD
+ * ΔE 15.8, normal ΔE 20.6, min 4.38:1.
+ *
+ * One Dark's eight accents plus deeper purple and lighter cyan and red steps.
+ * DEVIATION: dark red #be5046 lightened a step to #c15349 for 3:1.
+ */
+[data-theme="one-dark-pro"] {
+    --chart-1: #61afef;
+    --chart-2: #98c379;
+    --chart-3: #ac5fc3;
+    --chart-4: #e5c07b;
+    --chart-5: #c678dd;
+    --chart-6: #d19a66;
+    --chart-7: #81e0ec;
+    --chart-8: #e06c75;
+    --chart-9: #feb9bb;
+    --chart-10: #c15349;
+    --chart-11: #56b6c2;
+    --chart-other: #7f848e;
+    --chart-in: #98c379;
+    --chart-out: #e06c75;
+    --chart-net: #abb2bf;
+}

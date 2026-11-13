@@ -1,0 +1,142 @@
+/*
+ * Tokyo Night, the "day" and "night" styles (github.com/folke/tokyonight.nvim).
+ * Bases are bg, bg_dark and bg_highlight (day) or bg, bg_dark and bg_dark1
+ * (night). Day's foreground is its own blue #3760bf at 4.5:1, so base-content
+ * stays below the 7:1 the other themes reach.
+ *
+ * Each variant is a daisyUI custom theme plus its chart block. The chart rules
+ * (slot order, the named tokens, how to validate) are in app.css and
+ * src/lib/format/palette.ts.
+ */
+
+@plugin "daisyui/theme" {
+    name: "tokyo-night-day";
+    default: false;
+    prefersdark: false;
+    color-scheme: light;
+    --color-base-100: #e1e2e7;
+    --color-base-200: #d0d5e3;
+    --color-base-300: #c4c8da;
+    --color-base-content: #3760bf;
+    --color-primary: #2e7de9;
+    --color-primary-content: #0c0e14;
+    --color-secondary: #7847bd;
+    --color-secondary-content: #e1e2e7;
+    --color-accent: #b15c00;
+    --color-accent-content: #ffffff;
+    --color-neutral: #3760bf;
+    --color-neutral-content: #e1e2e7;
+    --color-info: #006a83;
+    --color-info-content: #e1e2e7;
+    --color-success: #587539;
+    --color-success-content: #ffffff;
+    --color-warning: #8c6c3e;
+    --color-warning-content: #ffffff;
+    --color-error: #c64343;
+    --color-error-content: #ffffff;
+    --radius-selector: 0.5rem;
+    --radius-field: 0.25rem;
+    --radius-box: 0.5rem;
+    --size-selector: 0.25rem;
+    --size-field: 0.25rem;
+    --border: 1px;
+    --depth: 1;
+    --noise: 0;
+}
+
+/*
+ * tokyo-night-day: 14 slots, validated on base-100 #e1e2e7 — worst adjacent
+ * CVD ΔE 10.3, worst adjacent normal-vision ΔE 15.1, every slot ≥ 3:1 contrast
+ * (min 3.07:1). Flow in/out CVD ΔE 9.7. Pins (info/secondary/accent):
+ * all-pairs CVD ΔE 9.6, normal ΔE 18.4, min 3.69:1.
+ *
+ * Thirteen Day accents (blue5 dropped as a near-duplicate of cyan); slot 11 is
+ * a deeper yellow-brown from Day's yellow. DEVIATIONS: red #f52a65 darkened a
+ * step to #f32764 and the comment grey #848cb5 to #757da5 for 3:1.
+ */
+[data-theme="tokyo-night-day"] {
+    --chart-1: #2e7de9;
+    --chart-2: #d20065;
+    --chart-3: #007197;
+    --chart-4: #587539;
+    --chart-5: #7847bd;
+    --chart-6: #8c6c3e;
+    --chart-7: #188092;
+    --chart-8: #c64343;
+    --chart-9: #9854f1;
+    --chart-10: #f32764;
+    --chart-11: #654718;
+    --chart-12: #118c74;
+    --chart-13: #b15c00;
+    --chart-14: #387068;
+    --chart-other: #757da5;
+    --chart-in: #118c74;
+    --chart-out: #f32764;
+    --chart-net: #3760bf;
+}
+
+@plugin "daisyui/theme" {
+    name: "tokyo-night-night";
+    default: false;
+    prefersdark: false;
+    color-scheme: dark;
+    --color-base-100: #1a1b26;
+    --color-base-200: #16161e;
+    --color-base-300: #0c0e14;
+    --color-base-content: #c0caf5;
+    --color-primary: #7aa2f7;
+    --color-primary-content: #1a1b26;
+    --color-secondary: #9d7cd8;
+    --color-secondary-content: #1a1b26;
+    --color-accent: #ff9e64;
+    --color-accent-content: #1a1b26;
+    --color-neutral: #292e42;
+    --color-neutral-content: #c0caf5;
+    --color-info: #7dcfff;
+    --color-info-content: #1a1b26;
+    --color-success: #9ece6a;
+    --color-success-content: #1a1b26;
+    --color-warning: #e0af68;
+    --color-warning-content: #1a1b26;
+    --color-error: #f7768e;
+    --color-error-content: #1a1b26;
+    --radius-selector: 0.5rem;
+    --radius-field: 0.25rem;
+    --radius-box: 0.5rem;
+    --size-selector: 0.25rem;
+    --size-field: 0.25rem;
+    --border: 1px;
+    --depth: 1;
+    --noise: 0;
+}
+
+/*
+ * tokyo-night-night: 14 slots, validated on base-100 #1a1b26 — worst adjacent
+ * CVD ΔE 15.6, worst adjacent normal-vision ΔE 17.3, every slot ≥ 3:1 contrast
+ * (min 3.29:1). Flow in/out CVD ΔE 17.4. Pins (info/secondary/accent):
+ * all-pairs CVD ΔE 16.7, normal ΔE 21, min 5.13:1.
+ *
+ * Thirteen Night accents (blue5 dropped as a near-duplicate of cyan); slot 13
+ * is a deeper blue from Night's blue. `out` is red1, not red: red sits too
+ * near green under CVD (ΔE 9.0 vs 17.4).
+ */
+[data-theme="tokyo-night-night"] {
+    --chart-1: #7aa2f7;
+    --chart-2: #9ece6a;
+    --chart-3: #9d7cd8;
+    --chart-4: #e0af68;
+    --chart-5: #2ac3de;
+    --chart-6: #db4b4b;
+    --chart-7: #73daca;
+    --chart-8: #ff007c;
+    --chart-9: #7dcfff;
+    --chart-10: #ff9e64;
+    --chart-11: #bb9af7;
+    --chart-12: #f7768e;
+    --chart-13: #466abb;
+    --chart-14: #1abc9c;
+    --chart-other: #737aa2;
+    --chart-in: #9ece6a;
+    --chart-out: #db4b4b;
+    --chart-net: #c0caf5;
+}

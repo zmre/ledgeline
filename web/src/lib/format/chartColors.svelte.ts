@@ -1,5 +1,5 @@
-// The live chart palette: `app.css`'s `--chart-*` tokens (and daisyUI's
-// `--color-info`/`-secondary`/`-accent` for pinned series) resolved to concrete
+// The live chart palette: the theme's `--chart-*` tokens (`src/themes/`, and
+// daisyUI's `--color-info`/`-secondary`/`-accent` for pinned series) resolved to concrete
 // colour strings, re-resolved whenever `<html data-theme>` changes.
 //
 // Why resolve at all, rather than hand charts `var(--chart-1)`: see the header

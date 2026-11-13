@@ -19,9 +19,9 @@ async function seedServerUrl(page: Page): Promise<void> {
     }, API_TOKEN);
 }
 
-test("dark theme is the default", async ({page}) => {
+test("default-dark is the theme before any pref applies", async ({page}) => {
     await page.goto("/");
-    await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "default-dark");
 });
 
 test("first run prompts for a server URL", async ({page}) => {

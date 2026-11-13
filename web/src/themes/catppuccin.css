@@ -1,0 +1,143 @@
+/*
+ * Catppuccin Latte and Mocha (catppuccin.com/palette). Base 100/200/300 are
+ * base, mantle and crust; neutral is surface0 (Mocha) or text (Latte).
+ *
+ * Each variant is a daisyUI custom theme plus its chart block. The chart rules
+ * (slot order, the named tokens, how to validate) are in app.css and
+ * src/lib/format/palette.ts.
+ */
+
+@plugin "daisyui/theme" {
+    name: "catppuccin-latte";
+    default: false;
+    prefersdark: false;
+    color-scheme: light;
+    --color-base-100: #eff1f5;
+    --color-base-200: #e6e9ef;
+    --color-base-300: #dce0e8;
+    --color-base-content: #4c4f69;
+    --color-primary: #8839ef;
+    --color-primary-content: #eff1f5;
+    --color-secondary: #e64553;
+    --color-secondary-content: #11111b;
+    --color-accent: #179299;
+    --color-accent-content: #11111b;
+    --color-neutral: #4c4f69;
+    --color-neutral-content: #eff1f5;
+    --color-info: #1e66f5;
+    --color-info-content: #ffffff;
+    --color-success: #40a02b;
+    --color-success-content: #11111b;
+    --color-warning: #df8e1d;
+    --color-warning-content: #11111b;
+    --color-error: #d20f39;
+    --color-error-content: #eff1f5;
+    --radius-selector: 0.5rem;
+    --radius-field: 0.25rem;
+    --radius-box: 0.5rem;
+    --size-selector: 0.25rem;
+    --size-field: 0.25rem;
+    --border: 1px;
+    --depth: 1;
+    --noise: 0;
+}
+
+/*
+ * catppuccin-latte: 14 slots, validated on base-100 #eff1f5 — worst adjacent
+ * CVD ΔE 18.3, worst adjacent normal-vision ΔE 19.5, every slot ≥ 3:1 contrast
+ * (min 3.06:1). Flow in/out CVD ΔE 13.6. Pins (info/secondary/accent):
+ * all-pairs CVD ΔE 12.7, normal ΔE 20.2, min 3.31:1.
+ *
+ * Twelve Latte accents; flamingo and sapphire dropped as near-duplicates of
+ * maroon/rosewater and teal. DEVIATIONS: rosewater, pink, peach, yellow,
+ * green, sky and lavender are darkened in OKLCH just enough for 3:1 on base
+ * (Latte's pastels sit at 2.3–2.9:1); slots 11 and 13 are darker blue and red
+ * from the same hues to reach fourteen. `in` is teal (Latte green is below 3:1
+ * and too close to red under CVD).
+ */
+[data-theme="catppuccin-latte"] {
+    --chart-1: #8839ef;
+    --chart-2: #e64553;
+    --chart-3: #1393cb;
+    --chart-4: #d20f39;
+    --chart-5: #6b7ff4;
+    --chart-6: #ec5b04;
+    --chart-7: #d260b4;
+    --chart-8: #c27904;
+    --chart-9: #1e66f5;
+    --chart-10: #3d9d27;
+    --chart-11: #0341b8;
+    --chart-12: #c37362;
+    --chart-13: #920624;
+    --chart-14: #179299;
+    --chart-other: #7c7f93;
+    --chart-in: #179299;
+    --chart-out: #d20f39;
+    --chart-net: #4c4f69;
+}
+
+@plugin "daisyui/theme" {
+    name: "catppuccin-mocha";
+    default: false;
+    prefersdark: false;
+    color-scheme: dark;
+    --color-base-100: #1e1e2e;
+    --color-base-200: #181825;
+    --color-base-300: #11111b;
+    --color-base-content: #cdd6f4;
+    --color-primary: #cba6f7;
+    --color-primary-content: #1e1e2e;
+    --color-secondary: #eba0ac;
+    --color-secondary-content: #1e1e2e;
+    --color-accent: #f9e2af;
+    --color-accent-content: #1e1e2e;
+    --color-neutral: #313244;
+    --color-neutral-content: #cdd6f4;
+    --color-info: #89b4fa;
+    --color-info-content: #1e1e2e;
+    --color-success: #a6e3a1;
+    --color-success-content: #1e1e2e;
+    --color-warning: #fab387;
+    --color-warning-content: #1e1e2e;
+    --color-error: #f38ba8;
+    --color-error-content: #1e1e2e;
+    --radius-selector: 0.5rem;
+    --radius-field: 0.25rem;
+    --radius-box: 0.5rem;
+    --size-selector: 0.25rem;
+    --size-field: 0.25rem;
+    --border: 1px;
+    --depth: 1;
+    --noise: 0;
+}
+
+/*
+ * catppuccin-mocha: 14 slots, validated on base-100 #1e1e2e — worst adjacent
+ * CVD ΔE 16.3, worst adjacent normal-vision ΔE 17.8, every slot ≥ 3:1 contrast
+ * (min 3.51:1). Flow in/out CVD ΔE 10.7. Pins (info/secondary/accent):
+ * all-pairs CVD ΔE 11.2, normal ΔE 16.5, min 7.79:1.
+ *
+ * Eleven Mocha accents (flamingo, maroon and sky dropped as near-duplicates);
+ * slots 9, 11 and 13 are deeper blue, red and green from Mocha's own hues, so
+ * the pastels have darker neighbours.
+ */
+[data-theme="catppuccin-mocha"] {
+    --chart-1: #cba6f7;
+    --chart-2: #f5e0dc;
+    --chart-3: #f38ba8;
+    --chart-4: #f9e2af;
+    --chart-5: #b4befe;
+    --chart-6: #fab387;
+    --chart-7: #89b4fa;
+    --chart-8: #a6e3a1;
+    --chart-9: #547cbe;
+    --chart-10: #94e2d5;
+    --chart-11: #b65472;
+    --chart-12: #f5c2e7;
+    --chart-13: #6ea96a;
+    --chart-14: #74c7ec;
+    --chart-other: #7f849c;
+    --chart-in: #a6e3a1;
+    --chart-out: #f38ba8;
+    --chart-net: #cdd6f4;
+}

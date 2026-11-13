@@ -1,0 +1,71 @@
+/*
+ * Dracula (draculatheme.com/spec), dark only. Bases are background and the two
+ * darker shades the spec gives for sidebars and menus.
+ *
+ * Each variant is a daisyUI custom theme plus its chart block. The chart rules
+ * (slot order, the named tokens, how to validate) are in app.css and
+ * src/lib/format/palette.ts.
+ */
+
+@plugin "daisyui/theme" {
+    name: "dracula";
+    default: false;
+    prefersdark: false;
+    color-scheme: dark;
+    --color-base-100: #282a36;
+    --color-base-200: #21222c;
+    --color-base-300: #191a21;
+    --color-base-content: #f8f8f2;
+    --color-primary: #ff79c6;
+    --color-primary-content: #282a36;
+    --color-secondary: #bd93f9;
+    --color-secondary-content: #282a36;
+    --color-accent: #ffb86c;
+    --color-accent-content: #282a36;
+    --color-neutral: #44475a;
+    --color-neutral-content: #f8f8f2;
+    --color-info: #8be9fd;
+    --color-info-content: #282a36;
+    --color-success: #50fa7b;
+    --color-success-content: #282a36;
+    --color-warning: #f1fa8c;
+    --color-warning-content: #282a36;
+    --color-error: #ff5555;
+    --color-error-content: #282a36;
+    --radius-selector: 0.5rem;
+    --radius-field: 0.25rem;
+    --radius-box: 0.5rem;
+    --size-selector: 0.25rem;
+    --size-field: 0.25rem;
+    --border: 1px;
+    --depth: 1;
+    --noise: 0;
+}
+
+/*
+ * dracula: 12 slots, validated on base-100 #282a36 — worst adjacent CVD ΔE 20,
+ * worst adjacent normal-vision ΔE 20.2, every slot ≥ 3:1 contrast (min
+ * 3.57:1). Flow in/out CVD ΔE 17.5. Pins (info/secondary/accent): all-pairs
+ * CVD ΔE 15.8, normal ΔE 21.4, min 5.90:1.
+ *
+ * Dracula's seven accents unchanged plus deeper and lighter steps of its pink,
+ * purple, red and cyan.
+ */
+[data-theme="dracula"] {
+    --chart-1: #ff79c6;
+    --chart-2: #f1fa8c;
+    --chart-3: #4faec2;
+    --chart-4: #50fa7b;
+    --chart-5: #bd93f9;
+    --chart-6: #ff5555;
+    --chart-7: #d1b5fd;
+    --chart-8: #ffb86c;
+    --chart-9: #d14f9d;
+    --chart-10: #8be9fd;
+    --chart-11: #956bcd;
+    --chart-12: #ff8b84;
+    --chart-other: #6272a4;
+    --chart-in: #50fa7b;
+    --chart-out: #ff5555;
+    --chart-net: #f8f8f2;
+}

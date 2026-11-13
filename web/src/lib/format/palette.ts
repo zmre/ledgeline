@@ -5,9 +5,10 @@
 // ── WHERE THE COLOURS LIVE ───────────────────────────────────────────────────
 //
 // The source of truth is CSS: `--chart-1` … `--chart-N`, `--chart-other`,
-// `--chart-in`, `--chart-out` and `--chart-net`, declared per daisyUI theme in
-// `src/app.css`. A theme defines as many categorical `--chart-N` slots as it
-// likes, contiguous from 1: `resolvePalette` reads `--chart-1`, `--chart-2`, …
+// `--chart-in`, `--chart-out` and `--chart-net`, declared per theme variant
+// beside its daisyUI theme in `src/themes/<family>.css` (rules in `src/app.css`).
+// A theme defines as many categorical `--chart-N` slots as it likes, contiguous
+// from 1: `resolvePalette` reads `--chart-1`, `--chart-2`, …
 // up to the first empty one, and every chart sizes itself to that count
 // (`palette.categorical.length`), folding to `other` only past the last slot.
 // Charts cannot be handed `var(--chart-1)` — SVG presentation attributes set
@@ -16,20 +17,24 @@
 // `getComputedStyle` and re-resolves when `<html data-theme>` changes.
 // `DEFAULT_PALETTE` below is the fallback for when no stylesheet is there to
 // ask (unit tests, jsdom, SSR) or the theme defines no categorical slots at
-// all; `palette.test.ts` parses `app.css` and fails if the dark block and this
-// object disagree.
+// all; `palette.test.ts` parses the theme files and fails if the default-dark
+// block and this object disagree, or if any theme's block is incomplete.
 //
 // ── ADDING A THEME ───────────────────────────────────────────────────────────
 //
-//   1. Add the daisyUI theme to the `@plugin "daisyui"` list in `app.css`.
-//   2. Add a `[data-theme="<name>"] { --chart-*: … }` block beside the dark one:
+//   1. Add a `@plugin "daisyui/theme"` block to a family file in `src/themes/`
+//      (imported from `app.css`) and the variant to `#lib/theme/catalog.ts`.
+//   2. Add a `[data-theme="<name>"] { --chart-*: … }` block beside it:
 //      any number of `--chart-N` slots (no gaps — reading stops at the first
 //      missing one) plus the four named tokens. A missing named token silently
 //      falls back to the DARK value here, which will be wrong on a light surface.
 //   3. Validate the slots, in order, against that theme's `--color-base-100`
-//      with the dataviz skill's validator before shipping them.
+//      with the dataviz skill's validator before shipping them, and record the
+//      numbers in a comment above the block. The floors every shipped theme
+//      meets: worst adjacent CVD ΔE ≥ 8, worst adjacent normal-vision ΔE ≥ 15,
+//      every slot ≥ 3:1. `palette.test.ts` checks structure and contrast.
 //
-// ── THE DARK VALUES AND WHY ──────────────────────────────────────────────────
+// ── THE DEFAULT-DARK VALUES AND WHY ──────────────────────────────────────────────────
 //
 // Fourteen hues generated from daisyUI dark's primary (#615dff) and warning
 // (#fcb700) as anchors, so the charts carry the same vibrancy as the buttons
@@ -64,9 +69,11 @@
 // and its series are the same colour in every theme by construction, and a
 // theme switch recolours both. A chart names one by `ThemePin` (a token name,
 // never a colour, so report models stay theme-free) and `pinColor` resolves
-// it. The dark values below are daisy dark's, as oklch strings: SVG `fill` and
+// it. The dark values below are daisy dark's (= `default-dark`'s), as oklch strings: SVG `fill` and
 // CSS `background` take them as they are. `palette.test.ts` pins them to the
-// installed daisyUI.
+// installed daisyUI. Because the pins are theme roles, every theme picks its
+// info/secondary/accent so the three stay apart (each theme file records their
+// all-pairs CVD ΔE); the default themes keep daisy's own.
 
 /** Resolved chart colours for one theme. Every value is a concrete CSS colour, never a `var(...)`. */
 export interface ChartPalette {
@@ -109,7 +116,7 @@ export const OTHER_LABEL = "(other)";
 /** The CSS custom property for categorical slot `i` (0-based): `--chart-{i+1}`. */
 export const slotToken = (i: number): string => `--chart-${i + 1}`;
 
-/** The CSS custom property behind each named palette entry, as declared in `app.css`. */
+/** The CSS custom property behind each named palette entry, as declared in every theme's chart block. */
 export const CHART_TOKENS = {
     other: "--chart-other",
     flowIn: "--chart-in",
@@ -117,14 +124,14 @@ export const CHART_TOKENS = {
     flowNet: "--chart-net",
 } as const;
 
-/** daisyUI 5's custom property behind each `ThemeColors` entry. Declared by daisyUI, not by `app.css`. */
+/** daisyUI 5's custom property behind each `ThemeColors` entry. Declared by each daisyUI theme, not by a chart block. */
 export const THEME_TOKENS = {
     info: "--color-info",
     secondary: "--color-secondary",
     accent: "--color-accent",
 } as const satisfies Record<keyof ThemeColors, string>;
 
-/** daisyUI dark's chart tokens — the fallback when CSS is absent. Must match `app.css` (tested). */
+/** default-dark's chart tokens — the fallback when CSS is absent. Must match `src/themes/default.css` (tested). */
 export const DEFAULT_PALETTE: ChartPalette = Object.freeze({
     categorical: Object.freeze([
         "#615dff", //  1 indigo   = daisy primary
