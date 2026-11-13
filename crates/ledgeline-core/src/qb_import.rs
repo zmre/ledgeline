@@ -311,6 +311,7 @@ mod tests {
             customer: None,
             vendor: None,
             name: None,
+            units: None,
         }
     }
 

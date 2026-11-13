@@ -702,6 +702,7 @@ pub(crate) fn posting(account: &str, amount: Dec, memo: Option<String>) -> QbPos
         customer: None,
         vendor: None,
         name: None,
+        units: None,
     }
 }
 

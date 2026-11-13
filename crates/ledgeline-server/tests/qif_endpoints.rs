@@ -332,3 +332,87 @@ async fn the_preview_suggests_a_journal_account_for_every_unmapped_qif_account()
         );
     }
 }
+
+/// Map every unmapped account to the engine's own suggestion, as a user who
+/// accepts them all would.
+async fn accept_suggestions(tree: &Tree, stage_id: &str) {
+    let body = preview(tree, stage_id).await;
+    let suggested = body["suggestedAccounts"].as_object().expect("suggestions");
+    let mappings: Vec<(String, String)> = body["unmappedAccounts"]
+        .as_array()
+        .expect("unmapped")
+        .iter()
+        .map(|account| {
+            let account = account.as_str().expect("a name").to_string();
+            let target = suggested[&account]
+                .as_str()
+                .expect("a suggestion")
+                .to_string();
+            (account, target)
+        })
+        .collect();
+    let borrowed: Vec<(&str, &str)> = mappings
+        .iter()
+        .map(|(from, to)| (from.as_str(), to.as_str()))
+        .collect();
+    map(tree, &borrowed).await;
+}
+
+#[tokio::test]
+async fn investment_records_are_written_as_shares_at_their_price() {
+    let tree = Tree::bare();
+    let stage_id = staged(&tree, "investment.qif").await;
+    accept_suggestions(&tree, &stage_id).await;
+    let body = preview(&tree, &stage_id).await;
+    assert_eq!(body["unmappedAccounts"], json!([]), "{body}");
+
+    let (status, result) = with_json(
+        &tree,
+        "POST",
+        "/api/import/qb-journal/commit",
+        json!({"stageId": stage_id}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+
+    let journal = tree.journal_text();
+    // Buy 40 at $50.00 with a $4.95 commission; a sale at the sale price.
+    assert!(
+        journal.contains("40 \"ACME Index Fund\" @ $50.00"),
+        "{journal}"
+    );
+    assert!(journal.contains("$4.95"), "{journal}");
+    assert!(
+        journal.contains("-10 \"ACME Index Fund\" @ $55.00"),
+        "{journal}"
+    );
+    // A reinvested dividend buys shares too.
+    assert!(
+        journal.contains("0.25 \"ACME Index Fund\" @ $52.00"),
+        "{journal}"
+    );
+
+    // What was written reads back as exactly what would be written again.
+    let again = staged(&tree, "investment.qif").await;
+    let body = preview(&tree, &again).await;
+    assert_eq!(body["idMatches"]["new"], 0, "{body}");
+    assert_eq!(body["idMatches"]["conflicting"], json!([]), "{body}");
+
+    if std::env::var_os("LEDGELINE_HLEDGER_IMPORT_CHECK").is_some() {
+        let path = tree.dir.path().join("main.journal");
+        let output = std::process::Command::new("hledger")
+            .args(["--no-conf", "-f"])
+            .arg(&path)
+            .args(["bal", "--flat", "--no-total", "-N", "Securities|ACME"])
+            .output()
+            .expect("hledger runs");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // 40 bought, 0.25 reinvested, 10 sold.
+        assert!(stdout.contains("30.25 \"ACME Index Fund\""), "{stdout}");
+    }
+}

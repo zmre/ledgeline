@@ -107,6 +107,18 @@ pub struct QifClass {
     pub description: Option<String>,
 }
 
+/// One `!Type:Security` record: the name investment records use in `Y`, and
+/// its ticker symbol.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct QifSecurity {
+    /// `N`: the name, as `Y` writes it.
+    pub name: String,
+    /// `S`: the ticker symbol, when the file gives one.
+    pub symbol: Option<String>,
+    /// `T`: `Stock`, `Mutual Fund` …
+    pub kind: Option<String>,
+}
+
 /// One split line group: `S` (category or `[Account]`), `E` (memo), `$`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct QifSplit {
@@ -165,6 +177,8 @@ pub struct QifFile {
     pub accounts: Vec<QifAccount>,
     pub categories: Vec<QifCategory>,
     pub classes: Vec<QifClass>,
+    /// Every `!Type:Security` record, first occurrence of each name only.
+    pub securities: Vec<QifSecurity>,
     pub registers: Vec<QifRegister>,
     /// Headers whose records were skipped (`!Type:Memorized` …), once each.
     pub skipped_sections: Vec<String>,
@@ -242,6 +256,7 @@ enum Section {
     AccountList,
     Categories,
     Classes,
+    Securities,
     Register(RegisterKind),
     Skipped,
 }
@@ -347,6 +362,7 @@ impl Reader {
             "!account" => Section::AccountList,
             "!type:cat" => Section::Categories,
             "!type:class" => Section::Classes,
+            "!type:security" => Section::Securities,
             "!type:bank" => Section::Register(RegisterKind::Bank),
             "!type:cash" => Section::Register(RegisterKind::Cash),
             "!type:ccard" => Section::Register(RegisterKind::CreditCard),
@@ -382,6 +398,7 @@ impl Reader {
             Section::AccountList => self.account(&fields),
             Section::Categories => self.category(&fields),
             Section::Classes => self.class(&fields),
+            Section::Securities => self.security(&fields),
             Section::Register(kind) => {
                 let record = record(kind, &fields)?;
                 if let Some(register) = self.file.registers.last_mut() {
@@ -429,6 +446,18 @@ impl Reader {
         };
         if !class.name.is_empty() && !self.file.classes.iter().any(|c| c.name == class.name) {
             self.file.classes.push(class);
+        }
+    }
+
+    fn security(&mut self, fields: &[Field]) {
+        let security = QifSecurity {
+            name: text_of(fields, 'N').unwrap_or_default(),
+            symbol: text_of(fields, 'S'),
+            kind: text_of(fields, 'T'),
+        };
+        let known = self.file.securities.iter().any(|s| s.name == security.name);
+        if !security.name.is_empty() && !known {
+            self.file.securities.push(security);
         }
     }
 }
