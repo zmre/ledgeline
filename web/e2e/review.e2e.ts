@@ -99,6 +99,9 @@ test("review unknowns from the keyboard: suggestion, similar, skip and back — 
     await expect(cardOf(page, 22)).toBeFocused();
     await expect(cardOf(page, 22).getByTestId("review-similar-count")).toHaveText("7");
     await page.keyboard.press("s");
+    // `s` focuses the first Similar row after a render tick; ⇧A pressed before
+    // that lands mid-move and is lost (seen on CI), so wait for the focus.
+    await expect(cardOf(page, 22).locator("[data-similar-rows] input").first()).toBeFocused();
     await page.keyboard.press("Shift+A");
     await expect(cardOf(page, 22).getByTestId("review-similar-all")).toBeChecked();
     await page.keyboard.press("ControlOrMeta+Enter");
