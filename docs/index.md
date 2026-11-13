@@ -42,7 +42,7 @@ Imports need hledger 1.40 or newer. The macOS app bundles its own copy. Elsewher
 
 Pass the journal on the command line, as in the `nix run` example above. Ledgeline follows its `include` directives, so open your main file, not one of the files it includes.
 
-With no argument, Ledgeline reopens the last journal you used. In the desktop app, **File → Open** (<kbd>Cmd</kbd>+<kbd>O</kbd> on macOS, <kbd>Ctrl</kbd>+<kbd>O</kbd> on Linux) picks another one, and **File → Open Recent** lists the ones you've had open. On macOS, double-clicking a `.journal` or `.hledger` file opens it in Ledgeline. Ledgeline is also offered under **Open With** for `.ledger` and `.j` files.
+With no argument, Ledgeline reopens the last journal you used. The first time, with nothing to reopen, the desktop app opens the [New ledger](new-ledger.md) wizard instead, which can also open sample data to try. In the desktop app, **File → Open** (<kbd>Cmd</kbd>+<kbd>O</kbd> on macOS, <kbd>Ctrl</kbd>+<kbd>O</kbd> on Linux) picks another one, and **File → Open Recent** lists the ones you've had open. On macOS, double-clicking a `.journal` or `.hledger` file opens it in Ledgeline. Ledgeline is also offered under **Open With** for `.ledger` and `.j` files.
 
 On Linux the window has no title bar or menu bar until you press <kbd>F10</kbd>.
 
@@ -54,6 +54,7 @@ The top bar has a tab for each part of the app. Most things can be done from the
 
 ## Map of the manual
 
+- [Starting a new ledger](new-ledger.md): File → New, from a personal, business or empty chart of accounts, or from another app's export.
 - [Journal](journal/index.md): the transaction list, [filtering](journal/filtering.md), editing, [transfer matching](journal/transfer-matching.md), [problems](journal/problems.md) the background checks find, [keyboard shortcuts](journal/keyboard.md), and [exporting the journal to XLSX](journal/export.md).
 - [Imports](imports/index.md): [bringing in bank and card statements](imports/new-transactions.md), [creating](imports/create-rules.md) and [editing](imports/rules-editor.md) CSV rules files, and [importing from QuickBooks](imports/quickbooks.md).
 - [Exports](exports/index.md): [QIF](exports/qif.md) for Banktivity, Quicken and other personal-finance apps, and [posting-row CSV](exports/csv.md) in hledger's `print -O csv` format.

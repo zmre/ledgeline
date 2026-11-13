@@ -237,6 +237,7 @@ The desktop window adds menu shortcuts. <kbd>Cmd</kbd> on macOS is <kbd>Ctrl</kb
 
 | Keys                                                      | Action                                          |
 | --------------------------------------------------------- | ----------------------------------------------- |
+| <kbd>Cmd</kbd>+<kbd>N</kbd>                               | Start a [new ledger](../new-ledger.md)          |
 | <kbd>Cmd</kbd>+<kbd>O</kbd>                               | Open a journal                                  |
 | <kbd>Cmd</kbd>+<kbd>R</kbd>                               | Reload                                          |
 | <kbd>Cmd</kbd>+<kbd>[</kbd> / <kbd>Cmd</kbd>+<kbd>]</kbd> | Back / forward (macOS)                          |

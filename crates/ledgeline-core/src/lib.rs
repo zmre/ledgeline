@@ -77,6 +77,7 @@ pub mod journal_meta;
 pub mod journals;
 pub mod matching;
 pub mod model;
+pub mod new_ledger;
 pub mod parse;
 pub mod periodic;
 pub mod pinned;

@@ -58,6 +58,7 @@ mod import_review;
 mod journal_api;
 mod location;
 mod match_api;
+mod new_ledger_api;
 mod prefs;
 mod prices_api;
 mod profiles_api;
@@ -104,6 +105,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 
 pub use app_dirs::{AppDirs, CONFIG_DIR_ENV, HLEDGER_ENV, IGNORE_USER_CONF_ENV};
 pub use location::JournalLocation;
+pub use new_ledger_api::{DesktopHost, SAMPLE_JOURNAL};
 // The switch the e2e and live-contract harnesses set so a headless server
 // leaves UI preferences to the browser (see `ui_prefs`).
 pub use security::{
@@ -449,6 +451,11 @@ pub struct AppState {
     /// The SPA's view state (`/api/ui-prefs`): whether it is left to the
     /// browser, and the lock every save takes. See [`ui_prefs`].
     ui_prefs: Arc<ui_prefs::UiPrefsSession>,
+    /// The native shell, when there is one (plan 39 File → New): what picks a
+    /// folder and is told when the server opens a new journal. `None` on the
+    /// headless server and in a browser, where the new-ledger routes that
+    /// need it answer `501`. See [`new_ledger_api`].
+    desktop: Option<Arc<new_ledger_api::Desktop>>,
 }
 
 /// The real Yahoo feeds, over ONE `reqwest::Client` ([`yahoo::http_client`])
@@ -511,6 +518,7 @@ impl AppState {
             benchmark_cache: Arc::default(),
             app_dirs,
             ui_prefs: Arc::default(),
+            desktop: None,
         }
     }
 
@@ -564,6 +572,7 @@ impl AppState {
             benchmark_cache: Arc::default(),
             app_dirs,
             ui_prefs: Arc::default(),
+            desktop: None,
         }
     }
 
@@ -938,6 +947,20 @@ impl AppState {
     }
 
     /// This state's quote source. `pub(crate)` — only `prices_api` reads it.
+    /// The native shell's hook, when this state has one.
+    pub(crate) fn desktop(&self) -> Option<&Arc<new_ledger_api::Desktop>> {
+        self.desktop.as_ref()
+    }
+
+    /// Plug in the native shell (plan 39 File → New): the folder picker and
+    /// the "a journal was opened" notice the new-ledger routes need. The
+    /// desktop GUI calls this; the tests hand in a fake.
+    #[must_use]
+    pub fn with_desktop(mut self, host: Arc<dyn DesktopHost>) -> Self {
+        self.desktop = Some(Arc::new(new_ledger_api::Desktop::new(host)));
+        self
+    }
+
     pub(crate) fn price_source(&self) -> &Arc<dyn yahoo::PriceFeed> {
         &self.price_source
     }
@@ -1461,6 +1484,21 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         .route("/api/prices/status", get(prices_api::status))
         .route("/api/prices/file", post(prices_api::create_file))
         .route("/api/prices/update", post(prices_api::update))
+        // File → New (plan 39 wizard): whether this server can create a
+        // ledger, the starting charts, the native folder picker, and the
+        // create / try-the-sample writes. THE SAME PLACEMENT TRAP as the routes
+        // above, and a wider one: `POST /api/new-ledger` writes files into a
+        // folder outside any journal and switches the open journal. Below the
+        // `route_layer` it would do that unauthenticated.
+        // `new_ledger_endpoints.rs::every_new_ledger_route_requires_the_token`
+        // pins the 401.
+        .route(
+            "/api/new-ledger",
+            get(new_ledger_api::status).post(new_ledger_api::create),
+        )
+        .route("/api/new-ledger/template", get(new_ledger_api::template))
+        .route("/api/new-ledger/folder", post(new_ledger_api::pick_folder))
+        .route("/api/new-ledger/sample", post(new_ledger_api::sample))
         // Token-gate exactly the routes registered above. `route_layer` skips
         // the fallback, which is what lets the browser fetch the shell before it
         // has any credential to present.

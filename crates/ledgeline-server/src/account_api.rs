@@ -71,22 +71,14 @@ const MAX_ID_BYTES: usize = 1024;
 /// See [`MAX_ID_BYTES`].
 const MAX_ID_COMPONENTS: usize = 9;
 
-/// The file a first account declaration is offered a home in, when nothing
-/// declares one yet. A NAME, chosen by us, for a file that does not exist —
-/// the one situation where `journals.rs`'s "no filename is ever inspected"
-/// rule does not apply, per `budget_api`'s identical `BUDGET_FILE`.
-const ACCOUNTS_FILE: &str = "accounts.journal";
-
-/// The contents a new `accounts.journal` is created with. A comment and
-/// nothing else — the same reasoning `budget_api::BUDGET_FILE_HEADER` gives:
-/// the file's whole job is to be a place declarations go.
-const ACCOUNTS_FILE_HEADER: &str = "\
-; Chart of accounts.
-;
-; Each `account` line below declares one account and its tags (`type:`,
-; `bsgroup:`, `holdings:`, `valuation:`, or any of your own). Ledgeline edits
-; this file from the Settings \u{2192} Accounts tab.
-";
+// The file a first account declaration is offered a home in, when nothing
+// declares one yet. A NAME, chosen by us, for a file that does not exist —
+// the one situation where `journals.rs`'s "no filename is ever inspected"
+// rule does not apply, per `budget_api`'s identical `BUDGET_FILE`. Shared
+// with the File → New wizard (`new_ledger`), and so is the header a new
+// one starts with: a comment and nothing else, the same reasoning
+// `budget_api::BUDGET_FILE_HEADER` gives.
+use ledgeline_core::new_ledger::{ACCOUNTS_FILE, ACCOUNTS_FILE_HEADER};
 
 // ===========================================================================
 // Wire types
