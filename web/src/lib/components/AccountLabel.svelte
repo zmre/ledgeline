@@ -60,17 +60,15 @@
     // RenameList makes). `title` is the full name too unless the caller passes
     // its own — the journal chips prefix theirs with "Edit category ·".
     import {abbreviateAccount, fitAccount} from "#lib/domain/accounts.js";
-    import {textMeasurer} from "./textWidth";
-
-    /** The journal chip's size, and this component's original and default context. */
-    const CHIP_FONT_SIZE_PX = 12;
+    import {rootPx} from "#lib/theme/scale.js";
+    import {CHIP_FONT_SIZE_REM, textMeasurer} from "./textWidth";
 
     let {
         name,
         title,
         budget,
         maxWidth,
-        fontSizePx = CHIP_FONT_SIZE_PX,
+        fontSizeRem = CHIP_FONT_SIZE_REM,
     }: {
         name: string;
         /** Tooltip text. Defaults to the full account name; a caller replacing it must still say the whole name. */
@@ -80,19 +78,20 @@
         /** CSS px of room the text actually has. Preferred over `budget` whenever the caller has measured it. */
         maxWidth?: number;
         /**
-         * The size this label is rendered at, so `maxWidth` is compared against a
-         * width measured in the same font. Only matters alongside `maxWidth`; a
-         * caller that renders bigger than the default and does not say so gets
-         * labels fitted too generously and then clipped by CSS.
+         * The size this label is rendered at, in rem (the journal chip's 0.75rem
+         * by default), so `maxWidth` is compared against a width measured in the
+         * same font at the live interface scale. Only matters alongside
+         * `maxWidth`; a caller that renders bigger than the default and does not
+         * say so gets labels fitted too generously and then clipped by CSS.
          */
-        fontSizePx?: number;
+        fontSizeRem?: number;
     } = $props();
 
     // Measured pixels when both the caller and the engine can supply them,
     // characters when either cannot. `budget` being undefined falls through to
     // the helper's own default rather than being special-cased here.
     const display = $derived.by(() => {
-        const measure = maxWidth === undefined ? null : textMeasurer(fontSizePx);
+        const measure = maxWidth === undefined ? null : textMeasurer(fontSizeRem * rootPx());
         if (measure === null || maxWidth === undefined) return abbreviateAccount(name, budget);
         return fitAccount(name, maxWidth, measure);
     });

@@ -34,21 +34,18 @@
     import {matches} from "#lib/stores/matches.svelte.js";
     import {problems} from "#lib/stores/problems.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
+    import {rootPx} from "#lib/theme/scale.js";
     import {lazyListCursor} from "#lib/ui/listCursor.svelte.js";
     import ColumnMenu from "./ColumnMenu.svelte";
     import TransactionRow from "./TransactionRow.svelte";
     import {measureAccountColumn} from "./accountColumn.svelte";
     import {txnModal} from "./edit/modalState.svelte";
     import {rowActions} from "./rowAction.svelte";
-    import {centerOffset, computeWindow, displayTotal, expandedWithin, halfPageRows, nearestOffset, nextStatus, slotAt, slotOf} from "./rowModel";
+    import {centerOffset, computeWindow, displayTotal, expandedWithin, halfPageRows, listGeometry, nearestOffset, nextStatus, slotAt, slotOf} from "./rowModel";
 
     /** Where the Find Matches docs live (plan 35 Phase 4), for the disabled button's "how". */
     const MATCHING_DOCS = "https://zmre.github.io/ledgeline/journal/transfer-matching/";
 
-    const ROW_PITCH = 40; // h-10 table rows
-    const CARD_PITCH = 104; // h-24 card (96px) + mb-2 (8px)
-    const CARD_HEIGHT = 96; // the card itself, without its 8px margin
-    const CARD_INSET = 8; // the card wrapper's p-2
     const OVERSCAN = 12;
 
     let scroller = $state<HTMLDivElement | null>(null);
@@ -57,10 +54,13 @@
     let containerWidth = $state(1024);
     let headHeight = $state(0);
 
-    const mode = $derived(containerWidth < 640 ? "card" : "table");
-    const pitch = $derived(mode === "card" ? CARD_PITCH : ROW_PITCH);
-    const rowHeight = $derived(mode === "card" ? CARD_HEIGHT : ROW_PITCH);
-    const topInset = $derived(mode === "card" ? CARD_INSET : 0);
+    // Rem row geometry at the live root size (`listGeometry`), so a zoom
+    // re-derives the window, and EFFECT 2 re-anchors the cursor.
+    const geometry = $derived(listGeometry(containerWidth, rootPx()));
+    const mode = $derived(geometry.mode);
+    const pitch = $derived(geometry.pitch);
+    const rowHeight = $derived(geometry.rowHeight);
+    const topInset = $derived(geometry.topInset);
     // The sticky <thead> paints over the top of the viewport in table mode; card
     // mode has no header at all.
     const headroom = $derived(mode === "card" ? 0 : headHeight);
@@ -423,14 +423,14 @@
         pulseTimer = setTimeout(() => (pulseIndex = null), 2000);
     }
 
-    // EFFECT 2 — re-reveal the cursor when the layout mode flips.
+    // EFFECT 2 — re-reveal the cursor when the pitch changes.
     //
-    // Pitch goes 40 → 104 across the 640px breakpoint, so the same `scrollTop`
-    // afterwards points at a completely different row. That is a pre-existing
-    // bug the cursor happens to make fixable: with a cursor there is finally a
-    // "here" to return to.
+    // Pitch goes 40 → 104 across the card breakpoint, and doubles from 100 % to
+    // 200 % interface scale, so the same `scrollTop` afterwards points at a
+    // completely different row. That is a pre-existing bug the cursor happens
+    // to make fixable: with a cursor there is finally a "here" to return to.
     $effect(() => {
-        void mode;
+        void pitch;
         reveal(
             untrack(() => cursor.index),
             "nearest"
@@ -694,7 +694,7 @@
                 </tbody>
             </table>
         {:else}
-            <div class="p-2" style="padding-top: {win.padTop + 8}px; padding-bottom: {win.padBottom + 8}px">
+            <div class="p-2" style="padding-top: {win.padTop + topInset}px; padding-bottom: {win.padBottom + topInset}px">
                 {#each visible as slot (slotKey(slot))}
                     {#if slot.shows === null}
                         <div class="mb-2 h-24 skeleton opacity-40" aria-hidden="true" data-skeleton></div>

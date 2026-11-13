@@ -20,6 +20,7 @@
     import type {Transaction} from "#lib/domain/types.js";
     import {editing} from "#lib/stores/editing.svelte.js";
     import {journal} from "#lib/stores/journal.svelte.js";
+    import {rootPx} from "#lib/theme/scale.js";
     import {accountColumn} from "./accountColumn.svelte";
     import {flowChipRooms, splitChipRooms} from "./chipGeometry";
     import AccountInput from "./edit/AccountInput.svelte";
@@ -40,8 +41,8 @@
         transferEnds?: readonly [string, string];
     } = $props();
 
-    /** Room the "+N auto" badge takes from the chips: its text at `badge-sm` plus the flex gap. */
-    const AUTO_BADGE_PX = 60;
+    /** Room the "+N auto" badge takes from the chips: its text at `badge-sm` plus the flex gap (60px at 100 %). */
+    const AUTO_BADGE_REM = 3.75;
     const flow: AccountFlow = $derived(transferEnds === undefined ? accountFlow(txn) : {kind: "flow", source: transferEnds[0], dest: transferEnds[1]});
     const autoCount = $derived(transferEnds === undefined ? generatedPostings(txn).length : 0);
     const autoRules = $derived(generatingRules(txn));
@@ -55,13 +56,16 @@
     // back to their character budget. The chips are NOT width-capped in CSS any
     // more; these numbers only choose which string goes in, and flexbox still
     // does the laying out.
+    //
+    // Everything here is at the live root size, so a zoom re-derives it.
     const chipRooms = $derived.by(() => {
-        const measure = chipMeasurer();
+        const root = rootPx();
+        const measure = chipMeasurer(root);
         // The "+N auto" badge takes its share of the cell before the chips do.
-        const cell = accountColumn.width - (autoCount > 0 ? AUTO_BADGE_PX : 0);
+        const cell = accountColumn.width - (autoCount > 0 ? AUTO_BADGE_REM * root : 0);
         if (measure === null || cell <= 0) return null;
-        if (flow.kind === "flow") return flowChipRooms([flow.source, flow.dest], cell, measure);
-        return splitChipRooms(flow.accounts, cell);
+        if (flow.kind === "flow") return flowChipRooms([flow.source, flow.dest], cell, measure, root);
+        return splitChipRooms(flow.accounts, cell, root);
     });
 
     // The account currently being edited (null = not editing), plus its draft value.

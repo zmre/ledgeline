@@ -14,7 +14,8 @@
     import {decodeChart} from "#lib/api/journalViewDecode.js";
     import {LedgelineApi} from "#lib/api/native.js";
     import ChartLegend from "#lib/components/ChartLegend.svelte";
-    import {fittedTicks, labelFormatter} from "#lib/components/periodAxis.js";
+    import {axisTickLabelProps, fittedTicks, labelFormatter, remPadding} from "#lib/components/periodAxis.js";
+    import {rootPx} from "#lib/theme/scale.js";
     import type {RootCategory} from "#lib/domain/accounts.js";
     import {DEFAULT_AMOUNT_STYLE} from "#lib/format/amounts.js";
     import {chartColors} from "#lib/format/chartColors.svelte.js";
@@ -150,7 +151,12 @@
     // — `periodAxis` owns both that rule and the width-aware spacing, for every
     // period chart.
     const bucketLabels = $derived(rows.map((r) => r.bucket));
-    const xTicks = $derived(fittedTicks(bucketLabels));
+    /** px per rem, live: the axis labels and the padding that holds them follow the interface scale. */
+    const root = $derived(rootPx());
+    const xTicks = $derived(fittedTicks(bucketLabels, root));
+    const tickLabelProps = $derived(axisTickLabelProps(root));
+    /** In rem (8/8/56/56px at 100 %); the bottom holds the axis and the legend. */
+    const padding = $derived(remPadding({top: 0.5, right: 0.5, bottom: 3.5, left: 3.5}, root));
     const bucketLabel = $derived(labelFormatter(bucketLabels));
 </script>
 
@@ -264,10 +270,10 @@
                 legend
                 brush={false}
                 points={rows.length <= 31}
-                padding={{top: 8, right: 8, bottom: 56, left: 56}}
+                {padding}
                 props={{
-                    xAxis: {format: bucketLabel, ticks: xTicks},
-                    yAxis: {format: (v: number) => formatCompactChartValue(v, commodity, style)},
+                    xAxis: {format: bucketLabel, ticks: xTicks, tickLabelProps},
+                    yAxis: {format: (v: number) => formatCompactChartValue(v, commodity, style), tickLabelProps},
                     spline: {class: "stroke-2"},
                     tooltip: {
                         header: {format: bucketLabel},

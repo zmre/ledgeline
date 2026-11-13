@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
-import {fittedTicks, labelFormatter, tickIndices, type AxisFit} from "./periodAxis";
+import {axisTickLabelProps, fittedTicks, labelFormatter, tickIndices, type AxisFit} from "./periodAxis";
 import {textMeasurer} from "./textWidth";
 
 // The measuring seam: jsdom has no canvas, so the real `textMeasurer` answers
@@ -107,5 +107,32 @@ describe("UNIT periodAxis labelFormatter", () => {
         expect(labelOf(1)).toBe("b");
         expect(labelOf(0.6)).toBe("b");
         expect(labelOf(5)).toBe("");
+    });
+});
+
+describe("UNIT periodAxis at the interface scale (plan 39)", () => {
+    it("measures the labels at their rem size on the root it is given", () => {
+        tickIndices(12, {plotWidth: 326, labels: MONTHS, root: 32});
+        expect(textMeasurer).toHaveBeenLastCalledWith(20);
+        tickIndices(12, {plotWidth: 326, labels: MONTHS, fontRem: 0.6875, root: 16});
+        expect(textMeasurer).toHaveBeenLastCalledWith(11);
+    });
+
+    it("fits the same ticks at 200 % into a plot twice as wide, because everything doubled", () => {
+        vi.mocked(textMeasurer).mockImplementation((px: number) => (text: string) => text.length * px * 0.55);
+        for (const plot of [120, 240, 326, 480]) {
+            expect(tickIndices(12, {plotWidth: plot * 2, labels: MONTHS, root: 32}), `${plot}`).toEqual(
+                tickIndices(12, {plotWidth: plot, labels: MONTHS, root: 16})
+            );
+        }
+        // …and at 200 % the SAME plot holds fewer labels, which is the point.
+        expect(tickIndices(12, {plotWidth: 480, labels: MONTHS, root: 32}).length).toBeLessThan(
+            tickIndices(12, {plotWidth: 480, labels: MONTHS, root: 16}).length
+        );
+    });
+
+    it("restyles layerchart's fixed 10px tick labels in rem, with metrics doubled at 200 %", () => {
+        expect(axisTickLabelProps(16)).toEqual({class: "text-[0.625rem]", capHeight: "7px", lineHeight: "11px"});
+        expect(axisTickLabelProps(32)).toEqual({class: "text-[0.625rem]", capHeight: "14px", lineHeight: "22px"});
     });
 });

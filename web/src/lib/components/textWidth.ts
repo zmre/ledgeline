@@ -13,15 +13,19 @@
 // budget in `accounts.ts`, which is imprecise but never claims otherwise.
 
 import type {MeasureText} from "#lib/domain/accounts.js";
+import {rootPx} from "#lib/theme/scale.js";
 
 // The journal's account chips are daisyUI `badge-sm`, whose `font-size` is
 // 0.75rem. There is no chip in the document at the time the first measurement is
 // wanted, so this is read from the stylesheet's constant rather than from an
 // element; the family still comes from the live document, since that is the part
-// a theme or a user stylesheet actually changes.
-const CHIP_FONT_SIZE_PX = 12;
+// a theme or a user stylesheet actually changes. In rem, because the interface
+// scale (plan 39) moves the root: 12px at 100 %, 24px at 200 %.
+export const CHIP_FONT_SIZE_REM = 0.75;
 
-// Per font size, because a second caller at a different size arrived (the
+// Per font size IN PX — the size actually rendered, so the same rem at two
+// interface scales is two entries, never one answering for both. Per size,
+// because a second caller at a different size arrived (the
 // Balances list renders account names at `text-sm`, 14px) and one shared
 // context would have measured its labels a sixth narrow — the exact silent
 // wrongness the note above says is worse than not measuring at all. The size is
@@ -35,6 +39,21 @@ const widths = new Map<number, Map<string, number>>();
 // Account names are a bounded set in any real journal, but a pathological
 // import should not be able to grow this without limit.
 const CACHE_LIMIT = 4096;
+
+/** The px size a font string carries, or NaN. */
+function sizeIn(font: string): number {
+    const match = /(\d+(?:\.\d+)?)px/.exec(font);
+    return match === null ? Number.NaN : Number.parseFloat(match[1]);
+}
+
+/**
+ * A rem converted at a fractional root is a float with noise in its tail
+ * (0.875 × 17.6 = 15.400000000000002). Rounded to a hundredth of a px it is a
+ * stable cache key, and a size the canvas can echo back.
+ */
+function roundPx(px: number): number {
+    return Math.round(px * 100) / 100;
+}
 
 function contextFor(fontSizePx: number): CanvasRenderingContext2D | null {
     const existing = contexts.get(fontSizePx);
@@ -62,7 +81,9 @@ function contextFor(fontSizePx: number): CanvasRenderingContext2D | null {
         `${fontSizePx}px ${families.split(",")[0].trim()}`,
     ]) {
         measured.font = candidate;
-        if (measured.font.includes(`${fontSizePx}px`)) {
+        // Compared as a number, not as text: an engine may serialize 8.4px as
+        // "8.4px" or "8.40000px", and only a mismatch in SIZE means it did not take.
+        if (Math.abs(sizeIn(measured.font) - fontSizePx) < 0.01) {
             context = measured;
             contexts.set(fontSizePx, context);
             return context;
@@ -72,7 +93,7 @@ function contextFor(fontSizePx: number): CanvasRenderingContext2D | null {
 }
 
 /**
- * A measurer for text rendered at `fontSizePx` in the document's body font, or
+ * A measurer for text rendered at `renderedPx` in the document's body font, or
  * `null` on an engine that cannot measure. Callers must handle `null` — see the
  * note above on why it is not a guess.
  *
@@ -80,7 +101,8 @@ function contextFor(fontSizePx: number): CanvasRenderingContext2D | null {
  * different size answers confidently and wrongly, and the caller has no way to
  * tell.
  */
-export function textMeasurer(fontSizePx: number): MeasureText | null {
+export function textMeasurer(renderedPx: number): MeasureText | null {
+    const fontSizePx = roundPx(renderedPx);
     const ctx = contextFor(fontSizePx);
     if (ctx === null) return null;
     let cache = widths.get(fontSizePx);
@@ -99,9 +121,13 @@ export function textMeasurer(fontSizePx: number): MeasureText | null {
     };
 }
 
-/** A measurer for text rendered in a journal account chip (daisyUI `badge-sm`, 12px). */
-export function chipMeasurer(): MeasureText | null {
-    return textMeasurer(CHIP_FONT_SIZE_PX);
+/**
+ * A measurer for text rendered in a journal account chip (daisyUI `badge-sm`,
+ * 0.75rem) at a root of `root` px — the live root by default, so a caller in a
+ * `$derived` re-measures when the interface scale changes.
+ */
+export function chipMeasurer(root: number = rootPx()): MeasureText | null {
+    return textMeasurer(CHIP_FONT_SIZE_REM * root);
 }
 
 /** Testing seam: drop every memoized context and width so a fake can be installed. */

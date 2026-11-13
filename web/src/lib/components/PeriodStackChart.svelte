@@ -50,7 +50,8 @@
     import {chartColors} from "#lib/format/chartColors.svelte.js";
     import ChartHeading from "./ChartHeading.svelte";
     import ChartLegend, {type LegendEntry} from "./ChartLegend.svelte";
-    import {fittedTicks, labelFormatter, tickIndices} from "./periodAxis";
+    import {rootPx} from "#lib/theme/scale.js";
+    import {axisTickLabelProps, fittedTicks, labelFormatter, remPadding, tickIndices} from "./periodAxis";
     import {stackBars} from "./stackBars";
     import {seriesAt, topToBottom} from "./stackHit";
     import {stackEmptyReason} from "./periodStackEmpty";
@@ -115,7 +116,12 @@
 
     const axisFormat = $derived(formatAxis ?? formatValue);
 
-    const PADDING = {top: 16, right: 8, bottom: 24, left: 56};
+    /** In rem (16/8/24/56px at 100 %): the left side is the y labels' gutter, so it grows with them. */
+    const PADDING_REM = {top: 1, right: 0.5, bottom: 1.5, left: 3.5};
+    /** px per rem, live: everything text-sized below follows the interface scale. */
+    const root = $derived(rootPx());
+    const padding = $derived(remPadding(PADDING_REM, root));
+    const tickLabelProps = $derived(axisTickLabelProps(root));
     const BAND_PADDING = 0.4;
     /** dataviz mark spec: a bar never exceeds this, however much room its band has. */
     const MAX_BAR_WIDTH = 24;
@@ -184,7 +190,7 @@
         return [lo, hi];
     });
 
-    const xTicks = $derived(fittedTicks(labels));
+    const xTicks = $derived(fittedTicks(labels, root));
     const labelOf = $derived(labelFormatter(labels));
 
     /** Where each bucket's bar sits: the band's width capped at `MAX_BAR_WIDTH`, centred in it. */
@@ -278,8 +284,8 @@
 
     const netOf = (d: Row): number => d.net;
 
-    /** The px size the net value labels are drawn at (the `text-[11px]` below). */
-    const NET_LABEL_FONT_PX = 11;
+    /** The size the net value labels are drawn at (the `text-[0.6875rem]` below, 11px at 100 %). */
+    const NET_LABEL_FONT_REM = 0.6875;
     const netTexts = $derived(rows.map((r) => axisFormat(r.net)));
     /**
      * The buckets whose net gets a dot and value label in a plot `plotWidth` px
@@ -290,7 +296,7 @@
      */
     function netLabelsAt(plotWidth: number): Set<number> {
         if (!labelNet) return new Set();
-        const fitted = tickIndices(rows.length, {plotWidth, labels: netTexts, fontPx: NET_LABEL_FONT_PX});
+        const fitted = tickIndices(rows.length, {plotWidth, labels: netTexts, fontRem: NET_LABEL_FONT_REM, root});
         return new Set(fitted.filter((i) => rows[i].net !== 0 || rows[i].v.some((v) => v !== 0)));
     }
 
@@ -363,9 +369,10 @@
             <circle {cx} {cy} r="4" fill={chartColors.flowNet} class="stroke-base-200" stroke-width="2" />
             <text
                 x={cx}
-                y={r.net >= 0 ? cy - 9 : cy + 16}
+                y={r.net >= 0 ? cy - 0.5625 * root : cy + root}
                 text-anchor={edge}
-                class="fill-base-content stroke-base-200 [stroke-width:3px] text-[11px] font-semibold tabular-nums [paint-order:stroke]">{netTexts[r.i]}</text
+                class="fill-base-content stroke-base-200 [stroke-width:3px] text-[0.6875rem] font-semibold tabular-nums [paint-order:stroke]"
+                >{netTexts[r.i]}</text
             >
         </g>
     {/each}
@@ -391,10 +398,10 @@
                     bandPadding={BAND_PADDING}
                     brush={false}
                     marks={bars}
-                    padding={PADDING}
+                    {padding}
                     props={{
-                        xAxis: {format: labelOf, ticks: xTicks},
-                        yAxis: {format: axisFormat},
+                        xAxis: {format: labelOf, ticks: xTicks, tickLabelProps},
+                        yAxis: {format: axisFormat, tickLabelProps},
                     }}
                     {tooltip}
                     aboveMarks={netLine}
@@ -408,10 +415,10 @@
                     brush={false}
                     highlight={{lines: true, points: false}}
                     marks={areas}
-                    padding={PADDING}
+                    {padding}
                     props={{
-                        xAxis: {format: labelOf, ticks: xTicks},
-                        yAxis: {format: axisFormat},
+                        xAxis: {format: labelOf, ticks: xTicks, tickLabelProps},
+                        yAxis: {format: axisFormat, tickLabelProps},
                     }}
                     {tooltip}
                     aboveMarks={netLine}

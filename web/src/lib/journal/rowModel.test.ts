@@ -9,6 +9,7 @@ import {
     expandedWithin,
     formatTotals,
     halfPageRows,
+    listGeometry,
     nearestOffset,
     nextStatus,
     periodLabel,
@@ -348,5 +349,32 @@ describe("expanded transfer slots (plan 35 D11)", () => {
     it("is the identity with nothing expanded", () => {
         expect(slotAt(4, [])).toEqual({position: 4, half: null});
         expect(slotOf(4, [])).toBe(4);
+    });
+});
+
+describe("UNIT listGeometry (interface scale, plan 39)", () => {
+    it("is the h-10 row and the h-24 + mb-2 card at 100 %", () => {
+        expect(listGeometry(1024, 16)).toEqual({mode: "table", pitch: 40, rowHeight: 40, topInset: 0});
+        expect(listGeometry(375, 16)).toEqual({mode: "card", pitch: 104, rowHeight: 96, topInset: 8});
+        expect(listGeometry(639, 16).mode).toBe("card");
+        expect(listGeometry(640, 16).mode).toBe("table");
+    });
+
+    it("doubles at 200 %, where an h-10 row is 80px", () => {
+        expect(listGeometry(2048, 32)).toEqual({mode: "table", pitch: 80, rowHeight: 80, topInset: 0});
+        expect(listGeometry(750, 32)).toEqual({mode: "card", pitch: 208, rowHeight: 192, topInset: 16});
+    });
+
+    it("moves the card breakpoint with the root: rem columns stop fitting sooner at 200 %", () => {
+        expect(listGeometry(1024, 16).mode).toBe("table");
+        expect(listGeometry(1024, 32).mode).toBe("card");
+        expect(listGeometry(1024, 11.2).mode).toBe("table");
+    });
+
+    it("windows the same rows at 200 % for twice the scroll offset", () => {
+        const at100 = computeWindow(4000, 600, listGeometry(1024, 16).pitch, 10_000, 12);
+        const at200 = computeWindow(8000, 1200, listGeometry(2048, 32).pitch, 10_000, 12);
+        expect({start: at200.start, end: at200.end}).toEqual({start: at100.start, end: at100.end});
+        expect(at200.padTop).toBe(at100.padTop * 2);
     });
 });

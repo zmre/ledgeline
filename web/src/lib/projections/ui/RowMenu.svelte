@@ -28,6 +28,7 @@
      asserting on geometry, and so the keyboard reaches them at all. -->
 <script lang="ts">
     import {dismissible} from "#lib/keys/dismissible.js";
+    import {remToPx} from "#lib/theme/scale.js";
     import {menuPosition, portal} from "#lib/ui/anchoredPopup.js";
 
     interface Item {
@@ -60,23 +61,27 @@
         testid?: string;
     } = $props();
 
-    /** The menu's width in px, which is `w-52`. A number because the style is inline. */
-    const WIDTH = 208;
-    /** Rough item height and padding. Used ONLY to decide whether to flip up. */
-    const ITEM_HEIGHT = 36;
-    const PADDING = 16;
+    /**
+     * The menu's width, which is `w-52` (13rem, 208px at 100 %). A number
+     * because the style is inline in px, so it is converted at the live root
+     * each time the menu is placed: a fixed 208 would not grow with its text.
+     */
+    const WIDTH_REM = 13;
+    /** Rough item height and padding (36px, 16px at 100 %). Used ONLY to decide whether to flip up. */
+    const ITEM_HEIGHT_REM = 2.25;
+    const PADDING_REM = 1;
 
     let open = $state(false);
     let trigger = $state<HTMLButtonElement | null>(null);
     let menu = $state<HTMLUListElement | null>(null);
-    let placement = $state({top: 0, left: 0, width: WIDTH, maxHeight: 0, below: true});
+    let placement = $state({top: 0, left: 0, width: remToPx(WIDTH_REM), maxHeight: 0, below: true});
 
     function reposition(): void {
         if (trigger === null) return;
         placement = menuPosition(
             trigger.getBoundingClientRect(),
             {width: window.innerWidth, height: window.innerHeight},
-            {width: WIDTH, height: items.length * ITEM_HEIGHT + PADDING}
+            {width: remToPx(WIDTH_REM), height: remToPx(items.length * ITEM_HEIGHT_REM + PADDING_REM)}
         );
     }
 

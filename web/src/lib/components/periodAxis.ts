@@ -15,6 +15,7 @@
 // own copy of both functions, character for character. They live here so a
 // third chart cannot invent a seventh spacing.
 
+import {rootPx} from "#lib/theme/scale.js";
 import {textMeasurer} from "./textWidth";
 
 /**
@@ -27,11 +28,47 @@ import {textMeasurer} from "./textWidth";
  */
 const TARGET_TICKS = 6;
 
-/** The px size layerchart draws axis tick labels at (`Axis.base.svelte`). */
-export const AXIS_LABEL_PX = 10;
+/**
+ * The size axis tick labels are drawn at: layerchart's own 10px
+ * (`Axis.base.svelte`), as rem so it follows the interface scale. Layerchart
+ * pins it in px, so the charts restyle their labels with `axisTickLabelProps`.
+ */
+export const AXIS_LABEL_REM = 0.625;
 
-/** Clear space kept between two neighbouring tick labels. */
-const LABEL_GAP_PX = 12;
+/** Clear space kept between two neighbouring tick labels (12px at 100 %). */
+const LABEL_GAP_REM = 0.75;
+
+/** A chart's padding, per side. */
+export interface Padding {
+    top: number;
+    right: number;
+    bottom: number;
+    left: number;
+}
+
+/**
+ * A chart padding written in rem, in px at a root of `root`. The paddings hold
+ * the axis labels (the left one is the y labels' gutter), so they have to grow
+ * with the labels or a 200 % axis is clipped at the chart's edge.
+ */
+export function remPadding(rem: Padding, root: number): Padding {
+    return {top: rem.top * root, right: rem.right * root, bottom: rem.bottom * root, left: rem.left * root};
+}
+
+/**
+ * Tick-label props for a layerchart axis drawn at `AXIS_LABEL_REM` on a root of
+ * `root` px.
+ *
+ * Layerchart styles `.lc-axis-tick-label` with `font-size: 10px` and positions
+ * the label with a fixed 7px cap height and 11px line height, so at any other
+ * interface scale the labels would stay 10px while everything around them
+ * grew. The class (a utility, which outranks layerchart's `components` layer)
+ * restores the size in rem; the two metrics keep their 10px proportions in px
+ * at the live root, which is the unit layerchart does its arithmetic in.
+ */
+export function axisTickLabelProps(root: number): {class: string; capHeight: string; lineHeight: string} {
+    return {class: "text-[0.625rem]", capHeight: `${0.4375 * root}px`, lineHeight: `${0.6875 * root}px`};
+}
 
 /**
  * Average glyph advance as a fraction of the font size, for when text cannot be
@@ -52,18 +89,21 @@ export interface AxisFit {
     plotWidth: number;
     /** Every bucket's label, as it will be printed. */
     labels: readonly string[];
-    /** The px size the labels are drawn at. Defaults to `AXIS_LABEL_PX`. */
-    fontPx?: number;
+    /** The size the labels are drawn at, in rem. Defaults to `AXIS_LABEL_REM`. */
+    fontRem?: number;
+    /** CSS px per rem. Defaults to the live root (`rootPx()`). */
+    root?: number;
 }
 
 /**
  * The widest label's px width plus the gap kept beside it: measured in the
  * document's font (`textMeasurer`), or estimated when nothing can measure.
  */
-function labelSlotPx({labels, fontPx = AXIS_LABEL_PX}: AxisFit): number {
+function labelSlotPx({labels, fontRem = AXIS_LABEL_REM, root = rootPx()}: AxisFit): number {
+    const fontPx = fontRem * root;
     const widthOf = textMeasurer(fontPx) ?? ((text: string) => text.length * fontPx * FALLBACK_EM_PER_CHAR);
     const widest = labels.reduce((max, label) => Math.max(max, widthOf(label)), 0);
-    return widest + LABEL_GAP_PX;
+    return widest + LABEL_GAP_REM * root;
 }
 
 /**
@@ -110,9 +150,12 @@ export function rangeWidth(scale: {range(): readonly unknown[]}): number {
  * sized to the plot. So the chart's own measurement is the width the labels are
  * fitted to — no second `bind:clientWidth`, no copy of the chart's padding.
  * Before layout the range is empty and this is the fixed ~six-tick target.
+ *
+ * `root` is the px per rem the labels are drawn at; a chart passes `rootPx()`
+ * from inside its `$derived` so a zoom refits the axis.
  */
-export function fittedTicks(labels: readonly string[]): (scale: {range(): readonly unknown[]}) => number[] {
-    return (scale) => tickIndices(labels.length, {plotWidth: rangeWidth(scale), labels});
+export function fittedTicks(labels: readonly string[], root: number = rootPx()): (scale: {range(): readonly unknown[]}) => number[] {
+    return (scale) => tickIndices(labels.length, {plotWidth: rangeWidth(scale), labels, root});
 }
 
 /**
