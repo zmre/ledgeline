@@ -12,14 +12,22 @@
      for why it cannot be edited here. That is `aliases.rs`'s "when in doubt,
      opaque" carried to the screen: a rule Ledgeline will not rewrite is still a
      rule the user has, and hiding it would be a worse lie than showing it
-     read-only. -->
+     read-only.
+
+     On a wide layout (plan 41 WP-B) the budget TABLE above already shows, and
+     edits, every goal that backs one of its rows. Listing those here as well
+     would put each goal on screen twice, so the page passes `hidden` — the
+     `rowGoals` keys of the goals the table represents — and this lists only the
+     rest: goals on a parent hidden by a budgeted child, on accounts that are
+     neither income nor expense, or on accounts with no row this span. It keeps
+     "Add a budget goal". The empty state still reads the WHOLE listing, so a
+     journal whose every goal is in the table is not told it has none. -->
 <script lang="ts">
+    import {goalAmountText, goalEditable, goalKey} from "#lib/budget/rowGoals.js";
     import {periodOf, sortBudgetLines, type BudgetSortKey, type SortDir} from "#lib/budget/sort.js";
     import {joinableRule} from "#lib/budget/target.js";
     import {BUDGET_PERIODS, type BudgetFile, type BudgetGoal, type BudgetListing, type BudgetRule} from "#lib/budget/types.js";
-    import type {MixedAmount} from "#lib/domain/money.js";
     import type {AmountStyle} from "#lib/domain/types.js";
-    import {formatTotals} from "#lib/journal/rowModel.js";
 
     let {
         listing,
@@ -34,6 +42,7 @@
         onRemoveCancel,
         onRemoveConfirm,
         onCreateFile,
+        hidden,
     }: {
         listing: BudgetListing;
         styles: ReadonlyMap<string, AmountStyle>;
@@ -52,6 +61,8 @@
         onRemoveCancel: () => void;
         onRemoveConfirm: (journalId: string, goal: BudgetGoal) => void;
         onCreateFile: () => void;
+        /** `goalKey`s of goals shown elsewhere (the wide table) and so left out here. Absent: list everything. */
+        hidden?: ReadonlySet<string>;
     } = $props();
 
     /** Whether this row is the one awaiting a removal confirmation. */
@@ -75,7 +86,9 @@
         target: {file: BudgetFile; rule: BudgetRule} | null;
     }
 
-    const rows = $derived<Row[]>(listing.files.flatMap((file) => file.rules.flatMap((rule) => rule.goals.map((goal) => ({file, rule, goal})))));
+    const allRows = $derived<Row[]>(listing.files.flatMap((file) => file.rules.flatMap((rule) => rule.goals.map((goal) => ({file, rule, goal})))));
+    /** What this list shows: everything, less what the table above already does. */
+    const rows = $derived<Row[]>(hidden === undefined ? allRows : allRows.filter((row) => !hidden.has(goalKey(row.file.journalId, row.goal))));
 
     /**
      * Sort within one period group, by the page's one order control.
@@ -125,22 +138,11 @@
     /** The file a brand-new rule goes in: the engine's own default target. */
     const defaultFile = $derived(listing.files.find((file) => file.journalId === listing.defaultTarget) ?? null);
 
-    function fmt(amount: MixedAmount | null): string {
-        if (amount === null) return "—";
-        const parts = formatTotals(amount, styles).map((line) => line.text);
-        return parts.length > 0 ? parts.join(", ") : "—";
-    }
-
     /** The magnitude to show: the entry when there is one, else the raw amount. */
-    function shown(goal: BudgetGoal): string {
-        if (goal.entry === null) return fmt(goal.amount);
-        return fmt(new Map([[goal.entry.commodity, goal.entry.value]]));
-    }
+    const shown = (goal: BudgetGoal): string => goalAmountText(goal, styles);
 
     /** Whether this goal can be changed here at all. */
-    function editable(row: Row): boolean {
-        return listing.editable && row.file.writable && row.rule.locked === null && row.goal.locked === null;
-    }
+    const editable = (row: Row): boolean => goalEditable(listing, row.file, row.rule, row.goal);
 
     /** Where this goal is written, for the tooltip — the promise plain text makes. */
     function whereabouts(row: Row): string {
@@ -151,7 +153,7 @@
 
 <section class="flex flex-col gap-4" data-testid="budget-editor">
     <div class="flex flex-wrap items-center justify-between gap-2">
-        <h2 class="text-base font-semibold">Budget goals</h2>
+        <h2 class="text-base font-semibold">{hidden === undefined ? "Budget goals" : "Other budget goals"}</h2>
         {#if listing.editable && defaultFile !== null}
             <button type="button" class="btn btn-primary btn-sm" disabled={busy} onclick={() => onAdd(defaultFile.journalId, null)} data-testid="add-goal">
                 Add a budget goal
@@ -165,7 +167,7 @@
         </div>
     {/if}
 
-    {#if rows.length === 0}
+    {#if allRows.length === 0}
         <div class="rounded-box border border-base-content/10 px-4 py-8 text-center" data-testid="no-goals">
             <p class="font-medium">No budget goals yet.</p>
             <p class="mx-auto mt-1 max-w-prose text-sm text-base-content/60">
@@ -187,6 +189,15 @@
             {/if}
         </div>
     {:else}
+        {#if rows.length === 0}
+            <p class="text-sm text-base-content/60" data-testid="budget-editor-all-in-table">
+                Every goal is in the table above. Click a budgeted amount to change it.
+            </p>
+        {:else if hidden !== undefined}
+            <p class="text-sm text-base-content/60">
+                Goals the table above can't show: on a parent account whose subaccounts have goals of their own, or on accounts with no row in this period.
+            </p>
+        {/if}
         {#each groups as group (group.period)}
             <div class="flex flex-col gap-1">
                 <div class="flex flex-wrap items-baseline justify-between gap-x-3">
