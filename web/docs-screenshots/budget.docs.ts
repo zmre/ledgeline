@@ -17,12 +17,12 @@ test("overview", async ({page}) => {
 });
 
 test("bars", async ({page}) => {
-    // The bars only: the Expenses roll-up and one bar per budgeted account. The
-    // tick on each bar is where spending "should" be by today.
-    const rollup = page.getByText(/^Expenses · Spent/).locator("xpath=ancestor::div[contains(@class,'rounded-box')][1]");
-    const lastBar = page.getByText("expenses:food", {exact: true}).first().locator("xpath=ancestor::div[1]/..");
-    const drawn = await annotate(page, [{kind: "box", target: page.getByText(/\$\d+ \/ \$\d+/).first(), pad: 4}]);
-    await shot(page, SECTION, "bars", {clip: [rollup, lastBar, drawn], padding: 10});
+    // The Expenses table: one row per budgeted account, the Total under them.
+    // The tall line on each bar is the goal, the small tick where spending
+    // "should" be by today.
+    const table = page.getByTestId("budget-table-expense");
+    const drawn = await annotate(page, [{kind: "box", target: table.getByTestId("budget-remaining").first(), pad: 4}]);
+    await shot(page, SECTION, "bars", {clip: [table, drawn], padding: 10});
 });
 
 test("goals", async ({page}) => {
