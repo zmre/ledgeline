@@ -84,10 +84,10 @@ pub(crate) struct Cli {
 
 /// The non-interactive jobs this binary can be asked to do.
 ///
-/// One so far. It is a subcommand rather than another set of flags on [`Cli`]
-/// because an import needs four required paths that mean nothing to the GUI, and
-/// because `ledgeline import --help` is then a real page describing exactly that
-/// job.
+/// Import and export. Each is a subcommand rather than another set of flags on
+/// [`Cli`] because an import needs four required paths that mean nothing to the
+/// GUI, and because `ledgeline import --help` is then a real page describing
+/// exactly that job.
 #[derive(clap::Subcommand, Debug)]
 pub(crate) enum Command {
     /// Import a statement without a window: convert, preview, and (unless
@@ -99,6 +99,11 @@ pub(crate) enum Command {
     /// command line for a run you have just set up, which is where these
     /// arguments are meant to come from.
     Import(ledgeline::CliImport),
+    /// Export the journal for another app: QIF (one file per commodity, with
+    /// a report of what QIF cannot carry) or one CSV row per posting in
+    /// hledger's `print -O csv` columns. Nothing is overwritten without
+    /// `--force`.
+    Export(ledgeline::CliExport),
 }
 
 /// Fatal startup/runtime errors surfaced to the user via `main`.
@@ -140,6 +145,9 @@ pub(crate) enum AppError {
     /// a string rather than its own HTTP-shaped error type.
     #[error("{0}")]
     Import(String),
+    /// A `ledgeline export` run failed; the sentence names the file.
+    #[error("{0}")]
+    Export(String),
 }
 
 /// Counts nothing in this process; enforces the memory budget in a workbook
@@ -175,6 +183,9 @@ fn run(cli: Cli) -> Result<(), AppError> {
     let app_dirs = AppDirs::from_env();
     if let Some(Command::Import(args)) = &cli.command {
         return run_import(args, app_dirs);
+    }
+    if let Some(Command::Export(args)) = &cli.command {
+        return ledgeline::run_cli_export(args).map_err(AppError::Export);
     }
     #[cfg(feature = "gui")]
     if !cli.server {

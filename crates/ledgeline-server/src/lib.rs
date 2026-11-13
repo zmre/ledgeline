@@ -51,6 +51,7 @@ mod commodity_profile;
 mod conf_api;
 mod edit_api;
 mod error;
+mod export_cli;
 mod hledger;
 mod import_api;
 mod import_review;
@@ -123,6 +124,12 @@ pub use ui_prefs::{BootAppearance, UI_PREFS_IN_BROWSER_ENV, boot_appearance};
 pub use import_api::{
     CliImport, CliImportReport, CliImportWritten, CliQbConflict, CliQbReport, CliQbWritten,
     CliRunReport, run_cli_import,
+};
+// `ledgeline export` and the desktop File → Export menu (plan 39): the same
+// file-writing functions behind both.
+pub use export_cli::{
+    CliExport, ExportError, QifWritten, csv_summary, export_csv_to_file, export_qif_to_dir,
+    qif_targets, run_cli_export,
 };
 // Spreadsheet parsing runs in a resource-limited child process (see
 // `workbook_sandbox`). The binary needs the worker entry point and the

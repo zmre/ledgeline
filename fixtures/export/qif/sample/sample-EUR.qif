@@ -1,0 +1,108 @@
+!Type:Cat
+Nexpenses
+E
+^
+Nexpenses:depreciation
+E
+^
+Nexpenses:food:groceries
+E
+^
+Nexpenses:food:restaurants
+E
+^
+Nexpenses:housing:rent
+E
+^
+Nexpenses:shopping
+E
+^
+Nexpenses:taxes:federal
+E
+^
+Nexpenses:taxes:state
+E
+^
+Nexpenses:transport:fuel
+E
+^
+Nexpenses:travel:activities
+E
+^
+Nexpenses:travel:flights
+E
+^
+Nexpenses:travel:lodging
+E
+^
+Nexpenses:unknown
+E
+^
+Nexpenses:utilities:electric
+E
+^
+Nincome
+I
+^
+Nincome:dividends
+I
+^
+Nincome:salary
+I
+^
+!Option:AutoSwitch
+!Account
+NLedgeline Adjustments
+TOth A
+^
+Nassets:bank:wise:eur
+TBank
+^
+!Clear:AutoSwitch
+!Account
+Nassets:bank:wise:eur
+TBank
+^
+!Type:Bank
+D06/10/2025
+T1000.00
+CX
+PWise | convert USD to EUR
+Mcommodity conversion
+L[Ledgeline Adjustments]
+^
+D09/12/2025
+T-645.00
+CX
+PHotel Adlon | lodging, Berlin
+Lexpenses:travel:lodging
+^
+D09/14/2025
+T-23.50
+CX
+PCurry 36 | dinner
+Lexpenses:food:restaurants
+^
+D09/15/2025
+T-36.00
+CX
+PMuseumsinsel | museum tickets
+Lexpenses:travel:activities
+^
+D05/08/2026
+T500.00
+CX
+PWise | convert USD to EUR (Munich trip float)
+Mcommodity conversion
+L[Ledgeline Adjustments]
+^
+D06/18/2026
+T-18.75
+PBäckerei Rischart | breakfast
+Lexpenses:food:restaurants
+^
+D06/19/2026
+T-210.00
+PHotel Laimer Hof | lodging, Munich
+Lexpenses:travel:lodging
+^

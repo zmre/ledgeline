@@ -1,0 +1,42 @@
+; Plan 39 export fixture: several commodities, costs and an implicit
+; conversion. QIF has no currency field, so each commodity is its own file.
+
+D $1,000.00
+commodity 1.000,00 EUR
+
+account assets:bank:checking    ; type: C
+account assets:bank:euro        ; type: C
+account assets:broker           ; type: A
+account liabilities:card        ; type: L
+account income:dividends        ; type: R
+account expenses                ; type: X
+account equity:opening          ; type: E
+
+P 2026-01-01 AAPL $150.00
+P 2026-01-01 EUR $1.10
+
+2026-01-01 Opening
+    assets:bank:checking        $5,000.00
+    assets:bank:euro            1.000,00 EUR
+    equity:opening              $-5,000.00
+    equity:opening              -1.000,00 EUR
+
+2026-01-03 Buy shares
+    assets:broker               10 AAPL @ $150.00
+    assets:bank:checking
+
+2026-01-04 Paris hotel
+    expenses:travel:lodging     180,00 EUR
+    liabilities:card            -180,00 EUR
+
+2026-01-05 Wire to euro account
+    assets:bank:euro            500,00 EUR @@ $550.00
+    assets:bank:checking
+
+2026-01-06 Currency swap
+    assets:bank:euro            100,00 EUR
+    assets:bank:checking         $-109.00
+
+2026-01-20 Dividend
+    assets:bank:checking            $12.00
+    income:dividends

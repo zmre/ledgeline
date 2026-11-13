@@ -1,0 +1,6 @@
+QIF export: 4 transactions written as 5 records in 1 file.
+  non-english-dollar.qif ($): 5 records
+
+Changed to fit QIF:
+  2 opening balances written as QIF Opening Balance records
+  liability exported as credit card (CCard): pasivo:tarjeta

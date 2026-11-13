@@ -48,6 +48,10 @@ use wry::{NewWindowResponse, WebViewBuilder};
 
 use crate::{AppError, Cli};
 
+// plan 39 export: File → Export → QIF… / CSV (posting rows)….
+#[path = "gui_export.rs"]
+mod export_menu;
+
 /// How many recent journals the File → "Open Recent" submenu shows (the on-disk
 /// store keeps more; this is just the visible slice).
 const RECENT_MENU_LIMIT: usize = 5;
@@ -442,6 +446,16 @@ fn build_menu() -> AppMenu {
     log_menu(
         "file menu",
         file_menu.append_items(&[&open, &recent, &PredefinedMenuItem::separator()]),
+    );
+    // plan 39 export: File → Export, right after Open Recent wherever that is.
+    let after_recent = file_menu
+        .items()
+        .iter()
+        .position(|item| item.id() == recent.id())
+        .map_or(0, |index| index + 1);
+    log_menu(
+        "file menu export",
+        file_menu.insert(&export_menu::submenu(), after_recent),
     );
     // muda implements only Separator/Copy/Cut/Paste/SelectAll/About on GTK —
     // `close_window` and `quit` are BOTH documented "Linux: Unsupported" and
@@ -1091,6 +1105,10 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
 
         match event {
             Event::UserEvent(UserEvent::Menu(menu_event)) => {
+                // plan 39 export: runs on its own thread, against the open journal.
+                if export_menu::handle(&menu_event.id, &current.borrow()) {
+                    return;
+                }
                 if let Some(shortcut) = menu_shortcut(&menu_event.id) {
                     if perform_shortcut(shortcut) {
                         #[cfg(target_os = "linux")]

@@ -1,0 +1,84 @@
+; Plan 39 export fixture: the corners of hledger 1.52's print -O csv that the
+; posting-row CSV export must reproduce byte for byte (quoting, multi-line
+; comments, secondary dates, virtual postings, mixed amounts, zeros, costs,
+; and the dates hledger writes into an auto-generated posting's comment).
+
+commodity $1,000.00
+commodity 1.000,00 EUR
+
+account assets:bank:checking  ; type: C
+account liabilities:card  ; type: L
+
+2024-01-02=2024-01-05 * (101) Grocer | food  ; txn note, trip:paris
+    expenses:groceries        $1,234.56  ; posting note "quoted", cat:x
+    ! assets:bank:checking   = $-1,234.56
+
+2024-01-03 ! Buy stock
+    assets:broker      10 AAPL @ $150.00
+    assets:bank:checking   $-1,500.00
+
+2024-01-04 Euro thing
+    expenses:travel   12,50 EUR
+    expenses:travel   $3.00
+    liabilities:card
+
+2024-01-05 Virtual
+    (budget:food)     $10
+    [assets:sav]      $5
+    [assets:bank:checking]  $-5
+    expenses:x   $0
+    assets:bank:checking
+
+2024-01-06 Neg
+    expenses:refund   $-0.50
+    liabilities:card  $0.50
+
+account assets:reserve
+
+= expenses:food
+    assets:reserve          *0.10  ; rule note
+    assets:bank             *-0.10
+
+2026-02-03 A
+    expenses:food     $50.00  ; date: 2026-02-04, date2: 2026-02-06
+    assets:bank
+
+2026-02-03 B
+    expenses:food     $50.00  ; [2026-02-07]
+    assets:bank
+
+2026-02-03 C
+    expenses:food     $50.00  ; date2: 2026-02-09
+    assets:bank
+
+
+2024-01-02 Multi  ; first line
+    ; second line
+    expenses:food        $10.005  ; p1
+        ; p2
+    assets:bank
+
+2024-01-03 Price
+    assets:broker      3 AAPL @@ $100
+    assets:bank   
+
+2024-01-04 Big
+    assets:x   1000000 JPY
+    equity:open
+
+2024-01-01 a
+    x   $0.00
+    y   $0.00
+
+2024-01-02 b
+    x   $0.00 = $0.00
+
+2024-01-03 c
+    x   0.00 EUR
+    y   $1.50
+    z
+
+2024-01-04 d
+    x   $1.00
+    y   $-1.00
+    z   $0.00

@@ -48,6 +48,9 @@
 //! - `matching` — transfer matching: pairing the two halves of a transfer on a
 //!   clearing account and linking them with `match:` posting tags (see
 //!   `plans/35-transfer-matching.md`)
+//! - `export` — QIF (one file per commodity, with a loss report) and
+//!   posting-row CSV matching hledger's `print -O csv` (see
+//!   `plans/39-onboarding-offboarding.md`)
 
 pub mod accounts;
 pub mod aliases;
@@ -66,6 +69,7 @@ pub mod display;
 // of it without one.
 pub(crate) mod dirscan;
 pub mod edit;
+pub mod export;
 pub mod grouped_csv;
 pub mod hledger_conf;
 pub mod holdings;

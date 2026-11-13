@@ -180,6 +180,7 @@ hledger-checks:
     LEDGELINE_HLEDGER_PROJECTION_CHECK=1 cargo test -p ledgeline-core --test projection_files
     LEDGELINE_HLEDGER_PROJECTION_CHECK=1 cargo test -p ledgeline-core --lib every_period_form_fires_on_hledger_s_dates
     LEDGELINE_HLEDGER_AUTO_CHECK=1 cargo test -p ledgeline-core --test auto_journal
+    LEDGELINE_HLEDGER_EXPORT_CHECK=1 cargo test -p ledgeline-core --test export_csv
 
 # Snapshot raw hledger-web JSON API responses into fixtures/api/vVERSION/
 snapshot-api:

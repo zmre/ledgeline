@@ -1,0 +1,54 @@
+!Type:Cat
+Nexpenses
+E
+^
+Nexpenses:travel:lodging
+E
+^
+Nincome:dividends
+I
+^
+!Option:AutoSwitch
+!Account
+NLedgeline Adjustments
+TOth A
+^
+Nassets:bank:checking
+TBank
+^
+Nassets:broker
+TOth A
+^
+!Clear:AutoSwitch
+!Account
+Nassets:bank:checking
+TBank
+^
+!Type:Bank
+D01/01/2026
+T5000.00
+POpening Balance
+L[assets:bank:checking]
+^
+D01/03/2026
+T-1500.00
+PBuy shares
+L[assets:broker]
+^
+D01/05/2026
+T-550.00
+PWire to euro account
+Mcommodity conversion
+L[Ledgeline Adjustments]
+^
+D01/06/2026
+T-109.00
+PCurrency swap
+Mcommodity conversion
+L[Ledgeline Adjustments]
+^
+D01/20/2026
+T12.00
+PDividend
+Lincome:dividends
+^

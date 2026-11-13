@@ -1,0 +1,43 @@
+; Plan 39 export fixture: what QIF cannot hold. Equity entries, a
+; reclassification with no bank-like account, virtual postings, balance
+; assertions, budgets, an auto-posting rule, tags, secondary and posting
+; dates, an untyped account and a name QIF reserves a character in.
+
+account assets:bank:checking    ; type: C
+account assets:reserve          ; type: A, kpi: true
+account expenses                ; type: X
+account income                  ; type: R
+account equity                  ; type: E
+
+= expenses:food
+    assets:reserve          *0.10
+    assets:bank:checking    *-0.10
+
+~ monthly
+    expenses:food           $400.00
+    assets:bank:checking
+
+2026-02-01 * Opening
+    assets:bank:checking        $1,000.00 = $1,000.00
+    equity:opening
+
+2026-02-03=2026-02-05 Market  ; project:kitchen
+    expenses:food                  $50.00  ; date: 2026-02-04
+    (budget:food)                 $-50.00
+    assets:bank:checking
+
+2026-02-10 Reclassify
+    expenses:office                $25.00  ; was supplies
+    expenses:supplies             $-25.00
+
+2026-02-12 Owner draw
+    equity:draws                  $200.00
+    assets:bank:checking
+
+2026-02-14 Partner A/B split
+    misc/shared                    $10.00
+    assets:bank:checking          $-10.00
+
+2026-02-28 Interest
+    assets:bank:checking            $0.42
+    income:interest

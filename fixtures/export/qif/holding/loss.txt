@@ -1,0 +1,18 @@
+QIF export: 6 transactions written as 6 records in 1 file.
+  holding-dollar.qif ($): 6 records
+
+Not exported (QIF has no place for these):
+  1 balance assertion
+  1 periodic transaction (budget or forecast)
+  1 account declaration's tags
+  1 transaction's tags other than class:
+  1 secondary date (date2)
+  1 posting date (date: tag)
+  1 unbalanced virtual (account) posting
+
+Changed to fit QIF:
+  1 auto-posting rule applied: 2 generated postings written as ordinary splits
+  2 transactions with no bank-like account, an equity leg or a conversion written through the "Ledgeline Adjustments" account
+  1 opening balance written as QIF Opening Balance record
+  account misc/shared renamed to misc-shared
+  1 account with no type exported as expense category: misc/shared

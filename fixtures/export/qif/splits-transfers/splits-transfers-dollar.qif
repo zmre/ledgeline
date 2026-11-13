@@ -1,0 +1,161 @@
+!Type:Class
+NAuto
+^
+NHome
+^
+!Type:Cat
+Nexpenses
+E
+^
+Nexpenses:food:dining
+E
+^
+Nexpenses:food:groceries
+E
+^
+Nexpenses:household
+E
+^
+Nexpenses:housing:rent
+E
+^
+Nexpenses:interest
+E
+^
+Nexpenses:tax
+E
+^
+Nincome:salary
+I
+^
+!Option:AutoSwitch
+!Account
+Nassets:bank:checking
+TBank
+^
+Nassets:bank:savings
+TBank
+^
+Nassets:wallet
+TCash
+^
+Nliabilities:car loan
+TOth L
+^
+Nliabilities:card
+TCCard
+^
+!Clear:AutoSwitch
+!Account
+Nassets:bank:checking
+TBank
+^
+!Type:Bank
+D01/01/2026
+T2500.00
+CX
+POpening Balance
+L[assets:bank:checking]
+^
+D01/02/2026
+T-1500.00
+CX
+N1001
+PLandlord | January rent
+Lexpenses:housing:rent/Home
+^
+D01/10/2026
+T-500.00
+CX
+PMove to savings
+L[assets:bank:savings]
+^
+D01/15/2026
+T3200.00
+CX
+PEmployer | payroll
+L[assets:bank:savings]
+S[assets:bank:savings]
+Eauto-save
+$-300.00
+Sexpenses:tax
+$-800.00
+Sincome:salary
+$4300.00
+^
+D01/20/2026
+T-320.00
+CX
+PCard payment
+L[liabilities:card]
+^
+D01/25/2026
+T-290.00
+PCar loan payment
+L[liabilities:car loan]
+S[liabilities:car loan]
+$-250.00
+Sexpenses:interest/Auto
+$-40.00
+^
+!Account
+Nassets:bank:savings
+TBank
+^
+!Type:Bank
+D01/01/2026
+T10000.00
+CX
+POpening Balance
+L[assets:bank:savings]
+^
+!Account
+Nassets:wallet
+TCash
+^
+!Type:Cash
+D01/07/2026
+T-4.50
+C*
+PCafe
+Lexpenses:food:dining
+^
+!Account
+Nliabilities:car loan
+TOth L
+^
+!Type:Oth L
+D01/01/2026
+T-12000.00
+CX
+POpening Balance
+L[liabilities:car loan]
+^
+!Account
+Nliabilities:card
+TCCard
+^
+!Type:CCard
+D01/01/2026
+T-320.00
+CX
+POpening Balance
+L[liabilities:card]
+^
+D01/05/2026
+T-100.00
+PGrocer
+Mweekly shop
+Lexpenses:food:groceries
+Sexpenses:food:groceries
+Emilk and bread
+$-82.10
+Sexpenses:household
+Esoap
+$-17.90
+^
+D01/28/2026
+T-60.00
+PHardware store
+Lexpenses:household
+^
