@@ -1,12 +1,13 @@
 <script lang="ts">
-    // The QuickBooks Online Journal import screen (WP-17 Phase C): a staged
-    // export's parsed groups, the accounts nothing maps yet, and a commit that
-    // writes straight into the journal — no CSV, no rules file, no dry run.
+    // The whole-book import screen (WP-17 Phase C; every source since plan
+    // 39 — QuickBooks Journal, QIF …): a staged export's parsed groups, the
+    // accounts nothing maps yet, and a commit that writes straight into the
+    // journal — no CSV, no rules file, no dry run.
     //
     // Mounted INSTEAD OF `StagedPanel`/`DryRunPanel`/`ResultPanel` the moment
-    // `NewTransactionsPanel` sees `staged.format === "quickbooks-journal"` —
-    // see `qbJournalModel.isQuickbooksJournalStage`, the ONE branch that
-    // decision is allowed to make (the plan's Phase C contract: no new
+    // `NewTransactionsPanel` sees a whole-book `staged.format` (`quickbooks-
+    // journal`, `qif` …) — see `qbJournalModel.isBookImportStage`, the ONE
+    // branch that decision is allowed to make (the plan's Phase C contract: no new
     // client-side detection, no confidence UI, no confirmation step; the
     // engine already decided, server-side, at `POST /api/import/stage`).
     //
@@ -24,7 +25,17 @@
     import ImportMatches from "#lib/matching/ui/ImportMatches.svelte";
     import {reviewLaunch} from "#lib/review/ui/launch.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
-    import {canCommitQbJournal, dateFormatNotice, filesNeedingSort, qbIdMatchesSummary, qbReorderOffer} from "../qbJournalModel";
+    import {
+        bookChangedIn,
+        bookExportTitle,
+        bookSourceLabel,
+        canCommitQbJournal,
+        dateFormatNotice,
+        filesNeedingSort,
+        QB_JOURNAL_FORMAT,
+        qbIdMatchesSummary,
+        qbReorderOffer,
+    } from "../qbJournalModel";
     import {qbJournalStore} from "../qbJournalStore.svelte";
     import {stagedRunCounts, stagedRunItems, type StagedRunKind} from "../stagedReview";
     import QbUnmappedAccounts from "./QbUnmappedAccounts.svelte";
@@ -32,7 +43,19 @@
     import StagedReviewButtons from "./StagedReviewButtons.svelte";
     import {reveal, revealArm} from "#lib/ui/reveal.js";
 
-    let {stageId, accountNames}: {stageId: string; accountNames: string[]} = $props();
+    let {
+        stageId,
+        format = QB_JOURNAL_FORMAT,
+        accountNames,
+    }: {
+        stageId: string;
+        /** The stage's `format`: which source this is, before the preview has said so too. */
+        format?: string;
+        accountNames: string[];
+    } = $props();
+
+    const title = $derived(bookExportTitle(format));
+    const sourceLabel = $derived(bookSourceLabel(format));
 
     // Keyed on `stageId` (a prop) and `settings.serverUrl` (a store), neither
     // of which this effect writes — so it cannot become the self-feeding loop
@@ -104,20 +127,33 @@
         value={qbJournalStore.preview}
         error={qbJournalStore.previewError}
         testid="qb-preview-error"
-        label="this QuickBooks Journal export"
-        loadingLabel="Reading the QuickBooks Journal export"
+        label={`this ${title}`}
+        loadingLabel={`Reading the ${title}`}
         onRetry={retryPreview}
     >
         {#snippet children(preview)}
             <div class="flex flex-col gap-3" data-testid="qb-journal-panel">
-                <section class="flex flex-col gap-2 rounded-box border border-base-content/10 p-3" aria-label="QuickBooks Journal export">
-                    <h2 class="text-sm font-semibold tracking-tight">QuickBooks Journal export</h2>
-                    <p class="text-xs text-base-content/60" data-testid="qb-export-help">
-                        From QuickBooks Online: <strong>Reports → Journal</strong> → choose a time frame → optionally <strong>Customize</strong> to add
-                        <strong>Vendor</strong>, <strong>Customer</strong> and <strong>Class</strong> → <strong>Export to Excel</strong>. Re-downloading the
-                        same or overlapping time frame — including "All Dates" — is safe: transactions already imported are recognized by their QuickBooks id
-                        and never duplicated.
-                    </p>
+                <section class="flex flex-col gap-2 rounded-box border border-base-content/10 p-3" aria-label={title}>
+                    <h2 class="text-sm font-semibold tracking-tight">{title}</h2>
+                    {#if format === QB_JOURNAL_FORMAT}
+                        <p class="text-xs text-base-content/60" data-testid="qb-export-help">
+                            From QuickBooks Online: <strong>Reports → Journal</strong> → choose a time frame → optionally <strong>Customize</strong> to add
+                            <strong>Vendor</strong>, <strong>Customer</strong> and <strong>Class</strong> → <strong>Export to Excel</strong>. Re-downloading the
+                            same or overlapping time frame — including "All Dates" — is safe: transactions already imported are recognized by their QuickBooks
+                            id and never duplicated.
+                        </p>
+                    {:else if format === "qif"}
+                        <p class="text-xs text-base-content/60" data-testid="qb-export-help">
+                            Export QIF with every account selected (Banktivity: <strong>File → Export → QIF</strong>; Quicken:
+                            <strong>File → Export → QIF file</strong>). Accounts, categories, splits, transfers and classes come through; a transfer written in
+                            both accounts is kept once. Importing the same file again is safe: each transaction gets an id from its date, account, amount and
+                            payee, so ones already imported are skipped.
+                        </p>
+                    {:else}
+                        <p class="text-xs text-base-content/60" data-testid="qb-export-help">
+                            Importing the same export again is safe: transactions already imported are recognized by their id and never duplicated.
+                        </p>
+                    {/if}
                     <p class="text-sm text-base-content/70" data-testid="qb-summary">
                         {preview.transactionCount} transaction{preview.transactionCount === 1 ? "" : "s"} from {preview.postingCount} posting{preview.postingCount ===
                         1
@@ -139,6 +175,7 @@
                 {#if preview.unmappedAccounts.length > 0}
                     <QbUnmappedAccounts
                         accounts={preview.unmappedAccounts}
+                        sourceLabel={preview.sourceLabel}
                         {accountNames}
                         draftFor={(account) => qbJournalStore.draftFor(account)}
                         {onDraft}
@@ -191,7 +228,7 @@
                         data-testid="qb-update-changed"
                     />
                     <span>
-                        Update transactions that changed in QuickBooks
+                        Update transactions that changed in {bookChangedIn(format)}
                         <span class="block text-xs text-base-content/60">
                             Already-imported transactions the export now shows differently are replaced with the export's version, keeping their cleared status
                             and notes. Leave this off if you re-categorize imported transactions by hand — those edits would be overwritten.
@@ -206,7 +243,7 @@
                             value={qbJournalStore.commitResult}
                             error={qbJournalStore.commitError}
                             testid="qb-commit-error"
-                            label="the QuickBooks import"
+                            label={`the ${sourceLabel} import`}
                             loadingLabel="Writing the import"
                             onRetry={commit}
                         >
@@ -220,7 +257,7 @@
                                     <p class="text-sm" data-testid="qb-imported">
                                         Imported {result.imported} transaction{result.imported === 1 ? "" : "s"}.
                                     </p>
-                                    <!-- Find Matches (plan 35 D9 "Import"): a QuickBooks import inserts by date,
+                                    <!-- Find Matches (plan 35 D9 "Import"): a whole-book import inserts by date,
                                          so it offers the whole journal's pairs, not only the new ones. -->
                                     <ImportMatches since={null} imported={result.imported} />
                                     {#if result.updated > 0}

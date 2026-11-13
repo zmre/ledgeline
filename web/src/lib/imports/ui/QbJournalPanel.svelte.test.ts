@@ -251,3 +251,26 @@ describe("COMPONENT QbJournalPanel — the commit flow", () => {
         expect(screen.getByTestId("qb-result").textContent).not.toContain("left untouched");
     });
 });
+
+// Last in the file: the store is shared, and a test after this one would
+// briefly see the QIF preview before its own arrives.
+describe("COMPONENT QbJournalPanel — a QIF export (plan 39)", () => {
+    it("speaks of QIF, not QuickBooks, in its heading, help and mapping table", async () => {
+        await connectFakeEngine({
+            "/api/import/qb-journal/qif-1": {...previewUnmapped("qif-1"), source: "qif", sourceLabel: "QIF", unmappedAccounts: ["Food:Groceries"]},
+        });
+
+        render(QbJournalPanel, {props: {stageId: "qif-1", format: "qif", accountNames: []}});
+
+        // Waits for THIS stage's preview: the store is shared by every test here.
+        await vi.waitFor(() => expect(screen.getByDisplayValue("Food:Groceries")).toBeTruthy());
+        expect(screen.getByRole("heading", {name: "QIF export"})).toBeDefined();
+        expect(screen.getByRole("heading", {name: "Map QIF accounts"})).toBeDefined();
+        expect(screen.getByText("QIF account")).toBeDefined();
+        const help = screen.getByTestId("qb-export-help").textContent ?? "";
+        expect(help).toMatch(/QIF/);
+        expect(help).not.toMatch(/QuickBooks/);
+        expect(screen.getByTestId("qb-update-changed-label").textContent).toMatch(/changed in the source app/);
+        expect(screen.queryByText(/QuickBooks/)).toBeNull();
+    });
+});

@@ -1458,6 +1458,10 @@ interface RawQbSample {
 
 interface RawQbPreview {
     stageId?: string;
+    // Plan 39: the whole-book source. Absent from an engine older than QIF
+    // import, which only ever staged QuickBooks.
+    source?: string;
+    sourceLabel?: string;
     transactionCount?: number;
     postingCount?: number;
     dateFormat?: RawQbDateFormat;
@@ -4732,6 +4736,8 @@ export function decodeQbPreview(raw: unknown): QbPreview {
     if (typeof preview !== "object" || preview === null) throw new ApiShapeError("qb preview: expected an object");
     return Object.freeze({
         stageId: str(preview.stageId, "qb preview stageId"),
+        source: optStr(preview.source, "qb preview source") ?? "quickbooks-journal",
+        sourceLabel: optStr(preview.sourceLabel, "qb preview sourceLabel") ?? "QuickBooks",
         transactionCount: num(preview.transactionCount, "qb preview transactionCount"),
         postingCount: num(preview.postingCount, "qb preview postingCount"),
         dateFormat: decodeQbDateFormat(preview.dateFormat, "qb preview dateFormat"),

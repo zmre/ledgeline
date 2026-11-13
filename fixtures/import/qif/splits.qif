@@ -1,0 +1,39 @@
+!Type:Bank
+D01/02/2026
+T2500.00
+CX
+POpening Balance
+L[Checking]
+^
+D01/05/2026
+T-142.37
+C*
+N1041
+PHarbor Market
+MWeekly shop and a hardware run
+SFood:Groceries
+EProduce and pantry
+$-96.12
+SHousehold:Supplies
+ELight bulbs
+$-31.25
+SFood:Snacks
+$-15.00
+^
+D01/09/2026
+T1850.00
+C*
+PNorthwind Payroll
+SSalary
+$2400.00
+STaxes:Federal
+EWithholding
+$-410.00
+STaxes:State
+$-140.00
+^
+D01/14/2026
+T-60.00
+PCorner Cafe
+LDining
+^

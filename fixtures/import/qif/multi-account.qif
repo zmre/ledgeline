@@ -1,0 +1,94 @@
+!Option:AutoSwitch
+!Account
+NChecking
+TBank
+DEveryday account
+^
+NSavings
+TBank
+^
+NVisa
+TCCard
+L5000.00
+^
+NWallet
+TCash
+^
+NCar
+TOth A
+^
+NCar Loan
+TOth L
+^
+!Clear:AutoSwitch
+!Account
+NChecking
+TBank
+^
+!Type:Bank
+D01/02/2026
+T4000.00
+CX
+POpening Balance
+L[Checking]
+^
+D01/03/2026
+T-200.00
+PATM
+L[Wallet]
+^
+D01/15/2026
+T-420.00
+PAuto finance
+S[Car Loan]
+EPrincipal
+$-380.00
+SAuto:Loan Interest
+EInterest
+$-40.00
+^
+!Account
+NVisa
+TCCard
+^
+!Type:CCard
+D01/04/2026
+T-63.20
+PFuel Stop
+LAuto:Fuel
+^
+D01/18/2026
+T-118.40
+PBookshop
+LEducation
+^
+!Account
+NWallet
+TCash
+^
+!Type:Cash
+D01/06/2026
+T-12.50
+PFarmers market
+LFood:Groceries
+^
+!Account
+NCar
+TOth A
+^
+!Type:Oth A
+D01/01/2026
+T18000.00
+POpening Balance
+L[Car]
+^
+!Account
+NCar Loan
+TOth L
+^
+!Type:Oth L
+D01/01/2026
+T-15000.00
+POpening Balance
+L[Car Loan]
+^

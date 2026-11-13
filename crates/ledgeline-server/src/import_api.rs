@@ -103,6 +103,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::http::{HeaderMap, HeaderName};
 use axum::response::Response;
 use ledgeline_core::aliases;
+use ledgeline_core::book_import;
 use ledgeline_core::convert::{
     self, ConvertError, ConvertNote, SourceFormat, StatementMeta, StatementSummary, Tabular,
 };
@@ -111,6 +112,7 @@ use ledgeline_core::edit::Fingerprint;
 use ledgeline_core::hledger_conf;
 use ledgeline_core::journals::{self, JournalTarget};
 use ledgeline_core::model::Status;
+use ledgeline_core::qb_journal::{ImportSource, QbJournal};
 use ledgeline_core::reimport::{self, RowClassification};
 use ledgeline_core::rules::matching::{self, Candidate, Ranking, Score, Signals};
 use ledgeline_core::rules::{self, Discovery, RulesDoc, RulesPath};
@@ -2256,12 +2258,38 @@ pub(crate) async fn capabilities(State(state): State<AppState>) -> Result<Respon
 }
 
 /// Every format the New Transactions tab accepts, in the order the UI lists
-/// them. Spelled from the engine's own names so the two cannot drift.
+/// them. Spelled from the engine's own names so the two cannot drift: the
+/// statement formats, then the extensions only a whole-book import reads
+/// (`.qif`, `.qmtf`).
 fn convert_formats() -> Vec<&'static str> {
     SourceFormat::ALL
         .into_iter()
         .map(SourceFormat::as_str)
+        .chain(book_import::EXTRA_EXTENSIONS)
         .collect()
+}
+
+/// Is this upload a whole-book export (a QuickBooks Journal report, a QIF
+/// file …), and if so its parse — [`book_import::detect_and_parse_with`],
+/// with the QuickBooks workbook reader run in the sandboxed worker.
+///
+/// `Some(Err(..))` is a file unmistakably in one of those formats that could
+/// not be read; it is refused by name rather than falling through to the CSV
+/// rules screen.
+fn detect_book(name: &str, bytes: &[u8]) -> Option<Result<QbJournal, AppError>> {
+    book_import::detect_and_parse_with(name, bytes, |bytes| {
+        workbook_sandbox::qb_detect(bytes).then(|| workbook_sandbox::qb_parse(bytes))
+    })
+    .map(|parsed| parsed.map_err(|error| AppError::BadRequest(error.to_string())))
+}
+
+/// How a message names an export from `source`: `QuickBooks Journal export`,
+/// `QIF export`.
+pub(crate) fn export_noun(source: ImportSource) -> String {
+    match source {
+        ImportSource::QuickBooks => "QuickBooks Journal export".to_string(),
+        other => format!("{} export", other.label()),
+    }
 }
 
 /// `POST /api/import/stage` — raw bytes plus `X-Ledgeline-Filename`.
@@ -2315,14 +2343,15 @@ fn stage_upload(
     bytes: &[u8],
     statement: usize,
 ) -> Result<WireStage, AppError> {
-    // WP-17: a QuickBooks Online "Journal" report cannot go through the
-    // `convert`/CSV-rules pipeline at all (see `qb_journal`'s module docs), so
-    // it is detected and diverted before `convert::detect` gets a look.
-    // `qb_journal::detect` says yes on a damaged export as well as a good one
-    // — see its own docs on why — so a truncated file is refused BY NAME here
-    // rather than falling through to the CSV rules screen.
-    if workbook_sandbox::qb_detect(bytes) {
-        return stage_qb_journal(state, name, bytes);
+    // WP-17 / plan 39: a whole-book export (a QuickBooks Online "Journal"
+    // report, a QIF file) cannot go through the `convert`/CSV-rules pipeline
+    // at all (see `qb_journal`'s module docs), so it is detected and diverted
+    // before `convert::detect` gets a look. Detection says yes on a damaged
+    // export as well as a good one — see `qb_journal::detect`'s own docs on
+    // why — so a truncated file is refused BY NAME here rather than falling
+    // through to the CSV rules screen.
+    if let Some(parsed) = detect_book(name, bytes) {
+        return stage_qb_journal(state, name, parsed?);
     }
     let format = convert::detect(name, bytes).map_err(convert_error)?;
     let tabular =
@@ -2428,7 +2457,10 @@ fn per_account_name(upload: &str, hint: &str) -> String {
     }
 }
 
-/// The QuickBooks Journal branch of [`stage_upload`] (WP-17 Phase B).
+/// The whole-book branch of [`stage_upload`] (WP-17 Phase B; QIF since plan
+/// 39). `format` is the source's own (`quickbooks-journal`, `qif` …; see
+/// `ImportSource::stage_format`), which is what routes the SPA to the
+/// mapping panel.
 ///
 /// Parses eagerly, exactly as the CSV branch converts eagerly — a stage
 /// response has always meant "this upload was fully validated", and a
@@ -2443,16 +2475,19 @@ fn per_account_name(upload: &str, hint: &str) -> String {
 /// which accounts are unmapped — recomputed against the journal's CURRENT
 /// aliases on every call, which a value cached here at upload time could not
 /// be.
-fn stage_qb_journal(state: &AppState, name: &str, bytes: &[u8]) -> Result<WireStage, AppError> {
-    let parsed = workbook_sandbox::qb_parse(bytes)
-        .map_err(|error| AppError::BadRequest(error.to_string()))?;
+fn stage_qb_journal(
+    state: &AppState,
+    name: &str,
+    parsed: QbJournal,
+) -> Result<WireStage, AppError> {
+    let format = parsed.source.stage_format();
     let (id, _staged) = state.qb_stages().put(parsed).ok_or_else(|| {
         AppError::Internal("the operating system's random source is unavailable".to_string())
     })?;
 
     Ok(WireStage {
         stage_id: id.as_str().to_string(),
-        format: "quickbooks-journal",
+        format,
         preview: WirePreview {
             header: None,
             rows: Vec::new(),
@@ -5125,12 +5160,12 @@ fn shell_quote(argument: &str) -> String {
 /// exactly the files the screen can and no others.
 #[derive(clap::Args, Debug, Clone)]
 pub struct CliImport {
-    /// The statement to import: CSV/TSV, OFX/QFX/QBO, a spreadsheet, or a
-    /// QuickBooks Online "Journal" report export. Which one is decided by
-    /// sniffing the file's own bytes
-    /// ([`ledgeline_core::qb_journal::detect`]) — the exact same check the
-    /// screen's upload makes — not by `--output`/`--rules` being present or
-    /// absent.
+    /// The statement to import: CSV/TSV, OFX/QFX/QBO, a spreadsheet, a
+    /// QuickBooks Online "Journal" report export, or a QIF/QMTF file. Which
+    /// one is decided by the file's own bytes and name
+    /// ([`ledgeline_core::book_import::detect_and_parse`]) — the exact same
+    /// check the screen's upload makes — not by `--output`/`--rules` being
+    /// present or absent.
     #[arg(short = 'i', long)]
     input: PathBuf,
 
@@ -5467,8 +5502,8 @@ fn cli_import(state: &AppState, args: &CliImport) -> Result<CliRunReport, AppErr
         )));
     }
 
-    if workbook_sandbox::qb_detect(&bytes) {
-        return cli_import_qb_journal(state, args, &bytes, &name, &journal_id, &root_id)
+    if let Some(parsed) = detect_book(&name, &bytes) {
+        return cli_import_qb_journal(state, args, parsed?, &name, &journal_id, &root_id)
             .map(CliRunReport::QbJournal);
     }
     cli_import_csv(state, args, &location, &journal_id, &root_id, &name, &bytes)
@@ -5502,15 +5537,15 @@ fn cli_import_csv(
     }
     if !missing.is_empty() {
         return Err(AppError::BadRequest(format!(
-            "{} required: this input is not a QuickBooks Journal export, so it needs a CSV \
-             destination and a rules file, like every other import.",
+            "{} required: this input is not a QuickBooks Journal or QIF export, so it needs a \
+             CSV destination and a rules file, like every other import.",
             missing_sentence(&missing),
         )));
     }
     if args.update_changed {
         return Err(AppError::BadRequest(
-            "--update-changed only applies to a QuickBooks Journal export; this input is not \
-             one, and a CSV import never overwrites a transaction it already holds."
+            "--update-changed only applies to a QuickBooks Journal or QIF export; this input is \
+             not one, and a CSV import never overwrites a transaction it already holds."
                 .to_string(),
         ));
     }
@@ -5673,7 +5708,7 @@ fn missing_sentence(missing: &[&str]) -> String {
 fn cli_import_qb_journal(
     state: &AppState,
     args: &CliImport,
-    bytes: &[u8],
+    parsed: QbJournal,
     name: &str,
     journal_id: &str,
     root_id: &str,
@@ -5701,15 +5736,13 @@ fn cli_import_qb_journal(
     }
     if !extra.is_empty() {
         return Err(AppError::BadRequest(format!(
-            "{} not used for a QuickBooks Journal export: there is no CSV or rules file in this \
-             path, and no single statement balance to reconcile against, since one export can \
-             write into several accounts across several files in one run.",
+            "{} not used for a {}: there is no CSV or rules file in this path, and no single \
+             statement balance to reconcile against, since one export can write into several \
+             accounts across several files in one run.",
             missing_sentence(&extra),
+            export_noun(parsed.source),
         )));
     }
-
-    let parsed = workbook_sandbox::qb_parse(bytes)
-        .map_err(|error| AppError::BadRequest(error.to_string()))?;
 
     let command = qb_cli_invocation(
         name,

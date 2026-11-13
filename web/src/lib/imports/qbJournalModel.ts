@@ -31,9 +31,53 @@ export function isQuickbooksJournalFormat(format: string): boolean {
     return format === QB_JOURNAL_FORMAT;
 }
 
-/** Whether the currently staged file (if any) is a QuickBooks Journal export — the panel's own routing question. */
+/** Whether the currently staged file (if any) is a QuickBooks Journal export. */
 export function isQuickbooksJournalStage(staged: StagedFile | null): boolean {
     return staged !== null && isQuickbooksJournalFormat(staged.format);
+}
+
+// ---------------------------------------------------------------------------
+// Whole-book imports (plan 39): every source the engine stages through the
+// QuickBooks pipeline. The engine names the source in the stage's `format`
+// (`ImportSource::stage_format` in `book_import.rs`); this table is the label
+// a person reads for each. A format not listed here is a statement.
+// ---------------------------------------------------------------------------
+
+/** Every whole-book stage `format`, and the source name shown for it. */
+export const BOOK_IMPORT_LABELS: Readonly<Record<string, string>> = Object.freeze({
+    [QB_JOURNAL_FORMAT]: "QuickBooks",
+    qif: "QIF",
+    xero: "Xero",
+    gnucash: "GnuCash",
+    "hledger-csv": "hledger CSV",
+    ynab: "YNAB",
+    monarch: "Monarch",
+    copilot: "Copilot",
+});
+
+/** Whether a stage `format` is a whole-book export that the mapping panel handles. */
+export function isBookImportFormat(format: string): boolean {
+    return Object.hasOwn(BOOK_IMPORT_LABELS, format);
+}
+
+/** Whether the currently staged file (if any) is a whole-book export — the panel's own routing question. */
+export function isBookImportStage(staged: StagedFile | null): boolean {
+    return staged !== null && isBookImportFormat(staged.format);
+}
+
+/** The source name for a whole-book stage `format` (`QuickBooks`, `QIF`), or a generic one for a format this build does not know. */
+export function bookSourceLabel(format: string): string {
+    return isBookImportFormat(format) ? (BOOK_IMPORT_LABELS[format] ?? "book") : "book";
+}
+
+/** The panel's heading: `QuickBooks Journal export`, `QIF export`. */
+export function bookExportTitle(format: string): string {
+    return format === QB_JOURNAL_FORMAT ? "QuickBooks Journal export" : `${bookSourceLabel(format)} export`;
+}
+
+/** Where a changed transaction changed, for the "Update transactions that changed in …" option. */
+export function bookChangedIn(format: string): string {
+    return format === QB_JOURNAL_FORMAT ? "QuickBooks" : "the source app";
 }
 
 // ---------------------------------------------------------------------------

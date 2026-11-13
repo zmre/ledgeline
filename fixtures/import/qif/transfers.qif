@@ -1,0 +1,27 @@
+!Account
+NChecking
+TBank
+^
+!Type:Bank
+D01/02/2026
+T3000.00
+CX
+POpening Balance
+L[Checking]
+^
+D01/10/2026
+T-500.00
+C*
+PMonthly savings
+L[Savings]
+^
+D01/20/2026
+T-750.00
+PCard payment
+L[Visa]
+^
+D01/25/2026
+T-25.00
+PFee
+LBank Charges
+^

@@ -75,6 +75,23 @@ describe("COMPONENT NewTransactionsPanel — the QuickBooks Journal format branc
         expect(screen.queryByTestId("imports-balance")).toBeNull();
     });
 
+    it("shows the same panel, labelled QIF, for a QIF upload (plan 39)", async () => {
+        await setup(
+            {...CAPABILITIES, formats: [...CAPABILITIES.formats, "qif", "qmtf"]},
+            {
+                "/api/import/stage": {...QB_STAGE, stageId: "qif-stage-1", format: "qif"},
+                "/api/import/qb-journal/qif-stage-1": {...QB_PREVIEW, stageId: "qif-stage-1", source: "qif", sourceLabel: "QIF"},
+            }
+        );
+        await importStore.offerFile(upload("Banktivity.qif"));
+
+        render(NewTransactionsPanel);
+
+        await vi.waitFor(() => expect(screen.getByTestId("qb-journal-panel")).toBeTruthy());
+        expect(screen.getByRole("heading", {name: "QIF export"})).toBeDefined();
+        expect(screen.queryByTestId("imports-candidates")).toBeNull();
+    });
+
     it("leaves an ordinary CSV upload on the unchanged rules-candidate flow", async () => {
         await setup(CAPABILITIES, {"/api/import/stage": STAGE});
         await importStore.offerFile(upload("bank.csv"));

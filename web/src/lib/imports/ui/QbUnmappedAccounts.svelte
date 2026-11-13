@@ -20,6 +20,7 @@
 
     let {
         accounts,
+        sourceLabel = "QuickBooks",
         accountNames,
         draftFor,
         onDraft,
@@ -29,6 +30,8 @@
     }: {
         /** Distinct QuickBooks account names in first-seen order — `WireQbPreview.unmappedAccounts`. */
         accounts: readonly string[];
+        /** Whose names these are: `QuickBooks`, `QIF` (plan 39). */
+        sourceLabel?: string;
         accountNames: string[];
         draftFor: (account: string) => string;
         onDraft: (account: string, value: string) => void;
@@ -41,8 +44,8 @@
     const canSave = $derived(hasMappingsToSave(accounts, drafts));
 </script>
 
-<section class="flex flex-col gap-3 rounded-box border border-warning/40 p-3" aria-label="Unmapped QuickBooks accounts" data-testid="qb-unmapped">
-    <h2 class="text-sm font-semibold tracking-tight">Map QuickBooks accounts</h2>
+<section class="flex flex-col gap-3 rounded-box border border-warning/40 p-3" aria-label="Unmapped {sourceLabel} accounts" data-testid="qb-unmapped">
+    <h2 class="text-sm font-semibold tracking-tight">Map {sourceLabel} accounts</h2>
     <p class="text-xs text-base-content/60">
         These account names come straight from the export. Type the Ledgeline account each one is, and Ledgeline adds a plain <code>alias</code> for it — the same
         mapping the Account Aliases tab edits. A mapping on a parent account also covers its own sub-accounts.
@@ -54,7 +57,7 @@
         <div class="flex flex-col gap-1 rounded-box border border-base-content/10 p-2">
             <div class="flex flex-wrap items-end gap-2">
                 <label class="form-control grow">
-                    <span class="label-text text-xs">QuickBooks account</span>
+                    <span class="label-text text-xs">{sourceLabel} account</span>
                     <input
                         type="text"
                         class="input-bordered input w-full font-mono input-sm"

@@ -34,6 +34,8 @@
 //!   Phase 4; see `plans/39-onboarding-offboarding.md`)
 //! - `single_entry` — one-row-per-transaction app exports (YNAB, Monarch,
 //!   Copilot) as two-posting transactions with transfers paired (plan 39 Phase 5)
+//! - `qif` / `qif_import` — QIF and QMTF files read into the same multi-posting
+//!   shape, and `book_import`, which recognises every such export (plan 39)
 //! - `hledger_conf` — the `--alias` options an `hledger.conf` declares, and
 //!   writing one into it (Enhanced imports)
 //! - `title` — the derived "what am I looking at" title for the open journal
@@ -54,6 +56,7 @@ pub mod auto;
 pub mod auto_balance;
 pub mod auto_edit;
 pub mod auto_form;
+pub mod book_import;
 pub mod convert;
 pub mod decimal;
 pub mod display;
@@ -76,6 +79,8 @@ pub mod pinned;
 pub mod projections;
 pub mod qb_import;
 pub mod qb_journal;
+pub mod qif;
+pub mod qif_import;
 pub mod query;
 pub mod reimport;
 pub mod reports;

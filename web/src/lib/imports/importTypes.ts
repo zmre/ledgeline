@@ -576,10 +576,14 @@ export interface QbIdMatches {
  */
 export interface QbPreview {
     readonly stageId: string;
+    /** The source, in the stage `format` vocabulary (`quickbooks-journal`, `qif` …). */
+    readonly source: string;
+    /** The source name a person reads (`QuickBooks`, `QIF`). */
+    readonly sourceLabel: string;
     readonly transactionCount: number;
     readonly postingCount: number;
     readonly dateFormat: QbDateFormat;
-    /** Distinct QuickBooks account names no plain alias in the journal maps yet. Non-empty blocks a commit. */
+    /** Distinct source account names (QuickBooks accounts, QIF accounts and categories) no plain alias in the journal maps yet. Non-empty blocks a commit. */
     readonly unmappedAccounts: readonly string[];
     readonly sample: readonly QbSample[];
     /** Null while any account is unmapped — nothing can be built (and so nothing classified) without one. */

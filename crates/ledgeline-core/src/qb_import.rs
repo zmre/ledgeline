@@ -113,14 +113,16 @@ pub fn description_for(transaction: &QbTransaction) -> String {
     let raw = if let Some(name) = transaction.name.as_deref().filter(|name| !name.is_empty()) {
         name.to_string()
     } else {
-        match transaction
+        let memo = transaction
             .postings
             .first()
             .and_then(|posting| posting.memo.as_deref())
-            .filter(|memo| !memo.is_empty())
-        {
-            Some(memo) => format!("{}: {memo}", transaction.transaction_type),
-            None => transaction.transaction_type.clone(),
+            .filter(|memo| !memo.is_empty());
+        // A QIF bank record has no transaction type: its memo alone, then.
+        match (memo, transaction.transaction_type.is_empty()) {
+            (Some(memo), true) => memo.to_string(),
+            (Some(memo), false) => format!("{}: {memo}", transaction.transaction_type),
+            (None, _) => transaction.transaction_type.clone(),
         }
     };
     journal_safe(&raw)
@@ -316,6 +318,16 @@ mod tests {
     fn description_falls_back_to_bare_type_with_no_name_and_no_memo() {
         let txn = transaction("1", vec![posting("Checking")]);
         assert_eq!(description_for(&txn), "Journal Entry");
+    }
+
+    #[test]
+    fn description_with_no_type_is_the_bare_memo() {
+        let mut txn = transaction("1", vec![posting("Checking")]);
+        txn.transaction_type = String::new();
+        txn.postings[0].memo = Some("ATM withdrawal".to_string());
+        assert_eq!(description_for(&txn), "ATM withdrawal");
+        txn.postings[0].memo = None;
+        assert_eq!(description_for(&txn), "");
     }
 
     #[test]

@@ -2064,8 +2064,16 @@ describe("UNIT nativeDecode — QuickBooks Journal preview (qb_journal_api.rs, W
     };
 
     it("decodes the parsed groups and which accounts are unmapped", () => {
-        // An engine that predates review (plan 32 D30) sends no `txns`: read as none.
-        expect(decodeQbPreview(PREVIEW)).toEqual({...PREVIEW, txns: []});
+        // An engine that predates review (plan 32 D30) sends no `txns`: read as
+        // none; one that predates QIF (plan 39) sends no source: QuickBooks.
+        expect(decodeQbPreview(PREVIEW)).toEqual({...PREVIEW, source: "quickbooks-journal", sourceLabel: "QuickBooks", txns: []});
+    });
+
+    it("decodes the whole-book source a QIF preview names (plan 39)", () => {
+        const qif = decodeQbPreview({...PREVIEW, source: "qif", sourceLabel: "QIF"});
+        expect(qif.source).toBe("qif");
+        expect(qif.sourceLabel).toBe("QIF");
+        expect(() => decodeQbPreview({...PREVIEW, source: 7})).toThrow(ApiShapeError);
     });
 
     it("decodes idMatches once every account resolves — null while any account is still unmapped", () => {

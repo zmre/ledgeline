@@ -1,0 +1,16 @@
+!Type:Bank
+D01/02/2026
+T-10.00
+PFirst
+LCoffee
+^
+D02/03/2026
+T-20.00
+PSecond
+LCoffee
+^
+D03/04/2026
+T-30.00
+PThird
+LCoffee
+^

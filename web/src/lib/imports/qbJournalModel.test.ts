@@ -1,10 +1,15 @@
 import {describe, expect, it} from "vitest";
 import {
+    bookChangedIn,
+    bookExportTitle,
+    bookSourceLabel,
     canCommitQbJournal,
     dateFormatNotice,
     defaultAliasTargetFile,
     filesNeedingSort,
     hasMappingsToSave,
+    isBookImportFormat,
+    isBookImportStage,
     isQuickbooksJournalFormat,
     isQuickbooksJournalStage,
     mappingDraft,
@@ -64,6 +69,28 @@ describe("UNIT qbJournalModel — the one branch point", () => {
 
     it("is false before anything is staged", () => {
         expect(isQuickbooksJournalStage(null)).toBe(false);
+    });
+});
+
+describe("UNIT qbJournalModel — whole-book sources (plan 39)", () => {
+    it("routes every whole-book format to the mapping panel and nothing else", () => {
+        expect(isBookImportFormat("quickbooks-journal")).toBe(true);
+        expect(isBookImportFormat("qif")).toBe(true);
+        expect(isBookImportFormat("csv")).toBe(false);
+        expect(isBookImportFormat("toString")).toBe(false);
+        expect(isBookImportStage(staged("qif"))).toBe(true);
+        expect(isBookImportStage(staged("ofx"))).toBe(false);
+        expect(isBookImportStage(null)).toBe(false);
+    });
+
+    it("names each source the way a person reads it", () => {
+        expect(bookSourceLabel("qif")).toBe("QIF");
+        expect(bookSourceLabel("quickbooks-journal")).toBe("QuickBooks");
+        expect(bookExportTitle("quickbooks-journal")).toBe("QuickBooks Journal export");
+        expect(bookExportTitle("qif")).toBe("QIF export");
+        expect(bookChangedIn("quickbooks-journal")).toBe("QuickBooks");
+        expect(bookChangedIn("qif")).toBe("the source app");
+        expect(bookSourceLabel("csv")).toBe("book");
     });
 });
 
@@ -132,6 +159,8 @@ describe("UNIT qbJournalModel — resolving unmapped accounts", () => {
 describe("UNIT qbJournalModel — the commit gate", () => {
     const preview = (unmapped: readonly string[]): QbPreview => ({
         stageId: "s1",
+        source: "quickbooks-journal",
+        sourceLabel: "QuickBooks",
         transactionCount: 1,
         postingCount: 2,
         dateFormat: {format: "%m/%d/%Y", ambiguous: false},

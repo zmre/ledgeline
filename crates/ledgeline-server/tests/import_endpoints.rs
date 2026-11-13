@@ -665,7 +665,8 @@ async fn capabilities_describes_what_the_screen_may_offer() {
     assert_eq!(
         body["formats"],
         json!([
-            "csv", "tsv", "ssv", "ofx", "qfx", "qbo", "xls", "xlsx", "xlsm", "xlsb", "ods"
+            "csv", "tsv", "ssv", "ofx", "qfx", "qbo", "xls", "xlsx", "xlsm", "xlsb", "ods", "qif",
+            "qmtf"
         ]),
         "the accepted formats are the contract's list, in order"
     );
