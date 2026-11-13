@@ -1,12 +1,13 @@
 <script lang="ts">
     // Settings route: an outer subnav, same shape as Imports (WP-11) and
-    // Reports. Six screens live under it — "Accounts" (the chart-of-accounts
+    // Reports. Seven screens live under it — "Accounts" (the chart-of-accounts
     // editor), "Account Aliases" (moved here from Imports; the panel and
     // its store are unchanged, only the tab that hosts it moved), "hledger
     // config" (the `hledger.conf` in force: --auto and report depths),
     // "Automatic postings" (the journal's `=` rules) and "Projections" (which
-    // scenario the Projections tab opens by default, plan 33) and "Appearance"
-    // (theme and text size, plan 39). The tab
+    // scenario the Projections tab opens by default, plan 33), "Appearance"
+    // (theme and text size, plan 39) and "Prices" (automatic stock price
+    // updates, plan 41). The tab
     // lives in the query string via the same three pieces the Imports route
     // uses — `searchToParams` after each navigation behind a `restored` latch,
     // a debounced `replaceState` mirror the other way.
@@ -17,6 +18,7 @@
     import AliasPanel from "#lib/imports/ui/AliasPanel.svelte";
     import AppearancePanel from "#lib/settings/ui/AppearancePanel.svelte";
     import HledgerConfPanel from "#lib/settings/ui/HledgerConfPanel.svelte";
+    import PricesSettingsPanel from "#lib/settings/ui/PricesSettingsPanel.svelte";
     import AutoRulesPanel from "#lib/autoRules/ui/AutoRulesPanel.svelte";
     import ProjectionSettingsPanel from "#lib/projections/ui/ProjectionSettingsPanel.svelte";
     import {defaultSettingsParams, paramsToSearch, searchToParams, type SettingsParams} from "#lib/settings/params.js";
@@ -79,6 +81,8 @@
         <ProjectionSettingsPanel />
     {:else if params.tab === "appearance"}
         <AppearancePanel />
+    {:else if params.tab === "prices"}
+        <PricesSettingsPanel />
     {:else}
         <AccountsPanel accountNames={journal.accountNames} />
     {/if}

@@ -22,7 +22,7 @@ import {
 describe("UNIT uiPrefs", () => {
     it("names every view setting, and never the connection", () => {
         expect([...UI_PREF_KEYS].sort()).toEqual(Object.keys(defaultUiPrefs()).sort());
-        expect(UI_PREF_KEYS).toHaveLength(21);
+        expect(UI_PREF_KEYS).toHaveLength(23);
         expect(UI_PREF_KEYS).not.toContain("serverUrl");
         expect(UI_PREF_KEYS).not.toContain("serverToken");
     });
@@ -55,10 +55,16 @@ describe("UNIT uiPrefs", () => {
         expect(defaultUiPrefs().uiScale).toBe(100);
         expect(UI_SCALE_DEFAULT).toBe(100);
         expect(UI_SCALE_RANGE).toEqual([50, 300]);
-        expect(PINNABLE_UI_PREF_KEYS).toEqual(["theme", "uiScale"]);
+        expect(PINNABLE_UI_PREF_KEYS).toEqual(["theme", "uiScale", "autoPrices", "autoPricesWeeks"]);
         expect(isThemeId("tokyo-night-day")).toBe(true);
         expect(isThemeId("Nord")).toBe(false);
         expect(isThemeId(undefined)).toBe(false);
+    });
+
+    it("defaults automatic prices off with six weeks, and clamps a hand-edited week count", () => {
+        expect(defaultUiPrefs()).toMatchObject({autoPrices: false, autoPricesWeeks: 6});
+        expect(cleanUiPrefs({autoPrices: true, autoPricesWeeks: 99})).toMatchObject({autoPrices: true, autoPricesWeeks: 52});
+        expect(cleanUiPrefs({autoPrices: "yes", autoPricesWeeks: -1})).toMatchObject({autoPrices: false, autoPricesWeeks: 0});
     });
 
     it("cleans a stale theme to the default and clamps the scale", () => {

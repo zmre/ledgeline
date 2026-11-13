@@ -6,8 +6,9 @@
 //! Three routes:
 //!
 //! - `GET /api/prices/status` — which currently-held symbols need a quote,
-//!   which journal file(s) already hold `P` directives, and whether a first
-//!   `prices.journal` can be created.
+//!   which journal file(s) already hold `P` directives, whether a first
+//!   `prices.journal` can be created, and what the automatic updater
+//!   (`auto_prices`, plan 41) last did.
 //! - `POST /api/prices/file` — create a `prices.journal` and `include` it, for
 //!   a journal with nowhere yet to put a price.
 //! - `POST /api/prices/update` — fetch every currently-held symbol's latest
@@ -49,6 +50,11 @@
 //! a `tokio::sync::Mutex` rather than a `std::sync::Mutex`, same reasoning as
 //! `AppState`'s own doc comment gives for that field.
 //!
+//! The automatic updater (`auto_prices`) writes through the same
+//! [`plan_update`] and [`apply_update`], which is why phase 3 takes a LIST of
+//! closes per symbol: the button fetches one (the latest), the updater may
+//! bring back the latest plus a close for each week it backfills.
+//!
 //! # No absolute path is ever echoed
 //!
 //! Same rule as everywhere else in this crate. Errors quote the caller's own
@@ -72,6 +78,7 @@ use std::path::Path as FsPath;
 use std::sync::Arc;
 
 use crate::AppState;
+use crate::auto_prices::WireAutoStatus;
 use crate::edit_api::{infer_style, json_body};
 use crate::error::{AppError, editing_disabled};
 use crate::location::JournalLocation;
@@ -142,17 +149,20 @@ pub(crate) struct WirePricesStatus {
     create_file_name: &'static str,
     /// Every candidate file an update could target, best first.
     files: Vec<WirePricesFile>,
+    /// The automatic updater: whether it is on for this ledger, and what it
+    /// last did — for the quiet "Prices auto-updated 2 h ago" line.
+    auto: WireAutoStatus,
 }
 
 /// One symbol that will be priced.
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WirePriceSymbol {
     /// The hledger commodity symbol.
-    symbol: String,
+    pub(crate) symbol: String,
     /// The ticker it will be looked up as on Yahoo Finance: the commodity's
     /// `yahoo:` tag, else the symbol itself.
-    yahoo_ticker: String,
+    pub(crate) yahoo_ticker: String,
 }
 
 /// One candidate (or, in the update response, the actual) target file.
@@ -200,7 +210,7 @@ pub(crate) struct WireUpdateRequest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WireUpdateResponse {
     file: WirePricesFile,
-    results: Vec<WirePriceResult>,
+    pub(crate) results: Vec<WirePriceResult>,
 }
 
 /// One symbol's outcome — the structured equivalent of what the bash scripts
@@ -210,7 +220,7 @@ pub(crate) struct WireUpdateResponse {
 pub(crate) struct WirePriceResult {
     symbol: String,
     yahoo_ticker: String,
-    outcome: Outcome,
+    pub(crate) outcome: Outcome,
     /// The fetched date, present for `updated` and `duplicate`.
     #[serde(skip_serializing_if = "Option::is_none")]
     date: Option<String>,
@@ -220,7 +230,7 @@ pub(crate) struct WirePriceResult {
 }
 
 /// What happened to one symbol.
-#[derive(Serialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Outcome {
     /// A new `P` line was fetched and appended.
@@ -282,7 +292,10 @@ pub(crate) async fn update(
             let source = Arc::clone(&source);
             let as_of = plan.as_of.clone();
             async move {
-                let result = source.latest_close(&symbol.yahoo_ticker, &as_of).await;
+                let result = source
+                    .latest_close(&symbol.yahoo_ticker, &as_of)
+                    .await
+                    .map(|latest| latest.into_iter().collect());
                 FetchOutcome { symbol, result }
             }
         })
@@ -322,6 +335,9 @@ fn prices_status(state: &AppState, editable: bool) -> Result<WirePricesStatus, A
         .iter()
         .find(|file| file.writable)
         .map(|file| file.journal_id.clone());
+    let auto = state
+        .auto_prices()
+        .wire_status(crate::ui_prefs::auto_price_prefs(state).enabled);
 
     Ok(WirePricesStatus {
         editable,
@@ -334,6 +350,7 @@ fn prices_status(state: &AppState, editable: bool) -> Result<WirePricesStatus, A
                 .is_some_and(|location| can_create(location, journal).is_ok()),
         create_file_name: PRICES_FILE,
         files,
+        auto,
     })
 }
 
@@ -473,6 +490,26 @@ fn candidate_targets(
         .into_iter()
         .filter(|target| target.is_root)
         .collect()
+}
+
+/// The file the automatic updater appends to: the same default the button
+/// offers (the writable file holding the most `P` directives), but ONLY when
+/// some file already holds prices.
+///
+/// `None` is the "no prices file yet" case, which the updater answers by doing
+/// nothing. Where a journal's first price goes is a decision about the user's
+/// files — the button asks before creating `prices.journal`, or appends to the
+/// root journal only when the user clicks — and a background task must never
+/// make it for them. Once a single `P` line exists anywhere, the user has
+/// already made it.
+pub(crate) fn auto_target(location: &JournalLocation, journal: &Journal) -> Option<String> {
+    if journal.prices.is_empty() {
+        return None;
+    }
+    candidate_targets(location, journal)
+        .into_iter()
+        .find(|target| target.writable)
+        .map(|target| target.id)
 }
 
 // ===========================================================================
@@ -640,7 +677,7 @@ fn create_prices_file(state: &AppState) -> Result<WireCreatedPricesFile, AppErro
 /// Everything phase 2 (the async fetch) and phase 3 (the write) need, computed
 /// once against a single snapshot so a concurrent edit mid-fetch is caught by
 /// the fingerprint recheck in [`apply_update`] rather than silently mixed in.
-struct UpdatePlan {
+pub(crate) struct UpdatePlan {
     id: String,
     /// The vault `path` is in — the plan's own, so the write after the fetch
     /// lands in the storage the read came from.
@@ -656,7 +693,7 @@ struct UpdatePlan {
 }
 
 /// Phase 1: resolve the target file, read it, and work out what to fetch.
-fn plan_update(state: &AppState, id: &str) -> Result<UpdatePlan, AppError> {
+pub(crate) fn plan_update(state: &AppState, id: &str) -> Result<UpdatePlan, AppError> {
     let snapshot = state.snapshot();
     let journal = &snapshot.journal;
     let location = snapshot.storage().ok_or_else(|| unresolved(id))?;
@@ -689,15 +726,21 @@ fn plan_update(state: &AppState, id: &str) -> Result<UpdatePlan, AppError> {
     })
 }
 
-/// One symbol's fetch, still unresolved into a wire outcome.
-struct FetchOutcome {
-    symbol: WirePriceSymbol,
-    result: Result<Option<FetchedPrice>, YahooError>,
+/// One symbol's fetch, still unresolved into wire outcomes: every close to
+/// record for it, ascending. Empty is "found nothing usable" (`not-found`).
+pub(crate) struct FetchOutcome {
+    pub(crate) symbol: WirePriceSymbol,
+    pub(crate) result: Result<Vec<FetchedPrice>, YahooError>,
 }
 
 /// Phase 3: fold the fetched quotes into `plan`'s file and write it (if
-/// anything actually changed).
-fn apply_update(
+/// anything actually changed). One [`WirePriceResult`] per close, or one per
+/// symbol that brought none back.
+///
+/// New lines go into the file in date order among its existing `P` lines
+/// ([`insert_price_lines`]), so a backfill lands where a person reading the
+/// file would look for it rather than after this morning's close.
+pub(crate) fn apply_update(
     state: &AppState,
     plan: UpdatePlan,
     fetched: Vec<FetchOutcome>,
@@ -706,48 +749,37 @@ fn apply_update(
     let journal = &snapshot.journal;
 
     let mut results: Vec<WirePriceResult> = Vec::with_capacity(fetched.len());
-    let mut new_lines: Vec<(String, String)> = Vec::new();
+    // Keyed `(date, symbol)` for the append order.
+    let mut new_lines: Vec<((String, String), String)> = Vec::new();
 
     for FetchOutcome { symbol, result } in fetched {
-        match result {
-            Err(_error) => results.push(WirePriceResult {
-                symbol: symbol.symbol,
-                yahoo_ticker: symbol.yahoo_ticker,
-                outcome: Outcome::FetchError,
-                date: None,
-                price: None,
-            }),
-            Ok(None) => results.push(WirePriceResult {
-                symbol: symbol.symbol,
-                yahoo_ticker: symbol.yahoo_ticker,
-                outcome: Outcome::NotFound,
-                date: None,
-                price: None,
-            }),
-            Ok(Some(price)) => {
-                // See `MAX_FETCHED_QUOTE_PLACES`: bound the raw quote BEFORE
-                // it can influence a fallback style, then round again to
-                // whatever precision the journal actually established for
-                // this commodity (a no-op when that is already <= the bound).
-                //
-                // Rounded ABOVE the duplicate branch, not inside the write
-                // branch: both outcomes report `price` on the wire, and a
-                // `duplicate` echoing the raw `f64` tail while an `updated`
-                // echoed `228.00` would be two different answers to one
-                // question.
-                let bounded = round_to_places(price.quantity, MAX_FETCHED_QUOTE_PLACES);
-                let style = infer_style(journal, &plan.quote, bounded.places);
-                let quantity = round_to_places(bounded, style.precision);
-                if line_exists(&plan.text, &price.date, &symbol.symbol) {
-                    results.push(WirePriceResult {
-                        symbol: symbol.symbol,
-                        yahoo_ticker: symbol.yahoo_ticker,
-                        outcome: Outcome::Duplicate,
-                        date: Some(price.date),
-                        price: Some(WireDec::from(quantity)),
-                    });
-                    continue;
-                }
+        let prices = match result {
+            Err(_error) => {
+                results.push(no_price(symbol, Outcome::FetchError));
+                continue;
+            }
+            Ok(prices) if prices.is_empty() => {
+                results.push(no_price(symbol, Outcome::NotFound));
+                continue;
+            }
+            Ok(prices) => prices,
+        };
+        for price in prices {
+            // See `MAX_FETCHED_QUOTE_PLACES`: bound the raw quote BEFORE it
+            // can influence a fallback style, then round again to whatever
+            // precision the journal actually established for this commodity
+            // (a no-op when that is already <= the bound).
+            //
+            // Rounded ABOVE the duplicate branch, not inside the write branch:
+            // both outcomes report `price` on the wire, and a `duplicate`
+            // echoing the raw `f64` tail while an `updated` echoed `228.00`
+            // would be two different answers to one question.
+            let bounded = round_to_places(price.quantity, MAX_FETCHED_QUOTE_PLACES);
+            let style = infer_style(journal, &plan.quote, bounded.places);
+            let quantity = round_to_places(bounded, style.precision);
+            let outcome = if line_exists(&plan.text, &price.date, &symbol.symbol) {
+                Outcome::Duplicate
+            } else {
                 let amount = Amount {
                     commodity: plan.quote.clone(),
                     quantity,
@@ -760,15 +792,16 @@ fn apply_update(
                     symbol.symbol,
                     render_amount(&amount)
                 );
-                new_lines.push((symbol.symbol.clone(), line));
-                results.push(WirePriceResult {
-                    symbol: symbol.symbol,
-                    yahoo_ticker: symbol.yahoo_ticker,
-                    outcome: Outcome::Updated,
-                    date: Some(price.date),
-                    price: Some(WireDec::from(quantity)),
-                });
-            }
+                new_lines.push(((price.date.clone(), symbol.symbol.clone()), line));
+                Outcome::Updated
+            };
+            results.push(WirePriceResult {
+                symbol: symbol.symbol.clone(),
+                yahoo_ticker: symbol.yahoo_ticker.clone(),
+                outcome,
+                date: Some(price.date),
+                price: Some(WireDec::from(quantity)),
+            });
         }
     }
 
@@ -776,7 +809,12 @@ fn apply_update(
     let new_text = if new_lines.is_empty() {
         plan.text.clone()
     } else {
-        append_lines(&plan.text, new_lines.iter().map(|(_, line)| line.as_str()))
+        insert_price_lines(
+            &plan.text,
+            new_lines
+                .iter()
+                .map(|((date, _), line)| (date.as_str(), line.as_str())),
+        )
     };
 
     if new_text != plan.text {
@@ -822,6 +860,17 @@ fn apply_update(
     Ok(WireUpdateResponse { file, results })
 }
 
+/// A symbol's result when it brought back no close at all.
+fn no_price(symbol: WirePriceSymbol, outcome: Outcome) -> WirePriceResult {
+    WirePriceResult {
+        symbol: symbol.symbol,
+        yahoo_ticker: symbol.yahoo_ticker,
+        outcome,
+        date: None,
+        price: None,
+    }
+}
+
 /// Round `value` to exactly `places` fractional digits, half-even. A no-op
 /// when `value` already has `places` or fewer (this only ever REMOVES
 /// precision `Dec` does not need — see [`MAX_FETCHED_QUOTE_PLACES`] and
@@ -849,19 +898,100 @@ fn round_to_places(value: Dec, places: u32) -> Dec {
     Dec::new(mantissa, places)
 }
 
-/// `text`, plus `lines` appended at EOF (one per line, with a leading newline
-/// inserted first if `text` does not already end in one). Same "append at EOF,
-/// the one position provably unable to change anything already in the file"
-/// argument `budget_api::create_budget_file`'s `include` placement makes.
-fn append_lines<'a>(text: &str, lines: impl Iterator<Item = &'a str>) -> String {
+/// `text` with each `(date, line)` of `lines` inserted where it belongs in
+/// date order among the file's `P` directives: straight after the LAST `P`
+/// line dated on or before it, scanning from the end. `lines` must already be
+/// in `(date, symbol)` order; each lands after the ones before it, so lines
+/// added on one date stay together, after that date's existing lines, in
+/// symbol order.
+///
+/// Why not just append: a price file is a dated history that people read and
+/// diff, and a weekly backfill appended after today's close would put six
+/// weeks of September below November. Inserting keeps the file in the order
+/// it was (presumably) in.
+///
+/// What it never does is move anything already there. No existing line —
+/// user `P` lines, comments, blank lines, other directives — is reordered or
+/// rewritten; new lines only go BETWEEN lines, byte-exact everywhere else. So a
+/// file that is already out of order stays exactly as out of order as it was;
+/// scanning from the end means a new line lands after the last line that
+/// could precede it, which in a file that is mostly appended to is where the
+/// most recent history is. A new line older than every `P` line goes before
+/// the first one; a file with no `P` lines at all is appended to, the one
+/// position provably unable to change anything already in it (the argument
+/// `budget_api::create_budget_file`'s `include` placement makes).
+///
+/// A `P` line inside a `comment` … `end comment` block is not a price and
+/// is never inserted next to: a line placed there would parse fine and be
+/// silently ignored.
+fn insert_price_lines<'a>(text: &str, lines: impl Iterator<Item = (&'a str, &'a str)>) -> String {
     let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
-    let lead = if text.is_empty() || text.ends_with('\n') {
-        String::new()
-    } else {
-        newline.to_string()
+    // Each existing line WITH its own terminator, so joining them back is
+    // byte-exact; `Some(date)` on the ones that are live `P` directives.
+    let mut in_comment = false;
+    let mut segments: Vec<(String, Option<String>)> = text
+        .split_inclusive('\n')
+        .map(|segment| {
+            let content = segment.trim_end_matches(['\r', '\n']);
+            let date = if in_comment {
+                in_comment = content.trim_end() != "end comment";
+                None
+            } else if content.trim_end() == "comment" {
+                in_comment = true;
+                None
+            } else {
+                price_line_date(content)
+            };
+            (segment.to_string(), date)
+        })
+        .collect();
+
+    for (date, line) in lines {
+        let after_last_earlier = segments
+            .iter()
+            .rposition(|(_, existing)| existing.as_deref().is_some_and(|d| d <= date))
+            .map(|index| index + 1);
+        let before_first = || segments.iter().position(|(_, existing)| existing.is_some());
+        let at = after_last_earlier
+            .or_else(before_first)
+            .unwrap_or(segments.len());
+        // The line it follows may be the file's last, with no terminator.
+        if let Some((previous, _)) = at.checked_sub(1).and_then(|i| segments.get_mut(i))
+            && !previous.ends_with('\n')
+        {
+            previous.push_str(newline);
+        }
+        segments.insert(at, (format!("{line}{newline}"), Some(date.to_string())));
+    }
+    segments.into_iter().map(|(segment, _)| segment).collect()
+}
+
+/// The date of a live `P` directive line, as ISO `YYYY-MM-DD`, or `None` for
+/// any other line. A directive starts at column 0 — an indented `P` is a
+/// posting's content, not a price — and hledger accepts `/` and `.` as date
+/// separators and unpadded months and days, so those are normalised for the
+/// comparison (the line itself is never rewritten).
+fn price_line_date(line: &str) -> Option<String> {
+    let rest = line.strip_prefix('P')?;
+    if !rest.starts_with([' ', '\t']) {
+        return None;
+    }
+    let token = rest.split_whitespace().next()?;
+    let mut parts = token.split(['-', '/', '.']);
+    let (year, month, day) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() {
+        return None;
+    }
+    let number = |part: &str, width: usize| {
+        (!part.is_empty() && part.len() <= width && part.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| format!("{part:0>width$}"))
     };
-    let body: String = lines.map(|line| format!("{line}{newline}")).collect();
-    format!("{text}{lead}{body}")
+    Some(format!(
+        "{}-{}-{}",
+        number(year, 4).filter(|year| year.len() == 4 && !year.starts_with('0'))?,
+        number(month, 2)?,
+        number(day, 2)?
+    ))
 }
 
 /// Does `text` already have a `P DATE [TIME] SYMBOL ...` line for this exact
@@ -1146,27 +1276,152 @@ mod tests {
         assert!(!line_exists("", "2026-06-30", "AAPL"));
     }
 
+    fn insert(text: &str, lines: &[(&str, &str)]) -> String {
+        insert_price_lines(text, lines.iter().copied())
+    }
+
     #[test]
-    fn append_lines_adds_a_newline_before_the_first_appended_line_when_missing() {
-        let out = append_lines(
-            "P 2026-06-01 AAPL $220.00",
-            ["P 2026-07-01 AAPL $228.00"].into_iter(),
+    fn a_file_with_no_price_lines_is_appended_to() {
+        assert_eq!(
+            insert("; prices\n", &[("2026-07-01", "P 2026-07-01 AAPL $228.00")]),
+            "; prices\nP 2026-07-01 AAPL $228.00\n"
         );
         assert_eq!(
-            out,
+            insert("", &[("2026-07-01", "P 2026-07-01 AAPL $228.00")]),
+            "P 2026-07-01 AAPL $228.00\n"
+        );
+    }
+
+    /// The last line had no newline: one is added before the new line, and
+    /// the file ends with one after.
+    #[test]
+    fn inserting_after_a_last_line_with_no_newline_adds_one() {
+        assert_eq!(
+            insert(
+                "P 2026-06-01 AAPL $220.00",
+                &[("2026-07-01", "P 2026-07-01 AAPL $228.00")]
+            ),
             "P 2026-06-01 AAPL $220.00\nP 2026-07-01 AAPL $228.00\n"
         );
     }
 
     #[test]
-    fn append_lines_does_not_double_a_trailing_newline() {
-        let out = append_lines(
-            "P 2026-06-01 AAPL $220.00\n",
-            ["P 2026-07-01 AAPL $228.00"].into_iter(),
+    fn a_line_goes_into_the_middle_after_its_date_group() {
+        let text = "\
+P 2026-06-01 AAPL $220.00
+P 2026-06-08 AAPL $221.00
+P 2026-06-08 VTI $260.00
+P 2026-06-15 AAPL $222.00
+";
+        assert_eq!(
+            insert(
+                text,
+                &[
+                    ("2026-06-08", "P 2026-06-08 MSFT $400.00"),
+                    ("2026-06-10", "P 2026-06-10 AAPL $221.50"),
+                ]
+            ),
+            "\
+P 2026-06-01 AAPL $220.00
+P 2026-06-08 AAPL $221.00
+P 2026-06-08 VTI $260.00
+P 2026-06-08 MSFT $400.00
+P 2026-06-10 AAPL $221.50
+P 2026-06-15 AAPL $222.00
+"
+        );
+    }
+
+    /// Older than everything: before the first `P` line, after the header
+    /// comment and blank line, which stay where they are.
+    #[test]
+    fn a_line_older_than_every_price_goes_before_the_first() {
+        let text = "; Market prices.\n\nP 2026-06-08 AAPL $221.00\n";
+        assert_eq!(
+            insert(text, &[("2026-05-29", "P 2026-05-29 AAPL $219.00")]),
+            "; Market prices.\n\nP 2026-05-29 AAPL $219.00\nP 2026-06-08 AAPL $221.00\n"
+        );
+    }
+
+    /// Newer than everything: after the last `P` line — before a trailing
+    /// comment that follows it, which stays last.
+    #[test]
+    fn a_line_newer_than_every_price_goes_after_the_last() {
+        let text = "P 2026-06-08 AAPL $221.00\n\n; end of prices\n";
+        assert_eq!(
+            insert(text, &[("2026-07-01", "P 2026-07-01 AAPL $228.00")]),
+            "P 2026-06-08 AAPL $221.00\nP 2026-07-01 AAPL $228.00\n\n; end of prices\n"
+        );
+    }
+
+    /// An out-of-order file is not sorted: the new line goes after the LAST
+    /// line dated on or before it, scanning from the end, and every existing
+    /// line, comment and blank line stays put.
+    #[test]
+    fn an_out_of_order_file_is_left_alone_and_scanned_from_the_end() {
+        let text = "\
+P 2026-06-01 AAPL $220.00
+; mid-file note
+
+P 2026-06-20 AAPL $225.00
+P 2026-06-05 AAPL $221.00
+P 2026-06-30 AAPL $228.00
+";
+        assert_eq!(
+            insert(text, &[("2026-06-10", "P 2026-06-10 AAPL $223.00")]),
+            "\
+P 2026-06-01 AAPL $220.00
+; mid-file note
+
+P 2026-06-20 AAPL $225.00
+P 2026-06-05 AAPL $221.00
+P 2026-06-10 AAPL $223.00
+P 2026-06-30 AAPL $228.00
+"
+        );
+    }
+
+    #[test]
+    fn crlf_files_stay_crlf() {
+        assert_eq!(
+            insert(
+                "P 2026-06-01 AAPL $220.00\r\nP 2026-06-30 AAPL $228.00\r\n",
+                &[("2026-06-15", "P 2026-06-15 AAPL $224.00")]
+            ),
+            "P 2026-06-01 AAPL $220.00\r\nP 2026-06-15 AAPL $224.00\r\nP 2026-06-30 AAPL $228.00\r\n"
+        );
+    }
+
+    /// A `P` line inside a comment block, or indented, is not a price.
+    #[test]
+    fn commented_and_indented_price_lines_are_not_anchors() {
+        let text = "\
+P 2026-06-01 AAPL $220.00
+comment
+P 2026-06-30 AAPL $999.00
+end comment
+2026-06-02 note
+    P 2026-06-29 is not a directive  ; posting comment
+";
+        let out = insert(text, &[("2026-07-01", "P 2026-07-01 AAPL $228.00")]);
+        assert!(
+            out.starts_with("P 2026-06-01 AAPL $220.00\nP 2026-07-01 AAPL $228.00\ncomment\n"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn price_line_dates_are_normalised_for_comparison() {
+        assert_eq!(
+            price_line_date("P 2026/6/3 AAPL $1").as_deref(),
+            Some("2026-06-03")
         );
         assert_eq!(
-            out,
-            "P 2026-06-01 AAPL $220.00\nP 2026-07-01 AAPL $228.00\n"
+            price_line_date("P\t2026.06.30 12:00 AAPL $1").as_deref(),
+            Some("2026-06-30")
         );
+        assert_eq!(price_line_date("Price list"), None);
+        assert_eq!(price_line_date(" P 2026-06-30 AAPL $1"), None);
+        assert_eq!(price_line_date("P AAPL $1"), None);
     }
 }

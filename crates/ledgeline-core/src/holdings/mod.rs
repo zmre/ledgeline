@@ -40,7 +40,7 @@ pub use classify::{
 pub use commodities::{Currencies, is_us_dollar};
 pub use engine::{
     DatedFlow, HoldingsFlows, compute_holdings, first_holding_date, holdings_flows,
-    prices_any_held, valuation_base,
+    last_held_dates, prices_any_held, valuation_base,
 };
 pub use other::{
     OtherHolding, OtherHoldingsReport, OtherHoldingsTotals, OtherHoldingsWarning, OtherInputs,

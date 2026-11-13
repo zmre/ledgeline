@@ -15,6 +15,10 @@
 //! 3. **Creating `prices.journal` never overwrites anything**, same as budget's
 //!    equivalent file.
 //! 4. **The token guard covers all three routes**, two of which write to disk.
+//! 5. **The automatic updater (plan 41)** fetches only what the journal is
+//!    missing, inserts it in date order, never creates a prices file, and
+//!    backs off when rate-limited — driven one tick at a time through
+//!    `AppState::run_auto_prices_once` with a fixed clock.
 
 mod common;
 
@@ -23,14 +27,15 @@ use axum::body::Body;
 use axum::http::{HeaderName, Request, StatusCode, header};
 use http_body_util::BodyExt;
 use ledgeline::{
-    AccessToken, AppState, FetchedPrice, PriceFeed, Security, YahooError, router_with_security,
-    router_with_state,
+    AccessToken, AppDirs, AppState, FetchedPrice, PriceFeed, Security, YahooError,
+    router_with_security, router_with_state,
 };
 use ledgeline_core::Dec;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
@@ -49,16 +54,37 @@ enum FakeQuote {
     Error,
 }
 
+/// One canned answer [`FakeFeed::daily_closes`] gives for a ticker.
+#[derive(Clone)]
+enum FakeHistory {
+    /// These completed closes, `(date, quantity)`, ascending.
+    Closes(Vec<(&'static str, Dec)>),
+    /// Yahoo said "slow down".
+    RateLimited,
+}
+
 /// A [`PriceFeed`] that never touches the network: every ticker's answer is
-/// decided up front by the test.
+/// decided up front by the test, and every history request is counted, so a
+/// test can prove a tick made NO request.
 struct FakeFeed {
     quotes: HashMap<&'static str, FakeQuote>,
+    history: HashMap<&'static str, FakeHistory>,
+    requests: Arc<AtomicUsize>,
 }
 
 impl FakeFeed {
     fn new(quotes: impl IntoIterator<Item = (&'static str, FakeQuote)>) -> Self {
         Self {
             quotes: quotes.into_iter().collect(),
+            history: HashMap::new(),
+            requests: Arc::default(),
+        }
+    }
+
+    fn with_history(history: impl IntoIterator<Item = (&'static str, FakeHistory)>) -> Self {
+        Self {
+            history: history.into_iter().collect(),
+            ..Self::new([])
         }
     }
 }
@@ -77,6 +103,26 @@ impl PriceFeed for FakeFeed {
             })),
             Some(FakeQuote::NotFound) | None => Ok(None),
             Some(FakeQuote::Error) => Err(YahooError::Http("fake network failure".to_string())),
+        }
+    }
+
+    async fn daily_closes(
+        &self,
+        ticker: &str,
+        from: &str,
+    ) -> Result<Vec<FetchedPrice>, YahooError> {
+        self.requests.fetch_add(1, Ordering::SeqCst);
+        match self.history.get(ticker) {
+            Some(FakeHistory::Closes(closes)) => Ok(closes
+                .iter()
+                .filter(|(date, _)| *date >= from)
+                .map(|(date, quantity)| FetchedPrice {
+                    date: (*date).to_string(),
+                    quantity: *quantity,
+                })
+                .collect()),
+            Some(FakeHistory::RateLimited) => Err(YahooError::RateLimited("fake 429".to_string())),
+            None => Ok(Vec::new()),
         }
     }
 }
@@ -104,6 +150,8 @@ commodity 1.0000 AAPL
 struct Tree {
     dir: TempDir,
     state: AppState,
+    /// How many history requests the fake feed has answered.
+    requests: Arc<AtomicUsize>,
 }
 
 impl Tree {
@@ -120,10 +168,23 @@ impl Tree {
             std::fs::write(dir.path().join(name), body).expect("write included journal");
         }
         std::fs::write(dir.path().join("main.journal"), text).expect("write journal");
+        let requests = Arc::clone(&feed.requests);
+        // A scratch config dir: the status route reads the effective
+        // `autoPrices` setting, and the developer's own `ui-prefs.toml` must
+        // never decide a test.
         let state = AppState::from_journal_path(dir.path().join("main.journal"))
             .expect("the scratch journal opens")
+            .with_app_dirs(AppDirs::under(dir.path().join("app")))
             .with_price_source(Arc::new(feed));
-        Self { dir, state }
+        Self {
+            dir,
+            state,
+            requests,
+        }
+    }
+
+    fn requests(&self) -> usize {
+        self.requests.load(Ordering::SeqCst)
     }
 
     fn held() -> Self {
@@ -288,6 +349,39 @@ include history.journal
         "the root journal is untouched"
     );
     assert!(!tree.path("prices.journal").exists());
+}
+
+/// The button inserts in date order too: a fetched close OLDER than a price
+/// already in the file (a back-dated `P` line someone typed) goes before it,
+/// not at the end.
+#[tokio::test]
+async fn an_update_inserts_the_new_price_in_date_order() {
+    let main = "\
+commodity 1.0000 AAPL
+
+include history.journal
+
+2026-01-05 buy apple
+    assets:broker    10 AAPL @ $200.00
+    assets:cash
+";
+    let history = "; prices\nP 2026-06-01 AAPL $220.00\nP 2026-07-15 AAPL $231.00\n";
+    let tree = Tree::with_files(
+        main,
+        &[("history.journal", history)],
+        FakeFeed::new([("AAPL", FakeQuote::Price("2026-06-30", dec(22800, 2)))]),
+    );
+    let (status, body) = post_json(
+        &tree,
+        "/api/prices/update",
+        json!({"journalId": "history.journal"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        tree.read("history.journal"),
+        "; prices\nP 2026-06-01 AAPL $220.00\nP 2026-06-30 AAPL $228.00\nP 2026-07-15 AAPL $231.00\n"
+    );
 }
 
 /// A `duplicate` reports the SAME rounded price an `updated` would have
@@ -569,4 +663,207 @@ async fn every_prices_route_requires_the_token() {
             "{method} {uri} with the wrong token"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Automatic updates (plan 41)
+// ---------------------------------------------------------------------------
+
+/// Unix seconds for `date` at `hh:00` UTC.
+fn unix_at(date: &str, hour: i64) -> i64 {
+    let days = ledgeline_core::reports::periods::days_from_iso(date);
+    days * 86_400 + hour * 3_600
+}
+
+/// Friday 2026-11-13, 22:00 UTC: past the 21:30 cutoff, so the latest
+/// completed close is that day's.
+fn friday_evening() -> i64 {
+    unix_at("2026-11-13", 22)
+}
+
+/// AAPL bought on 2026-09-01 and VTI on 2026-10-20, both still held, with
+/// their prices in `prices.journal`.
+const AUTO_MAIN: &str = "\
+commodity 1.0000 AAPL
+commodity 1.0000 VTI
+
+include prices.journal
+
+2026-09-01 buy apple
+    assets:broker    10 AAPL @ $200.00
+    assets:cash
+
+2026-10-20 buy total market
+    assets:broker    5 VTI @ $300.00
+    assets:cash
+";
+
+/// AAPL is priced in the week of 10-26 (Friday 10-30) only; VTI in the week of
+/// 11-02 (Wednesday 11-04) only. Neither has Friday 11-13's close.
+const AUTO_PRICES: &str = "\
+; Market prices.
+
+P 2026-10-30 AAPL $250.00
+P 2026-11-04 VTI $310.00
+";
+
+/// The setting, on for this ledger with a two-week backfill.
+const AUTO_ON: &str = "[ui]\nautoPrices = true\nautoPricesWeeks = 2\n";
+
+fn auto_tree(feed: FakeFeed) -> Tree {
+    Tree::with_files(
+        AUTO_MAIN,
+        &[("prices.journal", AUTO_PRICES), ("ledgeline.toml", AUTO_ON)],
+        feed,
+    )
+}
+
+fn auto_feed() -> FakeFeed {
+    FakeFeed::with_history([
+        (
+            "AAPL",
+            FakeHistory::Closes(vec![
+                ("2026-10-30", dec(25000, 2)),
+                ("2026-11-05", dec(25500, 2)),
+                ("2026-11-06", dec(25600, 2)),
+                ("2026-11-12", dec(26000, 2)),
+                ("2026-11-13", dec(26100, 2)),
+            ]),
+        ),
+        (
+            "VTI",
+            FakeHistory::Closes(vec![
+                ("2026-10-29", dec(30500, 2)),
+                ("2026-10-30", dec(30600, 2)),
+                ("2026-11-04", dec(31000, 2)),
+                ("2026-11-13", dec(31500, 2)),
+            ]),
+        ),
+    ])
+}
+
+/// The whole tick: each symbol's missing weeks and the latest close, one
+/// request per symbol, inserted among the existing lines in date order —
+/// and the status route says so.
+#[tokio::test]
+async fn an_auto_run_backfills_missing_weeks_and_the_latest_close_in_date_order() {
+    let tree = auto_tree(auto_feed());
+    tree.state.run_auto_prices_once(friday_evening()).await;
+
+    assert_eq!(tree.requests(), 2, "one request per symbol");
+    assert_eq!(
+        tree.read("prices.journal"),
+        "\
+; Market prices.
+
+P 2026-10-30 AAPL $250.00
+P 2026-10-30 VTI $306.00
+P 2026-11-04 VTI $310.00
+P 2026-11-06 AAPL $256.00
+P 2026-11-13 AAPL $261.00
+P 2026-11-13 VTI $315.00
+"
+    );
+    assert_eq!(
+        tree.read("main.journal"),
+        AUTO_MAIN,
+        "the root is untouched"
+    );
+
+    let (status, body) = get(&tree, "/api/prices/status").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["auto"]["enabled"], json!(true));
+    assert_eq!(body["auto"]["lastOutcome"], json!("updated"));
+    assert_eq!(body["auto"]["lastAdded"], json!(4));
+    assert_eq!(body["auto"]["lastRun"], json!(friday_evening()));
+    assert_eq!(body["auto"]["backoffUntil"], Value::Null);
+
+    // An hour later the LOCAL check finds nothing missing: no request.
+    tree.state
+        .run_auto_prices_once(friday_evening() + 3_600)
+        .await;
+    assert_eq!(tree.requests(), 2, "an up-to-date journal makes no request");
+    let (_, body) = get(&tree, "/api/prices/status").await;
+    assert_eq!(body["auto"]["lastOutcome"], json!("up-to-date"));
+}
+
+/// A holiday (or a delisted ticker): the feed only has an older close the
+/// journal already holds. Nothing is written, and the symbol is not asked
+/// about again until the target date moves.
+#[tokio::test]
+async fn an_auto_run_asks_about_a_holiday_once() {
+    let feed = FakeFeed::with_history([
+        (
+            "AAPL",
+            FakeHistory::Closes(vec![("2026-11-05", dec(25500, 2))]),
+        ),
+        ("VTI", FakeHistory::Closes(vec![])),
+    ]);
+    let tree = auto_tree(feed);
+    tree.state.run_auto_prices_once(friday_evening()).await;
+    assert_eq!(tree.requests(), 2);
+    let after_first = tree.read("prices.journal");
+    assert!(
+        after_first.contains("P 2026-11-05 AAPL $255.00"),
+        "{after_first}"
+    );
+
+    tree.state
+        .run_auto_prices_once(friday_evening() + 3_600)
+        .await;
+    assert_eq!(tree.requests(), 2, "memoised: not asked again today");
+    assert_eq!(tree.read("prices.journal"), after_first);
+    let (_, body) = get(&tree, "/api/prices/status").await;
+    assert_eq!(body["auto"]["lastOutcome"], json!("up-to-date"));
+}
+
+/// Off unless asked for: with no setting, a tick reads nothing from the
+/// network and writes nothing.
+#[tokio::test]
+async fn auto_prices_are_off_by_default() {
+    let tree = Tree::with_files(AUTO_MAIN, &[("prices.journal", AUTO_PRICES)], auto_feed());
+    tree.state.run_auto_prices_once(friday_evening()).await;
+    assert_eq!(tree.requests(), 0);
+    assert_eq!(tree.read("prices.journal"), AUTO_PRICES);
+    let (_, body) = get(&tree, "/api/prices/status").await;
+    assert_eq!(body["auto"]["enabled"], json!(false));
+    assert_eq!(body["auto"]["lastOutcome"], Value::Null);
+}
+
+/// No file holds a price yet: the updater never chooses one (or creates
+/// `prices.journal`) on the user's behalf.
+#[tokio::test]
+async fn an_auto_run_never_creates_a_prices_file() {
+    let tree = Tree::with_files(JOURNAL, &[("ledgeline.toml", AUTO_ON)], auto_feed());
+    tree.state.run_auto_prices_once(friday_evening()).await;
+    assert_eq!(tree.requests(), 0);
+    assert!(!tree.path("prices.journal").exists());
+    assert_eq!(tree.read("main.journal"), JOURNAL);
+    let (_, body) = get(&tree, "/api/prices/status").await;
+    assert_eq!(body["auto"]["lastOutcome"], json!("no-prices-file"));
+}
+
+/// A rate limit stops the run and backs off for an hour: the next tick
+/// within that hour makes no request at all.
+#[tokio::test]
+async fn a_rate_limit_backs_auto_runs_off() {
+    let feed = FakeFeed::with_history([
+        ("AAPL", FakeHistory::RateLimited),
+        ("VTI", FakeHistory::RateLimited),
+    ]);
+    let tree = auto_tree(feed);
+    let now = friday_evening();
+    tree.state.run_auto_prices_once(now).await;
+    let asked = tree.requests();
+    assert!(
+        (1..=2).contains(&asked),
+        "stopped at the limit: {asked} requests"
+    );
+    assert_eq!(tree.read("prices.journal"), AUTO_PRICES);
+    let (_, body) = get(&tree, "/api/prices/status").await;
+    assert_eq!(body["auto"]["lastOutcome"], json!("rate-limited"));
+    assert_eq!(body["auto"]["backoffUntil"], json!(now + 3_600));
+
+    tree.state.run_auto_prices_once(now + 1_800).await;
+    assert_eq!(tree.requests(), asked, "backing off: no request");
 }

@@ -44,6 +44,7 @@ mod account_api;
 mod alias_api;
 mod app_dirs;
 mod auto_api;
+mod auto_prices;
 mod auto_wire;
 mod benchmarks_api;
 mod budget_api;
@@ -428,6 +429,10 @@ pub struct AppState {
     /// tests — the only route in this crate that makes an outbound network
     /// call, and the only state field that is not itself journal-derived.
     price_source: Arc<dyn yahoo::PriceFeed>,
+    /// The automatic price updater's memo, backoff and last outcome (plan 41;
+    /// see [`auto_prices`]). Per state, so two states in one process — the
+    /// integration tests — never share a memo or a backoff.
+    auto_prices: Arc<auto_prices::AutoPrices>,
     /// Where `profiles_api` classifies holdings from (Yahoo's `quoteSummary`
     /// behind a crumb handshake), plus the cache of what it said. Swappable
     /// for a fake through [`AppState::with_profile_source`], like
@@ -513,6 +518,7 @@ impl AppState {
             qb_stages: Arc::new(qb_journal_api::QbStageArea::default()),
             import_writes: Arc::new(tokio::sync::Mutex::new(())),
             price_source: yahoo.prices,
+            auto_prices: Arc::default(),
             profiles: yahoo.profiles,
             history_source: yahoo.history,
             benchmark_cache: Arc::default(),
@@ -567,6 +573,7 @@ impl AppState {
             qb_stages: Arc::new(qb_journal_api::QbStageArea::default()),
             import_writes: Arc::new(tokio::sync::Mutex::new(())),
             price_source: yahoo.prices,
+            auto_prices: Arc::default(),
             profiles: yahoo.profiles,
             history_source: yahoo.history,
             benchmark_cache: Arc::default(),
@@ -978,6 +985,27 @@ impl AppState {
         self
     }
 
+    /// The automatic price updater's state, shared by all clones.
+    pub(crate) fn auto_prices(&self) -> &auto_prices::AutoPrices {
+        &self.auto_prices
+    }
+
+    /// [`Self::auto_prices`], owned, for the loop that outlives any borrow.
+    pub(crate) fn auto_prices_arc(&self) -> Arc<auto_prices::AutoPrices> {
+        Arc::clone(&self.auto_prices)
+    }
+
+    /// Run ONE automatic price check as if the wall clock read `now` (Unix
+    /// seconds): the local check, and the fetch and write if something is
+    /// missing. What [`run_auto_prices`] does every hour.
+    ///
+    /// `pub` for the integration tests, which drive single ticks with a fixed
+    /// clock and a fake [`PriceFeed`] rather than wait on the real loop; the
+    /// outcome shows on `GET /api/prices/status` and in the journal.
+    pub async fn run_auto_prices_once(&self, now: i64) {
+        auto_prices::run_once(self, now).await;
+    }
+
     /// This state's classification source and cache. `pub(crate)` — only
     /// `profiles_api` reads it.
     pub(crate) fn profiles(&self) -> &Arc<profiles_api::Profiles> {
@@ -1012,6 +1040,19 @@ impl AppState {
         self.history_source = source;
         self
     }
+}
+
+/// The automatic price updater's background loop (plan 41; see
+/// [`auto_prices`]): a first check shortly after start-up, then about hourly,
+/// for as long as the runtime lives. Does nothing at all while the effective
+/// `autoPrices` setting is off.
+///
+/// The binaries that serve a journal spawn this on their runtime — the
+/// desktop app and `--server` both — so it follows the state through File →
+/// Open. Nothing else does: the in-process routers the tests build never
+/// start it, and drive [`AppState::run_auto_prices_once`] instead.
+pub async fn run_auto_prices(state: AppState) {
+    auto_prices::run_forever(state).await;
 }
 
 /// What [`AppState::refresh`] / [`AppState::reload`] did.

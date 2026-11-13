@@ -95,6 +95,28 @@ describe("COMPONENT UpdatePricesButton", () => {
         expect(screen.queryByTestId("update-prices")).toBeNull();
     });
 
+    it("is the page's primary action", async () => {
+        await stub({"/api/prices/status": STATUS_ONE_SYMBOL});
+        await pricesStore.reloadStatus(FAKE_ENGINE);
+        render(UpdatePricesButton, {format});
+        expect(screen.getByTestId("update-prices").classList).toContain("btn-primary");
+    });
+
+    it("says quietly what the automatic updater last did, and nothing while it is off", async () => {
+        const twoHoursAgo = Math.floor(Date.now() / 1000) - 2 * 3_600 - 30;
+        const auto = {enabled: true, lastRun: twoHoursAgo, lastOutcome: "updated", lastAdded: 3, backoffUntil: null};
+        await stub({"/api/prices/status": {...STATUS_ONE_SYMBOL, auto}});
+        await pricesStore.reloadStatus(FAKE_ENGINE);
+        const on = render(UpdatePricesButton, {format});
+        expect(screen.getByTestId("auto-prices-note").textContent).toBe("Prices auto-updated 2 h ago");
+        on.unmount();
+
+        await stub({"/api/prices/status": {...STATUS_ONE_SYMBOL, auto: {...auto, enabled: false}}});
+        await pricesStore.reloadStatus(FAKE_ENGINE);
+        render(UpdatePricesButton, {format});
+        expect(screen.queryByTestId("auto-prices-note")).toBeNull();
+    });
+
     it("is absent when no currently-held symbol needs a quote", async () => {
         await stub({"/api/prices/status": STATUS_NO_SYMBOLS});
         await pricesStore.reloadStatus(FAKE_ENGINE);
