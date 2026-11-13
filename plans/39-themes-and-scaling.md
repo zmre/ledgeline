@@ -97,3 +97,24 @@ flash once; fixing that by templating `index.html` is a follow-up.
   grid with swatches, OS-follow note, pin checkbox, scale stepper), charts
   re-resolve on theme change, e2e for theme + zoom, screenshots at 70 % and
   200 % across every route, fix what breaks.
+
+## Status (2026-11-12)
+
+WP-A–D done; the 70 %/200 % screenshot pass found the header and breakpoints
+broken at large scales. Fixed by redefining Tailwind's `sm`–`2xl` as container
+queries on `<body>` (rem there tracks the root font size; in media queries it
+doesn't) and folding the section tabs into a menu below `md`.
+
+### Follow-ups
+
+- In files mode a save is debounced 500 ms; a change made just before quitting
+  (Cmd+= then Cmd+Q) can be lost. Flush on `pagehide`.
+- Desktop first paint: the localStorage boot cache is per origin and the
+  desktop origin changes each launch, so a saved non-default theme can flash
+  once. Inject the effective appearance via wry `with_initialization_script`.
+- Not yet verified in the desktop app (WebKit): one keypress zooms exactly
+  once via the View menu; `container-type` on `<body>` behaves as in Chromium.
+- Imperfect at the limits: Find Matches tooltip widens the journal 47 px at
+  800×600/200 %; chart axis text (0.625rem) and 0.65rem report labels are
+  < 8 px at 70 %; some axis labels touch at 200 %; wide tables scroll.
+- `max-*:` and range breakpoint variants are still media queries (unused today).
