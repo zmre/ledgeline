@@ -20,15 +20,23 @@
      The fill is therefore ONE colour. It used to be green up to the goal marker
      and red past it, which is precisely what made "earned more than target"
      render as a red overspend on an income line. The goal marker stays as the
-     high-contrast line; the pace mark is a second, quieter tick. -->
+     high-contrast line; the pace mark is a second, quieter tick.
+
+     # Narrow only, since plan 41
+
+     This is the NARROW layout. From `@4xl` (56rem) up the page draws
+     `BudgetTable.svelte` instead — goals on the same row as their progress,
+     with track-fixed gradient bars. Both build rows from `budgetBars.ts`, so
+     they cannot word a bar differently. -->
 <script lang="ts">
     import {openJournal} from "#lib/journal/openJournal.js";
-    import type {MixedAmount} from "#lib/domain/money.js";
     import type {AmountStyle, ISODate} from "#lib/domain/types.js";
-    import {sortBudgetLines, type BudgetSortKey, type SortDir} from "#lib/budget/sort.js";
-    import {formatTotals} from "#lib/journal/rowModel.js";
-    import {barGeometry, primaryValue, type BarGeometry} from "#lib/reports/budgetSummary.js";
-    import type {BudgetBar as WireBar, BudgetHealth, BudgetReport} from "#lib/reports/types.js";
+    import type {BudgetSortKey, SortDir} from "#lib/budget/sort.js";
+    // The rows are built in `budgetBars.ts`, shared with the wide table
+    // (`BudgetTable.svelte`), so the two layouts can never word a bar apart.
+    import {budgetPeriodLabel, budgetSections, type BudgetBarView as BudgetBar, type BudgetSectionView} from "#lib/reports/ui/budgetBars.js";
+    import type {BudgetHealth, BudgetReport} from "#lib/reports/types.js";
+    import BudgetEmpty from "./BudgetEmpty.svelte";
 
     let {
         report,
@@ -50,96 +58,8 @@
         dir: SortDir;
     } = $props();
 
-    /** One MixedAmount → a compact string ("$352", or "$1, €2" multi-commodity; "0" when empty). */
-    function fmt(ma: MixedAmount): string {
-        const parts = formatTotals(ma, styles).map((l) => l.text);
-        return parts.length > 0 ? parts.join(", ") : "0";
-    }
-
-    interface BudgetBar {
-        account: string;
-        spentText: string;
-        budgetText: string;
-        remainderText: string;
-        /** null for a multi-commodity line, which has no single comparison to make. */
-        health: BudgetHealth | null;
-        pct: number | null;
-        geom: BarGeometry | null;
-        /** The goal in magnitude, so the sort control can order bars by it. */
-        goal: MixedAmount;
-    }
-
-    /** The words under a bar, in the vocabulary plans/20 fixes. The engine picks the sentence and its amount. */
-    function labelText(label: WireBar["label"]): string {
-        const amount = label.amount === null ? "" : fmt(label.amount);
-        switch (label.kind) {
-            case "onPlan":
-                return "on plan";
-            case "behindPace":
-                return `${amount} behind pace`;
-            case "aboveTarget":
-                return `${amount} above target`;
-            case "toGo":
-                return `${amount} to go`;
-            case "over":
-                return `${amount} over`;
-            case "aheadOfPace":
-                return `${amount} ahead of pace`;
-            case "left":
-                return `${amount} left`;
-        }
-    }
-
-    /** An engine bar → what the row renders. Geometry is the only arithmetic, and it is pixels. */
-    function toBar(bar: WireBar): BudgetBar {
-        // A bar with no health has no single magnitude to draw (multi-commodity):
-        // the engine withheld the verdict, so no geometry either.
-        const spent = primaryValue(bar.actual);
-        const budget = primaryValue(bar.goal);
-        const pace = primaryValue(bar.pace);
-        const geom = bar.health !== null && spent !== null && budget !== null && pace !== null ? barGeometry(spent, budget, pace) : null;
-        return {
-            account: bar.account,
-            spentText: fmt(bar.actual),
-            budgetText: fmt(bar.goal),
-            remainderText: labelText(bar.label),
-            health: bar.health,
-            pct: geom !== null && geom.ratio !== null ? Math.round(geom.ratio * 100) : null,
-            geom,
-            goal: bar.goal,
-        };
-    }
-
-    interface Section {
-        title: string;
-        verbSpent: string; // "Earned" / "Spent"
-        verbOf: string; // "target" / "budgeted"
-        overall: BudgetBar;
-        bars: BudgetBar[];
-    }
-
-    const WORDS = {revenue: {title: "Income", verbSpent: "Earned", verbOf: "target"}, expense: {title: "Expenses", verbSpent: "Spent", verbOf: "budgeted"}};
-
-    // A bar's goal is ALREADY the span total, so it is comparable as it stands —
-    // the editor below sorts by the engine's annualised figures instead.
-    const sections = $derived<Section[]>(
-        report.summary.sections.map((section) => ({
-            ...WORDS[section.kind],
-            overall: toBar(section.overall),
-            bars: sortBudgetLines(section.bars.map(toBar), sort, dir, (bar) => ({account: bar.account, amount: bar.goal})),
-        }))
-    );
-
-    // The exact dates, not just the month names: the bars cover whole months, so
-    // when the controls asked for a partial one this is the only thing telling
-    // the user the bar (and the journal link) is wider than what they typed.
-    const periodLabel = $derived(
-        report.buckets.length === 0
-            ? ""
-            : report.buckets.length === 1
-              ? `${report.periods[0].label} (${from} – ${to})`
-              : `${report.periods[0].label} – ${report.periods[report.periods.length - 1].label} (${from} – ${to})`
-    );
+    const sections = $derived<BudgetSectionView[]>(budgetSections(report, styles, sort, dir));
+    const periodLabel = $derived(budgetPeriodLabel(report, from, to));
 
     /** Green when the line is on the right side of pace, red otherwise; neutral when there is no comparison. */
     const healthText: Record<BudgetHealth, string> = {healthy: "text-success", behind: "text-error", over: "text-error"};
@@ -173,14 +93,7 @@
 
 <div class="flex flex-col gap-6" data-testid="budget-summary">
     {#if sections.length === 0}
-        <div class="rounded-box border border-base-content/10 px-4 py-10 text-center" data-testid="budget-empty">
-            <p class="font-medium">No income or expense budget goals for this period.</p>
-            <p class="mt-1 text-sm text-base-content/60">
-                Add periodic rules (lines starting with <code class="rounded bg-base-200 px-1">~</code>) to your journal. Accounts that aren't named
-                <code class="rounded bg-base-200 px-1">expenses…</code>/<code class="rounded bg-base-200 px-1">income…</code> need an
-                <code class="rounded bg-base-200 px-1">account … ; type: X</code> directive to be classified.
-            </p>
-        </div>
+        <BudgetEmpty />
     {:else}
         {#if periodLabel !== ""}<span class="-mb-2 text-xs text-base-content/50">{periodLabel}</span>{/if}
         {#each sections as section (section.title)}
