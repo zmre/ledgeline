@@ -309,14 +309,11 @@ export const wizard = {
         // capabilities and their destinations — is re-read first.
         await refreshEverything();
         await importStore.reloadCapabilities(url);
-        // MERGE SEAM (plan 39 importers): the import flow reads the file the
-        // way it reads any dropped statement — `POST /api/import/stage`, which
-        // already routes a QuickBooks Journal .xlsx to the QbJournalPanel. The
-        // QIF and grouped-CSV importers plug in behind that same stage call,
-        // so nothing here changes when they land. What would help: a way to
-        // pass `source.id` along (a preset hint for Xero vs GnuCash CSV, or a
-        // `?source=` the Imports route reads), so a CSV that matches several
-        // presets is not left to detection alone.
+        // The import flow reads the file the way it reads any dropped
+        // statement: `POST /api/import/stage` recognises QuickBooks, QIF and
+        // the CSV presets (`book_import::detect_and_parse`) and routes them to
+        // the mapping panel. No source hint is passed: each CSV preset is
+        // detected by a column the others lack, so detection is unambiguous.
         await importStore.offerFile(file);
     },
 };

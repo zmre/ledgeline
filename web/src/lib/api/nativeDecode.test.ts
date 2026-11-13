@@ -2066,7 +2066,14 @@ describe("UNIT nativeDecode — QuickBooks Journal preview (qb_journal_api.rs, W
     it("decodes the parsed groups and which accounts are unmapped", () => {
         // An engine that predates review (plan 32 D30) sends no `txns`: read as
         // none; one that predates QIF (plan 39) sends no source: QuickBooks.
-        expect(decodeQbPreview(PREVIEW)).toEqual({...PREVIEW, source: "quickbooks-journal", sourceLabel: "QuickBooks", txns: []});
+        expect(decodeQbPreview(PREVIEW)).toEqual({...PREVIEW, source: "quickbooks-journal", sourceLabel: "QuickBooks", suggestedAccounts: {}, txns: []});
+    });
+
+    it("decodes the suggested journal accounts, and refuses a non-string suggestion (plan 39)", () => {
+        const suggested = {"1000 Checking": "assets:bank:1000 Checking"};
+        expect(decodeQbPreview({...PREVIEW, suggestedAccounts: suggested}).suggestedAccounts).toEqual(suggested);
+        expect(() => decodeQbPreview({...PREVIEW, suggestedAccounts: {"1000 Checking": 7}})).toThrow(ApiShapeError);
+        expect(() => decodeQbPreview({...PREVIEW, suggestedAccounts: ["x"]})).toThrow(ApiShapeError);
     });
 
     it("decodes the whole-book source a QIF preview names (plan 39)", () => {

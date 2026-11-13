@@ -1466,6 +1466,8 @@ interface RawQbPreview {
     postingCount?: number;
     dateFormat?: RawQbDateFormat;
     unmappedAccounts?: unknown[];
+    // Plan 39: absent from an engine that predates suggestions.
+    suggestedAccounts?: unknown;
     sample?: RawQbSample[];
     idMatches?: RawQbIdMatches | null;
     // Plan 32 D30: every built transaction as a review card, keyed by Trans #.
@@ -2785,6 +2787,14 @@ export function decodeRenderedEntry(raw: unknown): RenderedEntry {
 }
 
 /** The scenario file's own account types — always an object on the wire (empty for a seed), so an absent one is a broken contract. */
+/** A JSON object of string values; absent reads as empty. */
+function decodeStringRecord(raw: unknown, what: string): Readonly<Record<string, string>> {
+    if (raw === undefined || raw === null) return Object.freeze({});
+    if (typeof raw !== "object" || Array.isArray(raw)) throw new ApiShapeError(`${what}: expected an object`);
+    const entries = Object.entries(raw as Record<string, unknown>).map(([key, value]) => [key, str(value, `${what}[${key}]`)] as const);
+    return Object.freeze(Object.fromEntries(entries));
+}
+
 function decodeScenarioAccountTypes(raw: RawScenario["accountTypes"]): Readonly<Record<string, AccountType>> {
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new ApiShapeError("scenario accountTypes: expected an object");
     return Object.freeze(
@@ -4742,6 +4752,7 @@ export function decodeQbPreview(raw: unknown): QbPreview {
         postingCount: num(preview.postingCount, "qb preview postingCount"),
         dateFormat: decodeQbDateFormat(preview.dateFormat, "qb preview dateFormat"),
         unmappedAccounts: frozen(decodeStrings(preview.unmappedAccounts, "qb preview unmappedAccounts")),
+        suggestedAccounts: decodeStringRecord(preview.suggestedAccounts, "qb preview suggestedAccounts"),
         sample: frozen((preview.sample ?? []).map((txn, i) => decodeQbSample(txn, `qb preview sample[${i}]`))),
         idMatches: decodeOptQbIdMatches(preview.idMatches, "qb preview idMatches"),
         txns: decodeStagedTxns(preview.txns, "qb preview txns", decodeQbStagedTxn),

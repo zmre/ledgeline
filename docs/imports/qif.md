@@ -29,7 +29,7 @@ Two-digit years are read as 1969–2068, and Quicken's `1/ 5'98` style is unders
 
 ## Map the accounts and categories
 
-Every name the file uses appears in the **Map QIF accounts** table until your journal maps it. Type the hledger account each one should become and press **Map accounts**. Each mapping is saved as a plain `alias` line, exactly as for [QuickBooks](quickbooks.md#map-the-quickbooks-accounts), and you can review it later in [Settings → Account Aliases](../settings/account-aliases.md).
+Every name the file uses appears in the **Map QIF accounts** table until your journal maps it. Each row starts with a suggestion: an existing account with the same last name segment if your journal has exactly one, otherwise a new name from the file's own account type, such as `assets:bank:Checking` for a bank register, `liabilities:credit cards:Visa` for a credit card, or `expenses:Groceries` for a spending category. Change any you disagree with, clear a row to leave it for later, and press **Map accounts**. Each mapping is saved as a plain `alias` line, exactly as for [QuickBooks](quickbooks.md#map-the-quickbooks-accounts), and you can review it later in [Settings → Account Aliases](../settings/account-aliases.md).
 
 Declare the accounts you want first in [Settings → Accounts](../settings/accounts.md), with their types, so the reports classify them.
 

@@ -78,7 +78,7 @@ use crate::grouped_csv::{
     Draft, GroupedCsvError, Header, ImportReport, Parsed, Table, cell, column_cells, day_number,
     decimal_mark, finish, header_of, money_at, owned, posting, prefix_of,
 };
-use crate::qb_journal::{ImportSource, ImportStatus, QbJournal};
+use crate::qb_journal::{ImportSource, ImportStatus, QbJournal, SourceAccountKind};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -194,11 +194,20 @@ fn parse_table(preset: Preset, table: &Table) -> Result<Parsed, GroupedCsvError>
         Preset::Monarch => monarch(table)?,
         Preset::Copilot => copilot(table, &mut report)?,
     };
+    // The accounts the app tracks; everything else a row posts to is a
+    // category (or an unpaired transfer's raw account name).
+    let tracked: Vec<String> = lines.iter().map(|line| line.account.clone()).collect();
     let drafts = match preset {
         Preset::Ynab => assemble_named(lines, &mut report),
         Preset::Monarch | Preset::Copilot => assemble_paired(lines, &mut report),
     };
-    let journal = finish(drafts, guess, preset.source(), prefix_of(preset.source()))?;
+    let mut journal = finish(drafts, guess, preset.source(), prefix_of(preset.source()))?;
+    journal.account_kinds.extend(
+        tracked
+            .into_iter()
+            .map(|account| (account, SourceAccountKind::Tracked)),
+    );
+    crate::qb_import::classify_remaining_by_sign(&mut journal);
     Ok(Parsed { journal, report })
 }
 

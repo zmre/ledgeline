@@ -305,3 +305,30 @@ async fn a_check_number_becomes_the_transaction_code() {
     );
     assert!(journal.contains("Produce and pantry"), "{journal}");
 }
+
+#[tokio::test]
+async fn the_preview_suggests_a_journal_account_for_every_unmapped_qif_account() {
+    let tree = Tree::with_journal("account expenses:utilities:electric\n");
+    let stage_id = staged(&tree, "banktivity.qif").await;
+    let body = preview(&tree, &stage_id).await;
+    let suggested = &body["suggestedAccounts"];
+    // An existing account with the same last segment wins.
+    assert_eq!(
+        suggested["Utilities:Electric"], "expenses:utilities:electric",
+        "{body}"
+    );
+    // Otherwise a name under the root the export's kind implies.
+    assert_eq!(
+        suggested["Equity:Opening Balances"],
+        "equity:Opening Balances"
+    );
+    assert_eq!(suggested["Interest Income"], "income:Interest Income");
+    assert_eq!(suggested["Groceries"], "expenses:Groceries");
+    for account in body["unmappedAccounts"].as_array().expect("unmapped") {
+        let account = account.as_str().expect("a name");
+        assert!(
+            suggested[account].is_string(),
+            "no suggestion for {account}: {body}"
+        );
+    }
+}

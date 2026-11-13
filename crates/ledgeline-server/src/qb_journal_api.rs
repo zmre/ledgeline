@@ -184,6 +184,11 @@ pub(crate) struct WireQbPreview {
     /// Distinct QuickBooks account names no plain alias in the journal maps,
     /// in first-seen order. Non-empty blocks a commit — see the module docs.
     unmapped_accounts: Vec<String>,
+    /// A suggested journal account for each unmapped one that the export
+    /// lets Ledgeline derive (plan 39: [`qb_import::suggest_accounts`]). The
+    /// mapping step pre-fills these for the user to review; nothing is
+    /// written until they save.
+    suggested_accounts: std::collections::BTreeMap<String, String>,
     /// A clipped sample of the parsed transactions, so a person can recognise
     /// their own data.
     sample: Vec<WireQbSample>,
@@ -389,6 +394,8 @@ fn preview_of(
     let snapshot = state.snapshot();
     let aliases = plain_aliases(&snapshot.journal);
     let unmapped = qb_import::unmapped_accounts(&aliases, &parsed.transactions);
+    let suggested_accounts =
+        qb_import::suggest_accounts(parsed, &unmapped, &journal_accounts(&snapshot.journal));
 
     let (id_matches, txns) = if unmapped.is_empty() {
         let built = build_and_classify(&snapshot.journal, &aliases, parsed)?;
@@ -425,6 +432,7 @@ fn preview_of(
             ambiguous: parsed.date_format.ambiguous,
         },
         unmapped_accounts: unmapped,
+        suggested_accounts,
         sample,
         id_matches,
         txns,
@@ -432,6 +440,25 @@ fn preview_of(
 }
 
 /// A classification as the preview's `txns` spell it.
+/// Every account the journal declares or posts to, sorted and distinct: what
+/// a source account's suggestion may match by name.
+fn journal_accounts(journal: &Journal) -> Vec<String> {
+    journal
+        .accounts
+        .iter()
+        .map(|decl| decl.name.0.clone())
+        .chain(
+            journal
+                .transactions
+                .iter()
+                .flat_map(|txn| &txn.postings)
+                .map(|posting| posting.account.0.clone()),
+        )
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 fn classification_word(classification: &RowClassification) -> &'static str {
     match classification {
         RowClassification::New => "new",

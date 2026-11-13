@@ -59,9 +59,11 @@
 
 use crate::decimal::Dec;
 use crate::edit::render_dec;
-use crate::qb_journal::{ImportSource, ImportStatus, QbJournal, QbPosting, QbTransaction};
+use crate::qb_journal::{
+    ImportSource, ImportStatus, QbJournal, QbPosting, QbTransaction, SourceAccountKind,
+};
 use crate::qif::{self, QifError, QifFile, QifRecord, RegisterKind};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// The source name an opening-balance record's other side is written to.
 pub const OPENING_BALANCES: &str = "Equity:Opening Balances";
@@ -155,10 +157,96 @@ pub fn import(file: &QifFile, fallback: &str) -> Result<QbJournal, QifError> {
         .map(|(_, (built, id))| built.into_transaction(id))
         .collect::<Vec<_>>();
 
-    Ok(QbJournal {
-        transactions: unique_ids(transactions),
+    let transactions = unique_ids(transactions);
+    let account_kinds = account_kinds(file, &names, &records, &transactions);
+    let mut parsed = QbJournal {
+        transactions,
         date_format: dates.guess,
         source: ImportSource::Qif,
+        account_kinds,
+    };
+    crate::qb_import::classify_remaining_by_sign(&mut parsed);
+    Ok(parsed)
+}
+
+/// What the file says about each source account's kind, for the mapping
+/// step's suggestions: register types, `!Account` types, transfer targets
+/// (accounts of unstated kind), income categories, investment holdings and
+/// the names this module invents. Categories the file leaves unflagged are
+/// classified afterwards by the sign of their postings.
+fn account_kinds(
+    file: &QifFile,
+    names: &Names,
+    records: &[(String, RegisterKind, &QifRecord)],
+    transactions: &[QbTransaction],
+) -> BTreeMap<String, SourceAccountKind> {
+    let transfers = records.iter().flat_map(|(register, _, record)| {
+        std::iter::once(record.category.as_deref())
+            .chain(record.splits.iter().map(|split| split.category.as_deref()))
+            .filter_map(move |raw| match names.target(raw, register).0 {
+                Target::Transfer(account) => Some(account),
+                _ => None,
+            })
+    });
+    let mut kinds: BTreeMap<String, SourceAccountKind> = transfers
+        .map(|account| (account, SourceAccountKind::Tracked))
+        .collect();
+    // `Account:Security`: a holding inside an investment register.
+    let investment_registers: Vec<String> = records
+        .iter()
+        .filter(|(_, kind, _)| *kind == RegisterKind::Investment)
+        .map(|(register, ..)| format!("{register}:"))
+        .collect();
+    for posting in transactions.iter().flat_map(|txn| &txn.postings) {
+        if investment_registers
+            .iter()
+            .any(|prefix| posting.account.starts_with(prefix.as_str()))
+        {
+            kinds.insert(posting.account.clone(), SourceAccountKind::Investment);
+        }
+    }
+    for account in &file.accounts {
+        if let Some(kind) = account.kind.as_deref().and_then(kind_of_type_line) {
+            kinds.insert(account.name.clone(), kind);
+        }
+    }
+    for (register, kind, _) in records {
+        kinds.insert(register.clone(), register_kind(*kind));
+    }
+    for category in file.categories.iter().filter(|category| category.income) {
+        let source = names.source(&Target::Category(category.name.clone()));
+        kinds.insert(source, SourceAccountKind::Income);
+    }
+    kinds.insert(OPENING_BALANCES.to_string(), SourceAccountKind::Equity);
+    kinds
+}
+
+fn register_kind(kind: RegisterKind) -> SourceAccountKind {
+    match kind {
+        RegisterKind::Bank => SourceAccountKind::Bank,
+        RegisterKind::Cash => SourceAccountKind::Cash,
+        RegisterKind::CreditCard => SourceAccountKind::CreditCard,
+        RegisterKind::OtherAsset => SourceAccountKind::OtherAsset,
+        RegisterKind::OtherLiability => SourceAccountKind::OtherLiability,
+        RegisterKind::Investment => SourceAccountKind::Investment,
+    }
+}
+
+/// An `!Account` record's `T` line (`Bank`, `CCard`, `Oth A`, `Invst` …).
+fn kind_of_type_line(text: &str) -> Option<SourceAccountKind> {
+    let key: String = text
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_lowercase();
+    Some(match key.as_str() {
+        "bank" => SourceAccountKind::Bank,
+        "cash" => SourceAccountKind::Cash,
+        "ccard" => SourceAccountKind::CreditCard,
+        "otha" => SourceAccountKind::OtherAsset,
+        "othl" => SourceAccountKind::OtherLiability,
+        "invst" | "port" | "401(k)" | "401k" | "mutual" => SourceAccountKind::Investment,
+        _ => return None,
     })
 }
 
