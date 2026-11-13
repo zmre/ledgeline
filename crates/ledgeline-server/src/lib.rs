@@ -1387,6 +1387,9 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
             "/api/ui-prefs",
             get(ui_prefs_api::get).patch(ui_prefs_api::patch),
         )
+        // Plan 39: keep `theme`/`uiScale` for this ledger — the one route that
+        // may create `ledgeline.toml`, because the user asked.
+        .route("/api/ui-prefs/pin", post(ui_prefs_api::pin))
         // Settings › hledger config (plan 30, Decision 10): the config file in
         // force, and `--auto` / `--depth` written into it. THE SAME PLACEMENT
         // TRAP as the routes above: the `PUT` rewrites a file every hledger

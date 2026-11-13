@@ -41,18 +41,24 @@ import {
     REVIEW_LIMIT_RANGE,
     REVIEW_MAX_DAYS,
     REVIEW_RECENT_LIMIT,
+    isThemeId,
     UI_PREF_KEYS,
+    UI_SCALE_DEFAULT,
+    UI_SCALE_RANGE,
     wholeIn,
     withoutLocalKeys,
     withoutUiFields,
     type ColumnConfig,
     type InsightsTab,
+    type PinnableUiPrefKey,
+    type ThemeId,
     type UiPrefs,
     type UiPrefsIssue,
     type UiPrefsPatch,
+    type UiPrefsState,
 } from "#lib/settings/uiPrefs.js";
 
-export type {ColumnConfig, InsightsTab} from "#lib/settings/uiPrefs.js";
+export type {ColumnConfig, InsightsTab, PinnableUiPrefKey, ThemeId} from "#lib/settings/uiPrefs.js";
 export {MATCH_LOOKBACK, MATCH_TRANSIT_DAYS, MATCH_WINDOW, REVIEW_MAX_DAYS, REVIEW_RECENT_LIMIT} from "#lib/settings/uiPrefs.js";
 
 interface ConnectionSettings {
@@ -158,6 +164,14 @@ let uiMode: "local" | "server" = "local";
 let uiReady = $state(false);
 /** What the engine reported about its settings files, plus any failed save. */
 let uiNotices = $state<readonly string[]>([]);
+/**
+ * The keys the open ledger's own `ledgeline.toml` sets (the engine's
+ * `localKeys`): which settings are kept for this ledger only. Empty in
+ * "local" mode.
+ */
+let uiLocalKeys = $state<readonly string[]>([]);
+/** Mirrors `uiMode === "server"`, reactively: whether a setting can be kept for one ledger (`pinToLedger`). */
+let uiInFiles = $state(false);
 /** Keys changed since the last save went out, and the engine to send them to. */
 let pending: UiPrefsPatch = {};
 let pendingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -215,6 +229,7 @@ async function flushUiPrefs(): Promise<void> {
         // more since this went out, and applying it would undo that.
         const answer = decodeUiPrefsState(await new LedgelineApi(uiServerUrl).patchUiPrefs(body));
         uiNotices = describeIssues(answer.issues);
+        uiLocalKeys = answer.localKeys;
     } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause);
         uiNotices = [...uiNotices.filter((n) => !n.startsWith("Couldn't save")), `Couldn't save view settings: ${message}`];
@@ -224,6 +239,47 @@ async function flushUiPrefs(): Promise<void> {
 
 function applyUiPrefs(prefs: UiPrefs): void {
     Object.assign(state, prefs);
+}
+
+function setUiMode(mode: "local" | "server"): void {
+    uiMode = mode;
+    uiInFiles = mode === "server";
+    if (mode === "local") uiLocalKeys = [];
+}
+
+/**
+ * Keep `key` for the open ledger only, or stop (plan 39): `POST
+ * /api/ui-prefs/pin`. Pinning writes the key's current value into the
+ * ledger's `ledgeline.toml` (created if need be), so any pending save goes
+ * out first; from then on the engine saves that key there. Unpinning removes
+ * it, and the key falls back to the global value, which is applied here.
+ *
+ * Resolves `true` when the engine took it. A failure — "local" mode, no ledger
+ * file open, a `ledgeline.toml` the engine will not write — is reported in
+ * `uiPrefsNotices` and resolves `false`, never throws; `isPinned` is unchanged,
+ * so a checkbox bound to it shows the truth either way.
+ */
+async function pinToLedger(key: PinnableUiPrefKey, pinned: boolean): Promise<boolean> {
+    if (uiMode !== "server" || uiServerUrl === null) return false;
+    await flushUiPrefs();
+    let answer: UiPrefsState;
+    try {
+        answer = decodeUiPrefsState(await new LedgelineApi(uiServerUrl).pinUiPref(key, pinned));
+    } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        uiNotices = [
+            ...uiNotices.filter((n) => !n.startsWith("Couldn't keep")),
+            `Couldn't keep this setting ${pinned ? "for this ledger" : "for every ledger"}: ${message}`,
+        ];
+        console.warn("[settings] pinning a UI preference failed", cause);
+        return false;
+    }
+    // Changes made while this was in flight are still pending; keep them over
+    // the answer rather than letting it undo them.
+    applyUiPrefs(applyPatch(answer.prefs, pending));
+    uiNotices = describeIssues(answer.issues);
+    uiLocalKeys = answer.localKeys;
+    return true;
 }
 
 /**
@@ -240,7 +296,7 @@ async function loadUiPrefs(serverUrl: string): Promise<void> {
     try {
         let answer = decodeUiPrefsState(await api.getUiPrefs());
         if (answer.storage === "browser") {
-            uiMode = "local";
+            setUiMode("local");
             return;
         }
         const legacy = legacyUiPatch(readBlob());
@@ -260,14 +316,15 @@ async function loadUiPrefs(serverUrl: string): Promise<void> {
         }
         applyUiPrefs(answer.prefs);
         uiNotices = describeIssues(answer.issues);
+        uiLocalKeys = answer.localKeys;
         uiServerUrl = serverUrl;
-        uiMode = "server";
+        setUiMode("server");
         if (migrated) writeBlob(withoutUiFields(readBlob()));
     } catch (cause) {
         // No route (hledger-web, an older engine) or no answer: the browser's
         // copy is all there is, as before WP-5.
         console.warn("[settings] UI preferences unavailable from the engine; using this browser's", cause);
-        uiMode = "local";
+        setUiMode("local");
     } finally {
         uiReady = true;
     }
@@ -301,6 +358,20 @@ export const settings = {
     },
     /** Load the view state from the engine at `serverUrl` (see `loadUiPrefs`). */
     loadUiPrefs,
+    /**
+     * Whether the engine keeps the view state in its settings files, so a
+     * setting can be kept for one ledger (`pinToLedger`). False in "local"
+     * mode (browser storage, or no engine route): hide the per-ledger control.
+     */
+    get canPinToLedger(): boolean {
+        return uiInFiles;
+    },
+    /** Whether the open ledger's own `ledgeline.toml` sets `key` — the per-ledger checkbox's state. Reactive. */
+    isPinned(key: PinnableUiPrefKey): boolean {
+        return uiLocalKeys.includes(key);
+    },
+    /** Keep `key` for this ledger only, or stop (see `pinToLedger`). */
+    pinToLedger,
     /** Send any debounced view-state save now. */
     flushUiPrefs,
     get columns(): ColumnConfig {
@@ -455,6 +526,23 @@ export const settings = {
     set matchTransitDays(days: number) {
         state.matchTransitDays = wholeIn(days, MATCH_TRANSIT_RANGE, MATCH_TRANSIT_DAYS);
         save({matchTransitDays: state.matchTransitDays});
+    },
+    /** The colour theme id (plan 39): a family follows the OS light/dark setting, a variant pins one. Unknown ids are ignored. */
+    get theme(): ThemeId {
+        return state.theme;
+    },
+    set theme(theme: ThemeId) {
+        if (!isThemeId(theme)) return;
+        state.theme = theme;
+        save({theme});
+    },
+    /** Interface scale in whole percent (plan 39), clamped to 50–300; the UI steps inside that. */
+    get uiScale(): number {
+        return state.uiScale;
+    },
+    set uiScale(scale: number) {
+        state.uiScale = wholeIn(scale, UI_SCALE_RANGE, UI_SCALE_DEFAULT);
+        save({uiScale: state.uiScale});
     },
     /** The cross-origin engine token, if one was entered. Null in embedded mode. */
     get serverToken(): string | null {

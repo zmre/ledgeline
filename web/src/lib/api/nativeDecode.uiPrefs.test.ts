@@ -4,7 +4,7 @@
 
 import {readFileSync} from "node:fs";
 import {describe, expect, it} from "vitest";
-import {defaultUiPrefs} from "#lib/settings/uiPrefs.js";
+import {defaultUiPrefs, THEME_IDS} from "#lib/settings/uiPrefs.js";
 import {ApiShapeError} from "./client";
 import {decodeUiPrefsState} from "./nativeDecode";
 
@@ -19,6 +19,15 @@ describe("UNIT nativeDecode — UI preferences over the ui-prefs golden", () => 
         expect(state.storage).toBe("files");
         expect(state.localKeys).toEqual([]);
         expect(state.issues).toEqual([]);
+    });
+
+    it("decodes every theme id and a scale", () => {
+        for (const theme of THEME_IDS) {
+            const body = golden("ui-prefs");
+            const state = decodeUiPrefsState({...body, prefs: {...(body.prefs as Record<string, unknown>), theme, uiScale: 175}});
+            expect(state.prefs.theme).toBe(theme);
+            expect(state.prefs.uiScale).toBe(175);
+        }
     });
 
     it("decodes the keys the ledger's own file sets", () => {
@@ -58,6 +67,10 @@ describe("UNIT nativeDecode — UI preferences over the ui-prefs golden", () => 
             ["a fractional number", withPrefs({reviewMaxDays: 1.5})],
             ["an absent projection id", prefsWithout("lastProjectionId")],
             ["a non-array benchmark list", withPrefs({benchmarks: "SPY"})],
+            ["an unknown theme", withPrefs({theme: "neon"})],
+            ["an absent theme", prefsWithout("theme")],
+            ["a fractional scale", withPrefs({uiScale: 1.5})],
+            ["a string scale", withPrefs({uiScale: "100"})],
             ["an unknown storage", {...golden("ui-prefs"), storage: "cloud"}],
             ["the retired ledger storage", {...golden("ui-prefs"), storage: "ledger"}],
             ["no localKeys array", {...golden("ui-prefs"), localKeys: undefined}],

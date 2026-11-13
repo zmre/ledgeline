@@ -12,9 +12,9 @@ Ledgeline keeps its own settings in TOML files. You can edit any of them by hand
 | --- | --- | --- | --- |
 | `prefs.toml` | Ledgeline's config folder | The hledger path field on the Imports screen | `hledgerPath`, the hledger program Ledgeline runs |
 | `ui-prefs.toml` | Ledgeline's config folder | Ledgeline, as you use it, and you | Your view settings, for every ledger |
-| `ledgeline.toml` | The folder of your main journal | You. Ledgeline never creates it | One ledger's own view settings, overriding `ui-prefs.toml` |
+| `ledgeline.toml` | The folder of your main journal | You, or Ledgeline when you ask it to [keep a setting for one ledger](#keeping-a-setting-for-one-ledger) | One ledger's own view settings, overriding `ui-prefs.toml` |
 
-View settings are the choices Ledgeline remembers as you work: which journal columns show, which panels are open, the Review and Find Matches numbers, the benchmark lines on the Stocks chart, and the like.
+View settings are the choices Ledgeline remembers as you work: the theme and interface scale, which journal columns show, which panels are open, the Review and Find Matches numbers, the benchmark lines on the Stocks chart, and the like.
 
 The list of recently opened journals stays in `recent.json`, in the same config folder.
 
@@ -44,11 +44,23 @@ When you change a view setting in the app, Ledgeline saves only that key, and pi
 - If the open ledger has a `ledgeline.toml` and its `[ui]` table already sets that key, the change is saved there.
 - Otherwise it goes to `ui-prefs.toml`, and applies to every ledger that doesn't set the key itself.
 
-So a `ledgeline.toml` only ever holds the keys someone put in it. Say a later version adds a theme setting. Changing the theme saves it to `ui-prefs.toml`, even in a ledger that has a `ledgeline.toml`. Once you add `theme` to that file's `[ui]` table by hand, theme changes made in that ledger are saved there instead.
+So a `ledgeline.toml` only ever holds the keys someone put in it. Changing the theme, for example, saves it to `ui-prefs.toml`, even in a ledger that has a `ledgeline.toml`. Once `theme` is in that file's `[ui]` table, whether you added it by hand or [ticked "Use for this ledger only"](#keeping-a-setting-for-one-ledger), theme changes made in that ledger are saved there instead.
 
 The journal columns are decided one column at a time. A change to the Status column is saved in `ledgeline.toml` only if its `[ui.columns]` table already has `status`. The other columns still go to `ui-prefs.toml`.
 
-Opening the app and looking around writes nothing. Ledgeline creates `ui-prefs.toml` the first time you change a view setting, and never creates `ledgeline.toml`.
+Opening the app and looking around writes nothing. Ledgeline creates `ui-prefs.toml` the first time you change a view setting. It creates `ledgeline.toml` only when you ask it to keep a setting for one ledger.
+
+## Keeping a setting for one ledger
+
+The theme and the interface scale can be kept for one ledger from inside the app, so you can tell your business books from your personal ones at a glance. Tick "Use for this ledger only" next to the setting:
+
+- Ledgeline writes the setting's current value into the `[ui]` table of the open ledger's `ledgeline.toml`. If the ledger has no `ledgeline.toml` yet, Ledgeline creates it. This is the only time Ledgeline creates that file, and it only happens because you asked.
+- From then on, changing that setting while this ledger is open saves it in `ledgeline.toml`. Other ledgers keep using `ui-prefs.toml`.
+- Untick the box to go back to the shared value. Ledgeline removes the key from `[ui]`, along with any comment lines directly above it. The rest of the file stays, and Ledgeline never deletes the file, even if nothing is left in it.
+
+Only `theme` and `uiScale` can be kept this way from the app. For any other key, add it to `ledgeline.toml` by hand.
+
+Ledgeline won't write to a `ledgeline.toml` that is a symbolic link, is larger than 64 KiB, or isn't valid TOML. In that case the box can't be ticked, and a notice says why. The checkbox isn't offered when [view settings are kept in the browser](#keeping-view-settings-in-the-browser).
 
 ## `ui-prefs.toml`
 
@@ -139,6 +151,8 @@ A path you type into the file by hand isn't checked until Ledgeline runs it. If 
 | `matchWindow` | `10` | 1 to 60 days |
 | `matchLookback` | `365` | 0 to 36500 days. 0 means no limit |
 | `matchTransitDays` | `10` | 1 to 365 days |
+| `theme` | `"default"` | The colour theme. A family name follows your system's light or dark setting: `"default"`, `"github"`, `"catppuccin"`, `"gruvbox"`, `"tokyo-night"` or `"solarized"`. A variant always looks the same: `"default-light"`, `"default-dark"`, `"github-light"`, `"github-dark"`, `"catppuccin-latte"`, `"catppuccin-mocha"`, `"gruvbox-light"`, `"gruvbox-dark"`, `"tokyo-night-day"`, `"tokyo-night-night"`, `"solarized-light"`, `"solarized-dark"`, and the dark-only `"one-dark-pro"`, `"dracula"`, `"monokai"` and `"nord"` |
+| `uiScale` | `100` | Interface scale in percent, 50 to 300. The app steps through 70 to 200 |
 
 ## Keeping view settings in the browser
 

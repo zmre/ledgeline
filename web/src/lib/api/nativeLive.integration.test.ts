@@ -18,7 +18,7 @@ import {styleOf} from "#lib/format/amounts.js";
 import {formatTotals} from "#lib/journal/rowModel.js";
 import {activeScenario, blankLine, cloneScenario, emptyScenario, renderBody, runBody, withQuantity} from "#lib/projections/scenarioModel.js";
 import {dec} from "#lib/domain/money.js";
-import {LedgelineApi, ValidationError} from "./native";
+import {ConflictError, LedgelineApi, ValidationError} from "./native";
 import {
     decodeAccountReport,
     decodeCashFlowStatement,
@@ -582,5 +582,8 @@ describe.runIf(apiUrl !== undefined && apiUrl !== "")("INTEGRATION live ledgelin
         expect(patched.prefs.columns).toEqual({...defaultUiPrefs().columns, status: false});
         expect(decodeUiPrefsState(await api.getUiPrefs()).prefs.matchWindow).toBe(10);
         await expect(api.patchUiPrefs({matchWindow: 0})).rejects.toThrow(ValidationError);
+        // Plan 39: nothing can be kept per ledger while the browser keeps it all.
+        await expect(api.pinUiPref("theme", true)).rejects.toThrow(ConflictError);
+        await expect(api.pinUiPref("matchWindow" as never, true)).rejects.toThrow(ValidationError);
     });
 });

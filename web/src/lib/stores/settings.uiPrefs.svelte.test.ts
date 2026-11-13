@@ -14,19 +14,43 @@ const ENGINE = "http://engine.test";
 
 interface Call {
     method: string;
+    path: string;
     body: unknown;
 }
 
-/** A fake `/api/ui-prefs`: GET answers `answer`; PATCH merges into it (or fails with `patchStatus`). */
-function engine(options: {storage?: UiPrefsStorage; localKeys?: string[]; prefs?: Partial<UiPrefs>; patchStatus?: number; getStatus?: number} = {}) {
+/**
+ * A fake `/api/ui-prefs`: GET answers `answer`; PATCH merges into it (or fails
+ * with `patchStatus`); `POST /pin` adds or drops the key in `localKeys` (or
+ * fails with `pinStatus`), an unpinned key falling back to `globalPrefs`.
+ */
+function engine(
+    options: {
+        storage?: UiPrefsStorage;
+        localKeys?: string[];
+        prefs?: Partial<UiPrefs>;
+        globalPrefs?: Partial<UiPrefs>;
+        patchStatus?: number;
+        getStatus?: number;
+        pinStatus?: number;
+    } = {}
+) {
     const calls: Call[] = [];
     let prefs: UiPrefs = {...defaultUiPrefs(), ...options.prefs};
-    const answer = () => ({prefs, storage: options.storage ?? "files", localKeys: options.localKeys ?? [], issues: []});
+    let localKeys = options.localKeys ?? [];
+    const answer = () => ({prefs, storage: options.storage ?? "files", localKeys, issues: []});
     vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
         const method = init?.method ?? "GET";
         const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
-        calls.push({method, body});
-        if (!String(input).endsWith("/api/ui-prefs")) return Promise.resolve(new Response("not found", {status: 404}));
+        const path = new URL(String(input)).pathname;
+        calls.push({method, path, body});
+        if (path === "/api/ui-prefs/pin" && method === "POST") {
+            if (options.pinStatus !== undefined) return Promise.resolve(new Response("no ledger file is open", {status: options.pinStatus}));
+            const {key, pinned} = body as {key: "theme" | "uiScale"; pinned: boolean};
+            localKeys = pinned ? [...localKeys.filter((k) => k !== key), key] : localKeys.filter((k) => k !== key);
+            if (!pinned) prefs = {...prefs, [key]: {...defaultUiPrefs(), ...options.globalPrefs}[key]};
+            return Promise.resolve(new Response(JSON.stringify(answer()), {status: 200}));
+        }
+        if (path !== "/api/ui-prefs") return Promise.resolve(new Response("not found", {status: 404}));
         if (method === "GET" && options.getStatus !== undefined) return Promise.resolve(new Response("nope", {status: options.getStatus}));
         if (method === "PATCH") {
             if (options.patchStatus !== undefined) return Promise.resolve(new Response("ledgeline.toml is not valid TOML", {status: options.patchStatus}));
@@ -152,5 +176,86 @@ describe("COMPONENT settings — view state on the engine", () => {
         expect(settings.reviewMaxDays).toBe(30);
         settings.reviewMaxDays = 40;
         expect(persisted()).toMatchObject({reviewMaxDays: 40});
+    });
+
+    it("saves theme and scale like any other key, clamping the scale and ignoring an unknown theme", async () => {
+        const fake = engine();
+        const settings = await loadWith({serverUrl: ENGINE});
+        await settings.loadUiPrefs(ENGINE);
+        expect(settings.theme).toBe("default");
+        expect(settings.uiScale).toBe(100);
+        vi.useFakeTimers();
+        settings.theme = "catppuccin-mocha";
+        settings.theme = "not-a-theme" as never;
+        settings.uiScale = 1000;
+        expect(settings.theme).toBe("catppuccin-mocha");
+        expect(settings.uiScale).toBe(300);
+        await vi.advanceTimersByTimeAsync(500);
+        const patches = fake.calls.filter((c) => c.method === "PATCH");
+        expect(patches.map((c) => c.body)).toEqual([{theme: "catppuccin-mocha", uiScale: 300}]);
+        expect(persisted()).toEqual({serverUrl: ENGINE});
+    });
+
+    it("pins a key to the ledger after sending any pending save, and reads the pin from localKeys", async () => {
+        const fake = engine({localKeys: ["matchWindow"]});
+        const settings = await loadWith({serverUrl: ENGINE});
+        await settings.loadUiPrefs(ENGINE);
+        expect(settings.canPinToLedger).toBe(true);
+        expect(settings.isPinned("theme")).toBe(false);
+        vi.useFakeTimers();
+        settings.theme = "nord";
+        expect(await settings.pinToLedger("theme", true)).toBe(true);
+        expect(fake.calls.filter((c) => c.method !== "GET").map((c) => [c.method, c.path, c.body])).toEqual([
+            ["PATCH", "/api/ui-prefs", {theme: "nord"}],
+            ["POST", "/api/ui-prefs/pin", {key: "theme", pinned: true}],
+        ]);
+        expect(settings.isPinned("theme")).toBe(true);
+        expect(settings.isPinned("uiScale")).toBe(false);
+        expect(settings.theme).toBe("nord");
+    });
+
+    it("unpinning applies the value the key falls back to", async () => {
+        engine({localKeys: ["theme"], prefs: {theme: "dracula"}, globalPrefs: {theme: "github"}});
+        const settings = await loadWith({serverUrl: ENGINE});
+        await settings.loadUiPrefs(ENGINE);
+        expect(settings.isPinned("theme")).toBe(true);
+        expect(await settings.pinToLedger("theme", false)).toBe(true);
+        expect(settings.isPinned("theme")).toBe(false);
+        expect(settings.theme).toBe("github");
+    });
+
+    it("keeps a change made while a pin is in flight over the pin's answer", async () => {
+        engine({localKeys: ["theme"], prefs: {theme: "dracula"}});
+        const settings = await loadWith({serverUrl: ENGINE});
+        await settings.loadUiPrefs(ENGINE);
+        vi.useFakeTimers();
+        const pinning = settings.pinToLedger("uiScale", false);
+        settings.uiScale = 150;
+        await pinning;
+        expect(settings.uiScale).toBe(150);
+    });
+
+    it("reports a refused pin and leaves the pin state as it was", async () => {
+        const fake = engine({pinStatus: 409});
+        const settings = await loadWith({serverUrl: ENGINE});
+        vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        await settings.loadUiPrefs(ENGINE);
+        expect(await settings.pinToLedger("theme", true)).toBe(false);
+        expect(settings.isPinned("theme")).toBe(false);
+        expect(settings.uiPrefsNotices.join(" ")).toContain("Couldn't keep this setting for this ledger");
+        expect(fake.calls.filter((c) => c.path === "/api/ui-prefs/pin")).toHaveLength(1);
+    });
+
+    it("cannot pin when the view state is kept in the browser", async () => {
+        const fake = engine({storage: "browser"});
+        const settings = await loadWith({serverUrl: ENGINE, theme: "nord", uiScale: 90});
+        await settings.loadUiPrefs(ENGINE);
+        expect(settings.canPinToLedger).toBe(false);
+        expect(settings.theme).toBe("nord");
+        expect(settings.uiScale).toBe(90);
+        expect(await settings.pinToLedger("theme", true)).toBe(false);
+        expect(fake.calls.map((c) => c.method)).toEqual(["GET"]);
+        settings.uiScale = 110;
+        expect(persisted()).toMatchObject({theme: "nord", uiScale: 110});
     });
 });
