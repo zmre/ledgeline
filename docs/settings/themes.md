@@ -8,6 +8,12 @@ order: 50
 
 Ledgeline comes with sixteen colour themes based on popular editor themes. Each one sets the colours of the whole app, charts included. Every theme has its own chart colours, checked so that neighbouring colours stay distinct for colour-blind readers and every chart mark stands out from the background.
 
+## Choosing a theme
+
+Open **Settings → Appearance**. Each theme's card is drawn in its own colours. Click a card to use that theme. On a card with **Auto · Light · Dark** buttons, Auto follows your system, and Light or Dark keeps that version.
+
+Tick **Use for this ledger only** to give the open ledger its own theme, so you can tell your books apart at a glance. Ledgeline saves it in a `ledgeline.toml` beside the journal, creating the file if needed. Untick it to go back to your usual theme.
+
 ## Follow the system, or pick one
 
 Six themes come in a light and a dark version. Choose one of these by its family name and Ledgeline follows your system: the light version while your computer is in light mode, the dark one in dark mode, switching when the system does. Choose a version by its own name to keep it whatever the system says.
@@ -28,6 +34,18 @@ Six themes come in a light and a dark version. Choose one of these by its family
 The last four are dark only, so they stay dark when your system is in light mode.
 
 `default` is the starting theme. Its dark version is the look Ledgeline has always had.
+
+## Text size
+
+**Settings → Appearance** also sets the text size, from 70 % to 200 %. All text grows or shrinks together, and the layout around it follows. The keyboard does the same from anywhere in the app:
+
+| Keys (Mac) | Keys (Windows, Linux) | Does        |
+| ---------- | --------------------- | ----------- |
+| ⌘ +        | Ctrl +                | Larger      |
+| ⌘ −        | Ctrl −                | Smaller     |
+| ⌘ 0        | Ctrl 0                | Actual size |
+
+In the desktop app the same commands are in the **View** menu. The size is saved as `uiScale` (a percentage, `100` by default) and can be kept for one ledger like the theme.
 
 ## The `theme` key
 

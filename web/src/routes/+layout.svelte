@@ -16,6 +16,7 @@
     import {refreshEverything} from "#lib/stores/refreshAll.js";
     import {onServerReady} from "#lib/stores/serverWatch.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
+    import {useAppearance} from "#lib/theme/appearance.svelte.js";
     import {listenForMenuZoom} from "#lib/theme/zoom.svelte.js";
     import {connectionLabel, connectionTooltip, type ConnState} from "#lib/ui/connectionLabel.js";
 
@@ -48,10 +49,11 @@
     // the four pre-existing element handlers working untouched.
     registerKeys(globalLayer());
 
-    // MERGE SEAM: interface zoom (plan 39 WP-C). The keyboard half is in
-    // `globalLayer()` above; this is the desktop View menu's half, which
-    // arrives as a `ledgeline:zoom` event on `window` (see theme/zoom.svelte.ts).
-    // The integration package wires the zoom sink to settings.uiScale.
+    // Theme and interface scale (plan 39): applied from the saved prefs and the
+    // OS colour scheme, with the zoom shortcuts stepping the saved scale. The
+    // keyboard half of zoom is in `globalLayer()` above; this is the desktop
+    // View menu's half, which arrives as a `ledgeline:zoom` event on `window`.
+    useAppearance();
     $effect(() => listenForMenuZoom());
 
     // WP-08: connection status dot fed by journal.status (green ready / yellow

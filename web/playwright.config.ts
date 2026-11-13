@@ -110,7 +110,10 @@ export default defineConfig({
     // With multiple webServers playwright does not infer baseURL from `port`.
     // timezoneId matches the vitest pin in vite.config.ts so both suites exercise
     // a negative-offset zone rather than whatever the runner happens to be in.
-    use: {baseURL: "http://localhost:4173", timezoneId: "America/Denver"},
+    // Dark, like the app before plan 39 made the default theme follow the OS:
+    // every older spec was written against default-dark. appearance.e2e.ts
+    // emulates light explicitly.
+    use: {baseURL: "http://localhost:4173", timezoneId: "America/Denver", colorScheme: "dark"},
     testDir: "e2e",
     testMatch: "**/*.e2e.{ts,js}",
 });

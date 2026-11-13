@@ -2,10 +2,10 @@
 // its own subnav: `?tab=`, restored once on mount and mirrored back with
 // debounced replaceState by the route itself.
 
-export type SettingsTab = "accounts" | "aliases" | "hledgerConf" | "auto" | "projections";
+export type SettingsTab = "accounts" | "aliases" | "hledgerConf" | "auto" | "projections" | "appearance";
 
-/** "Accounts" is the first (default) tab. Projections is LAST (plan 33 D22), so keys 1–4 keep their tabs. */
-export const TAB_ORDER: SettingsTab[] = ["accounts", "aliases", "hledgerConf", "auto", "projections"];
+/** "Accounts" is the first (default) tab. New tabs go LAST (Projections, plan 33 D22; Appearance, plan 39), so the number keys keep their tabs. */
+export const TAB_ORDER: SettingsTab[] = ["accounts", "aliases", "hledgerConf", "auto", "projections", "appearance"];
 
 export const TAB_LABELS: Record<SettingsTab, string> = {
     accounts: "Accounts",
@@ -20,6 +20,8 @@ export const TAB_LABELS: Record<SettingsTab, string> = {
     auto: "Automatic postings",
     // Which scenario the Projections tab opens by default (plan 33 D22).
     projections: "Projections",
+    // Theme and text size (plan 39).
+    appearance: "Appearance",
 };
 
 export interface SettingsParams {

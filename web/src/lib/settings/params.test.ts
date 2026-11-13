@@ -18,9 +18,16 @@ describe("UNIT settings/params", () => {
 
     describe("TAB_ORDER", () => {
         it("puts Accounts first and labels every tab", () => {
-            expect(TAB_ORDER).toEqual(["accounts", "aliases", "hledgerConf", "auto", "projections"]);
+            expect(TAB_ORDER).toEqual(["accounts", "aliases", "hledgerConf", "auto", "projections", "appearance"]);
             expect(TAB_ORDER[0]).toBe(DFLT.tab);
-            expect(TAB_ORDER.map((t) => TAB_LABELS[t])).toEqual(["Accounts", "Account Aliases", "hledger config", "Automatic postings", "Projections"]);
+            expect(TAB_ORDER.map((t) => TAB_LABELS[t])).toEqual([
+                "Accounts",
+                "Account Aliases",
+                "hledger config",
+                "Automatic postings",
+                "Projections",
+                "Appearance",
+            ]);
         });
     });
 
