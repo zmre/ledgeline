@@ -1,5 +1,5 @@
 import {beforeEach, describe, expect, it} from "vitest";
-import {defaultFilter, filters, localToday, presetRange} from "./filters.svelte";
+import {defaultFilter, filters, holdMonth, localToday, presetRange, type JournalFilter} from "./filters.svelte";
 
 describe("UNIT filters", () => {
     describe("presetRange (pure, fixed today)", () => {
@@ -203,6 +203,92 @@ describe("UNIT filters", () => {
             expect(filters.value.pin).not.toBe(pin);
             filters.replace({from: null, to: null, accounts: new Set(), query: ""});
             expect(filters.value.pin).toBeNull();
+        });
+    });
+
+    describe("calendar view (plan 40)", () => {
+        const today = "2026-11-13";
+        const base: JournalFilter = {from: "2026-08-16", to: "2026-11-13", accounts: new Set(), query: "", preset: "last90", pin: null};
+
+        beforeEach(() => filters.reset());
+
+        it("holdMonth leaves the list alone", () => {
+            expect(holdMonth(base, today)).toBe(base);
+        });
+
+        it("holdMonth snaps the range to the month it means and drops the preset", () => {
+            expect(holdMonth({...base, calendar: true}, today)).toMatchObject({from: "2026-11-01", to: "2026-11-30", preset: null});
+        });
+
+        it("holdMonth keeps a whole month as it is, a live preset included", () => {
+            const thisMonth: JournalFilter = {...base, from: "2026-11-01", to: "2026-11-30", preset: "thisMonth", calendar: true};
+            expect(holdMonth(thisMonth, today)).toBe(thisMonth);
+        });
+
+        it("holdMonth never keeps a pin in the calendar", () => {
+            const pinned: JournalFilter = {...base, from: "2026-11-01", to: "2026-11-30", pin: {account: "assets:bank", commodity: null}, calendar: true};
+            expect(holdMonth(pinned, today).pin).toBeNull();
+        });
+
+        it("entering the calendar clears the running balance and holds a month", () => {
+            filters.pin("assets:bank");
+            filters.setCalendar(true);
+            expect(filters.value.calendar).toBe(true);
+            expect(filters.value.pin).toBeNull();
+            const {from, to} = filters.value;
+            expect(from?.slice(8)).toBe("01");
+            expect(from?.slice(0, 7)).toBe(to?.slice(0, 7));
+        });
+
+        it("a range picked in the calendar becomes a month", () => {
+            filters.setCalendar(true);
+            filters.setRange("2025-03-10", "2025-06-02");
+            expect(filters.value).toMatchObject({from: "2025-06-01", to: "2025-06-30"});
+            filters.applyPreset("lastYear");
+            expect(filters.value.to?.slice(5)).toBe("12-31");
+            expect(filters.value.from?.slice(5)).toBe("12-01");
+        });
+
+        it("showMonth moves the month", () => {
+            filters.setCalendar(true);
+            filters.showMonth("2024-02");
+            expect(filters.value).toMatchObject({from: "2024-02-01", to: "2024-02-29", calendar: true});
+        });
+
+        it("pinning leaves the calendar, keeping its month", () => {
+            filters.setCalendar(true);
+            filters.showMonth("2024-02");
+            filters.focusAccount("assets:bank");
+            expect(filters.value).toMatchObject({calendar: false, from: "2024-02-01", to: "2024-02-29", pin: {account: "assets:bank", commodity: null}});
+        });
+
+        it("leaving the calendar keeps the month it showed", () => {
+            filters.setCalendar(true);
+            filters.showMonth("2024-02");
+            filters.setCalendar(false);
+            expect(filters.value).toMatchObject({calendar: false, from: "2024-02-01", to: "2024-02-29"});
+        });
+
+        it("reset in the calendar keeps the view and the month, clearing the rest", () => {
+            filters.setCalendar(true);
+            filters.showMonth("2024-02");
+            filters.setQuery("coffee");
+            filters.toggleAccount("expenses");
+            filters.reset();
+            expect(filters.value).toMatchObject({calendar: true, from: "2024-02-01", to: "2024-02-29", query: ""});
+            expect(filters.value.accounts.size).toBe(0);
+        });
+
+        it("a restored link with both a calendar and a pin keeps the calendar", () => {
+            filters.replace({
+                from: "2026-01-05",
+                to: "2026-03-01",
+                accounts: new Set(),
+                query: "",
+                pin: {account: "assets:bank", commodity: null},
+                calendar: true,
+            });
+            expect(filters.value).toMatchObject({calendar: true, pin: null, from: "2026-03-01", to: "2026-03-31"});
         });
     });
 });

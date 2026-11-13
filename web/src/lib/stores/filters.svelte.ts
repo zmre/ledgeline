@@ -9,6 +9,7 @@
    is correct (and the contract exposes ReadonlySet); Date is read-once. */
 import type {ISODate} from "#lib/domain/types.js";
 import {toggleSubtreeRoot} from "#lib/filters/treeSelect.js";
+import {calendarMonth, isWholeMonth, monthRange} from "#lib/journal/calendarModel.js";
 import {addDays} from "#lib/reports/periods.js";
 
 export interface JournalFilter {
@@ -31,6 +32,16 @@ export interface JournalFilter {
      * filter literal that predates it stays a valid filter.
      */
     pin?: RunningPin | null;
+    /**
+     * The journal shows a month calendar instead of the table (plan 40). While
+     * it is on, `from`/`to` are always exactly one calendar month — every
+     * change to the range is snapped to one (`holdMonth`) — and there is never
+     * a pin: entering the calendar clears the running balance, and pinning
+     * leaves the calendar. Not part of the view's key: switching view
+     * refetches nothing the range did not already change. Optional, like
+     * `pin`, so older filter literals stay valid (absent: the table).
+     */
+    calendar?: boolean;
 }
 
 /** A pinned running balance: the subtree root, and the commodity (null: the engine's default, the one with most postings). */
@@ -87,7 +98,25 @@ export function defaultFilter(): JournalFilter {
     return {from, to, accounts: new Set<string>(), query: "", preset: "last90", pin: null};
 }
 
+/**
+ * The calendar's invariants applied to `f`: with the calendar on, the range
+ * becomes the one month it means (`calendarMonth`) and the pin goes. A range
+ * that already IS a whole month is left alone, preset and all, so a live
+ * "this month" stays live. With the calendar off, `f` is returned untouched.
+ */
+export function holdMonth(f: JournalFilter, today: ISODate): JournalFilter {
+    if (f.calendar !== true) return f;
+    const pinless = (f.pin ?? null) === null ? f : {...f, pin: null};
+    if (isWholeMonth(f.from, f.to)) return pinless;
+    return {...pinless, ...monthRange(calendarMonth(f.from, f.to, today)), preset: null};
+}
+
 let value = $state<JournalFilter>(defaultFilter());
+
+/** Every write goes through here, so no path can leave the calendar on a range that is not a month. */
+function commit(next: JournalFilter): void {
+    value = holdMonth(next, localToday());
+}
 
 /**
  * Observe filter changes outside component context (used by urlSync, which is
@@ -107,14 +136,14 @@ export const filters = {
         return value;
     },
     setRange(from: ISODate | null, to: ISODate | null): void {
-        value = {...value, from, to, preset: null};
+        commit({...value, from, to, preset: null});
     },
     applyPreset(p: DatePreset): void {
-        value = {...value, ...presetRange(p, localToday()), preset: p};
+        commit({...value, ...presetRange(p, localToday()), preset: p});
     },
     /** Toggle an account's selection, keeping the subtree-root invariant (see treeSelect.toggleSubtreeRoot). */
     toggleAccount(name: string): void {
-        value = {...value, accounts: toggleSubtreeRoot(value.accounts, name)};
+        commit({...value, accounts: toggleSubtreeRoot(value.accounts, name)});
     },
     /**
      * Replace the whole account selection at once.
@@ -127,49 +156,69 @@ export const filters = {
      * `toggleSubtreeRoot`, exactly as `toggleAccount` does.
      */
     setAccounts(accounts: ReadonlySet<string>): void {
-        value = {...value, accounts: new Set(accounts)};
+        commit({...value, accounts: new Set(accounts)});
     },
     clearAccounts(): void {
-        value = {...value, accounts: new Set<string>()};
+        commit({...value, accounts: new Set<string>()});
     },
     setQuery(q: string): void {
-        value = {...value, query: q};
+        commit({...value, query: q});
     },
     /** Pin `account`'s running balance, leaving the account filter as it is. `commodity` null: the engine's default. */
     pin(account: string, commodity: string | null = null): void {
-        value = {...value, pin: {account, commodity}};
+        commit({...value, pin: {account, commodity}, calendar: false});
     },
     /**
      * Filter to `account` AND pin it, as one filter change — the Balances view's
      * click. The date range is kept: the balance is right whatever the range.
      */
     focusAccount(account: string, commodity: string | null = null): void {
-        value = {...value, accounts: new Set([account]), pin: {account, commodity}};
+        commit({...value, accounts: new Set([account]), pin: {account, commodity}, calendar: false});
     },
     /** Switch the pinned commodity (null: back to the engine's default). No-op without a pin. */
     setPinCommodity(commodity: string | null): void {
         const pin = value.pin ?? null;
         if (pin === null || pin.commodity === commodity) return;
-        value = {...value, pin: {account: pin.account, commodity}};
+        commit({...value, pin: {account: pin.account, commodity}});
     },
     /** Remove the running-balance columns. The account filter stays as it is. */
     unpin(): void {
         if ((value.pin ?? null) === null) return;
-        value = {...value, pin: null};
+        commit({...value, pin: null});
     },
+    /**
+     * Back to the default filter. In the calendar, the view and the month it
+     * shows stay: Reset clears what narrows the month, it does not throw the
+     * user out of the view or back to a 90-day range the calendar cannot show.
+     */
     reset(): void {
-        value = defaultFilter();
+        const fresh = defaultFilter();
+        value = value.calendar === true ? {...fresh, from: value.from, to: value.to, preset: value.preset ?? null, calendar: true} : fresh;
     },
     /** Replace the whole filter at once (urlSync startup restore). */
     replace(f: JournalFilter): void {
         const pin = f.pin ?? null;
-        value = {
+        commit({
             from: f.from,
             to: f.to,
             accounts: new Set(f.accounts),
             query: f.query,
             preset: f.preset ?? null,
             pin: pin === null ? null : {account: pin.account, commodity: pin.commodity},
-        };
+            ...(f.calendar === true ? {calendar: true} : {}),
+        });
+    },
+    /**
+     * Show the calendar (plan 40) or the table. Turning it on clears the
+     * running balance and holds the range to the month it means; turning it
+     * off keeps the month the calendar was showing.
+     */
+    setCalendar(on: boolean): void {
+        if ((value.calendar === true) === on) return;
+        commit({...value, calendar: on});
+    },
+    /** The calendar's month navigation: show `month` (`YYYY-MM`). */
+    showMonth(month: string): void {
+        commit({...value, ...monthRange(month), preset: null});
     },
 };

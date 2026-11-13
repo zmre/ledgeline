@@ -57,12 +57,21 @@ These need a cursor row. <kbd>j</kbd> or <kbd>k</kbd> puts one on the table, and
 | <kbd>m</kbd>                                         | Find Matches                                 |
 | <kbd>Shift</kbd>+<kbd>M</kbd>                        | Find match for the cursor's transaction      |
 | <kbd>l</kbd>                                         | Expand or collapse a transfer row            |
+| <kbd>v</kbd>                                         | Switch between the list and the calendar     |
 
 The editing keys (<kbd>Enter</kbd>, <kbd>e</kbd>, <kbd>c</kbd>, <kbd>s</kbd>, <kbd>x</kbd>, <kbd>n</kbd>, <kbd>u</kbd>, <kbd>r</kbd>, <kbd>m</kbd>) only work when the journal can be edited. See [The journal](index.md#editing-transactions). <kbd>u</kbd>, <kbd>r</kbd> and <kbd>m</kbd> don't need a cursor row, and each is off when its button is disabled.
 
 <kbd>Shift</kbd>+<kbd>M</kbd> works on a row with a transfer half that isn't linked or ignored yet. See [Find match for one transaction](transfer-matching.md#find-match-for-one-transaction).
 
 <kbd>l</kbd> works on a linked transfer row, which shows both halves of a transfer as one row, and on either half once it is expanded. See [Transfer matching](transfer-matching.md#linked-transfers-in-the-journal).
+
+In the [calendar](calendar.md), only <kbd>n</kbd>, <kbd>u</kbd>, <kbd>r</kbd>, <kbd>m</kbd> and <kbd>v</kbd> from this table apply. The calendar adds its own:
+
+| Keys                         | Action         |
+| ---------------------------- | -------------- |
+| <kbd>h</kbd> or <kbd>←</kbd> | Previous month |
+| <kbd>l</kbd> or <kbd>→</kbd> | Next month     |
+| <kbd>t</kbd>                 | This month     |
 
 <kbd>Enter</kbd> and <kbd>n</kbd> open the [transaction editor](#transaction-editor). In an inline description or account edit, <kbd>Enter</kbd> saves and <kbd>Esc</kbd> cancels.
 

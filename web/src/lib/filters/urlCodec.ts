@@ -13,6 +13,9 @@
 // A pinned running balance (plan 36) is `&bal=<account>`, plus `&balc=<c>` only
 // when a commodity was chosen: an absent `balc` means "the engine's default",
 // so a shared link stays short and keeps meaning "the usual one".
+//
+// The calendar view (plan 40) is `&cal=1`. Its month is the ordinary from/to
+// pair; the store, not the codec, holds a restored range to one month.
 import type {ISODate} from "#lib/domain/types.js";
 import {localToday, presetRange, type DatePreset, type JournalFilter, type RunningPin} from "#lib/stores/filters.svelte.js";
 import {safeDecode} from "#lib/url/safeDecode.js";
@@ -42,6 +45,7 @@ export function filterToSearch(f: JournalFilter, dflt: JournalFilter): string {
         params.set("bal", pin.account);
         if (pin.commodity !== null) params.set("balc", pin.commodity);
     }
+    if (f.calendar === true) params.set("cal", "1");
     return params.toString();
 }
 
@@ -66,11 +70,13 @@ export function searchToFilter(search: string, dflt: JournalFilter, today: ISODa
               );
     const query = params.get("q") ?? dflt.query;
     const pin = parsePin(params, dflt.pin ?? null);
+    // Present only when on, so a table filter reads exactly as it did before the calendar existed.
+    const calendar = (params.get("cal") === null ? dflt.calendar === true : params.get("cal") === "1") ? {calendar: true} : {};
     const rawPreset = params.get("preset");
     if (rawPreset !== null && PRESETS.has(rawPreset)) {
         const preset = rawPreset as DatePreset;
         const {from, to} = presetRange(preset, today); // live: recomputed against the CURRENT day
-        return {from, to, accounts, query, preset, pin};
+        return {from, to, accounts, query, preset, pin, ...calendar};
     }
     const hasDates = params.get("from") !== null || params.get("to") !== null;
     return {
@@ -80,6 +86,7 @@ export function searchToFilter(search: string, dflt: JournalFilter, today: ISODa
         query,
         preset: hasDates ? null : (dflt.preset ?? null),
         pin,
+        ...calendar,
     };
 }
 

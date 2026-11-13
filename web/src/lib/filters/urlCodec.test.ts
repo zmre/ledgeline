@@ -153,4 +153,18 @@ describe("UNIT urlCodec", () => {
             expect(filterToSearch(filter({pin: null}), dflt)).toBe("");
         });
     });
+
+    describe("calendar view (plan 40)", () => {
+        it("writes cal=1 beside the month's dates, and reads it back", () => {
+            const search = filterToSearch(filter({from: "2026-11-01", to: "2026-11-30", calendar: true}), dflt);
+            expect(new URLSearchParams(search).get("cal")).toBe("1");
+            const parsed = searchToFilter(search, dflt);
+            expect(parsed).toMatchObject({from: "2026-11-01", to: "2026-11-30", calendar: true});
+        });
+
+        it("writes nothing for the list, and a list link reads without the key", () => {
+            expect(filterToSearch(filter({calendar: false}), dflt)).toBe("");
+            expect("calendar" in searchToFilter("q=coffee", dflt)).toBe(false);
+        });
+    });
 });

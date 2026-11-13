@@ -14,13 +14,17 @@
     // expands in place (▸, `l`) into its two halves, two more slots of the same
     // pitch, so the windowing stays fixed-pitch: `slotAt` maps a display slot
     // to the engine row (or half) it shows, and the cursor walks slots.
+    //
+    // The calendar (plan 40) takes the list's place when the filter says so:
+    // the toolbar stays, the table's own keys stand down, and the toggle next
+    // to the column menu switches between the two.
     import {untrack} from "svelte";
     import {statusPatch} from "#lib/api/editMapping.js";
     import type {Transaction} from "#lib/domain/types.js";
     import type {JournalRow} from "#lib/journalView/types.js";
     import {dismissible} from "#lib/keys/dismissible.js";
     import {registerKeys} from "#lib/keys/keymap.svelte.js";
-    import {PRIORITY} from "#lib/keys/types.js";
+    import {PRIORITY, type Binding} from "#lib/keys/types.js";
     import {rowMarker, type RowMarker} from "#lib/review/card.js";
     import {REVIEW_BUTTON} from "#lib/review/ui/buttons.js";
     import {reviewLaunch} from "#lib/review/ui/launch.svelte.js";
@@ -36,7 +40,9 @@
     import {settings} from "#lib/stores/settings.svelte.js";
     import {rootPx} from "#lib/theme/scale.js";
     import {lazyListCursor} from "#lib/ui/listCursor.svelte.js";
+    import CalendarView from "./CalendarView.svelte";
     import ColumnMenu from "./ColumnMenu.svelte";
+    import {monthOf} from "./calendarModel";
     import TransactionRow from "./TransactionRow.svelte";
     import {measureAccountColumn} from "./accountColumn.svelte";
     import {txnModal} from "./edit/modalState.svelte";
@@ -47,6 +53,9 @@
     const MATCHING_DOCS = "https://zmre.github.io/ledgeline/journal/transfer-matching/";
 
     const OVERSCAN = 12;
+
+    /** The month calendar is showing instead of the list (plan 40). */
+    const calendar = $derived(filters.value.calendar === true);
 
     let scroller = $state<HTMLDivElement | null>(null);
     let scrollTop = $state(0);
@@ -322,54 +331,71 @@
     // these on a read-only engine AND the keys stay unclaimed there.
     const canEdit = (): boolean => editing.canEdit;
 
+    /** The list's own keys stand down while the calendar shows: they would move a cursor nobody can see. */
+    const inList = (): boolean => !calendar;
+    /** Keys that act on the whole journal, not a row, work in both views. */
+    const BOTH_VIEWS: ReadonlySet<string> = new Set(["n", "u", "r", "m"]);
+
     registerKeys({
         id: "journal-table",
         priority: PRIORITY.widget,
-        bindings: [
-            {keys: "j", label: "Next transaction", group: "Journal", run: () => moveCursor(1)},
-            {keys: "ArrowDown", label: "Next transaction", group: "Journal", run: () => moveCursor(1)},
-            {keys: "k", label: "Previous transaction", group: "Journal", run: () => moveCursor(-1)},
-            {keys: "ArrowUp", label: "Previous transaction", group: "Journal", run: () => moveCursor(-1)},
-            // PageDown/PageUp are bound alongside the Ctrl chords deliberately:
-            // Ctrl-U is view-source in Chrome and not reliably preventable, so
-            // there has to be an uncontested path. Harmless in the WKWebView the
-            // app ships in, real in `just dev`.
-            {keys: "ctrl+d", label: "Half page down", group: "Journal", run: () => moveCursor(halfPageRows(viewportHeight, pitch))},
-            {keys: "PageDown", label: "Half page down", group: "Journal", run: () => moveCursor(halfPageRows(viewportHeight, pitch))},
-            {keys: "ctrl+u", label: "Half page up", group: "Journal", run: () => moveCursor(-halfPageRows(viewportHeight, pitch))},
-            {keys: "PageUp", label: "Half page up", group: "Journal", run: () => moveCursor(-halfPageRows(viewportHeight, pitch))},
-            {keys: "g g", label: "First transaction", group: "Journal", run: () => (cursor.first(), reveal(cursor.index, "nearest"))},
-            {keys: "G", label: "Last transaction", group: "Journal", run: () => (cursor.last(), reveal(cursor.index, "nearest"))},
-            {
-                keys: "Escape",
-                label: "Clear the cursor",
-                group: "Journal",
-                run: () => (armedDelete !== null ? (armedDelete = null) : armedMatch !== null ? (armedMatch = null) : cursor.clear()),
-            },
-            {
-                keys: "Enter",
-                label: "Edit transaction",
-                group: "Journal",
-                enabled: canEdit,
-                run: () => cursor.item !== null && txnModal.openEdit(cursor.item.index),
-            },
-            {keys: "e", label: "Edit description", group: "Journal", enabled: canEdit, run: () => requestRowAction("description")},
-            {keys: "c", label: "Edit category", group: "Journal", enabled: canEdit, run: () => requestRowAction("category")},
-            {keys: "s", label: "Cycle status", group: "Journal", enabled: canEdit, run: () => void cycleStatus()},
-            {keys: "x", label: "Delete transaction", group: "Journal", enabled: canEdit, run: armOrConfirmDelete},
-            {keys: "n", label: "Add transaction", group: "Journal", enabled: canEdit, run: () => txnModal.openAdd()},
-            {keys: "u", label: "Review unknowns", group: "Journal", enabled: () => canEdit() && unknownCount > 0, run: () => launchReview("unknowns")},
-            {keys: "r", label: "Review recents", group: "Journal", enabled: () => canEdit() && recentCount > 0, run: () => launchReview("recents")},
-            {keys: "m", label: "Find matches", group: "Journal", enabled: () => canEdit() && canOpenMatches, run: launchMatches},
-            {keys: "M", label: "Find a match for this transaction", group: "Journal", enabled: () => canEdit() && cursorFindable(), run: findMatchAtCursor},
-            {
-                keys: "l",
-                label: "Expand or collapse a transfer",
-                group: "Journal",
-                enabled: () => cursor.index !== -1 && slotFor(cursor.index).row?.transfer !== undefined,
-                run: toggleCursorTransfer,
-            },
-        ],
+        bindings: (
+            [
+                {
+                    keys: "v",
+                    label: "Switch between the list and the calendar",
+                    group: "Journal",
+                    run: () => filters.setCalendar(!calendar),
+                },
+                {keys: "j", label: "Next transaction", group: "Journal", run: () => moveCursor(1)},
+                {keys: "ArrowDown", label: "Next transaction", group: "Journal", run: () => moveCursor(1)},
+                {keys: "k", label: "Previous transaction", group: "Journal", run: () => moveCursor(-1)},
+                {keys: "ArrowUp", label: "Previous transaction", group: "Journal", run: () => moveCursor(-1)},
+                // PageDown/PageUp are bound alongside the Ctrl chords deliberately:
+                // Ctrl-U is view-source in Chrome and not reliably preventable, so
+                // there has to be an uncontested path. Harmless in the WKWebView the
+                // app ships in, real in `just dev`.
+                {keys: "ctrl+d", label: "Half page down", group: "Journal", run: () => moveCursor(halfPageRows(viewportHeight, pitch))},
+                {keys: "PageDown", label: "Half page down", group: "Journal", run: () => moveCursor(halfPageRows(viewportHeight, pitch))},
+                {keys: "ctrl+u", label: "Half page up", group: "Journal", run: () => moveCursor(-halfPageRows(viewportHeight, pitch))},
+                {keys: "PageUp", label: "Half page up", group: "Journal", run: () => moveCursor(-halfPageRows(viewportHeight, pitch))},
+                {keys: "g g", label: "First transaction", group: "Journal", run: () => (cursor.first(), reveal(cursor.index, "nearest"))},
+                {keys: "G", label: "Last transaction", group: "Journal", run: () => (cursor.last(), reveal(cursor.index, "nearest"))},
+                {
+                    keys: "Escape",
+                    label: "Clear the cursor",
+                    group: "Journal",
+                    run: () => (armedDelete !== null ? (armedDelete = null) : armedMatch !== null ? (armedMatch = null) : cursor.clear()),
+                },
+                {
+                    keys: "Enter",
+                    label: "Edit transaction",
+                    group: "Journal",
+                    enabled: canEdit,
+                    run: () => cursor.item !== null && txnModal.openEdit(cursor.item.index),
+                },
+                {keys: "e", label: "Edit description", group: "Journal", enabled: canEdit, run: () => requestRowAction("description")},
+                {keys: "c", label: "Edit category", group: "Journal", enabled: canEdit, run: () => requestRowAction("category")},
+                {keys: "s", label: "Cycle status", group: "Journal", enabled: canEdit, run: () => void cycleStatus()},
+                {keys: "x", label: "Delete transaction", group: "Journal", enabled: canEdit, run: armOrConfirmDelete},
+                {keys: "n", label: "Add transaction", group: "Journal", enabled: canEdit, run: () => txnModal.openAdd()},
+                {keys: "u", label: "Review unknowns", group: "Journal", enabled: () => canEdit() && unknownCount > 0, run: () => launchReview("unknowns")},
+                {keys: "r", label: "Review recents", group: "Journal", enabled: () => canEdit() && recentCount > 0, run: () => launchReview("recents")},
+                {keys: "m", label: "Find matches", group: "Journal", enabled: () => canEdit() && canOpenMatches, run: launchMatches},
+                {keys: "M", label: "Find a match for this transaction", group: "Journal", enabled: () => canEdit() && cursorFindable(), run: findMatchAtCursor},
+                {
+                    keys: "l",
+                    label: "Expand or collapse a transfer",
+                    group: "Journal",
+                    enabled: () => cursor.index !== -1 && slotFor(cursor.index).row?.transfer !== undefined,
+                    run: toggleCursorTransfer,
+                },
+            ] satisfies Binding[]
+        ).map((binding): Binding => {
+            if (binding.keys === "v" || BOTH_VIEWS.has(binding.keys)) return binding;
+            const enabled = binding.enabled;
+            return {...binding, enabled: enabled === undefined ? inList : () => inList() && enabled()};
+        }),
     });
 
     /** Keep the cursor in step with the mouse: clicking a row's button cursors that row. */
@@ -412,12 +438,24 @@
      */
     export async function scrollToTxn(index: number): Promise<void> {
         const found = await journalView.locate(index).catch(() => null);
+        if (calendar) {
+            // The calendar has no scroll to move: it turns to the transaction's
+            // month instead, and pulses it there.
+            if (found === null || found.date === null) return;
+            if (monthOf(found.date) !== monthOf(filters.value.from ?? found.date)) filters.showMonth(monthOf(found.date));
+            pulse(index);
+            return;
+        }
         const position = found === null || found.position === null ? null : slotOf(found.position, openPositions);
         if (position === null) return;
         reveal(position, "center");
         // Arriving from the drawer leaves you on that row, so `j` continues from
         // there rather than starting over at the top.
         cursor.to(position);
+        pulse(index);
+    }
+
+    function pulse(index: number): void {
         pulseIndex = index;
         clearTimeout(pulseTimer);
         pulseTimer = setTimeout(() => (pulseIndex = null), 2000);
@@ -493,7 +531,9 @@
      scale, or the insights panel open on a small screen) the table keeps a few
      rows and the page scrolls, rather than squeezing to nothing and leaving its
      toolbar to spill under the totals footer. -->
-<section class="flex min-h-40 grow flex-col">
+<!-- The calendar's weeks are a fixed height, so in it the section is as tall as
+     its content (the page scrolls) rather than a share of the window. -->
+<section class={["flex grow flex-col", calendar ? "shrink-0" : "min-h-40"]}>
     <!-- Wraps rather than overflowing when a big interface scale leaves too few rem across. -->
     <div class="flex flex-wrap items-center justify-between gap-2 pb-1">
         {#if editing.canEdit}
@@ -636,80 +676,125 @@
                 <button type="button" class="btn btn-ghost btn-xs" onclick={() => (matchFailure = null)}>Dismiss</button>
             </div>
         {/if}
-        <ColumnMenu />
+        <div class="flex items-center gap-1">
+            {#if !calendar}
+                <ColumnMenu />
+            {/if}
+            <!-- The view toggle sits last, so hiding the column menu in the calendar does not move it. -->
+            <div class="join" role="group" aria-label="Journal view">
+                <button
+                    type="button"
+                    class={["btn join-item btn-ghost btn-xs", !calendar && "btn-active"]}
+                    aria-pressed={!calendar}
+                    aria-label="List view"
+                    title="List view (v)"
+                    onclick={() => filters.setCalendar(false)}
+                    data-testid="view-list"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-4 w-4" aria-hidden="true">
+                        <path
+                            fill-rule="evenodd"
+                            d="M2 3.75A.75.75 0 0 1 2.75 3h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 3.75ZM2 8a.75.75 0 0 1 .75-.75h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 8Zm0 4.25a.75.75 0 0 1 .75-.75h10.5a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1-.75-.75Z"
+                            clip-rule="evenodd"
+                        />
+                    </svg>
+                </button>
+                <button
+                    type="button"
+                    class={["btn join-item btn-ghost btn-xs", calendar && "btn-active"]}
+                    aria-pressed={calendar}
+                    aria-label="Calendar view"
+                    title="Calendar view (v)"
+                    onclick={() => filters.setCalendar(true)}
+                    data-testid="view-calendar"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-4 w-4" aria-hidden="true">
+                        <path
+                            fill-rule="evenodd"
+                            d="M4 1.75a.75.75 0 0 1 1.5 0V3h5V1.75a.75.75 0 0 1 1.5 0V3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2V1.75ZM4.5 6a1 1 0 0 0-1 1v4.5a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1h-7Z"
+                            clip-rule="evenodd"
+                        />
+                    </svg>
+                </button>
+            </div>
+        </div>
     </div>
     <!-- There is no DOM focus on the cursored row (see the cursor's comment), so
          nothing would otherwise be announced as it moves. -->
     <div class="sr-only" aria-live="polite" aria-atomic="true">{announcement}</div>
-    <div
-        bind:this={scroller}
-        bind:clientHeight={viewportHeight}
-        bind:clientWidth={containerWidth}
-        onscroll={(event) => (scrollTop = event.currentTarget.scrollTop)}
-        onfocusin={(event) => syncCursorFromTarget(event.target)}
-        class="min-h-0 grow overflow-y-auto rounded-lg border border-base-300"
-    >
-        {#if journalView.total === null}
-            <div class="flex justify-center p-8" aria-label="Loading transactions"><span class="loading loading-spinner"></span></div>
-        {:else if total === 0}
-            <div class="p-8 text-center text-sm text-base-content/60">No transactions match the current filters.</div>
-        {:else if mode === "table"}
-            <table class="table table-fixed table-sm">
-                <colgroup>
-                    {#if columns.date}<col class="w-24" />{/if}
-                    {#if columns.status}<col class="w-16" />{/if}
-                    {#if columns.description}<col />{/if}
-                    {#if columns.accounts}<col />{/if}
-                    {#if columns.amount}<col class="w-36" />{/if}
-                    {#if pinned !== null}<col class="w-32" /><col class="w-44" />{/if}
-                </colgroup>
-                <thead class="sticky top-0 z-10 bg-base-200" bind:clientHeight={headHeight}>
-                    <tr class="text-base-content/70">
-                        {#if columns.date}<th class="text-left">Date</th>{/if}
-                        {#if columns.status}<th class="text-left">Status</th>{/if}
-                        {#if columns.description}<th class="text-left">Description</th>{/if}
-                        <!-- One measurement for the whole column: `table-fixed`
+    {#if calendar}
+        <CalendarView pulse={pulseIndex} />
+    {:else}
+        <div
+            bind:this={scroller}
+            bind:clientHeight={viewportHeight}
+            bind:clientWidth={containerWidth}
+            onscroll={(event) => (scrollTop = event.currentTarget.scrollTop)}
+            onfocusin={(event) => syncCursorFromTarget(event.target)}
+            class="min-h-0 grow overflow-y-auto rounded-lg border border-base-300"
+        >
+            {#if journalView.total === null}
+                <div class="flex justify-center p-8" aria-label="Loading transactions"><span class="loading loading-spinner"></span></div>
+            {:else if total === 0}
+                <div class="p-8 text-center text-sm text-base-content/60">No transactions match the current filters.</div>
+            {:else if mode === "table"}
+                <table class="table table-fixed table-sm">
+                    <colgroup>
+                        {#if columns.date}<col class="w-24" />{/if}
+                        {#if columns.status}<col class="w-16" />{/if}
+                        {#if columns.description}<col />{/if}
+                        {#if columns.accounts}<col />{/if}
+                        {#if columns.amount}<col class="w-36" />{/if}
+                        {#if pinned !== null}<col class="w-32" /><col class="w-44" />{/if}
+                    </colgroup>
+                    <thead class="sticky top-0 z-10 bg-base-200" bind:clientHeight={headHeight}>
+                        <tr class="text-base-content/70">
+                            {#if columns.date}<th class="text-left">Date</th>{/if}
+                            {#if columns.status}<th class="text-left">Status</th>{/if}
+                            {#if columns.description}<th class="text-left">Description</th>{/if}
+                            <!-- One measurement for the whole column: `table-fixed`
                              makes every accounts cell this wide, so the chips
                              below fit themselves to real pixels without a
                              ResizeObserver per row. -->
-                        {#if columns.accounts}<th class="text-left" use:measureAccountColumn>Accounts</th>{/if}
-                        {#if columns.amount}<th class="text-right">Amount</th>{/if}
-                        {#if pinned !== null}
-                            <th class="text-right" title="What the row did to {pinned}">Change</th>
-                            <th class="text-right" title="{pinned}'s balance after the row, over the whole journal">Balance</th>
+                            {#if columns.accounts}<th class="text-left" use:measureAccountColumn>Accounts</th>{/if}
+                            {#if columns.amount}<th class="text-right">Amount</th>{/if}
+                            {#if pinned !== null}
+                                <th class="text-right" title="What the row did to {pinned}">Change</th>
+                                <th class="text-right" title="{pinned}'s balance after the row, over the whole journal">Balance</th>
+                            {/if}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {#if win.padTop > 0}
+                            <tr aria-hidden="true" style="height: {win.padTop}px"><td colspan={colCount} class="p-0"></td></tr>
                         {/if}
-                    </tr>
-                </thead>
-                <tbody>
-                    {#if win.padTop > 0}
-                        <tr aria-hidden="true" style="height: {win.padTop}px"><td colspan={colCount} class="p-0"></td></tr>
-                    {/if}
+                        {#each visible as slot (slotKey(slot))}
+                            {#if slot.shows === null}
+                                <!-- A row whose block is still loading: same height, no
+                                 `data-txn` (nothing to act on), hidden from AT. -->
+                                <tr class="h-10" aria-hidden="true" data-skeleton>
+                                    <td colspan={colCount} class="py-1"><div class="h-3 w-full skeleton opacity-40"></div></td>
+                                </tr>
+                            {:else}
+                                {@render row(slot, slot.shows, "row")}
+                            {/if}
+                        {/each}
+                        {#if win.padBottom > 0}
+                            <tr aria-hidden="true" style="height: {win.padBottom}px"><td colspan={colCount} class="p-0"></td></tr>
+                        {/if}
+                    </tbody>
+                </table>
+            {:else}
+                <div class="p-2" style="padding-top: {win.padTop + topInset}px; padding-bottom: {win.padBottom + topInset}px">
                     {#each visible as slot (slotKey(slot))}
                         {#if slot.shows === null}
-                            <!-- A row whose block is still loading: same height, no
-                                 `data-txn` (nothing to act on), hidden from AT. -->
-                            <tr class="h-10" aria-hidden="true" data-skeleton>
-                                <td colspan={colCount} class="py-1"><div class="h-3 w-full skeleton opacity-40"></div></td>
-                            </tr>
+                            <div class="mb-2 h-24 skeleton opacity-40" aria-hidden="true" data-skeleton></div>
                         {:else}
-                            {@render row(slot, slot.shows, "row")}
+                            {@render row(slot, slot.shows, "card")}
                         {/if}
                     {/each}
-                    {#if win.padBottom > 0}
-                        <tr aria-hidden="true" style="height: {win.padBottom}px"><td colspan={colCount} class="p-0"></td></tr>
-                    {/if}
-                </tbody>
-            </table>
-        {:else}
-            <div class="p-2" style="padding-top: {win.padTop + topInset}px; padding-bottom: {win.padBottom + topInset}px">
-                {#each visible as slot (slotKey(slot))}
-                    {#if slot.shows === null}
-                        <div class="mb-2 h-24 skeleton opacity-40" aria-hidden="true" data-skeleton></div>
-                    {:else}
-                        {@render row(slot, slot.shows, "card")}
-                    {/if}
-                {/each}
-            </div>
-        {/if}
-    </div>
+                </div>
+            {/if}
+        </div>
+    {/if}
 </section>

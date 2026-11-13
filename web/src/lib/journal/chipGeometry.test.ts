@@ -25,12 +25,14 @@ const {chrome: CHIP_CHROME_PX, flowArrow: FLOW_ARROW_PX, flowGap: FLOW_GAP_PX} =
 // expected numbers readable.
 const px = (text: string): number => text.length * 6;
 
-// The accounts cell at the widest the app goes: `max-w-7xl` (1280px) minus
-// `p-4` (32px) is 1248px of main content, minus the scroller's 1px borders is
-// 1246px of table. `table-fixed` hands the fixed columns their widths — date
-// `w-24` 96, status `w-16` 64, amount `w-36` 144 — and splits the remaining 942
-// evenly between the two auto columns, so the accounts cell is 471px wide, less
-// `table-sm`'s 0.75rem padding-inline a side: 447px of content box.
+// A wide accounts cell: the one a 1280px main column gives (the app's max
+// before it grew to 100rem). 1280 minus `p-4` (32px) is 1248px of main
+// content, minus the scroller's 1px borders is 1246px of table. `table-fixed`
+// hands the fixed columns their widths — date `w-24` 96, status `w-16` 64,
+// amount `w-36` 144 — and splits the remaining 942 evenly between the two auto
+// columns, so the accounts cell is 471px wide, less `table-sm`'s 0.75rem
+// padding-inline a side: 447px of content box. The expectations below are
+// worked out for this width.
 const WIDE_CELL = 447;
 
 // The same sum at a 1024px window: (1024 - 32 - 2 - 304) / 2 - 24.
