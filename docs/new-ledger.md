@@ -19,7 +19,7 @@ The wizard needs the desktop app, because it uses the system folder picker. A br
    - **Personal**: bank accounts, cash, investments, a credit card, loans, income, and everyday spending.
    - **Business**: bank accounts, receivables, inventory, fixed assets, payables, sales tax, payroll, owner's equity, revenue, and common business expenses.
    - **Empty**: no accounts. Add your own in [Settings → Accounts](settings/accounts.md), or let an import bring them in.
-2. **Currency.** Pick the base currency, or **Other…** for any currency code. The preview shows how amounts will look. Tick the decimal comma box to write `1.000,00` instead of `1,000.00`. Also pick the month your fiscal year starts in.
+2. **Currency.** Pick the base currency, or **Other…** for any currency code. The preview shows how amounts will look. Tick the decimal comma box to write `1.000,00` instead of `1,000.00`.
 3. **Accounts.** Review the chart. Rename an account in place, or remove one you won't use. Subaccounts take their parent's type. You can add accounts and change tags later in Settings → Accounts.
 4. **Folder.** Press **Choose folder…** and pick an empty folder, or make a new one in the picker. A folder that holds only hidden files, such as `.DS_Store` or `.git`, counts as empty. Give the ledger a name; it starts as the folder's name. Then press **Create ledger**.
 
@@ -41,15 +41,13 @@ The first step has a **Try with sample data** link. It opens a copy of the sampl
 
 Two files, both plain hledger journals:
 
-`main.journal` is the file Ledgeline opens. Its first line is the ledger's name, which Ledgeline shows at the top of the window. It records the fiscal year as a comment, sets the base currency, and includes the chart of accounts. New transactions go at the end of it.
+`main.journal` is the file Ledgeline opens. Its first line is the ledger's name, which Ledgeline shows at the top of the window. It sets the base currency and includes the chart of accounts. New transactions go at the end of it.
 
 ```journal
 ; Acme Books
 ;
 ; Created by Ledgeline's New ledger wizard. The chart of accounts is in
 ; accounts.journal; transactions go at the end of this file.
-;
-; Fiscal year starts in July.
 
 decimal-mark .
 commodity $1,000.00
@@ -78,7 +76,5 @@ Every top-level account has a declared type, so reports classify the accounts co
 The `transfers` account is a clearing account for moving money between your own accounts. See [Transfer matching](journal/transfer-matching.md). The business chart's `kpi:` tags turn on the [startup metrics](reports/startup-metrics.md) on Insights. Remove them if you don't want those figures.
 
 The wizard never writes over a file. It refuses a folder that holds anything other than hidden files. It doesn't create `ledgeline.toml` either; see [Settings files](settings/settings-files.md).
-
-Ledgeline's reports use calendar years. The fiscal year is recorded in `main.journal` so you, and later versions of Ledgeline, know it.
 
 Both files work with the `hledger` command: `hledger -f main.journal check` passes on a new ledger.

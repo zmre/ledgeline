@@ -30,21 +30,6 @@ export const CURRENCY_PRESETS: readonly CurrencyPreset[] = Object.freeze([
 
 export const CUSTOM_CURRENCY = "custom";
 
-export const MONTHS: readonly string[] = Object.freeze([
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-]);
-
 export const KIND_LABELS: Readonly<Record<LedgerKind, {title: string; blurb: string}>> = Object.freeze({
     individual: {title: "Personal", blurb: "Bank accounts, cards, loans, income and everyday spending."},
     business: {title: "Business", blurb: "Receivables, payables, sales tax, owner's equity and common business expenses."},
@@ -237,18 +222,11 @@ export function defaultTitle(folderName: string | null, kind: LedgerKind): strin
 }
 
 /** The answers, as `POST /api/new-ledger` wants them. */
-export function createBody(answers: {
-    folderId: string;
-    title: string;
-    currency: CurrencyStyle;
-    fiscalYearStart: number;
-    accounts: readonly TemplateAccount[];
-}): CreateLedgerBody {
+export function createBody(answers: {folderId: string; title: string; currency: CurrencyStyle; accounts: readonly TemplateAccount[]}): CreateLedgerBody {
     return Object.freeze({
         folderId: answers.folderId,
         title: answers.title.trim(),
         currency: answers.currency,
-        fiscalYearStart: answers.fiscalYearStart,
         accounts: answers.accounts,
     });
 }

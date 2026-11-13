@@ -1,7 +1,7 @@
 <!-- File → New (plan 39 Phase 6): the new-ledger wizard.
 
      Two paths. "Start fresh" asks for a starting chart (personal, business or
-     empty), the base currency and fiscal year, shows the accounts for review,
+     empty), the base currency, shows the accounts for review,
      then a folder and a name, and writes main.journal + accounts.journal.
      "Start from another app" asks which app and which export, writes an
      EMPTY ledger the same way, and hands the file to the Imports screen.
@@ -11,7 +11,7 @@
 <script lang="ts">
     import {onMount} from "svelte";
     import {wizard} from "../wizardStore.svelte";
-    import {CURRENCY_PRESETS, CUSTOM_CURRENCY, KIND_LABELS, MONTHS, sampleAmount, SOURCE_APPS, sourceFileWarning} from "../model";
+    import {CURRENCY_PRESETS, CUSTOM_CURRENCY, KIND_LABELS, sampleAmount, SOURCE_APPS, sourceFileWarning} from "../model";
     import type {LedgerKind, WizardPath, WizardStep} from "../types";
     import AccountReview from "./AccountReview.svelte";
 
@@ -189,19 +189,6 @@
                             <option value={CUSTOM_CURRENCY}>Other…</option>
                         </select>
                     </label>
-                    <label class="flex flex-col gap-1">
-                        <span class="text-sm font-medium">Fiscal year starts in</span>
-                        <select
-                            class="select w-full"
-                            data-testid="new-ledger-fiscal"
-                            value={wizard.fiscalYearStart}
-                            onchange={(event) => wizard.setFiscalYearStart(Number(event.currentTarget.value))}
-                        >
-                            {#each MONTHS as month, index (month)}
-                                <option value={index + 1}>{month}</option>
-                            {/each}
-                        </select>
-                    </label>
                     {#if wizard.currencyPreset === CUSTOM_CURRENCY}
                         <label class="flex flex-col gap-1">
                             <span class="text-sm font-medium">Currency code or symbol</span>
@@ -238,9 +225,6 @@
                 <p class="text-sm" data-testid="new-ledger-sample-amount">
                     Amounts will look like <code class="font-mono">{sampleAmount(wizard.currency)}</code>.
                     {#if wizard.blocker !== null}<span class="text-error">{wizard.blocker}</span>{/if}
-                </p>
-                <p class="text-xs text-base-content/60">
-                    Ledgeline's reports use calendar years for now. The fiscal year is noted in your journal so you, and later versions, know it.
                 </p>
             {:else if wizard.step === "accounts"}
                 <AccountReview

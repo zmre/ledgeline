@@ -163,7 +163,6 @@ fn create_body(folder_id: &str, title: &str, accounts: Value) -> Value {
         "folderId": folder_id,
         "title": title,
         "currency": usd(),
-        "fiscalYearStart": 7,
         "accounts": accounts,
     })
 }
@@ -272,7 +271,7 @@ async fn create_writes_the_ledger_opens_it_and_names_no_path() {
 
     let main = std::fs::read_to_string(folder.join("main.journal")).unwrap();
     assert!(main.starts_with("; Acme Books\n"), "{main}");
-    assert!(main.contains("Fiscal year starts in July."));
+    assert!(!main.to_lowercase().contains("fiscal"), "{main}");
     assert!(main.contains("D $1,000.00"));
     let declared = std::fs::read_to_string(folder.join("accounts.journal")).unwrap();
     assert!(

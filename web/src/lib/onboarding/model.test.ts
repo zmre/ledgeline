@@ -137,7 +137,7 @@ describe("UNIT onboarding model", () => {
     });
 
     it("builds the create body with a trimmed title", () => {
-        const body = createBody({folderId: "f1", title: "  Mine  ", currency: CURRENCY_PRESETS[0].style, fiscalYearStart: 7, accounts: CHART});
-        expect(body).toEqual({folderId: "f1", title: "Mine", currency: CURRENCY_PRESETS[0].style, fiscalYearStart: 7, accounts: CHART});
+        const body = createBody({folderId: "f1", title: "  Mine  ", currency: CURRENCY_PRESETS[0].style, accounts: CHART});
+        expect(body).toEqual({folderId: "f1", title: "Mine", currency: CURRENCY_PRESETS[0].style, accounts: CHART});
     });
 });

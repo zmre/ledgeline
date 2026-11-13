@@ -44,7 +44,6 @@ let currencyPreset = $state<string>("usd");
 let customCode = $state("");
 let customDecimals = $state(2);
 let decimalComma = $state(false);
-let fiscalYearStart = $state(1);
 let title = $state("");
 let titleEdited = $state(false);
 let accounts = $state.raw<readonly TemplateAccount[]>([]);
@@ -70,7 +69,6 @@ function resetAnswers(): void {
     customCode = "";
     customDecimals = 2;
     decimalComma = false;
-    fiscalYearStart = 1;
     title = "";
     titleEdited = false;
     accounts = [];
@@ -137,9 +135,6 @@ export const wizard = {
     },
     get currency(): CurrencyStyle {
         return currentCurrency();
-    },
-    get fiscalYearStart(): number {
-        return fiscalYearStart;
     },
     get title(): string {
         return title;
@@ -245,9 +240,6 @@ export const wizard = {
     setDecimalComma(value: boolean): void {
         decimalComma = value;
     },
-    setFiscalYearStart(month: number): void {
-        fiscalYearStart = month;
-    },
     setTitle(value: string): void {
         title = value;
         titleEdited = true;
@@ -284,7 +276,7 @@ export const wizard = {
     async create(): Promise<WizardOutcome> {
         const blocked = this.blocker;
         if (blocked !== null || folder === null) return {ok: false, message: blocked ?? "Choose a folder."};
-        const body = createBody({folderId: folder.id, title, currency: currentCurrency(), fiscalYearStart, accounts: path === "import" ? [] : accounts});
+        const body = createBody({folderId: folder.id, title, currency: currentCurrency(), accounts: path === "import" ? [] : accounts});
         const created = await run("create", async (client) => decodeCreatedLedger(await client.createNewLedger(body)));
         return created === null ? {ok: false, message: error ?? "The ledger could not be created."} : {ok: true, created};
     },
