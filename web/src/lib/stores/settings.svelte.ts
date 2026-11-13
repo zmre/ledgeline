@@ -201,15 +201,53 @@ function persist(): void {
     });
 }
 
-/** Record a change to the view state where this session keeps it. */
-function save(patch: UiPrefsPatch): void {
+/**
+ * Record a change to the view state where this session keeps it.
+ *
+ * `now`: send at once instead of after the debounce. For one-off choices
+ * (theme, text size) rather than streams of edits: the debounce would leave a
+ * window in which quitting the desktop app loses the change, and a macOS Quit
+ * gives the page no chance to send it.
+ */
+function save(patch: UiPrefsPatch, now = false): void {
+    if (changedDuringPin !== null) changedDuringPin = mergePatch(changedDuringPin, patch);
     if (uiMode === "local") {
         persist();
         return;
     }
     pending = mergePatch(pending, patch);
     if (pendingTimer !== null) clearTimeout(pendingTimer);
-    pendingTimer = setTimeout(() => void flushUiPrefs(), UI_PREFS_SAVE_DELAY_MS);
+    pendingTimer = null;
+    if (now) void flushUiPrefs();
+    else pendingTimer = setTimeout(() => void flushUiPrefs(), UI_PREFS_SAVE_DELAY_MS);
+}
+
+/**
+ * Send whatever is pending as the page goes away (`pagehide`, or hidden),
+ * with a `keepalive` request that outlives it. Nothing to send, or "local"
+ * mode (which persisted already), does nothing.
+ */
+function flushUiPrefsOnUnload(): void {
+    if (pendingTimer !== null) clearTimeout(pendingTimer);
+    pendingTimer = null;
+    const body = pending;
+    if (uiServerUrl === null || Object.keys(body).length === 0) return;
+    pending = {};
+    new LedgelineApi(uiServerUrl).patchUiPrefsOnUnload(body);
+}
+
+/** Listen for the page going away and send pending saves then (see `flushUiPrefsOnUnload`). Returns the teardown. */
+function flushUiPrefsWhenLeaving(target: Window = window): () => void {
+    const onHide = () => flushUiPrefsOnUnload();
+    const onVisibility = () => {
+        if (target.document.visibilityState === "hidden") flushUiPrefsOnUnload();
+    };
+    target.addEventListener("pagehide", onHide);
+    target.document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+        target.removeEventListener("pagehide", onHide);
+        target.document.removeEventListener("visibilitychange", onVisibility);
+    };
 }
 
 /** Human-readable lines for the engine's issues: `ledgeline.toml: ui.matchWindow must be a whole number`. */
@@ -217,8 +255,29 @@ function describeIssues(issues: readonly UiPrefsIssue[]): string[] {
     return issues.map((issue) => `${issue.file}: ${issue.key === null ? "" : `${issue.key} `}${issue.message}`);
 }
 
+/**
+ * Every change made while a pin request is in flight, so its answer can't undo
+ * them. `pending` alone isn't enough: theme and text size save at once, so by
+ * the time the answer lands they have already left `pending`. Null when no pin
+ * is in flight.
+ */
+let changedDuringPin: UiPrefsPatch | null = null;
+
+/**
+ * Saves go out one at a time, in order: each absolute value must land after
+ * the one before it, or a burst of zoom presses could save an older scale.
+ */
+let saving: Promise<void> = Promise.resolve();
+
 /** Send the pending save now. Resolves once it has been answered (or has failed, which is reported, not thrown). */
-async function flushUiPrefs(): Promise<void> {
+function flushUiPrefs(): Promise<void> {
+    // A failure is reported inside `sendPending`; one that escaped it must not
+    // wedge every later save behind a rejected promise.
+    saving = saving.catch(() => undefined).then(sendPending);
+    return saving;
+}
+
+async function sendPending(): Promise<void> {
     if (pendingTimer !== null) clearTimeout(pendingTimer);
     pendingTimer = null;
     const body = pending;
@@ -261,11 +320,13 @@ function setUiMode(mode: "local" | "server"): void {
  */
 async function pinToLedger(key: PinnableUiPrefKey, pinned: boolean): Promise<boolean> {
     if (uiMode !== "server" || uiServerUrl === null) return false;
+    changedDuringPin = {};
     await flushUiPrefs();
     let answer: UiPrefsState;
     try {
         answer = decodeUiPrefsState(await new LedgelineApi(uiServerUrl).pinUiPref(key, pinned));
     } catch (cause) {
+        changedDuringPin = null;
         const message = cause instanceof Error ? cause.message : String(cause);
         uiNotices = [
             ...uiNotices.filter((n) => !n.startsWith("Couldn't keep")),
@@ -274,9 +335,11 @@ async function pinToLedger(key: PinnableUiPrefKey, pinned: boolean): Promise<boo
         console.warn("[settings] pinning a UI preference failed", cause);
         return false;
     }
-    // Changes made while this was in flight are still pending; keep them over
+    // Changes made while this was in flight (sent or still pending) win over
     // the answer rather than letting it undo them.
-    applyUiPrefs(applyPatch(answer.prefs, pending));
+    const changed = changedDuringPin ?? {};
+    changedDuringPin = null;
+    applyUiPrefs(applyPatch(answer.prefs, mergePatch(changed, pending)));
     uiNotices = describeIssues(answer.issues);
     uiLocalKeys = answer.localKeys;
     return true;
@@ -374,6 +437,8 @@ export const settings = {
     pinToLedger,
     /** Send any debounced view-state save now. */
     flushUiPrefs,
+    /** Send pending view-state saves when the page is hidden or unloaded; returns the teardown. */
+    flushUiPrefsWhenLeaving,
     get columns(): ColumnConfig {
         return state.columns;
     },
@@ -534,7 +599,7 @@ export const settings = {
     set theme(theme: ThemeId) {
         if (!isThemeId(theme)) return;
         state.theme = theme;
-        save({theme});
+        save({theme}, true);
     },
     /** Interface scale in whole percent (plan 39), clamped to 50–300; the UI steps inside that. */
     get uiScale(): number {
@@ -542,7 +607,7 @@ export const settings = {
     },
     set uiScale(scale: number) {
         state.uiScale = wholeIn(scale, UI_SCALE_RANGE, UI_SCALE_DEFAULT);
-        save({uiScale: state.uiScale});
+        save({uiScale: state.uiScale}, true);
     },
     /** The cross-origin engine token, if one was entered. Null in embedded mode. */
     get serverToken(): string | null {

@@ -16,6 +16,7 @@ interface Call {
     method: string;
     path: string;
     body: unknown;
+    keepalive: boolean;
 }
 
 /**
@@ -42,7 +43,7 @@ function engine(
         const method = init?.method ?? "GET";
         const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
         const path = new URL(String(input)).pathname;
-        calls.push({method, path, body});
+        calls.push({method, path, body, keepalive: init?.keepalive === true});
         if (path === "/api/ui-prefs/pin" && method === "POST") {
             if (options.pinStatus !== undefined) return Promise.resolve(new Response("no ledger file is open", {status: options.pinStatus}));
             const {key, pinned} = body as {key: "theme" | "uiScale"; pinned: boolean};
@@ -257,5 +258,48 @@ describe("COMPONENT settings — view state on the engine", () => {
         expect(fake.calls.map((c) => c.method)).toEqual(["GET"]);
         settings.uiScale = 110;
         expect(persisted()).toMatchObject({theme: "nord", uiScale: 110});
+    });
+});
+
+// Plan 39 follow-up: a change must not be lost when the app quits or the page
+// goes away inside the save debounce.
+describe("COMPONENT settings — saves that must not be lost", () => {
+    const patches = (calls: Call[]) => calls.filter((c) => c.method === "PATCH");
+
+    it("saves the theme and text size at once, without waiting for the debounce", async () => {
+        const fake = engine();
+        const settings = await loadWith({serverUrl: ENGINE});
+        await settings.loadUiPrefs(ENGINE);
+        vi.useFakeTimers();
+        settings.theme = "nord";
+        settings.uiScale = 125;
+        // No timer is advanced: both leave on the queue (merged into one
+        // request when they're made in the same tick), not on the debounce.
+        await vi.waitFor(() => expect(fake.current()).toMatchObject({theme: "nord", uiScale: 125}));
+    });
+
+    it("sends saves one at a time, so the last value wins", async () => {
+        const fake = engine();
+        const settings = await loadWith({serverUrl: ENGINE});
+        await settings.loadUiPrefs(ENGINE);
+        for (const scale of [110, 125, 150, 175]) settings.uiScale = scale;
+        await settings.flushUiPrefs();
+        expect(fake.current().uiScale).toBe(175);
+        expect(patches(fake.calls).at(-1)?.body).toEqual({uiScale: 175});
+    });
+
+    it("sends a debounced save with keepalive when the page is hidden", async () => {
+        const fake = engine();
+        const settings = await loadWith({serverUrl: ENGINE});
+        await settings.loadUiPrefs(ENGINE);
+        vi.useFakeTimers();
+        const stop = settings.flushUiPrefsWhenLeaving();
+        settings.hideZeroBalances = false;
+        expect(patches(fake.calls)).toHaveLength(0);
+        window.dispatchEvent(new Event("pagehide"));
+        expect(patches(fake.calls)).toEqual([{method: "PATCH", path: "/api/ui-prefs", body: {hideZeroBalances: false}, keepalive: true}]);
+        vi.advanceTimersByTime(5000);
+        expect(patches(fake.calls)).toHaveLength(1);
+        stop();
     });
 });
