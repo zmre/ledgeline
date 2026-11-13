@@ -8,8 +8,9 @@
 //! lives in two TOML files the engine reads, merged per key:
 //!
 //! 1. `ledgeline.toml` in the MAIN JOURNAL'S DIRECTORY, keys under `[ui]`. A
-//!    person writes this file by hand to give one ledger its own values; the
-//!    app NEVER creates it.
+//!    person writes this file by hand to give one ledger its own values. The
+//!    app creates it in one case only: the user asks to keep a [`PINNABLE`]
+//!    key for this ledger ([`pin`], plan 39).
 //! 2. `ui-prefs.toml` in the config directory ([`AppDirs::config_dir`]), the
 //!    same keys at top level. The app's own file: it creates it on the first
 //!    save and edits it after.
@@ -25,9 +26,9 @@
 //! written to `ledgeline.toml` only when that file already exists and its
 //! `[ui]` table already sets that key to a value; everything else goes to
 //! `ui-prefs.toml`. So a ledger overrides exactly the keys someone put in its
-//! file by hand, those keys keep being saved there, and opening or using the
-//! app never makes a file appear in somebody's repository. Reading never
-//! writes anything.
+//! file by hand (or pinned, see [`pin`]), those keys keep being saved there,
+//! and opening or using the app never makes a file appear in somebody's
+//! repository unless they asked for it. Reading never writes anything.
 //!
 //! # `ledgeline.toml` is untrusted
 //!
@@ -96,7 +97,8 @@ use crate::{AppState, JournalLocation};
 /// Env switch for [`Storage::Browser`]. Any non-empty value turns it on.
 pub const UI_PREFS_IN_BROWSER_ENV: &str = "LEDGELINE_UI_PREFS_IN_BROWSER";
 
-/// The per-ledger override file, beside the main journal. Hand-made only.
+/// The per-ledger override file, beside the main journal. Hand-made, or
+/// created by an explicit [`pin`].
 pub(crate) const LEDGER_FILE: &str = "ledgeline.toml";
 
 /// The global file, in the config directory: where saves normally go.
@@ -149,6 +151,39 @@ const PIE_DIMENSIONS: &[&str] = &[
     "category",
     "risk",
 ];
+
+/// Theme ids (plan 39). A family id (`github`) follows the OS light/dark
+/// setting; a variant id (`github-dark`) pins one; dark-only families have one
+/// id. The SPA's `THEME_IDS` (`web/src/lib/settings/uiPrefs.ts`) is the same
+/// list.
+const THEMES: &[&str] = &[
+    "default",
+    "default-light",
+    "default-dark",
+    "github",
+    "github-light",
+    "github-dark",
+    "catppuccin",
+    "catppuccin-latte",
+    "catppuccin-mocha",
+    "gruvbox",
+    "gruvbox-light",
+    "gruvbox-dark",
+    "tokyo-night",
+    "tokyo-night-day",
+    "tokyo-night-night",
+    "solarized",
+    "solarized-light",
+    "solarized-dark",
+    "one-dark-pro",
+    "dracula",
+    "monokai",
+    "nord",
+];
+
+/// The keys [`pin`] may write into [`LEDGER_FILE`]: what a person would want
+/// to tell one ledger from another by.
+const PINNABLE: &[&str] = &["theme", "uiScale"];
 
 /// What a key holds, how a value for it is checked, and its built-in default.
 #[derive(Debug, Clone, Copy)]
@@ -222,6 +257,15 @@ const SPECS: &[Spec] = &[
     whole("matchWindow", 1, 60, 10),
     whole("matchLookback", 0, 36500, 365),
     whole("matchTransitDays", 1, 365, 10),
+    Spec {
+        key: "theme",
+        kind: Kind::Choice {
+            allowed: THEMES,
+            default: "default",
+        },
+    },
+    // Whole percent. The SPA steps 70–200; the wider range is for hand edits.
+    whole("uiScale", 50, 300, 100),
 ];
 
 const fn flag(key: &'static str, default: bool) -> Spec {
@@ -1129,6 +1173,223 @@ pub(crate) fn apply(state: &AppState, patch: &Patch) -> Result<WireUiPrefs, AppE
     Ok(current(state))
 }
 
+/// A `POST /api/ui-prefs/pin` body, checked: pin one [`PINNABLE`] key to the
+/// open ledger, or unpin it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Pin {
+    key: &'static str,
+    pinned: bool,
+}
+
+impl Pin {
+    /// Check a pin body: `{"key": "theme", "pinned": true}`, nothing else.
+    ///
+    /// # Errors
+    /// [`AppError::BadRequest`] for any other shape, or a key that is not
+    /// [`PINNABLE`].
+    pub(crate) fn from_json(body: &Json) -> Result<Self, AppError> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Body {
+            key: String,
+            pinned: bool,
+        }
+        let body: Body = serde_json::from_value(body.clone()).map_err(|_| {
+            AppError::BadRequest(
+                "a pin must be {\"key\": <a UI preference>, \"pinned\": true or false}".to_string(),
+            )
+        })?;
+        let key = PINNABLE
+            .iter()
+            .copied()
+            .find(|key| *key == body.key)
+            .ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "only {} can be kept for one ledger",
+                    PINNABLE.join(" and ")
+                ))
+            })?;
+        Ok(Self {
+            key,
+            pinned: body.pinned,
+        })
+    }
+}
+
+/// The top of a [`LEDGER_FILE`] that [`pin`] creates.
+const LEDGER_HEADER: &str = concat!(
+    "# Ledgeline view settings for this ledger only. Keys in [ui] override\n",
+    "# ui-prefs.toml while this ledger is open. Docs: \"Settings files\".\n",
+    "\n",
+);
+
+/// Pin `pin.key` to the open ledger — write its current effective value into
+/// [`LEDGER_FILE`]'s `[ui]`, CREATING the file if there is none — or unpin it
+/// by removing the key from `[ui]` (the file is kept, even empty). Answers
+/// with the effective values after, like [`apply`].
+///
+/// This is the one place the app creates [`LEDGER_FILE`], and only because
+/// the user asked to keep a setting for this ledger. Once a key is pinned the
+/// ordinary save routing sends its later changes there.
+///
+/// Pinning a key the file already sets to a usable value, or unpinning one it
+/// does not set, writes nothing. An existing file that is symlinked, too large
+/// or not TOML is never written; unpinning from one is a no-op, since it sets
+/// no key.
+///
+/// # Errors
+/// [`AppError::Conflict`] in browser mode, with no ledger open, or when the
+/// ledger file cannot be safely written (see above, or a `[ui]`/key that is
+/// not what a pin expects); [`AppError::Internal`] when the write fails.
+pub(crate) fn pin(state: &AppState, pin: Pin) -> Result<WireUiPrefs, AppError> {
+    let session = state.ui_prefs();
+    if session.browser {
+        return Err(AppError::Conflict(
+            "view settings are kept in this browser, so none can be kept for one ledger"
+                .to_string(),
+        ));
+    }
+    let location = state.snapshot().storage().ok_or_else(|| {
+        AppError::Conflict(
+            "no ledger file is open, so there is no ledgeline.toml to keep a setting in"
+                .to_string(),
+        )
+    })?;
+    let path = ledger_path(&location)?;
+    {
+        // Held across the write, so a save never interleaves with it.
+        let kept = session.kept();
+        if pin.pinned {
+            // What the key is now without the ledger's file. When the file
+            // has a usable value, that is already the effective one.
+            let global = global_layer(state.app_dirs());
+            let value = merge(&[&kept.values, &global.values])
+                .remove(pin.key)
+                .ok_or_else(|| AppError::Internal(format!("{} has no spec", pin.key)))?;
+            pin_ledger(&location, &path, pin.key, &value)?;
+        } else {
+            unpin_ledger(&location, &path, pin.key)?;
+        }
+    }
+    Ok(current(state))
+}
+
+/// The `409` for a [`LEDGER_FILE`] a pin will not write.
+fn refuse_ledger(reason: &str) -> AppError {
+    AppError::Conflict(format!(
+        "{LEDGER_FILE} {reason}, so Ledgeline will not write to it"
+    ))
+}
+
+/// Set `key` to `value` in [`LEDGER_FILE`]'s `[ui]`, creating the file or the
+/// table as needed. See [`pin`].
+fn pin_ledger(
+    location: &JournalLocation,
+    path: &VaultPath,
+    key: &'static str,
+    value: &PrefValue,
+) -> Result<(), AppError> {
+    let vault = location.vault();
+    let patch = Patch {
+        values: Values::from([(key, value.clone())]),
+    };
+    with_retries(LEDGER_FILE, || match read_ledger(location, path) {
+        LedgerFile::Missing => {
+            let mut document = DocumentMut::new();
+            let mut ui = Table::new();
+            patch_table(&mut ui, false, LEDGER_FILE, "ui.", &patch)?;
+            document.insert(UI_TABLE, Item::Table(ui));
+            let text = format!("{LEDGER_HEADER}{document}");
+            // A file the user keeps (and may commit) with their books: the
+            // ordinary new-file mode, as for a rules file or a projection.
+            match vault.create_new_shared(path, text.as_bytes()) {
+                Ok(_) => Ok(Attempt::Done(())),
+                // Something appeared under the name: re-read it.
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    Ok(Attempt::Retry)
+                }
+                Err(error) => Err(write_failed(LEDGER_FILE, error.kind())),
+            }
+        }
+        LedgerFile::Unusable(reason) => Err(refuse_ledger(reason)),
+        LedgerFile::Present {
+            mut document,
+            revision,
+        } => {
+            if ledger_layer(&document).values.contains_key(key) {
+                return Ok(Attempt::Done(()));
+            }
+            if !document.contains_key(UI_TABLE) {
+                // A new table goes last, after what the document holds as
+                // trailing text (a comment-only file is all trailing text).
+                let trailing = document.trailing().as_str().unwrap_or_default().to_string();
+                document.set_trailing("");
+                let mut ui = Table::new();
+                ui.decor_mut().set_prefix(trailing);
+                document.insert(UI_TABLE, Item::Table(ui));
+            }
+            let ui = document
+                .entry(UI_TABLE)
+                .or_insert_with(|| Item::Table(Table::new()));
+            // A `[ui.columns]` alone makes `[ui]` implicit; it now holds a key.
+            if let Some(table) = ui.as_table_mut() {
+                table.set_implicit(false);
+            }
+            let ui = ui
+                .as_table_like_mut()
+                .ok_or_else(|| refuse_ledger("has a ui that is not a table"))?;
+            if ui.get(key).is_some_and(|item| !item.is_value()) {
+                return Err(refuse_ledger(&format!(
+                    "has a ui.{key} that is not a value"
+                )));
+            }
+            patch_table(ui, false, LEDGER_FILE, "ui.", &patch)?;
+            match location
+                .vault()
+                .replace(path, document.to_string().as_bytes(), &revision)
+            {
+                Ok(_) => Ok(Attempt::Done(())),
+                Err(VaultError::Changed { .. }) => Ok(Attempt::Retry),
+                Err(error) => Err(write_failed(LEDGER_FILE, error.kind())),
+            }
+        }
+    })
+}
+
+/// Remove `key` from [`LEDGER_FILE`]'s `[ui]`, keeping everything else and the
+/// file itself. A key the file does not set, or a file that is missing or
+/// unusable, is left alone. The key's own line goes, with any comment lines
+/// directly above it.
+fn unpin_ledger(
+    location: &JournalLocation,
+    path: &VaultPath,
+    key: &'static str,
+) -> Result<(), AppError> {
+    with_retries(LEDGER_FILE, || {
+        let LedgerFile::Present {
+            mut document,
+            revision,
+        } = read_ledger(location, path)
+        else {
+            return Ok(Attempt::Done(()));
+        };
+        if !ledger_sets(&document, key) {
+            return Ok(Attempt::Done(()));
+        }
+        if let Some(ui) = document.get_mut(UI_TABLE).and_then(Item::as_table_like_mut) {
+            ui.remove(key);
+        }
+        match location
+            .vault()
+            .replace(path, document.to_string().as_bytes(), &revision)
+        {
+            Ok(_) => Ok(Attempt::Done(())),
+            Err(VaultError::Changed { .. }) => Ok(Attempt::Retry),
+            Err(error) => Err(write_failed(LEDGER_FILE, error.kind())),
+        }
+    })
+}
+
 /// [`Storage::Browser`]'s answer: the defaults under `overrides`, from no file.
 fn browser_answer(overrides: &Values) -> WireUiPrefs {
     WireUiPrefs {
@@ -1184,8 +1445,118 @@ mod tests {
                 "matchWindow": 10,
                 "matchLookback": 365,
                 "matchTransitDays": 10,
+                "theme": "default",
+                "uiScale": 100,
             })
         );
+    }
+
+    #[test]
+    fn every_theme_id_is_accepted_from_either_file_and_a_patch() {
+        assert_eq!(THEMES.len(), 22);
+        for id in THEMES {
+            let (prefs, issues) = effective(&format!("[ui]\ntheme = \"{id}\"\n"), "");
+            assert!(issues.is_empty(), "{id}: {issues:?}");
+            assert_eq!(prefs["theme"], *id);
+            let (prefs, _) = effective("", &format!("theme = \"{id}\"\n"));
+            assert_eq!(prefs["theme"], *id);
+            assert!(Patch::from_json(&json!({"theme": id})).is_ok(), "{id}");
+        }
+    }
+
+    #[test]
+    fn a_hostile_theme_or_scale_falls_through_with_an_issue() {
+        let (prefs, issues) = effective(
+            "[ui]\ntheme = \"../../etc/passwd\"\nuiScale = \"huge\"\n",
+            "theme = \"nord\"\nuiScale = 125\n",
+        );
+        assert_eq!(
+            prefs["theme"], "nord",
+            "a bad theme falls through to global"
+        );
+        assert_eq!(prefs["uiScale"], 125, "a bad type falls through");
+        let keys: Vec<&str> = issues.iter().filter_map(|i| i.key.as_deref()).collect();
+        assert_eq!(keys, ["ui.theme", "ui.uiScale"]);
+        assert!(issues.iter().all(|issue| !issue.message.contains("passwd")));
+
+        // Wrong case, a table, a number: no layer usable, so the default.
+        for bad in ["theme = \"Nord\"", "theme = 3", "[ui.theme]\nx = 1"] {
+            let (prefs, issues) = effective(&format!("[ui]\n{bad}\n"), "");
+            assert_eq!(prefs["theme"], "default", "{bad}");
+            assert_eq!(issues.len(), 1, "{bad}: {issues:?}");
+        }
+    }
+
+    #[test]
+    fn a_hand_edited_scale_is_clamped_and_a_patch_is_range_checked() {
+        for (written, read) in [("10", 50), ("9999", 300), ("-1", 50), ("112.6", 113)] {
+            let (prefs, issues) = effective(&format!("[ui]\nuiScale = {written}\n"), "");
+            assert_eq!(prefs["uiScale"], read, "{written}");
+            assert_eq!(
+                issues.len(),
+                usize::from(written != "112.6"),
+                "{written}: {issues:?}"
+            );
+        }
+        for ok in [50, 70, 100, 300] {
+            assert!(Patch::from_json(&json!({"uiScale": ok})).is_ok(), "{ok}");
+        }
+        for bad in [json!(49), json!(301), json!(1.5), json!("100"), json!(null)] {
+            assert!(
+                matches!(
+                    Patch::from_json(&json!({"uiScale": bad})),
+                    Err(AppError::BadRequest(_))
+                ),
+                "{bad}"
+            );
+        }
+        for bad in [json!("Default"), json!("light"), json!(""), json!(null)] {
+            assert!(
+                matches!(
+                    Patch::from_json(&json!({"theme": bad})),
+                    Err(AppError::BadRequest(_))
+                ),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_theme_and_scale_can_be_pinned() {
+        assert_eq!(
+            Pin::from_json(&json!({"key": "theme", "pinned": true})).expect("pin"),
+            Pin {
+                key: "theme",
+                pinned: true
+            }
+        );
+        assert_eq!(
+            Pin::from_json(&json!({"key": "uiScale", "pinned": false})).expect("unpin"),
+            Pin {
+                key: "uiScale",
+                pinned: false
+            }
+        );
+        for bad in [
+            json!({"key": "matchWindow", "pinned": true}),
+            json!({"key": "hledgerPath", "pinned": true}),
+            json!({"key": "columns.date", "pinned": true}),
+            json!({"key": "theme"}),
+            json!({"key": "theme", "pinned": "yes"}),
+            json!({"key": "theme", "pinned": true, "value": "nord"}),
+            json!(["theme"]),
+        ] {
+            assert!(
+                matches!(Pin::from_json(&bad), Err(AppError::BadRequest(_))),
+                "{bad} must be refused"
+            );
+        }
+        for key in PINNABLE {
+            assert!(
+                spec(key).is_some_and(|spec| !spec.key.contains('.')),
+                "{key}"
+            );
+        }
     }
 
     #[test]

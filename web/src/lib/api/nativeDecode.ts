@@ -45,7 +45,7 @@ import type {
 } from "#lib/holdings/types.js";
 import type {CreatedPricesFile, PriceOutcome, PriceResult, PricesFile, PricesStatus, PricesUpdateResponse} from "#lib/holdings/pricesTypes.js";
 import {CATEGORY_DIMENSIONS, PIE_DIMENSIONS} from "#lib/holdings/profileTypes.js";
-import {COLUMN_KEYS, INSIGHTS_TABS, UI_PREFS_STORAGES} from "#lib/settings/uiPrefs.js";
+import {COLUMN_KEYS, INSIGHTS_TABS, THEME_IDS, UI_PREFS_STORAGES} from "#lib/settings/uiPrefs.js";
 import type {ColumnConfig, UiPrefs, UiPrefsIssue, UiPrefsState} from "#lib/settings/uiPrefs.js";
 import type {BenchmarkCatalog, BenchmarkLine, BenchmarksResponse} from "#lib/holdings/benchmarks.js";
 import type {Breakdown, CategoryWeight, HoldingsProfiles, SymbolProfile, YahooStatus} from "#lib/holdings/profileTypes.js";
@@ -4925,6 +4925,8 @@ export function decodeUiPrefsState(raw: unknown): UiPrefsState {
         matchWindow: whole(prefs.matchWindow, "ui-prefs matchWindow"),
         matchLookback: whole(prefs.matchLookback, "ui-prefs matchLookback"),
         matchTransitDays: whole(prefs.matchTransitDays, "ui-prefs matchTransitDays"),
+        theme: decodeEnum(THEME_IDS, prefs.theme as string | undefined, "ui-prefs theme"),
+        uiScale: whole(prefs.uiScale, "ui-prefs uiScale"),
     };
     if (!Array.isArray(body.issues)) throw new ApiShapeError("ui-prefs issues: expected an array");
     const issues = body.issues.map((rawIssue, i): UiPrefsIssue => {

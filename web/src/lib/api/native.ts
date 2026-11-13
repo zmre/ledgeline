@@ -8,7 +8,7 @@ import type {WireAutoRuleFormIn} from "#lib/autoRules/ruleForm.js";
 import type {SaveAutoRuleBody} from "#lib/autoRules/types.js";
 import type {BudgetPeriod} from "#lib/budget/types.js";
 import type {SaveHledgerConfBody} from "#lib/settings/hledgerConfTypes.js";
-import type {UiPrefsPatch} from "#lib/settings/uiPrefs.js";
+import type {PinnableUiPrefKey, UiPrefsPatch} from "#lib/settings/uiPrefs.js";
 import {ApiUnreachableError, authHeaders, REQUEST_TIMEOUT_MS, withDeadline} from "./client";
 
 /** The configured server answered, but has no /api/* routes (it is not the Ledgeline engine, or predates the route). */
@@ -2085,6 +2085,18 @@ export class LedgelineApi {
      */
     patchUiPrefs(patch: UiPrefsPatch): Promise<unknown> {
         return this.mutate<unknown>("PATCH", "/api/ui-prefs", 200, patch);
+    }
+
+    /**
+     * Keep `key` for the open ledger only (`pinned: true`: its current value
+     * is written into the ledger's `ledgeline.toml`, created if need be), or
+     * stop (`false`: the key is removed; the file stays). Answers as
+     * `getUiPrefs`, with `localKeys` showing the pin. A key that cannot be
+     * pinned is a `ValidationError`; browser storage, no ledger file open, or
+     * a `ledgeline.toml` the engine will not write is a `ConflictError`.
+     */
+    pinUiPref(key: PinnableUiPrefKey, pinned: boolean): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/ui-prefs/pin", 200, {key, pinned});
     }
 
     /**

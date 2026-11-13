@@ -12,7 +12,9 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
-use ledgeline::{AppDirs, AppState, router_with_state};
+use ledgeline::{
+    AccessToken, AppDirs, AppState, Security, router_with_security, router_with_state,
+};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -64,6 +66,10 @@ impl Tree {
         send(&self.state, "PATCH", Some(body)).await
     }
 
+    async fn pin(&self, key: &str, pinned: bool) -> (StatusCode, Value) {
+        send_pin(&self.state, json!({"key": key, "pinned": pinned})).await
+    }
+
     fn open(&self, ledger: &str) {
         self.state
             .rebind_editor(self.path(&format!("{ledger}/main.journal")))
@@ -72,9 +78,22 @@ impl Tree {
 }
 
 async fn send(state: &AppState, method: &str, body: Option<Value>) -> (StatusCode, Value) {
+    send_to(state, method, "/api/ui-prefs", body).await
+}
+
+async fn send_pin(state: &AppState, body: Value) -> (StatusCode, Value) {
+    send_to(state, "POST", "/api/ui-prefs/pin", Some(body)).await
+}
+
+async fn send_to(
+    state: &AppState,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     let request = Request::builder()
         .method(method)
-        .uri("/api/ui-prefs")
+        .uri(uri)
         .header(header::CONTENT_TYPE, "application/json");
     let request = match body {
         Some(body) => request.body(Body::from(serde_json::to_vec(&body).unwrap())),
@@ -655,6 +674,352 @@ async fn browser_mode_never_creates_or_modifies_either_settings_file() {
     );
     assert_eq!(tree.read(GLOBAL).as_deref(), Some("matchLookback = 90\n"));
     assert_eq!(settings_files(&tree), ["a/ledgeline.toml", GLOBAL]);
+}
+
+// ---------------------------------------------------------------------------
+// `POST /api/ui-prefs/pin` (plan 39): keep `theme`/`uiScale` for one ledger.
+// ---------------------------------------------------------------------------
+
+const LEDGER: &str = "a/ledgeline.toml";
+
+#[tokio::test]
+async fn pinning_creates_ledgeline_toml_with_the_current_value() {
+    let tree = Tree::new();
+    tree.write(GLOBAL, "theme = \"nord\"\n");
+    let (status, body) = tree.pin("theme", true).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["storage"], "files");
+    assert_eq!(body["localKeys"], json!(["theme"]));
+    assert_eq!(body["prefs"]["theme"], "nord");
+    assert_no_absolute_path(&tree, &body);
+
+    let text = tree.read(LEDGER).expect("created beside the journal");
+    assert!(
+        text.starts_with("# Ledgeline view settings for this ledger only."),
+        "{text}"
+    );
+    assert!(text.ends_with("[ui]\ntheme = \"nord\"\n"), "{text}");
+    assert_eq!(tree.read(GLOBAL).as_deref(), Some("theme = \"nord\"\n"));
+    assert_eq!(settings_files(&tree), [LEDGER, GLOBAL]);
+
+    // The default value pins too, beside the first key.
+    let (status, body) = tree.pin("uiScale", true).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["localKeys"], json!(["theme", "uiScale"]));
+    assert!(
+        tree.read(LEDGER)
+            .unwrap()
+            .ends_with("[ui]\ntheme = \"nord\"\nuiScale = 100\n")
+    );
+}
+
+#[tokio::test]
+async fn after_a_pin_saves_of_that_key_go_to_the_ledger_and_other_ledgers_keep_the_global_value() {
+    let tree = Tree::new();
+    tree.write(GLOBAL, "theme = \"nord\"\n");
+    assert_eq!(tree.pin("theme", true).await.0, StatusCode::OK);
+
+    let (status, body) = tree
+        .patch(json!({"theme": "dracula", "uiScale": 125}))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["prefs"]["theme"], "dracula");
+    assert!(
+        tree.read(LEDGER)
+            .unwrap()
+            .ends_with("[ui]\ntheme = \"dracula\"\n")
+    );
+    assert_eq!(
+        tree.read(GLOBAL).as_deref(),
+        Some("theme = \"nord\"\nuiScale = 125\n"),
+        "the unpinned key still goes global"
+    );
+
+    tree.open("b");
+    let (_, body) = tree.get().await;
+    assert_eq!(body["prefs"]["theme"], "nord");
+    assert_eq!(body["prefs"]["uiScale"], 125);
+    assert_eq!(body["localKeys"], json!([]));
+    assert!(tree.read("b/ledgeline.toml").is_none());
+}
+
+#[tokio::test]
+async fn pinning_into_an_existing_file_keeps_its_comments_and_keys() {
+    let tree = Tree::new();
+    let original = "\
+# Business books.
+title = \"kept\"
+
+[ui]
+# two weeks apart here
+matchWindow = 14 # card settles slowly
+
+[other]
+x = 1
+";
+    tree.write(LEDGER, original);
+    tree.write(GLOBAL, "uiScale = 150\n");
+    let (status, body) = tree.pin("uiScale", true).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["localKeys"], json!(["matchWindow", "uiScale"]));
+    assert_eq!(
+        tree.read(LEDGER).unwrap(),
+        original.replace(
+            "# card settles slowly\n",
+            "# card settles slowly\nuiScale = 150\n"
+        )
+    );
+
+    // A file with no [ui] table gets one; one with only [ui.columns] gets
+    // its implicit [ui] made explicit.
+    for (text, written, local) in [
+        (
+            "# just a note\n",
+            "# just a note\n[ui]\ntheme = \"default\"\n",
+            json!(["theme"]),
+        ),
+        (
+            "title = \"x\"\n\n[other]\ny = 1\n# the end\n",
+            "title = \"x\"\n\n[other]\ny = 1\n# the end\n[ui]\ntheme = \"default\"\n",
+            json!(["theme"]),
+        ),
+        (
+            "[ui.columns]\nstatus = false\n",
+            "[ui]\ntheme = \"default\"\n[ui.columns]\nstatus = false\n",
+            json!(["columns.status", "theme"]),
+        ),
+        (
+            "ui = { matchWindow = 5 }\n",
+            "ui = { matchWindow = 5 , theme = \"default\" }\n",
+            json!(["matchWindow", "theme"]),
+        ),
+    ] {
+        let tree = Tree::new();
+        tree.write(LEDGER, text);
+        let (status, body) = tree.pin("theme", true).await;
+        assert_eq!(status, StatusCode::OK, "{text} → {body}");
+        assert_eq!(body["localKeys"], local, "{text}");
+        assert_eq!(body["issues"], json!([]), "{text}");
+        assert_eq!(tree.read(LEDGER).as_deref(), Some(written), "{text}");
+    }
+}
+
+#[tokio::test]
+async fn pinning_a_key_already_set_writes_nothing_but_a_bad_value_is_replaced() {
+    let tree = Tree::new();
+    let pinned = "[ui]\ntheme = \"gruvbox\" # mine\n";
+    tree.write(LEDGER, pinned);
+    tree.write(GLOBAL, "theme = \"nord\"\n");
+    let (status, body) = tree.pin("theme", true).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["prefs"]["theme"], "gruvbox");
+    assert_eq!(tree.read(LEDGER).as_deref(), Some(pinned));
+
+    tree.write(LEDGER, "[ui]\ntheme = \"no-such-theme\" # mine\n");
+    let (status, body) = tree.pin("theme", true).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["issues"], json!([]));
+    assert_eq!(
+        tree.read(LEDGER).as_deref(),
+        Some("[ui]\ntheme = \"nord\" # mine\n"),
+        "the effective value, in place of the bad one"
+    );
+}
+
+#[tokio::test]
+async fn unpinning_removes_the_key_and_keeps_the_file() {
+    let tree = Tree::new();
+    tree.write(GLOBAL, "theme = \"nord\"\n");
+    tree.write(
+        LEDGER,
+        "# mine\n[ui]\nmatchWindow = 14\n# blue for business\ntheme = \"github\"\n",
+    );
+    let (status, body) = tree.pin("theme", false).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["localKeys"], json!(["matchWindow"]));
+    assert_eq!(body["prefs"]["theme"], "nord", "back to the global value");
+    assert_eq!(
+        tree.read(LEDGER).as_deref(),
+        Some("# mine\n[ui]\nmatchWindow = 14\n")
+    );
+
+    // Even when that leaves nothing in it.
+    tree.write(LEDGER, "[ui]\nuiScale = 90\n");
+    let (status, body) = tree.pin("uiScale", false).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["localKeys"], json!([]));
+    assert_eq!(tree.read(LEDGER).as_deref(), Some("[ui]\n"));
+}
+
+#[tokio::test]
+async fn unpinning_a_key_that_is_not_pinned_writes_nothing() {
+    let tree = Tree::new();
+    let (status, body) = tree.pin("theme", false).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        settings_files(&tree),
+        Vec::<String>::new(),
+        "no file is created"
+    );
+
+    for text in [
+        "[ui]\nmatchWindow = 14\n",
+        "theme = \"nord\"\n",
+        "[ui.theme]\nx = 1\n",
+    ] {
+        tree.write(LEDGER, text);
+        let (status, body) = tree.pin("theme", false).await;
+        assert_eq!(status, StatusCode::OK, "{text} → {body}");
+        assert_eq!(tree.read(LEDGER).as_deref(), Some(text));
+    }
+}
+
+#[tokio::test]
+async fn only_theme_and_scale_can_be_pinned_and_a_bad_pin_writes_nothing() {
+    let tree = Tree::new();
+    for body in [
+        json!({"key": "matchWindow", "pinned": true}),
+        json!({"key": "hledgerPath", "pinned": true}),
+        json!({"key": "columns", "pinned": true}),
+        json!({"key": "theme"}),
+        json!({"key": "theme", "pinned": true, "value": "nord"}),
+        json!("theme"),
+    ] {
+        let (status, answer) = send_pin(&tree.state, body.clone()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body} → {answer}");
+    }
+    assert_eq!(settings_files(&tree), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn a_ledger_file_that_cannot_be_safely_written_refuses_a_pin() {
+    let big = format!("[ui]\nmatchWindow = 20\n{}", "# padding\n".repeat(8000));
+    for text in [
+        big.as_str(),
+        "[ui\nmatchWindow = ",
+        "ui = 5\n",
+        "[ui.theme]\nx = 1\n",
+    ] {
+        let tree = Tree::new();
+        tree.write(LEDGER, text);
+        let (status, body) = tree.pin("theme", true).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_no_absolute_path(&tree, &body);
+        assert_eq!(tree.read(LEDGER).as_deref(), Some(text));
+        assert!(tree.read(GLOBAL).is_none());
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_symlinked_ledger_file_refuses_a_pin_and_is_never_written_through() {
+    let tree = Tree::new();
+    let target = tree.path("elsewhere.toml");
+    let planted = "[ui]\nmatchWindow = 55\n";
+    std::fs::write(&target, planted).unwrap();
+    std::os::unix::fs::symlink(&target, tree.path(LEDGER)).unwrap();
+    let (status, body) = tree.pin("theme", true).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_no_absolute_path(&tree, &body);
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), planted);
+    assert!(
+        tree.path(LEDGER)
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+
+    // A dangling one is not created through either.
+    let tree = Tree::new();
+    let target = tree.path("would-be-created.toml");
+    std::os::unix::fs::symlink(&target, tree.path(LEDGER)).unwrap();
+    let (status, body) = tree.pin("theme", true).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(!target.exists(), "nothing was created at the link's target");
+}
+
+#[tokio::test]
+async fn pinning_needs_an_open_ledger_file_and_files_storage() {
+    let dir = TempDir::new().unwrap();
+    let journal = ledgeline_core::parse::parse_journal(JOURNAL, "in-memory").unwrap();
+    let state =
+        AppState::from_journal(&journal).with_app_dirs(AppDirs::under(dir.path().join("app")));
+    let (status, body) = send_pin(&state, json!({"key": "theme", "pinned": true})).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(files_under(dir.path()), Vec::<String>::new());
+
+    let tree = Tree::new();
+    let state = tree.state.clone().with_ui_prefs_in_browser();
+    for pinned in [true, false] {
+        let (status, body) = send_pin(&state, json!({"key": "theme", "pinned": pinned})).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert!(
+            body.as_str().is_some_and(|m| m.contains("browser")),
+            "{body}"
+        );
+    }
+    assert_eq!(settings_files(&tree), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn a_hostile_theme_or_scale_in_ledgeline_toml_falls_back_with_an_issue() {
+    let tree = Tree::new();
+    tree.write(LEDGER, "[ui]\ntheme = \"$(rm -rf)\"\nuiScale = 5000\n");
+    tree.write(GLOBAL, "theme = \"dracula\"\n");
+    let (status, body) = tree.get().await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["prefs"]["theme"], "dracula");
+    assert_eq!(body["prefs"]["uiScale"], 300, "clamped");
+    assert_eq!(
+        issue_keys(&body),
+        ["ledgeline.toml:ui.theme", "ledgeline.toml:ui.uiScale"]
+    );
+    assert!(!body.to_string().contains("rm -rf"), "{body}");
+}
+
+/// Both UI-preference routes write files, so both sit behind the token guard;
+/// the pin route is the one that may create `ledgeline.toml`.
+#[tokio::test]
+async fn every_ui_prefs_route_requires_the_token() {
+    const PORT: u16 = 5097;
+    let tree = Tree::new();
+    let token = AccessToken::parse("integration-test-token").expect("well-formed token");
+    for (method, uri, body) in [
+        ("GET", "/api/ui-prefs", ""),
+        ("PATCH", "/api/ui-prefs", "{}"),
+        (
+            "POST",
+            "/api/ui-prefs/pin",
+            r#"{"key":"theme","pinned":true}"#,
+        ),
+    ] {
+        for (auth, expected) in [
+            (None, Some(StatusCode::UNAUTHORIZED)),
+            (Some("Bearer wrong"), Some(StatusCode::UNAUTHORIZED)),
+            (Some("Bearer integration-test-token"), None),
+        ] {
+            let mut request = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::HOST, format!("127.0.0.1:{PORT}"))
+                .header(header::CONTENT_TYPE, "application/json");
+            if let Some(auth) = auth {
+                request = request.header(header::AUTHORIZATION, auth);
+            }
+            let status =
+                router_with_security(tree.state.clone(), Security::local(token.clone(), PORT))
+                    .oneshot(request.body(Body::from(body)).unwrap())
+                    .await
+                    .expect("router responds")
+                    .status();
+            match expected {
+                Some(expected) => assert_eq!(status, expected, "{method} {uri} {auth:?}"),
+                None => assert_eq!(status, StatusCode::OK, "{method} {uri} with the token"),
+            }
+        }
+    }
+    assert!(tree.read(LEDGER).is_some(), "the authorised pin wrote");
 }
 
 /// Every regular file under `root`, relative, sorted.

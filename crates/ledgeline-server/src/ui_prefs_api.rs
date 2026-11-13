@@ -17,7 +17,7 @@ use crate::edit_api::json_body;
 use crate::error::AppError;
 use crate::reports_api::compute;
 use crate::security::no_store_json;
-use crate::ui_prefs::{self, Patch};
+use crate::ui_prefs::{self, Patch, Pin};
 
 /// `GET /api/ui-prefs` — the effective preferences for the open journal.
 /// Reads only: never creates or writes a file.
@@ -40,5 +40,24 @@ pub(crate) async fn patch(
 ) -> Result<Response, AppError> {
     let patch = Patch::from_json(&json_body(payload)?)?;
     let Json(body) = compute(move || ui_prefs::apply(&state, &patch)).await?;
+    Ok(no_store_json(body))
+}
+
+/// `POST /api/ui-prefs/pin` — keep one setting for the open ledger only, or
+/// stop: body `{"key": "theme" | "uiScale", "pinned": bool}`. Pinning writes
+/// the key's current effective value into the ledger's `ledgeline.toml`
+/// `[ui]`, creating the file if there is none — the one time the app creates
+/// it, because the user asked. Unpinning removes the key and keeps the file.
+/// Answers like `GET`, so `localKeys` shows the pin.
+///
+/// `400` for any other key or shape; `409` in browser mode, with no ledger
+/// file open, or when an existing `ledgeline.toml` cannot be safely written
+/// (symlinked, too large, not TOML).
+pub(crate) async fn pin(
+    State(state): State<AppState>,
+    payload: Result<Json<serde_json::Value>, JsonRejection>,
+) -> Result<Response, AppError> {
+    let pin = Pin::from_json(&json_body(payload)?)?;
+    let Json(body) = compute(move || ui_prefs::pin(&state, pin)).await?;
     Ok(no_store_json(body))
 }

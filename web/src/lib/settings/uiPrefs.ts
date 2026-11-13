@@ -32,6 +32,51 @@ export type InsightsTab = "activity" | "balances";
 export const INSIGHTS_TABS: readonly InsightsTab[] = ["activity", "balances"];
 
 /**
+ * Theme ids (plan 39). A family id (`github`) follows the OS light/dark
+ * setting; a variant id (`github-dark`) pins one; dark-only families have one
+ * id. The engine checks the same list (`THEMES` in ui_prefs.rs).
+ */
+export const THEME_IDS = [
+    "default",
+    "default-light",
+    "default-dark",
+    "github",
+    "github-light",
+    "github-dark",
+    "catppuccin",
+    "catppuccin-latte",
+    "catppuccin-mocha",
+    "gruvbox",
+    "gruvbox-light",
+    "gruvbox-dark",
+    "tokyo-night",
+    "tokyo-night-day",
+    "tokyo-night-night",
+    "solarized",
+    "solarized-light",
+    "solarized-dark",
+    "one-dark-pro",
+    "dracula",
+    "monokai",
+    "nord",
+] as const;
+
+export type ThemeId = (typeof THEME_IDS)[number];
+
+export const THEME_DEFAULT: ThemeId = "default";
+
+/** Interface scale, whole percent (plan 39). The engine clamps hand edits to this range; the UI steps inside it. */
+export const UI_SCALE_RANGE = [50, 300] as const;
+export const UI_SCALE_DEFAULT = 100;
+
+/** The keys `POST /api/ui-prefs/pin` can keep for one ledger (`PINNABLE` in ui_prefs.rs). */
+export const PINNABLE_UI_PREF_KEYS = ["theme", "uiScale"] as const;
+
+export type PinnableUiPrefKey = (typeof PINNABLE_UI_PREF_KEYS)[number];
+
+export const isThemeId = (value: unknown): value is ThemeId => (THEME_IDS as readonly unknown[]).includes(value);
+
+/**
  * Every UI preference. The engine owns the same list, defaults and bounds
  * (`SPECS` in ui_prefs.rs); `the defaults are the SPA's` there pins them.
  */
@@ -80,6 +125,10 @@ export interface UiPrefs {
     matchLookback: number;
     /** The "In transit" finding's threshold (D10). Default 10. */
     matchTransitDays: number;
+    /** The colour theme (plan 39): a family id follows the OS light/dark setting, a variant id pins one. */
+    theme: ThemeId;
+    /** Interface scale in whole percent (plan 39), 50–300. Default 100. */
+    uiScale: number;
 }
 
 export type UiPrefKey = keyof UiPrefs;
@@ -104,6 +153,8 @@ export const UI_PREF_KEYS: readonly UiPrefKey[] = [
     "matchWindow",
     "matchLookback",
     "matchTransitDays",
+    "theme",
+    "uiScale",
 ];
 
 /** A partial update, as `PATCH /api/ui-prefs` takes it: `columns` may name only some members. */
@@ -196,6 +247,8 @@ export const defaultUiPrefs = (): UiPrefs => ({
     matchWindow: MATCH_WINDOW,
     matchLookback: MATCH_LOOKBACK,
     matchTransitDays: MATCH_TRANSIT_DAYS,
+    theme: THEME_DEFAULT,
+    uiScale: UI_SCALE_DEFAULT,
 });
 
 const flag = (value: unknown, fallback: boolean): boolean => (typeof value === "boolean" ? value : fallback);
@@ -237,6 +290,10 @@ export function cleanUiPrefs(parsed: Record<string, unknown>): UiPrefs {
         matchWindow: wholeIn(parsed.matchWindow, MATCH_WINDOW_RANGE, MATCH_WINDOW),
         matchLookback: wholeIn(parsed.matchLookback, MATCH_LOOKBACK_RANGE, MATCH_LOOKBACK),
         matchTransitDays: wholeIn(parsed.matchTransitDays, MATCH_TRANSIT_RANGE, MATCH_TRANSIT_DAYS),
+        // Validated against the list: a theme a later version dropped must
+        // fall back rather than leave the page unstyled.
+        theme: isThemeId(parsed.theme) ? parsed.theme : base.theme,
+        uiScale: wholeIn(parsed.uiScale, UI_SCALE_RANGE, UI_SCALE_DEFAULT),
     };
 }
 
