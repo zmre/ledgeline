@@ -161,3 +161,32 @@ describe("UNIT helpSections", () => {
         expect(advertised.filter((row) => row.keys === "j").map((row) => row.label)).toEqual(["widget down"]);
     });
 });
+
+describe("UNIT always bindings (zoom, plan 39)", () => {
+    it("still resolves an `always` binding from below a modal layer, and nothing else from there", () => {
+        const layers = stack(
+            {id: "global", priority: PRIORITY.page, bindings: [binding("?"), binding("mod+0", "zoom", {always: true})]},
+            {id: "overlay", priority: PRIORITY.overlay, modal: true, bindings: [binding("j")]}
+        );
+
+        const active = resolveBindings(layers);
+
+        expect(active.map((b) => b.label)).toEqual(["j", "zoom"]);
+    });
+
+    it("lets a modal layer still shadow an `always` key it binds itself", () => {
+        const layers = stack(
+            {id: "global", priority: PRIORITY.page, bindings: [binding("mod+0", "zoom", {always: true})]},
+            {id: "overlay", priority: PRIORITY.overlay, modal: true, bindings: [binding("mod+0", "overlay's own")]}
+        );
+
+        expect(resolveBindings(layers).map((b) => b.label)).toEqual(["overlay's own"]);
+    });
+
+    it("keeps a `help: false` alias off the sheet while it still dispatches", () => {
+        const active = resolveBindings(stack({id: "global", bindings: [binding("ctrl++", "Zoom in"), binding("ctrl+=", "Zoom in", {help: false})]}));
+
+        expect(helpSections(active).flatMap((s) => s.rows.map((r) => r.keys))).toEqual(["ctrl++"]);
+        expect(handleKey(active, "", press("=", {ctrlKey: true})).kind).toBe("run");
+    });
+});

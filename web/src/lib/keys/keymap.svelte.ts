@@ -120,12 +120,23 @@ export const keymap = {
         // Mid-IME composition, and the dead-key half of an accented character
         // (Option-e on a US layout in the WKWebView) — neither is a keystroke yet.
         if (event.isComposing || event.key === "Dead" || event.key === "Unidentified") return;
-        // Focus is in a field: the app is not listening, with NO exceptions,
-        // Escape included. Escape inside a field belongs to that field, which is
-        // the shape the four pre-existing handlers already have. One rule with
-        // no carve-outs cannot drift.
+        // Focus is in a field: the app is not listening, Escape included.
+        // Escape inside a field belongs to that field, which is the shape the
+        // four pre-existing handlers already have. The ONE carve-out is a
+        // binding marked `always` (zoom): a Ctrl/Cmd chord that types nothing,
+        // so a field cannot want it, and browser zoom works from a field too.
+        // It is a property of the binding, not a list here, so it cannot drift.
         if (isTypingTarget(event.target as TargetLike | null)) {
             disarm();
+            const decision = handleKey(
+                active.filter((binding) => binding.always === true),
+                "",
+                event
+            );
+            if (decision.kind === "run") {
+                event.preventDefault();
+                decision.binding.run();
+            }
             return;
         }
         // Escape always disarms a half-typed chord, then falls through so an

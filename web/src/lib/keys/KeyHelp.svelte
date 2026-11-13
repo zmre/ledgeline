@@ -48,7 +48,7 @@
                     </section>
                 {/each}
             </div>
-            <p class="mt-4 text-xs text-base-content/60">Shortcuts are off while you're typing in a field.</p>
+            <p class="mt-4 text-xs text-base-content/60">Shortcuts are off while you're typing in a field, except zoom.</p>
         </div>
         <button type="button" class="modal-backdrop" aria-label="Close" onclick={() => keymap.closeHelp()}>close</button>
     </div>

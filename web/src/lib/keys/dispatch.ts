@@ -23,21 +23,27 @@ import {GROUP_ORDER, PRIORITY, type KeyGroup, type RegisteredLayer, type Resolve
  * Then: drop anything `enabled()` says no to, and dedupe by canonical key,
  * first occurrence winning. The higher layer wins outright — there is no
  * negotiation and no `stopPropagation` anywhere in this design.
+ *
+ * The one exception to the modal blind is an `always` binding (zoom): it is
+ * still collected from below a modal layer, because the browser's own zoom
+ * works over any dialog and ours should too.
  */
 export function resolveBindings(layers: readonly RegisteredLayer[]): ResolvedBinding[] {
     const ordered = [...layers].sort((a, b) => (b.priority ?? PRIORITY.page) - (a.priority ?? PRIORITY.page) || b.seq - a.seq);
 
     const resolved: ResolvedBinding[] = [];
     const claimed = new Set<string>();
+    let blinded = false;
     for (const layer of ordered) {
         for (const binding of layer.bindings) {
+            if (blinded && binding.always !== true) continue;
             if (binding.enabled !== undefined && !binding.enabled()) continue;
             const key = canonical(binding.keys);
             if (claimed.has(key)) continue;
             claimed.add(key);
             resolved.push({...binding, layerId: layer.id});
         }
-        if (layer.modal === true) break;
+        if (layer.modal === true) blinded = true;
     }
     return resolved;
 }
@@ -90,11 +96,13 @@ export interface HelpSection {
  *
  * Rows keep resolution order within a group (so the winning binding for a
  * shadowed key is the one shown, exactly once) and groups follow `GROUP_ORDER`.
- * An empty group is omitted rather than rendered as a bare heading.
+ * An empty group is omitted rather than rendered as a bare heading, and a
+ * binding marked `help: false` (an alternate spelling) is not listed.
  */
 export function helpSections(active: readonly ResolvedBinding[]): HelpSection[] {
     const byGroup = new Map<KeyGroup, HelpRow[]>();
     for (const binding of active) {
+        if (binding.help === false) continue;
         const rows = byGroup.get(binding.group) ?? [];
         rows.push({keys: binding.keys, label: binding.label, tokens: formatKeys(binding.keys)});
         byGroup.set(binding.group, rows);

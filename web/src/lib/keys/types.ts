@@ -69,6 +69,19 @@ export interface Binding {
      * of runes state: the help sheet calls it inside a `$derived`.
      */
     enabled?: () => boolean;
+    /**
+     * Fires EVERYWHERE, the way the browser's own zoom does: while focus is in
+     * a field, and under a `modal` overlay that blinds every other binding
+     * below it. For Ctrl/Cmd chords that type nothing and that no field or
+     * overlay could mean anything else by — the zoom keys, and nothing else so
+     * far. Never a chord sequence: a field gets no `g` prefix.
+     */
+    always?: boolean;
+    /**
+     * `false` keeps an alternate spelling off the `?` sheet (Cmd+= beside the
+     * listed Cmd++). It still fires. Default: listed.
+     */
+    help?: boolean;
 }
 
 export interface Layer {
