@@ -32,7 +32,7 @@
             )}{!expanded && lines.length > CLIP ? `\n… ${lines.length - CLIP} more line${lines.length - CLIP === 1 ? "" : "s"}` : ""}</pre>
         <h3
             id={headId}
-            class="shrink-0 text-[0.625rem] font-semibold tracking-[0.08em] whitespace-nowrap text-base-content/40 uppercase"
+            class="shrink-0 text-[length:max(0.625rem,8px)] font-semibold tracking-[0.08em] whitespace-nowrap text-base-content/40 uppercase"
             title="Edit this in the file"
         >
             file text · read-only

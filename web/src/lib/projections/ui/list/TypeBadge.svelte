@@ -39,7 +39,7 @@
     };
 
     const BASE =
-        "inline-flex h-4 max-w-full shrink-0 items-center self-center justify-self-start rounded-[0.3rem] px-1.5 font-sans text-[0.5625rem] leading-none font-semibold tracking-[0.07em] uppercase";
+        "inline-flex h-4 max-w-full shrink-0 items-center self-center justify-self-start rounded-[0.3rem] px-1.5 font-sans text-[length:max(0.5625rem,8px)] leading-none font-semibold tracking-[0.07em] uppercase";
 </script>
 
 {#if account.trim() === ""}
