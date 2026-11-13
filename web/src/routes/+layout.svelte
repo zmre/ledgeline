@@ -25,8 +25,8 @@
     // The header stays pinned at the top so the ledger name and the section
     // tabs are always in view. Its height is the page's scroll padding, so
     // every `scrollIntoView` and anchor jump lands just below it rather than
-    // underneath it — measured, not hard-coded, because the tabs wrap on a
-    // narrow window.
+    // underneath it — measured, not hard-coded, because it grows with the
+    // interface scale.
     let headerHeight = $state(0);
     $effect(() => {
         document.documentElement.style.scrollPaddingTop = `${headerHeight}px`;
@@ -66,6 +66,22 @@
     // the fallback chain and why the URL is now only its last rung.
     const connLabel = $derived(connectionLabel(conn, journal.title));
     const connTitle = $derived(connectionTooltip(conn, journal.file, settings.serverUrl, journal.error));
+
+    // The section tabs, drawn as the header's tab row on a wide window and as
+    // its menu on a narrow one. Imports hides on an engine with no rules route.
+    const sections = $derived.by(() => {
+        const path = page.url.pathname;
+        const all = [
+            {href: resolve("/"), label: "Journal", active: path === "/"},
+            {href: resolve("holdings"), label: "Holdings", active: path.startsWith("/holdings")},
+            {href: resolve("budget"), label: "Budget", active: path.startsWith("/budget")},
+            {href: resolve("projections"), label: "Projections", active: path.startsWith("/projections")},
+            {href: resolve("reports"), label: "Reports", active: path.startsWith("/reports")},
+            {href: resolve("imports"), label: "Imports", active: path.startsWith("/imports")},
+        ];
+        return rulesStore.available ? all : all.filter((s) => s.label !== "Imports");
+    });
+    const currentSection = $derived(sections.find((s) => s.active)?.label ?? (page.url.pathname.startsWith("/settings") ? "Settings" : "Menu"));
 
     let reconnectOpen = $state(false);
     let storageNoticeDismissed = $state(false);
@@ -122,6 +138,15 @@
     });
 </script>
 
+{#snippet sectionLinks(inMenu: boolean)}
+    {#each sections as section (section.label)}
+        <li>
+            <!-- A menu link blurs itself: the dropdown is open while focus is inside it. -->
+            <a href={section.href} class={section.active ? "menu-active" : ""} onclick={inMenu ? (e) => e.currentTarget.blur() : undefined}>{section.label}</a>
+        </li>
+    {/each}
+{/snippet}
+
 <svelte:head><link rel="icon" type="image/svg+xml" href="/ledgeline-icon-small.svg" /></svelte:head>
 
 <!-- `onblur` disarms a half-typed chord on Cmd-Tab, so returning to the window
@@ -134,33 +159,37 @@
         <div class="flex min-h-screen flex-col bg-base-100 text-base-content">
             <header class="navbar sticky top-0 z-30 min-h-12 bg-base-200 shadow-sm" bind:clientHeight={headerHeight} data-testid="app-header">
                 <div class="navbar-start">
-                    <a href={resolve("/")} class="btn gap-2 btn-ghost px-2 text-lg font-semibold tracking-tight">
-                        <img src="/ledgeline-icon-small.svg" alt="Ledgeline" class="h-7 w-7 rounded" />
-                        Ledgeline
+                    <a href={resolve("/")} class="btn gap-2 btn-ghost px-2 text-lg font-semibold tracking-tight" aria-label="Ledgeline">
+                        <img src="/ledgeline-icon-small.svg" alt="" class="h-7 w-7 rounded" />
+                        <span class="hidden md:inline">Ledgeline</span>
                     </a>
+                    <!-- Below `md` (48rem — in rem, so a big interface scale gets
+                         here on a wide window too) the six tabs no longer fit
+                         beside the logo and the icons, so they fold into one
+                         menu named for the current section. -->
+                    <div class="dropdown md:hidden" data-testid="nav-menu">
+                        <div tabindex="0" role="button" class="btn gap-1 btn-ghost px-2 btn-sm" aria-label="Sections: {currentSection}">
+                            {currentSection}
+                            <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                class="h-4 w-4"
+                                aria-hidden="true"
+                            >
+                                <path stroke-linecap="round" stroke-linejoin="round" d="m6 9 6 6 6-6" />
+                            </svg>
+                        </div>
+                        <ul tabindex="-1" class="menu dropdown-content z-40 mt-2 w-max rounded-box bg-base-200 p-2 shadow-lg">
+                            {@render sectionLinks(true)}
+                        </ul>
+                    </div>
                 </div>
-                <nav class="navbar-center">
+                <nav class="navbar-center hidden md:flex">
                     <ul class="menu menu-horizontal gap-1 px-1">
-                        <li>
-                            <a href={resolve("/")} class={page.url.pathname === "/" ? "menu-active" : ""}>Journal</a>
-                        </li>
-                        <li>
-                            <a href={resolve("holdings")} class={page.url.pathname.startsWith("/holdings") ? "menu-active" : ""}>Holdings</a>
-                        </li>
-                        <li>
-                            <a href={resolve("budget")} class={page.url.pathname.startsWith("/budget") ? "menu-active" : ""}>Budget</a>
-                        </li>
-                        <li>
-                            <a href={resolve("projections")} class={page.url.pathname.startsWith("/projections") ? "menu-active" : ""}>Projections</a>
-                        </li>
-                        <li>
-                            <a href={resolve("reports")} class={page.url.pathname.startsWith("/reports") ? "menu-active" : ""}>Reports</a>
-                        </li>
-                        {#if rulesStore.available}
-                            <li>
-                                <a href={resolve("imports")} class={page.url.pathname.startsWith("/imports") ? "menu-active" : ""}>Imports</a>
-                            </li>
-                        {/if}
+                        {@render sectionLinks(false)}
                     </ul>
                 </nav>
                 <div class="navbar-end gap-1 pr-2">

@@ -55,6 +55,12 @@ test("shell works at mobile width (375px)", async ({page}) => {
     await page.goto("/");
     await expect(page.locator("footer")).toContainText("transactions");
 
+    // Too narrow for the tab row: the sections fold into one menu named for the current one.
+    await expect(page.getByTestId("app-header").getByRole("link", {name: "Holdings"})).toBeHidden();
+    await page.getByRole("button", {name: "Sections: Journal"}).click();
     await page.getByRole("link", {name: "Reports"}).click();
     await expect(page.getByRole("tab", {name: "Balance Sheet"})).toBeVisible();
+    await expect(page.getByRole("button", {name: "Sections: Reports"})).toBeVisible();
+    // The menu closes behind the navigation.
+    await expect(page.getByTestId("nav-menu").getByRole("link", {name: "Holdings"})).toBeHidden();
 });
