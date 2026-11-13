@@ -13,10 +13,9 @@ second half is editable — Ledgeline writes your budget back into your journal 
 ordinary hledger `~` periodic rules, which `hledger balance --budget` reads
 exactly as it always has.
 
-On a wide window the two halves merge into one table: each goal sits on the
-same row as its progress, and you change a goal by clicking its budgeted amount.
-See [The budget table](#the-budget-table). On a narrow window the bars and the
-goals list are shown one above the other.
+The two halves share one table: each goal sits on the same row as its
+progress, and you change a goal by clicking its budgeted amount. See
+[The budget table](#the-budget-table).
 
 ![The Budget tab for the year to date: the controls, the budget bars and the start of the goals list](images/budget-overview.png)
 
@@ -314,9 +313,9 @@ hledger accepts, and not something worth leaving behind.
 
 ## Reading the bars
 
-![Budget bars: the Expenses roll-up and the per-account bars, with one spent / budgeted figure boxed](images/budget-bars.png)
+![The Expenses table: one row per budgeted account and the Total under them, with one Remaining figure boxed](images/budget-bars.png)
 
-The top half is `hledger balance --budget` in envelope form: one bullet bar per
+The table is `hledger balance --budget` in envelope form: one bullet bar per
 category, split into Income and Expenses, with the goal marker where your budget
 sits and the fill showing what has actually happened.
 
@@ -328,25 +327,25 @@ you clicked.
 
 ### Pace: where you should be by now
 
-Each bar carries **two** marks. The bright one is your goal for the whole span.
-The quieter, half-height one is **pace** — the goal prorated to the days that
+Each bar carries **two** marks. The tall, bright one is your goal for the
+whole span; it stands a little above and below the bar so you can still see it
+when the fill has run past it. The quieter, half-height one is **pace** — the goal prorated to the days that
 have actually elapsed. Look at January-to-June of an annual budget and the pace
 mark sits at the halfway point; look at a period that has already finished and it
 sits exactly on the goal, because a finished period is fully paced.
 
-In the stacked (narrow) layout, a bar is **green when it is on the right side of
-pace, red when it is not**, and the fill is one colour throughout. The wide
-table keeps the same sentences but colours the bars differently (see
+The verdict is the sentence at the bar's right end, under **Remaining**, and
+its colour (the bar's own colour is about the goal, not pace; see
 [The budget table](#the-budget-table)):
 
 | Type    | Situation                    | Label              | Colour |
 |---------|------------------------------|--------------------|--------|
 | Expense | at or under pace             | `$X left`          | green  |
-| Expense | past pace, still under goal  | `$X ahead of pace` | red    |
+| Expense | past pace, still under goal  | `$X ahead of pace` | amber  |
 | Expense | past goal                    | `$X over`          | red    |
 | Revenue | at or past goal              | `$X above target`  | green  |
 | Revenue | at or past pace, under goal  | `$X to go`         | green  |
-| Revenue | short of pace                | `$X behind pace`   | red    |
+| Revenue | short of pace                | `$X behind pace`   | amber  |
 
 Income and expenses are read by the same sentence, in opposite directions, which
 is the only way a two-section screen stays legible. It also fixes two things that
@@ -371,8 +370,7 @@ anything a bar or a label can show.
 
 ### The budget table
 
-When the window is wide enough (56rem of page width, which scales with the
-interface size), each section is a table with four columns:
+Each section is a table with four columns:
 
 | Column    | What it shows                                                                                   |
 |-----------|-------------------------------------------------------------------------------------------------|
@@ -381,11 +379,20 @@ interface size), each section is a table with four columns:
 | Actual    | What has happened so far, above the bar.                                                        |
 | Remaining | The bar's sentence (`$170.00 left`, `$25.00 over`, `$400.00 behind pace`), at the bar's right end. |
 
-A **Total** row heads each section. It sums the rows below it and can't be
-edited.
+A **Total** row closes each section, under a rule. It sums the rows above it
+and can't be edited.
 
-**Editing from the Budgeted column.** What a click does depends on how many
-goals make up the figure:
+On a narrow window (a phone, a half-screen window, or a large interface size)
+each row folds onto two lines: the account and its Budgeted amount on the
+first, then Actual and Remaining above the bar on the second. The Actual and
+Remaining headings are dropped there, because the figures over each bar say
+what they are. The fold happens when the table is narrower than 42rem, which
+scales with the interface size.
+
+**Editing from the Budgeted column.** Hover or tab to a row and a pencil
+appears before its budgeted amount; on a touch screen the pencil is always
+shown, dimmed. The pencil and the amount are one button. What a click does
+depends on how many goals make up the figure:
 
 - **One goal:** the click opens the goal dialog for it.
 - **Several goals:** the amount has a small ▾, and the click opens a list of
