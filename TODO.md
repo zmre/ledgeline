@@ -28,8 +28,6 @@
 
 - feat: **Reconcile mode** (builds on plan 36's running balances). Pick an account, enter a statement's end date and closing balance, then tick off transactions as they match the statement, writing hledger's `*` cleared status on the account's posting. Show cleared total vs statement balance and the difference live, so you're done when it reads zero. Then offer to write a balance assertion at the statement date. Questions: posting-level vs transaction-level status (hledger has both; the posting is the right one here), `!` pending for items in flight, and whether "cleared through" gets remembered per account (a tag on the account declaration?) so the next statement starts where the last ended.
 * Support editing assertions: add a "+ assertion" control to each posting row, backed by a new SetPostingAssertion op. The engine already writes assertions out (render_assertion), so most of the work is the new op, the UI and tests.
-- feat: File -> New
-  - Here I'm assuming we're setting up a new set of journal files, chart of accounts, etc. Probably we prompt with some questions and use an empty folder as a starting point and then create a skeleton so someone can start using us to track things. We should have a default chart of accounts for individuals and another for businesses and then we should allow them to start with an empty set of accounts to add their own.
 
 ## Search
 
