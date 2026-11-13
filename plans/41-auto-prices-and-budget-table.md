@@ -61,6 +61,21 @@ no files except `TODO.md`/docs, so they run in parallel worktrees.
   session is dropped unless Yahoo's `meta.currentTradingPeriod.regular.end`
   has passed. **The manual button gets the same fix**, because today it can
   record an intraday price as the day's close.
+- **Which symbols need a price for a date D** (added 2026-11-13). A
+  commodity needs a price dated D only if it's held at some point in
+  `[D, today]`. In other words, D ≤ its last-held date, where an open
+  position counts as today. Examples:
+  - Buy X on Sep 1 and still hold it: X gets backfilled even for weeks
+    before Sep 1.
+  - Sell all of Y on Sep 5: Y gets nothing after Sep 5's week.
+  - Sell all of X yesterday: X doesn't get today's close.
+
+  The last-held date comes from the same holdings engine the Stocks tab uses.
+- **Prices file stays in date order** (added 2026-11-13). New `P` lines,
+  from the manual button and from auto runs, go in chronological position
+  after the last `P` line dated on or before them. They're not appended.
+  Existing lines, comments and other directives are never reordered, so a
+  file that's already out of order stays that way.
 - **Weeks** are Monday–Sunday. "No other updates that week" means no `P`
   directive for that commodity dated in that week, in any included file.
 - **No silent file creation.** If no file holds prices yet (`canCreateFile`),
