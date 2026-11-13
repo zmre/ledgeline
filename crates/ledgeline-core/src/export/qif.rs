@@ -13,6 +13,7 @@
 //!
 //! | hledger type             | QIF                                       |
 //! |--------------------------|-------------------------------------------|
+//! | security account         | `Invst` register — see [`invst`]          |
 //! | Cash (`C`)               | `Bank` register                           |
 //! | other Asset (`A`)        | `Oth A` register                          |
 //! | Liability (`L`)          | `CCard` or `Oth L` register — see below   |
@@ -30,16 +31,24 @@
 //!
 //! # Transactions
 //!
+//! A transaction that moves a security is first offered to [`invst::plan`],
+//! which writes it as investment records (Buy, Sell, Div, ShrsIn …) in the
+//! file of the currency it was paid in. What no action fits continues below,
+//! and the report counts why.
+//!
 //! Postings are split by commodity first: QIF has no currency field, so each
 //! commodity gets its own file. A posting with a cost (`@`/`@@`) is written as
-//! the cash it cost — shares bought into a brokerage account become the
-//! dollars they cost — except on a bank (`Bank`/`Cash`) register, where a cost
-//! is a currency exchange and the currency is kept. A commodity whose postings
+//! the cash it cost — a security trade no action fits, or a house booked as
+//! its own commodity, becomes the dollars it cost — except on a bank
+//! (`Bank`/`Cash`) register, where a cost is a currency exchange and the
+//! currency is kept. A commodity whose postings
 //! do not balance on their own (that exchange, or a conversion with no written
 //! cost) is balanced through the holding account in its file.
 //!
 //! Within one commodity, the transaction is written once, in its *home*
-//! register — [`home_register`] — with a split line for every other posting:
+//! register — [`home_register`], though an `Invst` register is home only when
+//! no other register is involved and the record has one other leg, because an
+//! investment record cannot split — with a split line for every other posting:
 //! a category, or `[Account]` for another register. The target app mirrors
 //! the transfer into the other register itself. [`TransferPlacement`] is the
 //! one switch that changes that.
@@ -56,6 +65,8 @@
 //! the transaction comment without its tags; `E` a posting's comment without
 //! its tags; `L`/`S` take `/Class` from a `class:` tag. Status maps
 //! three-to-three ([`status_field`]).
+
+mod invst;
 
 use super::loss::{FileSummary, LossReport};
 use super::{free_text, is_internal_tag, print_order};
@@ -151,6 +162,8 @@ pub enum QifAccountType {
     OtherAsset,
     /// `Oth L`
     OtherLiability,
+    /// `Invst`: securities and the cash beside them.
+    Investment,
 }
 
 impl QifAccountType {
@@ -163,6 +176,7 @@ impl QifAccountType {
             Self::CreditCard => "CCard",
             Self::OtherAsset => "Oth A",
             Self::OtherLiability => "Oth L",
+            Self::Investment => "Invst",
         }
     }
 
@@ -180,6 +194,7 @@ impl QifAccountType {
             "ccard" | "creditcard" => Some(Self::CreditCard),
             "otha" | "otherasset" => Some(Self::OtherAsset),
             "othl" | "otherliability" => Some(Self::OtherLiability),
+            "invst" | "investment" => Some(Self::Investment),
             _ => None,
         }
     }
@@ -218,7 +233,6 @@ pub fn export_qif(journal: &Journal, options: &QifOptions) -> Result<QifExport, 
     let classifier = Classifier::new(journal, &applied);
     let mut loss = LossReport {
         transactions: applied.transactions.len(),
-        price_directives: journal.prices.len(),
         periodic_transactions: journal.periodic_transactions.len(),
         auto_posting_rules: journal.auto_rules.len(),
         auto_postings_applied: applied
@@ -253,6 +267,7 @@ pub fn export_qif(journal: &Journal, options: &QifOptions) -> Result<QifExport, 
     }
 
     let categories = classifier.categories(&applied, &mut names);
+    let prices = security_prices(journal, &classifier, &files, &mut loss);
     let primary = primary_commodity(journal, &files);
     let mut ordered: Vec<(Commodity, FileBuilder)> = files.into_iter().collect();
     ordered.sort_by_key(|(commodity, _)| Some(commodity) != primary.as_ref());
@@ -272,8 +287,22 @@ pub fn export_qif(journal: &Journal, options: &QifOptions) -> Result<QifExport, 
                 records: builder.records,
             });
             loss.records += builder.records;
+            let securities: Vec<(&str, &invst::Security)> = builder
+                .securities
+                .iter()
+                .filter_map(|symbol| {
+                    classifier
+                        .invest
+                        .security(symbol)
+                        .map(|security| (symbol.as_str(), security))
+                })
+                .collect();
             QifFile {
-                text: builder.render(&categories),
+                text: builder.render(
+                    &categories,
+                    &securities,
+                    prices.get(&commodity).map_or(&[], Vec::as_slice),
+                ),
                 commodity,
                 file_name,
             }
@@ -309,6 +338,7 @@ struct Classifier {
     types: AccountTypes,
     overrides: HashMap<String, QifAccountType>,
     credit_cards: BTreeSet<String>,
+    invest: invst::Investments,
 }
 
 impl Classifier {
@@ -325,10 +355,12 @@ impl Classifier {
                     .map(|ty| (decl.name.0.clone(), ty))
             })
             .collect();
+        let invest = invst::Investments::new(journal, applied, &types, &overrides);
         let mut classifier = Self {
             types,
             overrides,
             credit_cards: BTreeSet::new(),
+            invest,
         };
         classifier.credit_cards = classifier.find_credit_cards(applied);
         classifier
@@ -394,7 +426,16 @@ impl Classifier {
             .collect()
     }
 
+    /// The account whose register `account` is written in: its investment
+    /// register when it is part of one, else itself.
+    fn register_account<'a>(&'a self, account: &'a str) -> &'a str {
+        self.invest.register(account).unwrap_or(account)
+    }
+
     fn role(&self, account: &str) -> Role {
+        if self.invest.register(account).is_some() {
+            return Role::Register(QifAccountType::Investment);
+        }
         if let Some(ty) = self.override_for(account) {
             return Role::Register(ty);
         }
@@ -532,19 +573,30 @@ struct Record {
     splits: Vec<Split>,
 }
 
+/// One record in a register.
+#[derive(Debug, Clone)]
+enum Entry {
+    /// A bank-style record (`Bank`, `CCard`, `Oth A` …).
+    Cash(Record),
+    /// An investment record (`Invst`); boxed, it is the larger by far.
+    Invst(Box<invst::InvstRecord>),
+}
+
 /// Everything written to one commodity's file.
 #[derive(Default)]
 struct FileBuilder {
     /// Registers by QIF name: their type and records, in print order.
-    registers: BTreeMap<String, (QifAccountType, Vec<Record>)>,
+    registers: BTreeMap<String, (QifAccountType, Vec<Entry>)>,
     /// Registers already touched by a transaction in this file — the test for
     /// whether an opening balance can still be an `Opening Balance` record.
     touched: HashSet<String>,
+    /// Symbols of the securities this file's investment records name.
+    securities: BTreeSet<String>,
     records: usize,
 }
 
 impl FileBuilder {
-    fn register(&mut self, name: &str, ty: QifAccountType) -> &mut Vec<Record> {
+    fn register(&mut self, name: &str, ty: QifAccountType) -> &mut Vec<Entry> {
         &mut self
             .registers
             .entry(name.to_string())
@@ -552,18 +604,39 @@ impl FileBuilder {
             .1
     }
 
+    /// Add a record; in an investment register a cash record (one split, by
+    /// construction) becomes `XIn`/`XOut`/`MiscInc`/`MiscExp`.
     fn push(&mut self, name: &str, ty: QifAccountType, record: Record) {
-        self.register(name, ty).push(record);
+        let entry = if ty == QifAccountType::Investment {
+            Entry::Invst(Box::new(invst::from_cash(&record)))
+        } else {
+            Entry::Cash(record)
+        };
+        self.register(name, ty).push(entry);
         self.records += 1;
     }
 
-    fn render(&self, categories: &BTreeMap<String, bool>) -> String {
+    fn push_invst(&mut self, name: &str, record: invst::InvstRecord) {
+        self.register(name, QifAccountType::Investment)
+            .push(Entry::Invst(Box::new(record)));
+        self.records += 1;
+    }
+
+    fn render(
+        &self,
+        categories: &BTreeMap<String, bool>,
+        securities: &[(&str, &invst::Security)],
+        prices: &[String],
+    ) -> String {
         let mut out = String::new();
         let classes: BTreeSet<&str> = self
             .registers
             .values()
-            .flat_map(|(_, records)| records)
-            .flat_map(|record| &record.splits)
+            .flat_map(|(_, entries)| entries)
+            .flat_map(|entry| match entry {
+                Entry::Cash(record) => record.splits.as_slice(),
+                Entry::Invst(_) => &[],
+            })
             .filter_map(|split| split.class.as_deref())
             .collect();
         if !classes.is_empty() {
@@ -578,6 +651,16 @@ impl FileBuilder {
                 let _ = write!(out, "N{name}\n{}\n^\n", if *income { "I" } else { "E" });
             }
         }
+        // Quicken writes a header before each security and each price.
+        for (symbol, security) in securities {
+            let _ = write!(
+                out,
+                "!Type:Security\nN{}\nS{}\nT{}\n^\n",
+                security.name,
+                symbol.replace('"', ""),
+                security.kind
+            );
+        }
         out.push_str("!Option:AutoSwitch\n!Account\n");
         for (name, (ty, _)) in &self.registers {
             let _ = write!(out, "N{name}\nT{}\n^\n", ty.code());
@@ -589,9 +672,15 @@ impl FileBuilder {
                 "!Account\nN{name}\nT{code}\n^\n!Type:{code}\n",
                 code = ty.code()
             );
-            for record in records {
-                render_record(&mut out, record);
+            for entry in records {
+                match entry {
+                    Entry::Cash(record) => render_record(&mut out, record),
+                    Entry::Invst(record) => record.render(&mut out),
+                }
             }
+        }
+        for line in prices {
+            let _ = write!(out, "!Type:Prices\n{line}\n^\n");
         }
         out
     }
@@ -700,6 +789,20 @@ fn export_transaction(
         ctx.loss.transaction_tags += 1;
     }
 
+    // A transaction moving a security becomes investment records when an
+    // action fits; otherwise it is written as cash at cost below.
+    let trade = match invst::plan(txn, ctx.classifier)? {
+        invst::Planned::Trade(trade) => Some(trade),
+        invst::Planned::Fallback(reason) => {
+            *ctx.loss
+                .investment_fallbacks
+                .entry(reason.to_string())
+                .or_default() += 1;
+            None
+        }
+        invst::Planned::NotATrade => None,
+    };
+
     // Legs, grouped by the commodity they are exported in.
     let mut groups: BTreeMap<Commodity, Vec<Leg>> = BTreeMap::new();
     for posting in &txn.postings {
@@ -715,14 +818,29 @@ fn export_transaction(
         if posting.generated.is_none() && (posting.date.is_some() || posting.date2.is_some()) {
             ctx.loss.posting_dates += 1;
         }
-        if has_dropped_tags(&posting.tags) {
+        // A security's `name:` is carried by the security list.
+        let names_security = trade.is_some()
+            && posting
+                .amounts
+                .iter()
+                .any(|amount| ctx.classifier.invest.is_security(&amount.commodity.0));
+        let tags: Vec<(String, String)> = posting
+            .tags
+            .iter()
+            .filter(|(name, _)| !(names_security && name == "name"))
+            .cloned()
+            .collect();
+        if has_dropped_tags(&tags) {
             ctx.loss.posting_tags += 1;
         }
         let account = posting.account.0.as_str();
-        let role = ctx.classifier.role(account);
         if ctx.classifier.is_untyped(account) {
             untyped.insert(account.to_string());
         }
+        if trade.is_some() {
+            continue;
+        }
+        let role = ctx.classifier.role(account);
         // A cost on a bank account is a currency exchange: keep the currency,
         // and let the residual below balance each side. Anywhere else
         // (shares, a foreign-currency expense) the posting is the cash it cost.
@@ -749,6 +867,11 @@ fn export_transaction(
                 conversion: false,
             });
         }
+    }
+
+    if let Some(trade) = trade {
+        write_trade(txn, trade, ctx, files);
+        return Ok(());
     }
 
     // A commodity whose legs do not sum to zero is one side of a conversion
@@ -785,6 +908,66 @@ fn export_transaction(
     Ok(())
 }
 
+/// Write a transaction [`invst::plan`] mapped to investment records, plus the
+/// other side of an X action: listed, or mirrored under
+/// [`TransferPlacement::Mirrored`] (into an investment register that mirror is
+/// an `XIn`/`XOut`).
+fn write_trade(
+    txn: &Transaction,
+    trade: invst::Trade,
+    ctx: &mut Context<'_>,
+    files: &mut BTreeMap<Commodity, FileBuilder>,
+) {
+    let Some((home_account, _)) = trade.records.first() else {
+        // Units moved within one register, or a bare `0 AAPL` marker: nothing
+        // changes in QIF.
+        return;
+    };
+    let home = ctx.names.qif(home_account);
+    let file = files.entry(trade.currency).or_default();
+    file.securities.insert(trade.symbol);
+    ctx.loss.investment_transactions += 1;
+    ctx.loss.realized_gains += usize::from(trade.realized_gain);
+    ctx.loss.dividend_categories += usize::from(trade.dividend_category);
+    for (account, record) in trade.records {
+        let name = ctx.names.qif(&account);
+        file.push_invst(&name, record);
+        file.touched.insert(name);
+    }
+    let Some((account, change)) = trade.counterpart else {
+        return;
+    };
+    let ty = if ctx.classifier.invest.is_register_root(&account) {
+        QifAccountType::Investment
+    } else if let Role::Register(ty) = ctx.classifier.role(&account) {
+        ty
+    } else {
+        return;
+    };
+    let name = ctx.names.qif(ctx.classifier.register_account(&account));
+    file.touched.insert(name.clone());
+    if ctx.placement == TransferPlacement::Mirrored {
+        let record = Record {
+            date: txn.date.clone(),
+            status: txn.status,
+            code: txn.code.clone(),
+            payee: txn.description.clone(),
+            memo: free_text(&txn.comment),
+            total: change,
+            splits: vec![Split {
+                target: Target::Transfer(home),
+                class: class_of(&[], txn),
+                memo: String::new(),
+                from_comment: false,
+                amount: change,
+            }],
+        };
+        file.push(&name, ty, record);
+    } else {
+        file.register(&name, ty);
+    }
+}
+
 /// Write one commodity's share of a transaction. Returns whether anything went
 /// through the holding account.
 fn write_group(
@@ -817,6 +1000,9 @@ fn write_group(
     let mut equity_names: Vec<&str> = Vec::new();
     for leg in legs {
         match leg.role {
+            // An investment register has no Opening Balance record: its
+            // opening cash is an `XIn` from the holding account.
+            Role::Register(QifAccountType::Investment) => remaining.push(leg.clone()),
             Role::Register(ty) => {
                 let name = ctx.names.qif(&leg.account);
                 if opened.iter().any(|(opened, _)| *opened == name) {
@@ -892,7 +1078,10 @@ fn write_record(
         .iter()
         .map(|leg| {
             let register = match leg.role {
-                Role::Register(ty) => Some((ctx.names.qif(&leg.account), ty)),
+                Role::Register(ty) => Some((
+                    ctx.names.qif(ctx.classifier.register_account(&leg.account)),
+                    ty,
+                )),
                 Role::Equity { .. } => {
                     Some((HOLDING_ACCOUNT.to_string(), QifAccountType::OtherAsset))
                 }
@@ -905,13 +1094,46 @@ fn write_record(
         .iter()
         .filter_map(|(register, _)| register.as_ref())
         .collect();
-    let (home, home_type) = home_register(registers.iter().map(|(name, _)| name.as_str()))
-        .and_then(|home| registers.iter().find(|(name, _)| name == home))
+    // An investment record has no splits, so an investment register is home
+    // only when no other register is there and it has one other leg.
+    let outside = |home: &str| {
+        placed
+            .iter()
+            .filter(|(register, _)| register.as_ref().is_none_or(|(name, _)| name != home))
+            .count()
+    };
+    let names_where = |keep: &dyn Fn(&str, QifAccountType) -> bool| {
+        registers
+            .iter()
+            .filter(move |(name, ty)| keep(name, *ty))
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>()
+    };
+    let invst = QifAccountType::Investment;
+    let home_name = home_register(names_where(&|name, ty| {
+        ty != invst && name != HOLDING_ACCOUNT
+    }))
+    .or_else(|| {
+        names_where(&|name, ty| ty == invst && outside(name) <= 1)
+            .into_iter()
+            .min()
+    })
+    .or_else(|| home_register(names_where(&|_, ty| ty != invst)))
+    .unwrap_or(HOLDING_ACCOUNT);
+    let (home, home_type) = registers
+        .iter()
+        .find(|(name, _)| name == home_name)
         .map_or_else(
             || (HOLDING_ACCOUNT.to_string(), QifAccountType::OtherAsset),
             |(name, ty)| (name.clone(), *ty),
         );
     let held = home == HOLDING_ACCOUNT || registers.iter().any(|(name, _)| name == HOLDING_ACCOUNT);
+    if home_type == invst && outside(&home) == 0 {
+        // Everything stayed inside one investment register (a trade written
+        // at cost): no cash moved in or out of it.
+        file.touched.insert(home);
+        return Ok(held);
+    }
 
     let mut home_legs: Vec<&Leg> = Vec::new();
     let mut others: BTreeMap<String, (QifAccountType, Vec<&Leg>)> = BTreeMap::new();
@@ -1025,6 +1247,41 @@ fn join_memo<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
 // ---------------------------------------------------------------------------
 // Files
 // ---------------------------------------------------------------------------
+
+/// The `!Type:Prices` lines for each file, from the `P` directives that price
+/// a security in that file's currency, in journal order. Every other `P`
+/// directive is counted as not exported: an exchange rate between two
+/// currencies has no QIF form, and neither has the price of a commodity that
+/// is not a security (a house) or of a security in a currency it has no
+/// records in.
+fn security_prices(
+    journal: &Journal,
+    classifier: &Classifier,
+    files: &BTreeMap<Commodity, FileBuilder>,
+    loss: &mut LossReport,
+) -> BTreeMap<Commodity, Vec<String>> {
+    let mut out: BTreeMap<Commodity, Vec<String>> = BTreeMap::new();
+    for price in &journal.prices {
+        let symbol = price.commodity.0.as_str();
+        let target = &price.price.commodity;
+        let listed = files
+            .get(target)
+            .is_some_and(|file| file.securities.contains(symbol));
+        if listed {
+            out.entry(target.clone())
+                .or_default()
+                .push(invst::price_line(symbol, price.price.quantity, &price.date));
+            loss.prices_written += 1;
+        } else if classifier.invest.currencies.is_currency(symbol)
+            && classifier.invest.currencies.is_currency(&target.0)
+        {
+            loss.exchange_rates += 1;
+        } else {
+            loss.price_directives += 1;
+        }
+    }
+    out
+}
 
 /// The commodity whose file comes first: the journal's `D` default commodity
 /// when it has records, else the one with the most records (ties by name).
@@ -1216,7 +1473,7 @@ mod tests {
     }
 
     #[test]
-    fn each_commodity_gets_its_own_file_and_costs_become_cash() {
+    fn each_commodity_gets_its_own_file_and_shares_stay_in_theirs() {
         let out = export(&format!(
             "{DECLS}D $1,000.00\naccount assets:broker  ; type: A\n\n\
              2024-01-02 Buy\n    assets:broker  10 AAPL @ $150\n    assets:bank  $-1500\n\n\
@@ -1225,13 +1482,17 @@ mod tests {
         ));
         let names: Vec<&str> = out.files.iter().map(|f| f.file_name.as_str()).collect();
         assert_eq!(names, ["t-dollar.qif", "t-EUR.qif"]);
+        // The shares are an investment record in the dollar file, not a file
+        // of their own and not cash at cost.
         assert!(
-            out.files[0].text.contains("L[assets:broker]\n"),
+            out.files[0]
+                .text
+                .contains("!Type:Invst\nD01/02/2024\nNBuyX\nYAAPL\nI150.00\nQ10\n"),
             "{}",
             out.files[0].text
         );
-        assert!(!out.files[0].text.contains("AAPL"));
-        assert_eq!(out.loss.cost_postings, 1);
+        assert_eq!(out.loss.cost_postings, 0);
+        assert_eq!(out.loss.investment_transactions, 1);
         assert_eq!(out.loss.extra_commodity_files(), 1);
     }
 

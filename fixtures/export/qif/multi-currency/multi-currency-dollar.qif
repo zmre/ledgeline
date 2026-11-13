@@ -8,6 +8,11 @@ E
 Nincome:dividends
 I
 ^
+!Type:Security
+NAAPL
+SAAPL
+TStock
+^
 !Option:AutoSwitch
 !Account
 NLedgeline Adjustments
@@ -17,7 +22,7 @@ Nassets:bank:checking
 TBank
 ^
 Nassets:broker
-TOth A
+TInvst
 ^
 !Clear:AutoSwitch
 !Account
@@ -29,11 +34,6 @@ D01/01/2026
 T5000.00
 POpening Balance
 L[assets:bank:checking]
-^
-D01/03/2026
-T-1500.00
-PBuy shares
-L[assets:broker]
 ^
 D01/05/2026
 T-550.00
@@ -51,4 +51,22 @@ D01/20/2026
 T12.00
 PDividend
 Lincome:dividends
+^
+!Account
+Nassets:broker
+TInvst
+^
+!Type:Invst
+D01/03/2026
+NBuyX
+YAAPL
+I150.00
+Q10
+T1500.00
+PBuy shares
+L[assets:bank:checking]
+$1500.00
+^
+!Type:Prices
+"AAPL",150.00,"1/1/26"
 ^

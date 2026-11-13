@@ -1,0 +1,16 @@
+QIF export: 16 transactions written as 18 records in 2 files.
+  investments-dollar.qif ($): 16 records
+  investments-EUR.qif (EUR): 2 records
+
+Not exported (QIF has no place for these):
+  1 exchange rate (P directive between currencies)
+  1 realized gain posting on a sale (the app works gains out from its own lots)
+
+Changed to fit QIF:
+  1 extra commodity written to a file of its own (QIF has no currency field)
+  1 transaction with no bank-like account, an equity leg or a conversion written through the "Ledgeline Adjustments" account
+  1 opening balance written as QIF Opening Balance record
+  10 security transactions written as investment records (Buy, Sell, Div …); lots and cost basis are not carried
+  5 security prices written to the QIF price list
+  3 dividends written as Div or ReinvDiv, which name no income account
+  1 currency conversion split into one record per currency, each balanced through the "Ledgeline Adjustments" account

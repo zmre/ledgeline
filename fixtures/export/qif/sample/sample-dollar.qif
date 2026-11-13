@@ -50,6 +50,31 @@ I
 Nincome:salary
 I
 ^
+!Type:Security
+NApple Inc.
+SAAPL
+TStock
+^
+!Type:Security
+NGLD
+SGLD
+TStock
+^
+!Type:Security
+NNVDA
+SNVDA
+TStock
+^
+!Type:Security
+NTSLA
+STSLA
+TStock
+^
+!Type:Security
+NVanguard Total Market
+SVTI
+TStock
+^
 !Option:AutoSwitch
 !Account
 NLedgeline Adjustments
@@ -61,20 +86,8 @@ TBank
 Nassets:bank:savings
 TBank
 ^
-Nassets:broker:taxable:aapl
-TOth A
-^
-Nassets:broker:taxable:cash
-TBank
-^
-Nassets:broker:taxable:nvda
-TOth A
-^
-Nassets:broker:taxable:tsla
-TOth A
-^
-Nassets:broker:taxable:vti
-TOth A
+Nassets:broker:taxable
+TInvst
 ^
 Nassets:property:home
 TOth A
@@ -173,7 +186,7 @@ D09/02/2024
 T-3000.00
 CX
 PFidelity | fund brokerage account
-L[assets:broker:taxable:cash]
+L[assets:broker:taxable]
 ^
 D09/12/2024
 T-118.20
@@ -353,7 +366,7 @@ D02/18/2025
 T-5000.00
 CX
 PFidelity | fund brokerage account
-L[assets:broker:taxable:cash]
+L[assets:broker:taxable]
 ^
 D02/27/2025
 T4050.00
@@ -449,7 +462,7 @@ D05/15/2025
 T-1500.00
 CX
 PFidelity | fund brokerage account
-L[assets:broker:taxable:cash]
+L[assets:broker:taxable]
 ^
 D05/15/2025
 T-300.00
@@ -618,7 +631,7 @@ D10/08/2025
 T-5000.00
 CX
 PFidelity | fund brokerage account
-L[assets:broker:taxable:cash]
+L[assets:broker:taxable]
 ^
 D10/12/2025
 T-99.85
@@ -928,109 +941,145 @@ POpening Balance
 L[assets:bank:savings]
 ^
 !Account
-Nassets:broker:taxable:aapl
-TOth A
+Nassets:broker:taxable
+TInvst
 ^
-!Type:Oth A
+!Type:Invst
 D09/16/2024
+NBuy
+YApple Inc.
+I220.00
+Q10
 T2200.00
 CX
 PFidelity | buy AAPL
-L[assets:broker:taxable:cash]
 ^
-D05/20/2025
-T1028.75
-CX
-PFidelity | buy AAPL
-L[assets:broker:taxable:cash]
-^
-D03/10/2026
-T1117.35
-CX
-PFidelity | buy AAPL (fractional)
-L[assets:broker:taxable:cash]
-^
-!Account
-Nassets:broker:taxable:cash
-TBank
-^
-!Type:Bank
 D11/15/2024
+NMiscInc
 T12.50
 CX
 PFidelity | AAPL dividend
 Lincome:dividends
 ^
 D02/14/2025
+NMiscInc
 T12.50
 CX
 PFidelity | AAPL dividend
 Lincome:dividends
 ^
 D02/20/2025
-T-3981.00
+NBuy
+YVanguard Total Market
+I265.40
+Q15
+T3981.00
 CX
 PFidelity | buy VTI
-L[assets:broker:taxable:vti]
 ^
 D05/15/2025
+NMiscInc
 T18.75
 CX
 PFidelity | AAPL dividend
 Lincome:dividends
+^
+D05/20/2025
+NBuy
+YApple Inc.
+I205.75
+Q5
+T1028.75
+CX
+PFidelity | buy AAPL
 ^
 D08/15/2025
+NMiscInc
 T18.75
 CX
 PFidelity | AAPL dividend
 Lincome:dividends
 ^
+D08/20/2025
+NShrsIn
+YGLD
+Q5
+CX
+PVaulted | gold ETF gift from grandpa
+^
 D10/10/2025
-T-2921.00
+NBuy
+YVanguard Total Market
+I292.10
+Q10
+T2921.00
 CX
 PFidelity | buy VTI
-L[assets:broker:taxable:vti]
 ^
 D11/05/2025
-T-2283.00
+NBuy
+YNVDA
+I190.25
+Q12
+T2283.00
 CX
 PFidelity | buy NVDA
-L[assets:broker:taxable:nvda]
 ^
 D11/14/2025
+NMiscInc
 T18.75
 CX
 PFidelity | AAPL dividend
 Lincome:dividends
 ^
 D01/20/2026
+NSell
+YNVDA
+I205.60
+Q12
 T2467.20
 CX
 PFidelity | sell NVDA (close position)
-L[assets:broker:taxable:nvda]
 ^
 D02/13/2026
+NMiscInc
 T25.00
 CX
 PFidelity | AAPL dividend
 Lincome:dividends
 ^
+D03/10/2026
+NBuy
+YApple Inc.
+I248.30
+Q4.5
+T1117.35
+CX
+PFidelity | buy AAPL (fractional)
+^
 D04/14/2026
+NSell
+YVanguard Total Market
+I301.55
+Q8
 T2412.40
 CX
 PFidelity | sell VTI (partial)
-L[assets:broker:taxable:vti]
 ^
 D05/15/2026
+NMiscInc
 T25.00
 CX
 PFidelity | AAPL dividend
 Lincome:dividends
 ^
 D06/22/2026
+NSell
+YTSLA
+I315.00
+Q2
 T630.00
 PFidelity | sell TSLA (position was never entered)
-L[assets:broker:taxable:tsla]
 ^
 !Account
 Nassets:property:home
@@ -1389,4 +1438,25 @@ T-336000.00
 CX
 POpening Balance
 L[liabilities:mortgage]
+^
+!Type:Prices
+"AAPL",228.00,"9/30/24"
+^
+!Type:Prices
+"AAPL",221.50,"3/31/25"
+^
+!Type:Prices
+"VTI",268.90,"3/31/25"
+^
+!Type:Prices
+"AAPL",255.00,"12/31/25"
+^
+!Type:Prices
+"VTI",298.40,"12/31/25"
+^
+!Type:Prices
+"AAPL",270.25,"6/30/26"
+^
+!Type:Prices
+"VTI",310.75,"6/30/26"
 ^
