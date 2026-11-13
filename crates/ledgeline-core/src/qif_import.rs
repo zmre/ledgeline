@@ -60,13 +60,16 @@
 use crate::decimal::Dec;
 use crate::edit::render_dec;
 use crate::qb_journal::{
-    ImportSource, ImportStatus, QbJournal, QbPosting, QbTransaction, SourceAccountKind,
+    ImportSource, ImportStatus, QbJournal, QbPosting, QbTransaction, SourceAccountKind, Units,
 };
 use crate::qif::{self, QifError, QifFile, QifRecord, RegisterKind};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// The source name an opening-balance record's other side is written to.
 pub const OPENING_BALANCES: &str = "Equity:Opening Balances";
+
+/// The source name a share trade's commission is written to.
+pub const COMMISSIONS: &str = "Investment Expenses:Commissions";
 
 /// The source name for a record or split with no category.
 pub const UNCATEGORIZED: &str = "Uncategorized";
@@ -276,9 +279,10 @@ fn opening_balance_account(register: &qif::QifRegister) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 /// Every account name in the file, so a category spelled the same can be told
-/// apart from it.
+/// apart from it, and every security's ticker by the name `Y` uses.
 struct Names {
     accounts: HashSet<String>,
+    symbols: HashMap<String, String>,
 }
 
 /// Where a `L`/`S` value points.
@@ -299,7 +303,27 @@ impl Names {
                 .map(|account| account.name.clone())
                 .chain(registers.map(str::to_string))
                 .collect(),
+            symbols: file
+                .securities
+                .iter()
+                .filter_map(|security| {
+                    let symbol = security.symbol.as_deref()?.trim();
+                    (!symbol.is_empty()).then(|| (security.name.clone(), symbol.to_string()))
+                })
+                .collect(),
         }
+    }
+
+    /// The hledger commodity a security is written as: its ticker from the
+    /// file's `!Type:Security` list, else the name `Y` gives it (written
+    /// quoted when it holds spaces or digits). A `"` can't be quoted, so it
+    /// is dropped.
+    fn commodity(&self, security: &str) -> String {
+        let security = security.trim();
+        self.symbols
+            .get(security)
+            .map_or(security, String::as_str)
+            .replace('"', "")
     }
 
     /// `raw` (`Food:Groceries/Class`, `[Savings]`, empty) from the point of
@@ -391,6 +415,7 @@ fn posting(account: String, amount: Dec, memo: Option<String>, class: Option<Str
         customer: None,
         vendor: None,
         name: None,
+        units: None,
     }
 }
 
@@ -601,6 +626,25 @@ fn investment(
     };
     let neg = negate(amount, line)?;
 
+    let reinvested_from = match action {
+        Action::Reinvest(kind) => Some(income(kind)),
+        _ => None,
+    };
+    let trade = Trade {
+        holding: &holding,
+        cash: &cash,
+        reinvested_from,
+        class: class.clone(),
+    };
+    if let Some(postings) = trade.postings(names, record, action)? {
+        return Ok(Built {
+            kind: raw_action,
+            postings,
+            transfer_to: None,
+            ..base
+        });
+    }
+
     // (first, second): first carries the memo; the two always balance.
     let (first, second, transfer_to) = match action {
         Action::Buy => ((holding, amount), (cash, neg), None),
@@ -657,6 +701,129 @@ fn investment(
         transfer_to,
         ..base
     })
+}
+
+/// Where a share trade's postings go.
+struct Trade<'a> {
+    holding: &'a str,
+    cash: &'a str,
+    /// The income account a reinvested dividend or interest is paid from.
+    reinvested_from: Option<String>,
+    class: Option<String>,
+}
+
+impl Trade<'_> {
+    /// A record that moves shares (`Buy`, `Sell`, a reinvestment, `ShrsIn`,
+    /// `ShrsOut`, and their `X` forms) as units of the security, so the
+    /// holding carries shares and a cost the way a hand-written hledger
+    /// purchase does (plan 39):
+    ///
+    /// ```text
+    /// Buy   Brokerage:ACME   40 ACME @ $50.00     Sell  Checking        $545.05
+    ///       Investment Expenses:Commissions $4.95       Investment Expenses:Commissions $4.95
+    ///       Brokerage       $-2004.95                   Brokerage:ACME  -10 ACME @ $55.00
+    /// ```
+    ///
+    /// A sale is written at its sale price with no realized-gain posting, the
+    /// same convention as Ledgeline's own sample journal; the holdings report
+    /// works out the gain from average cost. The shares are worth the record's
+    /// total less (for a buy) or plus (for a sale) its commission, and the
+    /// price is kept when quantity × price is exactly that. Shares moved in or
+    /// out with no total and no price carry no cost (`@@ $0`).
+    ///
+    /// `None` when the record names no security or no quantity, or the action
+    /// moves no shares: it is then written as the cash it moved.
+    fn postings(
+        &self,
+        names: &Names,
+        record: &QifRecord,
+        action: Action,
+    ) -> Result<Option<Vec<QbPosting>>, QifError> {
+        let moves_shares = matches!(
+            action,
+            Action::Buy | Action::Sell | Action::Reinvest(_) | Action::SharesIn | Action::SharesOut
+        );
+        let (Some(security), Some(quantity), true) =
+            (record.security.as_deref(), record.quantity, moves_shares)
+        else {
+            return Ok(None);
+        };
+        let line = record.line;
+        let overflow = |_| QifError::AmountOverflow { line };
+        let quantity = quantity.abs().map_err(overflow)?;
+        let commission = record
+            .commission
+            .unwrap_or_else(Dec::zero)
+            .abs()
+            .map_err(overflow)?;
+        let total = record.amount.map(Dec::abs).transpose().map_err(overflow)?;
+        let at_price = record
+            .price
+            .map(|price| price.mul(quantity))
+            .transpose()
+            .map_err(overflow)?;
+        let value = match (action, total) {
+            (Action::Buy, Some(total)) => total.sub(commission).map_err(overflow)?,
+            (Action::Sell, Some(total)) => total.add(commission).map_err(overflow)?,
+            (_, Some(total)) => total,
+            (_, None) => at_price.unwrap_or_else(Dec::zero),
+        };
+
+        let shares = |inward: bool| -> Result<QbPosting, QifError> {
+            let (amount, quantity) = if inward {
+                (value, quantity)
+            } else {
+                (
+                    value.neg().map_err(overflow)?,
+                    quantity.neg().map_err(overflow)?,
+                )
+            };
+            Ok(QbPosting {
+                units: Some(Units {
+                    commodity: names.commodity(security),
+                    quantity,
+                    price: record.price.map(Dec::abs).transpose().map_err(overflow)?,
+                }),
+                ..posting(self.holding.to_string(), amount, record.memo.clone(), None)
+            })
+        };
+        let money = |account: &str, amount: Dec| {
+            posting(account.to_string(), amount, None, self.class.clone())
+        };
+        let fee = (!commission.is_zero())
+            .then(|| posting(COMMISSIONS.to_string(), commission, None, None));
+
+        let postings = match action {
+            Action::Buy => {
+                let paid = value.add(commission).map_err(overflow)?;
+                std::iter::once(shares(true)?)
+                    .chain(fee)
+                    .chain([money(self.cash, paid.neg().map_err(overflow)?)])
+                    .collect()
+            }
+            Action::Sell => {
+                let proceeds = value.sub(commission).map_err(overflow)?;
+                std::iter::once(money(self.cash, proceeds))
+                    .chain(fee)
+                    .chain([shares(false)?])
+                    .collect()
+            }
+            Action::Reinvest(_) => {
+                let income = self
+                    .reinvested_from
+                    .as_deref()
+                    .unwrap_or("Investment Income");
+                vec![shares(true)?, money(income, value.neg().map_err(overflow)?)]
+            }
+            Action::SharesIn => vec![
+                shares(true)?,
+                money(OPENING_BALANCES, value.neg().map_err(overflow)?),
+            ],
+            Action::SharesOut => vec![shares(false)?, money(OPENING_BALANCES, value)],
+            _ => return Ok(None),
+        };
+        Ok(Some(postings))
+    }
 }
 
 /// `10 ACME @ 15.00, commission 4.95`, from whichever of those fields the
@@ -1000,30 +1167,42 @@ mod tests {
     }
 
     #[test]
-    fn investment_actions_become_cash_movements() {
+    fn investment_actions_carry_shares_and_cash() {
         let journal = import_text(
-            "!Account\nNBrokerage\nTInvst\n^\n!Type:Invst\n\
-             D1/5/26\nNBuy\nYACME\nI15.00\nQ10\nO4.95\nT154.95\n^\n\
-             D1/6/26\nNDiv\nYACME\nT12.00\n^\n\
-             D1/7/26\nNSellX\nYACME\nQ5\nI20\nT100\nL[Checking]\n$100\n^\n\
-             D1/8/26\nNReinvDiv\nYACME\nT3\n^\n\
-             D1/9/26\nNStkSplit\nYACME\nQ2\n^\n\
-             D1/10/26\nNXIn\nT500\nL[Checking]\n^\n",
+            "!Type:Security\nNACME Index Fund\nSACME\nTMutual Fund\n^\n\
+             !Account\nNBrokerage\nTInvst\n^\n!Type:Invst\n\
+             D1/5/26\nNBuy\nYACME Index Fund\nI15.00\nQ10\nO4.95\nT154.95\n^\n\
+             D1/6/26\nNDiv\nYACME Index Fund\nT12.00\n^\n\
+             D1/7/26\nNSellX\nYACME Index Fund\nQ5\nI20\nT100\nL[Checking]\n$100\n^\n\
+             D1/8/26\nNReinvDiv\nYACME Index Fund\nI15\nQ0.2\nT3\n^\n\
+             D1/9/26\nNStkSplit\nYACME Index Fund\nQ2\n^\n\
+             D1/10/26\nNXIn\nT500\nL[Checking]\n^\n\
+             D1/11/26\nNShrsIn\nYNO LIST CO\nQ3\n^\n",
         );
         balanced(&journal);
         let all: Vec<_> = journal.transactions.iter().map(legs).collect();
+        let units = |txn: usize, posting: usize| {
+            journal.transactions[txn].postings[posting]
+                .units
+                .clone()
+                .map(|units| (units.commodity, units.quantity, units.price))
+        };
+
+        // A buy: shares at the price, the commission, and the cash paid.
         assert_eq!(
             all[0],
             vec![
-                ("Brokerage:ACME".to_string(), dec("154.95")),
+                ("Brokerage:ACME Index Fund".to_string(), dec("150")),
+                (COMMISSIONS.to_string(), dec("4.95")),
                 ("Brokerage".to_string(), dec("-154.95")),
             ]
         );
         assert_eq!(
-            journal.transactions[0].postings[0].memo.as_deref(),
-            Some("10 ACME @ 15.00, commission 4.95")
+            units(0, 0),
+            Some(("ACME".to_string(), dec("10"), Some(dec("15.00"))))
         );
         assert_eq!(journal.transactions[0].transaction_type, "Buy");
+        // A dividend is cash.
         assert_eq!(
             all[1],
             vec![
@@ -1031,14 +1210,32 @@ mod tests {
                 ("Investment Income:Dividends".to_string(), dec("-12")),
             ]
         );
+        assert_eq!(units(1, 0), None);
+        // A sale through another account: proceeds there, shares out at the sale price.
         assert_eq!(
             all[2],
             vec![
                 ("Checking".to_string(), dec("100")),
-                ("Brokerage:ACME".to_string(), dec("-100")),
+                ("Brokerage:ACME Index Fund".to_string(), dec("-100")),
             ]
         );
-        assert_eq!(all[3][0], ("Brokerage:ACME".to_string(), dec("3")));
+        assert_eq!(
+            units(2, 1),
+            Some(("ACME".to_string(), dec("-5"), Some(dec("20"))))
+        );
+        // A reinvested dividend: shares bought with the income.
+        assert_eq!(
+            all[3],
+            vec![
+                ("Brokerage:ACME Index Fund".to_string(), dec("3")),
+                ("Investment Income:Dividends".to_string(), dec("-3")),
+            ]
+        );
+        assert_eq!(
+            units(3, 0),
+            Some(("ACME".to_string(), dec("0.2"), Some(dec("15"))))
+        );
+        // A split moves no money and no units here.
         assert!(all[4].iter().all(|(_, amount)| amount.is_zero()));
         assert_eq!(
             all[5],
@@ -1046,6 +1243,19 @@ mod tests {
                 ("Brokerage".to_string(), dec("500")),
                 ("Checking".to_string(), dec("-500")),
             ]
+        );
+        // Shares moved in with no price: units at no cost, and a security
+        // with no list entry keeps its own name.
+        assert_eq!(
+            all[6],
+            vec![
+                ("Brokerage:NO LIST CO".to_string(), dec("0")),
+                (OPENING_BALANCES.to_string(), dec("0")),
+            ]
+        );
+        assert_eq!(
+            units(6, 0),
+            Some(("NO LIST CO".to_string(), dec("3"), None))
         );
     }
 

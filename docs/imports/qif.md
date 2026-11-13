@@ -90,21 +90,30 @@ Quicken and Banktivity start each account with an `Opening Balance` transaction 
 
 ### Investments
 
-QIF investment records are imported as the money they move, not as share lots. Each one is valued at its total:
+A trade that moves shares is written with the shares as a commodity, the same way you would write a purchase by hand, so the [holdings report](../holdings/index.md) sees share counts and costs:
+
+```journal
+2026-01-05 Buy  ; id: qif-…
+    assets:investments:Brokerage:ACME Index Fund    40 "ACME Index Fund" @ $50.00
+    expenses:Investment Expenses:Commissions        $4.95
+    assets:investments:Brokerage                    $-2004.95
+```
 
 | Action | Written as |
 | --- | --- |
-| `Buy` | Cash out of the account, into `Account:Security` |
-| `Sell` | Back out of `Account:Security` into cash, at the sale proceeds; no cost basis or gain is worked out |
+| `Buy` | Shares into `Account:Security` at the record's price, the commission to `Investment Expenses:Commissions`, the total out of cash |
+| `Sell` | Shares out of `Account:Security` at the sale price, the commission as above, the proceeds into cash. No realized-gain posting is written; the holdings report works the gain out from average cost |
+| `ReinvDiv`, `ReinvInt`, `ReinvLg`, `ReinvSh` | Shares into `Account:Security`, paid from `Investment Income:…` |
+| `ShrsIn`, `ShrsOut` | Shares into or out of `Account:Security`, against `Equity:Opening Balances`, at the record's price (or total). With neither, the shares carry no cost (`@@ $0`) |
 | `Div`, `IntInc`, `CGLong`, `CGShort`, `MiscInc` | Cash in, from `Investment Income:…` |
-| `ReinvDiv`, `ReinvInt`, `ReinvLg`, `ReinvSh` | Into `Account:Security`, from `Investment Income:…` |
-| `ShrsIn`, `ShrsOut` | Into or out of `Account:Security`, against `Equity:Opening Balances` |
 | `XIn`, `XOut`, `Cash` | Cash in or out, against the `L` account |
 | `MargInt`, `MiscExp` | Cash out, to the `L` category or `Investment Expenses` |
 
-An action ending in `X` (`BuyX`, `SellX`, `DivX` …) moves the cash through the `L` account instead of the investment account's own cash. The shares, price and commission are kept in the memo, as in `40 ACME Index Fund @ 50.00, commission 4.95`. An action that moves no money, such as `StkSplit`, or one Ledgeline does not know, is written as a zero-amount transaction with the action in its memo, so nothing in the file disappears unseen.
+An action ending in `X` (`BuyX`, `SellX`, `DivX` …) moves the cash through the `L` account instead of the investment account's own cash.
 
-If you track holdings by share count, edit those transactions afterwards to use the security as a commodity.
+The commodity is the security's ticker from the file's `!Type:Security` list (`ACME`), or the name the record uses when the file has no list (`"ACME Index Fund"`, quoted because it has spaces). When the price times the shares isn't exactly the value, the total is written instead (`40 ACME @@ $2003.10`).
+
+A trade with no security or no share count is written as the money it moves, with whatever the record says in the memo. A stock split, or an action Ledgeline doesn't know, is written as a zero-amount transaction with the action in its memo, so nothing in the file disappears unseen. Adjust holdings for a split by hand.
 
 ## Importing again
 
@@ -118,8 +127,8 @@ If you change a transaction's date, amount or payee in the source app and export
 
 - **Currencies.** QIF has no currency field. Every amount is written in your journal's default commodity. For a second currency, import its file into a journal whose default is that currency, or edit the amounts afterwards.
 - **Budgets, scheduled transactions, attachments and reconciliation history.** Banktivity and Quicken don't export them.
-- **Share lots and prices.** See [Investments](#investments).
-- **Memorized transactions, securities and price lists** (`!Type:Memorized`, `!Type:Security`, `!Type:Prices`) are skipped.
+- **Share lots and price history.** Shares come in with their cost (see [Investments](#investments)), but specific lots and stock splits don't, and a `!Type:Prices` list is skipped. hledger can still value holdings from the trade prices with `--infer-market-prices`.
+- **Memorized transactions** (`!Type:Memorized`) are skipped.
 
 ## From a terminal
 

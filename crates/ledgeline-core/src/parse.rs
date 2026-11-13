@@ -3573,7 +3573,7 @@ pub(crate) fn split_account_amount(text: &str) -> (&str, &str) {
 /// into the commodity name (PARSE-5). `[`/`]` are deliberately **not** excluded
 /// — hledger accepts `10 AA[PL` as the commodity `AA[PL`, and only treats
 /// `[...]` as a lot date directly after a `{...}` price.
-fn is_commodity_char(c: char) -> bool {
+pub(crate) fn is_commodity_char(c: char) -> bool {
     !c.is_ascii_digit()
         && !c.is_whitespace()
         && !matches!(

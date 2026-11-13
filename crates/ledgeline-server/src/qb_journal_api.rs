@@ -63,11 +63,13 @@ use axum::extract::{Path as AxumPath, State};
 use axum::response::Response;
 use ledgeline_core::edit::InsertPosition;
 use ledgeline_core::model::{
-    AccountName, AliasDirective, Amount, Commodity, Journal, Posting, PostingType, SourcePos,
-    Status, Tindex, Transaction,
+    AccountName, AliasDirective, Amount, Commodity, Cost, CostKind, Journal, Posting, PostingType,
+    SourcePos, Status, Tindex, Transaction,
 };
 use ledgeline_core::qb_import::{self, plain_aliases, resolve_account};
-use ledgeline_core::qb_journal::{ImportSource, ImportStatus, QbJournal, QbPosting, QbTransaction};
+use ledgeline_core::qb_journal::{
+    ImportSource, ImportStatus, QbJournal, QbPosting, QbTransaction, Units,
+};
 use ledgeline_core::reimport::{self, RowClassification};
 use ledgeline_core::reports::{
     AccountType, AccountTypes, KpiRole, account_decls, declared_kpi_roles, declared_types,
@@ -573,11 +575,17 @@ fn wire_sample(txn: &QbTransaction) -> WireQbSample {
             // clamps `places` to `MAX_RENDER_PLACES`, which this module's private
             // copy of it did not.
             .map(|posting| {
-                format!(
-                    "{}  {}",
-                    posting.account,
-                    ledgeline_core::edit::render_dec(posting.amount, '.')
-                )
+                let money = ledgeline_core::edit::render_dec(posting.amount, '.');
+                match &posting.units {
+                    // Plan 39: shares of a security, then what they're worth.
+                    Some(units) => format!(
+                        "{}  {} {} ({money})",
+                        posting.account,
+                        ledgeline_core::edit::render_dec(units.quantity, '.'),
+                        units.commodity
+                    ),
+                    None => format!("{}  {money}", posting.account),
+                }
             })
             .collect(),
     }
@@ -877,9 +885,13 @@ fn code_for(qb_txn: &QbTransaction, source: ImportSource) -> String {
 fn merge_same_account_postings(id: &str, postings: Vec<Posting>) -> Result<Vec<Posting>, AppError> {
     let mut merged: Vec<Posting> = Vec::with_capacity(postings.len());
     for posting in postings {
-        let existing = merged
-            .iter_mut()
-            .find(|other| other.account == posting.account && other.comment == posting.comment);
+        let existing = merged.iter_mut().find(|other| {
+            other.account == posting.account
+                    && other.comment == posting.comment
+                    // Units at a price are a trade each: never summed.
+                    && is_plain_money(other)
+                    && is_plain_money(&posting)
+        });
         match existing {
             Some(target) => {
                 let summed = target.amounts[0]
@@ -909,17 +921,21 @@ fn build_posting(
     let account = resolve_account(&posting.account, aliases)
         .expect("caller guarantees every account resolves before building a transaction");
     let name_is_customer = customer_lines.takes_customer(&account);
-    let style = infer_style(journal, commodity, posting.amount.places);
+    let money = Amount {
+        commodity: commodity.clone(),
+        quantity: posting.amount,
+        style: infer_style(journal, commodity, posting.amount.places),
+        cost: None,
+    };
+    let amount = match &posting.units {
+        Some(units) => units_amount(journal, units, money),
+        None => money,
+    };
     Posting {
         status: Status::Unmarked,
         ptype: PostingType::Regular,
         account: AccountName(account),
-        amounts: vec![Amount {
-            commodity: commodity.clone(),
-            quantity: posting.amount,
-            style,
-            cost: None,
-        }],
+        amounts: vec![amount],
         balance_assertion: None,
         date: None,
         date2: None,
@@ -927,6 +943,48 @@ fn build_posting(
         tags: Vec::new(),
         generated: None,
         elided: false,
+    }
+}
+
+/// A posting of plain money: one amount with no cost. Only these merge.
+fn is_plain_money(posting: &Posting) -> bool {
+    matches!(posting.amounts.as_slice(), [amount] if amount.cost.is_none())
+}
+
+/// `units` of a security, priced so they are worth exactly `money` (plan 39):
+/// `40 ACME @ $50.00` when the source's per-unit price times the quantity is
+/// exactly the posting's amount, else `40 ACME @@ $2004.95` (the total, as a
+/// positive amount, which is how hledger writes a total cost).
+fn units_amount(journal: &Journal, units: &Units, money: Amount) -> Amount {
+    let commodity = Commodity(units.commodity.clone());
+    let style = infer_style(journal, &commodity, units.quantity.places);
+    let exact_price = units.price.filter(|price| {
+        price
+            .mul(units.quantity)
+            .is_ok_and(|value| value == money.quantity)
+    });
+    let cost = match exact_price {
+        Some(price) => Cost {
+            kind: CostKind::Unit,
+            amount: Amount {
+                style: infer_style(journal, &money.commodity, price.places),
+                quantity: price,
+                ..money
+            },
+        },
+        None => Cost {
+            kind: CostKind::Total,
+            amount: Amount {
+                quantity: money.quantity.abs().unwrap_or(money.quantity),
+                ..money
+            },
+        },
+    };
+    Amount {
+        commodity,
+        quantity: units.quantity,
+        style,
+        cost: Some(Box::new(cost)),
     }
 }
 
@@ -1343,6 +1401,7 @@ mod tests {
             customer: None,
             vendor: None,
             name: None,
+            units: None,
         };
         let txn = QbTransaction {
             id: "1".to_string(),
@@ -1572,6 +1631,7 @@ mod tests {
             customer: None,
             vendor: None,
             name: None,
+            units: None,
         }
     }
 

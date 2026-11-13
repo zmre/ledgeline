@@ -4341,12 +4341,21 @@ fn render_assertion(assertion: &BalanceAssertion) -> String {
 
 /// Render `commodity` + `quantity` per `style`'s side/spacing/decimal-mark.
 /// Digit grouping is intentionally omitted.
+/// A symbol hledger can only read quoted (one with a space, a digit or an
+/// operator character, such as `"ACME Index Fund"`) is written quoted; the
+/// parser keeps the name without its quotes.
 fn render_priced(commodity: &Commodity, quantity: Dec, style: &AmountStyle) -> String {
     let number = render_dec(quantity, style.decimal_mark.unwrap_or('.'));
-    let symbol = &commodity.0;
-    if symbol.is_empty() {
+    if commodity.0.is_empty() {
         return number;
     }
+    let quoted;
+    let symbol = if commodity.0.chars().all(crate::parse::is_commodity_char) {
+        &commodity.0
+    } else {
+        quoted = format!("\"{}\"", commodity.0);
+        &quoted
+    };
     match (style.side, style.spaced) {
         (CommoditySide::Left, false) => format!("{symbol}{number}"),
         (CommoditySide::Left, true) => format!("{symbol} {number}"),
@@ -5427,5 +5436,24 @@ mod tests {
         REPARSES.with(|count| count.set(0));
         assert!(editor.apply_batch(&stale).is_err());
         assert_eq!(REPARSES.with(std::cell::Cell::get), 0);
+    }
+
+    #[test]
+    fn a_commodity_hledger_reads_only_quoted_is_written_quoted() {
+        let journal = crate::parse_journal(
+            "2026-01-05 buy\n    assets:b  40 \"ACME Index Fund\" @ $50.00\n    assets:c  $-2000.00\n",
+            "q.journal",
+        )
+        .expect("parses");
+        let amount = &journal.transactions[0].postings[0].amounts[0];
+        assert_eq!(amount.commodity.0, "ACME Index Fund");
+        let rendered = render_amount(amount);
+        assert_eq!(rendered, "40 \"ACME Index Fund\" @ $50.00");
+        let again = crate::parse_journal(
+            &format!("2026-01-05 buy\n    assets:b  {rendered}\n    assets:c  $-2000.00\n"),
+            "q.journal",
+        )
+        .expect("the rendered amount reads back");
+        assert_eq!(&again.transactions[0].postings[0].amounts[0], amount);
     }
 }

@@ -135,9 +135,20 @@ fn investment_actions_and_the_bank_side_collapse() {
     assert_eq!(journal.transactions.len(), 7);
     let totals = balances(&journal);
     assert_eq!(totals["Checking"], dec("-4450"));
-    assert_eq!(totals["Brokerage:ACME Index Fund"], dec("1467.95"));
+    // The holding's cost; the buy's commission is an expense of its own.
+    assert_eq!(totals["Brokerage:ACME Index Fund"], dec("1463.00"));
+    assert_eq!(totals[ledgeline_core::qif_import::COMMISSIONS], dec("4.95"));
     assert_eq!(totals["Investment Income:Dividends"], dec("-31.40"));
     assert_eq!(totals["Investment Income:Interest"], dec("-2.10"));
+    // 40 bought, 0.25 reinvested, 10 sold.
+    let shares = journal
+        .transactions
+        .iter()
+        .flat_map(|txn| &txn.postings)
+        .filter_map(|posting| posting.units.as_ref())
+        .try_fold(dec("0"), |sum, units| sum.add(units.quantity))
+        .expect("fits");
+    assert_eq!(shares, dec("30.25"));
 }
 
 #[test]

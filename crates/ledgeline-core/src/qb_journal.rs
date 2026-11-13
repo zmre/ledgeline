@@ -231,6 +231,26 @@ pub struct QbPosting {
     /// no Customer column value for it.
     #[serde(default)]
     pub name: Option<String>,
+    /// Units of a commodity other than the journal's currency, when the
+    /// source records them: shares of a security in a QIF investment record
+    /// (plan 39). [`QbPosting::amount`] stays the value in the journal's
+    /// currency, so a transaction still balances on `amount` alone. `None` for
+    /// QuickBooks, which reports money only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub units: Option<Units>,
+}
+
+/// Units of a commodity, written as `quantity COMMODITY @ price` (or
+/// `@@ amount` when no price makes the units worth exactly the posting's
+/// amount).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Units {
+    /// The hledger commodity symbol, without quotes: `ACME`, `ACME Index Fund`.
+    pub commodity: String,
+    /// Signed like the posting's amount: shares in positive, shares out negative.
+    pub quantity: Dec,
+    /// The per-unit price in the journal's currency, when the source gives one.
+    pub price: Option<Dec>,
 }
 
 /// One QuickBooks transaction: a marker row, its postings and its closing row.
@@ -959,6 +979,7 @@ fn posting(
             customer: cell(row, layout.customer),
             vendor: cell(row, layout.vendor),
             name: cell(row, layout.name),
+            units: None,
         },
         debit,
         credit,
