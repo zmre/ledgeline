@@ -30,7 +30,7 @@
 </script>
 
 {#if spans !== null}
-    <tr class="text-[0.6rem] tracking-widest uppercase" data-testid="projected-band">
+    <tr class="text-[length:max(0.6rem,8px)] tracking-widest uppercase" data-testid="projected-band">
         <th class="{fixed ? '' : 'w-full'} font-normal"><span class="sr-only">Period</span></th>
         {#if spans.actual > 0}
             <th colspan={spans.actual} class="text-center font-normal text-base-content/40">Actual</th>

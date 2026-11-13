@@ -30,7 +30,7 @@
 </script>
 
 <span
-    class="inline-flex h-[1.125rem] shrink-0 items-center rounded-[0.3rem] px-1.5 font-sans text-[0.625rem] leading-none font-semibold tracking-[0.08em] uppercase {TINT[
+    class="inline-flex h-[1.125rem] shrink-0 items-center rounded-[0.3rem] px-1.5 font-sans text-[length:max(0.625rem,8px)] leading-none font-semibold tracking-[0.08em] uppercase {TINT[
         kind
     ]}"
     data-badge={kind}
