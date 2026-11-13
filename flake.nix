@@ -97,12 +97,16 @@
       # `CARGO_MANIFEST_DIR/../../fixtures` + `canonicalize()`), so `fixtures/`
       # must survive the source filter or `cargoTest` fails to find them.
       # `web/build` is deliberately excluded — see `spaPlaceholder` below.
+      # `crates/ledgeline-server/src/sample.journal` is `include_str!`ed by the
+      # File → New wizard (a copy of the fixture, so the published crate holds
+      # it); it is not a Cargo source, so it needs its own clause.
       src = lib.cleanSourceWith {
         src = ./.;
         name = "ledgeline-source";
         filter = path: type:
           (craneLib.filterCargoSources path type)
-          || (builtins.match ".*/fixtures(/.*)?" path != null);
+          || (builtins.match ".*/fixtures(/.*)?" path != null)
+          || (lib.hasSuffix "/crates/ledgeline-server/src/sample.journal" path);
       };
 
       # `crates/ledgeline-server/src/spa.rs` embeds `crates/ledgeline-server/spa/`
