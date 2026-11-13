@@ -3,6 +3,33 @@
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <!--
+            First-paint appearance (plan 39). The saved theme and scale arrive by
+            fetch, after the first frame; this paints that frame from the cache
+            lib/theme/appearance.svelte.ts writes ({light, dark, scale}), else from
+            the default theme's variant for the OS scheme. The engine's CSP hashes
+            every inline script it serves, so this needs no policy change.
+        -->
+        <script>
+            (function () {
+                var root = document.documentElement;
+                var dark = !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+                var cache = null;
+                try {
+                    cache = JSON.parse(localStorage.getItem("ledgeline.appearance") || "null");
+                } catch (e) {}
+                var ok = function (v) {
+                    return typeof v === "string" && /^[a-z-]{1,40}$/.test(v);
+                };
+                var variant = cache && ok(dark ? cache.dark : cache.light) ? (dark ? cache.dark : cache.light) : dark ? "default-dark" : "default-light";
+                root.setAttribute("data-theme", variant);
+                var scale = cache && typeof cache.scale === "number" && cache.scale >= 50 && cache.scale <= 300 ? cache.scale : 100;
+                if (scale !== 100) {
+                    root.style.setProperty("--ui-scale", String(scale / 100));
+                    root.style.fontSize = scale + "%";
+                }
+            })();
+        </script>
         %sveltekit.head%
     </head>
     <body data-sveltekit-preload-data="hover">

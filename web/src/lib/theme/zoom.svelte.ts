@@ -52,11 +52,10 @@ let read: () => number = () => local;
  * Route new scales somewhere other than the local default, and read the
  * current scale from there too.
  *
- * MERGE SEAM: wire to settings.uiScale — the integration package calls
- * `setScaleSink((p) => settings.setUiScale(p), () => settings.uiScale)` once
- * the prefs store has the key, and applies the persisted scale reactively
- * (`applyScale`) from there. Until then the default sink applies it and keeps
- * a local value, so the shortcuts work but nothing is saved.
+ * The root layout's `useAppearance` (theme/appearance.svelte.ts) points this
+ * at `settings.uiScale`, which saves the scale and is applied reactively from
+ * there. Without a sink (tests, or before the layout mounts) the default one
+ * applies the scale and keeps a local value, saving nothing.
  *
  * `null` restores the default (tests).
  */
