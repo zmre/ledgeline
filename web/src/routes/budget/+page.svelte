@@ -9,6 +9,11 @@
     // disagrees with its bottom half about the budget is worse than one that is
     // briefly blank.
     //
+    // On a wide page (plan 41 WP-B) the two halves merge: `BudgetTable` puts
+    // each goal on the row of its progress, its Budgeted figure opening the
+    // same modal and the same two-step remove the editor uses, and the editor
+    // below shrinks to the goals the table has no row for (`rowGoals.ts`).
+    //
     // The controls, the URL mirroring and the export follow the reports page
     // verbatim — same `searchMirror`, same FE-1 gate on the export (the workbook
     // is named from the CURRENT controls and built from the HELD report, so those
@@ -39,6 +44,9 @@
     import {decToInput} from "#lib/api/editMapping.js";
     import {exportBudgetXlsx} from "#lib/export/xlsx.js";
     import BudgetSummary from "#lib/reports/ui/BudgetSummary.svelte";
+    import BudgetTable from "#lib/reports/ui/BudgetTable.svelte";
+    import {rowGoals, type GoalRef, type RowGoals} from "#lib/budget/rowGoals.js";
+    import {remToPx} from "#lib/theme/scale.js";
     import ExportButton from "#lib/reports/ui/ExportButton.svelte";
     import {today} from "#lib/reports/periods.js";
     import {dataView} from "#lib/stores/loadState.js";
@@ -247,6 +255,38 @@
         await apply(journalId, {kind: "remove", index: goal.index});
     }
 
+    // --- Wide layout: the table (plan 41 WP-B) ---------------------------------
+    //
+    // At `@4xl` (56rem) and wider the bars and the goals merge into one table,
+    // each goal on the row of its progress. Decided in SCRIPT, not by a CSS
+    // container query hiding one of two mounted layouts: both carry the same
+    // test ids (`budget-summary`, `budget-empty`), and two of each in the DOM —
+    // one merely hidden — would be two of everything to a screen reader and
+    // ambiguous to every locator. The width is the page's own, measured in rem
+    // at the LIVE root (`remToPx`), so the breakpoint follows the interface
+    // scale exactly as the container-query variants do (plan 39). Until the
+    // first measurement the width is 0, so the page opens on the narrow layout.
+    const TABLE_MIN_REM = 56;
+    let pageWidth = $state(0);
+    const wide = $derived(pageWidth >= remToPx(TABLE_MIN_REM));
+
+    /**
+     * Which goals stand behind each row of the report being SHOWN, at the depth
+     * it was computed at — the held query's, not the controls', which run ahead
+     * of it while a new depth loads. Null without both halves: then the table
+     * edits nothing and the editor hides nothing.
+     */
+    const tableGoals = $derived.by((): RowGoals | null => {
+        const shown = held.value;
+        const goals = listing.value;
+        if (shown === null || goals === null) return null;
+        const accounts = shown.summary.sections.flatMap((section) => section.bars.map((bar) => bar.account));
+        return rowGoals(goals, accounts, held.query?.depth ?? params.depth);
+    });
+    /** The goals the editor leaves to the table: only when the table is what is on screen. */
+    const hiddenFromEditor = $derived(wide && tableGoals !== null ? tableGoals.represented : undefined);
+    const NO_GOALS: ReadonlyMap<string, readonly GoalRef[]> = new Map<string, readonly GoalRef[]>();
+
     async function createFile(): Promise<void> {
         const outcome = await budgetStore.createFile(reportQuery);
         writeError = outcome.ok ? null : outcome.failure.message;
@@ -260,7 +300,7 @@
 
 <svelte:head><title>Ledgeline — Budget</title></svelte:head>
 
-<div class="flex flex-col gap-6">
+<div class="flex flex-col gap-6" bind:clientWidth={pageWidth}>
     <div class="flex flex-wrap items-center justify-between gap-2">
         <h1 class="text-lg font-semibold">Budget</h1>
         {#if exportable !== null}
@@ -354,7 +394,27 @@
         onRetry={() => void budgetStore.report.load(settings.serverUrl ?? "", reportQuery)}
     >
         {#snippet children(current)}
-            <BudgetSummary report={current} {styles} from={span.from} to={span.to} {asOf} sort={params.sort} dir={params.dir} />
+            {#if wide}
+                <BudgetTable
+                    report={current}
+                    {styles}
+                    from={span.from}
+                    to={span.to}
+                    {asOf}
+                    sort={params.sort}
+                    dir={params.dir}
+                    listing={budgetStore.available ? listing.value : null}
+                    goalsByAccount={tableGoals?.byAccount ?? NO_GOALS}
+                    busy={budgetStore.saving}
+                    {removing}
+                    onEdit={openEdit}
+                    onRemove={(journalId, goal) => (removing = {journalId, goal})}
+                    onRemoveCancel={() => (removing = null)}
+                    onRemoveConfirm={(journalId, goal) => void removeGoal(journalId, goal)}
+                />
+            {:else}
+                <BudgetSummary report={current} {styles} from={span.from} to={span.to} {asOf} sort={params.sort} dir={params.dir} />
+            {/if}
         {/snippet}
     </AsyncSection>
 
@@ -399,6 +459,7 @@
                     onRemoveCancel={() => (removing = null)}
                     onRemoveConfirm={(journalId, goal) => void removeGoal(journalId, goal)}
                     onCreateFile={() => void createFile()}
+                    hidden={hiddenFromEditor}
                 />
             {/snippet}
         </AsyncSection>
