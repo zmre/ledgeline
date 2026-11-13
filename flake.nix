@@ -100,13 +100,18 @@
       # `crates/ledgeline-server/src/sample.journal` is `include_str!`ed by the
       # File → New wizard (a copy of the fixture, so the published crate holds
       # it); it is not a Cargo source, so it needs its own clause.
+      # `assets/Info.plist.in` is READ by a macOS unit test (gui_file_assoc.rs)
+      # that keeps the file types the app claims in step with the ones its
+      # "Make Default" menu command sets; `assets/` itself stays out.
       src = lib.cleanSourceWith {
         src = ./.;
         name = "ledgeline-source";
         filter = path: type:
           (craneLib.filterCargoSources path type)
           || (builtins.match ".*/fixtures(/.*)?" path != null)
-          || (lib.hasSuffix "/crates/ledgeline-server/src/sample.journal" path);
+          || (lib.hasSuffix "/crates/ledgeline-server/src/sample.journal" path)
+          || (lib.hasSuffix "/assets" path && type == "directory")
+          || (lib.hasSuffix "/assets/Info.plist.in" path);
       };
 
       # `crates/ledgeline-server/src/spa.rs` embeds `crates/ledgeline-server/spa/`

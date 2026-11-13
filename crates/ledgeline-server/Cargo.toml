@@ -63,6 +63,8 @@ gui = [
     "dep:url",
     "dep:gtk",
     "dep:webkit2gtk",
+    "dep:objc2-core-foundation",
+    "dep:objc2-core-services",
 ]
 
 [dependencies]
@@ -137,6 +139,25 @@ rfd = { version = "0.17", optional = true }
 # the percent-encoding — journal paths with spaces are common). This is already
 # in the tree as a tao dependency, so cargo unifies it and it costs no new build.
 url = { version = "2", optional = true }
+
+# Ledgeline ▸ "Make Ledgeline the Default for Journal Files" (`gui_file_assoc.rs`)
+# calls Launch Services directly: `LSRegisterURL` and
+# `LSSetDefaultRoleHandlerForContentType`. Both crates are ALREADY in the tree
+# (notify's FSEvents backend links them), so cargo unifies them and this adds no
+# crate to Cargo.lock — only the LaunchServices features we call.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = { version = "0.3", optional = true, default-features = false, features = [
+    "std",
+    "CFString",
+    "CFURL",
+] }
+objc2-core-services = { version = "0.3", optional = true, default-features = false, features = [
+    "std",
+    "libc",
+    "LaunchServices",
+    "LSInfo",
+    "LSConstants",
+] }
 
 # Linux hides the in-window GtkMenuBar by default (F10 toggles it), which needs
 # to name `gtk::Settings` and `gtk::Widget` directly. gtk 0.18 is ALREADY in the

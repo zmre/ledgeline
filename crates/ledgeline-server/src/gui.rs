@@ -53,6 +53,11 @@ use crate::{AppError, Cli};
 #[path = "gui_export.rs"]
 mod export_menu;
 
+// Ledgeline ▸ Make Ledgeline the Default for Journal Files.
+#[cfg(target_os = "macos")]
+#[path = "gui_file_assoc.rs"]
+mod file_assoc;
+
 /// How many recent journals the File → "Open Recent" submenu shows (the on-disk
 /// store keeps more; this is just the visible slice).
 const RECENT_MENU_LIMIT: usize = 5;
@@ -510,6 +515,8 @@ fn build_menu() -> AppMenu {
             "app menu",
             app_menu.append_items(&[
                 &PredefinedMenuItem::about(None, Some(about_metadata())),
+                &PredefinedMenuItem::separator(),
+                &file_assoc::menu_item(),
                 &PredefinedMenuItem::separator(),
                 &PredefinedMenuItem::services(None),
                 &PredefinedMenuItem::separator(),
@@ -1225,6 +1232,10 @@ fn run_event_loop(
             Event::UserEvent(UserEvent::Menu(menu_event)) => {
                 // plan 39 export: runs on its own thread, against the open journal.
                 if export_menu::handle(&menu_event.id, &current.borrow()) {
+                    return;
+                }
+                #[cfg(target_os = "macos")]
+                if file_assoc::handle(&menu_event.id) {
                     return;
                 }
                 if let Some(shortcut) = menu_shortcut(&menu_event.id) {

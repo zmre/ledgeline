@@ -42,7 +42,7 @@ Imports need hledger 1.40 or newer. The macOS app bundles its own copy. Elsewher
 
 Pass the journal on the command line, as in the `nix run` example above. Ledgeline follows its `include` directives, so open your main file, not one of the files it includes.
 
-With no argument, Ledgeline reopens the last journal you used. The first time, with nothing to reopen, the desktop app opens the [New ledger](new-ledger.md) wizard instead, which can also open sample data to try. In the desktop app, **File → Open** (<kbd>Cmd</kbd>+<kbd>O</kbd> on macOS, <kbd>Ctrl</kbd>+<kbd>O</kbd> on Linux) picks another one, and **File → Open Recent** lists the ones you've had open. On macOS, double-clicking a `.journal` or `.hledger` file opens it in Ledgeline. Ledgeline is also offered under **Open With** for `.ledger` and `.j` files.
+With no argument, Ledgeline reopens the last journal you used. The first time, with nothing to reopen, the desktop app opens the [New ledger](new-ledger.md) wizard instead, which can also open sample data to try. In the desktop app, **File → Open** (<kbd>Cmd</kbd>+<kbd>O</kbd> on macOS, <kbd>Ctrl</kbd>+<kbd>O</kbd> on Linux) picks another one, and **File → Open Recent** lists the ones you've had open. On macOS, double-clicking a `.journal` or `.hledger` file opens it in Ledgeline. Ledgeline is also offered under **Open With** for `.ledger` and `.j` files. If another app (a text editor, say) keeps opening your journals, choose **Ledgeline ▸ Make Ledgeline the Default for Journal Files**.
 
 On Linux the window has no title bar or menu bar until you press <kbd>F10</kbd>.
 

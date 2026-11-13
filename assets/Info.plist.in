@@ -48,7 +48,18 @@
        Open With without silently stealing the default from whatever already
        claims them. Both types conform to public.plain-text — journals ARE plain
        text, and conforming means Quick Look, Spotlight indexing and generic
-       text editors keep working on them. -->
+       text editors keep working on them.
+
+       `org.ledger-cli.journal` is NOT ours: it is a UTI other apps (text
+       editors, notably) import for .journal/.ledger/.hledger/.beancount. When
+       two bundles declare a type for the same extension, Launch Services picks
+       one, and which one wins can change with each re-registration (every
+       Nix/Home Manager rebuild re-registers the app at a new path). A file
+       typed as the OTHER UTI then lists only its importer in Open With and
+       Ledgeline vanishes from the menu. Claiming the alias too keeps
+       Ledgeline offered, and the default, whichever declaration wins. Keep
+       this list in step with `DEFAULT_CONTENT_TYPES` in
+       crates/ledgeline-server/src/gui_file_assoc.rs (a unit test checks). -->
   <key>CFBundleDocumentTypes</key>
   <array>
     <dict>
@@ -63,6 +74,7 @@
       <key>LSItemContentTypes</key>
       <array>
         <string>com.zmre.ledgeline.journal</string>
+        <string>org.ledger-cli.journal</string>
       </array>
     </dict>
     <dict>

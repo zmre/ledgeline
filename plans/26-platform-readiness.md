@@ -377,4 +377,19 @@ and after B6.
 - The desktop watcher's reload does not rebind the editor after a failed
   reload.
 - No Swift shell or xcframework yet.
+- Opening journals from the Files app (2026-11-13), for when the Swift shell
+  lands. Its `Info.plist` needs the same file-type claims as
+  `assets/Info.plist.in`:
+  - Export `com.zmre.ledgeline.journal`.
+  - Claim it and `org.ledger-cli.journal` at `Owner`, plus
+    `com.zmre.ledgeline.ledger` at `Alternate`.
+  - Set `LSSupportsOpeningDocumentsInPlace` = `YES`, so a tapped journal opens
+    in place (iCloud Drive, a file provider) instead of being copied into the
+    app's Inbox, where saves would never reach the original.
+  - The scene delegate gets the file as a security-scoped URL in
+    `scene(_:openURLContexts:)`. Turn it into a bookmark: that bookmark is the
+    recents token A2 anticipates.
+  - iOS has no per-user default app for a file type, so the macOS
+    "Make Default" menu command has no counterpart there. Owner rank and
+    in-place support are the only levers.
 - Pre-existing: the Insights panel squeezes the table at 1280×720.

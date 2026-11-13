@@ -308,16 +308,39 @@ see [releasing.md](releasing.md).
 `Info.plist.in` registers two exported UTIs so double-clicking a journal launches
 Ledgeline with that file open:
 
-| Extensions            | UTI                                  | Rank        |
-| --------------------- | ------------------------------------ | ----------- |
-| `.journal`, `.hledger` | `com.zmre.ledgeline.journal` | `Owner`     |
-| `.ledger`, `.j`        | `com.zmre.ledgeline.ledger`  | `Alternate` |
+| Extensions                                  | UTI                          | Rank        |
+| ------------------------------------------- | ---------------------------- | ----------- |
+| `.journal`, `.hledger`                      | `com.zmre.ledgeline.journal` | `Owner`     |
+| `.journal`, `.ledger`, `.hledger`, others   | `org.ledger-cli.journal`     | `Owner`     |
+| `.ledger`, `.j`                             | `com.zmre.ledgeline.ledger`  | `Alternate` |
 
 `Owner` makes Ledgeline the system default for the hledger-specific extensions.
 `.ledger` and `.j` are shared with Ledger CLI tooling (and `.j` is generic enough
 that other toolchains claim it), so `Alternate` keeps Ledgeline reachable via
 **Open With** without stealing an existing default. Both types conform to
 `public.plain-text`, so Quick Look, Spotlight and text editors still work.
+
+`org.ledger-cli.journal` is not exported by Ledgeline; it is claimed because
+other apps (text editors, typically) *import* it for the same extensions. When
+two bundles declare a type for one extension, Launch Services picks one, and the
+pick can flip each time either app is re-registered (every Nix/Home Manager
+rebuild re-registers at a new path). A file typed as the other UTI used to list
+only the importer under **Open With**, so Ledgeline disappeared from the menu and
+double-click went to the editor. Claiming the alias keeps Ledgeline offered.
+
+Rank only breaks ties between claimants, and an editor claiming the alias at
+`Owner` too leaves the default to chance. The user's own choice outranks every
+claim: **Ledgeline ▸ Make Ledgeline the Default for Journal Files**
+(`gui_file_assoc.rs`) re-registers the running bundle, then records Ledgeline as
+the user's handler for each `Owner`-ranked type (the entry Finder's Get Info ▸
+**Change All…** writes) and reads it back. A unit test keeps the plist's
+`Owner` types and the command's list identical.
+
+To see the type Spotlight has cached for a file (what Finder goes by):
+
+```sh
+mdls -name kMDItemContentType path/to/file.journal   # Spotlight's cached type
+```
 
 macOS does **not** pass the document in `argv`: it calls
 `application:openURLs:`, which tao surfaces as `Event::Opened { urls }` and
