@@ -39,7 +39,8 @@ at the changed PNGs and commit them with the UI change that moved them.
     - `finishMotion(page)`: ends every running animation and waits for the
       review deck's outgoing card to leave, so a shot never catches a card
       mid-flight.
-- Viewport 1280×800 at 2× scale. The app has a single (dark) theme.
+- Viewport 1280×800 at 2× scale, `colorScheme: "dark"`: shots use the
+  `default-dark` theme (the `default` theme following a dark OS).
 
 ## Add a shot
 
