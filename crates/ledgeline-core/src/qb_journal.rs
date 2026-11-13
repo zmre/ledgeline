@@ -248,6 +248,20 @@ pub struct QbTransaction {
     /// The payee, when the report carries a `Name` column and the row fills it.
     pub name: Option<String>,
     pub postings: Vec<QbPosting>,
+    /// The clearing mark the source recorded. QuickBooks' Journal report has
+    /// none, so it is always [`ImportStatus::Unmarked`] there; QIF (`C*`/`CX`)
+    /// and the posting-row CSV formats do carry one (plan 39).
+    #[serde(default)]
+    pub status: ImportStatus,
+}
+
+/// A source transaction's clearing mark, written as hledger's `*`/`!`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImportStatus {
+    #[default]
+    Unmarked,
+    Pending,
+    Cleared,
 }
 
 /// A parsed export: its transactions, and how its dates were read.
@@ -1004,6 +1018,7 @@ fn date(groups: Vec<Raw>) -> Result<QbJournal, QbJournalError> {
                 num: group.num,
                 name: group.name,
                 postings: group.postings,
+                status: ImportStatus::Unmarked,
             })
         })
         .collect::<Result<_, QbJournalError>>()?;

@@ -61,7 +61,7 @@ use ledgeline_core::model::{
     Status, Tindex, Transaction,
 };
 use ledgeline_core::qb_import::{self, plain_aliases, resolve_account};
-use ledgeline_core::qb_journal::{QbJournal, QbPosting, QbTransaction};
+use ledgeline_core::qb_journal::{ImportStatus, QbJournal, QbPosting, QbTransaction};
 use ledgeline_core::reimport::{self, RowClassification};
 use ledgeline_core::reports::{
     AccountType, AccountTypes, KpiRole, account_decls, declared_kpi_roles, declared_types,
@@ -746,7 +746,11 @@ fn build_transaction(
         index: Tindex(0),
         date: qb_txn.date.clone(),
         date2: None,
-        status: Status::Unmarked,
+        status: match qb_txn.status {
+            ImportStatus::Unmarked => Status::Unmarked,
+            ImportStatus::Pending => Status::Pending,
+            ImportStatus::Cleared => Status::Cleared,
+        },
         code: String::new(),
         description: qb_import::description_for(qb_txn),
         // The re-import tag convention `reimport::ID_TAG` already reads.
@@ -1268,6 +1272,7 @@ mod tests {
             num: None,
             name: None,
             postings: vec![posting(Dec::new(-1250, 2)), posting(Dec::new(1, u32::MAX))],
+            status: ledgeline_core::qb_journal::ImportStatus::Unmarked,
         };
         let sample = wire_sample(&txn);
         assert_eq!(sample.postings[0], "1000 Checking  -12.50");
@@ -1621,6 +1626,7 @@ mod tests {
                 line("2500 Deferred Revenue", 2500, "Acme"),
                 line("4000 Sales", -2500, "Acme"),
             ],
+            status: ledgeline_core::qb_journal::ImportStatus::Unmarked,
         };
         let built = build_transaction(
             &journal,
@@ -1684,6 +1690,7 @@ mod tests {
             num: Some("598".to_string()),
             name: None,
             postings,
+            status: ledgeline_core::qb_journal::ImportStatus::Unmarked,
         };
         let built = build_transaction(
             &journal,
