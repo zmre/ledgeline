@@ -283,6 +283,34 @@ pub enum ImportStatus {
 pub struct QbJournal {
     pub transactions: Vec<QbTransaction>,
     pub date_format: DateFormatGuess,
+    /// Which app the export came from. Every importer that produces this shape
+    /// (QuickBooks Journal, QIF, the posting-row and single-entry CSV presets)
+    /// sets it, so labels and `id:` prefixes can follow the source (plan 39).
+    #[serde(default)]
+    pub source: ImportSource,
+}
+
+/// The app (or format) a multi-posting import came from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ImportSource {
+    /// QuickBooks Online's Journal report (this module).
+    #[default]
+    QuickBooks,
+    /// QIF or QMTF: Banktivity, Quicken, Moneydance, GnuCash.
+    Qif,
+    /// Xero Journal Report or General Ledger Detail CSV.
+    Xero,
+    /// GnuCash multi-line transaction CSV.
+    GnuCash,
+    /// hledger's own `print -O csv` (and Ledgeline's posting-row CSV export).
+    HledgerCsv,
+    /// YNAB register CSV.
+    Ynab,
+    /// Monarch transactions CSV.
+    Monarch,
+    /// Copilot transactions CSV.
+    Copilot,
 }
 
 // ---------------------------------------------------------------------------
@@ -1026,6 +1054,7 @@ fn date(groups: Vec<Raw>) -> Result<QbJournal, QbJournalError> {
     Ok(QbJournal {
         transactions,
         date_format: guess,
+        source: ImportSource::QuickBooks,
     })
 }
 
