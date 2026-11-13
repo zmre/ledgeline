@@ -13,6 +13,11 @@ second half is editable — Ledgeline writes your budget back into your journal 
 ordinary hledger `~` periodic rules, which `hledger balance --budget` reads
 exactly as it always has.
 
+On a wide window the two halves merge into one table: each goal sits on the
+same row as its progress, and you change a goal by clicking its budgeted amount.
+See [The budget table](#the-budget-table). On a narrow window the bars and the
+goals list are shown one above the other.
+
 ![The Budget tab for the year to date: the controls, the budget bars and the start of the goals list](images/budget-overview.png)
 
 Design notes and the reasoning behind each decision live in
@@ -329,8 +334,10 @@ have actually elapsed. Look at January-to-June of an annual budget and the pace
 mark sits at the halfway point; look at a period that has already finished and it
 sits exactly on the goal, because a finished period is fully paced.
 
-A bar is **green when it is on the right side of pace, red when it is not**, and
-the fill is one colour throughout:
+In the stacked (narrow) layout, a bar is **green when it is on the right side of
+pace, red when it is not**, and the fill is one colour throughout. The wide
+table keeps the same sentences but colours the bars differently (see
+[The budget table](#the-budget-table)):
 
 | Type    | Situation                    | Label              | Colour |
 |---------|------------------------------|--------------------|--------|
@@ -361,6 +368,63 @@ Pace is exact: the engine compares `actual × days in span` with
 The pace *figure* it reports (and quotes in "behind pace" / "ahead of pace") is
 that ratio rounded six decimal places past the goal's own precision, far below
 anything a bar or a label can show.
+
+### The budget table
+
+When the window is wide enough (56rem of page width, which scales with the
+interface size), each section is a table with four columns:
+
+| Column    | What it shows                                                                                   |
+|-----------|-------------------------------------------------------------------------------------------------|
+| Account   | The category. Click it to open the journal filtered to that account for the same span.         |
+| Budgeted  | The goal for the whole span. Click it to change the goal.                                       |
+| Actual    | What has happened so far, above the bar.                                                        |
+| Remaining | The bar's sentence (`$170.00 left`, `$25.00 over`, `$400.00 behind pace`), at the bar's right end. |
+
+A **Total** row heads each section. It sums the rows below it and can't be
+edited.
+
+**Editing from the Budgeted column.** What a click does depends on how many
+goals make up the figure:
+
+- **One goal:** the click opens the goal dialog for it.
+- **Several goals:** the amount has a small ▾, and the click opens a list of
+  them, each with its period, its amount and its own Edit and Remove. Remove
+  asks for confirmation, the same as in the goals list.
+- **No goal Ledgeline can edit:** the amount is plain text with a 🔒. Hover it
+  to see why (see [What Ledgeline will not rewrite](#what-ledgeline-will-not-rewrite)).
+
+A figure can be made of several goals for two reasons. Goals of different
+periods on one account add up: a $50 monthly gift budget plus a $600 yearly
+one is one row. And the depth slider rolls accounts up: at depth 2,
+`expenses:fun` and `expenses:fun:movies` are both counted in the
+`expenses:fun` row, so both goals are listed behind it. In the list, a goal
+written on a subaccount shows that subaccount's name under its period.
+
+**The goals list below the table** shrinks to the goals the table has no row
+for, under the heading *Other budget goals*. There are two cases. One is a goal
+on a parent account whose subaccounts have goals of their own, at a depth deep
+enough to show those subaccounts: at depth 3, an `expenses:fun` goal sits
+beside an `expenses:fun:movies` row, and the bars show only the subaccount.
+The other is a goal on an account that is neither income nor expense. **Add a
+budget goal** stays at the top of the list. If every goal has a row, the list
+says so.
+
+**Bar colours in the table** show how far along the goal a line is. The colour
+is laid across the whole track, keyed to the goal marker, and the fill only
+uncovers it:
+
+- **Expenses** run green, then amber at three-quarters of the goal, then
+  orange at the goal. Past the goal marker the bar turns red. A line at 40 % of
+  its budget is all green, and one at 90 % is green fading into orange.
+- **Income** runs from blue to green and never turns red. Earning more than the
+  target is good news.
+
+The pace verdict moves to the **Remaining** text. It is green on the right side
+of pace, amber when it is not, and red only for an expense past its goal.
+
+The orange is worked out from each theme's own amber and red, so it matches
+whichever theme you use.
 
 ### Ordering
 
