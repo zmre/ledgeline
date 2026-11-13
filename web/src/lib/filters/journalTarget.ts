@@ -1,7 +1,7 @@
 // "Show me this in the journal" — one description of that intent, shared by
 // every surface that offers it.
 //
-// There were two mechanisms doing this. `BudgetSummary.openInJournal` calls
+// There were two mechanisms doing this. `BudgetTable.openInJournal` calls
 // `filters.replace` then `goto`; `SubscriptionsBox.journalLink` builds an
 // `<a href>`. Both are needed — a link must stay a real link so middle-click and
 // open-in-new-tab work — so what is shared here is the STRING, not the

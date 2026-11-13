@@ -1,6 +1,6 @@
 // The goals editor's `hidden` filter (plan 41 WP-B).
 //
-// On a wide layout the table above shows every goal that backs one of its rows,
+// The table above shows every goal that backs one of its rows,
 // and the editor lists only the rest. The two claims worth pinning: the filter
 // removes exactly what it is told to, and it never turns a journal WITH goals
 // into the "No budget goals yet" screen — that one offers to create a budget
@@ -73,7 +73,7 @@ function mount(hidden?: ReadonlySet<string>) {
 }
 
 describe("COMPONENT BudgetEditor — goals the table already shows", () => {
-    it("lists every goal when nothing is hidden (the narrow layout)", () => {
+    it("lists every goal when nothing is hidden (the table has no report or listing yet)", () => {
         mount();
         expect(screen.getByText("expenses:food")).toBeTruthy();
         expect(screen.getByText("expenses")).toBeTruthy();

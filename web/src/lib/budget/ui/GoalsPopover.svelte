@@ -20,6 +20,7 @@
      dismissal (Escape, focus restore) is `dismissible`'s. Outside-click and
      scroll are handled here, counting the trigger as inside, as RowMenu does. -->
 <script lang="ts">
+    import type {Snippet} from "svelte";
     import {goalAmountText, goalKey, lockReason, periodLabel, type GoalRef} from "#lib/budget/rowGoals.js";
     import type {BudgetGoal, BudgetListing, BudgetRule} from "#lib/budget/types.js";
     import type {AmountStyle} from "#lib/domain/types.js";
@@ -39,6 +40,7 @@
         onRemove,
         onRemoveCancel,
         onRemoveConfirm,
+        pencil,
     }: {
         /** The row's account — the popover's title and the trigger's accessible name. */
         account: string;
@@ -53,6 +55,8 @@
         onRemove: (journalId: string, goal: BudgetGoal) => void;
         onRemoveCancel: () => void;
         onRemoveConfirm: (journalId: string, goal: BudgetGoal) => void;
+        /** The table's edit cue, drawn inside the trigger before the amount, so the cue and the figure are one button. */
+        pencil?: Snippet;
     } = $props();
 
     /** 20rem: wide enough for a period, an amount and two buttons on one line at any scale. */
@@ -120,15 +124,15 @@
 <button
     bind:this={trigger}
     type="button"
-    class="cursor-pointer font-mono text-primary tabular-nums hover:underline"
+    class="inline-flex cursor-pointer items-center gap-1.5 font-mono text-primary tabular-nums hover:underline"
     aria-haspopup="dialog"
     aria-expanded={open}
-    aria-label="{refs.length} budget goals for {account}: {amountText}"
+    aria-label="Edit budget for {account} ({refs.length} goals)"
     title="{refs.length} goals add up to this — click to see them"
     data-testid="budgeted-goals"
     onclick={toggle}
 >
-    {amountText}<span class="ml-0.5 text-xs" aria-hidden="true">▾</span>
+    {@render pencil?.()}<span>{amountText}<span class="ml-0.5 text-xs" aria-hidden="true">▾</span></span>
 </button>
 
 {#if open}

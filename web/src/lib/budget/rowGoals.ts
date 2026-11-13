@@ -1,6 +1,6 @@
 // Which written goals stand behind a row of the budget table (plan 41 WP-B).
 //
-// The wide Budget tab puts each rule on the same row as its progress, so the
+// The Budget tab's table puts each rule on the same row as its progress, so the
 // "Budgeted" figure on a row has to be able to say WHICH `~` lines it came
 // from — that is what the edit button on it opens. The bars come from the
 // engine's summary and the goals from the listing; nothing on the wire joins

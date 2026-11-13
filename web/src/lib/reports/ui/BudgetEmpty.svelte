@@ -1,6 +1,5 @@
-<!-- What the bars say when there are none: shared by the stacked list
-     (`BudgetSummary`) and the wide table (`BudgetTable`), which carry the same
-     `budget-empty` test id so the e2e suite finds it at any width. -->
+<!-- What the bars say when there are none, drawn by `BudgetTable` in place of
+     its sections (`budget-empty`, which the e2e suite looks for). -->
 <div class="rounded-box border border-base-content/10 px-4 py-10 text-center" data-testid="budget-empty">
     <p class="font-medium">No income or expense budget goals for this period.</p>
     <p class="mt-1 text-sm text-base-content/60">

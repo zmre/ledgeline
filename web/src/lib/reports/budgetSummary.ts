@@ -21,9 +21,9 @@ export function primaryValue(ma: MixedAmount): number | null {
     return toNumber(qty);
 }
 
-/** Bullet-bar geometry: a single-colour fill, the goal marker, and the quieter pace tick. */
+/** Bullet-bar geometry: the fill, the goal marker, and the quieter pace tick. */
 export interface BarGeometry {
-    /** 0..100 — width of the fill. ONE colour; the bar's `health` says which. */
+    /** 0..100 — how much of the track the fill reveals (its colour is {@link barGradient}'s). */
     fillPct: number;
     /** 0..100 — position of the goal marker (the high-contrast line). */
     markerPct: number;
@@ -46,9 +46,8 @@ const TICK_EPSILON_PCT = 0.5;
  * headroom past the marker (overspend is always visible) and an over-budget bar
  * saturates the fill while the marker slides left of the fill's end.
  *
- * The fill is no longer split at the marker. That split is exactly what made an
- * income line "earning more than target" paint red past its goal; the colour is
- * now one decision, the engine's `health`, taken from the same three numbers.
+ * The colour is not decided here: {@link barGradient} keys it to the marker by
+ * section, so an income line earning more than its target never turns red.
  */
 export function barGeometry(spent: number, budget: number, pace: number): BarGeometry {
     const s = Math.abs(spent);
@@ -78,7 +77,7 @@ export const EXPENSE_AMBER_AT = 0.75;
 const stop = (pct: number): string => `${Math.round(Math.min(100, Math.max(0, pct)) * 100) / 100}%`;
 
 /**
- * The wide table's bar colour (plan 41 WP-B): a gradient FIXED TO THE TRACK,
+ * The budget table's bar colour (plan 41 WP-B): a gradient FIXED TO THE TRACK,
  * which the fill only reveals.
  *
  * The stops are laid out in track coordinates, keyed to the goal marker, so a

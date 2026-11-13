@@ -71,7 +71,7 @@ export function activeBudgetPreset(from: ISODate, to: ISODate, now: ISODate = to
  *
  * The bars are the thing that cannot move — a monthly goal is a whole-month
  * figure, so comparing it to a partial month is what the envelope view is for.
- * So the drill-down is widened to this span instead, and `BudgetSummary` shows
+ * So the drill-down is widened to this span instead, and `BudgetTable` shows
  * it, rather than silently filtering to a narrower set than it charted.
  */
 export function budgetSpan(from: ISODate, to: ISODate): {from: ISODate; to: ISODate; count: number} {
