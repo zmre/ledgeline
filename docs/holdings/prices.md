@@ -1,6 +1,6 @@
 ---
 title: Prices and valuation
-description: "Where Holdings gets its prices, how they differ from the balance sheet, and how Update prices writes P directives from Yahoo Finance."
+description: "Where Holdings gets its prices, how they differ from the balance sheet, how Update prices writes P directives from Yahoo Finance, and how to keep them up to date automatically."
 order: 20
 tags: [holdings, prices]
 ---
@@ -27,7 +27,7 @@ with `hledger bs -V`.
 
 The **Update prices** button sits beside the tab strip while the Stocks tab is
 open. One press fetches the latest close for every symbol the tab currently
-shows and appends a `P` directive per symbol to your journal.
+shows and adds a `P` directive per symbol to your journal.
 
 It appears only when there is something for it to do: a journal Ledgeline can
 write to, at least one stock currently held, and somewhere to put a price.
@@ -84,9 +84,76 @@ like `^GSPC`.
   precision your journal already uses for the base commodity, so an update reads
   as `P 2026-08-31 AAPL $315.23` rather than the ten-digit float Yahoo answers
   with.
-- **Appends at the end of the file**, the one position that cannot disturb
-  anything already in it. Your comments, ordering and spacing are untouched.
-- **During market hours the "latest close" is the day's live price**, because
-  that is the candle Yahoo is still forming. This matches what `pricehist` and
-  the shell scripts this replaced do. Press it after the close for a settled
-  number.
+- **Keeps the file in date order.** Each new line goes straight after the
+  last `P` line dated on or before it, so same-day prices stay together; a
+  price older than every other goes before the first, and a file with no `P`
+  lines yet is appended to. Nothing already in the file moves: your comments,
+  blank lines and other directives stay where they are, and a file that is
+  already out of order stays exactly as out of order as it was (the new line
+  goes after the last line, counting from the end, dated on or before it).
+- **Only records closes.** During market hours Yahoo's daily series ends with
+  today's still-forming candle, whose "close" is just the last trade so far.
+  Ledgeline drops a candle until the exchange's own regular session for that
+  day has ended, so a press at lunchtime records yesterday's close, and a press
+  after the bell records today's.
+
+## Automatic price updates
+
+Turn on **Settings → Prices → Keep stock prices up to date in the background**
+and Ledgeline keeps the prices current for you while it is open:
+
+- **Shortly after it starts**, and then **about once an hour**, it checks your
+  journal for stocks missing the **latest closing price** — today's once US
+  markets have closed (after 21:30 UTC on a weekday), otherwise the previous
+  weekday's.
+- **It fills in weekly history.** For each of the last *N* Monday-to-Sunday
+  weeks (6 by default, 0 to 52), a stock with no `P` line anywhere in that week
+  gets the week's Friday close — or the week's last trading day, when the
+  Friday was a holiday. A price on any day of the week counts, so prices you
+  add yourself mid-week are respected. Set the weeks to 0 to fetch only the
+  latest close.
+- **It prices what you held.** A stock needs a price for a date if you held it
+  at some point between that date and today. A stock bought last month still
+  gets the weeks before you bought it — that is the history a chart of it
+  shows — but a stock you sold all of in September gets nothing after the week
+  you sold it, and one sold yesterday does not need today's close.
+
+New lines go where **Update prices** would put them, in date order, in your own
+style. A line already there for that date is never duplicated.
+
+### It needs a prices file first
+
+Nothing happens until some file in your journal holds a `P` directive. The
+automatic update never decides where a journal's first price goes, and never
+creates `prices.journal` itself. Click **Update prices** once: it creates the
+file (or finds the one you already use), and from then on the automatic
+updates add to it. Holdings shows *Click Update prices once to start automatic
+updates* until you do.
+
+A read-only journal is never written to.
+
+### Going easy on Yahoo Finance
+
+- The hourly check is done **on your own journal**, with no network at all. A
+  request goes out only for a stock that is actually missing a price.
+- **One request per stock**, however many weeks are being filled in.
+- At most **two requests at a time**, started at least a quarter of a second
+  apart.
+- If Yahoo Finance answers *too many requests*, the run stops at once and
+  automatic updates pause for an hour, then two, four, and so on up to a day.
+  Holdings says when they resume. The **Update prices** button still works
+  during a pause.
+- A stock Yahoo has nothing new for — a market holiday, a delisted ticker — is
+  asked about once per trading day, not every hour.
+
+Next to the **Update prices** button, Holdings shows what the last automatic
+run did, such as *Prices auto-updated 2 h ago*.
+
+### Settings for one ledger
+
+The setting is shared by every ledger unless you tick **Use for this ledger
+only** on the Prices settings tab, which keeps both the on/off switch and the
+number of weeks in that ledger's `ledgeline.toml` (see
+[Settings files](../settings/settings-files.md)). That way your real books can
+update themselves while a sample ledger you demo with does not. The keys are
+`autoPrices` and `autoPricesWeeks`.
