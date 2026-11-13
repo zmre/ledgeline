@@ -1,12 +1,6 @@
 // The Budget tab's bars as the screen reads them — words and geometry, from the
-// engine's verdicts (plan 26 B6), shared by the two layouts that draw them.
-//
-// There are two since plan 41: the stacked list (`BudgetSummary.svelte`, every
-// width below the table's breakpoint, unchanged) and the Banktivity-style
-// table (`BudgetTable.svelte`, wide). They must not disagree about a single
-// word or amount — a bar that read "$170 left" in one and "$170.00 left" in the
-// other at the same moment would be a bug report — so both build their rows
-// HERE, and differ only in where they put them.
+// engine's verdicts (plan 26 B6), for the Banktivity-style table that draws
+// them (`BudgetTable.svelte`, plan 41) at every width.
 //
 // Nothing here decides a verdict: the engine already has. This picks the
 // sentence for the engine's label kind, formats amounts with the journal's

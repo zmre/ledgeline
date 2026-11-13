@@ -992,7 +992,7 @@ describe("UNIT export/xlsx", () => {
 
     // FE-6: the sheet used to end in one "Total" row that summed |income| +
     // |expenses| into a figure shown nowhere on the page, and divided one such
-    // sum by another for "% of budget". BudgetSummary.svelte renders two
+    // sum by another for "% of budget". BudgetTable.svelte renders two
     // sections with two totals; so does the export now.
     describe("budget workbook mirrors the two on-screen sections", () => {
         /** An engine bar: every amount already a magnitude, `remaining` = goal − actual. */

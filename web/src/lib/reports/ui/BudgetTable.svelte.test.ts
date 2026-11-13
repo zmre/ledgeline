@@ -1,13 +1,15 @@
-// The wide budget table, mounted (plan 41 WP-B).
+// The budget table, mounted (plan 41 WP-B).
 //
 // What only a mount can answer: that the four columns are there and the Total
-// row heads each section; that the Budgeted figure offers exactly the edit the
+// row closes each section; that the Budgeted figure offers exactly the edit the
 // goals behind it allow (one → the modal, several → a list, none editable → a
-// lock); and that the bar's colour is the track-fixed gradient with the right
-// MEANING per section — an income bar must never carry red.
+// lock), with the pencil inside the same button; that the bar's colour is the
+// track-fixed gradient with the right MEANING per section — an income bar must
+// never carry red — and that the goal marker is outside the track's clip.
 //
 // The numbers and verdicts are the engine's and are not re-checked here; nor is
-// where anything sits (jsdom has no layout engine).
+// where anything sits (jsdom has no layout engine, so the container-query fold
+// is checked by eye, not here).
 
 import {fireEvent, render, screen, within} from "@testing-library/svelte";
 import {describe, expect, it, vi} from "vitest";
@@ -136,8 +138,13 @@ describe("COMPONENT BudgetTable — columns", () => {
         expect(headers).toEqual(["Budgeted expenses", "Budgeted", "Actual", "Remaining"]);
     });
 
-    it("puts a Total row first in each section, from the section's overall bar", () => {
+    it("puts the Total row last in each section, from the section's overall bar", () => {
         mount();
+        for (const kind of ["revenue", "expense"]) {
+            const rows = within(screen.getByTestId(`budget-table-${kind}`)).getAllByRole("row");
+            expect(rows.at(-1)?.dataset.testid).toBe("budget-total-row");
+            expect(rows.filter((r) => r.dataset.testid === "budget-total-row")).toHaveLength(1);
+        }
         const total = within(screen.getByTestId("budget-table-expense")).getByTestId("budget-total-row");
         expect(total.textContent).toContain("Total");
         expect(total.textContent).toContain("$1,175.00");
@@ -170,6 +177,25 @@ describe("COMPONENT BudgetTable — the Budgeted cell's edit affordance", () => 
         expect(editedGoal.index).toBe(0);
     });
 
+    it("draws the pencil inside the edit button, before the figure, and names the account", () => {
+        mount();
+        const edit = within(row("expenses:food")).getByRole("button", {name: "Edit budget for expenses:food"});
+        expect(edit.dataset.testid).toBe("budgeted-edit");
+        const pencil = within(edit).getByTestId("budgeted-pencil");
+        expect(pencil.querySelector("svg")).not.toBeNull();
+        // Before the number, in the same button: a click on either is one click.
+        expect(edit.firstElementChild).toBe(pencil);
+        expect(edit.textContent?.trim()).toBe("$300.00");
+    });
+
+    it("gives the several-goals trigger the same pencil and name, keeping its ▾", () => {
+        mount();
+        const trigger = within(row("expenses:gifts")).getByTestId("budgeted-goals");
+        expect(trigger.getAttribute("aria-label")).toMatch(/^Edit budget for expenses:gifts/);
+        expect(trigger.firstElementChild?.getAttribute("data-testid")).toBe("budgeted-pencil");
+        expect(trigger.textContent).toContain("▾");
+    });
+
     it("lists several goals behind one row, each with its own Edit", async () => {
         const {onEdit, onRemove} = mount();
         const gifts = row("expenses:gifts");
@@ -194,7 +220,8 @@ describe("COMPONENT BudgetTable — the Budgeted cell's edit affordance", () => 
     it("is plain text with the engine's reason when no backing goal is editable", () => {
         mount();
         const utilities = row("expenses:utilities");
-        expect(within(utilities).queryByRole("button", {name: /Edit the budget goal/})).toBeNull();
+        expect(within(utilities).queryByRole("button", {name: /Edit budget/})).toBeNull();
+        expect(within(utilities).queryByTestId("budgeted-pencil")).toBeNull();
         expect(within(utilities).getByTestId("budgeted-locked").getAttribute("title")).toBe("the amount is an expression");
     });
 
@@ -232,6 +259,22 @@ describe("COMPONENT BudgetTable — gradient bars", () => {
         expect(style).toContain("--color-info");
         expect(style).not.toContain("--color-error");
         expect(style).not.toContain("--color-orange");
+    });
+});
+
+describe("COMPONENT BudgetTable — the goal marker", () => {
+    it("stands outside the clipped track, so an overrun fill cannot hide it", () => {
+        mount();
+        const gas = row("expenses:gas");
+        const track = within(gas).getByTestId("budget-bar-track");
+        const marker = within(gas).getByTestId("budget-goal-marker");
+        expect(track.className).toContain("overflow-hidden");
+        expect(track.contains(marker)).toBe(false);
+        expect(track.contains(within(gas).getByTestId("budget-bar-fill"))).toBe(true);
+        // Sibling of the track, so it shares its box and can stand proud of it.
+        expect(marker.parentElement).toBe(track.parentElement);
+        expect(marker.className).toContain("bg-base-content");
+        expect(marker.className).toContain("-inset-y-1");
     });
 });
 

@@ -14,7 +14,7 @@
      rule the user has, and hiding it would be a worse lie than showing it
      read-only.
 
-     On a wide layout (plan 41 WP-B) the budget TABLE above already shows, and
+     The budget TABLE above (plan 41 WP-B) already shows, and
      edits, every goal that backs one of its rows. Listing those here as well
      would put each goal on screen twice, so the page passes `hidden` — the
      `rowGoals` keys of the goals the table represents — and this lists only the
@@ -61,7 +61,7 @@
         onRemoveCancel: () => void;
         onRemoveConfirm: (journalId: string, goal: BudgetGoal) => void;
         onCreateFile: () => void;
-        /** `goalKey`s of goals shown elsewhere (the wide table) and so left out here. Absent: list everything. */
+        /** `goalKey`s of goals shown elsewhere (the budget table) and so left out here. Absent: list everything. */
         hidden?: ReadonlySet<string>;
     } = $props();
 
