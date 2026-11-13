@@ -1,6 +1,12 @@
 //! The HTTP surface for the QuickBooks Online **Journal** report import
 //! (WP-17 Phase B; see `plans/17-quickbooks-journal-import.md`).
 //!
+//! Since plan 39 it serves every whole-book import: anything
+//! `ledgeline_core::book_import` recognises (QuickBooks, QIF …) is parsed to
+//! the same [`QbJournal`] and staged, previewed and committed here. The
+//! preview names the source (`source`, `sourceLabel`) so the panel and the
+//! messages below can say which. The type and route names keep "Qb".
+//!
 //! This is a second import pipeline beside `import_api`'s CSV/OFX one — the
 //! report is multi-row-per-transaction and already double-entry, so it cannot
 //! go through `hledger import` at all (see `ledgeline_core::qb_journal`'s
@@ -61,7 +67,7 @@ use ledgeline_core::model::{
     Status, Tindex, Transaction,
 };
 use ledgeline_core::qb_import::{self, plain_aliases, resolve_account};
-use ledgeline_core::qb_journal::{ImportStatus, QbJournal, QbPosting, QbTransaction};
+use ledgeline_core::qb_journal::{ImportSource, ImportStatus, QbJournal, QbPosting, QbTransaction};
 use ledgeline_core::reimport::{self, RowClassification};
 use ledgeline_core::reports::{
     AccountType, AccountTypes, KpiRole, account_decls, declared_kpi_roles, declared_types,
@@ -166,6 +172,12 @@ impl QbStageArea {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WireQbPreview {
     stage_id: String,
+    /// The app or format the export came from, in the stage response's own
+    /// `format` vocabulary (`quickbooks-journal`, `qif` …), plus the name a
+    /// person reads (`QuickBooks`, `QIF`). Plan 39: the same panel serves
+    /// every whole-book import.
+    source: &'static str,
+    source_label: &'static str,
     transaction_count: usize,
     posting_count: usize,
     date_format: WireQbDateFormat,
@@ -206,12 +218,12 @@ struct WireQbSample {
 
 /// What matching this export's transactions against the journal by id found —
 /// the QuickBooks-import analogue of `import_api::WireIdMatches`. No
-/// `statusChanged` list: a built transaction is always
-/// [`Status::Unmarked`] (nothing in a QuickBooks export maps to hledger's
-/// clearing status), so [`reimport::classify`] can never answer
-/// [`RowClassification::StatusOnly`] here — seeing one would mean a status
-/// difference, and that is folded into `conflicting`, same as the CSV path
-/// when its own rules file assigns no status.
+/// `statusChanged` list: [`reimport::classify`] is always asked with
+/// `status_mapped: false`, so it never answers
+/// [`RowClassification::StatusOnly`] here, and a status difference is folded
+/// into `conflicting`. A QuickBooks export carries no status at all; a QIF
+/// file's does (plan 39), but a journal transaction marked `*` by hand after
+/// import is still the user's edit, so it is reported, never synced.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WireQbIdMatches {
@@ -360,8 +372,8 @@ fn resolve_stage(state: &AppState, raw: &str) -> Result<(String, Arc<QbStage>), 
 fn stage_not_found(raw: &str) -> AppError {
     let clipped: String = raw.chars().take(120).collect();
     AppError::NotFound(format!(
-        "{clipped:?} is not a staged QuickBooks Journal upload this server is holding; drop the \
-         file again"
+        "{clipped:?} is not a staged QuickBooks Journal or QIF upload this server is holding; \
+         drop the file again"
     ))
 }
 
@@ -379,7 +391,7 @@ fn preview_of(
     let unmapped = qb_import::unmapped_accounts(&aliases, &parsed.transactions);
 
     let (id_matches, txns) = if unmapped.is_empty() {
-        let built = build_and_classify(&snapshot.journal, &aliases, &parsed.transactions)?;
+        let built = build_and_classify(&snapshot.journal, &aliases, parsed)?;
         let staged = staged_text(&built)?;
         let txns = crate::import_review::wire_txns(&snapshot, &staged, None, |at| {
             let row = &built[at];
@@ -404,6 +416,8 @@ fn preview_of(
 
     Ok(WireQbPreview {
         stage_id,
+        source: parsed.source.stage_format(),
+        source_label: parsed.source.label(),
         transaction_count: parsed.transactions.len(),
         posting_count,
         date_format: WireQbDateFormat {
@@ -454,10 +468,12 @@ fn apply_overrides(
     built: &mut [Classified],
     overrides: &[WireQbOverride],
     update_changed: bool,
+    source: ImportSource,
 ) -> Result<(), AppError> {
     if overrides.is_empty() {
         return Ok(());
     }
+    let label = source.label();
     crate::import_review::check_override_count(overrides.len())?;
     let mut staged = staged_text(built)?;
     let edits = overrides
@@ -468,7 +484,7 @@ fn apply_overrides(
                 .position(|row| row.id == override_.id)
                 .ok_or_else(|| {
                     AppError::BadRequest(format!(
-                        "QuickBooks transaction {:?} is not in this export",
+                        "{label} transaction {:?} is not in this export",
                         clip(&override_.id)
                     ))
                 })?;
@@ -478,7 +494,7 @@ fn apply_overrides(
                     && matches!(row.classification, RowClassification::Conflicting { .. }));
             if !written {
                 return Err(AppError::BadRequest(format!(
-                    "QuickBooks transaction {} is not written by this commit, so it cannot carry a \
+                    "{label} transaction {} is not written by this commit, so it cannot carry a \
                      review edit",
                     row.id
                 )));
@@ -488,7 +504,7 @@ fn apply_overrides(
                 fingerprint: &override_.fingerprint,
                 ops: &override_.ops,
                 label: format!(
-                    "QuickBooks transaction {} ({} {})",
+                    "{label} transaction {} ({} {})",
                     row.id, row.transaction.date, row.transaction.description
                 ),
             })
@@ -561,20 +577,26 @@ struct Classified {
 fn build_and_classify(
     journal: &Journal,
     aliases: &[&AliasDirective],
-    transactions: &[QbTransaction],
+    parsed: &QbJournal,
 ) -> Result<Vec<Classified>, AppError> {
     let index = reimport::build_index(journal, reimport::ID_TAG);
     let commodity = commodity_for(journal);
     let customer_lines = CustomerLines::new(journal);
-    transactions
+    parsed
+        .transactions
         .iter()
         .map(|qb_txn| {
-            let transaction =
-                build_transaction(journal, qb_txn, aliases, &commodity, &customer_lines)?;
-            // Every built transaction is `Status::Unmarked` (see
-            // `WireQbIdMatches`'s docs), so `status_mapped` is always `false`:
-            // any status difference from a hand-marked transaction is a
-            // conflict, never a silent "status-only" sync.
+            let transaction = build_transaction(
+                journal,
+                qb_txn,
+                parsed.source,
+                aliases,
+                &commodity,
+                &customer_lines,
+            )?;
+            // `status_mapped` is always `false` (see `WireQbIdMatches`'s
+            // docs): any status difference from a hand-marked transaction is
+            // a conflict, never a silent "status-only" sync.
             let classification = reimport::classify(&index, &qb_txn.id, &transaction, false);
             Ok(Classified {
                 id: qb_txn.id.clone(),
@@ -593,8 +615,8 @@ fn wire_id_matches(built: &[Classified]) -> WireQbIdMatches {
         match &row.classification {
             RowClassification::New => new += 1,
             RowClassification::Unchanged => unchanged += 1,
-            // A QuickBooks-built proposal never assigns a status, so this
-            // never occurs (see `WireQbIdMatches`'s docs) — matched anyway,
+            // `status_mapped` is always `false`, so this never occurs (see
+            // `WireQbIdMatches`'s docs) — matched anyway,
             // exhaustively, rather than behind a wildcard that would hide a
             // change to `classify`'s status-mapping rule.
             RowClassification::StatusOnly { .. } => {}
@@ -730,6 +752,7 @@ impl CustomerLines {
 fn build_transaction(
     journal: &Journal,
     qb_txn: &QbTransaction,
+    source: ImportSource,
     aliases: &[&AliasDirective],
     commodity: &Commodity,
     customer_lines: &CustomerLines,
@@ -751,7 +774,7 @@ fn build_transaction(
             ImportStatus::Pending => Status::Pending,
             ImportStatus::Cleared => Status::Cleared,
         },
-        code: String::new(),
+        code: code_for(qb_txn, source),
         description: qb_import::description_for(qb_txn),
         // The re-import tag convention `reimport::ID_TAG` already reads.
         comment: format!("id: {}\n", qb_txn.id),
@@ -764,6 +787,28 @@ fn build_transaction(
         ),
         source_file: PathBuf::new(),
     })
+}
+
+/// The transaction's hledger code: a QIF check number (`N`), or nothing.
+///
+/// QuickBooks' `Num` is deliberately NOT written: imports made before plan 39
+/// carry no code, and writing one now would make every one of them differ on
+/// re-import. A code ends at `)` in hledger, so brackets and anything that
+/// would break the line are dropped.
+fn code_for(qb_txn: &QbTransaction, source: ImportSource) -> String {
+    if source == ImportSource::QuickBooks {
+        return String::new();
+    }
+    qb_txn
+        .num
+        .as_deref()
+        .map(|num| {
+            qb_import::journal_safe(num)
+                .replace(['(', ')'], "")
+                .trim()
+                .to_string()
+        })
+        .unwrap_or_default()
 }
 
 /// Combine postings that resolved to the SAME account and carry an IDENTICAL
@@ -963,7 +1008,13 @@ pub(crate) fn commit_journal(
     crate::review_api::check_edits(review.journal_edits)?;
     let (snapshot, mut built) = classify_parsed(state, parsed)?;
     let id_matches = wire_id_matches(&built);
-    apply_overrides(&snapshot.raw, &mut built, review.overrides, update_changed)?;
+    apply_overrides(
+        &snapshot.raw,
+        &mut built,
+        review.overrides,
+        update_changed,
+        parsed.source,
+    )?;
     let (new, changed): (Vec<Classified>, Vec<Classified>) = built
         .into_iter()
         .filter(|row| {
@@ -1161,9 +1212,9 @@ fn classify_parsed(
     let aliases = plain_aliases(&snapshot.journal);
     let unmapped = qb_import::unmapped_accounts(&aliases, &parsed.transactions);
     if !unmapped.is_empty() {
-        return Err(unmapped_refusal(&unmapped));
+        return Err(unmapped_refusal(&unmapped, parsed.source));
     }
-    let built = build_and_classify(&snapshot.journal, &aliases, &parsed.transactions)?;
+    let built = build_and_classify(&snapshot.journal, &aliases, parsed)?;
     Ok((snapshot, built))
 }
 
@@ -1171,10 +1222,11 @@ fn classify_parsed(
 /// HTTP `commit` route and the CLI's non-interactive refusal (which has
 /// nobody to prompt, so it names the same accounts and stops — see the
 /// plan's Phase D section) say the identical sentence.
-fn unmapped_refusal(unmapped: &[String]) -> AppError {
+fn unmapped_refusal(unmapped: &[String], source: ImportSource) -> AppError {
     AppError::BadRequest(format!(
-        "these QuickBooks accounts have no matching alias, so nothing was written: {}. Add a \
-         plain alias for each one (PUT /api/aliases/{{journalId}}) and try again.",
+        "these {} accounts have no matching alias, so nothing was written: {}. Add a plain \
+         alias for each one (PUT /api/aliases/{{journalId}}) and try again.",
+        source.label(),
         unmapped.join(", ")
     ))
 }
@@ -1631,6 +1683,7 @@ mod tests {
         let built = build_transaction(
             &journal,
             &qb_txn,
+            ImportSource::QuickBooks,
             &aliases,
             &commodity_for(&journal),
             &CustomerLines::new(&journal),
@@ -1695,6 +1748,7 @@ mod tests {
         let built = build_transaction(
             &journal,
             &qb_txn,
+            ImportSource::QuickBooks,
             &aliases,
             &commodity_for(&journal),
             &CustomerLines::new(&journal),

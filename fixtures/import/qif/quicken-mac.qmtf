@@ -1,0 +1,43 @@
+!Option:AutoSwitch
+!Account
+NEveryday Checking
+TBank
+^
+!Clear:AutoSwitch
+!Type:Tag
+NReimbursable
+DWork expenses
+^
+!Type:Cat
+NDining
+E
+^
+NTravel:Lodging
+E
+^
+!Account
+NEveryday Checking
+TBank
+^
+!Type:Bank
+D1/ 2'26
+U2000.00
+T2000.00
+CX
+POpening Balance
+L[Everyday Checking]
+^
+D1/ 7'26
+U-48.75
+T-48.75
+C*
+PNoodle House
+LDining
+^
+D1/19'26
+U-389.00
+T-389.00
+PHarborview Inn
+MConference stay
+LTravel:Lodging
+^

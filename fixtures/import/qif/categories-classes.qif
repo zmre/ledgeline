@@ -1,0 +1,58 @@
+!Type:Cat
+NSalary
+DPay from work
+I
+^
+NRent
+DRent received
+I
+^
+NHome
+DHousehold costs
+E
+^
+NHome:Repairs
+E
+^
+NHome:Utilities
+E
+^
+!Type:Class
+NDuplex A
+DUpstairs unit
+^
+NDuplex B
+DDownstairs unit
+^
+!Account
+NChecking
+TBank
+^
+!Type:Bank
+D01/03/2026
+T1200.00
+C*
+PTenant A
+LRent/Duplex A
+^
+D01/03/2026
+T1100.00
+C*
+PTenant B
+LRent/Duplex B
+^
+D01/12/2026
+T-310.00
+PValley Plumbing
+SHome:Repairs/Duplex A
+ELeak under sink
+$-185.00
+SHome:Repairs/Duplex B
+EWater heater check
+$-125.00
+^
+D01/20/2026
+T-96.40
+PCity Utilities
+LHome:Utilities
+^

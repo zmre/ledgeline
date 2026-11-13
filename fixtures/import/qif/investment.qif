@@ -1,0 +1,64 @@
+!Account
+NBrokerage
+TInvst
+^
+!Type:Invst
+D01/02/2026
+NXIn
+PFunding
+T5000.00
+L[Checking]
+^
+D01/05/2026
+NBuy
+YACME Index Fund
+I50.00
+Q40
+O4.95
+T2004.95
+^
+D02/15/2026
+NDiv
+YACME Index Fund
+T18.40
+^
+D02/15/2026
+NReinvDiv
+YACME Index Fund
+I52.00
+Q0.25
+T13.00
+^
+D03/02/2026
+NSellX
+YACME Index Fund
+I55.00
+Q10
+T550.00
+L[Checking]
+$550.00
+^
+D03/20/2026
+NStkSplit
+YACME Index Fund
+Q2
+^
+D03/31/2026
+NIntInc
+T2.10
+^
+!Account
+NChecking
+TBank
+^
+!Type:Bank
+D01/02/2026
+T-5000.00
+PTo brokerage
+L[Brokerage]
+^
+D03/02/2026
+T550.00
+PFrom brokerage
+L[Brokerage]
+^

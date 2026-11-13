@@ -1,0 +1,147 @@
+!Option:AutoSwitch
+!Account
+NJoint Checking
+TBank
+^
+NHigh Yield Savings
+TBank
+^
+NRewards Card
+TCCard
+^
+!Clear:AutoSwitch
+!Type:Cat
+NGroceries
+E
+^
+NUtilities:Electric
+E
+^
+NUtilities:Internet
+E
+^
+NPaycheck
+I
+^
+!Type:Class
+NPersonal
+^
+!Account
+NJoint Checking
+TBank
+^
+!Type:Bank
+D01/01/2026
+T5200.00
+CX
+POpening Balance
+L[Joint Checking]
+^
+D01/08/2026
+T3150.00
+CX
+PNorthwind Payroll
+LPaycheck
+^
+D01/10/2026
+T-1000.00
+CX
+PTransfer to savings
+L[High Yield Savings]
+^
+D01/12/2026
+T-212.48
+C*
+PCity Power and Fiber
+SUtilities:Electric/Personal
+$-142.49
+SUtilities:Internet/Personal
+$-69.99
+^
+D01/28/2026
+T-640.18
+PRewards Card payment
+L[Rewards Card]
+^
+D01/28/2026
+T-300.00
+PSplit savings and groceries
+S[High Yield Savings]
+$-250.00
+SGroceries
+$-50.00
+^
+!Account
+NHigh Yield Savings
+TBank
+^
+!Type:Bank
+D01/01/2026
+T12000.00
+CX
+POpening Balance
+L[High Yield Savings]
+^
+D01/10/2026
+T1000.00
+CX
+PTransfer from checking
+L[Joint Checking]
+^
+D01/28/2026
+T250.00
+PSplit savings and groceries
+L[Joint Checking]
+^
+D01/31/2026
+T41.07
+C*
+PInterest
+LInterest Income
+^
+!Account
+NRewards Card
+TCCard
+^
+!Type:CCard
+D01/01/2026
+T-640.18
+CX
+POpening Balance
+L[Rewards Card]
+^
+D01/14/2026
+T-88.16
+PGreen Grocer
+LGroceries
+^
+D01/28/2026
+T640.18
+PPayment received
+L[Joint Checking]
+^
+!Option:AutoSwitch
+!Account
+NJoint Checking
+TBank
+^
+NHigh Yield Savings
+TBank
+^
+NRewards Card
+TCCard
+^
+!Clear:AutoSwitch
+!Type:Cat
+NGroceries
+E
+^
+NUtilities:Electric
+E
+^
+NUtilities:Internet
+E
+^
+NPaycheck
+I
+^

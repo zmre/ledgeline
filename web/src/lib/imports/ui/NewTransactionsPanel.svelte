@@ -30,7 +30,7 @@
     import ReviewOverlay from "#lib/review/ui/ReviewOverlay.svelte";
     import {actionRunsDryRun, importAction, shows, visibleSections} from "../importModel";
     import {importStore} from "../importStore.svelte";
-    import {isQuickbooksJournalStage} from "../qbJournalModel";
+    import {isBookImportStage} from "../qbJournalModel";
     import type {StagedRef} from "../reviewTypes";
     import {stagedRunCounts, stagedRunItems, type StagedReviewProps, type StagedRunKind} from "../stagedReview";
     import DropTarget from "./DropTarget.svelte";
@@ -64,7 +64,7 @@
      * failure), so those two cases keep falling through to `StagedPanel`'s own
      * `AsyncSection`, exactly like the CSV path's loading/error UI.
      */
-    const qbJournal = $derived(isQuickbooksJournalStage(importStore.staged));
+    const qbJournal = $derived(isBookImportStage(importStore.staged));
 
     /**
      * Every section below that a press makes appear scrolls itself into view
@@ -187,7 +187,7 @@
                      stay dark for this stage because `dryRunRequested`/
                      `writeRequested` are only ever set by the ordinary CSV
                      flow's own buttons, which this branch never presses. -->
-                <QbJournalPanel stageId={importStore.staged.stageId} accountNames={journal.accountNames} />
+                <QbJournalPanel stageId={importStore.staged.stageId} format={importStore.staged.format} accountNames={journal.accountNames} />
             {:else if importStore.hasStagedOutcome}
                 <!-- Converting, then the preview and candidates: both are what
                      the drop made appear. -->
