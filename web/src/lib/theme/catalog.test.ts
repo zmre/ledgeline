@@ -132,3 +132,20 @@ describe("UNIT theme catalog against the CSS", () => {
         expect(variant.swatch.chart).toEqual([1, 2, 3, 4].map((n) => chart.get(`--chart-${n}`)));
     });
 });
+
+// Three copies of the theme id list must agree: this catalog (what the SPA can
+// render), the prefs wire (`THEME_IDS`, what the store accepts) and the engine's
+// `THEMES` (what `ui-prefs.toml` / `ledgeline.toml` validate against).
+describe("theme ids across the wire", () => {
+    it("THEME_PREF_IDS is the prefs THEME_IDS set", async () => {
+        const {THEME_IDS} = await import("#lib/settings/uiPrefs.js");
+        expect([...THEME_PREF_IDS].sort()).toEqual([...THEME_IDS].sort());
+    });
+
+    it("THEME_PREF_IDS is the engine's THEMES set", () => {
+        const rust = readFileSync(fileURLToPath(new URL("../../../../crates/ledgeline-server/src/ui_prefs.rs", import.meta.url)), "utf8");
+        const block = /const THEMES: &\[&str\] = &\[([^\]]*)\];/.exec(rust)?.[1] ?? "";
+        const ids = [...block.matchAll(/"([a-z-]+)"/g)].map((m) => m[1]);
+        expect(ids.sort()).toEqual([...THEME_PREF_IDS].sort());
+    });
+});
