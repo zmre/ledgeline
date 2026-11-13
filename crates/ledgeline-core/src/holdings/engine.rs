@@ -2148,6 +2148,70 @@ pub fn first_holding_date(
         .min()
 }
 
+/// For every security an in-scope stock-holding account has EVER held (on or
+/// before `scope.as_of`), the last date it was held: `scope.as_of` itself
+/// while the position is still open, else the date of the transaction that
+/// closed it out.
+///
+/// The automatic price updater's question (plan 41): "does anyone need a price
+/// for this symbol on date D?" is "was it held at some point in `[D, today]`",
+/// which is exactly `D <= last held`. A position bought on 1 September still
+/// wants prices for the weeks BEFORE then — its history before purchase is
+/// what a chart of it, or a "what if I had bought sooner" question, reads —
+/// while a position sold on 5 September wants nothing after that week.
+///
+/// The closing date counts as held: the shares were owned for part of that
+/// day, and a sale's own price is a price someone will look up. Netting uses
+/// the same membership test as the report ([`scope_predicate`] plus
+/// [`is_holding_account`], currencies excluded) in journal order, so a symbol
+/// the Stocks tab has shown is one this answers for.
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow.
+pub fn last_held_dates(
+    txns: &[Transaction],
+    accounts: &[AccountDeclaration],
+    scope: &HoldingsScope,
+) -> Result<BTreeMap<String, String>, ReportError> {
+    let declared = declared_types(&account_decls_from(accounts));
+    let classes = declared_holdings_classes(accounts);
+    let currencies = Currencies::from_declared(txns, &declared);
+    let predicate = scope_predicate(scope, &classes);
+    let as_of = scope.as_of.as_str();
+
+    let mut net: BTreeMap<&str, Dec> = BTreeMap::new();
+    let mut last: BTreeMap<&str, &str> = BTreeMap::new();
+    for txn in journal_order(txns.iter().filter(|txn| txn.date.as_str() <= as_of)) {
+        for posting in &txn.postings {
+            if !predicate(&posting.account.0) || !is_holding_account(&posting.account.0, &declared)
+            {
+                continue;
+            }
+            for amount in &posting.amounts {
+                let symbol = amount.commodity.0.as_str();
+                if currencies.is_currency(symbol) {
+                    continue;
+                }
+                let slot = net.entry(symbol).or_insert_with(Dec::zero);
+                let before = *slot;
+                *slot = slot.add(amount.quantity)?;
+                // Held on this date if it was held going in or coming out.
+                if before.mantissa > 0 || slot.mantissa > 0 {
+                    last.insert(symbol, txn.date.as_str());
+                }
+            }
+        }
+    }
+    Ok(last
+        .into_iter()
+        .map(|(symbol, date)| {
+            let open = net.get(symbol).is_some_and(|shares| shares.mantissa > 0);
+            let last_held = if open { as_of } else { date };
+            (symbol.to_string(), last_held.to_string())
+        })
+        .collect())
+}
+
 /// One holdings snapshot at `as_of` from prebuilt inputs — [`compute_holdings`]
 /// minus the per-call setup, so the `gain_since` start snapshot can reuse it
 /// instead of rebuilding the whole world one level down.
@@ -5677,5 +5741,83 @@ mod flows_tests {
         );
         let too_early = scope("2024-12-31", ScopeMode::Include, &[]);
         assert_eq!(first_holding_date(&txns, &[], &too_early), None);
+    }
+
+    /// Plan 41's three cases: an open position is held "today" (`as_of`)
+    /// however recently it was bought; a sold-out one was last held on the
+    /// day of the sale; and a position re-opened after a sale is open again.
+    /// Equity/income legs and currencies never count, as in the report.
+    #[test]
+    fn last_held_is_as_of_while_open_else_the_closing_date() {
+        let cash = |cents| posting("assets:broker:cash", vec![usd(cents)], &[]);
+        let txns = vec![
+            txn(
+                1,
+                "2026-09-01",
+                vec![buy("assets:broker", "X", 5, 10_000, true), cash(-50_000)],
+                &[],
+            ),
+            txn(
+                2,
+                "2026-08-01",
+                vec![buy("assets:broker", "Y", 3, 10_000, true), cash(-30_000)],
+                &[],
+            ),
+            txn(
+                3,
+                "2026-09-05",
+                vec![sell("assets:broker", "Y", 3), cash(31_000)],
+                &[],
+            ),
+            txn(
+                4,
+                "2026-07-01",
+                vec![buy("assets:broker", "Z", 1, 10_000, true), cash(-10_000)],
+                &[],
+            ),
+            txn(
+                5,
+                "2026-07-10",
+                vec![sell("assets:broker", "Z", 1), cash(10_000)],
+                &[],
+            ),
+            txn(
+                6,
+                "2026-10-01",
+                vec![buy("assets:broker", "Z", 2, 10_000, true), cash(-20_000)],
+                &[],
+            ),
+            // A gift booked against income moves no holding.
+            txn(
+                7,
+                "2026-06-01",
+                vec![
+                    buy_no_cost_in("income:gifts", "W", 1),
+                    buy_no_cost_in("equity:opening", "W", -1),
+                ],
+                &[],
+            ),
+        ];
+        let today = scope("2026-11-13", ScopeMode::Include, &[]);
+        let last = last_held_dates(&txns, &[], &today).unwrap();
+        assert_eq!(
+            last,
+            BTreeMap::from([
+                ("X".to_string(), "2026-11-13".to_string()),
+                ("Y".to_string(), "2026-09-05".to_string()),
+                ("Z".to_string(), "2026-11-13".to_string()),
+            ])
+        );
+        // Before X was bought and before Y was sold, as of 2026-09-03.
+        let earlier = scope("2026-09-03", ScopeMode::Include, &[]);
+        let last = last_held_dates(&txns, &[], &earlier).unwrap();
+        assert_eq!(last.get("Y").map(String::as_str), Some("2026-09-03"));
+        assert_eq!(last.get("X").map(String::as_str), Some("2026-09-03"));
+        assert_eq!(last.get("Z").map(String::as_str), Some("2026-07-10"));
+    }
+
+    /// A cost-less share posting into any account, for the income/equity case.
+    fn buy_no_cost_in(account: &str, symbol: &str, qty: i128) -> crate::model::Posting {
+        posting(account, vec![amt(symbol, qty, 0)], &[])
     }
 }
