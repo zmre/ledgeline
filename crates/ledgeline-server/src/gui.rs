@@ -185,6 +185,10 @@ pub(crate) fn run(cli: &Cli, app_dirs: AppDirs) -> Result<(), AppError> {
         }
     });
 
+    // Plan 41: the background price updater, on the same runtime and the same
+    // state, so it follows File → Open. Idle unless `autoPrices` is on.
+    let _auto_prices = runtime.spawn(ledgeline::run_auto_prices(state.clone()));
+
     let bound_port = runtime
         .block_on(port_rx)
         .ok()
