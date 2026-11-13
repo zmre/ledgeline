@@ -154,3 +154,31 @@ describe("COMPONENT keymap chords", () => {
         expect(keymap.pending).toBe("");
     });
 });
+
+describe("COMPONENT always bindings (zoom, plan 39)", () => {
+    it("fires an `always` chord from inside a field and prevents the browser's default", () => {
+        let zoomed = 0;
+        let typed = 0;
+        render(KeysProbe, {
+            props: {
+                layerOf: (): Layer => ({
+                    id: "global",
+                    bindings: [
+                        {keys: "ctrl+0", label: "Actual size", group: "Global", run: () => (zoomed += 1), always: true},
+                        {keys: "j", label: "down", group: "Journal", run: () => (typed += 1)},
+                    ],
+                }),
+            },
+        });
+        const input = document.createElement("input");
+        document.body.append(input);
+
+        const zoom = press("0", input, {ctrlKey: true});
+        const letter = press("j", input);
+        input.remove();
+
+        expect({zoomed, typed}).toEqual({zoomed: 1, typed: 0});
+        expect(zoom.defaultPrevented).toBe(true);
+        expect(letter.defaultPrevented).toBe(false);
+    });
+});

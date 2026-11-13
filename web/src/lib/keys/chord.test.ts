@@ -6,7 +6,7 @@
 import {describe, expect, it} from "vitest";
 import {canonical, chordToken, formatKeys, MODIFIER_JOINER, isPrefixOf, matchesKeys, steps} from "./chord";
 
-function press(key: string, mods: Partial<{ctrlKey: boolean; altKey: boolean; metaKey: boolean; shiftKey: boolean}> = {}) {
+function press(key: string, mods: Partial<{ctrlKey: boolean; altKey: boolean; metaKey: boolean; shiftKey: boolean; code: string}> = {}) {
     return {key, ctrlKey: false, altKey: false, metaKey: false, shiftKey: false, ...mods};
 }
 
@@ -83,5 +83,40 @@ describe("UNIT formatKeys", () => {
     it("separates a chord's modifiers and key, so ⌘⇧↵ never reads as one word", () => {
         expect(formatKeys("mod+shift+Enter")[0].text.split(MODIFIER_JOINER)).toHaveLength(3);
         expect(MODIFIER_JOINER).not.toBe("");
+    });
+});
+
+describe("UNIT the + key and keyboard layouts (zoom, plan 39)", () => {
+    it("spells the + key itself, which a split on + alone cannot", () => {
+        expect(canonical("ctrl++")).toBe("ctrl++");
+        expect(canonical("shift+ctrl++")).toBe("ctrl++");
+        expect(canonical("+")).toBe("+");
+        expect(matchesKeys("ctrl++", chordToken(press("+", {ctrlKey: true, shiftKey: true})))).toBe(true);
+        expect(formatKeys("ctrl++")).toEqual([{text: `Ctrl${MODIFIER_JOINER}+`}]);
+    });
+
+    it("leaves - = and 0 chords alone", () => {
+        expect(canonical("ctrl+-")).toBe("ctrl+-");
+        expect(chordToken(press("-", {ctrlKey: true}))).toBe("ctrl+-");
+        expect(chordToken(press("=", {metaKey: true}))).toBe("meta+=");
+        expect(chordToken(press("0", {ctrlKey: true, code: "Digit0"}))).toBe("ctrl+0");
+    });
+
+    it("trusts event.key on a Latin layout, even where the physical key differs", () => {
+        // German: `+` has its own key (US `]`); AZERTY: `-` sits on Digit6.
+        expect(chordToken(press("+", {metaKey: true, code: "BracketRight"}))).toBe("meta++");
+        expect(chordToken(press("-", {ctrlKey: true, code: "Digit6"}))).toBe("ctrl+-");
+    });
+
+    it("falls back to the physical key for a Ctrl/Cmd chord on a non-Latin character", () => {
+        expect(chordToken(press("à", {metaKey: true, code: "Digit0"}))).toBe("meta+0");
+        expect(chordToken(press("л", {ctrlKey: true, code: "KeyK"}))).toBe("ctrl+k");
+        expect(chordToken(press("Л", {ctrlKey: true, shiftKey: true, code: "KeyK"}))).toBe("ctrl+K");
+        expect(chordToken(press("ß", {ctrlKey: true, code: "Minus"}))).toBe("ctrl+-");
+    });
+
+    it("never rewrites a character typed without Ctrl/Cmd", () => {
+        expect(chordToken(press("à", {code: "Digit0"}))).toBe("à");
+        expect(chordToken(press("à", {altKey: true, code: "Digit0"}))).toBe("alt+à");
     });
 });
