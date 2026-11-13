@@ -29,9 +29,9 @@ Ledgeline opens the new journal and adds it to **File → Open Recent**.
 
 Pick the app you're coming from, such as Quicken, Banktivity, Moneydance, GnuCash, Xero, QuickBooks Online, YNAB, Monarch or Copilot, or a bank statement. The wizard says where that app keeps its export. Then choose the exported file.
 
-The currency and folder steps are the same as above. Ledgeline creates an empty ledger, then opens the [Imports](imports/index.md) screen with your file already loaded. There you match the export's accounts to yours and choose what to write, the same as any other import. See [Importing from QuickBooks](imports/quickbooks.md) for the QuickBooks Online journal report.
+The currency and folder steps are the same as above. Ledgeline creates an empty ledger, then opens the [Imports](imports/index.md) screen with your file already loaded. There you map the export's accounts and categories to hledger accounts, then choose what to write. Since the new ledger has no accounts yet, Ledgeline suggests a name for each one from the export itself (a bank register becomes `assets:bank:…`, a spending category `expenses:…`), so most of the work is checking its suggestions. See [Importing a QIF file](imports/qif.md), [Importing from other apps](imports/other-apps.md) and [Importing from QuickBooks](imports/quickbooks.md) for what each export brings over.
 
-If this version of Ledgeline can't read that kind of file yet, the wizard says so. It still creates the ledger, and you can import the file later.
+A bank statement (OFX, QFX or CSV) goes through the ordinary statement import instead, with a rules file. If Ledgeline can't read the file at all, the wizard says so. It still creates the ledger, and you can import the file later.
 
 ## Try with sample data
 

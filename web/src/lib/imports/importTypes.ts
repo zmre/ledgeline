@@ -585,6 +585,8 @@ export interface QbPreview {
     readonly dateFormat: QbDateFormat;
     /** Distinct source account names (QuickBooks accounts, QIF accounts and categories) no plain alias in the journal maps yet. Non-empty blocks a commit. */
     readonly unmappedAccounts: readonly string[];
+    /** A suggested journal account per unmapped source account, derived from the export (plan 39); the mapping step pre-fills these for review. */
+    readonly suggestedAccounts: Readonly<Record<string, string>>;
     readonly sample: readonly QbSample[];
     /** Null while any account is unmapped — nothing can be built (and so nothing classified) without one. */
     readonly idMatches: QbIdMatches | null;

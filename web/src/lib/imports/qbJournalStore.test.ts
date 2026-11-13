@@ -172,6 +172,30 @@ describe("UNIT qbJournalStore — resolving unmapped accounts", () => {
         expect(store.preview?.unmappedAccounts).toEqual([]);
     });
 
+    it("pre-fills each row with the engine's suggestion, lets a typed value or a cleared field win, and submits the suggestions (plan 39)", async () => {
+        const suggested = {
+            ...PREVIEW_UNMAPPED,
+            suggestedAccounts: {"Riverbank BUSINESS CHECKING (0002)": "assets:bank:Riverbank", "3000 Member Equity": "equity:Member Equity"},
+        };
+        const {store, fetchMock} = await freshStore({
+            "/api/import/qb-journal/s1": suggested,
+            "/api/aliases": ALIASES,
+            "/api/aliases/main.journal": {...ALIASES.files[0], revision: "rev-2"},
+        });
+        await store.ensurePreview("http://engine.test", "s1");
+        expect(store.draftFor("Riverbank BUSINESS CHECKING (0002)")).toBe("assets:bank:Riverbank");
+        store.setDraft("3000 Member Equity", "equity:opening");
+        expect(store.draftFor("3000 Member Equity")).toBe("equity:opening");
+        store.setDraft("3000 Member Equity", "");
+        expect(store.draftFor("3000 Member Equity")).toBe("");
+
+        const ok = await store.saveMappings("http://engine.test", "s1", suggested.unmappedAccounts);
+
+        expect(ok).toBe(true);
+        const sent = bodyOf(fetchMock, "/api/aliases/main.journal") as {edits: unknown[]};
+        expect(sent.edits).toEqual([{kind: "append", pattern: "Riverbank BUSINESS CHECKING (0002)", replacement: "assets:bank:Riverbank", regex: false}]);
+    });
+
     it("surfaces a conflict (the journal changed underneath the edit) as a mapping error, and leaves the preview alone", async () => {
         const {store, fetchMock} = await freshStore({
             "/api/import/qb-journal/s1": PREVIEW_UNMAPPED,

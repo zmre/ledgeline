@@ -9,7 +9,7 @@ tags: [imports, xero, gnucash, ynab, monarch, copilot, migration]
 
 Ledgeline can read the transaction exports of several accounting and budgeting apps and turn them into hledger transactions. These imports work like the [QuickBooks import](quickbooks.md), not like a bank statement:
 
-- Every account and category in the export appears in a mapping step, where you choose the journal account each one becomes. Ledgeline remembers your choices as `alias` lines.
+- Every account and category in the export appears in a mapping step, where you choose the journal account each one becomes. Ledgeline fills in a suggestion for each: GnuCash and hledger names as they are, tracked accounts under `assets:`, and categories under `income:` or `expenses:` depending on which way their money mostly moved. Xero accounts get a suggestion only when your journal already has an account with the same name. Ledgeline remembers your choices as `alias` lines.
 - Each transaction gets an `id:` tag. Importing a later, overlapping export skips the transactions that are already in your journal.
 - Nothing is written if any part of the file can't be read. The error names the row to look at.
 

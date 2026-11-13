@@ -288,6 +288,31 @@ pub struct QbJournal {
     /// sets it, so labels and `id:` prefixes can follow the source (plan 39).
     #[serde(default)]
     pub source: ImportSource,
+    /// What kind of account each source account name is, where the export
+    /// says (QIF register types and income categories) or the importer can
+    /// tell (a single-entry export's tracked accounts against its categories).
+    /// Empty for QuickBooks. Feeds the mapping step's suggested journal
+    /// accounts ([`crate::qb_import::suggest_accounts`]); never used to write.
+    #[serde(default)]
+    pub account_kinds: std::collections::BTreeMap<String, SourceAccountKind>,
+}
+
+/// The kind of a source account, as far as its export reveals it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SourceAccountKind {
+    Bank,
+    Cash,
+    CreditCard,
+    OtherAsset,
+    OtherLiability,
+    Investment,
+    /// An account the app tracks a balance for, of unstated kind (Monarch,
+    /// Copilot and YNAB don't say whether it is an asset or a liability).
+    Tracked,
+    Income,
+    Expense,
+    Equity,
 }
 
 /// The app (or format) a multi-posting import came from.
@@ -1055,6 +1080,7 @@ fn date(groups: Vec<Raw>) -> Result<QbJournal, QbJournalError> {
         transactions,
         date_format: guess,
         source: ImportSource::QuickBooks,
+        account_kinds: std::collections::BTreeMap::new(),
     })
 }
 

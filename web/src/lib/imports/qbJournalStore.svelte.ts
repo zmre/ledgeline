@@ -165,8 +165,9 @@ export const qbJournalStore = {
     },
 
     // --- resolving unmapped accounts -----------------------------------------
+    /** What the user typed for `account`, else the engine's suggestion (plan 39), else blank. Clearing a field to blank sticks. */
     draftFor(account: string): string {
-        return drafts[account] ?? "";
+        return drafts[account] ?? preview.value?.suggestedAccounts[account] ?? "";
     },
     setDraft(account: string, value: string): void {
         drafts = {...drafts, [account]: value};
@@ -192,7 +193,7 @@ export const qbJournalStore = {
      */
     async saveMappings(serverUrl: string, stageId: string, unmapped: readonly string[]): Promise<boolean> {
         mappingError = null;
-        const edits = mappingEdits(unmapped, drafts);
+        const edits = mappingEdits(unmapped, Object.fromEntries(unmapped.map((account) => [account, this.draftFor(account)])));
         if (edits.length === 0) {
             mappingError = "Type an account for at least one row before mapping.";
             return false;
@@ -213,7 +214,8 @@ export const qbJournalStore = {
         }
         // The rows that resolved are gone from the next preview; anything
         // still unmapped (blank, or refused by `mappingProblems`) is offered
-        // again with an empty field rather than a stale, possibly-invalid one.
+        // again with its suggestion, or an empty field, rather than a stale,
+        // possibly-invalid draft.
         drafts = {};
         await this.refreshPreview(serverUrl, stageId);
         return true;

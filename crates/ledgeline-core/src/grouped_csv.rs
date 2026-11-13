@@ -808,6 +808,7 @@ pub(crate) fn finish(
         transactions,
         date_format,
         source,
+        account_kinds: std::collections::BTreeMap::new(),
     })
 }
 

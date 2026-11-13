@@ -36,8 +36,10 @@
 //! would need to be. Matched in file order, first match wins, exactly how
 //! hledger composes several `--alias` options.
 
+use crate::decimal::Dec;
 use crate::model::{AliasDirective, Journal};
-use crate::qb_journal::QbTransaction;
+use crate::qb_journal::{ImportSource, QbJournal, QbTransaction, SourceAccountKind};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The plain (non-regex), in-force aliases of `journal` — the set
 /// [`resolve_account`] and [`unmapped_accounts`] are matched against.
@@ -91,6 +93,134 @@ pub fn unmapped_accounts(
         }
     }
     unmapped
+}
+
+/// Give every source account `parsed` hasn't classified yet a kind from the
+/// net direction of its postings: money in overall (a credit balance) reads
+/// as income, money out as expense.
+///
+/// For a category of a single-entry or QIF export this is the only signal
+/// there is. It is a *suggestion* input, never a classification anything is
+/// written by: the user sees and can change every suggested account before an
+/// alias is saved (plan 39).
+pub fn classify_remaining_by_sign(parsed: &mut QbJournal) {
+    let mut net: BTreeMap<&str, Dec> = BTreeMap::new();
+    for posting in parsed.transactions.iter().flat_map(|txn| &txn.postings) {
+        if parsed.account_kinds.contains_key(&posting.account) {
+            continue;
+        }
+        let total = net.entry(&posting.account).or_insert_with(Dec::zero);
+        // An overflow leaves the running total where it was; the suggestion
+        // is advisory and the write path refuses overflow on its own.
+        *total = total.add(posting.amount).unwrap_or(*total);
+    }
+    let kinds: Vec<(String, SourceAccountKind)> = net
+        .into_iter()
+        .map(|(account, total)| {
+            let kind = if total < Dec::zero() {
+                SourceAccountKind::Income
+            } else {
+                SourceAccountKind::Expense
+            };
+            (account.to_string(), kind)
+        })
+        .collect();
+    parsed.account_kinds.extend(kinds);
+}
+
+/// A suggested journal account for each of `unmapped` (source account names
+/// with no alias yet), for the mapping step to pre-fill (plan 39: the account
+/// tree is derived from the export, then reviewed by the user).
+///
+/// In order of preference:
+///
+/// 1. The one existing account in `existing` whose last segment matches the
+///    source name's last segment, ignoring case: `Groceries` → an existing
+///    `expenses:food:groceries`. Two or more candidates suggest none of them.
+/// 2. GnuCash and hledger CSV names are already full hierarchical account
+///    names, so they are suggested as they are.
+/// 3. A new name under hledger's standard roots from the account's kind
+///    ([`QbJournal::account_kinds`]): `assets:bank:Checking`,
+///    `liabilities:credit cards:Visa`, `expenses:Food:Groceries`. hledger and
+///    Ledgeline infer those roots' types, so a new ledger needs no
+///    declarations for them to land in the right reports.
+///
+/// A name with no kind and no match gets no suggestion.
+#[must_use]
+pub fn suggest_accounts(
+    parsed: &QbJournal,
+    unmapped: &[String],
+    existing: &[String],
+) -> BTreeMap<String, String> {
+    let mut by_leaf: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
+    for account in existing {
+        by_leaf
+            .entry(leaf(account).to_lowercase())
+            .or_default()
+            .insert(account);
+    }
+    unmapped
+        .iter()
+        .filter_map(|source| {
+            let display = source.strip_suffix(" (category)").unwrap_or(source);
+            let existing_match = by_leaf
+                .get(&leaf(display).to_lowercase())
+                .filter(|candidates| candidates.len() == 1)
+                .and_then(|candidates| candidates.first())
+                .map(|account| (*account).to_string());
+            let suggestion = existing_match.or_else(|| match parsed.source {
+                ImportSource::GnuCash | ImportSource::HledgerCsv => Some(display.to_string()),
+                _ => parsed
+                    .account_kinds
+                    .get(source)
+                    .map(|kind| under_root(*kind, display)),
+            })?;
+            let suggestion = tidy_account(&suggestion);
+            (!suggestion.is_empty()).then(|| (source.clone(), suggestion))
+        })
+        .collect()
+}
+
+/// The last `:`-separated segment of an account name.
+fn leaf(account: &str) -> &str {
+    account.rsplit(':').next().unwrap_or(account).trim()
+}
+
+/// `name` under the standard root for `kind`, without doubling a root the
+/// source name already starts with (`Equity:Opening Balances` →
+/// `equity:Opening Balances`).
+fn under_root(kind: SourceAccountKind, name: &str) -> String {
+    let (root, branch) = match kind {
+        SourceAccountKind::Bank => ("assets", Some("bank")),
+        SourceAccountKind::Cash => ("assets", Some("cash")),
+        SourceAccountKind::CreditCard => ("liabilities", Some("credit cards")),
+        SourceAccountKind::OtherAsset | SourceAccountKind::Tracked => ("assets", None),
+        SourceAccountKind::OtherLiability => ("liabilities", None),
+        SourceAccountKind::Investment => ("assets", Some("investments")),
+        SourceAccountKind::Income => ("income", None),
+        SourceAccountKind::Expense => ("expenses", None),
+        SourceAccountKind::Equity => ("equity", None),
+    };
+    let name = match name.split_once(':') {
+        Some((first, rest)) if first.trim().eq_ignore_ascii_case(root) => rest,
+        _ => name,
+    };
+    match branch {
+        Some(branch) => format!("{root}:{branch}:{name}"),
+        None => format!("{root}:{name}"),
+    }
+}
+
+/// An account name hledger reads back as written: no line breaks or tabs,
+/// no run of two spaces (which ends an account name in a posting), no
+/// `;`, and no empty segments.
+fn tidy_account(name: &str) -> String {
+    name.replace(['\n', '\r', '\t', ';'], " ")
+        .split(':')
+        .map(|segment| segment.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 /// hledger's description for one QuickBooks transaction.

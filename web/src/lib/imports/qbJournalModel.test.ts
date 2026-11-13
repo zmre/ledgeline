@@ -165,6 +165,7 @@ describe("UNIT qbJournalModel — the commit gate", () => {
         postingCount: 2,
         dateFormat: {format: "%m/%d/%Y", ambiguous: false},
         unmappedAccounts: unmapped,
+        suggestedAccounts: {},
         sample: [],
         idMatches: unmapped.length === 0 ? idMatches() : null,
         txns: [],
