@@ -9,7 +9,7 @@
 //!     window, then the wry webview pointed at `http://127.0.0.1:<port>/`.
 //!  4. muda menus drive actions: File→Open journal… (rfd picker → reparse +
 //!     hot-swap the shared state + reload the webview) and View→Reload/Back/
-//!     Forward (`webview` script/navigation). The Tokio runtime keeps serving on
+//!     Forward/Zoom (`webview` script/navigation). The Tokio runtime keeps serving on
 //!     its worker threads while the (diverging) event loop owns the main thread.
 //!
 //! Because the SPA is served same-origin and the journal is hot-swapped in place,
@@ -170,6 +170,9 @@ struct AppMenu {
     reload: MenuItem,
     back: MenuItem,
     forward: MenuItem,
+    zoom_in: MenuItem,
+    zoom_out: MenuItem,
+    actual_size: MenuItem,
     /// Linux only: muda's predefined Quit is inert on GTK, so we dispatch our
     /// own. Elsewhere the native predefined item handles it and there is
     /// nothing to match against.
@@ -220,6 +223,9 @@ enum Shortcut {
     Reload,
     Back,
     Forward,
+    /// View → Zoom In / Zoom Out / Actual Size. The SPA owns the scale (its
+    /// steps, and saving it as a preference), so these only tell it which way.
+    Zoom(Zoom),
     /// Linux only — see `quit` in [`build_menu`] for why this is not
     /// `PredefinedMenuItem::quit`.
     ///
@@ -229,6 +235,45 @@ enum Shortcut {
     /// ungated variant is dead code under `-D warnings`.
     #[cfg(target_os = "linux")]
     Quit,
+}
+
+/// Which way a View-menu zoom goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Zoom {
+    In,
+    Out,
+    Reset,
+}
+
+/// The script that hands a zoom to the SPA: a `ledgeline:zoom` event on
+/// `window`, which `web/src/lib/theme/zoom.svelte.ts` listens for and turns into
+/// the same step the keyboard takes.
+///
+/// One press, one step. The menu's accelerators are the same keys the SPA's
+/// keymap binds, and what keeps a single press from zooming twice is which of
+/// the two sees it — per platform:
+///
+/// - **macOS**: WKWebView offers a Cmd key-equivalent to the PAGE first and only
+///   walks the main menu if the page leaves it unhandled. The keymap
+///   `preventDefault`s its zoom keys, so the menu item fires only when it is
+///   clicked (or the page is not up to take the key).
+/// - **Linux**: with the menu bar shown its `GtkAccelGroup` consumes the key
+///   before the web view gets it; with the bar hidden (the default) the
+///   accelerator is dead and only the page sees the key.
+/// - **Windows**: WebView2 handles keys in its own browser process and wry does
+///   not forward them to the host's accelerator table, so the menu is not
+///   expected to see a key the page has focus for. (wry's default
+///   `with_hotkeys_zoom(false)` also turns WebView2's own Ctrl +/- page zoom off,
+///   which would otherwise stack a page zoom on top of the interface scale.)
+///
+/// None of that is testable from here, so the SPA also drops the same action
+/// arriving from the other route within a few hundred milliseconds.
+const fn zoom_script(zoom: Zoom) -> &'static str {
+    match zoom {
+        Zoom::In => "window.dispatchEvent(new CustomEvent('ledgeline:zoom', {detail: 'in'}))",
+        Zoom::Out => "window.dispatchEvent(new CustomEvent('ledgeline:zoom', {detail: 'out'}))",
+        Zoom::Reset => "window.dispatchEvent(new CustomEvent('ledgeline:zoom', {detail: 'reset'}))",
+    }
 }
 
 /// Kill the WebKit web process instead of letting it exit on its own.
@@ -464,9 +509,40 @@ fn build_menu() -> AppMenu {
     );
     let back = MenuItem::with_id("back", "&Back", true, Some(back_accel));
     let forward = MenuItem::with_id("forward", "&Forward", true, Some(forward_accel));
+    // Cmd/Ctrl `=` rather than `+`: `=` is the unshifted key on a US layout, the
+    // one browsers put on Zoom In. The SPA's keymap also takes `+`, for layouts
+    // with a dedicated `+` key; see `zoom_script` for why a press never counts
+    // twice.
+    let zoom_in = MenuItem::with_id(
+        "zoom-in",
+        "Zoom &In",
+        true,
+        Some(Accelerator::new(COMMAND_MODIFIER, Code::Equal)),
+    );
+    let zoom_out = MenuItem::with_id(
+        "zoom-out",
+        "Zoom &Out",
+        true,
+        Some(Accelerator::new(COMMAND_MODIFIER, Code::Minus)),
+    );
+    let actual_size = MenuItem::with_id(
+        "actual-size",
+        "&Actual Size",
+        true,
+        Some(Accelerator::new(COMMAND_MODIFIER, Code::Digit0)),
+    );
     log_menu(
         "view menu",
-        view_menu.append_items(&[&reload, &PredefinedMenuItem::separator(), &back, &forward]),
+        view_menu.append_items(&[
+            &reload,
+            &PredefinedMenuItem::separator(),
+            &back,
+            &forward,
+            &PredefinedMenuItem::separator(),
+            &zoom_in,
+            &zoom_out,
+            &actual_size,
+        ]),
     );
 
     #[cfg(target_os = "macos")]
@@ -487,6 +563,9 @@ fn build_menu() -> AppMenu {
         reload,
         back,
         forward,
+        zoom_in,
+        zoom_out,
+        actual_size,
         #[cfg(target_os = "linux")]
         quit,
     }
@@ -833,6 +912,9 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
     let reload_id = menu.reload.id().clone();
     let back_id = menu.back.id().clone();
     let forward_id = menu.forward.id().clone();
+    let zoom_in_id = menu.zoom_in.id().clone();
+    let zoom_out_id = menu.zoom_out.id().clone();
+    let actual_size_id = menu.actual_size.id().clone();
     let recent_submenu = menu.recent.clone();
     #[cfg(target_os = "linux")]
     let quit_id = menu.quit.id().clone();
@@ -944,6 +1026,9 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
                 Shortcut::Forward => {
                     let _ = webview.evaluate_script("history.forward()");
                 }
+                Shortcut::Zoom(zoom) => {
+                    let _ = webview.evaluate_script(zoom_script(zoom));
+                }
                 #[cfg(target_os = "linux")]
                 Shortcut::Quit => return true,
             }
@@ -965,6 +1050,12 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
                 Some(Shortcut::Back)
             } else if *id == forward_id {
                 Some(Shortcut::Forward)
+            } else if *id == zoom_in_id {
+                Some(Shortcut::Zoom(Zoom::In))
+            } else if *id == zoom_out_id {
+                Some(Shortcut::Zoom(Zoom::Out))
+            } else if *id == actual_size_id {
+                Some(Shortcut::Zoom(Zoom::Reset))
             } else {
                 None
             }
@@ -1269,10 +1360,24 @@ mod perf {
 #[cfg(test)]
 mod tests {
     use super::{
-        AccessToken, external_docs_url, first_journal_path, navigation_allowed, token_init_script,
+        AccessToken, Zoom, external_docs_url, first_journal_path, navigation_allowed,
+        token_init_script, zoom_script,
     };
     use std::path::PathBuf;
     use url::Url;
+
+    #[test]
+    fn zoom_scripts_dispatch_the_event_the_spa_listens_for() {
+        // The SPA's `ZOOM_EVENT` and `isZoomAction` (web/src/lib/theme/zoom.svelte.ts).
+        for (zoom, detail) in [(Zoom::In, "in"), (Zoom::Out, "out"), (Zoom::Reset, "reset")] {
+            let script = zoom_script(zoom);
+            assert!(script.starts_with("window.dispatchEvent(new CustomEvent('ledgeline:zoom'"));
+            assert!(
+                script.contains(&format!("{{detail: '{detail}'}}")),
+                "{script}"
+            );
+        }
+    }
 
     #[test]
     fn only_docs_pages_go_to_the_system_browser() {
