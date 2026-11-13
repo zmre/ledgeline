@@ -1,0 +1,142 @@
+/*
+ * GitHub: Primer's "Light default" and "Dark default" (github.com/primer/primitives).
+ * Base 100 is canvas-default; 200/300 are canvas-subtle and the next step
+ * (light), or canvas-inset and the step between (dark).
+ *
+ * Each variant is a daisyUI custom theme plus its chart block. The chart rules
+ * (slot order, the named tokens, how to validate) are in app.css and
+ * src/lib/format/palette.ts.
+ */
+
+@plugin "daisyui/theme" {
+    name: "github-light";
+    default: false;
+    prefersdark: false;
+    color-scheme: light;
+    --color-base-100: #ffffff;
+    --color-base-200: #f6f8fa;
+    --color-base-300: #eaeef2;
+    --color-base-content: #1f2328;
+    --color-primary: #0969da;
+    --color-primary-content: #ffffff;
+    --color-secondary: #bf3989;
+    --color-secondary-content: #ffffff;
+    --color-accent: #bc4c00;
+    --color-accent-content: #ffffff;
+    --color-neutral: #24292f;
+    --color-neutral-content: #ffffff;
+    --color-info: #0969da;
+    --color-info-content: #ffffff;
+    --color-success: #1a7f37;
+    --color-success-content: #ffffff;
+    --color-warning: #9a6700;
+    --color-warning-content: #ffffff;
+    --color-error: #d1242f;
+    --color-error-content: #ffffff;
+    --radius-selector: 0.5rem;
+    --radius-field: 0.25rem;
+    --radius-box: 0.5rem;
+    --size-selector: 0.25rem;
+    --size-field: 0.25rem;
+    --border: 1px;
+    --depth: 1;
+    --noise: 0;
+}
+
+/*
+ * github-light: 14 slots, validated on base-100 #ffffff — worst adjacent CVD
+ * ΔE 8.5, worst adjacent normal-vision ΔE 15.8, every slot ≥ 3:1 contrast (min
+ * 3.14:1). Flow in/out CVD ΔE 16.3. Pins (info/secondary/accent): all-pairs
+ * CVD ΔE 13.4, normal ΔE 16.7, min 5.03:1.
+ *
+ * All fourteen slots are Primer scale steps 4 and 5 (blue, green, purple,
+ * orange, yellow, pink, red). `in` is green-4 rather than success (green-5)
+ * and `out` red-6: success and danger sit at one lightness and collapse under
+ * CVD (ΔE 5.5).
+ */
+[data-theme="github-light"] {
+    --chart-1: #0969da;
+    --chart-2: #2da44e;
+    --chart-3: #8250df;
+    --chart-4: #bc4c00;
+    --chart-5: #218bff;
+    --chart-6: #9a6700;
+    --chart-7: #e85aad;
+    --chart-8: #1a7f37;
+    --chart-9: #bf8700;
+    --chart-10: #cf222e;
+    --chart-11: #a475f9;
+    --chart-12: #e16f24;
+    --chart-13: #bf3989;
+    --chart-14: #fa4549;
+    --chart-other: #6e7781;
+    --chart-in: #2da44e;
+    --chart-out: #a40e26;
+    --chart-net: #1f2328;
+}
+
+@plugin "daisyui/theme" {
+    name: "github-dark";
+    default: false;
+    prefersdark: false;
+    color-scheme: dark;
+    --color-base-100: #0d1117;
+    --color-base-200: #090c10;
+    --color-base-300: #010409;
+    --color-base-content: #e6edf3;
+    --color-primary: #58a6ff;
+    --color-primary-content: #0d1117;
+    --color-secondary: #a371f7;
+    --color-secondary-content: #0d1117;
+    --color-accent: #ffa657;
+    --color-accent-content: #0d1117;
+    --color-neutral: #30363d;
+    --color-neutral-content: #e6edf3;
+    --color-info: #79c0ff;
+    --color-info-content: #0d1117;
+    --color-success: #3fb950;
+    --color-success-content: #0d1117;
+    --color-warning: #d29922;
+    --color-warning-content: #0d1117;
+    --color-error: #f85149;
+    --color-error-content: #0d1117;
+    --radius-selector: 0.5rem;
+    --radius-field: 0.25rem;
+    --radius-box: 0.5rem;
+    --size-selector: 0.25rem;
+    --size-field: 0.25rem;
+    --border: 1px;
+    --depth: 1;
+    --noise: 0;
+}
+
+/*
+ * github-dark: 14 slots, validated on base-100 #0d1117 — worst adjacent CVD ΔE
+ * 13.1, worst adjacent normal-vision ΔE 16.7, every slot ≥ 3:1 contrast (min
+ * 5.61:1). Flow in/out CVD ΔE 9.6. Pins (info/secondary/accent): all-pairs CVD
+ * ΔE 14.4, normal ΔE 19.6, min 5.64:1.
+ *
+ * All fourteen slots are Primer dark scale steps 2–5. `out` is danger-emphasis
+ * (#da3633), not danger-fg (#f85149), which collapses against success under
+ * CVD (ΔE 2.2).
+ */
+[data-theme="github-dark"] {
+    --chart-1: #58a6ff;
+    --chart-2: #3fb950;
+    --chart-3: #d2a8ff;
+    --chart-4: #f85149;
+    --chart-5: #ffa657;
+    --chart-6: #db61a2;
+    --chart-7: #56d364;
+    --chart-8: #a371f7;
+    --chart-9: #e3b341;
+    --chart-10: #db6d28;
+    --chart-11: #f778ba;
+    --chart-12: #d29922;
+    --chart-13: #79c0ff;
+    --chart-14: #f78166;
+    --chart-other: #7d8590;
+    --chart-in: #3fb950;
+    --chart-out: #da3633;
+    --chart-net: #e6edf3;
+}

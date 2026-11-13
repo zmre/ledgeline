@@ -1,0 +1,140 @@
+/*
+ * Solarized light and dark (ethanschoonover.com/solarized). Base 100/200 are
+ * base3/base2 (light) or base03 plus derived darker steps (dark: Solarized has
+ * no shade below base03). base-content is the "emphasised" tone, base01 (light)
+ * or base1 (dark): Solarized's design keeps body text near 5:1, below the 7:1
+ * the other themes reach, and that is kept rather than redesigning it.
+ *
+ * Each variant is a daisyUI custom theme plus its chart block. The chart rules
+ * (slot order, the named tokens, how to validate) are in app.css and
+ * src/lib/format/palette.ts.
+ */
+
+@plugin "daisyui/theme" {
+    name: "solarized-light";
+    default: false;
+    prefersdark: false;
+    color-scheme: light;
+    --color-base-100: #fdf6e3;
+    --color-base-200: #eee8d5;
+    --color-base-300: #e4ddc8;
+    --color-base-content: #586e75;
+    --color-primary: #268bd2;
+    --color-primary-content: #001b22;
+    --color-secondary: #d33682;
+    --color-secondary-content: #ffffff;
+    --color-accent: #b58900;
+    --color-accent-content: #001b22;
+    --color-neutral: #073642;
+    --color-neutral-content: #fdf6e3;
+    --color-info: #268bd2;
+    --color-info-content: #001b22;
+    --color-success: #859900;
+    --color-success-content: #001b22;
+    --color-warning: #b58900;
+    --color-warning-content: #001b22;
+    --color-error: #dc322f;
+    --color-error-content: #ffffff;
+    --radius-selector: 0.5rem;
+    --radius-field: 0.25rem;
+    --radius-box: 0.5rem;
+    --size-selector: 0.25rem;
+    --size-field: 0.25rem;
+    --border: 1px;
+    --depth: 1;
+    --noise: 0;
+}
+
+/*
+ * solarized-light: 11 slots, validated on base-100 #fdf6e3 — worst adjacent
+ * CVD ΔE 14.4, worst adjacent normal-vision ΔE 16.5, every slot ≥ 3:1 contrast
+ * (min 3.08:1). Flow in/out CVD ΔE 13.1. Pins (info/secondary/accent):
+ * all-pairs CVD ΔE 13.9, normal ΔE 25, min 2.98:1.
+ *
+ * Solarized's eight accents plus three deeper steps of magenta, violet and
+ * orange. DEVIATIONS: yellow, cyan and green darkened a step (they sit at
+ * 2.9–3.0:1 on base3). `in` is cyan, not green: Solarized green and red
+ * collapse under CVD (ΔE 4.0). PINS: accent is Solarized yellow at 2.98:1, a
+ * hair under 3:1, kept as published.
+ */
+[data-theme="solarized-light"] {
+    --chart-1: #268bd2;
+    --chart-2: #dc322f;
+    --chart-3: #a0045c;
+    --chart-4: #b1860e;
+    --chart-5: #3c3c8a;
+    --chart-6: #82960b;
+    --chart-7: #6c71c4;
+    --chart-8: #cb4b16;
+    --chart-9: #239c93;
+    --chart-10: #7c2804;
+    --chart-11: #d33682;
+    --chart-other: #657b83;
+    --chart-in: #239c93;
+    --chart-out: #dc322f;
+    --chart-net: #586e75;
+}
+
+@plugin "daisyui/theme" {
+    name: "solarized-dark";
+    default: false;
+    prefersdark: false;
+    color-scheme: dark;
+    --color-base-100: #002b36;
+    --color-base-200: #00232c;
+    --color-base-300: #001b22;
+    --color-base-content: #93a1a1;
+    --color-primary: #268bd2;
+    --color-primary-content: #001b22;
+    --color-secondary: #d33682;
+    --color-secondary-content: #ffffff;
+    --color-accent: #b58900;
+    --color-accent-content: #002b36;
+    --color-neutral: #073642;
+    --color-neutral-content: #93a1a1;
+    --color-info: #268bd2;
+    --color-info-content: #001b22;
+    --color-success: #859900;
+    --color-success-content: #002b36;
+    --color-warning: #b58900;
+    --color-warning-content: #002b36;
+    --color-error: #dc322f;
+    --color-error-content: #ffffff;
+    --radius-selector: 0.5rem;
+    --radius-field: 0.25rem;
+    --radius-box: 0.5rem;
+    --size-selector: 0.25rem;
+    --size-field: 0.25rem;
+    --border: 1px;
+    --depth: 1;
+    --noise: 0;
+}
+
+/*
+ * solarized-dark: 12 slots, validated on base-100 #002b36 — worst adjacent CVD
+ * ΔE 14.8, worst adjacent normal-vision ΔE 16.3, every slot ≥ 3:1 contrast
+ * (min 3.25:1). Flow in/out CVD ΔE 13.5. Pins (info/secondary/accent):
+ * all-pairs CVD ΔE 13.9, normal ΔE 25, min 3.30:1.
+ *
+ * Solarized's eight accents unchanged plus four lighter steps of violet, blue,
+ * green and red. `in` is cyan, not green: Solarized green and red collapse
+ * under CVD (ΔE 5.0).
+ */
+[data-theme="solarized-dark"] {
+    --chart-1: #268bd2;
+    --chart-2: #859900;
+    --chart-3: #6c71c4;
+    --chart-4: #b58900;
+    --chart-5: #9299f0;
+    --chart-6: #dc322f;
+    --chart-7: #7dc4fe;
+    --chart-8: #cb4b16;
+    --chart-9: #2aa198;
+    --chart-10: #bcd357;
+    --chart-11: #d33682;
+    --chart-12: #ff7064;
+    --chart-other: #657b83;
+    --chart-in: #2aa198;
+    --chart-out: #dc322f;
+    --chart-net: #93a1a1;
+}

@@ -1,0 +1,72 @@
+/*
+ * Nord (nordtheme.com), dark only. Base 100 is nord0; 200/300 are derived
+ * darker polar-night steps; base-content is nord4. Error (nord11) takes black
+ * text: no Nord colour reaches 4.5:1 on it.
+ *
+ * Each variant is a daisyUI custom theme plus its chart block. The chart rules
+ * (slot order, the named tokens, how to validate) are in app.css and
+ * src/lib/format/palette.ts.
+ */
+
+@plugin "daisyui/theme" {
+    name: "nord";
+    default: false;
+    prefersdark: false;
+    color-scheme: dark;
+    --color-base-100: #2e3440;
+    --color-base-200: #292e39;
+    --color-base-300: #242933;
+    --color-base-content: #d8dee9;
+    --color-primary: #88c0d0;
+    --color-primary-content: #2e3440;
+    --color-secondary: #d08770;
+    --color-secondary-content: #242933;
+    --color-accent: #ebcb8b;
+    --color-accent-content: #2e3440;
+    --color-neutral: #3b4252;
+    --color-neutral-content: #d8dee9;
+    --color-info: #81a1c1;
+    --color-info-content: #2e3440;
+    --color-success: #a3be8c;
+    --color-success-content: #2e3440;
+    --color-warning: #ebcb8b;
+    --color-warning-content: #2e3440;
+    --color-error: #bf616a;
+    --color-error-content: #000000;
+    --radius-selector: 0.5rem;
+    --radius-field: 0.25rem;
+    --radius-box: 0.5rem;
+    --size-selector: 0.25rem;
+    --size-field: 0.25rem;
+    --border: 1px;
+    --depth: 1;
+    --noise: 0;
+}
+
+/*
+ * nord: 10 slots, validated on base-100 #2e3440 — worst adjacent CVD ΔE 14,
+ * worst adjacent normal-vision ΔE 15, every slot ≥ 3:1 contrast (min 3.05:1).
+ * Flow in/out CVD ΔE 15.7. Pins (info/secondary/accent): all-pairs CVD ΔE
+ * 11.6, normal ΔE 15, min 4.39:1.
+ *
+ * Nord's frost and aurora (nord7 dropped as a near-duplicate of nord8); slots
+ * 5 and 9 are a deeper yellow and a lighter frost. Nord is deliberately
+ * low-chroma, so ten slots is its ceiling here. `other` is a lighter step of
+ * nord3, which is below 3:1 on nord0.
+ */
+[data-theme="nord"] {
+    --chart-1: #88c0d0;
+    --chart-2: #bf616a;
+    --chart-3: #a3be8c;
+    --chart-4: #5e81ac;
+    --chart-5: #c1a263;
+    --chart-6: #81a1c1;
+    --chart-7: #ebcb8b;
+    --chart-8: #b48ead;
+    --chart-9: #a1daea;
+    --chart-10: #d08770;
+    --chart-other: #7b88a1;
+    --chart-in: #a3be8c;
+    --chart-out: #bf616a;
+    --chart-net: #d8dee9;
+}

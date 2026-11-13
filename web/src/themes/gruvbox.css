@@ -1,0 +1,140 @@
+/*
+ * Gruvbox light and dark, medium contrast (github.com/morhetz/gruvbox). Light
+ * bases are bg0, bg0_s and bg1; dark bases are bg0, bg0_h and one step darker
+ * (derived; Gruvbox has nothing below bg0_h). Light roles use the faded
+ * accents, dark roles the bright ones.
+ *
+ * Each variant is a daisyUI custom theme plus its chart block. The chart rules
+ * (slot order, the named tokens, how to validate) are in app.css and
+ * src/lib/format/palette.ts.
+ */
+
+@plugin "daisyui/theme" {
+    name: "gruvbox-light";
+    default: false;
+    prefersdark: false;
+    color-scheme: light;
+    --color-base-100: #fbf1c7;
+    --color-base-200: #f2e5bc;
+    --color-base-300: #ebdbb2;
+    --color-base-content: #3c3836;
+    --color-primary: #af3a03;
+    --color-primary-content: #fbf1c7;
+    --color-secondary: #9d0006;
+    --color-secondary-content: #fbf1c7;
+    --color-accent: #b57614;
+    --color-accent-content: #000000;
+    --color-neutral: #3c3836;
+    --color-neutral-content: #fbf1c7;
+    --color-info: #076678;
+    --color-info-content: #fbf1c7;
+    --color-success: #79740e;
+    --color-success-content: #ffffff;
+    --color-warning: #d79921;
+    --color-warning-content: #282828;
+    --color-error: #cc241d;
+    --color-error-content: #fbf1c7;
+    --radius-selector: 0.5rem;
+    --radius-field: 0.25rem;
+    --radius-box: 0.5rem;
+    --size-selector: 0.25rem;
+    --size-field: 0.25rem;
+    --border: 1px;
+    --depth: 1;
+    --noise: 0;
+}
+
+/*
+ * gruvbox-light: 13 slots, validated on base-100 #fbf1c7 — worst adjacent CVD
+ * ΔE 8.8, worst adjacent normal-vision ΔE 15.3, every slot ≥ 3:1 contrast (min
+ * 3.07:1). Flow in/out CVD ΔE 10. Pins (info/secondary/accent): all-pairs CVD
+ * ΔE 14.8, normal ΔE 21.7, min 3.33:1.
+ *
+ * Gruvbox's faded and neutral accents (neutral yellow dropped as a
+ * near-duplicate). DEVIATIONS: neutral green and aqua darkened just enough for
+ * 3:1 on bg0.
+ */
+[data-theme="gruvbox-light"] {
+    --chart-1: #af3a03;
+    --chart-2: #619563;
+    --chart-3: #9d0006;
+    --chart-4: #8f8e03;
+    --chart-5: #076678;
+    --chart-6: #79740e;
+    --chart-7: #b16286;
+    --chart-8: #b57614;
+    --chart-9: #8f3f71;
+    --chart-10: #d65d0e;
+    --chart-11: #458588;
+    --chart-12: #cc241d;
+    --chart-13: #427b58;
+    --chart-other: #928374;
+    --chart-in: #79740e;
+    --chart-out: #9d0006;
+    --chart-net: #3c3836;
+}
+
+@plugin "daisyui/theme" {
+    name: "gruvbox-dark";
+    default: false;
+    prefersdark: false;
+    color-scheme: dark;
+    --color-base-100: #282828;
+    --color-base-200: #1d2021;
+    --color-base-300: #141617;
+    --color-base-content: #ebdbb2;
+    --color-primary: #fe8019;
+    --color-primary-content: #282828;
+    --color-secondary: #fb4934;
+    --color-secondary-content: #1d2021;
+    --color-accent: #fabd2f;
+    --color-accent-content: #282828;
+    --color-neutral: #3c3836;
+    --color-neutral-content: #ebdbb2;
+    --color-info: #83a598;
+    --color-info-content: #282828;
+    --color-success: #b8bb26;
+    --color-success-content: #282828;
+    --color-warning: #d79921;
+    --color-warning-content: #282828;
+    --color-error: #cc241d;
+    --color-error-content: #ffffff;
+    --radius-selector: 0.5rem;
+    --radius-field: 0.25rem;
+    --radius-box: 0.5rem;
+    --size-selector: 0.25rem;
+    --size-field: 0.25rem;
+    --border: 1px;
+    --depth: 1;
+    --noise: 0;
+}
+
+/*
+ * gruvbox-dark: 14 slots, validated on base-100 #282828 — worst adjacent CVD
+ * ΔE 12.2, worst adjacent normal-vision ΔE 15.3, every slot ≥ 3:1 contrast
+ * (min 3.06:1). Flow in/out CVD ΔE 9.7. Pins (info/secondary/accent):
+ * all-pairs CVD ΔE 12.2, normal ΔE 21.4, min 4.29:1.
+ *
+ * Gruvbox's bright and neutral accents. DEVIATION: neutral red #cc241d
+ * lightened to #d73128 for 3:1 on bg0.
+ */
+[data-theme="gruvbox-dark"] {
+    --chart-1: #fe8019;
+    --chart-2: #d73128;
+    --chart-3: #8ec07c;
+    --chart-4: #d65d0e;
+    --chart-5: #83a598;
+    --chart-6: #fb4934;
+    --chart-7: #fabd2f;
+    --chart-8: #b16286;
+    --chart-9: #d79921;
+    --chart-10: #d3869b;
+    --chart-11: #98971a;
+    --chart-12: #458588;
+    --chart-13: #b8bb26;
+    --chart-14: #689d6a;
+    --chart-other: #928374;
+    --chart-in: #b8bb26;
+    --chart-out: #fb4934;
+    --chart-net: #ebdbb2;
+}

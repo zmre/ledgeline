@@ -1,0 +1,71 @@
+/*
+ * Monokai (Wimer Hazenberg's original, as in Sublime Text and VS Code), dark
+ * only. Bases are the editor, the sidebar and a derived darker step.
+ *
+ * Each variant is a daisyUI custom theme plus its chart block. The chart rules
+ * (slot order, the named tokens, how to validate) are in app.css and
+ * src/lib/format/palette.ts.
+ */
+
+@plugin "daisyui/theme" {
+    name: "monokai";
+    default: false;
+    prefersdark: false;
+    color-scheme: dark;
+    --color-base-100: #272822;
+    --color-base-200: #1e1f1c;
+    --color-base-300: #171814;
+    --color-base-content: #f8f8f2;
+    --color-primary: #66d9ef;
+    --color-primary-content: #272822;
+    --color-secondary: #ae81ff;
+    --color-secondary-content: #272822;
+    --color-accent: #fd971f;
+    --color-accent-content: #272822;
+    --color-neutral: #3e3d32;
+    --color-neutral-content: #f8f8f2;
+    --color-info: #66d9ef;
+    --color-info-content: #272822;
+    --color-success: #a6e22e;
+    --color-success-content: #272822;
+    --color-warning: #e6db74;
+    --color-warning-content: #272822;
+    --color-error: #f92672;
+    --color-error-content: #171814;
+    --radius-selector: 0.5rem;
+    --radius-field: 0.25rem;
+    --radius-box: 0.5rem;
+    --size-selector: 0.25rem;
+    --size-field: 0.25rem;
+    --border: 1px;
+    --depth: 1;
+    --noise: 0;
+}
+
+/*
+ * monokai: 12 slots, validated on base-100 #272822 — worst adjacent CVD ΔE
+ * 18.5, worst adjacent normal-vision ΔE 25.5, every slot ≥ 3:1 contrast (min
+ * 3.08:1). Flow in/out CVD ΔE 21.6. Pins (info/secondary/accent): all-pairs
+ * CVD ΔE 16.3, normal ΔE 24, min 5.23:1.
+ *
+ * Monokai has six accents; six more are deeper and lighter steps of the same
+ * hues (blue, orange, purple, pink).
+ */
+[data-theme="monokai"] {
+    --chart-1: #66d9ef;
+    --chart-2: #f92672;
+    --chart-3: #e6db74;
+    --chart-4: #1a9fb4;
+    --chart-5: #a6e22e;
+    --chart-6: #ae81ff;
+    --chart-7: #fd971f;
+    --chart-8: #c2a6fe;
+    --chart-9: #b36705;
+    --chart-10: #fda9b9;
+    --chart-11: #8758d2;
+    --chart-12: #ff6d91;
+    --chart-other: #75715e;
+    --chart-in: #a6e22e;
+    --chart-out: #f92672;
+    --chart-net: #f8f8f2;
+}
