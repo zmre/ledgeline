@@ -26,6 +26,42 @@ export interface PricesFile {
     priceCount: number;
 }
 
+/**
+ * How the engine's last automatic price run ended (plan 41; `RunOutcome` in
+ * `auto_prices.rs`).
+ *  - `updated`: new `P` lines were written (`lastAdded` of them).
+ *  - `up-to-date`: the journal already had what it wanted; nothing was fetched.
+ *  - `nothing-new`: fetched, but nothing new came back (a holiday, a delisted ticker).
+ *  - `no-prices-file`: no file holds prices yet, so nothing was done.
+ *  - `rate-limited`: Yahoo asked it to slow down; see `backoffUntil`.
+ *  - `conflict`: the file changed while it was writing; the next run retries.
+ *  - `failed`: a fetch or the write failed; the next run retries.
+ */
+export type AutoPricesOutcome = "updated" | "up-to-date" | "nothing-new" | "no-prices-file" | "rate-limited" | "conflict" | "failed";
+
+export const AUTO_PRICES_OUTCOMES: readonly AutoPricesOutcome[] = [
+    "updated",
+    "up-to-date",
+    "nothing-new",
+    "no-prices-file",
+    "rate-limited",
+    "conflict",
+    "failed",
+];
+
+/** `GET /api/prices/status`'s `auto`: the background updater's state. Times are Unix seconds. */
+export interface AutoPricesStatus {
+    /** The effective `autoPrices` setting for this ledger. */
+    enabled: boolean;
+    /** When the last run that did anything finished, or null if none has yet. */
+    lastRun: number | null;
+    lastOutcome: AutoPricesOutcome | null;
+    /** How many `P` lines that run wrote. */
+    lastAdded: number;
+    /** Until when automatic runs are paused after a rate limit, or null. */
+    backoffUntil: number | null;
+}
+
 /** `GET /api/prices/status`. */
 export interface PricesStatus {
     editable: boolean;
@@ -36,6 +72,7 @@ export interface PricesStatus {
     canCreateFile: boolean;
     createFileName: string;
     files: PricesFile[];
+    auto: AutoPricesStatus;
 }
 
 /** `POST /api/prices/file` → the file it created and the include it wrote. */

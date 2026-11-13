@@ -231,7 +231,7 @@ pub(crate) enum AutoPlan {
 /// The fetches one tick makes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FetchPlan {
-    /// The file to append to.
+    /// The file new lines go into, in date order.
     pub(crate) target: String,
     /// The latest completed close, by [`latest_completed_close`].
     pub(crate) close: String,

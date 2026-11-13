@@ -27,6 +27,8 @@ import {
     applyPatch,
     cleanBenchmarks,
     cleanUiPrefs,
+    AUTO_PRICES_WEEKS_DEFAULT,
+    AUTO_PRICES_WEEKS_RANGE,
     COLUMN_KEYS,
     defaultUiPrefs,
     legacyUiPatch,
@@ -608,6 +610,26 @@ export const settings = {
     set uiScale(scale: number) {
         state.uiScale = wholeIn(scale, UI_SCALE_RANGE, UI_SCALE_DEFAULT);
         save({uiScale: state.uiScale}, true);
+    },
+    /**
+     * Automatic price updates (plan 41): the engine fetches missing stock
+     * prices in the background. Saved at once, like the theme: the engine
+     * wakes its updater on the save, so the first check follows the click.
+     */
+    get autoPrices(): boolean {
+        return state.autoPrices;
+    },
+    set autoPrices(on: boolean) {
+        state.autoPrices = on;
+        save({autoPrices: on}, true);
+    },
+    /** How many past weeks the updater backfills, clamped to 0–52 (0 = the latest close only). */
+    get autoPricesWeeks(): number {
+        return state.autoPricesWeeks;
+    },
+    set autoPricesWeeks(weeks: number) {
+        state.autoPricesWeeks = wholeIn(weeks, AUTO_PRICES_WEEKS_RANGE, AUTO_PRICES_WEEKS_DEFAULT);
+        save({autoPricesWeeks: state.autoPricesWeeks});
     },
     /** The cross-origin engine token, if one was entered. Null in embedded mode. */
     get serverToken(): string | null {
