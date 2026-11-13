@@ -499,7 +499,7 @@ struct Names {
 
 impl Names {
     fn qif(&mut self, account: &str) -> String {
-        let name = sanitize(account);
+        let name = qif_name(account);
         if name != account {
             self.renamed.insert((account.to_string(), name.clone()));
         }
@@ -509,7 +509,8 @@ impl Names {
 
 /// Replace the characters QIF gives a meaning to in a category, transfer or
 /// class name, and fold line breaks to spaces.
-fn sanitize(name: &str) -> String {
+#[must_use]
+pub fn qif_name(name: &str) -> String {
     name.chars()
         .map(|c| match c {
             '/' => '-',
@@ -757,7 +758,7 @@ fn class_of(own: &[(String, String)], txn: &Transaction) -> Option<String> {
     own.iter()
         .chain(&txn.tags)
         .find(|(name, value)| name == CLASS_TAG && !value.is_empty())
-        .map(|(_, value)| sanitize(value))
+        .map(|(_, value)| qif_name(value))
 }
 
 /// Whether a tag list carries anything QIF drops: tags other than the class,
@@ -1025,7 +1026,7 @@ fn write_group(
         let own: Vec<&Leg> = registers
             .iter()
             .copied()
-            .filter(|leg| sanitize(&leg.account) == *name)
+            .filter(|leg| qif_name(&leg.account) == *name)
             .collect();
         let total = sum(&own)?;
         let record = Record {

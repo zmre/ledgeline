@@ -155,6 +155,11 @@ pub struct ImportReport {
     /// Whole source transactions left out on purpose: GnuCash voided ones,
     /// Copilot rows marked `excluded`.
     pub skipped_transactions: usize,
+    /// hledger virtual postings (`(account)` or `[account]`) left out. The
+    /// multi-posting shape has no virtual postings, and leaving them out keeps
+    /// every transaction balanced: an unbalanced `(…)` posting is outside the
+    /// balance, and `[…]` postings balance among themselves.
+    pub skipped_virtual_postings: usize,
     /// Single-entry transfers whose two sides were joined into one transaction.
     pub transfers_paired: usize,
     /// Single-entry transfer rows with no partner, kept against their category.
@@ -282,7 +287,7 @@ pub fn parse_tabular(preset: Preset, tabular: &Tabular) -> Result<Parsed, Groupe
 fn parse_table(preset: Preset, table: &Table) -> Result<Parsed, GroupedCsvError> {
     let mut report = table.report();
     let (drafts, format) = match preset {
-        Preset::HledgerCsv => hledger(table)?,
+        Preset::HledgerCsv => hledger(table, &mut report)?,
         Preset::Xero => xero(table, &mut report)?,
         Preset::GnuCash => gnucash(table, &mut report)?,
     };
@@ -905,7 +910,10 @@ fn one_commodity<'a>(values: impl Iterator<Item = &'a str>) -> Result<(), Groupe
 /// hledger 1.52's columns: `txnidx,date,date2,status,code,description,comment,
 /// account,amount,commodity,credit,debit,posting-status,posting-comment`.
 /// `amount` is signed; when a file lacks it, `debit - credit` is used.
-fn hledger(table: &Table) -> Result<(Vec<Draft>, DateFormatGuess), GroupedCsvError> {
+fn hledger(
+    table: &Table,
+    report: &mut ImportReport,
+) -> Result<(Vec<Draft>, DateFormatGuess), GroupedCsvError> {
     let header = Header::new(&table.header);
     let key = header.require(&["txnidx"], "txnidx")?;
     let date = header.require(&["date"], "date")?;
@@ -954,6 +962,14 @@ fn hledger(table: &Table) -> Result<(Vec<Draft>, DateFormatGuess), GroupedCsvErr
             let row = table.row_number(first_index);
             let postings = indices
                 .iter()
+                .filter(|&&index| {
+                    let virtual_posting =
+                        cell(&table.rows[index], Some(account)).is_some_and(is_virtual_account);
+                    if virtual_posting {
+                        report.skipped_virtual_postings += 1;
+                    }
+                    !virtual_posting
+                })
                 .map(|&index| {
                     let line = &table.rows[index];
                     let at = table.row_number(index);
@@ -988,7 +1004,21 @@ fn hledger(table: &Table) -> Result<(Vec<Draft>, DateFormatGuess), GroupedCsvErr
             })
         })
         .collect::<Result<Vec<_>, GroupedCsvError>>()?;
+    // A transaction made only of virtual postings has nothing left to import.
+    let drafts = drafts
+        .into_iter()
+        .filter(|draft| !draft.postings.is_empty())
+        .collect();
     Ok((drafts, dates.guess))
+}
+
+/// Whether hledger wrote `account` as a virtual posting: `(name)` (unbalanced)
+/// or `[name]` (balanced). Account names never otherwise start and end with
+/// those brackets, since hledger reads them as the posting type.
+fn is_virtual_account(account: &str) -> bool {
+    let account = account.trim();
+    (account.starts_with('(') && account.ends_with(')'))
+        || (account.starts_with('[') && account.ends_with(']'))
 }
 
 /// The value of hledger tag `name` in a comment: `name: value` where the value

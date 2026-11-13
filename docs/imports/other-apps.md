@@ -54,7 +54,7 @@ hledger can write a journal as one CSV row per posting:
 hledger -f main.journal print -O csv > book.csv
 ```
 
-Ledgeline reads that file back, including from hledger versions that put `debit` before `credit`. It keeps the date, status, code, description, accounts, amounts and posting comments.
+Ledgeline reads that file back, including from hledger versions that put `debit` before `credit`. It keeps the date, status, code, description, accounts, amounts and posting comments. Virtual postings, written as `(account)` or `[account]`, are left out: they have no place in an imported transaction, and leaving them out keeps every transaction balanced.
 
 A transaction that already has an `id:` tag keeps it, so re-importing a file made from your own journal skips everything that is already there. Other transactions get a generated `id:` built from the date, description, accounts and amounts. hledger's `txnidx` column only numbers rows within one report, so Ledgeline doesn't use it as an id.
 

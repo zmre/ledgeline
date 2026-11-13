@@ -1,6 +1,6 @@
 ---
 title: Imports
-description: "Bring bank, card, QuickBooks and QIF exports into your hledger journal, and manage the CSV rules files that read them."
+description: "Bring bank, card, QuickBooks, QIF and other apps' exports into your hledger journal, and manage the CSV rules files that read them."
 order: 20
 tags: [imports]
 ---
@@ -33,6 +33,7 @@ Ledgeline converts whatever you drop into one CSV, then hands that CSV to hledge
 | Spreadsheets | `.xls`, `.xlsx`, `.xlsm`, `.xlsb`, `.ods` | Ledgeline reads one sheet and says which. |
 | QuickBooks Online Journal report | `.xlsx` | Detected from the file's contents and handled by its own panel. See [Importing from QuickBooks](quickbooks.md). |
 | QIF and QMTF | `.qif`, `.qmtf` | A whole set of books from Banktivity, Quicken, Moneydance or GnuCash, handled by the same panel as QuickBooks. See [Importing a QIF file](qif.md). |
+| Xero, GnuCash, hledger CSV, YNAB, Monarch, Copilot | `.csv` | Recognised from the column headings and handled by the same panel as QuickBooks. Ordinary bank CSVs still go to the rules screen. See [Importing from other apps](other-apps.md). |
 
 PDF statements are refused. The numbers in a PDF aren't reliably where they appear to be, so Ledgeline asks you to download CSV, OFX/QFX or a spreadsheet from your bank instead. The research behind that decision is in [PDF extraction](../development/pdf-extraction.md).
 
@@ -49,5 +50,6 @@ Ledgeline also never runs a rules file's `source ... | COMMAND` line, because th
 - [Editing rules](rules-editor.md): what the rules editor can change and what it leaves alone.
 - [Importing from QuickBooks](quickbooks.md): bring in a QuickBooks Online Journal export and map its accounts.
 - [Importing a QIF file](qif.md): bring in the accounts, categories, splits and transfers of a QIF or QMTF export.
+- [Importing from other apps](other-apps.md): bring in a Xero, GnuCash or hledger posting-row CSV, or a YNAB, Monarch or Copilot transactions export.
 
 How the import pipeline works internally, and why, is in [Imports internals](../development/imports-internals.md).
