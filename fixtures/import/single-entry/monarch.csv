@@ -1,0 +1,13 @@
+Date,Merchant,Category,Account,Original Statement,Notes,Amount,Tags,Owner
+2026-02-10,Transfer from Checking,Transfer,Ally Savings,TRANSFER FROM CHASE,,250.00,,
+2026-01-28,Transfer to Savings,Transfer,Chase Checking (...1234),ONLINE TRANSFER TO SAV,,-250.00,,
+2026-01-22,Amazon,Shopping,Chase Sapphire (...4321),AMZN MKTP US REFUND,,19.99,,
+2026-01-21,Bistro 9,Restaurants & Bars,Chase Sapphire (...4321),BISTRO 9 NYC,date night,-45.10,Dining,Shared
+2026-01-20,Venmo,Transfer,Chase Checking (...1234),VENMO PAYMENT 1029,rent share,-600.00,,
+2026-01-15,Payment Thank You,Credit Card Payment,Chase Sapphire (...4321),PAYMENT THANK YOU,,320.15,,
+2026-01-15,Chase Card Payment,Credit Card Payment,Chase Checking (...1234),PAYMENT TO CHASE CARD,,-320.15,,
+2026-01-08,Transfer from Checking,Transfer,Ally Savings,TRANSFER FROM CHASE,,500.00,,
+2026-01-07,Transfer to Savings,Transfer,Chase Checking (...1234),ONLINE TRANSFER TO SAV,,-500.00,,
+2026-01-06,Employer Inc,Paycheck,Chase Checking (...1234),EMPLOYER INC PAYROLL,,"3,100.00",,
+2026-01-05,Whole Foods,Groceries,Chase Checking (...1234),WHOLEFDS #123,,-84.12,,Shared
+2026-01-05,,,Chase Checking (...1234),ATM FEE,,-3.00,,

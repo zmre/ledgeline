@@ -1,0 +1,18 @@
+General Ledger Detail
+Demo Company (UK)
+1 January 2026 to 31 January 2026
+Date,Source,Contact,Description,Reference,Debit,Credit,Gross,VAT,Account Code,Account,Journal Number
+Business Bank Account,,,,,,,,,,,
+03/01/2026,Spend Money,Office Supplies Ltd,Printer paper,SP-1,,60.00,60.00,10.00,090,Business Bank Account,201
+17/01/2026,Receive Money,Bayside Club,Hall hire,RM-1,240.00,,240.00,40.00,090,Business Bank Account,202
+Total Business Bank Account,,,,,240.00,60.00,,,,,
+Office Expenses,,,,,,,,,,,
+03/01/2026,Spend Money,Office Supplies Ltd,Printer paper,SP-1,50.00,,,,429,Office Expenses,201
+Total Office Expenses,,,,,50.00,,,,,,
+Sales,,,,,,,,,,,
+17/01/2026,Receive Money,Bayside Club,Hall hire,RM-1,,200.00,,,200,Sales,202
+Total Sales,,,,,,200.00,,,,,
+VAT,,,,,,,,,,,
+03/01/2026,Spend Money,Office Supplies Ltd,Printer paper,SP-1,10.00,,,,820,VAT,201
+17/01/2026,Receive Money,Bayside Club,Hall hire,RM-1,,40.00,,,820,VAT,202
+Total VAT,,,,,10.00,40.00,,,,,

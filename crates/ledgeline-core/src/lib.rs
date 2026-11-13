@@ -29,6 +29,11 @@
 //! - `qb_journal` — QuickBooks Online's grouped "Journal" report, which no CSV
 //!   rules file can express (QuickBooks import; see
 //!   `plans/17-quickbooks-journal-import.md`)
+//! - `grouped_csv` — posting-row CSV (hledger `print -O csv`, Xero journals,
+//!   GnuCash multi-line) grouped back into multi-posting transactions (plan 39
+//!   Phase 4; see `plans/39-onboarding-offboarding.md`)
+//! - `single_entry` — one-row-per-transaction app exports (YNAB, Monarch,
+//!   Copilot) as two-posting transactions with transfers paired (plan 39 Phase 5)
 //! - `hledger_conf` — the `--alias` options an `hledger.conf` declares, and
 //!   writing one into it (Enhanced imports)
 //! - `title` — the derived "what am I looking at" title for the open journal
@@ -58,6 +63,7 @@ pub mod display;
 // of it without one.
 pub(crate) mod dirscan;
 pub mod edit;
+pub mod grouped_csv;
 pub mod hledger_conf;
 pub mod holdings;
 pub mod journal_meta;
@@ -75,6 +81,7 @@ pub mod reimport;
 pub mod reports;
 pub mod review;
 pub mod rules;
+pub mod single_entry;
 pub mod sort;
 pub mod text;
 pub mod title;
