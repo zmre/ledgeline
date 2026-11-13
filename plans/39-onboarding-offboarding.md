@@ -370,6 +370,6 @@ Every whole-book importer parses into the QuickBooks journal import's existing s
 
 - **Multi-currency import.** `QbPosting` has no commodity, so QIF amounts all go into the journal's default commodity (a second-currency Banktivity file imports wrongly) and the CSV presets refuse a file mixing commodities.
 - **Ambiguous QIF dates** warn but don't yet let the user pick the other order.
-- **Investments** export and import as cash movement; no `!Type:Invst` output, no lots.
+- **Investments (fixed 2026-11-12).** Export writes `!Type:Invst` registers (Buy/Sell/BuyX/SellX, Div, ReinvDiv, ShrsIn/ShrsOut), a `!Type:Security` list and a `!Type:Prices` list; import writes shares as commodities at their price (`QbPosting.units`), commissions as an expense, sales at the sale price. A round-trip test checks share counts. Still missing: lots and specific identification, stock splits (a zero-amount note on import), realized-gain postings (dropped on export; the app works gains out itself), the price list on import, pairing an in-kind `ShrsOut`/`ShrsIn` into one transaction, and the `!Type:Prices` line format is unverified against Banktivity (Phase 3).
 - **Unverified real-world formats:** Xero's actual Journal Report layout and column names, GnuCash's multi-line first row and localized headers, Copilot's `type` values and sign, Monarch's transfer category names. Synthetic fixtures follow the documented columns.
 - **Not exercised by hand:** the native folder/save dialogs, File → Export, File → New and the first-run window were build- and test-checked only.
