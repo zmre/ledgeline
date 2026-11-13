@@ -9,10 +9,14 @@
 //! flow they needed.
 //!
 //! Order matters only where two detectors could both claim a file, and none
-//! can today: QuickBooks needs a workbook, QIF needs a `!Type:`-style header.
+//! can today: QuickBooks needs a workbook, QIF needs a `!Type:`-style header,
+//! and each CSV preset needs a header column the others (and bank
+//! statements) lack.
 
+use crate::grouped_csv::{self, GroupedCsvError};
 use crate::qb_journal::{self, ImportSource, QbJournal, QbJournalError};
 use crate::qif::{self, QifError};
+use crate::single_entry;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -23,6 +27,9 @@ pub enum BookImportError {
     QuickBooks(#[from] QbJournalError),
     #[error("{0}")]
     Qif(#[from] QifError),
+    /// A posting-row (`grouped_csv`) or single-entry (`single_entry`) CSV preset.
+    #[error("{0}")]
+    Csv(#[from] GroupedCsvError),
 }
 
 /// Recognise and parse a book export with the QuickBooks reader run in this
@@ -57,13 +64,22 @@ pub fn detect_and_parse_with(
             crate::qif_import::parse_and_import(name, bytes).map_err(BookImportError::from),
         );
     }
-    // MERGE SEAM (plan 39 grouped CSV): the posting-row CSV presets
-    // (`grouped_csv.rs`: Xero, GnuCash, hledger `print -O csv`) and the
-    // single-entry presets (`single_entry.rs`: YNAB, Monarch, Copilot) slot in
-    // here, each as `if detected { return Some(parse(..).map_err(..)); }`
-    // with its own `BookImportError` variant. Keep their sniffing
-    // conservative: a CSV no preset claims must fall through to `None` and
-    // the rules pipeline.
+    // CSV presets. Each detector needs a column no bank statement has, so a
+    // CSV no preset claims falls through to `None` and the rules pipeline.
+    if let Some(preset) = grouped_csv::detect_preset(name, bytes) {
+        return Some(
+            grouped_csv::parse_preset(preset, bytes)
+                .map(|parsed| parsed.journal)
+                .map_err(BookImportError::from),
+        );
+    }
+    if let Some(preset) = single_entry::detect_preset(name, bytes) {
+        return Some(
+            single_entry::parse_preset(preset, bytes)
+                .map(|parsed| parsed.journal)
+                .map_err(BookImportError::from),
+        );
+    }
     None
 }
 
@@ -134,6 +150,58 @@ mod tests {
         let csv = b"Date,Description,Amount\n2026-01-05,Coffee,-3.00\n";
         assert_eq!(detect_and_parse_with("bank.csv", csv, not_quickbooks), None);
         assert_eq!(detect_and_parse("bank.csv", csv), None);
+    }
+
+    #[test]
+    fn every_csv_preset_is_recognised_and_tagged_with_its_source() {
+        let cases: [(&str, &[u8], ImportSource); 6] = [
+            (
+                "x.csv",
+                include_bytes!("../../../fixtures/import/grouped-csv/hledger-print.csv"),
+                ImportSource::HledgerCsv,
+            ),
+            (
+                "x.csv",
+                include_bytes!("../../../fixtures/import/grouped-csv/xero-journal.csv"),
+                ImportSource::Xero,
+            ),
+            (
+                "x.csv",
+                include_bytes!("../../../fixtures/import/grouped-csv/gnucash-multiline.csv"),
+                ImportSource::GnuCash,
+            ),
+            (
+                "x.csv",
+                include_bytes!("../../../fixtures/import/single-entry/ynab-register.csv"),
+                ImportSource::Ynab,
+            ),
+            (
+                "x.csv",
+                include_bytes!("../../../fixtures/import/single-entry/monarch.csv"),
+                ImportSource::Monarch,
+            ),
+            (
+                "x.csv",
+                include_bytes!("../../../fixtures/import/single-entry/copilot.csv"),
+                ImportSource::Copilot,
+            ),
+        ];
+        for (name, bytes, source) in cases {
+            let parsed = detect_and_parse_with(name, bytes, not_quickbooks)
+                .unwrap_or_else(|| panic!("{source:?} not recognised"))
+                .unwrap_or_else(|error| panic!("{source:?} refused: {error}"));
+            assert_eq!(parsed.source, source);
+            assert!(!parsed.transactions.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_damaged_csv_preset_is_refused_rather_than_sent_to_the_rules_screen() {
+        let bytes = include_bytes!("../../../fixtures/import/grouped-csv/xero-unbalanced.csv");
+        assert!(matches!(
+            detect_and_parse_with("x.csv", bytes, not_quickbooks),
+            Some(Err(BookImportError::Csv(_)))
+        ));
     }
 
     #[test]

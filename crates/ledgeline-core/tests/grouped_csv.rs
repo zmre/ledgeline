@@ -518,3 +518,23 @@ proptest::proptest! {
         }
     }
 }
+
+#[test]
+fn hledger_csv_leaves_out_virtual_postings_and_counts_them() {
+    let csv = "\"txnidx\",\"date\",\"date2\",\"status\",\"code\",\"description\",\"comment\",\"account\",\"amount\",\"commodity\",\"credit\",\"debit\",\"posting-status\",\"posting-comment\"
+\"1\",\"2026-01-05\",\"\",\"\",\"\",\"Grocer\",\"\",\"expenses:food\",\"50.00\",\"$\",\"\",\"50.00\",\"\",\"\"
+\"1\",\"2026-01-05\",\"\",\"\",\"\",\"Grocer\",\"\",\"assets:checking\",\"-50.00\",\"$\",\"50.00\",\"\",\"\",\"\"
+\"1\",\"2026-01-05\",\"\",\"\",\"\",\"Grocer\",\"\",\"(budget:food)\",\"-50.00\",\"$\",\"50.00\",\"\",\"\",\"\"
+\"2\",\"2026-01-06\",\"\",\"\",\"\",\"Envelope move\",\"\",\"[envelope:a]\",\"10.00\",\"$\",\"\",\"10.00\",\"\",\"\"
+\"2\",\"2026-01-06\",\"\",\"\",\"\",\"Envelope move\",\"\",\"[envelope:b]\",\"-10.00\",\"$\",\"10.00\",\"\",\"\",\"\"
+";
+    let parsed = grouped_csv::parse_preset(Preset::HledgerCsv, csv.as_bytes()).expect("parses");
+    assert_eq!(parsed.report.skipped_virtual_postings, 3);
+    assert_eq!(parsed.journal.transactions.len(), 1);
+    let accounts: Vec<&str> = parsed.journal.transactions[0]
+        .postings
+        .iter()
+        .map(|posting| posting.account.as_str())
+        .collect();
+    assert_eq!(accounts, ["expenses:food", "assets:checking"]);
+}
