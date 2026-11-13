@@ -182,8 +182,10 @@ const THEMES: &[&str] = &[
 ];
 
 /// The keys [`pin`] may write into [`LEDGER_FILE`]: what a person would want
-/// to tell one ledger from another by.
-const PINNABLE: &[&str] = &["theme", "uiScale"];
+/// to tell one ledger from another by. The automatic price update keys (plan
+/// 41) are here because "fetch prices for my real books, but not for the
+/// sample ledger I demo with" is exactly a per-ledger choice.
+const PINNABLE: &[&str] = &["theme", "uiScale", "autoPrices", "autoPricesWeeks"];
 
 /// What a key holds, how a value for it is checked, and its built-in default.
 #[derive(Debug, Clone, Copy)]
@@ -266,6 +268,13 @@ const SPECS: &[Spec] = &[
     },
     // Whole percent. The SPA steps 70–200; the wider range is for hand edits.
     whole("uiScale", 50, 300, 100),
+    // Plan 41: the engine's background price updater (`auto_prices`). Off
+    // until asked for — it makes network requests on the user's behalf.
+    flag("autoPrices", false),
+    // How many past Monday–Sunday weeks it backfills a missing weekly close
+    // for. 0 = the latest close only. A year is plenty; every extra week only
+    // makes the one request per symbol a little larger.
+    whole("autoPricesWeeks", 0, 52, 6),
 ];
 
 const fn flag(key: &'static str, default: bool) -> Spec {
@@ -813,6 +822,12 @@ fn unknown_key(key: &str) -> AppError {
 }
 
 impl Patch {
+    /// Whether this sets either automatic price key, so the updater should
+    /// look again now rather than at its next hourly slot.
+    pub(crate) fn touches_auto_prices(&self) -> bool {
+        self.values.contains_key("autoPrices") || self.values.contains_key("autoPricesWeeks")
+    }
+
     fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
@@ -1148,6 +1163,35 @@ pub fn boot_appearance(state: &AppState) -> BootAppearance {
     BootAppearance::from_pref(theme, scale)
 }
 
+/// The automatic price updater's two settings, effective for `state`'s
+/// current journal (the ledger's `ledgeline.toml` over `ui-prefs.toml` over
+/// the defaults, like every other key). Reads only, like [`current`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AutoPricePrefs {
+    pub(crate) enabled: bool,
+    /// Already clamped to `0..=52` by the spec.
+    pub(crate) weeks: u32,
+}
+
+/// See [`AutoPricePrefs`]. In browser mode — the e2e and live-contract
+/// harnesses — this is the default, off, so those never reach the network.
+pub(crate) fn auto_price_prefs(state: &AppState) -> AutoPricePrefs {
+    let wire = current(state);
+    AutoPricePrefs {
+        enabled: wire
+            .prefs
+            .get("autoPrices")
+            .and_then(Json::as_bool)
+            .unwrap_or(false),
+        weeks: wire
+            .prefs
+            .get("autoPricesWeeks")
+            .and_then(Json::as_u64)
+            .and_then(|weeks| u32::try_from(weeks).ok())
+            .unwrap_or(0),
+    }
+}
+
 /// The effective preferences for `state`'s current journal. Reads only:
 /// nothing is created or written.
 pub(crate) fn current(state: &AppState) -> WireUiPrefs {
@@ -1265,7 +1309,7 @@ impl Pin {
             .ok_or_else(|| {
                 AppError::BadRequest(format!(
                     "only {} can be kept for one ledger",
-                    PINNABLE.join(" and ")
+                    PINNABLE.join(", ")
                 ))
             })?;
         Ok(Self {
@@ -1551,6 +1595,8 @@ mod tests {
                 "matchTransitDays": 10,
                 "theme": "default",
                 "uiScale": 100,
+                "autoPrices": false,
+                "autoPricesWeeks": 6,
             })
         );
     }
@@ -1626,7 +1672,7 @@ mod tests {
     }
 
     #[test]
-    fn only_theme_and_scale_can_be_pinned() {
+    fn only_the_pinnable_keys_can_be_pinned() {
         assert_eq!(
             Pin::from_json(&json!({"key": "theme", "pinned": true})).expect("pin"),
             Pin {
@@ -1641,6 +1687,12 @@ mod tests {
                 pinned: false
             }
         );
+        for key in ["autoPrices", "autoPricesWeeks"] {
+            assert!(
+                Pin::from_json(&json!({"key": key, "pinned": true})).is_ok(),
+                "{key}"
+            );
+        }
         for bad in [
             json!({"key": "matchWindow", "pinned": true}),
             json!({"key": "hledgerPath", "pinned": true}),
@@ -1661,6 +1713,24 @@ mod tests {
                 "{key}"
             );
         }
+    }
+
+    /// The ledger's own file can turn automatic prices on for that ledger
+    /// alone, and a hand-edited week count is clamped to the spec's range.
+    #[test]
+    fn the_auto_price_keys_layer_and_clamp_like_any_other() {
+        let (prefs, issues) = effective(
+            "[ui]\nautoPrices = true\nautoPricesWeeks = 99\n",
+            "autoPrices = false\nautoPricesWeeks = 3\n",
+        );
+        assert_eq!(prefs["autoPrices"], true);
+        assert_eq!(prefs["autoPricesWeeks"], 52);
+        assert_eq!(issues.len(), 1, "the clamp is reported: {issues:?}");
+        let (prefs, _) = effective("", "autoPricesWeeks = 0\n");
+        assert_eq!(prefs["autoPrices"], false);
+        assert_eq!(prefs["autoPricesWeeks"], 0);
+        assert!(Patch::from_json(&json!({"autoPricesWeeks": 53})).is_err());
+        assert!(Patch::from_json(&json!({"autoPrices": "yes"})).is_err());
     }
 
     #[test]

@@ -39,7 +39,14 @@ pub(crate) async fn patch(
     payload: Result<Json<serde_json::Value>, JsonRejection>,
 ) -> Result<Response, AppError> {
     let patch = Patch::from_json(&json_body(payload)?)?;
-    let Json(body) = compute(move || ui_prefs::apply(&state, &patch)).await?;
+    let wake = patch.touches_auto_prices();
+    let saver = state.clone();
+    let Json(body) = compute(move || ui_prefs::apply(&saver, &patch)).await?;
+    if wake {
+        // Turning automatic prices on (or widening its weeks) should not wait
+        // up to an hour to show it works.
+        state.auto_prices().wake();
+    }
     Ok(no_store_json(body))
 }
 
@@ -58,6 +65,10 @@ pub(crate) async fn pin(
     payload: Result<Json<serde_json::Value>, JsonRejection>,
 ) -> Result<Response, AppError> {
     let pin = Pin::from_json(&json_body(payload)?)?;
-    let Json(body) = compute(move || ui_prefs::pin(&state, pin)).await?;
+    let saver = state.clone();
+    let Json(body) = compute(move || ui_prefs::pin(&saver, pin)).await?;
+    // A pin can change this ledger's effective auto-price setting; a spare
+    // wake costs one local check.
+    state.auto_prices().wake();
     Ok(no_store_json(body))
 }

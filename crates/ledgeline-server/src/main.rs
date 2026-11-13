@@ -797,6 +797,10 @@ fn run_server_blocking(cli: &Cli, app_dirs: AppDirs) -> Result<(), AppError> {
             }
         );
         let security = security_plan.build(bound)?;
+        // Plan 41: the background price updater. Idle unless the user turned
+        // `autoPrices` on; the e2e harnesses keep prefs in the browser, where
+        // it is always off.
+        tokio::spawn(ledgeline::run_auto_prices(state.clone()));
 
         // Live-reload watcher; held for the serve duration (dropping it stops
         // watching). A watcher failure only disables live reload.
