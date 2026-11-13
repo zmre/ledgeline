@@ -61,7 +61,8 @@
     import {chartColors} from "#lib/format/chartColors.svelte.js";
     import ChartHeading from "./ChartHeading.svelte";
     import ChartLegend from "./ChartLegend.svelte";
-    import {fittedTicks, labelFormatter} from "./periodAxis";
+    import {rootPx} from "#lib/theme/scale.js";
+    import {axisTickLabelProps, fittedTicks, labelFormatter, remPadding} from "./periodAxis";
 
     let {
         heading,
@@ -147,7 +148,15 @@
     /** The tooltip's formatter: a gap reads as an em-dash, never as "$0.00" or "NaN". */
     const tooltipFormat = $derived((n: number | null | undefined): string => (typeof n === "number" && Number.isFinite(n) ? formatValue(n) : "—"));
 
-    const xTicks = $derived(fittedTicks(labels));
+    /** px per rem, live: the axis labels and the padding that holds them follow the interface scale. */
+    const root = $derived(rootPx());
+    const xTicks = $derived(fittedTicks(labels, root));
+    const tickLabelProps = $derived(axisTickLabelProps(root));
+    // `right` is half a period label ("Jun 2028" at text-xs): the x-axis
+    // centres each label on its point, so the LAST one would otherwise hang off
+    // the edge and be clipped. In rem (8/28/24/56px at 100 %) so it grows with
+    // the labels.
+    const padding = $derived(remPadding({top: 0.5, right: 1.75, bottom: 1.5, left: 3.5}, root));
     const labelOf = $derived(labelFormatter(labels));
 
     /**
@@ -258,13 +267,10 @@
                 yNice={includeZero || extent.length > 0}
                 onTooltipClick={onPeriodClick === undefined ? undefined : clickPeriod}
                 tooltip={tooltipLines === undefined ? undefined : linesTooltip}
-                // `right` is half a period label ("Jun 2028" at text-xs): the
-                // x-axis centres each label on its point, so the LAST one would
-                // otherwise hang off the edge and be clipped.
-                padding={{top: 8, right: 28, bottom: 24, left: 56}}
+                {padding}
                 props={{
-                    xAxis: {format: labelOf, ticks: xTicks},
-                    yAxis: {format: axisFormat},
+                    xAxis: {format: labelOf, ticks: xTicks, tickLabelProps},
+                    yAxis: {format: axisFormat, tickLabelProps},
                     spline: {class: LINE_CLASS},
                     tooltip: {header: {format: labelOf}, item: {format: tooltipFormat}},
                 }}

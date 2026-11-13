@@ -14,7 +14,11 @@
 
 import {describe, expect, it} from "vitest";
 import {accountRenderings, fitAccount} from "#lib/domain/accounts.js";
-import {CHIP_CHROME_PX, FLOW_ARROW_PX, FLOW_GAP_PX, flowChipRooms, splitChipRooms} from "./chipGeometry";
+import {CHIP_CHROME_REM, chipMetrics, FLOW_ARROW_REM, FLOW_GAP_REM, flowChipRooms, splitChipRooms} from "./chipGeometry";
+
+// The root at 100 %: every px figure below was measured at it.
+const ROOT = 16;
+const {chrome: CHIP_CHROME_PX, flowArrow: FLOW_ARROW_PX, flowGap: FLOW_GAP_PX} = chipMetrics(ROOT);
 
 // A uniform 6px glyph. The lumpy-font case is exercised in accounts.test.ts;
 // here the arithmetic under test is the sharing, so an easy ruler keeps the
@@ -41,7 +45,7 @@ const PAIRS = [
 
 /** What the row would actually render, and how wide that comes out. */
 function renderRow(names: string[], cell: number): {labels: string[]; used: number} {
-    const rooms = flowChipRooms(names, cell, px);
+    const rooms = flowChipRooms(names, cell, px, ROOT);
     const labels = names.map((name, i) => fitAccount(name, rooms[i], px));
     // A chip is `width: fit-content`, so it occupies its text — or its share,
     // when the text overflows and CSS clips it.
@@ -50,14 +54,36 @@ function renderRow(names: string[], cell: number): {labels: string[]; used: numb
 }
 
 describe("UNIT chipGeometry", () => {
-    describe("CHIP_CHROME_PX", () => {
+    describe("chipMetrics", () => {
         it("is daisyUI's badge-sm padding and border, from the stylesheet's own formula", () => {
-            const size = 0.25 * 5 * 16; // `--size: calc(var(--size-selector) * 6)` at badge-sm's 5
+            const size = 0.25 * 5 * ROOT; // `--size: calc(var(--size-selector) * 6)` at badge-sm's 5
             const border = 1; // `--border`
             const paddingInline = size / 2 - border; // daisyUI's own expression
 
             expect(size).toBe(20);
             expect(CHIP_CHROME_PX).toBe((paddingInline + border) * 2);
+            expect(CHIP_CHROME_REM * ROOT).toBe(size);
+        });
+
+        it("is the rem the stylesheet writes, so it doubles at a 200 % interface scale", () => {
+            expect(chipMetrics(ROOT * 2)).toEqual({chrome: CHIP_CHROME_PX * 2, flowGap: FLOW_GAP_PX * 2, flowArrow: FLOW_ARROW_PX * 2});
+            expect({gap: FLOW_GAP_REM * ROOT, arrow: FLOW_ARROW_REM * ROOT}).toEqual({gap: 8, arrow: 12});
+        });
+    });
+
+    describe("at 200 %", () => {
+        it("hands every chip exactly twice the room when the cell and the text both double", () => {
+            // At 200 % the column is laid out from rem, so it is twice as wide,
+            // and the chip text is measured at 24px instead of 12px.
+            const px2 = (text: string): number => px(text) * 2;
+            for (const names of PAIRS) {
+                for (const cell of [WIDE_CELL, NARROW_CELL, 260]) {
+                    const at100 = flowChipRooms(names, cell, px, ROOT);
+                    const at200 = flowChipRooms(names, cell * 2, px2, ROOT * 2);
+                    at200.forEach((room, i) => expect(room).toBeCloseTo(at100[i] * 2));
+                }
+            }
+            expect(splitChipRooms(["a:b"], WIDE_CELL * 2, ROOT * 2)).toEqual([427 * 2]);
         });
     });
 
@@ -96,14 +122,14 @@ describe("UNIT chipGeometry", () => {
             // independently at 45%, the long name could never exceed 201px of a
             // 447px cell however little the short one used.
             const names = ["assets:bank:checking", "expenses:household:repairs:plumbing"];
-            const [, dest] = flowChipRooms(names, WIDE_CELL, px);
+            const [, dest] = flowChipRooms(names, WIDE_CELL, px, ROOT);
 
             expect(dest).toBeGreaterThan(WIDE_CELL * 0.45);
             expect(renderRow(names, WIDE_CELL).labels[1]).toBe("expenses:household:repairs:plumbing");
         });
 
         it("spends the whole cell when the names cannot all fit", () => {
-            const rooms = flowChipRooms(["expenses:household:repairs:plumbing", "assets:morganstanley:pw-roth-ira:cash"], NARROW_CELL, px);
+            const rooms = flowChipRooms(["expenses:household:repairs:plumbing", "assets:morganstanley:pw-roth-ira:cash"], NARROW_CELL, px, ROOT);
             const allotted = rooms.reduce((sum, room) => sum + room + CHIP_CHROME_PX, FLOW_ARROW_PX + FLOW_GAP_PX);
 
             expect(allotted).toBeCloseTo(NARROW_CELL);
@@ -111,8 +137,8 @@ describe("UNIT chipGeometry", () => {
 
         it("gives the same names more room as the column widens", () => {
             const names = ["expenses:household:repairs:plumbing", "assets:morganstanley:pw-roth-ira:cash"];
-            const narrow = flowChipRooms(names, NARROW_CELL, px);
-            const wide = flowChipRooms(names, WIDE_CELL, px);
+            const narrow = flowChipRooms(names, NARROW_CELL, px, ROOT);
+            const wide = flowChipRooms(names, WIDE_CELL, px, ROOT);
 
             expect(wide[0]).toBeGreaterThan(narrow[0]);
             expect(wide[1]).toBeGreaterThan(narrow[1]);
@@ -127,7 +153,7 @@ describe("UNIT chipGeometry", () => {
 
     describe("splitChipRooms", () => {
         it("offers each wrapped chip the whole line, not the old 176px cap", () => {
-            const rooms = splitChipRooms(["a:b", "c:d", "e:f"], WIDE_CELL);
+            const rooms = splitChipRooms(["a:b", "c:d", "e:f"], WIDE_CELL, ROOT);
 
             expect(rooms).toEqual([427, 427, 427]);
             expect(rooms[0]).toBeGreaterThan(176);

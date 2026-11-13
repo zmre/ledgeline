@@ -54,8 +54,8 @@
         onOpen: () => void;
     } = $props();
 
-    /** The name renders at `text-sm`; the measurer has to be told, or it answers for 12px. */
-    const NAME_FONT_SIZE_PX = 14;
+    /** The name renders at `text-sm` (0.875rem); the measurer has to be told, or it answers for the chip's 0.75rem. */
+    const NAME_FONT_SIZE_REM = 0.875;
 
     /**
      * Coarse fallback for the frame before the observer reports, and for engines
@@ -115,7 +115,7 @@
                     <AccountLabel
                         name={entry.account}
                         maxWidth={nameWidth > 0 ? nameWidth : undefined}
-                        fontSizePx={NAME_FONT_SIZE_PX}
+                        fontSizeRem={NAME_FONT_SIZE_REM}
                         budget={FALLBACK_BUDGET}
                     />
                 </span>

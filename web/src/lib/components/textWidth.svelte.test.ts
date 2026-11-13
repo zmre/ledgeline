@@ -92,3 +92,39 @@ describe("UNIT textWidth", () => {
         expect(calls).toBe(1);
     });
 });
+
+describe("UNIT textWidth at the interface scale (plan 39)", () => {
+    const sized = () => ({
+        font: "",
+        measureText(this: {font: string}, text: string) {
+            const size = Number(/(\d+(?:\.\d+)?)px/.exec(this.font)?.[1]);
+            return {width: text.length * size};
+        },
+    });
+
+    it("measures chips at 0.75rem of the root it is given: 12px at 100 %, 24px at 200 %", () => {
+        withCanvas(sized());
+
+        expect(chipMeasurer(16)?.("abcd")).toBe(48);
+        expect(chipMeasurer(32)?.("abcd")).toBe(96); // its own entry, not the cached 48
+        expect(chipMeasurer(11.2)?.("abcd")).toBeCloseTo(33.6); // 70 %: 8.4px
+    });
+
+    it("keys a fractional size by its rounded px, so float noise neither splits the cache nor fails the font check", () => {
+        let contexts = 0;
+        const context = sized();
+        resetChipMeasurer();
+        vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() => {
+            contexts += 1;
+            return context as never;
+        });
+
+        const a = textMeasurer(0.875 * 17.6); // 15.400000000000002
+        const b = textMeasurer(15.4);
+
+        expect(a).not.toBeNull();
+        expect(a?.("ab")).toBeCloseTo(30.8);
+        expect(b?.("ab")).toBeCloseTo(30.8);
+        expect(contexts).toBe(1);
+    });
+});

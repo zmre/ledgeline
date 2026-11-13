@@ -17,6 +17,7 @@
     // discarding the whole half-typed transaction.
     import {tick} from "svelte";
     import {TYPING_ATTRIBUTE} from "#lib/keys/target.js";
+    import {remToPx} from "#lib/theme/scale.js";
     import {popupPosition, portal} from "#lib/ui/anchoredPopup.js";
     import {matchAccounts, tabCompletion} from "./accountMatch";
 
@@ -45,7 +46,8 @@
 
     /** Rows to show at once before the list scrolls. */
     const VISIBLE_ROWS = 8;
-    const ROW_HEIGHT = 28;
+    /** An option row (28px at 100 %); converted at the live root when the popup is placed. */
+    const ROW_HEIGHT_REM = 1.75;
 
     let open = $state(false);
     let highlighted = $state(0);
@@ -77,7 +79,7 @@
     function reposition(): void {
         if (field === null) return;
         const rect = field.getBoundingClientRect();
-        placement = popupPosition(rect, {width: window.innerWidth, height: window.innerHeight}, VISIBLE_ROWS * ROW_HEIGHT);
+        placement = popupPosition(rect, {width: window.innerWidth, height: window.innerHeight}, VISIBLE_ROWS * remToPx(ROW_HEIGHT_REM));
     }
 
     async function show(newStem: string = value): Promise<void> {

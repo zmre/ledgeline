@@ -25,7 +25,13 @@
 
     // Spelled out, so Tailwind sees each class. One row is the matching input's
     // height: line + padding + a 1px border each side (20 + 10 + 2 = 2rem for sm).
-    const SIZE = {xs: "textarea-xs min-h-6 py-[3px] leading-4", sm: "textarea-sm min-h-8 py-[5px] leading-5"} as const;
+    // The padding is what is left of the rem height once the rem line and the
+    // px border are taken out — 5px (sm) and 3px (xs) at 100 % — so the sum is
+    // still the input's height at every interface scale.
+    const SIZE = {
+        xs: "textarea-xs min-h-6 py-[calc(0.25rem-1px)] leading-4",
+        sm: "textarea-sm min-h-8 py-[calc(0.375rem-1px)] leading-5",
+    } as const;
 
     let field = $state<HTMLTextAreaElement | null>(null);
 

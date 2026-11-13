@@ -58,6 +58,7 @@
     import type {AmountStyle} from "#lib/domain/types.js";
     import {chartColors} from "#lib/format/chartColors.svelte.js";
     import type {FlowReport} from "#lib/reports/types.js";
+    import {rootPx} from "#lib/theme/scale.js";
     import {placeLabels, type Bar} from "./sankeyLabels";
     import {flowPalette, linkTooltip, nodeTooltip, sankeyView, tooltipText, type FlowsPanel, type SankeyTooltip} from "./sankeyModel";
 
@@ -81,24 +82,37 @@
         onToggle: (open: boolean) => void;
     } = $props();
 
-    /** Gap between a bar and its label. */
-    const LABEL_GAP = 6;
+    // Every length below that a LABEL occupies or makes room for is in rem (the
+    // px figure at 100 % beside it) and becomes px at the live root size, so
+    // at a 200 % interface scale the labels are twice the size AND have twice
+    // the room. The bar's own width and the gap between bars are marks, not
+    // text, and stay in px.
+    /** px per rem, live. */
+    const root = $derived(rootPx());
+    const rem = (value: number): number => value * root;
+    /** Gap between a bar and its label (6px). */
+    const LABEL_GAP_REM = 0.375;
     const BAR_WIDTH = 10;
-    /** Half the gap between the label line and the figure under it. */
-    const LINE_GAP = 6;
-    /** The chart's padding above and below the bars; labels may use it. */
-    const PAD_Y = 8;
-    /** A name-and-figure label's height: 11px name, 10px figure, 5px air. */
-    const TWO_LINE = 26;
-    /** A name-only label's height: 11px name, 3px air. */
-    const ONE_LINE = 14;
-    /** How far a column with leader lines steps its labels out, to give the lines room. */
-    const LEADER = 10;
-    /** Room per bar in the taller column, the height a normal P&L has always had. */
-    const ROW = 30;
-    /** The ordinary ceiling, and the one that only one-line labels may push past. */
-    const USUAL_MAX = 900;
-    const GROWN_MAX = 1600;
+    /** Half the gap between the label line and the figure under it (6px). */
+    const LINE_GAP_REM = 0.375;
+    /** The chart's padding above and below the bars; labels may use it (8px). */
+    const PAD_Y_REM = 0.5;
+    /** A name-and-figure label's height: 11px name, 10px figure, 5px air (26px). */
+    const TWO_LINE_REM = 1.625;
+    /** A name-only label's height: 11px name, 3px air (14px). */
+    const ONE_LINE_REM = 0.875;
+    /** How far a column with leader lines steps its labels out, to give the lines room (10px). */
+    const LEADER_REM = 0.625;
+    /** Room per bar in the taller column, the height a normal P&L has always had (30px). */
+    const ROW_REM = 1.875;
+    /** The ordinary ceiling, and the one that only one-line labels may push past (900px, 1600px). */
+    const USUAL_MAX_REM = 56.25;
+    const GROWN_MAX_REM = 100;
+    /** The label sizes (11px name, 10px figure), as px for layerchart's `<Text>`. */
+    const NAME_FONT_REM = 0.6875;
+    const FIGURE_FONT_REM = 0.625;
+    /** An average glyph of the 11px name in the app's stack (6.2px), for the character budget. */
+    const NAME_GLYPH_REM = 0.3875;
 
     // The palette is built from the WHOLE report, never from the one graph
     // below: that is what keeps an account the same colour in both diagrams.
@@ -120,27 +134,27 @@
 
     let width = $state(0);
 
-    /** Horizontal gutter for the labels, on each side. */
-    const pad = $derived(Math.min(190, Math.max(90, Math.round(width * 0.28))));
+    /** Horizontal gutter for the labels, on each side: 28 % of the width, held between 90 and 190px at 100 %. */
+    const pad = $derived(Math.min(rem(11.875), Math.max(rem(5.625), Math.round(width * 0.28))));
     /**
      * Characters a label may occupy before it is cut, at 11px in the app's stack.
-     * A column with leader lines has `LEADER` less of the gutter to spend.
+     * A column with leader lines has `LEADER_REM` less of the gutter to spend.
      */
     function truncate(label: string, leaders: boolean): string {
-        const budget = Math.max(6, Math.floor((pad - LABEL_GAP - (leaders ? LEADER : 0)) / 6.2));
+        const budget = Math.max(6, Math.floor((pad - rem(LABEL_GAP_REM) - (leaders ? rem(LEADER_REM) : 0)) / rem(NAME_GLYPH_REM)));
         return label.length <= budget ? label : `${label.slice(0, budget - 1)}…`;
     }
 
     /**
      * Tall enough for the taller column, since neither column ever folds a row
-     * away: `ROW` a bar up to the usual 900px, which is every P&L this panel was
+     * away: `ROW_REM` a bar up to the usual 900px (at 100 %), which is every P&L this panel was
      * first drawn for. Past that it grows only as far as one-line labels need,
      * so a column that `layoutLabels` has already cut to names alone still fits.
      */
     function heightFor(nodes: {side: string}[]): number {
         const sources = nodes.filter((node) => node.side === "source").length;
         const rows = Math.max(sources, nodes.length - sources);
-        return Math.min(GROWN_MAX, Math.max(200, Math.min(USUAL_MAX, rows * ROW), rows * ONE_LINE));
+        return Math.min(rem(GROWN_MAX_REM), Math.max(rem(12.5), Math.min(rem(USUAL_MAX_REM), rows * rem(ROW_REM)), rows * rem(ONE_LINE_REM)));
     }
 
     /** What the hover box shows, where (container px), and which mark it belongs to. */
@@ -211,17 +225,17 @@
                 {@const height = heightFor(view.nodes)}
                 <div class="relative w-full" style="height: {height}px" bind:clientWidth={width} bind:this={frame} data-testid="sankey-chart-{slug}">
                     {#if width > 0}
-                        <Chart data={{nodes: view.nodes, links: view.links}} padding={{top: PAD_Y, right: pad, bottom: PAD_Y, left: pad}}>
+                        <Chart data={{nodes: view.nodes, links: view.links}} padding={{top: rem(PAD_Y_REM), right: pad, bottom: rem(PAD_Y_REM), left: pad}}>
                             <Svg>
                                 <!-- `nodeId` is REQUIRED here: Sankey defaults
                                      it to `d.index`, and our links reference keys. -->
                                 <Sankey nodeId={(d) => d.key} nodeWidth={BAR_WIDTH} nodePadding={12}>
                                     {#snippet children({nodes, links})}
                                         {@const spots = placeLabels(nodes as Bar[], {
-                                            top: -PAD_Y,
-                                            bottom: height - PAD_Y,
-                                            twoLine: TWO_LINE,
-                                            oneLine: ONE_LINE,
+                                            top: -rem(PAD_Y_REM),
+                                            bottom: height - rem(PAD_Y_REM),
+                                            twoLine: rem(TWO_LINE_REM),
+                                            oneLine: rem(ONE_LINE_REM),
                                         })}
                                         <!-- Pointer-only, and hidden from the
                                              accessibility tree: the legend and
@@ -253,7 +267,7 @@
                                             {@const spot = spots[node.key]}
                                             {@const edge = source ? node.x0 : node.x1}
                                             {@const out = source ? -1 : 1}
-                                            {@const x = edge + out * (LABEL_GAP + (spot?.leaders === true ? LEADER : 0))}
+                                            {@const x = edge + out * (rem(LABEL_GAP_REM) + (spot?.leaders === true ? rem(LEADER_REM) : 0))}
                                             {@const y = spot?.y ?? middle}
                                             {@const tip = nodeTooltip(node)}
                                             <!-- A tab stop that DOES nothing but
@@ -276,7 +290,7 @@
                                                 }}
                                                 onpointerleave={() => (hover = null)}
                                                 onfocus={() => {
-                                                    hover = {tip, color: node.color, x: edge + pad, y: middle + PAD_Y, node: node.key};
+                                                    hover = {tip, color: node.color, x: edge + pad, y: middle + rem(PAD_Y_REM), node: node.key};
                                                 }}
                                                 onblur={() => (hover = null)}
                                             >
@@ -309,20 +323,20 @@
                                                     <Text
                                                         value={truncate(node.label, spot?.leaders === true)}
                                                         {x}
-                                                        y={spot?.twoLine === false ? y : y - LINE_GAP}
+                                                        y={spot?.twoLine === false ? y : y - rem(LINE_GAP_REM)}
                                                         textAnchor={source ? "end" : "start"}
                                                         verticalAnchor="middle"
-                                                        fontSize={11}
+                                                        fontSize={rem(NAME_FONT_REM)}
                                                         class="fill-base-content"
                                                     />
                                                     {#if spot?.twoLine !== false}
                                                         <Text
                                                             value={node.amount}
                                                             {x}
-                                                            y={y + LINE_GAP}
+                                                            y={y + rem(LINE_GAP_REM)}
                                                             textAnchor={source ? "end" : "start"}
                                                             verticalAnchor="middle"
-                                                            fontSize={10}
+                                                            fontSize={rem(FIGURE_FONT_REM)}
                                                             class="fill-base-content/55"
                                                         />
                                                     {/if}

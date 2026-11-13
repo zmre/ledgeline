@@ -9,6 +9,7 @@
     // `.modal-box` makes itself the containing block for fixed children.
     import {tick} from "svelte";
     import {TYPING_ATTRIBUTE} from "#lib/keys/target.js";
+    import {remToPx} from "#lib/theme/scale.js";
     import {popupPosition, portal} from "#lib/ui/anchoredPopup.js";
     import {rankPayees} from "../complete";
     import type {PayeeUse} from "../types";
@@ -31,7 +32,8 @@
     } = $props();
 
     const VISIBLE_ROWS = 8;
-    const ROW_HEIGHT = 30;
+    /** An option row (30px at 100 %); converted at the live root when the popup is placed. */
+    const ROW_HEIGHT_REM = 1.875;
 
     let open = $state(false);
     let highlighted = $state(0);
@@ -45,7 +47,11 @@
 
     function reposition(): void {
         if (field !== null)
-            placement = popupPosition(field.getBoundingClientRect(), {width: window.innerWidth, height: window.innerHeight}, VISIBLE_ROWS * ROW_HEIGHT);
+            placement = popupPosition(
+                field.getBoundingClientRect(),
+                {width: window.innerWidth, height: window.innerHeight},
+                VISIBLE_ROWS * remToPx(ROW_HEIGHT_REM)
+            );
     }
 
     async function show(): Promise<void> {

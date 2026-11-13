@@ -6,34 +6,53 @@
 // worst one character of abbreviation that was not needed, and never a broken
 // layout. Anything that moves the classes in AccountsCell should move these
 // with them; chipGeometry.test.ts pins each one to the class it came from.
+//
+// They are written in rem, as the stylesheet writes them, and turned into px
+// against the root the caller passes (`rootPx()` from theme/scale.ts): at a
+// 200 % interface scale every one of them is twice as wide, and so is the text
+// the measurer reports, so the arithmetic below is unchanged in shape.
 
 import {fitAccount, shareWidths, type MeasureText} from "#lib/domain/accounts.js";
 
 /**
  * Everything a chip spends before its text starts, per chip.
  *
- * daisyUI `badge-sm` sets `--size: calc(0.25rem * 5)` = 20px and
- * `padding-inline: calc(var(--size) / 2 - var(--border))` = 9px a side, on top
- * of the 1px `--border` itself: (9 + 1) * 2.
+ * daisyUI `badge-sm` sets `--size: calc(0.25rem * 5)` = 1.25rem and
+ * `padding-inline: calc(var(--size) / 2 - var(--border))` a side, on top of
+ * the `--border` itself: (size / 2 - border + border) * 2 = size. The border is
+ * a px hairline, but it cancels, so the whole chrome is the rem `--size`.
  */
-export const CHIP_CHROME_PX = 20;
+export const CHIP_CHROME_REM = 1.25;
 
-/** The two `gap-1` gaps either side of the arrow in a from→to row: 4px each. */
-export const FLOW_GAP_PX = 8;
+/** The two `gap-1` gaps either side of the arrow in a from→to row: 0.25rem each. */
+export const FLOW_GAP_REM = 0.5;
 
-/** The `→` itself, at the 0.75rem font size `table-sm` gives the row. */
-export const FLOW_ARROW_PX = 12;
+/** The `→` itself, one em at the 0.75rem font size `table-sm` gives the row. */
+export const FLOW_ARROW_REM = 0.75;
+
+/** The constants above in px, at a root of `root` px per rem. */
+export interface ChipMetrics {
+    chrome: number;
+    flowGap: number;
+    flowArrow: number;
+}
+
+export function chipMetrics(root: number): ChipMetrics {
+    return {chrome: CHIP_CHROME_REM * root, flowGap: FLOW_GAP_REM * root, flowArrow: FLOW_ARROW_REM * root};
+}
 
 /**
- * Text room for each chip of a `source → dest` cell `cellWidth` px wide.
+ * Text room for each chip of a `source → dest` cell `cellWidth` px wide, at a
+ * root of `root` px per rem (`measure` must measure at that root too).
  *
  * The two chips SHARE the cell. That is the whole point: capping each at 45%
  * independently meant a short source could not lend its slack to a long
  * destination, so an `assets:bank:checking → expenses:household:repairs:plumbing`
  * row left the tail of the column empty no matter how the budget was tuned.
  */
-export function flowChipRooms(names: readonly string[], cellWidth: number, measure: MeasureText): number[] {
-    return settleRooms(names, cellWidth - FLOW_ARROW_PX - FLOW_GAP_PX, measure);
+export function flowChipRooms(names: readonly string[], cellWidth: number, measure: MeasureText, root: number): number[] {
+    const {chrome, flowGap, flowArrow} = chipMetrics(root);
+    return settleRooms(names, cellWidth - flowArrow - flowGap, measure, chrome);
 }
 
 /**
@@ -43,8 +62,9 @@ export function flowChipRooms(names: readonly string[], cellWidth: number, measu
  * width worth fitting to is the whole cell: abbreviate only a name that will not
  * fit even then. Chips short enough to sit together already fit by definition.
  */
-export function splitChipRooms(names: readonly string[], cellWidth: number): number[] {
-    return names.map(() => cellWidth - CHIP_CHROME_PX);
+export function splitChipRooms(names: readonly string[], cellWidth: number, root: number): number[] {
+    const {chrome} = chipMetrics(root);
+    return names.map(() => cellWidth - chrome);
 }
 
 // Passes of hand-back below. Each one buys at least one chip one more rung, so
@@ -80,21 +100,21 @@ const CRUMB_PX = 0.5;
  * chipGeometry.test.ts asserts, and exactly what "the label fills the column"
  * means when it cannot be seen.
  */
-function settleRooms(names: readonly string[], room: number, measure: MeasureText): number[] {
-    const boxes = names.map((name) => measure(name) + CHIP_CHROME_PX);
+function settleRooms(names: readonly string[], room: number, measure: MeasureText, chrome: number): number[] {
+    const boxes = names.map((name) => measure(name) + chrome);
     let shares = shareWidths(boxes, room);
     for (let pass = 0; pass < SETTLE_PASSES; pass++) {
-        const labels = names.map((name, i) => fitAccount(name, shares[i] - CHIP_CHROME_PX, measure));
+        const labels = names.map((name, i) => fitAccount(name, shares[i] - chrome, measure));
         // A last-resort rung can still overflow its share; CSS clips it there,
         // so what it OCCUPIES is the share and not the string's own width.
-        const used = labels.map((label, i) => Math.min(measure(label) + CHIP_CHROME_PX, shares[i]));
+        const used = labels.map((label, i) => Math.min(measure(label) + chrome, shares[i]));
         const slack = room - used.reduce((sum, width) => sum + width, 0);
         if (slack <= CRUMB_PX) break;
-        const winner = names.findIndex((name, i) => labels[i] !== name && fitAccount(name, used[i] - CHIP_CHROME_PX + slack, measure) !== labels[i]);
+        const winner = names.findIndex((name, i) => labels[i] !== name && fitAccount(name, used[i] - chrome + slack, measure) !== labels[i]);
         if (winner === -1) break;
         // Re-based on what is really used, so the shares still total `room`.
         shares = used.slice();
         shares[winner] = used[winner] + slack;
     }
-    return shares.map((share) => share - CHIP_CHROME_PX);
+    return shares.map((share) => share - chrome);
 }

@@ -151,6 +151,37 @@ export interface RowWindow {
 }
 
 /**
+ * The table's row geometry, in rem because the classes that draw it are: an
+ * `h-10` table row, an `h-24` card plus its `mb-2`, the card wrapper's `p-2`,
+ * and the container width below which the table becomes cards (640px at
+ * 100 %; in rem, because what has to fit is rem-sized columns).
+ */
+export const LIST_GEOMETRY_REM = {rowPitch: 2.5, cardPitch: 6.5, cardHeight: 6, cardInset: 0.5, cardBreakpoint: 40} as const;
+
+export interface ListGeometry {
+    mode: "card" | "table";
+    /** px from one row's top to the next. */
+    pitch: number;
+    /** px of the row itself (a card's pitch less its margin). */
+    rowHeight: number;
+    /** px of padding above the first row (the card wrapper's). */
+    topInset: number;
+}
+
+/**
+ * The virtualized list's geometry in px for a container `containerWidth` px
+ * wide at a root of `root` px per rem. At the 200 % interface scale an `h-10`
+ * row is 80px, and a pitch left at 40 would window the wrong rows and anchor
+ * the cursor half a screen off — so this is the one place the pitch comes from.
+ */
+export function listGeometry(containerWidth: number, root: number): ListGeometry {
+    const g = LIST_GEOMETRY_REM;
+    if (containerWidth < g.cardBreakpoint * root)
+        return {mode: "card", pitch: g.cardPitch * root, rowHeight: g.cardHeight * root, topInset: g.cardInset * root};
+    return {mode: "table", pitch: g.rowPitch * root, rowHeight: g.rowPitch * root, topInset: 0};
+}
+
+/**
  * Fixed-pitch windowing over a scroll container. Rows are laid out on a
  * `rowPitch`-px grid; only the slice covering the viewport (± `overscan` rows)
  * is rendered, so the rendered-row count is bounded by
