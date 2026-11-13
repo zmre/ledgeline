@@ -489,10 +489,15 @@
     />
 {/snippet}
 
-<section class="flex min-h-0 grow flex-col">
-    <div class="flex items-center justify-between gap-2 pb-1">
+<!-- `min-h-40`, not `min-h-0`: on a window short in rem (a big interface
+     scale, or the insights panel open on a small screen) the table keeps a few
+     rows and the page scrolls, rather than squeezing to nothing and leaving its
+     toolbar to spill under the totals footer. -->
+<section class="flex min-h-40 grow flex-col">
+    <!-- Wraps rather than overflowing when a big interface scale leaves too few rem across. -->
+    <div class="flex flex-wrap items-center justify-between gap-2 pb-1">
         {#if editing.canEdit}
-            <div class="flex items-center gap-2">
+            <div class="flex flex-wrap items-center gap-2">
                 <button type="button" class="btn gap-1 btn-primary btn-sm" onclick={() => txnModal.openAdd()}>
                     <span class="text-base leading-none">+</span> Add transaction
                 </button>
@@ -527,8 +532,9 @@
                             <span class="badge badge-ghost badge-sm tabular-nums" data-testid="review-recents-count">{recentCount}</span>
                         </button>
                     </span>
+                    <!-- End-aligned when the toolbar is narrow enough to wrap: a left-aligned panel ran past the window. -->
                     <details
-                        class="dropdown"
+                        class="dropdown dropdown-end sm:dropdown-start"
                         bind:open={reviewMenuOpen}
                         use:dismissible={{active: reviewMenuOpen, outside: true, onDismiss: () => (reviewMenuOpen = false)}}
                     >
@@ -560,8 +566,9 @@
                             >
                         </button>
                     </span>
+                    <!-- End-aligned when the toolbar is narrow enough to wrap: a left-aligned panel ran past the window. -->
                     <details
-                        class="dropdown"
+                        class="dropdown dropdown-end sm:dropdown-start"
                         bind:open={matchMenuOpen}
                         use:dismissible={{active: matchMenuOpen, outside: true, onDismiss: () => (matchMenuOpen = false)}}
                     >

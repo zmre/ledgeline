@@ -36,7 +36,7 @@
         {#if picked.length > 0}<span class="badge badge-xs badge-neutral">{picked.length}</span>{/if}
         {#if failing > 0}<span class="text-warning" aria-label="{failing} comparison could not load">!</span>{/if}
     </summary>
-    <div class="dropdown-content z-10 mt-1 w-72 rounded-box bg-base-200 p-2 shadow-lg">
+    <div class="dropdown-content z-10 mt-1 w-72 max-w-[calc(100vw-2rem)] rounded-box bg-base-200 p-2 shadow-lg">
         <p class="mb-1 px-1 text-xs text-base-content/60">Your contributions and withdrawals, on the same dates, into a fund instead. Dividends reinvested.</p>
         <ul class="flex flex-col">
             {#each catalog as benchmark (benchmark.symbol)}

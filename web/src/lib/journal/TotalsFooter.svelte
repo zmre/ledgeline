@@ -27,7 +27,7 @@
 </script>
 
 <footer class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-box bg-base-200 px-4 py-2">
-    <div class="flex items-center gap-3 text-sm text-base-content/70">
+    <div class="flex flex-wrap items-center gap-3 text-sm text-base-content/70">
         <span class="whitespace-nowrap"><span class="font-medium text-base-content">{count}</span> {count === 1 ? noun : `${noun}s`}</span>
         <span class="whitespace-nowrap">{period}</span>
         {@render actions?.()}
