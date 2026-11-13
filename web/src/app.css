@@ -54,3 +54,34 @@
  * above the block. palette.test.ts checks the structure and the contrast of
  * every -content colour.
  */
+
+/*
+ * Breakpoints that follow the interface scale (plan 39).
+ *
+ * Tailwind's `sm:`/`md:`/`lg:`/`xl:`/`2xl:` are media queries, and a rem in a
+ * media query is the browser's INITIAL font size, never our scaled root: at
+ * 200 % a 1280px window still counted as `xl` and crammed double-size content
+ * into it. A rem in a CONTAINER query is the root's computed size, so the same
+ * thresholds, re-declared against the `app` container on <body>, move with the
+ * scale: at 200 % that window is 40rem wide and lays out like a 640px one. At
+ * 100 % nothing changes (the container is the viewport, less any classic
+ * scrollbar).
+ *
+ * The built-in names are REDEFINED, not joined by new ones, so every
+ * responsive class in the app follows the scale and a new one cannot forget
+ * to. <body> is the container so modals and drawers outside the layout's
+ * wrapper match too. `max-*:` and ranges (`md:max-lg:`) are NOT redefined;
+ * nothing uses them. Tailwind's own `@sm:`…`@7xl:` container variants are
+ * untouched (IncomeStatementView's `@container` uses them).
+ */
+@custom-variant sm (@container app (width >= 40rem));
+@custom-variant md (@container app (width >= 48rem));
+@custom-variant lg (@container app (width >= 64rem));
+@custom-variant xl (@container app (width >= 80rem));
+@custom-variant 2xl (@container app (width >= 96rem));
+
+@layer base {
+    body {
+        container: app / inline-size;
+    }
+}
