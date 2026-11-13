@@ -43,7 +43,17 @@ import type {
     OtherHoldingsTotals,
     OtherHoldingsWarning,
 } from "#lib/holdings/types.js";
-import type {CreatedPricesFile, PriceOutcome, PriceResult, PricesFile, PricesStatus, PricesUpdateResponse} from "#lib/holdings/pricesTypes.js";
+import {
+    AUTO_PRICES_OUTCOMES,
+    type AutoPricesOutcome,
+    type AutoPricesStatus,
+    type CreatedPricesFile,
+    type PriceOutcome,
+    type PriceResult,
+    type PricesFile,
+    type PricesStatus,
+    type PricesUpdateResponse,
+} from "#lib/holdings/pricesTypes.js";
 import {CATEGORY_DIMENSIONS, PIE_DIMENSIONS} from "#lib/holdings/profileTypes.js";
 import {COLUMN_KEYS, INSIGHTS_TABS, THEME_IDS, UI_PREFS_STORAGES} from "#lib/settings/uiPrefs.js";
 import type {ColumnConfig, UiPrefs, UiPrefsIssue, UiPrefsState} from "#lib/settings/uiPrefs.js";
@@ -4944,6 +4954,8 @@ export function decodeUiPrefsState(raw: unknown): UiPrefsState {
         matchTransitDays: whole(prefs.matchTransitDays, "ui-prefs matchTransitDays"),
         theme: decodeEnum(THEME_IDS, prefs.theme as string | undefined, "ui-prefs theme"),
         uiScale: whole(prefs.uiScale, "ui-prefs uiScale"),
+        autoPrices: bool("autoPrices"),
+        autoPricesWeeks: whole(prefs.autoPricesWeeks, "ui-prefs autoPricesWeeks"),
     };
     if (!Array.isArray(body.issues)) throw new ApiShapeError("ui-prefs issues: expected an array");
     const issues = body.issues.map((rawIssue, i): UiPrefsIssue => {
@@ -5229,6 +5241,15 @@ interface RawPricesStatus {
     canCreateFile?: boolean;
     createFileName?: string;
     files?: RawPricesFile[];
+    auto?: RawAutoPricesStatus;
+}
+
+interface RawAutoPricesStatus {
+    enabled?: boolean;
+    lastRun?: number | null;
+    lastOutcome?: string | null;
+    lastAdded?: number;
+    backoffUntil?: number | null;
 }
 
 interface RawCreatedPricesFile {
@@ -5256,6 +5277,25 @@ const PRICE_OUTCOMES: PriceOutcome[] = ["updated", "duplicate", "not-found", "fe
 function priceOutcome(value: unknown, context: string): PriceOutcome {
     if (typeof value === "string" && (PRICE_OUTCOMES as string[]).includes(value)) return value as PriceOutcome;
     throw new ApiShapeError(`${context}: expected one of ${PRICE_OUTCOMES.join(", ")}, got ${JSON.stringify(value)}`);
+}
+
+/**
+ * The updater's state. Lenient where strictness would cost more than it buys:
+ * this feeds one quiet line beside the button, so an outcome a newer engine
+ * added reads as "nothing to say" (null) rather than failing the whole status
+ * and taking the button with it.
+ */
+function decodeAutoPricesStatus(raw: RawAutoPricesStatus | undefined): AutoPricesStatus {
+    if (raw === undefined) return Object.freeze({enabled: false, lastRun: null, lastOutcome: null, lastAdded: 0, backoffUntil: null});
+    if (typeof raw !== "object" || raw === null) throw new ApiShapeError("prices status auto: expected an object");
+    const outcome = raw.lastOutcome;
+    return Object.freeze({
+        enabled: raw.enabled === true,
+        lastRun: optNum(raw.lastRun, "prices status auto lastRun"),
+        lastOutcome: typeof outcome === "string" && (AUTO_PRICES_OUTCOMES as readonly string[]).includes(outcome) ? (outcome as AutoPricesOutcome) : null,
+        lastAdded: optNum(raw.lastAdded, "prices status auto lastAdded") ?? 0,
+        backoffUntil: optNum(raw.backoffUntil, "prices status auto backoffUntil"),
+    });
 }
 
 function decodePricesFile(raw: RawPricesFile | undefined, context: string): PricesFile {
@@ -5289,6 +5329,7 @@ export function decodePricesStatus(raw: unknown): PricesStatus {
         canCreateFile: status.canCreateFile === true,
         createFileName: optStr(status.createFileName, "prices status createFileName") ?? "prices.journal",
         files: frozen(status.files.map((file, i) => decodePricesFile(file, `prices status files[${i}]`))),
+        auto: decodeAutoPricesStatus(status.auto),
     });
 }
 

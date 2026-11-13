@@ -7,9 +7,13 @@
      (mirrors BudgetEditor's "Create budget.journal" affordance) — then fetch
      and append. Both writes go through `pricesStore`, which reloads its own
      status afterward; the Holdings report itself is reloaded by `+page.svelte`
-     so the newly-priced positions' market values update on screen. -->
+     so the newly-priced positions' market values update on screen.
+
+     Beside it, a quiet line about the engine's background updater (plan 41),
+     when the user turned it on: "Prices auto-updated 2 h ago". -->
 <script lang="ts">
     import type {Dec} from "#lib/domain/money.js";
+    import {autoPricesNote} from "#lib/holdings/autoPrices.js";
     import type {PriceResult} from "#lib/holdings/pricesTypes.js";
     import {pricesStore} from "#lib/stores/prices.svelte.js";
 
@@ -18,6 +22,15 @@
     const status = $derived(pricesStore.status.value);
     let error = $state<string | null>(null);
     let lastResults = $state<PriceResult[] | null>(null);
+
+    // The wall clock, a minute at a time: enough for "2 h ago" to stay true
+    // while the tab sits open, without re-rendering every second.
+    let now = $state(Math.floor(Date.now() / 1000));
+    $effect(() => {
+        const timer = setInterval(() => (now = Math.floor(Date.now() / 1000)), 60_000);
+        return () => clearInterval(timer);
+    });
+    const autoNote = $derived(status === null ? null : autoPricesNote(status.auto, now));
 
     const OUTCOME_LABEL: Record<PriceResult["outcome"], string> = {
         updated: "updated",
@@ -70,12 +83,17 @@
 </script>
 
 {#if status !== null && status.editable && status.symbols.length > 0 && (status.defaultTarget !== null || status.canCreateFile)}
-    <button type="button" class="btn btn-sm" disabled={pricesStore.busy} onclick={() => void onClick()} data-testid="update-prices">
-        {#if pricesStore.busy}
-            <span class="loading loading-xs loading-spinner"></span>
+    <div class="flex items-center gap-3">
+        {#if autoNote !== null}
+            <span class="text-xs opacity-70" data-testid="auto-prices-note">{autoNote}</span>
         {/if}
-        Update prices
-    </button>
+        <button type="button" class="btn btn-primary btn-sm" disabled={pricesStore.busy} onclick={() => void onClick()} data-testid="update-prices">
+            {#if pricesStore.busy}
+                <span class="loading loading-xs loading-spinner"></span>
+            {/if}
+            Update prices
+        </button>
+    </div>
 {/if}
 
 {#if lastResults !== null}

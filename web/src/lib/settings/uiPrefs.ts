@@ -69,8 +69,12 @@ export const THEME_DEFAULT: ThemeId = "default";
 export const UI_SCALE_RANGE = [50, 300] as const;
 export const UI_SCALE_DEFAULT = 100;
 
+/** Automatic price updates (plan 41): how many past weeks to backfill, 0 (the latest close only)–52. */
+export const AUTO_PRICES_WEEKS_RANGE = [0, 52] as const;
+export const AUTO_PRICES_WEEKS_DEFAULT = 6;
+
 /** The keys `POST /api/ui-prefs/pin` can keep for one ledger (`PINNABLE` in ui_prefs.rs). */
-export const PINNABLE_UI_PREF_KEYS = ["theme", "uiScale"] as const;
+export const PINNABLE_UI_PREF_KEYS = ["theme", "uiScale", "autoPrices", "autoPricesWeeks"] as const;
 
 export type PinnableUiPrefKey = (typeof PINNABLE_UI_PREF_KEYS)[number];
 
@@ -129,6 +133,13 @@ export interface UiPrefs {
     theme: ThemeId;
     /** Interface scale in whole percent (plan 39), 50–300. Default 100. */
     uiScale: number;
+    /**
+     * The engine fetches missing stock prices in the background (plan 41).
+     * Off by default: it makes requests to Yahoo Finance on the user's behalf.
+     */
+    autoPrices: boolean;
+    /** How many past Monday–Sunday weeks it backfills a missing weekly close for, 0–52. Default 6. */
+    autoPricesWeeks: number;
 }
 
 export type UiPrefKey = keyof UiPrefs;
@@ -155,6 +166,8 @@ export const UI_PREF_KEYS: readonly UiPrefKey[] = [
     "matchTransitDays",
     "theme",
     "uiScale",
+    "autoPrices",
+    "autoPricesWeeks",
 ];
 
 /** A partial update, as `PATCH /api/ui-prefs` takes it: `columns` may name only some members. */
@@ -249,6 +262,8 @@ export const defaultUiPrefs = (): UiPrefs => ({
     matchTransitDays: MATCH_TRANSIT_DAYS,
     theme: THEME_DEFAULT,
     uiScale: UI_SCALE_DEFAULT,
+    autoPrices: false,
+    autoPricesWeeks: AUTO_PRICES_WEEKS_DEFAULT,
 });
 
 const flag = (value: unknown, fallback: boolean): boolean => (typeof value === "boolean" ? value : fallback);
@@ -294,6 +309,8 @@ export function cleanUiPrefs(parsed: Record<string, unknown>): UiPrefs {
         // fall back rather than leave the page unstyled.
         theme: isThemeId(parsed.theme) ? parsed.theme : base.theme,
         uiScale: wholeIn(parsed.uiScale, UI_SCALE_RANGE, UI_SCALE_DEFAULT),
+        autoPrices: flag(parsed.autoPrices, base.autoPrices),
+        autoPricesWeeks: wholeIn(parsed.autoPricesWeeks, AUTO_PRICES_WEEKS_RANGE, AUTO_PRICES_WEEKS_DEFAULT),
     };
 }
 
