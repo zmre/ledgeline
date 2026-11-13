@@ -54,6 +54,9 @@
     // keyboard half of zoom is in `globalLayer()` above; this is the desktop
     // View menu's half, which arrives as a `ledgeline:zoom` event on `window`.
     useAppearance();
+    // Saves still waiting on their debounce go out as the page is hidden or
+    // unloaded (a reload, a closed tab), with a request that outlives it.
+    $effect(() => settings.flushUiPrefsWhenLeaving());
     $effect(() => listenForMenuZoom());
 
     // WP-08: connection status dot fed by journal.status (green ready / yellow

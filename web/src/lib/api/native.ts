@@ -2088,6 +2088,18 @@ export class LedgelineApi {
     }
 
     /**
+     * `patchUiPrefs` for a page that is going away: `keepalive`, so the request
+     * outlives the document (pagehide, a reload, a closed tab), and
+     * fire-and-forget, because nothing is left to read the answer.
+     */
+    patchUiPrefsOnUnload(patch: UiPrefsPatch): void {
+        const headers = authHeaders({Accept: "application/json", "Content-Type": "application/json"});
+        void fetch(`${this.baseUrl}/api/ui-prefs`, {method: "PATCH", headers, body: JSON.stringify(patch), cache: "no-store", keepalive: true}).catch(() => {
+            // The page is gone; there is no one to tell.
+        });
+    }
+
+    /**
      * Keep `key` for the open ledger only (`pinned: true`: its current value
      * is written into the ledger's `ledgeline.toml`, created if need be), or
      * stop (`false`: the key is removed; the file stays). Answers as
