@@ -1,7 +1,7 @@
 # Screenshot manifest
 
 Every image `just docs-screenshots` writes, and the manual page that embeds it.
-Paths are relative to the repo root. All are 2× PNGs; the app has a single dark
+Paths are relative to the repo root. All are 2× PNGs in the `default-dark`
 theme.
 
 | Image                                                 | What it shows                                                                                                                                                                                  | Doc page / section                                      |
