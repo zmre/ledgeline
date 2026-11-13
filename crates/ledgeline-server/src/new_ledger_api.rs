@@ -34,8 +34,8 @@ use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{Query, State};
 use axum::response::Response;
 use ledgeline_core::new_ledger::{
-    self, ACCOUNTS_FILE, Currency, DecimalMark, LedgerKind, MAIN_FILE, Month, NewLedger,
-    NewLedgerError, SymbolSide, TemplateAccount,
+    self, ACCOUNTS_FILE, Currency, DecimalMark, LedgerKind, MAIN_FILE, NewLedger, NewLedgerError,
+    SymbolSide, TemplateAccount,
 };
 use ledgeline_core::vault::LocalVault;
 use serde::{Deserialize, Serialize};
@@ -248,7 +248,6 @@ pub(crate) struct WireCreate {
     folder_id: String,
     title: String,
     currency: WireCurrency,
-    fiscal_year_start: u8,
     accounts: Vec<WireAccount>,
 }
 
@@ -367,7 +366,6 @@ fn create_ledger(state: &AppState, request: WireCreate) -> Result<WireCreated, A
     let ledger = NewLedger {
         title: request.title,
         currency: request.currency.into(),
-        fiscal_year_start: Month::new(request.fiscal_year_start).map_err(refused)?,
         accounts: request
             .accounts
             .into_iter()

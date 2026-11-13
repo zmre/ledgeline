@@ -64,11 +64,10 @@ describe("COMPONENT NewLedgerWizard", () => {
         await next("new-ledger-kind-business");
         await fireEvent.click(screen.getByTestId("new-ledger-kind-business"));
         await vi.waitFor(() => expect(sent.some((r) => r.path === "/api/new-ledger/template")).toBe(true));
-        await next("new-ledger-fiscal");
+        await next("new-ledger-sample-amount");
 
         // Details: a decimal comma changes the preview.
         expect(screen.getByTestId("new-ledger-sample-amount").textContent).toContain("$1,000.00");
-        await fireEvent.change(screen.getByTestId("new-ledger-fiscal"), {target: {value: "7"}});
         await next("new-ledger-account-row");
 
         // Review: four rows; remove the last.
@@ -90,7 +89,6 @@ describe("COMPONENT NewLedgerWizard", () => {
             folderId: "f-1",
             title: "Acme Books",
             currency: {commodity: "$", side: "left", spaced: false, decimals: 2, decimalMark: "period"},
-            fiscalYearStart: 7,
             accounts: TEMPLATE.accounts.slice(0, 3),
         });
     });
@@ -102,7 +100,7 @@ describe("COMPONENT NewLedgerWizard", () => {
         await fireEvent.click(screen.getByTestId("new-ledger-path-fresh"));
         await next("new-ledger-kind-empty");
         await fireEvent.click(screen.getByTestId("new-ledger-kind-empty"));
-        await next("new-ledger-fiscal");
+        await next("new-ledger-sample-amount");
         await next("new-ledger-create");
 
         await fireEvent.click(screen.getByTestId("new-ledger-pick-folder"));

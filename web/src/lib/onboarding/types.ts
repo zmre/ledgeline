@@ -57,6 +57,5 @@ export type CreateLedgerBody = Readonly<{
     folderId: string;
     title: string;
     currency: CurrencyStyle;
-    fiscalYearStart: number;
     accounts: readonly TemplateAccount[];
 }>;

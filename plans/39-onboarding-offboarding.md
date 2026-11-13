@@ -128,7 +128,6 @@ The same importers feed a **File → New wizard** with two paths:
 - **Start fresh.** Ask:
   - individual or business;
   - base currency (writes a `D` directive);
-  - fiscal year;
   - folder.
 
   Then write `main.journal` and `accounts.journal`, using a template chart of accounts (individual or business) or an empty one, with `type:` declarations.
@@ -364,7 +363,7 @@ Every whole-book importer parses into the QuickBooks journal import's existing s
 - **The account tree is derived and suggested, not written.** The importers record each source account's kind (QIF register types and income categories; single-entry tracked accounts vs. categories, classified by the sign of their money). `qb_import::suggest_accounts` turns that into pre-filled mapping rows: an existing account with the same last segment if there is exactly one, otherwise a name under a standard root (`assets:bank:…`, `liabilities:credit cards:…`, `expenses:…`). GnuCash and hledger names are suggested as written. The user reviews every row before any alias is saved.
 - **QIF transfers are written once** (in the first bank-like register by name). `--mirror-transfers` writes Quicken-style mirrored records for Phase 3 to compare. Status: `*` → `CX`, `!` → `C*`.
 - **Virtual postings** are written by the CSV export (as hledger does) and left out, with a count, by the CSV importer. QIF has no form for them; the loss report counts them.
-- **Fiscal year** from the wizard is recorded only as a comment in `main.journal`; nothing reads it yet.
+- **No fiscal-year question.** The plan listed one, but neither hledger nor Ledgeline has a fiscal-year setting, so the answer would have been unused. Removed 2026-11-12; add it back with the reports that would use it.
 - **First run** opens the wizard in the GUI when there is no journal argument, `$LEDGELINE_FIXTURE` or recent journal. `--server` and the dev shell still fall back to `fixtures/sample.journal`. The wizard's "Try with sample data" writes a fresh copy of the embedded sample to the cache folder.
 
 ### Known gaps

@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use ledgeline_core::new_ledger::{
-    ACCOUNTS_FILE, Currency, DecimalMark, LedgerKind, MAIN_FILE, Month, NewLedger, SymbolSide,
-    chart, render, write_ledger,
+    ACCOUNTS_FILE, Currency, DecimalMark, LedgerKind, MAIN_FILE, NewLedger, SymbolSide, chart,
+    render, write_ledger,
 };
 use ledgeline_core::parse::parse_journal_in;
 use ledgeline_core::reports::account_types::{
@@ -109,7 +109,6 @@ fn every_template_passes_hledger_check_and_hledger_agrees_on_types() {
             let files = render(&NewLedger {
                 title: format!("{kind:?} books"),
                 currency: currency.clone(),
-                fiscal_year_start: Month::new(4).unwrap(),
                 accounts: chart(kind),
             })
             .expect("renders");

@@ -9,8 +9,8 @@
 //! Two files, and nothing else:
 //!
 //! - **`main.journal`** — the file Ledgeline opens. A title comment on the
-//!   first line (what [`crate::title`] shows as the ledger's name), the fiscal
-//!   year as a comment, the `decimal-mark`, `commodity` and `D` directives for
+//!   first line (what [`crate::title`] shows as the ledger's name), the
+//!   `decimal-mark`, `commodity` and `D` directives for
 //!   the base currency, `include accounts.journal`, and then nothing: new
 //!   transactions are appended below.
 //! - **`accounts.journal`** — the chart of accounts: one `account` line per
@@ -23,13 +23,6 @@
 //! Keeping the declarations in their own file is what the accounts editor
 //! already expects ("a file that holds no transactions"), and keeps the
 //! transaction file free of a hundred lines of setup.
-//!
-//! # Fiscal year
-//!
-//! Neither hledger nor Ledgeline has a fiscal-year setting today: every report
-//! period is a calendar one. So the answer is recorded as a comment in
-//! `main.journal`, where a person (or a later version) can read it, and is
-//! never written to `ledgeline.toml`, which Ledgeline never creates.
 //!
 //! # The charts
 //!
@@ -45,7 +38,6 @@
 //! matching (`docs/journal/transfer-matching.md`).
 
 use std::collections::{BTreeSet, HashMap};
-use std::fmt;
 
 use thiserror::Error;
 
@@ -203,52 +195,6 @@ impl Currency {
     }
 }
 
-/// A calendar month, 1 (January) to 12 (December).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Month(u8);
-
-impl Month {
-    /// January — a calendar fiscal year.
-    pub const JANUARY: Self = Self(1);
-
-    /// The month numbered `number`, 1 to 12.
-    ///
-    /// # Errors
-    /// [`NewLedgerError::Month`] for anything outside 1–12.
-    pub fn new(number: u8) -> Result<Self, NewLedgerError> {
-        (1..=12)
-            .contains(&number)
-            .then_some(Self(number))
-            .ok_or(NewLedgerError::Month(number))
-    }
-
-    /// The month's English name.
-    #[must_use]
-    pub fn name(self) -> &'static str {
-        const NAMES: [&str; 12] = [
-            "January",
-            "February",
-            "March",
-            "April",
-            "May",
-            "June",
-            "July",
-            "August",
-            "September",
-            "October",
-            "November",
-            "December",
-        ];
-        NAMES[usize::from(self.0 - 1)]
-    }
-}
-
-impl fmt::Display for Month {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.name())
-    }
-}
-
 /// One account a new chart declares: its full name and the tags on its
 /// `account` line, in the order they are written.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -266,8 +212,6 @@ pub struct NewLedger {
     pub title: String,
     /// The base currency.
     pub currency: Currency,
-    /// The month the fiscal year starts in.
-    pub fiscal_year_start: Month,
     /// The chart of accounts, in the order it is written.
     pub accounts: Vec<TemplateAccount>,
 }
@@ -299,9 +243,6 @@ pub enum NewLedgerError {
     /// More than four decimal places.
     #[error("a currency can have at most 4 decimal places, not {0}")]
     Decimals(u8),
-    /// A month outside 1–12.
-    #[error("{0} is not a month; use 1 (January) to 12 (December)")]
-    Month(u8),
     /// The same account twice.
     #[error("{0} is in the list twice")]
     DuplicateAccount(String),
@@ -474,14 +415,14 @@ const BUSINESS: &[(&str, &[(&str, &str)])] = &[
 /// Render a new ledger's two files, and prove they parse together.
 ///
 /// # Errors
-/// [`NewLedgerError`] for a title, currency, month or account the wizard should
+/// [`NewLedgerError`] for a title, currency or account the wizard should
 /// not have sent; [`NewLedgerError::Unreadable`] if the result fails to parse
 /// (a bug, but checked rather than trusted).
 pub fn render(ledger: &NewLedger) -> Result<LedgerFiles, NewLedgerError> {
     let title = clean_title(&ledger.title)?;
     ledger.currency.validate()?;
     let accounts = render_accounts(&ledger.accounts)?;
-    let main = render_main(&title, &ledger.currency, ledger.fiscal_year_start);
+    let main = render_main(&title, &ledger.currency);
     let files = LedgerFiles { main, accounts };
     prove_readable(&files)?;
     Ok(files)
@@ -496,7 +437,7 @@ fn clean_title(raw: &str) -> Result<String, NewLedgerError> {
     ok.then(|| title.to_string()).ok_or(NewLedgerError::Title)
 }
 
-fn render_main(title: &str, currency: &Currency, fiscal_year_start: Month) -> String {
+fn render_main(title: &str, currency: &Currency) -> String {
     let sample = currency.sample_amount();
     let mark = currency.decimal_mark.mark();
     format!(
@@ -504,8 +445,6 @@ fn render_main(title: &str, currency: &Currency, fiscal_year_start: Month) -> St
          ;\n\
          ; Created by Ledgeline's New ledger wizard. The chart of accounts is in\n\
          ; {ACCOUNTS_FILE}; transactions go at the end of this file.\n\
-         ;\n\
-         ; Fiscal year starts in {fiscal_year_start}.\n\
          \n\
          decimal-mark {mark}\n\
          commodity {sample}\n\
@@ -629,7 +568,6 @@ mod tests {
         NewLedger {
             title: "Test books".to_string(),
             currency: Currency::usd(),
-            fiscal_year_start: Month::JANUARY,
             accounts: chart(kind),
         }
     }
@@ -719,7 +657,7 @@ mod tests {
     }
 
     #[test]
-    fn the_main_file_carries_title_currency_fiscal_year_and_the_include() {
+    fn the_main_file_carries_title_currency_and_the_include() {
         let files = render(&NewLedger {
             title: "  Acme Books  ".to_string(),
             currency: Currency {
@@ -729,12 +667,10 @@ mod tests {
                 decimals: 2,
                 decimal_mark: DecimalMark::Comma,
             },
-            fiscal_year_start: Month::new(7).unwrap(),
             accounts: Vec::new(),
         })
         .unwrap();
         assert!(files.main.starts_with("; Acme Books\n"), "{}", files.main);
-        assert!(files.main.contains("Fiscal year starts in July."));
         assert!(files.main.contains("decimal-mark ,\n"));
         assert!(files.main.contains("commodity 1.000,00 €\n"));
         assert!(files.main.contains("D 1.000,00 €\n"));
@@ -795,9 +731,6 @@ mod tests {
         let mut bad = ledger(LedgerKind::Empty);
         bad.currency.decimals = 5;
         assert!(matches!(render(&bad), Err(NewLedgerError::Decimals(5))));
-
-        assert!(matches!(Month::new(0), Err(NewLedgerError::Month(0))));
-        assert!(matches!(Month::new(13), Err(NewLedgerError::Month(13))));
 
         let mut bad = ledger(LedgerKind::Individual);
         bad.accounts.push(bad.accounts[0].clone());
