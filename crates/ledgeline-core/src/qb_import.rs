@@ -190,6 +190,7 @@ mod tests {
             num: None,
             name: None,
             postings,
+            status: crate::qb_journal::ImportStatus::Unmarked,
         }
     }
 
