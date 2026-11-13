@@ -7,6 +7,7 @@
 import type {WireAutoRuleFormIn} from "#lib/autoRules/ruleForm.js";
 import type {SaveAutoRuleBody} from "#lib/autoRules/types.js";
 import type {BudgetPeriod} from "#lib/budget/types.js";
+import type {CreateLedgerBody} from "#lib/onboarding/types.js";
 import type {SaveHledgerConfBody} from "#lib/settings/hledgerConfTypes.js";
 import type {PinnableUiPrefKey, UiPrefsPatch} from "#lib/settings/uiPrefs.js";
 import {ApiUnreachableError, authHeaders, REQUEST_TIMEOUT_MS, withDeadline} from "./client";
@@ -1699,6 +1700,38 @@ export class LedgelineApi {
      */
     createAccountsFile(): Promise<unknown> {
         return this.mutate<unknown>("POST", "/api/accounts/file", 200, {});
+    }
+
+    // --- File → New (plan 39 wizard) ----------------------------------------
+
+    /** Whether this engine can create a ledger (the desktop app), and whether one is open (decode with `decodeNewLedgerStatus`). */
+    newLedgerStatus(): Promise<unknown> {
+        return this.getJson("/api/new-ledger");
+    }
+
+    /** The chart of accounts a kind of ledger starts with (decode with `decodeTemplate`). */
+    newLedgerTemplate(kind: string): Promise<unknown> {
+        return this.getJson(`/api/new-ledger/template?kind=${encodeURIComponent(kind)}`);
+    }
+
+    /**
+     * Show the desktop's folder picker and wait for the user (decode with
+     * `decodePickedFolder`). The answer names the folder by a one-time id, never
+     * a path. Construct the client with a long `timeoutMs`: this waits on a person.
+     * 501 without the desktop app.
+     */
+    pickNewLedgerFolder(): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/new-ledger/folder", 200, {});
+    }
+
+    /** Write a new ledger into the picked folder and open it (decode with `decodeCreatedLedger`). 409 when the folder isn't empty or the choice expired. */
+    createNewLedger(body: CreateLedgerBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/new-ledger", 200, body);
+    }
+
+    /** Open a fresh copy of the sample journal (decode with `decodeCreatedLedger`). */
+    openSampleLedger(): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/new-ledger/sample", 200, {});
     }
 
     /** Every budget goal the journal declares (decode with `decodeBudgetListing`). */

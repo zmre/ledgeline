@@ -59,7 +59,9 @@ pub(crate) struct Cli {
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
 
-    /// Journal to open (default: $LEDGELINE_FIXTURE, else fixtures/sample.journal).
+    /// Journal to open (default: $LEDGELINE_FIXTURE, else the journal you
+    /// opened last). With neither, the desktop app opens the New ledger
+    /// wizard and --server serves fixtures/sample.journal.
     pub(crate) journal: Option<PathBuf>,
 
     /// Run headless: HTTP API + embedded SPA only, no desktop window.
@@ -394,14 +396,23 @@ fn plural(count: usize) -> &'static str {
 }
 
 /// Resolve the journal path: positional arg → `$LEDGELINE_FIXTURE` → the
-/// most-recently-opened journal that still exists → the default dev fixture. So
-/// `ledgeline` with no args re-opens the last journal you used.
-pub(crate) fn resolve_journal(cli: &Cli, app_dirs: &AppDirs) -> PathBuf {
+/// most-recently-opened journal that still exists. So `ledgeline` with no args
+/// re-opens the last journal you used.
+///
+/// `None` is a first run (plan 39 wizard). What happens then is the caller's
+/// call: the desktop app opens the New ledger wizard, while `--server` falls
+/// back to [`DEFAULT_FIXTURE`] ([`server_journal`]) — a headless server has
+/// no one to ask, and `just dev` and the test harnesses rely on it.
+pub(crate) fn resolve_journal(cli: &Cli, app_dirs: &AppDirs) -> Option<PathBuf> {
     cli.journal
         .clone()
         .or_else(|| std::env::var("LEDGELINE_FIXTURE").ok().map(PathBuf::from))
         .or_else(|| ledgeline::recents::most_recent(app_dirs))
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_FIXTURE))
+}
+
+/// The journal headless mode serves: [`resolve_journal`], else the dev fixture.
+fn server_journal(cli: &Cli, app_dirs: &AppDirs) -> PathBuf {
+    resolve_journal(cli, app_dirs).unwrap_or_else(|| PathBuf::from(DEFAULT_FIXTURE))
 }
 
 /// Is `host` a loopback address (or the `localhost` name)? Anything else — a LAN
@@ -720,7 +731,7 @@ fn run_server_blocking(cli: &Cli, app_dirs: AppDirs) -> Result<(), AppError> {
     // Decide the security posture BEFORE touching the journal, so a refused
     // non-loopback bind (SEC-9) fails fast and never opens the file.
     let (process_token, security_plan) = plan_security(cli)?;
-    let journal_path = resolve_journal(cli, &app_dirs);
+    let journal_path = server_journal(cli, &app_dirs);
     // Bind an editor to the file so the write endpoints (`POST`/`DELETE
     // /api/transactions`) are live. Canonicalize first so the editor's save target
     // and recorded source name match the watcher's canonical path and the

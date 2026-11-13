@@ -22,10 +22,11 @@
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use ledgeline::{
-    AccessToken, AppDirs, AppState, BootAppearance, boot_appearance, recents, router_with_security,
-    token_init_script,
+    AccessToken, AppDirs, AppState, BootAppearance, DesktopHost, boot_appearance, recents,
+    router_with_security, token_init_script,
 };
 use muda::{
     Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
@@ -61,6 +62,33 @@ const RECENT_MENU_LIMIT: usize = 5;
 enum UserEvent {
     Menu(MenuEvent),
     JournalPicked(PathBuf),
+    // plan 39 wizard: the server has already bound its editor to this journal
+    // (File → New, or the sample); the shell only has to catch up.
+    JournalAdopted(PathBuf),
+}
+
+// plan 39 wizard
+/// The shell's side of File → New ([`DesktopHost`]): the folder picker, and
+/// the notice that the server opened a journal on its own.
+///
+/// The proxy is behind a mutex because the server calls this from its
+/// blocking pool, and tao's proxy is `Send` but not `Sync` on every platform.
+struct GuiHost {
+    proxy: Mutex<EventLoopProxy<UserEvent>>,
+}
+
+impl DesktopHost for GuiHost {
+    fn pick_folder(&self) -> Option<PathBuf> {
+        rfd::FileDialog::new()
+            .set_title("Choose an empty folder for the new ledger")
+            .set_can_create_directories(true)
+            .pick_folder()
+    }
+
+    fn journal_opened(&self, main: &Path) {
+        let proxy = self.proxy.lock().unwrap_or_else(PoisonError::into_inner);
+        let _ = proxy.send_event(UserEvent::JournalAdopted(main.to_path_buf()));
+    }
 }
 
 /// GUI entry point: stand up the in-process server, then run the window.
@@ -71,22 +99,39 @@ pub(crate) fn run(cli: &Cli, app_dirs: AppDirs) -> Result<(), AppError> {
     // printed here, and it is not in the served shell either: the WebView gets
     // it out of band, from `token_init_script`.
     let (process_token, security_plan) = crate::plan_security(cli)?;
+    // Built before the server so the server's File → New routes can reach the
+    // loop through a proxy (plan 39 wizard). Still on the main thread.
+    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    let host = Arc::new(GuiHost {
+        proxy: Mutex::new(event_loop.create_proxy()),
+    });
+    // plan 39 wizard: with no journal named and none recent — a first run —
+    // the window opens on the New ledger wizard over an empty, read-only
+    // state rather than on a sample journal.
     let journal_path = crate::resolve_journal(cli, &app_dirs);
-    // Bind an editor to the file so the GUI's edit endpoints are live (this is the
-    // primary mode). Canonicalize first — like `run_server_blocking` — so the
-    // editor's save target and source name match the watcher's canonical path.
-    let editor_path = journal_path
-        .canonicalize()
-        .unwrap_or_else(|_| journal_path.clone());
-    let state = AppState::from_journal_path(&editor_path)
-        .map_err(|source| AppError::OpenEditor {
-            path: journal_path.display().to_string(),
-            source,
-        })?
-        .with_app_dirs(app_dirs);
+    let (state, editor_path) = match &journal_path {
+        Some(journal_path) => {
+            // Bind an editor to the file so the GUI's edit endpoints are live
+            // (this is the primary mode). Canonicalize first — like
+            // `run_server_blocking` — so the editor's save target and source
+            // name match the watcher's canonical path.
+            let editor_path = journal_path
+                .canonicalize()
+                .unwrap_or_else(|_| journal_path.clone());
+            let state = AppState::from_journal_path(&editor_path)
+                .map_err(|source| AppError::OpenEditor {
+                    path: journal_path.display().to_string(),
+                    source,
+                })?
+                .with_app_dirs(app_dirs);
+            // Remember this journal as the most-recently-opened (canonical path).
+            recents::record(state.app_dirs(), &editor_path);
+            (state, Some(editor_path))
+        }
+        None => (no_journal_state()?.with_app_dirs(app_dirs), None),
+    };
+    let state = state.with_desktop(host);
     perf::stamp("journal_loaded");
-    // Remember this journal as the most-recently-opened (canonical path).
-    recents::record(state.app_dirs(), &editor_path);
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -141,36 +186,74 @@ pub(crate) fn run(cli: &Cli, app_dirs: AppDirs) -> Result<(), AppError> {
         .flatten()
         .ok_or(AppError::ServerStart)?;
     let url = format!("http://{host}:{bound_port}/");
-    eprintln!("ledgeline: serving {} at {url}", journal_path.display());
-
     // Live-reload watcher (re-pointed on File→Open); `None` just disables reload.
-    let watcher = crate::spawn_watcher(&journal_path, state.clone()).ok();
+    let watcher = match &editor_path {
+        Some(path) => {
+            eprintln!("ledgeline: serving {} at {url}", path.display());
+            crate::spawn_watcher(path, state.clone()).ok()
+        }
+        None => {
+            eprintln!("ledgeline: no journal yet; opening the New ledger wizard at {url}");
+            None
+        }
+    };
+    // plan 39 wizard: a first run starts on the wizard's page.
+    let start = match editor_path {
+        Some(_) => url.clone(),
+        None => wizard_url(&url),
+    };
 
-    run_event_loop(GuiContext {
-        url,
-        token: process_token.token,
-        state,
-        watcher,
-        current: editor_path,
-    })
+    run_event_loop(
+        event_loop,
+        GuiContext {
+            url,
+            start,
+            token: process_token.token,
+            state,
+            watcher,
+            current: editor_path.unwrap_or_default(),
+        },
+    )
     // `runtime` and `_server` stay live on this frame while the event loop runs.
+}
+
+// plan 39 wizard
+/// The state a first run serves while the wizard is up: an empty journal with
+/// no file behind it, so nothing can be edited until a ledger is created or
+/// opened.
+fn no_journal_state() -> Result<AppState, AppError> {
+    let empty = ledgeline_core::parse_journal("", "")
+        .map_err(|error| AppError::Gui(format!("building an empty journal: {error}")))?;
+    Ok(AppState::from_journal(&empty))
+}
+
+// plan 39 wizard
+/// The New ledger wizard's page under the app's base url.
+fn wizard_url(base: &str) -> String {
+    format!("{base}new")
 }
 
 /// Everything the event loop owns after startup.
 struct GuiContext {
     url: String,
+    /// The page the window opens on: `url` itself, or the wizard on a first
+    /// run (plan 39 wizard).
+    start: String,
     /// The access token, handed to the WebView by [`token_init_script`].
     token: AccessToken,
     state: AppState,
     watcher: Option<RecommendedWatcher>,
     /// Canonical path of the journal currently open (excluded from the recents
-    /// submenu, and updated on each File→Open / Open Recent).
+    /// submenu, and updated on each File→Open / Open Recent). Empty while a
+    /// first run has none.
     current: PathBuf,
 }
 
 /// Menu bar plus the handles for the custom items we match events against.
 struct AppMenu {
     menu_bar: Menu,
+    // plan 39 wizard
+    new: MenuItem,
     open: MenuItem,
     /// File → "Open Recent" submenu; repopulated as journals are opened.
     recent: Submenu,
@@ -226,6 +309,8 @@ const COMMAND_MODIFIER: Modifiers = Modifiers::CONTROL;
 /// exactly one implementation and the two routes cannot drift apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Shortcut {
+    // plan 39 wizard
+    New,
     Open,
     Reload,
     Back,
@@ -328,6 +413,10 @@ fn linux_shortcut_for(key: &Key<'_>, modifiers: ModifiersState) -> Option<Shortc
     let ctrl = modifiers.control_key() && !modifiers.alt_key() && !modifiers.super_key();
     let alt = modifiers.alt_key() && !modifiers.control_key() && !modifiers.super_key();
     match key {
+        // plan 39 wizard
+        Key::Character(character) if ctrl && character.eq_ignore_ascii_case("n") => {
+            Some(Shortcut::New)
+        }
         Key::Character(character) if ctrl && character.eq_ignore_ascii_case("o") => {
             Some(Shortcut::Open)
         }
@@ -435,6 +524,13 @@ fn build_menu() -> AppMenu {
     };
 
     let file_menu = Submenu::new("&File", true);
+    // plan 39 wizard: File → New… opens the new-ledger wizard.
+    let new = MenuItem::with_id(
+        "new",
+        "&New…",
+        true,
+        Some(Accelerator::new(COMMAND_MODIFIER, Code::KeyN)),
+    );
     let open = MenuItem::with_id(
         "open",
         "&Open journal…",
@@ -445,7 +541,12 @@ fn build_menu() -> AppMenu {
     let recent = Submenu::new("Open &Recent", true);
     log_menu(
         "file menu",
-        file_menu.append_items(&[&open, &recent, &PredefinedMenuItem::separator()]),
+        file_menu.append_items(&[
+            &new, // plan 39 wizard
+            &open,
+            &recent,
+            &PredefinedMenuItem::separator(),
+        ]),
     );
     // plan 39 export: File → Export, right after Open Recent wherever that is.
     let after_recent = file_menu
@@ -575,6 +676,7 @@ fn build_menu() -> AppMenu {
 
     AppMenu {
         menu_bar,
+        new, // plan 39 wizard
         open,
         recent,
         reload,
@@ -732,6 +834,7 @@ fn appearance_init_script(origin: &str, appearance: &BootAppearance) -> String {
 fn build_webview(
     window: &tao::window::Window,
     url: &str,
+    start: &str,
     token: &AccessToken,
     appearance: &BootAppearance,
 ) -> Result<wry::WebView, AppError> {
@@ -743,7 +846,7 @@ fn build_webview(
     let builder = WebViewBuilder::new()
         .with_initialization_script(token_init_script(&origin, token))
         .with_initialization_script(appearance_init_script(&origin, appearance))
-        .with_url(url)
+        .with_url(start)
         .with_navigation_handler(move |candidate| {
             let allowed = navigation_allowed(&base, &candidate);
             // A docs link leaves the webview where it is and opens in the
@@ -897,9 +1000,10 @@ fn show_open_error(path: &Path, error: &AppError) {
 
 /// Build the window + webview on the main thread and run the (diverging) event
 /// loop until the window closes.
-fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
-    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
-
+fn run_event_loop(
+    event_loop: tao::event_loop::EventLoop<UserEvent>,
+    ctx: GuiContext,
+) -> Result<(), AppError> {
     // Route muda menu activations into the loop as user events.
     let menu_proxy = event_loop.create_proxy();
     MenuEvent::set_event_handler(Some(move |event| {
@@ -947,9 +1051,10 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
 
     perf::stamp("window_built");
     let appearance = boot_appearance(&ctx.state);
-    let webview = build_webview(&window, &ctx.url, &ctx.token, &appearance)?;
+    let webview = build_webview(&window, &ctx.url, &ctx.start, &ctx.token, &appearance)?;
     perf::stamp("webview_built");
 
+    let new_id = menu.new.id().clone(); // plan 39 wizard
     let open_id = menu.open.id().clone();
     let reload_id = menu.reload.id().clone();
     let back_id = menu.back.id().clone();
@@ -1023,21 +1128,28 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
         // into the editor mutex) so edits target the new file, then re-point the
         // watcher, record it as most-recent, refresh the submenu, and reload the
         // page. Canonicalize to match the watcher's path, as at startup.
+        //
+        // `adopt` is the half that follows a successful rebind. File → New
+        // (plan 39 wizard) runs it on its own: the server has already rebound
+        // the editor, and the SPA navigates itself, so there is no page reload.
+        let adopt = |editor_path: &Path| {
+            watcher.replace(crate::spawn_watcher(editor_path, state.clone()).ok());
+            recents::record(state.app_dirs(), editor_path);
+            current.replace(editor_path.to_path_buf());
+            rebuild_recent(
+                state.app_dirs(),
+                &recent_submenu,
+                &recent_map,
+                Some(editor_path),
+            );
+            eprintln!("ledgeline: opened {}", editor_path.display());
+        };
         let open_journal = |raw: &Path| {
             let editor_path = raw.canonicalize().unwrap_or_else(|_| raw.to_path_buf());
             match state.rebind_editor(&editor_path) {
                 Ok(()) => {
-                    watcher.replace(crate::spawn_watcher(&editor_path, state.clone()).ok());
-                    recents::record(state.app_dirs(), &editor_path);
-                    current.replace(editor_path.clone());
-                    rebuild_recent(
-                        state.app_dirs(),
-                        &recent_submenu,
-                        &recent_map,
-                        Some(editor_path.as_path()),
-                    );
+                    adopt(&editor_path);
                     let _ = webview.load_url(&url);
-                    eprintln!("ledgeline: opened {}", editor_path.display());
                 }
                 Err(source) => {
                     let error = AppError::OpenEditor {
@@ -1058,6 +1170,10 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
         // enclosing `FnMut`, and capturing it here as well would not compile.
         let perform_shortcut = |shortcut: Shortcut| -> bool {
             match shortcut {
+                // plan 39 wizard
+                Shortcut::New => {
+                    let _ = webview.load_url(&wizard_url(&url));
+                }
                 Shortcut::Open => spawn_file_picker(picker_proxy.clone()),
                 Shortcut::Reload => {
                     let _ = webview.load_url(&url);
@@ -1084,7 +1200,9 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
             if *id == quit_id {
                 return Some(Shortcut::Quit);
             }
-            if *id == open_id {
+            if *id == new_id {
+                Some(Shortcut::New) // plan 39 wizard
+            } else if *id == open_id {
                 Some(Shortcut::Open)
             } else if *id == reload_id {
                 Some(Shortcut::Reload)
@@ -1130,6 +1248,10 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
             }
             Event::UserEvent(UserEvent::JournalPicked(path)) => {
                 open_journal(&path);
+            }
+            // plan 39 wizard
+            Event::UserEvent(UserEvent::JournalAdopted(path)) => {
+                adopt(&path);
             }
             // A document launch: Finder double-click, `open -a Ledgeline x.journal`,
             // or a drop on the Dock icon. macOS does NOT pass the document in argv
@@ -1262,6 +1384,10 @@ mod linux_keyboard_tests {
 
     #[test]
     fn the_bound_chords_map_to_their_actions() {
+        assert_eq!(
+            linux_shortcut_for(&Key::Character("n"), CTRL),
+            Some(Shortcut::New)
+        );
         assert_eq!(
             linux_shortcut_for(&Key::Character("o"), CTRL),
             Some(Shortcut::Open)
