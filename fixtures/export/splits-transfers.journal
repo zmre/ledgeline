@@ -1,0 +1,54 @@
+; Plan 39 export fixture: splits, transfers, statuses, classes and comments.
+; Account types are declared, so nothing here is classified by name.
+
+account assets:bank:checking    ; type: C
+account assets:bank:savings     ; type: C
+account assets:wallet           ; type: C, qif: Cash
+account liabilities:card        ; type: L
+account liabilities:car loan    ; type: L
+account income:salary           ; type: R
+account expenses                ; type: X
+account equity:opening          ; type: E
+
+2026-01-01 * Opening balances
+    assets:bank:checking        $2,500.00
+    assets:bank:savings         $10,000.00
+    liabilities:card              $-320.00
+    liabilities:car loan       $-12,000.00
+    equity:opening
+
+2026-01-02 * (1001) Landlord | January rent  ; class: Home
+    expenses:housing:rent       $1,500.00
+    assets:bank:checking
+
+2026-01-05 Grocer  ; weekly shop, trip:none
+    expenses:food:groceries        $82.10  ; milk and bread
+    expenses:household             $17.90  ; soap
+    liabilities:card
+
+2026-01-07 ! Cafe
+    expenses:food:dining            $4.50
+    assets:wallet
+
+2026-01-10 * Move to savings
+    assets:bank:savings           $500.00
+    assets:bank:checking
+
+2026-01-15 * Employer | payroll
+    assets:bank:checking        $3,200.00
+    assets:bank:savings           $300.00  ; auto-save
+    expenses:tax                  $800.00
+    income:salary
+
+2026-01-20 * Card payment
+    liabilities:card              $320.00
+    assets:bank:checking
+
+2026-01-25 Car loan payment
+    liabilities:car loan          $250.00
+    expenses:interest              $40.00  ; class: Auto
+    assets:bank:checking
+
+2026-01-28 Hardware store
+    expenses:household             $60.00
+    liabilities:card

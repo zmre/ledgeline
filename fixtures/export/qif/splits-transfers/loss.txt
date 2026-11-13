@@ -1,0 +1,9 @@
+QIF export: 9 transactions written as 12 records in 1 file.
+  splits-transfers-dollar.qif ($): 12 records
+
+Not exported (QIF has no place for these):
+  1 transaction's tags other than class:
+
+Changed to fit QIF:
+  4 opening balances written as QIF Opening Balance records
+  liability exported as credit card (CCard): liabilities:card

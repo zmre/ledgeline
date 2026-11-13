@@ -1,0 +1,19 @@
+QIF export: 189 transactions written as 194 records in 3 files.
+  sample-dollar.qif ($): 186 records
+  sample-EUR.qif (EUR): 7 records
+  sample-GLD.qif (GLD): 1 record
+
+Not exported (QIF has no place for these):
+  2 balance assertions
+  14 market prices (P directives)
+  4 account declarations' tags
+  32 transactions' tags other than class:
+  8 postings' tags other than class:
+
+Changed to fit QIF:
+  2 extra commodities written to separate files of their own (QIF has no currency field)
+  2 transactions with no bank-like account, an equity leg or a conversion written through the "Ledgeline Adjustments" account
+  7 opening balances written as QIF Opening Balance records
+  11 postings with a cost (investments, foreign-currency spending) written as the cash amount; units, lots and prices are not carried
+  2 currency conversions split into one record per currency, each balanced through the "Ledgeline Adjustments" account
+  liability exported as credit card (CCard): liabilities:cc:visa

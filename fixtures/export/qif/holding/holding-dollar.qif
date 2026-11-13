@@ -1,0 +1,85 @@
+!Type:Cat
+Nexpenses
+E
+^
+Nexpenses:food
+E
+^
+Nexpenses:office
+E
+^
+Nexpenses:supplies
+E
+^
+Nincome
+I
+^
+Nincome:interest
+I
+^
+Nmisc-shared
+E
+^
+!Option:AutoSwitch
+!Account
+NLedgeline Adjustments
+TOth A
+^
+Nassets:bank:checking
+TBank
+^
+Nassets:reserve
+TOth A
+^
+!Clear:AutoSwitch
+!Account
+NLedgeline Adjustments
+TOth A
+^
+!Type:Oth A
+D02/10/2026
+T0.00
+PReclassify
+Lexpenses:office
+Sexpenses:office
+Ewas supplies
+$-25.00
+Sexpenses:supplies
+$25.00
+^
+!Account
+Nassets:bank:checking
+TBank
+^
+!Type:Bank
+D02/01/2026
+T1000.00
+CX
+POpening Balance
+L[assets:bank:checking]
+^
+D02/03/2026
+T-55.00
+PMarket
+Lexpenses:food
+Sexpenses:food
+$-50.00
+S[assets:reserve]
+$-5.00
+^
+D02/12/2026
+T-200.00
+POwner draw
+Mequity:draws
+L[Ledgeline Adjustments]
+^
+D02/14/2026
+T-10.00
+PPartner A/B split
+Lmisc-shared
+^
+D02/28/2026
+T0.42
+PInterest
+Lincome:interest
+^

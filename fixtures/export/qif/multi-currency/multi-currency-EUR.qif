@@ -1,0 +1,54 @@
+!Type:Cat
+Nexpenses
+E
+^
+Nexpenses:travel:lodging
+E
+^
+Nincome:dividends
+I
+^
+!Option:AutoSwitch
+!Account
+NLedgeline Adjustments
+TOth A
+^
+Nassets:bank:euro
+TBank
+^
+Nliabilities:card
+TCCard
+^
+!Clear:AutoSwitch
+!Account
+Nassets:bank:euro
+TBank
+^
+!Type:Bank
+D01/01/2026
+T1000.00
+POpening Balance
+L[assets:bank:euro]
+^
+D01/05/2026
+T500.00
+PWire to euro account
+Mcommodity conversion
+L[Ledgeline Adjustments]
+^
+D01/06/2026
+T100.00
+PCurrency swap
+Mcommodity conversion
+L[Ledgeline Adjustments]
+^
+!Account
+Nliabilities:card
+TCCard
+^
+!Type:CCard
+D01/04/2026
+T-180.00
+PParis hotel
+Lexpenses:travel:lodging
+^

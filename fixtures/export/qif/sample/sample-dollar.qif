@@ -1,0 +1,1392 @@
+!Type:Cat
+Nexpenses
+E
+^
+Nexpenses:depreciation
+E
+^
+Nexpenses:food:groceries
+E
+^
+Nexpenses:food:restaurants
+E
+^
+Nexpenses:housing:rent
+E
+^
+Nexpenses:shopping
+E
+^
+Nexpenses:taxes:federal
+E
+^
+Nexpenses:taxes:state
+E
+^
+Nexpenses:transport:fuel
+E
+^
+Nexpenses:travel:activities
+E
+^
+Nexpenses:travel:flights
+E
+^
+Nexpenses:travel:lodging
+E
+^
+Nexpenses:unknown
+E
+^
+Nexpenses:utilities:electric
+E
+^
+Nincome
+I
+^
+Nincome:dividends
+I
+^
+Nincome:salary
+I
+^
+!Option:AutoSwitch
+!Account
+NLedgeline Adjustments
+TOth A
+^
+Nassets:bank:checking
+TBank
+^
+Nassets:bank:savings
+TBank
+^
+Nassets:broker:taxable:aapl
+TOth A
+^
+Nassets:broker:taxable:cash
+TBank
+^
+Nassets:broker:taxable:nvda
+TOth A
+^
+Nassets:broker:taxable:tsla
+TOth A
+^
+Nassets:broker:taxable:vti
+TOth A
+^
+Nassets:property:home
+TOth A
+^
+Nassets:vehicles:car:cost
+TOth A
+^
+Nassets:vehicles:car:depreciation
+TOth A
+^
+Nliabilities:cc:visa
+TCCard
+^
+Nliabilities:mortgage
+TOth L
+^
+!Clear:AutoSwitch
+!Account
+Nassets:bank:checking
+TBank
+^
+!Type:Bank
+D07/01/2024
+T5000.00
+CX
+POpening Balance
+L[assets:bank:checking]
+^
+D07/01/2024
+T-1800.00
+CX
+POakview Properties | rent
+Lexpenses:housing:rent
+^
+D07/12/2024
+T-132.50
+CX
+PCity Power & Light | electricity
+Lexpenses:utilities:electric
+^
+D07/15/2024
+T-300.00
+CX
+PChase | visa autopay
+L[liabilities:cc:visa]
+^
+D07/27/2024
+T4050.00
+CX
+PAcme Corp | July salary
+Lincome:salary
+Sincome:salary
+$5400.00
+Sexpenses:taxes:federal
+$-1050.00
+Sexpenses:taxes:state
+$-300.00
+^
+D08/01/2024
+T-1800.00
+CX
+POakview Properties | rent
+Lexpenses:housing:rent
+^
+D08/12/2024
+T-141.75
+CX
+PCity Power & Light | electricity
+Lexpenses:utilities:electric
+^
+D08/15/2024
+T-300.00
+CX
+PChase | visa autopay
+L[liabilities:cc:visa]
+^
+D08/27/2024
+T4050.00
+CX
+PAcme Corp | August salary
+Lincome:salary
+Sincome:salary
+$5400.00
+Sexpenses:taxes:federal
+$-1050.00
+Sexpenses:taxes:state
+$-300.00
+^
+D09/01/2024
+T-1800.00
+CX
+POakview Properties | rent
+Lexpenses:housing:rent
+^
+D09/02/2024
+T-3000.00
+CX
+PFidelity | fund brokerage account
+L[assets:broker:taxable:cash]
+^
+D09/12/2024
+T-118.20
+CX
+PCity Power & Light | electricity
+Lexpenses:utilities:electric
+^
+D09/15/2024
+T-300.00
+CX
+PChase | visa autopay
+L[liabilities:cc:visa]
+^
+D09/27/2024
+T4050.00
+CX
+PAcme Corp | September salary
+Lincome:salary
+Sincome:salary
+$5400.00
+Sexpenses:taxes:federal
+$-1050.00
+Sexpenses:taxes:state
+$-300.00
+^
+D10/01/2024
+T-1800.00
+CX
+POakview Properties | rent
+Lexpenses:housing:rent
+^
+D10/05/2024
+T-500.00
+CX
+Ptransfer to savings
+L[assets:bank:savings]
+^
+D10/12/2024
+T-102.35
+CX
+PCity Power & Light | electricity
+Lexpenses:utilities:electric
+^
+D10/15/2024
+T-300.00
+CX
+PChase | visa autopay
+L[liabilities:cc:visa]
+^
+D10/27/2024
+T4050.00
+CX
+PAcme Corp | October salary
+Lincome:salary
+Sincome:salary
+$5400.00
+Sexpenses:taxes:federal
+$-1050.00
+Sexpenses:taxes:state
+$-300.00
+^
+D11/01/2024
+T-1800.00
+CX
+POakview Properties | rent
+Lexpenses:housing:rent
+^
+D11/12/2024
+T-115.80
+CX
+PCity Power & Light | electricity
+Lexpenses:utilities:electric
+^
+D11/15/2024
+T-300.00
+CX
+PChase | visa autopay
+L[liabilities:cc:visa]
+^
+D11/27/2024
+T4050.00
+CX
+PAcme Corp | November salary
+Lincome:salary
+Sincome:salary
+$5400.00
+Sexpenses:taxes:federal
+$-1050.00
+Sexpenses:taxes:state
+$-300.00
+^
+D12/01/2024
+T-1800.00
+CX
+POakview Properties | rent
+Lexpenses:housing:rent
+^
+D12/12/2024
+T-128.44
+CX
+PCity Power & Light | electricity
+Lexpenses:utilities:electric
+^
+D12/15/2024
+T-300.00
+CX
+PChase | visa autopay
+L[liabilities:cc:visa]
+^
+D12/27/2024
+T4050.00
+CX
+PAcme Corp | December salary
+Lincome:salary
+Sincome:salary
+$5400.00
+Sexpenses:taxes:federal
+$-1050.00
+Sexpenses:taxes:state
+$-300.00
+^
+D01/01/2025
+T-1800.00
+CX
+POakview Properties | rent
+Lexpenses:housing:rent
+^
+D01/05/2025
+T-500.00
+CX
+Ptransfer to savings
+L[assets:bank:savings]
+^
+D01/12/2025
+T-134.90
+CX
+PCity Power & Light | electricity
+Lexpenses:utilities:electric
+^
+D01/15/2025
+T-300.00
+CX
+PChase | visa autopay
+L[liabilities:cc:visa]
+^
+D01/27/2025
+T4050.00
+CX
+PAcme Corp | January salary
+Lincome:salary
+Sincome:salary
+$5400.00
+Sexpenses:taxes:federal
+$-1050.00
+Sexpenses:taxes:state
+$-300.00
+^
+D02/01/2025
+T-1800.00
+CX
+POakview Properties | rent
+Lexpenses:housing:rent
+^
+D02/12/2025
+T-129.35
+CX
+PCity Power & Light | electricity
+Lexpenses:utilities:electric
+^
+D02/15/2025
+T-300.00
+CX
+PChase | visa autopay
+L[liabilities:cc:visa]
+^
+D02/18/2025
+T-5000.00
+CX
+PFidelity | fund brokerage account
+L[assets:broker:taxable:cash]
+^
+D02/27/2025
+T4050.00
+CX
+PAcme Corp | February salary
+Lincome:salary
+Sincome:salary
+$5400.00
+Sexpenses:taxes:federal
+$-1050.00
+Sexpenses:taxes:state
+$-300.00
+^
+D03/01/2025
+T-1800.00
+CX
+POakview Properties | rent
+Lexpenses:housing:rent
+^
+D03/12/2025
+T-108.62
+CX
+PCity Power & Light | electricity
+Lexpenses:utilities:electric
+^
+D03/15/2025
+T-300.00
+CX
+PChase | visa autopay
+L[liabilities:cc:visa]
+^
+D03/27/2025
+T4050.00
+CX
+PAcme Corp | March salary
+Lincome:salary
+Sincome:salary
+$5400.00
+Sexpenses:taxes:federal
+$-1050.00
+Sexpenses:taxes:state
+$-300.00
+^
+D04/01/2025
+T-1800.00
+CX
+POakview Properties | rent
+Lexpenses:housing:rent
+^
+D04/05/2025
+T-500.00
+CX
+Ptransfer to savings
+L[assets:bank:savings]
+^
+D04/12/2025
+T-96.47
+CX
+PCity Power & Light | electricity
+Lexpenses:utilities:electric
+^
+D04/15/2025
+T-300.00
+CX
+PChase | visa autopay
+L[liabilities:cc:visa]
+^
+D04/27/2025
+T4050.00
+CX
+PAcme Corp | April salary
+Lincome:salary
+Sincome:salary
+$5400.00
+Sexpenses:taxes:federal
+$-1050.00
+Sexpenses:taxes:state
+$-300.00
+^
+D05/01/2025
+T-1800.00
+CX
+POakview Properties | rent
+Lexpenses:housing:rent
+^
+D05/12/2025
+T-92.13
+CX
+PCity Power & Light | electricity
+Lexpenses:utilities:electric
+^
+D05/15/2025
+T-1500.00
+CX
+PFidelity | fund brokerage account
+L[assets:broker:taxable:cash]
+^
+D05/15/2025
+T-300.00
+CX
+PChase | visa autopay
+L[liabilities:cc:visa]
+^
+D05/27/2025
+T4050.00
+CX
+PAcme Corp | May salary
+Lincome:salary
+Sincome:salary
+$5400.00
+Sexpenses:taxes:federal
+$-1050.00
+Sexpenses:taxes:state
+$-300.00
+^
+D06/01/2025
+T-1800.00
+CX
+POakview Properties | rent
+Lexpenses:housing:rent
+^
+D06/10/2025
+T-1085.00
+CX
+PWise | convert USD to EUR
+Mcommodity conversion
+L[Ledgeline Adjustments]
+^
+D06/12/2025
+T-110.28
+CX
+PCity Power & Light | electricity
+Lexpenses:utilities:electric
+^
+D06/15/2025
+T-300.00
+CX
+PChase | visa autopay
+L[liabilities:cc:visa]
+^
+D06/27/2025
+T4050.00
+CX
+PAcme Corp | June salary
+Lincome:salary
+Sincome:salary
+$5400.00
+Sexpenses:taxes:federal
+$-1050.00
+Sexpenses:taxes:state
+$-300.00
+^
+D07/01/2025
+T-1800.00
+CX
+POakview Properties | rent
+Lexpenses:housing:rent
+^
+D07/05/2025
+T-500.00
+CX
+Ptransfer to savings
+L[assets:bank:savings]
+^
+D07/12/2025
+T-138.72
+CX
+PCity Power & Light | electricity
+Lexpenses:utilities:electric
+^
+D07/15/2025
+T-300.00
+CX
+PChase | visa autopay
+L[liabilities:cc:visa]
+^
+D07/27/2025
+T4200.00
+CX
+PAcme Corp | July salary (raise)
+Lincome:salary
+Sincome:salary
+$5660.00
+Sexpenses:taxes:federal
+$-1150.00
+Sexpenses:taxes:state
+$-310.00
+^
+D08/01/2025
+T-1875.00
+CX
+POakview Properties | rent (new lease)
+Lexpenses:housing:rent
+^
+D08/12/2025
+T-144.95
+CX
+PCity Power & Light | electricity
+Lexpenses:utilities:electric
+^
+D08/15/2025
+T-300.00
+CX
+PChase | visa autopay
+L[liabilities:cc:visa]
+^
+D08/27/2025
+T4200.00
+CX
+PAcme Corp | August salary
+Lincome:salary
+Sincome:salary
+$5660.00
+Sexpenses:taxes:federal
+$-1150.00
+Sexpenses:taxes:state
+$-310.00
+^
+D09/01/2025
+T-1875.00
+CX
+POakview Properties | rent
+Lexpenses:housing:rent
+^
+D09/12/2025
+T-121.40
+CX
+PCity Power & Light | electricity
+Lexpenses:utilities:electric
+^
+D09/15/2025
+T-300.00
+CX
+PChase | visa autopay
+L[liabilities:cc:visa]
+^
+D09/27/2025
+T4200.00
+CX
+PAcme Corp | September salary
+Lincome:salary
+Sincome:salary
+$5660.00
+Sexpenses:taxes:federal
+$-1150.00
+Sexpenses:taxes:state
+$-310.00
+^
+D10/01/2025
+T-1875.00
+CX
+POakview Properties | rent
+Lexpenses:housing:rent
+^
+D10/05/2025
+T-500.00
+CX
+Ptransfer to savings
+L[assets:bank:savings]
+^
+D10/08/2025
+T-5000.00
+CX
+PFidelity | fund brokerage account
+L[assets:broker:taxable:cash]
+^
+D10/12/2025
+T-99.85
+CX
+PCity Power & Light | electricity
+Lexpenses:utilities:electric
+^
+D10/15/2025
+T-300.00
+CX
+PChase | visa autopay
+L[liabilities:cc:visa]
+^
+D10/27/2025
+T4200.00
+CX
+PAcme Corp | October salary
+Lincome:salary
+Sincome:salary
+$5660.00
+Sexpenses:taxes:federal
+$-1150.00
+Sexpenses:taxes:state
+$-310.00
+^
+D11/01/2025
+T-1875.00
+CX
+N2101
+POakview Properties | rent (paid by check)
+Lexpenses:housing:rent
+^
+D11/12/2025
+T-117.53
+CX
+PCity Power & Light | electricity
+Lexpenses:utilities:electric
+^
+D11/15/2025
+T-300.00
+CX
+PChase | visa autopay
+L[liabilities:cc:visa]
+^
+D11/27/2025
+T4200.00
+CX
+PAcme Corp | November salary
+Lincome:salary
+Sincome:salary
+$5660.00
+Sexpenses:taxes:federal
+$-1150.00
+Sexpenses:taxes:state
+$-310.00
+^
+D12/01/2025
+T-1875.00
+CX
+POakview Properties | rent
+Lexpenses:housing:rent
+^
+D12/12/2025
+T-131.66
+CX
+PCity Power & Light | electricity
+Lexpenses:utilities:electric
+^
+D12/15/2025
+T-300.00
+CX
+PChase | visa autopay
+L[liabilities:cc:visa]
+^
+D12/27/2025
+T4200.00
+CX
+PAcme Corp | December salary
+Lincome:salary
+Sincome:salary
+$5660.00
+Sexpenses:taxes:federal
+$-1150.00
+Sexpenses:taxes:state
+$-310.00
+^
+D01/01/2026
+T-1875.00
+CX
+POakview Properties | rent
+Lexpenses:housing:rent
+^
+D01/05/2026
+T-500.00
+CX
+Ptransfer to savings
+L[assets:bank:savings]
+^
+D01/12/2026
+T-139.28
+CX
+PCity Power & Light | electricity
+Lexpenses:utilities:electric
+^
+D01/15/2026
+T-300.00
+CX
+PChase | visa autopay
+L[liabilities:cc:visa]
+^
+D01/27/2026
+T4200.00
+CX
+PAcme Corp | January salary
+Lincome:salary
+Sincome:salary
+$5660.00
+Sexpenses:taxes:federal
+$-1150.00
+Sexpenses:taxes:state
+$-310.00
+^
+D02/01/2026
+T-1875.00
+CX
+POakview Properties | rent
+Lexpenses:housing:rent
+^
+D02/12/2026
+T-126.84
+CX
+PCity Power & Light | electricity
+Lexpenses:utilities:electric
+^
+D02/15/2026
+T-300.00
+CX
+PChase | visa autopay
+L[liabilities:cc:visa]
+^
+D02/27/2026
+T4200.00
+CX
+PAcme Corp | February salary
+Lincome:salary
+Sincome:salary
+$5660.00
+Sexpenses:taxes:federal
+$-1150.00
+Sexpenses:taxes:state
+$-310.00
+^
+D03/01/2026
+T-1875.00
+CX
+POakview Properties | rent
+Lexpenses:housing:rent
+^
+D03/12/2026
+T-105.47
+CX
+PCity Power & Light | electricity
+Lexpenses:utilities:electric
+^
+D03/15/2026
+T-300.00
+CX
+PChase | visa autopay
+L[liabilities:cc:visa]
+^
+D03/27/2026
+T4200.00
+CX
+PAcme Corp | March salary
+Lincome:salary
+Sincome:salary
+$5660.00
+Sexpenses:taxes:federal
+$-1150.00
+Sexpenses:taxes:state
+$-310.00
+^
+D04/01/2026
+T-1875.00
+CX
+POakview Properties | rent
+Lexpenses:housing:rent
+^
+D04/05/2026
+T-500.00
+CX
+Ptransfer to savings
+L[assets:bank:savings]
+^
+D04/12/2026
+T-94.60
+CX
+PCity Power & Light | electricity
+Lexpenses:utilities:electric
+^
+D04/15/2026
+T-300.00
+CX
+PChase | visa autopay
+L[liabilities:cc:visa]
+^
+D04/27/2026
+T4200.00
+CX
+PAcme Corp | April salary
+Lincome:salary
+Sincome:salary
+$5660.00
+Sexpenses:taxes:federal
+$-1150.00
+Sexpenses:taxes:state
+$-310.00
+^
+D05/01/2026
+T-1875.00
+CX
+POakview Properties | rent
+Lexpenses:housing:rent
+^
+D05/08/2026
+T-571.00
+CX
+PWise | convert USD to EUR (Munich trip float)
+Mcommodity conversion
+L[Ledgeline Adjustments]
+^
+D05/12/2026
+T-90.22
+CX
+PCity Power & Light | electricity
+Lexpenses:utilities:electric
+^
+D05/15/2026
+T-300.00
+CX
+PChase | visa autopay
+L[liabilities:cc:visa]
+^
+D05/27/2026
+T4200.00
+CX
+PAcme Corp | May salary
+Lincome:salary
+Sincome:salary
+$5660.00
+Sexpenses:taxes:federal
+$-1150.00
+Sexpenses:taxes:state
+$-310.00
+^
+D06/01/2026
+T-1875.00
+POakview Properties | rent
+Lexpenses:housing:rent
+^
+D06/12/2026
+T-112.75
+PCity Power & Light | electricity
+Lexpenses:utilities:electric
+^
+D06/15/2026
+T-300.00
+PChase | visa autopay
+L[liabilities:cc:visa]
+^
+D06/20/2026
+T-75.00
+PVenmo payment
+Lexpenses:unknown
+^
+D06/27/2026
+T4200.00
+CX
+PAcme Corp | June salary
+Mdirect deposit confirmed
+Lincome:salary
+Sincome:salary
+$5660.00
+Sexpenses:taxes:federal
+$-1150.00
+Sexpenses:taxes:state
+$-310.00
+^
+D06/28/2026
+T-42.13
+Lexpenses:food:restaurants
+^
+D07/01/2026
+T-1875.00
+POakview Properties | rent
+Lexpenses:housing:rent
+^
+!Account
+Nassets:bank:savings
+TBank
+^
+!Type:Bank
+D07/01/2024
+T10000.00
+CX
+POpening Balance
+L[assets:bank:savings]
+^
+!Account
+Nassets:broker:taxable:aapl
+TOth A
+^
+!Type:Oth A
+D09/16/2024
+T2200.00
+CX
+PFidelity | buy AAPL
+L[assets:broker:taxable:cash]
+^
+D05/20/2025
+T1028.75
+CX
+PFidelity | buy AAPL
+L[assets:broker:taxable:cash]
+^
+D03/10/2026
+T1117.35
+CX
+PFidelity | buy AAPL (fractional)
+L[assets:broker:taxable:cash]
+^
+!Account
+Nassets:broker:taxable:cash
+TBank
+^
+!Type:Bank
+D11/15/2024
+T12.50
+CX
+PFidelity | AAPL dividend
+Lincome:dividends
+^
+D02/14/2025
+T12.50
+CX
+PFidelity | AAPL dividend
+Lincome:dividends
+^
+D02/20/2025
+T-3981.00
+CX
+PFidelity | buy VTI
+L[assets:broker:taxable:vti]
+^
+D05/15/2025
+T18.75
+CX
+PFidelity | AAPL dividend
+Lincome:dividends
+^
+D08/15/2025
+T18.75
+CX
+PFidelity | AAPL dividend
+Lincome:dividends
+^
+D10/10/2025
+T-2921.00
+CX
+PFidelity | buy VTI
+L[assets:broker:taxable:vti]
+^
+D11/05/2025
+T-2283.00
+CX
+PFidelity | buy NVDA
+L[assets:broker:taxable:nvda]
+^
+D11/14/2025
+T18.75
+CX
+PFidelity | AAPL dividend
+Lincome:dividends
+^
+D01/20/2026
+T2467.20
+CX
+PFidelity | sell NVDA (close position)
+L[assets:broker:taxable:nvda]
+^
+D02/13/2026
+T25.00
+CX
+PFidelity | AAPL dividend
+Lincome:dividends
+^
+D04/14/2026
+T2412.40
+CX
+PFidelity | sell VTI (partial)
+L[assets:broker:taxable:vti]
+^
+D05/15/2026
+T25.00
+CX
+PFidelity | AAPL dividend
+Lincome:dividends
+^
+D06/22/2026
+T630.00
+PFidelity | sell TSLA (position was never entered)
+L[assets:broker:taxable:tsla]
+^
+!Account
+Nassets:property:home
+TOth A
+^
+!Type:Oth A
+D07/01/2024
+T420000.00
+CX
+POpening Balance
+L[assets:property:home]
+^
+!Account
+Nassets:vehicles:car:cost
+TOth A
+^
+!Type:Oth A
+D07/01/2024
+T28000.00
+CX
+POpening Balance
+L[assets:vehicles:car:cost]
+^
+!Account
+Nassets:vehicles:car:depreciation
+TOth A
+^
+!Type:Oth A
+D06/30/2025
+T-4000.00
+CX
+Pvehicle depreciation FY2025
+Lexpenses:depreciation
+^
+D06/30/2026
+T-3500.00
+CX
+Pvehicle depreciation FY2026
+Lexpenses:depreciation
+^
+!Account
+Nliabilities:cc:visa
+TCCard
+^
+!Type:CCard
+D07/01/2024
+T-450.00
+CX
+POpening Balance
+L[liabilities:cc:visa]
+^
+D07/08/2024
+T-187.42
+CX
+PSafeway | weekly groceries
+Lexpenses:food:groceries
+^
+D07/21/2024
+T-84.20
+CX
+PThai Basil | dinner out
+Lexpenses:food:restaurants
+^
+D08/08/2024
+T-203.18
+CX
+PCostco | groceries
+Lexpenses:food:groceries
+^
+D08/19/2024
+T-58.40
+CX
+PShell | fuel
+Lexpenses:transport:fuel
+^
+D09/08/2024
+T-176.55
+CX
+PTrader Joe's | groceries
+Lexpenses:food:groceries
+^
+D09/21/2024
+T-96.75
+CX
+PLa Fonda | dinner out
+Lexpenses:food:restaurants
+^
+D10/08/2024
+T-231.09
+CX
+PSafeway | weekly groceries
+Lexpenses:food:groceries
+^
+D10/19/2024
+T-61.22
+CX
+PChevron | fuel
+Lexpenses:transport:fuel
+^
+D11/08/2024
+T-198.76
+CX
+PCostco | groceries
+Lexpenses:food:groceries
+^
+D11/21/2024
+T-78.50
+CX
+PThai Basil | dinner out
+Lexpenses:food:restaurants
+^
+D12/08/2024
+T-245.33
+CX
+PSafeway | holiday groceries
+Lexpenses:food:groceries
+^
+D12/19/2024
+T-55.18
+CX
+PShell | fuel
+Lexpenses:transport:fuel
+^
+D01/08/2025
+T-189.64
+CX
+PTrader Joe's | groceries
+Lexpenses:food:groceries
+^
+D01/21/2025
+T-112.40
+CX
+PBistro Nouveau | anniversary dinner
+Lexpenses:food:restaurants
+^
+D02/08/2025
+T-224.87
+CX
+PCostco | groceries
+Lexpenses:food:groceries
+^
+D02/19/2025
+T-63.75
+CX
+PChevron | fuel
+Lexpenses:transport:fuel
+^
+D03/08/2025
+T-206.41
+CX
+PSafeway | weekly groceries
+Lexpenses:food:groceries
+^
+D03/21/2025
+T-88.20
+CX
+PLa Fonda | dinner out
+Lexpenses:food:restaurants
+^
+D04/08/2025
+T-194.28
+CX
+PTrader Joe's | groceries
+Lexpenses:food:groceries
+^
+D04/19/2025
+T-59.90
+CX
+PShell | fuel
+Lexpenses:transport:fuel
+^
+D05/08/2025
+T-218.90
+CX
+PCostco | groceries
+Lexpenses:food:groceries
+^
+D05/21/2025
+T-104.65
+CX
+PBistro Nouveau | dinner out
+Lexpenses:food:restaurants
+^
+D06/08/2025
+T-182.73
+CX
+PSafeway | weekly groceries
+Lexpenses:food:groceries
+^
+D06/19/2025
+T-66.35
+CX
+PChevron | fuel
+Lexpenses:transport:fuel
+^
+D07/08/2025
+T-209.55
+CX
+PTrader Joe's | groceries
+Lexpenses:food:groceries
+^
+D07/21/2025
+T-93.10
+CX
+PThai Basil | dinner out
+Lexpenses:food:restaurants
+^
+D08/08/2025
+T-226.14
+CX
+PCostco | groceries
+Lexpenses:food:groceries
+^
+D08/19/2025
+T-57.62
+CX
+PShell | fuel
+Lexpenses:transport:fuel
+^
+D09/08/2025
+T-171.98
+CX
+PSafeway | weekly groceries
+Lexpenses:food:groceries
+^
+D09/21/2025
+T-45.30
+CX
+PPho Corner | dinner out
+Lexpenses:food:restaurants
+^
+D10/08/2025
+T-233.47
+CX
+PTrader Joe's | groceries
+Lexpenses:food:groceries
+^
+D10/19/2025
+T-64.08
+CX
+PChevron | fuel
+Lexpenses:transport:fuel
+^
+D11/08/2025
+T-201.26
+CX
+PCostco | groceries
+Lexpenses:food:groceries
+^
+D11/21/2025
+T-86.90
+CX
+PLa Fonda | dinner out
+Lexpenses:food:restaurants
+^
+D12/08/2025
+T-252.80
+CX
+PSafeway | holiday groceries
+Lexpenses:food:groceries
+^
+D12/19/2025
+T-60.45
+CX
+PShell | fuel
+Lexpenses:transport:fuel
+^
+D01/08/2026
+T-190.37
+CX
+PTrader Joe's | groceries
+Lexpenses:food:groceries
+^
+D01/21/2026
+T-118.75
+CX
+PBistro Nouveau | birthday dinner
+Lexpenses:food:restaurants
+^
+D02/08/2026
+T-217.62
+CX
+PCostco | groceries
+Lexpenses:food:groceries
+^
+D02/19/2026
+T-62.19
+CX
+PChevron | fuel
+Lexpenses:transport:fuel
+^
+D03/08/2026
+T-205.93
+CX
+PSafeway | weekly groceries
+Lexpenses:food:groceries
+^
+D03/21/2026
+T-91.35
+CX
+PThai Basil | dinner out
+Lexpenses:food:restaurants
+^
+D04/08/2026
+T-196.71
+CX
+PTrader Joe's | groceries
+Lexpenses:food:groceries
+^
+D04/19/2026
+T-58.83
+CX
+PShell | fuel
+Lexpenses:transport:fuel
+^
+D05/08/2026
+T-221.48
+CX
+PCostco | groceries
+Lexpenses:food:groceries
+^
+D05/21/2026
+T-107.90
+CX
+PBistro Nouveau | dinner out
+Lexpenses:food:restaurants
+^
+D06/08/2026
+T-184.15
+PSafeway | weekly groceries
+Lexpenses:food:groceries
+^
+D06/19/2026
+T-65.52
+PChevron | fuel
+Lexpenses:transport:fuel
+^
+D07/02/2026
+T-412.80
+C*
+PDelta Airlines | flight to Denver
+Lexpenses:travel:flights
+^
+D07/03/2026
+T-56.24
+PSafeway | weekly groceries
+Lexpenses:food:groceries
+^
+!Account
+Nliabilities:mortgage
+TOth L
+^
+!Type:Oth L
+D07/01/2024
+T-336000.00
+CX
+POpening Balance
+L[liabilities:mortgage]
+^

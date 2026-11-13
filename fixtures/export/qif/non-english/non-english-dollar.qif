@@ -1,0 +1,62 @@
+!Type:Cat
+Ncogs:infraestructura
+E
+^
+Ngastos:oficina
+E
+^
+Ningresos:consultoria
+I
+^
+!Option:AutoSwitch
+!Account
+Nactivo:banco
+TOth A
+^
+Ncuenta:efectivo
+TBank
+^
+Npasivo:tarjeta
+TCCard
+^
+!Clear:AutoSwitch
+!Account
+Nactivo:banco
+TOth A
+^
+!Type:Oth A
+D01/01/2026
+T10000.00
+POpening Balance
+L[activo:banco]
+^
+D02/05/2026
+T4000.00
+PCliente Uno | consulting fee
+Lingresos:consultoria
+^
+!Account
+Ncuenta:efectivo
+TBank
+^
+!Type:Bank
+D01/01/2026
+T500.00
+POpening Balance
+L[cuenta:efectivo]
+^
+D03/12/2026
+T-150.00
+PPapeleria | office supplies
+Lgastos:oficina
+^
+!Account
+Npasivo:tarjeta
+TCCard
+^
+!Type:CCard
+D02/10/2026
+T-600.00
+PProveedor | servers
+Lcogs:infraestructura
+^
