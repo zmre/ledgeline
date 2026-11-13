@@ -148,4 +148,16 @@ describe("theme ids across the wire", () => {
         const ids = [...block.matchAll(/"([a-z-]+)"/g)].map((m) => m[1]);
         expect(ids.sort()).toEqual([...THEME_PREF_IDS].sort());
     });
+
+    it("the engine's family table resolves every family as the catalog does", () => {
+        const rust = readFileSync(fileURLToPath(new URL("../../../../crates/ledgeline-server/src/ui_prefs.rs", import.meta.url)), "utf8");
+        const block = /const THEME_FAMILY_VARIANTS: &\[\(&str, &str, &str\)\] = &\[([\s\S]*?)\];/.exec(rust)?.[1] ?? "";
+        const rows = [...block.matchAll(/\("([a-z-]+)", "([a-z-]+)", "([a-z-]+)"\)/g)].map((m) => [m[1], m[2], m[3]]);
+        const expected = THEME_FAMILIES.filter((f) => f.variants.light !== undefined && f.variants.dark !== undefined).map((f) => [
+            f.id,
+            f.variants.light,
+            f.variants.dark,
+        ]);
+        expect(rows).toEqual(expected);
+    });
 });

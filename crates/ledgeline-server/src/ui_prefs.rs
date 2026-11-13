@@ -1089,6 +1089,65 @@ impl UiPrefsSession {
     }
 }
 
+/// Families with both a light and a dark variant, as `(family, light, dark)`
+/// (plan 39). Every other theme id names one variant. The SPA's catalog
+/// (`web/src/lib/theme/catalog.ts`) is the source; a vitest there checks this
+/// table against it.
+const THEME_FAMILY_VARIANTS: &[(&str, &str, &str)] = &[
+    ("default", "default-light", "default-dark"),
+    ("github", "github-light", "github-dark"),
+    ("catppuccin", "catppuccin-latte", "catppuccin-mocha"),
+    ("gruvbox", "gruvbox-light", "gruvbox-dark"),
+    ("tokyo-night", "tokyo-night-day", "tokyo-night-night"),
+    ("solarized", "solarized-light", "solarized-dark"),
+];
+
+/// What the desktop app paints its first frame with, before the SPA has
+/// fetched its prefs: the variant shown under a light and under a dark OS,
+/// and the scale. The shape of the SPA's first-paint cache
+/// (`web/src/lib/theme/appearance.svelte.ts`, read by `app.html`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BootAppearance {
+    pub light: &'static str,
+    pub dark: &'static str,
+    pub scale: i64,
+}
+
+impl BootAppearance {
+    /// From a theme pref and a scale; an unknown theme reads as `default`.
+    fn from_pref(theme: &str, scale: i64) -> Self {
+        let family = THEME_FAMILY_VARIANTS
+            .iter()
+            .find(|(family, _, _)| *family == theme)
+            .map(|&(_, light, dark)| (light, dark));
+        let variant = THEMES.iter().copied().find(|id| *id == theme);
+        let (light, dark) = match (family, variant) {
+            (Some(pair), _) => pair,
+            // A variant id, or a dark-only theme: the same either way.
+            (None, Some(id)) => (id, id),
+            (None, None) => ("default-light", "default-dark"),
+        };
+        Self { light, dark, scale }
+    }
+}
+
+/// The effective theme and scale for `state`'s current journal, for the
+/// desktop app's first paint. Reads only, like [`current`].
+pub fn boot_appearance(state: &AppState) -> BootAppearance {
+    let wire = current(state);
+    let theme = wire
+        .prefs
+        .get("theme")
+        .and_then(Json::as_str)
+        .unwrap_or("default");
+    let scale = wire
+        .prefs
+        .get("uiScale")
+        .and_then(Json::as_i64)
+        .unwrap_or(100);
+    BootAppearance::from_pref(theme, scale)
+}
+
 /// The effective preferences for `state`'s current journal. Reads only:
 /// nothing is created or written.
 pub(crate) fn current(state: &AppState) -> WireUiPrefs {
@@ -1404,6 +1463,51 @@ fn browser_answer(overrides: &Values) -> WireUiPrefs {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn boot_appearance_resolves_families_variants_and_unknowns() {
+        assert_eq!(
+            BootAppearance::from_pref("catppuccin", 125),
+            BootAppearance {
+                light: "catppuccin-latte",
+                dark: "catppuccin-mocha",
+                scale: 125
+            }
+        );
+        assert_eq!(
+            BootAppearance::from_pref("github-light", 100),
+            BootAppearance {
+                light: "github-light",
+                dark: "github-light",
+                scale: 100
+            }
+        );
+        assert_eq!(
+            BootAppearance::from_pref("dracula", 100),
+            BootAppearance {
+                light: "dracula",
+                dark: "dracula",
+                scale: 100
+            }
+        );
+        assert_eq!(
+            BootAppearance::from_pref("<script>", 100),
+            BootAppearance {
+                light: "default-light",
+                dark: "default-dark",
+                scale: 100
+            }
+        );
+    }
+
+    #[test]
+    fn every_theme_family_names_known_variants() {
+        for (family, light, dark) in THEME_FAMILY_VARIANTS {
+            for id in [family, light, dark] {
+                assert!(THEMES.contains(id), "{id} is not in THEMES");
+            }
+        }
+    }
 
     fn parse(text: &str) -> DocumentMut {
         text.parse().expect("test TOML parses")

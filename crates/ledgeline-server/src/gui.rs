@@ -23,7 +23,10 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
-use ledgeline::{AccessToken, AppDirs, AppState, recents, router_with_security, token_init_script};
+use ledgeline::{
+    AccessToken, AppDirs, AppState, BootAppearance, boot_appearance, recents, router_with_security,
+    token_init_script,
+};
 use muda::{
     Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
     accelerator::{Accelerator, Code, Modifiers},
@@ -688,12 +691,35 @@ fn first_journal_path(urls: &[Url]) -> Option<PathBuf> {
     urls.iter().find_map(|url| url.to_file_path().ok())
 }
 
+/// Seeds the SPA's first-paint cache (`ledgeline.appearance`, read by the
+/// boot script in `app.html`) with the saved theme and scale (plan 39).
+///
+/// The cache lives in localStorage, which is per origin, and the desktop
+/// origin's port changes on every launch, so without this a saved theme would
+/// flash the default for a frame on each start. Seeded ONCE per webview
+/// session (a sessionStorage marker): init scripts run again on every reload,
+/// and by then the SPA has written newer values than these launch-time ones.
+fn appearance_init_script(origin: &str, appearance: &BootAppearance) -> String {
+    let literal = |value: &str| serde_json::Value::from(value).to_string();
+    let cache = serde_json::to_string(appearance).unwrap_or_else(|_| "null".to_string());
+    format!(
+        "if (window.location.origin === {origin}) {{ try {{ \
+         if (!sessionStorage.getItem(\"ledgeline.appearance.seeded\")) {{ \
+         localStorage.setItem(\"ledgeline.appearance\", {cache}); \
+         sessionStorage.setItem(\"ledgeline.appearance.seeded\", \"1\"); }} \
+         }} catch (e) {{}} }}",
+        origin = literal(origin),
+        cache = literal(&cache),
+    )
+}
+
 /// Build the wry webview for `window`, pointed at `url`, with `token` handed to
 /// pages on `url`'s origin (see [`token_init_script`]).
 fn build_webview(
     window: &tao::window::Window,
     url: &str,
     token: &AccessToken,
+    appearance: &BootAppearance,
 ) -> Result<wry::WebView, AppError> {
     let base = url.to_string();
     let origin = Url::parse(url)
@@ -702,6 +728,7 @@ fn build_webview(
         .ascii_serialization();
     let builder = WebViewBuilder::new()
         .with_initialization_script(token_init_script(&origin, token))
+        .with_initialization_script(appearance_init_script(&origin, appearance))
         .with_url(url)
         .with_navigation_handler(move |candidate| {
             let allowed = navigation_allowed(&base, &candidate);
@@ -905,7 +932,8 @@ fn run_event_loop(ctx: GuiContext) -> Result<(), AppError> {
     }
 
     perf::stamp("window_built");
-    let webview = build_webview(&window, &ctx.url, &ctx.token)?;
+    let appearance = boot_appearance(&ctx.state);
+    let webview = build_webview(&window, &ctx.url, &ctx.token, &appearance)?;
     perf::stamp("webview_built");
 
     let open_id = menu.open.id().clone();
@@ -1360,11 +1388,26 @@ mod perf {
 #[cfg(test)]
 mod tests {
     use super::{
-        AccessToken, Zoom, external_docs_url, first_journal_path, navigation_allowed,
-        token_init_script, zoom_script,
+        AccessToken, BootAppearance, Zoom, appearance_init_script, external_docs_url,
+        first_journal_path, navigation_allowed, token_init_script, zoom_script,
     };
     use std::path::PathBuf;
     use url::Url;
+
+    #[test]
+    fn appearance_script_seeds_the_boot_cache_once_on_our_origin() {
+        let appearance = BootAppearance {
+            light: "catppuccin-latte",
+            dark: "catppuccin-mocha",
+            scale: 125,
+        };
+        let script = appearance_init_script("http://127.0.0.1:5555", &appearance);
+        assert!(script.starts_with(r#"if (window.location.origin === "http://127.0.0.1:5555")"#));
+        assert!(script.contains(
+            r#"localStorage.setItem("ledgeline.appearance", "{\"light\":\"catppuccin-latte\",\"dark\":\"catppuccin-mocha\",\"scale\":125}")"#
+        ));
+        assert!(script.contains(r#"sessionStorage.getItem("ledgeline.appearance.seeded")"#));
+    }
 
     #[test]
     fn zoom_scripts_dispatch_the_event_the_spa_listens_for() {
