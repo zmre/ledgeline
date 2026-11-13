@@ -555,12 +555,33 @@ mod tests {
     /// shell BUILTINS only — the worker runs with an empty environment, so with
     /// no `PATH` a Linux `sh` (the nix sandbox has no `/usr/bin` to fall back
     /// on) cannot find `sleep` or `yes`, and exits 127 instead.
+    ///
+    /// On Linux, exec fails with ETXTBSY while any process holds the file open
+    /// for writing — including a child another test thread forked while
+    /// `fs::write` had it open, until that child execs. So the script is run
+    /// once with `probe` (which exits at once) until exec succeeds; after that
+    /// no writer is left and the test's own spawn cannot hit the race.
     fn script(dir: &tempfile::TempDir, body: &str) -> PathBuf {
         let path = dir.path().join("worker.sh");
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("the script writes");
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\n[ \"$1\" = probe ] && exit 0\n{body}\n"),
+        )
+        .expect("the script writes");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
             .expect("the script is executable");
-        path
+        for _ in 0..200 {
+            match Command::new(&path).arg("probe").env_clear().status() {
+                Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                outcome => {
+                    outcome.expect("the script runs");
+                    return path;
+                }
+            }
+        }
+        panic!("{} stayed busy", path.display());
     }
 
     const SHORT: Leash = Leash {
