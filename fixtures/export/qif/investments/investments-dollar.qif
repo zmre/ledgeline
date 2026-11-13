@@ -1,0 +1,203 @@
+!Type:Cat
+Nexpenses:fees
+E
+^
+Nexpenses:travel
+E
+^
+Nincome:dividends
+I
+^
+Nincome:gains
+I
+^
+Nincome:interest
+I
+^
+!Type:Security
+NApple Inc.
+SAAPL
+TStock
+^
+!Type:Security
+NFidelity 500 Index Fund
+SFXAIX
+TMutual Fund
+^
+!Type:Security
+NVTI
+SVTI
+TStock
+^
+!Option:AutoSwitch
+!Account
+NLedgeline Adjustments
+TOth A
+^
+Nassets:bank:checking
+TBank
+^
+Nassets:broker
+TInvst
+^
+Nassets:ira
+TInvst
+^
+!Clear:AutoSwitch
+!Account
+Nassets:bank:checking
+TBank
+^
+!Type:Bank
+D01/02/2024
+T20000.00
+CX
+POpening Balance
+L[assets:bank:checking]
+^
+D01/05/2024
+T-5000.00
+CX
+PFidelity | fund brokerage account
+L[assets:broker]
+^
+D02/01/2024
+T-6000.00
+CX
+PIRA contribution
+L[assets:ira]
+^
+D04/12/2024
+T-540.00
+CX
+PWise | buy euros
+Mcommodity conversion
+L[Ledgeline Adjustments]
+^
+!Account
+Nassets:broker
+TInvst
+^
+!Type:Invst
+D01/10/2024
+NBuy
+YApple Inc.
+I185.00
+Q10
+T1854.95
+CX
+PFidelity | buy AAPL
+O4.95
+^
+D01/15/2024
+NBuyX
+YVTI
+I235.50
+Q8
+T1884.00
+CX
+PFidelity | buy VTI from checking
+L[assets:bank:checking]
+$1884.00
+^
+D02/15/2024
+NDiv
+YApple Inc.
+T2.40
+CX
+PFidelity | AAPL dividend
+^
+D03/01/2024
+NMiscInc
+T1.12
+PFidelity | cash sweep interest
+Lincome:interest
+^
+D03/20/2024
+NReinvDiv
+YFidelity 500 Index Fund
+I180.00
+Q0.5
+T90.00
+CX
+PFidelity | FXAIX dividend reinvested
+^
+D03/25/2024
+NDivX
+YVTI
+T11.60
+CX
+PFidelity | VTI dividend paid to checking
+L[assets:bank:checking]
+$11.60
+^
+D04/01/2024
+NShrsIn
+YFidelity 500 Index Fund
+I175.00
+Q20
+T3500.00
+CX
+PFidelity | FXAIX moved in from old employer plan
+^
+D05/10/2024
+NSell
+YApple Inc.
+I183.20
+Q4
+T727.85
+CX
+PFidelity | sell AAPL (partial)
+O4.95
+^
+D06/03/2024
+NSellX
+YVTI
+Q8
+T2000.00
+CX
+PFidelity | sell VTI (close position) to checking
+L[assets:bank:checking]
+$2000.00
+^
+D06/25/2024
+NShrsOut
+YApple Inc.
+Q2
+PFidelity | move AAPL to IRA in kind
+^
+!Account
+Nassets:ira
+TInvst
+^
+!Type:Invst
+D02/02/2024
+NBuy
+YVTI
+I236.00
+Q20
+T4720.00
+CX
+PIRA | buy VTI
+^
+D06/25/2024
+NShrsIn
+YApple Inc.
+Q2
+PFidelity | move AAPL to IRA in kind
+^
+!Type:Prices
+"AAPL",171.48,"3/28/24"
+^
+!Type:Prices
+"FXAIX",182.10,"3/28/24"
+^
+!Type:Prices
+"AAPL",210.62,"6/28/24"
+^
+!Type:Prices
+"VTI",259.40,"6/28/24"
+^
+!Type:Prices
+"FXAIX",191.50,"6/28/24"
+^

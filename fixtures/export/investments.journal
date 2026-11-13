@@ -1,0 +1,109 @@
+; Plan 39 export fixture: securities written as QIF investment registers.
+;
+; assets:broker is one Invst register: its sub-accounts hold securities plus
+; one cash account. assets:ira holds its cash and its shares in the one
+; account, so it is a register of its own. Covered: buys from the
+; brokerage's cash and from checking, a commission, a partial sell, a full
+; sell with a realized-gain posting, a dividend marked with a zero-unit
+; posting, a dividend paid to checking, interest with no security, a
+; reinvested dividend, a security transferred in from equity, shares moved in
+; kind between registers, and P prices (plus one exchange rate, which QIF
+; cannot carry).
+
+account assets:bank:checking    ; type: C
+account assets:bank:euro        ; type: C
+account assets:broker           ; type: A
+account assets:broker:cash      ; type: C
+account assets:broker:aapl      ; type: A
+account assets:broker:vti       ; type: A
+account assets:broker:fund      ; type: A
+account assets:ira              ; type: A
+account income:dividends        ; type: R
+account income:interest         ; type: R
+account income:gains            ; type: R
+account expenses:fees           ; type: X
+account expenses:travel         ; type: X
+account equity:opening          ; type: E
+account equity:transfers        ; type: E
+
+commodity $1,000.00
+commodity 1.000,00 EUR
+commodity 1.000 AAPL
+commodity 1.00 VTI
+commodity 1.000 FXAIX  ; name: Fidelity 500 Index Fund, type: mutualfund
+
+P 2024-03-28 AAPL $171.48
+P 2024-03-28 FXAIX $182.10
+P 2024-06-28 AAPL $210.62
+P 2024-06-28 VTI $259.40
+P 2024-06-28 FXAIX $191.50
+P 2024-06-28 EUR $1.07
+
+2024-01-02 * Opening balance
+    assets:bank:checking        $20,000.00
+    equity:opening
+
+2024-01-05 * Fidelity | fund brokerage account
+    assets:broker:cash           $5,000.00
+    assets:bank:checking
+
+2024-01-10 * Fidelity | buy AAPL
+    assets:broker:aapl           10 AAPL @ $185.00  ; name: Apple Inc.
+    expenses:fees                    $4.95
+    assets:broker:cash
+
+2024-01-15 * Fidelity | buy VTI from checking
+    assets:broker:vti             8 VTI @ $235.50
+    assets:bank:checking
+
+2024-02-01 * IRA contribution
+    assets:ira                   $6,000.00
+    assets:bank:checking
+
+2024-02-02 * IRA | buy VTI
+    assets:ira                   20 VTI @ $236.00
+    assets:ira                  $-4,720.00
+
+2024-02-15 * Fidelity | AAPL dividend
+    assets:broker:aapl            0 AAPL
+    assets:broker:cash               $2.40
+    income:dividends
+
+2024-03-01 Fidelity | cash sweep interest
+    assets:broker:cash               $1.12
+    income:interest
+
+2024-03-20 * Fidelity | FXAIX dividend reinvested
+    assets:broker:fund            0.5 FXAIX @ $180.00
+    income:dividends               $-90.00
+
+2024-03-25 * Fidelity | VTI dividend paid to checking
+    assets:broker:vti             0 VTI
+    assets:bank:checking            $11.60
+    income:dividends
+
+2024-04-01 * Fidelity | FXAIX moved in from old employer plan
+    assets:broker:fund            20 FXAIX @ $175.00
+    equity:transfers
+
+2024-04-12 * Wise | buy euros
+    assets:bank:euro              500,00 EUR @ $1.08
+    assets:bank:checking
+
+2024-04-20 * Lyon | hotel
+    expenses:travel               200,00 EUR
+    assets:bank:euro
+
+2024-05-10 * Fidelity | sell AAPL (partial)
+    assets:broker:aapl           -4 AAPL @ $183.20  ; name: Apple Inc.
+    expenses:fees                    $4.95
+    assets:broker:cash
+
+2024-06-03 * Fidelity | sell VTI (close position) to checking
+    assets:broker:vti            -8 VTI @ $235.50
+    assets:bank:checking         $2,000.00
+    income:gains
+
+2024-06-25 Fidelity | move AAPL to IRA in kind
+    assets:broker:aapl           -2 AAPL
+    assets:ira                    2 AAPL

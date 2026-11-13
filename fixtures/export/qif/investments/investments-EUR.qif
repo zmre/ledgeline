@@ -1,0 +1,43 @@
+!Type:Cat
+Nexpenses:fees
+E
+^
+Nexpenses:travel
+E
+^
+Nincome:dividends
+I
+^
+Nincome:gains
+I
+^
+Nincome:interest
+I
+^
+!Option:AutoSwitch
+!Account
+NLedgeline Adjustments
+TOth A
+^
+Nassets:bank:euro
+TBank
+^
+!Clear:AutoSwitch
+!Account
+Nassets:bank:euro
+TBank
+^
+!Type:Bank
+D04/12/2024
+T500.00
+CX
+PWise | buy euros
+Mcommodity conversion
+L[Ledgeline Adjustments]
+^
+D04/20/2024
+T-200.00
+CX
+PLyon | hotel
+Lexpenses:travel
+^

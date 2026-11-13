@@ -2,6 +2,7 @@
 //! before trusting the result (plan 39: "showing users what will be lost is
 //! part of the pitch").
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 /// One QIF file in the export, as the report lists it.
@@ -29,8 +30,12 @@ pub struct LossReport {
     // --- Dropped: QIF has nowhere to put these. ---
     /// `= AMOUNT` balance assertions on postings.
     pub balance_assertions: usize,
-    /// `P` market-price directives.
+    /// `P` market-price directives with no QIF form: the price of something
+    /// that is not a security (a house), or of a security in a currency it
+    /// has no records in.
     pub price_directives: usize,
+    /// `P` directives between two currencies (exchange rates).
+    pub exchange_rates: usize,
     /// `~` periodic transactions (budgets and forecasts).
     pub periodic_transactions: usize,
     /// `account` declarations carrying tags other than `type:`/`qif:`
@@ -68,6 +73,19 @@ pub struct LossReport {
     /// Posting comments folded into the record memo because the record has
     /// one split and so no split memo line.
     pub posting_comments_merged: usize,
+    /// Transactions moving a security written as investment (`!Type:Invst`)
+    /// records: Buy, Sell, Div, ReinvDiv, ShrsIn …
+    pub investment_transactions: usize,
+    /// Security prices written to a `!Type:Prices` list.
+    pub prices_written: usize,
+    /// Sells whose realized gain or loss posting was left out; the target
+    /// app works the gain out from its own lots.
+    pub realized_gains: usize,
+    /// `Div`/`ReinvDiv` records, which have no field for the income account.
+    pub dividend_categories: usize,
+    /// Transactions moving a security that no investment action fits,
+    /// written as cash at cost instead, counted by reason.
+    pub investment_fallbacks: BTreeMap<String, usize>,
     /// Accounts renamed because QIF reserves a character in their name.
     pub renamed_accounts: Vec<(String, String)>,
     /// Accounts with no resolvable type, exported as expense categories.
@@ -117,8 +135,18 @@ impl LossReport {
             ),
             (
                 self.price_directives,
-                "market price (P directive)",
-                "market prices (P directives)",
+                "market price (P directive) of something other than a security",
+                "market prices (P directives) of things other than securities",
+            ),
+            (
+                self.exchange_rates,
+                "exchange rate (P directive between currencies)",
+                "exchange rates (P directives between currencies)",
+            ),
+            (
+                self.realized_gains,
+                "realized gain posting on a sale (the app works gains out from its own lots)",
+                "realized gain postings on sales (the app works gains out from its own lots)",
             ),
             (
                 self.periodic_transactions,
@@ -214,6 +242,34 @@ impl LossReport {
                 self.opening_balances,
                 plural(self.opening_balances),
                 plural(self.opening_balances),
+            ));
+        }
+        if self.investment_transactions > 0 {
+            changed.push(format!(
+                "{} security transaction{} written as investment records (Buy, Sell, Div …); \
+                 lots and cost basis are not carried",
+                self.investment_transactions,
+                plural(self.investment_transactions),
+            ));
+        }
+        if self.prices_written > 0 {
+            changed.push(format!(
+                "{} security price{} written to the QIF price list",
+                self.prices_written,
+                plural(self.prices_written),
+            ));
+        }
+        if self.dividend_categories > 0 {
+            changed.push(format!(
+                "{} dividend{} written as Div or ReinvDiv, which name no income account",
+                self.dividend_categories,
+                plural(self.dividend_categories),
+            ));
+        }
+        for (reason, count) in &self.investment_fallbacks {
+            changed.push(format!(
+                "{count} security transaction{} written as cash at cost ({reason})",
+                plural(*count),
             ));
         }
         if self.cost_postings > 0 {
