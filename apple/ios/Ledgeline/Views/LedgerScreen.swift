@@ -45,6 +45,11 @@ struct LedgerScreen: View {
                 // Back is the bar's button; WebKit's edge swipes would walk the
                 // web history behind the SPA's back.
                 .webViewBackForwardNavigationGestures(.disabled)
+                // The page never pans sideways (body clips at the viewport,
+                // plan 42), so a diagonal drag must not rubber-band it either:
+                // horizontal bounce only when the content is actually wider,
+                // as MBR does. Vertical keeps the usual bounce.
+                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
                 // …and a swipe in from the left edge is that same back.
                 .gesture(EdgeSwipe(edge: .left, isEnabled: true) {
                     Haptics.play(NativeHapticStyle.light.rawValue)
