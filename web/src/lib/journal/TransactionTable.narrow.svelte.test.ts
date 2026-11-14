@@ -40,7 +40,17 @@ function txn(index: number, date: ISODate, description: string): Transaction {
     };
 }
 
-const TXNS = [txn(2, "2026-04-10", "Coffee"), txn(1, "2026-04-03", "Bagel")];
+const TAGGED: Transaction = {
+    ...txn(3, "2026-04-12", "Train"),
+    comment: "trip: munich",
+    tags: [["trip", "munich"]],
+    postings: [
+        {account: "expenses:travel", amounts: [usd(2000)], status: "unmarked", comment: "window seat, receipt: r-1", tags: [["receipt", "r-1"]]},
+        {account: "assets:cash", amounts: [usd(-2000)], status: "unmarked", comment: "seat: 12A", tags: [["seat", "12A"]]},
+    ],
+};
+
+const TXNS = [TAGGED, txn(2, "2026-04-10", "Coffee"), txn(1, "2026-04-03", "Bagel")];
 
 async function show(): Promise<void> {
     await connectFakeEngine();
@@ -117,9 +127,9 @@ describe("COMPONENT TransactionTable below the md breakpoint", () => {
         render(TransactionTable);
 
         const cards = await screen.findAllByTestId("journal-card");
-        expect(cards).toHaveLength(2);
+        expect(cards).toHaveLength(3);
         expect(screen.queryByRole("table")).toBeNull();
-        const first = cards[0];
+        const first = cards[1];
         expect(first.querySelector("[data-testid=card-date]")?.getAttribute("title")).toBe("2026-04-10");
         expect(first.textContent).toContain("Coffee");
         expect(first.textContent).toContain("$4.50");
@@ -131,7 +141,7 @@ describe("COMPONENT TransactionTable below the md breakpoint", () => {
         width(390);
         render(TransactionTable);
 
-        const [first] = await screen.findAllByTestId("journal-card");
+        const [, first] = await screen.findAllByTestId("journal-card");
         await fireEvent.click(first);
         expect(txnModal.open).toBe(false);
         const sheet = screen.getByTestId("txn-detail");
@@ -140,12 +150,10 @@ describe("COMPONENT TransactionTable below the md breakpoint", () => {
         expect(postings.textContent).toContain("expenses:coffee");
         expect(postings.textContent).toContain("assets:cash");
         expect(postings.textContent).toContain("$-4.50");
+        // Two buttons only; the backdrop closes it.
         expect([...sheet.querySelectorAll("[data-testid=detail-actions] button")].map((button) => button.textContent?.trim())).toEqual([
             "Edit",
             "Mark reviewed",
-            "Mark pending",
-            "Delete…",
-            "Close",
         ]);
 
         await fireEvent.click(screen.getByTestId("detail-edit"));
@@ -155,14 +163,40 @@ describe("COMPONENT TransactionTable below the md breakpoint", () => {
         txnModal.close();
     });
 
-    it("opens the same sheet from a card's description button, and Close closes it", async () => {
+    it("shows comments without the tags the Tags line already lists", async () => {
         width(390);
         render(TransactionTable);
 
-        const [first] = await screen.findAllByTestId("row-description");
+        const [tagged] = await screen.findAllByTestId("journal-card");
+        await fireEvent.click(tagged);
+        expect(screen.getByTestId("detail-tags").textContent).toBe("Tags: trip:munich");
+        // "; trip: munich" is all tag: no comment line at all.
+        expect(screen.queryByTestId("detail-comment")).toBeNull();
+        expect(screen.getAllByTestId("detail-posting-comment").map((line) => line.textContent)).toEqual(["window seat"]);
+        await fireEvent.click(screen.getByTestId("detail-backdrop"));
+    });
+
+    it("opens a card's sheet from its status badge rather than cycling the status", async () => {
+        width(390);
+        render(TransactionTable);
+
+        const [, first] = await screen.findAllByTestId("journal-card");
+        expect(first.querySelector("[aria-label^='Cycle status']")).toBeNull();
+        const badge = first.querySelector("[title=unmarked]");
+        if (badge === null) throw new Error("no status badge on the card");
+        await fireEvent.click(badge);
+        expect(screen.getByTestId("txn-detail")).toBeTruthy();
+        await fireEvent.click(screen.getByTestId("detail-backdrop"));
+    });
+
+    it("opens the same sheet from a card's description button, and a tap outside closes it", async () => {
+        width(390);
+        render(TransactionTable);
+
+        const [, first] = await screen.findAllByTestId("row-description");
         await fireEvent.click(first);
         expect(screen.getByTestId("txn-detail")).toBeTruthy();
-        await fireEvent.click(screen.getByTestId("detail-close"));
+        await fireEvent.click(screen.getByTestId("detail-backdrop"));
         expect(screen.queryByTestId("txn-detail")).toBeNull();
         expect(txnModal.open).toBe(false);
     });

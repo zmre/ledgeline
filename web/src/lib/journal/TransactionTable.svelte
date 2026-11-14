@@ -311,11 +311,12 @@
         if (!result.ok && result.failure.kind !== "conflict") editing.reportFailure(result.failure);
     }
 
-    // Touch (plan 42 phase 3): the narrow cards' swipes, and the detail sheet
-    // a tap or a long press opens (the whole transaction, then its actions).
-    // Each action is something the toolbar or the keys already do; Delete arms
-    // the same confirm `x` does and never deletes outright.
-    let rowMenu = $state.raw<{slot: Slot; shows: JournalRow} | null>(null);
+    // Touch (plan 42 phase 3): the narrow cards' swipes, the detail sheet a
+    // tap opens (the whole transaction, then Edit and Mark reviewed), and a
+    // long press straight to Edit. Each action is something the toolbar or the
+    // keys already do; Delete arms the same confirm `x` does and never deletes
+    // outright.
+    let rowMenu = $state.raw<JournalRow | null>(null);
 
     function armDelete(txn: Transaction): void {
         armedMatch = null;
@@ -327,21 +328,12 @@
         if (!result.ok && result.failure.kind !== "conflict") editing.reportFailure(result.failure);
     }
 
-    async function cycleRowStatus(txn: Transaction): Promise<void> {
-        const result = await editing.patch(txn.index, statusPatch(nextStatus(txn.status)));
-        cursor.reanchor();
-        if (!result.ok && result.failure.kind !== "conflict") editing.reportFailure(result.failure);
-    }
-
-    /** What the menu's status item does: the label for the status `s` would cycle to. */
-    const STATUS_ACTION: Record<Transaction["status"], string> = {pending: "Mark pending", cleared: "Mark cleared", unmarked: "Clear status"};
-
     /**
      * A card's swipes: right marks it reviewed when it carries the faint
      * "unreviewed" stripe (the rows Review Recents would pick up), else edits
-     * it; left reveals Edit and Delete.
+     * it; left reveals Edit and Delete. A long press is a shortcut to Edit.
      */
-    function swipeFor(slot: Slot, shows: JournalRow): {leading: SwipeAction; trailing: SwipeAction[]; onMenu: () => void} {
+    function swipeFor(shows: JournalRow): {leading: SwipeAction; trailing: SwipeAction[]; onLongPress: () => void} {
         const txn = shows.txn;
         const edit: SwipeAction = {label: "Edit", tone: "info", run: () => txnModal.openEdit(txn.index), testid: "swipe-edit"};
         const leading: SwipeAction =
@@ -349,34 +341,30 @@
         return {
             leading,
             trailing: [edit, {label: "Delete", tone: "error", run: () => armDelete(txn), testid: "swipe-delete"}],
-            onMenu: () => openDetail(slot, shows),
+            onLongPress: () => {
+                swipeOpen.set(null);
+                txnModal.openEdit(txn.index);
+            },
         };
     }
 
-    /** Open a card's detail sheet: a tap, a long press, or the description button. */
-    function openDetail(slot: Slot, shows: JournalRow): void {
+    /** Open a card's detail sheet: a tap, or the description button. */
+    function openDetail(shows: JournalRow): void {
         swipeOpen.set(null);
-        rowMenu = {slot, shows};
+        rowMenu = shows;
     }
 
-    /** The detail sheet's actions for `shows` at `slot`; each closes the sheet first. */
-    function detailActions(slot: Slot, shows: JournalRow): DetailAction[] {
+    /**
+     * The detail sheet's buttons for `shows`: Edit, and Mark reviewed when it
+     * applies; each closes the sheet first. Everything else a row offers
+     * (status, matching, delete) lives in the editor, the swipes and the keys.
+     */
+    function detailActions(shows: JournalRow): DetailAction[] {
+        if (!editing.canEdit) return [];
         const txn = shows.txn;
         const item = (label: string, action: () => void, extra: Partial<DetailAction> = {}): DetailAction => ({label, run: () => fromMenu(action), ...extra});
-        const out: DetailAction[] = [];
-        if (editing.canEdit) {
-            out.push(item("Edit", () => txnModal.openEdit(txn.index), {tone: "primary", testid: "detail-edit"}));
-            if (!shows.reviewed && !shows.unknown) out.push(item("Mark reviewed", () => void reviewRow(txn), {testid: "detail-reviewed"}));
-            out.push(item(STATUS_ACTION[nextStatus(txn.status)], () => void cycleRowStatus(txn), {testid: "detail-status"}));
-            if (shows.transfer === undefined && findableClearing(txn).length > 0)
-                out.push(item("Find match", () => matches.openFor(txn.index), {testid: "detail-find-match"}));
-        }
-        if (slot.half === null && shows.transfer !== undefined) {
-            out.push(item(openPositions.includes(slot.position) ? "Hide both halves" : "Show both halves", () => toggleTransfer(slot.position)));
-            if (editing.canEdit) out.push(item("Unlink", () => ((armedDelete = null), (armedMatch = {kind: "unlink", row: shows}))));
-        }
-        if (editing.canEdit) out.push(item("Delete…", () => armDelete(txn), {tone: "error", testid: "detail-delete"}));
-        return out;
+        const edit = item("Edit", () => txnModal.openEdit(txn.index), {tone: "primary", testid: "detail-edit"});
+        return !shows.reviewed && !shows.unknown ? [edit, item("Mark reviewed", () => void reviewRow(txn), {testid: "detail-reviewed"})] : [edit];
     }
 
     /** A transfer row's two real accounts, for the sheet's note. */
@@ -740,8 +728,8 @@
         onUnlink={() => ((armedDelete = null), (armedMatch = {kind: "unlink", row: shows}))}
         onForget={(value) => ((armedDelete = null), (armedMatch = {kind: "forget", txn: shows.txn, value}))}
         onFindMatch={() => matches.openFor(shows.txn.index)}
-        swipe={mode === "card" && editing.canEdit ? swipeFor(slot, shows) : null}
-        onDetail={mode === "card" ? () => openDetail(slot, shows) : undefined}
+        swipe={mode === "card" && editing.canEdit ? swipeFor(shows) : null}
+        onDetail={mode === "card" ? () => openDetail(shows) : undefined}
     />
 {/snippet}
 
@@ -1116,11 +1104,6 @@
     {#if rowMenu !== null}
         <!-- A card's detail sheet (plan 42): the whole transaction, read-only,
              then everything the row offers a mouse and a keyboard. -->
-        <TxnDetailSheet
-            txn={rowMenu.shows.txn}
-            note={transferNote(rowMenu.shows)}
-            actions={detailActions(rowMenu.slot, rowMenu.shows)}
-            onClose={closeRowMenu}
-        />
+        <TxnDetailSheet txn={rowMenu.txn} note={transferNote(rowMenu)} actions={detailActions(rowMenu)} onClose={closeRowMenu} />
     {/if}
 </section>

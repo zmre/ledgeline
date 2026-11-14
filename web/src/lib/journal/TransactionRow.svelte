@@ -31,6 +31,7 @@
     import AmountCell from "./AmountCell.svelte";
     import CommentIndicator from "./CommentIndicator.svelte";
     import RunningCells from "./RunningCells.svelte";
+    import StatusBadge from "./StatusBadge.svelte";
     import StatusCell from "./StatusCell.svelte";
     import SwipeCard from "./SwipeCard.svelte";
     import type {SwipeAction} from "./swipe";
@@ -90,8 +91,8 @@
         onForget?: (value: string) => void;
         /** Find match (A2): open the matcher on this transaction. Offered when it has an unlinked clearing posting. */
         onFindMatch?: () => void;
-        /** A card's touch gestures (plan 42 phase 3): swipe right, the actions a swipe left reveals, and a long press. */
-        swipe?: {leading: SwipeAction | null; trailing: SwipeAction[]; onMenu: () => void} | null;
+        /** A card's touch gestures (plan 42 phase 3): swipe right, the actions a swipe left reveals, and a long press (Edit). */
+        swipe?: {leading: SwipeAction | null; trailing: SwipeAction[]; onLongPress: () => void} | null;
         /** A card's tap (plan 42): open the read-only detail sheet. Without it a tap edits. */
         onDetail?: () => void;
     } = $props();
@@ -382,13 +383,13 @@
          the transaction's detail sheet; the description button is the
          keyboard's way in. -->
     <!-- A finger can also swipe it (SwipeCard): right for the leading action,
-         left for Edit and Delete, and a long press for the same sheet. -->
+         left for Edit and Delete, and a long press goes straight to Edit. -->
     <SwipeCard
         id={txn.index}
         enabled={canEdit && swipe !== null}
         leading={swipe?.leading ?? null}
         trailing={swipe?.trailing ?? []}
-        onLongPress={swipe?.onMenu}
+        onLongPress={swipe?.onLongPress}
         class={["mb-2 h-20", nested && "ml-4"]}
     >
         <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
@@ -449,7 +450,9 @@
                                 {#if pinned !== null}
                                     <RunningCells cell={running} {pinned} txnIndex={txn.index} txnDate={txn.date} mode="card" />
                                 {/if}
-                                {#if columns.status}<span class="shrink-0"><StatusCell {txn} /></span>{/if}
+                                <!-- A badge, not the cycling button: a tap on it is a tap on
+                                     the card, which opens the sheet. -->
+                                {#if columns.status}<span class="shrink-0"><StatusBadge status={txn.status} /></span>{/if}
                             </div>
                             {#if tagText !== ""}
                                 <span class="max-w-full truncate text-base-content/50" title={tagText} data-testid="card-tags">{tagText}</span>

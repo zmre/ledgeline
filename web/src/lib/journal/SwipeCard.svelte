@@ -1,7 +1,7 @@
 <script lang="ts">
     // A narrow journal card that answers a finger (plan 42 phase 3): swipe left
     // reveals the trailing actions, swipe right runs the leading one, and a
-    // long press opens the row's menu. The thresholds are `swipe.ts`'s; this
+    // long press runs `onLongPress` (the journal's: Edit). The thresholds are `swipe.ts`'s; this
     // only feeds them pointer events.
     //
     // Touch and pen only: a mouse has the card's tap and the desktop table.

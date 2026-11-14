@@ -79,6 +79,10 @@ describe("UNIT review form", () => {
         ["first\nsecond line", "first\nsecond line"],
         ["\nown line, id:7", "own line"],
         ["a\nreviewed:x\n\nb, c:1", "a\nb"],
+        // The journal's detail sheet shows exactly this under a "Tags:" line.
+        ["trip: munich", ""],
+        ["window seat, receipt: r-1", "window seat"],
+        ["seat 12A, trip:munich, date: 2026-01-05", "seat 12A"],
     ])("free text of %j is %j", (comment, free) => {
         expect(commentFreeText(comment)).toBe(free);
     });
