@@ -265,6 +265,16 @@ html.ll-native .toast-top {
     background-color: color-mix(in oklab, var(--color-primary) 25%, var(--ll-sticky-bg, var(--color-base-100)));
 }
 
+/*
+ * Sideways scrollers (report and holdings tables, tab strips, code blocks)
+ * keep a sideways swipe to themselves: at their edge it does not carry on
+ * into the page (or, in a desktop browser, into a back/forward swipe). Only
+ * the x axis, so a vertical drag over a table still scrolls the page.
+ */
+:where(.overflow-x-auto, .overflow-auto, .ll-sticky-col) {
+    overscroll-behavior-x: contain;
+}
+
 /* 2.5rem: clear of HScroll's ‹ button and fade, which sit over the left edge. */
 .ll-sticky-title {
     position: sticky;
