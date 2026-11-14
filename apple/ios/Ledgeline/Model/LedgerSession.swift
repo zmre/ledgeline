@@ -87,8 +87,37 @@ final class LedgerSession {
     /// Loads the SPA and starts watching for a crashed WebContent process.
     func start() async {
         self.watcher = Task { [weak self] in await self?.watchNavigations() }
-        await self.load(LedgelineSchemeHandler.origin, label: "first page")
+        #if DEBUG
+            await self.load(Self.debugStartURL(), label: "first page")
+            await self.runDebugScript()
+        #else
+            await self.load(LedgelineSchemeHandler.origin, label: "first page")
+        #endif
     }
+
+    #if DEBUG
+        /// Screenshots without a tap: `SIMCTL_CHILD_LEDGELINE_START_PATH=
+        /// "/reports?tab=balance-sheet"` opens that page first.
+        private static func debugStartURL() -> URL {
+            guard let path = ProcessInfo.processInfo.environment["LEDGELINE_START_PATH"], path.hasPrefix("/"),
+                  let url = URL(string: path, relativeTo: LedgelineSchemeHandler.origin)?.absoluteURL
+            else { return LedgelineSchemeHandler.origin }
+            return url
+        }
+
+        /// `SIMCTL_CHILD_LEDGELINE_DEBUG_JS="…"`: evaluated once after the first
+        /// load (and a short settle), e.g. to open a drawer or an overlay.
+        private func runDebugScript() async {
+            guard let script = ProcessInfo.processInfo.environment["LEDGELINE_DEBUG_JS"], !script.isEmpty else { return }
+            try? await Task.sleep(for: .milliseconds(1500))
+            do {
+                let result = try await self.page.callJavaScript(script)
+                Log.info("debug js: \(String(describing: result))")
+            } catch {
+                Log.info("debug js failed: \(error)")
+            }
+        }
+    #endif
 
     func close() {
         self.watcher?.cancel()
