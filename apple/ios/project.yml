@@ -1,0 +1,152 @@
+# The Ledgeline iOS/iPadOS app (plans/42-mobile-app.md). Generated into
+# Ledgeline.xcodeproj by `xcodegen generate` (build.sh does this). The
+# .xcodeproj and the Info.plist XcodeGen writes are not checked in.
+#
+# Links Ledgeline's Rust core (crates/ledgeline-ffi, `mobile` feature) as a
+# static-library xcframework (LedgelineFFI.xcframework, produced by build.sh)
+# and compiles the UniFFI Swift bindings (Generated/ledgeline_ffi.swift) into
+# the app target. Modelled on mbr's apple/ios/project.yml.
+name: Ledgeline
+options:
+  bundleIdPrefix: com.zmre.ledgeline
+  deploymentTarget:
+    iOS: "26.0"
+  xcodeVersion: "26.0"
+
+settings:
+  base:
+    # build.sh passes the workspace's version (Cargo.toml) on the command line.
+    MARKETING_VERSION: "0.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    # Swift 5 mode: UniFFI's generated bindings and the WebKit SwiftUI API
+    # would otherwise need Sendable annotations throughout.
+    SWIFT_VERSION: "5.0"
+    DEVELOPMENT_TEAM: X2SAY6ACE6
+    CODE_SIGN_STYLE: Automatic
+    # Only arm64 slices exist in LedgelineFFI.xcframework (device and
+    # Apple-silicon simulator); a generic simulator build would add x86_64.
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: NO
+
+configs:
+  Debug:
+    SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+  Release:
+    SWIFT_OPTIMIZATION_LEVEL: -O
+
+targets:
+  Ledgeline:
+    type: application
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Ledgeline
+        createIntermediateGroups: true
+        excludes:
+          - Info.plist
+      - path: Generated/ledgeline_ffi.swift
+      # The app icon: the desktop app's Icon Composer package, shared. Named
+      # as a file so it is one resource, not a group of loose SVGs (XcodeGen
+      # has no file type for .icon; mbr's project.yml has the story).
+      - path: ../../assets/Ledgeline.icon
+        type: file
+        buildPhase: resources
+      # The privacy cover's icon (a flat PNG; the .icon package has no
+      # UIImage form).
+      - path: ../../assets/ledgeline.png
+        buildPhase: resources
+      # The bundled sample ledger, copied into Documents/Sample on first open.
+      - path: ../../fixtures/sample.journal
+        buildPhase: resources
+    dependencies:
+      - framework: LedgelineFFI.xcframework
+        embed: false
+      - sdk: SystemConfiguration.framework
+      - sdk: Security.framework
+    info:
+      path: Ledgeline/Info.plist
+      properties:
+        # Journals open in place from Files: the app reads and writes the
+        # original (iCloud Drive, a file provider), never a copy in its Inbox.
+        LSSupportsOpeningDocumentsInPlace: true
+        # The same claims as the Mac app (assets/Info.plist.in; plan 26
+        # "Opening journals from the Files app"): hledger's extensions at
+        # Owner, shared Ledger ones at Alternate, and the
+        # org.ledger-cli.journal alias other apps import.
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: hledger journal
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - com.zmre.ledgeline.journal
+              - org.ledger-cli.journal
+          - CFBundleTypeName: Ledger journal
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - com.zmre.ledgeline.ledger
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.zmre.ledgeline.journal
+            UTTypeDescription: hledger journal
+            UTTypeConformsTo:
+              - public.plain-text
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - journal
+                - hledger
+          - UTTypeIdentifier: com.zmre.ledgeline.ledger
+            UTTypeDescription: Ledger journal
+            UTTypeConformsTo:
+              - public.plain-text
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - ledger
+                - j
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zmre.ledgeline.ios
+        PRODUCT_NAME: Ledgeline
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Ledgeline
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.finance
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        # Show the app's Documents folder (the sample ledger) in Files.
+        INFOPLIST_KEY_UIFileSharingEnabled: YES
+        # Phase 3 (unlock with Face ID); declared now so the key is in place.
+        INFOPLIST_KEY_NSFaceIDUsageDescription: "Ledgeline uses Face ID to unlock your ledgers."
+        # Most of the (large) Rust staticlib is unreachable from the FFI
+        # surface; let the linker drop it.
+        DEAD_CODE_STRIPPING: YES
+        # ../../assets/Ledgeline.icon, by its package name.
+        ASSETCATALOG_COMPILER_APPICON_NAME: Ledgeline
+
+  # Unit tests for what can be checked without the Rust core: the FNV-1a 64
+  # vectors the conditional replace relies on. Not hosted: the file under
+  # test is compiled in directly. `build.sh test` runs them.
+  LedgelineTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: LedgelineTests
+      - path: Ledgeline/Support/FNV1a.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zmre.ledgeline.ios.tests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  Ledgeline:
+    build:
+      targets:
+        Ledgeline: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - LedgelineTests

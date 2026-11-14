@@ -379,6 +379,7 @@ fn open_over_a_folder_writes_through_the_coordinator() {
         folder.path().to_string_lossy().into_owned(),
         "main.journal".into(),
         Some(cache.path().to_string_lossy().into_owned()),
+        None,
         Some(Arc::clone(&coordinator) as Arc<dyn FileCoordinator>),
     )
     .unwrap();
@@ -431,6 +432,7 @@ fn opening_something_that_is_not_there_is_an_open_error() {
         "x.journal".into(),
         None,
         None,
+        None,
     );
     assert!(matches!(missing, Err(MobileError::Open { .. })));
     let folder = tempfile::tempdir().unwrap();
@@ -439,6 +441,50 @@ fn opening_something_that_is_not_there_is_an_open_error() {
         "absent.journal".into(),
         None,
         None,
+        None,
     );
     assert!(matches!(no_journal, Err(MobileError::Open { .. })));
+}
+
+/// The app's config directory is where the view settings persist: a saved
+/// key lands in `ui-prefs.toml` there (created on first write), and the next
+/// journal the app opens with the same directory reads it back.
+#[test]
+fn view_settings_persist_in_the_config_dir() {
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::write(folder.path().join("main.journal"), JOURNAL).unwrap();
+    let support = tempfile::tempdir().unwrap();
+    let config = support.path().join("Ledgeline");
+    let open = || {
+        LedgelineApp::open(
+            folder.path().to_string_lossy().into_owned(),
+            "main.journal".into(),
+            None,
+            Some(config.to_string_lossy().into_owned()),
+            None,
+        )
+        .unwrap()
+    };
+
+    let app = open();
+    let saved = send(
+        &app,
+        "PATCH",
+        "/api/ui-prefs",
+        Some(json!({"uiScale": 125})),
+        true,
+    );
+    assert_eq!(
+        saved.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&saved.body)
+    );
+    let written = std::fs::read_to_string(config.join("ui-prefs.toml")).unwrap();
+    assert!(written.contains("125"), "{written}");
+    drop(app);
+
+    let reopened = open();
+    let prefs = get(&reopened, "/api/ui-prefs").json();
+    assert!(prefs.to_string().contains("125"), "{prefs}");
 }

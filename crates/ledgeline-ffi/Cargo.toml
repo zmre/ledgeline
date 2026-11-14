@@ -18,6 +18,16 @@ crate-type = ["lib", "staticlib"]
 name = "ledgeline_ffi"
 bench = false
 
+# The Swift-bindings generator (`apple/ios/build.sh` runs it on the host, over
+# the built staticlib). Behind its own feature because uniffi's `cli` pulls
+# clap: the staticlib (`cargo build -p ledgeline-ffi`) never builds it.
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+required-features = ["bindgen"]
+bench = false
+test = false
+
 [features]
 # The iOS app's surface: the in-process HTTP server behind the app's custom
 # scheme handler (`LedgelineApp`). Pulls in the server WITHOUT its default
@@ -32,6 +42,8 @@ mobile = [
     "dep:tower",
     "dep:tokio",
 ]
+# The `uniffi-bindgen` binary only. Apple hosts only, like the rest of UniFFI.
+bindgen = ["uniffi/cli"]
 
 [dependencies]
 ledgeline-core = { workspace = true }

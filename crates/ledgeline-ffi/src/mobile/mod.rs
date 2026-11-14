@@ -16,11 +16,11 @@
 //!   [`SingleFileVault`] for one file opened in place
 //!   ([`LedgelineApp::open_file`]).
 //! - **App state**: [`AppDirs`] under the app's `Caches/` directory — the
-//!   staging area for dropped statements, and room for a cache. No config
-//!   directory: nothing in the preferences store applies to a build with no
-//!   external tools, and recents are the app's own bookmarks
-//!   ([`ledgeline::recents`] stores a bookmark id as an opaque token if the
-//!   app wants Ledgeline to keep them).
+//!   staging area for dropped statements, and room for a cache — plus an
+//!   optional config directory (the app's `Application Support/Ledgeline`)
+//!   where `ui-prefs.toml` persists the view settings. Recents are the app's
+//!   own bookmarks ([`ledgeline::recents`] stores a bookmark id as an opaque
+//!   token if the app wants Ledgeline to keep them).
 //! - **Threads**: its own small tokio runtime, every thread failing fast on
 //!   dataless files ([`crate::iopolicy`]).
 //! - **Access**: the bearer token is still required
@@ -153,6 +153,10 @@ impl LedgelineApp {
     /// - `cache_dir`: the app's `Caches/` directory (or a subfolder); the
     ///   staging area for dropped statements lives under it. `None` uses the
     ///   process temp directory.
+    /// - `config_dir`: where the app-wide stores live (`ui-prefs.toml`, the
+    ///   view settings) — the app's `Application Support/Ledgeline`. Shared by
+    ///   every journal the app opens; created on first write. `None` keeps
+    ///   view settings in memory only (the SPA says so).
     /// - `coordinator`: performs writes and downloads; `None` writes with
     ///   plain `std::fs` (only right for the app's own container).
     ///
@@ -165,13 +169,15 @@ impl LedgelineApp {
         root_path: String,
         main_file: String,
         cache_dir: Option<String>,
+        config_dir: Option<String>,
         coordinator: Option<Arc<dyn FileCoordinator>>,
     ) -> Result<Arc<Self>, MobileError> {
         let root = canonical_dir(Path::new(&root_path))?;
         let main = VaultPath::new(main_file.trim_start_matches('/'))
             .map_err(|e| open_error(format!("{main_file}: {e}")))?;
         let vault: Arc<dyn Vault> = Arc::new(CoordinatedVault::new(root, coordinator));
-        Self::with_vault(vault, main, mobile_dirs(cache_dir.as_deref()), false)
+        let dirs = mobile_dirs(cache_dir.as_deref(), config_dir.as_deref());
+        Self::with_vault(vault, main, dirs, false)
     }
 
     /// Open one journal file in place — what iOS grants for a file opened
@@ -181,11 +187,14 @@ impl LedgelineApp {
     /// [`MobileError::NeedsFolder`]. Granting the folder later means opening
     /// it with [`LedgelineApp::open`] and dropping this.
     ///
+    /// `config_dir` is as for [`LedgelineApp::open`].
+    ///
     /// # Errors
     /// As [`LedgelineApp::open`], plus [`MobileError::NeedsFolder`].
     #[cfg_attr(target_vendor = "apple", uniffi::constructor)]
     pub fn open_file(
         path: String,
+        config_dir: Option<String>,
         coordinator: Option<Arc<dyn FileCoordinator>>,
     ) -> Result<Arc<Self>, MobileError> {
         let given = Path::new(&path);
@@ -197,7 +206,8 @@ impl LedgelineApp {
         let single = SingleFileVault::new(CoordinatedVault::new(parent, coordinator), name)
             .map_err(open_error)?;
         let main = single.file().clone();
-        Self::with_vault(Arc::new(single), main, mobile_dirs(None), true)
+        let dirs = mobile_dirs(None, config_dir.as_deref());
+        Self::with_vault(Arc::new(single), main, dirs, true)
     }
 
     /// The vault's root folder (canonical).
@@ -360,12 +370,15 @@ impl LedgelineApp {
     }
 }
 
-/// The app's directories on a phone: everything under `cache_dir` (or the
-/// process temp directory), no config directory, no `hledger`.
-fn mobile_dirs(cache_dir: Option<&str>) -> AppDirs {
+/// The app's directories on a phone: scratch under `cache_dir` (or the
+/// process temp directory), the app-wide stores in `config_dir` when the app
+/// gives one, no `hledger`.
+fn mobile_dirs(cache_dir: Option<&str>, config_dir: Option<&str>) -> AppDirs {
     let cache = cache_dir.map(std::path::PathBuf::from);
     AppDirs {
-        config_dir: None,
+        config_dir: config_dir
+            .filter(|dir| !dir.is_empty())
+            .map(std::path::PathBuf::from),
         temp_dir: cache
             .as_ref()
             .map_or_else(std::env::temp_dir, |dir| dir.join("tmp")),
