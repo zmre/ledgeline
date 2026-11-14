@@ -3,6 +3,7 @@ import {dec, type MixedAmount} from "#lib/domain/money.js";
 import type {Amount, AmountStyle, ISODate, Posting, Transaction, TxnStatus} from "#lib/domain/types.js";
 import {
     accountFlow,
+    cardDate,
     centerOffset,
     computeWindow,
     displayTotal,
@@ -353,16 +354,20 @@ describe("expanded transfer slots (plan 35 D11)", () => {
 });
 
 describe("UNIT listGeometry (interface scale, plan 39)", () => {
-    it("is the h-10 row and the h-24 + mb-2 card at 100 %", () => {
+    it("is the h-10 row and the h-16 + mb-2 card at 100 %", () => {
         expect(listGeometry(1024, 16)).toEqual({mode: "table", pitch: 40, rowHeight: 40, topInset: 0});
-        expect(listGeometry(375, 16)).toEqual({mode: "card", pitch: 104, rowHeight: 96, topInset: 8});
-        expect(listGeometry(639, 16).mode).toBe("card");
-        expect(listGeometry(640, 16).mode).toBe("table");
+        expect(listGeometry(375, 16)).toEqual({mode: "card", pitch: 72, rowHeight: 64, topInset: 8});
+    });
+
+    it("turns to cards below md (48rem) less main's padding: an iPad mini's 744pt portrait gets cards", () => {
+        expect(listGeometry(735, 16).mode).toBe("card");
+        expect(listGeometry(712, 16).mode).toBe("card");
+        expect(listGeometry(736, 16).mode).toBe("table");
     });
 
     it("doubles at 200 %, where an h-10 row is 80px", () => {
         expect(listGeometry(2048, 32)).toEqual({mode: "table", pitch: 80, rowHeight: 80, topInset: 0});
-        expect(listGeometry(750, 32)).toEqual({mode: "card", pitch: 208, rowHeight: 192, topInset: 16});
+        expect(listGeometry(750, 32)).toEqual({mode: "card", pitch: 144, rowHeight: 128, topInset: 16});
     });
 
     it("moves the card breakpoint with the root: rem columns stop fitting sooner at 200 %", () => {
@@ -376,5 +381,16 @@ describe("UNIT listGeometry (interface scale, plan 39)", () => {
         const at200 = computeWindow(8000, 1200, listGeometry(2048, 32).pitch, 10_000, 12);
         expect({start: at200.start, end: at200.end}).toEqual({start: at100.start, end: at100.end});
         expect(at200.padTop).toBe(at100.padTop * 2);
+    });
+});
+
+describe("UNIT cardDate (plan 42)", () => {
+    it("drops the year in the current year", () => {
+        expect(cardDate("2026-06-20", "2026-11-13")).toBe("Jun 20");
+        expect(cardDate("2026-01-05", "2026-11-13")).toBe("Jan 5");
+    });
+
+    it("keeps a short year otherwise", () => {
+        expect(cardDate("2025-12-31", "2026-11-13")).toBe("Dec 31 '25");
     });
 });

@@ -761,13 +761,17 @@
     {#if calendar}
         <CalendarView pulse={pulseIndex} />
     {:else}
+        <!-- Below `md` the page scrolls (routes/+page.svelte), so the list cannot
+             take "what is left": it is one screen tall less the totals footer, and
+             scrolling the page down to it leaves the list and the footer filling
+             the window. The windowing needs a bounded height either way. -->
         <div
             bind:this={scroller}
             bind:clientHeight={viewportHeight}
             bind:clientWidth={containerWidth}
             onscroll={(event) => (scrollTop = event.currentTarget.scrollTop)}
             onfocusin={(event) => syncCursorFromTarget(event.target)}
-            class="min-h-0 grow overflow-y-auto rounded-lg border border-base-300"
+            class="h-[calc(100dvh-9rem-var(--ll-chrome-top))] min-h-64 grow overflow-y-auto rounded-lg border border-base-300 md:h-auto md:min-h-0"
         >
             {#if journalView.total === null}
                 <div class="flex justify-center p-8" aria-label="Loading transactions"><span class="loading loading-spinner"></span></div>

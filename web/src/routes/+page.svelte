@@ -135,7 +135,13 @@
 
 <svelte:head><title>Ledgeline — Journal</title></svelte:head>
 
-<div class="flex min-h-0 flex-col gap-3" style="height: calc(100dvh - 7rem)">
+<!-- From `md` the page is exactly one window tall and only the transaction
+     list scrolls: the window less the chrome above <main> (`--ll-chrome-top`:
+     the HTML header, or the iOS app's native bar) and 4rem of padding and gaps.
+     Below `md` the filter bar and insights alone are taller than a phone, and
+     a fixed height squeezed the list to nothing; there the page scrolls and the
+     list (TransactionTable) takes a screenful of its own. -->
+<div class="flex min-h-0 flex-col gap-3 md:h-[calc(100dvh-4rem-var(--ll-chrome-top))]">
     <FilterBar accountNames={journal.accountNames} />
 
     <!-- The summaries are suppressed rather than fed an empty journal: zeroes

@@ -8,7 +8,7 @@
 // the section reads it once on mount (the ResizeObserver stub never fires), so
 // each test picks its width before rendering.
 
-import {render, screen} from "@testing-library/svelte";
+import {fireEvent, render, screen} from "@testing-library/svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {dec} from "#lib/domain/money.js";
 import type {Amount, AmountStyle, ISODate, Transaction} from "#lib/domain/types.js";
@@ -19,6 +19,7 @@ import {journalView, resetJournalView} from "#lib/stores/journalView.svelte.js";
 import {connectFakeEngine, FAKE_ENGINE} from "#lib/testing/fakeEngine.js";
 import {summaryBody, VIEW_GENERATION, wireRow} from "#lib/testing/journalViewFixture.js";
 import TransactionTable from "./TransactionTable.svelte";
+import {txnModal} from "./edit/modalState.svelte.js";
 
 const USD: AmountStyle = {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]};
 const usd = (cents: number): Amount => ({commodity: "$", qty: dec(cents, 2), style: USD});
@@ -109,5 +110,37 @@ describe("COMPONENT TransactionTable below the md breakpoint", () => {
         expect(screen.getByTestId("journal-calendar")).toBeTruthy();
         expect(screen.getByTestId("view-calendar")).toBeTruthy();
         expect(keymap.active.map((binding) => binding.keys)).toContain("v");
+    });
+
+    it("renders each transaction as a two-line card: date · description · amount, then the accounts", async () => {
+        width(390);
+        render(TransactionTable);
+
+        const cards = await screen.findAllByTestId("journal-card");
+        expect(cards).toHaveLength(2);
+        expect(screen.queryByRole("table")).toBeNull();
+        const first = cards[0];
+        expect(first.querySelector("[data-testid=card-date]")?.getAttribute("title")).toBe("2026-04-10");
+        expect(first.textContent).toContain("Coffee");
+        expect(first.textContent).toContain("$4.50");
+    });
+
+    it("opens the whole transaction when a card's description is tapped", async () => {
+        width(390);
+        render(TransactionTable);
+
+        const [first] = await screen.findAllByTestId("row-description");
+        await fireEvent.click(first);
+        expect(txnModal.open).toBe(true);
+        expect(txnModal.targetIndex).toBe(2);
+        txnModal.close();
+    });
+
+    it("keeps the table at an iPad's 768pt-wide list", async () => {
+        width(768);
+        render(TransactionTable);
+
+        await vi.waitFor(() => expect(screen.getByRole("table")).toBeTruthy());
+        expect(screen.queryByTestId("journal-card")).toBeNull();
     });
 });
