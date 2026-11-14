@@ -38,6 +38,8 @@
 //!   shape, and `book_import`, which recognises every such export (plan 39)
 //! - `hledger_conf` — the `--alias` options an `hledger.conf` declares, and
 //!   writing one into it (Enhanced imports)
+//! - `date_shift` — moving a whole journal by whole months, so the sample
+//!   ledger always ends in the current month
 //! - `title` — the derived "what am I looking at" title for the open journal
 //! - `accounts` — `account NAME  ; tags...` declarations: the format-preserving
 //!   span editor over them (Account list editor; see
@@ -61,6 +63,7 @@ pub mod auto_edit;
 pub mod auto_form;
 pub mod book_import;
 pub mod convert;
+pub mod date_shift;
 pub mod decimal;
 pub mod display;
 // Internal: the directory walk `rules::discovery` and `projections::discovery`
