@@ -91,7 +91,9 @@
 {/snippet}
 
 <div class="flex flex-col gap-2" data-testid="account-report">
-    <div class="flex items-start gap-4">
+    <!-- Side by side from sm; on a phone the help would be a sliver beside the
+         buttons, so they stack, buttons still at the right. -->
+    <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-4">
         <div class="flex flex-col gap-1 text-xs text-base-content/70" data-testid="account-report-help">
             {#each readings as reading (reading)}
                 <p>{READING_HELP[reading]}</p>
