@@ -106,7 +106,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 
 pub use app_dirs::{AppDirs, CONFIG_DIR_ENV, HLEDGER_ENV, IGNORE_USER_CONF_ENV};
 pub use location::JournalLocation;
-pub use new_ledger_api::{DesktopHost, SAMPLE_JOURNAL};
+pub use new_ledger_api::{DesktopHost, SAMPLE_JOURNAL, current_sample_journal};
 // The switch the e2e and live-contract harnesses set so a headless server
 // leaves UI preferences to the browser (see `ui_prefs`).
 pub use security::{

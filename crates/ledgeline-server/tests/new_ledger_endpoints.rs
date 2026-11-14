@@ -14,8 +14,8 @@ use axum::body::Body;
 use axum::http::{HeaderName, Request, StatusCode, header};
 use http_body_util::BodyExt;
 use ledgeline::{
-    AccessToken, AppDirs, AppState, DesktopHost, SAMPLE_JOURNAL, Security, router_with_security,
-    router_with_state,
+    AccessToken, AppDirs, AppState, DesktopHost, SAMPLE_JOURNAL, Security, current_sample_journal,
+    router_with_security, router_with_state,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -508,7 +508,20 @@ async fn the_sample_opens_from_the_app_cache() {
         .scratch
         .path()
         .join("app/cache/sample/sample.journal");
-    assert_eq!(std::fs::read_to_string(&copy).unwrap(), SAMPLE_JOURNAL);
+    // Moved up to this month (UTC, as the server reads the clock).
+    let days = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        / 86_400;
+    let today = ledgeline_core::reports::periods::iso_from_days(i64::try_from(days).unwrap());
+    let written = std::fs::read_to_string(&copy).unwrap();
+    assert_eq!(written, current_sample_journal(&today));
+    assert!(
+        written.contains(&format!("\n{}-", &today[..7])),
+        "the newest transaction is in {}",
+        &today[..7]
+    );
     assert_eq!(desktop.host.opened(), vec![copy.canonicalize().unwrap()]);
     let (_, rows) = desktop.call("GET", "/api/journal/summary", None).await;
     assert!(!rows.contains("\"count\":0"), "{rows}");
