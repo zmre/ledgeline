@@ -165,3 +165,53 @@ html.ll-native body {
 html.ll-native .toast {
     margin-bottom: env(safe-area-inset-bottom, 0px);
 }
+
+/*
+ * What covers the top of the viewport (plan 42). In the iOS app the web view
+ * runs under the native navigation bar (measured on an iPhone 17 simulator:
+ * `env(safe-area-inset-top)` is 116px, the status bar plus the bar, and
+ * `innerHeight` is the whole screen), so anything `position: fixed` at `top: 0`
+ * sits behind the bar. Body padding moves the page's own flow below it; every
+ * fixed overlay reads `--ll-top-inset` instead of assuming the viewport's top
+ * edge is visible. `--ll-chrome-top` is everything above <main>'s padding: the
+ * HTML header (`min-h-12`) on the desktop and in a browser, the native bar in
+ * the app (where the header is collapsed).
+ *
+ * Keyed on `ll-native`, not width: it is the native bar that covers the page,
+ * and a narrow desktop window has no such bar.
+ */
+:root {
+    --ll-top-inset: 0px;
+    --ll-chrome-top: 3rem;
+}
+
+html.ll-native {
+    --ll-top-inset: env(safe-area-inset-top, 0px);
+    --ll-chrome-top: var(--ll-top-inset);
+}
+
+/* The problems drawer, every daisyUI modal (KeyHelp, GoalModal, the
+ * projections' EntryDialog and Save dialog…) and the review/match layers start
+ * below the bar rather than under it. */
+html.ll-native .drawer-side {
+    top: var(--ll-top-inset);
+    height: calc(100dvh - var(--ll-top-inset));
+}
+
+html.ll-native .modal {
+    top: var(--ll-top-inset);
+    height: auto;
+}
+
+html.ll-native .modal > .modal-box {
+    max-height: calc(100dvh - var(--ll-top-inset) - 1rem);
+}
+
+html.ll-native .review-layer {
+    top: var(--ll-top-inset);
+}
+
+html.ll-native .toast-top {
+    top: calc(1rem + var(--ll-top-inset));
+}
+

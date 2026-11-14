@@ -313,7 +313,7 @@
 
 <article
     bind:this={root}
-    class="{panel} flex max-h-[calc(100dvh-7.5rem)] flex-col"
+    class="{panel} flex max-h-[calc(100dvh-7.5rem-var(--ll-top-inset))] flex-col"
     data-testid="match-focus"
     data-match-panel
     tabindex="-1"

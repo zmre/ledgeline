@@ -7,7 +7,7 @@
     import {tick} from "svelte";
     import {TYPING_ATTRIBUTE} from "#lib/keys/target.js";
     import {remToPx} from "#lib/theme/scale.js";
-    import {popupPosition, portal} from "#lib/ui/anchoredPopup.js";
+    import {popupPosition, portal, liveViewport} from "#lib/ui/anchoredPopup.js";
     import {rankCommodities} from "../complete";
 
     let {
@@ -41,7 +41,7 @@
         if (field === null) return;
         const box = field.getBoundingClientRect();
         const anchor = {top: box.top, bottom: box.bottom, left: box.left, width: Math.max(box.width, remToPx(POPUP_WIDTH_REM))};
-        placement = popupPosition(anchor, {width: window.innerWidth, height: window.innerHeight}, VISIBLE_ROWS * remToPx(ROW_HEIGHT_REM));
+        placement = popupPosition(anchor, liveViewport(), VISIBLE_ROWS * remToPx(ROW_HEIGHT_REM));
     }
 
     async function show(): Promise<void> {

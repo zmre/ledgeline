@@ -181,7 +181,7 @@
      */
     const SURFACE = "relative min-w-0 origin-bottom overflow-hidden rounded-box border bg-base-100 [grid-area:1/1]";
     /** The top card. Its body scrolls inside it, under a max height that leaves room for the bar and the peeks' strips. */
-    const CARD = `deck-card ${SURFACE} pointer-events-auto z-[5] flex max-h-[calc(100dvh-7.5rem)] flex-col self-start shadow-2xl outline-none`;
+    const CARD = `deck-card ${SURFACE} pointer-events-auto z-[5] flex max-h-[calc(100dvh-7.5rem-var(--ll-top-inset))] flex-col self-start shadow-2xl outline-none`;
     /** Loading, the error, nothing to review, and the run's summary under the last card. */
     const PANEL = `${SURFACE} pointer-events-auto z-0 self-start border-base-content/10 shadow-2xl`;
     /** A card waiting beneath: as tall as the top card (stretched to the cell), hero only. */

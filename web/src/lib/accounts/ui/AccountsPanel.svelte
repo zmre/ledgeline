@@ -215,7 +215,7 @@
     onRetry={retry}
 >
     {#snippet children(loaded)}
-        <div class="flex flex-col gap-4 lg:h-[calc(100dvh-11rem)]" data-testid="settings-accounts">
+        <div class="flex flex-col gap-4 lg:h-[calc(100dvh-8rem-var(--ll-chrome-top))]" data-testid="settings-accounts">
             {#if !loaded.editable}
                 <div class="alert items-start rounded-box py-2 text-sm alert-info" role="status" data-testid="settings-accounts-read-only">
                     <span>This server has no journal open for editing, so these are shown but cannot be changed.</span>

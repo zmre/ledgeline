@@ -73,7 +73,7 @@
     import MatchLine from "./MatchLine.svelte";
 
     const SURFACE = "relative min-w-0 origin-bottom overflow-hidden rounded-box border bg-base-100 [grid-area:1/1]";
-    const CARD = `deck-card ${SURFACE} pointer-events-auto z-[5] flex max-h-[calc(100dvh-7.5rem)] flex-col self-start shadow-2xl outline-none`;
+    const CARD = `deck-card ${SURFACE} pointer-events-auto z-[5] flex max-h-[calc(100dvh-7.5rem-var(--ll-top-inset))] flex-col self-start shadow-2xl outline-none`;
     const PANEL = `${SURFACE} pointer-events-auto z-0 self-start border-base-content/10 shadow-2xl outline-none`;
     const PEEK = `${SURFACE} pointer-events-none self-stretch border-base-content/10 p-5 shadow-xl sm:p-8`;
     const today = localToday();
