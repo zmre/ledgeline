@@ -88,10 +88,12 @@ the `md` container breakpoint (48 rem).
 | Calendar view             | toggle removed; `cal=1` opens the list                                                      | narrow         |
 | xlsx export               | `share` message → native share sheet (Save to Files, AirDrop, Mail…)                         | native         |
 | Reports / projections tables | horizontal scroll with sticky first column                                               | narrow         |
-| Journal list              | three-line cards (date · payee · amount, then the full accounts wrapping onto two lines, tags, status) instead of columns; a tap opens a read-only detail sheet (every posting, tags, comments) with Edit / Mark reviewed / Find match / Delete | narrow |
+| Journal list              | three-line cards (date · payee · amount, then the full accounts wrapping onto two lines, tags, status) instead of columns; a tap (status badge included) opens a read-only detail sheet (every posting, tags, comments as free text without their tags) with only Edit and Mark reviewed; a tap outside or back closes it | narrow |
 | Journal scroll            | one page scroll: the windowed list follows the page (`pageScroll`), no inner scroller; the totals footer flows after it | narrow |
 | Journal review buttons    | one Review menu button with the total as its badge: Review unknowns (n), Review recents (n), Find matches (n), then both settings | narrow |
-| Journal cards             | swipe right = mark reviewed (unreviewed stripe) else edit; swipe left = Edit / Delete (Delete arms the floating confirm); long press = the detail sheet | narrow, touch |
+| Journal cards             | swipe right = mark reviewed (unreviewed stripe) else edit; swipe left = Edit / Delete (Delete arms the floating confirm); long press = Edit | narrow, touch |
+| Control bars              | Budget, Reports, Projections and the Holdings scope bar fold behind a one/two-line summary (`FoldedControls`) that opens them | below `sm` |
+| Sample ledger             | always the pristine sample, every date moved by whole months so the newest transaction is in the current month (`date_shift.rs`; desktop "Try with sample data" and the iOS sample, via `sample_journal()` over FFI, rewritten on every open) | all |
 | Sideways scrollers        | `overscroll-behavior-x: contain` on every horizontal scroller; the web view bounces sideways only when the content is wider (`scrollBounceBehavior(.basedOnSize, axes: .horizontal)`) | all / native |
 | Bottom inset              | `--ll-bottom-inset`: the app measures the home indicator and sets `--ll-native-bottom` (the web view ignores the bottom safe area) | native |
 | Page zoom                 | WebKit zoom off (viewport `user-scalable=no`, set by the app's script); pinch steps the UI scale via `ledgeline:zoom` | native |
@@ -138,6 +140,16 @@ vertically; dropdown panels stay on screen when their row wraps; sideways
 scrollers contain their overscroll and the web view no longer bounces
 sideways. Matching from the sample ledger has no proposals, so the match
 card at 200 % is unverified in the simulator.
+
+Third iPhone round (2026-11-13): the detail sheet keeps only Edit and Mark
+reviewed (tap outside or back closes it) and shows comments without their
+tags; long press on a card = Edit; the card's status badge opens the sheet
+instead of cycling; the review card's "Similar unreviewed" heading stays on
+one line with its hint below; Reports, Projections and Holdings fold their
+controls like Budget (shared `components/FoldedControls.svelte`); holdings
+stat tiles are 2×2 below `sm` with values that shrink to fit; the sample
+ledger (desktop and iOS) is shifted by whole months so it always ends this
+month.
 
 ### Phase 3: native gestures + lock — done (2026-11-13)
 

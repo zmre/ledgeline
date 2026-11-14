@@ -35,7 +35,7 @@ A bank statement (OFX, QFX or CSV) goes through the ordinary statement import in
 
 ## Try with sample data
 
-The first step has a **Try with sample data** link. It opens a copy of the sample journal used throughout this manual: a household with bank accounts, a brokerage account, a mortgage, and a few years of transactions. The copy lives in Ledgeline's cache folder, and each click starts from a fresh copy, so feel free to change it.
+The first step has a **Try with sample data** link. It opens a copy of the sample journal used throughout this manual: a household with bank accounts, a brokerage account, a mortgage, and a few years of transactions. The copy lives in Ledgeline's cache folder, and each click starts from a fresh copy, so feel free to change it. Its dates are moved forward by whole months so that its newest transactions fall in the current month, and the journal's default view (the last 90 days) opens on data.
 
 ## The files the wizard writes
 
