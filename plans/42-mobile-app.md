@@ -129,3 +129,10 @@ budget, holdings, settings panels.
   possible on iOS; moot while Imports is hidden.
 - CSV-rules imports need hledger: Imports stays hidden.
 - No new-ledger creation on device yet (pick an existing journal).
+- **Single-file providers (Sync.com, Google Drive, OneDrive) are out of
+  scope** (decided 2026-11-13). Their pickers grant files, not folders, so a
+  journal with `include`s can't open and new files (scenarios, includes)
+  can't be created. A "granted-files vault" (multi-pick each include, one
+  bookmark per file) is possible but was judged not worth it while features
+  would still be missing. Supported: iCloud Drive, On My iPhone/iPad, and
+  other providers that grant whole folders (e.g. Working Copy).
