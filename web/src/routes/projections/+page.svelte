@@ -40,6 +40,7 @@
     // (plan 33 D3).
     import {onMount} from "svelte";
     import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import FoldedControls from "#lib/components/FoldedControls.svelte";
     import DepthSlider from "#lib/insights/DepthSlider.svelte";
     import {fileStore} from "#lib/projections/fileStore.svelte.js";
     import {defaultBlocker, defaultConflict, effectiveDefault, openingSteps, type OpeningSource} from "#lib/projections/opening.js";
@@ -309,6 +310,16 @@
 
     // MERGE SEAM: plan 34. Compare vs actuals takes effect only with Actuals > 0.
     const comparing = $derived(compareActive(params));
+    const INTERVAL_NAMES: Record<ProjectionParams["interval"], string> = {monthly: "Monthly", quarterly: "Quarterly", yearly: "Yearly"};
+    /** The folded bar's line below `sm`: what the controls are set to. */
+    const controlsSummary = $derived(
+        [
+            INTERVAL_NAMES[params.interval],
+            comparing ? "vs actuals" : `${params.count} ${params.count === 1 ? "period" : "periods"}`,
+            `${params.lookback} actual`,
+            `depth ${params.depth}`,
+        ].join(" · ")
+    );
     /** The first actual day, for the checkbox's hint: off the held projection, omitted before one lands. */
     const compareFromLabel = $derived.by(() => {
         const held = scenarioStore.projection.value;
@@ -543,77 +554,86 @@
     <div class="divider my-0"></div>
 
     <!-- Picking a reading scrolls THIS bar to the top of the window (under the
-         pinned header), so interval and depth stay in view above the strip. -->
-    <div bind:this={controls} class="flex flex-wrap items-end gap-x-4 gap-y-2 rounded-box bg-base-200 px-3 py-2" data-testid="projection-controls">
-        <label class="form-control">
-            <span class="label-text mb-1 block text-xs text-base-content/70">Interval</span>
-            <select class="select w-32 select-sm" bind:value={params.interval} aria-label="Interval">
-                <option value="monthly">Monthly</option>
-                <option value="quarterly">Quarterly</option>
-                <option value="yearly">Yearly</option>
-            </select>
-        </label>
-        <label class="form-control {comparing ? 'opacity-50' : ''}" title={comparing ? "Not used while comparing" : undefined}>
-            <span class="label-text mb-1 block text-xs text-base-content/70">Periods</span>
-            <input
-                type="number"
-                aria-disabled={comparing}
-                class="input w-20 input-sm"
-                min="1"
-                max={MAX_COUNT}
-                value={params.count}
-                onchange={(e) => setCount(e.currentTarget.value)}
-                aria-label="Number of periods"
-            />
-        </label>
-        <!-- How many full ACTUAL periods the statements show before the
-             forecast (plan 28 Decision 6). Zero is allowed: forecast only. -->
-        <label class="form-control">
-            <span class="label-text mb-1 block text-xs text-base-content/70">Actuals</span>
-            <input
-                type="number"
-                class="input w-20 input-sm"
-                min="0"
-                max={MAX_COUNT}
-                value={params.lookback}
-                onchange={(e) => setLookback(e.currentTarget.value)}
-                aria-label="Actual periods before the projection"
-            />
-        </label>
-        <!-- MERGE SEAM: plan 34. Compare vs actuals, for every reading at once:
-             the window, the anchor and the run are shared. -->
-        <div class="flex flex-col gap-0.5 self-end">
-            <label class="label cursor-pointer gap-2 text-sm">
-                <input
-                    type="checkbox"
-                    class="checkbox checkbox-sm"
-                    bind:checked={params.compare}
-                    disabled={params.lookback === 0}
-                    aria-describedby="projection-compare-hint"
-                    data-testid="projection-compare"
-                />
-                Compare vs actuals
+         pinned header), so interval and depth stay in view above the strip.
+         Below `sm` it folds behind a line saying what it is set to; the
+         wrapper is the scroll target, since the folded panel has no box. -->
+    <div bind:this={controls} class="flex flex-col gap-2">
+        <FoldedControls
+            id="projection-controls"
+            summary={controlsSummary}
+            testid="projection-controls"
+            class="flex-wrap items-end gap-x-4 gap-y-2 rounded-box bg-base-200 px-3 py-2"
+        >
+            <label class="form-control">
+                <span class="label-text mb-1 block text-xs text-base-content/70">Interval</span>
+                <select class="select w-32 select-sm" bind:value={params.interval} aria-label="Interval">
+                    <option value="monthly">Monthly</option>
+                    <option value="quarterly">Quarterly</option>
+                    <option value="yearly">Yearly</option>
+                </select>
             </label>
-            <span id="projection-compare-hint" class="text-xs text-base-content/60" data-testid="projection-compare-hint">
-                {#if params.lookback === 0}
-                    Set Actuals to 1 or more to compare
-                {:else if compareFromLabel !== null}
-                    Re-runs this scenario from {compareFromLabel} and sets it beside what happened
-                {/if}
-            </span>
-        </div>
-        <!-- Keyed on maxDepth for the reason the reports bar keys it: the slider
+            <label class="form-control {comparing ? 'opacity-50' : ''}" title={comparing ? "Not used while comparing" : undefined}>
+                <span class="label-text mb-1 block text-xs text-base-content/70">Periods</span>
+                <input
+                    type="number"
+                    aria-disabled={comparing}
+                    class="input w-20 input-sm"
+                    min="1"
+                    max={MAX_COUNT}
+                    value={params.count}
+                    onchange={(e) => setCount(e.currentTarget.value)}
+                    aria-label="Number of periods"
+                />
+            </label>
+            <!-- How many full ACTUAL periods the statements show before the
+             forecast (plan 28 Decision 6). Zero is allowed: forecast only. -->
+            <label class="form-control">
+                <span class="label-text mb-1 block text-xs text-base-content/70">Actuals</span>
+                <input
+                    type="number"
+                    class="input w-20 input-sm"
+                    min="0"
+                    max={MAX_COUNT}
+                    value={params.lookback}
+                    onchange={(e) => setLookback(e.currentTarget.value)}
+                    aria-label="Actual periods before the projection"
+                />
+            </label>
+            <!-- MERGE SEAM: plan 34. Compare vs actuals, for every reading at once:
+             the window, the anchor and the run are shared. -->
+            <div class="flex flex-col gap-0.5 self-end">
+                <label class="label cursor-pointer gap-2 text-sm">
+                    <input
+                        type="checkbox"
+                        class="checkbox checkbox-sm"
+                        bind:checked={params.compare}
+                        disabled={params.lookback === 0}
+                        aria-describedby="projection-compare-hint"
+                        data-testid="projection-compare"
+                    />
+                    Compare vs actuals
+                </label>
+                <span id="projection-compare-hint" class="text-xs text-base-content/60" data-testid="projection-compare-hint">
+                    {#if params.lookback === 0}
+                        Set Actuals to 1 or more to compare
+                    {:else if compareFromLabel !== null}
+                        Re-runs this scenario from {compareFromLabel} and sets it beside what happened
+                    {/if}
+                </span>
+            </div>
+            <!-- Keyed on maxDepth for the reason the reports bar keys it: the slider
              can mount while accounts are still loading (max=1), and the browser
              clamps the input's value to that max without updating bound state. -->
-        {#key maxDepth}
-            <DepthSlider bind:depth={params.depth} max={maxDepth} />
-        {/key}
-        {#if canReseed}
-            <div class="flex items-center gap-2 text-xs text-base-content/70" data-testid="projection-reseed">
-                <span>The starting rows were seeded at depth {scenarioStore.seedDepth}.</span>
-                <button type="button" class="btn btn-outline btn-xs" onclick={retrySeed}>Re-seed at depth {params.depth}</button>
-            </div>
-        {/if}
+            {#key maxDepth}
+                <DepthSlider bind:depth={params.depth} max={maxDepth} />
+            {/key}
+            {#if canReseed}
+                <div class="flex items-center gap-2 text-xs text-base-content/70" data-testid="projection-reseed">
+                    <span>The starting rows were seeded at depth {scenarioStore.seedDepth}.</span>
+                    <button type="button" class="btn btn-outline btn-xs" onclick={retrySeed}>Re-seed at depth {params.depth}</button>
+                </div>
+            {/if}
+        </FoldedControls>
     </div>
 
     {#if compareNote !== null}
