@@ -52,10 +52,12 @@
                 All except
             </button>
         </div>
-        <label class="ml-auto flex items-center gap-2">
-            <span class="text-xs text-base-content/70">Period</span>
+        <!-- Below sm each of these takes a full line, labels in one column,
+             rather than wrapping wherever the widths happen to break. -->
+        <label class="flex w-full items-center gap-2 sm:ml-auto sm:w-auto">
+            <span class="w-10 shrink-0 text-xs text-base-content/70 sm:w-auto">Period</span>
             <select
-                class="select w-44 select-sm"
+                class="select min-w-0 flex-1 select-sm sm:w-44 sm:flex-none"
                 value={gainPeriod}
                 onchange={(e) => holdingsScope.setGainPeriod(e.currentTarget.value as GainPeriod)}
                 aria-label="Gain period"
@@ -66,11 +68,11 @@
                 {/each}
             </select>
         </label>
-        <label class="flex items-center gap-2">
-            <span class="text-xs text-base-content/70">As of</span>
+        <label class="flex w-full items-center gap-2 sm:w-auto">
+            <span class="w-10 shrink-0 text-xs text-base-content/70 sm:w-auto">As of</span>
             <input
                 type="date"
-                class="input w-40 input-sm"
+                class="input min-w-0 flex-1 input-sm sm:w-40 sm:flex-none"
                 value={holdingsScope.value.asOf}
                 onchange={(e) => setAsOf(e.currentTarget.value)}
                 aria-label="As of date"

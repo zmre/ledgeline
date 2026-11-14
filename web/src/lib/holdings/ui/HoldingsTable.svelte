@@ -124,7 +124,10 @@
     {/if}
 {/snippet}
 
-<div class="overflow-x-auto rounded-box border border-base-content/10">
+<!-- When the table is wider than the screen the name column stays put while
+     the figures scroll under it (`.ll-sticky-col`, app.css). Below md the
+     symbol rides under the name instead of taking a second column. -->
+<div class="ll-sticky-col overflow-x-auto rounded-box border border-base-content/10">
     <table class="table table-zebra table-sm" data-testid="holdings-table">
         <thead>
             <!-- Every header is a <th scope="col">, never a <td>: aria-sort is only
@@ -134,7 +137,7 @@
                  centers). OtherHoldingsTable is this header's deliberate twin. -->
             <tr>
                 <th scope="col" aria-sort={ariaSort("name")}>{@render sortButton("name", "Name")}</th>
-                <th scope="col" aria-sort={ariaSort("symbol")}>{@render sortButton("symbol", "Symbol")}</th>
+                <th scope="col" class="hidden md:table-cell" aria-sort={ariaSort("symbol")}>{@render sortButton("symbol", "Symbol")}</th>
                 <th scope="col" class="text-right" aria-sort={ariaSort("shares")}>{@render sortButton("shares", "Shares")}</th>
                 <th scope="col" class="text-right" aria-sort={ariaSort("basis")}>{@render sortButton("basis", "Basis")}</th>
                 <th scope="col" class="text-right" aria-sort={ariaSort("price")}>{@render sortButton("price", "Price")}</th>
@@ -151,8 +154,10 @@
                     class={cursor.key === h.symbol ? "bg-primary/25" : ""}
                     aria-current={cursor.key === h.symbol ? "true" : undefined}
                 >
-                    <th class="font-normal whitespace-nowrap" title={h.accounts.join(", ")}>{h.name}</th>
-                    <th class="font-medium">{h.symbol}</th>
+                    <th class="min-w-32 font-normal whitespace-normal md:whitespace-nowrap" title={h.accounts.join(", ")}>
+                        {h.name}{#if h.name !== h.symbol}<span class="block text-xs font-medium text-base-content/60 md:hidden">{h.symbol}</span>{/if}
+                    </th>
+                    <th class="hidden font-medium md:table-cell">{h.symbol}</th>
                     <td class="text-right font-mono whitespace-nowrap tabular-nums" data-testid="shares-{h.symbol}">{formatShares(h.shares)}</td>
                     <td class="text-right font-mono whitespace-nowrap tabular-nums">
                         {#if h.firstBasisDate === null}
@@ -193,7 +198,7 @@
         <tfoot>
             <tr class="border-t border-base-content/20 bg-base-200 text-sm font-bold text-base-content" data-testid="holdings-totals">
                 <th class="font-bold whitespace-nowrap">Total ({holdings.length} holdings):</th>
-                <th></th>
+                <th class="hidden md:table-cell"></th>
                 <td></td>
                 <td class="text-right font-mono whitespace-nowrap tabular-nums">{@render money(totals.basis)}</td>
                 <td></td>
