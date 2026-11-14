@@ -98,6 +98,17 @@ fn internal(message: impl std::fmt::Display) -> MobileError {
     }
 }
 
+/// The sample journal with its dates moved by whole months so its newest
+/// transaction falls in the month of `today_iso` (`YYYY-MM-DD`, the device's
+/// local date). The app writes this over its sample copy every time the sample
+/// ledger is opened, so the sample is always pristine and always current. An
+/// unreadable `today_iso` returns the sample as authored.
+#[cfg_attr(target_vendor = "apple", uniffi::export)]
+#[must_use]
+pub fn sample_journal(today_iso: String) -> String {
+    ledgeline::current_sample_journal(&today_iso)
+}
+
 /// What a [`LedgelineApp::refresh`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(target_vendor = "apple", derive(uniffi::Enum))]

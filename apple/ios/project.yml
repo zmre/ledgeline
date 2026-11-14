@@ -55,9 +55,6 @@ targets:
       # UIImage form).
       - path: ../../assets/ledgeline.png
         buildPhase: resources
-      # The bundled sample ledger, copied into Documents/Sample on first open.
-      - path: ../../fixtures/sample.journal
-        buildPhase: resources
     dependencies:
       - framework: LedgelineFFI.xcframework
         embed: false

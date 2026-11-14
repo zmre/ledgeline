@@ -2,7 +2,7 @@ import Foundation
 import Observation
 
 /// A saved ledger: a journal file the user granted, a folder plus the journal
-/// inside it, or the bundled sample.
+/// inside it, or the sample.
 struct Ledger: Identifiable, Codable, Hashable {
     enum Scope: String, Codable {
         /// `bookmark` is the folder; `mainFile` is relative to it.
@@ -11,7 +11,7 @@ struct Ledger: Identifiable, Codable, Hashable {
         /// Its `include`s are out of reach: opening one that has any asks
         /// for the folder.
         case file
-        /// The bundled sample journal, copied into Documents/Sample.
+        /// The sample journal, written into Documents/Sample on every open.
         case sample
     }
 
@@ -267,20 +267,25 @@ final class LedgerStore {
         }.value
     }
 
-    /// Copies the bundled sample journal into `folder` the first time it is
-    /// opened; after that it is the user's to edit.
+    /// Writes the sample journal into `folder`, every time the sample is
+    /// opened: always the pristine sample, its dates moved (by the Rust core,
+    /// in whole months) so the newest transaction is in this month and the
+    /// default "last 90 days" view opens on data. Edits to the sample do not
+    /// survive a reopen.
     nonisolated static func installSample(in folder: URL) async throws {
         try await Task.detached(priority: .userInitiated) {
-            let fileManager = FileManager.default
             let target = folder.appending(path: AppPaths.sampleFile)
-            guard !fileManager.fileExists(atPath: target.path(percentEncoded: false)) else { return }
-            guard let bundled = Bundle.main.url(forResource: "sample", withExtension: "journal") else {
-                throw CocoaError(.fileNoSuchFile)
-            }
-            try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
-            try fileManager.copyItem(at: bundled, to: target)
-            Log.info("sample journal installed at \(target.path(percentEncoded: false))")
+            let text = sampleJournal(todayIso: Self.localToday())
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try Data(text.utf8).write(to: target, options: .atomic)
+            Log.info("sample journal written at \(target.path(percentEncoded: false))")
         }.value
+    }
+
+    /// Today on this device as `YYYY-MM-DD` (Gregorian, local time zone).
+    nonisolated static func localToday(_ now: Date = .now) -> String {
+        let parts = Calendar(identifier: .gregorian).dateComponents(in: .current, from: now)
+        return String(format: "%04d-%02d-%02d", parts.year ?? 1970, parts.month ?? 1, parts.day ?? 1)
     }
 
     /// `2026.journal` → `2026`.

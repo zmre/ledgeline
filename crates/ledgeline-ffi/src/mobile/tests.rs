@@ -488,3 +488,22 @@ fn view_settings_persist_in_the_config_dir() {
     let prefs = get(&reopened, "/api/ui-prefs").json();
     assert!(prefs.to_string().contains("125"), "{prefs}");
 }
+
+#[test]
+fn the_sample_journal_ends_in_the_given_month() {
+    let text = sample_journal("2027-03-09".to_string());
+    let journal = ledgeline_core::parse::parse_journal(&text, "sample.journal").expect("parses");
+    let newest = journal
+        .transactions
+        .iter()
+        .map(|txn| txn.date.as_str())
+        .max();
+    assert!(
+        newest.is_some_and(|date| date.starts_with("2027-03")),
+        "{newest:?}"
+    );
+    assert_eq!(
+        sample_journal("not a date".to_string()),
+        ledgeline::SAMPLE_JOURNAL
+    );
+}

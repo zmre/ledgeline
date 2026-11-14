@@ -243,7 +243,9 @@ private struct LedgerRow: View {
                             .accessibilityLabel("Locked with \(AppLock.methodName)")
                     }
                 }
-                Text(Self.prettyLocation(self.ledger.location))
+                Text(self.ledger.scope == .sample
+                    ? "Example data, fresh and dated to this month each time it opens"
+                    : Self.prettyLocation(self.ledger.location))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)

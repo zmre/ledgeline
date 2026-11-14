@@ -432,6 +432,11 @@ int8_t uniffi_ledgeline_ffi_fn_func_materializes_dataless_files(RustCallStatus *
 void uniffi_ledgeline_ffi_fn_func_set_materialize_dataless_files(int8_t materialize, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEDGELINE_FFI_FN_FUNC_SAMPLE_JOURNAL
+#define UNIFFI_FFIDEF_UNIFFI_LEDGELINE_FFI_FN_FUNC_SAMPLE_JOURNAL
+RustBuffer uniffi_ledgeline_ffi_fn_func_sample_journal(RustBuffer today_iso, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_FFI_LEDGELINE_FFI_RUSTBUFFER_ALLOC
 #define UNIFFI_FFIDEF_FFI_LEDGELINE_FFI_RUSTBUFFER_ALLOC
 RustBuffer ffi_ledgeline_ffi_rustbuffer_alloc(uint64_t size, RustCallStatus *_Nonnull out_status
@@ -701,6 +706,12 @@ uint16_t uniffi_ledgeline_ffi_checksum_func_materializes_dataless_files(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_LEDGELINE_FFI_CHECKSUM_FUNC_SET_MATERIALIZE_DATALESS_FILES
 #define UNIFFI_FFIDEF_UNIFFI_LEDGELINE_FFI_CHECKSUM_FUNC_SET_MATERIALIZE_DATALESS_FILES
 uint16_t uniffi_ledgeline_ffi_checksum_func_set_materialize_dataless_files(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_LEDGELINE_FFI_CHECKSUM_FUNC_SAMPLE_JOURNAL
+#define UNIFFI_FFIDEF_UNIFFI_LEDGELINE_FFI_CHECKSUM_FUNC_SAMPLE_JOURNAL
+uint16_t uniffi_ledgeline_ffi_checksum_func_sample_journal(void
     
 );
 #endif

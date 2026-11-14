@@ -2207,6 +2207,20 @@ public func setMaterializeDatalessFiles(materialize: Bool)  {try! rustCall() {
     )
 }
 }
+/**
+ * The sample journal with its dates moved by whole months so its newest
+ * transaction falls in the month of `today_iso` (`YYYY-MM-DD`, the device's
+ * local date). The app writes this over its sample copy every time the sample
+ * ledger is opened, so the sample is always pristine and always current. An
+ * unreadable `today_iso` returns the sample as authored.
+ */
+public func sampleJournal(todayIso: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_ledgeline_ffi_fn_func_sample_journal(
+        FfiConverterString.lower(todayIso),$0
+    )
+})
+}
 
 private enum InitializationResult {
     case ok
@@ -2227,6 +2241,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ledgeline_ffi_checksum_func_set_materialize_dataless_files() != 51285) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ledgeline_ffi_checksum_func_sample_journal() != 13459) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ledgeline_ffi_checksum_method_filecoordinator_coordinated_replace() != 42607) {
