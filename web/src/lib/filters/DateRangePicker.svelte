@@ -123,9 +123,16 @@
             {/each}
         </ul>
     </details>
-    <div class="flex items-center gap-1">
-        <DateInput class="w-36" value={filters.value.from} onchange={setFrom} aria-label="From date" />
-        <span class="text-base-content/60" aria-hidden="true">–</span>
-        <DateInput class="w-36" value={filters.value.to} onchange={setTo} aria-label="To date" />
+    <!-- Wraps: at a big interface scale on a phone the two fields do not fit
+         on one line, and the To field went off the right edge. The dash goes
+         with To, so a wrapped line reads "– Nov 13". `w-32` below `sm`: a
+         phone's date field has no picker icon, and the dash and a w-36 field
+         did not fit one line at 200 %. -->
+    <div class="flex min-w-0 flex-wrap items-center gap-1" data-testid="date-range-fields">
+        <DateInput class="w-32 sm:w-36" value={filters.value.from} onchange={setFrom} aria-label="From date" />
+        <span class="flex items-center gap-1">
+            <span class="text-base-content/60" aria-hidden="true">–</span>
+            <DateInput class="w-32 sm:w-36" value={filters.value.to} onchange={setTo} aria-label="To date" />
+        </span>
     </div>
 </div>

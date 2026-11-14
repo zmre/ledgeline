@@ -118,20 +118,20 @@
         <!-- `a`, not `/`: on this page `/` belongs to the free-text SearchInput
              below, which is the box people reach for first. -->
         <AccountTreeSelect {accountNames} selected={accounts} onToggle={toggleAccount} onClear={clearAccounts} searchKey="a" />
-        <div class="w-full min-w-48 sm:ml-auto sm:w-64">
+        <div class="w-full min-w-0 sm:ml-auto sm:w-64 sm:min-w-48">
             <SearchInput />
         </div>
     </div>
     {#if hasChips}
         <div class="flex flex-wrap items-center gap-1">
             {#if rangeChanged}
-                <span class="badge gap-1 badge-outline">
-                    {rangeLabel}
+                <span class="badge h-auto min-h-(--size) max-w-full gap-1 badge-outline">
+                    <span class="[overflow-wrap:anywhere]">{rangeLabel}</span>
                     <button type="button" class="cursor-pointer" aria-label="Reset date range" onclick={() => filters.setRange(dflt.from, dflt.to)}>✕</button>
                 </span>
             {/if}
             {#each selectedAccounts as name (name)}
-                <span class="badge max-w-full gap-1 badge-outline">
+                <span class="badge h-auto min-h-(--size) max-w-full gap-1 badge-outline">
                     <span class="truncate">{name}</span>
                     {#if pin?.account !== name}
                         <!-- Pins this account's running balance and keeps the filter: how you pin from inside the journal. -->
@@ -147,7 +147,7 @@
                 </span>
             {/each}
             {#if filters.value.query !== ""}
-                <span class="badge max-w-full gap-1 badge-outline">
+                <span class="badge h-auto min-h-(--size) max-w-full gap-1 badge-outline">
                     <span class="truncate">“{filters.value.query}”</span>
                     <button type="button" class="cursor-pointer" aria-label="Clear search filter" onclick={() => filters.setQuery("")}>✕</button>
                 </span>
