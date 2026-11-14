@@ -32,6 +32,8 @@
     import CommentIndicator from "./CommentIndicator.svelte";
     import RunningCells from "./RunningCells.svelte";
     import StatusCell from "./StatusCell.svelte";
+    import SwipeCard from "./SwipeCard.svelte";
+    import type {SwipeAction} from "./swipe";
     import {txnModal} from "./edit/modalState.svelte";
     import {rowActions} from "./rowAction.svelte";
     import {formatAmount} from "#lib/domain/money.js";
@@ -57,6 +59,7 @@
         onUnlink,
         onForget,
         onFindMatch,
+        swipe = null,
     }: {
         txn: Transaction;
         columns: ColumnConfig;
@@ -86,6 +89,8 @@
         onForget?: (value: string) => void;
         /** Find match (A2): open the matcher on this transaction. Offered when it has an unlinked clearing posting. */
         onFindMatch?: () => void;
+        /** A card's touch gestures (plan 42 phase 3): swipe right, the actions a swipe left reveals, and a long press. */
+        swipe?: {leading: SwipeAction | null; trailing: SwipeAction[]; onMenu: () => void} | null;
     } = $props();
 
     /** The other half of a transfer row, for "→ Jan 2". */
@@ -354,56 +359,67 @@
          A ring, not a background: the card already has `bg-base-200`. -->
     <!-- A tap anywhere on the card that is not one of its own controls opens
          the transaction; the description button is the keyboard's way in. -->
-    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-    <article
-        class={["card relative mb-2 h-16 overflow-hidden bg-base-200", nested && "ml-4", canEdit && "cursor-pointer", cardClass]}
-        onclick={openFromCard}
-        aria-current={cursor ? "true" : undefined}
-        data-txn={txn.index}
-        data-slot={at}
-        data-transfer={transfer?.matchId}
-        data-review-marker={marker ?? undefined}
-        data-testid="journal-card"
+    <!-- A finger can also swipe it (SwipeCard): right for the leading action,
+         left for Edit and Delete, and a long press for the row's menu. -->
+    <SwipeCard
+        id={txn.index}
+        enabled={canEdit && swipe !== null}
+        leading={swipe?.leading ?? null}
+        trailing={swipe?.trailing ?? []}
+        onLongPress={swipe?.onMenu}
+        class={["mb-2 h-16", nested && "ml-4"]}
     >
-        {#if marker !== null}
-            <span class="absolute inset-y-0 left-0 w-[3px]" style:background={stripeColor(marker)} aria-hidden="true"></span>
-        {/if}
-        <div class="flex h-full min-w-0 flex-col justify-center gap-1 px-3">
-            <div class="flex min-w-0 items-center gap-2">
-                {#if columns.date}
-                    <span class="shrink-0 text-xs whitespace-nowrap text-base-content/60 tabular-nums" title={txn.date} data-testid="card-date"
-                        >{cardDate(txn.date, today)}</span
-                    >
-                {/if}
-                <div class="min-w-0 grow text-sm font-medium">{@render descriptionContent()}</div>
-                {#if columns.amount}
-                    <span
-                        class="flex shrink-0 items-baseline gap-1 font-mono text-sm tabular-nums"
-                        title={amounts.map((amount) => formatAmount(amount)).join("\n")}
-                    >
-                        {#if amounts.length === 0}
-                            <span class="text-base-content/40">&mdash;</span>
-                        {:else}
-                            <span class={["whitespace-nowrap", amounts[0].qty.m < 0n && "text-error"]}>{formatAmount(amounts[0])}</span>
-                            {#if amounts.length > 1}<span class="text-xs text-base-content/50">+{amounts.length - 1}</span>{/if}
-                        {/if}
-                    </span>
-                {/if}
+        <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+        <article
+            class={["card relative h-full overflow-hidden bg-base-200", canEdit && "cursor-pointer", cardClass]}
+            onclick={openFromCard}
+            aria-current={cursor ? "true" : undefined}
+            data-txn={txn.index}
+            data-slot={at}
+            data-transfer={transfer?.matchId}
+            data-review-marker={marker ?? undefined}
+            data-testid="journal-card"
+        >
+            {#if marker !== null}
+                <span class="absolute inset-y-0 left-0 w-[3px]" style:background={stripeColor(marker)} aria-hidden="true"></span>
+            {/if}
+            <div class="flex h-full min-w-0 flex-col justify-center gap-1 px-3">
+                <div class="flex min-w-0 items-center gap-2">
+                    {#if columns.date}
+                        <span class="shrink-0 text-xs whitespace-nowrap text-base-content/60 tabular-nums" title={txn.date} data-testid="card-date"
+                            >{cardDate(txn.date, today)}</span
+                        >
+                    {/if}
+                    <div class="min-w-0 grow text-sm font-medium">{@render descriptionContent()}</div>
+                    {#if columns.amount}
+                        <span
+                            class="flex shrink-0 items-baseline gap-1 font-mono text-sm tabular-nums"
+                            title={amounts.map((amount) => formatAmount(amount)).join("\n")}
+                        >
+                            {#if amounts.length === 0}
+                                <span class="text-base-content/40">&mdash;</span>
+                            {:else}
+                                <span class={["whitespace-nowrap", amounts[0].qty.m < 0n && "text-error"]}>{formatAmount(amounts[0])}</span>
+                                {#if amounts.length > 1}<span class="text-xs text-base-content/50">+{amounts.length - 1}</span>{/if}
+                            {/if}
+                        </span>
+                    {/if}
+                </div>
+                <div class="flex min-w-0 items-center gap-2 text-xs text-base-content/60">
+                    {#if columns.accounts}
+                        <div class="min-w-0 grow overflow-hidden">{@render accountsContent()}</div>
+                    {:else}
+                        <span class="grow"></span>
+                    {/if}
+                    {#if pinned !== null}
+                        <RunningCells cell={running} {pinned} txnIndex={txn.index} txnDate={txn.date} mode="card" />
+                    {/if}
+                    {#if tagText !== ""}
+                        <span class="max-w-[35%] shrink truncate text-base-content/50" title={tagText} data-testid="card-tags">{tagText}</span>
+                    {/if}
+                    {#if columns.status}<span class="shrink-0"><StatusCell {txn} /></span>{/if}
+                </div>
             </div>
-            <div class="flex min-w-0 items-center gap-2 text-xs text-base-content/60">
-                {#if columns.accounts}
-                    <div class="min-w-0 grow overflow-hidden">{@render accountsContent()}</div>
-                {:else}
-                    <span class="grow"></span>
-                {/if}
-                {#if pinned !== null}
-                    <RunningCells cell={running} {pinned} txnIndex={txn.index} txnDate={txn.date} mode="card" />
-                {/if}
-                {#if tagText !== ""}
-                    <span class="max-w-[35%] shrink truncate text-base-content/50" title={tagText} data-testid="card-tags">{tagText}</span>
-                {/if}
-                {#if columns.status}<span class="shrink-0"><StatusCell {txn} /></span>{/if}
-            </div>
-        </div>
-    </article>
+        </article>
+    </SwipeCard>
 {/if}
