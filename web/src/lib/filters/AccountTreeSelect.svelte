@@ -69,7 +69,7 @@
 <!-- `bind:open` moves the dropdown's state into the DOM where the dismissal
      action can close it. This is ColumnMenu's shape, adopted here because this
      dropdown had neither Escape nor outside-click before. -->
-<details class="dropdown" bind:open use:dismissible={{active: open, onDismiss: () => (open = false), outside: true}}>
+<details class="ll-hang-from-row dropdown dropdown-start" bind:open use:dismissible={{active: open, onDismiss: () => (open = false), outside: true}}>
     <summary class="btn btn-sm">
         Accounts
         {#if selectedCount > 0}

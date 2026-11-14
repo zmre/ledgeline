@@ -759,7 +759,7 @@
              settings: three buttons in a row left room for two letters of
              each label. No tooltips: nothing hovers on a phone. The menu's
              panel hangs from the whole row (`static` details in a `relative`
-             row), so it is the row's width wherever the button wrapped to. -->
+             row), at its right edge and never wider than it, wherever the button wrapped to. -->
         <div class="flex flex-col gap-2 pb-1" data-testid="journal-toolbar-narrow">
             <div class="relative flex flex-wrap items-center justify-between gap-2">
                 {#if editing.canEdit}
@@ -785,7 +785,7 @@
                                 <ReviewIcon name="chevron-down" class="h-3.5 w-3.5" />
                             </summary>
                             <div
-                                class="dropdown-content inset-x-0 z-20 mt-1 max-h-[70dvh] overflow-x-hidden overflow-y-auto overscroll-contain rounded-box border border-base-300 bg-base-200 p-2 shadow-lg"
+                                class="dropdown-content z-20 mt-1 max-h-[70dvh] w-[min(24rem,100%)] overflow-x-hidden overflow-y-auto overscroll-contain rounded-box border border-base-300 bg-base-200 p-2 shadow-lg"
                                 data-testid="review-menu"
                             >
                                 <ul class="menu w-full p-0 text-base">
@@ -903,9 +903,9 @@
                                 <span class="badge badge-ghost badge-sm tabular-nums" data-testid="review-recents-count">{recentCount}</span>
                             </button>
                         </span>
-                        <!-- End-aligned when the toolbar is narrow enough to wrap: a left-aligned panel ran past the window. -->
+                        <!-- End-aligned: a left-aligned panel ran past the window whenever the toolbar wrapped (daisyUI's sm: is a media query, so it never tracked that). -->
                         <details
-                            class="dropdown dropdown-end sm:dropdown-start"
+                            class="dropdown dropdown-end"
                             bind:open={reviewMenuOpen}
                             use:dismissible={{active: reviewMenuOpen, outside: true, onDismiss: () => (reviewMenuOpen = false)}}
                         >
@@ -941,9 +941,9 @@
                                 >
                             </button>
                         </span>
-                        <!-- End-aligned when the toolbar is narrow enough to wrap: a left-aligned panel ran past the window. -->
+                        <!-- End-aligned: a left-aligned panel ran past the window whenever the toolbar wrapped (daisyUI's sm: is a media query, so it never tracked that). -->
                         <details
-                            class="dropdown dropdown-end sm:dropdown-start"
+                            class="dropdown dropdown-end"
                             bind:open={matchMenuOpen}
                             use:dismissible={{active: matchMenuOpen, outside: true, onDismiss: () => (matchMenuOpen = false)}}
                         >
@@ -977,7 +977,8 @@
                 <span></span>
             {/if}
             {@render confirmBar()}
-            <div class="flex items-center gap-1">
+            <!-- `ml-auto`: on a line of its own (a wrapped toolbar) it stays on the right, where its menu opens leftwards. -->
+            <div class="ml-auto flex items-center gap-1">
                 {#if !calendar}
                     <ColumnMenu />
                 {/if}

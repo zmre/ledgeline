@@ -287,4 +287,16 @@ html.ll-native .toast-top {
     .ll-sticky-col {
         --ll-statement-label: 10rem;
     }
+
+    /* A dropdown whose button a wrapped row may put anywhere (the filter bar's
+     * Accounts): below `md` its panel hangs from the row's left edge (the
+     * nearest `relative` ancestor) rather than the button, so it stays on
+     * screen. */
+    .ll-hang-from-row {
+        position: static;
+    }
+
+    .ll-hang-from-row > .dropdown-content {
+        inset-inline-start: 0;
+    }
 }

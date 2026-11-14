@@ -113,7 +113,8 @@
 </script>
 
 <div class="flex flex-col gap-2 rounded-box bg-base-200 p-2">
-    <div class="flex flex-wrap items-center gap-2">
+    <!-- `relative`: below `md` the Accounts panel hangs from this row (`ll-hang-from-row`). -->
+    <div class="relative flex flex-wrap items-center gap-2">
         <DateRangePicker />
         <!-- `a`, not `/`: on this page `/` belongs to the free-text SearchInput
              below, which is the box people reach for first. -->

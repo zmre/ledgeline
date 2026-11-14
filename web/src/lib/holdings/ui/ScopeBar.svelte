@@ -22,7 +22,8 @@
 </script>
 
 <div class="flex flex-col gap-2 rounded-box bg-base-200 p-2" data-testid="holdings-scope-bar">
-    <div class="flex flex-wrap items-center gap-2">
+    <!-- `relative`: below `md` the Accounts panel hangs from this row. -->
+    <div class="relative flex flex-wrap items-center gap-2">
         <!-- `/` here: holdings has no free-text search box, so the account tree
              is the search on this page. -->
         <AccountTreeSelect
