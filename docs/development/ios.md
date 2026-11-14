@@ -83,3 +83,14 @@ aren't committed.
 - App logs go to stderr under `simctl launch --console-pty` and to the
   unified log (subsystem `com.zmre.ledgeline.ios`). Logging never writes
   journal contents.
+- Opening a ledger asks for Face ID or the passcode (per-ledger, on by
+  default). A simulator with a passcode shows the passcode sheet. To use
+  Face ID instead, enroll it with `xcrun simctl spawn booted notifyutil -s
+  com.apple.BiometricKit.enrollmentChanged 1` then `notifyutil -p
+  com.apple.BiometricKit.enrollmentChanged`, and answer each prompt with
+  `notifyutil -p com.apple.BiometricKit_Sim.pearl.match` (or
+  `pearl.nomatch`). With neither, the ledger opens and the log says so.
+- `simctl` can't swipe or pinch either. A `LEDGELINE_DEBUG_JS` script can
+  dispatch `PointerEvent`s with `pointerType: "touch"` on a journal card
+  to drive its swipes and long press. A pinch sends the page's
+  `ledgeline:zoom` event, which a script can dispatch directly.

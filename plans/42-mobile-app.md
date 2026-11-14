@@ -1,6 +1,6 @@
 # Plan 42: iOS / iPadOS app
 
-Status: Phase 1 in progress (2026-11-13). Not for the App Store yet: a
+Status: Phases 1–2 in progress; phase 3 (gestures + lock) done (2026-11-13). Not for the App Store yet: a
 development-signed build installed straight onto Patrick's devices.
 
 ## Goal
@@ -89,6 +89,11 @@ the `md` container breakpoint (48 rem).
 | xlsx export               | `share` message → native share sheet (Save to Files, AirDrop, Mail…)                         | native         |
 | Reports / projections tables | horizontal scroll with sticky first column                                               | narrow         |
 | Journal list              | stacked multi-row cards (date · payee / account · amount) instead of columns                | narrow         |
+| Journal scroll            | one page scroll: the windowed list follows the page (`pageScroll`), no inner scroller; the totals footer flows after it | narrow |
+| Journal review buttons    | one row of equal short buttons (Unknowns n · Recents n · Matches n) and one ▾ for both settings | narrow     |
+| Journal cards             | swipe right = mark reviewed (unreviewed stripe) else edit; swipe left = Edit / Delete (Delete arms the floating confirm); long press = row menu | narrow, touch |
+| Bottom inset              | `--ll-bottom-inset`: the app measures the home indicator and sets `--ll-native-bottom` (the web view ignores the bottom safe area) | native |
+| Page zoom                 | WebKit zoom off (viewport `user-scalable=no`, set by the app's script); pinch steps the UI scale via `ledgeline:zoom` | native |
 | Entry dialog, review overlay | full-screen sheet layout, stacked fields                                                 | narrow         |
 
 ## Phases
@@ -113,7 +118,19 @@ Audit every screen at 390 pt (iPhone), 744 pt (iPad mini portrait) and
 entry dialog, review/match overlays, reports & projections horizontal scroll,
 budget, holdings, settings panels.
 
-### Phase 3: native gestures + lock
+### Phase 3: native gestures + lock — done (2026-11-13)
+
+Done: swipe/long-press on cards (`journal/SwipeCard.svelte`, thresholds in
+`swipe.ts`, mark-reviewed in `review/markReviewed.ts`); left-edge swipe =
+the bar's back (`EdgeSwipe` in LedgerScreen.swift, light haptic); pinch =
+one UI-scale step per 1.25× (`PinchSteps.swift`, saved like desktop zoom);
+`AppLock.swift` asks on open and after > 5 min in the background (cover
+stays up with Unlock / Ledgers), per-ledger "Require Face ID" in the
+ledger row's context menu and leading swipe (turning it off authenticates
+first). Gestures were exercised in the simulator with synthetic pointer
+events only; a real finger on the device is still to be tried.
+
+Original scope:
 
 - Swipe actions on journal cards (e.g. leading = review/edit, trailing =
   delete/duplicate), long-press context menu.
