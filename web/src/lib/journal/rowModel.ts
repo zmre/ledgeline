@@ -165,13 +165,13 @@ export interface RowWindow {
 
 /**
  * The table's row geometry, in rem because the classes that draw it are: an
- * `h-10` table row, an `h-16` card plus its `mb-2`, the card wrapper's `p-2`,
+ * `h-10` table row, an `h-20` (three-line) card plus its `mb-2`, the card wrapper's `p-2`,
  * and the container width below which the table becomes cards. That is the
  * `md` breakpoint (48rem on <body>, plan 42) less <main>'s 2rem of padding:
  * the list's own width is what is measured. In rem, because what has to fit
  * is rem-sized columns.
  */
-export const LIST_GEOMETRY_REM = {rowPitch: 2.5, cardPitch: 4.5, cardHeight: 4, cardInset: 0.5, cardBreakpoint: 46} as const;
+export const LIST_GEOMETRY_REM = {rowPitch: 2.5, cardPitch: 5.5, cardHeight: 5, cardInset: 0.5, cardBreakpoint: 46} as const;
 
 export interface ListGeometry {
     mode: "card" | "table";

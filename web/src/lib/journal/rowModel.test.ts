@@ -354,9 +354,9 @@ describe("expanded transfer slots (plan 35 D11)", () => {
 });
 
 describe("UNIT listGeometry (interface scale, plan 39)", () => {
-    it("is the h-10 row and the h-16 + mb-2 card at 100 %", () => {
+    it("is the h-10 row and the h-20 + mb-2 card at 100 %", () => {
         expect(listGeometry(1024, 16)).toEqual({mode: "table", pitch: 40, rowHeight: 40, topInset: 0});
-        expect(listGeometry(375, 16)).toEqual({mode: "card", pitch: 72, rowHeight: 64, topInset: 8});
+        expect(listGeometry(375, 16)).toEqual({mode: "card", pitch: 88, rowHeight: 80, topInset: 8});
     });
 
     it("turns to cards below md (48rem) less main's padding: an iPad mini's 744pt portrait gets cards", () => {
@@ -367,7 +367,7 @@ describe("UNIT listGeometry (interface scale, plan 39)", () => {
 
     it("doubles at 200 %, where an h-10 row is 80px", () => {
         expect(listGeometry(2048, 32)).toEqual({mode: "table", pitch: 80, rowHeight: 80, topInset: 0});
-        expect(listGeometry(750, 32)).toEqual({mode: "card", pitch: 144, rowHeight: 128, topInset: 16});
+        expect(listGeometry(750, 32)).toEqual({mode: "card", pitch: 176, rowHeight: 160, topInset: 16});
     });
 
     it("moves the card breakpoint with the root: rem columns stop fitting sooner at 200 %", () => {

@@ -57,6 +57,7 @@
     import type {SwipeAction} from "./swipe";
     import {swipeOpen} from "./swipeOpen.svelte";
     import TransactionRow from "./TransactionRow.svelte";
+    import TxnDetailSheet, {type DetailAction} from "./TxnDetailSheet.svelte";
     import {measureAccountColumn} from "./accountColumn.svelte";
     import {txnModal} from "./edit/modalState.svelte";
     import {rowActions} from "./rowAction.svelte";
@@ -308,9 +309,10 @@
         if (!result.ok && result.failure.kind !== "conflict") editing.reportFailure(result.failure);
     }
 
-    // Touch (plan 42 phase 3): the narrow cards' swipes and long-press menu.
-    // Each is something the card's tap, the toolbar or the keys already do;
-    // Delete arms the same toolbar confirm `x` does and never deletes outright.
+    // Touch (plan 42 phase 3): the narrow cards' swipes, and the detail sheet
+    // a tap or a long press opens (the whole transaction, then its actions).
+    // Each action is something the toolbar or the keys already do; Delete arms
+    // the same confirm `x` does and never deletes outright.
     let rowMenu = $state.raw<{slot: Slot; shows: JournalRow} | null>(null);
 
     function armDelete(txn: Transaction): void {
@@ -345,11 +347,41 @@
         return {
             leading,
             trailing: [edit, {label: "Delete", tone: "error", run: () => armDelete(txn), testid: "swipe-delete"}],
-            onMenu: () => {
-                swipeOpen.set(null);
-                rowMenu = {slot, shows};
-            },
+            onMenu: () => openDetail(slot, shows),
         };
+    }
+
+    /** Open a card's detail sheet: a tap, a long press, or the description button. */
+    function openDetail(slot: Slot, shows: JournalRow): void {
+        swipeOpen.set(null);
+        rowMenu = {slot, shows};
+    }
+
+    /** The detail sheet's actions for `shows` at `slot`; each closes the sheet first. */
+    function detailActions(slot: Slot, shows: JournalRow): DetailAction[] {
+        const txn = shows.txn;
+        const item = (label: string, action: () => void, extra: Partial<DetailAction> = {}): DetailAction => ({label, run: () => fromMenu(action), ...extra});
+        const out: DetailAction[] = [];
+        if (editing.canEdit) {
+            out.push(item("Edit", () => txnModal.openEdit(txn.index), {tone: "primary", testid: "detail-edit"}));
+            if (!shows.reviewed && !shows.unknown) out.push(item("Mark reviewed", () => void reviewRow(txn), {testid: "detail-reviewed"}));
+            out.push(item(STATUS_ACTION[nextStatus(txn.status)], () => void cycleRowStatus(txn), {testid: "detail-status"}));
+            if (shows.transfer === undefined && findableClearing(txn).length > 0)
+                out.push(item("Find match", () => matches.openFor(txn.index), {testid: "detail-find-match"}));
+        }
+        if (slot.half === null && shows.transfer !== undefined) {
+            out.push(item(openPositions.includes(slot.position) ? "Hide both halves" : "Show both halves", () => toggleTransfer(slot.position)));
+            if (editing.canEdit) out.push(item("Unlink", () => ((armedDelete = null), (armedMatch = {kind: "unlink", row: shows}))));
+        }
+        if (editing.canEdit) out.push(item("Delete…", () => armDelete(txn), {tone: "error", testid: "detail-delete"}));
+        return out;
+    }
+
+    /** A transfer row's two real accounts, for the sheet's note. */
+    function transferNote(shows: JournalRow): string | null {
+        const transfer = shows.transfer;
+        if (transfer === undefined) return null;
+        return `Transfer: ${transfer.from.account ?? transfer.from.label ?? "?"} → ${transfer.to.account ?? transfer.to.label ?? "?"}`;
     }
 
     function closeRowMenu(): void {
@@ -707,6 +739,7 @@
         onForget={(value) => ((armedDelete = null), (armedMatch = {kind: "forget", txn: shows.txn, value}))}
         onFindMatch={() => matches.openFor(shows.txn.index)}
         swipe={mode === "card" && editing.canEdit ? swipeFor(slot, shows) : null}
+        onDetail={mode === "card" ? () => openDetail(slot, shows) : undefined}
     />
 {/snippet}
 
@@ -1046,7 +1079,7 @@
                 <div class="p-2" style="padding-top: {win.padTop + topInset}px; padding-bottom: {win.padBottom + topInset}px">
                     {#each visible as slot (slotKey(slot))}
                         {#if slot.shows === null}
-                            <div class="mb-2 h-24 skeleton opacity-40" aria-hidden="true" data-skeleton></div>
+                            <div class="mb-2 h-20 skeleton opacity-40" aria-hidden="true" data-skeleton></div>
                         {:else}
                             {@render row(slot, slot.shows, "card")}
                         {/if}
@@ -1056,52 +1089,13 @@
         </div>
     {/if}
     {#if rowMenu !== null}
-        {@const menuRow = rowMenu.shows}
-        {@const menuSlot = rowMenu.slot}
-        {@const menuTxn = menuRow.txn}
-        <!-- The card's long-press menu (plan 42 phase 3): everything the row
-             offers a mouse and a keyboard, as one list a thumb can reach. -->
-        <div
-            class="modal modal-open modal-bottom"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Transaction actions"
-            data-testid="row-menu"
-            use:dismissible={{onDismiss: closeRowMenu}}
-        >
-            <div class="modal-box pb-[calc(1.25rem+var(--ll-bottom-inset))]">
-                <p class="mb-2 truncate px-1 text-sm text-base-content/60">
-                    <span class="font-mono">{menuTxn.date}</span>
-                    {menuTxn.description || "(no description)"}
-                </p>
-                <ul class="menu w-full p-0 text-base">
-                    <li><button type="button" onclick={() => fromMenu(() => txnModal.openEdit(menuTxn.index))}>Edit</button></li>
-                    {#if !menuRow.reviewed && !menuRow.unknown}
-                        <li><button type="button" onclick={() => fromMenu(() => void reviewRow(menuTxn))}>Mark reviewed</button></li>
-                    {/if}
-                    <li>
-                        <button type="button" onclick={() => fromMenu(() => void cycleRowStatus(menuTxn))}>{STATUS_ACTION[nextStatus(menuTxn.status)]}</button>
-                    </li>
-                    {#if menuRow.transfer === undefined && findableClearing(menuTxn).length > 0}
-                        <li><button type="button" onclick={() => fromMenu(() => matches.openFor(menuTxn.index))}>Find a match</button></li>
-                    {/if}
-                    {#if menuSlot.half === null && menuRow.transfer !== undefined}
-                        <li>
-                            <button type="button" onclick={() => fromMenu(() => toggleTransfer(menuSlot.position))}
-                                >{openPositions.includes(menuSlot.position) ? "Hide both halves" : "Show both halves"}</button
-                            >
-                        </li>
-                        <li>
-                            <button type="button" onclick={() => fromMenu(() => ((armedDelete = null), (armedMatch = {kind: "unlink", row: menuRow})))}
-                                >Unlink the transfer</button
-                            >
-                        </li>
-                    {/if}
-                    <li><button type="button" class="text-error" onclick={() => fromMenu(() => armDelete(menuTxn))}>Delete…</button></li>
-                    <li><button type="button" onclick={closeRowMenu}>Cancel</button></li>
-                </ul>
-            </div>
-            <button type="button" class="modal-backdrop" aria-label="Close" onclick={closeRowMenu}></button>
-        </div>
+        <!-- A card's detail sheet (plan 42): the whole transaction, read-only,
+             then everything the row offers a mouse and a keyboard. -->
+        <TxnDetailSheet
+            txn={rowMenu.shows.txn}
+            note={transferNote(rowMenu.shows)}
+            actions={detailActions(rowMenu.slot, rowMenu.shows)}
+            onClose={closeRowMenu}
+        />
     {/if}
 </section>

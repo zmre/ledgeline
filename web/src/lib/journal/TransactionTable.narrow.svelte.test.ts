@@ -112,7 +112,7 @@ describe("COMPONENT TransactionTable below the md breakpoint", () => {
         expect(keymap.active.map((binding) => binding.keys)).toContain("v");
     });
 
-    it("renders each transaction as a two-line card: date · description · amount, then the accounts", async () => {
+    it("renders each transaction as a card: date · description · amount, then the accounts in full", async () => {
         width(390);
         render(TransactionTable);
 
@@ -123,17 +123,48 @@ describe("COMPONENT TransactionTable below the md breakpoint", () => {
         expect(first.querySelector("[data-testid=card-date]")?.getAttribute("title")).toBe("2026-04-10");
         expect(first.textContent).toContain("Coffee");
         expect(first.textContent).toContain("$4.50");
+        // Whole names, not last segments: a phone wraps them onto a second line.
+        expect(first.querySelector("[data-testid=card-accounts]")?.textContent).toBe("assets:cash → expenses:coffee");
     });
 
-    it("opens the whole transaction when a card's description is tapped", async () => {
+    it("opens a read-only detail sheet when a card is tapped, and Edit there opens the editor", async () => {
+        width(390);
+        render(TransactionTable);
+
+        const [first] = await screen.findAllByTestId("journal-card");
+        await fireEvent.click(first);
+        expect(txnModal.open).toBe(false);
+        const sheet = screen.getByTestId("txn-detail");
+        expect(screen.getByTestId("detail-description").textContent).toBe("Coffee");
+        const postings = screen.getByTestId("detail-postings");
+        expect(postings.textContent).toContain("expenses:coffee");
+        expect(postings.textContent).toContain("assets:cash");
+        expect(postings.textContent).toContain("$-4.50");
+        expect([...sheet.querySelectorAll("[data-testid=detail-actions] button")].map((button) => button.textContent?.trim())).toEqual([
+            "Edit",
+            "Mark reviewed",
+            "Mark pending",
+            "Delete…",
+            "Close",
+        ]);
+
+        await fireEvent.click(screen.getByTestId("detail-edit"));
+        expect(screen.queryByTestId("txn-detail")).toBeNull();
+        expect(txnModal.open).toBe(true);
+        expect(txnModal.targetIndex).toBe(2);
+        txnModal.close();
+    });
+
+    it("opens the same sheet from a card's description button, and Close closes it", async () => {
         width(390);
         render(TransactionTable);
 
         const [first] = await screen.findAllByTestId("row-description");
         await fireEvent.click(first);
-        expect(txnModal.open).toBe(true);
-        expect(txnModal.targetIndex).toBe(2);
-        txnModal.close();
+        expect(screen.getByTestId("txn-detail")).toBeTruthy();
+        await fireEvent.click(screen.getByTestId("detail-close"));
+        expect(screen.queryByTestId("txn-detail")).toBeNull();
+        expect(txnModal.open).toBe(false);
     });
 
     it("keeps the table at an iPad's 768pt-wide list", async () => {

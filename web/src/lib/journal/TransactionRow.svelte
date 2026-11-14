@@ -38,7 +38,7 @@
     import {rowActions} from "./rowAction.svelte";
     import {formatAmount} from "#lib/domain/money.js";
     import {localToday} from "#lib/stores/filters.svelte.js";
-    import {cardDate, txnFlowAmounts} from "./rowModel";
+    import {accountFlow, cardDate, generatedPostings, txnFlowAmounts} from "./rowModel";
 
     let {
         txn,
@@ -60,6 +60,7 @@
         onForget,
         onFindMatch,
         swipe = null,
+        onDetail,
     }: {
         txn: Transaction;
         columns: ColumnConfig;
@@ -91,6 +92,8 @@
         onFindMatch?: () => void;
         /** A card's touch gestures (plan 42 phase 3): swipe right, the actions a swipe left reveals, and a long press. */
         swipe?: {leading: SwipeAction | null; trailing: SwipeAction[]; onMenu: () => void} | null;
+        /** A card's tap (plan 42): open the read-only detail sheet. Without it a tap edits. */
+        onDetail?: () => void;
     } = $props();
 
     /** The other half of a transfer row, for "→ Jan 2". */
@@ -143,10 +146,26 @@
         startEditDesc();
     });
 
-    function openFromCard(event: MouseEvent): void {
-        if (!canEdit || (event.target instanceof Element && event.target.closest("button, a, input, label") !== null)) return;
-        txnModal.openEdit(txn.index);
+    /** A card's tap: the detail sheet (read-only journals too), else the editor. */
+    function openCard(): void {
+        if (onDetail !== undefined) onDetail();
+        else if (canEdit) txnModal.openEdit(txn.index);
     }
+
+    function openFromCard(event: MouseEvent): void {
+        if (event.target instanceof Element && event.target.closest("button, a, input, label") !== null) return;
+        openCard();
+    }
+
+    /** A card's accounts in full, for its wrapping account lines: `from → to`, or the split's accounts. */
+    const cardAccounts = $derived.by((): string => {
+        if (mode !== "card") return "";
+        if (transfer !== undefined && ends !== null) return `${ends[0]} → ${ends[1]}`;
+        const flow = accountFlow(txn);
+        const auto = generatedPostings(txn).length;
+        const text = flow.kind === "flow" ? `${flow.source} → ${flow.dest}` : flow.accounts.join(" · ");
+        return auto > 0 ? `${text} · +${auto} auto` : text;
+    });
 
     function startEditDesc(): void {
         if (!canEdit) return;
@@ -215,13 +234,13 @@
                 use:descAutofocus
             />
         {:else if canEdit}
-            <!-- A card (narrow, plan 42) opens the whole transaction: an inline
-                 field in a two-line card on a phone is too small to work in. -->
+            <!-- A card (narrow, plan 42) opens the transaction's detail sheet:
+                 an inline field in a card on a phone is too small to work in. -->
             <button
                 type="button"
                 class="min-w-0 truncate text-left"
-                title={mode === "card" ? `Edit · ${txn.description}` : `Click to edit · ${txn.description}`}
-                onclick={mode === "card" ? () => txnModal.openEdit(txn.index) : startEditDesc}
+                title={mode === "card" ? txn.description : `Click to edit · ${txn.description}`}
+                onclick={mode === "card" ? openCard : startEditDesc}
                 data-testid="row-description"
             >
                 {txn.description || "(no description)"}
@@ -351,27 +370,30 @@
         {/if}
     </tr>
 {:else}
-    <!-- The narrow list (plan 42): two lines a phone can read rather than five
-         squeezed columns. Line one is when · what · how much; line two, muted,
-         is where (the accounts), then the tags and the status. The card is
-         `h-16`, which `LIST_GEOMETRY_REM` windows by: a second commodity
+    <!-- The narrow list (plan 42): three lines a phone can read rather than
+         five squeezed columns. Line one is when · what · how much; lines two
+         and three, muted, are where (the accounts, in full, wrapping onto the
+         third line when they need it), then the tags and the status. The card
+         is `h-20`, which `LIST_GEOMETRY_REM` windows by: accounts that would
+         need a fourth line end in an ellipsis, and a second commodity
          collapses to "+1" rather than growing it.
          A ring, not a background: the card already has `bg-base-200`. -->
     <!-- A tap anywhere on the card that is not one of its own controls opens
-         the transaction; the description button is the keyboard's way in. -->
+         the transaction's detail sheet; the description button is the
+         keyboard's way in. -->
     <!-- A finger can also swipe it (SwipeCard): right for the leading action,
-         left for Edit and Delete, and a long press for the row's menu. -->
+         left for Edit and Delete, and a long press for the same sheet. -->
     <SwipeCard
         id={txn.index}
         enabled={canEdit && swipe !== null}
         leading={swipe?.leading ?? null}
         trailing={swipe?.trailing ?? []}
         onLongPress={swipe?.onMenu}
-        class={["mb-2 h-16", nested && "ml-4"]}
+        class={["mb-2 h-20", nested && "ml-4"]}
     >
         <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
         <article
-            class={["card relative h-full overflow-hidden bg-base-200", canEdit && "cursor-pointer", cardClass]}
+            class={["card relative h-full overflow-hidden bg-base-200", (canEdit || onDetail !== undefined) && "cursor-pointer", cardClass]}
             onclick={openFromCard}
             aria-current={cursor ? "true" : undefined}
             data-txn={txn.index}
@@ -383,11 +405,18 @@
             {#if marker !== null}
                 <span class="absolute inset-y-0 left-0 w-[3px]" style:background={stripeColor(marker)} aria-hidden="true"></span>
             {/if}
-            <div class="flex h-full min-w-0 flex-col justify-center gap-1 px-3">
+            <!-- `@container`: the card's own width, in rem, decides how its lines
+                 split. Below 16rem (a phone at a big interface scale) the date
+                 leaves line one to the description and opens the accounts line,
+                 and the status and tags follow the accounts instead of taking
+                 a column beside them. -->
+            <div class="@container flex h-full min-w-0 flex-col justify-center gap-0.5 px-3">
                 <div class="flex min-w-0 items-center gap-2">
                     {#if columns.date}
-                        <span class="shrink-0 text-xs whitespace-nowrap text-base-content/60 tabular-nums" title={txn.date} data-testid="card-date"
-                            >{cardDate(txn.date, today)}</span
+                        <span
+                            class="shrink-0 text-xs whitespace-nowrap text-base-content/60 tabular-nums @max-[16rem]:hidden"
+                            title={txn.date}
+                            data-testid="card-date">{cardDate(txn.date, today)}</span
                         >
                     {/if}
                     <div class="min-w-0 grow text-sm font-medium">{@render descriptionContent()}</div>
@@ -405,20 +434,35 @@
                         </span>
                     {/if}
                 </div>
-                <div class="flex min-w-0 items-center gap-2 text-xs text-base-content/60">
-                    {#if columns.accounts}
-                        <div class="min-w-0 grow overflow-hidden">{@render accountsContent()}</div>
-                    {:else}
-                        <span class="grow"></span>
+                <div class="flex min-w-0 items-start gap-2 text-xs leading-4 text-base-content/60">
+                    <!-- Plain text, not chips: chips cannot wrap, and a phone needs
+                         the whole name, not its last segment. -->
+                    <p class="line-clamp-2 min-w-0 grow [overflow-wrap:anywhere]" title={cardAccounts}>
+                        {#if columns.date}<span class="hidden tabular-nums @max-[16rem]:inline">{cardDate(txn.date, today)} · </span>{/if}
+                        {#if columns.accounts}<span data-testid="card-accounts">{cardAccounts}</span>{/if}
+                        {#if columns.status && txn.status !== "unmarked"}<span class="hidden @max-[16rem]:inline"> · {txn.status}</span>{/if}
+                        {#if tagText !== ""}<span class="hidden text-base-content/50 @max-[16rem]:inline"> · {tagText}</span>{/if}
+                    </p>
+                    {#if pinned !== null || tagText !== "" || columns.status}
+                        <div class="flex max-w-[40%] shrink-0 flex-col items-end gap-0.5 @max-[16rem]:hidden">
+                            <div class="flex items-center gap-2">
+                                {#if pinned !== null}
+                                    <RunningCells cell={running} {pinned} txnIndex={txn.index} txnDate={txn.date} mode="card" />
+                                {/if}
+                                {#if columns.status}<span class="shrink-0"><StatusCell {txn} /></span>{/if}
+                            </div>
+                            {#if tagText !== ""}
+                                <span class="max-w-full truncate text-base-content/50" title={tagText} data-testid="card-tags">{tagText}</span>
+                            {/if}
+                        </div>
                     {/if}
-                    {#if pinned !== null}
-                        <RunningCells cell={running} {pinned} txnIndex={txn.index} txnDate={txn.date} mode="card" />
-                    {/if}
-                    {#if tagText !== ""}
-                        <span class="max-w-[35%] shrink truncate text-base-content/50" title={tagText} data-testid="card-tags">{tagText}</span>
-                    {/if}
-                    {#if columns.status}<span class="shrink-0"><StatusCell {txn} /></span>{/if}
                 </div>
+                {#if pinned !== null}
+                    <!-- The pinned balance has no inline form: below 16rem it gets a line of its own. -->
+                    <div class="hidden justify-end text-xs @max-[16rem]:flex">
+                        <RunningCells cell={running} {pinned} txnIndex={txn.index} txnDate={txn.date} mode="card" />
+                    </div>
+                {/if}
             </div>
         </article>
     </SwipeCard>
