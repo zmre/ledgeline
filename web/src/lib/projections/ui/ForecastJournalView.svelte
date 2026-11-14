@@ -94,7 +94,7 @@
     </div>
 
     {#if shown.length > 0}
-        <div class="overflow-x-auto rounded-box border border-base-content/10">
+        <div class="ll-sticky-col overflow-x-auto rounded-box border border-base-content/10">
             <table class="table table-sm [&_tbody_tr]:border-0">
                 <thead>
                     <tr class="text-[0.65rem] text-base-content/40">

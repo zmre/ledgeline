@@ -117,9 +117,9 @@
             </div>
         {/if}
     </div>
-    <HScroll testid="accounts-scroller">
+    <HScroll class="ll-sticky-col" testid="accounts-scroller">
         <section
-            class="overflow-hidden rounded-box border border-base-content/10"
+            class="overflow-clip rounded-box border border-base-content/10"
             style:min-width={statementMinWidth(periods, !comparing, comparing)}
             data-testid="accounts-table"
         >

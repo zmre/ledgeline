@@ -215,3 +215,50 @@ html.ll-native .toast-top {
     top: calc(1rem + var(--ll-top-inset));
 }
 
+/*
+ * Report tables that scroll sideways (plan 42): the label column (every row's
+ * first cell, headers and totals included) stays put while the figures scroll
+ * under it, so a phone never shows a column of numbers with nothing to say
+ * what they are. Opaque, because the figures pass beneath it: each tinted row
+ * gets its tint mixed onto the page colour rather than the see-through
+ * original. A scroller (or a section inside one) with its own tint sets
+ * `--ll-sticky-bg`.
+ *
+ * Section titles (`.ll-sticky-title`) stay in view the same way: the title row
+ * keeps its full-width background and only its text sticks.
+ *
+ * The sticky element's nearest scroll container must BE the sideways
+ * scroller, so nothing between them may be `overflow: hidden` (that makes a
+ * scroll container too); boxes inside use `overflow: clip`.
+ */
+.ll-sticky-col :is(thead, tbody, tfoot) > tr > :first-child {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    background-color: var(--ll-sticky-bg, var(--color-base-100));
+}
+
+.ll-sticky-col tr.bg-base-200 > :first-child {
+    background-color: var(--color-base-200);
+}
+
+.ll-sticky-col tr.bg-base-200\/60 > :first-child {
+    background-color: color-mix(in oklab, var(--color-base-200) 60%, var(--ll-sticky-bg, var(--color-base-100)));
+}
+
+.ll-sticky-col tr.bg-primary\/25 > :first-child {
+    background-color: color-mix(in oklab, var(--color-primary) 25%, var(--ll-sticky-bg, var(--color-base-100)));
+}
+
+.ll-sticky-title {
+    position: sticky;
+    left: 1rem;
+    display: inline-block;
+}
+
+/* Below `md` the label column is narrower: it is on screen the whole time. */
+@container app (width < 48rem) {
+    .ll-sticky-col {
+        --ll-statement-label: 10rem;
+    }
+}
