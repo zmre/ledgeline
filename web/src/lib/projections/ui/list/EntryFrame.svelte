@@ -87,10 +87,16 @@
     onpointerenter={() => onHover?.(true)}
     onpointerleave={() => onHover?.(false)}
 >
-    <div class="flex items-start gap-1">
+    <!-- Handle | header | buttons on the first row; hint and body below the
+         header. From `sm` the body keeps to the header's column; on a phone it
+         also takes the buttons' column, which there is the room that keeps
+         account names readable. Start/end longhands only: a `col-span-*`
+         under a variant is the `grid-column` shorthand and would reset the
+         start line. -->
+    <div class="grid grid-cols-[1rem_minmax(0,1fr)_auto] items-start gap-x-1">
         <span
             class={[
-                "mt-0.5 w-4 shrink-0 text-center leading-5 select-none",
+                "row-span-2 mt-0.5 w-4 shrink-0 text-center leading-5 select-none",
                 canDrag ? "cursor-grab text-base-content/25 group-hover/entry:text-base-content/60" : "text-transparent",
             ]}
             draggable={canDrag ? "true" : "false"}
@@ -100,24 +106,28 @@
             ondragstart={onDragStart}
             ondragend={onDragEnd}>⠿</span
         >
-        <div class={["min-w-0 grow", entry.disabled && "opacity-55"]}>
-            <div class="flex min-h-5 flex-wrap items-center gap-x-2 gap-y-1">
-                {#if entry.disabled}
-                    <KindBadge kind="off" />
-                {/if}
-                {#each entry.badges as badge (badge)}
-                    <KindBadge kind={badge} />
-                {/each}
-                {@render header(headId)}
-            </div>
-            {#if hint !== null}
-                <p class="mt-1 text-xs text-warning" data-testid="entry-hint">{hint}</p>
+        <div class={["col-start-2 row-start-1 flex min-h-5 min-w-0 flex-wrap items-center gap-x-2 gap-y-1", entry.disabled && "opacity-55"]}>
+            {#if entry.disabled}
+                <KindBadge kind="off" />
             {/if}
-            {#if body}
-                {@render body()}
-            {/if}
+            {#each entry.badges as badge (badge)}
+                <KindBadge kind={badge} />
+            {/each}
+            {@render header(headId)}
         </div>
-        <div class="flex shrink-0 items-center gap-0.5 opacity-45 transition-opacity group-focus-within/entry:opacity-100 group-hover/entry:opacity-100">
+        {#if hint !== null || body}
+            <div class={["col-start-2 col-end-4 row-start-2 min-w-0 sm:col-end-3", entry.disabled && "opacity-55"]}>
+                {#if hint !== null}
+                    <p class="mt-1 text-xs text-warning" data-testid="entry-hint">{hint}</p>
+                {/if}
+                {#if body}
+                    {@render body()}
+                {/if}
+            </div>
+        {/if}
+        <div
+            class="col-start-3 row-start-1 flex shrink-0 items-center gap-0.5 opacity-45 transition-opacity group-focus-within/entry:opacity-100 group-hover/entry:opacity-100"
+        >
             {#if onEdit !== null}
                 <button
                     type="button"

@@ -93,7 +93,7 @@
     </div>
 
     <div class="flex flex-col gap-1.5">
-        <div class="flex items-baseline justify-between">
+        <div class="flex flex-wrap items-baseline justify-between gap-x-3">
             <span class="text-xs font-medium text-base-content/70">Postings</span>
             <span class="text-xs text-base-content/45" data-testid="amount-help"
                 >Amounts as the journal writes them: a minus moves money out of an account.</span
