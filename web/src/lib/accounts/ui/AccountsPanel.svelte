@@ -441,10 +441,10 @@
                                 </button>
                             </div>
 
-                            <label class="form-control w-full">
+                            <label class="flex w-full flex-col gap-2">
                                 <span class="label-text text-xs">Note</span>
                                 <textarea
-                                    class="textarea-bordered textarea textarea-sm"
+                                    class="textarea-bordered textarea w-full textarea-sm"
                                     rows="2"
                                     disabled={disabled || removalStaged}
                                     value={form.note}
