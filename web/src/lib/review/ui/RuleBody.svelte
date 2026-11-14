@@ -138,11 +138,11 @@
 </script>
 
 <div
-    class="grid grid-cols-[4.5rem_minmax(0,1fr)] items-start gap-x-3 gap-y-3 px-3 pt-3 pb-3"
+    class="grid grid-cols-1 items-start gap-x-3 gap-y-1 px-3 pt-3 pb-3 md:grid-cols-[4.5rem_minmax(0,1fr)] md:gap-y-3"
     data-testid="review-rule-body"
     data-locked={rules === null ? "" : undefined}
 >
-    <span class="pt-1.5 text-[0.65rem] font-semibold tracking-[0.14em] text-base-content/45 uppercase">Match</span>
+    <span class="mt-2 text-[0.65rem] font-semibold tracking-[0.14em] text-base-content/45 uppercase first:mt-0 md:mt-0 md:pt-1.5">Match</span>
     <div class="flex min-w-0 flex-wrap items-center gap-2">
         <select
             class="select w-40 shrink-0 select-sm"
@@ -176,7 +176,7 @@
         </span>
     </div>
 
-    <span class="pt-0.5 text-[0.65rem] font-semibold tracking-[0.14em] text-base-content/45 uppercase">Then set</span>
+    <span class="mt-2 text-[0.65rem] font-semibold tracking-[0.14em] text-base-content/45 uppercase md:mt-0 md:pt-0.5">Then set</span>
     <ul class="flex min-w-0 flex-col gap-1.5" data-testid="review-rule-targets">
         {#each targets as target (target.field)}
             <li>

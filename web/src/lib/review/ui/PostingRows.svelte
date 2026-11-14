@@ -135,10 +135,13 @@
         {@const unknown = isUncategorized(posting.account, classes)}
         {@const inert = posting.elided === true && posting.amount.trim() === ""}
         <li class="flex flex-col gap-1" data-testid="review-posting">
-            <div class="flex items-center gap-2">
+            <!-- One line from `md`. Below it (a phone) the account takes the first
+                 line beside its number and buttons, and the amount (and any
+                 assertion) wraps to a second, right-aligned (plan 42). -->
+            <div class="flex flex-wrap items-center gap-2 md:flex-nowrap">
                 <kbd class="kbd w-6 shrink-0 justify-center kbd-xs text-base-content/50" title="Press {at + 1} to edit this account">{at + 1}</kbd>
                 <div
-                    class={["relative min-w-0 grow rounded-field", unknown && "ring-2 ring-warning/70"]}
+                    class={["relative min-w-0 grow basis-[calc(100%-8rem)] rounded-field md:basis-auto", unknown && "ring-2 ring-warning/70"]}
                     data-review-field="account-{at}"
                     data-unknown={unknown ? "" : undefined}
                     use:captureKeys={(event) => onTargetKeydown(event, at)}
@@ -150,7 +153,7 @@
                         <ReviewIcon name="warning" />
                     </span>
                 {/if}
-                <div class="w-40 shrink-0" data-review-field="amount-{at}">
+                <div class="order-last ml-auto w-44 shrink-0 md:order-none md:ml-0 md:w-40" data-review-field="amount-{at}">
                     <div class="input w-full gap-1 font-mono tabular-nums input-sm">
                         <!-- An elided leg writes no amount, so it has no commodity to change (p7 amendment 22): the field waits for an amount. -->
                         <CommodityInput
@@ -175,7 +178,7 @@
                     </div>
                 </div>
                 {#if assertionSlot}
-                    <div class="flex w-32 shrink-0 items-center">
+                    <div class="order-last flex w-32 shrink-0 items-center md:order-none">
                         {#if posting.balanceAssertion !== null}
                             {@const assertion = assertionLabel(posting.balanceAssertion)}
                             <span
