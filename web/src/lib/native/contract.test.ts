@@ -11,6 +11,7 @@ import {readdirSync, readFileSync, statSync} from "node:fs";
 import {join} from "node:path";
 import {fileURLToPath} from "node:url";
 import {describe, expect, it} from "vitest";
+import {ZOOM_EVENT} from "#lib/theme/zoom.svelte.js";
 import {MESSAGE_HANDLER, NATIVE_API, NATIVE_CLASS, NATIVE_GLOBAL} from "./detect";
 
 const IOS_ROOT = fileURLToPath(new URL("../../../../apple/ios", import.meta.url));
@@ -52,5 +53,17 @@ describe.skipIf(files.length === 0)("the Swift side of the bridge", () => {
         for (const literal of ["page", "share", "haptic", "light", "success", "warning"]) {
             expect(swift, `"${literal}"`).toContain(`"${literal}"`);
         }
+    });
+
+    it("dispatches the page's zoom event for a pinch, with its actions", () => {
+        expect(swift).toContain(`"${ZOOM_EVENT}"`);
+        expect(swift).toContain('case zoomIn = "in"');
+        expect(swift).toContain('case zoomOut = "out"');
+    });
+
+    it("sets the bottom-inset property app.css reads", () => {
+        const css = readFileSync(fileURLToPath(new URL("../../app.css", import.meta.url)), "utf8");
+        expect(swift).toContain('"--ll-native-bottom"');
+        expect(css).toContain("var(--ll-native-bottom");
     });
 });

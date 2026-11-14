@@ -153,7 +153,7 @@ html.ll-native body {
      * are the native bar, the home indicator and, in landscape, the notch. */
     padding-top: env(safe-area-inset-top, 0px);
     padding-right: env(safe-area-inset-right, 0px);
-    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-bottom: var(--ll-bottom-inset);
     padding-left: env(safe-area-inset-left, 0px);
     /* A stray pixel of width would otherwise make the whole page pan sideways
      * under a finger. `clip`, never `hidden`: `hidden` makes body a scroll
@@ -163,7 +163,7 @@ html.ll-native body {
 
 /* Toasts are fixed to the viewport's corners: keep them off the home indicator. */
 html.ll-native .toast {
-    margin-bottom: env(safe-area-inset-bottom, 0px);
+    margin-bottom: var(--ll-bottom-inset);
 }
 
 /*
@@ -183,11 +183,17 @@ html.ll-native .toast {
 :root {
     --ll-top-inset: 0px;
     --ll-chrome-top: 3rem;
+    --ll-bottom-inset: env(safe-area-inset-bottom, 0px);
 }
 
+/* `--ll-bottom-inset` is the home indicator. The app's web view runs under it
+ * (it ignores the bottom safe area so the page scrolls edge to edge), which
+ * leaves `env(safe-area-inset-bottom)` at 0 there; the app measures the inset
+ * itself and sets `--ll-native-bottom` on <html> (LedgerSession.swift). */
 html.ll-native {
     --ll-top-inset: env(safe-area-inset-top, 0px);
     --ll-chrome-top: var(--ll-top-inset);
+    --ll-bottom-inset: max(env(safe-area-inset-bottom, 0px), var(--ll-native-bottom, 0px));
 }
 
 /* The problems drawer, every daisyUI modal (KeyHelp, GoalModal, the

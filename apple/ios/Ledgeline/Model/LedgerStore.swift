@@ -28,6 +28,14 @@ struct Ledger: Identifiable, Codable, Hashable {
     var bookmark: Data?
     /// Where it was when added, for the list's second line. Display only.
     var location: String
+    /// Face ID / Touch ID / passcode before opening (plan 42). `nil` (a
+    /// ledger saved before the setting existed) means on.
+    var requireUnlock: Bool? = nil
+
+    /// Whether opening this ledger, or coming back to it, asks the owner first.
+    var requiresUnlock: Bool {
+        self.requireUnlock ?? true
+    }
 }
 
 /// Where the app keeps things.
@@ -190,6 +198,13 @@ final class LedgerStore {
         guard !trimmed.isEmpty, let index = ledgers.firstIndex(where: { $0.id == id }) else { return }
         self.ledgers[index].name = trimmed
         self.save()
+    }
+
+    func setRequiresUnlock(_ id: UUID, _ required: Bool) {
+        guard let index = ledgers.firstIndex(where: { $0.id == id }) else { return }
+        self.ledgers[index].requireUnlock = required
+        self.save()
+        Log.info("ledger \(id): require unlock \(required)")
     }
 
     /// Forgets a ledger and deletes its scratch folder. The journal itself is
