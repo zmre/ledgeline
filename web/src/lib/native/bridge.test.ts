@@ -94,7 +94,7 @@ describe("outside the app, everything is a no-op", () => {
         expect(publishPage(META)).toBe(false);
         expect(share("a.xlsx", "application/x", new Uint8Array([1]))).toBe(false);
         expect(haptic("light")).toBe(false);
-        const uninstall = installNativeBridge({navigate: () => {}});
+        const uninstall = installNativeBridge({navigate: () => {}, refresh: () => {}});
         expect(win.ledgelineNative).toBeUndefined();
         uninstall();
         expect(posted).toEqual([]);
@@ -242,7 +242,8 @@ describe("window.ledgelineNative", () => {
     it("navigates to known sections, runs actions, goes back and reports state", () => {
         const went: string[] = [];
         let ran = 0;
-        const uninstall = installNativeBridge({navigate: (id) => went.push(id)});
+        let refetched = 0;
+        const uninstall = installNativeBridge({navigate: (id) => went.push(id), refresh: () => (refetched += 1)});
         const api = win.ledgelineNative!;
         addActionProvider(() => [{id: "refresh", label: "Refresh everything", run: () => (ran += 1)}]);
 
@@ -255,6 +256,9 @@ describe("window.ledgelineNative", () => {
         expect(ran).toBe(1);
 
         expect(api.back()).toBe(false);
+
+        expect(api.refresh()).toBe(true);
+        expect(refetched).toBe(1);
 
         expect(api.state()).toBeNull();
         publishPage(META);

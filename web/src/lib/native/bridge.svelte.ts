@@ -71,6 +71,8 @@ export interface NativeApi {
     action(actionId: string): boolean;
     back(): boolean;
     state(): PageMessage | null;
+    /** Re-fetch everything on screen from the engine (the app has just re-read the files). */
+    refresh(): boolean;
 }
 
 declare global {
@@ -312,7 +314,7 @@ export function lastPageMessage(): PageMessage | null {
  * removal. `navigate` is the layout's router hook: it receives a known
  * section id and moves there.
  */
-export function installNativeBridge(deps: {navigate: (id: SectionId) => void}): () => void {
+export function installNativeBridge(deps: {navigate: (id: SectionId) => void; refresh: () => void}): () => void {
     if (!isNative()) return () => {};
     const api: NativeApi = {
         navigate(sectionId: string): boolean {
@@ -323,6 +325,10 @@ export function installNativeBridge(deps: {navigate: (id: SectionId) => void}): 
         action: (actionId: string) => runAction(actionId),
         back: () => back(),
         state: () => lastPageMessage(),
+        refresh(): boolean {
+            deps.refresh();
+            return true;
+        },
     };
     window[NATIVE_API] = api;
     return () => {

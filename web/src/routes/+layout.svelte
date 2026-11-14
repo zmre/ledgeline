@@ -184,6 +184,8 @@
                 // eslint-disable-next-line svelte/no-navigation-without-resolve -- every value in sectionHrefs IS a resolve() of its route
                 if (page.url.pathname !== sectionHrefs[id]) void goto(sectionHrefs[id]);
             },
+            // The app's one Refresh re-reads the files itself, then asks for this.
+            refresh: () => void refreshEverything(),
         })
     );
     afterNavigate((navigation) => {
@@ -194,7 +196,9 @@
     registerNativeActions(
         () => {
             const actions: NativeAction[] = [];
-            if (conn !== "none") actions.push({id: "refresh", label: "Refresh everything", icon: "arrow.clockwise", run: () => void refreshEverything()});
+            // In the app, Refresh is the native menu's own item (it re-reads the files first).
+            if (conn !== "none" && !native)
+                actions.push({id: "refresh", label: "Refresh everything", icon: "arrow.clockwise", run: () => void refreshEverything()});
             actions.push({
                 id: "problems",
                 label: problems.count > 0 ? `Problems (${problems.count})` : "Problems",

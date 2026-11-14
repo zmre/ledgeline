@@ -174,6 +174,14 @@ enum NativeBridge {
                         id: actionID, in: page)
     }
 
+    /// `window.ledgelineNative.refresh()`: re-fetch everything on screen from
+    /// the engine. The native Refresh calls it after `app.refresh()` found the
+    /// files unchanged (a changed journal reloads the whole page instead).
+    @MainActor
+    static func refreshPage(in page: WebPage) async -> Bool {
+        await self.call("return window.ledgelineNative ? window.ledgelineNative.refresh() : false", id: nil, in: page)
+    }
+
     /// `window.ledgelineNative.back()`: `false` (or no bridge) means nothing
     /// to go back to, and the app shows the ledger list.
     @MainActor

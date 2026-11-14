@@ -286,7 +286,7 @@ private struct LedgerMenu: View {
             }
             Section {
                 Button("Refresh", systemImage: "arrow.clockwise") {
-                    Task { await self.session.refresh(reason: "menu") }
+                    Task { await self.session.refresh(reason: "menu", refetchPage: true) }
                 }
                 Button("Switch Ledger", systemImage: "books.vertical", action: self.switchLedger)
             }

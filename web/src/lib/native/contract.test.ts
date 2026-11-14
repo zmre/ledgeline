@@ -39,7 +39,7 @@ describe.skipIf(files.length === 0)("the Swift side of the bridge", () => {
     });
 
     it("calls every window.ledgelineNative method the page installs", () => {
-        for (const method of ["navigate", "action", "back", "state"]) {
+        for (const method of ["navigate", "action", "back", "state", "refresh"]) {
             expect(swift, `${NATIVE_API}.${method}`).toContain(`${NATIVE_API}.${method}`);
         }
     });

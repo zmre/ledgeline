@@ -179,8 +179,10 @@ final class LedgerSession {
     /// Picks up changes made outside the app (foreground, the Refresh menu
     /// item, a pending download landing). `Reloaded` reloads the page;
     /// `Pending` tries again shortly; `Failed` keeps the last good snapshot
-    /// and says why.
-    func refresh(reason: String) async {
+    /// and says why. `refetchPage` (the menu's Refresh) also has the page
+    /// re-fetch what it shows when the files were unchanged, so one button
+    /// renews both the engine's snapshot and the screen.
+    func refresh(reason: String, refetchPage: Bool = false) async {
         guard !self.refreshing else { return }
         self.refreshing = true
         defer { self.refreshing = false }
@@ -191,6 +193,7 @@ final class LedgerSession {
             switch summary.outcome {
             case .unchanged:
                 self.refreshProblem = nil
+                if refetchPage { _ = await NativeBridge.refreshPage(in: self.page) }
             case .reloaded:
                 self.refreshProblem = nil
                 await self.reload(why: "journal changed")
