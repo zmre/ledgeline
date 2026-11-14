@@ -20,6 +20,7 @@
     // is named from the CURRENT controls and built from the HELD report, so those
     // two may only be combined when they answer the same question).
     import {onMount} from "svelte";
+    import FoldedControls from "#lib/components/FoldedControls.svelte";
     import {
         activeBudgetPreset,
         budgetParamsToSearch,
@@ -145,10 +146,9 @@
 
     /**
      * Below `sm` the controls fold behind one line saying what they are set
-     * to: open, they are a phone's whole first screen before any budget shows.
-     * From `sm` up they are always shown and the toggle is not.
+     * to (`FoldedControls`): open, they are a phone's whole first screen
+     * before any budget shows. From `sm` up they are always shown.
      */
-    let controlsOpen = $state(false);
     const controlsSummary = $derived(
         [
             BUDGET_PRESETS.find((preset) => preset.id === activePreset)?.label ?? `${params.from} – ${params.to}`,
@@ -320,21 +320,11 @@
         {/if}
     </div>
 
-    <button
-        type="button"
-        class="flex w-full items-center justify-between gap-2 rounded-box bg-base-200 px-3 py-2 text-left text-sm sm:hidden"
-        aria-expanded={controlsOpen}
-        aria-controls="budget-controls"
-        data-testid="budget-controls-toggle"
-        onclick={() => (controlsOpen = !controlsOpen)}
-    >
-        <span class="min-w-0 truncate"><span class="text-base-content/60">Showing</span> {controlsSummary}</span>
-        <span class="shrink-0 text-xs text-base-content/60">{controlsOpen ? "Done" : "Change"}</span>
-    </button>
-    <div
+    <FoldedControls
         id="budget-controls"
-        class={["flex-wrap items-end gap-x-4 gap-y-2 rounded-box bg-base-200 px-3 py-2 sm:flex", controlsOpen ? "flex" : "hidden"]}
-        data-testid="budget-controls"
+        summary={controlsSummary}
+        testid="budget-controls"
+        class="flex-wrap items-end gap-x-4 gap-y-2 rounded-box bg-base-200 px-3 py-2"
     >
         <div class="form-control max-w-full">
             <span class="label-text mb-1 block text-xs text-base-content/70">Period</span>
@@ -401,7 +391,7 @@
                 </div>
             </div>
         </div>
-    </div>
+    </FoldedControls>
 
     <AsyncSection
         view={reportView}
