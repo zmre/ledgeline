@@ -29,7 +29,7 @@
 <script lang="ts">
     import {dismissible} from "#lib/keys/dismissible.js";
     import {remToPx} from "#lib/theme/scale.js";
-    import {menuPosition, portal} from "#lib/ui/anchoredPopup.js";
+    import {menuPosition, portal, liveViewport} from "#lib/ui/anchoredPopup.js";
 
     interface Item {
         /** Also the `{#each}` key, so two items of one menu must not share one. */
@@ -78,11 +78,10 @@
 
     function reposition(): void {
         if (trigger === null) return;
-        placement = menuPosition(
-            trigger.getBoundingClientRect(),
-            {width: window.innerWidth, height: window.innerHeight},
-            {width: remToPx(WIDTH_REM), height: remToPx(items.length * ITEM_HEIGHT_REM + PADDING_REM)}
-        );
+        placement = menuPosition(trigger.getBoundingClientRect(), liveViewport(), {
+            width: remToPx(WIDTH_REM),
+            height: remToPx(items.length * ITEM_HEIGHT_REM + PADDING_REM),
+        });
     }
 
     function close(): void {

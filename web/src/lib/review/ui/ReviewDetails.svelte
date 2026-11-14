@@ -13,6 +13,7 @@
     // The secondary date is optional, so it is a `DateInput`: WebKit paints
     // TODAY into an empty `<input type="date">`.
     import DateInput from "#lib/components/DateInput.svelte";
+    import {hint} from "#lib/keys/hint.svelte.js";
     import {nextStatus} from "#lib/journal/rowModel.js";
     import {detailsSummary} from "../card";
     import type {ReviewForm} from "../types";
@@ -58,7 +59,7 @@
     <button
         type="button"
         class="group -mx-1 flex items-center gap-x-2 rounded px-1 tabular-nums hover:bg-base-content/5 hover:text-base-content/80"
-        title="Edit the date, status and code (D)"
+        title={hint("Edit the date, status and code", "D")}
         aria-label="Details: {parts.join(', ')}. Edit the date, status and code"
         aria-expanded="false"
         data-testid="review-details-summary"

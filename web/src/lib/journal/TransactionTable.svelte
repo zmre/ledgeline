@@ -17,14 +17,23 @@
     //
     // The calendar (plan 40) takes the list's place when the filter says so:
     // the toolbar stays, the table's own keys stand down, and the toggle next
-    // to the column menu switches between the two.
+    // to the column menu switches between the two. Below the `md` breakpoint
+    // there is no calendar (plan 42): no toggle, no `v`, and a `cal=1` filter
+    // (a link, a restored URL) shows its month as the list.
+    //
+    // Below `md` the list has no scroller of its own (plan 42): the page
+    // scrolls, and the window is worked out from where the list sits in the
+    // viewport, so a phone has ONE scroll, not a list nested inside a page.
+    // From `md` up the list scrolls inside its own box under a fixed page.
     import {untrack} from "svelte";
+    import {hint} from "#lib/keys/hint.svelte.js";
     import {statusPatch} from "#lib/api/editMapping.js";
     import type {Transaction} from "#lib/domain/types.js";
     import type {JournalRow} from "#lib/journalView/types.js";
     import {dismissible} from "#lib/keys/dismissible.js";
     import {registerKeys} from "#lib/keys/keymap.svelte.js";
     import {PRIORITY, type Binding} from "#lib/keys/types.js";
+    import {registerNativeActions, type NativeAction} from "#lib/native/bridge.svelte.js";
     import {rowMarker, type RowMarker} from "#lib/review/card.js";
     import {REVIEW_BUTTON} from "#lib/review/ui/buttons.js";
     import {reviewLaunch} from "#lib/review/ui/launch.svelte.js";
@@ -42,8 +51,13 @@
     import {lazyListCursor} from "#lib/ui/listCursor.svelte.js";
     import CalendarView from "./CalendarView.svelte";
     import ColumnMenu from "./ColumnMenu.svelte";
-    import {monthOf} from "./calendarModel";
+    import {calendarFits, monthOf} from "./calendarModel";
+    import {markReviewed} from "#lib/review/markReviewed.js";
+    import {belowMd} from "#lib/ui/appWidth.svelte.js";
+    import type {SwipeAction} from "./swipe";
+    import {swipeOpen} from "./swipeOpen.svelte";
     import TransactionRow from "./TransactionRow.svelte";
+    import TxnDetailSheet, {type DetailAction} from "./TxnDetailSheet.svelte";
     import {measureAccountColumn} from "./accountColumn.svelte";
     import {txnModal} from "./edit/modalState.svelte";
     import {rowActions} from "./rowAction.svelte";
@@ -54,8 +68,21 @@
 
     const OVERSCAN = 12;
 
+    /**
+     * The section's measured width in px; null until measured (the first
+     * frame, and jsdom, which never measures), when the calendar is allowed.
+     * Measured on the section rather than the list's scroller because the
+     * calendar replaces the scroller, and the answer must not depend on which
+     * of the two is showing.
+     */
+    let sectionWidth = $state<number | null>(null);
+    /** Whether a month grid fits (plan 42): at or above `md`, in rem at the live scale. */
+    const calendarAllowed = $derived(sectionWidth === null || calendarFits(sectionWidth, rootPx()));
     /** The month calendar is showing instead of the list (plan 40). */
-    const calendar = $derived(filters.value.calendar === true);
+    const calendar = $derived(filters.value.calendar === true && calendarAllowed);
+
+    /** Below `md`: the page scrolls and the list scrolls with it (no inner scroller). */
+    const pageScroll = $derived(belowMd());
 
     let scroller = $state<HTMLDivElement | null>(null);
     let scrollTop = $state(0);
@@ -146,6 +173,8 @@
     const today = localToday();
     const markerOf = (row: JournalRow): RowMarker => rowMarker(row, today, settings.reviewMaxDays, settings.reviewMarkers);
     let reviewMenuOpen = $state(false);
+    /** The narrow toolbar's Review menu badge (plan 42): everything its three items would open. */
+    const reviewTotal = $derived(unknownCount + recentCount + matches.count);
 
     /** Open a review run — the D17 keys are disabled exactly when the button is. */
     function launchReview(kind: "unknowns" | "recents"): void {
@@ -200,9 +229,47 @@
                   centerOffset(position, pitch, viewportHeight, topInset + headroom)
                 : nearestOffset(scrollTop, position, pitch, rowHeight, viewportHeight, shown, headroom, topInset);
         if (top === scrollTop) return;
-        if (scroller !== null) scroller.scrollTop = top;
+        scrollListTo(top);
+    }
+
+    /**
+     * What covers the top of the viewport in page-scroll mode: the HTML header,
+     * or the iOS app's native bar. The layout keeps the root's
+     * `scroll-padding-top` equal to exactly that, so it is read from there.
+     */
+    function topCover(): number {
+        const value = Number.parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop);
+        return Number.isFinite(value) ? value : 0;
+    }
+
+    /** Scroll so that list offset `top` sits at the top of what is visible: the list's box, or the page. */
+    function scrollListTo(top: number): void {
+        if (scroller !== null) {
+            if (pageScroll) window.scrollTo({top: window.scrollY + scroller.getBoundingClientRect().top - topCover() + top});
+            else scroller.scrollTop = top;
+        }
         scrollTop = top;
     }
+
+    // Page-scroll mode: the window follows the page's scroll, in list
+    // coordinates — how far the list's top has gone up under the cover — and
+    // the viewport is the window less the cover.
+    $effect(() => {
+        if (!pageScroll || scroller === null) return;
+        const list = scroller;
+        const update = (): void => {
+            const cover = topCover();
+            scrollTop = Math.max(0, cover - list.getBoundingClientRect().top);
+            viewportHeight = Math.max(0, window.innerHeight - cover);
+        };
+        update();
+        window.addEventListener("scroll", update, {passive: true});
+        window.addEventListener("resize", update);
+        return () => {
+            window.removeEventListener("scroll", update);
+            window.removeEventListener("resize", update);
+        };
+    });
 
     function moveCursor(delta: number): void {
         cursor.move(delta);
@@ -244,6 +311,79 @@
         if (!result.ok && result.failure.kind !== "conflict") editing.reportFailure(result.failure);
     }
 
+    // Touch (plan 42 phase 3): the narrow cards' swipes, the detail sheet a
+    // tap opens (the whole transaction, then Edit and Mark reviewed), and a
+    // long press straight to Edit. Each action is something the toolbar or the
+    // keys already do; Delete arms the same confirm `x` does and never deletes
+    // outright.
+    let rowMenu = $state.raw<JournalRow | null>(null);
+
+    function armDelete(txn: Transaction): void {
+        armedMatch = null;
+        armedDelete = txn;
+    }
+
+    async function reviewRow(txn: Transaction): Promise<void> {
+        const result = await markReviewed(txn.index, today);
+        if (!result.ok && result.failure.kind !== "conflict") editing.reportFailure(result.failure);
+    }
+
+    /**
+     * A card's swipes: right marks it reviewed when it carries the faint
+     * "unreviewed" stripe (the rows Review Recents would pick up), else edits
+     * it; left reveals Edit and Delete. A long press is a shortcut to Edit.
+     */
+    function swipeFor(shows: JournalRow): {leading: SwipeAction; trailing: SwipeAction[]; onLongPress: () => void} {
+        const txn = shows.txn;
+        const edit: SwipeAction = {label: "Edit", tone: "info", run: () => txnModal.openEdit(txn.index), testid: "swipe-edit"};
+        const leading: SwipeAction =
+            markerOf(shows) === "unreviewed" ? {label: "Reviewed", tone: "success", run: () => void reviewRow(txn), testid: "swipe-reviewed"} : edit;
+        return {
+            leading,
+            trailing: [edit, {label: "Delete", tone: "error", run: () => armDelete(txn), testid: "swipe-delete"}],
+            onLongPress: () => {
+                swipeOpen.set(null);
+                txnModal.openEdit(txn.index);
+            },
+        };
+    }
+
+    /** Open a card's detail sheet: a tap, or the description button. */
+    function openDetail(shows: JournalRow): void {
+        swipeOpen.set(null);
+        rowMenu = shows;
+    }
+
+    /**
+     * The detail sheet's buttons for `shows`: Edit, and Mark reviewed when it
+     * applies; each closes the sheet first. Everything else a row offers
+     * (status, matching, delete) lives in the editor, the swipes and the keys.
+     */
+    function detailActions(shows: JournalRow): DetailAction[] {
+        if (!editing.canEdit) return [];
+        const txn = shows.txn;
+        const item = (label: string, action: () => void, extra: Partial<DetailAction> = {}): DetailAction => ({label, run: () => fromMenu(action), ...extra});
+        const edit = item("Edit", () => txnModal.openEdit(txn.index), {tone: "primary", testid: "detail-edit"});
+        return !shows.reviewed && !shows.unknown ? [edit, item("Mark reviewed", () => void reviewRow(txn), {testid: "detail-reviewed"})] : [edit];
+    }
+
+    /** A transfer row's two real accounts, for the sheet's note. */
+    function transferNote(shows: JournalRow): string | null {
+        const transfer = shows.transfer;
+        if (transfer === undefined) return null;
+        return `Transfer: ${transfer.from.account ?? transfer.from.label ?? "?"} → ${transfer.to.account ?? transfer.to.label ?? "?"}`;
+    }
+
+    function closeRowMenu(): void {
+        rowMenu = null;
+    }
+
+    /** Run a menu item: the menu closes first, so an overlay it opens is on top. */
+    function fromMenu(action: () => void): void {
+        rowMenu = null;
+        action();
+    }
+
     /** Expand or collapse the transfer row at engine `position`; anything else is left alone. */
     function toggleTransfer(position: number): void {
         const matchId = journalView.rowAt(position)?.transfer?.matchId;
@@ -279,7 +419,7 @@
         }
         const older = olderLabel(olderCount);
         if (matchCount === 0) return older === null ? "No transfer halves to pair up" : `Nothing to pair in the lookback; ${older}`;
-        return older === null ? "Find Matches (m)" : `Find Matches (m) · ${older}`;
+        return older === null ? hint("Find Matches", "m") : `${hint("Find Matches", "m")} · ${older}`;
     });
     $effect(() => {
         const serverUrl = settings.serverUrl;
@@ -295,6 +435,25 @@
         matchMenuOpen = false;
         matches.openRun();
     }
+
+    // The toolbar's buttons, as the iOS app's menu (plan 42): offered exactly
+    // when the buttons are usable, with the badge counts in the labels.
+    registerNativeActions(() => {
+        if (!editing.canEdit) return [];
+        const actions: NativeAction[] = [{id: "add-transaction", label: "Add transaction", icon: "plus", run: () => txnModal.openAdd()}];
+        if (unknownCount > 0)
+            actions.push({
+                id: "review-unknowns",
+                label: `Review unknowns (${unknownCount})`,
+                icon: "questionmark.circle",
+                run: () => launchReview("unknowns"),
+            });
+        if (recentCount > 0)
+            actions.push({id: "review-recents", label: `Review recents (${recentCount})`, icon: "checkmark.circle", run: () => launchReview("recents")});
+        if (canOpenMatches)
+            actions.push({id: "find-matches", label: matchCount > 0 ? `Find matches (${matchCount})` : "Find matches", icon: "link", run: launchMatches});
+        return actions;
+    });
 
     /** Find match for one transaction (A2): the cursored row, when it has an unlinked clearing posting. */
     const cursorFindable = (): boolean => {
@@ -345,6 +504,7 @@
                     keys: "v",
                     label: "Switch between the list and the calendar",
                     group: "Journal",
+                    enabled: () => calendarAllowed,
                     run: () => filters.setCalendar(!calendar),
                 },
                 {keys: "j", label: "Next transaction", group: "Journal", run: () => moveCursor(1)},
@@ -417,8 +577,13 @@
     // wholesale on every filter change, so its identity is a valid key.
     $effect(() => {
         void filters.value;
-        if (scroller !== null) scroller.scrollTop = 0;
-        scrollTop = 0;
+        void scroller;
+        // On a phone the filter bar is above the list: only a page scrolled
+        // past the list's top comes back to it.
+        untrack(() => {
+            if (!pageScroll) scrollListTo(0);
+            else if (scrollTop > 0) scrollListTo(0);
+        });
         cursor.clear();
         armedDelete = null;
         armedMatch = null;
@@ -504,6 +669,45 @@
     });
 </script>
 
+{#snippet confirmBar()}
+    <!-- The delete confirm lives in the TOOLBAR, not in the row: this is
+         outside the virtualized area so it cannot unmount mid-confirm, and
+         unlike a row-local "Delete?" it can say WHAT is about to go. It also
+         gives keyboard delete a mouse path for free — there was no delete
+         affordance outside the transaction popup at all. Below `md` the
+         toolbar may have scrolled away, so it floats at the bottom instead. -->
+    {#if armedDelete !== null}
+        <div class="flex items-center gap-2 rounded border border-error/40 px-2 py-1 text-sm" role="alert">
+            <span>
+                Delete <span class="font-mono">{armedDelete.date}</span>
+                {armedDelete.description || "(no description)"}?
+            </span>
+            <button type="button" class="btn btn-error btn-xs" onclick={() => void confirmDelete()}>Delete</button>
+            <button type="button" class="btn btn-ghost btn-xs" onclick={() => (armedDelete = null)}>Keep</button>
+        </div>
+    {:else if armedMatch !== null}
+        <div class="flex items-center gap-2 rounded border border-base-content/20 px-2 py-1 text-sm" role="alert" data-testid="match-confirm">
+            {#if armedMatch.kind === "unlink"}
+                {@const transfer = armedMatch.row.transfer}
+                <span>
+                    Unlink <span class="font-mono">{armedMatch.row.txn.date}</span>
+                    {transfer?.from.label ?? "?"} → {transfer?.to.label ?? "?"}? Both halves stay; only their match tags go.
+                </span>
+                <button type="button" class="btn btn-warning btn-xs" onclick={() => void confirmMatch()} data-testid="match-confirm-go">Unlink</button>
+            {:else}
+                <span>Forget that {armedMatch.txn.description || "this transaction"} is not a match ({armedMatch.value})? It may be proposed again.</span>
+                <button type="button" class="btn btn-warning btn-xs" onclick={() => void confirmMatch()} data-testid="match-confirm-go">Forget</button>
+            {/if}
+            <button type="button" class="btn btn-ghost btn-xs" onclick={() => (armedMatch = null)}>Keep</button>
+        </div>
+    {:else if matchFailure !== null}
+        <div class="flex items-center gap-2 rounded border border-error/40 px-2 py-1 text-sm" role="alert" data-testid="match-failure">
+            <span>Not saved: {matchFailure}</span>
+            <button type="button" class="btn btn-ghost btn-xs" onclick={() => (matchFailure = null)}>Dismiss</button>
+        </div>
+    {/if}
+{/snippet}
+
 {#snippet row(slot: Slot, shows: JournalRow, mode: "row" | "card")}
     <TransactionRow
         txn={shows.txn}
@@ -524,6 +728,8 @@
         onUnlink={() => ((armedDelete = null), (armedMatch = {kind: "unlink", row: shows}))}
         onForget={(value) => ((armedDelete = null), (armedMatch = {kind: "forget", txn: shows.txn, value}))}
         onFindMatch={() => matches.openFor(shows.txn.index)}
+        swipe={mode === "card" && editing.canEdit ? swipeFor(shows) : null}
+        onDetail={mode === "card" ? () => openDetail(shows) : undefined}
     />
 {/snippet}
 
@@ -533,205 +739,303 @@
      toolbar to spill under the totals footer. -->
 <!-- The calendar's weeks are a fixed height, so in it the section is as tall as
      its content (the page scrolls) rather than a share of the window. -->
-<section class={["flex grow flex-col", calendar ? "shrink-0" : "min-h-40"]}>
-    <!-- Wraps rather than overflowing when a big interface scale leaves too few rem across. -->
-    <div class="flex flex-wrap items-center justify-between gap-2 pb-1">
-        {#if editing.canEdit}
-            <div class="flex flex-wrap items-center gap-2">
-                <button type="button" class="btn gap-1 btn-primary btn-sm" onclick={() => txnModal.openAdd()}>
-                    <span class="text-base leading-none">+</span> Add transaction
-                </button>
-                <!-- Review (plan 32 D18): a count badge on each, disabled at zero. -->
-                <span
-                    class="tooltip tooltip-bottom"
-                    data-tip={unknownCount === 0 ? "No uncategorised transactions in the review window" : "Review Unknowns (u)"}
-                >
-                    <button
-                        type="button"
-                        class="{REVIEW_BUTTON} gap-1.5"
-                        disabled={unknownCount === 0}
-                        onclick={() => launchReview("unknowns")}
-                        data-testid="review-unknowns-button"
-                    >
-                        Review Unknowns
-                        <span class={["badge badge-sm tabular-nums", unknownCount > 0 ? "badge-warning" : "badge-ghost"]} data-testid="review-unknowns-count"
-                            >{unknownCount}</span
-                        >
+<section class={["flex grow flex-col", calendar ? "shrink-0" : "min-h-40"]} bind:clientWidth={null, (width) => (sectionWidth = width ?? null)}>
+    {#if pageScroll}
+        <!-- Below `md` (plan 42): Add, one Review menu and the column menu on
+             one line (wrapping at a big interface scale). The menu holds the
+             three review launchers with their counts and both groups'
+             settings: three buttons in a row left room for two letters of
+             each label. No tooltips: nothing hovers on a phone. The menu's
+             panel hangs from the whole row (`static` details in a `relative`
+             row), at its right edge and never wider than it, wherever the button wrapped to. -->
+        <div class="flex flex-col gap-2 pb-1" data-testid="journal-toolbar-narrow">
+            <div class="relative flex flex-wrap items-center justify-between gap-2">
+                {#if editing.canEdit}
+                    <button type="button" class="btn gap-1 btn-primary btn-sm" onclick={() => txnModal.openAdd()}>
+                        <span class="text-base leading-none">+</span> Add transaction
                     </button>
-                </span>
-                <div class="flex">
-                    <span class="tooltip tooltip-bottom" data-tip={recentCount === 0 ? "Nothing unreviewed in the review window" : "Review Recents (r)"}>
-                        <button
-                            type="button"
-                            class="{REVIEW_BUTTON} gap-1.5 rounded-r-none"
-                            disabled={recentCount === 0}
-                            onclick={() => launchReview("recents")}
-                            data-testid="review-recents-button"
+                {:else}
+                    <span></span>
+                {/if}
+                <div class="ml-auto flex flex-wrap items-center justify-end gap-1">
+                    {#if editing.canEdit}
+                        <details
+                            class="dropdown static dropdown-end"
+                            bind:open={reviewMenuOpen}
+                            use:dismissible={{active: reviewMenuOpen, outside: true, onDismiss: () => (reviewMenuOpen = false)}}
                         >
-                            Review Recents
-                            <span class="badge badge-ghost badge-sm tabular-nums" data-testid="review-recents-count">{recentCount}</span>
-                        </button>
-                    </span>
-                    <!-- End-aligned when the toolbar is narrow enough to wrap: a left-aligned panel ran past the window. -->
-                    <details
-                        class="dropdown dropdown-end sm:dropdown-start"
-                        bind:open={reviewMenuOpen}
-                        use:dismissible={{active: reviewMenuOpen, outside: true, onDismiss: () => (reviewMenuOpen = false)}}
-                    >
-                        <summary class="{REVIEW_BUTTON} rounded-l-none border-l-base-content/20 px-1.5" aria-label="Review settings" title="Review settings">
-                            <ReviewIcon name="chevron-down" class="h-3.5 w-3.5" />
-                        </summary>
-                        <div class="dropdown-content z-20 mt-1 rounded-box border border-base-300 bg-base-200 p-3 shadow-lg">
-                            <ReviewSettings />
-                        </div>
-                    </details>
+                            <summary class="{REVIEW_BUTTON} gap-1.5" aria-label="Review ({reviewTotal} to look at)" data-testid="review-menu-button">
+                                Review
+                                <span
+                                    class={["badge badge-sm tabular-nums", unknownCount > 0 ? "badge-warning" : matchCount > 0 ? "badge-info" : "badge-ghost"]}
+                                    data-testid="review-menu-count">{reviewTotal}</span
+                                >
+                                <ReviewIcon name="chevron-down" class="h-3.5 w-3.5" />
+                            </summary>
+                            <div
+                                class="dropdown-content z-20 mt-1 max-h-[70dvh] w-[min(24rem,100%)] overflow-x-hidden overflow-y-auto overscroll-contain rounded-box border border-base-300 bg-base-200 p-2 shadow-lg"
+                                data-testid="review-menu"
+                            >
+                                <ul class="menu w-full p-0 text-base">
+                                    <li class={[unknownCount === 0 && "menu-disabled"]}>
+                                        <button
+                                            type="button"
+                                            class="justify-between"
+                                            disabled={unknownCount === 0}
+                                            onclick={() => launchReview("unknowns")}
+                                            data-testid="review-unknowns-button"
+                                        >
+                                            Review unknowns
+                                            <span
+                                                class={["badge badge-sm tabular-nums", unknownCount > 0 ? "badge-warning" : "badge-ghost"]}
+                                                data-testid="review-unknowns-count">{unknownCount}</span
+                                            >
+                                        </button>
+                                    </li>
+                                    <li class={[recentCount === 0 && "menu-disabled"]}>
+                                        <button
+                                            type="button"
+                                            class="justify-between"
+                                            disabled={recentCount === 0}
+                                            onclick={() => launchReview("recents")}
+                                            data-testid="review-recents-button"
+                                        >
+                                            Review recents
+                                            <span class="badge badge-ghost badge-sm tabular-nums" data-testid="review-recents-count">{recentCount}</span>
+                                        </button>
+                                    </li>
+                                    <li class={[!canOpenMatches && "menu-disabled"]}>
+                                        <button
+                                            type="button"
+                                            class="justify-between"
+                                            disabled={!canOpenMatches}
+                                            onclick={launchMatches}
+                                            data-testid="find-matches-button"
+                                        >
+                                            Find matches
+                                            <span
+                                                class={["badge badge-sm tabular-nums", matchCount > 0 ? "badge-info" : "badge-ghost"]}
+                                                data-testid="find-matches-count">{matchCount}</span
+                                            >
+                                        </button>
+                                    </li>
+                                </ul>
+                                <div class="mt-2 border-t border-base-content/10 px-1 pt-2">
+                                    <ReviewSettings />
+                                    {#if olderCount > 0 && settings.matchLookback !== 0}
+                                        <p class="mt-2 text-xs text-base-content/60" data-testid="find-matches-older">{olderLabel(olderCount)}</p>
+                                    {/if}
+                                    {#if noClearing}
+                                        <p class="mt-2 text-xs text-base-content/60">
+                                            {matchTip}
+                                            <a class="link" href={MATCHING_DOCS} target="_blank" rel="noopener noreferrer" data-testid="find-matches-docs"
+                                                >How?</a
+                                            >
+                                        </p>
+                                    {/if}
+                                </div>
+                            </div>
+                        </details>
+                    {/if}
+                    {#if !calendar}
+                        <ColumnMenu />
+                    {/if}
                 </div>
-                <!-- Find Matches (plan 35 D9): disabled with nothing to propose, and,
-                     with no clearing account declared (D2), says how to declare one.
-                     Its ▾ (Amendment A1) holds the window and the lookback, as
-                     Review Recents' holds the review settings. -->
-                <div class="flex">
-                    <span class="tooltip tooltip-bottom before:max-w-72 before:whitespace-normal" data-tip={matchTip}>
+            </div>
+            {#if armedDelete !== null || armedMatch !== null || matchFailure !== null}
+                <div class="fixed inset-x-3 bottom-[calc(0.75rem+var(--ll-bottom-inset))] z-30 rounded-box bg-base-100 shadow-lg [&>div]:flex-wrap">
+                    {@render confirmBar()}
+                </div>
+            {/if}
+        </div>
+    {:else}
+        <!-- Wraps rather than overflowing when a big interface scale leaves too few rem across. -->
+        <div class="flex flex-wrap items-center justify-between gap-2 pb-1">
+            {#if editing.canEdit}
+                <div class="flex flex-wrap items-center gap-2">
+                    <button type="button" class="btn gap-1 btn-primary btn-sm" onclick={() => txnModal.openAdd()}>
+                        <span class="text-base leading-none">+</span> Add transaction
+                    </button>
+                    <!-- Review (plan 32 D18): a count badge on each, disabled at zero. -->
+                    <span
+                        class="tooltip tooltip-bottom"
+                        data-tip={unknownCount === 0 ? "No uncategorised transactions in the review window" : hint("Review Unknowns", "u")}
+                    >
                         <button
                             type="button"
-                            class="{REVIEW_BUTTON} gap-1.5 rounded-r-none"
-                            disabled={!canOpenMatches}
-                            onclick={launchMatches}
-                            data-testid="find-matches-button"
+                            class="{REVIEW_BUTTON} gap-1.5"
+                            disabled={unknownCount === 0}
+                            onclick={() => launchReview("unknowns")}
+                            data-testid="review-unknowns-button"
                         >
-                            <ReviewIcon name="link" class="h-3.5 w-3.5" />
-                            Find Matches
-                            <span class={["badge badge-sm tabular-nums", matchCount > 0 ? "badge-info" : "badge-ghost"]} data-testid="find-matches-count"
-                                >{matchCount}</span
+                            Review Unknowns
+                            <span
+                                class={["badge badge-sm tabular-nums", unknownCount > 0 ? "badge-warning" : "badge-ghost"]}
+                                data-testid="review-unknowns-count">{unknownCount}</span
                             >
                         </button>
                     </span>
-                    <!-- End-aligned when the toolbar is narrow enough to wrap: a left-aligned panel ran past the window. -->
-                    <details
-                        class="dropdown dropdown-end sm:dropdown-start"
-                        bind:open={matchMenuOpen}
-                        use:dismissible={{active: matchMenuOpen, outside: true, onDismiss: () => (matchMenuOpen = false)}}
-                    >
-                        <summary
-                            class="{REVIEW_BUTTON} rounded-l-none border-l-base-content/20 px-1.5"
-                            aria-label="Find Matches settings"
-                            title="Find Matches settings"
-                            data-testid="find-matches-menu"
+                    <div class="flex">
+                        <span
+                            class="tooltip tooltip-bottom"
+                            data-tip={recentCount === 0 ? "Nothing unreviewed in the review window" : hint("Review Recents", "r")}
                         >
-                            <ReviewIcon name="chevron-down" class="h-3.5 w-3.5" />
-                        </summary>
-                        <div class="dropdown-content z-20 mt-1 rounded-box border border-base-300 bg-base-200 p-3 shadow-lg">
-                            <ReviewSettings show="matches" />
-                            {#if olderCount > 0 && settings.matchLookback !== 0}
-                                <p class="mt-2 text-xs text-base-content/60" data-testid="find-matches-older">{olderLabel(olderCount)}</p>
-                            {/if}
-                        </div>
-                    </details>
+                            <button
+                                type="button"
+                                class="{REVIEW_BUTTON} gap-1.5 rounded-r-none"
+                                disabled={recentCount === 0}
+                                onclick={() => launchReview("recents")}
+                                data-testid="review-recents-button"
+                            >
+                                Review Recents
+                                <span class="badge badge-ghost badge-sm tabular-nums" data-testid="review-recents-count">{recentCount}</span>
+                            </button>
+                        </span>
+                        <!-- End-aligned: a left-aligned panel ran past the window whenever the toolbar wrapped (daisyUI's sm: is a media query, so it never tracked that). -->
+                        <details
+                            class="dropdown dropdown-end"
+                            bind:open={reviewMenuOpen}
+                            use:dismissible={{active: reviewMenuOpen, outside: true, onDismiss: () => (reviewMenuOpen = false)}}
+                        >
+                            <summary
+                                class="{REVIEW_BUTTON} rounded-l-none border-l-base-content/20 px-1.5"
+                                aria-label="Review settings"
+                                title="Review settings"
+                            >
+                                <ReviewIcon name="chevron-down" class="h-3.5 w-3.5" />
+                            </summary>
+                            <div class="dropdown-content z-20 mt-1 rounded-box border border-base-300 bg-base-200 p-3 shadow-lg">
+                                <ReviewSettings />
+                            </div>
+                        </details>
+                    </div>
+                    <!-- Find Matches (plan 35 D9): disabled with nothing to propose, and,
+                         with no clearing account declared (D2), says how to declare one.
+                         Its ▾ (Amendment A1) holds the window and the lookback, as
+                         Review Recents' holds the review settings. -->
+                    <div class="flex">
+                        <span class="tooltip tooltip-bottom before:max-w-72 before:whitespace-normal" data-tip={matchTip}>
+                            <button
+                                type="button"
+                                class="{REVIEW_BUTTON} gap-1.5 rounded-r-none"
+                                disabled={!canOpenMatches}
+                                onclick={launchMatches}
+                                data-testid="find-matches-button"
+                            >
+                                <ReviewIcon name="link" class="h-3.5 w-3.5" />
+                                Find Matches
+                                <span class={["badge badge-sm tabular-nums", matchCount > 0 ? "badge-info" : "badge-ghost"]} data-testid="find-matches-count"
+                                    >{matchCount}</span
+                                >
+                            </button>
+                        </span>
+                        <!-- End-aligned: a left-aligned panel ran past the window whenever the toolbar wrapped (daisyUI's sm: is a media query, so it never tracked that). -->
+                        <details
+                            class="dropdown dropdown-end"
+                            bind:open={matchMenuOpen}
+                            use:dismissible={{active: matchMenuOpen, outside: true, onDismiss: () => (matchMenuOpen = false)}}
+                        >
+                            <summary
+                                class="{REVIEW_BUTTON} rounded-l-none border-l-base-content/20 px-1.5"
+                                aria-label="Find Matches settings"
+                                title="Find Matches settings"
+                                data-testid="find-matches-menu"
+                            >
+                                <ReviewIcon name="chevron-down" class="h-3.5 w-3.5" />
+                            </summary>
+                            <div class="dropdown-content z-20 mt-1 rounded-box border border-base-300 bg-base-200 p-3 shadow-lg">
+                                <ReviewSettings show="matches" />
+                                {#if olderCount > 0 && settings.matchLookback !== 0}
+                                    <p class="mt-2 text-xs text-base-content/60" data-testid="find-matches-older">{olderLabel(olderCount)}</p>
+                                {/if}
+                            </div>
+                        </details>
+                    </div>
+                    {#if noClearing}
+                        <a
+                            class="link text-xs text-base-content/60 link-hover"
+                            href={MATCHING_DOCS}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            data-testid="find-matches-docs">How?</a
+                        >
+                    {/if}
                 </div>
-                {#if noClearing}
-                    <a
-                        class="link text-xs text-base-content/60 link-hover"
-                        href={MATCHING_DOCS}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        data-testid="find-matches-docs">How?</a
-                    >
-                {/if}
-            </div>
-        {:else}
-            <span></span>
-        {/if}
-        <!-- The delete confirm lives in the TOOLBAR, not in the row: this is
-             outside the virtualized area so it cannot unmount mid-confirm, and
-             unlike a row-local "Delete?" it can say WHAT is about to go. It also
-             gives keyboard delete a mouse path for free — there was no delete
-             affordance outside the transaction popup at all. -->
-        {#if armedDelete !== null}
-            <div class="flex items-center gap-2 rounded border border-error/40 px-2 py-1 text-sm" role="alert">
-                <span>
-                    Delete <span class="font-mono">{armedDelete.date}</span>
-                    {armedDelete.description || "(no description)"}?
-                </span>
-                <button type="button" class="btn btn-error btn-xs" onclick={() => void confirmDelete()}>Delete</button>
-                <button type="button" class="btn btn-ghost btn-xs" onclick={() => (armedDelete = null)}>Keep</button>
-            </div>
-        {:else if armedMatch !== null}
-            <div class="flex items-center gap-2 rounded border border-base-content/20 px-2 py-1 text-sm" role="alert" data-testid="match-confirm">
-                {#if armedMatch.kind === "unlink"}
-                    {@const transfer = armedMatch.row.transfer}
-                    <span>
-                        Unlink <span class="font-mono">{armedMatch.row.txn.date}</span>
-                        {transfer?.from.label ?? "?"} → {transfer?.to.label ?? "?"}? Both halves stay; only their match tags go.
-                    </span>
-                    <button type="button" class="btn btn-warning btn-xs" onclick={() => void confirmMatch()} data-testid="match-confirm-go">Unlink</button>
-                {:else}
-                    <span>Forget that {armedMatch.txn.description || "this transaction"} is not a match ({armedMatch.value})? It may be proposed again.</span>
-                    <button type="button" class="btn btn-warning btn-xs" onclick={() => void confirmMatch()} data-testid="match-confirm-go">Forget</button>
-                {/if}
-                <button type="button" class="btn btn-ghost btn-xs" onclick={() => (armedMatch = null)}>Keep</button>
-            </div>
-        {:else if matchFailure !== null}
-            <div class="flex items-center gap-2 rounded border border-error/40 px-2 py-1 text-sm" role="alert" data-testid="match-failure">
-                <span>Not saved: {matchFailure}</span>
-                <button type="button" class="btn btn-ghost btn-xs" onclick={() => (matchFailure = null)}>Dismiss</button>
-            </div>
-        {/if}
-        <div class="flex items-center gap-1">
-            {#if !calendar}
-                <ColumnMenu />
+            {:else}
+                <span></span>
             {/if}
-            <!-- The view toggle sits last, so hiding the column menu in the calendar does not move it. -->
-            <div class="join" role="group" aria-label="Journal view">
-                <button
-                    type="button"
-                    class={["btn join-item btn-ghost btn-xs", !calendar && "btn-active"]}
-                    aria-pressed={!calendar}
-                    aria-label="List view"
-                    title="List view (v)"
-                    onclick={() => filters.setCalendar(false)}
-                    data-testid="view-list"
-                >
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-4 w-4" aria-hidden="true">
-                        <path
-                            fill-rule="evenodd"
-                            d="M2 3.75A.75.75 0 0 1 2.75 3h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 3.75ZM2 8a.75.75 0 0 1 .75-.75h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 8Zm0 4.25a.75.75 0 0 1 .75-.75h10.5a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1-.75-.75Z"
-                            clip-rule="evenodd"
-                        />
-                    </svg>
-                </button>
-                <button
-                    type="button"
-                    class={["btn join-item btn-ghost btn-xs", calendar && "btn-active"]}
-                    aria-pressed={calendar}
-                    aria-label="Calendar view"
-                    title="Calendar view (v)"
-                    onclick={() => filters.setCalendar(true)}
-                    data-testid="view-calendar"
-                >
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-4 w-4" aria-hidden="true">
-                        <path
-                            fill-rule="evenodd"
-                            d="M4 1.75a.75.75 0 0 1 1.5 0V3h5V1.75a.75.75 0 0 1 1.5 0V3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2V1.75ZM4.5 6a1 1 0 0 0-1 1v4.5a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1h-7Z"
-                            clip-rule="evenodd"
-                        />
-                    </svg>
-                </button>
+            {@render confirmBar()}
+            <!-- `ml-auto`: on a line of its own (a wrapped toolbar) it stays on the right, where its menu opens leftwards. -->
+            <div class="ml-auto flex items-center gap-1">
+                {#if !calendar}
+                    <ColumnMenu />
+                {/if}
+                <!-- The view toggle sits last, so hiding the column menu in the calendar does not move it. -->
+                {#if calendarAllowed}
+                    <div class="join" role="group" aria-label="Journal view">
+                        <button
+                            type="button"
+                            class={["btn join-item btn-ghost btn-xs", !calendar && "btn-active"]}
+                            aria-pressed={!calendar}
+                            aria-label="List view"
+                            title={hint("List view", "v")}
+                            onclick={() => filters.setCalendar(false)}
+                            data-testid="view-list"
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-4 w-4" aria-hidden="true">
+                                <path
+                                    fill-rule="evenodd"
+                                    d="M2 3.75A.75.75 0 0 1 2.75 3h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 3.75ZM2 8a.75.75 0 0 1 .75-.75h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 8Zm0 4.25a.75.75 0 0 1 .75-.75h10.5a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1-.75-.75Z"
+                                    clip-rule="evenodd"
+                                />
+                            </svg>
+                        </button>
+                        <button
+                            type="button"
+                            class={["btn join-item btn-ghost btn-xs", calendar && "btn-active"]}
+                            aria-pressed={calendar}
+                            aria-label="Calendar view"
+                            title={hint("Calendar view", "v")}
+                            onclick={() => filters.setCalendar(true)}
+                            data-testid="view-calendar"
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-4 w-4" aria-hidden="true">
+                                <path
+                                    fill-rule="evenodd"
+                                    d="M4 1.75a.75.75 0 0 1 1.5 0V3h5V1.75a.75.75 0 0 1 1.5 0V3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2V1.75ZM4.5 6a1 1 0 0 0-1 1v4.5a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1h-7Z"
+                                    clip-rule="evenodd"
+                                />
+                            </svg>
+                        </button>
+                    </div>
+                {/if}
             </div>
         </div>
-    </div>
+    {/if}
     <!-- There is no DOM focus on the cursored row (see the cursor's comment), so
          nothing would otherwise be announced as it moves. -->
     <div class="sr-only" aria-live="polite" aria-atomic="true">{announcement}</div>
     {#if calendar}
         <CalendarView pulse={pulseIndex} />
     {:else}
+        <!-- From `md` the list is its own scroller and takes what the fixed-height
+             page leaves. Below `md` the page scrolls (routes/+page.svelte) and the
+             list is simply as tall as its rows: the window comes from the page's
+             scroll (the effect above), not from this box. -->
         <div
             bind:this={scroller}
-            bind:clientHeight={viewportHeight}
+            bind:clientHeight={
+                null,
+                (height) => {
+                    if (!pageScroll && typeof height === "number") viewportHeight = height;
+                }
+            }
             bind:clientWidth={containerWidth}
             onscroll={(event) => (scrollTop = event.currentTarget.scrollTop)}
             onfocusin={(event) => syncCursorFromTarget(event.target)}
-            class="min-h-0 grow overflow-y-auto rounded-lg border border-base-300"
+            class={pageScroll
+                ? "rounded-lg border border-base-300"
+                : "h-[calc(100dvh-9rem-var(--ll-chrome-top))] min-h-64 grow overflow-y-auto rounded-lg border border-base-300 md:h-auto md:min-h-0"}
         >
             {#if journalView.total === null}
                 <div class="flex justify-center p-8" aria-label="Loading transactions"><span class="loading loading-spinner"></span></div>
@@ -747,7 +1051,7 @@
                         {#if columns.amount}<col class="w-36" />{/if}
                         {#if pinned !== null}<col class="w-32" /><col class="w-44" />{/if}
                     </colgroup>
-                    <thead class="sticky top-0 z-10 bg-base-200" bind:clientHeight={headHeight}>
+                    <thead class="sticky top-0 z-10 bg-base-200" style:top={pageScroll ? "var(--ll-chrome-top)" : undefined} bind:clientHeight={headHeight}>
                         <tr class="text-base-content/70">
                             {#if columns.date}<th class="text-left">Date</th>{/if}
                             {#if columns.status}<th class="text-left">Status</th>{/if}
@@ -788,7 +1092,7 @@
                 <div class="p-2" style="padding-top: {win.padTop + topInset}px; padding-bottom: {win.padBottom + topInset}px">
                     {#each visible as slot (slotKey(slot))}
                         {#if slot.shows === null}
-                            <div class="mb-2 h-24 skeleton opacity-40" aria-hidden="true" data-skeleton></div>
+                            <div class="mb-2 h-20 skeleton opacity-40" aria-hidden="true" data-skeleton></div>
                         {:else}
                             {@render row(slot, slot.shows, "card")}
                         {/if}
@@ -796,5 +1100,10 @@
                 </div>
             {/if}
         </div>
+    {/if}
+    {#if rowMenu !== null}
+        <!-- A card's detail sheet (plan 42): the whole transaction, read-only,
+             then everything the row offers a mouse and a keyboard. -->
+        <TxnDetailSheet txn={rowMenu.txn} note={transferNote(rowMenu)} actions={detailActions(rowMenu)} onClose={closeRowMenu} />
     {/if}
 </section>

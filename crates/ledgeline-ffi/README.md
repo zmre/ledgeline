@@ -5,11 +5,10 @@ server's router in-process behind a custom URL scheme, over a folder (or one fil
 the user granted from Files or iCloud Drive. Not published; internal to this
 workspace. Plan: `plans/26-platform-readiness.md` (A3).
 
-The template for the Swift side is mbr's iOS shell
-(`mbr-markdown-browser/apple/ios/`, with its `build.sh`, and
-`design/ios-architecture-research.md` for the reasoning). This crate is
-modelled closely on mbr's `crates/mbr-ffi` (`src/mobile/`). The Swift shell
-itself is out of scope here.
+The Swift shell is `apple/ios/` (plan 42), modelled on mbr's iOS shell
+(`mbr-markdown-browser/apple/ios/`, with `design/ios-architecture-research.md`
+for the reasoning). This crate is modelled closely on mbr's `crates/mbr-ffi`
+(`src/mobile/`).
 
 ## Building
 
@@ -21,10 +20,13 @@ itself is out of scope here.
   `target/aarch64-apple-ios[-sim]/release/libledgeline_ffi.a`. The script
   sends only the target-side C compiles (rustls' `aws-lc-sys`) to Xcode's
   SDK. Everything else keeps the nix toolchain.
-- Bindings: proc-macros only, so there's no UDL and no build script. Generate
-  the Swift with `uniffi-bindgen` 0.31 from the built library (`uniffi-bindgen
-  generate --library libledgeline_ffi.a --language swift`), as mbr's
-  `build.sh` does.
+- Bindings: proc-macros only, so there's no UDL and no build script. The
+  crate's own `uniffi-bindgen` bin (feature `bindgen`, which adds uniffi's
+  `cli`) generates the Swift from the built library: `cargo run -p
+  ledgeline-ffi --features bindgen --bin uniffi-bindgen -- generate --library
+  target/aarch64-apple-ios/release/libledgeline_ffi.a --language swift
+  --out-dir …`. `apple/ios/build.sh` does all of this (see
+  `docs/development/ios.md`).
 
 The UniFFI exports compile on Apple targets only (`target_vendor = "apple"`,
 which includes macOS, so the host tests exercise them there). Elsewhere the
@@ -33,8 +35,8 @@ crate is plain Rust.
 ## Exported API
 
 ```text
-LedgelineApp.open(rootPath, mainFile, cacheDir?, coordinator?) throws -> LedgelineApp
-LedgelineApp.openFile(path, coordinator?) throws -> LedgelineApp
+LedgelineApp.open(rootPath, mainFile, cacheDir?, configDir?, coordinator?) throws -> LedgelineApp
+LedgelineApp.openFile(path, configDir?, coordinator?) throws -> LedgelineApp
 app.handle(method, url, headers: [Header], body: Data) async throws -> LedgelineResponse
 app.refresh() async throws -> RefreshSummary
 app.accessToken() -> String
@@ -152,6 +154,10 @@ pull-to-refresh, and a few seconds after a `Pending` outcome:
 
 ### App directories
 
-`cacheDir` (the app's `Caches/`) holds the staging area for dropped
-statements. There's no config directory: nothing in the preferences store
-applies to a build with no external tools.
+- `cacheDir` (the app's `Caches/`, per ledger) holds the staging area for
+  dropped statements.
+- `configDir` is where the app-wide stores live, `ui-prefs.toml` (the view
+  settings) above all. Pass the app's `Application Support/Ledgeline`, the
+  same for every ledger; it's created on first write. With `nil` the view
+  settings are kept in memory only and the SPA warns that there's no config
+  folder.

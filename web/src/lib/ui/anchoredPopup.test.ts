@@ -3,7 +3,7 @@
 // tell a correct placement from a broken one.
 
 import {describe, expect, it} from "vitest";
-import {menuPosition, popupPosition} from "./anchoredPopup";
+import {menuPosition, popupPosition, tipPosition} from "./anchoredPopup";
 
 const VIEWPORT = {width: 1024, height: 768};
 const rect = (top: number, height = 32, left = 100, width = 240) => ({top, bottom: top + height, left, width});
@@ -111,5 +111,30 @@ describe("UNIT menuPosition", () => {
 
         expect(placed.left).toBeGreaterThanOrEqual(8);
         expect(placed.left + placed.width).toBeLessThanOrEqual(200);
+    });
+});
+
+// Plan 42: in the iOS app the page runs under the native bar, which covers
+// `top` px of the viewport. Nothing may open into it.
+describe("UNIT covered viewport top (native bar)", () => {
+    const viewport = {width: 400, height: 800, top: 116};
+
+    it("caps a popup that flips up at the bar's edge", () => {
+        // Above: 200 - 116 - 10 = 74 usable px; below: 800 - 740 - 10 = 50. It flips, but stops at the bar.
+        const placement = popupPosition({top: 200, bottom: 740, left: 10, width: 200}, viewport, 300);
+        expect(placement.below).toBe(false);
+        expect(placement.top).toBeGreaterThanOrEqual(116);
+        expect(placement.maxHeight).toBe(200 - 116 - 2 - 8);
+    });
+
+    it("counts the room above from the bar's edge, so a roomier below wins", () => {
+        const placement = popupPosition({top: 220, bottom: 250, left: 10, width: 200}, {width: 400, height: 400, top: 116}, 300);
+        // Above: 220-116-10 = 94; below: 400-250-10 = 140.
+        expect(placement.below).toBe(true);
+    });
+
+    it("clamps a tooltip below the bar", () => {
+        const {top} = tipPosition({top: 120, bottom: 140, left: 10, width: 20}, {width: 400, height: 160, top: 116}, {width: 100, height: 80}, "bottom-start");
+        expect(top).toBeGreaterThanOrEqual(116 + 8);
     });
 });

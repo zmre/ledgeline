@@ -83,7 +83,7 @@
 </script>
 
 {#if status !== null && status.editable && status.symbols.length > 0 && (status.defaultTarget !== null || status.canCreateFile)}
-    <div class="flex items-center gap-3">
+    <div class="ml-auto flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
         {#if autoNote !== null}
             <span class="text-xs opacity-70" data-testid="auto-prices-note">{autoNote}</span>
         {/if}

@@ -30,8 +30,15 @@
     let {
         txn,
         transferEnds,
+        compact = false,
     }: {
         txn: Transaction;
+        /**
+         * A journal card's account line (plan 42): one line, never wrapping (the
+         * card is a fixed height), and read-only, since a tap on a card opens the
+         * whole transaction rather than an inline field too small to type in.
+         */
+        compact?: boolean;
         /**
          * A collapsed transfer row (plan 35 D11): the two real accounts, source
          * first. They render as this cell's ordinary flow chips, read-only — the
@@ -49,7 +56,7 @@
     const autoTitle = $derived(
         `${autoCount} ${autoCount === 1 ? "posting" : "postings"} added by ${autoRules.map((rule) => `= ${rule.query}`).join(", ")} — open the rule`
     );
-    const canEdit = $derived(editing.canEdit && transferEnds === undefined);
+    const canEdit = $derived(editing.canEdit && transferEnds === undefined && !compact);
 
     // Room in px for each chip's text, or null when nothing has measured the
     // column (card layout, server render, first frame) — the labels then fall
@@ -154,7 +161,7 @@
     <!-- `max-w-full` rather than the old `max-w-44` (176px): this list wraps, so
          a chip too wide to share a line gets one to itself. Capping it at 176px
          inside a ~450px cell left the rest of that line blank for nothing. -->
-    <div class="flex min-w-0 flex-wrap gap-1">
+    <div class={["flex min-w-0 gap-1", compact ? "flex-nowrap overflow-hidden" : "flex-wrap"]}>
         {#each flow.accounts as account, index (account)}
             {#if canEdit}
                 <button

@@ -1,5 +1,6 @@
 <!-- Report tab strip (WP-07): daisyUI tabs, one per report. -->
 <script lang="ts">
+    import HScroll from "#lib/components/HScroll.svelte";
     import {registerKeys} from "#lib/keys/keymap.svelte.js";
     import {PRIORITY} from "#lib/keys/types.js";
     import {TAB_LABELS, TAB_ORDER, type ReportTab} from "./params";
@@ -27,10 +28,14 @@
     });
 </script>
 
-<div role="tablist" class="tabs tabs-border" aria-label="Report">
-    {#each TAB_ORDER as t (t)}
-        <button type="button" role="tab" class="tab whitespace-nowrap {t === tab ? 'tab-active' : ''}" aria-selected={t === tab} onclick={() => (tab = t)}>
-            {TAB_LABELS[t]}
-        </button>
-    {/each}
-</div>
+<!-- One line that scrolls sideways rather than wrapping: a wrapped strip on a
+     phone is two or three rows of tabs before any content. -->
+<HScroll reveal={tab}>
+    <div role="tablist" class="tabs tabs-border w-max min-w-full flex-nowrap" aria-label="Report">
+        {#each TAB_ORDER as t (t)}
+            <button type="button" role="tab" class="tab whitespace-nowrap {t === tab ? 'tab-active' : ''}" aria-selected={t === tab} onclick={() => (tab = t)}>
+                {TAB_LABELS[t]}
+            </button>
+        {/each}
+    </div>
+</HScroll>

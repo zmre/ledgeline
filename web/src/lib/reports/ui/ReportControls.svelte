@@ -2,8 +2,9 @@
      Mutates fields of the bound params object; date edits are ignored until
      the input holds a full valid ISO date (type=date emits "" while clearing). -->
 <script lang="ts">
+    import FoldedControls from "#lib/components/FoldedControls.svelte";
     import DepthSlider from "#lib/insights/DepthSlider.svelte";
-    import {bsMultiPeriod, intervalLabel, MAX_COUNT, rangeKeys, TAB_CONTROLS, type ReportParams} from "./params";
+    import {bsMultiPeriod, controlsSummary, intervalLabel, MAX_COUNT, rangeKeys, TAB_CONTROLS, type ReportParams} from "./params";
 
     let {params = $bindable(), maxDepth}: {params: ReportParams; maxDepth: number} = $props();
 
@@ -29,7 +30,13 @@
     </label>
 {/snippet}
 
-<div class="flex flex-wrap items-end gap-x-4 gap-y-2 rounded-box bg-base-200 px-3 py-2">
+<!-- Below `sm` the bar folds behind a line saying what it is set to. -->
+<FoldedControls
+    id="report-controls"
+    summary={controlsSummary(params)}
+    testid="report-controls"
+    class="flex-wrap items-end gap-x-4 gap-y-2 rounded-box bg-base-200 px-3 py-2"
+>
     <!-- The balance sheet's multi-period mode: From, then As of, the last
          column's end. Single date (Total) shows As of alone, as it always did. -->
     {#if config.asOfFrom && bsMultiPeriod(params)}
@@ -80,4 +87,4 @@
             <DepthSlider bind:depth={params.depth} max={maxDepth} />
         {/key}
     {/if}
-</div>
+</FoldedControls>

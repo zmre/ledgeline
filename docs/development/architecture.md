@@ -52,11 +52,24 @@ An axum `Router` over an `AppState`. The library is what every host links; `main
 
 - **Desktop** (`ledgeline`, default features). `gui.rs` binds axum to an ephemeral loopback port and opens a wry webview at it. The SPA is embedded in the binary.
 - **Headless** (`ledgeline --server`, or a build with `--no-default-features --features watcher,external-tools`). The same router on a fixed port, token-guarded, for a browser or another client.
-- **iOS** (`crates/ledgeline-ffi`, `mobile` feature). No socket: `LedgelineApp::handle(method, url, headers, body)` runs the router in-process (`Router::oneshot`) behind the app's custom-scheme handler. Storage is a `CoordinatedVault` that writes through a Swift `FileCoordinator` (conditionally, against the expected revision), detects iCloud placeholder files and fails fast with `NotDownloaded` instead of blocking. The `mobile` feature builds the server without `gui`, `watcher` or `external-tools`. UniFFI exports are compiled on Apple targets only, so the crate builds and tests everywhere. The Swift shell itself is not written yet.
+- **iOS** (`crates/ledgeline-ffi`, `mobile` feature). No socket: `LedgelineApp::handle(method, url, headers, body)` runs the router in-process (`Router::oneshot`) behind the app's custom-scheme handler. Storage is a `CoordinatedVault` that writes through a Swift `FileCoordinator` (conditionally, against the expected revision), detects iCloud placeholder files and fails fast with `NotDownloaded` instead of blocking. The `mobile` feature builds the server without `gui`, `watcher` or `external-tools`. UniFFI exports are compiled on Apple targets only, so the crate builds and tests everywhere. The Swift shell lives in `apple/ios` (plan 42) and shows the same SPA in native mode, below.
 
 ## The web app
 
 `web/` is a SvelteKit SPA. Since plan 26 it requires the native API and holds no journal-sized data: the Journal tab reads windows of rows, the budget bars come with their pace and verdicts, and a projection line is sent signed as the file writes it, which the engine writes unchanged. What remains in TypeScript is presentation: layout, formatting with the engine's styles, chart and bar geometry, and form state. A component may still preview something while the user types (for example, whether a projection rule's postings balance on their own), but the engine's answer is the authority once it arrives.
+
+### Native mode (the iOS app)
+
+The iOS app shows the same SPA bundle with its own navigation bar in place of the HTML header. Its document-start script sets `window.__LEDGELINE_NATIVE__ = {platform, idiom, version}` and the `ll-native` class on `<html>`; `isNative()` in `web/src/lib/native/` reads either. Every native-only path is gated on it, so the desktop app and a browser are untouched. The contract is in `plans/42-mobile-app.md`.
+
+- **Page to app.** `window.webkit.messageHandlers.ledgeline.postMessage(msg)` with `{type: "page", title, sections, actions, canGoBack}` (posted from the root layout after every navigation and whenever an action, an open overlay or the history depth changes, deduped), `{type: "share", filename, mime, base64}` for an export, and `{type: "haptic", style}`.
+- **App to page.** `window.ledgelineNative.navigate(sectionId)`, `.action(actionId)`, `.back()` and `.state()`. `back()` closes the topmost overlay, else goes back in in-app history, else returns `false` and the app shows its home screen.
+- **Actions.** A component adds menu entries with `registerNativeActions(() => [...])` during init; the getter is reactive, so counts in labels stay current. The layout adds Refresh everything and Problems; every `ExportButton` adds Export to Excel; the journal adds Add transaction, the review and match runs, and the insights toggle.
+- **Overlays.** Anything built on `use:dismissible` registers its dismiss handler with the bridge on its own; other modals (the problems drawer, the goal and save-scenario dialogs) call `registerNativeOverlay`.
+- **Layout.** `html.ll-native` collapses the header to zero height (not `display: none`: fixed popups anchored inside it must still render) and pads the body by the safe-area insets (`viewport-fit=cover` is in `app.html`). Imports and the new-ledger wizard need a desktop host, so in native mode they are not rendered and redirect to the journal.
+- **Exports.** `downloadWorkbook` sends the bytes to the share sheet instead of an `<a download>`.
+
+Two related changes key off the device, not off native mode, so they apply in any browser too. Keyboard hints (`<kbd>` and "(v)" suffixes in tooltips, through `hint()` in `lib/keys/hint.svelte.ts`) hide when there is no fine pointer (`any-pointer: fine`), and the journal's calendar is not offered below the `md` breakpoint: no toggle, no `v`, and a `cal=1` link shows its month as the list.
 
 ## Adding a native UI
 

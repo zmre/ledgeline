@@ -59,3 +59,13 @@ coverage/
 .DS_Store
 *.swp
 .idea/
+
+# iOS app (apple/ios, plan 42). XcodeGen writes the .xcodeproj and build.sh
+# the xcframework; both are build products. apple/ios/Generated (the UniFFI
+# bindings) IS committed.
+/apple/ios/Ledgeline.xcodeproj/
+/apple/ios/LedgelineFFI.xcframework/
+/apple/ios/Ledgeline/Info.plist
+# A global `*.sw*` (vim swap files) would hide every Swift source; a repo
+# .gitignore outranks the global excludes file.
+!/apple/ios/**/*.swift

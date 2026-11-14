@@ -25,7 +25,7 @@
 </script>
 
 {#snippet days(field: NumberSetting, label: string, aria: string, min: number, max: number)}
-    <label class="flex items-center justify-between gap-3" for="{uid}-{field}">
+    <label class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1" for="{uid}-{field}">
         <span>{label}</span>
         <span class="flex items-center gap-1.5">
             <input
@@ -44,10 +44,10 @@
     </label>
 {/snippet}
 
-<div class="flex w-72 flex-col gap-3 p-1 text-sm" data-testid="review-settings">
+<div class="flex w-72 max-w-full flex-col gap-3 p-1 text-sm" data-testid="review-settings">
     {#if show !== "matches"}
         <h3 class="text-xs font-medium tracking-wide text-base-content/55 uppercase">Review settings</h3>
-        <label class="flex items-center justify-between gap-3" for="{uid}-limit">
+        <label class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1" for="{uid}-limit">
             <span>Review Recents takes</span>
             <span class="flex items-center gap-1.5">
                 <input
@@ -63,7 +63,7 @@
                 <span class="text-base-content/60">at most</span>
             </span>
         </label>
-        <label class="flex items-center justify-between gap-3" for="{uid}-days">
+        <label class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1" for="{uid}-days">
             <span>Look back</span>
             <span class="flex items-center gap-1.5">
                 <input
@@ -80,7 +80,7 @@
             </span>
         </label>
         <p class="-mt-2 text-xs text-base-content/50">0 days means no limit. Both queues use this window.</p>
-        <label class="flex cursor-pointer items-center justify-between gap-3">
+        <label class="flex cursor-pointer flex-wrap items-center justify-between gap-x-3 gap-y-1">
             <span>Mark unreviewed rows in the journal</span>
             <input
                 type="checkbox"

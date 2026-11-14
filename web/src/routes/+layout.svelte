@@ -1,5 +1,6 @@
 <script lang="ts">
     import "../app.css";
+    import {afterNavigate, goto} from "$app/navigation";
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
     import ProblemsBadge from "#lib/checks/ProblemsBadge.svelte";
@@ -10,6 +11,17 @@
     import KeyHelp from "#lib/keys/KeyHelp.svelte";
     import {keymap, registerKeys} from "#lib/keys/keymap.svelte.js";
     import {globalLayer} from "#lib/keys/navBindings.js";
+    import {
+        GLOBAL_ACTION_ORDER,
+        installNativeBridge,
+        noteNavigation,
+        publishPage,
+        registerNativeActions,
+        registerNativeOverlay,
+        type NativeAction,
+        type SectionId,
+    } from "#lib/native/bridge.svelte.js";
+    import {isNative} from "#lib/native/detect.js";
     import {localToday} from "#lib/stores/filters.svelte.js";
     import {journal, startPolling} from "#lib/stores/journal.svelte.js";
     import {problems} from "#lib/stores/problems.svelte.js";
@@ -27,10 +39,16 @@
     // every `scrollIntoView` and anchor jump lands just below it rather than
     // underneath it — measured, not hard-coded, because it grows with the
     // interface scale.
+    // In the iOS app the header is collapsed to nothing and the native bar's
+    // height is the top safe-area inset, so that is added (0 everywhere else).
     let headerHeight = $state(0);
     $effect(() => {
-        document.documentElement.style.scrollPaddingTop = `${headerHeight}px`;
+        document.documentElement.style.scrollPaddingTop = `calc(${headerHeight}px + env(safe-area-inset-top, 0px))`;
     });
+
+    // Inside the iOS/iPadOS app (plan 42). Set before any script runs and never
+    // changes for the life of the document, so a constant.
+    const native = isNative();
 
     // The Imports nav item is hidden on an engine that has no `/api/rules` route
     // at all (it 404s, which the client reports as `NativeApiUnavailableError`).
@@ -71,20 +89,22 @@
     const connTitle = $derived(connectionTooltip(conn, journal.file, settings.serverUrl, journal.error));
 
     // The section tabs, drawn as the header's tab row on a wide window and as
-    // its menu on a narrow one. Imports hides on an engine with no rules route.
+    // its menu on a narrow one. Imports hides on an engine with no rules route,
+    // and in the iOS app, which cannot run imports at all (plan 42).
     const sections = $derived.by(() => {
         const path = page.url.pathname;
         const all = [
-            {href: resolve("/"), label: "Journal", active: path === "/"},
-            {href: resolve("holdings"), label: "Holdings", active: path.startsWith("/holdings")},
-            {href: resolve("budget"), label: "Budget", active: path.startsWith("/budget")},
-            {href: resolve("projections"), label: "Projections", active: path.startsWith("/projections")},
-            {href: resolve("reports"), label: "Reports", active: path.startsWith("/reports")},
-            {href: resolve("imports"), label: "Imports", active: path.startsWith("/imports")},
-        ];
-        return rulesStore.available ? all : all.filter((s) => s.label !== "Imports");
+            {id: "journal", href: resolve("/"), label: "Journal", active: path === "/"},
+            {id: "holdings", href: resolve("holdings"), label: "Holdings", active: path.startsWith("/holdings")},
+            {id: "budget", href: resolve("budget"), label: "Budget", active: path.startsWith("/budget")},
+            {id: "projections", href: resolve("projections"), label: "Projections", active: path.startsWith("/projections")},
+            {id: "reports", href: resolve("reports"), label: "Reports", active: path.startsWith("/reports")},
+            {id: "imports", href: resolve("imports"), label: "Imports", active: path.startsWith("/imports")},
+        ] as const;
+        return rulesStore.available && !native ? all : all.filter((s) => s.id !== "imports");
     });
-    const currentSection = $derived(sections.find((s) => s.active)?.label ?? (page.url.pathname.startsWith("/settings") ? "Settings" : "Menu"));
+    const onSettings = $derived(page.url.pathname.startsWith("/settings"));
+    const currentSection = $derived(sections.find((s) => s.active)?.label ?? (onSettings ? "Settings" : "Menu"));
 
     let reconnectOpen = $state(false);
     let storageNoticeDismissed = $state(false);
@@ -139,6 +159,73 @@
         if (serverUrl === null || generation === null) return;
         void problems.load(serverUrl, generation, localToday());
     });
+
+    // ---- The iOS app's native chrome (plan 42) — all of it inert elsewhere. ----
+    //
+    // Imports and the new-ledger wizard need a desktop host (an hledger
+    // subprocess, a folder to create a ledger in), so in the app they are not
+    // routes at all: nothing renders there and the URL moves to the journal.
+    const nativeBlocked = $derived(native && (page.url.pathname.startsWith("/imports") || page.url.pathname.startsWith("/new")));
+    $effect(() => {
+        if (nativeBlocked) void goto(resolve("/"), {replace: true});
+    });
+
+    const sectionHrefs: Record<SectionId, string> = {
+        journal: resolve("/"),
+        holdings: resolve("holdings"),
+        budget: resolve("budget"),
+        projections: resolve("projections"),
+        reports: resolve("reports"),
+        settings: resolve("settings"),
+    };
+    $effect(() =>
+        installNativeBridge({
+            navigate: (id) => {
+                // eslint-disable-next-line svelte/no-navigation-without-resolve -- every value in sectionHrefs IS a resolve() of its route
+                if (page.url.pathname !== sectionHrefs[id]) void goto(sectionHrefs[id]);
+            },
+            // The app's one Refresh re-reads the files itself, then asks for this.
+            refresh: () => void refreshEverything(),
+        })
+    );
+    afterNavigate((navigation) => {
+        if (native) noteNavigation(navigation.type, "delta" in navigation ? navigation.delta : undefined);
+    });
+
+    // What the header's right-hand icons did, as menu actions after the page's own.
+    registerNativeActions(
+        () => {
+            const actions: NativeAction[] = [];
+            // In the app, Refresh is the native menu's own item (it re-reads the files first).
+            if (conn !== "none" && !native)
+                actions.push({id: "refresh", label: "Refresh everything", icon: "arrow.clockwise", run: () => void refreshEverything()});
+            actions.push({
+                id: "problems",
+                label: problems.count > 0 ? `Problems (${problems.count})` : "Problems",
+                icon: "exclamationmark.triangle",
+                run: () => (problems.drawerOpen = true),
+            });
+            return actions;
+        },
+        {order: GLOBAL_ACTION_ORDER}
+    );
+    registerNativeOverlay(
+        () => problems.drawerOpen,
+        () => (problems.drawerOpen = false)
+    );
+
+    // The page's state for the native bar: re-posted (deduped) whenever the
+    // section, an action, an open overlay or the history depth changes.
+    $effect(() => {
+        if (!native) return;
+        publishPage({
+            title: currentSection === "Menu" ? "Ledgeline" : currentSection,
+            sections: [
+                ...sections.flatMap(({id, label, active}) => (id === "imports" ? [] : [{id, label, active}])),
+                {id: "settings" as const, label: "Settings", active: onSettings},
+            ],
+        });
+    });
 </script>
 
 {#snippet sectionLinks(inMenu: boolean)}
@@ -160,7 +247,7 @@
     <input id="problems-drawer" type="checkbox" class="drawer-toggle" bind:checked={problems.drawerOpen} />
     <div class="drawer-content">
         <div class="flex min-h-screen flex-col bg-base-100 text-base-content">
-            <header class="navbar sticky top-0 z-30 min-h-12 bg-base-200 shadow-sm" bind:clientHeight={headerHeight} data-testid="app-header">
+            <header class="app-header navbar sticky top-0 z-30 min-h-12 bg-base-200 shadow-sm" bind:clientHeight={headerHeight} data-testid="app-header">
                 <div class="navbar-start">
                     <a href={resolve("/")} class="btn gap-2 btn-ghost px-2 text-lg font-semibold tracking-tight" aria-label="Ledgeline">
                         <img src="/ledgeline-icon-small.svg" alt="" class="h-7 w-7 rounded" />
@@ -267,7 +354,7 @@
 
             <!-- 100rem: 25% wider than Tailwind's max-w-7xl (80rem), for the calendar and wide tables on big screens. -->
             <main class="mx-auto w-full max-w-[100rem] grow p-4">
-                {#if settings.serverUrl === null || settings.uiPrefsReady}
+                {#if (settings.serverUrl === null || settings.uiPrefsReady) && !nativeBlocked}
                     {@render children()}
                 {/if}
             </main>

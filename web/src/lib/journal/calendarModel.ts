@@ -16,6 +16,18 @@ import type {Amount, AmountStyle, ISODate, Transaction} from "#lib/domain/types.
 import type {JournalRow} from "#lib/journalView/types.js";
 import {txnFlowAmounts, writtenPostings} from "./rowModel";
 
+/**
+ * The narrowest the calendar is offered at, in rem: the `md` breakpoint
+ * (app.css). Below it a day cell holds a few characters, and a one-day view
+ * would only repeat the list, so the journal shows the list (plan 42).
+ */
+export const CALENDAR_MIN_REM = 48;
+
+/** Whether a month grid fits a column `widthPx` wide at `root` px per rem. */
+export function calendarFits(widthPx: number, root: number): boolean {
+    return widthPx >= CALENDAR_MIN_REM * root;
+}
+
 /** A calendar month, `YYYY-MM`. */
 export type MonthKey = string;
 

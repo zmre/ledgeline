@@ -31,6 +31,7 @@
      chart rather than silently dropped. The statements need no such rule: they
      are valued into one base commodity by the engine, as on the Reports tab. -->
 <script lang="ts">
+    import HScroll from "#lib/components/HScroll.svelte";
     import PeriodLineChart from "#lib/components/PeriodLineChart.svelte";
     import ExportButton from "#lib/reports/ui/ExportButton.svelte";
     import {projectionExport} from "../export";
@@ -177,20 +178,23 @@
 </script>
 
 <div class="flex min-h-dvh flex-col gap-3">
-    <div bind:this={strip} class="flex flex-wrap items-end justify-between gap-2">
-        <div role="tablist" class="tabs tabs-border" aria-label="Projection report">
-            {#each PROJECTION_TABS as t (t)}
-                <button
-                    type="button"
-                    role="tab"
-                    class="tab whitespace-nowrap {t === tab ? 'tab-active' : ''}"
-                    aria-selected={t === tab}
-                    onclick={() => select(t)}
-                >
-                    {PROJECTION_TAB_LABELS[t]}
-                </button>
-            {/each}
-        </div>
+    <div bind:this={strip} class="flex flex-wrap items-end justify-between gap-2" data-testid="projection-tab-row">
+        <!-- One scrolling line, as the Reports strip: never two rows of tabs on a phone. -->
+        <HScroll reveal={tab}>
+            <div role="tablist" class="tabs tabs-border w-max min-w-full flex-nowrap" aria-label="Projection report">
+                {#each PROJECTION_TABS as t (t)}
+                    <button
+                        type="button"
+                        role="tab"
+                        class="tab whitespace-nowrap {t === tab ? 'tab-active' : ''}"
+                        aria-selected={t === tab}
+                        onclick={() => select(t)}
+                    >
+                        {PROJECTION_TAB_LABELS[t]}
+                    </button>
+                {/each}
+            </div>
+        </HScroll>
         {#if download !== null}
             {@const current = download}
             <ExportButton run={current.run} label="Export {PROJECTION_TAB_LABELS[tab]} as xlsx" />

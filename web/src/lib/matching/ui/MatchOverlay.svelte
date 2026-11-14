@@ -38,6 +38,7 @@
     // Card mode / field mode as in review: single keys act on the card,
     // Escape leaves a field, then closes (asking first when edits would go).
     import {tick, untrack} from "svelte";
+    import {hint} from "#lib/keys/hint.svelte.js";
     import {dismissible} from "#lib/keys/dismissible.js";
     import {keymap, registerKeys} from "#lib/keys/keymap.svelte.js";
     import {isTypingTarget, type TargetLike} from "#lib/keys/target.js";
@@ -72,7 +73,7 @@
     import MatchLine from "./MatchLine.svelte";
 
     const SURFACE = "relative min-w-0 origin-bottom overflow-hidden rounded-box border bg-base-100 [grid-area:1/1]";
-    const CARD = `deck-card ${SURFACE} pointer-events-auto z-[5] flex max-h-[calc(100dvh-7.5rem)] flex-col self-start shadow-2xl outline-none`;
+    const CARD = `deck-card ${SURFACE} pointer-events-auto z-[5] flex max-h-[calc(100dvh-7.5rem-var(--ll-top-inset))] flex-col self-start shadow-2xl outline-none`;
     const PANEL = `${SURFACE} pointer-events-auto z-0 self-start border-base-content/10 shadow-2xl outline-none`;
     const PEEK = `${SURFACE} pointer-events-none self-stretch border-base-content/10 p-5 shadow-xl sm:p-8`;
     const today = localToday();
@@ -397,10 +398,10 @@
 >
     <div class="pointer-events-none relative z-10 flex h-full flex-col items-center gap-3 px-3 pt-3 sm:gap-4 sm:px-6 sm:pt-5" out:layerOut|global={{reduced}}>
         <div
-            class="pointer-events-auto relative z-20 flex w-full max-w-4xl shrink-0 items-center gap-3 rounded-box border border-base-content/10 bg-base-300/95 py-1.5 pr-1.5 pl-4 text-base-content shadow-lg backdrop-blur"
+            class="pointer-events-auto relative z-20 flex w-full max-w-4xl shrink-0 flex-wrap items-center gap-x-3 gap-y-1 rounded-box border border-base-content/10 bg-base-300/95 py-1.5 pr-1.5 pl-4 text-base-content shadow-lg backdrop-blur"
             in:barIn|global={{reduced}}
         >
-            <h2 class="flex items-center gap-2 text-sm font-semibold tracking-wide"><ReviewIcon name="link" /> Find Matches</h2>
+            <h2 class="flex min-w-0 items-center gap-2 text-sm font-semibold tracking-wide whitespace-nowrap"><ReviewIcon name="link" /> Find Matches</h2>
             {#if matches.scope !== null}
                 <!-- Opened from an import's result (D9 "Import"): only pairs with a new half. -->
                 <span class="badge badge-ghost badge-sm" data-testid="match-scope">this import</span>
@@ -409,35 +410,39 @@
                 <span class="badge badge-ghost badge-sm" data-testid="match-focus-badge">one transaction</span>
             {/if}
             {#if started && page !== null && !focused}
-                <span class="text-sm text-base-content/65 tabular-nums" data-testid="match-remaining" aria-live="polite">{queue.length} left</span>
+                <span class="shrink-0 text-sm whitespace-nowrap text-base-content/65 tabular-nums" data-testid="match-remaining" aria-live="polite"
+                    >{queue.length} left</span
+                >
             {/if}
             {#if busy}
                 <span class="flex items-center gap-1.5 text-xs text-base-content/60" role="status" data-testid="match-saving">
                     <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-success"></span> saving…
                 </span>
             {/if}
-            <span class="grow"></span>
-            <details
-                class="dropdown dropdown-end"
-                bind:open={menuOpen}
-                use:dismissible={{active: menuOpen, outside: true, onDismiss: () => (menuOpen = false)}}
-            >
-                <summary class="btn btn-square btn-ghost text-base-content/80 btn-sm hover:bg-base-content/10" aria-label="Match settings" title="Settings">
-                    <ReviewIcon name="sliders" />
-                </summary>
-                <div class="dropdown-content z-30 mt-1 rounded-box border border-base-300 bg-base-200 p-3 text-base-content shadow-xl">
-                    <ReviewSettings show="matches" />
-                </div>
-            </details>
-            <button
-                type="button"
-                class="btn btn-square btn-ghost text-base-content/80 btn-sm hover:bg-base-content/10"
-                aria-label="Close Find Matches"
-                title="Close (Esc)"
-                onclick={requestClose}
-            >
-                <ReviewIcon name="x" />
-            </button>
+            <!-- Together and last: a wrapped bar keeps the settings and ✕ on the right of its second line. -->
+            <div class="ml-auto flex shrink-0 items-center gap-1">
+                <details
+                    class="dropdown dropdown-end"
+                    bind:open={menuOpen}
+                    use:dismissible={{active: menuOpen, outside: true, onDismiss: () => (menuOpen = false)}}
+                >
+                    <summary class="btn btn-square btn-ghost text-base-content/80 btn-sm hover:bg-base-content/10" aria-label="Match settings" title="Settings">
+                        <ReviewIcon name="sliders" />
+                    </summary>
+                    <div class="dropdown-content z-30 mt-1 rounded-box border border-base-300 bg-base-200 p-3 text-base-content shadow-xl">
+                        <ReviewSettings show="matches" />
+                    </div>
+                </details>
+                <button
+                    type="button"
+                    class="btn btn-square btn-ghost text-base-content/80 btn-sm hover:bg-base-content/10"
+                    aria-label="Close Find Matches"
+                    title={hint("Close", "Esc")}
+                    onclick={requestClose}
+                >
+                    <ReviewIcon name="x" />
+                </button>
+            </div>
         </div>
 
         {#if notice !== null}
@@ -580,9 +585,9 @@
                             in:cardIn|global={motion}
                             out:cardOut|global={motion}
                         >
-                            <div class="flex min-h-0 flex-col overflow-y-auto overscroll-contain">
-                                <header class="flex items-start justify-between gap-6 px-5 pt-5 sm:px-8 sm:pt-7">
-                                    <div class="min-w-0">
+                            <div class="flex min-h-0 min-w-0 flex-col overflow-x-hidden overflow-y-auto overscroll-contain">
+                                <header class="flex flex-wrap items-start justify-between gap-x-6 gap-y-2 px-5 pt-5 sm:px-8 sm:pt-7">
+                                    <div class="min-w-0 flex-[1_1_10rem]">
                                         <h2
                                             class="flex flex-wrap items-center gap-2 text-2xl leading-tight font-semibold tracking-tight"
                                             data-testid="match-header"
@@ -606,7 +611,7 @@
                                         </p>
                                     </div>
                                     <div
-                                        class="shrink-0 font-mono text-3xl leading-none font-light tracking-tight text-info tabular-nums sm:text-4xl"
+                                        class="ml-auto shrink-0 font-mono text-3xl leading-none font-light tracking-tight text-info tabular-nums sm:text-4xl"
                                         data-testid="match-amount"
                                     >
                                         {header.amount ?? "—"}
@@ -614,7 +619,10 @@
                                 </header>
 
                                 {#if choices.length > 1}
-                                    <fieldset class="mx-5 mt-4 rounded-box border border-warning/30 bg-warning/5 px-4 py-3 sm:mx-8" data-testid="match-choices">
+                                    <fieldset
+                                        class="mx-5 mt-4 min-w-0 rounded-box border border-warning/30 bg-warning/5 px-4 py-3 sm:mx-8"
+                                        data-testid="match-choices"
+                                    >
                                         <legend class="px-1 text-xs font-medium text-base-content/70">More than one half fits. Pair with:</legend>
                                         {#each choices as option, at (pairKey(option.a, option.b))}
                                             {@const other = otherHalf(option, proposal)}
@@ -680,7 +688,7 @@
 
                             {#if confirmClose}
                                 <div
-                                    class="flex min-h-[4.5rem] shrink-0 items-center justify-between gap-3 border-t border-warning/30 bg-warning/10 px-5 py-3 text-sm sm:px-8"
+                                    class="flex min-h-[4.5rem] shrink-0 flex-wrap items-center justify-between gap-3 border-t border-warning/30 bg-warning/10 px-5 py-3 text-sm sm:px-8"
                                     role="alert"
                                     data-testid="match-confirm-close"
                                 >
@@ -694,7 +702,7 @@
                                 </div>
                             {:else if confirmIgnore !== null}
                                 <div
-                                    class="flex min-h-[4.5rem] shrink-0 items-center justify-between gap-3 border-t border-warning/30 bg-warning/10 px-5 py-3 text-sm sm:px-8"
+                                    class="flex min-h-[4.5rem] shrink-0 flex-wrap items-center justify-between gap-3 border-t border-warning/30 bg-warning/10 px-5 py-3 text-sm sm:px-8"
                                     role="alert"
                                     data-testid="match-confirm-ignore"
                                 >

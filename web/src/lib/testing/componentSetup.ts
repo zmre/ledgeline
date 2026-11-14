@@ -25,11 +25,13 @@ if (typeof Element !== "undefined" && Element.prototype.scrollIntoView === undef
 // MODULE scope: `svelte/motion` builds a prefers-reduced-motion query on
 // import, so any test importing a LayerChart component dies before its first
 // assertion. Reporting "no preference" is the honest stub, and it is what the
-// app assumes on a surface that has never asked.
+// app assumes on a surface that has never asked. The one exception is a fine
+// pointer (`#lib/keys/hint.svelte.ts`, plan 42): the app's default surface is a
+// desktop with a mouse, so the keyboard hints it assumes stay in the tooltips.
 if (typeof window !== "undefined" && window.matchMedia === undefined) {
     window.matchMedia = (query: string): MediaQueryList =>
         ({
-            matches: false,
+            matches: /any-pointer:\s*fine/.test(query),
             media: query,
             onchange: null,
             addEventListener: () => {},

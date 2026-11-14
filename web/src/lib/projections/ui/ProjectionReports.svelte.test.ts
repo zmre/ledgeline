@@ -194,7 +194,7 @@ describe("COMPONENT ProjectionReports — the tab strip", () => {
         try {
             mount("cash");
             // The strip's row (tabs + the Export button) is what scrolls to the top.
-            const strip = screen.getByRole("tablist").parentElement!;
+            const strip = screen.getByTestId("projection-tab-row");
             await fireEvent.click(screen.getByRole("tab", {name: "Journal"}));
             keymap.handle(new KeyboardEvent("keydown", {key: "2", cancelable: true}));
             await tick();

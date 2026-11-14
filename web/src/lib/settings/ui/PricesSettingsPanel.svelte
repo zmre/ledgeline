@@ -58,22 +58,25 @@
 
     <label class="flex flex-wrap items-center gap-3">
         <span>Fill in a weekly closing price for the last</span>
-        <input
-            type="number"
-            class="input w-20 input-sm"
-            min={AUTO_PRICES_WEEKS_RANGE[0]}
-            max={AUTO_PRICES_WEEKS_RANGE[1]}
-            step="1"
-            value={settings.autoPricesWeeks}
-            disabled={!settings.autoPrices}
-            onchange={(e) => {
-                settings.autoPricesWeeks = e.currentTarget.valueAsNumber;
-                // Show the clamped value, not what was typed.
-                e.currentTarget.value = String(settings.autoPricesWeeks);
-            }}
-            data-testid="prices-weeks"
-        />
-        <span>weeks</span>
+        <!-- The number and its unit wrap as one, never "6" on one line and "weeks" on the next. -->
+        <span class="flex items-center gap-3">
+            <input
+                type="number"
+                class="input w-20 input-sm"
+                min={AUTO_PRICES_WEEKS_RANGE[0]}
+                max={AUTO_PRICES_WEEKS_RANGE[1]}
+                step="1"
+                value={settings.autoPricesWeeks}
+                disabled={!settings.autoPrices}
+                onchange={(e) => {
+                    settings.autoPricesWeeks = e.currentTarget.valueAsNumber;
+                    // Show the clamped value, not what was typed.
+                    e.currentTarget.value = String(settings.autoPricesWeeks);
+                }}
+                data-testid="prices-weeks"
+            />
+            <span>weeks</span>
+        </span>
     </label>
 
     <div class="flex flex-col gap-2 text-sm text-base-content/70">

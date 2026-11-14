@@ -216,7 +216,7 @@
 {/snippet}
 
 {#snippet ruled(title: string, columns: CfColumns, testid: string)}
-    <div class="-my-1 {grid ? 'border-x border-x-transparent' : 'overflow-x-auto'} border-y-2 border-base-content/30" data-testid={testid}>
+    <div class="-my-1 {grid ? 'border-x border-x-transparent' : 'll-sticky-col overflow-x-auto'} border-y-2 border-base-content/30" data-testid={testid}>
         <table class="table table-sm {grid ? 'table-fixed' : ''}">
             {@render template()}
             <!-- In interval mode a ruled line is a row of bare figures between
@@ -242,36 +242,39 @@
 
     <!-- Interval mode: one sideways scroller, one width, so every block keeps
          the same column edges. Total mode: `contents`, exactly as before. -->
-    <HScroll enabled={grid} testid="cf-scroller">
+    <HScroll enabled={grid} class="ll-sticky-col" testid="cf-scroller">
         <div
             class={grid ? "flex flex-col gap-4" : "contents"}
             style:min-width={buckets !== null ? statementMinWidth(buckets.length, !versus, versus) : undefined}
         >
             {#each model.boxes as box (box.kind)}
-                <section class="{grid ? 'overflow-hidden' : 'overflow-x-auto'} rounded-box border border-base-content/10" data-testid="cf-section-{box.kind}">
+                <!-- `overflow-clip`: see the income statement's boxes. -->
+                <section class="overflow-clip rounded-box border border-base-content/10" data-testid="cf-section-{box.kind}">
                     <h3
                         class="bg-base-200 {ACCENT[box.kind].rule} border-b-2 px-4 py-2.5 text-sm font-semibold tracking-wide uppercase {ACCENT[box.kind].text}"
                     >
-                        {box.title}
+                        <span class="ll-sticky-title">{box.title}</span>
                     </h3>
-                    <table class="table table-sm {grid ? 'table-fixed' : ''}">
-                        {@render template()}
-                        <thead>
-                            <ProjectedHeadRow columns={buckets?.length ?? 0} projectedFrom={edgeAt} {trailing} fixed={grid} compareLabel={band} />
-                            <tr class="text-[0.65rem] text-base-content/40">{@render figureHeads(`${box.title} line`)}</tr>
-                        </thead>
-                        <tbody>
-                            {#each box.rows as row (row.key)}
-                                {@render rowCells(row)}
-                            {/each}
-                        </tbody>
-                        <tfoot>
-                            <tr class="border-t-2 border-base-content/20 bg-base-200 text-sm font-bold text-base-content">
-                                <th class="{label} font-bold">{box.totalLabel}</th>
-                                {@render figures(box.total, "font-bold")}
-                            </tr>
-                        </tfoot>
-                    </table>
+                    <div class={grid ? "contents" : "ll-sticky-col overflow-x-auto"}>
+                        <table class="table table-sm {grid ? 'table-fixed' : ''}">
+                            {@render template()}
+                            <thead>
+                                <ProjectedHeadRow columns={buckets?.length ?? 0} projectedFrom={edgeAt} {trailing} fixed={grid} compareLabel={band} />
+                                <tr class="text-[0.65rem] text-base-content/40">{@render figureHeads(`${box.title} line`)}</tr>
+                            </thead>
+                            <tbody>
+                                {#each box.rows as row (row.key)}
+                                    {@render rowCells(row)}
+                                {/each}
+                            </tbody>
+                            <tfoot>
+                                <tr class="border-t-2 border-base-content/20 bg-base-200 text-sm font-bold text-base-content">
+                                    <th class="{label} font-bold">{box.totalLabel}</th>
+                                    {@render figures(box.total, "font-bold")}
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
                 </section>
             {/each}
 
@@ -282,7 +285,9 @@
 
             {#each [model.beginning, model.ending] as block (block.kind)}
                 <section
-                    class="{grid ? 'overflow-hidden' : 'overflow-x-auto'} rounded-box border border-base-content/20 bg-base-200/40"
+                    class="{grid
+                        ? 'overflow-clip'
+                        : 'll-sticky-col overflow-x-auto'} rounded-box border border-base-content/20 bg-base-200/40 [--ll-sticky-bg:color-mix(in_oklab,var(--color-base-200)_40%,var(--color-base-100))]"
                     data-testid="cf-cash-{block.kind}"
                 >
                     <table class="table table-sm {grid ? 'table-fixed' : ''}">
