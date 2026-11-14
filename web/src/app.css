@@ -242,6 +242,10 @@ html.ll-native .toast-top {
     background-color: var(--color-base-200);
 }
 
+.ll-sticky-col tr.bg-base-200\/40 > :first-child {
+    background-color: color-mix(in oklab, var(--color-base-200) 40%, var(--ll-sticky-bg, var(--color-base-100)));
+}
+
 .ll-sticky-col tr.bg-base-200\/60 > :first-child {
     background-color: color-mix(in oklab, var(--color-base-200) 60%, var(--ll-sticky-bg, var(--color-base-100)));
 }
@@ -250,9 +254,10 @@ html.ll-native .toast-top {
     background-color: color-mix(in oklab, var(--color-primary) 25%, var(--ll-sticky-bg, var(--color-base-100)));
 }
 
+/* 2.5rem: clear of HScroll's ‹ button and fade, which sit over the left edge. */
 .ll-sticky-title {
     position: sticky;
-    left: 1rem;
+    left: 2.5rem;
     display: inline-block;
 }
 
