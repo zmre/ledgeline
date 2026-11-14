@@ -118,6 +118,15 @@ Audit every screen at 390 pt (iPhone), 744 pt (iPad mini portrait) and
 entry dialog, review/match overlays, reports & projections horizontal scroll,
 budget, holdings, settings panels.
 
+Done so far (2026-11-13): journal cards, review labels above fields, sticky
+report label columns; tab strips (Reports, Projections, Settings) scroll on one
+line and reveal the selected tab (`HScroll reveal`); budget controls fold
+behind a summary line below `sm`; holdings tables get a sticky name column with
+the symbol/account under the name below `md`; projection cards give postings
+the full card width below `sm`; the forecast journal drops its date column
+below `sm`. Settings → Prices is hidden in the app (no background updater
+runs there).
+
 ### Phase 3: native gestures + lock — done (2026-11-13)
 
 Done: swipe/long-press on cards (`journal/SwipeCard.svelte`, thresholds in
