@@ -153,7 +153,7 @@
                         <ReviewIcon name="warning" />
                     </span>
                 {/if}
-                <div class="order-last ml-auto w-44 shrink-0 md:order-none md:ml-0 md:w-40" data-review-field="amount-{at}">
+                <div class="order-last ml-auto w-44 max-w-full shrink-0 md:order-none md:ml-0 md:w-40" data-review-field="amount-{at}">
                     <div class="input w-full gap-1 font-mono tabular-nums input-sm">
                         <!-- An elided leg writes no amount, so it has no commodity to change (p7 amendment 22): the field waits for an amount. -->
                         <CommodityInput
@@ -178,7 +178,7 @@
                     </div>
                 </div>
                 {#if assertionSlot}
-                    <div class="order-last flex w-32 shrink-0 items-center md:order-none">
+                    <div class="order-last flex w-32 max-w-full shrink-0 items-center md:order-none">
                         {#if posting.balanceAssertion !== null}
                             {@const assertion = assertionLabel(posting.balanceAssertion)}
                             <span
@@ -223,13 +223,13 @@
                 </button>
             </div>
             {#if at === chips.target && chips.chips.length > 0}
-                <div class="mt-2 mb-1 ml-8 flex flex-wrap items-center gap-2" data-testid="review-chips" aria-label="Suggestions">
+                <div class="mt-2 mb-1 ml-8 flex min-w-0 flex-wrap items-center gap-2" data-testid="review-chips" aria-label="Suggestions">
                     {#each chips.chips as chip, index (chip.account)}
                         {@const active = index === selected}
                         <button
                             type="button"
                             class={[
-                                "group flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors",
+                                "group flex max-w-full min-w-0 flex-wrap items-center gap-1.5 rounded-full border px-3 py-1 text-left text-xs transition-colors",
                                 active
                                     ? "border-success/60 bg-success/15 text-base-content"
                                     : "border-base-content/15 text-base-content/70 hover:border-base-content/30",

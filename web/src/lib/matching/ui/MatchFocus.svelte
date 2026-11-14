@@ -333,7 +333,7 @@
             </span>
         </div>
     {:else}
-        <div class="flex min-h-0 flex-col gap-5 overflow-y-auto overscroll-contain p-5 sm:p-8">
+        <div class="flex min-h-0 min-w-0 flex-col gap-5 overflow-x-hidden overflow-y-auto overscroll-contain p-5 sm:p-8">
             <header class="flex items-start justify-between gap-6">
                 <div class="min-w-0">
                     <h2 class="flex items-center gap-2 text-2xl leading-tight font-semibold tracking-tight">
@@ -511,8 +511,11 @@
                 </span>
             </div>
         {:else}
-            <footer class="flex h-[4.5rem] shrink-0 items-center justify-between gap-3 border-t border-base-content/10 px-5 sm:px-8" data-testid="match-footer">
-                <span class="flex items-center gap-2">
+            <footer
+                class="flex min-h-[4.5rem] shrink-0 flex-wrap items-center justify-between gap-3 border-t border-base-content/10 px-5 py-3 sm:px-8"
+                data-testid="match-footer"
+            >
+                <span class="flex flex-wrap items-center gap-2">
                     {#if entry !== null && !nothing}
                         <button type="button" class="btn gap-2 btn-success" onclick={link} disabled={!canLink} data-testid="match-link">
                             <ReviewIcon name="check" />

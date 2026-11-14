@@ -893,16 +893,16 @@
              it a stacking context, so it needs a z-index above the deck's cards
              (z-5/z-6) or the ⋯ menu opens beneath the card. -->
         <div
-            class="pointer-events-auto relative z-20 flex w-full max-w-4xl shrink-0 items-center gap-3 rounded-box border border-base-content/10 bg-base-300/95 py-1.5 pr-1.5 pl-4 text-base-content shadow-lg backdrop-blur"
+            class="@container pointer-events-auto relative z-20 flex w-full max-w-4xl shrink-0 flex-wrap items-center gap-x-3 gap-y-1 rounded-box border border-base-content/10 bg-base-300/95 py-1.5 pr-1.5 pl-4 text-base-content shadow-lg backdrop-blur"
             in:barIn|global={{reduced}}
         >
-            <h2 class="text-sm font-semibold tracking-wide">{TITLES[kind]}</h2>
+            <h2 class="min-w-0 truncate text-sm font-semibold tracking-wide">{TITLES[kind]}</h2>
             {#if review.count > 0 && single === null}
-                <span class="text-sm text-base-content/65 tabular-nums" data-testid="review-position" aria-live="polite">
+                <span class="shrink-0 text-sm whitespace-nowrap text-base-content/65 tabular-nums" data-testid="review-position" aria-live="polite">
                     {review.position} of {review.count}
                 </span>
                 <div
-                    class="h-1 w-28 overflow-hidden rounded-full bg-base-content/15"
+                    class="h-1 w-28 min-w-6 shrink overflow-hidden rounded-full bg-base-content/15 @max-[24rem]:hidden"
                     role="progressbar"
                     aria-valuemin={0}
                     aria-valuemax={review.count}
@@ -920,63 +920,69 @@
                     <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-success"></span> saving…
                 </span>
             {/if}
-            <span class="grow"></span>
-            <details
-                class="dropdown dropdown-end"
-                bind:open={menuOpen}
-                use:dismissible={{active: menuOpen, outside: true, onDismiss: () => (menuOpen = false)}}
-            >
-                <summary class="btn btn-square btn-ghost text-base-content/80 btn-sm hover:bg-base-content/10" aria-label="More actions" title="More actions">
-                    <ReviewIcon name="ellipsis" />
-                </summary>
-                <div class="dropdown-content z-30 mt-1 rounded-box border border-base-300 bg-base-200 p-2 text-base-content shadow-xl">
-                    {#if settingsOpen}
-                        <ReviewSettings show="review" />
-                        <button type="button" class="btn mt-2 w-full btn-ghost btn-xs" onclick={() => (settingsOpen = false)}>Done</button>
-                    {:else}
-                        <ul class="menu w-60 p-0 text-sm">
-                            {#if single === null}
-                                <!-- Single mode has its Mark reviewed checkbox instead (D32). -->
-                                <li>
-                                    <button type="button" onclick={ignore} disabled={current === null}>
-                                        <ReviewIcon name="ban" /> Ignore — never ask again <kbd class="ml-auto kbd kbd-xs">i</kbd>
-                                    </button>
-                                </li>
-                            {/if}
-                            {#if form.date2 === "" && !date2Shown}
-                                <li>
-                                    <button type="button" onclick={addDate2} disabled={current === null}>
-                                        <ReviewIcon name="calendar" /> Add secondary date
-                                    </button>
-                                </li>
-                            {/if}
-                            {#if single === "edit"}
-                                <!-- D37: only here, never in a queue run, where a missed key costs too much. -->
-                                <li>
-                                    <button type="button" class="text-error" onclick={armDelete} disabled={current === null} data-testid="review-delete">
-                                        <ReviewIcon name="x" /> Delete transaction <kbd class="ml-auto kbd kbd-xs">⇧X</kbd>
-                                    </button>
-                                </li>
-                            {/if}
-                            {#if source === null && single === null}
-                                <!-- The window and the limit shape the journal's queues; an import's run is the whole import. -->
-                                <li>
-                                    <button type="button" onclick={() => (settingsOpen = true)}><ReviewIcon name="sliders" /> Settings</button>
-                                </li>
-                            {/if}
-                        </ul>
-                    {/if}
-                </div>
-            </details>
-            <button
-                type="button"
-                class="btn btn-square btn-ghost text-base-content/80 btn-sm hover:bg-base-content/10"
-                aria-label={closeLabel}
-                title={hint("Close", "Esc")}
-                onclick={requestClose}
-            >
-                <ReviewIcon name="x" />
-            </button>
+            <!-- Together and last: a wrapped bar keeps ⋯ and ✕ on the right of its second line. -->
+            <div class="ml-auto flex shrink-0 items-center gap-1">
+                <details
+                    class="dropdown dropdown-end"
+                    bind:open={menuOpen}
+                    use:dismissible={{active: menuOpen, outside: true, onDismiss: () => (menuOpen = false)}}
+                >
+                    <summary
+                        class="btn btn-square btn-ghost text-base-content/80 btn-sm hover:bg-base-content/10"
+                        aria-label="More actions"
+                        title="More actions"
+                    >
+                        <ReviewIcon name="ellipsis" />
+                    </summary>
+                    <div class="dropdown-content z-30 mt-1 rounded-box border border-base-300 bg-base-200 p-2 text-base-content shadow-xl">
+                        {#if settingsOpen}
+                            <ReviewSettings show="review" />
+                            <button type="button" class="btn mt-2 w-full btn-ghost btn-xs" onclick={() => (settingsOpen = false)}>Done</button>
+                        {:else}
+                            <ul class="menu w-60 max-w-[calc(100vw-3rem)] p-0 text-sm">
+                                {#if single === null}
+                                    <!-- Single mode has its Mark reviewed checkbox instead (D32). -->
+                                    <li>
+                                        <button type="button" onclick={ignore} disabled={current === null}>
+                                            <ReviewIcon name="ban" /> Ignore — never ask again <kbd class="ml-auto kbd kbd-xs">i</kbd>
+                                        </button>
+                                    </li>
+                                {/if}
+                                {#if form.date2 === "" && !date2Shown}
+                                    <li>
+                                        <button type="button" onclick={addDate2} disabled={current === null}>
+                                            <ReviewIcon name="calendar" /> Add secondary date
+                                        </button>
+                                    </li>
+                                {/if}
+                                {#if single === "edit"}
+                                    <!-- D37: only here, never in a queue run, where a missed key costs too much. -->
+                                    <li>
+                                        <button type="button" class="text-error" onclick={armDelete} disabled={current === null} data-testid="review-delete">
+                                            <ReviewIcon name="x" /> Delete transaction <kbd class="ml-auto kbd kbd-xs">⇧X</kbd>
+                                        </button>
+                                    </li>
+                                {/if}
+                                {#if source === null && single === null}
+                                    <!-- The window and the limit shape the journal's queues; an import's run is the whole import. -->
+                                    <li>
+                                        <button type="button" onclick={() => (settingsOpen = true)}><ReviewIcon name="sliders" /> Settings</button>
+                                    </li>
+                                {/if}
+                            </ul>
+                        {/if}
+                    </div>
+                </details>
+                <button
+                    type="button"
+                    class="btn btn-square btn-ghost text-base-content/80 btn-sm hover:bg-base-content/10"
+                    aria-label={closeLabel}
+                    title={hint("Close", "Esc")}
+                    onclick={requestClose}
+                >
+                    <ReviewIcon name="x" />
+                </button>
+            </div>
         </div>
 
         {#if importNotice !== null}
@@ -1083,8 +1089,11 @@
                             in:enter|global={motion}
                             out:cardOut|global={motion}
                         >
-                            <!-- The card's body scrolls inside the card, so the deck never clips it. -->
-                            <div class="flex min-h-0 flex-col gap-6 overflow-y-auto overscroll-contain p-5 sm:p-8">
+                            <!-- The card's body scrolls inside the card, so the deck never clips it.
+                                 Up and down only: nothing in it may be wider than the card
+                                 (plan 42), and `overflow-x-hidden` stops a stray pixel from
+                                 turning it into a canvas that pans sideways under a finger. -->
+                            <div class="flex min-h-0 min-w-0 flex-col gap-6 overflow-x-hidden overflow-y-auto overscroll-contain p-5 sm:p-8">
                                 <ReviewHero txn={heroTxn ?? txn} {classes} {updatedFrom} detailsBlock={detailsExpanded}>
                                     {#snippet details()}
                                         <ReviewDetails
@@ -1192,7 +1201,7 @@
 
                             {#if confirmClose}
                                 <div
-                                    class="flex min-h-[4.5rem] shrink-0 items-center justify-between gap-3 border-t border-warning/30 bg-warning/10 px-5 py-3 text-sm sm:px-8"
+                                    class="flex min-h-[4.5rem] shrink-0 flex-wrap items-center justify-between gap-3 border-t border-warning/30 bg-warning/10 px-5 py-3 text-sm sm:px-8"
                                     role="alert"
                                     data-testid="review-confirm-close"
                                 >
@@ -1206,7 +1215,7 @@
                                 </div>
                             {:else if confirmDelete}
                                 <div
-                                    class="flex min-h-[4.5rem] shrink-0 items-center justify-between gap-3 border-t border-error/30 bg-error/10 px-5 py-3 text-sm sm:px-8"
+                                    class="flex min-h-[4.5rem] shrink-0 flex-wrap items-center justify-between gap-3 border-t border-error/30 bg-error/10 px-5 py-3 text-sm sm:px-8"
                                     role="alert"
                                     data-testid="review-confirm-delete"
                                 >

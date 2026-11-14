@@ -29,12 +29,12 @@
 </script>
 
 <footer
-    class="flex h-[4.5rem] shrink-0 items-center justify-between gap-3 border-t border-base-content/10 px-5 sm:px-8"
+    class="flex min-h-[4.5rem] shrink-0 items-center justify-between gap-3 border-t border-base-content/10 px-5 py-3 sm:px-8"
     data-testid="review-footer"
     data-state={phase}
 >
     {#key phase}
-        <div class="flex w-full items-center justify-between gap-3" in:footerFade={{reduced}}>
+        <div class="flex w-full flex-wrap items-center justify-between gap-3" in:footerFade={{reduced}}>
             {#if phase === "clean"}
                 <button type="button" class="btn gap-2 btn-success" onclick={onPrimary} disabled={busy} data-testid="review-primary">
                     <ReviewIcon name="check" /> Reviewed

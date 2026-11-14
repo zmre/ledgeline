@@ -42,11 +42,11 @@
 </script>
 
 <footer
-    class="flex h-[4.5rem] shrink-0 items-center justify-between gap-3 border-t border-base-content/10 px-5 sm:px-8"
+    class="flex min-h-[4.5rem] shrink-0 flex-wrap items-center justify-between gap-3 border-t border-base-content/10 px-5 py-3 sm:px-8"
     data-testid="review-footer"
     data-state="single"
 >
-    <div class="flex items-center gap-5">
+    <div class="flex flex-wrap items-center gap-x-5 gap-y-2">
         <button type="button" class="btn gap-2 btn-primary" onclick={onSave} disabled={busy || !dirty} data-testid="review-primary">
             {#if busy}<span class="loading loading-xs loading-spinner"></span>{/if}
             {adding ? "Add" : "Save"}

@@ -42,9 +42,14 @@
     const shown = $derived(hero.amounts.map((amount) => formatAmount(amount.qty.m < 0n ? {...amount, qty: neg(amount.qty)} : amount)));
 </script>
 
-<header class="flex items-start justify-between gap-6" data-testid={id("review-hero")} data-tone={hero.tone}>
-    <div class="min-w-0">
-        <h2 class="text-2xl leading-tight font-semibold tracking-tight break-words text-base-content sm:text-[2rem]" data-testid={id("review-payee")}>
+<!-- Wraps: at a big interface scale the amount takes its own line rather
+     than squeezing the payee to a letter a line. -->
+<header class="flex flex-wrap items-start justify-between gap-x-6 gap-y-2" data-testid={id("review-hero")} data-tone={hero.tone}>
+    <div class="min-w-0 flex-[1_1_10rem]">
+        <h2
+            class="text-2xl leading-tight font-semibold tracking-tight [overflow-wrap:anywhere] text-base-content sm:text-[2rem]"
+            data-testid={id("review-payee")}
+        >
             {hero.payee || "(no description)"}
             {#if hero.note !== ""}<span class="font-normal text-base-content/45">| {hero.note}</span>{/if}
         </h2>
@@ -74,7 +79,7 @@
             </p>
         {/if}
     </div>
-    <div class="shrink-0 text-right">
+    <div class="ml-auto max-w-full shrink-0 text-right">
         {#each shown as text, at (at)}
             <div class="font-mono text-3xl leading-none font-light tracking-tight tabular-nums sm:text-4xl {TONE[hero.tone]}" data-testid={id("review-amount")}>
                 {SIGN[hero.tone]}{text}
