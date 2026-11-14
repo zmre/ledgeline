@@ -335,6 +335,27 @@ engine-check:
 ios-check:
     ./scripts/ios-check.sh
 
+# iOS app (plan 42; docs/development/ios.md). macOS + Xcode only.
+# Build the iOS simulator app (SPA + release staticlib + bindings + xcframework)
+ios-build:
+    ./apple/ios/build.sh build
+
+# Build, then install and launch in the "iPhone 17" simulator
+ios-run:
+    ./apple/ios/build.sh run
+
+# Signed Release build for a device ($LEDGELINE_IOS_DEVICE registers it)
+ios-device:
+    ./apple/ios/build.sh device
+
+# Install the last device build on $LEDGELINE_IOS_DEVICE and launch it
+ios-install:
+    ./apple/ios/build.sh install
+
+# The iOS app's Swift unit tests, on the simulator
+ios-test:
+    ./apple/ios/build.sh test
+
 # Run the local engine server (Phase 2+): `just serve-engine ~/finance/2026.journal`
 serve-engine file="fixtures/sample.journal":
     cargo run -p ledgeline -- {{file}}

@@ -74,7 +74,7 @@
             {#if settings.isPinned("theme")}This ledger has its own theme, kept in its <code>ledgeline.toml</code>.{/if}
         </p>
 
-        <div class="grid grid-cols-[repeat(auto-fill,minmax(13rem,1fr))] gap-3" role="radiogroup" aria-label="Theme">
+        <div class="grid grid-cols-[repeat(auto-fill,minmax(min(13rem,100%),1fr))] gap-3" role="radiogroup" aria-label="Theme">
             {#each THEME_FAMILIES as family (family.id)}
                 {@const v = preview(family)}
                 {@const chosen = isChosen(family)}
@@ -146,8 +146,10 @@
             {/if}
         </div>
         <p class="text-sm text-base-content/70">
-            Scales all text and the layout around it. Shortcuts: <kbd class="kbd kbd-sm">{mod}+</kbd> larger,
-            <kbd class="kbd kbd-sm">{mod}−</kbd> smaller, <kbd class="kbd kbd-sm">{mod}0</kbd> actual size.
+            Scales all text and the layout around it.<span class="key-hint">
+                Shortcuts: <kbd class="kbd kbd-sm">{mod}+</kbd> larger, <kbd class="kbd kbd-sm">{mod}−</kbd> smaller, <kbd class="kbd kbd-sm">{mod}0</kbd> actual
+                size.</span
+            >
         </p>
         <div class="flex flex-wrap items-center gap-2">
             <button type="button" class="btn btn-square btn-sm" aria-label="Smaller" onclick={() => zoomOut()} disabled={scale <= SCALE_STEPS[0]}>−</button>

@@ -10,7 +10,7 @@
     import {tick} from "svelte";
     import {TYPING_ATTRIBUTE} from "#lib/keys/target.js";
     import {remToPx} from "#lib/theme/scale.js";
-    import {popupPosition, portal} from "#lib/ui/anchoredPopup.js";
+    import {popupPosition, portal, liveViewport} from "#lib/ui/anchoredPopup.js";
     import {rankPayees} from "../complete";
     import type {PayeeUse} from "../types";
 
@@ -46,12 +46,7 @@
     const listId = `payee-list-${uid}`;
 
     function reposition(): void {
-        if (field !== null)
-            placement = popupPosition(
-                field.getBoundingClientRect(),
-                {width: window.innerWidth, height: window.innerHeight},
-                VISIBLE_ROWS * remToPx(ROW_HEIGHT_REM)
-            );
+        if (field !== null) placement = popupPosition(field.getBoundingClientRect(), liveViewport(), VISIBLE_ROWS * remToPx(ROW_HEIGHT_REM));
     }
 
     async function show(): Promise<void> {

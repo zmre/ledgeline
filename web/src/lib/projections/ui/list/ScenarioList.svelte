@@ -513,9 +513,9 @@
 <div class="flex flex-col gap-3" data-testid="projection-list-panel">
     <!-- Header: the scenario's own default cash account, the filters, Add. -->
     <div class="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
-        <div class="flex flex-wrap items-center gap-2 text-sm" data-testid="projection-cash-default">
+        <div class="flex min-w-0 flex-wrap items-center gap-2 text-sm" data-testid="projection-cash-default">
             <span class="text-base-content/70">Default cash account</span>
-            <div class="w-64">
+            <div class="w-64 max-w-full">
                 <AccountInput
                     bind:value={() => cashText, (next) => (cashText = next)}
                     {accountNames}
@@ -579,7 +579,9 @@
 
     {#if armedEntry !== null}
         <div class="flex flex-wrap items-center gap-2 rounded-box border border-error/40 px-3 py-1.5 text-sm" role="alert" data-testid="entry-delete-confirm">
-            <span>Delete <strong class="font-medium">{armedEntry.name}</strong>? Press <kbd class="kbd kbd-xs">x</kbd> again.</span>
+            <span
+                >Delete <strong class="font-medium">{armedEntry.name}</strong>?<span class="key-hint"> Press <kbd class="kbd kbd-xs">x</kbd> again.</span></span
+            >
             <button type="button" class="btn btn-error btn-xs" onclick={() => remove(armedEntry)}>Delete</button>
             <button type="button" class="btn btn-ghost btn-xs" onclick={() => (armed = null)}>Keep</button>
         </div>

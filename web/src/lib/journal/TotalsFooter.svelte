@@ -32,7 +32,7 @@
         <span class="whitespace-nowrap">{period}</span>
         {@render actions?.()}
     </div>
-    <div class="ml-auto flex items-baseline gap-2 text-sm">
+    <div class="ml-auto flex flex-wrap items-baseline justify-end gap-x-2 text-sm">
         <span class="whitespace-nowrap text-base-content/60">Visible Journal Total</span>
         <span class="text-right font-mono font-semibold tabular-nums">
             {#each total as amount (amount.commodity)}

@@ -9,7 +9,7 @@
     import {signClass} from "#lib/format/sign.js";
     import type {GainPeriod, HoldingsReport} from "#lib/holdings/types.js";
     import {gainWindowSuffix} from "./gainPeriod";
-    import {EM_DASH, formatGainPct, untotaledBasisCount} from "./view";
+    import {EM_DASH, fitFontSize, formatGainPct, untotaledBasisCount} from "./view";
 
     let {
         totals,
@@ -52,14 +52,31 @@
             valueClass: signClass(totals.gainPct),
         },
     ]);
+    /** One size for every tile, fitted to the longest value, so the four read as a set. */
+    const valueSize = $derived(fitFontSize(stats.reduce((longest, stat) => (stat.value.length > longest.length ? stat.value : longest), "")));
 </script>
 
 <div class="flex flex-col gap-1" data-testid="holdings-stats-block">
-    <div class="stats w-full stats-vertical bg-base-200 shadow-none sm:stats-horizontal" data-testid="holdings-stats">
-        {#each stats as stat (stat.label)}
-            <div class="stat px-4 py-3">
-                <div class="stat-title text-xs">{stat.label}</div>
-                <div class="stat-value text-2xl md:text-3xl {stat.valueClass}">{stat.value}</div>
+    <!-- Two by two below `sm`, one row from `sm` up. Each tile is an
+         inline-size container, so its value shrinks to the tile's width
+         (`fitFontSize`) and, at the smallest size, wraps rather than spill. The
+         dashed rules are drawn here: daisyUI's `stats` modifiers know rows
+         and columns, not a grid. -->
+    <div class="grid w-full grid-cols-2 rounded-box bg-base-200 sm:auto-cols-fr sm:grid-flow-col sm:grid-cols-none" data-testid="holdings-stats">
+        {#each stats as stat, index (stat.label)}
+            <div
+                class={[
+                    "@container stat min-w-0 border-dashed border-base-content/10 px-2 py-2 sm:px-4 sm:py-3",
+                    index % 2 === 0 ? "border-e" : "border-e-0",
+                    index < 2 ? "border-b" : "border-b-0",
+                    "sm:border-b-0",
+                    index < stats.length - 1 ? "sm:border-e" : "sm:border-e-0",
+                ]}
+            >
+                <div class="stat-title text-xs whitespace-normal">{stat.label}</div>
+                <div class="stat-value leading-tight [overflow-wrap:anywhere] whitespace-normal {stat.valueClass}" style:font-size={valueSize}>
+                    {stat.value}
+                </div>
             </div>
         {/each}
     </div>

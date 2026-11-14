@@ -136,6 +136,19 @@ export function formatTotals(totals: MixedAmount, styles: ReadonlyMap<string, Am
 }
 
 /** Human label for the footer's period, e.g. "2026-07-01 – 2026-07-31" or "all dates". */
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * A journal card's date (plan 42): "Jun 20" in the current year, "Jun 20 '25"
+ * in any other, so a card stays short without a year ever going missing in an
+ * all-dates list. The table keeps the ISO date.
+ */
+export function cardDate(date: ISODate, today: ISODate): string {
+    const [year, month, day] = date.split("-");
+    const short = `${MONTHS[Number(month) - 1] ?? month} ${Number(day)}`;
+    return year === today.slice(0, 4) ? short : `${short} '${year.slice(2)}`;
+}
+
 export function periodLabel(from: ISODate | null, to: ISODate | null): string {
     if (from === null && to === null) return "all dates";
     if (from === null) return `through ${to}`;
@@ -152,11 +165,13 @@ export interface RowWindow {
 
 /**
  * The table's row geometry, in rem because the classes that draw it are: an
- * `h-10` table row, an `h-24` card plus its `mb-2`, the card wrapper's `p-2`,
- * and the container width below which the table becomes cards (640px at
- * 100 %; in rem, because what has to fit is rem-sized columns).
+ * `h-10` table row, an `h-20` (three-line) card plus its `mb-2`, the card wrapper's `p-2`,
+ * and the container width below which the table becomes cards. That is the
+ * `md` breakpoint (48rem on <body>, plan 42) less <main>'s 2rem of padding:
+ * the list's own width is what is measured. In rem, because what has to fit
+ * is rem-sized columns.
  */
-export const LIST_GEOMETRY_REM = {rowPitch: 2.5, cardPitch: 6.5, cardHeight: 6, cardInset: 0.5, cardBreakpoint: 40} as const;
+export const LIST_GEOMETRY_REM = {rowPitch: 2.5, cardPitch: 5.5, cardHeight: 5, cardInset: 0.5, cardBreakpoint: 46} as const;
 
 export interface ListGeometry {
     mode: "card" | "table";

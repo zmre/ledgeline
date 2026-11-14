@@ -94,20 +94,23 @@
     </div>
 
     {#if shown.length > 0}
-        <div class="overflow-x-auto rounded-box border border-base-content/10">
+        <!-- Below sm the date column goes (it is empty on every posting row, a
+             quarter of a phone's width) and the date leads the description. -->
+        <div class="ll-sticky-col overflow-x-auto rounded-box border border-base-content/10">
             <table class="table table-sm [&_tbody_tr]:border-0">
                 <thead>
                     <tr class="text-[0.65rem] text-base-content/40">
-                        <th class="w-28 font-normal">Date</th>
-                        <th class="font-normal">Description · account</th>
+                        <th class="hidden w-28 font-normal sm:table-cell">Date</th>
+                        <th class="font-normal"><span class="sm:hidden">Date · </span>Description · account</th>
                         <th class="w-36 text-right font-normal">Amount</th>
                     </tr>
                 </thead>
                 {#each shown as entry (entry.txn.index)}
                     <tbody class="border-t-2 border-base-content/10" data-testid="forecast-entry" data-origin={entry.origin.kind} data-key={entry.origin.key}>
                         <tr class="[&>td]:pt-3 [&>td]:pb-1">
-                            <td class="align-baseline font-mono text-xs whitespace-nowrap tabular-nums">{entry.txn.date}</td>
+                            <td class="hidden align-baseline font-mono text-xs whitespace-nowrap tabular-nums sm:table-cell">{entry.txn.date}</td>
                             <td class="font-medium" colspan="2">
+                                <span class="mr-2 font-mono text-xs font-normal whitespace-nowrap tabular-nums sm:hidden">{entry.txn.date}</span>
                                 <span>{entry.txn.description}</span>
                                 <span class="ml-2 badge badge-ghost font-mono badge-xs" title="From the scenario's {entry.origin.kind} {entry.origin.key}"
                                     >{originLabel(entry)}</span
@@ -120,7 +123,7 @@
                                 class="[&>td]:py-0.5 {rule === null ? 'text-base-content/80' : 'text-base-content/55 italic'}"
                                 data-generated={rule === null ? undefined : "auto"}
                             >
-                                <td></td>
+                                <td class="hidden sm:table-cell"></td>
                                 <td class="pl-6" title={posting.account}>
                                     <AccountLabel name={posting.account} maxWidth={480} />
                                     {#if rule !== null}

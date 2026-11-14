@@ -27,9 +27,14 @@ export interface FrameProps {
  * amount and annotation tracks are FIXED widths, so amounts line up down the
  * whole list, the way a journal's do — a per-card `auto` track put each card's
  * amounts wherever its own annotations left room.
+ *
+ * Below `sm` (a phone) a fixed 9.5rem amount track and the indent would leave
+ * the account a few characters, so the amount takes only what it needs and
+ * the grid starts at the card's edge (`EntryFrame` lets the body run under
+ * the card's buttons there too).
  */
 export const POSTING_GRID =
-    "mt-1 grid grid-cols-[minmax(0,1fr)_minmax(0,9.5rem)] lg:grid-cols-[minmax(0,1fr)_minmax(0,9.5rem)_minmax(0,19rem)] items-baseline gap-x-4 gap-y-0.5 pl-6 font-mono text-[0.8125rem] tabular-nums";
+    "mt-1 grid grid-cols-[minmax(0,1fr)_auto] sm:grid-cols-[minmax(0,1fr)_minmax(0,9.5rem)] lg:grid-cols-[minmax(0,1fr)_minmax(0,9.5rem)_minmax(0,19rem)] items-baseline gap-x-2 gap-y-0.5 pl-1 font-mono text-[0.8125rem] tabular-nums sm:gap-x-4 sm:pl-6";
 
 /**
  * The type badge's slot before every account (`PostingAccount`): a fixed

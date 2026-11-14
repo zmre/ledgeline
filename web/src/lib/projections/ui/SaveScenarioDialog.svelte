@@ -25,6 +25,7 @@
     // "that name is taken" note is a courtesy that saves a round trip; the
     // `conflict` failure is the real answer and is shown when it comes back.
     import {untrack} from "svelte";
+    import {registerNativeOverlay} from "#lib/native/bridge.svelte.js";
     import {projectionId} from "../scenarioModel";
     import type {ProjectionFile} from "../types";
 
@@ -44,6 +45,14 @@
     }
 
     const {name, directories, files, saving, error, onSave, onCancel}: Props = $props();
+
+    // The app's back button cancels, as the backdrop does — and, like it, not mid-save.
+    registerNativeOverlay(
+        () => true,
+        () => {
+            if (!saving) onCancel();
+        }
+    );
 
     // Seeded ONCE from the props, with `untrack` — the same pattern
     // `GoalModal.svelte` uses, and for the same reason: this is a draft the user

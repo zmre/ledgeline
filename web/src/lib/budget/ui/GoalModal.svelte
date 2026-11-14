@@ -12,6 +12,7 @@
      than surprising. -->
 <script lang="ts">
     import {untrack} from "svelte";
+    import {registerNativeOverlay} from "#lib/native/bridge.svelte.js";
     import {parseAmountInput} from "#lib/api/editMapping.js";
     import {BUDGET_PERIODS, type AccountReference, type BudgetPeriod, type GoalDraft, type GoalSubmission} from "#lib/budget/types.js";
     import type {AmountStyle} from "#lib/domain/types.js";
@@ -52,6 +53,14 @@
         onSubmit: (submission: GoalSubmission) => void;
         onCancel: () => void;
     } = $props();
+
+    // The app's back button cancels, as the backdrop does — and, like it, not mid-save.
+    registerNativeOverlay(
+        () => true,
+        () => {
+            if (!saving) onCancel();
+        }
+    );
 
     const editing = $derived(draft.goal !== null);
     // The period of an existing goal is a property of the RULE it lives in, and

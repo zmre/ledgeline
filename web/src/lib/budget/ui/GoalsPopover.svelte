@@ -26,7 +26,7 @@
     import type {AmountStyle} from "#lib/domain/types.js";
     import {dismissible} from "#lib/keys/dismissible.js";
     import {remToPx} from "#lib/theme/scale.js";
-    import {menuPosition, portal} from "#lib/ui/anchoredPopup.js";
+    import {menuPosition, portal, liveViewport} from "#lib/ui/anchoredPopup.js";
 
     let {
         account,
@@ -72,11 +72,10 @@
 
     function reposition(): void {
         if (trigger === null) return;
-        placement = menuPosition(
-            trigger.getBoundingClientRect(),
-            {width: window.innerWidth, height: window.innerHeight},
-            {width: remToPx(WIDTH_REM), height: remToPx(refs.length * ROW_HEIGHT_REM + PADDING_REM)}
-        );
+        placement = menuPosition(trigger.getBoundingClientRect(), liveViewport(), {
+            width: remToPx(WIDTH_REM),
+            height: remToPx(refs.length * ROW_HEIGHT_REM + PADDING_REM),
+        });
     }
 
     function close(): void {

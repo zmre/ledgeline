@@ -47,10 +47,6 @@
 - **Docs screenshot** of the startup section, if the docs-screenshot harness can serve `fixtures/saas/startup.journal`.
 
 
-## Mobile
-
-- Hide the journal's calendar view (plan 40) on phone-sized layouts: drop the list/calendar toggle and the `v` key, and open a `cal=1` link in the list. A month grid is unreadable at phone width, and a single-day view would just repeat the list.
-
 ## Security
 
 ## Performance

@@ -9,7 +9,11 @@
 
      `enabled: false` renders the children inside `display: contents`
      wrappers, so a caller whose single-column mode needs its children to stay
-     direct flex children (Total mode) gets exactly that. -->
+     direct flex children (Total mode) gets exactly that.
+
+     A tab strip passes its selected tab as `reveal`: whenever that changes
+     (and on mount) the `[aria-selected="true"]` child is scrolled into view,
+     so a narrow screen never shows a strip whose current tab is off the edge. -->
 <script lang="ts">
     import type {Snippet} from "svelte";
 
@@ -17,6 +21,7 @@
         enabled = true,
         class: className = "",
         testid,
+        reveal,
         children,
     }: {
         enabled?: boolean;
@@ -24,6 +29,8 @@
         class?: string;
         /** The scrolling element's `data-testid`. */
         testid?: string;
+        /** Scroll the selected (`aria-selected="true"`) child into view each time this changes. */
+        reveal?: unknown;
         children: Snippet;
     } = $props();
 
@@ -55,13 +62,29 @@
         return () => observer.disconnect();
     });
 
+    /** Room left beside a revealed child for the fade and chevron over that edge. */
+    const REVEAL_MARGIN = 40;
+
+    $effect(() => {
+        void reveal;
+        if (!enabled || scroller === undefined) return;
+        const target = scroller.querySelector<HTMLElement>('[aria-selected="true"]');
+        if (target === null) return;
+        const box = scroller.getBoundingClientRect();
+        const item = target.getBoundingClientRect();
+        if (item.left < box.left) scroller.scrollLeft += item.left - box.left - REVEAL_MARGIN;
+        else if (item.right > box.right) scroller.scrollLeft += item.right - box.right + REVEAL_MARGIN;
+    });
+
     function nudge(direction: 1 | -1): void {
         scroller?.scrollBy({left: direction * scroller.clientWidth * 0.8, behavior: "smooth"});
     }
 </script>
 
 {#if enabled}
-    <div class="relative" data-more-left={moreLeft} data-more-right={moreRight}>
+    <!-- `min-w-0 max-w-full`: as a flex item (a tab strip beside a button) it
+         would otherwise grow to its content and push off the page rather than scroll. -->
+    <div class="relative max-w-full min-w-0" data-more-left={moreLeft} data-more-right={moreRight}>
         <div bind:this={scroller} class="{className} overflow-x-auto" data-testid={testid} onscroll={measure}>
             {@render children()}
         </div>

@@ -26,13 +26,18 @@
         /** The cell's text; the account name when absent. */
         children?: Snippet;
     } = $props();
+
+    const segments = $derived(account.split(":"));
 </script>
 
 <span class="flex min-w-0 items-baseline {extra}" data-testid={testid}>
     <span class="{TYPE_SLOT} flex self-center">
         <TypeBadge {account} {classes} {dim} />
     </span>
-    <span class="min-w-0 truncate" title={account}>
-        {#if children}{@render children()}{:else}{account === "" ? "(no account)" : account}{/if}
+    <!-- A phone has no hover to read a `title`, so there the name wraps (at
+         its colons first) instead of being cut short. -->
+    <span class="min-w-0 [overflow-wrap:anywhere] sm:truncate" title={account}>
+        {#if children}{@render children()}{:else if account === ""}(no account){:else}{#each segments as segment, at (at)}{#if at > 0}:<wbr
+                    />{/if}{segment}{/each}{/if}
     </span>
 </span>

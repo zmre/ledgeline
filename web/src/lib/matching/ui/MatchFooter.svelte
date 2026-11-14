@@ -48,13 +48,13 @@
 </script>
 
 <footer
-    class="flex h-[4.5rem] shrink-0 items-center justify-between gap-3 border-t border-base-content/10 px-5 sm:px-8"
+    class="flex min-h-[4.5rem] shrink-0 items-center justify-between gap-3 border-t border-base-content/10 px-5 py-3 sm:px-8"
     data-testid="match-footer"
     data-state={dirty ? "dirty" : "clean"}
 >
     {#key dirty}
-        <div class="flex w-full items-center justify-between gap-3" in:footerFade={{reduced}}>
-            <span class="flex items-center gap-2">
+        <div class="flex w-full flex-wrap items-center justify-between gap-3" in:footerFade={{reduced}}>
+            <span class="flex flex-wrap items-center gap-2">
                 <button type="button" class="btn gap-2 btn-success" onclick={onLink} disabled={busy} data-testid="match-link">
                     <ReviewIcon name="check" />
                     {dirty ? "Link and Save" : "Link"}

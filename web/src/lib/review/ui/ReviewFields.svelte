@@ -56,13 +56,15 @@
     } = $props();
 </script>
 
+<!-- Labels sit to the left from `md`; below it (a phone) they go above their
+     fields, which then get the whole width (plan 42). -->
 {#snippet label(text: string, key: string)}
-    <span class="flex items-center gap-1.5 pt-1.5 text-xs font-medium tracking-wide text-base-content/55 uppercase">
+    <span class="mt-2 flex items-center gap-1.5 text-xs font-medium tracking-wide text-base-content/55 uppercase first:mt-0 md:mt-0 md:pt-1.5">
         <kbd class="kbd w-5 justify-center kbd-xs font-normal normal-case">{key}</kbd>{text}
     </span>
 {/snippet}
 
-<div class="grid grid-cols-[6.5rem_minmax(0,1fr)] items-start gap-x-3 gap-y-3">
+<div class="grid grid-cols-1 items-start gap-x-3 gap-y-1 md:grid-cols-[6.5rem_minmax(0,1fr)] md:gap-y-3">
     {@render label("Description", "d")}
     <div data-review-field="description">
         <DescriptionInput bind:value={form.description} {payees} {today} {disabled} onPick={onPayeePick} />

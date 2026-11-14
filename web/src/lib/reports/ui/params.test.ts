@@ -1,5 +1,6 @@
 import {describe, expect, it} from "vitest";
 import {
+    controlsSummary,
     alignToEnd,
     budgetRedirect,
     confDepthDefault,
@@ -17,6 +18,7 @@ import {
     TAB_ORDER,
     tabEnd,
     type ReportParams,
+    type ReportTab,
 } from "./params";
 
 const DFLT = defaultReportParams("2026-07-08");
@@ -405,5 +407,21 @@ describe("UNIT reports/ui/params — the Accounts tab (2026-10-28)", () => {
     it("writes `empty` only on its own tab", () => {
         expect(paramsToSearch({...dflt, tab: "cf", empty: true})).not.toContain("empty");
         expect(searchToParams("tab=cf&empty=1", dflt).empty).toBe(false);
+    });
+});
+
+describe("UNIT reports/ui/params — the folded controls' summary", () => {
+    const at = (tab: ReportTab, patch: Partial<ReportParams> = {}): string => controlsSummary({...defaultReportParams("2026-07-08"), tab, ...patch});
+
+    it.each<[ReportTab, Partial<ReportParams>, string]>([
+        ["bs", {interval: "total", asOf: "2026-07-08"}, "as of 2026-07-08 · Single date"],
+        ["bs", {interval: "monthly", bsFrom: "2025-08-01", asOf: "2026-07-08"}, "2025-08-01 – 2026-07-08 · Monthly"],
+        ["is", {interval: "total", from: "2026-01-01", to: "2026-07-08"}, "2026-01-01 – 2026-07-08 · Total"],
+        ["cf", {interval: "monthly", cfFrom: "2025-08-01", cfTo: "2026-07-08", depth: 2}, "2025-08-01 – 2026-07-08 · Monthly · depth 2"],
+        ["nw", {interval: "yearly", count: 5, end: "2026-07-08", depth: 3}, "5 × yearly to 2026-07-08 · depth 3"],
+        ["insights", {}, ""],
+        ["subs", {}, ""],
+    ])("%s %j reads %j", (tab, patch, summary) => {
+        expect(at(tab, patch)).toBe(summary);
     });
 });

@@ -14,6 +14,7 @@
      headline figure even when collapsed. -->
 <script lang="ts">
     import {formatAmount, toNumber} from "#lib/domain/money.js";
+    import {registerNativeActions} from "#lib/native/bridge.svelte.js";
     import {DEFAULT_AMOUNT_STYLE, ZERO} from "#lib/format/amounts.js";
     import {signClass} from "#lib/format/sign.js";
     import {today} from "#lib/reports/periods.js";
@@ -101,6 +102,19 @@
     // chart never drift.
     let depth = $state(2);
     const max = $derived(summary?.maxDepth ?? 1);
+
+    // The collapse toggle, as an iOS app menu action (plan 42).
+    registerNativeActions(
+        () => [
+            {
+                id: "insights",
+                label: settings.insightsOpen ? "Hide insights" : "Show insights",
+                icon: "chart.pie",
+                run: () => (settings.insightsOpen = !settings.insightsOpen),
+            },
+        ],
+        {order: 10}
+    );
 </script>
 
 <section class="collapse-arrow collapse bg-base-200" data-testid="insights-panel">

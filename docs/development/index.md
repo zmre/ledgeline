@@ -11,6 +11,7 @@ These pages are for people working on Ledgeline itself. If you only want to use 
 
 - [Architecture](architecture.md) describes the layering: the core library, the axum server around it, the hosts that run it (desktop, headless, iOS in-process), and where a native UI would plug in.
 - [Building and CI](building.md) covers the Nix dev shell, the pre-push hook, crane caching, how the SPA is embedded in the binary, the macOS app bundle, the Cachix cache and CI.
+- [The iOS app](ios.md) covers building, running and installing the iOS/iPadOS shell in `apple/ios`.
 - [Releasing](releasing.md) explains how a `v*` tag becomes signed, notarized DMGs, how the crates are published, and how to bump the bundled hledger.
 - [The docs site](docs-site.md) explains how this manual is built with mbr and published to GitHub Pages.
 - [Imports internals](imports-internals.md) explains why the import pipeline is built the way it is, including the subprocess rules, alias handling and security layers.

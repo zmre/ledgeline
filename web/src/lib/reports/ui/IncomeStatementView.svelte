@@ -321,7 +321,7 @@
          width, so every block keeps the same column edges and they all scroll
          together. Total mode: both wrappers are `contents`, so the boxes stay
          direct flex children and the page is exactly as it was. -->
-    <HScroll enabled={grid} class="@container" testid="is-scroller">
+    <HScroll enabled={grid} class="ll-sticky-col @container" testid="is-scroller">
         <div
             class={grid ? "flex flex-col gap-4" : "contents"}
             style:min-width={buckets !== null ? statementMinWidth(buckets.length, !versus, versus) : undefined}
@@ -335,82 +335,88 @@
                 {/if}
                 <!-- Total mode scrolls sideways rather than clipping; in interval mode the
              shared scroller around the stack does that. -->
-                <section class="{grid ? 'overflow-hidden' : 'overflow-x-auto'} rounded-box border border-base-content/10" data-testid="is-section-{box.kind}">
+                <!-- `overflow-clip`, not `hidden`: a hidden box is a scroll container, and
+                     the sticky label column must stick to the scroller around it. In
+                     Total mode only the table scrolls, so the title's background and
+                     text stay where they are. -->
+                <section class="overflow-clip rounded-box border border-base-content/10" data-testid="is-section-{box.kind}">
                     <h3
                         class="bg-base-200 {ACCENT[box.kind].rule} border-b-2 px-4 py-2.5 text-sm font-semibold tracking-wide uppercase {ACCENT[box.kind].text}"
                     >
-                        {box.title}
+                        <span class="ll-sticky-title">{box.title}</span>
                     </h3>
-                    <table class="table table-sm {grid ? 'table-fixed' : ''}">
-                        {@render template()}
-                        <!-- Repeated per box rather than printed once above them: each box
+                    <div class={grid ? "contents" : "ll-sticky-col overflow-x-auto"}>
+                        <table class="table table-sm {grid ? 'table-fixed' : ''}">
+                            {@render template()}
+                            <!-- Repeated per box rather than printed once above them: each box
                      is a separate table, so a single heading strip could not stay
                      aligned with the columns under it, and a table with no column
                      headers is a table a screen reader cannot narrate. -->
-                        <thead>
-                            <ProjectedHeadRow columns={buckets?.length ?? 0} projectedFrom={edgeAt} {trailing} fixed={grid} compareLabel={band} />
-                            <tr class="text-[0.65rem] text-base-content/40">
-                                <th class="{label} font-normal"><span class="sr-only">{box.title} line</span></th>
-                                {@render figureHeads()}
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {#each box.rows as row (row.key)}
-                                <tr
-                                    class="scroll-mt-10 {cursor.key === row.key ? 'bg-primary/25' : ''} {row.kind === 'group' ? 'font-medium' : ''}"
-                                    aria-current={cursor.key === row.key ? "true" : undefined}
-                                    data-is-row={row.key}
-                                    data-account={row.account ?? undefined}
-                                >
-                                    <th class="{label} font-normal">
-                                        {#if row.kind === "group"}
-                                            {#if row.expandable}
-                                                <button
-                                                    type="button"
-                                                    class="flex cursor-pointer items-center gap-1.5 text-left font-medium hover:text-primary"
-                                                    aria-expanded={row.expanded}
-                                                    onclick={() => toggle(row.key)}
-                                                >
-                                                    <span
-                                                        class="inline-block w-3 shrink-0 text-[0.65rem] text-base-content/40 transition-transform {row.expanded
-                                                            ? 'rotate-90'
-                                                            : ''}"
-                                                        aria-hidden="true">▶</span
+                            <thead>
+                                <ProjectedHeadRow columns={buckets?.length ?? 0} projectedFrom={edgeAt} {trailing} fixed={grid} compareLabel={band} />
+                                <tr class="text-[0.65rem] text-base-content/40">
+                                    <th class="{label} font-normal"><span class="sr-only">{box.title} line</span></th>
+                                    {@render figureHeads()}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {#each box.rows as row (row.key)}
+                                    <tr
+                                        class="scroll-mt-10 {cursor.key === row.key ? 'bg-primary/25' : ''} {row.kind === 'group' ? 'font-medium' : ''}"
+                                        aria-current={cursor.key === row.key ? "true" : undefined}
+                                        data-is-row={row.key}
+                                        data-account={row.account ?? undefined}
+                                    >
+                                        <th class="{label} font-normal">
+                                            {#if row.kind === "group"}
+                                                {#if row.expandable}
+                                                    <button
+                                                        type="button"
+                                                        class="flex cursor-pointer items-center gap-1.5 text-left font-medium hover:text-primary"
+                                                        aria-expanded={row.expanded}
+                                                        onclick={() => toggle(row.key)}
                                                     >
-                                                    {row.label}
-                                                </button>
-                                            {:else}
-                                                <!-- A group the engine sent no accounts for. The spacer keeps its
+                                                        <span
+                                                            class="inline-block w-3 shrink-0 text-[0.65rem] text-base-content/40 transition-transform {row.expanded
+                                                                ? 'rotate-90'
+                                                                : ''}"
+                                                            aria-hidden="true">▶</span
+                                                        >
+                                                        {row.label}
+                                                    </button>
+                                                {:else}
+                                                    <!-- A group the engine sent no accounts for. The spacer keeps its
                                              label on the same left edge as the groups that do. -->
-                                                <span class="flex items-center gap-1.5 font-medium">
-                                                    <span class="inline-block w-3 shrink-0" aria-hidden="true"></span>{row.label}
-                                                </span>
-                                            {/if}
-                                        {:else}
-                                            <!-- Inline padding, not a class: the depth is data, and `ReportTable`
+                                                    <span class="flex items-center gap-1.5 font-medium">
+                                                        <span class="inline-block w-3 shrink-0" aria-hidden="true"></span>{row.label}
+                                                    </span>
+                                                {/if}
+                                            {:else}
+                                                <!-- Inline padding, not a class: the depth is data, and `ReportTable`
                                          indents its own rows the same way (1rem per level). -->
-                                            <span class="whitespace-nowrap text-base-content/70" style="padding-left: {row.indent}rem" title={row.account}
-                                                >{row.label}</span
-                                            >
-                                        {/if}
-                                    </th>
-                                    {@render figures(row.amounts, row.pct, row.kind === "group" ? "font-medium" : "text-base-content/70")}
+                                                <span class="whitespace-nowrap text-base-content/70" style="padding-left: {row.indent}rem" title={row.account}
+                                                    >{row.label}</span
+                                                >
+                                            {/if}
+                                        </th>
+                                        {@render figures(row.amounts, row.pct, row.kind === "group" ? "font-medium" : "text-base-content/70")}
+                                    </tr>
+                                {/each}
+                                {#if box.rows.length === 0}
+                                    <tr>
+                                        <th class="{label} font-normal text-base-content/50">No {box.title.toLowerCase()}</th>
+                                        <td colspan={figureColumns}></td>
+                                    </tr>
+                                {/if}
+                            </tbody>
+                            <tfoot>
+                                <tr class="border-t-2 border-base-content/20 bg-base-200 text-sm font-bold text-base-content">
+                                    <th class="{label} font-bold">Total {box.title}</th>
+                                    {@render figures(box.total, box.totalPct, "font-bold")}
                                 </tr>
-                            {/each}
-                            {#if box.rows.length === 0}
-                                <tr>
-                                    <th class="{label} font-normal text-base-content/50">No {box.title.toLowerCase()}</th>
-                                    <td colspan={figureColumns}></td>
-                                </tr>
-                            {/if}
-                        </tbody>
-                        <tfoot>
-                            <tr class="border-t-2 border-base-content/20 bg-base-200 text-sm font-bold text-base-content">
-                                <th class="{label} font-bold">Total {box.title}</th>
-                                {@render figures(box.total, box.totalPct, "font-bold")}
-                            </tr>
-                        </tfoot>
-                    </table>
+                            </tfoot>
+                        </table>
+                    </div>
                 </section>
 
                 <!-- The ladder. Between the boxes, ruled top and bottom, and outside every
@@ -420,7 +426,7 @@
              a row of bare figures is not readable on its own. -->
                 {#each box.trailing as subtotal (subtotal.kind)}
                     <div
-                        class="-my-1 {grid ? 'border-x border-x-transparent' : 'overflow-x-auto'} border-y-2 border-base-content/30"
+                        class="-my-1 {grid ? 'border-x border-x-transparent' : 'll-sticky-col overflow-x-auto'} border-y-2 border-base-content/30"
                         data-testid="is-subtotal-{subtotal.kind}"
                     >
                         <table class="table table-sm {grid ? 'table-fixed' : ''}">
@@ -461,7 +467,10 @@
          columns like the ladder lines: net income per month is the one figure a
          reader most wants there, and a single Total would hide it. -->
             {#if buckets !== null}
-                <div class="overflow-hidden rounded-box border border-base-content/20 bg-base-200" data-testid="is-net-income">
+                <div
+                    class="overflow-clip rounded-box border border-base-content/20 bg-base-200 [--ll-sticky-bg:var(--color-base-200)]"
+                    data-testid="is-net-income"
+                >
                     <table class="table table-fixed table-sm">
                         {@render template()}
                         <thead>

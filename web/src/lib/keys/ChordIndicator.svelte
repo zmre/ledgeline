@@ -13,7 +13,7 @@
 </script>
 
 {#if tokens.length > 0}
-    <div class="pointer-events-none fixed bottom-4 left-4 z-40 flex items-center gap-1" aria-hidden="true" data-testid="chord-indicator">
+    <div class="pointer-events-none fixed bottom-4 left-4 z-40 flex items-center gap-1" aria-hidden="true" data-testid="chord-indicator" data-key-sheet>
         {#each tokens as token, at (at)}
             <kbd class="kbd kbd-sm">{token.text}</kbd>
         {/each}

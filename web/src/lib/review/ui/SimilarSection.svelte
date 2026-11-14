@@ -71,24 +71,30 @@
 </script>
 
 <section class="rounded-box border border-base-content/10 bg-base-200/40" data-testid={testid} data-open={open ? "" : undefined}>
-    <div class="flex items-center gap-2 px-3 py-2">
+    <!-- Heading and count on one line; the hint beside them when there is
+         room, else on its own line below (below `sm` always), never squeezing
+         the heading into two lines underneath it. -->
+    <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 px-3 py-2">
         <button
             type="button"
-            class="flex min-w-0 grow items-center gap-1.5 text-left text-sm font-medium"
+            class="flex max-w-full min-w-0 grow items-center gap-1.5 text-left text-sm font-medium whitespace-nowrap"
             aria-expanded={open}
             aria-controls="{testid}-list"
             onclick={() => (open = !open)}
         >
-            <ReviewIcon name={open ? "chevron-down" : "chevron-right"} class="h-3.5 w-3.5 text-base-content/50" />
+            <ReviewIcon name={open ? "chevron-down" : "chevron-right"} class="h-3.5 w-3.5 shrink-0 text-base-content/50" />
             <kbd class="kbd kbd-xs font-normal">s</kbd>
-            {title}
+            <!-- Its own box: at a big interface scale it wraps inside it, beside the count, never under the hint. -->
+            <span class="min-w-0 leading-tight whitespace-normal">{title}</span>
             <span class="text-base-content/40">·</span>
             <span class="tabular-nums" data-testid="{testid}-count">{rows.length}</span>
         </button>
         {#if applying !== ""}
-            <span class="shrink-0 text-xs text-base-content/50">apply: <span class="text-base-content/80">{applying}</span></span>
+            <span class="min-w-0 basis-full pl-5 text-xs [overflow-wrap:anywhere] text-base-content/50 sm:basis-auto sm:pl-0"
+                >apply: <span class="text-base-content/80">{applying}</span></span
+            >
         {:else}
-            <span class="shrink-0 text-xs text-base-content/40">change the description or an account to apply it</span>
+            <span class="min-w-0 basis-full pl-5 text-xs text-base-content/40 sm:basis-auto sm:pl-0">change the description or an account to apply it</span>
         {/if}
     </div>
     <!-- 0fr → 1fr: the section's height animates without measuring anything. -->

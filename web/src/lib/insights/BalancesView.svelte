@@ -12,8 +12,8 @@
         the journal to `expenses:` should not blank the cash panel.
      2. One commodity at a time, never summed across them. Nothing here needs a
         `P` directive, so a stale or missing price cannot make this read zero.
-     3. The account lists SCROLL inside a fixed height. The journal page is
-        `height: calc(100dvh - 7rem)` with only the transaction table scrolling,
+     3. The account lists SCROLL inside a fixed height. From `md` the journal
+        page is one window tall with only the transaction table scrolling,
         so every pixel this box takes comes straight out of the table.
 
      4. WHILE AN ACCOUNT IS PINNED, THE PIE IS ITS BALANCE LINE (plan 36
@@ -197,17 +197,19 @@
     </div>
 
     <!-- Same `stats` treatment as the activity tab's big numbers so the two
-         views read as siblings, but horizontal at every width: three money
-         figures fit across a phone, and stacking them cost ~140px of the
-         table's height on exactly the screens with least to spare.
+         views read as siblings. Side by side from `sm`; below it the three
+         figures did not fit across a phone and the row scrolled sideways, so
+         they stack, each as one compact label … figure line (a stacked tile
+         would cost ~140px of the table's height on exactly the screens with
+         least to spare).
          Hidden while an account is pinned: the view is then about that one
          account, and whole-journal totals beside its line only confuse. -->
     {#if pin === null}
-        <div class="stats w-full stats-horizontal bg-base-200 shadow-none">
+        <div class="stats w-full stats-vertical bg-base-200 shadow-none sm:stats-horizontal" data-testid="balances-tiles">
             {#each tiles as tile (tile.label)}
-                <div class="stat px-3 py-2" data-testid={tile.testid}>
+                <div class="stat flex flex-wrap items-baseline justify-between gap-x-3 px-3 py-1.5 sm:grid sm:py-2" data-testid={tile.testid}>
                     <div class="stat-title text-xs">{tile.label}</div>
-                    <div class="stat-value font-mono text-lg tabular-nums md:text-2xl {tile.valueClass}">{tile.value}</div>
+                    <div class="stat-value min-w-0 font-mono text-lg [overflow-wrap:anywhere] tabular-nums md:text-2xl {tile.valueClass}">{tile.value}</div>
                 </div>
             {/each}
         </div>

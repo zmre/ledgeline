@@ -161,6 +161,26 @@ export const TAB_CONTROLS: Record<ReportTab, ControlsConfig> = {
 };
 
 /**
+ * What the controls bar is set to, in a line: the folded bar's summary below
+ * `sm` (`FoldedControls`). Only what the tab's bar shows, in its order: the
+ * dates, then the Interval (and Periods), then the depth. `""` for a tab with
+ * no controls.
+ */
+export function controlsSummary(p: ReportParams): string {
+    const config = TAB_CONTROLS[p.tab];
+    const range = rangeKeys(p.tab);
+    const parts: string[] = [];
+    if (config.asOf) parts.push(config.asOfFrom && bsMultiPeriod(p) ? `${p.bsFrom} – ${p.asOf}` : `as of ${p.asOf}`);
+    if (config.range) parts.push(`${p[range.from]} – ${p[range.to]}`);
+    if (config.intervals.length > 0) {
+        const interval = intervalLabel(p.tab, p.interval);
+        parts.push(config.count ? `${p.count} × ${interval.toLowerCase()} to ${p.end}` : interval);
+    } else if (config.end) parts.push(`to ${p.end}`);
+    if (config.depth) parts.push(`depth ${p.depth}`);
+    return parts.join(" · ");
+}
+
+/**
  * The params a tab's From/To controls read and write: the P&L's `from`/`to`
  * or cash flow's own `cfFrom`/`cfTo`. One answer, used by the URL codec, the
  * controls, the query builder and the export title alike.

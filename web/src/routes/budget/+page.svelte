@@ -20,6 +20,7 @@
     // is named from the CURRENT controls and built from the HELD report, so those
     // two may only be combined when they answer the same question).
     import {onMount} from "svelte";
+    import FoldedControls from "#lib/components/FoldedControls.svelte";
     import {
         activeBudgetPreset,
         budgetParamsToSearch,
@@ -141,6 +142,19 @@
     /** The arrow is the label a mouse reads; `aria` is the one a screen reader does. */
     const SORT_DIR_LABELS: {id: SortDir; label: string; aria: string}[] = SORT_DIRS.map((id) =>
         id === "asc" ? {id, label: "↑", aria: "Ascending"} : {id, label: "↓", aria: "Descending"}
+    );
+
+    /**
+     * Below `sm` the controls fold behind one line saying what they are set
+     * to (`FoldedControls`): open, they are a phone's whole first screen
+     * before any budget shows. From `sm` up they are always shown.
+     */
+    const controlsSummary = $derived(
+        [
+            BUDGET_PRESETS.find((preset) => preset.id === activePreset)?.label ?? `${params.from} – ${params.to}`,
+            `depth ${params.depth}`,
+            `${SORT_KEY_LABELS.find((option) => option.id === params.sort)?.label ?? ""} ${SORT_DIR_LABELS.find((option) => option.id === params.dir)?.label ?? ""}`,
+        ].join(" · ")
     );
 
     const held = $derived(budgetStore.report);
@@ -306,7 +320,12 @@
         {/if}
     </div>
 
-    <div class="flex flex-wrap items-end gap-x-4 gap-y-2 rounded-box bg-base-200 px-3 py-2">
+    <FoldedControls
+        id="budget-controls"
+        summary={controlsSummary}
+        testid="budget-controls"
+        class="flex-wrap items-end gap-x-4 gap-y-2 rounded-box bg-base-200 px-3 py-2"
+    >
         <div class="form-control max-w-full">
             <span class="label-text mb-1 block text-xs text-base-content/70">Period</span>
             <!-- Wraps when a big interface scale leaves too few rem for the presets on one line. -->
@@ -372,7 +391,7 @@
                 </div>
             </div>
         </div>
-    </div>
+    </FoldedControls>
 
     <AsyncSection
         view={reportView}

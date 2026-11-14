@@ -44,6 +44,23 @@ export interface Rect {
 export interface Viewport {
     width: number;
     height: number;
+    /**
+     * How much of the viewport's top is covered (px): the iOS app's native
+     * bar, which the page runs under (plan 42). A popup never opens into it.
+     * Absent = 0.
+     */
+    top?: number;
+}
+
+/**
+ * The live viewport, less what the native bar covers. In the iOS app <body>
+ * is padded by exactly that (`html.ll-native body` in app.css); elsewhere
+ * nothing covers the top, whatever the body's padding.
+ */
+export function liveViewport(): Viewport {
+    const native = document.documentElement.classList.contains("ll-native");
+    const covered = native ? Number.parseFloat(getComputedStyle(document.body).paddingTop) : 0;
+    return {width: window.innerWidth, height: window.innerHeight, top: Number.isFinite(covered) ? covered : 0};
 }
 
 export interface Placement {
@@ -74,7 +91,7 @@ const MIN_ROOM = 96;
  */
 function verticalPlacement(rect: Rect, viewport: Viewport, desiredHeight: number): Omit<Placement, "left" | "width"> {
     const roomBelow = viewport.height - rect.bottom - GAP - MARGIN;
-    const roomAbove = rect.top - GAP - MARGIN;
+    const roomAbove = rect.top - (viewport.top ?? 0) - GAP - MARGIN;
     const below = roomBelow >= Math.min(desiredHeight, MIN_ROOM) || roomBelow >= roomAbove;
 
     const maxHeight = Math.max(0, below ? roomBelow : roomAbove);
@@ -171,7 +188,8 @@ export function tipPosition(
     const right = rect.left + rect.width;
     const height = rect.bottom - rect.top;
     const clampLeft = (left: number): number => Math.max(MARGIN, Math.min(left, viewport.width - size.width - MARGIN));
-    const clampTop = (top: number): number => Math.max(MARGIN, Math.min(top, viewport.height - size.height - MARGIN));
+    const ceiling = (viewport.top ?? 0) + MARGIN;
+    const clampTop = (top: number): number => Math.max(ceiling, Math.min(top, viewport.height - size.height - MARGIN));
 
     if (placement === "right") {
         const top = clampTop(rect.top + height / 2 - size.height / 2);
@@ -180,7 +198,7 @@ export function tipPosition(
     }
 
     const fitsBelow = rect.bottom + TIP_GAP + size.height <= viewport.height - MARGIN;
-    const fitsAbove = rect.top - TIP_GAP - size.height >= MARGIN;
+    const fitsAbove = rect.top - TIP_GAP - size.height >= ceiling;
     const below = fitsBelow || (!fitsAbove && viewport.height - rect.bottom >= rect.top);
     const top = clampTop(below ? rect.bottom + TIP_GAP : rect.top - TIP_GAP - size.height);
     const left = clampLeft(placement === "bottom-end" ? right - size.width : rect.left);

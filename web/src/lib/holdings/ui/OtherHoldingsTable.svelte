@@ -132,7 +132,9 @@
     {/if}
 {/snippet}
 
-<div class="overflow-x-auto rounded-box border border-base-content/10">
+<!-- As HoldingsTable: a sticky name column, and below md the account rides
+     under the name instead of taking a second column. -->
+<div class="ll-sticky-col overflow-x-auto rounded-box border border-base-content/10">
     <table class="table table-zebra table-sm" data-testid="other-holdings-table">
         <thead>
             <!-- Every header is a <th scope="col">, never a <td>: aria-sort is only
@@ -141,7 +143,7 @@
                  HoldingsTable is this header's deliberate twin — keep them in lockstep. -->
             <tr>
                 <th scope="col" aria-sort={ariaSort("name")}>{@render sortButton("name", "Name")}</th>
-                <th scope="col" aria-sort={ariaSort("account")}>{@render sortButton("account", "Account")}</th>
+                <th scope="col" class="hidden md:table-cell" aria-sort={ariaSort("account")}>{@render sortButton("account", "Account")}</th>
                 <th scope="col" class="text-right">Holding</th>
                 <th scope="col" class="text-right" aria-sort={ariaSort("value")}>{@render sortButton("value", "Value")}</th>
                 <th scope="col" class="text-right" aria-sort={ariaSort("cost")}>{@render sortButton("cost", "Cost")}</th>
@@ -156,8 +158,10 @@
                     class={cursor.key === h.account ? "bg-primary/25" : ""}
                     aria-current={cursor.key === h.account ? "true" : undefined}
                 >
-                    <th class="font-normal whitespace-nowrap" title={h.account}>{h.name}</th>
-                    <th class="font-normal whitespace-nowrap text-base-content/70">{h.account}</th>
+                    <th class="min-w-32 font-normal whitespace-normal md:whitespace-nowrap" title={h.account}>
+                        {h.name}<span class="block text-xs [overflow-wrap:anywhere] text-base-content/60 md:hidden">{h.account}</span>
+                    </th>
+                    <th class="hidden font-normal whitespace-nowrap text-base-content/70 md:table-cell">{h.account}</th>
                     <td class="text-right font-mono whitespace-nowrap tabular-nums" data-testid="held-{h.account}">
                         {formatHeldCommodities(h.commodities, base, formatUnits)}
                     </td>
@@ -173,7 +177,7 @@
         <tfoot>
             <tr class="border-t border-base-content/20 bg-base-200 text-sm font-bold text-base-content" data-testid="other-holdings-totals">
                 <th class="font-bold whitespace-nowrap">Total ({holdings.length} holdings):</th>
-                <th></th>
+                <th class="hidden md:table-cell"></th>
                 <td></td>
                 <td class="text-right font-mono whitespace-nowrap tabular-nums">{@render money(totals.value)}</td>
                 <td class="text-right font-mono whitespace-nowrap tabular-nums">{@render money(totals.cost)}</td>

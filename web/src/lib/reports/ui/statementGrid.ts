@@ -26,9 +26,20 @@ export const TOTAL_REM = 9;
  * width, so with fixed layout and the same colgroup their columns coincide.
  */
 export function statementMinWidth(periods: number, total: boolean, compare = false): string {
-    if (compare) return `${COMPARE_LABEL_REM + periods * COMPARE_PERIOD_REM + (total ? TOTAL_REM : 0) + DELTA_REM + DELTA_PCT_REM}rem`;
-    return `${LABEL_REM + periods * PERIOD_REM + (total ? TOTAL_REM : 0)}rem`;
+    const label = compare ? COMPARE_LABEL_REM : LABEL_REM;
+    const figures = compare
+        ? periods * COMPARE_PERIOD_REM + (total ? TOTAL_REM : 0) + DELTA_REM + DELTA_PCT_REM
+        : periods * PERIOD_REM + (total ? TOTAL_REM : 0);
+    return `calc(var(${NARROW_LABEL_VAR}, ${label}rem) + ${figures}rem)`;
 }
+
+/**
+ * Below `md` the label column is sticky (app.css, `.ll-sticky-col`), so it is
+ * on screen the whole time the figures scroll under it: at 19rem it would
+ * leave a phone one figure column. `app.css` sets this custom property to a
+ * narrower floor there; elsewhere it is unset and the floor above applies.
+ */
+export const NARROW_LABEL_VAR = "--ll-statement-label";
 
 // A projection comparison (plan 34) draws every period twice plus Δ and Δ%,
 // so it runs on a tighter template: at the usual one, three actual months

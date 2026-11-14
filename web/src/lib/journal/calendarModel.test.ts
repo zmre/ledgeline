@@ -4,7 +4,19 @@ import {NO_ACCOUNT_CLASSES} from "#lib/domain/accountClass.js";
 import {dec} from "#lib/domain/money.js";
 import type {Amount, AmountStyle, ISODate, Posting, Transaction} from "#lib/domain/types.js";
 import type {JournalRow} from "#lib/journalView/types.js";
-import {calendarItem, calendarMonth, fitDay, groupByDay, isWholeMonth, monthGrid, monthLabel, monthRange, shiftMonth} from "./calendarModel";
+import {
+    CALENDAR_MIN_REM,
+    calendarFits,
+    calendarItem,
+    calendarMonth,
+    fitDay,
+    groupByDay,
+    isWholeMonth,
+    monthGrid,
+    monthLabel,
+    monthRange,
+    shiftMonth,
+} from "./calendarModel";
 
 const usdStyle: AmountStyle = {side: "L", spaced: false, precision: 2, decimalPoint: ".", digitGroups: [",", [3]]};
 const shareStyle: AmountStyle = {side: "R", spaced: true, precision: 0, decimalPoint: ".", digitGroups: null};
@@ -193,5 +205,24 @@ describe("groupByDay", () => {
         ]);
         expect(days.get("2026-11-01")?.map((item) => item.id)).toEqual(["a", "b"]);
         expect(days.get("2026-11-02")?.map((item) => item.id)).toEqual(["c"]);
+    });
+});
+
+describe("calendarFits", () => {
+    // Plan 42: no month grid below the `md` breakpoint, in rem at the live scale.
+    it("is the md breakpoint, 48rem", () => {
+        expect(CALENDAR_MIN_REM).toBe(48);
+    });
+
+    it("fits at and above 48rem, not below", () => {
+        expect(calendarFits(768, 16)).toBe(true);
+        expect(calendarFits(767, 16)).toBe(false);
+        // An iPhone in portrait.
+        expect(calendarFits(390, 16)).toBe(false);
+    });
+
+    it("follows the interface scale: at 200 % a 1280px column is only 40rem", () => {
+        expect(calendarFits(1280, 32)).toBe(false);
+        expect(calendarFits(1536, 32)).toBe(true);
     });
 });

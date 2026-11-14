@@ -24,7 +24,8 @@
     const accountNames = $derived(report === null ? [] : reportAccounts(report));
 </script>
 
-<div class="flex flex-wrap items-center gap-x-4 gap-y-2" data-testid="account-report-controls">
+<!-- `relative`: below `md` the Accounts panel hangs from this row. -->
+<div class="relative flex flex-wrap items-center gap-x-4 gap-y-2" data-testid="account-report-controls">
     <AccountTreeSelect {accountNames} {selected} onToggle={(name) => (selected = toggleSubtreeRoot(selected, name))} onClear={() => (selected = new Set())} />
     <label class="label cursor-pointer gap-2 text-sm">
         <input type="checkbox" class="checkbox checkbox-sm" bind:checked={empty} data-testid="accounts-empty" />

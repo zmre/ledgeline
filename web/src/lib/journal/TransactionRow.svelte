@@ -18,6 +18,7 @@
     // shows a small ≠ that offers Forget rejection. A row with an unlinked
     // clearing posting offers Find match (Amendment A2) among its hover actions.
     import {descriptionPatch} from "#lib/api/editMapping.js";
+    import {hint} from "#lib/keys/hint.svelte.js";
     import {maxSeverity, type Problem} from "#lib/checks/engine.js";
     import type {Transaction} from "#lib/domain/types.js";
     import type {RunningCell, TransferRow} from "#lib/journalView/types.js";
@@ -30,10 +31,15 @@
     import AmountCell from "./AmountCell.svelte";
     import CommentIndicator from "./CommentIndicator.svelte";
     import RunningCells from "./RunningCells.svelte";
+    import StatusBadge from "./StatusBadge.svelte";
     import StatusCell from "./StatusCell.svelte";
+    import SwipeCard from "./SwipeCard.svelte";
+    import type {SwipeAction} from "./swipe";
     import {txnModal} from "./edit/modalState.svelte";
     import {rowActions} from "./rowAction.svelte";
-    import {txnFlowAmounts} from "./rowModel";
+    import {formatAmount} from "#lib/domain/money.js";
+    import {localToday} from "#lib/stores/filters.svelte.js";
+    import {accountFlow, cardDate, generatedPostings, txnFlowAmounts} from "./rowModel";
 
     let {
         txn,
@@ -54,6 +60,8 @@
         onUnlink,
         onForget,
         onFindMatch,
+        swipe = null,
+        onDetail,
     }: {
         txn: Transaction;
         columns: ColumnConfig;
@@ -83,6 +91,10 @@
         onForget?: (value: string) => void;
         /** Find match (A2): open the matcher on this transaction. Offered when it has an unlinked clearing posting. */
         onFindMatch?: () => void;
+        /** A card's touch gestures (plan 42 phase 3): swipe right, the actions a swipe left reveals, and a long press (Edit). */
+        swipe?: {leading: SwipeAction | null; trailing: SwipeAction[]; onLongPress: () => void} | null;
+        /** A card's tap (plan 42): open the read-only detail sheet. Without it a tap edits. */
+        onDetail?: () => void;
     } = $props();
 
     /** The other half of a transfer row, for "→ Jan 2". */
@@ -97,6 +109,11 @@
     const findable = $derived(transfer === undefined && onFindMatch !== undefined && findableClearing(txn).length > 0);
 
     const amounts = $derived(txnFlowAmounts(txn));
+    /** A card's muted tag line: the transaction's own tags, `name` or `name:value`. */
+    const tagText = $derived(mode === "card" ? txn.tags.map(([name, value]) => (value === "" ? name : `${name}:${value}`)).join(" ") : "");
+    const today = localToday();
+    /** A row's actions show on hover; a card has no hover (a phone), so its show always. */
+    const hoverOnly = $derived(mode === "row" ? "opacity-0 group-hover/desc:opacity-100 focus:opacity-100" : "");
     const flagTip = $derived(flags.map((problem) => problem.message).join("; "));
     const dotClass = $derived(maxSeverity(flags) === "error" ? "bg-error" : maxSeverity(flags) === "warning" ? "bg-warning" : "bg-info");
     const pulseClass = "bg-primary/15 animate-pulse";
@@ -128,6 +145,27 @@
         if (request === null || request.txnIndex !== txn.index || request.action !== "description") return;
         rowActions.consume(request.nonce);
         startEditDesc();
+    });
+
+    /** A card's tap: the detail sheet (read-only journals too), else the editor. */
+    function openCard(): void {
+        if (onDetail !== undefined) onDetail();
+        else if (canEdit) txnModal.openEdit(txn.index);
+    }
+
+    function openFromCard(event: MouseEvent): void {
+        if (event.target instanceof Element && event.target.closest("button, a, input, label") !== null) return;
+        openCard();
+    }
+
+    /** A card's accounts in full, for its wrapping account lines: `from → to`, or the split's accounts. */
+    const cardAccounts = $derived.by((): string => {
+        if (mode !== "card") return "";
+        if (transfer !== undefined && ends !== null) return `${ends[0]} → ${ends[1]}`;
+        const flow = accountFlow(txn);
+        const auto = generatedPostings(txn).length;
+        const text = flow.kind === "flow" ? `${flow.source} → ${flow.dest}` : flow.accounts.join(" · ");
+        return auto > 0 ? `${text} · +${auto} auto` : text;
     });
 
     function startEditDesc(): void {
@@ -173,7 +211,7 @@
                 class={["btn btn-square shrink-0 btn-ghost btn-xs", mode === "row" && "absolute top-1/2 right-full mr-1 -translate-y-1/2"]}
                 aria-expanded={expanded}
                 aria-label={expanded ? "Collapse the transfer" : "Expand the transfer"}
-                title={expanded ? "Collapse (l)" : "Show both halves (l)"}
+                title={hint(expanded ? "Collapse" : "Show both halves", "l")}
                 onclick={() => onToggle?.()}
                 data-testid="transfer-toggle"
             >
@@ -197,27 +235,37 @@
                 use:descAutofocus
             />
         {:else if canEdit}
-            <button type="button" class="min-w-0 truncate text-left" title="Click to edit · {txn.description}" onclick={startEditDesc}>
+            <!-- A card (narrow, plan 42) opens the transaction's detail sheet:
+                 an inline field in a card on a phone is too small to work in. -->
+            <button
+                type="button"
+                class="min-w-0 truncate text-left"
+                title={mode === "card" ? txn.description : `Click to edit · ${txn.description}`}
+                onclick={mode === "card" ? openCard : startEditDesc}
+                data-testid="row-description"
+            >
                 {txn.description || "(no description)"}
             </button>
             {@render linkIcon()}
             {@render partnerDate()}
             <CommentIndicator {txn} />
             {@render rejectionChips()}
-            <button
-                type="button"
-                class="btn btn-square shrink-0 btn-ghost opacity-0 btn-xs group-hover/desc:opacity-100 focus:opacity-100"
-                title="Edit whole transaction"
-                aria-label="Edit whole transaction"
-                onclick={() => txnModal.openEdit(txn.index)}
-            >
-                ✎
-            </button>
-            {#if findable}
+            {#if mode === "row"}
                 <button
                     type="button"
                     class="btn btn-square shrink-0 btn-ghost opacity-0 btn-xs group-hover/desc:opacity-100 focus:opacity-100"
-                    title="Find a match for this transfer half (⇧M)"
+                    title="Edit whole transaction"
+                    aria-label="Edit whole transaction"
+                    onclick={() => txnModal.openEdit(txn.index)}
+                >
+                    ✎
+                </button>
+            {/if}
+            {#if findable}
+                <button
+                    type="button"
+                    class={["btn btn-square shrink-0 btn-ghost btn-xs", hoverOnly]}
+                    title={hint("Find a match for this transfer half", "⇧M")}
                     aria-label="Find a match"
                     onclick={() => onFindMatch?.()}
                     data-testid="row-find-match"
@@ -228,7 +276,7 @@
             {#if transfer !== undefined}
                 <button
                     type="button"
-                    class="btn btn-square shrink-0 btn-ghost opacity-0 btn-xs group-hover/desc:opacity-100 focus:opacity-100"
+                    class={["btn btn-square shrink-0 btn-ghost btn-xs", hoverOnly]}
                     title="Unlink the transfer"
                     aria-label="Unlink the transfer"
                     onclick={() => onUnlink?.()}
@@ -281,10 +329,10 @@
 {#snippet accountsContent()}
     {#if transfer !== undefined && ends !== null}
         <div class="min-w-0" data-testid="transfer-accounts">
-            <AccountsCell {txn} transferEnds={ends} />
+            <AccountsCell {txn} transferEnds={ends} compact={mode === "card"} />
         </div>
     {:else}
-        <AccountsCell {txn} />
+        <AccountsCell {txn} compact={mode === "card"} />
     {/if}
 {/snippet}
 
@@ -323,37 +371,102 @@
         {/if}
     </tr>
 {:else}
-    <!-- A ring, not a background: the card already has `bg-base-200`. -->
-    <article
-        class={["card relative mb-2 h-24 overflow-hidden bg-base-200", nested && "ml-4", cardClass]}
-        aria-current={cursor ? "true" : undefined}
-        data-txn={txn.index}
-        data-slot={at}
-        data-transfer={transfer?.matchId}
-        data-review-marker={marker ?? undefined}
+    <!-- The narrow list (plan 42): three lines a phone can read rather than
+         five squeezed columns. Line one is when · what · how much; lines two
+         and three, muted, are where (the accounts, in full, wrapping onto the
+         third line when they need it), then the tags and the status. The card
+         is `h-20`, which `LIST_GEOMETRY_REM` windows by: accounts that would
+         need a fourth line end in an ellipsis, and a second commodity
+         collapses to "+1" rather than growing it.
+         A ring, not a background: the card already has `bg-base-200`. -->
+    <!-- A tap anywhere on the card that is not one of its own controls opens
+         the transaction's detail sheet; the description button is the
+         keyboard's way in. -->
+    <!-- A finger can also swipe it (SwipeCard): right for the leading action,
+         left for Edit and Delete, and a long press goes straight to Edit. -->
+    <SwipeCard
+        id={txn.index}
+        enabled={canEdit && swipe !== null}
+        leading={swipe?.leading ?? null}
+        trailing={swipe?.trailing ?? []}
+        onLongPress={swipe?.onLongPress}
+        class={["mb-2 h-20", nested && "ml-4"]}
     >
-        {#if marker !== null}
-            <span class="absolute inset-y-0 left-0 w-[3px]" style:background={stripeColor(marker)} aria-hidden="true"></span>
-        {/if}
-        <div class="card-body gap-1 p-3">
-            <div class="flex items-center justify-between gap-2">
-                <div class="flex min-w-0 items-center gap-1.5">
-                    {#if columns.status}<StatusCell {txn} />{/if}
-                    {@render descriptionContent()}
+        <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+        <article
+            class={["card relative h-full overflow-hidden bg-base-200", (canEdit || onDetail !== undefined) && "cursor-pointer", cardClass]}
+            onclick={openFromCard}
+            aria-current={cursor ? "true" : undefined}
+            data-txn={txn.index}
+            data-slot={at}
+            data-transfer={transfer?.matchId}
+            data-review-marker={marker ?? undefined}
+            data-testid="journal-card"
+        >
+            {#if marker !== null}
+                <span class="absolute inset-y-0 left-0 w-[3px]" style:background={stripeColor(marker)} aria-hidden="true"></span>
+            {/if}
+            <!-- `@container`: the card's own width, in rem, decides how its lines
+                 split. Below 16rem (a phone at a big interface scale) the date
+                 leaves line one to the description and opens the accounts line,
+                 and the status and tags follow the accounts instead of taking
+                 a column beside them. -->
+            <div class="@container flex h-full min-w-0 flex-col justify-center gap-0.5 px-3">
+                <div class="flex min-w-0 items-center gap-2">
+                    {#if columns.date}
+                        <span
+                            class="shrink-0 text-xs whitespace-nowrap text-base-content/60 tabular-nums @max-[16rem]:hidden"
+                            title={txn.date}
+                            data-testid="card-date">{cardDate(txn.date, today)}</span
+                        >
+                    {/if}
+                    <div class="min-w-0 grow text-sm font-medium">{@render descriptionContent()}</div>
+                    {#if columns.amount}
+                        <span
+                            class="flex shrink-0 items-baseline gap-1 font-mono text-sm tabular-nums"
+                            title={amounts.map((amount) => formatAmount(amount)).join("\n")}
+                        >
+                            {#if amounts.length === 0}
+                                <span class="text-base-content/40">&mdash;</span>
+                            {:else}
+                                <span class={["whitespace-nowrap", amounts[0].qty.m < 0n && "text-error"]}>{formatAmount(amounts[0])}</span>
+                                {#if amounts.length > 1}<span class="text-xs text-base-content/50">+{amounts.length - 1}</span>{/if}
+                            {/if}
+                        </span>
+                    {/if}
                 </div>
-                {#if columns.amount}<AmountCell {amounts} />{/if}
-            </div>
-            <div class="flex items-center justify-between gap-2">
-                {#if columns.accounts}
-                    <div class="min-w-0 overflow-hidden">{@render accountsContent()}</div>
-                {/if}
+                <div class="flex min-w-0 items-start gap-2 text-xs leading-4 text-base-content/60">
+                    <!-- Plain text, not chips: chips cannot wrap, and a phone needs
+                         the whole name, not its last segment. -->
+                    <p class="line-clamp-2 min-w-0 grow [overflow-wrap:anywhere]" title={cardAccounts}>
+                        {#if columns.date}<span class="hidden tabular-nums @max-[16rem]:inline">{cardDate(txn.date, today)} · </span>{/if}
+                        {#if columns.accounts}<span data-testid="card-accounts">{cardAccounts}</span>{/if}
+                        {#if columns.status && txn.status !== "unmarked"}<span class="hidden @max-[16rem]:inline"> · {txn.status}</span>{/if}
+                        {#if tagText !== ""}<span class="hidden text-base-content/50 @max-[16rem]:inline"> · {tagText}</span>{/if}
+                    </p>
+                    {#if pinned !== null || tagText !== "" || columns.status}
+                        <div class="flex max-w-[40%] shrink-0 flex-col items-end gap-0.5 @max-[16rem]:hidden">
+                            <div class="flex items-center gap-2">
+                                {#if pinned !== null}
+                                    <RunningCells cell={running} {pinned} txnIndex={txn.index} txnDate={txn.date} mode="card" />
+                                {/if}
+                                <!-- A badge, not the cycling button: a tap on it is a tap on
+                                     the card, which opens the sheet. -->
+                                {#if columns.status}<span class="shrink-0"><StatusBadge status={txn.status} /></span>{/if}
+                            </div>
+                            {#if tagText !== ""}
+                                <span class="max-w-full truncate text-base-content/50" title={tagText} data-testid="card-tags">{tagText}</span>
+                            {/if}
+                        </div>
+                    {/if}
+                </div>
                 {#if pinned !== null}
-                    <RunningCells cell={running} {pinned} txnIndex={txn.index} txnDate={txn.date} mode="card" />
-                {/if}
-                {#if columns.date}
-                    <span class="shrink-0 font-mono text-xs whitespace-nowrap text-base-content/60">{txn.date}</span>
+                    <!-- The pinned balance has no inline form: below 16rem it gets a line of its own. -->
+                    <div class="hidden justify-end text-xs @max-[16rem]:flex">
+                        <RunningCells cell={running} {pinned} txnIndex={txn.index} txnDate={txn.date} mode="card" />
+                    </div>
                 {/if}
             </div>
-        </div>
-    </article>
+        </article>
+    </SwipeCard>
 {/if}

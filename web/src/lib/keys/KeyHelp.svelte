@@ -25,6 +25,7 @@
         aria-modal="true"
         aria-label="Keyboard shortcuts"
         data-testid="key-help"
+        data-key-sheet
         use:dismissible={{onDismiss: () => keymap.closeHelp(), trap: true}}
     >
         <div class="modal-box max-w-3xl">

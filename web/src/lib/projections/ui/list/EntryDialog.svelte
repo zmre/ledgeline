@@ -18,6 +18,7 @@
      disabled button would swallow the very click that ended the edit. -->
 <script lang="ts">
     import {untrack} from "svelte";
+    import {hint} from "#lib/keys/hint.svelte.js";
     import {LedgelineApi, type RenderProjectionBody} from "#lib/api/native.js";
     import {decodeRenderedEntry} from "#lib/api/nativeDecode.js";
     import type {AccountClasses} from "#lib/domain/accountClass.js";
@@ -310,7 +311,7 @@
                 aria-busy={doneQueued}
                 onclick={done}
                 data-testid="entry-dialog-done"
-                title="Done (⌘↵)"
+                title={hint("Done", "⌘↵")}
             >
                 {#if doneQueued}<span class="loading loading-xs loading-spinner"></span>{/if}
                 Done <span class="hidden font-normal opacity-70 sm:inline" aria-hidden="true">⌘↵</span>

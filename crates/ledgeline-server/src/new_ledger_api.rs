@@ -50,6 +50,15 @@ use crate::security::no_store_json;
 /// pins it to the fixture byte for byte.
 pub const SAMPLE_JOURNAL: &str = include_str!("sample.journal");
 
+/// [`SAMPLE_JOURNAL`] with every date moved by whole months so its newest
+/// transaction falls in the month of `today` (`YYYY-MM-DD`): the default "last
+/// 90 days" view opens on data, whenever the sample is opened. The desktop's
+/// "Try with sample data" and the iOS app's sample ledger both write this.
+#[must_use]
+pub fn current_sample_journal(today: &str) -> String {
+    ledgeline_core::date_shift::shift_into_month_of(SAMPLE_JOURNAL, today)
+}
+
 /// The folder under the cache directory the sample is written into, and the
 /// file name it gets there.
 const SAMPLE_DIR: &str = "sample";
@@ -393,9 +402,10 @@ fn open_sample(state: &AppState) -> Result<WireCreated, AppError> {
     let dir = base.join(SAMPLE_DIR);
     let path = dir.join(SAMPLE_FILE);
     // The app's own copy, so it is simply rewritten: "Try with sample data"
-    // always starts from the pristine sample.
+    // always starts from the pristine sample, moved up to this month.
+    let text = current_sample_journal(&crate::reports_api::today_utc());
     std::fs::create_dir_all(&dir)
-        .and_then(|()| std::fs::write(&path, SAMPLE_JOURNAL))
+        .and_then(|()| std::fs::write(&path, text))
         .map_err(|error| {
             AppError::Internal(format!("the sample could not be written: {}", error.kind()))
         })?;

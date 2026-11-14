@@ -23,6 +23,7 @@
     import ProjectionSettingsPanel from "#lib/projections/ui/ProjectionSettingsPanel.svelte";
     import {defaultSettingsParams, paramsToSearch, searchToParams, type SettingsParams} from "#lib/settings/params.js";
     import SettingsTabs from "#lib/settings/ui/SettingsTabs.svelte";
+    import {isNative} from "#lib/native/detect.js";
     import {journal} from "#lib/stores/journal.svelte.js";
     import {loadJournalWhenReady} from "#lib/stores/serverWatch.svelte.js";
     import {searchMirror} from "#lib/url/searchSync.js";
@@ -81,7 +82,7 @@
         <ProjectionSettingsPanel />
     {:else if params.tab === "appearance"}
         <AppearancePanel />
-    {:else if params.tab === "prices"}
+    {:else if params.tab === "prices" && !isNative()}
         <PricesSettingsPanel />
     {:else}
         <AccountsPanel accountNames={journal.accountNames} />

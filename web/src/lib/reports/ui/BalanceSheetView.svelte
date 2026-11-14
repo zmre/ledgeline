@@ -322,16 +322,17 @@
 
     <!-- Multi-column: one sideways scroller, one width, so every block keeps the
          same column edges. Single-date: `contents`, exactly as before. -->
-    <HScroll enabled={multi} testid="bs-scroller">
+    <HScroll enabled={multi} class="ll-sticky-col" testid="bs-scroller">
         <div class={multi ? "flex flex-col gap-4" : "contents"} style:min-width={multi ? statementMinWidth(sheet.columns.length, false, comparing) : undefined}>
             {#each sheet.sections as section, at (section.kind)}
-                <section class="overflow-hidden rounded-box border border-base-content/10" data-testid="bs-section-{section.kind}">
+                <!-- `overflow-clip`: see the income statement's boxes. -->
+                <section class="overflow-clip rounded-box border border-base-content/10" data-testid="bs-section-{section.kind}">
                     <h3
                         class="bg-base-200 {ACCENT[section.kind].rule} border-b-2 px-4 py-2.5 text-sm font-semibold tracking-wide uppercase {ACCENT[
                             section.kind
                         ].text}"
                     >
-                        {section.title}
+                        <span class="ll-sticky-title">{section.title}</span>
                     </h3>
                     <table class="table table-sm {multi ? 'table-fixed' : ''}">
                         {@render template()}
@@ -450,7 +451,7 @@
             <!-- A `div`, not a `section`: the three boxes above are named landmarks by
          their `h3`, and an unnamed one here would just be noise to a screen
          reader. The table carries the name instead. -->
-            <div class="overflow-hidden rounded-box border border-base-content/20" data-testid="bs-summary">
+            <div class="overflow-clip rounded-box border border-base-content/20" data-testid="bs-summary">
                 <table class="table table-sm {multi ? 'table-fixed' : ''}" aria-label="Balance sheet totals">
                     {@render template()}
                     <!-- The boxes' header treatment again, plus a name for the last

@@ -249,7 +249,8 @@
 {/snippet}
 
 <div class="w-full">
-    <div class="mb-1 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+    <!-- `relative`: an `actions` dropdown may hang its panel from this row (BenchmarkPicker). -->
+    <div class="relative mb-1 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
         <ChartHeading {heading} {note} />
         {#if actions !== undefined}{@render actions()}{/if}
     </div>
