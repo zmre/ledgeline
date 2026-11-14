@@ -80,6 +80,7 @@
     // nothing is selected, and no rule is saved until the user picks. The save
     // order is the import's: the rule, then the card (the usual batch).
     import {flushSync, tick, untrack} from "svelte";
+    import {hint} from "#lib/keys/hint.svelte.js";
     import {addComment, cardChange, cardOps, formToBody, isSplit, reviewFormOf, validateForm} from "#lib/api/editMapping.js";
     import {openAutoRule} from "#lib/autoRules/openRule.js";
     import {txnModal} from "#lib/journal/edit/modalState.svelte.js";
@@ -971,7 +972,7 @@
                 type="button"
                 class="btn btn-square btn-ghost text-base-content/80 btn-sm hover:bg-base-content/10"
                 aria-label={closeLabel}
-                title="Close (Esc)"
+                title={hint("Close", "Esc")}
                 onclick={requestClose}
             >
                 <ReviewIcon name="x" />

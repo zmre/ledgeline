@@ -11,12 +11,14 @@
     // the editor on it.
     //
     // Not for phones: a day cell at phone width holds a few characters, and a
-    // one-day view would only repeat the list. A future mobile layout should
-    // hide the calendar toggle and keep the list (see TODO.md, "Mobile").
+    // one-day view would only repeat the list. Below the `md` breakpoint
+    // TransactionTable never mounts this: no toggle, no `v`, and a `cal=1`
+    // filter shows the list (`calendarFits` in calendarModel.ts, plan 42).
     //
     // Rows come from the journal view's block cache (`ensure` over the whole
     // month), so an edit re-reads them exactly as it re-reads the table's.
     import {untrack} from "svelte";
+    import {hint} from "#lib/keys/hint.svelte.js";
     import {styleOf} from "#lib/format/amounts.js";
     import {dismissible} from "#lib/keys/dismissible.js";
     import {registerKeys} from "#lib/keys/keymap.svelte.js";
@@ -135,10 +137,13 @@
 
 <div class="flex shrink-0 flex-col gap-1" data-testid="journal-calendar">
     <div class="flex items-center gap-2">
-        <button type="button" class="btn btn-square btn-ghost btn-sm" aria-label="Previous month" title="Previous month (h)" onclick={() => go(-1)}>‹</button>
+        <button type="button" class="btn btn-square btn-ghost btn-sm" aria-label="Previous month" title={hint("Previous month", "h")} onclick={() => go(-1)}
+            >‹</button
+        >
         <h2 class="min-w-36 text-center text-base font-semibold" aria-live="polite" data-testid="calendar-month">{monthLabel(month)}</h2>
-        <button type="button" class="btn btn-square btn-ghost btn-sm" aria-label="Next month" title="Next month (l)" onclick={() => go(1)}>›</button>
-        <button type="button" class="btn btn-ghost btn-xs" disabled={month === monthOf(today)} title="This month (t)" onclick={thisMonth}>Today</button>
+        <button type="button" class="btn btn-square btn-ghost btn-sm" aria-label="Next month" title={hint("Next month", "l")} onclick={() => go(1)}>›</button>
+        <button type="button" class="btn btn-ghost btn-xs" disabled={month === monthOf(today)} title={hint("This month", "t")} onclick={thisMonth}>Today</button
+        >
         {#if loading}
             <span class="loading loading-xs loading-spinner" aria-label="Loading transactions"></span>
         {:else if total === 0}

@@ -11,6 +11,7 @@ import {goto} from "$app/navigation";
 import {resolve} from "$app/paths";
 import {page} from "$app/state";
 import {rulesStore} from "#lib/imports/rulesStore.svelte.js";
+import {isNative} from "#lib/native/detect.js";
 import {zoomIn, zoomOut, zoomReset} from "#lib/theme/zoom.svelte.js";
 import {keymap} from "./keymap.svelte";
 import {PRIORITY, type Layer} from "./types";
@@ -64,8 +65,9 @@ export function globalLayer(): Layer {
                 group: "Navigation",
                 run: to("/imports"),
                 // Mirrors the nav item, which is hidden on an engine with no
-                // `/api/rules` route. A hidden destination should not be reachable.
-                enabled: () => rulesStore.available,
+                // `/api/rules` route, and in the iOS app, which has no Imports
+                // (plan 42). A hidden destination should not be reachable.
+                enabled: () => rulesStore.available && !isNative(),
             },
         ],
     };

@@ -17,14 +17,18 @@
     //
     // The calendar (plan 40) takes the list's place when the filter says so:
     // the toolbar stays, the table's own keys stand down, and the toggle next
-    // to the column menu switches between the two.
+    // to the column menu switches between the two. Below the `md` breakpoint
+    // there is no calendar (plan 42): no toggle, no `v`, and a `cal=1` filter
+    // (a link, a restored URL) shows its month as the list.
     import {untrack} from "svelte";
+    import {hint} from "#lib/keys/hint.svelte.js";
     import {statusPatch} from "#lib/api/editMapping.js";
     import type {Transaction} from "#lib/domain/types.js";
     import type {JournalRow} from "#lib/journalView/types.js";
     import {dismissible} from "#lib/keys/dismissible.js";
     import {registerKeys} from "#lib/keys/keymap.svelte.js";
     import {PRIORITY, type Binding} from "#lib/keys/types.js";
+    import {registerNativeActions, type NativeAction} from "#lib/native/bridge.svelte.js";
     import {rowMarker, type RowMarker} from "#lib/review/card.js";
     import {REVIEW_BUTTON} from "#lib/review/ui/buttons.js";
     import {reviewLaunch} from "#lib/review/ui/launch.svelte.js";
@@ -42,7 +46,7 @@
     import {lazyListCursor} from "#lib/ui/listCursor.svelte.js";
     import CalendarView from "./CalendarView.svelte";
     import ColumnMenu from "./ColumnMenu.svelte";
-    import {monthOf} from "./calendarModel";
+    import {calendarFits, monthOf} from "./calendarModel";
     import TransactionRow from "./TransactionRow.svelte";
     import {measureAccountColumn} from "./accountColumn.svelte";
     import {txnModal} from "./edit/modalState.svelte";
@@ -54,8 +58,18 @@
 
     const OVERSCAN = 12;
 
+    /**
+     * The section's measured width in px; null until measured (the first
+     * frame, and jsdom, which never measures), when the calendar is allowed.
+     * Measured on the section rather than the list's scroller because the
+     * calendar replaces the scroller, and the answer must not depend on which
+     * of the two is showing.
+     */
+    let sectionWidth = $state<number | null>(null);
+    /** Whether a month grid fits (plan 42): at or above `md`, in rem at the live scale. */
+    const calendarAllowed = $derived(sectionWidth === null || calendarFits(sectionWidth, rootPx()));
     /** The month calendar is showing instead of the list (plan 40). */
-    const calendar = $derived(filters.value.calendar === true);
+    const calendar = $derived(filters.value.calendar === true && calendarAllowed);
 
     let scroller = $state<HTMLDivElement | null>(null);
     let scrollTop = $state(0);
@@ -279,7 +293,7 @@
         }
         const older = olderLabel(olderCount);
         if (matchCount === 0) return older === null ? "No transfer halves to pair up" : `Nothing to pair in the lookback; ${older}`;
-        return older === null ? "Find Matches (m)" : `Find Matches (m) · ${older}`;
+        return older === null ? hint("Find Matches", "m") : `${hint("Find Matches", "m")} · ${older}`;
     });
     $effect(() => {
         const serverUrl = settings.serverUrl;
@@ -295,6 +309,25 @@
         matchMenuOpen = false;
         matches.openRun();
     }
+
+    // The toolbar's buttons, as the iOS app's menu (plan 42): offered exactly
+    // when the buttons are usable, with the badge counts in the labels.
+    registerNativeActions(() => {
+        if (!editing.canEdit) return [];
+        const actions: NativeAction[] = [{id: "add-transaction", label: "Add transaction", icon: "plus", run: () => txnModal.openAdd()}];
+        if (unknownCount > 0)
+            actions.push({
+                id: "review-unknowns",
+                label: `Review unknowns (${unknownCount})`,
+                icon: "questionmark.circle",
+                run: () => launchReview("unknowns"),
+            });
+        if (recentCount > 0)
+            actions.push({id: "review-recents", label: `Review recents (${recentCount})`, icon: "checkmark.circle", run: () => launchReview("recents")});
+        if (canOpenMatches)
+            actions.push({id: "find-matches", label: matchCount > 0 ? `Find matches (${matchCount})` : "Find matches", icon: "link", run: launchMatches});
+        return actions;
+    });
 
     /** Find match for one transaction (A2): the cursored row, when it has an unlinked clearing posting. */
     const cursorFindable = (): boolean => {
@@ -345,6 +378,7 @@
                     keys: "v",
                     label: "Switch between the list and the calendar",
                     group: "Journal",
+                    enabled: () => calendarAllowed,
                     run: () => filters.setCalendar(!calendar),
                 },
                 {keys: "j", label: "Next transaction", group: "Journal", run: () => moveCursor(1)},
@@ -533,7 +567,7 @@
      toolbar to spill under the totals footer. -->
 <!-- The calendar's weeks are a fixed height, so in it the section is as tall as
      its content (the page scrolls) rather than a share of the window. -->
-<section class={["flex grow flex-col", calendar ? "shrink-0" : "min-h-40"]}>
+<section class={["flex grow flex-col", calendar ? "shrink-0" : "min-h-40"]} bind:clientWidth={null, (width) => (sectionWidth = width ?? null)}>
     <!-- Wraps rather than overflowing when a big interface scale leaves too few rem across. -->
     <div class="flex flex-wrap items-center justify-between gap-2 pb-1">
         {#if editing.canEdit}
@@ -544,7 +578,7 @@
                 <!-- Review (plan 32 D18): a count badge on each, disabled at zero. -->
                 <span
                     class="tooltip tooltip-bottom"
-                    data-tip={unknownCount === 0 ? "No uncategorised transactions in the review window" : "Review Unknowns (u)"}
+                    data-tip={unknownCount === 0 ? "No uncategorised transactions in the review window" : hint("Review Unknowns", "u")}
                 >
                     <button
                         type="button"
@@ -560,7 +594,7 @@
                     </button>
                 </span>
                 <div class="flex">
-                    <span class="tooltip tooltip-bottom" data-tip={recentCount === 0 ? "Nothing unreviewed in the review window" : "Review Recents (r)"}>
+                    <span class="tooltip tooltip-bottom" data-tip={recentCount === 0 ? "Nothing unreviewed in the review window" : hint("Review Recents", "r")}>
                         <button
                             type="button"
                             class="{REVIEW_BUTTON} gap-1.5 rounded-r-none"
@@ -681,42 +715,44 @@
                 <ColumnMenu />
             {/if}
             <!-- The view toggle sits last, so hiding the column menu in the calendar does not move it. -->
-            <div class="join" role="group" aria-label="Journal view">
-                <button
-                    type="button"
-                    class={["btn join-item btn-ghost btn-xs", !calendar && "btn-active"]}
-                    aria-pressed={!calendar}
-                    aria-label="List view"
-                    title="List view (v)"
-                    onclick={() => filters.setCalendar(false)}
-                    data-testid="view-list"
-                >
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-4 w-4" aria-hidden="true">
-                        <path
-                            fill-rule="evenodd"
-                            d="M2 3.75A.75.75 0 0 1 2.75 3h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 3.75ZM2 8a.75.75 0 0 1 .75-.75h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 8Zm0 4.25a.75.75 0 0 1 .75-.75h10.5a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1-.75-.75Z"
-                            clip-rule="evenodd"
-                        />
-                    </svg>
-                </button>
-                <button
-                    type="button"
-                    class={["btn join-item btn-ghost btn-xs", calendar && "btn-active"]}
-                    aria-pressed={calendar}
-                    aria-label="Calendar view"
-                    title="Calendar view (v)"
-                    onclick={() => filters.setCalendar(true)}
-                    data-testid="view-calendar"
-                >
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-4 w-4" aria-hidden="true">
-                        <path
-                            fill-rule="evenodd"
-                            d="M4 1.75a.75.75 0 0 1 1.5 0V3h5V1.75a.75.75 0 0 1 1.5 0V3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2V1.75ZM4.5 6a1 1 0 0 0-1 1v4.5a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1h-7Z"
-                            clip-rule="evenodd"
-                        />
-                    </svg>
-                </button>
-            </div>
+            {#if calendarAllowed}
+                <div class="join" role="group" aria-label="Journal view">
+                    <button
+                        type="button"
+                        class={["btn join-item btn-ghost btn-xs", !calendar && "btn-active"]}
+                        aria-pressed={!calendar}
+                        aria-label="List view"
+                        title={hint("List view", "v")}
+                        onclick={() => filters.setCalendar(false)}
+                        data-testid="view-list"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-4 w-4" aria-hidden="true">
+                            <path
+                                fill-rule="evenodd"
+                                d="M2 3.75A.75.75 0 0 1 2.75 3h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 3.75ZM2 8a.75.75 0 0 1 .75-.75h10.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 8Zm0 4.25a.75.75 0 0 1 .75-.75h10.5a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1-.75-.75Z"
+                                clip-rule="evenodd"
+                            />
+                        </svg>
+                    </button>
+                    <button
+                        type="button"
+                        class={["btn join-item btn-ghost btn-xs", calendar && "btn-active"]}
+                        aria-pressed={calendar}
+                        aria-label="Calendar view"
+                        title={hint("Calendar view", "v")}
+                        onclick={() => filters.setCalendar(true)}
+                        data-testid="view-calendar"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-4 w-4" aria-hidden="true">
+                            <path
+                                fill-rule="evenodd"
+                                d="M4 1.75a.75.75 0 0 1 1.5 0V3h5V1.75a.75.75 0 0 1 1.5 0V3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2V1.75ZM4.5 6a1 1 0 0 0-1 1v4.5a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1h-7Z"
+                                clip-rule="evenodd"
+                            />
+                        </svg>
+                    </button>
+                </div>
+            {/if}
         </div>
     </div>
     <!-- There is no DOM focus on the cursored row (see the cursor's comment), so

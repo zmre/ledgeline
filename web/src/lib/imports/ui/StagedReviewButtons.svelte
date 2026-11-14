@@ -12,6 +12,7 @@
     // with every account mapped) is on screen — and each key is disabled exactly
     // when its button is.
     import {registerKeys} from "#lib/keys/keymap.svelte.js";
+    import {hint} from "#lib/keys/hint.svelte.js";
     import {PRIORITY} from "#lib/keys/types.js";
     import {REVIEW_BUTTON} from "#lib/review/ui/buttons.js";
     import type {StagedRunKind} from "../stagedReview";
@@ -55,7 +56,7 @@
     data-testid="imports-review"
 >
     <div class="flex items-center gap-2">
-        <span class="tooltip tooltip-bottom" data-tip={unknowns === 0 ? "Every transaction here has a category" : "Review Unknowns (u)"}>
+        <span class="tooltip tooltip-bottom" data-tip={unknowns === 0 ? "Every transaction here has a category" : hint("Review Unknowns", "u")}>
             <button
                 type="button"
                 class="{REVIEW_BUTTON} gap-1.5"
@@ -69,7 +70,7 @@
                 >
             </button>
         </span>
-        <span class="tooltip tooltip-bottom" data-tip={all === 0 ? "There is nothing to import" : "Review All (r)"}>
+        <span class="tooltip tooltip-bottom" data-tip={all === 0 ? "There is nothing to import" : hint("Review All", "r")}>
             <button type="button" class="{REVIEW_BUTTON} gap-1.5" disabled={all === 0} onclick={() => launch("all")} data-testid="imports-review-all">
                 Review All
                 <span class="badge badge-ghost badge-sm tabular-nums" data-testid="imports-review-all-count">{all}</span>

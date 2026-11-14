@@ -18,6 +18,7 @@
     // shows a small ≠ that offers Forget rejection. A row with an unlinked
     // clearing posting offers Find match (Amendment A2) among its hover actions.
     import {descriptionPatch} from "#lib/api/editMapping.js";
+    import {hint} from "#lib/keys/hint.svelte.js";
     import {maxSeverity, type Problem} from "#lib/checks/engine.js";
     import type {Transaction} from "#lib/domain/types.js";
     import type {RunningCell, TransferRow} from "#lib/journalView/types.js";
@@ -173,7 +174,7 @@
                 class={["btn btn-square shrink-0 btn-ghost btn-xs", mode === "row" && "absolute top-1/2 right-full mr-1 -translate-y-1/2"]}
                 aria-expanded={expanded}
                 aria-label={expanded ? "Collapse the transfer" : "Expand the transfer"}
-                title={expanded ? "Collapse (l)" : "Show both halves (l)"}
+                title={hint(expanded ? "Collapse" : "Show both halves", "l")}
                 onclick={() => onToggle?.()}
                 data-testid="transfer-toggle"
             >
@@ -217,7 +218,7 @@
                 <button
                     type="button"
                     class="btn btn-square shrink-0 btn-ghost opacity-0 btn-xs group-hover/desc:opacity-100 focus:opacity-100"
-                    title="Find a match for this transfer half (⇧M)"
+                    title={hint("Find a match for this transfer half", "⇧M")}
                     aria-label="Find a match"
                     onclick={() => onFindMatch?.()}
                     data-testid="row-find-match"

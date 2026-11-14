@@ -102,3 +102,66 @@
         --color-orange: color-mix(in oklab, var(--color-warning) 50%, var(--color-error));
     }
 }
+
+/*
+ * Keyboard hints follow the pointer, not the platform (plan 42). With no fine
+ * pointer anywhere (a phone; an iPad with no trackpad or mouse) there is no
+ * keyboard to speak of, so the `<kbd>` beside a button and any sentence that
+ * only explains a shortcut (`.key-hint`) go. Titles drop their "(v)" through
+ * `hint()` in #lib/keys/hint.svelte.ts, which asks the same question.
+ *
+ * Unlayered on purpose: it must beat daisyUI's `.kbd` and Tailwind's display
+ * utilities, which live in layers. The `?` sheet and the chord indicator are
+ * only reachable from a keyboard, so they keep theirs (`data-key-sheet`), and
+ * `revert-layer` hands those back to daisyUI's own `.kbd` display.
+ */
+@media not (any-pointer: fine) {
+    kbd,
+    .key-hint {
+        display: none;
+    }
+
+    [data-key-sheet] kbd {
+        display: revert-layer;
+    }
+}
+
+/*
+ * Native mode: inside the iOS/iPadOS app (plan 42). The app's document-start
+ * script puts `ll-native` on <html>; nothing else ever does, so none of this
+ * reaches the desktop app or a browser. The native navigation bar shows the
+ * section, a back button and a menu with the sections and the page's actions
+ * (#lib/native/bridge.svelte.ts), so the HTML header goes.
+ *
+ * Collapsed rather than `display: none`, as MBR's app does: a fixed-position
+ * dropdown or popover anchored inside the header still renders under an
+ * `overflow: hidden` ancestor with no transform, and would not inside a
+ * `display: none` one.
+ */
+html.ll-native .app-header {
+    height: 0;
+    min-height: 0;
+    padding: 0;
+    margin: 0;
+    border: 0;
+    box-shadow: none;
+    overflow: hidden;
+}
+
+html.ll-native body {
+    /* The page runs edge to edge (viewport-fit=cover in app.html); the insets
+     * are the native bar, the home indicator and, in landscape, the notch. */
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-left: env(safe-area-inset-left, 0px);
+    /* A stray pixel of width would otherwise make the whole page pan sideways
+     * under a finger. `clip`, never `hidden`: `hidden` makes body a scroll
+     * container, which breaks `position: sticky` inside it. */
+    overflow-x: clip;
+}
+
+/* Toasts are fixed to the viewport's corners: keep them off the home indicator. */
+html.ll-native .toast {
+    margin-bottom: env(safe-area-inset-bottom, 0px);
+}

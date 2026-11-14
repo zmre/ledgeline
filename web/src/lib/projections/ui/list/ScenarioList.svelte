@@ -579,7 +579,9 @@
 
     {#if armedEntry !== null}
         <div class="flex flex-wrap items-center gap-2 rounded-box border border-error/40 px-3 py-1.5 text-sm" role="alert" data-testid="entry-delete-confirm">
-            <span>Delete <strong class="font-medium">{armedEntry.name}</strong>? Press <kbd class="kbd kbd-xs">x</kbd> again.</span>
+            <span
+                >Delete <strong class="font-medium">{armedEntry.name}</strong>?<span class="key-hint"> Press <kbd class="kbd kbd-xs">x</kbd> again.</span></span
+            >
             <button type="button" class="btn btn-error btn-xs" onclick={() => remove(armedEntry)}>Delete</button>
             <button type="button" class="btn btn-ghost btn-xs" onclick={() => (armed = null)}>Keep</button>
         </div>

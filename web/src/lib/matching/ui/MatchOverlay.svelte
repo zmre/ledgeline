@@ -38,6 +38,7 @@
     // Card mode / field mode as in review: single keys act on the card,
     // Escape leaves a field, then closes (asking first when edits would go).
     import {tick, untrack} from "svelte";
+    import {hint} from "#lib/keys/hint.svelte.js";
     import {dismissible} from "#lib/keys/dismissible.js";
     import {keymap, registerKeys} from "#lib/keys/keymap.svelte.js";
     import {isTypingTarget, type TargetLike} from "#lib/keys/target.js";
@@ -433,7 +434,7 @@
                 type="button"
                 class="btn btn-square btn-ghost text-base-content/80 btn-sm hover:bg-base-content/10"
                 aria-label="Close Find Matches"
-                title="Close (Esc)"
+                title={hint("Close", "Esc")}
                 onclick={requestClose}
             >
                 <ReviewIcon name="x" />

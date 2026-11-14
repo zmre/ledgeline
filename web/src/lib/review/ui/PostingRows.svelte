@@ -253,7 +253,7 @@
                             <span class="text-base-content/45">{why(chip)}</span>
                         </button>
                     {/each}
-                    <span class="text-[0.7rem] text-base-content/40"><kbd class="kbd kbd-xs">Tab</kbd> in the account fills it in</span>
+                    <span class="key-hint text-[0.7rem] text-base-content/40"><kbd class="kbd kbd-xs">Tab</kbd> in the account fills it in</span>
                 </div>
             {/if}
             {#if posting.comment !== "" || revealed.includes(at)}

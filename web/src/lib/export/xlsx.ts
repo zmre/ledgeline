@@ -23,6 +23,8 @@ import {
     type MixedAmount,
 } from "#lib/domain/money.js";
 import type {AmountStyle} from "#lib/domain/types.js";
+import {isNative} from "#lib/native/detect.js";
+import {share} from "#lib/native/share.js";
 import type {HoldingsReport} from "#lib/holdings/types.js";
 import {primaryValue} from "#lib/reports/budgetSummary.js";
 import type {
@@ -1356,9 +1358,17 @@ export async function exportSaasXlsx(report: SaasReport, meta: {title: string; p
     await downloadWorkbook(await buildSaasWorkbook(report, meta), filename);
 }
 
-/** Serialize the workbook and trigger a browser download (Blob + anchor). */
+/**
+ * Serialize the workbook and trigger a browser download (Blob + anchor). In
+ * the iOS app (plan 42) a web view cannot complete an `<a download>`, so the
+ * bytes go to the native share sheet instead.
+ */
 export async function downloadWorkbook(workbook: Workbook, filename: string): Promise<void> {
     const buffer = await workbook.xlsx.writeBuffer();
+    if (isNative()) {
+        share(filename, XLSX_MIME, buffer as ArrayBuffer);
+        return;
+    }
     const blob = new Blob([buffer as ArrayBuffer], {type: XLSX_MIME});
     const url = URL.createObjectURL(blob);
     try {

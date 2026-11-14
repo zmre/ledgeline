@@ -146,8 +146,10 @@
             {/if}
         </div>
         <p class="text-sm text-base-content/70">
-            Scales all text and the layout around it. Shortcuts: <kbd class="kbd kbd-sm">{mod}+</kbd> larger,
-            <kbd class="kbd kbd-sm">{mod}−</kbd> smaller, <kbd class="kbd kbd-sm">{mod}0</kbd> actual size.
+            Scales all text and the layout around it.<span class="key-hint">
+                Shortcuts: <kbd class="kbd kbd-sm">{mod}+</kbd> larger, <kbd class="kbd kbd-sm">{mod}−</kbd> smaller, <kbd class="kbd kbd-sm">{mod}0</kbd> actual
+                size.</span
+            >
         </p>
         <div class="flex flex-wrap items-center gap-2">
             <button type="button" class="btn btn-square btn-sm" aria-label="Smaller" onclick={() => zoomOut()} disabled={scale <= SCALE_STEPS[0]}>−</button>

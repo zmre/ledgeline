@@ -15,6 +15,8 @@ The calendar view shows the journal one month at a time, with each transaction l
 
 The two buttons at the right of the table toolbar, next to the column gear, switch between the list and the calendar. <kbd>v</kbd> does the same from the keyboard.
 
+On a narrow window or a phone there is no calendar: a day would be a few characters wide. The toggle and <kbd>v</kbd> are gone, and a link saved in the calendar shows the same month as the list.
+
 The calendar always shows exactly one month. When you open it, the date range in the [filter bar](filtering.md) changes to a single month: the month your range ended in, or the current month if the range ran into the future. Moving to another month changes the date range too, so the insights panel and the totals footer always describe the month on screen.
 
 If you pick a different range in the filter bar while the calendar is open, the calendar jumps to the month that range ended in. Switching back to the list keeps the month you were looking at.

@@ -8,7 +8,13 @@
 // The topmost-only rule is what makes nested overlays behave WITHOUT
 // `stopPropagation` (which this codebase deliberately never uses): every ACTIVE
 // instance pushes onto a LIFO stack, and only the last one responds to Escape.
+//
+// In the iOS app (plan 42) an active instance is also an overlay the native
+// back button closes first: it registers `onDismiss` with the bridge, so every
+// overlay built on this action gets back-to-close without a line of its own.
 
+import {addOverlay} from "#lib/native/bridge.svelte.js";
+import {isNative} from "#lib/native/detect.js";
 import {FOCUSABLE} from "./target";
 
 export interface DismissibleOptions {
@@ -64,6 +70,7 @@ export function dismissible(node: HTMLElement, options: DismissibleOptions) {
     let current = options;
     let attached = false;
     let opener: HTMLElement | null = null;
+    let unregisterNative: (() => void) | null = null;
 
     function isTopmost(): boolean {
         return stack[stack.length - 1] === node;
@@ -114,6 +121,7 @@ export function dismissible(node: HTMLElement, options: DismissibleOptions) {
         stack.push(node);
         document.addEventListener("keydown", onKeyDown);
         document.addEventListener("pointerdown", onPointerDown, true);
+        if (isNative()) unregisterNative = addOverlay(() => current.onDismiss());
         if (current.trap === true) focusFirst(node);
     }
 
@@ -124,6 +132,8 @@ export function dismissible(node: HTMLElement, options: DismissibleOptions) {
         document.removeEventListener("pointerdown", onPointerDown, true);
         const at = stack.indexOf(node);
         if (at !== -1) stack.splice(at, 1);
+        unregisterNative?.();
+        unregisterNative = null;
         if (opener !== null && opener.isConnected) opener.focus();
         opener = null;
     }
