@@ -71,7 +71,15 @@ aren't committed.
 - `simctl` can't tap. In Debug builds,
   `SIMCTL_CHILD_LEDGELINE_OPEN_SAMPLE=1 xcrun simctl launch booted
   com.zmre.ledgeline.ios` opens the sample ledger at launch, which helps
-  with screenshots.
+  with screenshots. Two more Debug-only variables go with it:
+  `SIMCTL_CHILD_LEDGELINE_START_PATH="/reports?tab=bs"` opens that route
+  first, and `SIMCTL_CHILD_LEDGELINE_DEBUG_JS='…'` runs a script about 1.5 s
+  after the first load, for example to click a button or open the problems
+  drawer. The script is a function body, so `return` hands a value back to the
+  log. Take the shot with `xcrun simctl io booted screenshot out.png`.
+- The web view runs under the native bar: `env(safe-area-inset-top)` is
+  116 px on an iPhone 17 and `innerHeight` is the whole screen. Anything
+  `position: fixed` near the top has to use `--ll-top-inset` (`app.css`).
 - App logs go to stderr under `simctl launch --console-pty` and to the
   unified log (subsystem `com.zmre.ledgeline.ios`). Logging never writes
   journal contents.
