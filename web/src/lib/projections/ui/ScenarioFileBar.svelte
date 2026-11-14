@@ -106,7 +106,7 @@
 
 <div class="flex flex-col gap-2" data-testid="projection-file-bar">
     <div class="flex flex-wrap items-end gap-x-3 gap-y-2">
-        <label class="form-control">
+        <label class="form-control max-w-full min-w-0">
             <span class="label-text mb-1 block text-xs text-base-content/70">Scenario</span>
             <select
                 class="select w-64 max-w-full select-sm"

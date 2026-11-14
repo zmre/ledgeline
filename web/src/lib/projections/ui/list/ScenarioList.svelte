@@ -515,7 +515,7 @@
     <div class="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
         <div class="flex flex-wrap items-center gap-2 text-sm" data-testid="projection-cash-default">
             <span class="text-base-content/70">Default cash account</span>
-            <div class="w-64">
+            <div class="w-64 max-w-full">
                 <AccountInput
                     bind:value={() => cashText, (next) => (cashText = next)}
                     {accountNames}

@@ -30,13 +30,16 @@
     const failing = $derived(picked.filter((symbol) => states.get(symbol)?.status === "error").length);
 </script>
 
-<details class="dropdown dropdown-end" data-testid="benchmark-picker">
+<!-- `static`: the panel hangs from the chart's heading row (PeriodLineChart's
+     `relative` row), not from the button, so it stays on screen wherever the
+     row wrapped the button to. -->
+<details class="dropdown static dropdown-end" data-testid="benchmark-picker">
     <summary class="btn gap-1 btn-ghost font-normal btn-xs" title="Compare against what the same money would have done in an index fund">
         Compare
         {#if picked.length > 0}<span class="badge badge-xs badge-neutral">{picked.length}</span>{/if}
         {#if failing > 0}<span class="text-warning" aria-label="{failing} comparison could not load">!</span>{/if}
     </summary>
-    <div class="dropdown-content z-10 mt-1 w-72 max-w-[calc(100vw-2rem)] rounded-box bg-base-200 p-2 shadow-lg">
+    <div class="dropdown-content z-10 mt-1 w-72 max-w-full rounded-box bg-base-200 p-2 shadow-lg">
         <p class="mb-1 px-1 text-xs text-base-content/60">Your contributions and withdrawals, on the same dates, into a fund instead. Dividends reinvested.</p>
         <ul class="flex flex-col">
             {#each catalog as benchmark (benchmark.symbol)}

@@ -122,9 +122,10 @@
             <div class="flex flex-wrap items-baseline gap-2 text-sm" data-testid="settings-hledger-conf-file">
                 <span class="font-semibold">Config file:</span>
                 {#if loaded.handle !== null}
-                    <code data-testid="settings-hledger-conf-handle">{loaded.handle}</code>
+                    <code class="min-w-0 [overflow-wrap:anywhere]" data-testid="settings-hledger-conf-handle">{loaded.handle}</code>
                 {:else if loaded.createHandle !== null}
-                    <span data-testid="settings-hledger-conf-handle">none — saving will create <code>{loaded.createHandle}</code> beside your main journal</span
+                    <span data-testid="settings-hledger-conf-handle"
+                        >none — saving will create <code class="[overflow-wrap:anywhere]">{loaded.createHandle}</code> beside your main journal</span
                     >
                 {:else}
                     <span data-testid="settings-hledger-conf-handle">none</span>
@@ -188,13 +189,13 @@
                     <h3 class="text-sm font-semibold">Report depth (<code>--depth</code>)</h3>
                     {#each CONF_SECTIONS as section (section)}
                         {@const sectionForm = form.sections[section]}
-                        <fieldset class="rounded-box border border-base-300 p-3" data-testid={`settings-hledger-conf-depth-${section}`}>
+                        <fieldset class="min-w-0 rounded-box border border-base-300 p-3" data-testid={`settings-hledger-conf-depth-${section}`}>
                             <legend class="px-1 text-sm font-medium">
                                 {SECTION_LABELS[section]}
                                 {#if section !== "general"}<code class="text-xs text-base-content/60">[{section}]</code>{/if}
                             </legend>
                             <p class="mb-2 text-xs text-base-content/60">{SECTION_EFFECT[section]}</p>
-                            <label class="flex items-center gap-2 text-sm">
+                            <label class="flex flex-wrap items-center gap-2 text-sm">
                                 <span class="w-20">Depth</span>
                                 <input
                                     class="input w-20 input-sm"
@@ -212,7 +213,7 @@
                             {#each sectionForm.overrides as override, at (at)}
                                 <div class="mt-2 flex flex-wrap items-center gap-2 text-sm" data-testid="settings-hledger-conf-override">
                                     <input
-                                        class="input w-56 font-mono input-sm"
+                                        class="input w-56 max-w-full font-mono input-sm"
                                         placeholder="account regex, e.g. ^assets:inv"
                                         aria-label="Account pattern"
                                         value={override.regex}

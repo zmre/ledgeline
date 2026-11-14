@@ -143,7 +143,7 @@
 
 <div class="flex flex-col gap-3">
     <ScopeBar {accountNames} />
-    <div class="flex items-center justify-between gap-2">
+    <div class="flex flex-wrap items-center justify-between gap-2">
         <HoldingsTabs bind:tab={holdingsTab.value} />
         {#if holdingsTab.value === "stocks"}
             <UpdatePricesButton {format} />

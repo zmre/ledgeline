@@ -207,9 +207,9 @@
     {#if pin === null}
         <div class="stats w-full stats-vertical bg-base-200 shadow-none sm:stats-horizontal" data-testid="balances-tiles">
             {#each tiles as tile (tile.label)}
-                <div class="stat flex items-baseline justify-between gap-3 px-3 py-1.5 sm:grid sm:py-2" data-testid={tile.testid}>
+                <div class="stat flex flex-wrap items-baseline justify-between gap-x-3 px-3 py-1.5 sm:grid sm:py-2" data-testid={tile.testid}>
                     <div class="stat-title text-xs">{tile.label}</div>
-                    <div class="stat-value font-mono text-lg tabular-nums md:text-2xl {tile.valueClass}">{tile.value}</div>
+                    <div class="stat-value min-w-0 font-mono text-lg [overflow-wrap:anywhere] tabular-nums md:text-2xl {tile.valueClass}">{tile.value}</div>
                 </div>
             {/each}
         </div>

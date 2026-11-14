@@ -74,7 +74,7 @@
             {#if settings.isPinned("theme")}This ledger has its own theme, kept in its <code>ledgeline.toml</code>.{/if}
         </p>
 
-        <div class="grid grid-cols-[repeat(auto-fill,minmax(13rem,1fr))] gap-3" role="radiogroup" aria-label="Theme">
+        <div class="grid grid-cols-[repeat(auto-fill,minmax(min(13rem,100%),1fr))] gap-3" role="radiogroup" aria-label="Theme">
             {#each THEME_FAMILIES as family (family.id)}
                 {@const v = preview(family)}
                 {@const chosen = isChosen(family)}
