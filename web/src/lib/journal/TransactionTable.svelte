@@ -173,6 +173,8 @@
     const today = localToday();
     const markerOf = (row: JournalRow): RowMarker => rowMarker(row, today, settings.reviewMaxDays, settings.reviewMarkers);
     let reviewMenuOpen = $state(false);
+    /** The narrow toolbar's Review menu badge (plan 42): everything its three items would open. */
+    const reviewTotal = $derived(unknownCount + recentCount + matches.count);
 
     /** Open a review run — the D17 keys are disabled exactly when the button is. */
     function launchReview(kind: "unknowns" | "recents"): void {
@@ -751,12 +753,15 @@
      its content (the page scrolls) rather than a share of the window. -->
 <section class={["flex grow flex-col", calendar ? "shrink-0" : "min-h-40"]} bind:clientWidth={null, (width) => (sectionWidth = width ?? null)}>
     {#if pageScroll}
-        <!-- Below `md` (plan 42): Add and the column menu on one line, then the
-             three review launchers as one row of equal, short buttons with
-             their counts, and one ▾ for both groups' settings. No tooltips:
-             nothing hovers on a phone. -->
+        <!-- Below `md` (plan 42): Add, one Review menu and the column menu on
+             one line (wrapping at a big interface scale). The menu holds the
+             three review launchers with their counts and both groups'
+             settings: three buttons in a row left room for two letters of
+             each label. No tooltips: nothing hovers on a phone. The menu's
+             panel hangs from the whole row (`static` details in a `relative`
+             row), so it is the row's width wherever the button wrapped to. -->
         <div class="flex flex-col gap-2 pb-1" data-testid="journal-toolbar-narrow">
-            <div class="flex items-center justify-between gap-2">
+            <div class="relative flex flex-wrap items-center justify-between gap-2">
                 {#if editing.canEdit}
                     <button type="button" class="btn gap-1 btn-primary btn-sm" onclick={() => txnModal.openAdd()}>
                         <span class="text-base leading-none">+</span> Add transaction
@@ -764,72 +769,91 @@
                 {:else}
                     <span></span>
                 {/if}
-                {#if !calendar}
-                    <ColumnMenu />
-                {/if}
-            </div>
-            {#if editing.canEdit}
-                <div class="grid grid-cols-[1fr_1fr_1fr_auto] gap-1.5">
-                    <button
-                        type="button"
-                        class="{REVIEW_BUTTON} min-w-0 gap-1 px-2 text-xs"
-                        disabled={unknownCount === 0}
-                        aria-label="Review unknowns ({unknownCount})"
-                        onclick={() => launchReview("unknowns")}
-                        data-testid="review-unknowns-button"
-                    >
-                        <span class="truncate">Unknowns</span>
-                        <span class={["badge badge-xs tabular-nums", unknownCount > 0 ? "badge-warning" : "badge-ghost"]} data-testid="review-unknowns-count"
-                            >{unknownCount}</span
+                <div class="ml-auto flex flex-wrap items-center justify-end gap-1">
+                    {#if editing.canEdit}
+                        <details
+                            class="dropdown static dropdown-end"
+                            bind:open={reviewMenuOpen}
+                            use:dismissible={{active: reviewMenuOpen, outside: true, onDismiss: () => (reviewMenuOpen = false)}}
                         >
-                    </button>
-                    <button
-                        type="button"
-                        class="{REVIEW_BUTTON} min-w-0 gap-1 px-2 text-xs"
-                        disabled={recentCount === 0}
-                        aria-label="Review recents ({recentCount})"
-                        onclick={() => launchReview("recents")}
-                        data-testid="review-recents-button"
-                    >
-                        <span class="truncate">Recents</span>
-                        <span class="badge badge-ghost badge-xs tabular-nums" data-testid="review-recents-count">{recentCount}</span>
-                    </button>
-                    <button
-                        type="button"
-                        class="{REVIEW_BUTTON} min-w-0 gap-1 px-2 text-xs"
-                        disabled={!canOpenMatches}
-                        aria-label="Find matches ({matchCount})"
-                        onclick={launchMatches}
-                        data-testid="find-matches-button"
-                    >
-                        <span class="truncate">Matches</span>
-                        <span class={["badge badge-xs tabular-nums", matchCount > 0 ? "badge-info" : "badge-ghost"]} data-testid="find-matches-count"
-                            >{matchCount}</span
-                        >
-                    </button>
-                    <details
-                        class="dropdown dropdown-end"
-                        bind:open={reviewMenuOpen}
-                        use:dismissible={{active: reviewMenuOpen, outside: true, onDismiss: () => (reviewMenuOpen = false)}}
-                    >
-                        <summary class="{REVIEW_BUTTON} px-2" aria-label="Review and matching settings" title="Review and matching settings">
-                            <ReviewIcon name="chevron-down" class="h-3.5 w-3.5" />
-                        </summary>
-                        <div class="dropdown-content z-20 mt-1 w-[min(20rem,calc(100vw-2rem))] rounded-box border border-base-300 bg-base-200 p-3 shadow-lg">
-                            <ReviewSettings />
-                            {#if olderCount > 0 && settings.matchLookback !== 0}
-                                <p class="mt-2 text-xs text-base-content/60" data-testid="find-matches-older">{olderLabel(olderCount)}</p>
-                            {/if}
-                            {#if noClearing}
-                                <p class="mt-2 text-xs text-base-content/60">
-                                    {matchTip}
-                                    <a class="link" href={MATCHING_DOCS} target="_blank" rel="noopener noreferrer" data-testid="find-matches-docs">How?</a>
-                                </p>
-                            {/if}
-                        </div>
-                    </details>
+                            <summary class="{REVIEW_BUTTON} gap-1.5" aria-label="Review ({reviewTotal} to look at)" data-testid="review-menu-button">
+                                Review
+                                <span
+                                    class={["badge badge-sm tabular-nums", unknownCount > 0 ? "badge-warning" : matchCount > 0 ? "badge-info" : "badge-ghost"]}
+                                    data-testid="review-menu-count">{reviewTotal}</span
+                                >
+                                <ReviewIcon name="chevron-down" class="h-3.5 w-3.5" />
+                            </summary>
+                            <div
+                                class="dropdown-content inset-x-0 z-20 mt-1 max-h-[70dvh] overflow-x-hidden overflow-y-auto overscroll-contain rounded-box border border-base-300 bg-base-200 p-2 shadow-lg"
+                                data-testid="review-menu"
+                            >
+                                <ul class="menu w-full p-0 text-base">
+                                    <li class={[unknownCount === 0 && "menu-disabled"]}>
+                                        <button
+                                            type="button"
+                                            class="justify-between"
+                                            disabled={unknownCount === 0}
+                                            onclick={() => launchReview("unknowns")}
+                                            data-testid="review-unknowns-button"
+                                        >
+                                            Review unknowns
+                                            <span
+                                                class={["badge badge-sm tabular-nums", unknownCount > 0 ? "badge-warning" : "badge-ghost"]}
+                                                data-testid="review-unknowns-count">{unknownCount}</span
+                                            >
+                                        </button>
+                                    </li>
+                                    <li class={[recentCount === 0 && "menu-disabled"]}>
+                                        <button
+                                            type="button"
+                                            class="justify-between"
+                                            disabled={recentCount === 0}
+                                            onclick={() => launchReview("recents")}
+                                            data-testid="review-recents-button"
+                                        >
+                                            Review recents
+                                            <span class="badge badge-ghost badge-sm tabular-nums" data-testid="review-recents-count">{recentCount}</span>
+                                        </button>
+                                    </li>
+                                    <li class={[!canOpenMatches && "menu-disabled"]}>
+                                        <button
+                                            type="button"
+                                            class="justify-between"
+                                            disabled={!canOpenMatches}
+                                            onclick={launchMatches}
+                                            data-testid="find-matches-button"
+                                        >
+                                            Find matches
+                                            <span
+                                                class={["badge badge-sm tabular-nums", matchCount > 0 ? "badge-info" : "badge-ghost"]}
+                                                data-testid="find-matches-count">{matchCount}</span
+                                            >
+                                        </button>
+                                    </li>
+                                </ul>
+                                <div class="mt-2 border-t border-base-content/10 px-1 pt-2">
+                                    <ReviewSettings />
+                                    {#if olderCount > 0 && settings.matchLookback !== 0}
+                                        <p class="mt-2 text-xs text-base-content/60" data-testid="find-matches-older">{olderLabel(olderCount)}</p>
+                                    {/if}
+                                    {#if noClearing}
+                                        <p class="mt-2 text-xs text-base-content/60">
+                                            {matchTip}
+                                            <a class="link" href={MATCHING_DOCS} target="_blank" rel="noopener noreferrer" data-testid="find-matches-docs"
+                                                >How?</a
+                                            >
+                                        </p>
+                                    {/if}
+                                </div>
+                            </div>
+                        </details>
+                    {/if}
+                    {#if !calendar}
+                        <ColumnMenu />
+                    {/if}
                 </div>
-            {/if}
+            </div>
             {#if armedDelete !== null || armedMatch !== null || matchFailure !== null}
                 <div class="fixed inset-x-3 bottom-[calc(0.75rem+var(--ll-bottom-inset))] z-30 rounded-box bg-base-100 shadow-lg [&>div]:flex-wrap">
                     {@render confirmBar()}
