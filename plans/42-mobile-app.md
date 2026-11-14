@@ -88,10 +88,11 @@ the `md` container breakpoint (48 rem).
 | Calendar view             | toggle removed; `cal=1` opens the list                                                      | narrow         |
 | xlsx export               | `share` message → native share sheet (Save to Files, AirDrop, Mail…)                         | native         |
 | Reports / projections tables | horizontal scroll with sticky first column                                               | narrow         |
-| Journal list              | stacked multi-row cards (date · payee / account · amount) instead of columns                | narrow         |
+| Journal list              | three-line cards (date · payee · amount, then the full accounts wrapping onto two lines, tags, status) instead of columns; a tap opens a read-only detail sheet (every posting, tags, comments) with Edit / Mark reviewed / Find match / Delete | narrow |
 | Journal scroll            | one page scroll: the windowed list follows the page (`pageScroll`), no inner scroller; the totals footer flows after it | narrow |
-| Journal review buttons    | one row of equal short buttons (Unknowns n · Recents n · Matches n) and one ▾ for both settings | narrow     |
-| Journal cards             | swipe right = mark reviewed (unreviewed stripe) else edit; swipe left = Edit / Delete (Delete arms the floating confirm); long press = row menu | narrow, touch |
+| Journal review buttons    | one Review menu button with the total as its badge: Review unknowns (n), Review recents (n), Find matches (n), then both settings | narrow |
+| Journal cards             | swipe right = mark reviewed (unreviewed stripe) else edit; swipe left = Edit / Delete (Delete arms the floating confirm); long press = the detail sheet | narrow, touch |
+| Sideways scrollers        | `overscroll-behavior-x: contain` on every horizontal scroller; the web view bounces sideways only when the content is wider (`scrollBounceBehavior(.basedOnSize, axes: .horizontal)`) | all / native |
 | Bottom inset              | `--ll-bottom-inset`: the app measures the home indicator and sets `--ll-native-bottom` (the web view ignores the bottom safe area) | native |
 | Page zoom                 | WebKit zoom off (viewport `user-scalable=no`, set by the app's script); pinch steps the UI scale via `ledgeline:zoom` | native |
 | Entry dialog, review overlay | full-screen sheet layout, stacked fields                                                 | narrow         |
@@ -126,6 +127,17 @@ the symbol/account under the name below `md`; projection cards give postings
 the full card width below `sm`; the forecast journal drops its date column
 below `sm`. Settings → Prices is hidden in the app (no background updater
 runs there).
+
+Zoom pass (2026-11-13, iPhone feedback): every screen (journal, review and
+edit cards, detail sheet, reports, holdings, budget, projections, every
+Settings tab) swept at 100/150/200 % for boxes past the viewport and fixed;
+iPad 125/175 % checked as the narrow-desktop case. Journal cards are three
+lines (full accounts) and a tap opens a read-only detail sheet; one Review
+menu replaces the three narrow launchers; review/match cards scroll only
+vertically; dropdown panels stay on screen when their row wraps; sideways
+scrollers contain their overscroll and the web view no longer bounces
+sideways. Matching from the sample ledger has no proposals, so the match
+card at 200 % is unverified in the simulator.
 
 ### Phase 3: native gestures + lock — done (2026-11-13)
 
