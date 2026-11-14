@@ -174,11 +174,11 @@
                     {#if positions.shown.length > 0}
                         <section class="collapse-arrow collapse bg-base-200" data-testid="holdings-insights">
                             <input type="checkbox" bind:checked={insightsOpen} aria-label="Toggle holdings insights" />
-                            <div class="collapse-title flex min-h-0 items-center justify-between gap-2 py-3 pr-10">
+                            <div class="collapse-title flex min-h-0 flex-wrap items-center justify-between gap-x-2 py-3 pr-10">
                                 <h2 class="text-sm font-semibold tracking-tight">Insights</h2>
-                                <span class="text-sm">
+                                <span class="min-w-0 text-sm">
                                     <span class="mr-1 text-base-content/60">Market value</span>
-                                    <span class="font-semibold">{format(report.totals.marketValue)}</span>
+                                    <span class="font-semibold whitespace-nowrap">{format(report.totals.marketValue)}</span>
                                 </span>
                             </div>
                             <div class="collapse-content flex flex-col gap-4">

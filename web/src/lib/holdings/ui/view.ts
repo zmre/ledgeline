@@ -317,7 +317,7 @@ export function scopeSummary(scope: HoldingsScope, periodLabel: string): string 
  * container), never below `min`; past that the value wraps. A digit of the
  * tiles' extra-bold face is about 0.62em wide.
  */
-export function fitFontSize(text: string, max = "1.875rem", min = "0.875rem"): string {
+export function fitFontSize(text: string, max = "1.875rem", min = "0.5rem"): string {
     const fit = 100 / (Math.max(text.length, 4) * 0.62);
     return `clamp(${min}, ${fit.toFixed(2)}cqi, ${max})`;
 }

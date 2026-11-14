@@ -84,7 +84,8 @@
         >
             <ReviewIcon name={open ? "chevron-down" : "chevron-right"} class="h-3.5 w-3.5 shrink-0 text-base-content/50" />
             <kbd class="kbd kbd-xs font-normal">s</kbd>
-            <span class="min-w-0 truncate">{title}</span>
+            <!-- Its own box: at a big interface scale it wraps inside it, beside the count, never under the hint. -->
+            <span class="min-w-0 leading-tight whitespace-normal">{title}</span>
             <span class="text-base-content/40">·</span>
             <span class="tabular-nums" data-testid="{testid}-count">{rows.length}</span>
         </button>

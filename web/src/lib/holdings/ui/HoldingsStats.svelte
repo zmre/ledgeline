@@ -52,6 +52,8 @@
             valueClass: signClass(totals.gainPct),
         },
     ]);
+    /** One size for every tile, fitted to the longest value, so the four read as a set. */
+    const valueSize = $derived(fitFontSize(stats.reduce((longest, stat) => (stat.value.length > longest.length ? stat.value : longest), "")));
 </script>
 
 <div class="flex flex-col gap-1" data-testid="holdings-stats-block">
@@ -64,7 +66,7 @@
         {#each stats as stat, index (stat.label)}
             <div
                 class={[
-                    "@container stat min-w-0 border-dashed border-base-content/10 px-4 py-3",
+                    "@container stat min-w-0 border-dashed border-base-content/10 px-2 py-2 sm:px-4 sm:py-3",
                     index % 2 === 0 ? "border-e" : "border-e-0",
                     index < 2 ? "border-b" : "border-b-0",
                     "sm:border-b-0",
@@ -72,7 +74,7 @@
                 ]}
             >
                 <div class="stat-title text-xs whitespace-normal">{stat.label}</div>
-                <div class="stat-value leading-tight [overflow-wrap:anywhere] whitespace-normal {stat.valueClass}" style:font-size={fitFontSize(stat.value)}>
+                <div class="stat-value leading-tight [overflow-wrap:anywhere] whitespace-normal {stat.valueClass}" style:font-size={valueSize}>
                     {stat.value}
                 </div>
             </div>

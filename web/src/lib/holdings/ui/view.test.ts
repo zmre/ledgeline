@@ -369,8 +369,8 @@ describe("UNIT holdings/ui/view — the folded scope bar's line", () => {
 
 describe("UNIT holdings/ui/view — a stat value's font size", () => {
     it("shrinks with the text's length between the bounds", () => {
-        expect(fitFontSize("$1.00")).toBe("clamp(0.875rem, 32.26cqi, 1.875rem)");
-        expect(fitFontSize("$12,345,678.90")).toBe("clamp(0.875rem, 11.52cqi, 1.875rem)");
+        expect(fitFontSize("$1.00")).toBe("clamp(0.5rem, 32.26cqi, 1.875rem)");
+        expect(fitFontSize("$12,345,678.90")).toBe("clamp(0.5rem, 11.52cqi, 1.875rem)");
         // Very short text is capped like four characters.
         expect(fitFontSize("—")).toBe(fitFontSize("1234"));
     });

@@ -42,11 +42,27 @@
     data-testid="{testid}-toggle"
     onclick={() => (open = !open)}
 >
-    <!-- Two lines at most: a big interface scale leaves a phone few rem. -->
-    <span class="line-clamp-2 min-w-0 [overflow-wrap:anywhere]" data-testid="{testid}-summary"
+    <!-- Two lines at most: a big interface scale leaves a phone few rem.
+         Breaks between words (a long date may break at its hyphen), never
+         inside one. A chevron rather than a "Change" label, which took a
+         third of the line at 200 %. -->
+    <span class="line-clamp-2 min-w-0 [overflow-wrap:break-word]" data-testid="{testid}-summary"
         >{#if lead !== ""}<span class="me-1 text-base-content/60">{lead}</span>{/if}{summary}</span
     >
-    <span class="shrink-0 text-xs text-base-content/60">{open ? "Done" : "Change"}</span>
+    <span class="sr-only">{open ? "Done" : "Change"}</span>
+    <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 16 16"
+        fill="currentColor"
+        class={["h-4 w-4 shrink-0 text-base-content/60 transition-transform", open && "rotate-180"]}
+        aria-hidden="true"
+    >
+        <path
+            fill-rule="evenodd"
+            d="M4.22 6.22a.75.75 0 0 1 1.06 0L8 8.94l2.72-2.72a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.28a.75.75 0 0 1 0-1.06Z"
+            clip-rule="evenodd"
+        />
+    </svg>
 </button>
 <div {id} class={[className, "sm:flex", open ? "flex" : "hidden"]} data-testid={testid}>
     {@render children()}
