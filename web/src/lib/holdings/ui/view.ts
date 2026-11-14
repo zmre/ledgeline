@@ -4,7 +4,7 @@ import {add, cmp, dec, formatAmount, formatDec, MAX_QUANTITY_DECIMALS, toNumber,
 import type {AmountStyle} from "#lib/domain/types.js";
 import {DEFAULT_AMOUNT_STYLE, fmtSignedPct} from "#lib/format/amounts.js";
 import {OTHER_LABEL} from "#lib/format/palette.js";
-import type {Holding, OtherHolding} from "#lib/holdings/types.js";
+import type {Holding, HoldingsScope, OtherHolding} from "#lib/holdings/types.js";
 
 /** Null cells render as an em-dash everywhere on the holdings page. */
 export {EM_DASH} from "#lib/format/amounts.js";
@@ -295,4 +295,29 @@ export function sortOtherHoldings(holdings: readonly OtherHolding[], key: OtherS
         const ordered = dir === "asc" ? compare(va, vb) : compare(vb, va);
         return ordered !== 0 ? ordered : byAccount(a, b);
     });
+}
+
+/**
+ * The scope bar's line when it is folded below `sm` (`FoldedControls`): which
+ * accounts, the gain window, and the as-of date. One account is named; more
+ * are counted.
+ */
+export function scopeSummary(scope: HoldingsScope, periodLabel: string): string {
+    const accounts = [...scope.accounts].sort();
+    const which =
+        accounts.length === 0
+            ? "All accounts"
+            : `${scope.mode === "include" ? "Only" : "All except"} ${accounts.length === 1 ? accounts[0] : `${accounts.length} accounts`}`;
+    return [which, periodLabel, `as of ${scope.asOf}`].join(" · ");
+}
+
+/**
+ * A stat tile's value font size: as large as `max` but small enough that
+ * `text` fits the tile's width (`cqi`, the tile being an inline-size
+ * container), never below `min`; past that the value wraps. A digit of the
+ * tiles' extra-bold face is about 0.62em wide.
+ */
+export function fitFontSize(text: string, max = "1.875rem", min = "0.875rem"): string {
+    const fit = 100 / (Math.max(text.length, 4) * 0.62);
+    return `clamp(${min}, ${fit.toFixed(2)}cqi, ${max})`;
 }

@@ -3,10 +3,12 @@
      selection), and the as-of date. All state lives in the holdings scope
      store; every change recomputes the derived report, no refetch. -->
 <script lang="ts">
+    import FoldedControls from "#lib/components/FoldedControls.svelte";
     import AccountTreeSelect from "#lib/filters/AccountTreeSelect.svelte";
     import type {GainPeriod} from "#lib/holdings/types.js";
     import {GAIN_PERIODS} from "#lib/holdings/ui/gainPeriod.js";
     import {holdingsScope} from "#lib/stores/holdings.svelte.js";
+    import {scopeSummary} from "./view";
 
     let {accountNames}: {accountNames: string[]} = $props();
 
@@ -19,9 +21,11 @@
     const mode = $derived(holdingsScope.value.mode);
     const gainPeriod = $derived(holdingsScope.value.gainPeriod);
     const selectedAccounts = $derived([...holdingsScope.value.accounts].sort());
+    const summary = $derived(scopeSummary(holdingsScope.value, GAIN_PERIODS.find((option) => option.value === gainPeriod)?.label ?? gainPeriod));
 </script>
 
-<div class="flex flex-col gap-2 rounded-box bg-base-200 p-2" data-testid="holdings-scope-bar">
+<!-- Below `sm` the bar folds behind a line saying what it is set to. -->
+<FoldedControls id="holdings-scope" {summary} testid="holdings-scope-bar" class="flex-col gap-2 rounded-box bg-base-200 p-2">
     <!-- `relative`: below `md` the Accounts panel hangs from this row. -->
     <div class="relative flex flex-wrap items-center gap-2">
         <!-- `/` here: holdings has no free-text search box, so the account tree
@@ -93,4 +97,4 @@
             {/each}
         </div>
     {/if}
-</div>
+</FoldedControls>

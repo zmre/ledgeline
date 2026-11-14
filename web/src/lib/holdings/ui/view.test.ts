@@ -5,11 +5,13 @@ import {DEFAULT_PALETTE} from "#lib/format/palette.js";
 import type {Holding, OtherHolding} from "#lib/holdings/types.js";
 import {
     EM_DASH,
+    fitFontSize,
     formatGainPct,
     formatHeldCommodities,
     formatShares,
     formatUnitsWith,
     partitionShortPositions,
+    scopeSummary,
     PIE_OTHER,
     pieSlices,
     shortPositionNote,
@@ -344,5 +346,32 @@ describe("UNIT other-holdings view helpers", () => {
             expect(accounts(rows, "value", "desc")).toEqual(["a:home", "b:home", "c:home"]);
             expect(rows.map((h) => h.account)).toEqual(["b:home", "a:home", "c:home"]); // input untouched
         });
+    });
+});
+
+describe("UNIT holdings/ui/view — the folded scope bar's line", () => {
+    const scope = (accounts: string[], mode: "include" | "exclude" = "include") => ({
+        accounts: new Set(accounts),
+        mode,
+        asOf: "2026-11-13",
+        gainPeriod: "all" as const,
+    });
+
+    it.each<[string[], "include" | "exclude", string]>([
+        [[], "include", "All accounts · All time · as of 2026-11-13"],
+        [[], "exclude", "All accounts · All time · as of 2026-11-13"],
+        [["assets:broker"], "include", "Only assets:broker · All time · as of 2026-11-13"],
+        [["b", "a"], "exclude", "All except 2 accounts · All time · as of 2026-11-13"],
+    ])("%j %s reads %j", (accounts, mode, line) => {
+        expect(scopeSummary(scope(accounts, mode), "All time")).toBe(line);
+    });
+});
+
+describe("UNIT holdings/ui/view — a stat value's font size", () => {
+    it("shrinks with the text's length between the bounds", () => {
+        expect(fitFontSize("$1.00")).toBe("clamp(0.875rem, 32.26cqi, 1.875rem)");
+        expect(fitFontSize("$12,345,678.90")).toBe("clamp(0.875rem, 11.52cqi, 1.875rem)");
+        // Very short text is capped like four characters.
+        expect(fitFontSize("—")).toBe(fitFontSize("1234"));
     });
 });
