@@ -74,7 +74,7 @@
          dimmed and marked busy, with a spinner here, so they never pass for the
          answer to the period the control now reads. The spinner is hidden under
          reduced motion; the "Updating…" text carries the state on its own. -->
-    <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+    <div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
         <PeriodControl bind:start={params.insStart} bind:end={params.insEnd} />
         {#if insights.refreshing}
             <span class="flex items-center gap-2 text-xs text-base-content/60" role="status" data-testid="insights-refreshing">

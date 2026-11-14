@@ -67,7 +67,7 @@
                     {@const b = badge(row)}
                     <li class="flex flex-wrap items-center justify-between gap-x-3 text-sm">
                         <span class="min-w-0 truncate" title={row.account}>{leaf(row.account)}</span>
-                        <span class="ml-auto flex items-center gap-2 whitespace-nowrap">
+                        <span class="ml-auto flex flex-wrap items-center justify-end gap-x-2 whitespace-nowrap">
                             <span class="font-mono tabular-nums">{fmt(base, row.current, styles)}</span>
                             <!-- w-20, not w-16: the badge gained a decimal place. -->
                             <span class="{b.klass} w-20 text-right font-medium">{b.text}</span>

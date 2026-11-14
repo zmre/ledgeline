@@ -114,9 +114,10 @@
     {#snippet children(loaded)}
         <div class="flex max-w-3xl flex-col gap-4" data-testid="settings-hledger-conf">
             <p class="text-sm text-base-content/70">
-                hledger reads one config file for every command you run: the nearest <code>hledger.conf</code> at or above your journal's folder, else
-                <code>~/.hledger.conf</code>, else <code>~/.config/hledger/hledger.conf</code>. Ledgeline reads the options below from it and writes only the
-                lines you change here; everything else in the file is left as it is.
+                hledger reads one config file for every command you run: the nearest <code class="break-words">hledger.conf</code> at or above your journal's
+                folder, else
+                <code class="break-words">~/.hledger.conf</code>, else <code class="break-words">~/.config/hledger/hledger.conf</code>. Ledgeline reads the
+                options below from it and writes only the lines you change here; everything else in the file is left as it is.
             </p>
 
             <div class="flex flex-wrap items-baseline gap-2 text-sm" data-testid="settings-hledger-conf-file">
@@ -178,15 +179,15 @@
                         }}
                     />
                     <span>
-                        Apply automatic postings (<code>--auto</code>)
+                        Apply automatic postings (<code class="break-words">--auto</code>)
                         <span class="block text-xs text-base-content/60">
-                            The journal's <code>= QUERY</code> rules add postings to matching transactions, for every hledger command and in Ledgeline.
+                            The journal's <code class="break-words">= QUERY</code> rules add postings to matching transactions, for every hledger command and in Ledgeline.
                         </span>
                     </span>
                 </label>
 
                 <div class="flex flex-col gap-3">
-                    <h3 class="text-sm font-semibold">Report depth (<code>--depth</code>)</h3>
+                    <h3 class="text-sm font-semibold">Report depth (<code class="break-words">--depth</code>)</h3>
                     {#each CONF_SECTIONS as section (section)}
                         {@const sectionForm = form.sections[section]}
                         <fieldset class="min-w-0 rounded-box border border-base-300 p-3" data-testid={`settings-hledger-conf-depth-${section}`}>

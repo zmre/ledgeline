@@ -513,7 +513,7 @@
 <div class="flex flex-col gap-3" data-testid="projection-list-panel">
     <!-- Header: the scenario's own default cash account, the filters, Add. -->
     <div class="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
-        <div class="flex flex-wrap items-center gap-2 text-sm" data-testid="projection-cash-default">
+        <div class="flex min-w-0 flex-wrap items-center gap-2 text-sm" data-testid="projection-cash-default">
             <span class="text-base-content/70">Default cash account</span>
             <div class="w-64 max-w-full">
                 <AccountInput
