@@ -134,6 +134,7 @@ targets:
     sources:
       - path: LedgelineTests
       - path: Ledgeline/Support/FNV1a.swift
+      - path: Ledgeline/Support/PinchSteps.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.zmre.ledgeline.ios.tests

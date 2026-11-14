@@ -15,6 +15,8 @@ struct LedgerScreen: View {
     /// Files the journal needs are still downloading.
     @State private var downloading = false
     @State private var pickedFolder: PickedFolder?
+    /// The owner cancelled (or failed) the unlock prompt for this ledger.
+    @State private var lockedOut = false
 
     var body: some View {
         self.content
@@ -43,12 +45,45 @@ struct LedgerScreen: View {
                 // Back is the bar's button; WebKit's edge swipes would walk the
                 // web history behind the SPA's back.
                 .webViewBackForwardNavigationGestures(.disabled)
+                // …and a swipe in from the left edge is that same back.
+                .gesture(EdgeSwipe(edge: .left, isEnabled: true) {
+                    Haptics.play(NativeHapticStyle.light.rawValue)
+                    self.back()
+                })
+                // A pinch steps the SPA's UI scale (the page reflows); WebKit's
+                // own page zoom is off (NativeBridge's viewport script).
+                .gesture(PinchToScale { direction in
+                    Haptics.play(NativeHapticStyle.light.rawValue)
+                    Task { await NativeBridge.zoom(direction, in: session.page) }
+                })
+                // Edge to edge: the page scrolls under the home indicator. That
+                // zeroes `env(safe-area-inset-bottom)` inside the page, so the
+                // inset is measured here and handed over (`--ll-native-bottom`).
                 .ignoresSafeArea(edges: .bottom)
+                // Read from the window: inside a view that ignores the safe
+                // area SwiftUI reports 0 too. Re-read whenever the size
+                // changes (rotation, split view).
+                .background {
+                    GeometryReader { proxy in
+                        Color.clear.onChange(of: proxy.size, initial: true) {
+                            session.setBottomInset(Self.windowBottomInset)
+                        }
+                    }
+                }
                 .safeAreaInset(edge: .top, spacing: 0) {
                     if let problem = session.refreshProblem {
                         RefreshProblemBanner(message: problem) { session.refreshProblem = nil }
                     }
                 }
+        } else if self.lockedOut {
+            ContentUnavailableView {
+                Label("\(self.ledgerName) Is Locked", systemImage: AppLock.methodSymbol)
+            } description: {
+                Text("Unlock with \(AppLock.methodName) to open it.")
+            } actions: {
+                Button("Unlock") { Task { await self.open() } }
+                    .buttonStyle(.borderedProminent)
+            }
         } else if let needsFolder {
             ContentUnavailableView {
                 Label("This Journal Includes Other Files", systemImage: "folder.badge.questionmark")
@@ -126,6 +161,14 @@ struct LedgerScreen: View {
         self.error = nil
         self.needsFolder = nil
         self.downloading = false
+        // Face ID / passcode first (plan 42): nothing is read until it passes.
+        if ledger.requiresUnlock {
+            guard await self.model.lock.authenticate(reason: "Unlock \(ledger.name)") else {
+                self.lockedOut = true
+                return
+            }
+        }
+        self.lockedOut = false
         // A journal whose files are still in the cloud: their downloads were
         // requested; open again until they land (about two minutes).
         for attempt in 0 ..< 60 {
@@ -175,6 +218,13 @@ struct LedgerScreen: View {
         guard await self.store.add(folder: folder.access.url, mainFile: mainFile, replacing: folder.replacing) != nil
         else { return }
         await self.open()
+    }
+
+    /// The key window's bottom safe-area inset (the home indicator), pt.
+    private static var windowBottomInset: CGFloat {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let window = scenes.flatMap(\.windows).first(where: \.isKeyWindow) ?? scenes.first?.windows.first
+        return window?.safeAreaInsets.bottom ?? 0
     }
 
     static func describe(_ error: Error) -> String {
@@ -261,5 +311,125 @@ private struct RefreshProblemBanner: View {
         .background(.yellow.opacity(0.15))
         .background(.background)
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// A swipe in from one screen edge: UIKit's `UIScreenEdgePanGestureRecognizer`
+/// (as MBR's app does), so it begins only at the edge and follows the system's
+/// own edge rules. Attached to the web view as an extra recognizer, not drawn
+/// over it: a touch that does not start at the edge, a tap and a vertical
+/// scroll all reach the page untouched.
+///
+/// It fires once per swipe, as soon as the drag is clearly inward and
+/// horizontal (or on a short, fast flick at the end); once it fires, UIKit
+/// cancels the page's touches, so a journal card under the finger springs back
+/// rather than taking the drag as its own swipe.
+private struct EdgeSwipe: UIGestureRecognizerRepresentable {
+    /// `.left` or `.right`.
+    let edge: UIRectEdge
+    let isEnabled: Bool
+    let action: () -> Void
+
+    /// Inward distance, in points, at which a drag counts.
+    private static let distance: CGFloat = 40
+    /// A flick: this inward speed (pt/s) at the end, over at least `flickDistance`.
+    private static let flickSpeed: CGFloat = 400
+    private static let flickDistance: CGFloat = 16
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var fired = false
+
+        /// Alongside the web view's own recognizers, so it never waits on
+        /// (or blocks) scrolling and selection.
+        func gestureRecognizer(
+            _: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith _: UIGestureRecognizer
+        ) -> Bool {
+            true
+        }
+    }
+
+    func makeCoordinator(converter _: CoordinateSpaceConverter) -> Coordinator {
+        Coordinator()
+    }
+
+    func makeUIGestureRecognizer(context: Context) -> UIScreenEdgePanGestureRecognizer {
+        let recognizer = UIScreenEdgePanGestureRecognizer()
+        recognizer.edges = self.edge
+        recognizer.delegate = context.coordinator
+        recognizer.isEnabled = self.isEnabled
+        return recognizer
+    }
+
+    func updateUIGestureRecognizer(_ recognizer: UIScreenEdgePanGestureRecognizer, context _: Context) {
+        recognizer.isEnabled = self.isEnabled
+    }
+
+    func handleUIGestureRecognizerAction(_ recognizer: UIScreenEdgePanGestureRecognizer, context: Context) {
+        let view = recognizer.view
+        // Inward is +x from the left edge, -x from the right.
+        let sign: CGFloat = self.edge == .right ? -1 : 1
+        let inward = recognizer.translation(in: view).x * sign
+        let across = abs(recognizer.translation(in: view).y)
+        let horizontal = inward > across * 1.5
+        switch recognizer.state {
+        case .began:
+            context.coordinator.fired = false
+        case .changed:
+            if !context.coordinator.fired, horizontal, inward >= Self.distance {
+                context.coordinator.fired = true
+                self.action()
+            }
+        case .ended:
+            let speed = recognizer.velocity(in: view).x * sign
+            if !context.coordinator.fired, horizontal, inward >= Self.flickDistance, speed >= Self.flickSpeed {
+                context.coordinator.fired = true
+                self.action()
+            }
+        default:
+            break
+        }
+    }
+}
+
+/// A pinch steps the SPA's interface scale (plan 42): one step in or out each
+/// time the fingers spread or close by `PinchSteps.ratio` since the last step,
+/// so a long pinch walks several steps and the page reflows at each rather
+/// than magnifying. Recognized alongside the web view's own gestures.
+private struct PinchToScale: UIGestureRecognizerRepresentable {
+    let step: (PinchSteps.Direction) -> Void
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var steps = PinchSteps()
+
+        func gestureRecognizer(
+            _: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith _: UIGestureRecognizer
+        ) -> Bool {
+            true
+        }
+    }
+
+    func makeCoordinator(converter _: CoordinateSpaceConverter) -> Coordinator {
+        Coordinator()
+    }
+
+    func makeUIGestureRecognizer(context: Context) -> UIPinchGestureRecognizer {
+        let recognizer = UIPinchGestureRecognizer()
+        recognizer.delegate = context.coordinator
+        return recognizer
+    }
+
+    func handleUIGestureRecognizerAction(_ recognizer: UIPinchGestureRecognizer, context: Context) {
+        switch recognizer.state {
+        case .began:
+            context.coordinator.steps = PinchSteps()
+        case .changed:
+            for direction in context.coordinator.steps.advance(to: recognizer.scale) {
+                self.step(direction)
+            }
+        default:
+            break
+        }
     }
 }

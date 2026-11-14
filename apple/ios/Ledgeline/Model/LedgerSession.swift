@@ -24,6 +24,8 @@ final class LedgerSession {
     private var watcher: Task<Void, Never>?
     private var pendingRefresh: Task<Void, Never>?
     private var refreshing = false
+    /// The home indicator's height, pt (`LedgerScreen` measures it).
+    private var bottomInset: Double = 0
 
     // MARK: Opening
 
@@ -119,6 +121,19 @@ final class LedgerSession {
         }
     #endif
 
+    /// The web view runs under the home indicator, so the page cannot see
+    /// it; tell it (and tell every new document, `applyInsets`).
+    func setBottomInset(_ points: CGFloat) {
+        let value = Double(points)
+        guard value != self.bottomInset else { return }
+        self.bottomInset = value
+        Task { await self.applyInsets() }
+    }
+
+    private func applyInsets() async {
+        await NativeBridge.setBottomInset(self.bottomInset, in: self.page)
+    }
+
     func close() {
         self.watcher?.cancel()
         self.watcher = nil
@@ -132,6 +147,7 @@ final class LedgerSession {
         do {
             for try await event in self.page.load(URLRequest(url: url)) where event == .finished {
                 Log.info("\(label): finished in \(millis(since: start))ms")
+                await self.applyInsets()
                 return true
             }
         } catch {
@@ -150,6 +166,7 @@ final class LedgerSession {
         self.info.reset()
         do {
             for try await event in self.page.reload() where event == .finished {
+                await self.applyInsets()
                 break
             }
         } catch {

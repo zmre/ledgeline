@@ -116,11 +116,27 @@ enum NativeBridge {
         UIDevice.current.userInterfaceIdiom == .pad ? "pad" : "phone"
     }
 
+    /// The page's UI-scale event (`ZOOM_EVENT` in web/src/lib/theme/zoom.svelte.ts).
+    static let zoomEvent = "ledgeline:zoom"
+
+    /// The custom property the page reads the home indicator's height from
+    /// (`--ll-bottom-inset` in web/src/app.css).
+    static let bottomInsetProperty = "--ll-native-bottom"
+
     /// Runs at document start in the main frame, after `tokenInitScript()`.
+    /// Also turns WebKit's page zoom off once the viewport tag is parsed: a
+    /// pinch steps the SPA's own UI scale instead (`PinchToScale`), and a
+    /// focused small input no longer zooms the page.
     static func nativeScript(idiom: String) -> String {
         """
         window.__LEDGELINE_NATIVE__ = {platform: "ios", idiom: "\(idiom)", version: 1};
         document.documentElement.classList.add("ll-native");
+        document.addEventListener("DOMContentLoaded", function () {
+            var meta = document.querySelector('meta[name="viewport"]');
+            if (meta && meta.content.indexOf("user-scalable") < 0) {
+                meta.content += ", maximum-scale=1, user-scalable=no";
+            }
+        });
         """
     }
 
@@ -163,6 +179,33 @@ enum NativeBridge {
     @MainActor
     static func back(in page: WebPage) async -> Bool {
         await self.call("return window.ledgelineNative ? window.ledgelineNative.back() : false", id: nil, in: page)
+    }
+
+    /// One UI-scale step: the same `ledgeline:zoom` event the desktop menu
+    /// dispatches, so the scale is stepped, applied and saved as there.
+    @MainActor
+    static func zoom(_ direction: PinchSteps.Direction, in page: WebPage) async {
+        do {
+            _ = try await page.callJavaScript(
+                "window.dispatchEvent(new CustomEvent(name, {detail: detail})); return true",
+                arguments: ["name": self.zoomEvent, "detail": direction.rawValue]
+            )
+        } catch {
+            Log.info("bridge: zoom failed: \(error)")
+        }
+    }
+
+    /// Hands the page the home indicator's height (`--ll-native-bottom`).
+    @MainActor
+    static func setBottomInset(_ points: Double, in page: WebPage) async {
+        do {
+            _ = try await page.callJavaScript(
+                "document.documentElement.style.setProperty(name, value + 'px'); return true",
+                arguments: ["name": self.bottomInsetProperty, "value": points]
+            )
+        } catch {
+            Log.info("bridge: bottom inset failed: \(error)")
+        }
     }
 
     /// `window.ledgelineNative.state()`: the last `page` payload, to resync
