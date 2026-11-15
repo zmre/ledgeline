@@ -652,3 +652,58 @@ Error mapping: the plan's §6 table, one `ProblemCode` per row.
 - **WP-A: `reimport` now has `pub fn ids_of`.** It returns every id on a
   transaction, deduplicated. `build_index` uses it. `id_of` and `classify`
   are unchanged.
+||||||| 77485f7
+- **WP-R: `append_include` returns `Result<String, ShareError>`.** It
+  validates the name with the new public `share::check_include_name`: a
+  plain sibling `*.rules` name, with no separators, whitespace, control or
+  glob characters. A bare `String` return would let a bad name put a second
+  rule into the file.
+- **WP-R: `SharePlan` has two extra fields, `moved_spans: Vec<Span>` and
+  `include_offset: usize`.** They are what the byte-identity property test
+  reassembles from. `ShareError` is `BadFileName | NoFieldsLine |
+  AlreadyShared(String) | Unsafe`. `Unsafe` is a re-parse guard and should
+  never fire.
+- **WP-R: there's a fourth keep reason, `KeepReason::OrderDependent(field)`.**
+  The include goes last, and in hledger the last match wins. A block that came
+  *before* a kept block assigning the same field would start beating it after
+  the move (verified on 1.52). So that block stays too. This applies
+  transitively, and an `include` of some other file counts as a wall. The rule
+  is strict: one kept `account2` rule late in a file keeps every earlier
+  `account2` rule. `KeepReason` implements `Display` with a plain sentence for
+  `WireSharePreview.kept[].reason`.
+- **WP-R: `LayoutDependentPattern` also covers two more cases.** One is a
+  whole-record pattern containing `"`, since CSV quoting differs between the
+  files. The other is any matcher on the date column when the manual file's
+  `date-format` isn't `%Y-%m-%d`, because sync dates are always ISO.
+- **WP-R: a block whose assignment values interpolate a column sync lacks
+  stays, as `FieldNotInSync(name)`.** For example, `comment fitid:%fitid`.
+  hledger reads an unknown `%name` as empty without an error.
+- **WP-R: the feed template assigns `date2` inside `if %transacted .`.** The
+  contract's unconditional `date2 %transacted` is a hard hledger error on an
+  empty cell ("could not parse "" as a date"), verified on 1.52. The template
+  also adds `date %X` / `amount %X` when those column names are borrowed and
+  aren't `date` / `amount`.
+- **WP-R: the matching skip.** `matching::reads_csv_alone` returns true for a
+  file with a `fields` line or with any `include`, because `fields` may come
+  from an included file (`fixtures/review-rules/import/paypal.csv.rules`).
+  `prefilter` checks it, so `import_api::rank_candidates` gets the skip
+  without any server edit. A categories file has neither, so it's never a
+  candidate.
+- **WP-R: the `FeedColumns` mirror.** It lives in `rules/generate.rs`, with
+  the same fields, order and defaults, plus an `in_order() -> [&str; 7]`
+  helper that `feed_rules` uses. It carries a MERGE SEAM comment. On merge,
+  replace it with a re-export of `feeds::normalize::FeedColumns`, and either
+  add `in_order()` there or inline it.
+- **WP-R finding, open and not changed: shared `comment` rules erase the sync
+  id.** A conditional assignment beats a top-level one. So any categories
+  rule that sets `comment` replaces the template's `comment id:%id` on the
+  sync rows it matches, and those rows land with no `id:` tag. Then
+  `reimport` can't dedup them; see `split/firsttech-visa.sync.csv`, row
+  SHELL. One option: emit `if %id .` / `comment id:%id` *after* the include,
+  so ids win and category comments are lost on sync rows. Another: keep
+  comment-assigning blocks out of the categories file. Either way it needs a
+  decision.
+- **WP-R finding, open and not changed: the feed template has no
+  `currency`.** Synced amounts come in bare, while a manual file usually says
+  `currency $`. That's matching.rs's "commodity trap". A `currency` field on
+  `FeedRulesParams`, fed from SimpleFIN's account currency, would fix it.

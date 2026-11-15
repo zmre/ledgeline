@@ -169,6 +169,7 @@ hledger-checks:
     LEDGELINE_HLEDGER_CONVERT_CHECK=1 cargo test -p ledgeline-core --test convert_tabular
     LEDGELINE_HLEDGER_MATCH_CHECK=1 cargo test -p ledgeline-core --test matching
     LEDGELINE_HLEDGER_GENERATE_CHECK=1 cargo test -p ledgeline-core --test rules_generate
+    LEDGELINE_HLEDGER_SHARE_CHECK=1 cargo test -p ledgeline-core --test rules_share
     LEDGELINE_HLEDGER_REIMPORT_CHECK=1 cargo test -p ledgeline-core --test reimport
     LEDGELINE_HLEDGER_GROUPED_CSV_CHECK=1 cargo test -p ledgeline-core --test grouped_csv
     LEDGELINE_HLEDGER_SORT_CHECK=1 cargo test -p ledgeline-core --test sort

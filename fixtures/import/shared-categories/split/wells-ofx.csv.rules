@@ -1,0 +1,38 @@
+# Wells Fargo checking, downloaded as OFX and converted by Ledgeline.
+skip 1
+fields date, amount, name, memo, trntype, fitid, checknum
+date-format %Y-%m-%d
+currency $
+account1 assets:bank:wells:checking
+account2 expenses:unknown
+description %name
+comment id:%fitid
+
+# --- general rules first, so the payee rules below win ---
+
+if %trntype CHECK
+  account2 expenses:checks
+
+if,account2,comment
+NETFLIX,expenses:subscriptions,streaming
+SPOTIFY,expenses:subscriptions,music
+
+if %name PAYPAL
+& ! %memo REFUND
+  account2 expenses:paypal
+
+if %name ATM
+  comment fitid:%fitid
+
+if ^2024-01-0
+  comment first-week
+
+# --- payees ---
+
+if ONLINE TRANSFER
+  code xfer
+
+if %checknum [0-9]
+  code %checknum
+
+include wells-ofx.categories.rules

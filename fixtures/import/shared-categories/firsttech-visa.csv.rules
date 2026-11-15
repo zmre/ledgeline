@@ -1,0 +1,31 @@
+# First Tech Visa, the bank's own CSV export.
+skip 1
+fields posting_date, description, merchant, amount, type, balance, card
+date %posting_date
+date-format %m/%d/%Y
+currency $
+account1 liabilities:firsttech:visa
+account2 expenses:unknown
+description %merchant
+
+if %type Payment
+  account2 assets:bank:firsttech:checking
+
+if %posting_date ^12/
+  comment holidays
+
+if %merchant ^SAFEWAY
+  account2 expenses:food:groceries
+
+if %description RECURRING
+  comment recurring
+
+if SHELL OIL
+CHEVRON
+  account2 expenses:auto:fuel
+
+if %card 4321
+  comment card:%card
+
+if %merchant SHELL OIL
+  comment fuel:%description

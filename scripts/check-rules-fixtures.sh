@@ -111,6 +111,21 @@ trap 'rm -f "$edge_csv" "$match_csv"' EXIT
 printf 'Datum,Beschreibung,Soll,Haben\n15.01.2024,GEHALT,,3000.00\n16.01.2024,SUPERMARKT,45.20,\n' > "$match_csv"
 check "$match_csv" "$MATCH/wrong-dateformat.rules" "$MATCH/wrong-dateformat.rules"
 
+# --- fixtures/import/shared-categories — plan 43 rules sharing (WP-R) ---------
+#
+# The two manual rules files, their split (manual + categories, committed by
+# crates/ledgeline-core/tests/rules_share.rs as goldens), the sync rules files
+# the feed template writes over borrowed column names, and the default feed
+# template. The `include` resolves beside each rules file, so the categories
+# file is read from split/ too.
+SHARE=fixtures/import/shared-categories
+for stem in wells-ofx firsttech-visa; do
+    check "$SHARE/$stem.csv" "$SHARE/$stem.csv.rules" "$SHARE/$stem.csv.rules"
+    check "$SHARE/$stem.csv" "$SHARE/split/$stem.csv.rules" "$SHARE/split/$stem.csv.rules"
+    check "$SHARE/split/$stem.sync.csv" "$SHARE/split/$stem.sync.csv.rules" "$SHARE/split/$stem.sync.csv.rules"
+done
+check "$SHARE/feed/checking.sync.csv" "$SHARE/feed/checking.sync.csv.rules" "$SHARE/feed/checking.sync.csv.rules"
+
 if [ "$status" -ne 0 ]; then
     echo
     echo "One or more rules fixtures are not valid hledger rules files." >&2
