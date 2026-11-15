@@ -65,7 +65,7 @@
 //! bytes are committed.
 
 use crate::convert::Tabular;
-use crate::rules::RulesDoc;
+use crate::rules::{ItemKind, RulesDoc};
 use serde_json::Value;
 use std::time::SystemTime;
 use thiserror::Error;
@@ -601,6 +601,10 @@ pub struct PrefilterPass {
 /// produced ([`RulesDoc::settings`]) and what the preprocessor already read
 /// ([`Tabular`]):
 ///
+/// 0. **The file cannot read a CSV on its own** ([`reads_csv_alone`]). A
+///    plan-43 categories file holds only `if` blocks and is included by the
+///    files that do read CSVs; offering it as a candidate would be offering a
+///    fragment.
 /// 1. **The `fields` list is wider than the data.** The rules file addresses a
 ///    column that does not exist anywhere in the file. (The converse — naming
 ///    *fewer* columns than the file has — is legitimate and common, and is not a
@@ -623,8 +627,8 @@ pub struct PrefilterPass {
 /// one subprocess and is then caught by stage 2, which looks at what hledger
 /// actually produced. The two failures are not symmetric, so every check here
 /// declines to fire when it is unsure — an unmodelled `date-format` specifier, a
-/// truncated preview, a missing `fields` list and a missing `date-format` each
-/// mean "pass, and let stage 2 decide".
+/// truncated preview, a `fields` list that may arrive through an `include`, and a
+/// missing `date-format` each mean "pass, and let stage 2 decide".
 ///
 /// # What it deliberately does not do
 ///
@@ -634,6 +638,9 @@ pub struct PrefilterPass {
 /// tie-break in [`rank`] decides. Guessing is what a *user* is for.
 #[must_use]
 pub fn prefilter(doc: &RulesDoc, data: &Tabular) -> Option<PrefilterPass> {
+    if !reads_csv_alone(doc) {
+        return None;
+    }
     let settings = doc.settings();
     let fields = settings.fields.as_ref().map(|setting| &setting.value);
 
@@ -677,6 +684,23 @@ pub fn prefilter(doc: &RulesDoc, data: &Tabular) -> Option<PrefilterPass> {
             .filter(|currency| !currency.is_empty()),
         dates_tried,
         dates_parsed,
+    })
+}
+
+/// Whether `doc` can name a CSV's columns: it has a `fields` line (even one
+/// this crate keeps opaque, such as quoted names), or an `include` that may
+/// supply one — `paypal.csv.rules` + `paypal-common.rules` is a real layout.
+///
+/// A categories file (plan 43 §3.2) has neither, which is the point: it is
+/// never offered as an import candidate, because it cannot read a CSV alone.
+#[must_use]
+pub fn reads_csv_alone(doc: &RulesDoc) -> bool {
+    doc.items().iter().any(|item| match &item.kind {
+        ItemKind::Fields(_) | ItemKind::Include(_) => true,
+        ItemKind::Opaque(_) => doc.text()[item.body.clone()]
+            .strip_prefix("fields")
+            .is_some_and(|rest| rest.starts_with([' ', '\t'])),
+        _ => false,
     })
 }
 
@@ -1387,5 +1411,28 @@ mod tests {
         assert_eq!(ratio(3, 0), 1.0, "not an infinity, and not a NaN");
         assert_eq!(ratio(1, 2), 0.5);
         assert_eq!(ratio(9, 2), 1.0);
+    }
+
+    #[test]
+    fn a_file_with_no_fields_line_is_never_a_candidate() {
+        let data = Tabular {
+            header: Some(vec!["date".into(), "amount".into(), "name".into()]),
+            rows: vec![vec!["2024-01-15".into(), "-6.45".into(), "COFFEE".into()]],
+            ..Tabular::default()
+        };
+        let categories = RulesDoc::parse("# shared\nif COFFEE\n  account2 expenses:coffee\n");
+        assert!(!reads_csv_alone(&categories));
+        assert_eq!(prefilter(&categories, &data), None);
+
+        for readable in [
+            "fields date, amount, name\n",
+            "fields date, \"amount\", name\n",
+            "include common.rules\naccount2 expenses:unknown\n",
+        ] {
+            let doc = RulesDoc::parse(readable);
+            assert!(reads_csv_alone(&doc), "{readable:?}");
+            assert!(prefilter(&doc, &data).is_some(), "{readable:?}");
+        }
+        assert!(!reads_csv_alone(&RulesDoc::parse("fieldsx a, b\n")));
     }
 }
