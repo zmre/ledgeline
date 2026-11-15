@@ -22,6 +22,7 @@
 //! characters are removed and the length is capped. Transaction text is kept as
 //! sent and cleaned by [`normalize`] on its way into a CSV.
 
+pub mod config;
 pub mod dupes;
 pub mod normalize;
 pub mod simplefin;
