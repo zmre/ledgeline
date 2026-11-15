@@ -1,0 +1,119 @@
+{
+  "errors": [],
+  "x-api-message": [],
+  "accounts": [
+    {
+      "org": {
+        "domain": "demo.example-bank.test",
+        "sfin-url": "https://beta-bridge.simplefin.org/simplefin",
+        "name": "SimpleFIN Demo Bank",
+        "url": "https://demo.example-bank.test",
+        "id": "ORG-demo-1"
+      },
+      "id": "ACT-demo-checking",
+      "name": "SimpleFIN Checking",
+      "currency": "USD",
+      "balance": "26473.36",
+      "available-balance": "26473.36",
+      "balance-date": 1794268800,
+      "transactions": [
+        {
+          "id": "TRN-1001",
+          "posted": 1793664000,
+          "amount": "-4.50",
+          "description": "BLUE BOTTLE COFFEE #42 OAKLAND CA",
+          "payee": "Blue Bottle Coffee",
+          "memo": "",
+          "mcc": "5814",
+          "transacted_at": 1793642400,
+          "pending": false
+        },
+        {
+          "id": "TRN-1002",
+          "posted": 1793899800,
+          "amount": "2500.00",
+          "description": "ACME CORP PAYROLL",
+          "payee": "Acme Corp",
+          "memo": "Direct deposit",
+          "transacted_at": 1793899800,
+          "pending": false
+        },
+        {
+          "id": "TRN-1003",
+          "posted": 1794009600,
+          "amount": "-82.17",
+          "description": "SAFEWAY #1234",
+          "payee": "Safeway",
+          "memo": "",
+          "mcc": "5411",
+          "pending": false
+        },
+        {
+          "id": "TRN-1004",
+          "posted": 1794182400,
+          "amount": "-1200.00",
+          "description": "RENT, NOVEMBER \"UNIT 4\"",
+          "memo": "",
+          "pending": false
+        }
+      ],
+      "holdings": [],
+      "extra": { "account-open-date": 1600000000 }
+    },
+    {
+      "org": {
+        "domain": "demo.example-bank.test",
+        "sfin-url": "https://beta-bridge.simplefin.org/simplefin",
+        "name": "SimpleFIN Demo Bank",
+        "id": "ORG-demo-1"
+      },
+      "id": "ACT-demo-savings",
+      "name": "SimpleFIN Savings",
+      "currency": "USD",
+      "balance": "115525.50",
+      "available-balance": "115525.50",
+      "balance-date": 1794268800,
+      "transactions": [],
+      "holdings": []
+    },
+    {
+      "org": {
+        "domain": "demo.example-bank.test",
+        "sfin-url": "https://beta-bridge.simplefin.org/simplefin",
+        "name": "SimpleFIN Demo Bank",
+        "url": "https://demo.example-bank.test",
+        "id": "ORG-demo-1"
+      },
+      "id": "ACT-demo-brokerage",
+      "name": "SimpleFIN Investments",
+      "currency": "USD",
+      "balance": "48211.07",
+      "available-balance": "0.00",
+      "balance-date": 1794268800,
+      "transactions": [
+        {
+          "id": "TRN-2001",
+          "posted": 1793836800,
+          "amount": "12.34",
+          "description": "DIVIDEND VTI",
+          "payee": "Vanguard",
+          "memo": "Qualified dividend",
+          "pending": false
+        }
+      ],
+      "holdings": [
+        {
+          "id": "HOL-1",
+          "created": 1700000000,
+          "currency": "USD",
+          "cost_basis": "30000.00",
+          "description": "Vanguard Total Stock Market ETF",
+          "market_value": "48211.07",
+          "purchase_price": "200.00",
+          "shares": "150",
+          "symbol": "VTI"
+        }
+      ]
+    }
+  ]
+}

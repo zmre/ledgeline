@@ -1,0 +1,44 @@
+{
+  "errors": ["Chase needs you to sign in again."],
+  "errlist": [
+    {
+      "code": "con.auth",
+      "msg": "Chase needs you to sign in again.",
+      "conn_id": "CON-chase"
+    },
+    {
+      "code": "act.failed",
+      "msg": "We couldn't fetch this account today.",
+      "conn_id": "CON-chase",
+      "account_id": "ACT-chase-card"
+    },
+    {
+      "code": "gen.api",
+      "msg": "Requested date range exceeds 90 days; only the most recent 90 days were returned."
+    },
+    {
+      "code": "gen.warn",
+      "msg": "You have made 20 of 24 requests today and are close to the daily limit."
+    }
+  ],
+  "x-api-message": [
+    "SimpleFIN Bridge maintenance Nov 20, 02:00-04:00 UTC.",
+    "\u001b[31mSpoofed\u202e\ncolour\u0007",
+    ""
+  ],
+  "connections": [
+    { "conn_id": "CON-chase", "name": "Chase", "org_url": "https://www.chase.com" }
+  ],
+  "accounts": [
+    {
+      "id": "ACT-chase-checking",
+      "name": "Chase Checking",
+      "conn_id": "CON-chase",
+      "currency": "USD",
+      "balance": "1000.00",
+      "balance-date": 1794268800,
+      "transactions": []
+    }
+  ],
+  "a-field-from-the-future": { "nested": [1, 2, 3] }
+}

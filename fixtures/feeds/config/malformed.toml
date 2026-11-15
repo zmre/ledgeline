@@ -1,0 +1,75 @@
+# Synthetic: one good entry of each kind among malformed ones. parse() must
+# keep the good ones and warn about each of the rest.
+
+[[sync.connection]]
+id = "good-1"
+name = "Good"
+
+[[sync.connection]]
+id = "bad id with spaces"
+name = "Bad id"
+
+[[sync.connection]]
+name = "No id"
+
+[[sync.connection]]
+id = "good-1"   # repeats the first
+name = "Again"
+
+[[sync.account]]   # good; every optional key defaulted
+connection = "good-1"
+remoteId = "A-1"
+journalAccount = "assets:a"
+rules = "a.csv.rules"
+target = "a.journal"
+startDate = "2026-01-31"
+
+[[sync.account]]   # not a real date
+connection = "good-1"
+remoteId = "A-2"
+journalAccount = "assets:a"
+rules = "a.csv.rules"
+target = "a.journal"
+startDate = "2026-02-30"
+
+[[sync.account]]   # sign out of range
+connection = "good-1"
+remoteId = "A-3"
+journalAccount = "assets:a"
+rules = "a.csv.rules"
+target = "a.journal"
+startDate = 2026-01-01
+balanceSign = 2
+
+[[sync.account]]   # a moment, not a date
+connection = "good-1"
+remoteId = "A-4"
+journalAccount = "assets:a"
+rules = "a.csv.rules"
+target = "a.journal"
+startDate = 2026-11-01T10:00:00Z
+
+[[sync.account]]   # enabled isn't a boolean
+connection = "good-1"
+remoteId = "A-5"
+journalAccount = "assets:a"
+rules = "a.csv.rules"
+target = "a.journal"
+startDate = 2026-01-01
+enabled = "yes"
+
+[[sync.account]]   # no rules file
+connection = "good-1"
+remoteId = "A-6"
+journalAccount = "assets:a"
+target = "a.journal"
+startDate = 2026-01-01
+
+[[sync.manual]]
+account = "assets:invest:vanguard"
+downloadUrl = "javascript:alert(1)"
+nudge = true
+
+[[sync.manual]]
+account = "assets:invest:fidelity"
+downloadUrl = "https://www.fidelity.com/"
