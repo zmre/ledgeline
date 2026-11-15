@@ -10,6 +10,8 @@ import type {BudgetPeriod} from "#lib/budget/types.js";
 import type {CreateLedgerBody} from "#lib/onboarding/types.js";
 import type {SaveHledgerConfBody} from "#lib/settings/hledgerConfTypes.js";
 import type {PinnableUiPrefKey, UiPrefsPatch} from "#lib/settings/uiPrefs.js";
+import {decodeProblem} from "#lib/sync/decode.js";
+import type {WireAccountPatch, WireLinkRequest, WireManualUpdate, WireProblem} from "#lib/sync/types.js";
 import {ApiUnreachableError, authHeaders, REQUEST_TIMEOUT_MS, withDeadline} from "./client";
 
 /** The configured server answered, but has no /api/* routes (it is not the Ledgeline engine, or predates the route). */
@@ -67,6 +69,31 @@ export class NotFoundError extends Error {
     constructor(message: string, options?: ErrorOptions) {
         super(message, options);
         this.name = "NotFoundError";
+    }
+}
+
+/**
+ * Bank sync (plan 43): the engine REFUSED, and said why in a structured
+ * `WireProblem` (HTTP 422 `{problem}`), so the wizard can show the plan's
+ * wording and its one action — "This token was already used…" with Open
+ * SimpleFIN — rather than a bare status line.
+ */
+export class SyncProblemError extends Error {
+    readonly problem: WireProblem;
+    constructor(problem: WireProblem, options?: ErrorOptions) {
+        super(problem.message, options);
+        this.name = "SyncProblemError";
+        this.problem = problem;
+    }
+}
+
+/** A 422 body as a `SyncProblemError`; a body that is not `{problem}` still says something. */
+function syncProblemFrom(message: string, raw: string): Error {
+    try {
+        const body = JSON.parse(raw) as {problem?: unknown};
+        return new SyncProblemError(decodeProblem(body.problem, "sync 422 problem"));
+    } catch (cause) {
+        return new ValidationError(message || "Bank sync refused the request.", {cause});
     }
 }
 
@@ -2144,6 +2171,102 @@ export class LedgelineApi {
         return this.mutate<unknown>("POST", "/api/ui-prefs/pin", 200, {key, pinned});
     }
 
+    // -----------------------------------------------------------------------
+    // Bank sync (plan 43, contract "Routes"). Decode with `#lib/sync/decode`.
+    // Every write may answer 422 `{problem}` → `SyncProblemError`.
+    // -----------------------------------------------------------------------
+
+    /** `GET /api/sync/status` → `WireSyncStatus`. A 404 (an engine without sync) is `NativeApiUnavailableError`. */
+    syncStatus(): Promise<unknown> {
+        return this.getJson("/api/sync/status");
+    }
+
+    /** Claim a setup token: → `{connectionId, accounts}`. */
+    syncConnect(setupToken: string, name?: string): Promise<unknown> {
+        return this.syncWrite("POST", "/api/sync/connect", name === undefined ? {setupToken} : {setupToken, name});
+    }
+
+    /** Replace a connection's token, keeping its id and links: → `{connectionId, accounts}`. */
+    syncReplaceToken(connectionId: string, setupToken: string): Promise<unknown> {
+        return this.syncWrite("POST", `/api/sync/connections/${encodeURIComponent(connectionId)}/token`, {setupToken});
+    }
+
+    /** A balances-only fetch of the connection's accounts (counts against the quota): → `{accounts}`. */
+    syncConnectionAccounts(connectionId: string): Promise<unknown> {
+        return this.getJson(`/api/sync/connections/${encodeURIComponent(connectionId)}/accounts`);
+    }
+
+    /** Remove the keychain item and the `[[sync.connection]]` entry (links stay): → `WireSyncStatus`. */
+    syncDisconnect(connectionId: string): Promise<unknown> {
+        return this.syncWrite("DELETE", `/api/sync/connections/${encodeURIComponent(connectionId)}`);
+    }
+
+    /** The redacted diagnostic report, as plain text. */
+    async syncDiagnostics(connectionId: string): Promise<string> {
+        const url = `${this.baseUrl}/api/sync/connections/${encodeURIComponent(connectionId)}/diagnostics`;
+        return withDeadline(`GET ${url}`, this.timeoutMs, this.signal, async (signal) => {
+            let response: Response;
+            try {
+                response = await fetch(url, {headers: authHeaders({Accept: "text/plain"}), cache: "no-store", signal});
+            } catch (cause) {
+                throw new ApiUnreachableError(`Cannot reach the Ledgeline engine at ${this.baseUrl} (network or CORS failure)`, {cause});
+            }
+            if (response.status === 404) throw new NativeApiUnavailableError(NATIVE_UNAVAILABLE_MESSAGE);
+            const text = await response.text();
+            if (!response.ok) throw new ApiUnreachableError(usableErrorBody(text) || `GET ${url} responded ${response.status}`);
+            return text;
+        });
+    }
+
+    /** What sharing a manual rules file's categories would move: → `WireSharePreview`. Writes nothing. */
+    syncSharePreview(manualRulesId: string, journalAccount: string): Promise<unknown> {
+        return this.syncWrite("POST", "/api/sync/share/preview", {manualRulesId, journalAccount});
+    }
+
+    /** Dry-run the wizard's links: → `{accounts: WireLinkPreview[]}`. Writes nothing. */
+    syncLinkPreview(links: readonly WireLinkRequest[]): Promise<unknown> {
+        return this.syncWrite("POST", "/api/sync/link/preview", {links});
+    }
+
+    /** Write the links (rules, shares, `[sync]`, declarations, opening balances) and run the first sync: → `WireSyncRun`. */
+    syncLink(links: readonly WireLinkRequest[]): Promise<unknown> {
+        return this.syncWrite("POST", "/api/sync/link", {links});
+    }
+
+    /** Sync now — everything, one connection, or one account: → `WireSyncRun`. */
+    syncNow(target: {connectionId?: string; accountKey?: string} = {}): Promise<unknown> {
+        return this.syncWrite("POST", "/api/sync/now", target);
+    }
+
+    /** Change a linked account's mapping: → `WireSyncStatus`. */
+    syncPatchAccount(key: string, patch: WireAccountPatch): Promise<unknown> {
+        return this.syncWrite("PATCH", `/api/sync/accounts/${encodeURIComponent(key)}`, patch);
+    }
+
+    /** Stop syncing an account (its history stays): → `WireSyncStatus`. */
+    syncStopAccount(key: string): Promise<unknown> {
+        return this.syncWrite("DELETE", `/api/sync/accounts/${encodeURIComponent(key)}`);
+    }
+
+    /** Resolve a held row: import it anyway, or mark it a duplicate of the existing transaction: → `WireSyncStatus`. */
+    syncResolveHeld(key: string, heldId: string, action: "import" | "duplicate"): Promise<unknown> {
+        return this.syncWrite("POST", `/api/sync/held/${encodeURIComponent(key)}/${encodeURIComponent(heldId)}`, {action});
+    }
+
+    /** The journal's manually imported accounts: → `{accounts: WireManualAccount[]}`. */
+    syncManual(): Promise<unknown> {
+        return this.getJson("/api/sync/manual");
+    }
+
+    /** Save one manual account's download link and nudge: → `{accounts: WireManualAccount[]}`. */
+    syncPutManual(body: WireManualUpdate): Promise<unknown> {
+        return this.syncWrite("PUT", "/api/sync/manual", body);
+    }
+
+    private syncWrite(method: string, route: string, body?: unknown): Promise<unknown> {
+        return this.mutate<unknown>(method, route, 200, body, {422: syncProblemFrom});
+    }
+
     /**
      * Issue a write request and map the response: JSON-decode the body on
      * `okStatus`, else translate the HTTP status into the edit error taxonomy
@@ -2158,7 +2281,7 @@ export class LedgelineApi {
         route: string,
         okStatus: number,
         body?: unknown,
-        extraStatuses: Record<number, (message: string) => Error> = {}
+        extraStatuses: Record<number, (message: string, raw: string) => Error> = {}
     ): Promise<T> {
         const headers = authHeaders(body === undefined ? {Accept: "application/json"} : {Accept: "application/json", "Content-Type": "application/json"});
         return this.send<T>(method, route, okStatus, headers, body === undefined ? undefined : JSON.stringify(body), extraStatuses);
@@ -2211,7 +2334,7 @@ export class LedgelineApi {
         okStatus: number,
         headers: Record<string, string>,
         body: BodyInit | undefined,
-        extraStatuses: Record<number, (message: string) => Error> = {}
+        extraStatuses: Record<number, (message: string, raw: string) => Error> = {}
     ): Promise<T> {
         const url = `${this.baseUrl}${route}`;
         return withDeadline(`${method} ${url}`, this.timeoutMs, this.signal, async (signal) => {
@@ -2238,7 +2361,7 @@ export class LedgelineApi {
             // unmapped default.
             const message = usableErrorBody(text);
             const extra = extraStatuses[response.status];
-            if (extra !== undefined) throw extra(message);
+            if (extra !== undefined) throw extra(message, text);
             switch (response.status) {
                 case 400:
                     throw new ValidationError(message || "The transaction is invalid.");
