@@ -41,6 +41,8 @@ describe("UNIT sync problemAction", () => {
             expect(problemButtons(problem, scope).primary?.effect.type).toBe(type);
         }
         expect(problemButtons({...conAuthProblem(), action: null, secondary: null}, scope)).toEqual({primary: null, secondary: null});
+        const notConnected: WireProblem = {...conAuthProblem(), action: {kind: "connect", label: "Connect…", ref: CONNECTION_ID}};
+        expect(problemButtons(notConnected, scope).primary?.effect).toEqual({type: "reconnect", connectionId: CONNECTION_ID});
     });
 
     it("labels who has to act and links the docs", () => {

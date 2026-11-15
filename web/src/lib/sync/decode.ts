@@ -205,6 +205,10 @@ function decodeLinked(raw: unknown, ctx: string): WireLinkedAccount {
             };
         }),
         problems: problems(a.problems, `${ctx} problems`),
+        rulesChoices: arr(a.rulesChoices, `${ctx} rulesChoices`).map((raw, i) => {
+            const c = obj(raw, `${ctx} rulesChoices[${i}]`);
+            return {id: str(c.id, `${ctx} rulesChoices[${i}] id`), fits: bool(c.fits, `${ctx} rulesChoices[${i}] fits`)};
+        }),
     };
 }
 

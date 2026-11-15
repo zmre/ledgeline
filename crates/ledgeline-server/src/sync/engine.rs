@@ -74,6 +74,10 @@ pub(crate) struct Request {
     pub(crate) connection: Option<String>,
     /// These account keys only; empty = every linked account.
     pub(crate) accounts: Vec<String>,
+    /// Use the link preview's batch when it's fresh and covers the run
+    /// (`link` only: the first sync right after the preview). A user's
+    /// **Sync now** always asks the bank again.
+    pub(crate) reuse_preview: bool,
 }
 
 /// Clears the session's `running` flag however a run ends.
@@ -101,6 +105,7 @@ pub(crate) async fn run_auto(state: &AppState, now: i64) {
             mode: Mode::Auto,
             connection: None,
             accounts: Vec::new(),
+            reuse_preview: false,
         },
     )
     .await;
@@ -175,17 +180,7 @@ pub(crate) async fn run(state: &AppState, now: i64, request: &Request) -> WireSy
         if links.is_empty() && !request.accounts.is_empty() {
             continue;
         }
-        let targeted = !request.accounts.is_empty();
-        let ran = run_connection(
-            state,
-            now,
-            request.mode,
-            connection,
-            links,
-            targeted,
-            &settings,
-        )
-        .await;
+        let ran = run_connection(state, now, request, connection, links, &settings).await;
         answer.requests_today += ran.requests_today;
         answer.quota_warning |= ran.quota_warning;
         answer.accounts.extend(ran.accounts);
@@ -409,12 +404,13 @@ struct AccountRun {
 async fn run_connection(
     state: &AppState,
     now: i64,
-    mode: Mode,
+    request: &Request,
     connection: &ConnectionLink,
     links: Vec<AccountLink>,
-    targeted: bool,
     settings: &SyncSettings,
 ) -> ConnRun {
+    let mode = request.mode;
+    let targeted = !request.accounts.is_empty();
     let offset = super::local_offset(now);
     let mut out = ConnRun {
         accounts: Vec::new(),
@@ -525,6 +521,7 @@ async fn run_connection(
         &access,
         &windows,
         if targeted { accounts } else { Vec::new() },
+        request.reuse_preview,
     )
     .await;
     out.requests_today = fetched.requests_today;
@@ -780,9 +777,22 @@ async fn fetch_windows(
     access: &AccessUrl,
     windows: &[auto::Window],
     accounts: Vec<String>,
+    reuse_preview: bool,
 ) -> Fetched {
     let mut merged: Option<FeedBatch> = None;
     let mut requests_today = 0;
+    if reuse_preview
+        && let Some(start) = windows.iter().map(|w| w.start).min()
+        && let Some(cached) = state.sync().fresh_batch(connection, now, start, &accounts)
+    {
+        return Fetched {
+            result: Ok(cached),
+            requests_today: super::read_state(state)
+                .connections
+                .get(connection)
+                .map_or(0, |c| c.requests_on(&auto::utc_day(now))),
+        };
+    }
     for window in windows {
         let query = AccountsQuery {
             start_date: Some(window.start),

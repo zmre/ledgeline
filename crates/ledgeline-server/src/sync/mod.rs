@@ -363,12 +363,7 @@ pub(crate) fn access_for(
         Ok(None) => Ok(None),
         Ok(Some(secret)) => AccessUrl::parse(&secret, session.loopback_http())
             .map(Some)
-            .map_err(|_| {
-                WireProblem::setup(
-                    "The saved SimpleFIN access key on this computer is damaged. Reconnect with a \
-                     new setup token.",
-                )
-            }),
+            .map_err(|_| WireProblem::damaged_key(connection)),
         Err(error) => Err(WireProblem::setup(error.to_string())),
     }
 }
@@ -605,8 +600,13 @@ pub(crate) async fn accounts_route(
     Ok(Json(serde_json::json!({ "accounts": accounts })).into_response())
 }
 
-/// `DELETE /api/sync/connections/{id}`: remove the keychain item and the
-/// `[[sync.connection]]` entry. Its accounts stay, reading as not connected.
+/// `DELETE /api/sync/connections/{id}`: remove this computer's keychain item
+/// (plan §4.4: "Removes the access key from this Mac"). `ledgeline.toml` is
+/// shared by every computer that opens the ledger, so the
+/// `[[sync.connection]]` entry stays while any account still links to it;
+/// those accounts read as not connected until **Connect on this computer…**
+/// stores a token again under the same id, which keeps their `id:` prefixes.
+/// An entry with no linked accounts left is removed.
 pub(crate) async fn disconnect_route(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -623,7 +623,13 @@ pub(crate) async fn disconnect_route(
             .secrets()
             .delete(&id)
             .map_err(|error| AppError::Conflict(error.to_string()))?;
-        write_config(&worker, |text| feed_config::remove_connection(text, &id))?;
+        if !config
+            .accounts
+            .iter()
+            .any(|account| account.connection == id)
+        {
+            write_config(&worker, |text| feed_config::remove_connection(text, &id))?;
+        }
         worker.sync().forget_batch(&id);
         update_state(&worker, |memory| {
             memory.connections.remove(&id);
@@ -758,6 +764,7 @@ pub(crate) async fn now_route(
             mode: auto::Mode::Manual,
             connection: body.connection_id,
             accounts: body.account_key.into_iter().collect(),
+            reuse_preview: false,
         },
     )
     .await;

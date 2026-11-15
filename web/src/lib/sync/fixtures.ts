@@ -151,6 +151,10 @@ export function firstTechLinked(): WireLinkedAccount {
             {at: FIXTURE_LAST_SYNC - 86_400, outcome: "added", added: 7, held: 0},
         ],
         problems: [heldProblem()],
+        rulesChoices: [
+            {id: "imports/rules/firsttech-checking.sync.csv.rules", fits: true},
+            {id: "imports/rules/chase.sync.csv.rules", fits: true},
+        ],
     };
 }
 
@@ -177,6 +181,10 @@ export function chaseLinked(): WireLinkedAccount {
         held: [],
         history: [{at: FIXTURE_LAST_SYNC - 3 * 86_400, outcome: "added", added: 2, held: 0}],
         problems: [conAuthProblem()],
+        rulesChoices: [
+            {id: "imports/rules/firsttech-checking.sync.csv.rules", fits: true},
+            {id: "imports/rules/chase.sync.csv.rules", fits: true},
+        ],
     };
 }
 

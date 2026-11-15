@@ -508,6 +508,18 @@ impl WireProblem {
         .reference(connection)
     }
 
+    /// The keychain holds something for `connection` that isn't an access
+    /// URL: store a fresh token under the same id.
+    #[must_use]
+    pub fn damaged_key(connection: &str) -> Self {
+        Self::setup(
+            "The saved SimpleFIN access key on this computer is damaged. Reconnect with a new \
+             setup token.",
+        )
+        .action(ActionKind::Reconnect, "Reconnect…")
+        .reference(connection)
+    }
+
     /// Something in the user's setup stops this: a path outside the journal
     /// folder, no keychain, an unreadable `ledgeline.toml`.
     #[must_use]

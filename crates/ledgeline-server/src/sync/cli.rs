@@ -192,6 +192,7 @@ pub fn run_cli_sync(state: &AppState, args: &CliSync) -> Result<String, String> 
                         mode: Mode::Manual,
                         connection: connection.clone(),
                         accounts: Vec::new(),
+                        reuse_preview: false,
                     },
                 )
                 .await;

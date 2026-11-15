@@ -570,17 +570,52 @@ async fn disconnecting_removes_the_keychain_item_and_keeps_the_links() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(!tree.secrets.contains(&id));
     let config = sync_config(&tree.read("ledgeline.toml"));
-    assert!(config.connections.is_empty());
+    // ledgeline.toml is shared between computers: a connection that still
+    // has links stays, so another Mac keeps syncing and this one can
+    // reconnect under the same id (which keeps every `id:` prefix).
+    assert_eq!(config.connections.len(), 1, "the connection stays");
     assert_eq!(config.accounts.len(), 1, "the link stays");
-    let account = account_in(&body, "ACT-lakeside-checking");
-    let codes: Vec<&str> = account["problems"]
+    // The connection card says so, and its Connect… names the connection.
+    let connection = &body["connections"][0];
+    assert_eq!(connection["state"], "not-connected", "{body}");
+    let problem = connection["problems"]
         .as_array()
         .expect("problems")
         .iter()
-        .filter_map(|p| p["code"].as_str())
-        .collect();
-    assert!(codes.contains(&"not-connected"), "{codes:?}");
+        .find(|p| p["code"] == "not-connected")
+        .expect("a not-connected problem");
+    assert_eq!(problem["action"]["ref"], id.as_str());
     assert!(tree.read("ledgeline.toml").starts_with(LEDGER_TOML));
+
+    // Connect on this computer again: same connection id, links reattached.
+    let (status, body) = tree
+        .call(
+            "POST",
+            &format!("/api/sync/connections/{id}/token"),
+            Some(json!({"setupToken": TOKEN})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(tree.secrets.contains(&id));
+    let config = sync_config(&tree.read("ledgeline.toml"));
+    assert_eq!(config.connections.len(), 1);
+    assert_eq!(config.accounts[0].connection, id);
+}
+
+#[tokio::test]
+async fn disconnecting_an_unlinked_connection_removes_its_entry() {
+    let tree = Tree::new();
+    let id = tree.connect().await;
+    let (status, body) = tree
+        .call("DELETE", &format!("/api/sync/connections/{id}"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!tree.secrets.contains(&id));
+    assert!(
+        sync_config(&tree.read("ledgeline.toml"))
+            .connections
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -1108,6 +1143,30 @@ async fn a_link_preview_counts_and_shows_entries_but_writes_nothing() {
         )
         .await;
     assert_eq!(tree.feed.requests(), requests, "no new request");
+
+    // Linking straight after the preview imports from the same fetch: the
+    // wizard shouldn't spend two of the Bridge's ~24 daily requests.
+    let (status, run) = tree
+        .call(
+            "POST",
+            "/api/sync/link",
+            Some(json!({"links": [
+                link_request(&id, "ACT-lakeside-checking", "assets:bank:checking", "checking.sync.csv.rules"),
+                link_request(&id, "ACT-harbor-visa", "liabilities:cc:visa", "visa.sync.csv.rules"),
+            ]})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    assert_eq!(run["accounts"][0]["added"], 4, "{run}");
+    assert_eq!(
+        tree.feed.requests(),
+        requests,
+        "link reuses the preview's fetch"
+    );
+
+    // Sync now always asks the bank again.
+    let _ = tree.state.run_sync_now(NOW).await;
+    assert_eq!(tree.feed.requests(), requests + 1);
 }
 
 #[tokio::test]

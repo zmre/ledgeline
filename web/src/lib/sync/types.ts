@@ -123,6 +123,8 @@ export interface WireLinkedAccount {
     held: WireHeld[];
     history: WireHistoryEntry[];
     problems: WireProblem[];
+    /** Rules files that read the sync CSV (`fits`), plus other `*.sync.*` files, for the drawer's Change… picker. */
+    rulesChoices: {id: string; fits: boolean}[];
 }
 
 export type NewAccountType = "A" | "L" | "C";

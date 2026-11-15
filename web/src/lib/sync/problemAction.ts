@@ -95,7 +95,10 @@ export function problemButtons(problem: WireProblem, scope: ProblemScope): {prim
             primary = {label: action.label, effect: {type: "choose-file", accountKey: ref ?? scope.accountKey}};
             break;
         case "connect":
-            primary = {label: action.label, effect: {type: "connect"}};
+            // A not-connected problem names its connection: store a token for
+            // it again (same id, so the links and their `id:` tags carry on).
+            // Without a ref it's a brand-new connection.
+            primary = {label: action.label, effect: ref ? {type: "reconnect", connectionId: ref} : {type: "connect"}};
             break;
         case "set-hledger":
             primary = {label: action.label, effect: {type: "set-hledger"}};

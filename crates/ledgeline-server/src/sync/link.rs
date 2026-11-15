@@ -61,6 +61,8 @@ pub(crate) struct Context {
     pub(crate) location: Option<Arc<JournalLocation>>,
     pub(crate) discovery: Option<Discovery>,
     pub(crate) targets: Vec<JournalTarget>,
+    /// [`Context::sync_rules`], read once: every linked account lists it.
+    sync_rules: std::sync::OnceLock<Vec<WireRulesChoice>>,
 }
 
 impl Context {
@@ -79,11 +81,18 @@ impl Context {
             location,
             discovery,
             targets,
+            sync_rules: std::sync::OnceLock::new(),
         }
     }
 
     /// Rules files that read the sync CSV.
     fn sync_rules(&self) -> Vec<WireRulesChoice> {
+        self.sync_rules
+            .get_or_init(|| self.read_sync_rules())
+            .clone()
+    }
+
+    fn read_sync_rules(&self) -> Vec<WireRulesChoice> {
         self.discovery
             .iter()
             .flat_map(|discovery| discovery.files.iter())
@@ -300,13 +309,23 @@ fn balance_sheet_accounts(journal: &Journal) -> Vec<String> {
     names
 }
 
-/// A liability by its name or balance.
+/// A deposit account by its name: these are assets whatever else the name or
+/// the institution says ("Lakeside Credit Union · Checking").
+fn looks_like_deposit(remote: &RemoteSummary) -> bool {
+    let name = remote.name.to_lowercase();
+    ["checking", "chequing", "savings", "money market", "share"]
+        .iter()
+        .any(|word| name.contains(word))
+}
+
+/// A liability by its name or balance. Only the account's own name counts:
+/// the institution's ("… Credit Union", "Harbor Card Services") says nothing
+/// about which of its accounts this is.
 fn looks_like_liability(remote: &RemoteSummary) -> bool {
-    let name = format!(
-        "{} {}",
-        remote.name.to_lowercase(),
-        remote.org.as_deref().unwrap_or_default().to_lowercase()
-    );
+    if looks_like_deposit(remote) {
+        return false;
+    }
+    let name = remote.name.to_lowercase();
     [
         "card",
         "credit",
@@ -344,15 +363,7 @@ fn new_account_name(remote: &RemoteSummary) -> (String, &'static str) {
     if looks_like_liability(remote) {
         (format!("liabilities:{tail}"), "L")
     } else {
-        let lower = remote.name.to_lowercase();
-        let kind = if ["checking", "savings", "cash"]
-            .iter()
-            .any(|w| lower.contains(w))
-        {
-            "C"
-        } else {
-            "A"
-        };
+        let kind = if looks_like_deposit(remote) { "C" } else { "A" };
         (format!("assets:bank:{tail}"), kind)
     }
 }
@@ -1437,6 +1448,7 @@ pub(crate) async fn link(
                 mode: Mode::Manual,
                 connection: Some(connection),
                 accounts: keys.clone(),
+                reuse_preview: true,
             },
         )
         .await;
@@ -2068,6 +2080,34 @@ mod tests {
         assert_eq!(
             new_account_name(&remote("Brokerage", None, "5.00")),
             ("assets:bank:brokerage".to_string(), "A")
+        );
+        // The institution's name doesn't make a checking account a liability.
+        assert_eq!(
+            new_account_name(&remote(
+                "Checking ••4821",
+                Some("Lakeside Credit Union"),
+                "32292.23"
+            )),
+            (
+                "assets:bank:lakeside-credit-union:checking".to_string(),
+                "C"
+            )
+        );
+        // …nor a card an asset.
+        assert_eq!(
+            new_account_name(&remote("Cash Rewards ••3310", Some("Harbor"), "0.00")),
+            ("assets:bank:harbor:cash-rewards".to_string(), "A")
+        );
+        assert_eq!(
+            new_account_name(&remote(
+                "Cash Rewards Visa ••3310",
+                Some("Harbor Credit Union"),
+                "0.00"
+            )),
+            (
+                "liabilities:harbor-credit-union:cash-rewards-visa".to_string(),
+                "L"
+            )
         );
     }
 

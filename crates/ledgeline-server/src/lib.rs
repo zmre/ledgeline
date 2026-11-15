@@ -1129,6 +1129,7 @@ impl AppState {
                 mode: sync::auto::Mode::Manual,
                 connection: None,
                 accounts: Vec::new(),
+                reuse_preview: false,
             },
         )
         .await;

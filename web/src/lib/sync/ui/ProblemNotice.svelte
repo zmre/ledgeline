@@ -50,7 +50,7 @@
 >
     <span class="text-xs font-medium opacity-70">{whoLabel(problem.who)}</span>
     <span>
-        {problem.severity === "error" ? "" : "⚠ "}{problem.message}
+        {problem.severity === "warning" ? "⚠ " : ""}{problem.message}
         {#if problem.dataThrough !== null}
             <span class="whitespace-nowrap opacity-80">{dataThroughLine(problem.dataThrough, localToday())}.</span>
         {/if}

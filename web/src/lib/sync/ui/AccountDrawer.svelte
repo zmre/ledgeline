@@ -149,8 +149,18 @@
                     </label>
                     <label class="flex flex-col gap-1 text-xs">
                         <span>Rules file</span>
-                        <input type="text" class="input w-full font-mono input-sm" bind:value={draftRules} disabled={busy} spellcheck="false" />
-                        <span class="text-base-content/60">A sync rules file, relative to your journal's folder.</span>
+                        {#if account.rulesChoices.length > 0}
+                            <select class="select w-full font-mono select-sm" bind:value={draftRules} disabled={busy} data-testid="sync-rules-choice">
+                                {#if !account.rulesChoices.some((c) => c.id === draftRules)}<option value={draftRules}>{draftRules}</option>{/if}
+                                {#each account.rulesChoices as choice (choice.id)}
+                                    <option value={choice.id}>{choice.id}{choice.fits ? "" : " (doesn't read the sync CSV)"}</option>
+                                {/each}
+                            </select>
+                            <span class="text-base-content/60">Rules files beside your journal that read a sync CSV.</span>
+                        {:else}
+                            <input type="text" class="input w-full font-mono input-sm" bind:value={draftRules} disabled={busy} spellcheck="false" />
+                            <span class="text-base-content/60">A sync rules file, relative to your journal's folder.</span>
+                        {/if}
                     </label>
                     <div class="flex gap-2">
                         <button type="submit" class="btn btn-primary btn-sm" disabled={busy}>Save</button>

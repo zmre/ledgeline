@@ -55,8 +55,8 @@ describe("COMPONENT SyncSettingsPanel", () => {
         const row = screen.getByTestId("sync-settings-connection");
         await fireEvent.click(within(row).getByRole("button", {name: "Disconnect…"}));
         const confirm = within(row).getByTestId("sync-disconnect");
-        expect(confirm.textContent).toContain(
-            "Removes the access key from this Mac. Your transactions stay. To stop SimpleFIN itself sharing data, also disable the 'Ledgeline' app on SimpleFIN."
+        expect(confirm.textContent?.replace(/\s+/g, " ")).toContain(
+            "Removes the access key from this Mac. Your transactions and linked accounts stay, and other computers that open this ledger keep syncing. To stop SimpleFIN itself sharing data, also disable the 'Ledgeline' app on SimpleFIN."
         );
         expect(within(confirm).getByRole("link", {name: "Open SimpleFIN ↗"}).getAttribute("href")).toBe("https://beta-bridge.simplefin.org/");
         await fireEvent.click(within(confirm).getByRole("button", {name: "Disconnect"}));

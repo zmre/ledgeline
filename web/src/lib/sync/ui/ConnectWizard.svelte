@@ -226,7 +226,7 @@
                     <input type="radio" class="radio mt-1 radio-sm" name="{headingId}-method" value="simplefin" bind:group={method} />
                     <span class="flex flex-col gap-1">
                         <span class="flex flex-wrap justify-between gap-2 font-medium">
-                            Through SimpleFIN Bridge <span class="text-xs font-normal text-base-content/60">Third party · $15/year</span>
+                            Through SimpleFIN Bridge <span class="text-xs font-normal text-base-content/60">Third party · paid subscription</span>
                         </span>
                         <span class="text-sm text-base-content/80">
                             Works with most US banks. SimpleFIN and its data provider MX can see your transactions; Ledgeline never sees your bank password.

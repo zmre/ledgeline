@@ -27,7 +27,10 @@
     aria-label="Disconnect {connection.name}"
     data-testid="sync-disconnect"
 >
-    <p>Removes the access key from this Mac. Your transactions stay. To stop SimpleFIN itself sharing data, also disable the 'Ledgeline' app on SimpleFIN.</p>
+    <p>
+        Removes the access key from this Mac. Your transactions and linked accounts stay, and other computers that open this ledger keep syncing. To stop
+        SimpleFIN itself sharing data, also disable the 'Ledgeline' app on SimpleFIN.
+    </p>
     <div class="flex flex-wrap gap-2">
         <button type="button" class="btn btn-error btn-xs" disabled={busy} onclick={() => void disconnect()}>Disconnect</button>
         <a class="btn btn-xs" href={safeUrl(connection.manageUrl) ?? SIMPLEFIN_URL} target="_blank" rel="noopener noreferrer external">Open SimpleFIN ↗</a>

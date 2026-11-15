@@ -9,7 +9,7 @@ tags: [account-tags]
 
 Open Settings with the gear button at the right end of the top bar. It has no `g` shortcut of its own.
 
-Settings has five tabs. Press <kbd>1</kbd>–<kbd>5</kbd> to switch between them, or click the tab. The open tab is kept in the address as `?tab=accounts`, `?tab=aliases`, `?tab=hledgerConf`, `?tab=auto` or `?tab=projections`, so a reload brings you back to the same one.
+Settings has eight tabs. Press <kbd>1</kbd>–<kbd>8</kbd> to switch between them, or click the tab. The open tab is kept in the address as `?tab=accounts`, `?tab=aliases`, `?tab=hledgerConf`, `?tab=auto`, `?tab=projections`, `?tab=appearance`, `?tab=prices` or `?tab=sync`, so a reload brings you back to the same one. The iOS app has no Prices or Sync tab.
 
 | Tab | What it edits | Page |
 | --- | --- | --- |
@@ -18,6 +18,9 @@ Settings has five tabs. Press <kbd>1</kbd>–<kbd>5</kbd> to switch between them
 | hledger config | The `hledger.conf` file hledger reads for every command: whether automatic postings apply (`--auto`), and each report's starting depth (`--depth`) | [hledger config](hledger-config.md) |
 | Automatic postings | The `=` auto-posting rules in your journal: add, edit and delete them, see what each one added, and whether `--auto` is on | [Automatic postings](../journal/automatic-postings.md) |
 | Projections | Which scenario file the Projections tab opens when Ledgeline starts. A change applies at once. None means the tab reopens the last scenario, or starts from your journal | [Your default scenario](../projections/index.md#your-default-scenario) |
+| Appearance | The colour theme and the interface scale | [Themes](themes.md) |
+| Prices | Whether stock prices are kept up to date in the background, and how many past weeks get a weekly price | [Automatic price updates](../holdings/prices.md#automatic-price-updates) |
+| Sync | Whether linked bank accounts sync in the background and how often, where downloaded statements are saved and for how long, and your SimpleFIN connections, with **Disconnect…** | [Bank sync](../imports/bank-sync.md#sync-now-and-automatic-sync) |
 
 Accounts, Account Aliases and Automatic postings write to your journal files directly; hledger config writes to your `hledger.conf`; Projections writes one header line in your scenario files. Each save checks that the file has not changed on disk since Ledgeline read it. If it has, nothing is written, and the screen offers a button to reload and discard your edit. No tab can be changed when Ledgeline was started without a journal open for editing. In that case the tab shows what the journal declares and says it is read-only.
 

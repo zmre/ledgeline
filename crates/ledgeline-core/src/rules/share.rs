@@ -110,7 +110,7 @@ impl std::fmt::Display for KeepReason {
                 write!(f, "Uses the {name} column, which bank sync doesn't have.")
             }
             Self::LayoutDependentPattern => f.write_str(
-                "Matches the whole row with ^, $, a comma or a quote, which depends on the file's layout.",
+                "Its pattern depends on how this bank's file writes a row or a date, and sync's CSV writes them differently.",
             ),
             Self::Opaque => f.write_str("A table or an advanced rule Ledgeline can't move safely."),
             Self::OrderDependent(field) => write!(
