@@ -755,3 +755,52 @@ fn batched_fingerprints_match_the_single_ones_across_files() {
     // Distinct text, distinct fingerprint.
     assert_ne!(batched[0], batched[1]);
 }
+
+// ---------------------------------------------------------------------------
+// add_txn_tag_value (plan 43: "It's a duplicate")
+// ---------------------------------------------------------------------------
+
+/// `text` after `add_txn_tag_value(1, "id", value)`.
+fn id_added(text: &str, value: &str) -> String {
+    let mut editor = editor(text);
+    editor
+        .add_txn_tag_value(Tindex(1), "id", value)
+        .unwrap_or_else(|error| panic!("add id:{value} to {text:?}: {error}"));
+    editor.text()
+}
+
+#[test]
+fn a_second_value_joins_the_header_and_keeps_the_first() {
+    for (before, after) in [
+        ("2026-10-12 Safeway", "2026-10-12 Safeway  ; id:b"),
+        (
+            "2026-10-12 Safeway  ; id:a",
+            "2026-10-12 Safeway  ; id:a, id:b",
+        ),
+        (
+            "2026-10-12 Safeway  ; groceries",
+            "2026-10-12 Safeway  ; groceries, id:b",
+        ),
+    ] {
+        assert_eq!(id_added(&txn(before), "b"), txn(after), "{before}");
+    }
+    // An id on a `;` line below the header stays there.
+    let below = "2026-10-12 Safeway\n    ; id:a\n    expenses:food  $82.10\n    assets:checking\n";
+    assert_eq!(
+        id_added(below, "b"),
+        "2026-10-12 Safeway  ; id:b\n    ; id:a\n    expenses:food  $82.10\n    assets:checking\n"
+    );
+    let mut editor = editor(&id_added(below, "b"));
+    let ids: Vec<&str> = editor.journal().transactions[0]
+        .tags
+        .iter()
+        .filter(|(name, _)| name == "id")
+        .map(|(_, value)| value.as_str())
+        .collect();
+    assert_eq!(ids.len(), 2, "{ids:?}");
+    assert!(ids.contains(&"a") && ids.contains(&"b"));
+    // Already there: nothing changes.
+    let text = txn("2026-10-12 Safeway  ; id:a");
+    assert_eq!(id_added(&text, "a"), text);
+    assert!(editor.add_txn_tag_value(Tindex(1), "id", "x,y").is_err());
+}

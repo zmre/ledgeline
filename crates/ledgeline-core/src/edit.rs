@@ -212,6 +212,17 @@ pub enum EditOp {
     /// One line of text per line of free text; see that method for exactly
     /// which lines are rewritten, added and removed.
     SetTxnComment(String),
+    /// Add `name:value` as one more transaction tag, beside any values the
+    /// tag already has (plan 43: "It's a duplicate" records a bank's second
+    /// `id:` on the transaction it duplicates). Appended to the header's
+    /// same-line comment, or starting one written `"  ; "`. A no-op when that
+    /// exact value is already there.
+    AddTxnTagValue {
+        /// The tag name (`id`).
+        name: String,
+        /// The value to add.
+        value: String,
+    },
     /// The primary date, ISO `YYYY-MM-DD` (plan 32 D34). Only the date token
     /// changes, written in the separator the header already uses (`/`, `.`
     /// or `-`); the secondary date, the rest of the header and every posting
@@ -1822,6 +1833,27 @@ impl JournalEditor {
         )
     }
 
+    /// Add `name:value` to the transaction with `index` as one more tag,
+    /// keeping every value the tag already has
+    /// ([`EditOp::AddTxnTagValue`]); a no-op when that value is present.
+    ///
+    /// # Errors
+    /// As [`set_txn_tag`](Self::set_txn_tag).
+    pub fn add_txn_tag_value(
+        &mut self,
+        index: Tindex,
+        name: &str,
+        value: &str,
+    ) -> Result<(), EditError> {
+        self.apply_one(
+            index,
+            EditOp::AddTxnTagValue {
+                name: name.to_string(),
+                value: value.to_string(),
+            },
+        )
+    }
+
     /// Replace the FREE TEXT of the whole transaction comment with `text`,
     /// keeping every tag on the line it is on (plan 32 D9, D33).
     ///
@@ -3132,6 +3164,10 @@ struct Expected {
     replaced: bool,
     /// The last value asked of each tag an op named (`None`: absent).
     tags: Vec<(String, Option<String>)>,
+    /// Tag values an [`EditOp::AddTxnTagValue`] added. The transaction's
+    /// other tags must read back as before plus exactly these, as a multiset
+    /// (an appended value may read back ahead of one on a `;` line below).
+    added_tags: Vec<(String, String)>,
     /// The free-text lines asked of the transaction comment, if an op set it
     /// ([`comment_free_text`]'s form).
     comment: Option<Vec<String>>,
@@ -3193,7 +3229,14 @@ impl Expected {
                     .cloned()
                     .collect()
             };
-            if !header_kept || !postings_kept || untouched(original) != untouched(parsed) {
+            let tags_kept = if self.added_tags.is_empty() {
+                untouched(original) == untouched(parsed)
+            } else {
+                let mut want = untouched(original);
+                want.extend(self.added_tags.iter().cloned());
+                sorted_tags(&want) == sorted_tags(&untouched(parsed))
+            };
+            if !header_kept || !postings_kept || !tags_kept {
                 return Err(EditError::RoundTripMismatch);
             }
         }
@@ -3340,6 +3383,7 @@ fn rewrite_transaction(
         model: txn.clone(),
         replaced: false,
         tags: Vec::new(),
+        added_tags: Vec::new(),
         comment: None,
         tagged_postings: HashMap::new(),
     };
@@ -3458,6 +3502,18 @@ fn rewrite_transaction(
                 text = rewrite_txn_tag(&text, name, value.as_deref())?;
                 expected.tags.retain(|(asked, _)| asked != name);
                 expected.tags.push((name.clone(), value.clone()));
+            }
+            EditOp::AddTxnTagValue { name, value } => {
+                check_tag(name, Some(value))?;
+                let present = txn.tags.iter().any(|(tag, v)| tag == name && v == value)
+                    || expected
+                        .added_tags
+                        .iter()
+                        .any(|(tag, v)| tag == name && v == value);
+                if !present {
+                    text = append_txn_tag(&text, name, value)?;
+                    expected.added_tags.push((name.clone(), value.clone()));
+                }
             }
             EditOp::SetTxnComment(comment) => {
                 let lines = free_text_lines(comment)?;
@@ -3715,6 +3771,25 @@ fn rewrite_txn_tag(text: &str, name: &str, value: Option<&str>) -> Result<String
     Err(EditError::Internal(format!(
         "removing tag `{name}` did not converge"
     )))
+}
+
+/// `text` (one transaction) with `name:value` appended to the header's
+/// same-line comment, or a new `"  ; name:value"` comment on the header. Every
+/// existing tag, including other values of `name`, stays where it is.
+fn append_txn_tag(text: &str, name: &str, value: &str) -> Result<String, EditError> {
+    let rope = Rope::from_str(text);
+    let lines = Lines::new(&rope);
+    let (start, end) = lines.content_range(0)?;
+    let content = rope.slice(start..end).to_string();
+    let header = match content.find(';') {
+        Some(semi) => format!(
+            "{}{}",
+            &content[..=semi],
+            appended_tag(&content[semi + 1..], name, value)
+        ),
+        None => format!("{}  ; {name}:{value}", content.trim_end()),
+    };
+    Ok(spliced(&rope, start, end, &header))
 }
 
 /// One line of a transaction's span: its content and its own terminator
