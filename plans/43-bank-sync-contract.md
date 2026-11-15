@@ -608,3 +608,54 @@ Error mapping: the plan's §6 table, one `ProblemCode` per row.
 - **Sync never reports `conflicting` rows.** A known id is always
   `already`, because a hand edit wins. Only `held` (a possible duplicate)
   asks the user.
+
+### From WP-W (web)
+
+Requests for WP-S:
+
+- **`WireSyncRun.accounts[].uncategorized?: number`** (added, optional): new
+  rows that landed on the fallback account. The Sync now toast's
+  "Review 4" uses it; without it the toast falls back to `added`. The
+  decoder accepts it when present.
+- **Sync problems are merged into the Problems badge/drawer on the client**,
+  from `/api/sync/status`. Don't also add them to `/api/diagnostics`, or
+  they count twice.
+- **ui-prefs:** the SPA decoder defaults the four sync keys when absent, so
+  it works against today's engine. When `ui_prefs.rs` gains them, add them
+  (with defaults) to the golden `fixtures/native/v1/ui-prefs.json`. The
+  SPA's `PINNABLE` order is theme, uiScale, autoPrices, autoPricesWeeks,
+  autoSync, autoSyncEveryHours, syncSourceDir, syncKeepSourceDays.
+- **422 `{problem}`** is parsed from the raw body (no length cap), on every
+  sync write route.
+- **`action.ref`:** the UI reads it as a connection id for `reconnect`, an
+  account key for `review-held` / `choose-file` / `show-balance`, and a rules
+  id for `edit-rules`. Without `ref` it uses where the problem was listed
+  (the connection's or account's `problems`).
+- **`open-url`** is rendered only for `https://` URLs without credentials;
+  anything else drops the button. `manageUrl` falls back to the Bridge.
+- **Docs anchors:** details link to
+  `https://zmre.github.io/ledgeline/imports/bank-sync/#<docAnchor>` (WP-D).
+- **e2e fake host:** the browser token check accepts any `https://…/claim/…`
+  URL; `fake.simplefin.test` shows the "Not SimpleFIN Bridge" warning but
+  can connect. Bridge hosts: `beta-bridge.simplefin.org`,
+  `bridge.simplefin.org`.
+
+UI decisions that differ from the plan:
+
+- **Imports default tab** stays New Transactions for a bare `/imports`
+  (existing links and e2e). Accounts is first in the strip, key 1.
+- **No "Rename" on a connection:** there is no route for it. If wanted:
+  `PATCH /api/sync/connections/{id}` `{name}` → `WireSyncStatus`.
+- **Share prompt** offers Share them · Keep separate. "Start the sync rules
+  empty" had no wire difference from Keep separate.
+- **Auto-sync toggle** sits on the preview step and is saved (ui-prefs) only
+  after `/api/sync/link` succeeds.
+- **Drawer → Change…** takes the rules file as journal-relative text, because
+  `WireLinkedAccount` has no list of fitting sync rules files. Optional
+  request: `rulesChoices: {id, fits}[]` on it.
+- **Not yet wired:** "Import a file…" opens New Transactions without
+  presetting the account, and the drawer's rules **Edit** opens Edit Rules
+  without selecting the file. Neither screen takes that from the URL today.
+- **Dev only:** `localStorage["ledgeline.dev.syncFixtures"] = "1"` in a dev
+  build serves `web/src/lib/sync/fixtures.ts` instead of the engine. A
+  production build drops it.
