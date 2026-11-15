@@ -53,6 +53,9 @@
 //! - `export` — QIF (one file per commodity, with a loss report) and
 //!   posting-row CSV matching hledger's `print -O csv` (see
 //!   `plans/39-onboarding-offboarding.md`)
+//! - `feeds` — bank sync's pure half: SimpleFIN tokens and responses, the CSV a
+//!   sync rules file reads, possible-duplicate holding, and the `[sync]` tables
+//!   of `ledgeline.toml` (see `plans/43-bank-sync.md`)
 
 pub mod accounts;
 pub mod aliases;
@@ -73,6 +76,7 @@ pub mod display;
 pub(crate) mod dirscan;
 pub mod edit;
 pub mod export;
+pub mod feeds;
 pub mod grouped_csv;
 pub mod hledger_conf;
 pub mod holdings;

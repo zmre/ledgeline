@@ -608,3 +608,47 @@ Error mapping: the plan's §6 table, one `ProblemCode` per row.
 - **Sync never reports `conflicting` rows.** A known id is always
   `already`, because a hand edit wins. Only `held` (a possible duplicate)
   asks the user.
+- **WP-A: `TokenError::NoCredentials`.** `AccessUrl::parse` needs a fifth
+  variant for an access URL with no username or password. None of the four
+  listed ones fit. Match it non-exhaustively.
+- **WP-A: `Normalized::dropped_invalid`.** This is an extra counter for rows
+  whose amount isn't a plain decimal or whose id is empty once made
+  tag-safe. `parse_accounts` already drops and reports those, so the counter
+  is non-zero only for a `FeedAccount` built by hand, such as a fake provider.
+- **WP-A: a bad balance is `""`.** `FeedAccount::balance` stays a `String`.
+  A missing balance, or one that isn't a plain decimal, becomes `""` plus an
+  `Other` problem, and the account is kept. WP-S treats `""` as "unknown".
+- **WP-A: how the `/accounts` reader behaves.**
+  - When `errlist` is present, `errors` is ignored, so nothing is reported
+    twice.
+  - v1 yields no `connections`. Accounts carry `org_name`/`org_url` from
+    `org`, and `org.domain` becomes `https://<domain>/`.
+  - Server URLs (`org_url`) are kept only when they're `http(s)`.
+  - The money check is stricter than `Dec::parse`: `-?digits(.digits)?`.
+- **WP-A: quota text.** A message counts as `Quota` when it mentions
+  "quota", or "limit" without "range", so `gen.api`'s 90-day *range* cap
+  isn't counted. The rule applies to v1 strings and to `gen.*` or unknown v2
+  codes, never to `con.*`/`act.*`.
+- **WP-A: transaction text is cleaned.** `normalize` collapses whitespace
+  and strips control and bidi characters from payee, description and memo.
+  A newline in a CSV field would land inside a journal description. `to_csv`
+  still quotes every field correctly (property-tested with the `csv` crate).
+- **WP-A: how dupes match.**
+  - The amount matches a posting with exactly **one** amount, in any
+    commodity, because the feed's `USD` is the journal's `$`. Auto-generated
+    postings are ignored.
+  - A row claims the nearest-dated unclaimed match; ties go to file order.
+  - `Existing::index` is the 1-based `Tindex`.
+- **WP-A: config validation.**
+  - Connection ids must be 1–64 of `[A-Za-z0-9_-]`, because they become the
+    keychain key.
+  - `kind` must be 1–32 of `[a-z0-9-]`. It defaults to `simplefin`, and
+    `ConnectionLink::kind` is a `String`.
+  - A `downloadUrl` that isn't `http(s)` is dropped with a warning; the
+    entry is kept.
+  - Writers apply the same checks and return `ConfigError::Invalid` rather
+    than write something `parse` would skip. Other errors are `InvalidToml`
+    and `Shape`.
+- **WP-A: `reimport` now has `pub fn ids_of`.** It returns every id on a
+  transaction, deduplicated. `build_index` uses it. `id_of` and `classify`
+  are unchanged.

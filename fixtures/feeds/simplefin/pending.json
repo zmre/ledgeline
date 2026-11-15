@@ -1,0 +1,21 @@
+{
+  "errlist": [],
+  "connections": [{ "conn_id": "CON-p", "name": "Pending Bank" }],
+  "accounts": [
+    {
+      "id": "ACT-p",
+      "name": "Card",
+      "conn_id": "CON-p",
+      "currency": "USD",
+      "balance": "-310.00",
+      "balance-date": 1794268800,
+      "transactions": [
+        { "id": "P-1", "posted": 0, "amount": "-50.00", "description": "HOLD GAS STATION", "pending": true },
+        { "id": "P-2", "posted": 1794182400, "amount": "-60.00", "description": "HOTEL AUTH", "pending": true },
+        { "id": "P-3", "posted": 0, "amount": "-70.00", "description": "NOT POSTED YET" },
+        { "id": "P-4", "posted": 1794182400, "amount": "-130.00", "description": "GROCER", "transacted_at": 1794182400 },
+        { "id": "P-5", "posted": 1794268800, "amount": "0.00", "description": "CARD VERIFICATION" }
+      ]
+    }
+  ]
+}
