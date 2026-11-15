@@ -37,6 +37,19 @@ pub enum CliSyncCommand {
         #[arg(long)]
         name: Option<String>,
     },
+    /// Replace a connection's access with a new setup token, keeping its id
+    /// and links (after the token was revoked or disabled).
+    Reconnect {
+        /// The connection id.
+        connection: String,
+        /// The new setup token.
+        token: String,
+    },
+    /// The connection's redacted diagnostic report, for a bug report.
+    Diagnostics {
+        /// The connection id.
+        connection: String,
+    },
     /// List a connection's accounts with suggested mappings (one request).
     Accounts {
         /// The connection id (`ledgeline sync status` lists them).
@@ -95,6 +108,19 @@ pub fn run_cli_sync(state: &AppState, args: &CliSync) -> Result<String, String> 
                 link::connect(state, token, name.as_deref(), None)
                     .await
                     .map_err(describe)
+            }
+            CliSyncCommand::Reconnect { connection, token } => {
+                link::connect(state, token, None, Some(connection))
+                    .await
+                    .map_err(describe)
+            }
+            CliSyncCommand::Diagnostics { connection } => {
+                let state = state.clone();
+                let connection = connection.clone();
+                super::blocking(move || engine::diagnostics(&state, &connection))
+                    .await
+                    .map(Value::String)
+                    .map_err(|error| error.to_string())
             }
             CliSyncCommand::Accounts { connection } => link::remote_accounts(state, connection)
                 .await
@@ -173,7 +199,10 @@ pub fn run_cli_sync(state: &AppState, args: &CliSync) -> Result<String, String> 
             }
         }
     })?;
-    serde_json::to_string_pretty(&answer).map_err(|error| error.to_string())
+    match answer {
+        Value::String(text) => Ok(text),
+        other => serde_json::to_string_pretty(&other).map_err(|error| error.to_string()),
+    }
 }
 
 /// A route failure as one sentence.

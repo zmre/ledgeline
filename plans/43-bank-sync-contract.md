@@ -817,7 +817,8 @@ Other deviations:
 - **hledger-backed engine tests** are gated by `LEDGELINE_HLEDGER_SYNC_CHECK=1`
   (added to `just hledger-checks`), like the other hledger suites.
 - **CLI:** `ledgeline sync -j <journal> connect|accounts|link|status|now`,
-  printing each route's JSON.
+  printing each route's JSON, plus `reconnect <connection> <token>` (the
+  token-replacement route) and `diagnostics <connection>` for real-bank QA.
 - **The scheduler** is spawned by the desktop app and `--server`, but not
   under `LEDGELINE_UI_PREFS_IN_BROWSER` and never by the FFI.
 
