@@ -1674,59 +1674,10 @@ fn explain(
 // The feed template (plan 43 §3.2)
 // ---------------------------------------------------------------------------
 
-/// The column names of a normalised bank-feed CSV, in column order.
-///
-/// MERGE SEAM: replace with `feeds::normalize::FeedColumns` after WP-A merges
-/// (`pub use crate::feeds::normalize::FeedColumns;`). Same fields, same order,
-/// same defaults — the contract pins all three.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FeedColumns {
-    /// The posted date. Default `date`.
-    pub date: String,
-    /// The signed amount. Default `amount`.
-    pub amount: String,
-    /// The payee, which becomes the transaction description. Default `payee`.
-    pub payee: String,
-    /// The bank's raw description. Default `description`.
-    pub description: String,
-    /// The bank's memo. Default `memo`.
-    pub memo: String,
-    /// The row id, written as the transaction's `id:` tag. Default `id`.
-    pub id: String,
-    /// The transaction date when it differs from the posted date, else empty.
-    /// Default `transacted`.
-    pub transacted: String,
-}
-
-impl Default for FeedColumns {
-    fn default() -> Self {
-        Self {
-            date: "date".to_string(),
-            amount: "amount".to_string(),
-            payee: "payee".to_string(),
-            description: "description".to_string(),
-            memo: "memo".to_string(),
-            id: "id".to_string(),
-            transacted: "transacted".to_string(),
-        }
-    }
-}
-
-impl FeedColumns {
-    /// The names in CSV column order — the order of the `fields` line.
-    #[must_use]
-    pub fn in_order(&self) -> [&str; 7] {
-        [
-            &self.date,
-            &self.amount,
-            &self.payee,
-            &self.description,
-            &self.memo,
-            &self.id,
-            &self.transacted,
-        ]
-    }
-}
+/// The column names of a normalised bank-feed CSV, in column order: the one
+/// definition in [`crate::feeds::normalize`], re-exported here because the
+/// template and rules sharing are where most callers meet it.
+pub use crate::feeds::normalize::FeedColumns;
 
 /// What [`feed_rules`] needs to write a sync rules file.
 #[derive(Debug, Clone, Copy)]
@@ -1746,6 +1697,11 @@ pub struct FeedRulesParams<'a> {
     /// A sibling categories file to include. The caller has already validated
     /// the name (`discovery::resolve_new` plus `share::check_include_name`).
     pub categories_include: Option<&'a str>,
+    /// The commodity to put on every amount (`currency $`), when known. A feed
+    /// sends bare decimals, and a journal written in `$` would otherwise get
+    /// commodity-less amounts beside its `$` ones — the "commodity trap"
+    /// `matching.rs` warns about. The server picks it from the journal.
+    pub currency: Option<&'a str>,
 }
 
 /// The date format of a normalised feed CSV. `feeds::normalize` writes ISO
@@ -1776,8 +1732,19 @@ const FEED_DATE_FORMAT: &str = "%Y-%m-%d";
 /// as a date"), and normalisation leaves the cell empty whenever the two dates
 /// agree — which is most rows.
 ///
-/// The `include` goes **last**, because in hledger the last matching rule wins,
-/// so the shared categories outrank nothing in this file by accident.
+/// The `include` comes after every rule of this file's own, because in hledger
+/// the last matching rule wins, so the shared categories outrank nothing in
+/// this file by accident.
+///
+/// **One exception follows it: the id guard**, `if %id .` / `comment id:%id`.
+/// A conditional assignment beats a top-level one (verified on 1.52), so a
+/// shared rule that sets `comment` would otherwise replace the top-level
+/// `comment id:%id` on the rows it matches, and those rows would land with no
+/// `id:` tag — invisible to the id index, so imported again on every sync.
+/// The id column is never empty, so the guard matches every row, and as the
+/// last conditional it always wins. The top-level line stays as well, so the
+/// file still reads plainly. (Rules sharing also keeps comment-setting blocks
+/// out of the categories file; this guard covers rules added there later.)
 #[must_use]
 pub fn feed_rules(params: &FeedRulesParams) -> String {
     let columns = params.columns;
@@ -1794,6 +1761,11 @@ pub fn feed_rules(params: &FeedRulesParams) -> String {
             columns.in_order().map(one_line).join(", ")
         )),
         Some(format!("date-format {FEED_DATE_FORMAT}")),
+        params
+            .currency
+            .map(one_line)
+            .filter(|currency| !currency.is_empty())
+            .map(|currency| format!("currency {currency}")),
         (columns.date != "date").then(|| format!("date {}", ref_to(&columns.date))),
         (columns.amount != "amount").then(|| format!("amount {}", ref_to(&columns.amount))),
         Some(format!("account1 {}", one_line(params.journal_account))),
@@ -1805,6 +1777,8 @@ pub fn feed_rules(params: &FeedRulesParams) -> String {
         params
             .categories_include
             .map(|name| format!("include {}", one_line(name))),
+        Some(format!("if {} .", ref_to(&columns.id))),
+        Some(format!("  comment {ID_TAG}:{}", ref_to(&columns.id))),
     ];
     lines
         .into_iter()

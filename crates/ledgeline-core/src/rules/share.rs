@@ -42,6 +42,10 @@
 //! and every whole-record pattern is layout-free. Everything else stays and is
 //! reported as a [`KeptBlock`].
 //!
+//! A block that sets the transaction `comment` stays as well
+//! ([`KeepReason::SetsComment`]): on a synced row it would replace the
+//! template's `comment id:%id` and lose the row's id.
+//!
 //! The last-match-wins rule adds one reason the contract did not list: the
 //! include goes last, so a moved block ends up *after* every block that stays.
 //! A block that originally came before a kept block assigning the same field
@@ -92,6 +96,11 @@ pub enum KeepReason {
     /// here). The include goes last, so moving it would make it win where it
     /// used to lose.
     OrderDependent(String),
+    /// It assigns the transaction `comment` (not a posting's `comment1`…).
+    /// Sync writes each row's id there (`comment id:%id`), and a conditional
+    /// assignment beats that top-level one, so on a synced row this block
+    /// would erase the id and the row would be imported again on every sync.
+    SetsComment,
 }
 
 impl std::fmt::Display for KeepReason {
@@ -108,6 +117,9 @@ impl std::fmt::Display for KeepReason {
                 f,
                 "A later rule that stays also sets {field}, and moving this one would make it win."
             ),
+            Self::SetsComment => {
+                f.write_str("Sets the transaction comment, which sync uses for its id.")
+            }
         }
     }
 }
@@ -524,6 +536,13 @@ fn own_merits(doc: &RulesDoc, item: &Item, borrowed: &Borrowed) -> (Disposition,
                     .find(|name| !shareable_name(name) && !layout_only(name))
                     .map(|name| KeepReason::FieldNotInSync(name.to_string()))
             };
+            let sets_comment = || {
+                block
+                    .assignments
+                    .iter()
+                    .any(|a| a.field == HledgerField::Comment)
+                    .then_some(KeepReason::SetsComment)
+            };
             // A byte-order mark leads the document and must stay there.
             let bom = || {
                 text[item.span.clone()]
@@ -532,6 +551,7 @@ fn own_merits(doc: &RulesDoc, item: &Item, borrowed: &Borrowed) -> (Disposition,
             };
             let disposition = matcher_problem
                 .or_else(value_problem)
+                .or_else(sets_comment)
                 .or_else(bom)
                 .map_or(Disposition::Move, Disposition::Keep);
             (disposition, Some(Assigns::Fields(assigns)))

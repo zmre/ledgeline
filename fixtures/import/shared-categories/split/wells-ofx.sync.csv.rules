@@ -2,6 +2,7 @@
 skip 1
 fields date, amount, name, sfdescription, memo, id, transacted
 date-format %Y-%m-%d
+currency $
 account1 assets:bank:wells:checking
 account2 expenses:unknown
 description %name
@@ -9,3 +10,5 @@ comment id:%id
 if %transacted .
   date2 %transacted
 include wells-ofx.categories.rules
+if %id .
+  comment id:%id

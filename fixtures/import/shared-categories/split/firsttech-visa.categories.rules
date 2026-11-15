@@ -9,5 +9,3 @@ if SHELL OIL
 CHEVRON
   account2 expenses:auto:fuel
 
-if %merchant SHELL OIL
-  comment fuel:%description

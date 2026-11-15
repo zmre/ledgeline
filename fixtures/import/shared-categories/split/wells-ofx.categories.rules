@@ -19,9 +19,6 @@ if %memo REFUND
 & %amount ^[0-9]
   account2 income:refunds
 
-if %name VENMO
-  comment memo:%memo
-
 if %name PENDING
   skip
 

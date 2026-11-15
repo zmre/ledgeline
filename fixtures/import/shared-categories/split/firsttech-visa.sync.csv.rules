@@ -2,6 +2,7 @@
 skip 1
 fields posting_date, amount, merchant, description, memo, id, transacted
 date-format %Y-%m-%d
+currency $
 date %posting_date
 account1 liabilities:firsttech:visa
 account2 expenses:unknown
@@ -10,3 +11,5 @@ comment id:%id
 if %transacted .
   date2 %transacted
 include firsttech-visa.categories.rules
+if %id .
+  comment id:%id

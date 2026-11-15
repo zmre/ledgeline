@@ -129,7 +129,7 @@ fn compare_or_bless(path: &Path, actual: &str) {
 #[test]
 fn the_ofx_file_moves_its_payee_rules_and_keeps_the_rest_with_reasons() {
     let plan = plan("wells-ofx");
-    assert_eq!(plan.moved, 7, "{}", plan.categories_text);
+    assert_eq!(plan.moved, 6, "{}", plan.categories_text);
     assert_eq!(
         kept(&plan),
         [
@@ -138,6 +138,7 @@ fn the_ofx_file_moves_its_payee_rules_and_keeps_the_rest_with_reasons() {
             ("if %name PAYPAL", KeepReason::Opaque),
             ("if %name ATM", not_in_sync("fitid")),
             ("if ^2024-01-0", KeepReason::LayoutDependentPattern),
+            ("if %name VENMO", KeepReason::SetsComment),
             (
                 "if ONLINE TRANSFER",
                 KeepReason::OrderDependent("code".to_string())
@@ -150,7 +151,6 @@ fn the_ofx_file_moves_its_payee_rules_and_keeps_the_rest_with_reasons() {
         "# coffee shops\nif\n%name STARBUCKS",
         "if %name ^AMAZON",
         "if %memo REFUND\n& %amount ^[0-9]",
-        "if %name VENMO\n  comment memo:%memo",
         "if %name PENDING\n  skip",
         "if TRANSFER TO SAVINGS",
     ] {
@@ -183,14 +183,12 @@ fn the_bank_csv_borrows_its_own_names_and_keeps_its_us_date_matcher() {
         [
             ("if %type Payment", not_in_sync("type")),
             ("if %posting_date ^12/", KeepReason::LayoutDependentPattern),
-            (
-                "if %description RECURRING",
-                KeepReason::OrderDependent("comment".to_string())
-            ),
+            ("if %description RECURRING", KeepReason::SetsComment),
             ("if %card 4321", not_in_sync("card")),
+            ("if %merchant SHELL OIL", KeepReason::SetsComment),
         ]
     );
-    assert_eq!(plan.moved, 3);
+    assert_eq!(plan.moved, 2);
     // `description %merchant` makes `merchant` the payee, so the bank's own
     // `description` column is the sync description, and both are shareable.
     assert_eq!(
@@ -205,17 +203,32 @@ fn the_bank_csv_borrows_its_own_names_and_keeps_its_us_date_matcher() {
             "transacted"
         ])
     );
+    // It sets the comment, so it stays — sync would lose its ids to it.
     assert!(
-        plan.categories_text
+        plan.manual_new_text
             .contains("if %merchant SHELL OIL\n  comment fuel:%description\n")
+    );
+}
+
+#[test]
+fn a_block_setting_the_transaction_comment_stays_but_a_posting_comment_moves() {
+    let text = "fields date, amount, name\ndescription %name\n\
+                if COFFEE\n  comment coffee\n\n\
+                if TEA\n  comment2 tea\n";
+    let plan = plan_share(text, "x.categories.rules").expect("shares");
+    assert_eq!(kept(&plan), [("if COFFEE", KeepReason::SetsComment)]);
+    assert_eq!(plan.moved, 1);
+    assert_eq!(
+        KeepReason::SetsComment.to_string(),
+        "Sets the transaction comment, which sync uses for its id."
     );
 }
 
 #[test]
 fn a_moved_block_may_not_jump_a_later_kept_block_that_sets_the_same_field() {
     let text = "skip 1\nfields date, amount, name, trntype\ndescription %name\n\
-                if COFFEE\n  account2 expenses:coffee\n  comment c\n\
-                if TEA\n  comment t\n\
+                if COFFEE\n  account2 expenses:coffee\n  code c\n\
+                if TEA\n  code t\n\
                 if %trntype DEBIT\n  account2 expenses:debit\n\
                 if JUICE\n  account2 expenses:juice\n";
     let plan = plan_share(text, "x.categories.rules").expect("shares");
@@ -229,7 +242,7 @@ fn a_moved_block_may_not_jump_a_later_kept_block_that_sets_the_same_field() {
             ("if %trntype DEBIT", not_in_sync("trntype")),
         ]
     );
-    // TEA sets only `comment`, so it may move past the `account2` block; JUICE
+    // TEA sets only `code`, so it may move past the `account2` block; JUICE
     // already came after it.
     assert_eq!(plan.moved, 2);
 }
@@ -237,25 +250,25 @@ fn a_moved_block_may_not_jump_a_later_kept_block_that_sets_the_same_field() {
 #[test]
 fn the_ordering_guard_is_transitive_and_includes_are_walls() {
     let text = "fields date, amount, name, trntype\n\
-                if A\n  comment a\n\
-                if B\n  comment b\n  account2 x\n\
+                if A\n  code a\n\
+                if B\n  code b\n  account2 x\n\
                 if %trntype T\n  account2 y\n\
                 include other.rules\n\
                 if C\n  code c\n";
     let plan = plan_share(text, "x.categories.rules").expect("shares");
     // B stays because of the trntype block; A then stays because B (now kept)
-    // sets `comment` too. C is after the include, so nothing later stays.
+    // sets `code` too. C is after the include, so nothing later stays.
     assert_eq!(
         kept(&plan).into_iter().map(|(h, _)| h).collect::<Vec<_>>(),
         ["if A", "if B", "if %trntype T"]
     );
     assert_eq!(plan.moved, 1);
 
-    let walled = "fields date, amount, name\nif A\n  comment a\ninclude other.rules\n";
+    let walled = "fields date, amount, name\nif A\n  code a\ninclude other.rules\n";
     let plan = plan_share(walled, "x.categories.rules").expect("shares");
     assert_eq!(
         kept(&plan),
-        [("if A", KeepReason::OrderDependent("comment".to_string()))]
+        [("if A", KeepReason::OrderDependent("code".to_string()))]
     );
 }
 
@@ -510,6 +523,7 @@ fn sync_rules(stem: &str, plan: &SharePlan, account: &str) -> String {
         journal_account: account,
         fallback_account: DEFAULT_ACCOUNT2,
         categories_include: Some(&categories),
+        currency: Some("$"),
     })
 }
 
@@ -542,6 +556,7 @@ fn the_default_feed_template_matches_its_golden() {
         journal_account: "assets:bank:firsttech:checking",
         fallback_account: DEFAULT_ACCOUNT2,
         categories_include: None,
+        currency: None,
     });
     compare_or_bless(&dir().join("feed/checking.sync.csv.rules"), &text);
 }
@@ -563,6 +578,7 @@ fn the_feed_template_follows_the_plan_s_shape() {
         journal_account: "assets:bank:firsttech:checking",
         fallback_account: "expenses:unknown",
         categories_include: Some("firsttech-checking.categories.rules"),
+        currency: Some("$"),
     });
     assert_eq!(
         text,
@@ -570,12 +586,14 @@ fn the_feed_template_follows_the_plan_s_shape() {
          skip 1\n\
          fields date, amount, name, description, memo, id, transacted\n\
          date-format %Y-%m-%d\n\
+         currency $\n\
          account1 assets:bank:firsttech:checking\n\
          account2 expenses:unknown\n\
          description %name\n\
          comment id:%id\n\
          if %transacted .\n  date2 %transacted\n\
-         include firsttech-checking.categories.rules\n"
+         include firsttech-checking.categories.rules\n\
+         if %id .\n  comment id:%id\n"
     );
 }
 
@@ -588,6 +606,7 @@ fn a_bank_supplied_label_cannot_start_a_rule_of_its_own() {
         journal_account: "assets:bank",
         fallback_account: DEFAULT_ACCOUNT2,
         categories_include: None,
+        currency: None,
     });
     let first = text.lines().next().expect("a header");
     assert_eq!(
@@ -763,8 +782,10 @@ fn a_sync_csv_with_borrowed_names_gets_the_moved_categorizations() {
         rows.iter().all(|row| row.0 != "PENDING HOLD"),
         "the moved skip rule applies"
     );
+    // The VENMO block sets the comment, so it stayed in the manual file and
+    // the sync row keeps its id.
     let venmo = rows.iter().find(|row| row.0 == "VENMO").expect("venmo");
-    assert_eq!(venmo.3, "memo:rent share", "the moved rule's comment wins");
+    assert_eq!(venmo.3, "id:a1b2c3d4e5-4");
     let starbucks = rows.iter().find(|row| row.0 == "STARBUCKS").expect("sbux");
     assert_eq!(starbucks.3, "id:a1b2c3d4e5-2");
     assert_eq!(starbucks.2, None, "no transacted date, no date2");
@@ -773,5 +794,46 @@ fn a_sync_csv_with_borrowed_names_gets_the_moved_categorizations() {
         .find(|row| row.0 == "AMAZON MKTP")
         .expect("refund");
     assert_eq!(refund.2.as_deref(), Some("2024-02-01"));
+    let _ = std::fs::remove_dir_all(&work);
+}
+
+#[test]
+fn the_id_guard_beats_a_comment_rule_in_the_categories_file() {
+    if !opted_in() {
+        return;
+    }
+    let work = scratch("id-guard");
+    std::fs::write(
+        work.join("x.categories.rules"),
+        "if VENMO\n  comment memo:%memo\n  account2 expenses:venmo\n",
+    )
+    .expect("write categories");
+    let rules = work.join("x.sync.csv.rules");
+    std::fs::write(
+        &rules,
+        feed_rules(&FeedRulesParams {
+            label: "Checking",
+            provider: "SimpleFIN",
+            columns: &FeedColumns::default(),
+            journal_account: "assets:bank:checking",
+            fallback_account: DEFAULT_ACCOUNT2,
+            categories_include: Some("x.categories.rules"),
+            currency: Some("$"),
+        }),
+    )
+    .expect("write sync rules");
+    let csv = work.join("x.sync.csv");
+    std::fs::write(
+        &csv,
+        "date,amount,payee,description,memo,id,transacted\n\
+         2024-02-04,-40.00,VENMO,VENMO PAYMENT,rent share,abc-4,\n",
+    )
+    .expect("write csv");
+    let rows = by_description(&hledger_print(&csv, &rules, &["-O", "json"]));
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].3, "id:abc-4", "the id survives the shared comment");
+    assert_eq!(rows[0].1[1], "expenses:venmo", "the category still applies");
+    let printed = String::from_utf8(hledger_print(&csv, &rules, &[])).expect("utf8");
+    assert!(printed.contains("$-40.00"), "currency applies: {printed}");
     let _ = std::fs::remove_dir_all(&work);
 }
