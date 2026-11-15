@@ -29,6 +29,9 @@ if ^2024-01-0
 
 # --- payees ---
 
+if %name VENMO
+  comment memo:%memo
+
 if ONLINE TRANSFER
   code xfer
 

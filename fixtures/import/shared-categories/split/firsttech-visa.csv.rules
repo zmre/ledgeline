@@ -20,4 +20,7 @@ if %description RECURRING
 if %card 4321
   comment card:%card
 
+if %merchant SHELL OIL
+  comment fuel:%description
+
 include firsttech-visa.categories.rules

@@ -8,3 +8,5 @@ description %payee
 comment id:%id
 if %transacted .
   date2 %transacted
+if %id .
+  comment id:%id

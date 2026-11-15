@@ -76,6 +76,7 @@ mod security;
 mod sidecar;
 mod spa;
 mod stage;
+mod sync;
 mod ui_prefs;
 mod ui_prefs_api;
 mod workbook_sandbox;
@@ -151,6 +152,15 @@ pub use yahoo_profile::{AssetMix, ProfileError, ProfileFeed, YahooProfile};
 // `HistoryFeed` likewise, for `AppState::with_history_source`: the benchmark
 // overlay's integration tests hand it a fake instead of Yahoo Finance.
 pub use yahoo_history::HistoryFeed;
+// Bank sync (plan 43): the provider and secret-store seams, public so the
+// integration tests can hand `AppState::with_feed_provider` /
+// `with_secret_store` a fake — the only way the sync routes are tested with
+// no network and no keychain — and the `ledgeline sync` CLI.
+pub use sync::cli::{CliSync, CliSyncCommand, run_cli_sync};
+pub use sync::{
+    AccountsQuery, FeedError, FeedProvider, MemoryStore, SecretError, SecretStore, SimpleFinClient,
+    UnavailableStore, filter_batch,
+};
 
 /// An immutable, atomically-publishable view of one parsed journal: the parsed
 /// [`Journal`] for the per-request report handlers, plus every wire endpoint's
@@ -461,6 +471,11 @@ pub struct AppState {
     /// headless server and in a browser, where the new-ledger routes that
     /// need it answer `501`. See [`new_ledger_api`].
     desktop: Option<Arc<new_ledger_api::Desktop>>,
+    /// Bank sync (plan 43): the feed provider and secret store — the real
+    /// SimpleFIN client and the OS keychain unless a test swaps them
+    /// ([`AppState::with_feed_provider`], [`AppState::with_secret_store`]) —
+    /// and the scheduler's per-process state. Per state, like `auto_prices`.
+    sync: Arc<sync::SyncSession>,
 }
 
 /// The real Yahoo feeds, over ONE `reqwest::Client` ([`yahoo::http_client`])
@@ -525,6 +540,7 @@ impl AppState {
             app_dirs,
             ui_prefs: Arc::default(),
             desktop: None,
+            sync: Arc::default(),
         }
     }
 
@@ -580,6 +596,7 @@ impl AppState {
             app_dirs,
             ui_prefs: Arc::default(),
             desktop: None,
+            sync: Arc::default(),
         }
     }
 
@@ -1040,6 +1057,126 @@ impl AppState {
         self.history_source = source;
         self
     }
+}
+
+impl AppState {
+    /// Bank sync's session: provider, secrets, scheduler state.
+    pub(crate) fn sync(&self) -> &sync::SyncSession {
+        &self.sync
+    }
+
+    /// Fetch bank feeds from `provider` instead of SimpleFIN. `pub` for the
+    /// same reason as [`Self::with_price_source`]: the integration tests are
+    /// a separate crate and need a fake with no network.
+    #[must_use]
+    pub fn with_feed_provider(mut self, provider: Arc<dyn FeedProvider>) -> Self {
+        self.sync = Arc::new(self.sync.with_provider(provider));
+        self
+    }
+
+    /// Keep bank credentials in `secrets` instead of the OS keychain (tests,
+    /// and the e2e fake bridge).
+    #[must_use]
+    pub fn with_secret_store(mut self, secrets: Arc<dyn SecretStore>) -> Self {
+        self.sync = Arc::new(self.sync.with_secrets(secrets));
+        self
+    }
+
+    /// Let the SimpleFIN client talk plain `http` to a loopback host — the
+    /// in-process fake server the tests run. Test builds only (the
+    /// `test-fakes` feature); a release build can't reach it.
+    #[cfg(feature = "test-fakes")]
+    #[must_use]
+    pub fn with_sync_loopback_http(mut self) -> Self {
+        self.sync = Arc::new(self.sync.with_loopback_http());
+        self
+    }
+
+    /// The e2e and docs-screenshot bridge (`LEDGELINE_FEED_FAKE=<dir>`): a
+    /// provider serving `<dir>/accounts.json` that accepts any setup token for
+    /// `fake.simplefin.test`, and an in-memory secret store. Test builds only.
+    #[cfg(feature = "test-fakes")]
+    #[must_use]
+    pub fn with_fake_feed(self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.with_feed_provider(Arc::new(sync::client::FakeBridge::new(dir)))
+            .with_secret_store(Arc::new(MemoryStore::new()))
+    }
+
+    /// Make the next `n` sync commits report a conflict, as if the journal
+    /// changed under them (test builds only): drives the "skipped, retried
+    /// next run" path.
+    #[cfg(feature = "test-fakes")]
+    pub fn inject_sync_conflicts(&self, n: usize) {
+        self.sync
+            .inject_conflicts
+            .store(n, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// One background sync tick at `now` (Unix seconds), as the loop runs it:
+    /// nothing unless `autoSync` is on and something is due. For the tests,
+    /// which never start the loop.
+    pub async fn run_sync_once(&self, now: i64) {
+        sync::engine::run_auto(self, now).await;
+    }
+
+    /// Sync now at `now`, every linked account (the `POST /api/sync/now`
+    /// route's run), answering its JSON. For the tests.
+    pub async fn run_sync_now(&self, now: i64) -> serde_json::Value {
+        let run = sync::engine::run(
+            self,
+            now,
+            &sync::engine::Request {
+                mode: sync::auto::Mode::Manual,
+                connection: None,
+                accounts: Vec::new(),
+            },
+        )
+        .await;
+        serde_json::to_value(run).unwrap_or_default()
+    }
+}
+
+/// The environment variable naming a fake bank-feed directory (plan 43):
+/// `LEDGELINE_FEED_FAKE=<dir>` serves `<dir>/accounts.json` instead of
+/// SimpleFIN. Honoured only by a build with the `test-fakes` feature.
+pub const FEED_FAKE_ENV: &str = "LEDGELINE_FEED_FAKE";
+
+impl AppState {
+    /// Apply [`FEED_FAKE_ENV`]: with `test-fakes`, swap in the fake bridge and
+    /// an in-memory secret store; without it, say so and change nothing (a
+    /// release build fails closed — it never serves fake data).
+    #[must_use]
+    pub fn with_feed_fake_from_env(self) -> Self {
+        let Some(dir) = std::env::var_os(FEED_FAKE_ENV).filter(|dir| !dir.is_empty()) else {
+            return self;
+        };
+        #[cfg(feature = "test-fakes")]
+        {
+            eprintln!(
+                "ledgeline: bank sync is using the fake bridge at {} ({FEED_FAKE_ENV})",
+                std::path::Path::new(&dir).display()
+            );
+            self.with_fake_feed(dir)
+        }
+        #[cfg(not(feature = "test-fakes"))]
+        {
+            let _ = dir;
+            eprintln!(
+                "ledgeline: {FEED_FAKE_ENV} is ignored: this build has no test fakes (build with \
+                 --features test-fakes)"
+            );
+            self
+        }
+    }
+}
+
+/// Bank sync's background loop (plan 43; see `sync::auto`): a jittered first
+/// check shortly after start-up, then a wall-clock wake every five minutes.
+/// Does nothing while the effective `autoSync` setting is off. Spawned by the
+/// desktop app and `--server`, never on iOS or in browser-prefs mode (the e2e
+/// and live-contract harnesses).
+pub async fn run_auto_sync(state: AppState) {
+    sync::auto::run_forever(state).await;
 }
 
 /// The automatic price updater's background loop (plan 41; see
@@ -1540,6 +1677,9 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         .route("/api/new-ledger/template", get(new_ledger_api::template))
         .route("/api/new-ledger/folder", post(new_ledger_api::pick_folder))
         .route("/api/new-ledger/sample", post(new_ledger_api::sample))
+        // Plan 43 bank sync: every `/api/sync/*` route, token-gated with the
+        // rest (they read and write credentials and the journal).
+        .merge(sync::routes())
         // Token-gate exactly the routes registered above. `route_layer` skips
         // the fallback, which is what lets the browser fetch the shell before it
         // has any credential to present.

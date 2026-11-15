@@ -58,7 +58,7 @@ pub(crate) fn http_client() -> reqwest::Client {
 }
 
 /// Mozilla's root set, as compiled into `webpki-root-certs`.
-fn bundled_roots() -> Vec<reqwest::Certificate> {
+pub(crate) fn bundled_roots() -> Vec<reqwest::Certificate> {
     webpki_root_certs::TLS_SERVER_ROOT_CERTS
         .iter()
         .filter_map(|der| reqwest::Certificate::from_der(der).ok())

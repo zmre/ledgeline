@@ -185,7 +185,34 @@ const THEMES: &[&str] = &[
 /// to tell one ledger from another by. The automatic price update keys (plan
 /// 41) are here because "fetch prices for my real books, but not for the
 /// sample ledger I demo with" is exactly a per-ledger choice.
-const PINNABLE: &[&str] = &["theme", "uiScale", "autoPrices", "autoPricesWeeks"];
+///
+/// The bank sync keys (plan 43) are here for the same reason: sync the real
+/// books automatically, not the demo ledger.
+const PINNABLE: &[&str] = &[
+    "theme",
+    "uiScale",
+    "autoPrices",
+    "autoPricesWeeks",
+    "autoSync",
+    "autoSyncEveryHours",
+    "syncSourceDir",
+    "syncKeepSourceDays",
+];
+
+/// The sync keys, whose change wakes the sync scheduler.
+const SYNC_KEYS: &[&str] = &[
+    "autoSync",
+    "autoSyncEveryHours",
+    "syncSourceDir",
+    "syncKeepSourceDays",
+];
+
+/// `syncSourceDir`'s default: where fetched CSVs are kept, relative to the
+/// journal's folder.
+pub(crate) const DEFAULT_SYNC_SOURCE_DIR: &str = "imports/sync";
+
+/// The longest `syncSourceDir` kept.
+const MAX_REL_DIR_BYTES: usize = 255;
 
 /// What a key holds, how a value for it is checked, and its built-in default.
 #[derive(Debug, Clone, Copy)]
@@ -205,6 +232,11 @@ enum Kind {
     FileId,
     /// Benchmark ticker symbols, deduplicated, in order.
     Tickers,
+    /// A folder relative to the journal's own (`syncSourceDir`): no `..`, no
+    /// leading `/`, no `\\`, no control characters, no empty or `.` part. The
+    /// value is untrusted (it may come from `ledgeline.toml`), so the sync
+    /// engine resolves it inside the journal's folder again before writing.
+    RelDir { default: &'static str },
 }
 
 /// One preference. `key` is the wire name; a dotted key (`columns.date`) is a
@@ -275,6 +307,19 @@ const SPECS: &[Spec] = &[
     // for. 0 = the latest close only. A year is plenty; every extra week only
     // makes the one request per symbol a little larger.
     whole("autoPricesWeeks", 0, 52, 6),
+    // Plan 43: bank sync in the background. Off until asked for — it fetches
+    // from the bank feed and writes to the journal on the user's behalf.
+    flag("autoSync", false),
+    // The floor of 3 protects SimpleFIN's ~24-requests-a-day quota.
+    whole("autoSyncEveryHours", 3, 24, 6),
+    Spec {
+        key: "syncSourceDir",
+        kind: Kind::RelDir {
+            default: DEFAULT_SYNC_SOURCE_DIR,
+        },
+    },
+    // 0 = keep every fetched CSV forever.
+    whole("syncKeepSourceDays", 0, 3650, 90),
 ];
 
 const fn flag(key: &'static str, default: bool) -> Spec {
@@ -316,6 +361,7 @@ impl Kind {
             Self::Choice { default, .. } => PrefValue::Text(default.to_string()),
             Self::Whole { default, .. } => PrefValue::Whole(default),
             Self::FileId => PrefValue::FileId(None),
+            Self::RelDir { default } => PrefValue::Text(default.to_string()),
             Self::Tickers => PrefValue::Tickers(Vec::new()),
         }
     }
@@ -349,6 +395,10 @@ impl Kind {
             Self::FileId => {
                 let text = value.as_str().ok_or("must be a string")?;
                 check_file_id(text).map(|id| (PrefValue::FileId(id), None))
+            }
+            Self::RelDir { .. } => {
+                let text = value.as_str().ok_or("must be a string")?;
+                check_rel_dir(text).map(|dir| (PrefValue::Text(dir), None))
             }
             Self::Tickers => {
                 let entries = value.as_array().ok_or("must be a list of ticker symbols")?;
@@ -388,6 +438,11 @@ impl Kind {
                 .filter(|number| (min..=max).contains(number))
                 .map(PrefValue::Whole)
                 .ok_or("must be a whole number within its range"),
+            Self::RelDir { .. } => value
+                .as_str()
+                .ok_or("must be a folder inside the journal's folder")
+                .and_then(check_rel_dir)
+                .map(PrefValue::Text),
             Self::FileId => match value {
                 Json::Null => Ok(PrefValue::FileId(None)),
                 Json::String(text) => check_file_id(text).map(PrefValue::FileId),
@@ -428,6 +483,28 @@ fn check_file_id(text: &str) -> Result<Option<String>, &'static str> {
         return Err("contains control characters");
     }
     Ok((!text.is_empty()).then(|| text.to_string()))
+}
+
+/// A folder relative to the journal's folder, as [`Kind::RelDir`] accepts
+/// it, with a trailing `/` dropped.
+pub(crate) fn check_rel_dir(text: &str) -> Result<String, &'static str> {
+    let trimmed = text.trim_end_matches('/');
+    if trimmed.is_empty() || trimmed.len() > MAX_REL_DIR_BYTES {
+        return Err("must be a folder inside the journal's folder");
+    }
+    if trimmed.starts_with('/') || trimmed.contains('\\') || trimmed.contains(':') {
+        return Err("must be relative to the journal's folder");
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err("contains control characters");
+    }
+    if trimmed
+        .split('/')
+        .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return Err("may not contain empty, `.` or `..` parts");
+    }
+    Ok(trimmed.to_string())
 }
 
 /// A benchmark symbol as `settings.svelte.ts`'s `TICKER` accepts it:
@@ -828,6 +905,12 @@ impl Patch {
         self.values.contains_key("autoPrices") || self.values.contains_key("autoPricesWeeks")
     }
 
+    /// Whether the patch changes a bank sync setting, so the sync scheduler
+    /// should look again now.
+    pub(crate) fn touches_sync(&self) -> bool {
+        SYNC_KEYS.iter().any(|key| self.values.contains_key(key))
+    }
+
     fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
@@ -1191,6 +1274,132 @@ pub(crate) fn auto_price_prefs(state: &AppState) -> AutoPricePrefs {
             .unwrap_or(0),
     }
 }
+
+/// Bank sync's four settings, effective for `state`'s current journal. In
+/// browser mode — the e2e and live-contract harnesses — these are the
+/// defaults, so auto-sync is off and nothing reaches the network unasked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SyncSettings {
+    pub(crate) auto_sync: bool,
+    /// Clamped to `3..=24` by the spec.
+    pub(crate) every_hours: u32,
+    /// Checked by [`check_rel_dir`]; still resolved inside the journal's
+    /// folder before use.
+    pub(crate) source_dir: String,
+    /// `0` = keep forever.
+    pub(crate) keep_days: u32,
+}
+
+/// See [`SyncSettings`].
+pub(crate) fn sync_settings(state: &AppState) -> SyncSettings {
+    let wire = current(state);
+    let whole = |key: &str, default: u32| {
+        wire.prefs
+            .get(key)
+            .and_then(Json::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(default)
+    };
+    SyncSettings {
+        auto_sync: wire
+            .prefs
+            .get("autoSync")
+            .and_then(Json::as_bool)
+            .unwrap_or(false),
+        every_hours: whole("autoSyncEveryHours", 6),
+        source_dir: wire
+            .prefs
+            .get("syncSourceDir")
+            .and_then(Json::as_str)
+            .unwrap_or(DEFAULT_SYNC_SOURCE_DIR)
+            .to_string(),
+        keep_days: whole("syncKeepSourceDays", 90),
+    }
+}
+
+/// The open ledger's `ledgeline.toml`, as text: `Ok(None)` when there is no
+/// ledger or no file. Read the way every other read of it is — pinned, capped,
+/// never through a symlink. For the bank sync links under `[sync]`.
+///
+/// # Errors
+/// [`AppError::Conflict`] when the file exists but is unusable (symlinked,
+/// oversized, not TOML), with the reason.
+pub(crate) fn ledger_text(state: &AppState) -> Result<Option<String>, AppError> {
+    let Some(location) = state.snapshot().storage() else {
+        return Ok(None);
+    };
+    let path = ledger_path(&location)?;
+    match read_ledger(&location, &path) {
+        LedgerFile::Missing => Ok(None),
+        LedgerFile::Present { document, .. } => Ok(Some(document.to_string())),
+        LedgerFile::Unusable(reason) => Err(refuse_ledger(reason)),
+    }
+}
+
+/// Rewrite the open ledger's `ledgeline.toml` with `edit` (old text → new
+/// text), under the same lock and through the same pinned writer as [`pin`],
+/// re-reading and re-applying when another writer got there first. Bank
+/// sync's `[sync]` writers (`feeds::config`) are the only callers.
+///
+/// **May create the file** when it is missing: linking a bank account is an
+/// explicit user action, the documented second exception to "never
+/// auto-created" (plan 43 §3.6). An unusable file is never written.
+///
+/// Not refused in browser mode: `[sync]` is not a view setting, and the e2e
+/// harness links accounts like a user would.
+///
+/// # Errors
+/// [`AppError::Conflict`] with no ledger, an unusable file, or a write that
+/// keeps losing races; whatever `edit` returns; [`AppError::Internal`] when
+/// the write fails.
+pub(crate) fn edit_ledger_text(
+    state: &AppState,
+    edit: impl Fn(&str) -> Result<String, AppError>,
+) -> Result<(), AppError> {
+    let location = state.snapshot().storage().ok_or_else(|| {
+        AppError::Conflict("no ledger file is open, so there is no ledgeline.toml".to_string())
+    })?;
+    let path = ledger_path(&location)?;
+    let session = state.ui_prefs();
+    // Held across the write, so a view-settings save never interleaves.
+    let _kept = session.kept();
+    let vault = location.vault();
+    with_retries(LEDGER_FILE, || match read_ledger(&location, &path) {
+        LedgerFile::Missing => {
+            // The header goes first: `toml_edit` keeps a comment-only
+            // document as trailing text, after any table the edit adds.
+            let text = format!("{LEDGER_SYNC_HEADER}{}", edit("")?);
+            match vault.create_new_shared(&path, text.as_bytes()) {
+                Ok(_) => Ok(Attempt::Done(())),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    Ok(Attempt::Retry)
+                }
+                Err(error) => Err(write_failed(LEDGER_FILE, error.kind())),
+            }
+        }
+        LedgerFile::Unusable(reason) => Err(refuse_ledger(reason)),
+        LedgerFile::Present { document, revision } => {
+            let before = document.to_string();
+            let after = edit(&before)?;
+            if after == before {
+                return Ok(Attempt::Done(()));
+            }
+            match vault.replace(&path, after.as_bytes(), &revision) {
+                Ok(_) => Ok(Attempt::Done(())),
+                Err(VaultError::Changed { .. }) => Ok(Attempt::Retry),
+                Err(error) => Err(write_failed(LEDGER_FILE, error.kind())),
+            }
+        }
+    })
+}
+
+/// The top of a [`LEDGER_FILE`] that linking a bank account creates.
+const LEDGER_SYNC_HEADER: &str = concat!(
+    "# Ledgeline settings for this ledger. [sync] lists the bank accounts\n",
+    "# Ledgeline syncs into it; credentials are never stored here. [ui] keys\n",
+    "# override ui-prefs.toml while this ledger is open. Docs: \"Settings files\".\n",
+    "\n",
+);
 
 /// The effective preferences for `state`'s current journal. Reads only:
 /// nothing is created or written.
@@ -1597,6 +1806,10 @@ mod tests {
                 "uiScale": 100,
                 "autoPrices": false,
                 "autoPricesWeeks": 6,
+                "autoSync": false,
+                "autoSyncEveryHours": 6,
+                "syncSourceDir": "imports/sync",
+                "syncKeepSourceDays": 90,
             })
         );
     }
@@ -1717,6 +1930,46 @@ mod tests {
 
     /// The ledger's own file can turn automatic prices on for that ledger
     /// alone, and a hand-edited week count is clamped to the spec's range.
+    #[test]
+    fn the_sync_keys_layer_clamp_and_refuse_a_path_out_of_the_journal() {
+        let (prefs, issues) = effective(
+            "[ui]\nautoSync = true\nautoSyncEveryHours = 1\nsyncSourceDir = \"bank/feeds/\"\n",
+            "syncKeepSourceDays = 99999\n",
+        );
+        assert_eq!(prefs["autoSync"], true);
+        assert_eq!(
+            prefs["autoSyncEveryHours"], 3,
+            "the floor protects the quota"
+        );
+        assert_eq!(prefs["syncSourceDir"], "bank/feeds");
+        assert_eq!(prefs["syncKeepSourceDays"], 3650);
+        assert_eq!(issues.len(), 2, "{issues:?}");
+        for hostile in [
+            "/etc",
+            "../up",
+            "a/../../b",
+            "a//b",
+            ".",
+            "C:\\x",
+            "a\u{7}b",
+            "",
+        ] {
+            let (prefs, issues) = effective(
+                &format!(
+                    "[ui]\nsyncSourceDir = {}\n",
+                    toml_edit::Value::from(hostile)
+                ),
+                "",
+            );
+            assert_eq!(prefs["syncSourceDir"], "imports/sync", "{hostile:?}");
+            assert_eq!(issues.len(), 1, "{hostile:?}: {issues:?}");
+        }
+        assert!(Patch::from_json(&json!({"syncSourceDir": "../x"})).is_err());
+        assert!(Patch::from_json(&json!({"autoSyncEveryHours": 2})).is_err());
+        let patch = Patch::from_json(&json!({"syncSourceDir": "x/y"})).expect("ok");
+        assert!(patch.touches_sync() && !patch.touches_auto_prices());
+    }
+
     #[test]
     fn the_auto_price_keys_layer_and_clamp_like_any_other() {
         let (prefs, issues) = effective(

@@ -652,7 +652,6 @@ Error mapping: the plan's §6 table, one `ProblemCode` per row.
 - **WP-A: `reimport` now has `pub fn ids_of`.** It returns every id on a
   transaction, deduplicated. `build_index` uses it. `id_of` and `classify`
   are unchanged.
-||||||| 77485f7
 - **WP-R: `append_include` returns `Result<String, ShareError>`.** It
   validates the name with the new public `share::check_include_name`: a
   plain sibling `*.rules` name, with no separators, whitespace, control or
@@ -694,7 +693,7 @@ Error mapping: the plan's §6 table, one `ProblemCode` per row.
   helper that `feed_rules` uses. It carries a MERGE SEAM comment. On merge,
   replace it with a re-export of `feeds::normalize::FeedColumns`, and either
   add `in_order()` there or inline it.
-- **WP-R finding, open and not changed: shared `comment` rules erase the sync
+- **WP-R finding (resolved by WP-S, see below): shared `comment` rules erase the sync
   id.** A conditional assignment beats a top-level one. So any categories
   rule that sets `comment` replaces the template's `comment id:%id` on the
   sync rows it matches, and those rows land with no `id:` tag. Then
@@ -703,11 +702,10 @@ Error mapping: the plan's §6 table, one `ProblemCode` per row.
   so ids win and category comments are lost on sync rows. Another: keep
   comment-assigning blocks out of the categories file. Either way it needs a
   decision.
-- **WP-R finding, open and not changed: the feed template has no
+- **WP-R finding (resolved by WP-S, see below): the feed template has no
   `currency`.** Synced amounts come in bare, while a manual file usually says
   `currency $`. That's matching.rs's "commodity trap". A `currency` field on
   `FeedRulesParams`, fed from SimpleFIN's account currency, would fix it.
-||||||| 77485f7
 
 ### From WP-W (web)
 
@@ -759,3 +757,119 @@ UI decisions that differ from the plan:
 - **Dev only:** `localStorage["ledgeline.dev.syncFixtures"] = "1"` in a dev
   build serves `web/src/lib/sync/fixtures.ts` instead of the engine. A
   production build drops it.
+
+### WP-S (server)
+
+Lead decisions of 2026-11-15, carried out:
+
+- **Merge seam.** `rules::generate::FeedColumns` is now a re-export of
+  `feeds::normalize::FeedColumns` (which has `in_order()`); WP-R's mirror is
+  gone.
+- **Shared `comment` rules can't erase sync ids — fixed both ways.**
+  `share::KeepReason::SetsComment` ("Sets the transaction comment, which sync
+  uses for its id.") keeps a block that assigns the transaction `comment`
+  (not `comment1`…) in the manual file. And `feed_rules` ends every sync file
+  with an **id guard**, `if %<id> .` / `  comment id:%<id>`, after the include,
+  so it is the last conditional and always wins. The top-level `comment
+  id:%id` stays for readability. WP-R's tests and goldens were updated
+  (`wells-ofx` now moves 6 blocks, keeps VENMO; `firsttech-visa` keeps its two
+  comment blocks); `just rules-check` and `LEDGELINE_HLEDGER_SHARE_CHECK=1`
+  pass, with a new hledger test proving the guard beats a categories comment.
+  When sharing adds an include to an existing sync file, the server puts it
+  *before* the guard.
+- **Currency.** `FeedRulesParams.currency: Option<&str>` emits `currency X`
+  after `date-format`. The server picks: the commodity most used on the
+  linked account; else `$` for `USD` when the journal is mostly `$`; else the
+  ISO code. A custom-currency URL is fetched (no credentials) only when its
+  scheme and host are the access URL's (`FeedProvider::currency_symbol`,
+  letters only, ≤ 12); otherwise the symbol is `?` and a warning problem.
+- **No `conflicting`.** Rows are split with `dupes::split` over the whole
+  journal's ids *before* staging; only `fresh` rows go into the CSV.
+- **"Review now"** is the web's; no staged review host server-side.
+
+WP-W's requests, implemented:
+
+- `WireSyncRun.accounts[].uncategorized`: written rows posted to the rules
+  file's `account2` (default `expenses:unknown`), counted from the dry run's
+  entries.
+- Sync problems are **not** added to `/api/diagnostics`.
+- The four keys are in `fixtures/native/v1/ui-prefs.json`.
+- `action.ref`: connection id for `reconnect`/`connect`; account key for
+  `review-held`, `choose-file`, `show-balance`; rules id for `edit-rules`.
+  `docAnchor` is the problem code (`con-auth`, `revoked`, …, `other`).
+- `PATCH /api/sync/connections/{id}` `{name}` → `WireSyncStatus`, and
+  `WireLinkedAccount.rulesChoices: {id, fits}[]`.
+
+Other deviations:
+
+- **`POST /api/sync/connect` writes `[[sync.connection]]` straight away**,
+  not at link time: the keychain item exists from the claim on, and an entry
+  with no accounts is what lets "Re-check" list it later and Disconnect
+  remove the key. The answer may carry `problem` beside `connectionId` and
+  `accounts` when the claim worked but the listing didn't (or found no
+  banks: an `info` "SimpleFIN has no banks connected yet…").
+- **Errors.** A wizard problem is `422 {problem}`; a write on a read-only
+  server is `403` with a plain-text sentence; everything else is the crate's
+  usual plain-text `AppError` status.
+- **Link preview cache.** A connect/accounts batch is balances-only, so it
+  can't preview transactions. The preview caches its own transaction fetch for
+  10 minutes instead (same connection, reaching back far enough, holding the
+  accounts asked for).
+- **Sharing places the new sync file beside the manual file** (an `include`
+  names a sibling); an existing sync file must already be in that folder.
+  When the manual file has no saved CSV to run, the byte-identity check can't
+  run and the split is trusted (`identical: true`): it is a pure byte
+  partition, property-tested in core.
+- **New accounts** get `account NAME  ; type:X` plus `YYYY-MM-DD Opening
+  balance` / `equity:opening balances` in the link's **target** file (plan §11
+  open question, decided).
+- **Source folders:** `<syncSourceDir>/<slug(connection name)>/<slug(label)>-<key[..6]>/<YYYY-MM-DDTHHMM>.csv`,
+  local time, `-2`… for a second sync in the same minute. `syncSourceDir` is
+  resolved through `vault::canonicalize_existing_prefix` *before* anything is
+  created, so a symlink out of the journal folder is refused.
+- **No raw responses on disk.** Diagnostics are built from `sync-state.json`
+  (last 10 outcomes, the last error list, problems), credential-scrubbed by a
+  new `redact::scrub_credentials` and path-redacted. No bank response body is
+  written anywhere.
+- **`sync-state.json`** also remembers each connection's remote accounts
+  (balances only) for the "not linked" rows, the host for display, and
+  `failingSince` for "since…" and act.failed's 3-day escalation. The quota is
+  counted and saved *before* each request is sent.
+- **Thresholds:** `stale` after 14 days without new data (severity `info`);
+  network problems are `info` for 24 h, then `warning`; a manual account is
+  stale after 35 days; `lastImport` is always `null` (there is no import log to
+  read yet).
+- **Suggestions** use their own scoring (last four digits in the account
+  name, shared name words, a balance equal or negated), not
+  `qb_import::suggest_accounts`, which takes a `QbJournal`.
+- **Core additions outside WP-S's files:** `EditOp::AddTxnTagValue` /
+  `JournalEditor::add_txn_tag_value` in `edit.rs` ("It's a duplicate" adds a
+  second `id:` and keeps the first; there was no transaction-level op for
+  that); `import_api` gained `HeadlessImport`, `stage_headless`,
+  `headless_dry_run`, `headless_commit` (thin wrappers over `run_dry_run` /
+  `run_commit`, like `run_cli_import`).
+- **`FeedProvider`:** `claim(&SetupToken) -> access URL text`,
+  `accounts(&AccessUrl, &AccountsQuery)`, `currency_symbol` (default `None`).
+  `filter_batch` is public for fakes.
+- **Keychain:** `keyring` 3.6 (4.x splits into `keyring-core` + stores), per
+  target: `apple-native`; Linux `async-secret-service` + `crypto-rust` +
+  `async-io` (pure Rust zbus, no openssl/libdbus/native-tls); `windows-native`.
+  Behind a new default server feature `keychain`; without it (iOS/FFI) the
+  store is `UnavailableStore` and connecting is refused. `chrono` (`clock`) is
+  added for the local UTC offset.
+- **Test seams (`test-fakes`):** `with_sync_loopback_http`, `with_fake_feed`,
+  `inject_sync_conflicts`; the server's own tests get the feature through a
+  dev-dependency on the crate itself. Without the feature,
+  `LEDGELINE_FEED_FAKE` is ignored with a warning. `just e2e` and
+  `just docs-screenshots` build with it; **the Playwright config must still set
+  `LEDGELINE_FEED_FAKE` for the engine it starts, and the sync specs should run
+  on a copy of the fixture ledger** — linking writes `ledgeline.toml`, rules
+  files and CSVs beside the journal.
+- **hledger-backed engine tests** are gated by `LEDGELINE_HLEDGER_SYNC_CHECK=1`
+  (added to `just hledger-checks`), like the other hledger suites.
+- **CLI:** `ledgeline sync -j <journal> connect|accounts|link|status|now`,
+  printing each route's JSON, plus `reconnect <connection> <token>` (the
+  token-replacement route) and `diagnostics <connection>` for real-bank QA.
+- **The scheduler** is spawned by the desktop app and `--server`, but not
+  under `LEDGELINE_UI_PREFS_IN_BROWSER` and never by the FFI.
+
