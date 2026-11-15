@@ -1,0 +1,11 @@
+# ledgeline: SimpleFIN sync rules for Checking ••1234
+skip 1
+fields date, amount, name, sfdescription, memo, id, transacted
+date-format %Y-%m-%d
+account1 assets:bank:wells:checking
+account2 expenses:unknown
+description %name
+comment id:%id
+if %transacted .
+  date2 %transacted
+include wells-ofx.categories.rules

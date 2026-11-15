@@ -290,6 +290,7 @@ pub mod families;
 pub mod generate;
 pub mod infer;
 pub mod matching;
+pub mod share;
 
 pub use discovery::{
     CreateRefusal, DiscoveredRules, Discovery, Preview, PreviewUnavailable, RulesPath, discover,
@@ -1838,7 +1839,7 @@ fn sanitize_label(line: &str) -> String {
 /// The truncation counts **`char`s, not bytes**, so it can never split a code
 /// point; a `String` sliced at a byte offset is a panic waiting for the first
 /// non-ASCII description.
-fn sanitize_display(text: &str, max_chars: usize) -> String {
+pub(crate) fn sanitize_display(text: &str, max_chars: usize) -> String {
     let printable = text
         .chars()
         .filter(|c| !c.is_control() || c.is_whitespace())

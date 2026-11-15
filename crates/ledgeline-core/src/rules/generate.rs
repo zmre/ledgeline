@@ -1670,6 +1670,154 @@ fn explain(
     warnings
 }
 
+// ---------------------------------------------------------------------------
+// The feed template (plan 43 §3.2)
+// ---------------------------------------------------------------------------
+
+/// The column names of a normalised bank-feed CSV, in column order.
+///
+/// MERGE SEAM: replace with `feeds::normalize::FeedColumns` after WP-A merges
+/// (`pub use crate::feeds::normalize::FeedColumns;`). Same fields, same order,
+/// same defaults — the contract pins all three.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeedColumns {
+    /// The posted date. Default `date`.
+    pub date: String,
+    /// The signed amount. Default `amount`.
+    pub amount: String,
+    /// The payee, which becomes the transaction description. Default `payee`.
+    pub payee: String,
+    /// The bank's raw description. Default `description`.
+    pub description: String,
+    /// The bank's memo. Default `memo`.
+    pub memo: String,
+    /// The row id, written as the transaction's `id:` tag. Default `id`.
+    pub id: String,
+    /// The transaction date when it differs from the posted date, else empty.
+    /// Default `transacted`.
+    pub transacted: String,
+}
+
+impl Default for FeedColumns {
+    fn default() -> Self {
+        Self {
+            date: "date".to_string(),
+            amount: "amount".to_string(),
+            payee: "payee".to_string(),
+            description: "description".to_string(),
+            memo: "memo".to_string(),
+            id: "id".to_string(),
+            transacted: "transacted".to_string(),
+        }
+    }
+}
+
+impl FeedColumns {
+    /// The names in CSV column order — the order of the `fields` line.
+    #[must_use]
+    pub fn in_order(&self) -> [&str; 7] {
+        [
+            &self.date,
+            &self.amount,
+            &self.payee,
+            &self.description,
+            &self.memo,
+            &self.id,
+            &self.transacted,
+        ]
+    }
+}
+
+/// What [`feed_rules`] needs to write a sync rules file.
+#[derive(Debug, Clone, Copy)]
+pub struct FeedRulesParams<'a> {
+    /// The account as the user sees it, e.g. `First Tech · Checking ••1234`.
+    /// Display only: it lands in the header comment.
+    pub label: &'a str,
+    /// The feed provider's name, e.g. `SimpleFIN`. Display only.
+    pub provider: &'a str,
+    /// The CSV's column names, borrowed from a manual rules file when shared.
+    pub columns: &'a FeedColumns,
+    /// `account1`: the journal account the feed posts to.
+    pub journal_account: &'a str,
+    /// `account2`: where an uncategorised row lands, normally
+    /// [`DEFAULT_ACCOUNT2`].
+    pub fallback_account: &'a str,
+    /// A sibling categories file to include. The caller has already validated
+    /// the name (`discovery::resolve_new` plus `share::check_include_name`).
+    pub categories_include: Option<&'a str>,
+}
+
+/// The date format of a normalised feed CSV. `feeds::normalize` writes ISO
+/// dates and nothing else.
+const FEED_DATE_FORMAT: &str = "%Y-%m-%d";
+
+/// Write a sync rules file for one feed account.
+///
+/// Unlike [`generate`] this returns **text**, not a [`RulesDoc`] for the editor:
+/// it is written by the server at link time, not saved through the create
+/// route, so it may carry a header comment — and it should, because a user who
+/// finds `firsttech-checking.sync.csv.rules` in their folder deserves to be told
+/// what wrote it.
+///
+/// Every interpolated value is forced onto one line ([`one_line`]). The label
+/// comes from the bank, and a newline in it would otherwise start a rule of its
+/// own in a file hledger then executes.
+///
+/// `date` and `amount` need no assignment when their columns carry those names:
+/// hledger assigns a column named like one of its fields by itself. A borrowed
+/// name gets an explicit `date %X` / `amount %X`. The payee always gets an
+/// explicit `description %X`, which overrides the auto-assigned `description`
+/// column (verified on 1.52).
+///
+/// `date2` is assigned **only when the transacted column is non-empty**, by an
+/// `if %transacted .` block. hledger 1.52 rejects the whole file when an
+/// unconditional `date2 %transacted` meets an empty cell ("could not parse \"\"
+/// as a date"), and normalisation leaves the cell empty whenever the two dates
+/// agree — which is most rows.
+///
+/// The `include` goes **last**, because in hledger the last matching rule wins,
+/// so the shared categories outrank nothing in this file by accident.
+#[must_use]
+pub fn feed_rules(params: &FeedRulesParams) -> String {
+    let columns = params.columns;
+    let ref_to = |column: &str| format!("%{}", one_line(column));
+    let lines = [
+        Some(format!(
+            "# ledgeline: {} sync rules for {}",
+            one_line(params.provider),
+            one_line(params.label)
+        )),
+        Some("skip 1".to_string()),
+        Some(format!(
+            "fields {}",
+            columns.in_order().map(one_line).join(", ")
+        )),
+        Some(format!("date-format {FEED_DATE_FORMAT}")),
+        (columns.date != "date").then(|| format!("date {}", ref_to(&columns.date))),
+        (columns.amount != "amount").then(|| format!("amount {}", ref_to(&columns.amount))),
+        Some(format!("account1 {}", one_line(params.journal_account))),
+        Some(format!("account2 {}", one_line(params.fallback_account))),
+        Some(format!("description {}", ref_to(&columns.payee))),
+        Some(format!("comment {ID_TAG}:{}", ref_to(&columns.id))),
+        Some(format!("if {} .", ref_to(&columns.transacted))),
+        Some(format!("  date2 {}", ref_to(&columns.transacted))),
+        params
+            .categories_include
+            .map(|name| format!("include {}", one_line(name))),
+    ];
+    lines
+        .into_iter()
+        .flatten()
+        .map(|line| line + "\n")
+        .collect()
+}
+
+/// `text` on one line: control characters dropped, whitespace runs collapsed.
+fn one_line(text: &str) -> String {
+    crate::rules::sanitize_display(text, usize::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

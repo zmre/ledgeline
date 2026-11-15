@@ -1,0 +1,13 @@
+# ledgeline: categorization rules shared by this account's rules files.
+# Each of them ends with an include of this file, so a rule here works for
+# manual imports and bank sync alike. The last matching rule wins.
+
+if %merchant ^SAFEWAY
+  account2 expenses:food:groceries
+
+if SHELL OIL
+CHEVRON
+  account2 expenses:auto:fuel
+
+if %merchant SHELL OIL
+  comment fuel:%description
