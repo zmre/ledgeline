@@ -55,7 +55,15 @@ import {
     type PricesUpdateResponse,
 } from "#lib/holdings/pricesTypes.js";
 import {CATEGORY_DIMENSIONS, PIE_DIMENSIONS} from "#lib/holdings/profileTypes.js";
-import {COLUMN_KEYS, INSIGHTS_TABS, THEME_IDS, UI_PREFS_STORAGES} from "#lib/settings/uiPrefs.js";
+import {
+    AUTO_SYNC_HOURS_DEFAULT,
+    COLUMN_KEYS,
+    INSIGHTS_TABS,
+    SYNC_KEEP_DAYS_DEFAULT,
+    SYNC_SOURCE_DIR_DEFAULT,
+    THEME_IDS,
+    UI_PREFS_STORAGES,
+} from "#lib/settings/uiPrefs.js";
 import type {ColumnConfig, UiPrefs, UiPrefsIssue, UiPrefsState} from "#lib/settings/uiPrefs.js";
 import type {BenchmarkCatalog, BenchmarkLine, BenchmarksResponse} from "#lib/holdings/benchmarks.js";
 import type {Breakdown, CategoryWeight, HoldingsProfiles, SymbolProfile, YahooStatus} from "#lib/holdings/profileTypes.js";
@@ -4956,6 +4964,13 @@ export function decodeUiPrefsState(raw: unknown): UiPrefsState {
         uiScale: whole(prefs.uiScale, "ui-prefs uiScale"),
         autoPrices: bool("autoPrices"),
         autoPricesWeeks: whole(prefs.autoPricesWeeks, "ui-prefs autoPricesWeeks"),
+        // Bank sync (plan 43). Defaulted when ABSENT — an engine from before
+        // the sync keys must still load everyone's other settings — and strict
+        // when present, like every key above.
+        autoSync: prefs.autoSync === undefined ? false : bool("autoSync"),
+        autoSyncEveryHours: prefs.autoSyncEveryHours === undefined ? AUTO_SYNC_HOURS_DEFAULT : whole(prefs.autoSyncEveryHours, "ui-prefs autoSyncEveryHours"),
+        syncSourceDir: prefs.syncSourceDir === undefined ? SYNC_SOURCE_DIR_DEFAULT : str(prefs.syncSourceDir, "ui-prefs syncSourceDir"),
+        syncKeepSourceDays: prefs.syncKeepSourceDays === undefined ? SYNC_KEEP_DAYS_DEFAULT : whole(prefs.syncKeepSourceDays, "ui-prefs syncKeepSourceDays"),
     };
     if (!Array.isArray(body.issues)) throw new ApiShapeError("ui-prefs issues: expected an array");
     const issues = body.issues.map((rawIssue, i): UiPrefsIssue => {

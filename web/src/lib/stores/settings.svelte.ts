@@ -29,6 +29,11 @@ import {
     cleanUiPrefs,
     AUTO_PRICES_WEEKS_DEFAULT,
     AUTO_PRICES_WEEKS_RANGE,
+    AUTO_SYNC_HOURS_DEFAULT,
+    AUTO_SYNC_HOURS_RANGE,
+    isRelDir,
+    SYNC_KEEP_DAYS_DEFAULT,
+    SYNC_KEEP_DAYS_RANGE,
     COLUMN_KEYS,
     defaultUiPrefs,
     legacyUiPatch,
@@ -630,6 +635,42 @@ export const settings = {
     set autoPricesWeeks(weeks: number) {
         state.autoPricesWeeks = wholeIn(weeks, AUTO_PRICES_WEEKS_RANGE, AUTO_PRICES_WEEKS_DEFAULT);
         save({autoPricesWeeks: state.autoPricesWeeks});
+    },
+    /**
+     * Bank sync in the background (plan 43). Saved at once, like
+     * `autoPrices`: the engine wakes its scheduler on the save.
+     */
+    get autoSync(): boolean {
+        return state.autoSync;
+    },
+    set autoSync(on: boolean) {
+        state.autoSync = on;
+        save({autoSync: on}, true);
+    },
+    /** The most hours between background syncs, clamped to 3–24. */
+    get autoSyncEveryHours(): number {
+        return state.autoSyncEveryHours;
+    },
+    set autoSyncEveryHours(hours: number) {
+        state.autoSyncEveryHours = wholeIn(hours, AUTO_SYNC_HOURS_RANGE, AUTO_SYNC_HOURS_DEFAULT);
+        save({autoSyncEveryHours: state.autoSyncEveryHours});
+    },
+    /** Where synced statements go, relative to the journal's folder. A value that is not a folder inside it is ignored. */
+    get syncSourceDir(): string {
+        return state.syncSourceDir;
+    },
+    set syncSourceDir(dir: string) {
+        if (!isRelDir(dir)) return;
+        state.syncSourceDir = dir;
+        save({syncSourceDir: dir});
+    },
+    /** Days a synced statement is kept, clamped to 0 (forever)–3650. */
+    get syncKeepSourceDays(): number {
+        return state.syncKeepSourceDays;
+    },
+    set syncKeepSourceDays(days: number) {
+        state.syncKeepSourceDays = wholeIn(days, SYNC_KEEP_DAYS_RANGE, SYNC_KEEP_DAYS_DEFAULT);
+        save({syncKeepSourceDays: state.syncKeepSourceDays});
     },
     /** The cross-origin engine token, if one was entered. Null in embedded mode. */
     get serverToken(): string | null {

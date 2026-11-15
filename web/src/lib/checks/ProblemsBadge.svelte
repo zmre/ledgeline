@@ -3,13 +3,26 @@
     // severity present; clicking toggles the problems drawer (the layout's
     // daisyUI drawer checkbox is bound to problems.drawerOpen). Hidden entirely
     // when there is nothing to report: a clean journal shouldn't wear a warning sign.
+    //
+    // Bank sync's problems (plan 43) count here too, and the drawer lists them
+    // as their own "Bank sync" group: they come from the sync status, not from
+    // `/api/diagnostics`.
     import {problems} from "#lib/stores/problems.svelte.js";
+    import {syncStore} from "#lib/sync/syncStore.svelte.js";
 
-    const badgeClass = $derived(problems.maxSeverity === "error" ? "badge-error" : problems.maxSeverity === "warning" ? "badge-warning" : "badge-info");
-    const label = $derived(problems.count === 1 ? "1 problem" : `${problems.count} problems`);
+    const count = $derived(problems.count + syncStore.problems.length);
+    const worst = $derived(
+        problems.maxSeverity === "error" || syncStore.maxSeverity === "error"
+            ? "error"
+            : problems.maxSeverity === "warning" || syncStore.maxSeverity === "warning"
+              ? "warning"
+              : "info"
+    );
+    const badgeClass = $derived(worst === "error" ? "badge-error" : worst === "warning" ? "badge-warning" : "badge-info");
+    const label = $derived(count === 1 ? "1 problem" : `${count} problems`);
 </script>
 
-{#if problems.count > 0}
+{#if count > 0}
     <button
         type="button"
         class="btn indicator btn-square btn-ghost btn-sm"
@@ -17,7 +30,7 @@
         title={label}
         onclick={() => (problems.drawerOpen = !problems.drawerOpen)}
     >
-        <span class="indicator-item badge badge-xs {badgeClass} font-semibold">{problems.count}</span>
+        <span class="indicator-item badge badge-xs {badgeClass} font-semibold">{count}</span>
         <!-- triangle-exclamation -->
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="h-4 w-4" aria-hidden="true">
             <path

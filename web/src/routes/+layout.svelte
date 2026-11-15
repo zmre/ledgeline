@@ -5,6 +5,8 @@
     import {page} from "$app/state";
     import ProblemsBadge from "#lib/checks/ProblemsBadge.svelte";
     import ProblemsDrawer from "#lib/checks/ProblemsDrawer.svelte";
+    import {syncStore} from "#lib/sync/syncStore.svelte.js";
+    import SyncStatusDot from "#lib/sync/ui/SyncStatusDot.svelte";
     import ServerSetupModal from "#lib/components/ServerSetupModal.svelte";
     import {rulesStore} from "#lib/imports/rulesStore.svelte.js";
     import ChordIndicator from "#lib/keys/ChordIndicator.svelte";
@@ -165,6 +167,17 @@
     // Imports and the new-ledger wizard need a desktop host (an hledger
     // subprocess, a folder to create a ledger in), so in the app they are not
     // routes at all: nothing renders there and the URL moves to the journal.
+    // Bank sync's status (plan 43): polled for the header dot and the Problems
+    // badge, once per (server, reconnect). Not in the iOS app, which runs no
+    // sync engine. An engine without the route answers 404 and the store goes
+    // quiet; nothing here needs to know.
+    $effect(() => {
+        const serverUrl = settings.serverUrl;
+        void settings.serverNonce;
+        if (serverUrl === null || native) return;
+        return syncStore.start(serverUrl);
+    });
+
     const nativeBlocked = $derived(native && (page.url.pathname.startsWith("/imports") || page.url.pathname.startsWith("/new")));
     $effect(() => {
         if (nativeBlocked) void goto(resolve("/"), {replace: true});
@@ -306,6 +319,7 @@
                             <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
                         </svg>
                     </a>
+                    {#if !native}<SyncStatusDot />{/if}
                     <ProblemsBadge />
                     {#if conn !== "none"}
                         <!-- Every resource on screen, not just the journal —
