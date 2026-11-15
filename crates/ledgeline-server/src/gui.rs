@@ -135,7 +135,7 @@ pub(crate) fn run(cli: &Cli, app_dirs: AppDirs) -> Result<(), AppError> {
         }
         None => (no_journal_state()?.with_app_dirs(app_dirs), None),
     };
-    let state = state.with_desktop(host);
+    let state = state.with_desktop(host).with_feed_fake_from_env();
     perf::stamp("journal_loaded");
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -188,6 +188,8 @@ pub(crate) fn run(cli: &Cli, app_dirs: AppDirs) -> Result<(), AppError> {
     // Plan 41: the background price updater, on the same runtime and the same
     // state, so it follows File → Open. Idle unless `autoPrices` is on.
     let _auto_prices = runtime.spawn(ledgeline::run_auto_prices(state.clone()));
+    // Plan 43: background bank sync, idle unless `autoSync` is on.
+    let _auto_sync = runtime.spawn(ledgeline::run_auto_sync(state.clone()));
 
     let bound_port = runtime
         .block_on(port_rx)

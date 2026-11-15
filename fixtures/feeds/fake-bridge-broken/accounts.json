@@ -1,0 +1,110 @@
+{
+  "errlist": [
+    {
+      "code": "con.auth",
+      "msg": "Harbor Card Services needs you to log in again.",
+      "conn_id": "CON-harbor"
+    },
+    {
+      "code": "act.failed",
+      "msg": "Unable to retrieve data for this account.",
+      "account_id": "ACT-summit-savings"
+    }
+  ],
+  "x-api-message": [],
+  "connections": [
+    {
+      "conn_id": "CON-lakeside",
+      "name": "Lakeside Credit Union",
+      "org_id": "ORG-lakeside",
+      "org_url": "https://lakeside-cu.example"
+    },
+    {
+      "conn_id": "CON-harbor",
+      "name": "Harbor Card Services",
+      "org_id": "ORG-harbor",
+      "org_url": "https://harbor-card.example"
+    },
+    {
+      "conn_id": "CON-summit",
+      "name": "Summit Online Bank",
+      "org_id": "ORG-summit",
+      "org_url": "https://summit-bank.example"
+    }
+  ],
+  "accounts": [
+    {
+      "id": "ACT-lakeside-checking",
+      "name": "Checking \u2022\u20224821",
+      "conn_id": "CON-lakeside",
+      "currency": "USD",
+      "balance": "32292.23",
+      "available-balance": "32292.23",
+      "balance-date": 1784073600,
+      "transactions": [
+        {
+          "id": "LCU-7001",
+          "posted": 1783296000,
+          "amount": "4200.00",
+          "description": "ACME CORP PAYROLL PPD",
+          "payee": "Acme Corp",
+          "memo": "Direct deposit",
+          "pending": false
+        },
+        {
+          "id": "LCU-7002",
+          "posted": 1783468800,
+          "amount": "-96.40",
+          "description": "PG&E WEB ONLINE",
+          "payee": "PG&E Utilities",
+          "memo": "",
+          "pending": false
+        },
+        {
+          "id": "LCU-7003",
+          "posted": 1783641600,
+          "amount": "-64.18",
+          "description": "TRADER JOE'S #552",
+          "payee": "Trader Joe's",
+          "memo": "",
+          "transacted_at": 1783555200,
+          "pending": false
+        },
+        {
+          "id": "LCU-7004",
+          "posted": 1783987200,
+          "amount": "-40.00",
+          "description": "VENMO PAYMENT 1029384756",
+          "payee": "Venmo",
+          "memo": "rent share",
+          "pending": false
+        },
+        {
+          "id": "LCU-7005",
+          "posted": 0,
+          "amount": "-12.75",
+          "description": "BLUE BOTTLE COFFEE (PENDING)",
+          "pending": true
+        }
+      ]
+    },
+    {
+      "id": "ACT-harbor-visa",
+      "name": "Visa Signature \u2022\u20223310",
+      "conn_id": "CON-harbor",
+      "currency": "USD",
+      "balance": "-603.24",
+      "balance-date": 1784073600,
+      "transactions": []
+    },
+    {
+      "id": "ACT-summit-savings",
+      "name": "High-Yield Savings \u2022\u20220077",
+      "conn_id": "CON-summit",
+      "currency": "USD",
+      "balance": "20041.10",
+      "balance-date": 1784073600,
+      "transactions": []
+    }
+  ]
+}
