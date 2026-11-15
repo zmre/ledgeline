@@ -154,6 +154,10 @@ pub(crate) struct SyncSession {
     /// Read-modify-write of `sync-state.json`.
     state_lock: Mutex<()>,
     batches: Mutex<HashMap<String, CachedBatch>>,
+    /// Where `sync-state.json` goes instead of the cache directory: the fake
+    /// bridge's private folder, so an e2e or docs-screenshot run never writes
+    /// fake connections into the developer's real sync state.
+    state_dir: Option<std::path::PathBuf>,
     /// Test hook (`test-fakes`): commits to report as a conflict, so the
     /// "edited mid-run → skipped, retried next time" path can be driven.
     #[cfg(feature = "test-fakes")]
@@ -184,6 +188,7 @@ impl SyncSession {
             running: AtomicBool::new(false),
             state_lock: Mutex::new(()),
             batches: Mutex::default(),
+            state_dir: None,
             #[cfg(feature = "test-fakes")]
             inject_conflicts: std::sync::atomic::AtomicUsize::new(0),
         }
@@ -208,6 +213,18 @@ impl SyncSession {
             Arc::clone(&self.secrets),
             true,
         )
+    }
+
+    /// This session keeping `sync-state.json` in `dir` (the fake bridge).
+    #[cfg(feature = "test-fakes")]
+    pub(crate) fn with_state_dir(&self, dir: std::path::PathBuf) -> Self {
+        let mut session = Self::with(
+            Arc::clone(&self.provider),
+            Arc::clone(&self.secrets),
+            self.loopback_http,
+        );
+        session.state_dir = Some(dir);
+        session
     }
 
     pub(crate) fn provider(&self) -> &Arc<dyn FeedProvider> {
@@ -293,7 +310,12 @@ impl Default for SyncSession {
 
 /// `sync-state.json`'s path for `state`.
 fn state_path(state: &AppState) -> Option<std::path::PathBuf> {
-    state::path_in(state.app_dirs().cache_dir.as_deref())
+    let session = state.sync();
+    let dir = session
+        .state_dir
+        .as_deref()
+        .or(state.app_dirs().cache_dir.as_deref());
+    state::path_in(dir)
 }
 
 /// Read `sync-state.json`.

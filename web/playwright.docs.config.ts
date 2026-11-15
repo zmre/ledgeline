@@ -25,7 +25,7 @@ import {defineConfig} from "@playwright/test";
 export const DOCS_TOKEN = "ledgeline-docs-token";
 
 /** Fixture set → engine port. The keys are stage.ts set names. */
-export const DOCS_ENGINES = {sample: 5211, budget: 5212, subscriptions: 5213, review: 5214, matching: 5215} as const;
+export const DOCS_ENGINES = {sample: 5211, budget: 5212, subscriptions: 5213, review: 5214, matching: 5215, sync: 5216, syncBroken: 5217} as const;
 export type DocsJournal = keyof typeof DOCS_ENGINES;
 
 /** The journal file each staged set's engine opens. */
@@ -35,6 +35,18 @@ const JOURNAL_FILE: Readonly<Record<DocsJournal, string>> = {
     subscriptions: "basic.journal",
     review: "review.journal",
     matching: "matching.journal",
+    sync: "sample.journal",
+    syncBroken: "sample.journal",
+};
+
+/**
+ * The fake SimpleFIN each sync set's engine talks to (`LEDGELINE_FEED_FAKE`,
+ * plan 43; needs a `--features test-fakes` build, which `just docs-screenshots`
+ * makes). Relative to web/, where the engines start.
+ */
+const FEED_FAKE: Partial<Record<DocsJournal, string>> = {
+    sync: "../fixtures/feeds/fake-bridge",
+    syncBroken: "../fixtures/feeds/fake-bridge-broken",
 };
 
 const BIN = process.env.LEDGELINE_BIN ?? "../target/debug/ledgeline";
@@ -42,7 +54,7 @@ const BIN = process.env.LEDGELINE_BIN ?? "../target/debug/ledgeline";
 const engine = (set: DocsJournal) => ({
     command: `bun docs-screenshots/stage.ts ${set} && exec ${BIN} --server ../target/docs-screenshots/${set}/${JOURNAL_FILE[set]} --port ${DOCS_ENGINES[set]}`,
     // UI view state stays in the browser, where the shots seed it (plan 38 WP-5).
-    env: {LEDGELINE_TOKEN: DOCS_TOKEN, LEDGELINE_UI_PREFS_IN_BROWSER: "1"},
+    env: {LEDGELINE_TOKEN: DOCS_TOKEN, LEDGELINE_UI_PREFS_IN_BROWSER: "1", ...(FEED_FAKE[set] ? {LEDGELINE_FEED_FAKE: FEED_FAKE[set]} : {})},
     url: `http://127.0.0.1:${DOCS_ENGINES[set]}/`,
     reuseExistingServer: false,
 });

@@ -117,6 +117,13 @@ function scheduleFast(): void {
     if (status?.running === true || syncing) fastTimer = setTimeout(() => void refresh(), POLL_RUNNING_MS);
 }
 
+/** Re-read the manual-downloads list when a screen has loaded it: it leaves out linked accounts. */
+async function reloadManualIfShown(): Promise<void> {
+    if (manual === null) return;
+    const outcome = await attempt((a) => a.manual());
+    if (outcome.ok) manual = outcome.value;
+}
+
 async function refresh(): Promise<void> {
     if (api === null || unsupported) return;
     if (inFlight !== null) return inFlight;
@@ -286,6 +293,8 @@ export const syncStore = {
         } finally {
             syncing = false;
             await refresh();
+            // A linked account leaves the manual list.
+            await reloadManualIfShown();
         }
     },
     async patchAccount(key: string, patch: WireAccountPatch): Promise<SyncOutcome<WireSyncStatus>> {
@@ -295,7 +304,11 @@ export const syncStore = {
     },
     async stopAccount(key: string): Promise<SyncOutcome<WireSyncStatus>> {
         const outcome = await attempt((a) => a.stopAccount(key));
-        if (outcome.ok) adopt(outcome.value);
+        if (outcome.ok) {
+            adopt(outcome.value);
+            // An unlinked account rejoins the manual list.
+            await reloadManualIfShown();
+        }
         return outcome;
     },
     async resolveHeld(key: string, heldId: string, action: "import" | "duplicate"): Promise<SyncOutcome<WireSyncStatus>> {

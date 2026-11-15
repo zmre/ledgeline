@@ -191,7 +191,7 @@ test("shows the settings, the date-format example and the real CSV columns", asy
     await expect(columns.nth(2)).toContainText("3000.00");
     await expect(page.getByLabel("Field name for column 3")).toHaveValue("amount");
 
-    await page.getByRole("tab", {name: "Accounts"}).click();
+    await page.getByRole("tablist", {name: "Rules file settings"}).getByRole("tab", {name: "Accounts"}).click();
     await expect(page.getByLabel("Account").first()).toHaveValue("assets:bank:checking");
 });
 

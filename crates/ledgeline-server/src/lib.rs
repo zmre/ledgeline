@@ -1094,12 +1094,19 @@ impl AppState {
 
     /// The e2e and docs-screenshot bridge (`LEDGELINE_FEED_FAKE=<dir>`): a
     /// provider serving `<dir>/accounts.json` that accepts any setup token for
-    /// `fake.simplefin.test`, and an in-memory secret store. Test builds only.
+    /// `fake.simplefin.test`, an in-memory secret store, and `sync-state.json`
+    /// in a temporary folder of this process's own, never the real cache
+    /// directory. Test builds only.
     #[cfg(feature = "test-fakes")]
     #[must_use]
     pub fn with_fake_feed(self, dir: impl Into<std::path::PathBuf>) -> Self {
-        self.with_feed_provider(Arc::new(sync::client::FakeBridge::new(dir)))
-            .with_secret_store(Arc::new(MemoryStore::new()))
+        let mut state = self
+            .with_feed_provider(Arc::new(sync::client::FakeBridge::new(dir)))
+            .with_secret_store(Arc::new(MemoryStore::new()));
+        let private =
+            std::env::temp_dir().join(format!("ledgeline-fake-sync-{}", std::process::id()));
+        state.sync = Arc::new(state.sync.with_state_dir(private));
+        state
     }
 
     /// Make the next `n` sync commits report a conflict, as if the journal

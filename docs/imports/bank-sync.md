@@ -86,7 +86,7 @@ If SimpleFIN has no banks connected yet, the next step says so. Connect one on S
 
 Ledgeline lists every account SimpleFIN found, with its current balance. For each one, choose where it goes.
 
-![The Link accounts step: one account mapped to an existing journal account with a matching balance, a start date, a target file and a new rules file, and a prompt offering to share an existing rules file's categories](images/bank-sync-wizard-link.png)
+![The Link accounts step: one account mapped to an existing journal account with the journal balance beside the bank's, a start date, a target file and a new rules file, and a prompt offering to share an existing rules file's categories](images/bank-sync-wizard-link.png)
 
 **Journal account, New account, or Don't sync.** Pick one:
 
@@ -133,7 +133,7 @@ When the wizard finds a manual rules file whose `account1` is the account you ch
 
 Before you decide, **Share them** opens a preview. It says how many rules move, lists any that stay, and shows both files' changes. Then Ledgeline runs the manual rules file over the last statement you imported with it, before and after the change. When hledger's output is byte for byte the same, it says "✓ hledger reads your last statement exactly the same before and after." When it isn't, sharing is turned off and the difference is shown. Nothing is written until you press **Finish**.
 
-![The Share categorization with sync dialog: 38 rules move, three stay with their reasons, a green check that hledger reads the last statement the same, and the two file diffs](images/bank-sync-share-dialog.png)
+![The Share categorization with sync dialog: 3 rules move from checking.csv.rules into checking.categories.rules, a green check that hledger reads the last statement exactly the same, and the two file diffs folded](images/bank-sync-share-dialog.png)
 
 ### Rules that stay in the manual file
 
@@ -320,7 +320,7 @@ ledgeline sync -j books.journal diagnostics <connection>
 
 Each problem says who has to act (**Your bank**, **SimpleFIN**, **Ledgeline**, **Network** or **Your setup**), what happened, and since when. Most have one button that fixes them. **Details** shows the raw message, and links to the matching section below.
 
-![A problem on a linked account: Chase needs you to sign in again at SimpleFIN, Data stops at Nov 11, with Fix at SimpleFIN and I've fixed it buttons](images/bank-sync-problem-con-auth.png)
+![A problem on a linked account: Harbor Card Services needs you to sign in again at SimpleFIN, with Fix at SimpleFIN and I've fixed it buttons](images/bank-sync-problem-con-auth.png)
 
 <a id="con-auth"></a>
 

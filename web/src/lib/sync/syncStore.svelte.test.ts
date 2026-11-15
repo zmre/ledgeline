@@ -50,6 +50,20 @@ afterEach(() => {
 });
 
 describe("UNIT syncStore", () => {
+    it("re-reads a shown manual-downloads list after linking, which leaves the linked account out", async () => {
+        const manualCalls = (calls: Call[]) => calls.filter((c) => c.url.endsWith("/api/sync/manual")).length;
+        const {calls} = engine({
+            "GET /api/sync/manual": () => json({accounts: []}),
+            "POST /api/sync/link": () => json(fixtureRun()),
+        });
+        stop = syncStore.start(FAKE_ENGINE);
+        await vi.waitFor(() => expect(syncStore.status).not.toBeNull());
+        await syncStore.loadManual();
+        expect(manualCalls(calls)).toBe(1);
+        await syncStore.link([]);
+        expect(manualCalls(calls)).toBe(2);
+    });
+
     it("reads the status and derives the dot and the problems", async () => {
         engine();
         stop = syncStore.start(FAKE_ENGINE);
