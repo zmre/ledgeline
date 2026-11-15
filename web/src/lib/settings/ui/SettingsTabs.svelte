@@ -10,9 +10,10 @@
 
     let {tab = $bindable()}: {tab: SettingsTab} = $props();
 
-    // The iOS app (plan 42) runs no background price updater (it lives in the
-    // desktop server's main loop), so the tab that only configures it goes.
-    const tabs = isNative() ? TAB_ORDER.filter((t) => t !== "prices") : TAB_ORDER;
+    // The iOS app (plan 42) runs no background price updater or bank sync
+    // (both live in the desktop server's main loop), so the tabs that only
+    // configure them go.
+    const tabs = isNative() ? TAB_ORDER.filter((t) => t !== "prices" && t !== "sync") : TAB_ORDER;
 
     registerKeys({
         id: "settings-tabs",

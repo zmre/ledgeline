@@ -33,4 +33,10 @@ describe("COMPONENT SettingsTabs", () => {
             expect(selected()).toBe(label);
         }
     });
+
+    it("8 selects Sync, the last tab (plan 43)", async () => {
+        render(SettingsTabs, {tab: "accounts"});
+        await press("8");
+        expect(selected()).toBe("Sync");
+    });
 });
