@@ -103,6 +103,8 @@
       # `assets/Info.plist.in` is READ by a macOS unit test (gui_file_assoc.rs)
       # that keeps the file types the app claims in step with the ones its
       # "Make Default" menu command sets; `assets/` itself stays out.
+      # `crates/ledgeline-core/src/feeds/mcc.tsv` is the merchant-category table
+      # `include_str!`ed by `feeds/mcc.rs`.
       src = lib.cleanSourceWith {
         src = ./.;
         name = "ledgeline-source";
@@ -110,6 +112,7 @@
           (craneLib.filterCargoSources path type)
           || (builtins.match ".*/fixtures(/.*)?" path != null)
           || (lib.hasSuffix "/crates/ledgeline-server/src/sample.journal" path)
+          || (lib.hasSuffix "/crates/ledgeline-core/src/feeds/mcc.tsv" path)
           || (lib.hasSuffix "/assets" path && type == "directory")
           || (lib.hasSuffix "/assets/Info.plist.in" path);
       };
