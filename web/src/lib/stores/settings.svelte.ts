@@ -32,6 +32,8 @@ import {
     AUTO_SYNC_HOURS_DEFAULT,
     AUTO_SYNC_HOURS_RANGE,
     isRelDir,
+    MANUAL_REMIND_DAYS_DEFAULT,
+    MANUAL_REMIND_DAYS_RANGE,
     SYNC_KEEP_DAYS_DEFAULT,
     SYNC_KEEP_DAYS_RANGE,
     COLUMN_KEYS,
@@ -671,6 +673,14 @@ export const settings = {
     set syncKeepSourceDays(days: number) {
         state.syncKeepSourceDays = wholeIn(days, SYNC_KEEP_DAYS_RANGE, SYNC_KEEP_DAYS_DEFAULT);
         save({syncKeepSourceDays: state.syncKeepSourceDays});
+    },
+    /** Days without a new transaction before a manually imported account turns amber, clamped to 1–3650. */
+    get manualRemindDays(): number {
+        return state.manualRemindDays;
+    },
+    set manualRemindDays(days: number) {
+        state.manualRemindDays = wholeIn(days, MANUAL_REMIND_DAYS_RANGE, MANUAL_REMIND_DAYS_DEFAULT);
+        save({manualRemindDays: state.manualRemindDays});
     },
     /** The cross-origin engine token, if one was entered. Null in embedded mode. */
     get serverToken(): string | null {

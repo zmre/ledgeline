@@ -272,35 +272,58 @@ pub(crate) fn ready(ctx: &link::Context, link: &AccountLink) -> Result<ReadyLink
 
 /// The sync CSV's header names as the rules file's `fields` line spells them
 /// (a shared file borrows the manual file's names), or the defaults.
+///
+/// A file written before `mcc`, `mcc_name` and `extra` existed names only the
+/// first seven. Its names are kept and the three new columns get their
+/// defaults: the CSV still has them, at the end, where hledger ignores them.
 pub(crate) fn columns_of(rules_text: &str) -> FeedColumns {
     let fields = RulesDoc::parse(rules_text)
         .settings()
         .fields
         .map(|setting| setting.value)
         .unwrap_or_default();
+    let defaults = FeedColumns::default();
     match fields.as_slice() {
-        [date, amount, payee, description, memo, id, transacted] => FeedColumns {
-            date: date.clone(),
-            amount: amount.clone(),
-            payee: payee.clone(),
-            description: description.clone(),
-            memo: memo.clone(),
-            id: id.clone(),
-            transacted: transacted.clone(),
-        },
-        _ => FeedColumns::default(),
+        [
+            date,
+            amount,
+            payee,
+            description,
+            memo,
+            id,
+            transacted,
+            rest @ ..,
+        ] if rest.is_empty() || rest.len() == 3 => {
+            let named = |index: usize, default: &String| {
+                rest.get(index).cloned().unwrap_or_else(|| default.clone())
+            };
+            FeedColumns {
+                date: date.clone(),
+                amount: amount.clone(),
+                payee: payee.clone(),
+                description: description.clone(),
+                memo: memo.clone(),
+                id: id.clone(),
+                transacted: transacted.clone(),
+                mcc: named(0, &defaults.mcc),
+                mcc_name: named(1, &defaults.mcc_name),
+                extra: named(2, &defaults.extra),
+            }
+        }
+        _ => defaults,
     }
 }
 
-/// Whether a rules file's text reads the sync CSV: seven fields, and the
-/// sixth (the id) written as the transaction's `id:` tag.
+/// Whether a rules file's text reads the sync CSV: ten fields, or the seven
+/// of a file written before `mcc`/`mcc_name`/`extra`, and the sixth (the id)
+/// written as the transaction's `id:` tag.
 pub(crate) fn fits_sync(rules_text: &str) -> bool {
     let fields = RulesDoc::parse(rules_text)
         .settings()
         .fields
         .map(|setting| setting.value)
         .unwrap_or_default();
-    fields.len() == 7 && rules_text.contains(&format!("id:%{}", fields[5]))
+    matches!(fields.len(), 7 | 10) && rules_text.contains(&format!("id:%{}", fields[5]))
 }
 
 /// The planner's view of `connection`, from the config and the state file.
@@ -478,6 +501,9 @@ async fn run_connection(
         SyncPlan::NeedsUser(reason) => {
             if mode == Mode::Manual {
                 let problem = match reason {
+                    NeedsUser::NotConnected if memory.elsewhere(&connection.id, false) => {
+                        WireProblem::elsewhere(&connection.id)
+                    }
                     NeedsUser::NotConnected => WireProblem::not_connected(&connection.id),
                     NeedsUser::Revoked => WireProblem::revoked(&connection.id),
                     NeedsUser::Payment => {
@@ -580,6 +606,8 @@ async fn run_connection(
     let manage = manage_url(Some(&host));
     let remote = remote_summaries(&batch);
     update_state(state, |memory| {
+        // A key set up before `connectedHere` existed is remembered here.
+        memory.connected_here.insert(connection.id.clone());
         let conn = memory.connections.entry(connection.id.clone()).or_default();
         conn.last_attempt = Some(now);
         conn.last_success = Some(now);
@@ -590,6 +618,7 @@ async fn run_connection(
             conn.quota_until = Some(auto::next_utc_midnight(now));
         }
         conn.last_errlist = errlist(&batch);
+        conn.field_names = batch.field_names.iter().cloned().collect();
         conn.log(now, "ok", &format!("{} account(s)", batch.accounts.len()));
         if !targeted {
             // A custom currency's fetched symbol outlives the listing.
@@ -874,6 +903,7 @@ pub(crate) async fn fetch_balances(
                 conn.remote = remote;
                 conn.host = Some(host);
                 conn.last_errlist = errlist(&batch);
+                conn.field_names = batch.field_names.iter().cloned().collect();
             });
             Ok(batch)
         }
@@ -923,6 +953,7 @@ fn merge(mut earlier: FeedBatch, later: FeedBatch) -> FeedBatch {
             earlier.notices.push(notice);
         }
     }
+    earlier.field_names.extend(later.field_names);
     earlier
 }
 
@@ -1742,6 +1773,10 @@ pub(crate) fn diagnostics(state: &AppState, connection: &str) -> Result<String, 
             entry.detail
         ));
     }
+    text.push_str("\nfields the last response used (names only):\n");
+    for name in &remembered.field_names {
+        text.push_str(&format!("  {name}\n"));
+    }
     text.push_str("\nlast response's errors:\n");
     for line in &remembered.last_errlist {
         text.push_str(&format!("  {line}\n"));
@@ -1828,6 +1863,7 @@ mod tests {
                 problem(ProblemKind::GenApi, "gen.api", None, None),
             ],
             notices: Vec::new(),
+            field_names: std::collections::BTreeSet::new(),
         };
         let conn = connection_problems(&batch, "c1", "beta-bridge.simplefin.org", 5);
         assert_eq!(
@@ -1897,6 +1933,8 @@ mod tests {
             memo: None,
             transacted_at: None,
             pending: false,
+            mcc: None,
+            extra: None,
         }
     }
 

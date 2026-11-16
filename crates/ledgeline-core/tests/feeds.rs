@@ -402,7 +402,7 @@ fn borrowed_column_names_rename_only_the_header() {
     let mut lines = csv.lines();
     assert_eq!(
         lines.next(),
-        Some("date,amount,name,sfdescription,memo,id,transacted")
+        Some("date,amount,name,sfdescription,memo,id,transacted,mcc,mcc_name,extra")
     );
     let golden = read("simplefin/demo-v2.checking.csv");
     assert!(golden.lines().skip(1).eq(lines));
@@ -849,7 +849,7 @@ proptest! {
 
     /// Whatever a bank puts in a field, a real CSV reader gets it back.
     #[test]
-    fn csv_fields_round_trip(fields in proptest::collection::vec(any::<String>(), 7)) {
+    fn csv_fields_round_trip(fields in proptest::collection::vec(any::<String>(), 10)) {
         let row = ledgeline_core::feeds::normalize::NormRow {
             date: fields[0].clone(),
             amount: fields[1].clone(),
@@ -858,6 +858,9 @@ proptest! {
             memo: fields[4].clone(),
             id: fields[5].clone(),
             transacted: fields[6].clone(),
+            mcc: fields[7].clone(),
+            mcc_name: fields[8].clone(),
+            extra: fields[9].clone(),
         };
         let text = to_csv(std::slice::from_ref(&row), &FeedColumns::default());
         let mut reader = csv::ReaderBuilder::new()
@@ -879,4 +882,66 @@ proptest! {
         prop_assert!(!prefixed.contains(char::is_whitespace) || !prefixed.contains(['\n', '\r', '\t']));
         prop_assert_eq!(prefixed.trim(), prefixed.as_str());
     }
+}
+
+#[test]
+fn the_merchant_code_and_extra_reach_the_row() {
+    let demo = batch("demo-v2.json");
+    let safeway = account(&demo, "ACT-demo-checking")
+        .transactions
+        .iter()
+        .find(|txn| txn.id == "TRN-1003")
+        .expect("Safeway is in the demo");
+    assert_eq!(safeway.mcc.as_deref(), Some("5411"));
+    assert_eq!(
+        safeway.extra.as_deref(),
+        Some(r#"{"card":"Visa","category":"Groceries"}"#)
+    );
+    let payroll = account(&demo, "ACT-demo-checking")
+        .transactions
+        .iter()
+        .find(|txn| txn.id == "TRN-1002")
+        .expect("payroll is in the demo");
+    assert_eq!(
+        (payroll.mcc.as_deref(), payroll.extra.as_deref()),
+        (None, None)
+    );
+}
+
+#[test]
+fn a_numeric_or_odd_merchant_code_is_read_or_left_out() {
+    let body =
+        br#"{"accounts":[{"id":"A","name":"A","currency":"USD","balance":"0","transactions":[
+        {"id":"1","posted":1,"amount":"-1","description":"x","mcc":742},
+        {"id":"2","posted":1,"amount":"-1","description":"x","mcc":"not a code"},
+        {"id":"3","posted":1,"amount":"-1","description":"x","extra":{}}]}]}"#;
+    let parsed = ledgeline_core::feeds::simplefin::parse_accounts(body).expect("parses");
+    let txns = &parsed.accounts[0].transactions;
+    assert_eq!(txns[0].mcc.as_deref(), Some("0742"));
+    assert_eq!(txns[1].mcc, None);
+    assert_eq!(txns[2].extra, None, "an empty extra is no extra");
+}
+
+#[test]
+fn the_batch_lists_field_names_without_values() {
+    let demo = batch("demo-v2.json");
+    for name in [
+        "account.balance",
+        "account.extra.account-open-date",
+        "transaction.mcc",
+        "transaction.extra.card",
+        "transaction.extra.category",
+    ] {
+        assert!(
+            demo.field_names.contains(name),
+            "{name}: {:?}",
+            demo.field_names
+        );
+    }
+    assert!(
+        !demo
+            .field_names
+            .iter()
+            .any(|name| name.contains("Groceries"))
+    );
 }

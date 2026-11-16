@@ -64,6 +64,8 @@
     let wizard = $state.raw(untrack(() => wizardInit(start, connectionId, accounts)));
     /** Replacing a token keeps the connection's id and links. */
     const replacing = untrack(() => (start === "simplefin" ? connectionId : null));
+    /** Adding this computer to a connection another computer already syncs. */
+    const alsoHere = untrack(() => replacing !== null && syncStore.status?.connections.find((c) => c.id === replacing)?.state === "elsewhere");
 
     let method = $state<ConnectMethod>("simplefin");
     let token = $state("");
@@ -249,16 +251,28 @@
             <section class="flex flex-col gap-3">
                 <div class="flex flex-wrap items-baseline justify-between gap-2">
                     <h3 class="text-base font-semibold" tabindex="-1" bind:this={heading}>
-                        {replacing === null ? "Set up SimpleFIN Bridge" : "Paste a new setup token"}
+                        {replacing === null ? "Set up SimpleFIN Bridge" : alsoHere ? "Sync from this computer too" : "Paste a new setup token"}
                     </h3>
                     {#if replacing === null}<span class="text-xs text-base-content/60">About 5 minutes</span>{/if}
                 </div>
+                {#if alsoHere}
+                    <div class="flex flex-col gap-1 rounded-box bg-base-200 p-3 text-sm" data-testid="sync-also-here">
+                        <p>Another computer already syncs these accounts. You don't need to connect this one to see what it imports.</p>
+                        <p>
+                            If both computers sync, they can write the same transactions at nearly the same time, before iCloud (or whatever shares the ledger)
+                            has copied the other's changes across. That can duplicate transactions or leave a conflicted copy of a file. Turn on automatic sync
+                            on one computer only, as that computer's own setting rather than this ledger's, and use
+                            <strong>Sync now</strong> here only when the other one is off.
+                        </p>
+                        <p>Each computer needs its own setup token: a token works once.</p>
+                    </div>
+                {/if}
                 <ol class="flex list-decimal flex-col gap-2 pl-5 text-sm">
                     {#if replacing === null}
                         <li>
                             <span class="flex flex-wrap items-center justify-between gap-2">
                                 Create a SimpleFIN Bridge account and subscribe.
-                                <a class="btn btn-xs" href={SIMPLEFIN_URL} target="_blank" rel="noopener noreferrer external">Open SimpleFIN ↗</a>
+                                <a class="btn btn-primary btn-sm" href={SIMPLEFIN_URL} target="_blank" rel="noopener noreferrer external">Open SimpleFIN ↗</a>
                             </span>
                         </li>
                         <li>
@@ -268,7 +282,7 @@
                         <li>
                             <span class="flex flex-wrap items-center justify-between gap-2">
                                 Open SimpleFIN. Your linked accounts and their history stay as they are.
-                                <a class="btn btn-xs" href={SIMPLEFIN_URL} target="_blank" rel="noopener noreferrer external">Open SimpleFIN ↗</a>
+                                <a class="btn btn-primary btn-sm" href={SIMPLEFIN_URL} target="_blank" rel="noopener noreferrer external">Open SimpleFIN ↗</a>
                             </span>
                         </li>
                     {/if}
@@ -328,7 +342,7 @@
                 {#if wizard.accounts.length === 0}
                     <p class="text-sm">SimpleFIN has no banks connected yet. Connect one on SimpleFIN, then press Re-check.</p>
                     <div class="flex gap-2">
-                        <a class="btn btn-sm" href={SIMPLEFIN_URL} target="_blank" rel="noopener noreferrer external">Open SimpleFIN ↗</a>
+                        <a class="btn btn-primary btn-sm" href={SIMPLEFIN_URL} target="_blank" rel="noopener noreferrer external">Open SimpleFIN ↗</a>
                         <button type="button" class="btn btn-sm" disabled={busy || wizard.connectionId === null} onclick={() => void recheck()}>
                             {#if busy}<span class="loading loading-xs loading-spinner"></span>{/if}
                             Re-check

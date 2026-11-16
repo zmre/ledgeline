@@ -23,6 +23,12 @@ describe("UNIT sync statusLine", () => {
         expect(statusLine({...fixtureStatus(), available: false}, FIXTURE_NOW)).toBeNull();
     });
 
+    it("says where the sync happens when every connection syncs on another computer", () => {
+        const status = fixtureStatus();
+        status.connections = status.connections.map((c) => ({...c, state: "elsewhere" as const, connected: false}));
+        expect(statusLine(status, FIXTURE_NOW)).toBe("Bank sync runs on another computer");
+    });
+
     it("says next any minute when the next run is overdue", () => {
         expect(statusLine({...fixtureStatus(), nextAuto: FIXTURE_NOW - 60}, FIXTURE_NOW, "en-US")).toContain("next any minute");
     });

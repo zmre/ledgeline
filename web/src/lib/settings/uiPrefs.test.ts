@@ -23,7 +23,7 @@ import {
 describe("UNIT uiPrefs", () => {
     it("names every view setting, and never the connection", () => {
         expect([...UI_PREF_KEYS].sort()).toEqual(Object.keys(defaultUiPrefs()).sort());
-        expect(UI_PREF_KEYS).toHaveLength(27);
+        expect(UI_PREF_KEYS).toHaveLength(28);
         expect(UI_PREF_KEYS).not.toContain("serverUrl");
         expect(UI_PREF_KEYS).not.toContain("serverToken");
     });
@@ -65,6 +65,7 @@ describe("UNIT uiPrefs", () => {
             "autoSyncEveryHours",
             "syncSourceDir",
             "syncKeepSourceDays",
+            "manualRemindDays",
         ]);
         expect(isThemeId("tokyo-night-day")).toBe(true);
         expect(isThemeId("Nord")).toBe(false);
@@ -77,8 +78,15 @@ describe("UNIT uiPrefs", () => {
         expect(cleanUiPrefs({autoPrices: "yes", autoPricesWeeks: -1})).toMatchObject({autoPrices: false, autoPricesWeeks: 0});
     });
 
-    it("defaults bank sync off, every 6 hours, into imports/sync, kept 90 days, and cleans hand edits", () => {
-        expect(defaultUiPrefs()).toMatchObject({autoSync: false, autoSyncEveryHours: 6, syncSourceDir: "imports/sync", syncKeepSourceDays: 90});
+    it("defaults bank sync off, every 6 hours, into imports/sync, kept forever, reminding after 35 days, and cleans hand edits", () => {
+        expect(defaultUiPrefs()).toMatchObject({
+            autoSync: false,
+            autoSyncEveryHours: 6,
+            syncSourceDir: "imports/sync",
+            syncKeepSourceDays: 0,
+            manualRemindDays: 35,
+        });
+        expect(cleanUiPrefs({manualRemindDays: 0})).toMatchObject({manualRemindDays: 1});
         expect(cleanUiPrefs({autoSync: true, autoSyncEveryHours: 1, syncSourceDir: "bank/feeds", syncKeepSourceDays: 99999})).toMatchObject({
             autoSync: true,
             autoSyncEveryHours: 3,

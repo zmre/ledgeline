@@ -26,7 +26,8 @@ Read this before you sign up. Bank sync means a company other than you and your 
 
 - **SimpleFIN Bridge** runs on MX, a bank-data aggregator. You sign in to your bank on SimpleFIN's website, not in Ledgeline. MX keeps that login and fetches your accounts. SimpleFIN passes the results on to apps you allow.
 - **Ledgeline talks only to SimpleFIN Bridge.** It never sees your bank password. It holds one access key, which lets it read what SimpleFIN has. You can revoke that key on SimpleFIN at any time.
-- **It costs money.** SimpleFIN Bridge is a subscription, $15 a year at the time of writing. Ledgeline charges nothing for bank sync.
+- **It costs money.** SimpleFIN Bridge is a subscription, $15 a year or $1.50 a month at the time of writing. Ledgeline charges nothing for bank sync.
+- **It has limits.** One subscription connects up to 25 institutions and 25 apps. An institution is one bank login, however many accounts it holds, so a bank with checking, savings and a card counts once. Each Ledgeline connection is one app.
 
 ### Why there is no direct option
 
@@ -182,11 +183,60 @@ imports/sync/<connection>/<account>-<id>/2026-11-14T0712.csv
 ```
 
 - The folder is the **Save downloaded statements in** setting, `imports/sync` by default. It must be inside your journal's folder.
-- Files older than **Keep them for** (90 days by default) are deleted. Set it to 0 to keep every file.
+- Every file is kept unless you say otherwise. Set **Keep them for** to a number of days and older files are deleted. They are only Ledgeline's copies of what it downloaded: deleting them never touches your journal. 0, the default, keeps every file.
 - `hledger import` with the account's rules file reads these files the same way Ledgeline does, so you can check or repeat an import from a terminal.
 - Each sync writes a new file, and Ledgeline deletes the `.latest` file hledger leaves beside it. Duplicates are caught by id instead, so a transaction that arrives late still gets in.
 - Ledgeline writes no `.gitignore`. If your journal is in git, decide yourself whether to commit these files.
 - SimpleFIN's raw answers are never saved anywhere.
+
+### What's in the sync file
+
+The CSV has the same columns for every bank. Your sync rules file can match on any of them with `if %column`:
+
+| Column | What it holds |
+| --- | --- |
+| `date` | The date the bank posted it. |
+| `amount` | Negative for money out. |
+| `payee` | A cleaned-up merchant name, or the description when the bank has none. It becomes the transaction's description. |
+| `description` | The bank's own text, such as `SAFEWAY #1234 OAKLAND CA`. |
+| `memo` | Any note the bank adds, or empty. |
+| `id` | The transaction's sync id. It becomes the `id:` tag. |
+| `transacted` | The purchase date, when it differs from `date`. It becomes the secondary date. |
+| `mcc` | The merchant category code: four digits saying what kind of business it is, such as `5411`. Empty when the bank doesn't send one. |
+| `mcc_name` | The code in words, such as `Grocery Stores and Supermarkets`. Codes for single airlines, car rental firms and hotel chains all read as `Airlines`, `Car Rental` and `Hotels and Lodging`. |
+| `extra` | Anything else the bank sent, as JSON, such as `{"store":"552"}`. Usually empty. |
+
+When a transaction has a merchant category, sync tags it with it:
+
+```journal
+2026-07-10=2026-07-09 Trader Joe's  ; id:4a91c2-LCU-7003, category:Grocery Stores and Supermarkets
+    assets:bank:checking         $-64.18
+    expenses:unknown
+```
+
+Ledgeline doesn't categorize anything from the code by itself. To do that, add rules to the account's sync rules file or its shared categories file. The words are easier to read; the code is exact:
+
+```
+if %mcc_name Grocery
+  account2 expenses:food:groceries
+
+if %mcc ^(5812|5814)$
+  account2 expenses:food:restaurants
+
+if %extra "store":"552"
+  comment2 store:552
+```
+
+Not every bank sends a code. The `category:` tag and these rules only apply to transactions that have one.
+
+**A sync rules file from before these columns** names seven columns on its `fields` line, and keeps working unchanged: hledger ignores the extra columns. It can't match on `mcc`, `mcc_name` or `extra`, and it adds no `category:` tag. To get them, add `, mcc, mcc_name, extra` to the end of its `fields` line, and append the category tag rule last:
+
+```
+if %mcc_name .
+  comment id:%id, category:%mcc_name
+```
+
+To see what a bank actually sends, use **Copy diagnostic report** (or `ledgeline sync diagnostics`). It lists the field names of the last response, such as `transaction.mcc` or `transaction.extra.store`, without any of their values.
 
 ## Duplicates
 
@@ -259,7 +309,7 @@ Under the linked accounts, **Manual downloads** lists the asset and liability ac
 
 - **Add download page** saves the address of the bank's statement page. **Open download page ↗** then takes you there.
 - **Import a file…** opens New transactions.
-- An account with no new transaction for 35 days turns amber, as a reminder. For an account that is quiet on purpose, press **Edit** (or **Add download page**), untick **Remind me after 35 days**, and press **Save**.
+- An account with no new transaction for 35 days turns amber, as a reminder. Change the 35 under **Remind me about manual downloads after** in Settings → Sync. For an account you never download, like a car or a loan, press **Skip**: it gets no download page and no reminders, and the row says "No reminders". To change that later, or to quiet an account that already has a download page, press **Edit**, untick or tick **Remind me after *N* days**, and press **Save**.
 
 The download page and the reminder setting are saved in the ledger's `ledgeline.toml`.
 
@@ -289,12 +339,22 @@ If you only need a new token, use **Replace token…** instead. It keeps your li
 | --- | --- |
 | The SimpleFIN access key | Your keychain only, one item per connection, named `ledgeline.sync` in Keychain Access. On Linux, the Secret Service. Never in a file, a log, or a diagnostic report. |
 | Connections and account links | The `[sync]` part of `ledgeline.toml` beside your journal. Linking creates the file if needed. |
-| Sync settings | `autoSync`, `autoSyncEveryHours`, `syncSourceDir` and `syncKeepSourceDays`, in `ui-prefs.toml` or a ledger's `ledgeline.toml`, like other [settings](../settings/settings-files.md#the-keys). |
+| Sync settings | `autoSync`, `autoSyncEveryHours`, `syncSourceDir`, `syncKeepSourceDays` and `manualRemindDays`, in `ui-prefs.toml` or a ledger's `ledgeline.toml`, like other [settings](../settings/settings-files.md#the-keys). |
 | Request counts, recent results, held transactions | `sync-state.json` in Ledgeline's cache folder. Deleting it costs one extra fetch and the history list. |
 
 `ledgeline.toml` travels with your journal, so Ledgeline treats it as untrusted. It holds no secret and no server address: the address comes from the keychain. Rules files, target files and the source folder named there must be inside the journal's folder, or that link is skipped with a [setup problem](#setup).
 
-The keychain item stays on the computer that created it. Open the same ledger on a second Mac and its connection reads **Not connected on this computer**. Choose **Connect on this computer…** from the connection's ⋯ menu and paste a new setup token there.
+### A ledger shared between computers
+
+The keychain item stays on the computer that created it. When a ledger lives somewhere several computers open it, such as iCloud Drive, one computer can sync it and the others just read it.
+
+On a computer that has never been connected, the connection reads **Syncs on another computer**, and each account says "Synced on another computer". That isn't a problem. Nothing is fetched there, nothing shows on the header's sync icon or the Problems page, and **Sync now** is hidden. Transactions the other computer imports arrive with the journal files.
+
+To sync from this computer as well, press **Sync from this computer too…** and paste a new setup token from your SimpleFIN account. A token works once, so each computer needs its own. The links, and so the transactions' ids, stay the same.
+
+If both computers sync, they can write the same transactions at nearly the same time, before iCloud has copied the other's changes across. That can duplicate transactions, or leave a conflicted copy of a file. Turn on [automatic sync](#sync-now-and-automatic-sync) on one computer only, as that computer's own setting rather than the ledger's, and use **Sync now** on the other only when the first one is off.
+
+Once a computer has been connected, it remembers that. If its key goes missing later, it reads [Not connected on this computer](#not-connected) instead.
 
 ## From a terminal
 
@@ -477,12 +537,22 @@ The same message the New transactions tab shows when it can't run hledger.
 
 "Not connected on this computer."
 
-**Why.** The ledger's `ledgeline.toml` has links, but this computer's keychain has no access key for them. That's expected on a second computer, or after you deleted the keychain item, or after **Disconnect…**.
+**Why.** This computer was connected before, but its keychain has no access key for the connection any more: you deleted the keychain item, or pressed **Disconnect…**. A computer that was never connected reads [Syncs on another computer](#elsewhere) instead.
 
 **What to do.**
 
 - If the connection is still listed on the Accounts tab, choose **Connect on this computer…** from its ⋯ menu and paste a new setup token. The links are kept.
 - If you disconnected, the accounts are listed under **Not connected on this computer**. Connect a bank again and link them, then open each old entry and press **Stop syncing…**.
+
+<a id="elsewhere"></a>
+
+### Syncs on another computer
+
+"Bank sync for this ledger runs on another computer."
+
+**Why.** You pressed **Sync now** on a computer that was never connected. The ledger's links come from its shared `ledgeline.toml`, and another computer holds the key. See [A ledger shared between computers](#a-ledger-shared-between-computers).
+
+**What to do.** Nothing, if the other computer syncs. To sync from this one too, press **Sync from this computer too…** and paste a new setup token.
 
 <a id="setup"></a>
 

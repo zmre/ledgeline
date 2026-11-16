@@ -5,6 +5,7 @@
 <script lang="ts">
     import {goto} from "$app/navigation";
     import {localToday} from "#lib/stores/filters.svelte.js";
+    import {settings} from "#lib/stores/settings.svelte.js";
     import {manualStale} from "../manualStale";
     import {safeUrl} from "../problemAction";
     import {syncStore} from "../syncStore.svelte";
@@ -13,7 +14,7 @@
 
     let {account, highlight = false}: {account: WireManualAccount; highlight?: boolean} = $props();
 
-    const view = $derived(manualStale(account, localToday()));
+    const view = $derived(manualStale(account, localToday(), undefined, settings.manualRemindDays));
     const link = $derived(safeUrl(account.downloadUrl ?? undefined));
 
     let editing = $state(false);
@@ -42,6 +43,15 @@
         if (outcome.ok) editing = false;
         else error = outcome.failure.message;
     }
+
+    /** No download page and no reminders: the same as saving an empty form. */
+    async function skip(): Promise<void> {
+        saving = true;
+        error = null;
+        const outcome = await syncStore.putManual({account: account.account, downloadUrl: null, nudge: false});
+        saving = false;
+        if (!outcome.ok) error = outcome.failure.message;
+    }
 </script>
 
 <li
@@ -50,7 +60,9 @@
     data-stale={view.stale}
 >
     <span class="font-mono text-sm">{account.account}</span>
-    <span class="text-xs {view.stale ? 'text-warning' : 'text-base-content/70'}">{view.stale ? "⚠ " : ""}{view.line}</span>
+    <span class="text-xs {view.stale ? 'text-warning' : 'text-base-content/70'}"
+        >{view.stale ? "⚠ " : ""}{view.line}{account.nudge ? "" : " · No reminders"}</span
+    >
     {#if editing}
         <form class="flex flex-wrap items-center gap-2" onsubmit={(e) => void save(e)}>
             <input
@@ -63,7 +75,7 @@
             />
             <label class="flex cursor-pointer items-center gap-1 text-xs">
                 <input type="checkbox" class="checkbox checkbox-xs" bind:checked={draftNudge} disabled={saving} />
-                Remind me after 35 days
+                Remind me after {settings.manualRemindDays} days
             </label>
             <button type="submit" class="btn btn-primary btn-xs" disabled={saving}>Save</button>
             <button type="button" class="btn btn-ghost btn-xs" disabled={saving} onclick={() => (editing = false)}>Cancel</button>
@@ -76,7 +88,20 @@
             {/if}
             <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- importsHref resolves the route; the query string is appended -->
             <button type="button" class="btn btn-xs" onclick={() => void goto(importsHref("new"))}>Import a file…</button>
-            <button type="button" class="btn btn-ghost btn-xs" onclick={edit}>{link === null ? "Add download page" : "Edit"}</button>
+            {#if link === null && account.nudge}
+                <button type="button" class="btn btn-ghost btn-xs" onclick={edit}>Add download page</button>
+                <button
+                    type="button"
+                    class="btn btn-ghost btn-xs"
+                    title="No download page and no reminders, for an account you don't download, like a car or a loan"
+                    disabled={saving}
+                    onclick={() => void skip()}
+                    data-testid="sync-manual-skip">Skip</button
+                >
+            {:else}
+                <button type="button" class="btn btn-ghost btn-xs" onclick={edit}>Edit</button>
+            {/if}
         </div>
+        {#if error !== null}<span class="self-end text-xs text-error" role="alert">{error}</span>{/if}
     {/if}
 </li>

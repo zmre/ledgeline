@@ -58,7 +58,7 @@ The theme, the interface scale and the automatic price updates can be kept for o
 - From then on, changing that setting while this ledger is open saves it in `ledgeline.toml`. Other ledgers keep using `ui-prefs.toml`.
 - Untick the box to go back to the shared value. Ledgeline removes the key from `[ui]`, along with any comment lines directly above it. The rest of the file stays, and Ledgeline never deletes the file, even if nothing is left in it.
 
-Only `theme`, `uiScale`, `autoPrices`, `autoPricesWeeks` and the four sync keys can be kept this way from the app. The Prices tab keeps its two keys together, and the Sync tab keeps `autoSync`, `autoSyncEveryHours`, `syncSourceDir` and `syncKeepSourceDays` together. For any other key, add it to `ledgeline.toml` by hand.
+Only `theme`, `uiScale`, `autoPrices`, `autoPricesWeeks` and the five sync keys can be kept this way from the app. The Prices tab keeps its two keys together, and the Sync tab keeps `autoSync`, `autoSyncEveryHours`, `syncSourceDir`, `syncKeepSourceDays` and `manualRemindDays` together. For any other key, add it to `ledgeline.toml` by hand.
 
 Ledgeline won't write to a `ledgeline.toml` that is a symbolic link, is larger than 64 KiB, or isn't valid TOML. In that case the box can't be ticked, and a notice says why. The checkbox isn't offered when [view settings are kept in the browser](#keeping-view-settings-in-the-browser).
 
@@ -158,7 +158,8 @@ A path you type into the file by hand isn't checked until Ledgeline runs it. If 
 | `autoSync` | `false` | Sync linked bank accounts in the background. See [Sync now and automatic sync](../imports/bank-sync.md#sync-now-and-automatic-sync) |
 | `autoSyncEveryHours` | `6` | 3 to 24: the most hours between background syncs |
 | `syncSourceDir` | `"imports/sync"` | Where bank sync saves the files it downloads: a folder inside the journal's folder, written relative to it. An absolute path or one with `..` is ignored |
-| `syncKeepSourceDays` | `90` | 0 to 3650: how many days downloaded files are kept. 0 means forever |
+| `syncKeepSourceDays` | `0` | 0 to 3650: how many days downloaded files are kept. 0, the default, means forever |
+| `manualRemindDays` | `35` | 1 to 3650: days with no new transaction before a manually imported account turns amber on Imports → Accounts |
 
 ## Keeping view settings in the browser
 

@@ -12,6 +12,7 @@
         account,
         now,
         connected,
+        elsewhere = false,
         onOpen,
         onEffect,
     }: {
@@ -19,11 +20,15 @@
         now: number;
         /** Its connection exists on this computer — a problem's re-sync can only target one that does. */
         connected: boolean;
+        /** Its connection syncs on another computer: this one has no history of its own to show. */
+        elsewhere?: boolean;
         onOpen: (key: string) => void;
         onEffect: (effect: ProblemEffect) => void;
     } = $props();
 
-    const problems = $derived(account.problems.filter((p) => p.severity !== "info" && p.code !== "held"));
+    // Held rows included: "2 transactions need a look" with its Review is the
+    // warning that makes the header's sync icon amber, so it shows where it is.
+    const problems = $derived(account.problems.filter((p) => p.severity !== "info"));
 </script>
 
 <li class="flex flex-col gap-1 border-b border-base-content/5 px-3 py-2 last:border-b-0" data-testid="sync-linked-row" data-key={account.key}>
@@ -31,12 +36,7 @@
         <button type="button" class="link font-medium link-hover" onclick={() => onOpen(account.key)}>{account.label}</button>
         <span class="truncate font-mono text-xs text-base-content/70">→ {account.journalAccount}</span>
     </div>
-    <div class="flex flex-wrap items-center justify-between gap-2">
-        <span class="text-xs text-base-content/70" data-testid="sync-linked-line">{accountLine(account, now)}</span>
-        {#if account.held.length > 0}
-            <button type="button" class="btn btn-xs" onclick={() => onOpen(account.key)}>Review</button>
-        {/if}
-    </div>
+    <span class="text-xs text-base-content/70" data-testid="sync-linked-line">{elsewhere ? "Synced on another computer" : accountLine(account, now)}</span>
     {#each problems as problem, i (i)}
         <ProblemNotice {problem} scope={{connectionId: connected ? account.connectionId : null, accountKey: account.key}} {onEffect} busy={syncStore.running} />
     {/each}

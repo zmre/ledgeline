@@ -18,7 +18,7 @@
       "transactions": [
         {"id": "LCU-7001", "posted": 1783296000, "amount": "4200.00", "description": "ACME CORP PAYROLL PPD", "payee": "Acme Corp", "memo": "Direct deposit", "pending": false},
         {"id": "LCU-7002", "posted": 1783468800, "amount": "-96.40", "description": "PG&E WEB ONLINE", "payee": "PG&E Utilities", "memo": "", "pending": false},
-        {"id": "LCU-7003", "posted": 1783641600, "amount": "-64.18", "description": "TRADER JOE'S #552", "payee": "Trader Joe's", "memo": "", "transacted_at": 1783555200, "pending": false},
+        {"id": "LCU-7003", "posted": 1783641600, "amount": "-64.18", "description": "TRADER JOE'S #552", "payee": "Trader Joe's", "memo": "", "transacted_at": 1783555200, "mcc": "5411", "extra": {"store": "552"}, "pending": false},
         {"id": "LCU-7004", "posted": 1783987200, "amount": "-40.00", "description": "VENMO PAYMENT 1029384756", "payee": "Venmo", "memo": "rent share", "pending": false},
         {"id": "LCU-7005", "posted": 0, "amount": "-12.75", "description": "BLUE BOTTLE COFFEE (PENDING)", "pending": true}
       ]

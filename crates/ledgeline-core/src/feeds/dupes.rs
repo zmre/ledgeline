@@ -227,6 +227,9 @@ mod tests {
             memo: String::new(),
             id: id.into(),
             transacted: String::new(),
+            mcc: String::new(),
+            mcc_name: String::new(),
+            extra: String::new(),
         }
     }
 

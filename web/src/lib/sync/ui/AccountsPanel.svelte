@@ -99,7 +99,7 @@
                     <span class="text-xs text-warning" role="status">Couldn't refresh: {syncStore.pollError}</span>
                 {/if}
             </div>
-            <SyncNowButton />
+            {#if !status.connections.every((c) => c.state === "elsewhere") || status.connections.length === 0}<SyncNowButton />{/if}
         </div>
 
         {#if nothingYet}

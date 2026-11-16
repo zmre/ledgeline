@@ -50,6 +50,7 @@
           "payee": "Safeway",
           "memo": "",
           "mcc": "5411",
+          "extra": { "category": "Groceries", "card": "Visa" },
           "pending": false
         },
         {

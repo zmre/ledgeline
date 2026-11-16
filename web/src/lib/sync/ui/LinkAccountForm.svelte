@@ -10,7 +10,7 @@
     import {localToday} from "#lib/stores/filters.svelte.js";
     import {formatMoney} from "../format";
     import type {NewAccountType, WireRemoteAccount} from "../types";
-    import {balanceCompare, chunkNote, draftIssues, historyNote, newRulesName, signQuestion, type LinkDraft} from "../wizardModel";
+    import {balanceCompare, chunkNote, draftIssues, followAccount, historyNote, signQuestion, type LinkDraft} from "../wizardModel";
 
     let {
         remote,
@@ -40,8 +40,7 @@
     function setMode(next: Mode): void {
         draft.include = next !== "skip";
         draft.createAccount = next === "new";
-        if (draft.rulesChoice === "new")
-            draft.newRulesName = newRulesName(next === "new" ? draft.newAccount.name : draft.journalAccount || draft.newAccount.name);
+        followAccount(draft, remote.suggestion.syncRules);
     }
 
     const compare = $derived(mode === "existing" ? balanceCompare(remote, draft.balanceSign) : null);
@@ -78,9 +77,7 @@
                     label="Journal account for {remote.label}"
                     placeholder="assets:bank:checking"
                     disabled={mode !== "existing"}
-                    onCommit={() => {
-                        if (draft.rulesChoice === "new") draft.newRulesName = newRulesName(draft.journalAccount);
-                    }}
+                    onCommit={() => followAccount(draft, remote.suggestion.syncRules)}
                 />
             </span>
             {#if compare !== null}
@@ -98,7 +95,13 @@
             />
             <span class="w-28">New account</span>
             {#if mode === "new"}
-                <input type="text" class="input min-w-56 grow font-mono input-sm" aria-label="New account name" bind:value={draft.newAccount.name} />
+                <input
+                    type="text"
+                    class="input min-w-56 grow font-mono input-sm"
+                    aria-label="New account name"
+                    bind:value={draft.newAccount.name}
+                    oninput={() => followAccount(draft, remote.suggestion.syncRules)}
+                />
                 <select class="select w-auto select-sm" aria-label="Account type" bind:value={draft.newAccount.type}>
                     {#each TYPES as type (type.value)}<option value={type.value}>{type.label}</option>{/each}
                 </select>
@@ -164,7 +167,9 @@
             <span class="w-28">Rules file</span>
             <select class="select w-auto select-sm" bind:value={draft.rulesChoice}>
                 <option value="new">New: {draft.newRulesName}</option>
-                {#each fitting as rules (rules.id)}<option value={rules.id}>{fileName(rules.id)}</option>{/each}
+                {#each fitting as rules (rules.id)}
+                    <option value={rules.id}>{fileName(rules.id)}{rules.account1 === null ? "" : ` (${rules.account1})`}</option>
+                {/each}
             </select>
         </label>
 

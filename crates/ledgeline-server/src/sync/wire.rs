@@ -51,6 +51,7 @@ pub enum ProblemCode {
     Balance,
     Target,
     NotConnected,
+    Elsewhere,
     Setup,
     Other,
 }
@@ -76,6 +77,7 @@ impl ProblemCode {
             Self::Balance => "balance",
             Self::Target => "target",
             Self::NotConnected => "not-connected",
+            Self::Elsewhere => "elsewhere",
             Self::Setup => "setup",
             Self::Other => "other",
         }
@@ -508,6 +510,21 @@ impl WireProblem {
         .reference(connection)
     }
 
+    /// A **Sync now** on a computer that was never connected to
+    /// `connection`: another computer syncs this ledger. Info, not a fault;
+    /// [`super::status`] doesn't report it at all.
+    #[must_use]
+    pub fn elsewhere(connection: &str) -> Self {
+        Self::new(
+            ProblemCode::Elsewhere,
+            Severity::Info,
+            Who::Setup,
+            "Bank sync for this ledger runs on another computer.".to_string(),
+        )
+        .action(ActionKind::Connect, "Sync from this computer too…")
+        .reference(connection)
+    }
+
     /// The keychain holds something for `connection` that isn't an access
     /// URL: store a fresh token under the same id.
     #[must_use]
@@ -602,6 +619,9 @@ pub enum ConnectionState {
     Attention,
     Broken,
     NotConnected,
+    /// Linked in the shared `ledgeline.toml`, never connected on this
+    /// computer: another computer syncs this ledger. Not a problem.
+    Elsewhere,
 }
 
 /// One `[[sync.connection]]`, as the Accounts tab shows it.
@@ -677,6 +697,9 @@ pub struct WireHeld {
 pub struct WireRulesChoice {
     pub id: String,
     pub fits: bool,
+    /// The file's top-level `account1`: the journal account it posts to, so
+    /// the link form preselects only a file made for that account.
+    pub account1: Option<String>,
 }
 
 /// One `[[sync.account]]`, with what the last syncs did.
@@ -855,6 +878,7 @@ mod tests {
             ProblemCode::Balance,
             ProblemCode::Target,
             ProblemCode::NotConnected,
+            ProblemCode::Elsewhere,
             ProblemCode::Setup,
             ProblemCode::Other,
         ] {

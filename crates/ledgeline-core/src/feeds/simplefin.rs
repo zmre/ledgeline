@@ -344,7 +344,66 @@ pub fn parse_accounts(body: &[u8]) -> Result<FeedBatch, ParseError> {
         accounts,
         problems: provider_problems.into_iter().chain(read_problems).collect(),
         notices: parse_notices(&root),
+        field_names: field_names(&root),
     })
+}
+
+/// Most field names [`field_names`] lists, so a hostile response can't grow
+/// the state file without bound.
+const MAX_FIELD_NAMES: usize = 200;
+
+/// Every key the response's accounts and transactions used, and their
+/// `extra` objects' keys, as `account.KEY`, `account.extra.KEY`,
+/// `transaction.KEY` and `transaction.extra.KEY`. A key keeps only
+/// `[A-Za-z0-9_.-]`, at most 40 of them.
+fn field_names(root: &Map<String, Value>) -> std::collections::BTreeSet<String> {
+    fn keys<'a>(
+        prefix: &'a str,
+        object: &'a Map<String, Value>,
+    ) -> impl Iterator<Item = String> + 'a {
+        let extra = object
+            .get("extra")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flat_map(|extra| extra.keys())
+            .map(move |key| (format!("{prefix}.extra"), key));
+        object
+            .keys()
+            .map(move |key| (prefix.to_string(), key))
+            .chain(extra)
+            .filter_map(|(prefix, key)| {
+                let key: String = key
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+                    .take(40)
+                    .collect();
+                (!key.is_empty()).then(|| format!("{prefix}.{key}"))
+            })
+    }
+    let accounts = root
+        .get("accounts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object);
+    accounts
+        .flat_map(|account| {
+            let transactions = account
+                .get("transactions")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_object)
+                .flat_map(|txn| keys("transaction", txn));
+            keys("account", account).chain(transactions)
+        })
+        .scan(std::collections::BTreeSet::new(), |seen, name| {
+            (seen.len() < MAX_FIELD_NAMES).then(|| {
+                seen.insert(name.clone());
+                name
+            })
+        })
+        .collect()
 }
 
 /// The first of `keys` that `object` has with a non-null value. SimpleFIN
@@ -666,6 +725,13 @@ fn parse_txn(entry: &Value, account_id: &str, account_name: &str) -> Result<Feed
         pending: field(object, &["pending"])
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        mcc: field(object, &["mcc"])
+            .and_then(text)
+            .and_then(|raw| super::mcc::normalize_code(&raw)),
+        extra: field(object, &["extra"])
+            .and_then(Value::as_object)
+            .filter(|extra| !extra.is_empty())
+            .map(|extra| Value::Object(extra.clone()).to_string()),
         id,
     })
 }

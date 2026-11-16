@@ -1704,6 +1704,9 @@ pub struct FeedRulesParams<'a> {
     pub currency: Option<&'a str>,
 }
 
+/// The tag [`feed_rules`] gives a row's merchant category, in words.
+pub const CATEGORY_TAG: &str = "category";
+
 /// The date format of a normalised feed CSV. `feeds::normalize` writes ISO
 /// dates and nothing else.
 const FEED_DATE_FORMAT: &str = "%Y-%m-%d";
@@ -1745,6 +1748,13 @@ const FEED_DATE_FORMAT: &str = "%Y-%m-%d";
 /// last conditional it always wins. The top-level line stays as well, so the
 /// file still reads plainly. (Rules sharing also keeps comment-setting blocks
 /// out of the categories file; this guard covers rules added there later.)
+///
+/// **The category guard comes last**: `if %mcc_name .` sets the same comment
+/// plus a `category:` tag with the merchant category in words, on the rows
+/// that have one. It repeats the id because the comment is assigned whole,
+/// and it can't be folded into the id guard, which matches rows with no
+/// category too and would leave them an empty `category:`. The names never
+/// hold a comma ([`crate::feeds::mcc`]), so the tag gets the whole name.
 #[must_use]
 pub fn feed_rules(params: &FeedRulesParams) -> String {
     let columns = params.columns;
@@ -1779,6 +1789,12 @@ pub fn feed_rules(params: &FeedRulesParams) -> String {
             .map(|name| format!("include {}", one_line(name))),
         Some(format!("if {} .", ref_to(&columns.id))),
         Some(format!("  comment {ID_TAG}:{}", ref_to(&columns.id))),
+        Some(format!("if {} .", ref_to(&columns.mcc_name))),
+        Some(format!(
+            "  comment {ID_TAG}:{}, {CATEGORY_TAG}:{}",
+            ref_to(&columns.id),
+            ref_to(&columns.mcc_name)
+        )),
     ];
     lines
         .into_iter()

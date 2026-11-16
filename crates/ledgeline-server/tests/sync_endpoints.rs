@@ -602,6 +602,73 @@ async fn disconnecting_removes_the_keychain_item_and_keeps_the_links() {
     assert_eq!(config.accounts[0].connection, id);
 }
 
+/// Another Mac opening the same iCloud ledger: the links are in the shared
+/// `ledgeline.toml`, but this keychain never held the key and this cache
+/// never saw the connection.
+#[tokio::test]
+async fn a_ledger_synced_from_another_computer_is_quiet_until_asked() {
+    require_hledger!();
+    let tree = Tree::new();
+    let id = tree.connect().await;
+    tree.link_both(&id).await;
+    let journal = tree.read("sample.journal");
+    // Become the other computer: no key, no memory of this connection.
+    ledgeline::SecretStore::delete(tree.secrets.as_ref(), &id).expect("delete");
+    for file in files_under(&tree.path("app")) {
+        if file.ends_with("sync-state.json") {
+            std::fs::remove_file(tree.path("app").join(&file)).expect("forget");
+        }
+    }
+    let requests = tree.feed.requests();
+
+    let body = tree.status().await;
+    let connection = &body["connections"][0];
+    assert_eq!(connection["state"], "elsewhere", "{body}");
+    assert_eq!(connection["problems"], json!([]), "{body}");
+    assert!(
+        body["accounts"]
+            .as_array()
+            .expect("accounts")
+            .iter()
+            .all(|account| account["problems"] == json!([])),
+        "{body}"
+    );
+    assert_eq!(body["problemCount"]["warning"], 0, "{body}");
+    assert_eq!(body["problemCount"]["error"], 0, "{body}");
+
+    // Sync now says where the sync happens, and offers to sync here too.
+    let (status, run) = tree.call("POST", "/api/sync/now", Some(json!({}))).await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    let problem = run["problems"]
+        .as_array()
+        .expect("problems")
+        .iter()
+        .find(|p| p["code"] == "elsewhere")
+        .expect("an elsewhere note");
+    assert_eq!(problem["severity"], "info");
+    assert_eq!(problem["action"]["label"], "Sync from this computer too…");
+    assert_eq!(problem["action"]["ref"], id.as_str());
+    assert_eq!(tree.feed.requests(), requests, "nothing fetched");
+    assert_eq!(tree.read("sample.journal"), journal, "nothing written");
+
+    // Sync from this computer too: same connection, and from now on a
+    // missing key here is a real "not connected".
+    let (status, body) = tree
+        .call(
+            "POST",
+            &format!("/api/sync/connections/{id}/token"),
+            Some(json!({"setupToken": TOKEN})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(tree.status().await["connections"][0]["state"], "ok");
+    ledgeline::SecretStore::delete(tree.secrets.as_ref(), &id).expect("delete");
+    assert_eq!(
+        tree.status().await["connections"][0]["state"],
+        "not-connected"
+    );
+}
+
 #[tokio::test]
 async fn disconnecting_an_unlinked_connection_removes_its_entry() {
     let tree = Tree::new();
@@ -725,7 +792,7 @@ async fn linking_writes_rules_config_and_the_first_sync_exactly() {
     let expected = format!(
         "\n2026-07-06 Acme Corp  ; id:{c}-LCU-7001\n    assets:bank:checking       $4,200.00\n    expenses:unknown          $-4,200.00\n\n\
          2026-07-08 PG&E Utilities  ; id:{c}-LCU-7002\n    assets:bank:checking         $-96.40\n    expenses:unknown              $96.40\n\n\
-         2026-07-10=2026-07-09 Trader Joe's  ; id:{c}-LCU-7003\n    assets:bank:checking         $-64.18\n    expenses:unknown              $64.18\n\n\
+         2026-07-10=2026-07-09 Trader Joe's  ; id:{c}-LCU-7003, category:Grocery Stores and Supermarkets\n    assets:bank:checking         $-64.18\n    expenses:unknown              $64.18\n\n\
          2026-07-14 Venmo  ; id:{c}-LCU-7004\n    assets:bank:checking         $-40.00\n    expenses:unknown              $40.00\n\n\
          2026-07-09 Shell  ; id:{v}-HCS-502\n    liabilities:cc:visa         $-48.10\n    expenses:unknown             $48.10\n\n\
          2026-07-12 Amazon  ; id:{v}-HCS-503\n    liabilities:cc:visa         $-23.99\n    expenses:unknown             $23.99\n",
@@ -1050,6 +1117,11 @@ async fn diagnostics_never_hold_the_access_url() {
         !text.contains("secret") && !text.contains("user:"),
         "{text}"
     );
+    // The fields the bank sent, by name, so its extra data can be spotted…
+    assert!(text.contains("  transaction.mcc\n"), "{text}");
+    assert!(text.contains("  transaction.extra.store\n"), "{text}");
+    // …but never a value.
+    assert!(!text.contains("552") && !text.contains("Trader"), "{text}");
 }
 
 #[tokio::test]

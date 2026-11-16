@@ -44,6 +44,12 @@ pub struct FeedColumns {
     pub id: String,
     /// `"transacted"`.
     pub transacted: String,
+    /// `"mcc"`: the merchant category code.
+    pub mcc: String,
+    /// `"mcc_name"`: the code in words ([`super::mcc::name`]).
+    pub mcc_name: String,
+    /// `"extra"`: anything else the provider sent, as JSON.
+    pub extra: String,
 }
 
 impl Default for FeedColumns {
@@ -56,6 +62,9 @@ impl Default for FeedColumns {
             memo: "memo".into(),
             id: "id".into(),
             transacted: "transacted".into(),
+            mcc: "mcc".into(),
+            mcc_name: "mcc_name".into(),
+            extra: "extra".into(),
         }
     }
 }
@@ -63,8 +72,13 @@ impl Default for FeedColumns {
 impl FeedColumns {
     /// The names in column order: the order of the CSV header and of the
     /// rules file's `fields` line.
+    ///
+    /// The last three (`mcc`, `mcc_name`, `extra`) came later. They are at the
+    /// end so a rules file written before them, whose `fields` line names only
+    /// the first seven, still reads every column it knows from the same place;
+    /// hledger ignores columns past the `fields` list (verified on 1.52).
     #[must_use]
-    pub fn in_order(&self) -> [&str; 7] {
+    pub fn in_order(&self) -> [&str; 10] {
         [
             &self.date,
             &self.amount,
@@ -73,6 +87,9 @@ impl FeedColumns {
             &self.memo,
             &self.id,
             &self.transacted,
+            &self.mcc,
+            &self.mcc_name,
+            &self.extra,
         ]
     }
 }
@@ -108,6 +125,16 @@ pub struct NormRow {
     pub id: String,
     /// The transacted date, ISO, or `""` when it is the same day as `date`.
     pub transacted: String,
+    /// The merchant category code, four digits, or `""`.
+    #[serde(default)]
+    pub mcc: String,
+    /// The code in words, or `""` when there is no code or the list doesn't
+    /// know it.
+    #[serde(default)]
+    pub mcc_name: String,
+    /// The provider's `extra` object as compact JSON, or `""`.
+    #[serde(default)]
+    pub extra: String,
 }
 
 /// The rows, and how many were dropped for each reason.
@@ -195,6 +222,14 @@ fn row(txn: &FeedTxn, opts: &NormalizeOptions) -> Result<NormRow, Drop> {
         memo: txn.memo.as_deref().map(clean_text).unwrap_or_default(),
         id: format!("{}-{safe_id}", opts.account_short),
         transacted,
+        mcc: txn.mcc.clone().unwrap_or_default(),
+        mcc_name: txn
+            .mcc
+            .as_deref()
+            .and_then(super::mcc::name)
+            .unwrap_or_default()
+            .to_string(),
+        extra: txn.extra.clone().unwrap_or_default(),
     })
 }
 
@@ -221,7 +256,7 @@ pub fn fetched_ids(account: &FeedAccount, account_short: &str) -> HashSet<String
 /// comma, a quote, a line break, or leading/trailing whitespace.
 #[must_use]
 pub fn to_csv(rows: &[NormRow], columns: &FeedColumns) -> String {
-    let line = |fields: [&str; 7]| {
+    let line = |fields: [&str; 10]| {
         let mut line = fields.map(csv_field).join(",");
         line.push('\n');
         line
@@ -236,6 +271,9 @@ pub fn to_csv(rows: &[NormRow], columns: &FeedColumns) -> String {
                 &row.memo,
                 &row.id,
                 &row.transacted,
+                &row.mcc,
+                &row.mcc_name,
+                &row.extra,
             ])
         }))
         .collect()
@@ -312,6 +350,8 @@ mod tests {
             memo: None,
             transacted_at: None,
             pending: false,
+            mcc: None,
+            extra: None,
         }
     }
 
@@ -519,6 +559,9 @@ mod tests {
             memo: "line\nbreak".into(),
             id: "abc-1".into(),
             transacted: String::new(),
+            mcc: "5411".into(),
+            mcc_name: "Grocery Stores and Supermarkets".into(),
+            extra: r#"{"card":"1234","note":"a, b"}"#.into(),
         };
         let columns = FeedColumns {
             payee: "name".into(),
@@ -526,12 +569,13 @@ mod tests {
         };
         assert_eq!(
             to_csv(&[row], &columns),
-            "date,amount,name,description,memo,id,transacted\n\
-             2026-11-10,-1.50,\"Smith, Jones & Co\",\"He said \"\"hi\"\"\",\"line\nbreak\",abc-1,\n"
+            "date,amount,name,description,memo,id,transacted,mcc,mcc_name,extra\n\
+             2026-11-10,-1.50,\"Smith, Jones & Co\",\"He said \"\"hi\"\"\",\"line\nbreak\",abc-1,,\
+             5411,Grocery Stores and Supermarkets,\"{\"\"card\"\":\"\"1234\"\",\"\"note\"\":\"\"a, b\"\"}\"\n"
         );
         assert_eq!(
             to_csv(&[], &FeedColumns::default()),
-            "date,amount,payee,description,memo,id,transacted\n"
+            "date,amount,payee,description,memo,id,transacted,mcc,mcc_name,extra\n"
         );
         assert_eq!(csv_field(" lead"), "\" lead\"");
         assert_eq!(csv_field("plain"), "plain");

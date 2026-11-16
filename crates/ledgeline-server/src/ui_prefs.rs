@@ -197,6 +197,7 @@ const PINNABLE: &[&str] = &[
     "autoSyncEveryHours",
     "syncSourceDir",
     "syncKeepSourceDays",
+    "manualRemindDays",
 ];
 
 /// The sync keys, whose change wakes the sync scheduler.
@@ -318,8 +319,12 @@ const SPECS: &[Spec] = &[
             default: DEFAULT_SYNC_SOURCE_DIR,
         },
     },
-    // 0 = keep every fetched CSV forever.
-    whole("syncKeepSourceDays", 0, 3650, 90),
+    // 0 = keep every fetched CSV forever, the default: nothing is deleted
+    // unless the user asks for it.
+    whole("syncKeepSourceDays", 0, 3650, 0),
+    // Days without a new transaction before a manually imported account's
+    // row turns amber on Imports → Accounts.
+    whole("manualRemindDays", 1, 3650, 35),
 ];
 
 const fn flag(key: &'static str, default: bool) -> Spec {
@@ -1288,6 +1293,9 @@ pub(crate) struct SyncSettings {
     pub(crate) source_dir: String,
     /// `0` = keep forever.
     pub(crate) keep_days: u32,
+    /// `manualRemindDays`: a manual account's row turns amber after this
+    /// many days with no new transaction.
+    pub(crate) remind_days: u32,
 }
 
 /// See [`SyncSettings`].
@@ -1313,7 +1321,8 @@ pub(crate) fn sync_settings(state: &AppState) -> SyncSettings {
             .and_then(Json::as_str)
             .unwrap_or(DEFAULT_SYNC_SOURCE_DIR)
             .to_string(),
-        keep_days: whole("syncKeepSourceDays", 90),
+        keep_days: whole("syncKeepSourceDays", 0),
+        remind_days: whole("manualRemindDays", 35),
     }
 }
 
@@ -1809,7 +1818,8 @@ mod tests {
                 "autoSync": false,
                 "autoSyncEveryHours": 6,
                 "syncSourceDir": "imports/sync",
-                "syncKeepSourceDays": 90,
+                "syncKeepSourceDays": 0,
+                "manualRemindDays": 35,
             })
         );
     }

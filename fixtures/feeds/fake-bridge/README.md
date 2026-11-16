@@ -11,7 +11,7 @@ Shaped to `fixtures/sample.journal`, whose last transactions are dated
 
 | Account | Maps to | What it shows |
 | --- | --- | --- |
-| Lakeside Credit Union · Checking ••4821 | `assets:bank:checking` | 4 new rows (one with a transacted date), 1 pending row that is never imported; the balance matches once they land |
+| Lakeside Credit Union · Checking ••4821 | `assets:bank:checking` | 4 new rows (Trader Joe's has a transacted date, a merchant code and an `extra` object), 1 pending row that is never imported; the balance matches once they land |
 | Harbor Card Services · Visa Signature ••3310 | `liabilities:cc:visa` | `SAFEWAY` matches the journal's 2026-07-03 Safeway purchase, so it is **held**; 2 new rows; balance matches |
 | Summit Online Bank · High-Yield Savings ••0077 | nothing yet | suggested by name as `assets:bank:savings`; link it as a **new** account (`assets:bank:summit-online-bank:high-yield-savings`, opening balance $20,000.00 on 2026-06-30, start 2026-07-01) to show that path — its balance then matches |
 

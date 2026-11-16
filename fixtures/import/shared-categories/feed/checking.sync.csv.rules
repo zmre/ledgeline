@@ -1,6 +1,6 @@
 # ledgeline: SimpleFIN sync rules for First Tech · Checking ••1234
 skip 1
-fields date, amount, payee, description, memo, id, transacted
+fields date, amount, payee, description, memo, id, transacted, mcc, mcc_name, extra
 date-format %Y-%m-%d
 account1 assets:bank:firsttech:checking
 account2 expenses:unknown
@@ -10,3 +10,5 @@ if %transacted .
   date2 %transacted
 if %id .
   comment id:%id
+if %mcc_name .
+  comment id:%id, category:%mcc_name

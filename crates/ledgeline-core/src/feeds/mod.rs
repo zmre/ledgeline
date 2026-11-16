@@ -24,6 +24,7 @@
 
 pub mod config;
 pub mod dupes;
+pub mod mcc;
 pub mod normalize;
 pub mod simplefin;
 
@@ -41,6 +42,11 @@ pub struct FeedBatch {
     pub problems: Vec<FeedProblem>,
     /// `x-api-message` and the like: text the provider wants shown, sanitized.
     pub notices: Vec<String>,
+    /// The field names the response used, values left out: `account.balance`,
+    /// `transaction.mcc`, `transaction.extra.store`. For the diagnostics
+    /// report, so a bank's extra data shows up without anyone reading its
+    /// transactions.
+    pub field_names: std::collections::BTreeSet<String>,
 }
 
 /// One institution login at the provider.
@@ -112,6 +118,11 @@ pub struct FeedTxn {
     pub transacted_at: Option<i64>,
     /// Still pending at the bank.
     pub pending: bool,
+    /// The merchant category code, four digits ([`mcc::normalize_code`]).
+    pub mcc: Option<String>,
+    /// The provider's `extra` object as compact JSON, when it sent a
+    /// non-empty one: whatever else it knows, kept for rules to match on.
+    pub extra: Option<String>,
 }
 
 /// What kind of trouble a [`FeedProblem`] describes.

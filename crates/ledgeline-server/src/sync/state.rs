@@ -48,6 +48,21 @@ pub(crate) struct SyncState {
     /// By account key (`AccountLink::key`).
     #[serde(default)]
     pub(crate) accounts: BTreeMap<String, AccountState>,
+    /// Connection ids this computer has held an access key for. Kept through
+    /// **Disconnect…**, so a key that goes missing here reads as "Not
+    /// connected on this computer", while a connection set up only on another
+    /// computer reads as "runs on another computer". Lost with the cache
+    /// file, which only makes a missing key read as the quieter of the two.
+    #[serde(default)]
+    pub(crate) connected_here: std::collections::BTreeSet<String>,
+}
+
+impl SyncState {
+    /// Whether `connection` is linked here only because another computer
+    /// set it up: no access key now (`connected` false) and never one here.
+    pub(crate) fn elsewhere(&self, connection: &str, connected: bool) -> bool {
+        !connected && !self.connected_here.contains(connection)
+    }
 }
 
 /// One connection's memory.
@@ -73,6 +88,10 @@ pub(crate) struct ConnState {
     /// The last response's error list, sanitized, for the diagnostics report.
     #[serde(default)]
     pub(crate) last_errlist: Vec<String>,
+    /// The field names the last response used, values left out, for the
+    /// diagnostics report.
+    #[serde(default)]
+    pub(crate) field_names: Vec<String>,
     /// The last outcomes, newest last, for the diagnostics report.
     #[serde(default)]
     pub(crate) log: Vec<LogEntry>,

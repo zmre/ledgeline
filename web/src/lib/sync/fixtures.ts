@@ -152,8 +152,8 @@ export function firstTechLinked(): WireLinkedAccount {
         ],
         problems: [heldProblem()],
         rulesChoices: [
-            {id: "imports/rules/firsttech-checking.sync.csv.rules", fits: true},
-            {id: "imports/rules/chase.sync.csv.rules", fits: true},
+            {id: "imports/rules/firsttech-checking.sync.csv.rules", fits: true, account1: "assets:bank:firsttech:checking"},
+            {id: "imports/rules/chase.sync.csv.rules", fits: true, account1: "liabilities:cc:chase"},
         ],
     };
 }
@@ -182,8 +182,8 @@ export function chaseLinked(): WireLinkedAccount {
         history: [{at: FIXTURE_LAST_SYNC - 3 * 86_400, outcome: "added", added: 2, held: 0}],
         problems: [conAuthProblem()],
         rulesChoices: [
-            {id: "imports/rules/firsttech-checking.sync.csv.rules", fits: true},
-            {id: "imports/rules/chase.sync.csv.rules", fits: true},
+            {id: "imports/rules/firsttech-checking.sync.csv.rules", fits: true, account1: "assets:bank:firsttech:checking"},
+            {id: "imports/rules/chase.sync.csv.rules", fits: true, account1: "liabilities:cc:chase"},
         ],
     };
 }
@@ -232,7 +232,10 @@ export function chaseRemote(): WireRemoteAccount {
             target: "2026.journal",
             newAccountName: "liabilities:cc:chase",
             newAccountType: "L",
-            syncRules: [{id: "imports/rules/old-chase.sync.csv.rules", fits: true}],
+            syncRules: [
+                {id: "imports/rules/visa.sync.csv.rules", fits: true, account1: "liabilities:cc:visa"},
+                {id: "imports/rules/old-chase.sync.csv.rules", fits: true, account1: "liabilities:cc:chase"},
+            ],
             manualRules: {id: "imports/rules/chase.csv.rules", ruleCount: 41},
         },
     };

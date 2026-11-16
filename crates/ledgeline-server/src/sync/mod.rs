@@ -356,6 +356,23 @@ pub(crate) fn read_config(state: &AppState) -> Result<(SyncConfig, Vec<String>),
         .unwrap_or_default())
 }
 
+/// The download pages saved on the open ledger's `[[sync.manual]]` accounts
+/// (plan 43 §4.2), as written. The desktop window hands one of these, and no
+/// other bank page, to the system browser. An unreadable `ledgeline.toml` has
+/// none.
+#[must_use]
+pub fn saved_download_pages(state: &AppState) -> Vec<String> {
+    read_config(state)
+        .map(|(config, _)| {
+            config
+                .manual
+                .into_iter()
+                .filter_map(|manual| manual.download_url)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Apply a `feeds::config` writer to the open ledger's `ledgeline.toml`,
 /// creating the file if needed.
 ///
@@ -484,21 +501,21 @@ pub(crate) fn status(state: &AppState, now: i64) -> Result<WireSyncStatus, AppEr
         let mut problems: Vec<WireProblem> =
             remembered.map(|c| c.problems.clone()).unwrap_or_default();
         problems.extend(config_problems.iter().cloned());
+        let elsewhere = memory.elsewhere(&link.id, connected) && access.is_ok();
         match access {
             Err(problem) => problems.push(problem),
+            Ok(None) if elsewhere => {}
             Ok(None) => problems.push(WireProblem::not_connected(&link.id)),
             Ok(Some(_)) => {}
         }
-        let mine: Vec<&WireLinkedAccount> = accounts
-            .iter()
-            .filter(|account| account.connection_id == link.id)
-            .collect();
-        let worst = problems
-            .iter()
-            .chain(mine.iter().flat_map(|account| account.problems.iter()))
-            .map(|problem| problem.severity)
-            .max();
-        let state_now = if !connected {
+        // The connection's own problems only. An account's (held rows, a
+        // rules file) show on that account's row, where its fix is; counting
+        // them here put "Needs attention" on the connection with nothing
+        // beside it to say what.
+        let worst = problems.iter().map(|problem| problem.severity).max();
+        let state_now = if elsewhere {
+            ConnectionState::Elsewhere
+        } else if !connected {
             ConnectionState::NotConnected
         } else if running {
             ConnectionState::Syncing

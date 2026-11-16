@@ -7,6 +7,7 @@ import {
     decodeBase64,
     draftFor,
     draftIssues,
+    followAccount,
     historyNote,
     linkRequests,
     looksLikeSetupToken,
@@ -14,6 +15,7 @@ import {
     previewLine,
     previousStep,
     railSteps,
+    rulesFor,
     signQuestion,
     toLinkRequest,
     wizardInit,
@@ -153,6 +155,45 @@ describe("UNIT sync wizardModel drafts", () => {
         expect(draftIssues(draft)).toEqual(["Say whether to share the existing categorization rules."]);
         expect(toLinkRequest({...draft, share: "share"}, chaseRemote())?.share).toEqual({manualRulesId: "imports/rules/chase.csv.rules"});
         expect(toLinkRequest({...draft, share: "separate"}, chaseRemote())?.share).toBeNull();
+    });
+
+    it("never preselects another account's rules file", () => {
+        const remote = chaseRemote();
+        remote.suggestion.syncRules = [{id: "imports/rules/visa.sync.csv.rules", fits: true, account1: "liabilities:cc:visa"}];
+        expect(draftFor(remote, "main.journal", FIXTURE_TODAY).rulesChoice).toBe("new");
+        expect(rulesFor(remote.suggestion.syncRules, "liabilities:cc:visa")).toBe("imports/rules/visa.sync.csv.rules");
+        expect(rulesFor([{id: "x.sync.csv.rules", fits: true, account1: null}], "liabilities:cc:visa")).toBe("new");
+    });
+
+    it("follows a corrected account: the new file's name, and the choice back to New", () => {
+        // A guessed liabilities:mystery, with its own (fitting) file, corrected to a new liabilities:mortgage.
+        const remote = chaseRemote();
+        const choices = [
+            {id: "imports/rules/mystery.sync.csv.rules", fits: true, account1: "liabilities:mystery"},
+            {id: "imports/rules/creditcard.sync.csv.rules", fits: true, account1: "liabilities:cc:visa"},
+        ];
+        remote.suggestion = {...remote.suggestion, journalAccount: null, newAccountName: "liabilities:mystery", syncRules: choices};
+        const draft = draftFor(remote, "main.journal", FIXTURE_TODAY);
+        draft.include = true;
+        draft.createAccount = true;
+        expect(draft.rulesChoice).toBe("imports/rules/mystery.sync.csv.rules");
+
+        draft.newAccount.name = "liabilities:mortgage";
+        followAccount(draft, choices);
+        expect(draft).toMatchObject({rulesChoice: "new", newRulesName: "mortgage.sync.csv.rules"});
+
+        // Back to an account with a file of its own: that file again.
+        draft.createAccount = false;
+        draft.journalAccount = "liabilities:cc:visa";
+        followAccount(draft, choices);
+        expect(draft).toMatchObject({rulesChoice: "imports/rules/creditcard.sync.csv.rules", newRulesName: "visa.sync.csv.rules"});
+
+        // A file that belongs to no account in particular stays picked.
+        const shared = [...choices, {id: "imports/rules/any.sync.csv.rules", fits: true, account1: null}];
+        draft.rulesChoice = "imports/rules/any.sync.csv.rules";
+        draft.journalAccount = "liabilities:mortgage";
+        followAccount(draft, shared);
+        expect(draft.rulesChoice).toBe("imports/rules/any.sync.csv.rules");
     });
 
     it("starts an unknown account as Don't sync, with the new-account option ready", () => {

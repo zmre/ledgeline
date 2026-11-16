@@ -159,7 +159,7 @@ pub use yahoo_history::HistoryFeed;
 pub use sync::cli::{CliSync, CliSyncCommand, run_cli_sync};
 pub use sync::{
     AccountsQuery, FeedError, FeedProvider, MemoryStore, SecretError, SecretStore, SimpleFinClient,
-    UnavailableStore, filter_batch,
+    UnavailableStore, filter_batch, saved_download_pages,
 };
 
 /// An immutable, atomically-publishable view of one parsed journal: the parsed

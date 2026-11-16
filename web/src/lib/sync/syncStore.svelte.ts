@@ -203,6 +203,8 @@ export const syncStore = {
     /** Hidden with nothing linked; else idle, syncing, amber for attention, red for a broken connection. */
     get dot(): DotState {
         if (status === null || !status.available || status.accounts.length === 0) return "hidden";
+        // Synced from another computer only: nothing to show or fix here.
+        if (status.connections.length > 0 && status.connections.every((c) => c.state === "elsewhere")) return "hidden";
         if (this.running) return "syncing";
         if (status.connections.some((c) => c.state === "broken") || worst === "error") return "broken";
         if (status.connections.some((c) => c.state === "attention") || worst === "warning") return "attention";

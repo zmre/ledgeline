@@ -25,6 +25,7 @@ export type ProblemCode =
     | "balance"
     | "target"
     | "not-connected"
+    | "elsewhere"
     | "setup"
     | "other";
 
@@ -58,7 +59,8 @@ export interface WireProblem {
     docAnchor: string;
 }
 
-export type ConnectionState = "ok" | "syncing" | "attention" | "broken" | "not-connected";
+/** `elsewhere`: linked in the shared `ledgeline.toml` but never connected on this computer; another computer syncs it. */
+export type ConnectionState = "ok" | "syncing" | "attention" | "broken" | "not-connected" | "elsewhere";
 
 export interface WireQuota {
     autoMax: number;
@@ -124,7 +126,16 @@ export interface WireLinkedAccount {
     history: WireHistoryEntry[];
     problems: WireProblem[];
     /** Rules files that read the sync CSV (`fits`), plus other `*.sync.*` files, for the drawer's Change… picker. */
-    rulesChoices: {id: string; fits: boolean}[];
+    rulesChoices: WireRulesChoice[];
+}
+
+/** A sync rules file the link form or the drawer may offer. */
+export interface WireRulesChoice {
+    id: string;
+    /** Reads the sync CSV. */
+    fits: boolean;
+    /** The journal account it posts to, when it says. */
+    account1: string | null;
 }
 
 export type NewAccountType = "A" | "L" | "C";
@@ -139,8 +150,8 @@ export interface WireRemoteSuggestion {
     /** e.g. "assets:bank:ally:savings" */
     newAccountName: string;
     newAccountType: NewAccountType;
-    /** Existing sync-shaped files. */
-    syncRules: {id: string; fits: boolean}[];
+    /** Existing sync-shaped files, every account's. */
+    syncRules: WireRulesChoice[];
     /** A manual file covering the account. */
     manualRules: {id: string; ruleCount: number} | null;
 }

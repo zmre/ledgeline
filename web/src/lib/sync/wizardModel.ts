@@ -7,7 +7,7 @@
 // as events.
 
 import {daysBetween, formatMoney, negate, shortDate} from "./format";
-import type {NewAccountType, WireLinkPreview, WireLinkRequest, WireRemoteAccount, WireSyncRun} from "./types";
+import type {NewAccountType, WireLinkPreview, WireLinkRequest, WireRemoteAccount, WireRulesChoice, WireSyncRun} from "./types";
 
 // ---------------------------------------------------------------------------
 // Steps
@@ -215,7 +215,6 @@ export function newRulesName(journalAccount: string): string {
 export function draftFor(remote: WireRemoteAccount, defaultTarget: string, today: string): LinkDraft {
     const s = remote.suggestion;
     const journalAccount = s.journalAccount ?? "";
-    const fitting = s.syncRules.find((r) => r.fits);
     return {
         remoteId: remote.remoteId,
         include: s.journalAccount !== null,
@@ -229,7 +228,7 @@ export function draftFor(remote: WireRemoteAccount, defaultTarget: string, today
         },
         startDate: s.startDate,
         target: s.target ?? defaultTarget,
-        rulesChoice: fitting?.id ?? "new",
+        rulesChoice: rulesFor(s.syncRules, journalAccount === "" ? s.newAccountName : journalAccount),
         newRulesName: newRulesName(journalAccount === "" ? s.newAccountName : journalAccount),
         share: s.manualRules === null ? "separate" : "ask",
         balanceSign: s.signFlipped ? -1 : 1,
@@ -238,6 +237,33 @@ export function draftFor(remote: WireRemoteAccount, defaultTarget: string, today
 
 /** The journal account the draft writes to, whichever way it was chosen. */
 export const draftAccount = (draft: LinkDraft): string => (draft.createAccount ? draft.newAccount.name.trim() : draft.journalAccount.trim());
+
+/**
+ * The rules choice for `account`: an existing sync rules file whose
+ * `account1` is that account, else `"new"`. Another account's file is listed
+ * but never preselected.
+ */
+export function rulesFor(choices: readonly WireRulesChoice[], account: string): "new" | string {
+    const mine = choices.find((c) => c.fits && c.account1 !== null && c.account1 === account.trim());
+    return mine?.id ?? "new";
+}
+
+/**
+ * Follow a change of the draft's journal account (picked, typed as a new
+ * account, or by switching between the two): the new file's name follows it,
+ * and the choice moves to that account's own file, or to the new one. A file
+ * picked by hand stays picked only while it belongs to no account in
+ * particular.
+ */
+export function followAccount(draft: LinkDraft, choices: readonly WireRulesChoice[]): void {
+    // An empty existing-account box still names the file after the suggestion.
+    const account = draftAccount(draft) || draft.newAccount.name.trim();
+    draft.newRulesName = newRulesName(account);
+    const picked = choices.find((c) => c.id === draft.rulesChoice);
+    if (draft.rulesChoice === "new" || picked === undefined || (picked.account1 !== null && picked.account1 !== account)) {
+        draft.rulesChoice = rulesFor(choices, account);
+    }
+}
 
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
 const DECIMAL = /^[+-]?\d+(\.\d+)?$/;

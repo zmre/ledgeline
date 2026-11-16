@@ -59,6 +59,7 @@ import {
     AUTO_SYNC_HOURS_DEFAULT,
     COLUMN_KEYS,
     INSIGHTS_TABS,
+    MANUAL_REMIND_DAYS_DEFAULT,
     SYNC_KEEP_DAYS_DEFAULT,
     SYNC_SOURCE_DIR_DEFAULT,
     THEME_IDS,
@@ -4971,6 +4972,7 @@ export function decodeUiPrefsState(raw: unknown): UiPrefsState {
         autoSyncEveryHours: prefs.autoSyncEveryHours === undefined ? AUTO_SYNC_HOURS_DEFAULT : whole(prefs.autoSyncEveryHours, "ui-prefs autoSyncEveryHours"),
         syncSourceDir: prefs.syncSourceDir === undefined ? SYNC_SOURCE_DIR_DEFAULT : str(prefs.syncSourceDir, "ui-prefs syncSourceDir"),
         syncKeepSourceDays: prefs.syncKeepSourceDays === undefined ? SYNC_KEEP_DAYS_DEFAULT : whole(prefs.syncKeepSourceDays, "ui-prefs syncKeepSourceDays"),
+        manualRemindDays: prefs.manualRemindDays === undefined ? MANUAL_REMIND_DAYS_DEFAULT : whole(prefs.manualRemindDays, "ui-prefs manualRemindDays"),
     };
     if (!Array.isArray(body.issues)) throw new ApiShapeError("ui-prefs issues: expected an array");
     const issues = body.issues.map((rawIssue, i): UiPrefsIssue => {

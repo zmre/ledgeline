@@ -6,19 +6,19 @@
 <script lang="ts">
     import {onMount} from "svelte";
     import {resolve} from "$app/paths";
-    import {AUTO_SYNC_HOURS_RANGE, isRelDir, SYNC_KEEP_DAYS_RANGE} from "#lib/settings/uiPrefs.js";
+    import {AUTO_SYNC_HOURS_RANGE, isRelDir, MANUAL_REMIND_DAYS_RANGE, SYNC_KEEP_DAYS_RANGE} from "#lib/settings/uiPrefs.js";
     import {settings} from "#lib/stores/settings.svelte.js";
     import {syncStore} from "../syncStore.svelte";
     import DisconnectConfirm from "./DisconnectConfirm.svelte";
     import WhoSeesData from "./WhoSeesData.svelte";
 
-    const KEYS = ["autoSync", "autoSyncEveryHours", "syncSourceDir", "syncKeepSourceDays"] as const;
+    const KEYS = ["autoSync", "autoSyncEveryHours", "syncSourceDir", "syncKeepSourceDays", "manualRemindDays"] as const;
 
     let pinBusy = $state(false);
     async function pin(pinned: boolean): Promise<void> {
         pinBusy = true;
         try {
-            // All four together: one setting as far as a person is concerned.
+            // All of them together: one setting as far as a person is concerned.
             for (const key of KEYS) await settings.pinToLedger(key, pinned);
         } finally {
             pinBusy = false;
@@ -119,13 +119,34 @@
                 data-testid="sync-keep"
             />
             <span>days</span>
+            <span class="text-xs text-base-content/60">{settings.syncKeepSourceDays === 0 ? "0 keeps every one" : "older ones are deleted"}</span>
+        </span>
+    </label>
+
+    <label class="flex flex-wrap items-center gap-3">
+        <span>Remind me about manual downloads after</span>
+        <span class="flex items-center gap-3">
+            <input
+                type="number"
+                class="input w-24 input-sm"
+                min={MANUAL_REMIND_DAYS_RANGE[0]}
+                max={MANUAL_REMIND_DAYS_RANGE[1]}
+                step="1"
+                value={settings.manualRemindDays}
+                onchange={(e) => {
+                    settings.manualRemindDays = e.currentTarget.valueAsNumber;
+                    e.currentTarget.value = String(settings.manualRemindDays);
+                }}
+                data-testid="sync-remind"
+            />
+            <span>days with no new transactions</span>
         </span>
     </label>
 
     <div class="flex flex-col gap-2 text-sm text-base-content/70">
         <p>
             With this on, Ledgeline syncs while it's open: once each morning after your bank's overnight update, and again when the time above has passed. New
-            transactions go into your journal unreviewed. Possible duplicates are held for you to look at. Set the days to 0 to keep every statement.
+            transactions go into your journal unreviewed. Possible duplicates are held for you to look at.
         </p>
         <p>
             With it off, Ledgeline only contacts SimpleFIN when you click <span class="font-medium">Sync now</span> on
@@ -152,7 +173,9 @@
                                     >Disconnect…</button
                                 >
                             {:else if !connection.connected}
-                                <span class="ml-auto text-xs text-base-content/60">Not connected on this computer</span>
+                                <span class="ml-auto text-xs text-base-content/60"
+                                    >{connection.state === "elsewhere" ? "Syncs on another computer" : "Not connected on this computer"}</span
+                                >
                             {/if}
                         </div>
                         {#if confirming === connection.id}

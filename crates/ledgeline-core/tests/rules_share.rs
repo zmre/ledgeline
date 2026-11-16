@@ -59,6 +59,7 @@ fn not_in_sync(name: &str) -> KeepReason {
     KeepReason::FieldNotInSync(name.to_string())
 }
 
+/// The first seven names; `mcc`, `mcc_name` and `extra` keep their defaults.
 fn columns(names: [&str; 7]) -> FeedColumns {
     let [date, amount, payee, description, memo, id, transacted] = names.map(str::to_string);
     FeedColumns {
@@ -69,6 +70,7 @@ fn columns(names: [&str; 7]) -> FeedColumns {
         memo,
         id,
         transacted,
+        ..FeedColumns::default()
     }
 }
 
@@ -584,7 +586,7 @@ fn the_feed_template_follows_the_plan_s_shape() {
         text,
         "# ledgeline: SimpleFIN sync rules for Checking ••1234\n\
          skip 1\n\
-         fields date, amount, name, description, memo, id, transacted\n\
+         fields date, amount, name, description, memo, id, transacted, mcc, mcc_name, extra\n\
          date-format %Y-%m-%d\n\
          currency $\n\
          account1 assets:bank:firsttech:checking\n\
@@ -593,7 +595,8 @@ fn the_feed_template_follows_the_plan_s_shape() {
          comment id:%id\n\
          if %transacted .\n  date2 %transacted\n\
          include firsttech-checking.categories.rules\n\
-         if %id .\n  comment id:%id\n"
+         if %id .\n  comment id:%id\n\
+         if %mcc_name .\n  comment id:%id, category:%mcc_name\n"
     );
 }
 

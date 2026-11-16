@@ -103,6 +103,7 @@ impl Context {
                 (fits || file.id.contains(".sync.")).then(|| WireRulesChoice {
                     id: file.id.clone(),
                     fits,
+                    account1: file.account1.clone(),
                 })
             })
             .collect()
@@ -613,6 +614,7 @@ pub(crate) async fn connect(
             }
         }
         update_state(&worker, |memory| {
+            memory.connected_here.insert(conn_id.clone());
             let conn = memory.connections.entry(conn_id.clone()).or_default();
             conn.problems.clear();
             conn.failing_since = None;
@@ -1976,9 +1978,6 @@ pub(crate) fn patch_account(
     Ok(())
 }
 
-/// Days without a new transaction before a nudged manual account is stale.
-const MANUAL_STALE_DAYS: i64 = 35;
-
 /// `GET /api/sync/manual`: the journal's asset and liability accounts that no
 /// link names (by declared type, falling back to the name), with their last
 /// transaction and the `[[sync.manual]]` settings.
@@ -1990,6 +1989,8 @@ pub(crate) fn manual_accounts(
     now: i64,
 ) -> Result<Vec<WireManualAccount>, AppError> {
     let (config, _) = read_config(state)?;
+    // Days without a new transaction before a nudged manual account is stale.
+    let remind_days = i64::from(crate::ui_prefs::sync_settings(state).remind_days);
     let snapshot = state.snapshot();
     let linked: HashSet<&str> = config
         .accounts
@@ -2026,7 +2027,7 @@ pub(crate) fn manual_accounts(
             let stale = nudge
                 && last_transaction
                     .as_deref()
-                    .is_some_and(|date| today - days_from_iso(date) > MANUAL_STALE_DAYS);
+                    .is_some_and(|date| today - days_from_iso(date) > remind_days);
             WireManualAccount {
                 download_url: manual.and_then(|m| m.download_url.clone()),
                 last_import: None,

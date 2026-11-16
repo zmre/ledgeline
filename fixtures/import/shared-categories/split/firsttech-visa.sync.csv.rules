@@ -1,6 +1,6 @@
 # ledgeline: SimpleFIN sync rules for Checking ••1234
 skip 1
-fields posting_date, amount, merchant, description, memo, id, transacted
+fields posting_date, amount, merchant, description, memo, id, transacted, mcc, mcc_name, extra
 date-format %Y-%m-%d
 currency $
 date %posting_date
@@ -13,3 +13,5 @@ if %transacted .
 include firsttech-visa.categories.rules
 if %id .
   comment id:%id
+if %mcc_name .
+  comment id:%id, category:%mcc_name

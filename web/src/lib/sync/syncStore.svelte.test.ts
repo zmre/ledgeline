@@ -101,6 +101,16 @@ describe("UNIT syncStore", () => {
         expect(syncStore.dot).toBe("broken");
     });
 
+    it("hides the dot when every connection syncs on another computer", async () => {
+        const {setStatus} = engine();
+        const elsewhere = fixtureStatus();
+        elsewhere.connections = elsewhere.connections.map((c) => ({...c, state: "elsewhere" as const, connected: false, problems: []}));
+        setStatus(elsewhere);
+        stop = syncStore.start(FAKE_ENGINE);
+        await vi.waitFor(() => expect(syncStore.status).not.toBeNull());
+        expect(syncStore.dot).toBe("hidden");
+    });
+
     it("polls every 2 s while a run is going, and stops when it ends", async () => {
         const {calls, setStatus} = engine();
         setStatus({...fixtureStatus(), running: true});

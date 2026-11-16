@@ -6,7 +6,7 @@ import {fireEvent, render, screen, within} from "@testing-library/svelte";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {fakeSyncApi, startFakeSync, type FakeSyncApi} from "#lib/testing/fakeSyncApi.js";
 import {NativeApiUnavailableError} from "#lib/api/native.js";
-import {emptyStatus, FIXTURE_NOW} from "../fixtures";
+import {emptyStatus, fixtureStatus, FIXTURE_NOW} from "../fixtures";
 import {syncStore} from "../syncStore.svelte";
 
 vi.mock("$app/navigation", () => ({goto: vi.fn()}));
@@ -83,6 +83,23 @@ describe("COMPONENT AccountsPanel", () => {
         const drawer = screen.getByTestId("sync-account-drawer");
         await fireEvent.change(within(drawer).getByRole("combobox", {name: "Balance sign"}), {target: {value: "-1"}});
         expect(api.patchAccount).toHaveBeenCalledWith("a1b2c3d4e5", {balanceSign: -1});
+    });
+
+    it("reads quietly on a computer that another one syncs for, and offers to sync here too", async () => {
+        const elsewhere = fixtureStatus();
+        elsewhere.connections = elsewhere.connections.map((c) => ({...c, state: "elsewhere" as const, connected: false, problems: []}));
+        elsewhere.accounts = elsewhere.accounts.map((a) => ({...a, problems: []}));
+        await show(fakeSyncApi(elsewhere));
+        expect(screen.getByTestId("sync-status-line").textContent).toBe("Bank sync runs on another computer");
+        expect(screen.queryByTestId("sync-now")).toBeNull();
+        const card = screen.getByTestId("sync-connection");
+        expect(within(card).getByText("Syncs on another computer")).toBeTruthy();
+        expect(within(card).getAllByTestId("sync-linked-line")[0].textContent).toBe("Synced on another computer");
+        expect(within(card).queryByTestId("sync-problem")).toBeNull();
+        await fireEvent.click(within(screen.getByTestId("sync-elsewhere")).getByRole("button", {name: "Sync from this computer too…"}));
+        const wizard = screen.getByTestId("sync-wizard");
+        expect(within(wizard).getByRole("heading", {name: "Sync from this computer too"})).toBeTruthy();
+        expect(within(wizard).getByTestId("sync-also-here").textContent).toMatch(/one computer only/);
     });
 
     it("opens the wizard on the link step for an unlinked account", async () => {

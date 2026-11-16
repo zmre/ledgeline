@@ -14,6 +14,9 @@ describe("UNIT sync manualStale", () => {
         expect(manualStale(fresh, FIXTURE_TODAY).stale).toBe(false);
         expect(manualStale({...fresh, lastTransaction: "2026-10-09"}, FIXTURE_TODAY).stale).toBe(true);
         expect(manualStale({...vanguard, nudge: false}, FIXTURE_TODAY).stale).toBe(false);
+        // The setting moves the line: 10 days makes a 2-week-quiet account amber, 60 clears a 5-week one.
+        expect(manualStale({...fresh, lastTransaction: "2026-10-31"}, FIXTURE_TODAY, undefined, 10).stale).toBe(true);
+        expect(manualStale({...fresh, lastTransaction: "2026-10-09"}, FIXTURE_TODAY, undefined, 60).stale).toBe(false);
     });
 
     it("falls back to the last transaction, then to nothing", () => {

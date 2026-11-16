@@ -1,14 +1,13 @@
 // Manual downloads (plan 43 §4.2): what each manually imported account's row
-// says, and when it turns amber — 35 days with no new transactions, unless
-// the nudge is switched off for that account.
+// says, and when it turns amber — `manualRemindDays` (35 by default) with no
+// new transactions, unless the nudge is switched off for that account.
 //
 // Pure — today comes in as an argument. Relative imports only.
 
 import {daysBetween, shortDate} from "./format";
 import type {WireManualAccount} from "./types";
 
-/** Days without a new transaction before a nudged account's row turns amber. */
-export const STALE_AFTER_DAYS = 35;
+import {MANUAL_REMIND_DAYS_DEFAULT} from "#lib/settings/uiPrefs.js";
 
 export interface ManualView {
     stale: boolean;
@@ -21,14 +20,14 @@ const ago = (days: number): string => (days <= 0 ? "today" : days === 1 ? "yeste
 /**
  * The row's line and colour.
  *
- * Stale is decided here from the last transaction, by the same rule the
- * server's `stale` flag states, and either one is enough: the server knows
- * import history this page does not, and this side keeps a long-open page
- * honest as days pass without a refetch.
+ * Stale is decided here, from the last transaction and `remindDays`, by the
+ * same rule as the server's `stale` flag. The flag isn't read: this side
+ * follows a changed setting at once, and keeps a long-open page honest as days
+ * pass without a refetch.
  */
-export function manualStale(account: WireManualAccount, today: string, locale?: string): ManualView {
+export function manualStale(account: WireManualAccount, today: string, locale?: string, remindDays = MANUAL_REMIND_DAYS_DEFAULT): ManualView {
     const sinceTxn = account.lastTransaction === null ? null : daysBetween(account.lastTransaction, today);
-    const stale = account.nudge && (account.stale || (sinceTxn !== null && sinceTxn > STALE_AFTER_DAYS));
+    const stale = account.nudge && sinceTxn !== null && sinceTxn > remindDays;
     const parts: string[] = [];
     if (account.lastImport !== null) {
         const sinceImport = daysBetween(account.lastImport, today);

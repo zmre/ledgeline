@@ -78,9 +78,12 @@ export const AUTO_SYNC_HOURS_RANGE = [3, 24] as const;
 export const AUTO_SYNC_HOURS_DEFAULT = 6;
 /** Where synced statements are saved, relative to the journal's folder. */
 export const SYNC_SOURCE_DIR_DEFAULT = "imports/sync";
-/** How long a synced statement is kept, 0 (forever)–3650 days. Default 90. */
+/** How long a synced statement is kept, 0 (forever)–3650 days. Default 0: nothing is deleted unless asked. */
 export const SYNC_KEEP_DAYS_RANGE = [0, 3650] as const;
-export const SYNC_KEEP_DAYS_DEFAULT = 90;
+export const SYNC_KEEP_DAYS_DEFAULT = 0;
+/** Days without a new transaction before a manually imported account turns amber, 1–3650. Default 35. */
+export const MANUAL_REMIND_DAYS_RANGE = [1, 3650] as const;
+export const MANUAL_REMIND_DAYS_DEFAULT = 35;
 
 /**
  * A folder inside the journal's folder (`RelDir` in ui_prefs.rs): relative,
@@ -103,6 +106,7 @@ export const PINNABLE_UI_PREF_KEYS = [
     "autoSyncEveryHours",
     "syncSourceDir",
     "syncKeepSourceDays",
+    "manualRemindDays",
 ] as const;
 
 export type PinnableUiPrefKey = (typeof PINNABLE_UI_PREF_KEYS)[number];
@@ -178,8 +182,10 @@ export interface UiPrefs {
     autoSyncEveryHours: number;
     /** Where synced statements are saved, relative to the journal's folder. Default `imports/sync`. */
     syncSourceDir: string;
-    /** Days a synced statement is kept, 0 (forever)–3650. Default 90. */
+    /** Days a synced statement is kept, 0 (forever)–3650. Default 0. */
     syncKeepSourceDays: number;
+    /** Days without a new transaction before a manually imported account turns amber, 1–3650. Default 35. */
+    manualRemindDays: number;
 }
 
 export type UiPrefKey = keyof UiPrefs;
@@ -212,6 +218,7 @@ export const UI_PREF_KEYS: readonly UiPrefKey[] = [
     "autoSyncEveryHours",
     "syncSourceDir",
     "syncKeepSourceDays",
+    "manualRemindDays",
 ];
 
 /** A partial update, as `PATCH /api/ui-prefs` takes it: `columns` may name only some members. */
@@ -312,6 +319,7 @@ export const defaultUiPrefs = (): UiPrefs => ({
     autoSyncEveryHours: AUTO_SYNC_HOURS_DEFAULT,
     syncSourceDir: SYNC_SOURCE_DIR_DEFAULT,
     syncKeepSourceDays: SYNC_KEEP_DAYS_DEFAULT,
+    manualRemindDays: MANUAL_REMIND_DAYS_DEFAULT,
 });
 
 const flag = (value: unknown, fallback: boolean): boolean => (typeof value === "boolean" ? value : fallback);
@@ -363,6 +371,7 @@ export function cleanUiPrefs(parsed: Record<string, unknown>): UiPrefs {
         autoSyncEveryHours: wholeIn(parsed.autoSyncEveryHours, AUTO_SYNC_HOURS_RANGE, AUTO_SYNC_HOURS_DEFAULT),
         syncSourceDir: isRelDir(parsed.syncSourceDir) ? parsed.syncSourceDir : base.syncSourceDir,
         syncKeepSourceDays: wholeIn(parsed.syncKeepSourceDays, SYNC_KEEP_DAYS_RANGE, SYNC_KEEP_DAYS_DEFAULT),
+        manualRemindDays: wholeIn(parsed.manualRemindDays, MANUAL_REMIND_DAYS_RANGE, MANUAL_REMIND_DAYS_DEFAULT),
     };
 }
 

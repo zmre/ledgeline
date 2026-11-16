@@ -41,7 +41,9 @@
         attention: {label: "Needs attention", dot: "status-warning"},
         broken: {label: "Not working", dot: "status-error"},
         "not-connected": {label: "Not connected on this computer", dot: "status-neutral"},
+        elsewhere: {label: "Syncs on another computer", dot: "status-neutral"},
     } as const;
+    const elsewhere = $derived(connection.state === "elsewhere");
 
     let menuOpen = $state(false);
     let confirmDisconnect = $state(false);
@@ -114,7 +116,7 @@
                             onclick={() => {
                                 closeMenu();
                                 onReplaceToken(connection.id);
-                            }}>{connection.connected ? "Replace token…" : "Connect on this computer…"}</button
+                            }}>{connection.connected ? "Replace token…" : elsewhere ? "Sync from this computer too…" : "Connect on this computer…"}</button
                         >
                     </li>
                     <li><button type="button" onclick={() => void copyDiagnostics()}>Copy diagnostic report</button></li>
@@ -139,6 +141,13 @@
         <DisconnectConfirm {connection} onDone={() => (confirmDisconnect = false)} />
     {/if}
 
+    {#if elsewhere}
+        <div class="flex flex-wrap items-center justify-between gap-2 text-sm text-base-content/70" data-testid="sync-elsewhere">
+            <p>Another computer syncs these accounts. New transactions arrive here when the ledger's files do.</p>
+            <button type="button" class="btn btn-ghost btn-xs" onclick={() => onReplaceToken(connection.id)}>Sync from this computer too…</button>
+        </div>
+    {/if}
+
     {#each connection.problems.filter((p) => p.severity !== "info") as problem, i (i)}
         <ProblemNotice {problem} scope={{connectionId: connection.id, accountKey: null}} {onEffect} busy={syncStore.running} />
     {/each}
@@ -149,7 +158,7 @@
 
     <ul class="rounded-box border border-base-content/10">
         {#each accounts as account (account.key)}
-            <LinkedAccountRow {account} {now} connected={connection.connected} onOpen={onOpenAccount} {onEffect} />
+            <LinkedAccountRow {account} {now} connected={connection.connected} {elsewhere} onOpen={onOpenAccount} {onEffect} />
         {/each}
         {#each unlinked as remote (remote.remoteId)}
             <li class="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-base-content/5 px-3 py-2 last:border-b-0" data-testid="sync-unlinked-row">

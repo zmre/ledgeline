@@ -224,9 +224,9 @@ pub fn append_include(rules_text: &str, file_name: &str) -> Result<String, Share
 /// - **memo** — a column named `memo`.
 /// - **description** — `description` when the manual file has a column of that
 ///   name that isn't the payee source, else `sfdescription`.
-/// - **id**, **transacted**, and any role above with nothing to borrow keep
-///   their default names, prefixed `sf` while that collides with a manual
-///   column or another sync column.
+/// - **id**, **transacted**, **mcc**, **mcc_name**, **extra**, and any role
+///   above with nothing to borrow keep their default names, prefixed `sf`
+///   while that collides with a manual column or another sync column.
 ///
 /// A borrowed name is shareable: matchers on it move. A name hledger itself
 /// would read as a different field (`description %code`) is not borrowed.
@@ -377,6 +377,9 @@ fn borrow_names(doc: &RulesDoc, manual_fields: &[String]) -> Borrowed {
         memo: pick(memo, "memo"),
         id: pick(None, "id"),
         transacted: pick(None, "transacted"),
+        mcc: pick(None, "mcc"),
+        mcc_name: pick(None, "mcc_name"),
+        extra: pick(None, "extra"),
     };
     let iso = doc
         .settings()

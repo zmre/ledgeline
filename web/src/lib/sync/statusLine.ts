@@ -24,6 +24,7 @@ export function statusLine(status: WireSyncStatus, now: number, locale?: string)
     if (!status.available) return null;
     if (status.running) return "Syncing…";
     if (status.accounts.length === 0) return null;
+    if (status.connections.length > 0 && status.connections.every((c) => c.state === "elsewhere")) return "Bank sync runs on another computer";
     const parts = [status.autoSync ? "Auto-sync on" : "Auto-sync off"];
     const last = lastSynced(status);
     parts.push(last === null ? "not synced yet" : `last synced ${when(last, now, locale)}`);

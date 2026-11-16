@@ -22,6 +22,7 @@ import type {
     WireManualAccount,
     WireProblem,
     WireRemoteAccount,
+    WireRulesChoice,
     WireRunAccount,
     WireSharePreview,
     WireSyncRun,
@@ -47,6 +48,7 @@ const PROBLEM_CODES: readonly ProblemCode[] = [
     "balance",
     "target",
     "not-connected",
+    "elsewhere",
     "setup",
     "other",
 ];
@@ -64,7 +66,7 @@ const ACTION_KINDS: readonly ProblemActionKind[] = [
     "show-balance",
     "recheck",
 ];
-const CONNECTION_STATES: readonly ConnectionState[] = ["ok", "syncing", "attention", "broken", "not-connected"];
+const CONNECTION_STATES: readonly ConnectionState[] = ["ok", "syncing", "attention", "broken", "not-connected", "elsewhere"];
 const OUTCOMES: readonly RunOutcome[] = ["added", "nothing-new", "failed", "skipped"];
 const ACCOUNT_TYPES: readonly NewAccountType[] = ["A", "L", "C"];
 
@@ -80,6 +82,11 @@ function str(value: unknown, ctx: string): string {
     if (typeof value !== "string") throw new ApiShapeError(`${ctx}: expected a string`);
     return value;
 }
+function rulesChoice(raw: unknown, ctx: string): WireRulesChoice {
+    const c = obj(raw, ctx);
+    return {id: str(c.id, `${ctx} id`), fits: bool(c.fits, `${ctx} fits`), account1: optStr(c.account1, `${ctx} account1`)};
+}
+
 function optStr(value: unknown, ctx: string): string | null {
     return value === null ? null : str(value, ctx);
 }
@@ -205,10 +212,7 @@ function decodeLinked(raw: unknown, ctx: string): WireLinkedAccount {
             };
         }),
         problems: problems(a.problems, `${ctx} problems`),
-        rulesChoices: arr(a.rulesChoices, `${ctx} rulesChoices`).map((raw, i) => {
-            const c = obj(raw, `${ctx} rulesChoices[${i}]`);
-            return {id: str(c.id, `${ctx} rulesChoices[${i}] id`), fits: bool(c.fits, `${ctx} rulesChoices[${i}] fits`)};
-        }),
+        rulesChoices: arr(a.rulesChoices, `${ctx} rulesChoices`).map((raw, i) => rulesChoice(raw, `${ctx} rulesChoices[${i}]`)),
     };
 }
 
@@ -234,10 +238,7 @@ export function decodeRemoteAccount(raw: unknown, ctx = "sync remote account"): 
             target: optStr(s.target, `${ctx} suggestion target`),
             newAccountName: str(s.newAccountName, `${ctx} suggestion newAccountName`),
             newAccountType: oneOf(ACCOUNT_TYPES, s.newAccountType, `${ctx} suggestion newAccountType`),
-            syncRules: arr(s.syncRules, `${ctx} syncRules`).map((raw, i) => {
-                const f = obj(raw, `${ctx} syncRules[${i}]`);
-                return {id: str(f.id, `${ctx} syncRules[${i}] id`), fits: bool(f.fits, `${ctx} syncRules[${i}] fits`)};
-            }),
+            syncRules: arr(s.syncRules, `${ctx} syncRules`).map((raw, i) => rulesChoice(raw, `${ctx} syncRules[${i}]`)),
             manualRules:
                 manual === null ? null : {id: str(manual.id, `${ctx} manualRules id`), ruleCount: num(manual.ruleCount, `${ctx} manualRules ruleCount`)},
         },
