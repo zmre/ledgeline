@@ -33,9 +33,11 @@ concurrency:
 
 env:
   # Pinned so a new mbr release can't change the site between two tags.
-  # A main commit (#374) rather than a tag: the header/sidebar link partials in
-  # docs/.mbr/ need mbr main after v0.7.1. Move to the next tag once one exists.
-  MBR_FLAKE: github:zmre/mbr-markdown-browser/841d7790939d8f679760f7c5119070c3b4f8322d#mbr
+  # A commit rather than a tag: the header/sidebar link partials in docs/.mbr/
+  # need mbr main after v0.7.1, and the build's link check honours
+  # MBR_BASE_URL only from mbr #384 (before it, 404.html's Home link failed
+  # --fail-on-broken-links). Move to the next tag once one exists.
+  MBR_FLAKE: github:zmre/mbr-markdown-browser/304f3cfbb67ef8a5fb538e7a581d3923457638e4#mbr
 
 jobs:
   build:
@@ -62,7 +64,13 @@ jobs:
         run: nix build --accept-flake-config -L --out-link mbr "$MBR_FLAKE"
 
       - name: Build site
-        run: ./mbr/bin/mbr -b --fail-on-broken-links --output ./docs-build ./docs
+        env:
+          # The site is a GitHub project page, served under /ledgeline/.
+          # 404.html is served at whatever URL was missing, so it anchors its
+          # assets, site.json and Home link at base_url; left at the default "/"
+          # it loads nothing (no styles, no "did you mean" suggestions).
+          MBR_BASE_URL: /ledgeline/
+        run:./mbr/bin/mbr -b --fail-on-broken-links --output ./docs-build ./docs
 
       - name: Create Pages artifact
         if: github.event_name != 'pull_request'
