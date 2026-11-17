@@ -40,12 +40,17 @@ pub(crate) async fn patch(
 ) -> Result<Response, AppError> {
     let patch = Patch::from_json(&json_body(payload)?)?;
     let wake = patch.touches_auto_prices();
+    let wake_sync = patch.touches_sync();
     let saver = state.clone();
     let Json(body) = compute(move || ui_prefs::apply(&saver, &patch)).await?;
     if wake {
         // Turning automatic prices on (or widening its weeks) should not wait
         // up to an hour to show it works.
         state.auto_prices().wake();
+    }
+    if wake_sync {
+        // Likewise for bank sync's schedule (plan 43).
+        state.sync().auto().wake();
     }
     Ok(no_store_json(body))
 }
@@ -67,8 +72,9 @@ pub(crate) async fn pin(
     let pin = Pin::from_json(&json_body(payload)?)?;
     let saver = state.clone();
     let Json(body) = compute(move || ui_prefs::pin(&saver, pin)).await?;
-    // A pin can change this ledger's effective auto-price setting; a spare
-    // wake costs one local check.
+    // A pin can change this ledger's effective auto-price or auto-sync
+    // setting; a spare wake costs one local check.
     state.auto_prices().wake();
+    state.sync().auto().wake();
     Ok(no_store_json(body))
 }

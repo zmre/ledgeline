@@ -5453,6 +5453,92 @@ pub fn run_cli_import(state: &AppState, args: &CliImport) -> Result<CliRunReport
     cli_import(state, args).map_err(|error| error.to_string())
 }
 
+// ===========================================================================
+// Bank sync (plan 43): the same import, headless, from a CSV Ledgeline wrote
+// ===========================================================================
+
+/// One headless import of a sync CSV: the four handles a dry run takes.
+///
+/// Bank sync imports through exactly this pipeline — stage, [`run_dry_run`],
+/// [`run_commit`] — as [`run_cli_import`] does, with the very request types
+/// the routes deserialize, so a synced row lands exactly as the same CSV
+/// imported by hand would. Nothing here re-implements the import.
+pub(crate) struct HeadlessImport {
+    pub(crate) stage_id: String,
+    pub(crate) rules_id: String,
+    pub(crate) csv_path: String,
+    pub(crate) journal_id: String,
+}
+
+impl HeadlessImport {
+    fn request(&self) -> WireDryRunRequest {
+        WireDryRunRequest {
+            stage_id: self.stage_id.clone(),
+            rules_id: self.rules_id.clone(),
+            csv_path: self.csv_path.clone(),
+            journal_id: self.journal_id.clone(),
+            balance: None,
+            balance_account: None,
+            overrides: Vec::new(),
+        }
+    }
+}
+
+/// What a headless dry run proposed.
+pub(crate) enum HeadlessPreview {
+    /// hledger's proposal: the entries the commit would append, and how many.
+    Proposed { count: usize, entries: String },
+    /// hledger refused (most often the rules file); its stderr, redacted.
+    Failed { stderr: String },
+}
+
+/// Stage `csv` (already a header-plus-rows CSV Ledgeline wrote) under the
+/// display name `name`. Unlike an upload there is nothing to detect or
+/// convert, and no candidate rules files to rank: the account's rules file is
+/// already chosen.
+pub(crate) fn stage_headless(state: &AppState, name: &str, csv: &str) -> Result<String, AppError> {
+    state
+        .stages()
+        .put(csv, SourceFormat::Csv, name, None)
+        .map(|(id, _)| id.as_str().to_string())
+        .map_err(|error| {
+            AppError::Internal(format!("could not stage the sync CSV: {}", error.kind()))
+        })
+}
+
+/// [`run_dry_run`] for a headless import.
+pub(crate) fn headless_dry_run(
+    state: &AppState,
+    import: &HeadlessImport,
+) -> Result<HeadlessPreview, AppError> {
+    Ok(match run_dry_run(state, &import.request())? {
+        WireDryRun::Proposed(proposal) => HeadlessPreview::Proposed {
+            count: proposal.count,
+            entries: proposal.entries,
+        },
+        WireDryRun::Failed(failed) => HeadlessPreview::Failed {
+            stderr: failed.stderr,
+        },
+    })
+}
+
+/// [`run_commit`] for a headless import: how many transactions it appended.
+/// The caller holds `AppState::import_writes`.
+pub(crate) fn headless_commit(
+    state: &AppState,
+    import: &HeadlessImport,
+) -> Result<usize, AppError> {
+    run_commit(
+        state,
+        &WireCommitRequest {
+            plan: import.request(),
+            write_assertion: false,
+            journal_edits: Vec::new(),
+        },
+    )
+    .map(|commit| commit.imported)
+}
+
 /// [`run_cli_import`], in the crate's own error type.
 fn cli_import(state: &AppState, args: &CliImport) -> Result<CliRunReport, AppError> {
     // The journal this process was opened with — `--root-journal`, or `--journal`

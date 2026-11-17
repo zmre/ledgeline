@@ -18,6 +18,8 @@
     import {filters} from "#lib/stores/filters.svelte.js";
     import {matches} from "#lib/stores/matches.svelte.js";
     import {problems} from "#lib/stores/problems.svelte.js";
+    import SyncProblemsGroup from "#lib/sync/ui/SyncProblemsGroup.svelte";
+    import {syncStore} from "#lib/sync/syncStore.svelte.js";
 
     const RULE_LABELS: Record<string, string> = {
         unbalanced: "Unbalanced",
@@ -62,6 +64,8 @@
     /** The broken-match finding whose Unlink is armed (by transaction), and the last fix that failed. */
     let armedUnlink = $state<number | null>(null);
     let fixFailure = $state<{txnIndex: number; message: string} | null>(null);
+
+    const total = $derived(problems.count + syncStore.problems.length);
 
     const SEVERITY_BADGE: Record<Severity, string> = {error: "badge-error", warning: "badge-warning", info: "badge-info"};
 
@@ -183,10 +187,15 @@
         {#if problems.drawerOpen}
             <header class="flex items-center justify-between">
                 <h2 class="text-base font-semibold">Problems</h2>
-                <span class="text-sm text-base-content/60">{problems.count === 1 ? "1 finding" : `${problems.count} findings`}</span>
+                <span class="text-sm text-base-content/60">{total === 1 ? "1 finding" : `${total} findings`}</span>
             </header>
 
-            {#if problems.count === 0}
+            <!-- Bank sync (plan 43): its own group, first — a broken connection is the most time-sensitive thing here. -->
+            <SyncProblemsGroup />
+
+            {#if problems.count === 0 && syncStore.problems.length > 0}
+                <!-- Only bank sync has something: no "all checks pass" under it. -->
+            {:else if problems.count === 0}
                 <p class="text-sm text-base-content/60">No problems found. All checks pass.</p>
             {:else if problems.listLoading && problems.all.length === 0}
                 <p class="flex items-center gap-2 text-sm text-base-content/60" role="status">

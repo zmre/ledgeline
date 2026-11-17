@@ -203,8 +203,14 @@ fn stage_one_declines_to_reject_a_question_it_cannot_answer() {
             "an unmodelled specifier",
             "fields date, description, amount-out, amount-in\nskip 1\ndate-format %Y-%j\n",
         ),
-        // No `fields` list, so there is no date column to look in.
-        ("no fields list", "skip 1\ndate-format %d.%m.%Y\n"),
+        // The `fields` list arrives through an `include`, so there is no date
+        // column to look in. (A file with neither is a plan-43 categories
+        // fragment and IS rejected — see the lib test
+        // `a_file_with_no_fields_line_is_never_a_candidate`.)
+        (
+            "fields from an include",
+            "include common.rules\nskip 1\ndate-format %d.%m.%Y\n",
+        ),
     ];
     for (why, text) in cases {
         let pass = prefilter(&RulesDoc::parse(text), &data)

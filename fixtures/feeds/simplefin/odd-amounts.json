@@ -1,0 +1,26 @@
+{
+  "errlist": [],
+  "connections": [{ "conn_id": "CON-odd", "name": "Odd Bank" }],
+  "accounts": [
+    {
+      "id": "ACT-odd",
+      "name": "Odd Checking",
+      "conn_id": "CON-odd",
+      "currency": "USD",
+      "balance": "1,234.56",
+      "available-balance": "12.5",
+      "balance-date": 1794268800,
+      "transactions": [
+        { "id": "O-1", "posted": 1794182400, "amount": "5", "description": "WHOLE NUMBER" },
+        { "id": "O-2", "posted": 1794182400, "amount": "-0.1", "description": "ONE DECIMAL" },
+        { "id": "O-3", "posted": 1794182400, "amount": "1,000.00", "description": "THOUSANDS SEPARATOR" },
+        { "id": "O-4", "posted": 1794182400, "amount": "", "description": "EMPTY" },
+        { "id": "O-5", "posted": 1794182400, "description": "MISSING" },
+        { "posted": 1794182400, "amount": "-1.00", "description": "NO ID" },
+        "not an object",
+        { "id": "O-6", "posted": 1794182400, "amount": "-3.25", "description": "FINE" }
+      ]
+    },
+    { "name": "account with no id", "balance": "1.00", "transactions": [] }
+  ]
+}

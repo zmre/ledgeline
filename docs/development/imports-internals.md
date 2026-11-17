@@ -882,6 +882,28 @@ Content provenance is unchanged, and that is the point of routing the write thro
 same renderer. `POST /api/rules-create` itself **writes nothing at all** — it drafts, and the user
 saves. Drafting a plausible file and writing one stay separate, separately-testable operations.
 
+## Sharing categorization between rules files (plan 43)
+
+`rules/share.rs` splits a manual rules file's `if` blocks into `<account>.categories.rules`, which
+the manual file and the bank-sync rules file both `include` as their **last** line. It is pure text
+over the item partition: moved items keep their exact bytes, everything else stays put, and
+`SharePlan::moved_spans` + `include_offset` let a test reassemble the original byte for byte.
+
+Facts it rests on (hledger 1.52, verified against the binary):
+
+- `if %NAME` matches only when `NAME` is in the **including** file's `fields` line, so the sync CSV
+  borrows the manual file's column names (`plan_share` decides which).
+- `%NAME` in a value reads the CSV column only, and an unknown name reads as empty. A block
+  interpolating a column sync lacks stays.
+- A conditional assignment beats a top-level one wherever they sit; among conditionals the
+  **last** match wins. Since the include goes last, a block that came before a kept block setting the
+  same field would start winning, so it stays too (`KeepReason::OrderDependent`).
+- An unconditional `date2 %transacted` over an empty cell is a hard error, so the feed template
+  assigns `date2` inside `if %transacted .`.
+
+A file with no `fields` line and no `include` is never offered as an import candidate
+(`matching::reads_csv_alone`): a categories file cannot read a CSV alone.
+
 ## Concurrency
 
 Each response carries a `revision` — a fingerprint of the file's **raw bytes**. A save must echo it,

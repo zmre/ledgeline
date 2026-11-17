@@ -14,7 +14,7 @@
     // the run where it declines to write. Flat route, `?tab=`, no nested
     // directory: this codebase has none, and Reports does not use one either.
     import {onMount} from "svelte";
-    import {goto} from "$app/navigation";
+    import {afterNavigate, goto} from "$app/navigation";
     import {resolve} from "$app/paths";
     import ErrorToast from "#lib/components/ErrorToast.svelte";
     import {importStore} from "#lib/imports/importStore.svelte.js";
@@ -23,9 +23,11 @@
     import EditRulesPanel from "#lib/imports/ui/EditRulesPanel.svelte";
     import ImportTabs from "#lib/imports/ui/ImportTabs.svelte";
     import NewTransactionsPanel from "#lib/imports/ui/NewTransactionsPanel.svelte";
+    import {isNative} from "#lib/native/detect.js";
     import {journal} from "#lib/stores/journal.svelte.js";
     import {loadJournalWhenReady, onServerReady} from "#lib/stores/serverWatch.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
+    import AccountsPanel from "#lib/sync/ui/AccountsPanel.svelte";
     import {searchMirror} from "#lib/url/searchSync.js";
 
     // The account autocomplete is the only thing this screen wants from the
@@ -63,9 +65,21 @@
             void goto(`${resolve("settings")}${forward}`, {replace: true});
             return;
         }
-        if (window.location.search !== "") Object.assign(params, searchToParams(window.location.search, defaultImportParams()));
-        restored = true;
+        restore();
         return () => mirror.stop();
+    });
+
+    // Also after every navigation that stays on this route: the header's bank
+    // sync dot and the Problems drawer link to `?tab=accounts` from anywhere,
+    // including from this page, and a mount-only read would leave the old tab
+    // showing under the new URL (the Settings route had the same bug). The
+    // mirror writes with shallow `replaceState`, which is not a navigation.
+    function restore(): void {
+        Object.assign(params, searchToParams(window.location.search, defaultImportParams()));
+        restored = true;
+    }
+    afterNavigate(() => {
+        if (restored) restore();
     });
 
     // Mirror params → URL, debounced, replaceState (no history entries, no loops).
@@ -84,7 +98,9 @@
 <div class="flex flex-col gap-3">
     <ImportTabs bind:tab={params.tab} />
 
-    {#if params.tab === "new"}
+    {#if params.tab === "accounts" && !isNative()}
+        <AccountsPanel />
+    {:else if params.tab === "new" || params.tab === "accounts"}
         <NewTransactionsPanel />
     {:else}
         <EditRulesPanel />

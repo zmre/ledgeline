@@ -105,6 +105,20 @@ export default defineConfig({
             url: "http://127.0.0.1:5094/",
             reuseExistingServer: false,
         },
+        {
+            // The bank-sync engine (plan 43, e2e/sync.e2e.ts): sample.journal in
+            // a SCRATCH COPY (target/e2e-sync/, gitignored) staged fresh on every
+            // run, because linking writes rules files, `ledgeline.toml` and the
+            // first sync's transactions beside the journal. LEDGELINE_FEED_FAKE
+            // serves fixtures/feeds/fake-bridge/ instead of SimpleFIN, with
+            // credentials in memory and sync state in a temp folder; it needs a
+            // `--features test-fakes` build (`just e2e` makes one). CI's Nix
+            // binary has no fakes, so the spec skips when $LEDGELINE_BIN is set.
+            command: `rm -rf ../target/e2e-sync && mkdir -p ../target/e2e-sync && cp ../fixtures/sample.journal ../target/e2e-sync/ && exec ${process.env.LEDGELINE_BIN ?? "../target/debug/ledgeline"} --server ../target/e2e-sync/sample.journal --port 5093 --allow-origin http://localhost:4173`,
+            env: {...ENGINE_ENV, LEDGELINE_FEED_FAKE: "../fixtures/feeds/fake-bridge"},
+            url: "http://127.0.0.1:5093/",
+            reuseExistingServer: false,
+        },
         {command: "bun run build && bun run preview", port: 4173},
     ],
     // With multiple webServers playwright does not infer baseURL from `port`.

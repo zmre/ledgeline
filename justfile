@@ -59,10 +59,13 @@ test-integration port="5055":
 # build.rs mirrored into crates/ledgeline-server/spa/ when it was compiled —
 # the placeholder on a fresh checkout, which makes that spec skip. The config's
 # own `bun run build` (for `bun run preview`) then runs again; it takes seconds.
+# `--features test-fakes` so the engine honours `LEDGELINE_FEED_FAKE=<dir>`
+# (plan 43): bank-sync specs run against fixtures/feeds/fake-bridge/, never a
+# real bank feed, and a release build can't be pointed at fake data.
 # Run e2e tests (playwright)
 e2e:
     cd web && bun run build
-    cargo build -p ledgeline
+    cargo build -p ledgeline --features test-fakes
     cd web && bun run test:e2e
 
 # The SPA is built before the binary for the same reason as `e2e`: every docs
@@ -72,7 +75,7 @@ e2e:
 # Regenerate the docs screenshots (docs/**/images/*.png)
 docs-screenshots:
     cd web && bun run build
-    cargo build -p ledgeline
+    cargo build -p ledgeline --features test-fakes
     cd web && bunx playwright test -c playwright.docs.config.ts
 
 # Typecheck + svelte-check
@@ -169,6 +172,7 @@ hledger-checks:
     LEDGELINE_HLEDGER_CONVERT_CHECK=1 cargo test -p ledgeline-core --test convert_tabular
     LEDGELINE_HLEDGER_MATCH_CHECK=1 cargo test -p ledgeline-core --test matching
     LEDGELINE_HLEDGER_GENERATE_CHECK=1 cargo test -p ledgeline-core --test rules_generate
+    LEDGELINE_HLEDGER_SHARE_CHECK=1 cargo test -p ledgeline-core --test rules_share
     LEDGELINE_HLEDGER_REIMPORT_CHECK=1 cargo test -p ledgeline-core --test reimport
     LEDGELINE_HLEDGER_GROUPED_CSV_CHECK=1 cargo test -p ledgeline-core --test grouped_csv
     LEDGELINE_HLEDGER_SORT_CHECK=1 cargo test -p ledgeline-core --test sort
@@ -177,6 +181,7 @@ hledger-checks:
     LEDGELINE_HLEDGER_IMPORT_CHECK=1 cargo test -p ledgeline --test import_cli
     LEDGELINE_HLEDGER_IMPORT_CHECK=1 cargo test -p ledgeline --test qif_endpoints
     LEDGELINE_HLEDGER_IMPORT_CHECK=1 cargo test -p ledgeline --test review_rules_endpoints
+    LEDGELINE_HLEDGER_SYNC_CHECK=1 cargo test -p ledgeline --test sync_endpoints
     LEDGELINE_HLEDGER_QBJOURNAL_CHECK=1 cargo test -p ledgeline --test qb_journal_hledger_check
     LEDGELINE_HLEDGER_CONF_CHECK=1 cargo test -p ledgeline --test conf_endpoints
     LEDGELINE_HLEDGER_PROJECTION_CHECK=1 cargo test -p ledgeline-core --test projection_files

@@ -9,8 +9,9 @@ tags: [imports]
 
 The Imports screen turns a statement you downloaded into transactions in your journal. It uses hledger's own `hledger import` and your existing `*.rules` files, so an import done here gives the same result as one run from a terminal.
 
-Imports has two tabs. Press <kbd>1</kbd> or <kbd>2</kbd> to switch between them.
+Imports has three tabs. Press <kbd>1</kbd>–<kbd>3</kbd> to switch between them. A plain link to Imports opens New Transactions.
 
+- [Accounts](bank-sync.md) lists your bank and card accounts: the ones linked through SimpleFIN Bridge, which sync new transactions for you, and the ones you import by hand, with when each last had a transaction. The desktop app only.
 - [New Transactions](new-transactions.md) is where you drop a statement file, choose the rules file that reads it, preview the proposed transactions and write them.
 - [Edit Rules](rules-editor.md) lists the `*.rules` files beside your journal and lets you edit their settings, column mapping, default accounts and `if` rules.
 
@@ -46,6 +47,7 @@ Ledgeline also never runs a rules file's `source ... | COMMAND` line, because th
 ## Pages in this section
 
 - [New transactions](new-transactions.md): drop a statement, check the preview, write it.
+- [Bank sync](bank-sync.md): link accounts through SimpleFIN Bridge so new transactions arrive on their own, and fix a connection when it breaks.
 - [Creating a rules file](create-rules.md): let Ledgeline draft a rules file for a statement that has none.
 - [Editing rules](rules-editor.md): what the rules editor can change and what it leaves alone.
 - [Importing from QuickBooks](quickbooks.md): bring in a QuickBooks Online Journal export and map its accounts.

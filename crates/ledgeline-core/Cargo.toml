@@ -34,6 +34,17 @@ calamine = { workspace = true }
 encoding_rs = { workspace = true }
 encoding_rs_io = { workspace = true }
 chardetng = { workspace = true }
+# Bank sync (plan 43, `feeds`). All three were already in Cargo.lock through
+# `ledgeline-server` (same majors), so they add no crate to the graph:
+# - `toml_edit` writes the `[sync]` tables of `ledgeline.toml` while keeping
+#   every comment, the key order and the `[ui]` table byte for byte, exactly as
+#   the server's settings writer does;
+# - `base64` decodes a SimpleFIN setup token (standard or URL-safe alphabet);
+# - `url` parses the claim and access URLs. Hand-splitting `user:pass@host`
+#   is where credential leaks come from, so the WHATWG parser does it.
+toml_edit = "0.25"
+base64 = "0.23"
+url = "2"
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true }

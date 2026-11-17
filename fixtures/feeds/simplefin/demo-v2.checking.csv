@@ -1,0 +1,5 @@
+date,amount,payee,description,memo,id,transacted,mcc,mcc_name,extra
+2026-11-03,-4.50,Blue Bottle Coffee,BLUE BOTTLE COFFEE #42 OAKLAND CA,,878479726e-TRN-1001,2026-11-02,5814,Fast Food Restaurants,
+2026-11-05,2500.00,Acme Corp,ACME CORP PAYROLL,Direct deposit,878479726e-TRN-1002,,,,
+2026-11-07,-82.17,Safeway,SAFEWAY #1234,,878479726e-TRN-1003,,5411,Grocery Stores and Supermarkets,"{""card"":""Visa"",""category"":""Groceries""}"
+2026-11-09,-1200.00,"RENT, NOVEMBER ""UNIT 4""","RENT, NOVEMBER ""UNIT 4""",,878479726e-TRN-1004,,,,

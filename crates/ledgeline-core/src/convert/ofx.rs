@@ -703,7 +703,10 @@ fn row(txn: &Aggregate) -> Vec<String> {
 /// A FITID is opaque — nothing reads digits out of it — so the only property
 /// that matters is that distinct ids stay distinct, which dropping a separator
 /// from a digit group preserves.
-fn tag_safe(fitid: &str) -> String {
+///
+/// `pub(crate)` for [`crate::feeds::normalize`], whose SimpleFIN ids travel in
+/// the same `id:` tag and must be made safe the same way.
+pub(crate) fn tag_safe(fitid: &str) -> String {
     fitid
         .split_whitespace()
         .map(|word| word.replace(',', ""))

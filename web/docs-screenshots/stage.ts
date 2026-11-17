@@ -36,6 +36,24 @@ alias Chase Sapphire Visa = liabilities:cc:visa
 alias /^Vanguard Brokerage/ = assets:broker:taxable
 `;
 
+const SYNC_BROKEN_TOML = `# Staged by web/docs-screenshots/stage.ts for the bank sync problem shot.
+[[sync.connection]]
+id = "docs-bridge"
+name = "SimpleFIN Bridge"
+kind = "simplefin"
+
+[[sync.account]]
+connection = "docs-bridge"
+remoteId = "ACT-harbor-visa"
+label = "Harbor Card Services · Visa ••3310"
+journalAccount = "liabilities:cc:visa"
+rules = "harbor.sync.csv.rules"
+target = "sample.journal"
+startDate = 2026-07-04
+balanceSign = 1
+enabled = true
+`;
+
 const SETS: Readonly<Record<string, FixtureSet>> = {
     sample: {
         files: [
@@ -66,6 +84,24 @@ const SETS: Readonly<Record<string, FixtureSet>> = {
     },
     // Transfer matching (plan 35), read as of 2027-01-31: one file per bank
     // feed, included by the main file.
+    // Bank sync (plan 43): sample.journal plus a manual rules file for the
+    // checking account, so linking Lakeside offers to share its categories.
+    // The engine's LEDGELINE_FEED_FAKE serves fixtures/feeds/fake-bridge/.
+    sync: {
+        files: [
+            ["sample.journal", "sample.journal"],
+            ["rules/simple/checking.csv.rules", "imports/checking.csv.rules"],
+        ],
+    },
+    // The same, served by fixtures/feeds/fake-bridge-broken/ (con.auth on
+    // Harbor), with Harbor already linked so one sync shows the problem.
+    syncBroken: {
+        files: [
+            ["sample.journal", "sample.journal"],
+            ["import/shared-categories/feed/checking.sync.csv.rules", "harbor.sync.csv.rules"],
+        ],
+        append: {"ledgeline.toml": SYNC_BROKEN_TOML},
+    },
     matching: {
         files: [
             ["matching.journal", "matching.journal"],

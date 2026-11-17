@@ -106,6 +106,10 @@ pub(crate) enum Command {
     /// hledger's `print -O csv` columns. Nothing is overwritten without
     /// `--force`.
     Export(ledgeline::CliExport),
+    /// Bank sync without a window (plan 43): connect a SimpleFIN setup token,
+    /// list and link accounts, sync now, and show the status — the same
+    /// engine the Accounts tab uses. For dogfooding.
+    Sync(ledgeline::CliSync),
 }
 
 /// Fatal startup/runtime errors surfaced to the user via `main`.
@@ -150,6 +154,9 @@ pub(crate) enum AppError {
     /// A `ledgeline export` run failed; the sentence names the file.
     #[error("{0}")]
     Export(String),
+    /// A `ledgeline sync` run refused or failed.
+    #[error("{0}")]
+    Sync(String),
 }
 
 /// Counts nothing in this process; enforces the memory budget in a workbook
@@ -188,6 +195,9 @@ fn run(cli: Cli) -> Result<(), AppError> {
     }
     if let Some(Command::Export(args)) = &cli.command {
         return ledgeline::run_cli_export(args).map_err(AppError::Export);
+    }
+    if let Some(Command::Sync(args)) = &cli.command {
+        return run_sync(args, app_dirs);
     }
     #[cfg(feature = "gui")]
     if !cli.server {
@@ -243,6 +253,26 @@ fn run_import(args: &ledgeline::CliImport, app_dirs: AppDirs) -> Result<(), AppE
         ledgeline::CliRunReport::Csv(report) => print_csv_report(&report),
         ledgeline::CliRunReport::QbJournal(report) => print_qb_report(&report),
     }
+    Ok(())
+}
+
+/// `ledgeline sync …` — one bank sync command, then exit. The journal is
+/// opened exactly as `run_import` opens it; the answer is printed as the JSON
+/// the matching `/api/sync/*` route returns.
+fn run_sync(args: &ledgeline::CliSync, app_dirs: AppDirs) -> Result<(), AppError> {
+    let editor_path = args
+        .journal
+        .canonicalize()
+        .unwrap_or_else(|_| args.journal.clone());
+    let state = AppState::from_journal_path(&editor_path)
+        .map_err(|source| AppError::OpenEditor {
+            path: args.journal.display().to_string(),
+            source,
+        })?
+        .with_app_dirs(app_dirs)
+        .with_feed_fake_from_env();
+    let text = ledgeline::run_cli_sync(&state, args).map_err(AppError::Sync)?;
+    println!("{text}");
     Ok(())
 }
 
@@ -748,12 +778,14 @@ fn run_server_blocking(cli: &Cli, app_dirs: AppDirs) -> Result<(), AppError> {
     // The e2e and live-contract harnesses run this over committed fixtures:
     // a UI save must not land in `fixtures/`, and each browser context must
     // start from its own clean view state, so they leave it to the browser.
-    let state =
-        if std::env::var_os(ledgeline::UI_PREFS_IN_BROWSER_ENV).is_some_and(|v| !v.is_empty()) {
-            state.with_ui_prefs_in_browser()
-        } else {
-            state
-        };
+    let prefs_in_browser =
+        std::env::var_os(ledgeline::UI_PREFS_IN_BROWSER_ENV).is_some_and(|v| !v.is_empty());
+    let state = if prefs_in_browser {
+        state.with_ui_prefs_in_browser()
+    } else {
+        state
+    };
+    let state = state.with_feed_fake_from_env();
     // Remember this journal as the most-recently-opened (canonical path).
     ledgeline::recents::record(state.app_dirs(), &editor_path);
     let host = cli.host.clone();
@@ -801,6 +833,12 @@ fn run_server_blocking(cli: &Cli, app_dirs: AppDirs) -> Result<(), AppError> {
         // `autoPrices` on; the e2e harnesses keep prefs in the browser, where
         // it is always off.
         tokio::spawn(ledgeline::run_auto_prices(state.clone()));
+        // Plan 43: background bank sync, idle unless `autoSync` is on. Not
+        // started at all for the browser-prefs harnesses (e2e, live
+        // contract), so they never touch a bank feed unasked.
+        if !prefs_in_browser {
+            tokio::spawn(ledgeline::run_auto_sync(state.clone()));
+        }
 
         // Live-reload watcher; held for the serve duration (dropping it stops
         // watching). A watcher failure only disables live reload.

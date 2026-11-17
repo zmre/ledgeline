@@ -118,7 +118,31 @@ impl<'a> IdIndex<'a> {
     }
 }
 
-/// Index every transaction in `journal` that carries `id_tag`.
+/// Every non-empty value `txn` carries under `id_tag`, in comment order, each
+/// once.
+///
+/// A transaction may carry **several** ids. Bank sync's "It's a duplicate"
+/// (plan 43 §3.4) records a feed's id as a *second* `id:` tag on a transaction
+/// that was imported by hand under the statement's own `FITID`, so both the next
+/// manual download and the next sync recognise it. Empty values are skipped for
+/// the reason [`id_of`] gives, and a value repeated on one transaction counts
+/// once — `; id:A, id:A` is one transaction claiming `A`, not two.
+#[must_use]
+pub fn ids_of<'a>(txn: &'a Transaction, id_tag: &str) -> Vec<&'a str> {
+    txn.tags
+        .iter()
+        .filter(|(name, value)| name == id_tag && !value.is_empty())
+        .map(|(_, value)| value.as_str())
+        .fold(Vec::new(), |mut ids, id| {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+            ids
+        })
+}
+
+/// Index every transaction in `journal` that carries `id_tag`, under **every**
+/// id it carries (see [`ids_of`]).
 ///
 /// A duplicated id keeps the **first** in file order and records the count, so
 /// [`classify`] can refuse to act on an id it cannot resolve to one transaction
@@ -127,7 +151,7 @@ impl<'a> IdIndex<'a> {
 pub fn build_index<'a>(journal: &'a Journal, id_tag: &str) -> IdIndex<'a> {
     let mut by_id: HashMap<&'a str, (&'a Transaction, usize)> = HashMap::new();
     for txn in &journal.transactions {
-        if let Some(id) = id_of(txn, id_tag) {
+        for id in ids_of(txn, id_tag) {
             by_id
                 .entry(id)
                 .and_modify(|(_, count)| *count += 1)
@@ -638,6 +662,54 @@ mod tests {
         };
         assert_eq!(diffs.len(), 1);
         assert_eq!(diffs[0].field, "id");
+    }
+
+    /// Plan 43: "It's a duplicate" adds a feed id as a SECOND `id:` tag, and
+    /// both ids must then find the transaction.
+    #[test]
+    fn every_id_on_a_transaction_is_indexed() {
+        let holding = journal(
+            "2026-01-05 * COFFEE SHOP  ; id:FIT0001, id:a1b2c3d4e5-TX9\n    assets:bank:checking  -4.50\n    expenses:unknown  4.50\n",
+        );
+        let index = build_index(&holding, ID_TAG);
+        assert_eq!(index.len(), 2);
+        for id in ["FIT0001", "a1b2c3d4e5-TX9"] {
+            let (txn, carriers) = index.get(id).expect("each id finds the transaction");
+            assert_eq!(txn.description, "COFFEE SHOP");
+            assert_eq!(carriers, 1);
+        }
+        // `classify` is unchanged: the re-downloaded statement row, looked up
+        // by its own id, is still recognised as the same transaction.
+        let proposed = proposal(
+            "2026-01-05 * COFFEE SHOP  ; id:FIT0001\n    assets:bank:checking  -4.50\n    expenses:unknown  4.50\n",
+        );
+        assert_eq!(
+            classify(&index, "FIT0001", &proposed[0], true),
+            RowClassification::Unchanged
+        );
+    }
+
+    /// One transaction naming the same id twice is one carrier, not an
+    /// ambiguity; empty values are still ignored.
+    #[test]
+    fn a_repeated_or_empty_id_on_one_transaction_counts_once() {
+        let holding = journal("2026-01-05 * A  ; id:X, id:X, id:\n    a  -1\n    b  1\n");
+        let index = build_index(&holding, ID_TAG);
+        assert_eq!(index.len(), 1);
+        assert_eq!(index.get("X").map(|(_, n)| n), Some(1));
+        assert_eq!(ids_of(&holding.transactions[0], ID_TAG), vec!["X"]);
+    }
+
+    /// The same id on two DIFFERENT transactions — once as a second tag — is
+    /// still the ambiguity `classify` refuses to guess at.
+    #[test]
+    fn a_second_id_shared_with_another_transaction_is_counted() {
+        let holding = journal(
+            "2026-01-05 * A  ; id:X, id:Y\n    a  -1\n    b  1\n\n2026-01-06 * B  ; id:Y\n    a  -1\n    b  1\n",
+        );
+        let index = build_index(&holding, ID_TAG);
+        assert_eq!(index.get("Y").map(|(_, n)| n), Some(2));
+        assert_eq!(index.get("X").map(|(_, n)| n), Some(1));
     }
 
     /// A comment the user added is not a conflict. It is a note.

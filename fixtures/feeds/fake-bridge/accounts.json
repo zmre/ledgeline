@@ -1,0 +1,51 @@
+{
+  "errlist": [],
+  "x-api-message": [],
+  "connections": [
+    {"conn_id": "CON-lakeside", "name": "Lakeside Credit Union", "org_id": "ORG-lakeside", "org_url": "https://lakeside-cu.example"},
+    {"conn_id": "CON-harbor", "name": "Harbor Card Services", "org_id": "ORG-harbor", "org_url": "https://harbor-card.example"},
+    {"conn_id": "CON-summit", "name": "Summit Online Bank", "org_id": "ORG-summit", "org_url": "https://summit-bank.example"}
+  ],
+  "accounts": [
+    {
+      "id": "ACT-lakeside-checking",
+      "name": "Checking ••4821",
+      "conn_id": "CON-lakeside",
+      "currency": "USD",
+      "balance": "32292.23",
+      "available-balance": "32292.23",
+      "balance-date": 1784073600,
+      "transactions": [
+        {"id": "LCU-7001", "posted": 1783296000, "amount": "4200.00", "description": "ACME CORP PAYROLL PPD", "payee": "Acme Corp", "memo": "Direct deposit", "pending": false},
+        {"id": "LCU-7002", "posted": 1783468800, "amount": "-96.40", "description": "PG&E WEB ONLINE", "payee": "PG&E Utilities", "memo": "", "pending": false},
+        {"id": "LCU-7003", "posted": 1783641600, "amount": "-64.18", "description": "TRADER JOE'S #552", "payee": "Trader Joe's", "memo": "", "transacted_at": 1783555200, "mcc": "5411", "extra": {"store": "552"}, "pending": false},
+        {"id": "LCU-7004", "posted": 1783987200, "amount": "-40.00", "description": "VENMO PAYMENT 1029384756", "payee": "Venmo", "memo": "rent share", "pending": false},
+        {"id": "LCU-7005", "posted": 0, "amount": "-12.75", "description": "BLUE BOTTLE COFFEE (PENDING)", "pending": true}
+      ]
+    },
+    {
+      "id": "ACT-harbor-visa",
+      "name": "Visa Signature ••3310",
+      "conn_id": "CON-harbor",
+      "currency": "USD",
+      "balance": "-603.24",
+      "balance-date": 1784073600,
+      "transactions": [
+        {"id": "HCS-501", "posted": 1783209600, "amount": "-56.24", "description": "SAFEWAY #1234 SAN JOSE CA", "payee": "Safeway", "memo": "", "pending": false},
+        {"id": "HCS-502", "posted": 1783555200, "amount": "-48.10", "description": "SHELL OIL 5566", "payee": "Shell", "memo": "", "pending": false},
+        {"id": "HCS-503", "posted": 1783814400, "amount": "-23.99", "description": "AMAZON MKTPLACE PMTS", "payee": "Amazon", "memo": "", "pending": false}
+      ]
+    },
+    {
+      "id": "ACT-summit-savings",
+      "name": "High-Yield Savings ••0077",
+      "conn_id": "CON-summit",
+      "currency": "USD",
+      "balance": "20041.10",
+      "balance-date": 1784073600,
+      "transactions": [
+        {"id": "SOB-301", "posted": 1782864000, "amount": "41.10", "description": "INTEREST PAYMENT", "payee": "Summit Online Bank", "memo": "July interest", "pending": false}
+      ]
+    }
+  ]
+}

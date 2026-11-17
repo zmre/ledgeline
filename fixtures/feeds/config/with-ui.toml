@@ -1,0 +1,29 @@
+# Per-ledger settings for a synthetic ledger. Hand-written: every comment,
+# blank line and key order here must survive a sync write.
+
+[ui]
+# Local overrides
+currencyDisplay = "symbol"  # trailing comment
+autoSync = true
+
+[[sync.connection]]
+# The Bridge
+id = "4f6c1a2e-0000-4000-8000-000000000001"
+name = "SimpleFIN Bridge"  # shown in the UI
+kind = "simplefin"
+
+[[sync.account]]
+# Linked on Nov 1
+connection = "4f6c1a2e-0000-4000-8000-000000000001"
+remoteId = "ACT-12ab"
+label = "First Tech · Checking ••1234"   # keep me
+journalAccount = "assets:bank:firsttech:checking"
+rules = "imports/rules/firsttech-checking.sync.csv.rules"
+target = "2026.journal"
+startDate = 2026-11-01
+balanceSign = 1
+enabled = true
+
+[other]
+# A table this build doesn't know.
+x = 1

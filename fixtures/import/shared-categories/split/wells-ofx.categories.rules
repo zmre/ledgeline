@@ -1,0 +1,26 @@
+# ledgeline: categorization rules shared by this account's rules files.
+# Each of them ends with an include of this file, so a rule here works for
+# manual imports and bank sync alike. The last matching rule wins.
+
+# groceries
+if WHOLE FOODS
+  account2 expenses:food:groceries
+
+# coffee shops
+if
+%name STARBUCKS
+%name PEETS
+  account2 expenses:food:coffee
+
+if %name ^AMAZON
+  account2 expenses:shopping
+
+if %memo REFUND
+& %amount ^[0-9]
+  account2 income:refunds
+
+if %name PENDING
+  skip
+
+if TRANSFER TO SAVINGS
+  account2 assets:bank:wells:savings

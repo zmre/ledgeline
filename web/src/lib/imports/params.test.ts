@@ -17,10 +17,15 @@ describe("UNIT imports/params", () => {
     });
 
     describe("TAB_ORDER", () => {
-        it("puts New Transactions first and labels every tab", () => {
-            expect(TAB_ORDER).toEqual(["new", "rules"]);
-            expect(TAB_ORDER[0]).toBe(DFLT.tab);
-            expect(TAB_ORDER.map((t) => TAB_LABELS[t])).toEqual(["New Transactions", "Edit Rules"]);
+        it("puts Accounts first, keeps New Transactions the default, and labels every tab", () => {
+            expect(TAB_ORDER).toEqual(["accounts", "new", "rules"]);
+            expect(DFLT.tab).toBe("new");
+            expect(TAB_ORDER.map((t) => TAB_LABELS[t])).toEqual(["Accounts", "New Transactions", "Edit Rules"]);
+        });
+
+        it("reads and writes the Accounts tab", () => {
+            expect(searchToParams("?tab=accounts", DFLT)).toEqual({tab: "accounts"});
+            expect(paramsToSearch({tab: "accounts"})).toBe("tab=accounts");
         });
     });
 

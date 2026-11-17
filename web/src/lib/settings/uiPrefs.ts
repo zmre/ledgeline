@@ -73,8 +73,41 @@ export const UI_SCALE_DEFAULT = 100;
 export const AUTO_PRICES_WEEKS_RANGE = [0, 52] as const;
 export const AUTO_PRICES_WEEKS_DEFAULT = 6;
 
+/** Bank sync (plan 43): how often a background sync may run, 3–24 hours. Default 6. */
+export const AUTO_SYNC_HOURS_RANGE = [3, 24] as const;
+export const AUTO_SYNC_HOURS_DEFAULT = 6;
+/** Where synced statements are saved, relative to the journal's folder. */
+export const SYNC_SOURCE_DIR_DEFAULT = "imports/sync";
+/** How long a synced statement is kept, 0 (forever)–3650 days. Default 0: nothing is deleted unless asked. */
+export const SYNC_KEEP_DAYS_RANGE = [0, 3650] as const;
+export const SYNC_KEEP_DAYS_DEFAULT = 0;
+/** Days without a new transaction before a manually imported account turns amber, 1–3650. Default 35. */
+export const MANUAL_REMIND_DAYS_RANGE = [1, 3650] as const;
+export const MANUAL_REMIND_DAYS_DEFAULT = 35;
+
+/**
+ * A folder inside the journal's folder (`RelDir` in ui_prefs.rs): relative,
+ * no `..` step, no leading slash or drive, not empty.
+ */
+export function isRelDir(value: unknown): value is string {
+    if (typeof value !== "string") return false;
+    const trimmed = value.trim();
+    if (trimmed === "" || trimmed !== value || /^[/\\]/.test(value) || /^[A-Za-z]:/.test(value) || value.includes("\0")) return false;
+    return value.split(/[/\\]/).every((step) => step !== "..");
+}
+
 /** The keys `POST /api/ui-prefs/pin` can keep for one ledger (`PINNABLE` in ui_prefs.rs). */
-export const PINNABLE_UI_PREF_KEYS = ["theme", "uiScale", "autoPrices", "autoPricesWeeks"] as const;
+export const PINNABLE_UI_PREF_KEYS = [
+    "theme",
+    "uiScale",
+    "autoPrices",
+    "autoPricesWeeks",
+    "autoSync",
+    "autoSyncEveryHours",
+    "syncSourceDir",
+    "syncKeepSourceDays",
+    "manualRemindDays",
+] as const;
 
 export type PinnableUiPrefKey = (typeof PINNABLE_UI_PREF_KEYS)[number];
 
@@ -140,6 +173,19 @@ export interface UiPrefs {
     autoPrices: boolean;
     /** How many past Monday–Sunday weeks it backfills a missing weekly close for, 0–52. Default 6. */
     autoPricesWeeks: number;
+    /**
+     * Bank sync in the background (plan 43). Off by default: with it off,
+     * Ledgeline only talks to SimpleFIN when Sync now is clicked.
+     */
+    autoSync: boolean;
+    /** The most hours between background syncs, 3–24. Default 6. */
+    autoSyncEveryHours: number;
+    /** Where synced statements are saved, relative to the journal's folder. Default `imports/sync`. */
+    syncSourceDir: string;
+    /** Days a synced statement is kept, 0 (forever)–3650. Default 0. */
+    syncKeepSourceDays: number;
+    /** Days without a new transaction before a manually imported account turns amber, 1–3650. Default 35. */
+    manualRemindDays: number;
 }
 
 export type UiPrefKey = keyof UiPrefs;
@@ -168,6 +214,11 @@ export const UI_PREF_KEYS: readonly UiPrefKey[] = [
     "uiScale",
     "autoPrices",
     "autoPricesWeeks",
+    "autoSync",
+    "autoSyncEveryHours",
+    "syncSourceDir",
+    "syncKeepSourceDays",
+    "manualRemindDays",
 ];
 
 /** A partial update, as `PATCH /api/ui-prefs` takes it: `columns` may name only some members. */
@@ -264,6 +315,11 @@ export const defaultUiPrefs = (): UiPrefs => ({
     uiScale: UI_SCALE_DEFAULT,
     autoPrices: false,
     autoPricesWeeks: AUTO_PRICES_WEEKS_DEFAULT,
+    autoSync: false,
+    autoSyncEveryHours: AUTO_SYNC_HOURS_DEFAULT,
+    syncSourceDir: SYNC_SOURCE_DIR_DEFAULT,
+    syncKeepSourceDays: SYNC_KEEP_DAYS_DEFAULT,
+    manualRemindDays: MANUAL_REMIND_DAYS_DEFAULT,
 });
 
 const flag = (value: unknown, fallback: boolean): boolean => (typeof value === "boolean" ? value : fallback);
@@ -311,6 +367,11 @@ export function cleanUiPrefs(parsed: Record<string, unknown>): UiPrefs {
         uiScale: wholeIn(parsed.uiScale, UI_SCALE_RANGE, UI_SCALE_DEFAULT),
         autoPrices: flag(parsed.autoPrices, base.autoPrices),
         autoPricesWeeks: wholeIn(parsed.autoPricesWeeks, AUTO_PRICES_WEEKS_RANGE, AUTO_PRICES_WEEKS_DEFAULT),
+        autoSync: flag(parsed.autoSync, base.autoSync),
+        autoSyncEveryHours: wholeIn(parsed.autoSyncEveryHours, AUTO_SYNC_HOURS_RANGE, AUTO_SYNC_HOURS_DEFAULT),
+        syncSourceDir: isRelDir(parsed.syncSourceDir) ? parsed.syncSourceDir : base.syncSourceDir,
+        syncKeepSourceDays: wholeIn(parsed.syncKeepSourceDays, SYNC_KEEP_DAYS_RANGE, SYNC_KEEP_DAYS_DEFAULT),
+        manualRemindDays: wholeIn(parsed.manualRemindDays, MANUAL_REMIND_DAYS_RANGE, MANUAL_REMIND_DAYS_DEFAULT),
     };
 }
 

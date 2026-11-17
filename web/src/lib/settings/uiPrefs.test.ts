@@ -7,6 +7,7 @@ import {
     applyPatch,
     cleanUiPrefs,
     defaultUiPrefs,
+    isRelDir,
     isThemeId,
     legacyUiPatch,
     mergePatch,
@@ -22,7 +23,7 @@ import {
 describe("UNIT uiPrefs", () => {
     it("names every view setting, and never the connection", () => {
         expect([...UI_PREF_KEYS].sort()).toEqual(Object.keys(defaultUiPrefs()).sort());
-        expect(UI_PREF_KEYS).toHaveLength(23);
+        expect(UI_PREF_KEYS).toHaveLength(28);
         expect(UI_PREF_KEYS).not.toContain("serverUrl");
         expect(UI_PREF_KEYS).not.toContain("serverToken");
     });
@@ -55,7 +56,17 @@ describe("UNIT uiPrefs", () => {
         expect(defaultUiPrefs().uiScale).toBe(100);
         expect(UI_SCALE_DEFAULT).toBe(100);
         expect(UI_SCALE_RANGE).toEqual([50, 300]);
-        expect(PINNABLE_UI_PREF_KEYS).toEqual(["theme", "uiScale", "autoPrices", "autoPricesWeeks"]);
+        expect(PINNABLE_UI_PREF_KEYS).toEqual([
+            "theme",
+            "uiScale",
+            "autoPrices",
+            "autoPricesWeeks",
+            "autoSync",
+            "autoSyncEveryHours",
+            "syncSourceDir",
+            "syncKeepSourceDays",
+            "manualRemindDays",
+        ]);
         expect(isThemeId("tokyo-night-day")).toBe(true);
         expect(isThemeId("Nord")).toBe(false);
         expect(isThemeId(undefined)).toBe(false);
@@ -65,6 +76,28 @@ describe("UNIT uiPrefs", () => {
         expect(defaultUiPrefs()).toMatchObject({autoPrices: false, autoPricesWeeks: 6});
         expect(cleanUiPrefs({autoPrices: true, autoPricesWeeks: 99})).toMatchObject({autoPrices: true, autoPricesWeeks: 52});
         expect(cleanUiPrefs({autoPrices: "yes", autoPricesWeeks: -1})).toMatchObject({autoPrices: false, autoPricesWeeks: 0});
+    });
+
+    it("defaults bank sync off, every 6 hours, into imports/sync, kept forever, reminding after 35 days, and cleans hand edits", () => {
+        expect(defaultUiPrefs()).toMatchObject({
+            autoSync: false,
+            autoSyncEveryHours: 6,
+            syncSourceDir: "imports/sync",
+            syncKeepSourceDays: 0,
+            manualRemindDays: 35,
+        });
+        expect(cleanUiPrefs({manualRemindDays: 0})).toMatchObject({manualRemindDays: 1});
+        expect(cleanUiPrefs({autoSync: true, autoSyncEveryHours: 1, syncSourceDir: "bank/feeds", syncKeepSourceDays: 99999})).toMatchObject({
+            autoSync: true,
+            autoSyncEveryHours: 3,
+            syncSourceDir: "bank/feeds",
+            syncKeepSourceDays: 3650,
+        });
+        for (const bad of ["", "/etc", "../outside", "a/../../b", " padded", "C:/x", 7]) {
+            expect(cleanUiPrefs({syncSourceDir: bad}).syncSourceDir).toBe("imports/sync");
+        }
+        expect(isRelDir("imports/sync")).toBe(true);
+        expect(isRelDir("a\\..\\b")).toBe(false);
     });
 
     it("cleans a stale theme to the default and clamps the scale", () => {

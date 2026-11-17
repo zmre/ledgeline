@@ -135,7 +135,7 @@ pub(crate) fn run(cli: &Cli, app_dirs: AppDirs) -> Result<(), AppError> {
         }
         None => (no_journal_state()?.with_app_dirs(app_dirs), None),
     };
-    let state = state.with_desktop(host);
+    let state = state.with_desktop(host).with_feed_fake_from_env();
     perf::stamp("journal_loaded");
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -188,6 +188,8 @@ pub(crate) fn run(cli: &Cli, app_dirs: AppDirs) -> Result<(), AppError> {
     // Plan 41: the background price updater, on the same runtime and the same
     // state, so it follows File → Open. Idle unless `autoPrices` is on.
     let _auto_prices = runtime.spawn(ledgeline::run_auto_prices(state.clone()));
+    // Plan 43: background bank sync, idle unless `autoSync` is on.
+    let _auto_sync = runtime.spawn(ledgeline::run_auto_sync(state.clone()));
 
     let bound_port = runtime
         .block_on(port_rx)
@@ -756,26 +758,51 @@ fn navigation_allowed(base: &str, candidate: &str) -> bool {
     candidate == base.trim_end_matches('/') || candidate.starts_with(base)
 }
 
-/// The published docs site, the one place outside the app the SPA links to.
+/// The published docs site, one of the few places outside the app the SPA links to.
 const DOCS_HOST: &str = "zmre.github.io";
 const DOCS_PATH: &str = "/ledgeline/";
 
-/// `candidate`, re-serialized, when it is a page of the published docs site —
-/// the only URL the webview hands to the system browser. Everything else stays
-/// blocked: a link the SPA did not mean to show (or one injected into it) must
-/// not become a way to launch arbitrary URLs.
-fn external_docs_url(candidate: &str) -> Option<String> {
-    let url = Url::parse(candidate).ok()?;
-    let is_docs = url.scheme() == "https"
-        && url.host_str() == Some(DOCS_HOST)
+/// SimpleFIN's own sites (plan 43): the Bridge, where a user makes a setup
+/// token, fixes a bank sign-in or revokes access, and the protocol's home page.
+/// Any path on these hosts.
+const SIMPLEFIN_HOSTS: [&str; 4] = [
+    "beta-bridge.simplefin.org",
+    "bridge.simplefin.org",
+    "www.simplefin.org",
+    "simplefin.org",
+];
+
+/// `raw` re-serialized when it is a plain https URL: no port, no credentials.
+fn plain_https(raw: &str) -> Option<Url> {
+    let url = Url::parse(raw.trim()).ok()?;
+    let plain = url.scheme() == "https"
+        && url.host_str().is_some()
         && url.port().is_none()
         && url.username().is_empty()
-        && url.password().is_none()
-        && url.path().starts_with(DOCS_PATH);
-    is_docs.then(|| url.to_string())
+        && url.password().is_none();
+    plain.then_some(url)
 }
 
-/// Open a docs page (already vetted by [`external_docs_url`]) in the user's
+/// `candidate`, re-serialized, when it is a page the webview may hand to the
+/// system browser: the published docs site, SimpleFIN's, or exactly one of
+/// `saved` — the bank download pages saved for the open ledger (plan 43). Both
+/// sides of that last test are re-serialized, so a saved `https://bank.example`
+/// matches the `https://bank.example/` a click produces. Everything else stays
+/// blocked: a link the SPA did not mean to show (or one injected into it) must
+/// not become a way to launch arbitrary URLs.
+fn external_url(candidate: &str, saved: impl FnOnce() -> Vec<String>) -> Option<String> {
+    let url = plain_https(candidate)?;
+    let host = url.host_str()?;
+    let known = (host == DOCS_HOST && url.path().starts_with(DOCS_PATH))
+        || SIMPLEFIN_HOSTS.contains(&host)
+        || saved()
+            .iter()
+            .filter_map(|page| plain_https(page))
+            .any(|page| page == url);
+    known.then(|| url.to_string())
+}
+
+/// Open a page (already vetted by [`external_url`]) in the user's
 /// browser. The URL is one argument to a fixed program — no shell.
 fn open_in_browser(url: &str) {
     #[cfg(target_os = "macos")]
@@ -793,10 +820,10 @@ fn open_in_browser(url: &str) {
     }
 }
 
-/// Send `candidate` to the system browser when it is a docs page. Returns
-/// whether it did.
-fn open_if_docs(candidate: &str) -> bool {
-    external_docs_url(candidate)
+/// Send `candidate` to the system browser when [`external_url`] allows it.
+/// Returns whether it did. The page never loads in the app's own window.
+fn open_if_external(state: &AppState, candidate: &str) -> bool {
+    external_url(candidate, || ledgeline::saved_download_pages(state))
         .map(|url| open_in_browser(&url))
         .is_some()
 }
@@ -848,8 +875,10 @@ fn build_webview(
     start: &str,
     token: &AccessToken,
     appearance: &BootAppearance,
+    state: &AppState,
 ) -> Result<wry::WebView, AppError> {
     let base = url.to_string();
+    let (navigating, new_window) = (state.clone(), state.clone());
     let origin = Url::parse(url)
         .map_err(|error| AppError::Gui(format!("parsing the webview url: {error}")))?
         .origin()
@@ -860,18 +889,18 @@ fn build_webview(
         .with_url(start)
         .with_navigation_handler(move |candidate| {
             let allowed = navigation_allowed(&base, &candidate);
-            // A docs link leaves the webview where it is and opens in the
-            // user's browser instead.
-            if !allowed && !open_if_docs(&candidate) {
+            // A docs, SimpleFIN or saved download-page link leaves the webview
+            // where it is and opens in the user's browser instead.
+            if !allowed && !open_if_external(&navigating, &candidate) {
                 eprintln!("ledgeline: blocked navigation to {candidate}");
             }
             allowed
         })
         // No pop-ups at all: a new window would be a second WebView outside the
-        // navigation handler above. A docs link (`target=_blank`) goes to the
-        // user's browser instead.
-        .with_new_window_req_handler(|candidate, _features| {
-            if !open_if_docs(&candidate) {
+        // navigation handler above. A docs, SimpleFIN or saved download-page
+        // link (`target=_blank`) goes to the user's browser instead.
+        .with_new_window_req_handler(move |candidate, _features| {
+            if !open_if_external(&new_window, &candidate) {
                 eprintln!("ledgeline: blocked new window for {candidate}");
             }
             NewWindowResponse::Deny
@@ -1062,7 +1091,14 @@ fn run_event_loop(
 
     perf::stamp("window_built");
     let appearance = boot_appearance(&ctx.state);
-    let webview = build_webview(&window, &ctx.url, &ctx.start, &ctx.token, &appearance)?;
+    let webview = build_webview(
+        &window,
+        &ctx.url,
+        &ctx.start,
+        &ctx.token,
+        &appearance,
+        &ctx.state,
+    )?;
     perf::stamp("webview_built");
 
     let new_id = menu.new.id().clone(); // plan 39 wizard
@@ -1547,7 +1583,7 @@ mod perf {
 #[cfg(test)]
 mod tests {
     use super::{
-        AccessToken, BootAppearance, Zoom, appearance_init_script, external_docs_url,
+        AccessToken, BootAppearance, Zoom, appearance_init_script, external_url,
         first_journal_path, navigation_allowed, token_init_script, zoom_script,
     };
     use std::path::PathBuf;
@@ -1582,10 +1618,16 @@ mod tests {
     }
 
     #[test]
-    fn only_docs_pages_go_to_the_system_browser() {
-        let docs = "https://zmre.github.io/ledgeline/journal/transfer-matching/";
-        assert_eq!(external_docs_url(docs).as_deref(), Some(docs));
-        assert!(external_docs_url("https://zmre.github.io/ledgeline/").is_some());
+    fn only_docs_and_simplefin_pages_go_to_the_system_browser() {
+        for allowed in [
+            "https://zmre.github.io/ledgeline/journal/transfer-matching/",
+            "https://zmre.github.io/ledgeline/",
+            "https://beta-bridge.simplefin.org/",
+            "https://bridge.simplefin.org/simplefin/create",
+            "https://www.simplefin.org/protocol.html",
+        ] {
+            assert_eq!(external_url(allowed, Vec::new).as_deref(), Some(allowed));
+        }
         for refused in [
             "http://zmre.github.io/ledgeline/journal/",
             "https://zmre.github.io/other/",
@@ -1594,11 +1636,44 @@ mod tests {
             "https://evil.example/ledgeline/",
             "https://user@zmre.github.io/ledgeline/",
             "https://zmre.github.io:8443/ledgeline/",
+            "http://beta-bridge.simplefin.org/",
+            "https://beta-bridge.simplefin.org.evil.example/",
+            "https://evil-beta-bridge.simplefin.org/",
+            "https://user:secret@beta-bridge.simplefin.org/simplefin",
+            "https://beta-bridge.simplefin.org:8443/",
             "file:///ledgeline/",
             "javascript:alert(1)",
             "not a url",
         ] {
-            assert_eq!(external_docs_url(refused), None, "{refused}");
+            assert_eq!(external_url(refused, Vec::new), None, "{refused}");
+        }
+    }
+
+    #[test]
+    fn a_saved_download_page_goes_to_the_system_browser_and_nothing_near_it() {
+        let saved = || {
+            vec![
+                "https://bank.example".to_string(),
+                " https://card.example/statements?type=csv ".to_string(),
+                "http://plain.example/".to_string(),
+            ]
+        };
+        assert_eq!(
+            external_url("https://bank.example/", saved).as_deref(),
+            Some("https://bank.example/")
+        );
+        assert!(external_url("https://card.example/statements?type=csv", saved).is_some());
+        for refused in [
+            "https://bank.example/other",
+            "https://card.example/statements",
+            "https://bank.example.evil.example/",
+            "https://user@bank.example/",
+            "https://bank.example:8443/",
+            "http://bank.example/",
+            "http://plain.example/",
+            "https://plain.example/",
+        ] {
+            assert_eq!(external_url(refused, saved), None, "{refused}");
         }
     }
 

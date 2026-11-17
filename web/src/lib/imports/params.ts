@@ -4,7 +4,7 @@
 // is untested by construction. The imports route owns the replaceState glue,
 // exactly as the reports route does over `lib/reports/ui/params.ts`.
 //
-// Scheme: `?tab=new|rules`, and nothing else. Which rules FILE is open
+// Scheme: `?tab=accounts|new|rules`, and nothing else. Which rules FILE is open
 // is deliberately NOT in the URL: it is picked from a listing the page must
 // fetch before it can honour a name, the id is the engine's own opaque handle
 // rather than something a user would type, and today's screen has never restored
@@ -14,12 +14,17 @@
 // Account List Editor's home) — see `aliasesRedirect` for the bookmark that
 // must not quietly land on New Transactions.
 
-export type ImportTab = "new" | "rules";
+export type ImportTab = "accounts" | "new" | "rules";
 
-/** "New Transactions" is the first (default) tab — the screen Imports opens on. */
-export const TAB_ORDER: ImportTab[] = ["new", "rules"];
+/**
+ * "Accounts" (bank sync, plan 43) is the first tab in the strip — keys 1–3 —
+ * but "New Transactions" stays the DEFAULT, the screen a bare `/imports`
+ * opens on, so every existing link and bookmark lands where it always did.
+ */
+export const TAB_ORDER: ImportTab[] = ["accounts", "new", "rules"];
 
 export const TAB_LABELS: Record<ImportTab, string> = {
+    accounts: "Accounts",
     new: "New Transactions",
     rules: "Edit Rules",
 };

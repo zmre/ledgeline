@@ -6,8 +6,8 @@
     // config" (the `hledger.conf` in force: --auto and report depths),
     // "Automatic postings" (the journal's `=` rules) and "Projections" (which
     // scenario the Projections tab opens by default, plan 33), "Appearance"
-    // (theme and text size, plan 39) and "Prices" (automatic stock price
-    // updates, plan 41). The tab
+    // (theme and text size, plan 39), "Prices" (automatic stock price
+    // updates, plan 41) and "Sync" (bank sync, plan 43). The tab
     // lives in the query string via the same three pieces the Imports route
     // uses — `searchToParams` after each navigation behind a `restored` latch,
     // a debounced `replaceState` mirror the other way.
@@ -23,6 +23,7 @@
     import ProjectionSettingsPanel from "#lib/projections/ui/ProjectionSettingsPanel.svelte";
     import {defaultSettingsParams, paramsToSearch, searchToParams, type SettingsParams} from "#lib/settings/params.js";
     import SettingsTabs from "#lib/settings/ui/SettingsTabs.svelte";
+    import SyncSettingsPanel from "#lib/sync/ui/SyncSettingsPanel.svelte";
     import {isNative} from "#lib/native/detect.js";
     import {journal} from "#lib/stores/journal.svelte.js";
     import {loadJournalWhenReady} from "#lib/stores/serverWatch.svelte.js";
@@ -84,6 +85,8 @@
         <AppearancePanel />
     {:else if params.tab === "prices" && !isNative()}
         <PricesSettingsPanel />
+    {:else if params.tab === "sync" && !isNative()}
+        <SyncSettingsPanel />
     {:else}
         <AccountsPanel accountNames={journal.accountNames} />
     {/if}

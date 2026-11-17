@@ -12,7 +12,7 @@ Ledgeline keeps its own settings in TOML files. You can edit any of them by hand
 | --- | --- | --- | --- |
 | `prefs.toml` | Ledgeline's config folder | The hledger path field on the Imports screen | `hledgerPath`, the hledger program Ledgeline runs |
 | `ui-prefs.toml` | Ledgeline's config folder | Ledgeline, as you use it, and you | Your view settings, for every ledger |
-| `ledgeline.toml` | The folder of your main journal | You, or Ledgeline when you ask it to [keep a setting for one ledger](#keeping-a-setting-for-one-ledger) | One ledger's own view settings, overriding `ui-prefs.toml` |
+| `ledgeline.toml` | The folder of your main journal | You, or Ledgeline when you ask it to [keep a setting for one ledger](#keeping-a-setting-for-one-ledger) or [link a bank account](../imports/bank-sync.md) | One ledger's own view settings, overriding `ui-prefs.toml`, and its bank sync links |
 
 View settings are the choices Ledgeline remembers as you work: the theme and interface scale, which journal columns show, which panels are open, the Review and Find Matches numbers, the benchmark lines on the Stocks chart, and the like.
 
@@ -48,7 +48,7 @@ So a `ledgeline.toml` only ever holds the keys someone put in it. Changing the t
 
 The journal columns are decided one column at a time. A change to the Status column is saved in `ledgeline.toml` only if its `[ui.columns]` table already has `status`. The other columns still go to `ui-prefs.toml`.
 
-Opening the app and looking around writes nothing. Ledgeline creates `ui-prefs.toml` the first time you change a view setting. It creates `ledgeline.toml` only when you ask it to keep a setting for one ledger.
+Opening the app and looking around writes nothing. Ledgeline creates `ui-prefs.toml` the first time you change a view setting. It creates `ledgeline.toml` only when you ask it to keep a setting for one ledger, or link a bank account.
 
 ## Keeping a setting for one ledger
 
@@ -58,7 +58,7 @@ The theme, the interface scale and the automatic price updates can be kept for o
 - From then on, changing that setting while this ledger is open saves it in `ledgeline.toml`. Other ledgers keep using `ui-prefs.toml`.
 - Untick the box to go back to the shared value. Ledgeline removes the key from `[ui]`, along with any comment lines directly above it. The rest of the file stays, and Ledgeline never deletes the file, even if nothing is left in it.
 
-Only `theme`, `uiScale`, `autoPrices` and `autoPricesWeeks` can be kept this way from the app (the Prices tab keeps the last two together). For any other key, add it to `ledgeline.toml` by hand.
+Only `theme`, `uiScale`, `autoPrices`, `autoPricesWeeks` and the five sync keys can be kept this way from the app. The Prices tab keeps its two keys together, and the Sync tab keeps `autoSync`, `autoSyncEveryHours`, `syncSourceDir`, `syncKeepSourceDays` and `manualRemindDays` together. For any other key, add it to `ledgeline.toml` by hand.
 
 Ledgeline won't write to a `ledgeline.toml` that is a symbolic link, is larger than 64 KiB, or isn't valid TOML. In that case the box can't be ticked, and a notice says why. The checkbox isn't offered when [view settings are kept in the browser](#keeping-view-settings-in-the-browser).
 
@@ -101,7 +101,7 @@ benchmarks = ["SPY", "QQQ"]
 status = false   # nobody here uses ! and *
 ```
 
-Every key you list there overrides `ui-prefs.toml` in this ledger, and changes you make to those keys in the app are saved back to this file. Ledgeline edits values in place and keeps your comments, the order of the keys, and keys it doesn't know. The `[ui]` table is the only part it reads or writes. The rest of the file is left for later per-ledger settings.
+Every key you list there overrides `ui-prefs.toml` in this ledger, and changes you make to those keys in the app are saved back to this file. Ledgeline edits values in place and keeps your comments, the order of the keys, and keys it doesn't know. Besides `[ui]`, the only part it reads or writes is `[sync]`, which holds [bank sync](../imports/bank-sync.md#where-things-are-kept) connections and account links. Linking an account writes there, and creates the file if the ledger has none. The rest of the file is left for later per-ledger settings.
 
 To stop overriding a key, delete its line. The ledger then follows `ui-prefs.toml` for it again.
 
@@ -111,7 +111,7 @@ If your books are in a git repository or a shared folder, `ledgeline.toml` goes 
 
 A file somebody else wrote is treated as untrusted:
 
-- It can only hold view settings. Ledgeline never reads the hledger path, a server address or an access token from it. If one of those keys is there, Ledgeline ignores it and says so.
+- It can only hold view settings and bank sync links. Ledgeline never reads the hledger path, a server address or an access token from it. Bank sync keeps its access keys in your keychain, and the paths a link names must be inside the journal's folder. If one of those keys is there, Ledgeline ignores it and says so.
 - Every value is checked. A number outside its range is clamped. A choice that isn't one of the allowed values, or a value of the wrong type, is ignored, and that key falls back to `ui-prefs.toml` or the default. A change you make to that key in the app replaces the bad value.
 - Unknown keys are ignored, and kept when Ledgeline saves.
 - A file larger than 64 KiB, a file that isn't valid TOML, and a symbolic link are ignored. Ledgeline won't save to any of them, so your changes go to `ui-prefs.toml` until you fix or remove the file.
@@ -155,6 +155,11 @@ A path you type into the file by hand isn't checked until Ledgeline runs it. If 
 | `uiScale` | `100` | Interface scale in percent, 50 to 300. The app steps through 70 to 200 |
 | `autoPrices` | `false` | Keep stock prices up to date in the background. See [Automatic price updates](../holdings/prices.md#automatic-price-updates) |
 | `autoPricesWeeks` | `6` | 0 to 52: how many past weeks get a weekly closing price filled in. 0 means the latest close only |
+| `autoSync` | `false` | Sync linked bank accounts in the background. See [Sync now and automatic sync](../imports/bank-sync.md#sync-now-and-automatic-sync) |
+| `autoSyncEveryHours` | `6` | 3 to 24: the most hours between background syncs |
+| `syncSourceDir` | `"imports/sync"` | Where bank sync saves the files it downloads: a folder inside the journal's folder, written relative to it. An absolute path or one with `..` is ignored |
+| `syncKeepSourceDays` | `0` | 0 to 3650: how many days downloaded files are kept. 0, the default, means forever |
+| `manualRemindDays` | `35` | 1 to 3650: days with no new transaction before a manually imported account turns amber on Imports → Accounts |
 
 ## Keeping view settings in the browser
 

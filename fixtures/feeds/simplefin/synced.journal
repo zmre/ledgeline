@@ -1,0 +1,20 @@
+; Synthetic. A demo checking account that was partly imported by hand (an OFX
+; statement, so FITIDs) and partly by an earlier sync of demo-v2.json, for the
+; feeds::dupes end-to-end test. 878479726e is account_short("CON-demo-1",
+; "ACT-demo-checking").
+
+2026-10-20 * Opening history, imported by hand before sync
+    assets:bank:demo:checking        -20.00
+    expenses:misc
+
+2026-11-03 * Blue Bottle Coffee  ; id:878479726e-TRN-1001
+    assets:bank:demo:checking         -4.50
+    expenses:coffee
+
+2026-11-06 * SAFEWAY STORE 1234  ; id:FIT-20261106-77
+    assets:bank:demo:checking       $-82.17
+    expenses:groceries
+
+2026-11-09 * Landlord LLC
+    assets:bank:demo:checking      -1200.00
+    expenses:housing

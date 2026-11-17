@@ -169,6 +169,31 @@ fn ends_component(from: &str, rest: &str) -> bool {
     }
 }
 
+/// `text` with the credentials of any `scheme://user:pass@host` URL replaced
+/// by `<redacted>` (plan 43 §7: a SimpleFIN access URL carries its password
+/// in the userinfo). Bank sync never puts one in a message, so this is the
+/// belt to that braces, run over every diagnostics report before it leaves.
+pub(crate) fn scrub_credentials(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("://") {
+        let (head, tail) = rest.split_at(at + 3);
+        out.push_str(head);
+        let authority_end = tail
+            .find(|c: char| c == '/' || c == '?' || c == '#' || c.is_whitespace())
+            .unwrap_or(tail.len());
+        match tail[..authority_end].rfind('@') {
+            Some(userinfo) => {
+                out.push_str("<redacted>");
+                rest = &tail[userinfo..];
+            }
+            None => rest = tail,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,5 +409,17 @@ mod tests {
         assert!(matches!(redacted, AppError::BadRequest(ref m) if m == "a.journal:1: x"));
         let redacted = redactor.redact_error(AppError::Internal("in /u/fin".into()));
         assert!(matches!(redacted, AppError::Internal(ref m) if m == "in ."));
+    }
+
+    #[test]
+    fn credentials_in_urls_are_scrubbed() {
+        assert_eq!(
+            super::scrub_credentials(
+                "GET https://user:p%40ss@beta-bridge.simplefin.org/simplefin/accounts failed; see http://x.org/a@b"
+            ),
+            "GET https://<redacted>@beta-bridge.simplefin.org/simplefin/accounts failed; see http://x.org/a@b"
+        );
+        assert_eq!(super::scrub_credentials("no urls here"), "no urls here");
+        assert_eq!(super::scrub_credentials("a://@"), "a://<redacted>@");
     }
 }

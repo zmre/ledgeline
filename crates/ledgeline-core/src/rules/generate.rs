@@ -1670,6 +1670,144 @@ fn explain(
     warnings
 }
 
+// ---------------------------------------------------------------------------
+// The feed template (plan 43 §3.2)
+// ---------------------------------------------------------------------------
+
+/// The column names of a normalised bank-feed CSV, in column order: the one
+/// definition in [`crate::feeds::normalize`], re-exported here because the
+/// template and rules sharing are where most callers meet it.
+pub use crate::feeds::normalize::FeedColumns;
+
+/// What [`feed_rules`] needs to write a sync rules file.
+#[derive(Debug, Clone, Copy)]
+pub struct FeedRulesParams<'a> {
+    /// The account as the user sees it, e.g. `First Tech · Checking ••1234`.
+    /// Display only: it lands in the header comment.
+    pub label: &'a str,
+    /// The feed provider's name, e.g. `SimpleFIN`. Display only.
+    pub provider: &'a str,
+    /// The CSV's column names, borrowed from a manual rules file when shared.
+    pub columns: &'a FeedColumns,
+    /// `account1`: the journal account the feed posts to.
+    pub journal_account: &'a str,
+    /// `account2`: where an uncategorised row lands, normally
+    /// [`DEFAULT_ACCOUNT2`].
+    pub fallback_account: &'a str,
+    /// A sibling categories file to include. The caller has already validated
+    /// the name (`discovery::resolve_new` plus `share::check_include_name`).
+    pub categories_include: Option<&'a str>,
+    /// The commodity to put on every amount (`currency $`), when known. A feed
+    /// sends bare decimals, and a journal written in `$` would otherwise get
+    /// commodity-less amounts beside its `$` ones — the "commodity trap"
+    /// `matching.rs` warns about. The server picks it from the journal.
+    pub currency: Option<&'a str>,
+}
+
+/// The tag [`feed_rules`] gives a row's merchant category, in words.
+pub const CATEGORY_TAG: &str = "category";
+
+/// The date format of a normalised feed CSV. `feeds::normalize` writes ISO
+/// dates and nothing else.
+const FEED_DATE_FORMAT: &str = "%Y-%m-%d";
+
+/// Write a sync rules file for one feed account.
+///
+/// Unlike [`generate`] this returns **text**, not a [`RulesDoc`] for the editor:
+/// it is written by the server at link time, not saved through the create
+/// route, so it may carry a header comment — and it should, because a user who
+/// finds `firsttech-checking.sync.csv.rules` in their folder deserves to be told
+/// what wrote it.
+///
+/// Every interpolated value is forced onto one line ([`one_line`]). The label
+/// comes from the bank, and a newline in it would otherwise start a rule of its
+/// own in a file hledger then executes.
+///
+/// `date` and `amount` need no assignment when their columns carry those names:
+/// hledger assigns a column named like one of its fields by itself. A borrowed
+/// name gets an explicit `date %X` / `amount %X`. The payee always gets an
+/// explicit `description %X`, which overrides the auto-assigned `description`
+/// column (verified on 1.52).
+///
+/// `date2` is assigned **only when the transacted column is non-empty**, by an
+/// `if %transacted .` block. hledger 1.52 rejects the whole file when an
+/// unconditional `date2 %transacted` meets an empty cell ("could not parse \"\"
+/// as a date"), and normalisation leaves the cell empty whenever the two dates
+/// agree — which is most rows.
+///
+/// The `include` comes after every rule of this file's own, because in hledger
+/// the last matching rule wins, so the shared categories outrank nothing in
+/// this file by accident.
+///
+/// **One exception follows it: the id guard**, `if %id .` / `comment id:%id`.
+/// A conditional assignment beats a top-level one (verified on 1.52), so a
+/// shared rule that sets `comment` would otherwise replace the top-level
+/// `comment id:%id` on the rows it matches, and those rows would land with no
+/// `id:` tag — invisible to the id index, so imported again on every sync.
+/// The id column is never empty, so the guard matches every row, and as the
+/// last conditional it always wins. The top-level line stays as well, so the
+/// file still reads plainly. (Rules sharing also keeps comment-setting blocks
+/// out of the categories file; this guard covers rules added there later.)
+///
+/// **The category guard comes last**: `if %mcc_name .` sets the same comment
+/// plus a `category:` tag with the merchant category in words, on the rows
+/// that have one. It repeats the id because the comment is assigned whole,
+/// and it can't be folded into the id guard, which matches rows with no
+/// category too and would leave them an empty `category:`. The names never
+/// hold a comma ([`crate::feeds::mcc`]), so the tag gets the whole name.
+#[must_use]
+pub fn feed_rules(params: &FeedRulesParams) -> String {
+    let columns = params.columns;
+    let ref_to = |column: &str| format!("%{}", one_line(column));
+    let lines = [
+        Some(format!(
+            "# ledgeline: {} sync rules for {}",
+            one_line(params.provider),
+            one_line(params.label)
+        )),
+        Some("skip 1".to_string()),
+        Some(format!(
+            "fields {}",
+            columns.in_order().map(one_line).join(", ")
+        )),
+        Some(format!("date-format {FEED_DATE_FORMAT}")),
+        params
+            .currency
+            .map(one_line)
+            .filter(|currency| !currency.is_empty())
+            .map(|currency| format!("currency {currency}")),
+        (columns.date != "date").then(|| format!("date {}", ref_to(&columns.date))),
+        (columns.amount != "amount").then(|| format!("amount {}", ref_to(&columns.amount))),
+        Some(format!("account1 {}", one_line(params.journal_account))),
+        Some(format!("account2 {}", one_line(params.fallback_account))),
+        Some(format!("description {}", ref_to(&columns.payee))),
+        Some(format!("comment {ID_TAG}:{}", ref_to(&columns.id))),
+        Some(format!("if {} .", ref_to(&columns.transacted))),
+        Some(format!("  date2 {}", ref_to(&columns.transacted))),
+        params
+            .categories_include
+            .map(|name| format!("include {}", one_line(name))),
+        Some(format!("if {} .", ref_to(&columns.id))),
+        Some(format!("  comment {ID_TAG}:{}", ref_to(&columns.id))),
+        Some(format!("if {} .", ref_to(&columns.mcc_name))),
+        Some(format!(
+            "  comment {ID_TAG}:{}, {CATEGORY_TAG}:{}",
+            ref_to(&columns.id),
+            ref_to(&columns.mcc_name)
+        )),
+    ];
+    lines
+        .into_iter()
+        .flatten()
+        .map(|line| line + "\n")
+        .collect()
+}
+
+/// `text` on one line: control characters dropped, whitespace runs collapsed.
+fn one_line(text: &str) -> String {
+    crate::rules::sanitize_display(text, usize::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

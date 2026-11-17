@@ -1,0 +1,17 @@
+{
+  "errlist": [],
+  "connections": [{ "conn_id": "CON-air", "name": "Airline Rewards", "org_url": "https://rewards.example-air.test" }],
+  "accounts": [
+    {
+      "id": "ACT-miles",
+      "name": "Frequent Flyer",
+      "conn_id": "CON-air",
+      "currency": "https://beta-bridge.simplefin.org/simplefin/currency/example-air-miles",
+      "balance": "52000",
+      "balance-date": 1794268800,
+      "transactions": [
+        { "id": "M-1", "posted": 1794182400, "amount": "-2500", "description": "AWARD TICKET" }
+      ]
+    }
+  ]
+}
