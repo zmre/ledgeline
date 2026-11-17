@@ -37,7 +37,7 @@ env:
   # need mbr main after v0.7.1, and the build's link check honours
   # MBR_BASE_URL only from mbr #384 (before it, 404.html's Home link failed
   # --fail-on-broken-links). Move to the next tag once one exists.
-  MBR_FLAKE: github:zmre/mbr-markdown-browser/304f3cfbb67ef8a5fb538e7a581d3923457638e4#mbr
+  MBR_FLAKE: github:zmre/mbr-markdown-browser/98e2263838a2cbdb64eff65bdfd96b52442fb1a7#mbr
 
 jobs:
   build:
