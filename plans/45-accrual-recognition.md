@@ -800,6 +800,52 @@ closed set, and the path is confined. None of them runs anything.
 `ui_prefs.rs`'s module doc and `docs/settings/settings-files.md` gain the
 third exception.
 
+### D-lib. Library first: the invoicing app uses the same functions
+
+Patrick, 2026-11-17:
+
+> We are going to be creating a separate invoicing app and it is going to
+> load ledgeline crates as libraries. That invoicing app will need to be able
+> to write entries for a journal and for the revenue recognition periodic
+> stuff, but rather than write itself, I want to be sure it can use the same
+> logic and everything else that ledgeline uses.
+
+So every operation in this plan that reads or writes the books is a public
+function in `ledgeline-core`. The server only wraps it with HTTP, the
+snapshot, and UI preferences.
+
+- **`accrual::ops`** holds the writes. Each takes the main journal path (or
+  a loaded editor), `today`, and the expected fingerprints, and returns typed
+  results and errors:
+  - create `recognition.journal`;
+  - save schedules (D-editor: the source tags first, then the rule group);
+  - post due entries (D6: rebuilds the index, drops anything already posted,
+    refuses dates after today);
+  - apply a restatement (D4);
+  - link a settlement, with its fee edit (D-settle);
+  - read and write `ledgeline.toml [books]` (`basis`, `closed-through`).
+
+  They all go through `edit.rs` (`add_transactions`, `apply_batch`, and
+  `save`'s `ExternalChange` guard), so an invoicing app and a running
+  Ledgeline can write the same books safely: the second writer is refused
+  and retries, and nothing is clobbered. The shared part of the server's
+  `ledgeline.toml` editor (`ui_prefs.rs` `edit_ledger_text`) moves to core.
+- **Builders.** Invoice, bill and prepayment builders take a typed spec
+  (customer/vendor, invoice number, lines, deferred lines with
+  `service-start`/`term-months`/`proration`, `contract:`). They return the
+  `Transaction` plus a `ScheduleSpec` for each deferred line, so one `ops`
+  call writes an invoice and its schedule. The tag-name constants and the
+  recognition-file path resolution are public.
+- **No hidden state.** No globals, no server types, and `today` is always a
+  parameter. `autoRecognize` stays a server preference; core only offers
+  `post_due`.
+- **Enforced by a test.** `tests/accrual_library.rs` uses only public
+  `ledgeline_core::` paths to run the whole flow an invoicing app would.
+  It also covers an external write between load and save, which must give
+  `ExternalChange` and write nothing.
+- **Semver-visible.** Every public item in `accrual` has rustdoc, and the
+  module docs include an example. The API is kept small.
+
 ## Performance
 
 The target is a 200k-transaction ledger with 5,000 active schedules (consumer
@@ -940,6 +986,8 @@ Tests (unit, in-module, plus `tests/accrual_*.rs` on the fixture):
 - **Bench:** see Performance.
 
 ## Phase 2 — Wire (server, PR 2)
+
+Every route is a thin wrapper over a public `accrual` function in core (D-lib). No write logic lives in the server.
 
 | Route                                         | Does                                                                                                            |
 |-----------------------------------------------|-----------------------------------------------------------------------------------------------------------------|
