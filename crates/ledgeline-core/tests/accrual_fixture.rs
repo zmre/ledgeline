@@ -124,14 +124,14 @@ fn the_gate_opens_here_and_not_on_the_household_sample() {
 #[test]
 fn the_only_issue_is_the_duplicate_and_its_findings_are_anchored() {
     let (journal, book, index) = load();
-    let issues = index.issues();
+    let issues = index.issues(journal, book);
     assert!(
-        matches!(issues, [Issue::Duplicate { id, recognized, positions }]
+        matches!(issues.as_slice(), [Issue::Duplicate { id, recognized, positions }]
             if id == "cx1217" && recognized == "2026-03-17" && positions.len() == 2),
         "{issues:#?}"
     );
     let set = due(index, book, TODAY, Some(CLOSED));
-    let findings = recognition_findings(index, book, &set.closed, false);
+    let findings = recognition_findings(index, journal, book, &set.closed, false);
     let rules: Vec<&str> = findings.iter().map(|f| f.rule).collect();
     assert_eq!(
         rules,
@@ -368,7 +368,7 @@ fn an_included_recognition_file_is_flagged_and_never_a_goal() {
     )
     .expect("parses");
     let index = RecognitionIndex::build(&journal, &book);
-    let findings = recognition_findings(&index, &book, &[], true);
+    let findings = recognition_findings(&index, &journal, &book, &[], true);
     assert_eq!(findings[0].rule, "recognition-file-included");
     // The budget report sees no goal from it.
     let report = ledgeline_core::reports::budget::budget_report(

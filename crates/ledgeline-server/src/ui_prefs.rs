@@ -198,6 +198,7 @@ const PINNABLE: &[&str] = &[
     "syncSourceDir",
     "syncKeepSourceDays",
     "manualRemindDays",
+    "autoRecognize",
 ];
 
 /// The sync keys, whose change wakes the sync scheduler.
@@ -325,6 +326,22 @@ const SPECS: &[Spec] = &[
     // Days without a new transaction before a manually imported account's
     // row turns amber on Imports → Accounts.
     whole("manualRemindDays", 1, 3650, 35),
+    // Plan 45: post due recognition entries in the background. Off until
+    // asked for — it writes to the journal on the user's behalf.
+    flag("autoRecognize", false),
+    // Plan 45 D8: how the journal shows posted recognition entries.
+    Spec {
+        key: "recognitionRows",
+        kind: Kind::Choice {
+            allowed: &["group", "hide", "show"],
+            default: "group",
+        },
+    },
+    // Plan 45 D-settle: the invoice ↔ payment matcher, beside the match
+    // settings. 0 = no lookback limit; the tolerance is basis points of the
+    // invoice (300 = 3%, Q3).
+    whole("settlementLookbackDays", 0, 3650, 180),
+    whole("settlementToleranceBps", 0, 10_000, 300),
 ];
 
 const fn flag(key: &'static str, default: bool) -> Spec {
@@ -889,6 +906,12 @@ impl Patch {
         SYNC_KEYS.iter().any(|key| self.values.contains_key(key))
     }
 
+    /// Whether the patch turns background recognition on or off (plan 45),
+    /// so the recognizer should look again now.
+    pub(crate) fn touches_auto_recognize(&self) -> bool {
+        self.values.contains_key("autoRecognize")
+    }
+
     fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
@@ -1269,6 +1292,16 @@ pub(crate) struct SyncSettings {
     /// `manualRemindDays`: a manual account's row turns amber after this
     /// many days with no new transaction.
     pub(crate) remind_days: u32,
+}
+
+/// Whether `autoRecognize` (plan 45) is on for `state`'s journal. Off in
+/// browser mode, like every background writer.
+pub(crate) fn auto_recognize(state: &AppState) -> bool {
+    current(state)
+        .prefs
+        .get("autoRecognize")
+        .and_then(Json::as_bool)
+        .unwrap_or(false)
 }
 
 /// See [`SyncSettings`].
@@ -1777,6 +1810,10 @@ mod tests {
                 "syncSourceDir": "imports/sync",
                 "syncKeepSourceDays": 0,
                 "manualRemindDays": 35,
+                "autoRecognize": false,
+                "recognitionRows": "group",
+                "settlementLookbackDays": 180,
+                "settlementToleranceBps": 300,
             })
         );
     }
@@ -1935,6 +1972,9 @@ mod tests {
         assert!(Patch::from_json(&json!({"autoSyncEveryHours": 2})).is_err());
         let patch = Patch::from_json(&json!({"syncSourceDir": "x/y"})).expect("ok");
         assert!(patch.touches_sync() && !patch.touches_auto_prices());
+        assert!(!patch.touches_auto_recognize());
+        let patch = Patch::from_json(&json!({"autoRecognize": true})).expect("ok");
+        assert!(patch.touches_auto_recognize() && !patch.touches_sync());
     }
 
     #[test]

@@ -41,6 +41,7 @@
 //! threat model on [`security`] before putting either on a real socket.
 
 mod account_api;
+mod accrual_api;
 mod alias_api;
 mod app_dirs;
 mod auto_api;
@@ -289,6 +290,7 @@ impl Snapshot {
         raw: Arc<Journal>,
         location: Option<Arc<JournalLocation>>,
         user: &ledgeline_core::hledger_conf::UserConfDirs,
+        book_cache: &Arc<ledgeline_core::accrual::book::BookCache>,
     ) -> Self {
         // Minted FIRST, because `/api/journal` carries it as `generation`.
         let etag = next_etag();
@@ -323,7 +325,7 @@ impl Snapshot {
             commodities,
             accounts,
             journal_info,
-            view: journal_api::ViewCache::warmed(&journal, storage),
+            view: journal_api::ViewCache::warmed(&journal, storage, Arc::clone(book_cache)),
             projections: projection_cache::ProjectionCache::default(),
             conf: std::sync::OnceLock::new(),
             journal,
@@ -476,6 +478,11 @@ pub struct AppState {
     /// ([`AppState::with_feed_provider`], [`AppState::with_secret_store`]) —
     /// and the scheduler's per-process state. Per state, like `auto_prices`.
     sync: Arc<sync::SyncSession>,
+    /// Plan 45: the last recognition file parse, reused while its bytes and
+    /// the journal's styles are unchanged, so a journal edit doesn't re-read it.
+    book_cache: Arc<ledgeline_core::accrual::book::BookCache>,
+    /// Plan 45's `autoRecognize` loop state. Per state, like `auto_prices`.
+    recognize: Arc<accrual_api::RecognizeAuto>,
 }
 
 /// The real Yahoo feeds, over ONE `reqwest::Client` ([`yahoo::http_client`])
@@ -521,11 +528,13 @@ impl AppState {
     pub fn from_journal(journal: &Journal) -> Self {
         let yahoo = YahooFeeds::new();
         let app_dirs = Arc::new(default_app_dirs());
+        let book_cache = Arc::default();
         Self {
             inner: Arc::new(ArcSwap::from_pointee(Snapshot::from_journal(
                 Arc::new(journal.clone()),
                 None,
                 &app_dirs.hledger_conf,
+                &book_cache,
             ))),
             editor: Arc::new(Mutex::new(None)),
             rules_writes: Arc::new(tokio::sync::Mutex::new(())),
@@ -541,6 +550,8 @@ impl AppState {
             ui_prefs: Arc::default(),
             desktop: None,
             sync: Arc::default(),
+            book_cache,
+            recognize: Arc::default(),
         }
     }
 
@@ -575,10 +586,12 @@ impl AppState {
 
     fn from_editor(editor: JournalEditor) -> Self {
         let app_dirs = Arc::new(default_app_dirs());
+        let book_cache = Arc::default();
         let snapshot = Snapshot::from_journal(
             Arc::clone(editor.journal()),
             Some(location_of(&editor)),
             &app_dirs.hledger_conf,
+            &book_cache,
         );
         let yahoo = YahooFeeds::new();
         Self {
@@ -597,6 +610,8 @@ impl AppState {
             ui_prefs: Arc::default(),
             desktop: None,
             sync: Arc::default(),
+            book_cache,
+            recognize: Arc::default(),
         }
     }
 
@@ -616,6 +631,7 @@ impl AppState {
             Arc::clone(journal),
             location,
             &self.app_dirs.hledger_conf,
+            &self.book_cache,
         )));
     }
 
@@ -638,6 +654,7 @@ impl AppState {
             raw,
             snapshot.location.clone(),
             &self.app_dirs.hledger_conf,
+            &self.book_cache,
         )));
     }
 
@@ -660,6 +677,7 @@ impl AppState {
                     Arc::clone(reopened.journal()),
                     Some(location_of(&reopened)),
                     &self.app_dirs.hledger_conf,
+                    &self.book_cache,
                 )));
                 *editor = reopened;
                 // The editor we just replaced may have been half-mutated by a
@@ -715,6 +733,7 @@ impl AppState {
             Arc::clone(editor.journal()),
             Some(location_of(&editor)),
             &self.app_dirs.hledger_conf,
+            &self.book_cache,
         )));
         let mut guard = self.editor.lock().unwrap_or_else(PoisonError::into_inner);
         *guard = Some(editor);
@@ -781,7 +800,12 @@ impl AppState {
                 (Arc::clone(&snapshot.raw), snapshot.location.clone())
             }
         };
-        let snapshot = Snapshot::from_journal(journal, location, &self.app_dirs.hledger_conf);
+        let snapshot = Snapshot::from_journal(
+            journal,
+            location,
+            &self.app_dirs.hledger_conf,
+            &self.book_cache,
+        );
         let _ = snapshot.conf.set(Arc::new(conf));
         self.inner.store(Arc::new(snapshot));
     }
@@ -793,8 +817,17 @@ impl AppState {
     #[must_use]
     pub fn watched_files(&self) -> Vec<PathBuf> {
         let mut files = self.source_files();
-        let location = self.snapshot().storage();
-        for path in self.conf().watch_paths(location.as_deref()) {
+        let snapshot = self.snapshot();
+        let location = snapshot.storage();
+        // Plan 45: the recognition file is not included, so it is not a
+        // source; an outside edit to it still has to refresh.
+        let recognition = accrual_api::recognition_key(self, &snapshot);
+        for path in self
+            .conf()
+            .watch_paths(location.as_deref())
+            .into_iter()
+            .chain(recognition)
+        {
             if !files.contains(&path) {
                 files.push(path);
             }
@@ -849,6 +882,11 @@ impl AppState {
             Some(true) => {
                 let before = self.snapshot().etag.clone();
                 self.refresh_conf();
+                // The recognition file and `[books]` are not journal sources
+                // either (plan 45).
+                if self.snapshot().etag == before && accrual_api::changed_on_disk(self) {
+                    self.republish();
+                }
                 Ok(if self.snapshot().etag == before {
                     Refreshed::Unchanged
                 } else {
@@ -935,6 +973,7 @@ impl AppState {
             Arc::clone(&snapshot.raw),
             snapshot.location.clone(),
             &self.app_dirs.hledger_conf,
+            &self.book_cache,
         )));
         self
     }
@@ -1008,6 +1047,24 @@ impl AppState {
     }
 
     /// [`Self::auto_prices`], owned, for the loop that outlives any borrow.
+    /// The `autoRecognize` loop's state (plan 45).
+    pub(crate) fn recognize(&self) -> &accrual_api::RecognizeAuto {
+        &self.recognize
+    }
+
+    pub(crate) fn recognize_arc(&self) -> Arc<accrual_api::RecognizeAuto> {
+        Arc::clone(&self.recognize)
+    }
+
+    /// One `autoRecognize` pass for `today` (plan 45): what the background
+    /// loop runs, for the tests to drive with a fixed clock.
+    ///
+    /// # Errors
+    /// Whatever the post refused.
+    pub fn run_auto_recognize_once(&self, today: &str) -> Result<AutoRecognized, String> {
+        accrual_api::run_once(self, today).map_err(|error| error.to_string())
+    }
+
     pub(crate) fn auto_prices_arc(&self) -> Arc<auto_prices::AutoPrices> {
         Arc::clone(&self.auto_prices)
     }
@@ -1186,6 +1243,15 @@ impl AppState {
 pub async fn run_auto_sync(state: AppState) {
     sync::auto::run_forever(state).await;
 }
+
+/// Plan 45's `autoRecognize` loop: posts due recognition entries when the
+/// setting is on, after a change to the books (an edit, an external refresh,
+/// a new schedule) or at midnight. Idle while the setting is off.
+pub async fn run_auto_recognize(state: AppState) {
+    accrual_api::run_forever(state).await;
+}
+
+pub use accrual_api::AutoRecognized;
 
 /// The automatic price updater's background loop (plan 41; see
 /// [`auto_prices`]): a first check shortly after start-up, then about hourly,
@@ -1495,6 +1561,27 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         // Plan 35: transfer matching — the proposed pairs and the writes
         // that link, reject, unlink, forget and ignore (see `match_api`).
         // Above the `route_layer`: every POST here writes the journal.
+        .route("/api/accrual", get(accrual_api::accrual))
+        .route("/api/recognition/due", get(accrual_api::due_route))
+        .route("/api/recognition/post", post(accrual_api::post))
+        .route(
+            "/api/recognition/for/{index}",
+            get(accrual_api::for_transaction),
+        )
+        .route("/api/recognition/preview", post(accrual_api::preview))
+        .route("/api/recognition/save", post(accrual_api::save))
+        .route("/api/recognition/file", post(accrual_api::create_file))
+        .route(
+            "/api/books/closed-through",
+            post(accrual_api::closed_through),
+        )
+        .route("/api/settlements", get(accrual_api::settlements))
+        .route(
+            "/api/settlements/for/{index}",
+            get(accrual_api::settlements_for),
+        )
+        .route("/api/settlements/link", post(accrual_api::link))
+        .route("/api/settlements/link-all", post(accrual_api::link_all))
         .route("/api/matches", get(match_api::proposals))
         .route("/api/matches/for/{index}", get(match_api::for_transaction))
         .route("/api/matches/link", post(match_api::link))

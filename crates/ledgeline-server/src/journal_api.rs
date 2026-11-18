@@ -38,7 +38,10 @@ use ledgeline_core::view::checks::{
     Diagnostics, EngineChecks, WireFlag, diagnostics_body, engine_checks, local_findings,
 };
 use ledgeline_core::view::filter::{JournalFilter, display_order, filter_positions};
-use ledgeline_core::view::rows::{RowContext, TransferEnd, Transfers, haystack};
+use ledgeline_core::view::rows::{
+    GroupedRows, RecognitionGroup, RecognitionMode, RowContext, RowSlot, TransferEnd, Transfers,
+    haystack,
+};
 use ledgeline_core::view::running::{
     AssertionMark, BalanceWindow, PostingRef, RunningBalance, WireBalanceSeries, WireMark,
     WireRunning, WireRunningSummary, posting_order,
@@ -110,6 +113,13 @@ pub(crate) struct ViewCache {
     pub(crate) payees: OnceLock<Bytes>,
     /// The `GET /api/tags` body.
     pub(crate) tags: OnceLock<Bytes>,
+    /// Plan 45: `[books]`, the accounts' accrual roles, the gate and the
+    /// recognition file (`recognition: Option<Arc<RecognitionBook>>`), read
+    /// on first use ([`crate::accrual_api::AccrualView`]).
+    accrual: OnceLock<Arc<crate::accrual_api::AccrualView>>,
+    /// Where the recognition file's parse is kept across snapshots: shared by
+    /// every snapshot of one state.
+    book_cache: Arc<ledgeline_core::accrual::book::BookCache>,
 }
 
 /// What one filter keeps, in display order.
@@ -143,9 +153,11 @@ impl ViewCache {
     pub(crate) fn warmed(
         journal: &Arc<Journal>,
         storage: Option<Arc<JournalLocation>>,
+        book_cache: Arc<ledgeline_core::accrual::book::BookCache>,
     ) -> Arc<Self> {
         let cache = Arc::new(Self {
             storage,
+            book_cache,
             ..Self::default()
         });
         let weak = Arc::downgrade(&cache);
@@ -245,7 +257,13 @@ impl ViewCache {
         // local ones need the account classes first): run them side by side.
         let (engine, local) = std::thread::scope(|scope| {
             let engine = scope.spawn(|| self.engine(journal));
-            let local = local_findings(journal, &self.classes(journal), today);
+            let mut local = local_findings(journal, &self.classes(journal), today);
+            // Plan 45's six recognition findings, when the helpers are on.
+            local.extend(crate::accrual_api::findings(
+                &self.accrual(journal),
+                journal,
+                today,
+            ));
             let engine = engine
                 .join()
                 .unwrap_or_else(|payload| std::panic::resume_unwind(payload));
@@ -266,6 +284,31 @@ impl ViewCache {
         }
         entries.push(Arc::clone(&entry));
         entry
+    }
+
+    /// Plan 45's accrual view of `journal`, built on first use.
+    pub(crate) fn accrual(&self, journal: &Journal) -> Arc<crate::accrual_api::AccrualView> {
+        Arc::clone(self.accrual.get_or_init(|| {
+            Arc::new(crate::accrual_api::AccrualView::build(
+                journal,
+                self.storage.as_deref(),
+                &self.book_cache,
+            ))
+        }))
+    }
+
+    /// The accrual view, if a request already built it.
+    pub(crate) fn accrual_if_built(&self) -> Option<Arc<crate::accrual_api::AccrualView>> {
+        self.accrual.get().cloned()
+    }
+
+    /// Where the recognition file's parse is cached.
+    pub(crate) fn book_cache(&self) -> &ledgeline_core::accrual::book::BookCache {
+        &self.book_cache
+    }
+
+    pub(crate) fn storage(&self) -> Option<&JournalLocation> {
+        self.storage.as_deref()
     }
 
     fn engine(&self, journal: &Journal) -> Arc<EngineChecks> {
@@ -577,15 +620,113 @@ pub(crate) struct RowsQuery {
     /// `false`: one row per transaction, no transfer rows — what an export
     /// that writes transactions reads. Default `true`.
     collapse: Option<bool>,
+    /// Plan 45 D8: `group` (default), `hide` or `show` posted recognition
+    /// entries.
+    recognition: Option<String>,
+    /// Plan 45 D8: the months (`YYYY-MM`, comma-separated) whose group row
+    /// lists its entries under it.
+    expand: Option<String>,
 }
 
-/// `{generation, total, offset, rows}`.
+/// `{generation, total, offset, rows, recognitionHidden?}`.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct RowsBody<'a> {
     generation: &'a str,
     total: usize,
     offset: usize,
     rows: Vec<JournalRow<'a>>,
+    /// Plan 45: how many posted recognition entries `recognition=hide` left
+    /// out of the rows (they still count in every total).
+    #[serde(skip_serializing_if = "is_zero")]
+    recognition_hidden: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// Plan 45 D8: a month of posted recognition entries shown as one row —
+/// `{month, count, totals: [{commodity, quantity}], expanded}`.
+#[derive(Serialize)]
+pub(crate) struct WireRecognitionGroup {
+    month: String,
+    count: usize,
+    totals: Vec<WireGroupTotal>,
+    expanded: bool,
+}
+
+#[derive(Serialize)]
+struct WireGroupTotal {
+    commodity: String,
+    quantity: ledgeline_core::view::wire::WireDec,
+}
+
+impl WireRecognitionGroup {
+    fn of(group: &RecognitionGroup) -> Self {
+        Self {
+            month: group.month.clone(),
+            count: group.members.len(),
+            totals: group
+                .totals
+                .iter()
+                .map(|(commodity, quantity)| WireGroupTotal {
+                    commodity: commodity.clone(),
+                    quantity: (*quantity).into(),
+                })
+                .collect(),
+            expanded: group.expanded,
+        }
+    }
+}
+
+/// `?recognition=group|hide|show`, defaulting to `group`.
+fn recognition_mode(raw: Option<&str>) -> Result<RecognitionMode, AppError> {
+    match raw {
+        None | Some("group") => Ok(RecognitionMode::Group),
+        Some("hide") => Ok(RecognitionMode::Hide),
+        Some("show") => Ok(RecognitionMode::Show),
+        Some(other) => Err(AppError::BadRequest(format!(
+            "recognition must be group, hide or show, got {other:?}"
+        ))),
+    }
+}
+
+/// Plan 45 D8: `rows` (a filter result's rows, display order) under the
+/// recognition mode, when the accrual helpers are on; `None` when they are
+/// off and the rows stand as they are. A search expands every month it hits.
+fn recognition_rows(
+    view: &ViewCache,
+    journal: &Journal,
+    filter: &JournalFilter,
+    rows: &[u32],
+    mode: RecognitionMode,
+    expand: Option<&str>,
+) -> Option<GroupedRows> {
+    let accrual = view.accrual(journal);
+    if !accrual.gate.enabled {
+        return None;
+    }
+    let recognition = accrual.rows(journal);
+    if recognition.is_empty() {
+        return None;
+    }
+    let expanded: HashSet<String> = if filter.query().is_empty() {
+        expand
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|month| !month.is_empty())
+            .map(str::to_string)
+            .collect()
+    } else {
+        rows.iter()
+            .filter(|&&p| recognition.is_member(p))
+            .filter_map(|&p| journal.transactions[p as usize].date.get(..7))
+            .map(str::to_string)
+            .collect()
+    };
+    Some(recognition.group(journal, rows, mode, &expanded))
 }
 
 /// One `/api/journal/rows` row: a [`ReviewRow`], plus (plan 35 D11)
@@ -609,6 +750,10 @@ pub(crate) struct JournalRow<'a> {
     transfer: Option<WireTransfer<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     running: Option<WireRunning<'a>>,
+    /// Plan 45 D8: set on the row standing for a month of posted
+    /// recognition entries (the row itself is its latest entry).
+    #[serde(rename = "recognitionGroup", skip_serializing_if = "Option::is_none")]
+    recognition_group: Option<WireRecognitionGroup>,
 }
 
 /// `{matchId, halves: [row, row], from, to}`.
@@ -759,6 +904,8 @@ pub(crate) async fn rows(
     let pin = query.balance.filter(|account| !account.is_empty());
     let pin_commodity = query.balance_commodity;
     let collapse = query.collapse.unwrap_or(true);
+    let mode = recognition_mode(query.recognition.as_deref())?;
+    let expand = query.expand;
     let snapshot = state.snapshot();
     let etag = dated_etag(&snapshot, &today);
     conditional_tagged(snapshot, etag, &headers, move |snapshot| {
@@ -791,14 +938,28 @@ pub(crate) async fn rows(
         } else {
             &filtered.positions
         };
-        let window: Box<dyn Iterator<Item = &u32>> = if ascending {
-            Box::new(shown.iter().rev().skip(offset).take(limit))
+        // Plan 45 D8: never grouped with a pinned balance (every row needs
+        // its own), nor for a transaction-per-row export.
+        let grouped = (collapse && pin.is_none())
+            .then(|| recognition_rows(view, journal, &filter, shown, mode, expand.as_deref()))
+            .flatten();
+        let slots: Vec<RowSlot> = match &grouped {
+            Some(grouped) => grouped.slots.clone(),
+            None => shown.iter().copied().map(RowSlot::Txn).collect(),
+        };
+        let window: Box<dyn Iterator<Item = &RowSlot>> = if ascending {
+            Box::new(slots.iter().rev().skip(offset).take(limit))
         } else {
-            Box::new(shown.iter().skip(offset).take(limit))
+            Box::new(slots.iter().skip(offset).take(limit))
         };
         let rows = window
-            .map(|&position| {
+            .map(|slot| {
+                let (position, group) = match slot {
+                    RowSlot::Txn(position) => (*position, None),
+                    RowSlot::Group(group) => (group.anchor, Some(WireRecognitionGroup::of(group))),
+                };
                 Ok(JournalRow {
+                    recognition_group: group,
                     row: review_row(position),
                     linked: transfers.is_linked(position),
                     transfer: collapse
@@ -819,9 +980,10 @@ pub(crate) async fn rows(
             .collect::<Result<Vec<_>, AppError>>()?;
         to_bytes(&RowsBody {
             generation: generation_of(&snapshot.etag),
-            total: shown.len(),
+            total: slots.len(),
             offset,
             rows,
+            recognition_hidden: grouped.as_ref().map_or(0, |g| g.hidden),
         })
     })
     .await
@@ -946,6 +1108,9 @@ pub(crate) struct SummaryQuery {
     today: Option<String>,
     review_limit: Option<usize>,
     review_max_days: Option<u32>,
+    /// Plan 45 D8, as on `/api/journal/rows`.
+    recognition: Option<String>,
+    expand: Option<String>,
 }
 
 /// `{generation, …Summary}`.
@@ -980,6 +1145,10 @@ struct SummaryBody<'a, T: Serialize> {
     /// D11): nonzero means `total` counts rows, not transactions.
     transfers: usize,
     review: review_api::ReviewCounts,
+    /// Plan 45: posted recognition entries `recognition=hide` leaves out of
+    /// the rows. They are still in every figure (Q11: "incl. N hidden").
+    #[serde(rename = "recognitionHidden", skip_serializing_if = "is_zero")]
+    recognition_hidden: usize,
 }
 
 /// `GET /api/journal/summary` — for the filtered view: the count, the
@@ -1003,11 +1172,21 @@ pub(crate) async fn summary_route(
         query.q.as_deref(),
     )?;
     let review = ReviewWindow::resolve(query.today, query.review_limit, query.review_max_days)?;
+    let mode = recognition_mode(query.recognition.as_deref())?;
+    let expand = query.expand;
     let snapshot = state.snapshot();
     let etag = dated_etag(&snapshot, &review.today);
     conditional_tagged(snapshot, etag, &headers, move |snapshot| {
         let cache = &snapshot.view;
         let filtered = cache.filtered(&snapshot.journal, &filter);
+        let grouped = recognition_rows(
+            cache,
+            &snapshot.journal,
+            &filter,
+            &filtered.rows,
+            mode,
+            expand.as_deref(),
+        );
         let (classes, signs, declared) = (
             cache.classes(&snapshot.journal),
             cache.signs(&snapshot.journal),
@@ -1023,13 +1202,18 @@ pub(crate) async fn summary_route(
                 &filtered.positions,
                 &filter,
             )
-            .with_total(filtered.rows.len()),
+            .with_total(
+                grouped
+                    .as_ref()
+                    .map_or(filtered.rows.len(), |g| g.slots.len()),
+            ),
             transfers: filtered
                 .rows
                 .iter()
                 .filter(|&&position| transfers.get(position).is_some())
                 .count(),
             review: review.counts(&snapshot.journal, &cache.review(&snapshot.journal)),
+            recognition_hidden: grouped.as_ref().map_or(0, |g| g.hidden),
         })
     })
     .await
@@ -1143,6 +1327,9 @@ pub(crate) struct PositionQuery {
     to: Option<String>,
     accounts: Option<String>,
     q: Option<String>,
+    /// Plan 45 D8, as on `/api/journal/rows`.
+    recognition: Option<String>,
+    expand: Option<String>,
 }
 
 /// `{generation, position, date, total}`.
@@ -1176,23 +1363,43 @@ pub(crate) async fn position_route(
         query.q.as_deref(),
     )?;
     let tindex = query.index;
+    let mode = recognition_mode(query.recognition.as_deref())?;
+    let expand = query.expand;
     conditional(state.snapshot(), &headers, move |snapshot| {
         let filtered = snapshot.view.filtered(&snapshot.journal, &filter);
         let transfers = snapshot.view.transfers(&snapshot.journal);
+        let grouped = recognition_rows(
+            &snapshot.view,
+            &snapshot.journal,
+            &filter,
+            &filtered.rows,
+            mode,
+            expand.as_deref(),
+        );
         let at = position_of(snapshot, tindex);
+        // The row a filtered row position shows at: itself, or (plan 45) the
+        // group row of its month when that is collapsed.
+        let slot_of = |position: u32| match &grouped {
+            None => filtered.rows.iter().position(|p| *p == position),
+            Some(grouped) => grouped.slots.iter().position(|slot| match slot {
+                RowSlot::Txn(p) => *p == position,
+                RowSlot::Group(group) => !group.expanded && group.members.contains(&position),
+            }),
+        };
         let row = at.and_then(|at| {
             let at = u32::try_from(at).ok()?;
-            let row_of = |position: u32| filtered.rows.iter().position(|p| *p == position);
-            row_of(at).or_else(|| {
+            slot_of(at).or_else(|| {
                 let partner = transfers.get(at)?.partner(at);
-                filtered.positions.contains(&at).then(|| row_of(partner))?
+                filtered.positions.contains(&at).then(|| slot_of(partner))?
             })
         });
         to_bytes(&PositionBody {
             generation: generation_of(&snapshot.etag),
             position: row,
             date: at.map(|at| snapshot.journal.transactions[at].date.as_str()),
-            total: filtered.rows.len(),
+            total: grouped
+                .as_ref()
+                .map_or(filtered.rows.len(), |g| g.slots.len()),
         })
     })
     .await

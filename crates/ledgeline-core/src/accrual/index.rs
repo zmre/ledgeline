@@ -31,6 +31,7 @@ use crate::model::{Amount, Journal, Posting, PostingType, Tindex, Transaction};
 use crate::projections::is_generated;
 use crate::review::similarity_key;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::OnceLock;
 
 /// A deferred or prepaid posting tagged with a schedule id.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,7 +200,12 @@ pub enum Issue {
 pub struct RecognitionIndex {
     schedules: Vec<ScheduleInfo>,
     by_id: FxHashMap<String, u32>,
-    posted: FxHashMap<(u32, i32), PostedAt>,
+    /// Per schedule (by interned number): the days its posted entries fill,
+    /// sorted, duplicates kept. What the due set and the sum check ask.
+    posted_days: Vec<Vec<i32>>,
+    /// `(id, day) → positions`, built on the first [`Self::posted`] ask:
+    /// only the editor and the duplicate check look an entry up this way.
+    posted: OnceLock<FxHashMap<(u32, i32), PostedAt>>,
     by_party: BTreeMap<(PartyKindKey, String), Vec<u32>>,
     payee_parties: HashMap<String, Party>,
     needs_schedule: Vec<PostingRef>,
@@ -207,7 +213,6 @@ pub struct RecognitionIndex {
     /// order, as `(position, posting)`: what the ties read instead of
     /// walking the whole journal again.
     deferral_postings: Vec<(usize, usize)>,
-    issues: Vec<Issue>,
     roles: AccrualRoles,
 }
 
@@ -423,6 +428,167 @@ impl<'a> Cells<'a> {
     }
 }
 
+/// From this many schedules up, their occurrence walks are split across
+/// threads.
+const PARALLEL_SCHEDULES: usize = 512;
+
+/// From this many transactions up, the pass is split across threads.
+const PARALLEL_FROM: usize = 20_000;
+/// The most threads the pass is split across.
+const MAX_THREADS: usize = 8;
+
+/// One schedule fact the pass found, in file order: interned when merged.
+enum Event<'j> {
+    Posted {
+        id: &'j str,
+        entry: PostedEntry,
+        day: i32,
+    },
+    Adjustment {
+        id: &'j str,
+        adjustment: Adjustment,
+    },
+    Source {
+        id: &'j str,
+        line: SourceLine,
+    },
+}
+
+/// What one range of the transaction pass found.
+#[derive(Default)]
+struct Scan<'j> {
+    events: Vec<Event<'j>>,
+    needs: Vec<PostingRef>,
+    deferral_postings: Vec<(usize, usize)>,
+    payee: HashMap<String, BTreeMap<(PartyKindKey, String), usize>>,
+}
+
+/// The transaction pass over `txns`, whose first is at `offset` in the
+/// journal.
+fn scan<'j>(
+    txns: &'j [Transaction],
+    offset: usize,
+    deferrals: &[(String, AccrualRole)],
+) -> Scan<'j> {
+    let deferral_role = |account: &str| {
+        deferrals
+            .iter()
+            .find(|(name, _)| name.len() == account.len() && *name == account)
+            .map(|(_, role)| *role)
+    };
+    let mut out = Scan::default();
+    let record = |out: &mut Scan<'j>, position: usize, txn: &Transaction| {
+        for (at, posting) in txn.postings.iter().enumerate() {
+            if deferral_role(&posting.account.0).is_some() {
+                out.deferral_postings.push((position, at));
+            }
+        }
+    };
+    for (at_in_chunk, txn) in txns.iter().enumerate() {
+        let position = offset + at_in_chunk;
+        if !txn.tags.is_empty() && is_generated(txn) {
+            record(&mut out, position, txn);
+            continue;
+        }
+        if let Some(id) = (!txn.tags.is_empty())
+            .then(|| tag_value(&txn.tags, RECOGNITION_TAG))
+            .flatten()
+        {
+            let recognized = tag_value(&txn.tags, RECOGNIZED_TAG);
+            let restated = tag_value(&txn.tags, RESTATED_TAG);
+            if let Some(recognized) = recognized {
+                out.events.push(Event::Posted {
+                    id,
+                    day: day_of(recognized),
+                    entry: PostedEntry {
+                        position,
+                        tindex: txn.index,
+                        recognized: recognized.to_string(),
+                        date: txn.date.clone(),
+                    },
+                });
+                record(&mut out, position, txn);
+                continue;
+            }
+            if let Some(restated) = restated {
+                out.events.push(Event::Adjustment {
+                    id,
+                    adjustment: Adjustment {
+                        position,
+                        tindex: txn.index,
+                        date: txn.date.clone(),
+                        restated: restated.to_string(),
+                        through: tag_value(&txn.tags, RESTATED_THROUGH_TAG)
+                            .filter(|date| is_iso_date(date))
+                            .map(str::to_string),
+                    },
+                });
+                record(&mut out, position, txn);
+                continue;
+            }
+        }
+        // The transaction's own party, read at most once.
+        let mut txn_party: Option<Option<(PartyKind, &str)>> = None;
+        let mut party_here: Option<(PartyKind, &str)> = None;
+        for (at, posting) in txn.postings.iter().enumerate() {
+            let role = deferral_role(&posting.account.0);
+            if role.is_some() {
+                out.deferral_postings.push((position, at));
+            }
+            if posting.generated.is_some() || posting.ptype != PostingType::Regular {
+                continue;
+            }
+            let at = PostingRef {
+                position,
+                txn: txn.index,
+                posting: at,
+            };
+            let recognition = if posting.tags.is_empty() {
+                None
+            } else {
+                tag_value(&posting.tags, RECOGNITION_TAG)
+            };
+            match recognition {
+                Some(NONE_VALUE) => {}
+                Some(id) if !id.is_empty() => {
+                    if let Some(line) = source_line(at, txn, posting) {
+                        out.events.push(Event::Source { id, line });
+                    }
+                }
+                _ => {
+                    let deferral = role.is_some_and(|role| match role {
+                        AccrualRole::DeferredRevenue => {
+                            posting.amounts.iter().any(|a| a.quantity.mantissa < 0)
+                        }
+                        _ => posting.amounts.iter().any(|a| a.quantity.mantissa > 0),
+                    });
+                    if deferral {
+                        out.needs.push(at);
+                    }
+                }
+            }
+            if party_here.is_none() {
+                party_here = if posting.tags.is_empty() {
+                    None
+                } else {
+                    party_in(&posting.tags)
+                }
+                .or_else(|| *txn_party.get_or_insert_with(|| party_in(&txn.tags)));
+            }
+        }
+        if let Some((kind, name)) = party_here
+            && let Some(key) = similarity_key(&txn.description)
+        {
+            *out.payee
+                .entry(key)
+                .or_default()
+                .entry((kind_key(kind), name.to_string()))
+                .or_default() += 1;
+        }
+    }
+    out
+}
+
 impl RecognitionIndex {
     /// Index `journal` and `book`, resolving accrual roles itself.
     #[must_use]
@@ -434,6 +600,28 @@ impl RecognitionIndex {
     /// caches them).
     #[must_use]
     pub fn build_with(journal: &Journal, book: &RecognitionBook, roles: AccrualRoles) -> Self {
+        let chunks = if journal.transactions.len() >= PARALLEL_FROM {
+            std::thread::available_parallelism()
+                .map_or(1, std::num::NonZeroUsize::get)
+                .min(MAX_THREADS)
+        } else {
+            1
+        };
+        Self::build_chunked(journal, book, roles, chunks)
+    }
+
+    /// [`Self::build_with`] with the transaction pass split into `chunks`
+    /// contiguous ranges, each scanned on its own thread and merged in file
+    /// order — so ids are interned, and everything listed, exactly as one
+    /// sequential pass would. One pass over every posting is what finding the
+    /// source postings costs (about 6 ms of memory traffic alone at 200k
+    /// transactions), and this is how it fits the 10 ms budget.
+    pub(crate) fn build_chunked(
+        journal: &Journal,
+        book: &RecognitionBook,
+        roles: AccrualRoles,
+        chunks: usize,
+    ) -> Self {
         // The few deferred-revenue and prepaid accounts, compared by length
         // first: a per-posting map lookup was a fifth of the build.
         let deferrals: Vec<(String, AccrualRole)> = roles
@@ -441,22 +629,33 @@ impl RecognitionIndex {
             .filter(|(_, role, _)| role.is_deferral())
             .map(|(name, role, _)| (name.to_string(), role))
             .collect();
-        let deferral_role = |account: &str| {
-            deferrals
-                .iter()
-                .find(|(name, _)| name.len() == account.len() && *name == account)
-                .map(|(_, role)| *role)
+        let txns = &journal.transactions;
+        let size = txns.len().div_ceil(chunks.max(1)).max(1);
+        let scans: Vec<Scan<'_>> = if chunks <= 1 || txns.len() <= size {
+            vec![scan(txns, 0, &deferrals)]
+        } else {
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = txns
+                    .chunks(size)
+                    .enumerate()
+                    .map(|(n, chunk)| {
+                        let deferrals = &deferrals;
+                        scope.spawn(move || scan(chunk, n * size, deferrals))
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|handle| {
+                        handle
+                            .join()
+                            .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+                    })
+                    .collect()
+            })
         };
         let mut index = Self {
             roles,
             ..Self::default()
-        };
-        let record = |index: &mut Self, position: usize, txn: &Transaction| {
-            for (at, posting) in txn.postings.iter().enumerate() {
-                if deferral_role(&posting.account.0).is_some() {
-                    index.deferral_postings.push((position, at));
-                }
-            }
         };
         let intern = |index: &mut Self, id: &str| -> u32 {
             if let Some(&n) = index.by_id.get(id) {
@@ -472,105 +671,34 @@ impl RecognitionIndex {
         };
         let mut payee_counts: HashMap<String, BTreeMap<(PartyKindKey, String), usize>> =
             HashMap::new();
-        for (position, txn) in journal.transactions.iter().enumerate() {
-            if !txn.tags.is_empty() && is_generated(txn) {
-                record(&mut index, position, txn);
-                continue;
-            }
-            if let Some(id) = (!txn.tags.is_empty())
-                .then(|| tag_value(&txn.tags, RECOGNITION_TAG))
-                .flatten()
-            {
-                let recognized = tag_value(&txn.tags, RECOGNIZED_TAG);
-                let restated = tag_value(&txn.tags, RESTATED_TAG);
-                if recognized.is_some() || restated.is_some() {
-                    let n = intern(&mut index, id);
-                    let schedule = &mut index.schedules[n as usize];
-                    if let Some(recognized) = recognized {
-                        schedule.posted.push(PostedEntry {
-                            position,
-                            tindex: txn.index,
-                            recognized: recognized.to_string(),
-                            date: txn.date.clone(),
-                        });
-                        index
-                            .posted
-                            .entry((n, day_of(recognized)))
-                            .and_modify(|at| at.push(position))
-                            .or_insert(PostedAt::One(position));
-                    } else if let Some(restated) = restated {
-                        schedule.adjustments.push(Adjustment {
-                            position,
-                            tindex: txn.index,
-                            date: txn.date.clone(),
-                            restated: restated.to_string(),
-                            through: tag_value(&txn.tags, RESTATED_THROUGH_TAG)
-                                .filter(|date| is_iso_date(date))
-                                .map(str::to_string),
-                        });
-                    }
-                    record(&mut index, position, txn);
-                    continue;
-                }
-            }
-            // The transaction's own party, read at most once.
-            let mut txn_party: Option<Option<(PartyKind, &str)>> = None;
-            let mut party_here: Option<(PartyKind, &str)> = None;
-            for (at, posting) in txn.postings.iter().enumerate() {
-                let role = deferral_role(&posting.account.0);
-                if role.is_some() {
-                    index.deferral_postings.push((position, at));
-                }
-                if posting.generated.is_some() || posting.ptype != PostingType::Regular {
-                    continue;
-                }
-                let at = PostingRef {
-                    position,
-                    txn: txn.index,
-                    posting: at,
-                };
-                let recognition = if posting.tags.is_empty() {
-                    None
-                } else {
-                    tag_value(&posting.tags, RECOGNITION_TAG)
-                };
-                match recognition {
-                    Some(NONE_VALUE) => {}
-                    Some(id) if !id.is_empty() => {
-                        if let Some(line) = source_line(at, txn, posting) {
-                            let n = intern(&mut index, id);
-                            index.schedules[n as usize].sources.push(line);
+        for scan in scans {
+            for event in scan.events {
+                match event {
+                    Event::Posted { id, entry, day } => {
+                        let n = intern(&mut index, id) as usize;
+                        index.schedules[n].posted.push(entry);
+                        if index.posted_days.len() <= n {
+                            index.posted_days.resize_with(n + 1, Vec::new);
                         }
+                        index.posted_days[n].push(day);
                     }
-                    _ => {
-                        let deferral = role.is_some_and(|role| match role {
-                            AccrualRole::DeferredRevenue => {
-                                posting.amounts.iter().any(|a| a.quantity.mantissa < 0)
-                            }
-                            _ => posting.amounts.iter().any(|a| a.quantity.mantissa > 0),
-                        });
-                        if deferral {
-                            index.needs_schedule.push(at);
-                        }
+                    Event::Adjustment { id, adjustment } => {
+                        let n = intern(&mut index, id);
+                        index.schedules[n as usize].adjustments.push(adjustment);
                     }
-                }
-                if party_here.is_none() {
-                    party_here = if posting.tags.is_empty() {
-                        None
-                    } else {
-                        party_in(&posting.tags)
+                    Event::Source { id, line } => {
+                        let n = intern(&mut index, id);
+                        index.schedules[n as usize].sources.push(line);
                     }
-                    .or_else(|| *txn_party.get_or_insert_with(|| party_in(&txn.tags)));
                 }
             }
-            if let Some((kind, name)) = party_here
-                && let Some(key) = similarity_key(&txn.description)
-            {
-                *payee_counts
-                    .entry(key)
-                    .or_default()
-                    .entry((kind_key(kind), name.to_string()))
-                    .or_default() += 1;
+            index.needs_schedule.extend(scan.needs);
+            index.deferral_postings.extend(scan.deferral_postings);
+            for (key, counts) in scan.payee {
+                let into = payee_counts.entry(key).or_default();
+                for (party, count) in counts {
+                    *into.entry(party).or_default() += count;
+                }
             }
         }
         // The rules.
@@ -580,7 +708,15 @@ impl RecognitionIndex {
                 index.schedules[n as usize].rules.push(at);
             }
         }
-        for schedule in &mut index.schedules {
+        index
+            .posted_days
+            .resize_with(index.schedules.len(), Vec::new);
+        for days in &mut index.posted_days {
+            days.sort_unstable();
+        }
+        // Every schedule's occurrences: independent walks, split across
+        // threads for a large book.
+        let walk = |schedule: &mut ScheduleInfo| {
             schedule.occurrences = schedule
                 .rules
                 .iter()
@@ -597,6 +733,17 @@ impl RecognitionIndex {
                     flat.sort_unstable();
                     flat
                 });
+        };
+        if chunks > 1 && index.schedules.len() >= PARALLEL_SCHEDULES {
+            let size = index.schedules.len().div_ceil(chunks);
+            std::thread::scope(|scope| {
+                for part in index.schedules.chunks_mut(size) {
+                    let walk = &walk;
+                    scope.spawn(move || part.iter_mut().for_each(walk));
+                }
+            });
+        } else {
+            index.schedules.iter_mut().for_each(walk);
         }
         // Parties, latest service start last.
         for (n, schedule) in index.schedules.iter().enumerate() {
@@ -630,11 +777,10 @@ impl RecognitionIndex {
                 ))
             })
             .collect();
-        index.issues = index.integrity(journal, book);
         index
     }
 
-    fn integrity(&self, journal: &Journal, book: &RecognitionBook) -> Vec<Issue> {
+    fn integrity_issues(&self, journal: &Journal, book: &RecognitionBook) -> Vec<Issue> {
         let declared: BTreeSet<&str> = journal
             .accounts
             .iter()
@@ -642,7 +788,7 @@ impl RecognitionIndex {
             .collect();
         let mut issues = Vec::new();
         let mut duplicates: Vec<(&(u32, i32), &[usize])> = self
-            .posted
+            .posted_map()
             .iter()
             .map(|(key, at)| (key, at.as_slice()))
             .filter(|(_, positions)| positions.len() > 1)
@@ -844,12 +990,28 @@ impl RecognitionIndex {
         self.by_id.get(id).map(|&n| &self.schedules[n as usize])
     }
 
+    /// `(id, day) → positions`, built on first use.
+    fn posted_map(&self) -> &FxHashMap<(u32, i32), PostedAt> {
+        self.posted.get_or_init(|| {
+            let mut map: FxHashMap<(u32, i32), PostedAt> = FxHashMap::default();
+            for (n, schedule) in self.schedules.iter().enumerate() {
+                let n = u32::try_from(n).unwrap_or(u32::MAX);
+                for entry in &schedule.posted {
+                    map.entry((n, day_of(&entry.recognized)))
+                        .and_modify(|at| at.push(entry.position))
+                        .or_insert(PostedAt::One(entry.position));
+                }
+            }
+            map
+        })
+    }
+
     /// The transactions posted for `(id, recognized)`.
     #[must_use]
     pub fn posted(&self, id: &str, recognized: &str) -> &[usize] {
         self.by_id
             .get(id)
-            .and_then(|&n| self.posted.get(&(n, day_of(recognized))))
+            .and_then(|&n| self.posted_map().get(&(n, day_of(recognized))))
             .map_or(&[], PostedAt::as_slice)
     }
 
@@ -861,7 +1023,9 @@ impl RecognitionIndex {
 
     /// Whether the occurrence `day` of the schedule interned as `n` is posted.
     pub(crate) fn is_posted_day(&self, n: usize, day: i32) -> bool {
-        u32::try_from(n).is_ok_and(|n| self.posted.contains_key(&(n, day)))
+        self.posted_days
+            .get(n)
+            .is_some_and(|days| days.binary_search(&day).is_ok())
     }
 
     /// A party's schedules, by service start, latest last (D-renewal).
@@ -895,10 +1059,15 @@ impl RecognitionIndex {
         &self.needs_schedule
     }
 
-    /// The integrity issues, in a stable order.
+    /// The integrity issues behind the `recognition-*` findings, in a stable
+    /// order: duplicates, orphans, undeclared rule accounts, and schedules
+    /// that don't add up. Computed on demand, not by [`Self::build`] (plan 45
+    /// Phase 2): only the Problems route asks, and building them was most of
+    /// an index build. `journal` and `book` must be the ones the index was
+    /// built from.
     #[must_use]
-    pub fn issues(&self) -> &[Issue] {
-        &self.issues
+    pub fn issues(&self, journal: &Journal, book: &RecognitionBook) -> Vec<Issue> {
+        self.integrity_issues(journal, book)
     }
 
     /// The accrual roles the index was built with.
@@ -965,6 +1134,30 @@ impl RecognitionIndex {
         &self.deferral_postings
     }
 
+    /// Every structure of the index in a canonical text form (maps sorted),
+    /// for comparing two builds.
+    #[cfg(test)]
+    pub(crate) fn canonical(&self) -> String {
+        let mut posted: Vec<_> = self
+            .posted_map()
+            .iter()
+            .map(|(key, at)| (*key, at.as_slice().to_vec()))
+            .collect();
+        posted.sort();
+        let mut by_id: Vec<_> = self.by_id.iter().collect();
+        by_id.sort();
+        let mut payees: Vec<_> = self
+            .payee_parties
+            .iter()
+            .map(|(k, p)| (k.clone(), kind_key(p.kind), p.name.clone()))
+            .collect();
+        payees.sort();
+        format!(
+            "{:?}\n{posted:?}\n{by_id:?}\n{:?}\n{payees:?}\n{:?}\n{:?}",
+            self.schedules, self.by_party, self.needs_schedule, self.deferral_postings
+        )
+    }
+
     /// The interned number of `id`.
     #[cfg(test)]
     pub(crate) fn number(&self, id: &str) -> Option<usize> {
@@ -1014,7 +1207,7 @@ account assets:bank  ; type: C
     revenue:other  $-1.00
 ";
 
-    fn index() -> (Journal, RecognitionIndex) {
+    fn index() -> (Journal, RecognitionBook, RecognitionIndex) {
         let journal = parse_journal(BOOKS, "books.journal").expect("parses");
         let book = RecognitionBook::parse(
             RULES,
@@ -1023,12 +1216,12 @@ account assets:bank  ; type: C
         )
         .expect("parses");
         let index = RecognitionIndex::build(&journal, &book);
-        (journal, index)
+        (journal, book, index)
     }
 
     #[test]
     fn posted_entries_are_keyed_by_the_recognized_date_not_the_transaction_date() {
-        let (_, index) = index();
+        let (_, _, index) = index();
         assert!(index.is_posted("aaa111", "2026-02-05"));
         assert!(!index.is_posted("aaa111", "2026-02-04"));
         assert!(!index.is_posted("aaa111", "2026-03-05"));
@@ -1040,8 +1233,8 @@ account assets:bank  ; type: C
 
     #[test]
     fn duplicates_orphans_and_undeclared_accounts_are_issues() {
-        let (_, index) = index();
-        let issues = index.issues();
+        let (journal, book, index) = index();
+        let issues = index.issues(&journal, &book);
         assert!(issues.iter().any(|issue| matches!(
             issue,
             Issue::Duplicate { id, recognized, positions } if id == "aaa111" && recognized == "2026-02-05" && positions == &vec![2, 3]
@@ -1063,7 +1256,7 @@ account assets:bank  ; type: C
 
     #[test]
     fn untagged_deferrals_need_a_schedule_and_parties_are_indexed() {
-        let (journal, index) = index();
+        let (journal, _, index) = index();
         let needs: Vec<&str> = index
             .needs_schedule()
             .iter()
@@ -1262,6 +1455,23 @@ account assets:bank  ; type: C
                     reference_sum_issues(&index, &journal, &book, schedule)
                 );
             }
+        }
+    }
+
+    /// The chunked, multi-threaded pass builds exactly the sequential index,
+    /// whatever the chunk boundaries (ids interned in the same order).
+    #[test]
+    fn a_chunked_build_is_the_sequential_build() {
+        let (journal, book, _) = crate::accrual::test_fixture();
+        let roles = AccrualRoles::of(journal);
+        let sequential =
+            RecognitionIndex::build_chunked(journal, book, roles.clone(), 1).canonical();
+        for chunks in [2, 3, 7, 16, 1000] {
+            assert_eq!(
+                RecognitionIndex::build_chunked(journal, book, roles.clone(), chunks).canonical(),
+                sequential,
+                "{chunks} chunks"
+            );
         }
     }
 }

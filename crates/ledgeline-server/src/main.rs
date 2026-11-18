@@ -833,6 +833,9 @@ fn run_server_blocking(cli: &Cli, app_dirs: AppDirs) -> Result<(), AppError> {
         // `autoPrices` on; the e2e harnesses keep prefs in the browser, where
         // it is always off.
         tokio::spawn(ledgeline::run_auto_prices(state.clone()));
+        // Plan 45: post due recognition entries, idle unless `autoRecognize`
+        // is on (always off for the browser-prefs harnesses).
+        tokio::spawn(ledgeline::run_auto_recognize(state.clone()));
         // Plan 43: background bank sync, idle unless `autoSync` is on. Not
         // started at all for the browser-prefs harnesses (e2e, live
         // contract), so they never touch a bank feed unasked.

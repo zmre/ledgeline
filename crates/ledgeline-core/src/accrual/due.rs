@@ -651,9 +651,10 @@ account assets:bank  ; type: C
             text.push('\n');
             text.push_str(&crate::edit::format_transaction(&entry));
         }
-        let (_, book, index) = setup(&text);
+        let (journal, book, index) = setup(&text);
         assert!(due(&index, &book, "2026-04-05", None).is_empty());
-        assert!(index.issues().is_empty(), "{:?}", index.issues());
+        let issues = index.issues(&journal, &book);
+        assert!(issues.is_empty(), "{issues:?}");
     }
 
     #[test]
@@ -669,11 +670,12 @@ account assets:bank  ; type: C
         );
         assert!(text.contains("restated-through: 2026-04-30"), "{text}");
         assert!(text.contains("$200.00"), "{text}");
-        let (_, book, index) = setup(&text);
+        let (journal, book, index) = setup(&text);
         let set = due(&index, &book, "2026-05-10", Some("2026-04-30"));
         assert!(set.closed.is_empty());
         assert_eq!(dates(&set.open), vec!["2026-05-05"]);
-        assert!(index.issues().is_empty(), "{:?}", index.issues());
+        let issues = index.issues(&journal, &book);
+        assert!(issues.is_empty(), "{issues:?}");
     }
 
     proptest! {

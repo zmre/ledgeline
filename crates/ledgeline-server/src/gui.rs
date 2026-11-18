@@ -188,6 +188,8 @@ pub(crate) fn run(cli: &Cli, app_dirs: AppDirs) -> Result<(), AppError> {
     // Plan 41: the background price updater, on the same runtime and the same
     // state, so it follows File → Open. Idle unless `autoPrices` is on.
     let _auto_prices = runtime.spawn(ledgeline::run_auto_prices(state.clone()));
+    // Plan 45: background recognition posting, idle unless `autoRecognize`.
+    let _auto_recognize = runtime.spawn(ledgeline::run_auto_recognize(state.clone()));
     // Plan 43: background bank sync, idle unless `autoSync` is on.
     let _auto_sync = runtime.spawn(ledgeline::run_auto_sync(state.clone()));
 

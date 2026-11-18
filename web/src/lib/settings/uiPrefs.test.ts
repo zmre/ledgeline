@@ -23,7 +23,7 @@ import {
 describe("UNIT uiPrefs", () => {
     it("names every view setting, and never the connection", () => {
         expect([...UI_PREF_KEYS].sort()).toEqual(Object.keys(defaultUiPrefs()).sort());
-        expect(UI_PREF_KEYS).toHaveLength(28);
+        expect(UI_PREF_KEYS).toHaveLength(32);
         expect(UI_PREF_KEYS).not.toContain("serverUrl");
         expect(UI_PREF_KEYS).not.toContain("serverToken");
     });
@@ -66,6 +66,7 @@ describe("UNIT uiPrefs", () => {
             "syncSourceDir",
             "syncKeepSourceDays",
             "manualRemindDays",
+            "autoRecognize",
         ]);
         expect(isThemeId("tokyo-night-day")).toBe(true);
         expect(isThemeId("Nord")).toBe(false);
@@ -76,6 +77,22 @@ describe("UNIT uiPrefs", () => {
         expect(defaultUiPrefs()).toMatchObject({autoPrices: false, autoPricesWeeks: 6});
         expect(cleanUiPrefs({autoPrices: true, autoPricesWeeks: 99})).toMatchObject({autoPrices: true, autoPricesWeeks: 52});
         expect(cleanUiPrefs({autoPrices: "yes", autoPricesWeeks: -1})).toMatchObject({autoPrices: false, autoPricesWeeks: 0});
+    });
+
+    it("defaults recognition off, grouped, with a 180-day, 3% settlement matcher, and cleans hand edits", () => {
+        expect(defaultUiPrefs()).toMatchObject({
+            autoRecognize: false,
+            recognitionRows: "group",
+            settlementLookbackDays: 180,
+            settlementToleranceBps: 300,
+        });
+        expect(cleanUiPrefs({autoRecognize: true, recognitionRows: "hide", settlementLookbackDays: 99999, settlementToleranceBps: -5})).toMatchObject({
+            autoRecognize: true,
+            recognitionRows: "hide",
+            settlementLookbackDays: 3650,
+            settlementToleranceBps: 0,
+        });
+        expect(cleanUiPrefs({autoRecognize: "yes", recognitionRows: "collapse"})).toMatchObject({autoRecognize: false, recognitionRows: "group"});
     });
 
     it("defaults bank sync off, every 6 hours, into imports/sync, kept forever, reminding after 35 days, and cleans hand edits", () => {

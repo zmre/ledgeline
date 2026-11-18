@@ -58,3 +58,7 @@ holdings-other-series	/api/holdings/other/series?asOf=2026-07-08&interval=monthl
 # pins the built-in defaults, the `files` storage and no local keys. No date:
 # nothing in it is derived from a clock (see `every_pinned_request_fixes_its_own_dates`).
 ui-prefs	/api/ui-prefs
+# Plan 45: the accrual helpers' gate. sample.journal is a household ledger (no
+# receivable, payable, deferred-revenue or prepaid account, no [books]), so
+# every accrual route answers exactly this. No date in it.
+accrual	/api/accrual

@@ -547,6 +547,7 @@ pub fn diagnostics_body<'a>(
 #[must_use]
 pub fn recognition_findings(
     index: &crate::accrual::index::RecognitionIndex,
+    journal: &Journal,
     book: &crate::accrual::book::RecognitionBook,
     closed_due: &[crate::accrual::due::DueEntry],
     included: bool,
@@ -597,8 +598,8 @@ pub fn recognition_findings(
             ));
         }
     }
-    let issues = index.issues();
-    for issue in issues {
+    let issues = index.issues(journal, book);
+    for issue in &issues {
         if let Issue::Duplicate {
             id,
             recognized,
@@ -619,7 +620,7 @@ pub fn recognition_findings(
             }));
         }
     }
-    for issue in issues {
+    for issue in &issues {
         match issue {
             Issue::SumMismatch {
                 id,
@@ -644,7 +645,7 @@ pub fn recognition_findings(
             _ => {}
         }
     }
-    for issue in issues {
+    for issue in &issues {
         match issue {
             Issue::OrphanEntry { id, position } => out.push(Finding::txn(
                 *position,
@@ -681,7 +682,7 @@ pub fn recognition_findings(
             ),
         )
     }));
-    for issue in issues {
+    for issue in &issues {
         if let Issue::RuleAccount { id, account } = issue {
             out.push(Finding {
                 position: None,

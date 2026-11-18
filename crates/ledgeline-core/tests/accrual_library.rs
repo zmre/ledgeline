@@ -195,7 +195,8 @@ fn an_invoicing_app_walks_the_whole_flow() {
 
     let loaded = books.load().expect("loads");
     let index = RecognitionIndex::build(loaded.journal(), loaded.book());
-    assert!(index.issues().is_empty(), "{:?}", index.issues());
+    let issues = index.issues(loaded.journal(), loaded.book());
+    assert!(issues.is_empty(), "{issues:?}");
     assert!(loaded.due("2026-04-20").is_empty());
     // A stale preview is refused.
     assert!(matches!(
@@ -247,7 +248,12 @@ fn an_invoicing_app_walks_the_whole_flow() {
 
     // The schedule is still whole, and every entry carries its id.
     let loaded = books.load().expect("loads");
-    assert!(loaded.index().issues().is_empty());
+    assert!(
+        loaded
+            .index()
+            .issues(loaded.journal(), loaded.book())
+            .is_empty()
+    );
     assert!(
         loaded
             .journal()
