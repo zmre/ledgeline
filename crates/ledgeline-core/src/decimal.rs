@@ -307,21 +307,32 @@ impl Dec {
             Some((mark, pos)) => (&body[..pos], &body[pos + mark.len_utf8()..]),
             None => (body, ""),
         };
-        let int_digits: String = int_src.chars().filter(char::is_ascii_digit).collect();
-        let frac_digits: String = frac_src.chars().filter(char::is_ascii_digit).collect();
-        let places = u32::try_from(frac_digits.len())
-            .map_err(|_| DecError::InvalidNumber(input.to_string()))?;
-
-        let combined = format!("{int_digits}{frac_digits}");
-        if combined.is_empty() {
+        // The digits of both halves, accumulated straight into the mantissa:
+        // no intermediate strings (this runs for every amount of every
+        // journal).
+        let (int_count, frac_count) = (
+            int_src.bytes().filter(u8::is_ascii_digit).count(),
+            frac_src.bytes().filter(u8::is_ascii_digit).count(),
+        );
+        let places =
+            u32::try_from(frac_count).map_err(|_| DecError::InvalidNumber(input.to_string()))?;
+        if int_count + frac_count == 0 {
             return Err(DecError::InvalidNumber(input.to_string()));
         }
-        // `combined` is non-empty and all ASCII digits by construction (both
-        // halves were filtered with `is_ascii_digit`), so the only way this can
-        // fail is magnitude. hledger's mantissa is arbitrary-precision and ours
-        // is `i128`, so report the real reason rather than the misleading
+        // Every byte counted is an ASCII digit, so the only way this can fail
+        // is magnitude. hledger's mantissa is arbitrary-precision and ours is
+        // `i128`, so report the real reason rather than the misleading
         // "invalid numeric literal".
-        let magnitude: i128 = combined.parse().map_err(|_| DecError::Overflow)?;
+        let magnitude: i128 = int_src
+            .bytes()
+            .chain(frac_src.bytes())
+            .filter(u8::is_ascii_digit)
+            .try_fold(0_i128, |value, byte| {
+                value
+                    .checked_mul(10)
+                    .and_then(|value| value.checked_add(i128::from(byte - b'0')))
+            })
+            .ok_or(DecError::Overflow)?;
         let mantissa = if negative {
             magnitude.checked_neg().ok_or(DecError::Overflow)?
         } else {
@@ -1154,6 +1165,56 @@ mod tests {
             // magnitude — and the rounding step adds at most one unit, which
             // cannot push it past the original.
             prop_assert!(mean.mantissa.unsigned_abs() <= value.mantissa.unsigned_abs());
+        }
+    }
+
+    /// The mantissa as first computed (two digit strings, joined and parsed):
+    /// the oracle for the accumulating one.
+    fn reference_magnitude(int_src: &str, frac_src: &str) -> Result<i128, DecError> {
+        let int_digits: String = int_src.chars().filter(char::is_ascii_digit).collect();
+        let frac_digits: String = frac_src.chars().filter(char::is_ascii_digit).collect();
+        let combined = format!("{int_digits}{frac_digits}");
+        if combined.is_empty() {
+            return Err(DecError::InvalidNumber(String::new()));
+        }
+        combined.parse().map_err(|_| DecError::Overflow)
+    }
+
+    proptest::proptest! {
+        /// Parsing gives the original's value or error for any mix of digits,
+        /// separators, signs and exponents, including i128 overflow.
+        #[test]
+        fn parsing_matches_the_reference(
+            body in "[-+]?[0-9 ,._]{0,48}([eE][-+]?[0-9]{1,2})?",
+            mark in proptest::option::of(proptest::prop_oneof![proptest::strategy::Just('.'), proptest::strategy::Just(',')]),
+        ) {
+            let ours = Dec::parse_with_mark(&body, mark);
+            // The reference: the same function with the original mantissa step.
+            let trimmed = body.trim();
+            let mantissa_input = trimmed.find(['e', 'E']).map_or(trimmed, |pos| &trimmed[..pos]);
+            let rest = mantissa_input
+                .strip_prefix('-')
+                .or_else(|| mantissa_input.strip_prefix('+'))
+                .unwrap_or(mantissa_input)
+                .trim();
+            let split = mark.and_then(|m| rest.rfind(m).map(|pos| (m, pos)));
+            let (int_src, frac_src) = match split {
+                Some((m, pos)) => (&rest[..pos], &rest[pos + m.len_utf8()..]),
+                None => (rest, ""),
+            };
+            match (&ours, reference_magnitude(int_src, frac_src)) {
+                (Ok(value), Ok(magnitude)) if trimmed.find(['e', 'E']).is_none() => {
+                    let places = u32::try_from(frac_src.bytes().filter(u8::is_ascii_digit).count()).unwrap_or(0);
+                    let signed = if mantissa_input.starts_with('-') { -magnitude } else { magnitude };
+                    let expected = Dec::new(signed, places).rounded_half_even(MAX_PARSE_PLACES);
+                    proptest::prop_assert_eq!(*value, expected);
+                }
+                (Err(DecError::Overflow), Err(DecError::Overflow)) => {}
+                (Err(DecError::InvalidNumber(_)), Err(DecError::InvalidNumber(_))) => {}
+                (Ok(_), Ok(_)) => {}
+                (Err(_), _) if trimmed.find(['e', 'E']).is_some() => {}
+                (ours, theirs) => proptest::prop_assert!(false, "{body:?} {mark:?}: {ours:?} vs {theirs:?}"),
+            }
         }
     }
 }

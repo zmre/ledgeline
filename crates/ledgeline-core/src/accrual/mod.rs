@@ -365,8 +365,10 @@ impl AccrualRoles {
     }
 }
 
-/// Every account `journal` declares or posts to, deduplicated, in name order.
-fn account_names(journal: &Journal) -> BTreeSet<&str> {
+/// Every account `journal` declares or posts to, deduplicated. Hashed rather
+/// than sorted: a 200k journal has half a million postings and a few hundred
+/// accounts, and sorting the postings' names was most of an index build.
+fn account_names(journal: &Journal) -> FxHashSet<&str> {
     journal
         .accounts
         .iter()
@@ -378,6 +380,109 @@ fn account_names(journal: &Journal) -> BTreeSet<&str> {
         }))
         .collect()
 }
+
+/// How many cases a property test in this module runs: `default`, or
+/// `PROPTEST_CASES` when set (proptest's own variable, which an explicit
+/// `with_cases` would otherwise ignore). Keeps the development loop quick and
+/// a deeper run one variable away.
+#[cfg(test)]
+pub(crate) fn test_cases(default: u32) -> u32 {
+    std::env::var("PROPTEST_CASES")
+        .ok()
+        .and_then(|cases| cases.parse().ok())
+        .unwrap_or(default)
+}
+
+/// `fixtures/accrual`, parsed once per test binary and shared: the journal,
+/// its recognition book, and their index.
+#[cfg(test)]
+pub(crate) fn test_fixture() -> &'static (Journal, book::RecognitionBook, index::RecognitionIndex) {
+    static FIXTURE: std::sync::OnceLock<(Journal, book::RecognitionBook, index::RecognitionIndex)> =
+        std::sync::OnceLock::new();
+    FIXTURE.get_or_init(|| {
+        let dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/accrual");
+        let main = dir.join("books.journal");
+        let journal = crate::parse::parse_journal(
+            &std::fs::read_to_string(&main).expect("fixture"),
+            &main.to_string_lossy(),
+        )
+        .expect("parses");
+        let rules = dir.join("recognition.journal");
+        let book = book::RecognitionBook::parse(
+            &std::fs::read_to_string(&rules).expect("fixture"),
+            &rules,
+            &journal.commodity_styles,
+        )
+        .expect("parses");
+        let index = index::RecognitionIndex::build(&journal, &book);
+        (journal, book, index)
+    })
+}
+
+// ---------------------------------------------------------------------------
+// A fast hasher for internal keys
+// ---------------------------------------------------------------------------
+
+/// The Fx hash (rustc's): a multiply and a rotate per word. For keys this
+/// module builds from a journal it has already parsed — ids, day numbers,
+/// account names — where SipHash's flooding resistance buys nothing and
+/// costs most of a lookup.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct FxHasher(u64);
+
+const FX_SEED: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+
+impl FxHasher {
+    fn add(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(FX_SEED);
+    }
+}
+
+impl std::hash::Hasher for FxHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        let (words, rest) = bytes.as_chunks::<8>();
+        for word in words {
+            self.add(u64::from_le_bytes(*word));
+        }
+        if !rest.is_empty() {
+            let mut word = [0u8; 8];
+            word[..rest.len()].copy_from_slice(rest);
+            self.add(u64::from_le_bytes(word));
+        }
+    }
+
+    fn write_u8(&mut self, value: u8) {
+        self.add(u64::from(value));
+    }
+
+    fn write_u32(&mut self, value: u32) {
+        self.add(u64::from(value));
+    }
+
+    fn write_i32(&mut self, value: i32) {
+        self.add(u64::from(value.cast_unsigned()));
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.add(value);
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        self.add(value as u64);
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// [`FxHasher`] as a `BuildHasher`.
+pub(crate) type FxBuild = std::hash::BuildHasherDefault<FxHasher>;
+/// A `HashMap` keyed through [`FxHasher`].
+pub(crate) type FxHashMap<K, V> = std::collections::HashMap<K, V, FxBuild>;
+/// A `HashSet` keyed through [`FxHasher`].
+pub(crate) type FxHashSet<K> = std::collections::HashSet<K, FxBuild>;
 
 /// `ledgeline.toml`'s `[books] basis`: an override of the gate, both ways.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -538,17 +643,36 @@ pub fn without_recognition_rules(rules: &[PeriodicTransaction]) -> Cow<'_, [Peri
 /// Days since 1970-01-01 of an ISO `YYYY-MM-DD` date.
 #[must_use]
 pub(crate) fn day_of(date: &str) -> i32 {
-    let field = |range: std::ops::Range<usize>| -> i64 {
-        date.get(range).and_then(|s| s.parse().ok()).unwrap_or(0)
+    // The common case, `YYYY-MM-DD` in ASCII digits, read byte by byte: this
+    // runs several times per posted entry.
+    let bytes = date.as_bytes();
+    let digits = |range: std::ops::Range<usize>| -> Option<i64> {
+        bytes.get(range).and_then(|slice| {
+            slice.iter().try_fold(0_i64, |value, byte| {
+                byte.is_ascii_digit()
+                    .then(|| value * 10 + i64::from(byte - b'0'))
+            })
+        })
     };
-    i32::try_from(days_from_civil(field(0..4), field(5..7), field(8..10))).unwrap_or(i32::MAX)
+    let fast = (bytes.len() >= 10).then(|| Some((digits(0..4)?, digits(5..7)?, digits(8..10)?)));
+    let (year, month, day) = match fast.flatten() {
+        Some(parts) => parts,
+        None => {
+            let field = |range: std::ops::Range<usize>| -> i64 {
+                date.get(range).and_then(|s| s.parse().ok()).unwrap_or(0)
+            };
+            (field(0..4), field(5..7), field(8..10))
+        }
+    };
+    i32::try_from(days_from_civil(year, month, day)).unwrap_or(i32::MAX)
 }
 
 /// The ISO date of a day number.
 #[must_use]
 pub(crate) fn iso_of(day: i32) -> String {
     let (year, month, day) = civil_from_days(i64::from(day));
-    format!("{year:04}-{month:02}-{day:02}")
+    let narrow = |value: i64| i32::try_from(value).unwrap_or(i32::MAX);
+    crate::parse::iso_ymd((narrow(year), narrow(month), narrow(day)))
 }
 
 /// Whether `date` is a well-formed ISO date that names a real day.
@@ -711,5 +835,19 @@ mod tests {
                 (false, false, false)
             ]
         );
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(test_cases(512)))]
+
+        /// The byte-level `day_of` reads every string as the field parse did.
+        #[test]
+        fn day_of_matches_the_field_parse(date in "[0-9+ -]{0,12}|[0-9]{4}-[0-9]{2}-[0-9]{2}[0-9T:]{0,3}") {
+            let field = |range: std::ops::Range<usize>| -> i64 {
+                date.get(range).and_then(|s| s.parse().ok()).unwrap_or(0)
+            };
+            let reference = i32::try_from(days_from_civil(field(0..4), field(5..7), field(8..10))).unwrap_or(i32::MAX);
+            proptest::prop_assert_eq!(day_of(&date), reference);
+        }
     }
 }

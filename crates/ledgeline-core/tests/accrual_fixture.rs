@@ -22,6 +22,7 @@ use ledgeline_core::view::checks::recognition_findings;
 use ledgeline_core::{Dec, parse_journal};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 const TODAY: &str = "2026-11-17";
 const CLOSED: &str = "2026-09-30";
@@ -31,22 +32,27 @@ fn dir() -> PathBuf {
     common::fixtures_dir().join("accrual")
 }
 
-fn load() -> (Journal, RecognitionBook, RecognitionIndex) {
-    let loaded = Books::open(&dir().join("books.journal"))
-        .expect("opens")
-        .load()
-        .expect("loads");
-    assert_eq!(loaded.config().closed_through.as_deref(), Some(CLOSED));
-    let journal = loaded.journal().clone();
-    let book = loaded.book().clone();
-    let index = RecognitionIndex::build(&journal, &book);
-    (journal, book, index)
+/// The fixture through the public load path, read once per test binary and
+/// shared by every test (each used to re-read and re-parse it).
+fn load() -> &'static (Journal, RecognitionBook, RecognitionIndex) {
+    static LOADED: OnceLock<(Journal, RecognitionBook, RecognitionIndex)> = OnceLock::new();
+    LOADED.get_or_init(|| {
+        let loaded = Books::open(&dir().join("books.journal"))
+            .expect("opens")
+            .load()
+            .expect("loads");
+        assert_eq!(loaded.config().closed_through.as_deref(), Some(CLOSED));
+        let journal = loaded.journal().clone();
+        let book = loaded.book().clone();
+        let index = RecognitionIndex::build(&journal, &book);
+        (journal, book, index)
+    })
 }
 
 #[test]
 fn november_is_due_and_september_is_closed() {
     let (_, book, index) = load();
-    let set = due(&index, &book, TODAY, Some(CLOSED));
+    let set = due(index, book, TODAY, Some(CLOSED));
     let open: Vec<(&str, &str)> = set
         .open
         .iter()
@@ -75,7 +81,7 @@ fn november_is_due_and_september_is_closed() {
     assert_eq!(closed, vec![("2026-09-10", "as0710")]);
     // Nothing after today, whatever "today" the caller says.
     assert!(
-        due(&index, &book, "2026-11-16", Some(CLOSED))
+        due(index, book, "2026-11-16", Some(CLOSED))
             .open
             .iter()
             .all(|e| e.recognized.as_str() <= "2026-11-16")
@@ -85,8 +91,8 @@ fn november_is_due_and_september_is_closed() {
 #[test]
 fn prepaid_ties_and_deferred_revenue_is_off_by_the_unscheduled_lines() {
     let (journal, book, index) = load();
-    let set = due(&index, &book, TODAY, Some(CLOSED));
-    let tie = ties(&journal, &index, &book, &set);
+    let set = due(index, book, TODAY, Some(CLOSED));
+    let tie = ties(journal, index, book, &set);
     let prepaid: Vec<_> = tie
         .iter()
         .filter(|t| t.account == "assets:prepaid")
@@ -111,7 +117,7 @@ fn prepaid_ties_and_deferred_revenue_is_off_by_the_unscheduled_lines() {
 #[test]
 fn the_gate_opens_here_and_not_on_the_household_sample() {
     let (journal, _, _) = load();
-    assert!(is_accrual_ledger(&journal, None));
+    assert!(is_accrual_ledger(journal, None));
     assert!(!is_accrual_ledger(&common::fixture_journal(), None));
 }
 
@@ -124,8 +130,8 @@ fn the_only_issue_is_the_duplicate_and_its_findings_are_anchored() {
             if id == "cx1217" && recognized == "2026-03-17" && positions.len() == 2),
         "{issues:#?}"
     );
-    let set = due(&index, &book, TODAY, Some(CLOSED));
-    let findings = recognition_findings(&index, &book, &set.closed, false);
+    let set = due(index, book, TODAY, Some(CLOSED));
+    let findings = recognition_findings(index, book, &set.closed, false);
     let rules: Vec<&str> = findings.iter().map(|f| f.rule).collect();
     assert_eq!(
         rules,
@@ -146,15 +152,15 @@ fn the_only_issue_is_the_duplicate_and_its_findings_are_anchored() {
 #[test]
 fn settlements_pair_by_number_with_a_fee_and_exactly() {
     let (journal, _, _) = load();
-    let roles = AccrualRoles::of(&journal);
+    let roles = AccrualRoles::of(journal);
     // The D&O bill (March) is outside the default 180-day lookback.
-    let recent = propose(&journal, &roles, &SettleSettings::default(), TODAY);
+    let recent = propose(journal, &roles, &SettleSettings::default(), TODAY);
     assert_eq!(recent.len(), 2);
     let all = SettleSettings {
         lookback_days: 0,
         ..SettleSettings::default()
     };
-    let proposals = propose(&journal, &roles, &all, TODAY);
+    let proposals = propose(journal, &roles, &all, TODAY);
     let described: Vec<(&str, &str, bool, bool)> = proposals
         .iter()
         .map(|p| {
@@ -210,7 +216,7 @@ fn a_renewal_prefills_from_the_latest_schedule() {
         index.latest_schedule_of(&party).map(|s| s.id.as_str()),
         Some("cx1217")
     );
-    let spec = index.spec_of("cx1217", &book).expect("readable");
+    let spec = index.spec_of("cx1217", book).expect("readable");
     assert_eq!(spec.term, Term::Months(12));
     assert_eq!(spec.lines[0].target_account, "revenue:subscriptions");
 }
@@ -218,8 +224,8 @@ fn a_renewal_prefills_from_the_latest_schedule() {
 #[test]
 fn ending_the_old_adatum_plan_leaves_exactly_the_credit() {
     let (journal, book, index) = load();
-    let styles = JournalStyles::of(&journal);
-    let old_spec = index.spec_of("ad0401", &book).expect("readable");
+    let styles = JournalStyles::of(journal);
+    let old_spec = index.spec_of("ad0401", book).expect("readable");
     let old = build(&old_spec, &styles).expect("builds");
     let mut ended = old_spec.clone();
     ended.term = Term::Through("2026-10-31".into());
@@ -234,7 +240,7 @@ fn ending_the_old_adatum_plan_leaves_exactly_the_credit() {
     let r = restatement(
         &old,
         &new,
-        &journal,
+        journal,
         index.schedule("ad0401").expect("indexed"),
         Some(CLOSED),
         TODAY,
@@ -276,12 +282,12 @@ fn captured(id: &str, source: &str) -> Vec<(String, Dec)> {
 #[test]
 fn every_schedule_reads_back_as_hledger_generates_it() {
     let (journal, book, index) = load();
-    let styles = JournalStyles::of(&journal);
+    let styles = JournalStyles::of(journal);
     for id in book.ids() {
-        let spec = index.spec_of(id, &book).expect("readable");
+        let spec = index.spec_of(id, book).expect("readable");
         let schedule = build(&spec, &styles).expect("builds");
         let source = spec.lines[0].source_account.as_str();
-        let ours: Vec<(String, Dec)> = periods_of(&rules_of(&book, id), &[source])
+        let ours: Vec<(String, Dec)> = periods_of(&rules_of(book, id), &[source])
             .expect("bounded")
             .into_iter()
             .map(|o| (o.date, o.amounts[0].normalized()))

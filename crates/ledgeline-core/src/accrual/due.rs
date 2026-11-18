@@ -11,6 +11,7 @@
 //! as `hledger print --forecast` prints it, without `generated-transaction`,
 //! with `recognized:` added, no status mark and no `reviewed:` tag (Q6).
 
+use super::AccrualRole;
 use super::book::RecognitionBook;
 use super::index::RecognitionIndex;
 use super::schedule::{Party, occurrence_days};
@@ -22,7 +23,7 @@ use crate::edit::upsert_tag;
 use crate::model::{
     Amount, Journal, PeriodicTransaction, Posting, SourcePos, Status, Tindex, Transaction,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 /// One due occurrence.
@@ -86,18 +87,26 @@ pub fn due(
 ) -> DueSet {
     let today = day_of(today);
     let closed = closed_through.map(day_of);
-    let mut set = DueSet::default();
-    for (n, schedule) in index.schedules().iter().enumerate() {
+    let schedules = index.schedules();
+    // Every due occurrence as numbers first — `(day, schedule, rule)` — and
+    // only then, sorted, as entries: sorting the entries themselves cloned
+    // their date and id on every comparison.
+    let mut picks: Vec<(i32, usize, usize)> = Vec::new();
+    for (n, schedule) in schedules.iter().enumerate() {
         if schedule.rules.is_empty() {
             continue;
         }
         let cut = schedule.restated_through().map(day_of);
-        let occurrences: Vec<(i32, usize)> = match &schedule.occurrences {
+        let mut take = |day: i32, rule: usize| {
+            if cut.is_none_or(|cut| day > cut) && !index.is_posted_day(n, day) {
+                picks.push((day, n, rule));
+            }
+        };
+        match &schedule.occurrences {
             Some(all) => all
                 .iter()
-                .copied()
                 .take_while(|(day, _)| *day <= today)
-                .collect(),
+                .for_each(|&(day, rule)| take(day, rule)),
             None => {
                 let mut walked: Vec<(i32, usize)> = schedule
                     .rules
@@ -110,30 +119,31 @@ pub fn due(
                     })
                     .collect();
                 walked.sort_unstable();
-                walked
-            }
-        };
-        for (day, rule) in occurrences {
-            if cut.is_some_and(|cut| day <= cut) || index.is_posted_day(n, day) {
-                continue;
-            }
-            let entry = DueEntry {
-                id: schedule.id.clone(),
-                recognized: iso_of(day),
-                rule,
-                closed: closed.is_some_and(|closed| day <= closed),
-                party: schedule.party().cloned(),
-            };
-            if entry.closed {
-                set.closed.push(entry);
-            } else {
-                set.open.push(entry);
+                walked.into_iter().for_each(|(day, rule)| take(day, rule));
             }
         }
     }
-    let key = |entry: &DueEntry| (entry.recognized.clone(), entry.id.clone());
-    set.open.sort_by_key(key);
-    set.closed.sort_by_key(key);
+    // Stable, so one schedule's same-day occurrences keep their rule order.
+    picks.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| schedules[a.1].id.cmp(&schedules[b.1].id))
+    });
+    let parties: Vec<Option<Party>> = schedules.iter().map(|s| s.party().cloned()).collect();
+    let mut set = DueSet::default();
+    for (day, n, rule) in picks {
+        let entry = DueEntry {
+            id: schedules[n].id.clone(),
+            recognized: iso_of(day),
+            rule,
+            closed: closed.is_some_and(|closed| day <= closed),
+            party: parties[n].clone(),
+        };
+        if entry.closed {
+            set.closed.push(entry);
+        } else {
+            set.open.push(entry);
+        }
+    }
     set
 }
 
@@ -318,49 +328,82 @@ pub struct Tie {
     pub ties: bool,
 }
 
-/// The last day of `month` (`YYYY-MM`).
-fn month_end(month: &str) -> String {
-    crate::reports::periods::add_days(
-        &crate::reports::periods::add_months(&format!("{month}-01"), 1),
-        -1,
-    )
+/// The last day of the month `day` is in.
+fn month_end_of(day: i32) -> i32 {
+    let date = iso_of(day);
+    day_of(&crate::reports::periods::add_months(
+        &format!("{}-01", &date[..7]),
+        1,
+    )) - 1
 }
 
-/// Dated movements of one (account, commodity), sorted, with running sums.
-#[derive(Default)]
-struct Series {
-    points: Vec<(String, Dec)>,
+/// Month-end balances of a few (account, commodity) series, accumulated
+/// without sorting: a movement is added to the bucket of the first month end
+/// on or after it, and a balance is the sum of the buckets up to its month.
+/// Exact, since [`Dec`] addition is.
+struct Balances<'a> {
+    ends: Vec<i32>,
+    keys: Vec<(&'a str, &'a str)>,
+    /// Per key: its buckets, and whether anything was added to it at all.
+    buckets: Vec<(Vec<Dec>, bool)>,
 }
 
-impl Series {
-    fn push(&mut self, date: &str, quantity: Dec) {
-        self.points.push((date.to_string(), quantity));
-    }
-
-    fn finish(mut self) -> Self {
-        self.points.sort_by(|a, b| a.0.cmp(&b.0));
-        let mut running = Dec::zero();
-        for point in &mut self.points {
-            running = running.add(point.1).unwrap_or(running);
-            point.1 = running;
+impl<'a> Balances<'a> {
+    fn new(ends: &[i32]) -> Self {
+        Self {
+            ends: ends.to_vec(),
+            keys: Vec::new(),
+            buckets: Vec::new(),
         }
-        self
     }
 
-    fn at(&self, date: &str) -> Dec {
-        let n = self.points.partition_point(|(d, _)| d.as_str() <= date);
-        n.checked_sub(1).map_or(Dec::zero(), |i| self.points[i].1)
+    fn key(&mut self, account: &'a str, commodity: &'a str) -> usize {
+        match self.keys.iter().position(|k| *k == (account, commodity)) {
+            Some(at) => at,
+            None => {
+                self.keys.push((account, commodity));
+                self.buckets
+                    .push((vec![Dec::zero(); self.ends.len()], false));
+                self.keys.len() - 1
+            }
+        }
     }
-}
 
-type SeriesKey = (String, String);
+    fn add(&mut self, key: usize, day: i32, quantity: Dec) {
+        let (buckets, seen) = &mut self.buckets[key];
+        *seen = true;
+        let at = self.ends.partition_point(|end| *end < day);
+        if let Some(bucket) = buckets.get_mut(at) {
+            *bucket = bucket.add(quantity).unwrap_or(*bucket);
+        }
+    }
 
-fn add_posting(series: &mut BTreeMap<SeriesKey, Series>, date: &str, posting: &Posting) {
-    for amount in &posting.amounts {
-        series
-            .entry((posting.account.0.clone(), amount.commodity.0.clone()))
-            .or_default()
-            .push(date, amount.quantity);
+    fn add_posting(&mut self, day: i32, account: &'a str, posting: &'a Posting) {
+        for amount in &posting.amounts {
+            let key = self.key(account, &amount.commodity.0);
+            self.add(key, day, amount.quantity);
+        }
+    }
+
+    /// The balance of `key` at the `month`-th end; zero for a key never
+    /// added to.
+    fn at(&self, key: (&str, &str), month: usize) -> Dec {
+        self.keys
+            .iter()
+            .position(|k| *k == key)
+            .map_or(Dec::zero(), |at| {
+                self.buckets[at].0[..=month]
+                    .iter()
+                    .fold(Dec::zero(), |sum, value| sum.add(*value).unwrap_or(sum))
+            })
+    }
+
+    fn seen(&self) -> impl Iterator<Item = (&'a str, &'a str)> + '_ {
+        self.keys
+            .iter()
+            .zip(&self.buckets)
+            .filter(|(_, (_, seen))| *seen)
+            .map(|(key, _)| *key)
     }
 }
 
@@ -368,13 +411,13 @@ fn add_posting(series: &mut BTreeMap<SeriesKey, Series>, date: &str, posting: &P
 /// deferred/prepaid account a schedule draws on: the account's month-end
 /// balance before and after posting, and the scheduled remaining balance.
 #[must_use]
-pub fn ties(
-    journal: &Journal,
-    index: &RecognitionIndex,
-    book: &RecognitionBook,
-    due: &DueSet,
+pub fn ties<'a>(
+    journal: &'a Journal,
+    index: &'a RecognitionIndex,
+    book: &'a RecognitionBook,
+    due: &'a DueSet,
 ) -> Vec<Tie> {
-    let accounts: BTreeSet<&str> = index
+    let accounts: BTreeSet<&'a str> = index
         .schedules()
         .iter()
         .flat_map(|schedule| {
@@ -387,75 +430,125 @@ pub fn ties(
     if accounts.is_empty() || due.open.is_empty() {
         return Vec::new();
     }
-    let wanted = |posting: &Posting| accounts.contains(posting.account.0.as_str());
-    let mut actual: BTreeMap<SeriesKey, Series> = BTreeMap::new();
-    for txn in &journal.transactions {
-        for posting in txn.postings.iter().filter(|p| wanted(p)) {
-            add_posting(&mut actual, &txn.date, posting);
+    let accounts: Vec<&str> = accounts.into_iter().collect();
+    // The few accounts, compared by length first.
+    let wanted = |posting: &Posting| -> Option<&str> {
+        let name = posting.account.0.as_str();
+        accounts
+            .iter()
+            .find(|account| account.len() == name.len() && **account == name)
+            .copied()
+    };
+    let months: Vec<&str> = due
+        .open
+        .iter()
+        .map(|entry| &entry.recognized[..7])
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let ends: Vec<i32> = months
+        .iter()
+        .map(|month| month_end_of(day_of(&format!("{month}-01"))))
+        .collect();
+
+    let mut actual = Balances::new(&ends);
+    // The index lists every posting on a deferral account; when every
+    // source account is one (the norm), read that list rather than the
+    // whole journal.
+    let roles = index.roles();
+    if accounts
+        .iter()
+        .all(|account| roles.role(account).is_some_and(AccrualRole::is_deferral))
+    {
+        for &(position, at) in index.deferral_postings() {
+            let txn = &journal.transactions[position];
+            let posting = &txn.postings[at];
+            if let Some(account) = wanted(posting) {
+                actual.add_posting(day_of(&txn.date), account, posting);
+            }
         }
-    }
-    let mut pending: BTreeMap<SeriesKey, Series> = BTreeMap::new();
-    for entry in &due.open {
-        if let Some(rule) = book.rules.get(entry.rule) {
-            for posting in rule.postings.iter().filter(|p| wanted(p)) {
-                add_posting(&mut pending, &entry.recognized, posting);
+    } else {
+        for txn in &journal.transactions {
+            let mut day = None;
+            for posting in &txn.postings {
+                if let Some(account) = wanted(posting) {
+                    let day = *day.get_or_insert_with(|| day_of(&txn.date));
+                    actual.add_posting(day, account, posting);
+                }
             }
         }
     }
-    let mut scheduled: BTreeMap<SeriesKey, Series> = BTreeMap::new();
+
+    // What one occurrence of each rule moves, per key, resolved once.
+    let mut scheduled = Balances::new(&ends);
+    let mut pending = Balances::new(&ends);
+    let per_rule: Vec<Vec<(usize, usize, Dec)>> = book
+        .rules
+        .iter()
+        .map(|rule| {
+            let mut found = Vec::new();
+            for posting in &rule.postings {
+                if let Some(account) = wanted(posting) {
+                    for amount in &posting.amounts {
+                        found.push((
+                            scheduled.key(account, &amount.commodity.0),
+                            pending.key(account, &amount.commodity.0),
+                            amount.quantity,
+                        ));
+                    }
+                }
+            }
+            found
+        })
+        .collect();
+    for entry in &due.open {
+        if entry.rule < book.rules.len() {
+            let day = day_of(&entry.recognized);
+            for &(_, key, quantity) in &per_rule[entry.rule] {
+                pending.add(key, day, quantity);
+            }
+        }
+    }
     for schedule in index.schedules() {
         for source in &schedule.sources {
-            scheduled
-                .entry((source.account.clone(), source.amount.commodity.0.clone()))
-                .or_default()
-                .push(&source.date, source.amount.quantity);
+            let key = scheduled.key(&source.account, &source.amount.commodity.0);
+            scheduled.add(key, day_of(&source.date), source.amount.quantity);
         }
-        for (day, rule) in schedule.occurrences.iter().flatten() {
-            let date = iso_of(*day);
-            for posting in book.rules[*rule].postings.iter().filter(|p| wanted(p)) {
-                add_posting(&mut scheduled, &date, posting);
+        for &(day, rule) in schedule.occurrences.iter().flatten() {
+            for &(key, _, quantity) in &per_rule[rule] {
+                scheduled.add(key, day, quantity);
             }
         }
         for adjustment in &schedule.adjustments {
             let txn = &journal.transactions[adjustment.position];
-            for posting in txn.postings.iter().filter(|p| wanted(p)) {
-                add_posting(&mut scheduled, &txn.date, posting);
+            let day = day_of(&txn.date);
+            for posting in &txn.postings {
+                if let Some(account) = wanted(posting) {
+                    scheduled.add_posting(day, account, posting);
+                }
             }
         }
     }
-    let finish = |map: BTreeMap<SeriesKey, Series>| -> BTreeMap<SeriesKey, Series> {
-        map.into_iter().map(|(k, s)| (k, s.finish())).collect()
-    };
-    let (actual, pending, scheduled) = (finish(actual), finish(pending), finish(scheduled));
-    let keys: BTreeSet<&SeriesKey> = pending.keys().chain(scheduled.keys()).collect();
-    let months: BTreeSet<&str> = due
-        .open
-        .iter()
-        .map(|entry| &entry.recognized[..7])
-        .collect();
+    let keys: BTreeSet<(&str, &str)> = pending.seen().chain(scheduled.seen()).collect();
     months
-        .into_iter()
-        .flat_map(|month| {
-            let end = month_end(month);
-            keys.iter()
-                .map(|key| {
-                    let at = |map: &BTreeMap<SeriesKey, Series>| {
-                        map.get(*key).map_or(Dec::zero(), |series| series.at(&end))
-                    };
-                    let before = at(&actual);
-                    let after = before.add(at(&pending)).unwrap_or(before);
-                    let scheduled = at(&scheduled);
-                    Tie {
-                        month: month.to_string(),
-                        account: key.0.clone(),
-                        commodity: key.1.clone(),
-                        before,
-                        after,
-                        scheduled,
-                        ties: after == scheduled,
-                    }
-                })
-                .collect::<Vec<_>>()
+        .iter()
+        .enumerate()
+        .flat_map(|(month, name)| {
+            let (actual, pending, scheduled) = (&actual, &pending, &scheduled);
+            keys.iter().map(move |&key| {
+                let before = actual.at(key, month);
+                let after = before.add(pending.at(key, month)).unwrap_or(before);
+                let scheduled = scheduled.at(key, month);
+                Tie {
+                    month: (*name).to_string(),
+                    account: key.0.to_string(),
+                    commodity: key.1.to_string(),
+                    before,
+                    after,
+                    scheduled,
+                    ties: after == scheduled,
+                }
+            })
         })
         .collect()
 }
@@ -482,6 +575,7 @@ mod tests {
     use super::*;
     use crate::parse::parse_journal;
     use proptest::prelude::*;
+    use std::collections::BTreeMap;
     use std::path::Path;
 
     const BOOKS: &str = "\
@@ -583,6 +677,8 @@ account assets:bank  ; type: C
     }
 
     proptest! {
+        #![proptest_config(ProptestConfig::with_cases(crate::accrual::test_cases(64)))]
+
         #[test]
         fn nothing_after_today_is_ever_due(today in 0_i32..400, closed in proptest::option::of(0_i32..400)) {
             let (_, book, index) = setup(BOOKS);
@@ -600,6 +696,248 @@ account assets:bank  ; type: C
             for entry in &set.closed {
                 prop_assert!(closed.as_deref().is_some_and(|c| entry.recognized.as_str() <= c));
             }
+        }
+    }
+
+    /// `due` as first written: the oracle for the one that sorts numbers.
+    fn reference_due(
+        index: &RecognitionIndex,
+        book: &RecognitionBook,
+        today: &str,
+        closed_through: Option<&str>,
+    ) -> DueSet {
+        let today = day_of(today);
+        let closed = closed_through.map(day_of);
+        let mut set = DueSet::default();
+        for (n, schedule) in index.schedules().iter().enumerate() {
+            if schedule.rules.is_empty() {
+                continue;
+            }
+            let cut = schedule.restated_through().map(day_of);
+            let occurrences: Vec<(i32, usize)> = match &schedule.occurrences {
+                Some(all) => all
+                    .iter()
+                    .copied()
+                    .take_while(|(day, _)| *day <= today)
+                    .collect(),
+                None => {
+                    let mut walked: Vec<(i32, usize)> = schedule
+                        .rules
+                        .iter()
+                        .flat_map(|&rule| {
+                            occurrence_days(&book.rules[rule].period, Some(today))
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(move |day| (day, rule))
+                        })
+                        .collect();
+                    walked.sort_unstable();
+                    walked
+                }
+            };
+            for (day, rule) in occurrences {
+                if cut.is_some_and(|cut| day <= cut) || index.is_posted_day(n, day) {
+                    continue;
+                }
+                let entry = DueEntry {
+                    id: schedule.id.clone(),
+                    recognized: iso_of(day),
+                    rule,
+                    closed: closed.is_some_and(|closed| day <= closed),
+                    party: schedule.party().cloned(),
+                };
+                if entry.closed {
+                    set.closed.push(entry);
+                } else {
+                    set.open.push(entry);
+                }
+            }
+        }
+        let key = |entry: &DueEntry| (entry.recognized.clone(), entry.id.clone());
+        set.open.sort_by_key(key);
+        set.closed.sort_by_key(key);
+        set
+    }
+
+    fn fixture() -> (&'static RecognitionBook, &'static RecognitionIndex) {
+        let (_, book, index) = crate::accrual::test_fixture();
+        (book, index)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(crate::accrual::test_cases(64)))]
+
+        /// The number-sorting `due` lists exactly what the original did, in
+        /// the same order, on the fixture for any today and closed-through.
+        #[test]
+        fn due_matches_the_reference(today in 0_i32..900, closed in proptest::option::of(0_i32..900)) {
+            let (book, index) = fixture();
+            let base = day_of("2025-06-01");
+            let today = iso_of(base + today);
+            let closed = closed.map(|c| iso_of(base + c));
+            prop_assert_eq!(
+                due(index, book, &today, closed.as_deref()),
+                reference_due(index, book, &today, closed.as_deref())
+            );
+        }
+    }
+
+    // `ties` as first written: the oracle for the day-number one.
+    /// The last day of `month` (`YYYY-MM`).
+    fn ref_month_end(month: &str) -> String {
+        crate::reports::periods::add_days(
+            &crate::reports::periods::add_months(&format!("{month}-01"), 1),
+            -1,
+        )
+    }
+
+    /// Dated movements of one (account, commodity), sorted, with running sums.
+    #[derive(Default)]
+    struct RefSeries {
+        points: Vec<(String, Dec)>,
+    }
+
+    impl RefSeries {
+        fn push(&mut self, date: &str, quantity: Dec) {
+            self.points.push((date.to_string(), quantity));
+        }
+
+        fn finish(mut self) -> Self {
+            self.points.sort_by(|a, b| a.0.cmp(&b.0));
+            let mut running = Dec::zero();
+            for point in &mut self.points {
+                running = running.add(point.1).unwrap_or(running);
+                point.1 = running;
+            }
+            self
+        }
+
+        fn at(&self, date: &str) -> Dec {
+            let n = self.points.partition_point(|(d, _)| d.as_str() <= date);
+            n.checked_sub(1).map_or(Dec::zero(), |i| self.points[i].1)
+        }
+    }
+
+    type RefKey = (String, String);
+
+    fn ref_add_posting(series: &mut BTreeMap<RefKey, RefSeries>, date: &str, posting: &Posting) {
+        for amount in &posting.amounts {
+            series
+                .entry((posting.account.0.clone(), amount.commodity.0.clone()))
+                .or_default()
+                .push(date, amount.quantity);
+        }
+    }
+
+    /// The D6 ties for every month the open due entries fall in, for every
+    /// deferred/prepaid account a schedule draws on: the account's month-end
+    /// balance before and after posting, and the scheduled remaining balance.
+    fn reference_ties(
+        journal: &Journal,
+        index: &RecognitionIndex,
+        book: &RecognitionBook,
+        due: &DueSet,
+    ) -> Vec<Tie> {
+        let accounts: BTreeSet<&str> = index
+            .schedules()
+            .iter()
+            .flat_map(|schedule| {
+                schedule
+                    .sources
+                    .iter()
+                    .map(|source| source.account.as_str())
+            })
+            .collect();
+        if accounts.is_empty() || due.open.is_empty() {
+            return Vec::new();
+        }
+        let wanted = |posting: &Posting| accounts.contains(posting.account.0.as_str());
+        let mut actual: BTreeMap<RefKey, RefSeries> = BTreeMap::new();
+        for txn in &journal.transactions {
+            for posting in txn.postings.iter().filter(|p| wanted(p)) {
+                ref_add_posting(&mut actual, &txn.date, posting);
+            }
+        }
+        let mut pending: BTreeMap<RefKey, RefSeries> = BTreeMap::new();
+        for entry in &due.open {
+            if let Some(rule) = book.rules.get(entry.rule) {
+                for posting in rule.postings.iter().filter(|p| wanted(p)) {
+                    ref_add_posting(&mut pending, &entry.recognized, posting);
+                }
+            }
+        }
+        let mut scheduled: BTreeMap<RefKey, RefSeries> = BTreeMap::new();
+        for schedule in index.schedules() {
+            for source in &schedule.sources {
+                scheduled
+                    .entry((source.account.clone(), source.amount.commodity.0.clone()))
+                    .or_default()
+                    .push(&source.date, source.amount.quantity);
+            }
+            for (day, rule) in schedule.occurrences.iter().flatten() {
+                let date = iso_of(*day);
+                for posting in book.rules[*rule].postings.iter().filter(|p| wanted(p)) {
+                    ref_add_posting(&mut scheduled, &date, posting);
+                }
+            }
+            for adjustment in &schedule.adjustments {
+                let txn = &journal.transactions[adjustment.position];
+                for posting in txn.postings.iter().filter(|p| wanted(p)) {
+                    ref_add_posting(&mut scheduled, &txn.date, posting);
+                }
+            }
+        }
+        let finish = |map: BTreeMap<RefKey, RefSeries>| -> BTreeMap<RefKey, RefSeries> {
+            map.into_iter().map(|(k, s)| (k, s.finish())).collect()
+        };
+        let (actual, pending, scheduled) = (finish(actual), finish(pending), finish(scheduled));
+        let keys: BTreeSet<&RefKey> = pending.keys().chain(scheduled.keys()).collect();
+        let months: BTreeSet<&str> = due
+            .open
+            .iter()
+            .map(|entry| &entry.recognized[..7])
+            .collect();
+        months
+            .into_iter()
+            .flat_map(|month| {
+                let end = ref_month_end(month);
+                keys.iter()
+                    .map(|key| {
+                        let at = |map: &BTreeMap<RefKey, RefSeries>| {
+                            map.get(*key).map_or(Dec::zero(), |series| series.at(&end))
+                        };
+                        let before = at(&actual);
+                        let after = before.add(at(&pending)).unwrap_or(before);
+                        let scheduled = at(&scheduled);
+                        Tie {
+                            month: month.to_string(),
+                            account: key.0.clone(),
+                            commodity: key.1.clone(),
+                            before,
+                            after,
+                            scheduled,
+                            ties: after == scheduled,
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(crate::accrual::test_cases(48)))]
+
+        /// The day-number `ties` gives exactly the original's rows, on the
+        /// fixture for any today and closed-through.
+        #[test]
+        fn ties_match_the_reference(today in 0_i32..900, closed in proptest::option::of(0_i32..900)) {
+            let (journal, book, index) = crate::accrual::test_fixture();
+            let base = day_of("2025-06-01");
+            let set = due(index, book, &iso_of(base + today), closed.map(|c| iso_of(base + c)).as_deref());
+            prop_assert_eq!(
+                ties(journal, index, book, &set),
+                reference_ties(journal, index, book, &set)
+            );
         }
     }
 }

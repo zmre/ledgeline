@@ -20,10 +20,10 @@ use super::schedule::{
     Party, PartyKind, Proration, ScheduleLine, ScheduleSpec, Term, occurrence_days,
 };
 use super::{
-    AccrualRole, AccrualRoles, CALENDAR_VALUE, CONTRACT_TAG, CUSTOMER_TAG, Contract, NONE_VALUE,
-    PRORATION_TAG, RECOGNITION_TAG, RECOGNIZED_TAG, RENEWAL_DATE_TAG, RESTATED_TAG,
-    RESTATED_THROUGH_TAG, SERVICE_END_TAG, SERVICE_START_TAG, TERM_MONTHS_TAG, VENDOR_TAG, day_of,
-    is_iso_date, iso_of, tag_value,
+    AccrualRole, AccrualRoles, CALENDAR_VALUE, CONTRACT_TAG, CUSTOMER_TAG, Contract, FxHashMap,
+    FxHashSet, NONE_VALUE, PRORATION_TAG, RECOGNITION_TAG, RECOGNIZED_TAG, RENEWAL_DATE_TAG,
+    RESTATED_TAG, RESTATED_THROUGH_TAG, SERVICE_END_TAG, SERVICE_START_TAG, TERM_MONTHS_TAG,
+    VENDOR_TAG, day_of, is_iso_date, iso_of, tag_value,
 };
 use crate::decimal::Dec;
 use crate::matching::PostingRef;
@@ -198,13 +198,41 @@ pub enum Issue {
 #[derive(Debug, Clone, Default)]
 pub struct RecognitionIndex {
     schedules: Vec<ScheduleInfo>,
-    by_id: HashMap<String, u32>,
-    posted: HashMap<(u32, i32), Vec<usize>>,
+    by_id: FxHashMap<String, u32>,
+    posted: FxHashMap<(u32, i32), PostedAt>,
     by_party: BTreeMap<(PartyKindKey, String), Vec<u32>>,
     payee_parties: HashMap<String, Party>,
     needs_schedule: Vec<PostingRef>,
+    /// Every posting on a deferred-revenue or prepaid account, in file
+    /// order, as `(position, posting)`: what the ties read instead of
+    /// walking the whole journal again.
+    deferral_postings: Vec<(usize, usize)>,
     issues: Vec<Issue>,
     roles: AccrualRoles,
+}
+
+/// The transactions posted for one `(id, recognized)`: almost always one, so
+/// the common case allocates nothing.
+#[derive(Debug, Clone)]
+enum PostedAt {
+    One(usize),
+    Many(Vec<usize>),
+}
+
+impl PostedAt {
+    fn as_slice(&self) -> &[usize] {
+        match self {
+            Self::One(position) => std::slice::from_ref(position),
+            Self::Many(positions) => positions,
+        }
+    }
+
+    fn push(&mut self, position: usize) {
+        match self {
+            Self::One(first) => *self = Self::Many(vec![*first, position]),
+            Self::Many(positions) => positions.push(position),
+        }
+    }
 }
 
 /// [`PartyKind`] as an ordered key.
@@ -217,25 +245,41 @@ fn kind_key(kind: PartyKind) -> PartyKindKey {
     }
 }
 
+/// The `customer:` (else `vendor:`) of `tags`: the first value of each,
+/// trimmed, and only when not empty — [`tag_value`]'s reading, in one pass.
+fn party_in(tags: &[(String, String)]) -> Option<(PartyKind, &str)> {
+    let mut customer = None;
+    let mut vendor = None;
+    for (name, value) in tags {
+        if customer.is_none() && name == CUSTOMER_TAG {
+            customer = Some(value.trim());
+        } else if vendor.is_none() && name == VENDOR_TAG {
+            vendor = Some(value.trim());
+        }
+    }
+    customer
+        .filter(|name| !name.is_empty())
+        .map(|name| (PartyKind::Customer, name))
+        .or_else(|| {
+            vendor
+                .filter(|name| !name.is_empty())
+                .map(|name| (PartyKind::Vendor, name))
+        })
+}
+
+fn owned((kind, name): (PartyKind, &str)) -> Party {
+    Party {
+        kind,
+        name: name.to_string(),
+    }
+}
+
 /// The posting's `customer:`/`vendor:` (its own tag first), else the
 /// transaction's.
 fn party_of(txn: &Transaction, posting: &Posting) -> Option<Party> {
-    let find = |tags: &[(String, String)]| {
-        [
-            (CUSTOMER_TAG, PartyKind::Customer),
-            (VENDOR_TAG, PartyKind::Vendor),
-        ]
-        .into_iter()
-        .find_map(|(tag, kind)| {
-            tag_value(tags, tag)
-                .filter(|name| !name.is_empty())
-                .map(|name| Party {
-                    kind,
-                    name: name.to_string(),
-                })
-        })
-    };
-    find(&posting.tags).or_else(|| find(&txn.tags))
+    party_in(&posting.tags)
+        .or_else(|| party_in(&txn.tags))
+        .map(owned)
 }
 
 fn source_line(at: PostingRef, txn: &Transaction, posting: &Posting) -> Option<SourceLine> {
@@ -270,6 +314,7 @@ fn source_line(at: PostingRef, txn: &Transaction, posting: &Posting) -> Option<S
     })
 }
 
+#[cfg(test)]
 /// Per source account, the quantity (one commodity each) `postings` move it
 /// by, negated: what a rule or entry recognizes out of it.
 fn recognized_by(postings: &[Posting], accounts: &[&str]) -> Vec<BTreeMap<String, Dec>> {
@@ -294,6 +339,7 @@ fn recognized_by(postings: &[Posting], accounts: &[&str]) -> Vec<BTreeMap<String
         .collect()
 }
 
+#[cfg(test)]
 fn normalized(sums: Vec<BTreeMap<String, Dec>>) -> Vec<BTreeMap<String, Dec>> {
     sums.into_iter()
         .map(|sums| {
@@ -305,12 +351,75 @@ fn normalized(sums: Vec<BTreeMap<String, Dec>>) -> Vec<BTreeMap<String, Dec>> {
         .collect()
 }
 
+#[cfg(test)]
 fn add_into(total: &mut [BTreeMap<String, Dec>], more: &[BTreeMap<String, Dec>]) {
     for (into, from) in total.iter_mut().zip(more) {
         for (commodity, value) in from {
             let sum = into.entry(commodity.clone()).or_insert(Dec::zero());
             *sum = sum.add(*value).unwrap_or(*sum);
         }
+    }
+}
+
+/// Per (source account, commodity) sums of what postings recognize out of
+/// those accounts: a handful of cells, compared as maps (zero cells ignored,
+/// values normalized). Reused across entries, so checking 150k posted
+/// entries allocates almost nothing.
+#[derive(Debug, Default, Clone)]
+struct Cells<'a>(Vec<(usize, &'a str, Dec)>);
+
+impl<'a> Cells<'a> {
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    fn add(&mut self, at: usize, commodity: &'a str, value: Dec) {
+        match self
+            .0
+            .iter_mut()
+            .find(|(a, c, _)| *a == at && *c == commodity)
+        {
+            Some((_, _, sum)) => *sum = sum.add(value).unwrap_or(*sum),
+            None => self.0.push((at, commodity, value)),
+        }
+    }
+
+    /// Add what `postings` recognize out of `accounts`: the negation of what
+    /// they post to each.
+    fn recognize(&mut self, postings: &'a [Posting], accounts: &[&str]) {
+        for posting in postings {
+            let Some(at) = accounts.iter().position(|a| *a == posting.account.0) else {
+                continue;
+            };
+            for amount in &posting.amounts {
+                let value = amount.quantity.neg().unwrap_or(amount.quantity);
+                self.add(at, &amount.commodity.0, value);
+            }
+        }
+    }
+
+    fn extend(&mut self, other: &Cells<'a>) {
+        for &(at, commodity, value) in &other.0 {
+            self.add(at, commodity, value);
+        }
+    }
+
+    /// Equal as maps of non-zero values. Each side holds one cell per
+    /// `(account, commodity)` (`add` merges), and [`Dec`] compares by value,
+    /// so a count and a lookup per cell decide it without allocating.
+    fn same(&self, other: &Cells<'_>) -> bool {
+        let nonzero = |cells: &Cells<'_>| cells.0.iter().filter(|(_, _, v)| !v.is_zero()).count();
+        nonzero(self) == nonzero(other)
+            && self
+                .0
+                .iter()
+                .filter(|(_, _, v)| !v.is_zero())
+                .all(|(at, commodity, value)| {
+                    other
+                        .0
+                        .iter()
+                        .any(|(a, c, v)| a == at && c == commodity && v == value)
+                })
     }
 }
 
@@ -325,9 +434,29 @@ impl RecognitionIndex {
     /// caches them).
     #[must_use]
     pub fn build_with(journal: &Journal, book: &RecognitionBook, roles: AccrualRoles) -> Self {
+        // The few deferred-revenue and prepaid accounts, compared by length
+        // first: a per-posting map lookup was a fifth of the build.
+        let deferrals: Vec<(String, AccrualRole)> = roles
+            .iter()
+            .filter(|(_, role, _)| role.is_deferral())
+            .map(|(name, role, _)| (name.to_string(), role))
+            .collect();
+        let deferral_role = |account: &str| {
+            deferrals
+                .iter()
+                .find(|(name, _)| name.len() == account.len() && *name == account)
+                .map(|(_, role)| *role)
+        };
         let mut index = Self {
             roles,
             ..Self::default()
+        };
+        let record = |index: &mut Self, position: usize, txn: &Transaction| {
+            for (at, posting) in txn.postings.iter().enumerate() {
+                if deferral_role(&posting.account.0).is_some() {
+                    index.deferral_postings.push((position, at));
+                }
+            }
         };
         let intern = |index: &mut Self, id: &str| -> u32 {
             if let Some(&n) = index.by_id.get(id) {
@@ -344,10 +473,14 @@ impl RecognitionIndex {
         let mut payee_counts: HashMap<String, BTreeMap<(PartyKindKey, String), usize>> =
             HashMap::new();
         for (position, txn) in journal.transactions.iter().enumerate() {
-            if is_generated(txn) {
+            if !txn.tags.is_empty() && is_generated(txn) {
+                record(&mut index, position, txn);
                 continue;
             }
-            if let Some(id) = tag_value(&txn.tags, RECOGNITION_TAG) {
+            if let Some(id) = (!txn.tags.is_empty())
+                .then(|| tag_value(&txn.tags, RECOGNITION_TAG))
+                .flatten()
+            {
                 let recognized = tag_value(&txn.tags, RECOGNIZED_TAG);
                 let restated = tag_value(&txn.tags, RESTATED_TAG);
                 if recognized.is_some() || restated.is_some() {
@@ -363,8 +496,8 @@ impl RecognitionIndex {
                         index
                             .posted
                             .entry((n, day_of(recognized)))
-                            .or_default()
-                            .push(position);
+                            .and_modify(|at| at.push(position))
+                            .or_insert(PostedAt::One(position));
                     } else if let Some(restated) = restated {
                         schedule.adjustments.push(Adjustment {
                             position,
@@ -376,11 +509,18 @@ impl RecognitionIndex {
                                 .map(str::to_string),
                         });
                     }
+                    record(&mut index, position, txn);
                     continue;
                 }
             }
-            let mut party_here: Option<Party> = None;
+            // The transaction's own party, read at most once.
+            let mut txn_party: Option<Option<(PartyKind, &str)>> = None;
+            let mut party_here: Option<(PartyKind, &str)> = None;
             for (at, posting) in txn.postings.iter().enumerate() {
+                let role = deferral_role(&posting.account.0);
+                if role.is_some() {
+                    index.deferral_postings.push((position, at));
+                }
                 if posting.generated.is_some() || posting.ptype != PostingType::Regular {
                     continue;
                 }
@@ -389,7 +529,12 @@ impl RecognitionIndex {
                     txn: txn.index,
                     posting: at,
                 };
-                match tag_value(&posting.tags, RECOGNITION_TAG) {
+                let recognition = if posting.tags.is_empty() {
+                    None
+                } else {
+                    tag_value(&posting.tags, RECOGNITION_TAG)
+                };
+                match recognition {
                     Some(NONE_VALUE) => {}
                     Some(id) if !id.is_empty() => {
                         if let Some(line) = source_line(at, txn, posting) {
@@ -398,31 +543,33 @@ impl RecognitionIndex {
                         }
                     }
                     _ => {
-                        let deferral = match index.roles.role(&posting.account.0) {
-                            Some(AccrualRole::DeferredRevenue) => {
+                        let deferral = role.is_some_and(|role| match role {
+                            AccrualRole::DeferredRevenue => {
                                 posting.amounts.iter().any(|a| a.quantity.mantissa < 0)
                             }
-                            Some(AccrualRole::Prepaid) => {
-                                posting.amounts.iter().any(|a| a.quantity.mantissa > 0)
-                            }
-                            _ => false,
-                        };
+                            _ => posting.amounts.iter().any(|a| a.quantity.mantissa > 0),
+                        });
                         if deferral {
                             index.needs_schedule.push(at);
                         }
                     }
                 }
                 if party_here.is_none() {
-                    party_here = party_of(txn, posting);
+                    party_here = if posting.tags.is_empty() {
+                        None
+                    } else {
+                        party_in(&posting.tags)
+                    }
+                    .or_else(|| *txn_party.get_or_insert_with(|| party_in(&txn.tags)));
                 }
             }
-            if let Some(party) = party_here
+            if let Some((kind, name)) = party_here
                 && let Some(key) = similarity_key(&txn.description)
             {
                 *payee_counts
                     .entry(key)
                     .or_default()
-                    .entry((kind_key(party.kind), party.name))
+                    .entry((kind_key(kind), name.to_string()))
                     .or_default() += 1;
             }
         }
@@ -494,9 +641,10 @@ impl RecognitionIndex {
             .map(|decl| decl.name.0.as_str())
             .collect();
         let mut issues = Vec::new();
-        let mut duplicates: Vec<(&(u32, i32), &Vec<usize>)> = self
+        let mut duplicates: Vec<(&(u32, i32), &[usize])> = self
             .posted
             .iter()
+            .map(|(key, at)| (key, at.as_slice()))
             .filter(|(_, positions)| positions.len() > 1)
             .collect();
         duplicates.sort();
@@ -506,7 +654,7 @@ impl RecognitionIndex {
                 .map(|(&(n, day), positions)| Issue::Duplicate {
                     id: self.schedules[n as usize].id.clone(),
                     recognized: iso_of(day),
-                    positions: positions.clone(),
+                    positions: positions.to_vec(),
                 }),
         );
         for schedule in &self.schedules {
@@ -569,87 +717,94 @@ impl RecognitionIndex {
                 .collect()
         };
         let mut issues = Vec::new();
-        let per_rule: HashMap<usize, Vec<BTreeMap<String, Dec>>> = schedule
+        let per_rule: Vec<(usize, Cells<'_>)> = schedule
             .rules
             .iter()
-            .map(|&rule| (rule, recognized_by(&book.rules[rule].postings, &accounts)))
+            .map(|&rule| {
+                let mut cells = Cells::default();
+                cells.recognize(&book.rules[rule].postings, &accounts);
+                (rule, cells)
+            })
             .collect();
+        let rule_cells = |rule: usize| {
+            per_rule
+                .iter()
+                .find(|(at, _)| *at == rule)
+                .map(|(_, cells)| cells)
+        };
         // What the schedule will have recognized once it is fully posted:
         // its posted entries (one per period), its adjustments, and every
         // occurrence still to post after its restated cut. Against the
         // sources.
-        let n = self.number(&schedule.id).unwrap_or(usize::MAX);
         let cut = schedule.restated_through().map(day_of);
-        let mut scheduled = vec![BTreeMap::new(); accounts.len()];
-        let mut filled = BTreeSet::new();
+        // The periods posted, from this schedule's own entries: the same set
+        // as `is_posted_day`, without a map lookup per occurrence.
+        let mut posted_days: Vec<i32> = schedule
+            .posted
+            .iter()
+            .map(|entry| day_of(&entry.recognized))
+            .collect();
+        posted_days.sort_unstable();
+        posted_days.dedup();
+        let mut scheduled = Cells::default();
+        let mut filled: FxHashSet<&str> = FxHashSet::default();
         for entry in &schedule.posted {
             if filled.insert(entry.recognized.as_str()) {
-                add_into(
-                    &mut scheduled,
-                    &recognized_by(&journal.transactions[entry.position].postings, &accounts),
-                );
+                scheduled.recognize(&journal.transactions[entry.position].postings, &accounts);
             }
         }
         for adjustment in &schedule.adjustments {
-            add_into(
-                &mut scheduled,
-                &recognized_by(
-                    &journal.transactions[adjustment.position].postings,
-                    &accounts,
-                ),
+            scheduled.recognize(
+                &journal.transactions[adjustment.position].postings,
+                &accounts,
             );
         }
         for (day, rule) in occurrences {
-            if !self.is_posted_day(n, *day) && cut.is_none_or(|cut| *day > cut) {
-                add_into(&mut scheduled, &per_rule[rule]);
+            if posted_days.binary_search(day).is_err()
+                && cut.is_none_or(|cut| *day > cut)
+                && let Some(cells) = rule_cells(*rule)
+            {
+                scheduled.extend(cells);
             }
         }
-        let mut sources = vec![BTreeMap::new(); accounts.len()];
+        let mut sources = Cells::default();
         for source in &schedule.sources {
             let at = accounts
                 .iter()
                 .position(|a| *a == source.account)
                 .unwrap_or(0);
-            let sum = sources[at]
-                .entry(source.amount.commodity.0.clone())
-                .or_insert(Dec::zero());
-            *sum = sum.sub(source.amount.quantity).unwrap_or(*sum);
+            sources.add(at, &source.amount.commodity.0, source.amount.quantity);
         }
-        // `sources` holds the negation; the rules recognize the negation of
-        // the rule posting, which has the source's sign: compare negated.
-        let negate = |sums: Vec<BTreeMap<String, Dec>>| {
-            sums.into_iter()
-                .map(|m| {
-                    m.into_iter()
-                        .map(|(c, v)| (c, v.neg().unwrap_or(v)))
-                        .collect::<BTreeMap<_, _>>()
-                })
-                .collect::<Vec<_>>()
-        };
-        if !schedule.sources.is_empty()
-            && normalized(scheduled.clone()) != normalized(negate(sources))
-        {
+        if !schedule.sources.is_empty() && !scheduled.same(&sources) {
             issues.push(Issue::SumMismatch {
                 id: schedule.id.clone(),
                 position: schedule.sources.first().map(|s| s.at.position),
                 detail: "its posted entries, adjustments and remaining periods don't add up to its source line".to_string(),
             });
         }
-        // Each posted entry against its rule.
-        let by_day: HashMap<i32, Vec<usize>> =
-            occurrences
-                .iter()
-                .fold(HashMap::new(), |mut map, (day, rule)| {
-                    map.entry(*day).or_insert_with(Vec::new).push(*rule);
-                    map
-                });
+        // Each posted entry against its rule. `occurrences` is sorted by day.
+        let (mut expected, mut posted) = (Cells::default(), Cells::default());
         for entry in &schedule.posted {
             // A closed entry a restatement kept is reconciled by its
             // adjustment, whatever the rules now say about its period.
             if cut.is_some_and(|cut| day_of(&entry.date).min(day_of(&entry.recognized)) <= cut) {
                 continue;
             }
-            let Some(rules) = by_day.get(&day_of(&entry.recognized)) else {
+            let day = day_of(&entry.recognized);
+            let from = occurrences.partition_point(|(d, _)| *d < day);
+            let rules = occurrences[from..]
+                .iter()
+                .take_while(|(d, _)| *d == day)
+                .map(|(_, rule)| *rule);
+            expected.clear();
+            let mut any = false;
+            for rule in rules {
+                any = true;
+                if let Some(cells) = rule_cells(rule) {
+                    expected.extend(cells);
+                }
+            }
+            if !any {
                 issues.push(Issue::EntryMismatch {
                     id: schedule.id.clone(),
                     position: entry.position,
@@ -659,13 +814,10 @@ impl RecognitionIndex {
                     ),
                 });
                 continue;
-            };
-            let mut expected = vec![BTreeMap::new(); accounts.len()];
-            for rule in rules {
-                add_into(&mut expected, &per_rule[rule]);
             }
-            let posted = recognized_by(&journal.transactions[entry.position].postings, &accounts);
-            if normalized(expected) != normalized(posted) {
+            posted.clear();
+            posted.recognize(&journal.transactions[entry.position].postings, &accounts);
+            if !expected.same(&posted) {
                 issues.push(Issue::EntryMismatch {
                     id: schedule.id.clone(),
                     position: entry.position,
@@ -698,7 +850,7 @@ impl RecognitionIndex {
         self.by_id
             .get(id)
             .and_then(|&n| self.posted.get(&(n, day_of(recognized))))
-            .map_or(&[], Vec::as_slice)
+            .map_or(&[], PostedAt::as_slice)
     }
 
     /// Whether `(id, recognized)` has been posted.
@@ -807,7 +959,14 @@ impl RecognitionIndex {
         })
     }
 
+    /// Every posting on a deferred-revenue or prepaid account, as
+    /// `(position, posting)` in file order.
+    pub(crate) fn deferral_postings(&self) -> &[(usize, usize)] {
+        &self.deferral_postings
+    }
+
     /// The interned number of `id`.
+    #[cfg(test)]
     pub(crate) fn number(&self, id: &str) -> Option<usize> {
         self.by_id.get(id).map(|&n| n as usize)
     }
@@ -817,6 +976,7 @@ impl RecognitionIndex {
 mod tests {
     use super::*;
     use crate::parse::parse_journal;
+    use std::collections::HashMap;
     use std::path::Path;
 
     const BOOKS: &str = "\
@@ -924,5 +1084,184 @@ account assets:bank  ; type: C
                 .map(|p| p.name.as_str()),
             Some("Customer Y")
         );
+    }
+
+    /// The sum check as it was first written (maps of owned strings, a
+    /// `HashMap` of days): the oracle for the allocation-free one.
+    fn reference_sum_issues(
+        index: &RecognitionIndex,
+        journal: &Journal,
+        book: &RecognitionBook,
+        schedule: &ScheduleInfo,
+    ) -> Vec<Issue> {
+        let Some(occurrences) = &schedule.occurrences else {
+            return Vec::new();
+        };
+        let accounts: Vec<&str> = {
+            let mut seen = BTreeSet::new();
+            schedule
+                .sources
+                .iter()
+                .map(|s| s.account.as_str())
+                .filter(|a| seen.insert(*a))
+                .collect()
+        };
+        let mut issues = Vec::new();
+        let per_rule: HashMap<usize, Vec<BTreeMap<String, Dec>>> = schedule
+            .rules
+            .iter()
+            .map(|&rule| (rule, recognized_by(&book.rules[rule].postings, &accounts)))
+            .collect();
+        let n = index.number(&schedule.id).unwrap_or(usize::MAX);
+        let cut = schedule.restated_through().map(day_of);
+        let mut scheduled = vec![BTreeMap::new(); accounts.len()];
+        let mut filled = BTreeSet::new();
+        for entry in &schedule.posted {
+            if filled.insert(entry.recognized.as_str()) {
+                add_into(
+                    &mut scheduled,
+                    &recognized_by(&journal.transactions[entry.position].postings, &accounts),
+                );
+            }
+        }
+        for adjustment in &schedule.adjustments {
+            add_into(
+                &mut scheduled,
+                &recognized_by(
+                    &journal.transactions[adjustment.position].postings,
+                    &accounts,
+                ),
+            );
+        }
+        for (day, rule) in occurrences {
+            if !index.is_posted_day(n, *day) && cut.is_none_or(|cut| *day > cut) {
+                add_into(&mut scheduled, &per_rule[rule]);
+            }
+        }
+        let mut sources = vec![BTreeMap::new(); accounts.len()];
+        for source in &schedule.sources {
+            let at = accounts
+                .iter()
+                .position(|a| *a == source.account)
+                .unwrap_or(0);
+            let sum = sources[at]
+                .entry(source.amount.commodity.0.clone())
+                .or_insert(Dec::zero());
+            *sum = sum.sub(source.amount.quantity).unwrap_or(*sum);
+        }
+        let negate = |sums: Vec<BTreeMap<String, Dec>>| {
+            sums.into_iter()
+                .map(|m| {
+                    m.into_iter()
+                        .map(|(c, v)| (c, v.neg().unwrap_or(v)))
+                        .collect::<BTreeMap<_, _>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        if !schedule.sources.is_empty() && normalized(scheduled) != normalized(negate(sources)) {
+            issues.push(Issue::SumMismatch {
+                id: schedule.id.clone(),
+                position: schedule.sources.first().map(|s| s.at.position),
+                detail: "its posted entries, adjustments and remaining periods don't add up to its source line".to_string(),
+            });
+        }
+        let by_day: HashMap<i32, Vec<usize>> =
+            occurrences
+                .iter()
+                .fold(HashMap::new(), |mut map, (day, rule)| {
+                    map.entry(*day).or_insert_with(Vec::new).push(*rule);
+                    map
+                });
+        for entry in &schedule.posted {
+            if cut.is_some_and(|cut| day_of(&entry.date).min(day_of(&entry.recognized)) <= cut) {
+                continue;
+            }
+            let Some(rules) = by_day.get(&day_of(&entry.recognized)) else {
+                issues.push(Issue::EntryMismatch {
+                    id: schedule.id.clone(),
+                    position: entry.position,
+                    detail: format!(
+                        "it fills {}, a period the schedule doesn't have",
+                        entry.recognized
+                    ),
+                });
+                continue;
+            };
+            let mut expected = vec![BTreeMap::new(); accounts.len()];
+            for rule in rules {
+                add_into(&mut expected, &per_rule[rule]);
+            }
+            let posted = recognized_by(&journal.transactions[entry.position].postings, &accounts);
+            if normalized(expected) != normalized(posted) {
+                issues.push(Issue::EntryMismatch {
+                    id: schedule.id.clone(),
+                    position: entry.position,
+                    detail: format!(
+                        "its amount differs from the schedule's for {}",
+                        entry.recognized
+                    ),
+                });
+            }
+        }
+        issues
+    }
+
+    fn accrual_fixture() -> (Journal, RecognitionBook) {
+        let (journal, book, _) = crate::accrual::test_fixture();
+        (journal.clone(), book.clone())
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(crate::accrual::test_cases(48)))]
+
+        /// The allocation-free sum check reports exactly what the original
+        /// did, on the fixture with posted entries rescaled or removed.
+        #[test]
+        fn the_sum_check_matches_the_reference(
+            edits in proptest::collection::vec((0_usize..400, 0_u8..4), 0..12),
+        ) {
+            let (mut journal, book) = accrual_fixture();
+            for (pick, how) in edits {
+                let entries: Vec<usize> = journal
+                    .transactions
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| crate::accrual::is_recognition_entry(t))
+                    .map(|(at, _)| at)
+                    .collect();
+                if entries.is_empty() {
+                    break;
+                }
+                let at = entries[pick % entries.len()];
+                match how {
+                    0 => {
+                        journal.transactions.remove(at);
+                    }
+                    1 => {
+                        for posting in &mut journal.transactions[at].postings {
+                            for amount in &mut posting.amounts {
+                                amount.quantity = amount.quantity.add(amount.quantity).expect("doubles");
+                            }
+                        }
+                    }
+                    2 => {
+                        let txn = journal.transactions[at].clone();
+                        journal.transactions.push(txn);
+                    }
+                    _ => {
+                        if let Some(posting) = journal.transactions[at].postings.first_mut() {
+                            posting.amounts.clear();
+                        }
+                    }
+                }
+            }
+            let index = RecognitionIndex::build(&journal, &book);
+            for schedule in index.schedules() {
+                proptest::prop_assert_eq!(
+                    index.sum_issues(&journal, &book, schedule),
+                    reference_sum_issues(&index, &journal, &book, schedule)
+                );
+            }
+        }
     }
 }

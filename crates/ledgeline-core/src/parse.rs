@@ -2071,12 +2071,12 @@ fn parse_bounds(tokens: &[&str], bounded_span: bool) -> Option<Bounds> {
     // `to` between two dates; `until` is not one of them.
     let is_to = |token: &str| matches!(token, "to" | ".." | "-");
     let bounds = |start: Option<&SmartDate>, end: Option<&SmartDate>| Bounds {
-        start: start.map(|date| date.start.clone()),
-        end: end.map(|date| date.start.clone()),
+        start: start.map(|date| iso_ymd(date.start)),
+        end: end.map(|date| iso_ymd(date.start)),
     };
     let span = |date: SmartDate| Bounds {
-        start: Some(date.start),
-        end: bounded_span.then_some(date.end),
+        start: Some(iso_ymd(date.start)),
+        end: bounded_span.then(|| iso_ymd(date.end)),
     };
     match tokens {
         [] => Some(Bounds::default()),
@@ -2101,11 +2101,38 @@ fn parse_bounds(tokens: &[&str], bounded_span: bool) -> Option<Bounds> {
 }
 
 /// One date as a period bound writes it: where it starts, and where the span
-/// it names ends (exclusive).
+/// it names ends (exclusive), as `(year, month, day)`. Kept as numbers and
+/// formatted only when used: most bounds never need their end, and the
+/// formatting was a fifth of parsing a file of `~ monthly from … to …` rules
+/// (plan 45's recognition file).
 #[derive(Debug)]
 struct SmartDate {
-    start: String,
-    end: String,
+    start: (i32, i32, i32),
+    end: (i32, i32, i32),
+}
+
+/// `(year, month, day)` as ISO `YYYY-MM-DD`: exactly
+/// `format!("{year:04}-{month:02}-{day:02}")`, without the formatter for the
+/// in-range case every parsed date is in.
+pub(crate) fn iso_ymd((year, month, day): (i32, i32, i32)) -> String {
+    if !(0..=9999).contains(&year) || !(0..=99).contains(&month) || !(0..=99).contains(&day) {
+        return format!("{year:04}-{month:02}-{day:02}");
+    }
+    let digit = |value: i32| char::from(b'0' + u8::try_from(value % 10).unwrap_or(0));
+    let mut out = String::with_capacity(10);
+    out.extend([
+        digit(year / 1000),
+        digit(year / 100),
+        digit(year / 10),
+        digit(year),
+        '-',
+        digit(month / 10),
+        digit(month),
+        '-',
+        digit(day / 10),
+        digit(day),
+    ]);
+    out
 }
 
 /// A token holding one date, or two joined by `..` or `-` (`2027-01..2027-04`,
@@ -2166,11 +2193,12 @@ fn smart_date(token: &str) -> Option<SmartDate> {
             0,
         )
     } else {
-        let components: Vec<&str> = token.split(['-', '/', '.']).collect();
-        match components.as_slice() {
-            [year] => (four_digit_year(year)?, 1, None, 12),
-            [year, month] => (four_digit_year(year)?, number(month)?, None, 1),
-            [year, month, day] => (
+        // Up to three components, read without collecting them.
+        let mut parts = token.split(['-', '/', '.']);
+        match (parts.next(), parts.next(), parts.next(), parts.next()) {
+            (Some(year), None, _, _) => (four_digit_year(year)?, 1, None, 12),
+            (Some(year), Some(month), None, _) => (four_digit_year(year)?, number(month)?, None, 1),
+            (Some(year), Some(month), Some(day), None) => (
                 four_digit_year(year)?,
                 number(month)?,
                 Some(number(day)?),
@@ -2187,7 +2215,6 @@ fn smart_date(token: &str) -> Option<SmartDate> {
     {
         return None;
     }
-    let iso = |(year, month, day): (i32, i32, i32)| format!("{year:04}-{month:02}-{day:02}");
     let start = (year, month, day.unwrap_or(1));
     let end = match day {
         // A day's span ends on the next day.
@@ -2195,10 +2222,7 @@ fn smart_date(token: &str) -> Option<SmartDate> {
         Some(_) => add_months(year, month, 1),
         None => add_months(year, month, months),
     };
-    Some(SmartDate {
-        start: iso(start),
-        end: iso(end),
-    })
+    Some(SmartDate { start, end })
 }
 
 /// Four ASCII digits, as a year in `1..=9999`. Four, always: it is what tells
@@ -3514,7 +3538,10 @@ fn build_comment(raw: Option<&str>) -> (String, Vec<(String, String)>) {
             if content.is_empty() {
                 (String::new(), Vec::new())
             } else {
-                (format!("{content}\n"), parse_tags(content))
+                let mut stored = String::with_capacity(content.len() + 1);
+                stored.push_str(content);
+                stored.push('\n');
+                (stored, parse_tags(content))
             }
         }
     }
@@ -5253,5 +5280,16 @@ mod tests {
             .unwrap();
         assert!(assertion.total); // `==`
         assert_eq!(assertion.amount.quantity, Dec::new(-165_891, 2));
+    }
+
+    proptest::proptest! {
+        /// The fast ISO formatter is `format!("{:04}-{:02}-{:02}")` exactly.
+        #[test]
+        fn iso_ymd_is_the_formatter(year in -20_i32..12_000, month in -2_i32..120, day in -2_i32..120) {
+            proptest::prop_assert_eq!(
+                iso_ymd((year, month, day)),
+                format!("{year:04}-{month:02}-{day:02}")
+            );
+        }
     }
 }

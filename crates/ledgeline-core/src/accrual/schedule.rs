@@ -791,17 +791,29 @@ pub(crate) fn occurrence_days(spec: &PeriodSpec, through: Option<i32>) -> Option
         (None, None) if spec.kind == PeriodKind::Once => day_of(from),
         (None, None) => return None,
     };
+    // Month by month from `from`'s month: the 1st advances by the month's
+    // length, so each occurrence costs no calendar conversion.
     let monthly = |anchor_day: i64, lower: i32| -> Vec<i32> {
-        let (y, m, _) = ymd(day_of(from));
-        (0_i64..)
-            .map(|k| {
-                let month = first_of_month(y, m + k);
-                let (yy, mm, _) = ymd(month);
-                month + i32::try_from(anchor_day.min(days_in_month(yy, mm)) - 1).unwrap_or(0)
-            })
-            .take_while(|day| *day <= limit)
-            .filter(|day| *day >= lower)
-            .collect()
+        let (mut year, mut month, _) = ymd(day_of(from));
+        let mut first = first_of_month(year, month);
+        let mut out = Vec::new();
+        loop {
+            let length = days_in_month(year, month);
+            let day = first + i32::try_from(anchor_day.min(length) - 1).unwrap_or(0);
+            if day > limit {
+                break;
+            }
+            if day >= lower {
+                out.push(day);
+            }
+            first += i32::try_from(length).unwrap_or(31);
+            month += 1;
+            if month > 12 {
+                month = 1;
+                year += 1;
+            }
+        }
+        out
     };
     match spec.kind {
         PeriodKind::Once => Some(
@@ -1183,7 +1195,8 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(400))]
+        // 128 by default; `PROPTEST_CASES=2000` (or more) for a deep run.
+        #![proptest_config(ProptestConfig::with_cases(crate::accrual::test_cases(128)))]
 
         #[test]
         fn schedules_sum_exactly_and_read_back_as_their_periods(
