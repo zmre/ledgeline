@@ -4,7 +4,10 @@
     // account tree in a compact dropdown popover). Removable chips appear when
     // filters differ from the default. A pinned running balance (plan 36) gets
     // its own chip, and each account chip a ⚖ button that pins that account.
+    import {accrual} from "#lib/accrual/store.svelte.js";
     import {registerKeys} from "#lib/keys/keymap.svelte.js";
+    import type {RecognitionRows} from "#lib/settings/uiPrefs.js";
+    import {settings} from "#lib/stores/settings.svelte.js";
     import {PRIORITY} from "#lib/keys/types.js";
     import {defaultFilter, filters} from "#lib/stores/filters.svelte.js";
     import {toggleSubtreeRoot} from "./treeSelect";
@@ -110,6 +113,15 @@
         filters.value.from === null && filters.value.to === null ? "All dates" : `${filters.value.from ?? "…"} → ${filters.value.to ?? "…"}`
     );
     const selectedAccounts = $derived([...accounts].sort());
+
+    // Plan 45 D8: how the journal shows posted recognition entries — one row
+    // per month (Grouped), left out of the rows (Hidden; every total and chart
+    // still counts them), or every entry a row (Shown). Remembered as the
+    // `recognitionRows` UI preference; offered only when the accrual helpers
+    // are on for this ledger.
+    const RECOGNITION_LABELS: Record<RecognitionRows, string> = {group: "Grouped", hide: "Hidden", show: "Shown"};
+    const RECOGNITION_NEXT: Record<RecognitionRows, RecognitionRows> = {group: "hide", hide: "show", show: "group"};
+    const recognitionMode = $derived(settings.recognitionRows);
 </script>
 
 <div class="flex flex-col gap-2 rounded-box bg-base-200 p-2">
@@ -119,6 +131,23 @@
         <!-- `a`, not `/`: on this page `/` belongs to the free-text SearchInput
              below, which is the box people reach for first. -->
         <AccountTreeSelect {accountNames} selected={accounts} onToggle={toggleAccount} onClear={clearAccounts} searchKey="a" />
+        {#if accrual.enabled}
+            <!-- A cycling chip: Grouped → Hidden → Shown. A pinned running
+                 balance shows every entry anyway (each row needs its balance). -->
+            <button
+                type="button"
+                class={["badge h-auto min-h-(--size) cursor-pointer gap-1 badge-outline", recognitionMode !== "group" && "badge-info"]}
+                title={pin !== null
+                    ? "Every recognition entry is a row while a running balance is pinned"
+                    : `Recognition entries: ${RECOGNITION_LABELS[recognitionMode]}. Click for ${RECOGNITION_LABELS[RECOGNITION_NEXT[recognitionMode]]}.`}
+                aria-label="Recognition entries: {RECOGNITION_LABELS[recognitionMode]}"
+                onclick={() => (settings.recognitionRows = RECOGNITION_NEXT[recognitionMode])}
+                data-testid="recognition-chip"
+                data-mode={recognitionMode}
+            >
+                Recognition: {RECOGNITION_LABELS[recognitionMode]}
+            </button>
+        {/if}
         <div class="w-full min-w-0 sm:ml-auto sm:w-64 sm:min-w-48">
             <SearchInput />
         </div>

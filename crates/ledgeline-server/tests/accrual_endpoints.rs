@@ -93,6 +93,7 @@ async fn the_gate_is_off_on_the_household_sample() {
     for uri in [
         "/api/accrual",
         "/api/recognition/due",
+        "/api/recognition/needs",
         "/api/settlements",
         "/api/recognition/for/1",
         "/api/settlements/for/1",
@@ -129,6 +130,41 @@ async fn accrual_answers_the_gate_counts_and_file() {
         json!({"role": "prepaid", "declared": true})
     );
     assert_eq!(body["reason"]["kind"], "declared");
+}
+
+#[tokio::test]
+async fn needs_lists_the_unscheduled_deferrals_inside_the_lookback() {
+    let dir = fixture_copy(false, false);
+    let (state, _scratch) = state_in(&dir);
+    let body = get(&state, &format!("/api/recognition/needs?today={TODAY}")).await;
+    assert_eq!(body["enabled"], true);
+    assert_eq!(body["lookback"], 90);
+    let items = body["items"].as_array().expect("items");
+    assert_eq!(items.len(), 1, "{body}");
+    assert_eq!(items[0]["description"], "Fourth Coffee Invoice 2004");
+    assert_eq!(items[0]["invoice"], "2004");
+    assert!(
+        items[0]["account"]
+            .as_str()
+            .is_some_and(|a| a.contains("deferred")),
+        "{body}"
+    );
+    // The same count `/api/accrual` serves for the badge.
+    let accrual = get(&state, &format!("/api/accrual?today={TODAY}")).await;
+    assert_eq!(accrual["counts"]["needsSchedule"], items.len());
+    // A lookback that ends before the invoice leaves it out; 0 is everything.
+    let narrow = get(
+        &state,
+        &format!("/api/recognition/needs?today={TODAY}&lookback=7"),
+    )
+    .await;
+    assert_eq!(narrow["items"], json!([]));
+    let all = get(
+        &state,
+        &format!("/api/recognition/needs?today={TODAY}&lookback=0"),
+    )
+    .await;
+    assert!(all["items"].as_array().is_some_and(|a| !a.is_empty()));
 }
 
 #[tokio::test]

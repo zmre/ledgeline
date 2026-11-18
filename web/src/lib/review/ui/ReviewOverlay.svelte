@@ -115,6 +115,9 @@
     } from "../card";
     import type {Transaction} from "#lib/domain/types.js";
     import EditorMatchStrip from "#lib/matching/ui/EditorMatchStrip.svelte";
+    import AccrualSection from "#lib/accrual/editor/AccrualSection.svelte";
+    import {draftToWire, type ScheduleDraft} from "#lib/accrual/model.js";
+    import {accrual} from "#lib/accrual/store.svelte.js";
     import {loadRuleChoice} from "../journalRules";
     import type {QueueKind, ReviewForm} from "../types";
     import {reviewLaunch, type StagedLaunch} from "./launch.svelte";
@@ -253,6 +256,17 @@
     /** `${index}:${fingerprint}` the form was seeded from, and that transaction. */
     let seededFrom: string | null = null;
     let seededTxn: Transaction | null = null;
+    /**
+     * Plan 45 D-editor: the schedules the Accrual section set up, written
+     * after the transaction saves (journal first, rules last); why they can't
+     * be yet; the recognition file's creation prompt (D1) and its answer; and
+     * a schedule write that failed after the transaction landed.
+     */
+    let accrualPending = $state<ScheduleDraft[]>([]);
+    let accrualBlocking = $state<string | null>(null);
+    let accrualFileAsk = $state(false);
+    let accrualCreateFile = false;
+    let accrualFailure = $state<string | null>(null);
 
     const classes = $derived(journal.accountClasses);
     const current = $derived(review.current);
@@ -445,7 +459,7 @@
             return;
         }
         if (current.status === "saving" || ruleSaving || finishing) return;
-        if (single !== null ? !dirty : phase === "clean-unknown") return;
+        if (single !== null ? !dirty && accrualPending.length === 0 : phase === "clean-unknown") return;
         if (!valid()) return;
         if (ruleOffered && ruleOn) return void saveWithRule();
         commit();
@@ -535,8 +549,25 @@
     async function saveSingle(): Promise<void> {
         if (current === null || txn === null) return;
         const commodity = journal.dominantCommodity;
+        // Plan 45 D-editor: schedules ride along. A draft that isn't complete
+        // holds the save back; the first schedule asks to create the file.
+        const drafts = accrualPending;
+        accrualFailure = null;
+        if (drafts.length > 0) {
+            if (accrualBlocking !== null) {
+                accrualFailure = accrualBlocking;
+                return;
+            }
+            if (!accrualCreateFile && accrual.status?.file?.exists === false) {
+                accrualFileAsk = true;
+                return;
+            }
+        }
         let outcome: SingleOutcome;
-        if (adding) {
+        if (!dirty) {
+            // Only the rules change (a new target account, say): nothing to write to the journal.
+            outcome = {ok: true, index: txn.index};
+        } else if (adding) {
             const {date, date2, status, code, description, postings} = form;
             outcome = await review.addSingle(formToBody({date, date2, status, code, description, comment: addComment(form), postings}, commodity));
         } else {
@@ -544,6 +575,13 @@
             const picked = new Set(checked);
             const similar = change === null ? [] : rows.filter((row) => picked.has(row.txn.txn.index)).map((row) => ({txn: row.txn, ops: row.ops}));
             outcome = await review.saveSingle(ops, similar);
+        }
+        if (outcome.ok && drafts.length > 0) {
+            const saved = await accrual.saveSchedules(drafts.map(draftToWire), accrualCreateFile);
+            if (!saved.ok) {
+                accrualFailure = `The transaction was saved but its schedule wasn't: ${saved.failure.message}`;
+                return;
+            }
         }
         if (outcome.ok) return finish(outcome.index);
         if (outcome.failure.kind === "conflict") close();
@@ -1178,6 +1216,60 @@
                                     {/if}
                                 {:else if rows.length > 0}
                                     <SimilarSection bind:this={similarSection} {rows} bind:checked bind:open={similarOpen} applying={changeSummary(change)} />
+                                {/if}
+                                {#if single !== null && accrual.enabled}
+                                    {#key cardIndex}
+                                        <AccrualSection
+                                            bind:form
+                                            {txn}
+                                            fingerprint={current.item.fingerprint}
+                                            {adding}
+                                            {today}
+                                            {classes}
+                                            accountNames={journal.accountNames}
+                                            disabled={current.status === "saving" || finishing}
+                                            bind:pending={accrualPending}
+                                            bind:blocking={accrualBlocking}
+                                            onApply={primary}
+                                            onReload={() => txnModal.openEdit(txn.index)}
+                                        />
+                                    {/key}
+                                    {#if accrualFileAsk}
+                                        <div
+                                            class="alert flex flex-col items-start gap-2 py-2 text-sm alert-info"
+                                            role="alertdialog"
+                                            data-testid="accrual-file-prompt"
+                                        >
+                                            <span>
+                                                Create {accrual.status?.file?.path ?? "recognition.journal"} beside your journal? It holds the schedules. Your books
+                                                don't include it, so they stay a plain hledger journal.
+                                            </span>
+                                            <span class="flex gap-2">
+                                                <button
+                                                    type="button"
+                                                    class="btn btn-primary btn-xs"
+                                                    onclick={() => {
+                                                        accrualFileAsk = false;
+                                                        accrualCreateFile = true;
+                                                        void saveSingle();
+                                                    }}
+                                                    data-testid="accrual-file-create">Create and save</button
+                                                >
+                                                <button
+                                                    type="button"
+                                                    class="btn btn-ghost btn-xs"
+                                                    onclick={() => (accrualFileAsk = false)}
+                                                    data-testid="accrual-file-cancel">Cancel</button
+                                                >
+                                            </span>
+                                        </div>
+                                    {/if}
+                                    {#if accrualFailure !== null}
+                                        <div class="alert py-2 text-sm alert-error" role="alert" data-testid="accrual-failure">
+                                            <span class="grow break-words">{accrualFailure}</span>
+                                            <button type="button" class="btn btn-ghost btn-xs" onclick={() => (accrualFailure = null)}>Dismiss</button>
+                                        </div>
+                                    {/if}
                                 {/if}
                                 {#if ruleOffered && change !== null}
                                     <RuleBuilder

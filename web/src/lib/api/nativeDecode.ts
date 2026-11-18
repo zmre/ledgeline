@@ -905,6 +905,7 @@ interface RawTopTxn {
     date?: string;
     description?: string;
     amount?: RawDec;
+    recognition?: {month?: unknown; count?: unknown};
 }
 
 interface RawInsightsReport {
@@ -3505,7 +3506,18 @@ function decodeTopTxn(raw: RawTopTxn | undefined, context: string): TopTxn {
         date: raw.date as ISODate,
         description: raw.description,
         amount: decodeDec(raw.amount, `${context} amount`),
+        recognition: decodeTopRecognition(raw.recognition, `${context} recognition`),
     });
+}
+
+/** Plan 45 Q7, additive: `{month: "YYYY-MM", count}` on a line standing for a month of recognition entries. */
+function decodeTopRecognition(raw: RawTopTxn["recognition"], context: string): {month: string; count: number} | null {
+    if (raw === undefined) return null;
+    if (typeof raw !== "object" || raw === null) throw new ApiShapeError(`${context}: expected an object`);
+    const {month, count} = raw;
+    if (typeof month !== "string" || !/^\d{4}-\d{2}$/.test(month)) throw new ApiShapeError(`${context}: month must be YYYY-MM`);
+    if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 1) throw new ApiShapeError(`${context}: invalid count`);
+    return Object.freeze({month, count});
 }
 
 // ---------------------------------------------------------------------------

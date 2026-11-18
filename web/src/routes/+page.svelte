@@ -3,6 +3,8 @@
     // above the virtualized transaction table; the totals footer stays pinned.
     // On mount (and whenever a server URL is first configured) → journal.refresh().
     import {onMount, untrack} from "svelte";
+    import {accrual} from "#lib/accrual/store.svelte.js";
+    import {expandKeyOf, recognitionExpand} from "#lib/journal/recognitionExpand.svelte.js";
     import ErrorToast from "#lib/components/ErrorToast.svelte";
     import {styleOf} from "#lib/format/amounts.js";
     import ExportButton from "#lib/reports/ui/ExportButton.svelte";
@@ -13,6 +15,7 @@
     import TransactionTable from "#lib/journal/TransactionTable.svelte";
     import {txnModal} from "#lib/journal/edit/modalState.svelte.js";
     import MatchOverlay from "#lib/matching/ui/MatchOverlay.svelte";
+    import RecognitionOverlay from "#lib/accrual/ui/RecognitionOverlay.svelte";
     import ReviewOverlay from "#lib/review/ui/ReviewOverlay.svelte";
     import {reviewLaunch} from "#lib/review/ui/launch.svelte.js";
     import {periodLabel} from "#lib/journal/rowModel.js";
@@ -35,13 +38,31 @@
     // A pinned running balance (plan 36) rides along on the rows. An account
     // the engine refuses (a stale `bal=` link) is dropped from the request
     // rather than left to fail every block; the pin chip says why.
+    //
+    // Plan 45 D8: with the accrual helpers on, the rows carry the recognition
+    // mode (the chip) and the expanded months; a new filter collapses them.
+    // With the helpers off nothing extra is sent.
     $effect(() => {
         const serverUrl = settings.serverUrl;
         const generation = journal.generation;
         const filter = filters.value;
+        untrack(() => recognitionExpand.follow(expandKeyOf(filter)));
+        // The calendar draws transactions on days, so a month's group would
+        // read as its latest entry: there, Grouped shows every entry.
+        const mode = filter.calendar === true && settings.recognitionRows === "group" ? "show" : settings.recognitionRows;
+        const recognition = accrual.enabled ? {mode, expand: recognitionExpand.months} : null;
         if (serverUrl === null || generation === null) return;
         const pin = filter.pin ?? null;
-        journalView.sync(serverUrl, generation, filter, pin === null || running.refused(pin.account) ? null : pin);
+        journalView.sync(serverUrl, generation, filter, pin === null || running.refused(pin.account) ? null : pin, recognition);
+    });
+
+    // The accrual gate (plan 45 D-gate), in step with the journal: whether the
+    // chip, the group rows and the Recognition button exist at all.
+    $effect(() => {
+        const serverUrl = settings.serverUrl;
+        const generation = journal.generation;
+        if (serverUrl === null || generation === null) return;
+        untrack(() => void accrual.sync(serverUrl, generation));
     });
 
     // The pin's facts — its commodities and assertions, for the chip and the
@@ -57,7 +78,16 @@
     });
     const count = $derived(journalView.total ?? 0);
     /** A collapsed transfer pair is one row (plan 35 D11): with any, the footer counts rows, not transactions. */
-    const countsRows = $derived((journalView.summary?.transfers ?? 0) > 0);
+    /**
+     * Plan 45 D8: a month of recognition entries is one row too. Whether any
+     * is grouped is not counted by the engine, so with the helpers on and the
+     * chip on Grouped the footer says "rows" — every filter result may hold a
+     * group, and "rows" is never wrong where "transactions" can be.
+     */
+    const countsRows = $derived(
+        (journalView.summary?.transfers ?? 0) > 0 || (accrual.enabled && settings.recognitionRows === "group" && journalView.query?.pin == null)
+    );
+    const hiddenRecognition = $derived(journalView.summary?.recognitionHidden ?? 0);
     const total = $derived(journalView.summary?.visibleNet ?? []);
 
     /**
@@ -172,7 +202,7 @@
     {/if}
 
     {#if !loadFailed}
-        <TotalsFooter {count} {period} {total} noun={countsRows ? "row" : "transaction"}>
+        <TotalsFooter {count} {period} {total} noun={countsRows ? "row" : "transaction"} {hiddenRecognition}>
             {#snippet actions()}
                 {#if count > 0}
                     <ExportButton run={exportJournal} label="Export journal as xlsx" />
@@ -187,6 +217,9 @@
 {#if matches.open}
     <!-- Find Matches (plan 35 D9): the same kind of layer, opened from the table's toolbar. -->
     <MatchOverlay />
+{:else if accrual.open}
+    <!-- Recognition (plan 45 D6, Q8): Due, Needs a schedule, Invoices. "Open in editor" closes it, then opens the editor. -->
+    <RecognitionOverlay onEdit={(index) => txnModal.openEdit(index)} />
 {:else if reviewLaunch.kind !== null}
     <ReviewOverlay kind={reviewLaunch.kind} />
 {:else if txnModal.open}

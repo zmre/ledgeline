@@ -19,6 +19,7 @@ import type {
     JournalSummary,
     LineSeries,
     PieDatum,
+    RecognitionGroup,
     RowPosition,
     RowsPage,
     AssertionOp,
@@ -321,7 +322,32 @@ export function decodeRow(raw: unknown, context = "row"): JournalRow {
     // Plan 35 D11, additive: only `/api/journal/rows` sends them, and only on a linked row.
     if (value.linked !== undefined && bool(value.linked, `${context}.linked`)) row.linked = true;
     if (value.transfer !== undefined) row.transfer = decodeTransfer(value.transfer, `${context}.transfer`, index);
+    // Plan 45 D8, additive: only on a recognition group row.
+    if (value.recognitionGroup !== undefined) row.recognitionGroup = decodeRecognitionGroup(value.recognitionGroup, `${context}.recognitionGroup`);
     return Object.freeze(row);
+}
+
+/** `{month, count, totals, expanded}`: a month of posted recognition entries as one row (plan 45 D8). */
+function decodeRecognitionGroup(raw: unknown, context: string): RecognitionGroup {
+    const value = obj(raw, context);
+    const month = str(value.month, `${context}.month`);
+    if (!/^\d{4}-\d{2}$/.test(month)) throw new ApiShapeError(`${context}.month: expected YYYY-MM, got ${JSON.stringify(month)}`);
+    const count = num(value.count, `${context}.count`);
+    if (!Number.isSafeInteger(count) || count < 1) throw new ApiShapeError(`${context}: invalid count ${count}`);
+    return Object.freeze({
+        month,
+        count,
+        totals: Object.freeze(
+            arr(value.totals, `${context}.totals`).map((entry, i) => {
+                const total = obj(entry, `${context}.totals[${i}]`);
+                return Object.freeze({
+                    commodity: str(total.commodity, `${context}.totals[${i}].commodity`),
+                    quantity: decodeViewDec(total.quantity, `${context}.totals[${i}].quantity`),
+                });
+            })
+        ),
+        expanded: bool(value.expanded, `${context}.expanded`),
+    });
 }
 
 /** `{index, account, label}`: one end of a transfer (plan 35). Shared with `matchDecode.ts`. */
@@ -497,6 +523,7 @@ export function decodeRowsPage(raw: unknown): RowsPage {
         total: num(page.total, "journal rows total"),
         offset,
         rows: Object.freeze(arr(page.rows, "journal rows rows").map((row, i) => decodeRow(row, `journal rows[${offset + i}]`))) as JournalRow[],
+        recognitionHidden: hiddenCount(page.recognitionHidden, "journal rows recognitionHidden"),
     });
 }
 
@@ -504,6 +531,14 @@ function category(raw: unknown, context: string): RootCategory {
     const value = str(raw, context);
     if (!CATEGORIES.has(value)) throw new ApiShapeError(`${context}: unknown category ${JSON.stringify(value)}`);
     return value as RootCategory;
+}
+
+/** Plan 45 Q11's hidden count: absent (an engine or mode that hides nothing) is 0. */
+function hiddenCount(raw: unknown, context: string): number {
+    if (raw === undefined) return 0;
+    const value = num(raw, context);
+    if (!Number.isSafeInteger(value) || value < 0) throw new ApiShapeError(`${context}: invalid count ${value}`);
+    return value;
 }
 
 /** `GET /api/journal/summary` → the filtered view's figures. */
@@ -540,6 +575,7 @@ export function decodeJournalSummary(raw: unknown): JournalSummary {
         maxDepth: num(body.maxDepth, "journal summary maxDepth"),
         primary,
         review,
+        recognitionHidden: hiddenCount(body.recognitionHidden, "journal summary recognitionHidden"),
     });
 }
 

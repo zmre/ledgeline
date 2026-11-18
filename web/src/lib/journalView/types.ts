@@ -77,6 +77,23 @@ export interface JournalRow {
      * carries both halves for the expanded view. Absent on an ordinary row.
      */
     transfer?: TransferRow;
+    /**
+     * Plan 45 D8: this row stands for a month of posted recognition entries
+     * (its own `txn` is the month's latest entry). Absent on every other row.
+     */
+    recognitionGroup?: RecognitionGroup;
+}
+
+/** A month of posted recognition entries shown as one journal row (plan 45 D8). */
+export interface RecognitionGroup {
+    /** `YYYY-MM`. */
+    month: string;
+    /** How many entries the row stands for. */
+    count: number;
+    /** What they recognize, per commodity (the debit sides). */
+    totals: readonly {commodity: string; quantity: Dec}[];
+    /** The members are served as ordinary rows right after this one. */
+    expanded: boolean;
 }
 
 /** One end of a transfer: its transaction and its real (non-clearing) account. */
@@ -223,6 +240,8 @@ export interface RowsPage {
     total: number;
     offset: number;
     rows: JournalRow[];
+    /** Posted recognition entries `recognition=hide` left out of the rows (plan 45 Q11); 0 otherwise. */
+    recognitionHidden: number;
 }
 
 /** Income / expenses / net and the chart inputs for one commodity of the filtered view. */
@@ -257,6 +276,8 @@ export interface JournalSummary {
     primary: string | null;
     /** The review queues' sizes for the toolbar badges (plan 32 D18), or null from an engine that predates them. */
     review: ReviewCounts | null;
+    /** Posted recognition entries hidden from the rows but still in every figure (plan 45 Q11); 0 otherwise. */
+    recognitionHidden: number;
 }
 
 /** One pie slice: a display-boundary number and the exact amount, formatted. */

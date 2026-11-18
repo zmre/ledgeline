@@ -11,11 +11,27 @@
 
 import {goto} from "$app/navigation";
 import {resolve} from "$app/paths";
+import {endOfMonth} from "#lib/accrual/model.js";
 import {journalSearch, targetToFilter, type JournalTarget} from "#lib/filters/journalTarget.js";
+import {expandKeyOf, recognitionExpand} from "#lib/journal/recognitionExpand.svelte.js";
 import {filters} from "#lib/stores/filters.svelte.js";
 
 export async function openJournal(target: JournalTarget): Promise<void> {
     filters.replace(targetToFilter(target));
     // eslint-disable-next-line svelte/no-navigation-without-resolve -- resolve("/") IS the route id; the query string is appended
     await goto(`${resolve("/")}?${journalSearch(target)}`);
+}
+
+/**
+ * Plan 45 Q7 (and the "Posted N entries" toast): the journal on month `month`
+ * (`YYYY-MM`) with its recognition group expanded. Like `openJournal`, the
+ * store and the URL both: the journal page may already be mounted (the
+ * Insights panel lives on it), where only the store write takes effect.
+ */
+export async function openRecognitionMonth(month: string): Promise<void> {
+    const target: JournalTarget = {from: `${month}-01`, to: endOfMonth(month)};
+    filters.replace(targetToFilter(target));
+    recognitionExpand.seed([month], expandKeyOf(filters.value));
+    // eslint-disable-next-line svelte/no-navigation-without-resolve -- resolve("/") IS the route id; the query string is appended
+    await goto(`${resolve("/")}?${journalSearch(target)}&expand=${month}`);
 }

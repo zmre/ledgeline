@@ -1563,6 +1563,7 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         // Above the `route_layer`: every POST here writes the journal.
         .route("/api/accrual", get(accrual_api::accrual))
         .route("/api/recognition/due", get(accrual_api::due_route))
+        .route("/api/recognition/needs", get(accrual_api::needs_route))
         .route("/api/recognition/post", post(accrual_api::post))
         .route(
             "/api/recognition/for/{index}",

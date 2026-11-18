@@ -326,3 +326,14 @@ export function halfPageRows(viewportHeight: number, pitch: number): number {
 export function nextStatus(status: TxnStatus): TxnStatus {
     return status === "unmarked" ? "pending" : status === "pending" ? "cleared" : "unmarked";
 }
+
+/**
+ * Plan 45 D8: the month a posted recognition entry is grouped under (its
+ * date's), or null when `txn` is not one — a transaction tagged with both
+ * `recognition` and `recognized`, as `accrual::is_posted_entry` reads it.
+ * The table indents an expanded month's members by it.
+ */
+export function recognitionMonth(txn: Transaction): string | null {
+    const names = new Set(txn.tags.map(([name]) => name));
+    return names.has("recognition") && names.has("recognized") ? txn.date.slice(0, 7) : null;
+}

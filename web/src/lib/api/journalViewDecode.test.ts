@@ -9,7 +9,9 @@ import {
     decodeBalanceSeries,
     decodeCashBalances,
     decodeDiagnostics,
+    decodeJournalSummary,
     decodeRow,
+    decodeRowsPage,
     decodeRunningCell,
     decodeRunningInfo,
     decodeViewDec,
@@ -287,5 +289,45 @@ describe("UNIT decodeBalanceSeries", () => {
         // A failure must say what it found and where the line should be.
         expect(() => decodeBalanceSeries(withPoint({failures: [{...failure, calculated: undefined}]}))).toThrow(ApiShapeError);
         expect(() => decodeBalanceSeries(withPoint({failures: [{...failure, expected: undefined}]}))).toThrow(ApiShapeError);
+    });
+});
+
+// Plan 45 D8 / Q11: a month of recognition entries as one row, and the
+// entries `recognition=hide` left out — both additive.
+describe("UNIT recognition rows", () => {
+    const ROW = {
+        index: 7,
+        date: "2026-11-17",
+        status: "unmarked",
+        code: "",
+        description: "Customer X Recognized",
+        comment: "",
+        tags: [],
+        postings: [],
+        flags: [],
+    };
+    const GROUP = {month: "2026-11", count: 37, totals: [{commodity: "$", quantity: {m: "4125000", p: 2}}], expanded: false};
+
+    it("decodes a group row's month, count, totals and expansion", () => {
+        const row = decodeRow({...ROW, recognitionGroup: GROUP});
+        expect(row.recognitionGroup).toEqual({month: "2026-11", count: 37, totals: [{commodity: "$", quantity: {m: 4125000n, p: 2}}], expanded: false});
+        expect(decodeRow(ROW).recognitionGroup).toBeUndefined();
+    });
+
+    it("refuses a malformed group rather than rendering a half row", () => {
+        expect(() => decodeRow({...ROW, recognitionGroup: {...GROUP, month: "Nov"}})).toThrow(ApiShapeError);
+        expect(() => decodeRow({...ROW, recognitionGroup: {...GROUP, count: 0}})).toThrow(ApiShapeError);
+        expect(() => decodeRow({...ROW, recognitionGroup: {...GROUP, expanded: "no"}})).toThrow(ApiShapeError);
+        expect(() => decodeRow({...ROW, recognitionGroup: {...GROUP, totals: [{commodity: "$", quantity: 5}]}})).toThrow(ApiShapeError);
+    });
+
+    it("reads recognitionHidden on rows and summary, absent as 0", () => {
+        const page = {generation: "g", total: 1, offset: 0, rows: [ROW]};
+        expect(decodeRowsPage(page).recognitionHidden).toBe(0);
+        expect(decodeRowsPage({...page, recognitionHidden: 412}).recognitionHidden).toBe(412);
+        expect(() => decodeRowsPage({...page, recognitionHidden: -1})).toThrow(ApiShapeError);
+        const summary = {generation: "g", total: 1, visibleNet: [], commodities: [], perCommodity: [], maxDepth: 1, primary: null};
+        expect(decodeJournalSummary(summary).recognitionHidden).toBe(0);
+        expect(decodeJournalSummary({...summary, recognitionHidden: 3}).recognitionHidden).toBe(3);
     });
 });

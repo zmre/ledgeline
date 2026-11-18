@@ -853,13 +853,17 @@ scale), 36 months of history, and about 150k posted entries.
 
 | Work                                | How                                                                                                          | Cost                                  | Target (200k)  |
 |-------------------------------------|--------------------------------------------------------------------------------------------------------------|---------------------------------------|----------------|
-| `RecognitionIndex` build            | One pass over transactions and their postings' own tags. It collects source postings by id, posted entries as `(id, recognized) → position`, and adjustments. Ids are interned to `u32` and dates are `i32` day numbers | O(T + P)                              | < 10 ms        |
+| `RecognitionIndex` build            | One pass over transactions and their postings' own tags. It collects source postings by id, posted entries as `(id, recognized) → position`, and adjustments. Ids are interned to `u32` and dates are `i32` day numbers | O(T + P)                              | `index_with_roles` < 15 ms (13.4 ms measured) |
 | Recognition file parse              | `parse_journal_with_styles`, cached by file identity and revision                                            | O(file); skipped when unchanged       | < 15 ms (5k groups) |
 | Due set                             | For each rule, `occurrences(first, min(today, to))`, then a hash lookup in the posted set                     | O(Σ periods ≤ today)                  | < 5 ms         |
 | Ties                                | Month-end balances of the deferred/prepaid accounts from one sorted pass                                     | O(P_accrual)                          | < 5 ms         |
 | Group rows                          | Per filter result, one scan of `positions`, bucketing members by month                                       | O(rows)                               | < 2 ms         |
 | Post 5,000 entries                  | One `add_transactions` call: format, splice, **one** reparse                                                  | ≈ one parse (253 ms) + formatting     | < 600 ms       |
 
+- **The index target is 15 ms, not 10 (Patrick, 2026-11-18).** Just
+  touching every posting of a 200k ledger costs about 8 ms, so the scan
+  (parallel across ≤8 threads) plus its serial merge lands at 13.4 ms;
+  getting under 10 would need incremental indexing, which isn't worth it.
 - **Per snapshot, lazily.** Like `transfers` and `review`, the index is built
   on first use, in a `OnceLock`. A refresh builds a new snapshot, and a
   rebuild costs one pass. No incremental bookkeeping is needed beyond the

@@ -11,10 +11,13 @@
 //
 // A FILTER change is a different list: everything is dropped. So is a PIN
 // change (plan 36) — pinning, unpinning or switching the pinned commodity —
-// because every held row's `running` cell describes the old pin. A GENERATION
-// change (an edit, a file change) is the same list, re-read: the held blocks
-// stay on screen, marked stale, until their fresh copies arrive — so an inline
-// edit does not flash the table to skeletons.
+// because every held row's `running` cell describes the old pin, and so is a
+// change of the recognition MODE (plan 45 D8: grouped, hidden, shown). A
+// GENERATION change (an edit, a file change) is the same list, re-read: the
+// held blocks stay on screen, marked stale, until their fresh copies arrive —
+// so an inline edit does not flash the table to skeletons. Expanding or
+// collapsing a recognition month is the same kind of re-read: each block is
+// stamped with the generation AND the expanded months it was read with.
 //
 // The store never holds more than MAX_BLOCKS blocks; the ones furthest from
 // where the table last looked are evicted first. Scrolling a 200k-row journal
@@ -24,7 +27,7 @@
    immutable snapshot replaced wholesale (`$state.raw`), so a SvelteMap would
    add per-key signals nothing reads; `pending` is plain bookkeeping that no
    template or effect observes. */
-import {LedgelineApi, type JournalQueryFilter, type RunningPinQuery} from "#lib/api/native.js";
+import {LedgelineApi, type JournalQueryFilter, type RecognitionRowsQuery, type RunningPinQuery} from "#lib/api/native.js";
 import {decodeJournalSummary, decodeRowPosition, decodeRowsPage} from "#lib/api/journalViewDecode.js";
 import type {Transaction} from "#lib/domain/types.js";
 import type {JournalRow, JournalSummary, RowPosition} from "#lib/journalView/types.js";
@@ -46,16 +49,38 @@ export interface ViewQuery {
     filter: JournalQueryFilter;
     /** The pinned running balance every row carries, or null. */
     pin: RunningPinQuery | null;
+    /** Plan 45 D8: the recognition mode and expanded months, or null (the helpers are off: send nothing). */
+    recognition: RecognitionRowsQuery | null;
 }
 
 interface Block {
+    /** `stampOf`: the generation and the expanded months the block was read with. */
+    stamp: string;
     generation: string;
     rows: readonly JournalRow[];
 }
 
-/** Filters are compared by value: `accounts` is a Set, so its sorted members stand in for it. The pin is part of the key. */
-export function filterKey(filter: JournalQueryFilter, pin: RunningPinQuery | null = null): string {
-    return JSON.stringify([filter.from, filter.to, [...filter.accounts].sort(), filter.query, pin === null ? null : [pin.account, pin.commodity]]);
+/**
+ * Filters are compared by value: `accounts` is a Set, so its sorted members
+ * stand in for it. The pin is part of the key, and so is the recognition mode
+ * (a different list); the expanded months are not (see `stampOf`).
+ */
+export function filterKey(filter: JournalQueryFilter, pin: RunningPinQuery | null = null, recognition: RecognitionRowsQuery | null = null): string {
+    return JSON.stringify([
+        filter.from,
+        filter.to,
+        [...filter.accounts].sort(),
+        filter.query,
+        pin === null ? null : [pin.account, pin.commodity],
+        // Null (the helpers off, or not known yet) reads as the engine's
+        // default, `group`, so learning the gate does not re-read the list.
+        recognition?.mode ?? "group",
+    ]);
+}
+
+/** What a held block must match to be current: the generation and the expanded months. */
+function stampOf(target: ViewQuery): string {
+    return `${target.generation}|${[...(target.recognition?.expand ?? [])].sort().join(",")}`;
 }
 
 let query = $state.raw<ViewQuery | null>(null);
@@ -90,7 +115,7 @@ function reviewWindow(): {today: string; limit: number; maxDays: number} {
 async function loadSummary(target: ViewQuery, targetKey: string): Promise<void> {
     const token = ++summaryToken;
     try {
-        const value = decodeJournalSummary(await api(target.serverUrl).journalSummary(target.filter, reviewWindow()));
+        const value = decodeJournalSummary(await api(target.serverUrl).journalSummary(target.filter, reviewWindow(), target.recognition));
         if (token !== summaryToken || targetKey !== key) return;
         summary = {key: targetKey, value};
         total = value.total;
@@ -108,17 +133,25 @@ function evict(map: Map<number, Block>): void {
 }
 
 async function loadBlock(target: ViewQuery, block: number): Promise<void> {
-    const ticket = `${epoch}:${target.generation}:${block}`;
+    const stamp = stampOf(target);
+    const ticket = `${epoch}:${stamp}:${block}`;
     if (pending.has(ticket)) return;
     pending.add(ticket);
     const startedEpoch = epoch;
     try {
         const page = decodeRowsPage(
-            await api(target.serverUrl).journalRows(target.filter, {offset: block * BLOCK_SIZE, limit: BLOCK_SIZE, today: localToday()}, target.pin)
+            await api(target.serverUrl).journalRows(
+                target.filter,
+                {offset: block * BLOCK_SIZE, limit: BLOCK_SIZE, today: localToday()},
+                target.pin,
+                target.recognition
+            )
         );
         if (startedEpoch !== epoch) return;
         const next = new Map(blocks);
-        next.set(block, {generation: page.generation, rows: page.rows});
+        // Stamped with what was ASKED (the engine's generation may be newer:
+        // then the refresh below re-keys the view and the block reads stale).
+        next.set(block, {stamp: page.generation === target.generation ? stamp : `${page.generation}|?`, generation: page.generation, rows: page.rows});
         evict(next);
         blocks = next;
         total = page.total;
@@ -160,11 +193,17 @@ export const journalView = {
      * Point the view at (server, generation, filter, pin). Cheap to call on
      * every reactive tick: nothing happens unless one of them moved.
      */
-    sync(serverUrl: string, generation: string, filter: JournalQueryFilter, pin: RunningPinQuery | null = null): void {
-        const nextKey = filterKey(filter, pin);
+    sync(
+        serverUrl: string,
+        generation: string,
+        filter: JournalQueryFilter,
+        pin: RunningPinQuery | null = null,
+        recognition: RecognitionRowsQuery | null = null
+    ): void {
+        const nextKey = filterKey(filter, pin, recognition);
         const sameList = query !== null && query.serverUrl === serverUrl && key === nextKey;
-        if (sameList && query?.generation === generation) return;
-        const target: ViewQuery = {serverUrl, generation, filter, pin};
+        const target: ViewQuery = {serverUrl, generation, filter, pin, recognition};
+        if (sameList && query !== null && stampOf(query) === stampOf(target)) return;
         if (!sameList) {
             // A different list: nothing held describes it.
             epoch += 1;
@@ -194,7 +233,7 @@ export const journalView = {
         focusBlock = Math.floor((first + last) / 2);
         const limit = total === null ? last + 1 : Math.ceil(total / BLOCK_SIZE);
         for (let block = Math.max(0, first - 1); block <= Math.min(last + 1, limit - 1); block += 1) {
-            if (blocks.get(block)?.generation !== target.generation) void loadBlock(target, block);
+            if (blocks.get(block)?.stamp !== stampOf(target)) void loadBlock(target, block);
         }
     },
 
@@ -210,7 +249,7 @@ export const journalView = {
     async locate(index: number): Promise<RowPosition | null> {
         const target = query;
         if (target === null) return null;
-        return decodeRowPosition(await api(target.serverUrl).journalPosition(target.filter, index));
+        return decodeRowPosition(await api(target.serverUrl).journalPosition(target.filter, index, target.recognition));
     },
 
     /**

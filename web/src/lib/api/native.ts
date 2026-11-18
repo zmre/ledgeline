@@ -168,6 +168,75 @@ export interface AddTransactionBody {
 /** REPLACE uses the identical whole-transaction body shape as ADD. */
 export type ReplaceTransactionBody = AddTransactionBody;
 
+// ---------------------------------------------------------------------------
+// Accrual recognition request bodies (plan 45). Amounts in a schedule line are
+// decimal TEXT (`"-12000.00"`), signed as the source posting writes them.
+// ---------------------------------------------------------------------------
+
+/** `POST /api/recognition/post`. */
+export interface RecognitionPostBody {
+    generation: string;
+    /** Post entries dated on or before this (never after today); today when absent. */
+    through?: string;
+    /** Only these; every open due entry when absent. */
+    entries?: {id: string; recognized: string}[];
+    /** Fold the closed periods' entries into one adjustment per schedule, dated today. */
+    includeClosed?: boolean;
+    today?: string;
+}
+
+/** A schedule's inputs on the way in. `id` absent: the engine draws one. */
+export interface WireScheduleSpecIn {
+    id?: string;
+    lines: {sourceAccount: string; targetAccount: string; commodity: string; quantity: string; party?: {kind: "customer" | "vendor"; name: string}}[];
+    start: string;
+    term: {months: number} | {through: string};
+    proration?: "anniversary" | "calendar";
+    description: string;
+    headerTags?: [string, string][];
+}
+
+/** `POST /api/recognition/preview` and `/save`. */
+export interface RecognitionSaveBody {
+    source?: {kind: "add"; transaction: AddTransactionBody} | {kind: "replace"; index: number; fingerprint: string; transaction: AddTransactionBody};
+    schedules: WireScheduleSpecIn[];
+    createFile?: boolean;
+    /** The preview's `accrualGeneration`: refuse if the books changed since. */
+    accrualGeneration?: string;
+    today?: string;
+}
+
+/** `GET /api/settlements` query. `tolerance` is basis points of the invoice. */
+export interface SettlementsQuery {
+    today: string;
+    lookback?: number;
+    tolerance?: number;
+}
+
+/** One side of a link, as listed (its fingerprint is checked). */
+export interface WireSettleSideIn {
+    index: number;
+    posting: number;
+    fingerprint: string;
+}
+
+/** `POST /api/settlements/link`. */
+export interface SettlementLinkBody {
+    invoice: WireSettleSideIn;
+    payment: WireSettleSideIn;
+    /** Required for a short payment with no fee history. */
+    feeAccount?: string;
+    tolerance?: number;
+}
+
+/** `POST /api/settlements/link-all`. */
+export interface SettlementLinkAllBody {
+    generation: string;
+    lookback?: number;
+    tolerance?: number;
+    today?: string;
+}
+
 /** One surgical posting edit for PATCH: `index` is the 0-based posting position within the transaction. */
 export interface PatchPostingEdit {
     index: number;
@@ -771,6 +840,26 @@ export interface RunningPinQuery {
     commodity: string | null;
 }
 
+/**
+ * Plan 45 D8: how the journal shows posted recognition entries, and which
+ * months' groups are expanded. The engine ignores both while the accrual
+ * helpers are off, and groups nothing under a pinned running balance.
+ */
+export interface RecognitionRowsQuery {
+    mode: "group" | "hide" | "show";
+    /** `YYYY-MM` months whose group rows are expanded. */
+    expand: readonly string[];
+}
+
+/** `recognition=` (omitted for the default `group`) and `expand=` (omitted when empty). */
+export function recognitionParams(recognition: RecognitionRowsQuery | null | undefined): Record<string, QueryValue> {
+    if (recognition === null || recognition === undefined) return {};
+    return {
+        recognition: recognition.mode === "group" ? undefined : recognition.mode,
+        expand: recognition.expand.length === 0 ? undefined : [...recognition.expand].sort().join(","),
+    };
+}
+
 /** `from`/`to`/`accounts`/`q`, empty parts dropped; accounts sorted so equal filters build equal URLs. */
 export function filterParams(filter: JournalQueryFilter): Record<string, QueryValue> {
     return {
@@ -1298,12 +1387,19 @@ export class LedgelineApi {
     journalRows(
         filter: JournalQueryFilter,
         window: {offset: number; limit: number; order?: "asc" | "desc"; today: string; collapse?: boolean},
-        pin: RunningPinQuery | null = null
+        pin: RunningPinQuery | null = null,
+        recognition: RecognitionRowsQuery | null = null
     ): Promise<unknown> {
         const {collapse, ...rest} = window;
         const running = pin === null ? {} : {balance: pin.account, balanceCommodity: pin.commodity ?? undefined};
         return this.getJson(
-            `/api/journal/rows${queryString({...filterParams(filter), ...rest, ...running, collapse: collapse === false ? "false" : undefined})}`
+            `/api/journal/rows${queryString({
+                ...filterParams(filter),
+                ...rest,
+                ...running,
+                collapse: collapse === false ? "false" : undefined,
+                ...recognitionParams(recognition),
+            })}`
         );
     }
 
@@ -1345,9 +1441,9 @@ export class LedgelineApi {
      * toolbar badges (D18) — as of `review.today` when given, which the counts
      * depend on (they ignore the filter).
      */
-    journalSummary(filter: JournalQueryFilter, review?: ReviewWindowQuery): Promise<unknown> {
+    journalSummary(filter: JournalQueryFilter, review?: ReviewWindowQuery, recognition: RecognitionRowsQuery | null = null): Promise<unknown> {
         const window = review === undefined ? {} : {today: review.today, reviewLimit: review.limit, reviewMaxDays: review.maxDays};
-        return this.getJson(`/api/journal/summary${queryString({...filterParams(filter), ...window})}`);
+        return this.getJson(`/api/journal/summary${queryString({...filterParams(filter), ...window, ...recognitionParams(recognition)})}`);
     }
 
     /** The insights pie or line for the filtered view (decode with `decodeChart`). */
@@ -1359,8 +1455,8 @@ export class LedgelineApi {
     }
 
     /** Where the transaction with tindex `index` sits in the filtered view (decode with `decodeRowPosition`). */
-    journalPosition(filter: JournalQueryFilter, index: number): Promise<unknown> {
-        return this.getJson(`/api/journal/position${queryString({...filterParams(filter), index})}`);
+    journalPosition(filter: JournalQueryFilter, index: number, recognition: RecognitionRowsQuery | null = null): Promise<unknown> {
+        return this.getJson(`/api/journal/position${queryString({...filterParams(filter), index, ...recognitionParams(recognition)})}`);
     }
 
     /**
@@ -1921,6 +2017,77 @@ export class LedgelineApi {
      */
     linkAllMatches(body: LinkAllMatchesBody): Promise<unknown> {
         return this.mutate<unknown>("POST", "/api/matches/link-all", 200, body);
+    }
+
+    // -----------------------------------------------------------------------
+    // Accrual recognition (plan 45, Phase 2's routes). Decode with
+    // `#lib/accrual/decode`. Every GET answers `{enabled: false}` when the
+    // helpers are off for the ledger; every write then answers 409.
+    // -----------------------------------------------------------------------
+
+    /** `GET /api/accrual`: the gate, the roles, the recognition file and the badge counts. */
+    accrualStatus(query: {today: string; lookback?: number}): Promise<unknown> {
+        return this.getJson(`/api/accrual${queryString(query)}`);
+    }
+
+    /** `GET /api/recognition/due`: the catch-up table (D6). */
+    recognitionDue(today: string): Promise<unknown> {
+        return this.getJson(`/api/recognition/due${queryString({today})}`);
+    }
+
+    /** `GET /api/recognition/needs`: deferrals with no schedule inside the lookback (0 = all). */
+    recognitionNeeds(query: {today: string; lookback?: number}): Promise<unknown> {
+        return this.getJson(`/api/recognition/needs${queryString(query)}`);
+    }
+
+    /** `POST /api/recognition/post`: Post through a date. 409 on a stale `generation`. */
+    recognitionPost(body: RecognitionPostBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/recognition/post", 200, body);
+    }
+
+    /** `GET /api/recognition/for/{index}`: one source transaction's schedules, renewal prefill and party suggestion. */
+    recognitionFor(index: number, today: string): Promise<unknown> {
+        return this.getJson(`/api/recognition/for/${index}${queryString({today})}`);
+    }
+
+    /** `POST /api/recognition/preview`: what a save would write. Writes nothing. */
+    recognitionPreview(body: RecognitionSaveBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/recognition/preview", 200, body);
+    }
+
+    /** `POST /api/recognition/save`: the source transaction, then the rule groups or restatements. */
+    recognitionSave(body: RecognitionSaveBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/recognition/save", 200, body);
+    }
+
+    /** `POST /api/recognition/file`: create the recognition file (409 when something is in the way). */
+    recognitionCreateFile(): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/recognition/file", 200, {});
+    }
+
+    /** `POST /api/books/closed-through`: set (or, with null, clear) `[books] closed-through`. */
+    booksClosedThrough(date: string | null): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/books/closed-through", 200, {date});
+    }
+
+    /** `GET /api/settlements`: invoice/payment proposals and the open sides. */
+    settlements(query: SettlementsQuery): Promise<unknown> {
+        return this.getJson(`/api/settlements${queryString({...query})}`);
+    }
+
+    /** `GET /api/settlements/for/{index}`: one transaction's proposals and candidates, with no lookback. */
+    settlementsFor(index: number, query: SettlementsQuery): Promise<unknown> {
+        return this.getJson(`/api/settlements/for/${index}${queryString({...query})}`);
+    }
+
+    /** `POST /api/settlements/link`: link one invoice to its payment, with the fee edit for a short one. */
+    settlementLink(body: SettlementLinkBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/settlements/link", 200, body);
+    }
+
+    /** `POST /api/settlements/link-all`: link every clear proposal. */
+    settlementLinkAll(body: SettlementLinkAllBody): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/settlements/link-all", 200, body);
     }
 
     /**

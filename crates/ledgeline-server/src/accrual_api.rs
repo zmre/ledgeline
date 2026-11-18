@@ -1067,6 +1067,51 @@ fn needs_schedule(
 }
 
 // ===========================================================================
+// GET /api/recognition/needs
+// ===========================================================================
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NeedsBody<'a> {
+    enabled: bool,
+    generation: &'a str,
+    /// The lookback applied, in days (`0` = everything).
+    lookback: u32,
+    /// Newest first: the deferred-revenue credits and prepaid debits with no
+    /// `recognition:` tag, inside the lookback.
+    items: Vec<WireSide>,
+}
+
+/// `GET /api/recognition/needs?today&lookback` — the **Needs a schedule**
+/// tab (D6): the deferrals `/api/accrual` counts, one per posting, newest
+/// first. Each opens the editor's Accrual section on its transaction.
+pub(crate) async fn needs_route(
+    State(state): State<AppState>,
+    Query(query): Query<AccrualQuery>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let today = effective_today(query.today)?;
+    let lookback = query.lookback.unwrap_or(NEEDS_SCHEDULE_LOOKBACK_DAYS);
+    let day = today.clone();
+    answer(state, &headers, &today, move |_, snapshot, accrual| {
+        let journal = &snapshot.journal;
+        let index = accrual.index(journal);
+        let mut items: Vec<WireSide> = needs_schedule(journal, &index, &day, lookback)
+            .into_iter()
+            .map(|at| wire_side(journal, at, None))
+            .collect();
+        items.sort_by(|a, b| b.date.cmp(&a.date).then(b.index.cmp(&a.index)));
+        to_bytes(&NeedsBody {
+            enabled: true,
+            generation: generation_of(&snapshot.etag),
+            lookback,
+            items,
+        })
+    })
+    .await
+}
+
+// ===========================================================================
 // GET /api/recognition/due
 // ===========================================================================
 

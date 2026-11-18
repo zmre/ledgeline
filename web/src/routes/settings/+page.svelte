@@ -15,6 +15,7 @@
     import {afterNavigate} from "$app/navigation";
     import ErrorToast from "#lib/components/ErrorToast.svelte";
     import AccountsPanel from "#lib/accounts/ui/AccountsPanel.svelte";
+    import AccrualSettingsPanel from "#lib/accrual/settings/AccrualSettingsPanel.svelte";
     import AliasPanel from "#lib/imports/ui/AliasPanel.svelte";
     import AppearancePanel from "#lib/settings/ui/AppearancePanel.svelte";
     import HledgerConfPanel from "#lib/settings/ui/HledgerConfPanel.svelte";
@@ -87,6 +88,9 @@
         <PricesSettingsPanel />
     {:else if params.tab === "sync" && !isNative()}
         <SyncSettingsPanel />
+    {:else if params.tab === "books"}
+        <!-- Plan 45: the panel itself says when the helpers are off (a restored ?tab=books). -->
+        <AccrualSettingsPanel />
     {:else}
         <AccountsPanel accountNames={journal.accountNames} />
     {/if}
