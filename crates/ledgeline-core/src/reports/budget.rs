@@ -463,6 +463,9 @@ pub fn budget_report(
     rules: &[PeriodicTransaction],
     opts: &BudgetOpts,
 ) -> Result<BudgetReport, ReportError> {
+    // A `recognition:` rule is a schedule, never a goal (plan 45 D-guards),
+    // even in a recognition file included by mistake.
+    let rules = &*crate::accrual::without_recognition_rules(rules);
     let buckets = last_n_buckets(opts.end, opts.interval, opts.count)?;
 
     // `last_n_buckets` documents an empty vec for `count == 0`. With no buckets
@@ -808,6 +811,9 @@ pub fn budget_gaps(
     declared: &BTreeMap<String, AccountType>,
     opts: &BudgetOpts,
 ) -> Result<BudgetGaps, ReportError> {
+    // A `recognition:` rule is a schedule, never a goal (plan 45 D-guards),
+    // even in a recognition file included by mistake.
+    let rules = &*crate::accrual::without_recognition_rules(rules);
     let buckets = last_n_buckets(opts.end, opts.interval, opts.count)?;
     // No buckets is no span (`budget_report` returns the empty report here for
     // the same reason). The dates still have to be well-formed, so the empty

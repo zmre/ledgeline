@@ -138,6 +138,20 @@ pub fn format_amount(commodity: &str, qty: Dec, style: &AmountStyle, max_decimal
     }
 }
 
+/// A `commodity` directive declaring `style` for `commodity`, as
+/// `commodity $1,000.00`: a thousand in that style, so the side, spacing,
+/// marks, grouping and precision are all stated. What a file read beside the
+/// main journal writes, since hledger lends no directive across sibling `-f`
+/// files (projection scenarios, plan 45's recognition file).
+#[must_use]
+pub(crate) fn commodity_directive(commodity: &str, style: &AmountStyle) -> String {
+    let thousand = Dec::new(1000 * 10_i128.pow(style.precision), style.precision);
+    format!(
+        "commodity {}",
+        format_amount(commodity, thousand, style, style.precision)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

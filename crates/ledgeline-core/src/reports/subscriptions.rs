@@ -262,6 +262,11 @@ fn expense_charge(
     base: &Commodity,
     declared: &BTreeMap<String, AccountType>,
 ) -> Result<Option<Charge>, ReportError> {
+    // A posted recognition entry (prepaid insurance amortizing into
+    // `expenses:insurance` every month, say) is not a subscription (plan 45).
+    if crate::accrual::is_recognition_entry(txn) {
+        return Ok(None);
+    }
     let type_of = |account: &str| resolve_account_type(account, declared);
     if written(txn).any(|posting| type_of(&posting.account.0) == Some(AccountType::Revenue)) {
         return Ok(None);

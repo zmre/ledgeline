@@ -1,0 +1,48 @@
+2026-02-03 Customer Y Recognized  ; recognition: cy0203, renewal-date: 2027-02-03
+    liabilities:deferred-revenue         $833.33  ; customer: Customer Y
+    revenue:subscriptions               $-833.33  ; customer: Customer Y
+
+2026-03-03 Customer Y Recognized  ; recognition: cy0203, renewal-date: 2027-02-03
+    liabilities:deferred-revenue         $833.33  ; customer: Customer Y
+    revenue:subscriptions               $-833.33  ; customer: Customer Y
+
+2026-04-03 Customer Y Recognized  ; recognition: cy0203, renewal-date: 2027-02-03
+    liabilities:deferred-revenue         $833.33  ; customer: Customer Y
+    revenue:subscriptions               $-833.33  ; customer: Customer Y
+
+2026-05-03 Customer Y Recognized  ; recognition: cy0203, renewal-date: 2027-02-03
+    liabilities:deferred-revenue         $833.33  ; customer: Customer Y
+    revenue:subscriptions               $-833.33  ; customer: Customer Y
+
+2026-06-03 Customer Y Recognized  ; recognition: cy0203, renewal-date: 2027-02-03
+    liabilities:deferred-revenue         $833.33  ; customer: Customer Y
+    revenue:subscriptions               $-833.33  ; customer: Customer Y
+
+2026-07-03 Customer Y Recognized  ; recognition: cy0203, renewal-date: 2027-02-03
+    liabilities:deferred-revenue         $833.33  ; customer: Customer Y
+    revenue:subscriptions               $-833.33  ; customer: Customer Y
+
+2026-08-03 Customer Y Recognized  ; recognition: cy0203, renewal-date: 2027-02-03
+    liabilities:deferred-revenue         $833.33  ; customer: Customer Y
+    revenue:subscriptions               $-833.33  ; customer: Customer Y
+
+2026-09-03 Customer Y Recognized  ; recognition: cy0203, renewal-date: 2027-02-03
+    liabilities:deferred-revenue         $833.33  ; customer: Customer Y
+    revenue:subscriptions               $-833.33  ; customer: Customer Y
+
+2026-10-03 Customer Y Recognized  ; recognition: cy0203, renewal-date: 2027-02-03
+    liabilities:deferred-revenue         $833.33  ; customer: Customer Y
+    revenue:subscriptions               $-833.33  ; customer: Customer Y
+
+2026-11-03 Customer Y Recognized  ; recognition: cy0203, renewal-date: 2027-02-03
+    liabilities:deferred-revenue         $833.33  ; customer: Customer Y
+    revenue:subscriptions               $-833.33  ; customer: Customer Y
+
+2026-12-03 Customer Y Recognized  ; recognition: cy0203, renewal-date: 2027-02-03
+    liabilities:deferred-revenue         $833.33  ; customer: Customer Y
+    revenue:subscriptions               $-833.33  ; customer: Customer Y
+
+2027-01-03 Customer Y Recognized  ; recognition: cy0203
+    liabilities:deferred-revenue         $833.37  ; customer: Customer Y
+    revenue:subscriptions               $-833.37  ; customer: Customer Y
+

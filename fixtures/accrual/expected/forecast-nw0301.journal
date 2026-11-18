@@ -1,0 +1,48 @@
+2026-03-01 Northwind Insurance Recognized  ; recognition: nw0301, renewal-date: 2027-03-01
+    assets:prepaid                    $-500.00  ; vendor: Northwind Insurance
+    expenses:insurance:d-and-o         $500.00  ; vendor: Northwind Insurance
+
+2026-04-01 Northwind Insurance Recognized  ; recognition: nw0301, renewal-date: 2027-03-01
+    assets:prepaid                    $-500.00  ; vendor: Northwind Insurance
+    expenses:insurance:d-and-o         $500.00  ; vendor: Northwind Insurance
+
+2026-05-01 Northwind Insurance Recognized  ; recognition: nw0301, renewal-date: 2027-03-01
+    assets:prepaid                    $-500.00  ; vendor: Northwind Insurance
+    expenses:insurance:d-and-o         $500.00  ; vendor: Northwind Insurance
+
+2026-06-01 Northwind Insurance Recognized  ; recognition: nw0301, renewal-date: 2027-03-01
+    assets:prepaid                    $-500.00  ; vendor: Northwind Insurance
+    expenses:insurance:d-and-o         $500.00  ; vendor: Northwind Insurance
+
+2026-07-01 Northwind Insurance Recognized  ; recognition: nw0301, renewal-date: 2027-03-01
+    assets:prepaid                    $-500.00  ; vendor: Northwind Insurance
+    expenses:insurance:d-and-o         $500.00  ; vendor: Northwind Insurance
+
+2026-08-01 Northwind Insurance Recognized  ; recognition: nw0301, renewal-date: 2027-03-01
+    assets:prepaid                    $-500.00  ; vendor: Northwind Insurance
+    expenses:insurance:d-and-o         $500.00  ; vendor: Northwind Insurance
+
+2026-09-01 Northwind Insurance Recognized  ; recognition: nw0301, renewal-date: 2027-03-01
+    assets:prepaid                    $-500.00  ; vendor: Northwind Insurance
+    expenses:insurance:d-and-o         $500.00  ; vendor: Northwind Insurance
+
+2026-10-01 Northwind Insurance Recognized  ; recognition: nw0301, renewal-date: 2027-03-01
+    assets:prepaid                    $-500.00  ; vendor: Northwind Insurance
+    expenses:insurance:d-and-o         $500.00  ; vendor: Northwind Insurance
+
+2026-11-01 Northwind Insurance Recognized  ; recognition: nw0301, renewal-date: 2027-03-01
+    assets:prepaid                    $-500.00  ; vendor: Northwind Insurance
+    expenses:insurance:d-and-o         $500.00  ; vendor: Northwind Insurance
+
+2026-12-01 Northwind Insurance Recognized  ; recognition: nw0301, renewal-date: 2027-03-01
+    assets:prepaid                    $-500.00  ; vendor: Northwind Insurance
+    expenses:insurance:d-and-o         $500.00  ; vendor: Northwind Insurance
+
+2027-01-01 Northwind Insurance Recognized  ; recognition: nw0301, renewal-date: 2027-03-01
+    assets:prepaid                    $-500.00  ; vendor: Northwind Insurance
+    expenses:insurance:d-and-o         $500.00  ; vendor: Northwind Insurance
+
+2027-02-01 Northwind Insurance Recognized  ; recognition: nw0301, renewal-date: 2027-03-01
+    assets:prepaid                    $-500.00  ; vendor: Northwind Insurance
+    expenses:insurance:d-and-o         $500.00  ; vendor: Northwind Insurance
+

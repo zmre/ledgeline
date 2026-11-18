@@ -1,0 +1,24 @@
+2026-07-01 Tailspin Recognized  ; recognition: tt2001, renewal-date: 2027-01-01
+    liabilities:deferred-revenue         $500.00  ; customer: Tailspin
+    revenue:subscriptions               $-500.00  ; customer: Tailspin
+
+2026-08-01 Tailspin Recognized  ; recognition: tt2001, renewal-date: 2027-01-01
+    liabilities:deferred-revenue         $500.00  ; customer: Tailspin
+    revenue:subscriptions               $-500.00  ; customer: Tailspin
+
+2026-09-01 Tailspin Recognized  ; recognition: tt2001, renewal-date: 2027-01-01
+    liabilities:deferred-revenue         $500.00  ; customer: Tailspin
+    revenue:subscriptions               $-500.00  ; customer: Tailspin
+
+2026-10-01 Tailspin Recognized  ; recognition: tt2001, renewal-date: 2027-01-01
+    liabilities:deferred-revenue         $500.00  ; customer: Tailspin
+    revenue:subscriptions               $-500.00  ; customer: Tailspin
+
+2026-11-01 Tailspin Recognized  ; recognition: tt2001, renewal-date: 2027-01-01
+    liabilities:deferred-revenue         $500.00  ; customer: Tailspin
+    revenue:subscriptions               $-500.00  ; customer: Tailspin
+
+2026-12-01 Tailspin Recognized  ; recognition: tt2001, renewal-date: 2027-01-01
+    liabilities:deferred-revenue         $500.00  ; customer: Tailspin
+    revenue:subscriptions               $-500.00  ; customer: Tailspin
+

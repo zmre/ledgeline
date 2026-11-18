@@ -1,0 +1,72 @@
+2026-08-01 Contoso Recognized  ; recognition: ct0801, renewal-date: 2027-08-01
+    liabilities:deferred-revenue         $500.00  ; customer: Contoso
+    revenue:subscriptions               $-500.00  ; customer: Contoso
+    liabilities:deferred-revenue         $100.00  ; customer: Contoso
+    revenue:support                     $-100.00  ; customer: Contoso
+
+2026-09-01 Contoso Recognized  ; recognition: ct0801, renewal-date: 2027-08-01
+    liabilities:deferred-revenue         $500.00  ; customer: Contoso
+    revenue:subscriptions               $-500.00  ; customer: Contoso
+    liabilities:deferred-revenue         $100.00  ; customer: Contoso
+    revenue:support                     $-100.00  ; customer: Contoso
+
+2026-10-01 Contoso Recognized  ; recognition: ct0801, renewal-date: 2027-08-01
+    liabilities:deferred-revenue         $500.00  ; customer: Contoso
+    revenue:subscriptions               $-500.00  ; customer: Contoso
+    liabilities:deferred-revenue         $100.00  ; customer: Contoso
+    revenue:support                     $-100.00  ; customer: Contoso
+
+2026-11-01 Contoso Recognized  ; recognition: ct0801, renewal-date: 2027-08-01
+    liabilities:deferred-revenue         $500.00  ; customer: Contoso
+    revenue:subscriptions               $-500.00  ; customer: Contoso
+    liabilities:deferred-revenue         $100.00  ; customer: Contoso
+    revenue:support                     $-100.00  ; customer: Contoso
+
+2026-12-01 Contoso Recognized  ; recognition: ct0801, renewal-date: 2027-08-01
+    liabilities:deferred-revenue         $500.00  ; customer: Contoso
+    revenue:subscriptions               $-500.00  ; customer: Contoso
+    liabilities:deferred-revenue         $100.00  ; customer: Contoso
+    revenue:support                     $-100.00  ; customer: Contoso
+
+2027-01-01 Contoso Recognized  ; recognition: ct0801, renewal-date: 2027-08-01
+    liabilities:deferred-revenue         $500.00  ; customer: Contoso
+    revenue:subscriptions               $-500.00  ; customer: Contoso
+    liabilities:deferred-revenue         $100.00  ; customer: Contoso
+    revenue:support                     $-100.00  ; customer: Contoso
+
+2027-02-01 Contoso Recognized  ; recognition: ct0801, renewal-date: 2027-08-01
+    liabilities:deferred-revenue         $500.00  ; customer: Contoso
+    revenue:subscriptions               $-500.00  ; customer: Contoso
+    liabilities:deferred-revenue         $100.00  ; customer: Contoso
+    revenue:support                     $-100.00  ; customer: Contoso
+
+2027-03-01 Contoso Recognized  ; recognition: ct0801, renewal-date: 2027-08-01
+    liabilities:deferred-revenue         $500.00  ; customer: Contoso
+    revenue:subscriptions               $-500.00  ; customer: Contoso
+    liabilities:deferred-revenue         $100.00  ; customer: Contoso
+    revenue:support                     $-100.00  ; customer: Contoso
+
+2027-04-01 Contoso Recognized  ; recognition: ct0801, renewal-date: 2027-08-01
+    liabilities:deferred-revenue         $500.00  ; customer: Contoso
+    revenue:subscriptions               $-500.00  ; customer: Contoso
+    liabilities:deferred-revenue         $100.00  ; customer: Contoso
+    revenue:support                     $-100.00  ; customer: Contoso
+
+2027-05-01 Contoso Recognized  ; recognition: ct0801, renewal-date: 2027-08-01
+    liabilities:deferred-revenue         $500.00  ; customer: Contoso
+    revenue:subscriptions               $-500.00  ; customer: Contoso
+    liabilities:deferred-revenue         $100.00  ; customer: Contoso
+    revenue:support                     $-100.00  ; customer: Contoso
+
+2027-06-01 Contoso Recognized  ; recognition: ct0801, renewal-date: 2027-08-01
+    liabilities:deferred-revenue         $500.00  ; customer: Contoso
+    revenue:subscriptions               $-500.00  ; customer: Contoso
+    liabilities:deferred-revenue         $100.00  ; customer: Contoso
+    revenue:support                     $-100.00  ; customer: Contoso
+
+2027-07-01 Contoso Recognized  ; recognition: ct0801, renewal-date: 2027-08-01
+    liabilities:deferred-revenue         $500.00  ; customer: Contoso
+    revenue:subscriptions               $-500.00  ; customer: Contoso
+    liabilities:deferred-revenue         $100.00  ; customer: Contoso
+    revenue:support                     $-100.00  ; customer: Contoso
+

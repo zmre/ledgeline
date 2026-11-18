@@ -649,7 +649,7 @@ const CLOSED_TAGS: [ClosedTag; 7] = [
         recognizes: |value| parse_kpi_tag(value).is_some(),
         // `KpiRole::ALL`'s codes, in order — pinned by `tag_diagnostics.rs`.
         codes: "recurring, usage, deferred-revenue, sales-marketing, rnd, ga, receivable, \
-                payable",
+                payable, prepaid",
         consequence: "the account has no startup-metric role of its own, so Insights' startup \
                       metrics leave it out (or use its parent's role)",
     },

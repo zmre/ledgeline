@@ -1391,7 +1391,7 @@ fn render_amount(amount: &Amount) -> String {
 /// Every rule is one that would make the written line read back as something
 /// other than what was asked for — the failure `verify` would catch afterwards,
 /// reported up front with a sentence instead.
-fn check_account(account: &str) -> Result<(), PeriodicError> {
+pub(crate) fn check_account(account: &str) -> Result<(), PeriodicError> {
     let invalid = |why: &str| Err(PeriodicError::Invalid(format!("an account name {why}")));
     if account.is_empty() {
         return invalid("may not be empty");

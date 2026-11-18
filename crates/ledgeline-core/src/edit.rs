@@ -676,6 +676,16 @@ impl JournalEditor {
             .collect()
     }
 
+    /// Every file the journal is built from, with the content fingerprint of
+    /// the bytes this editor last read or wrote (`None` for a source it never
+    /// read): what a caller hashes into a "has anything changed since I
+    /// looked" token (plan 45's generation).
+    pub fn source_fingerprints(&self) -> impl Iterator<Item = (&VaultPath, Option<&Fingerprint>)> {
+        self.sources
+            .iter()
+            .map(|(path, known)| (path, known.as_ref().map(|r| &r.fingerprint)))
+    }
+
     /// The main journal file path.
     #[must_use]
     pub fn path(&self) -> &Path {
@@ -1116,10 +1126,26 @@ impl JournalEditor {
         // journal/files — `placement_for` reads only `self.journal`/
         // `self.files`, never mutates, so N calls against the untouched start
         // state are safe and cheap.
+        //
+        // The date order and each file's line index are built ONCE for the
+        // batch: looking both up per transaction scanned every transaction
+        // and every char of the destination file per insert, which made
+        // posting 5,000 recognition entries into a 200k journal take minutes
+        // (plan 45's `accrual/post_5k` bench).
         let mut placements: Vec<Placement> = Vec::with_capacity(transactions.len());
+        let order = DateOrder::of(&self.journal.transactions);
+        let mut lines: HashMap<PathBuf, Lines<'_>> = HashMap::new();
         for txn in transactions {
             let body = format_transaction(txn);
-            placements.push(self.placement_for(&body, txn, position)?);
+            placements.push(
+                if position == InsertPosition::Append || self.journal.transactions.is_empty() {
+                    self.append_to_main(&body)?
+                } else {
+                    let (predecessor, successor) =
+                        order.neighbors(&self.journal.transactions, &txn.date);
+                    self.place_between(&txn.date, predecessor, successor, &body, &mut lines)?
+                },
+            );
         }
 
         // 3. Group by (file, offset); date-order within each group; build ONE
@@ -1204,6 +1230,7 @@ impl JournalEditor {
         }
 
         let mut by_file: HashMap<PathBuf, Vec<BulkGroup>> = HashMap::new();
+        let mut terminators: HashMap<PathBuf, &'static str> = HashMap::new();
         for ((file_key, offset), mut indices) in by_key {
             // Date-ascending, stable — a same-date tie keeps the input
             // batch's own relative order, same spirit as `placement_for`'s
@@ -1216,7 +1243,14 @@ impl JournalEditor {
             });
 
             let prefix = placements[indices[0]].insertion.prefix.clone();
-            let terminator = dominant_terminator(self.rope_for(&file_key)?);
+            let terminator = match terminators.get(&file_key) {
+                Some(terminator) => *terminator,
+                None => {
+                    let found = dominant_terminator(self.rope_for(&file_key)?);
+                    terminators.insert(file_key.clone(), found);
+                    found
+                }
+            };
             let mut text = prefix.clone();
             let mut members = Vec::with_capacity(indices.len());
             let mut cursor = prefix.chars().count();
@@ -1374,6 +1408,15 @@ impl JournalEditor {
 
         // Locate each of the N new transactions by (file, header line), and
         // check it balances and round-trips — attributable per-transaction.
+        // Indexed once: a scan per new transaction (of the file's chars, and
+        // of the reparsed journal) was quadratic in a large batch.
+        let mut line_index: HashMap<&PathBuf, Lines<'_>> = HashMap::new();
+        let by_header: HashMap<(&Path, u32), usize> = reparsed
+            .transactions
+            .iter()
+            .enumerate()
+            .map(|(at, t)| ((t.source_file.as_path(), t.source_span.0.line), at))
+            .collect();
         let mut new_reparsed_indices: Vec<usize> = Vec::with_capacity(inputs.len());
         for (batch_index, (file_key, header_char)) in positions.iter().enumerate() {
             let candidate_rope = candidates.get(file_key).ok_or_else(|| {
@@ -1382,14 +1425,15 @@ impl JournalEditor {
                     file_key.display()
                 ))
             })?;
-            let line0 = Lines::new(candidate_rope).char_to_line(*header_char)?;
+            let line0 = line_index
+                .entry(file_key)
+                .or_insert_with(|| Lines::new(candidate_rope))
+                .char_to_line(*header_char)?;
             let line1 = u32::try_from(line0 + 1)
                 .map_err(|_| EditError::Internal("line index overflow".into()))?;
-            let (reparsed_index, located) = reparsed
-                .transactions
-                .iter()
-                .enumerate()
-                .find(|(_, t)| t.source_file == *file_key && t.source_span.0.line == line1)
+            let (reparsed_index, located) = by_header
+                .get(&(file_key.as_path(), line1))
+                .map(|&at| (at, &reparsed.transactions[at]))
                 .ok_or_else(|| {
                     EditError::Internal(format!(
                         "could not locate new transaction {batch_index} of the batch after the bulk edit"
@@ -2238,25 +2282,55 @@ impl JournalEditor {
             .iter()
             .filter(|existing| existing.date.as_str() > txn.date.as_str())
             .min_by(|a, b| a.date.cmp(&b.date));
+        self.place_between(&txn.date, predecessor, successor, body, &mut HashMap::new())
+    }
 
+    /// Where a transaction goes between its date neighbours (see
+    /// [`placement_for`](Self::placement_for)), with each file's line index
+    /// built at most once per `lines` cache.
+    fn place_between<'s>(
+        &'s self,
+        date: &str,
+        predecessor: Option<&Transaction>,
+        successor: Option<&Transaction>,
+        body: &str,
+        lines: &mut HashMap<PathBuf, Lines<'s>>,
+    ) -> Result<Placement, EditError> {
+        for txn in [predecessor, successor].into_iter().flatten() {
+            if !lines.contains_key(&txn.source_file) {
+                let built = Lines::new(self.rope_for(&txn.source_file)?);
+                lines.insert(txn.source_file.clone(), built);
+            }
+        }
+        let lines_of = |file: &Path| {
+            lines
+                .get(file)
+                .ok_or_else(|| EditError::Internal(format!("no line index for {}", file.display())))
+        };
+        let insert_after = |predecessor: &Transaction| {
+            self.insert_after(predecessor, body, lines_of(&predecessor.source_file)?)
+        };
+        let insert_before = |successor: &Transaction| {
+            self.insert_before(successor, body, lines_of(&successor.source_file)?)
+        };
         match (predecessor, successor) {
             // Both neighbors in one file (the common single-file case), or no
             // successor at all: follow the predecessor.
-            (Some(predecessor), None) => self.insert_after(predecessor, body),
+            (Some(predecessor), None) => insert_after(predecessor),
             (Some(predecessor), Some(successor)) => {
                 let successor_is_closer_in_period = predecessor.source_file
                     != successor.source_file
-                    && shared_date_prefix(&successor.date, &txn.date)
-                        > shared_date_prefix(&predecessor.date, &txn.date);
+                    && shared_date_prefix(&successor.date, date)
+                        > shared_date_prefix(&predecessor.date, date);
                 if successor_is_closer_in_period {
-                    self.insert_before(successor, body)
+                    insert_before(successor)
                 } else {
-                    self.insert_after(predecessor, body)
+                    insert_after(predecessor)
                 }
             }
             // No predecessor ⇒ the new row precedes every existing one: place it
             // before the successor, which is then the earliest transaction.
-            (None, Some(successor)) => self.insert_before(successor, body),
+            (None, Some(successor)) => insert_before(successor),
             (None, None) => Err(EditError::Internal(
                 "a non-empty journal has neither a predecessor nor a successor".into(),
             )),
@@ -2282,9 +2356,14 @@ impl JournalEditor {
     /// indented comment lines, so anchoring on the span's end keeps a
     /// `; subscription: false` written under the last posting attached to the
     /// transaction it belongs to.
-    fn insert_after(&self, predecessor: &Transaction, body: &str) -> Result<Placement, EditError> {
+    fn insert_after(
+        &self,
+        predecessor: &Transaction,
+        body: &str,
+        lines: &Lines<'_>,
+    ) -> Result<Placement, EditError> {
         let rope = self.rope_for(&predecessor.source_file)?;
-        let (_, end) = txn_char_range(&Lines::new(rope), predecessor)?;
+        let (_, end) = txn_char_range(lines, predecessor)?;
         let insertion = if end >= rope.len_chars() {
             append_insertion(rope, body)
         } else {
@@ -2296,7 +2375,7 @@ impl JournalEditor {
         };
         Ok(Placement {
             file_key: predecessor.source_file.clone(),
-            insertion: insertion.with_terminator(dominant_terminator(rope)),
+            insertion: insertion.with_terminator(lines.terminator()),
         })
     }
 
@@ -2308,12 +2387,15 @@ impl JournalEditor {
     /// header (DL-6): a `; note about this trip` line describes the transaction
     /// under it, and inserting between the two silently re-parents the note to
     /// the new row.
-    fn insert_before(&self, successor: &Transaction, body: &str) -> Result<Placement, EditError> {
-        let rope = self.rope_for(&successor.source_file)?;
-        let lines = Lines::new(rope);
-        let (start, _) = txn_char_range(&lines, successor)?;
+    fn insert_before(
+        &self,
+        successor: &Transaction,
+        body: &str,
+        lines: &Lines<'_>,
+    ) -> Result<Placement, EditError> {
+        let (start, _) = txn_char_range(lines, successor)?;
         let header_line0 = successor.source_span.0.line.saturating_sub(1) as usize;
-        let anchor_line0 = comment_block_start(&lines, header_line0);
+        let anchor_line0 = comment_block_start(lines, header_line0);
         let offset = if anchor_line0 == header_line0 {
             start
         } else {
@@ -2326,7 +2408,7 @@ impl JournalEditor {
                 prefix: String::new(),
                 body: format!("{body}\n"),
             }
-            .with_terminator(dominant_terminator(rope)),
+            .with_terminator(lines.terminator()),
         })
     }
 
@@ -2446,6 +2528,39 @@ fn file_changed_externally(vault: &dyn Vault, file: &FileBuf) -> Result<bool, Ed
 // Line addressing (DL-1)
 // ---------------------------------------------------------------------------
 
+/// Transactions by `(date, file order)`, for finding a new transaction's date
+/// neighbours by binary search: the same answer as [`JournalEditor::placement_for`]'s
+/// two scans (the latest-dated `<=`, last in file order on a tie; the
+/// earliest-dated `>`, first in file order on a tie).
+struct DateOrder(Vec<usize>);
+
+impl DateOrder {
+    fn of(transactions: &[Transaction]) -> Self {
+        let mut order: Vec<usize> = (0..transactions.len()).collect();
+        order.sort_by(|&a, &b| {
+            transactions[a]
+                .date
+                .cmp(&transactions[b].date)
+                .then(a.cmp(&b))
+        });
+        Self(order)
+    }
+
+    fn neighbors<'t>(
+        &self,
+        transactions: &'t [Transaction],
+        date: &str,
+    ) -> (Option<&'t Transaction>, Option<&'t Transaction>) {
+        let split = self
+            .0
+            .partition_point(|&at| transactions[at].date.as_str() <= date);
+        (
+            split.checked_sub(1).map(|at| &transactions[self.0[at]]),
+            self.0.get(split).map(|&at| &transactions[at]),
+        )
+    }
+}
+
 /// An **LF-only** line index over a rope: the char offset at which each line
 /// starts, where a line ends at `\n` and at nothing else.
 ///
@@ -2475,6 +2590,9 @@ fn file_changed_externally(vault: &dyn Vault, file: &FileBuf) -> Result<bool, Ed
 /// change.
 struct Lines<'a> {
     rope: &'a Rope,
+    /// The file's [`dominant_terminator`], found on first use and then kept,
+    /// so a batch reusing one index doesn't rescan the file per insertion.
+    terminator: std::cell::OnceCell<&'static str>,
     /// Char offset of the start of each line: always begins with `0` and gains
     /// an entry after every `\n`. A text ending in `\n` therefore has a final
     /// empty line, matching both ropey's `len_lines` convention (so
@@ -2494,7 +2612,17 @@ impl<'a> Lines<'a> {
                 }
             }
         }
-        Self { rope, starts }
+        Self {
+            rope,
+            starts,
+            terminator: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// The file's [`dominant_terminator`].
+    fn terminator(&self) -> &'static str {
+        self.terminator
+            .get_or_init(|| dominant_terminator(self.rope))
     }
 
     /// The number of lines, on ropey's convention (a trailing `\n` yields a

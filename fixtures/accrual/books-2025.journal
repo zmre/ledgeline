@@ -1,0 +1,14 @@
+; 2025 transactions of the accrual fixture (synthetic).
+
+2025-01-01 Opening balance
+    assets:bank:checking                $50000.00
+    equity:opening
+
+; Annual prepayment: twelve monthly entries in advance from Dec 17.
+2025-12-17 Customer X Payment
+    assets:bank:checking                $12000.00
+    liabilities:deferred-revenue       $-12000.00  ; customer: Customer X, recognition: cx1217, term-months: 12, contract: new
+
+2025-12-17 Customer X Recognized  ; recognition: cx1217, renewal-date: 2026-12-17, recognized: 2025-12-17
+    liabilities:deferred-revenue  $1000.00  ; customer: Customer X
+    revenue:subscriptions         $-1000.00  ; customer: Customer X

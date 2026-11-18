@@ -43,11 +43,15 @@ pub enum KpiRole {
     Receivable,
     /// Trade payables.
     Payable,
+    /// Prepaid expenses: an asset recognized into expense over a term
+    /// (plan 45). Insights reads nothing from it in v1; the accrual helpers'
+    /// gate does.
+    Prepaid,
 }
 
 impl KpiRole {
     /// Every role, in vocabulary order.
-    pub const ALL: [KpiRole; 8] = [
+    pub const ALL: [KpiRole; 9] = [
         KpiRole::Recurring,
         KpiRole::Usage,
         KpiRole::DeferredRevenue,
@@ -56,6 +60,7 @@ impl KpiRole {
         KpiRole::Ga,
         KpiRole::Receivable,
         KpiRole::Payable,
+        KpiRole::Prepaid,
     ];
 
     /// The tag value, as written in a journal and on the wire.
@@ -70,6 +75,7 @@ impl KpiRole {
             Self::Ga => "ga",
             Self::Receivable => "receivable",
             Self::Payable => "payable",
+            Self::Prepaid => "prepaid",
         }
     }
 }
@@ -92,7 +98,7 @@ pub fn expected_type(role: KpiRole) -> AccountType {
         KpiRole::Recurring | KpiRole::Usage => AccountType::Revenue,
         KpiRole::DeferredRevenue | KpiRole::Payable => AccountType::Liability,
         KpiRole::SalesMarketing | KpiRole::Rnd | KpiRole::Ga => AccountType::Expense,
-        KpiRole::Receivable => AccountType::Asset,
+        KpiRole::Receivable | KpiRole::Prepaid => AccountType::Asset,
     }
 }
 
@@ -123,7 +129,7 @@ pub fn any_kpi_declared(accounts: &[AccountDeclaration]) -> bool {
 }
 
 /// True when a strict descendant of `account` declares a role.
-fn has_declared_descendant(declared: &BTreeMap<String, KpiRole>, account: &str) -> bool {
+pub(crate) fn has_declared_descendant(declared: &BTreeMap<String, KpiRole>, account: &str) -> bool {
     declared
         .range::<str, _>((Bound::Excluded(account), Bound::Unbounded))
         .take_while(|(name, _)| name.starts_with(account))
@@ -132,7 +138,7 @@ fn has_declared_descendant(declared: &BTreeMap<String, KpiRole>, account: &str) 
 
 /// The last `:` segment of `account` contains `needle` (ASCII
 /// case-insensitive; `needle` is lowercase).
-fn last_segment_contains(account: &str, needle: &str) -> bool {
+pub(crate) fn last_segment_contains(account: &str, needle: &str) -> bool {
     let segment = account.rsplit(':').next().unwrap_or(account);
     segment.to_ascii_lowercase().contains(needle)
 }
@@ -173,6 +179,16 @@ pub fn kpi_resolver<'a>(
             .copied()
             .or_else(|| inferred_role(declared, types, account))
     }
+}
+
+/// The role `account` (or its nearest declaring ancestor) DECLARES, ignoring
+/// any name inference. What plan 45's accrual gate reads before it infers.
+#[must_use]
+pub(crate) fn nearest_declared_role(
+    declared: &BTreeMap<String, KpiRole>,
+    account: &str,
+) -> Option<KpiRole> {
+    nearest_declared(declared, account).copied()
 }
 
 /// Whether `account` (or an ancestor) DECLARES its role, as opposed to having
@@ -372,6 +388,7 @@ mod tests {
         );
         assert_eq!(expected_type(KpiRole::Payable), AccountType::Liability);
         assert_eq!(expected_type(KpiRole::Receivable), AccountType::Asset);
+        assert_eq!(expected_type(KpiRole::Prepaid), AccountType::Asset);
         for role in [KpiRole::SalesMarketing, KpiRole::Rnd, KpiRole::Ga] {
             assert_eq!(expected_type(role), AccountType::Expense);
         }

@@ -21,6 +21,14 @@
 //! - builds the [`EditOp`]s that link, reject, unlink, forget a rejection or
 //!   ignore a posting, so every caller writes exactly the same tags.
 //!
+//! Plan 45 (D-settle) adds **settlement links**: an invoice's receivable
+//! (or a bill's payable) posting linked to its payment's with the same
+//! `match:` tag. A link is valid when its postings are all clearing postings
+//! on one account, **or** all settlement postings (an account whose accrual
+//! role is receivable or payable) on one account. Settlement links are never
+//! proposed here (that's [`crate::accrual::settle`]) and never collapse into a
+//! transfer row.
+//!
 //! Nothing here writes a file. The ops go through
 //! [`crate::edit::JournalEditor::apply_batch`].
 
@@ -182,7 +190,8 @@ pub struct Alternative {
 pub enum BrokenReason {
     /// The id is on this many postings: fewer than two.
     Count(usize),
-    /// A posting is not on a clearing account.
+    /// The postings are neither all on a clearing account nor all on a
+    /// receivable or payable account (plan 45 D-settle).
     NotClearing,
     /// The postings are on more than one clearing account.
     DifferentAccounts,
@@ -213,6 +222,8 @@ pub struct LinkIndex {
     groups: BTreeMap<String, Vec<PostingRef>>,
     broken: Vec<BrokenLink>,
     by_position: HashMap<usize, Vec<String>>,
+    /// The valid links whose postings are settlement postings (plan 45).
+    settlement: BTreeSet<String>,
 }
 
 impl LinkIndex {
@@ -262,6 +273,14 @@ impl LinkIndex {
     #[must_use]
     pub fn link_count(&self, position: usize) -> usize {
         self.links_at(position).len()
+    }
+
+    /// Whether the valid link `id` is a settlement link — an invoice or bill
+    /// and its payment, through a receivable or payable account (plan 45
+    /// D-settle) — rather than a transfer.
+    #[must_use]
+    pub fn is_settlement(&self, id: &str) -> bool {
+        self.settlement.contains(id)
     }
 }
 
@@ -383,6 +402,39 @@ pub fn clearing_accounts(journal: &Journal) -> BTreeSet<String> {
         .filter(|account| under_a_root(account))
         .collect();
     names.into_iter().map(str::to_string).collect()
+}
+
+/// Whether an account is a **settlement** account: its accrual role is
+/// receivable or payable (plan 45 D-gate). Built from the declarations only,
+/// and asked only about accounts that carry a `match` tag, so it costs
+/// nothing on a journal with no settlement links.
+pub(crate) fn settlement_resolver(journal: &Journal) -> impl Fn(&str) -> bool + '_ {
+    let declared = crate::reports::declared_kpi_roles(&journal.accounts);
+    let types = AccountTypes::new(&account_decls(journal));
+    move |account: &str| {
+        crate::accrual::accrual_resolver(&declared, &types)(account)
+            .is_some_and(|(role, _)| role.is_settlement())
+    }
+}
+
+/// Which postings a link may join: clearing postings, or settlement
+/// postings (plan 45).
+struct Linkable<'j> {
+    clearing: BTreeSet<String>,
+    settlement: Box<dyn Fn(&str) -> bool + 'j>,
+}
+
+impl<'j> Linkable<'j> {
+    fn of(journal: &'j Journal) -> Self {
+        Self {
+            clearing: clearing_accounts(journal),
+            settlement: Box::new(settlement_resolver(journal)),
+        }
+    }
+
+    fn accepts(&self, account: &str) -> bool {
+        self.clearing.contains(account) || (self.settlement)(account)
+    }
 }
 
 /// Whether any account directive declares the `clearing` tag. With none,
@@ -1443,7 +1495,7 @@ fn posting_at(journal: &Journal, at: PostingRef) -> Option<&Posting> {
 /// transaction, with one cost-free amount of one commodity, the amounts
 /// summing to exactly zero.
 fn broken_reason(
-    clearing: &BTreeSet<String>,
+    linkable: &Linkable<'_>,
     postings: &[(PostingRef, &Posting)],
 ) -> Option<BrokenReason> {
     let Some(((_, first), rest)) = postings.split_first() else {
@@ -1452,10 +1504,8 @@ fn broken_reason(
     if rest.is_empty() {
         return Some(BrokenReason::Count(1));
     }
-    if postings
-        .iter()
-        .any(|(_, posting)| !clearing.contains(&posting.account.0))
-    {
+    let all = |test: &dyn Fn(&str) -> bool| postings.iter().all(|(_, p)| test(&p.account.0));
+    if !all(&|account| linkable.clearing.contains(account)) && !all(&*linkable.settlement) {
         return Some(BrokenReason::NotClearing);
     }
     if rest
@@ -1498,7 +1548,7 @@ fn sums_to_zero<'p>(postings: impl IntoIterator<Item = &'p Posting>) -> bool {
 /// (D5, D10). `match:ignore` is not a link.
 #[must_use]
 pub fn links(journal: &Journal) -> LinkIndex {
-    let clearing = clearing_accounts(journal);
+    let linkable = Linkable::of(journal);
     let mut index = LinkIndex::default();
     for (id, postings) in tag_index(journal, MATCH_TAG) {
         if id == IGNORE_VALUE {
@@ -1511,7 +1561,7 @@ pub fn links(journal: &Journal) -> LinkIndex {
         else {
             continue;
         };
-        if let Some(reason) = broken_reason(&clearing, &resolved) {
+        if let Some(reason) = broken_reason(&linkable, &resolved) {
             index.broken.push(BrokenLink {
                 id,
                 postings,
@@ -1529,6 +1579,12 @@ pub fn links(journal: &Journal) -> LinkIndex {
                 .entry(position)
                 .or_default()
                 .push(id.clone());
+        }
+        if resolved
+            .iter()
+            .any(|(_, posting)| !linkable.clearing.contains(&posting.account.0))
+        {
+            index.settlement.insert(id.clone());
         }
         match postings.as_slice() {
             [a, b] => {
@@ -1554,28 +1610,28 @@ pub fn rejections(journal: &Journal) -> Rejections {
 // Ids
 // ---------------------------------------------------------------------------
 
-/// Fresh `match`/`nomatch` ids: 6 base-36 characters, unique across every
-/// `match` and `nomatch` value in the journal and every id this generator has
-/// already handed out (so a bulk link can draw many from one journal).
+/// Fresh ids: 6 base-36 characters, unique across a namespace of values
+/// already in use and every id this generator has handed out (so a bulk
+/// action can draw many from one journal). Shared by `match`/`nomatch`
+/// ([`MatchIds`]) and plan 45's `recognition:` ids, each with its own
+/// namespace.
 #[derive(Debug)]
-pub struct MatchIds {
+pub struct IdGenerator {
     used: HashSet<String>,
     hasher: RandomState,
     counter: u64,
 }
 
-impl MatchIds {
-    /// A generator that avoids every id already in `journal`.
+impl IdGenerator {
+    /// A generator that avoids every value in `used`, and the reserved words
+    /// `ignore` and `none`.
     #[must_use]
-    pub fn new(journal: &Journal) -> Self {
-        let used = real_postings(journal)
-            .flat_map(|(_, _, posting)| {
-                tag_values(posting, MATCH_TAG).chain(tag_values(posting, NOMATCH_TAG))
-            })
-            .map(str::to_string)
-            .collect();
+    pub fn avoiding(used: impl IntoIterator<Item = String>) -> Self {
         Self {
-            used,
+            used: used
+                .into_iter()
+                .chain([IGNORE_VALUE.to_string(), "none".to_string()])
+                .collect(),
             hasher: RandomState::new(),
             counter: 0,
         }
@@ -1594,10 +1650,35 @@ impl MatchIds {
                     char::from(digit)
                 })
                 .collect();
-            if id != IGNORE_VALUE && self.used.insert(id.clone()) {
+            if self.used.insert(id.clone()) {
                 return id;
             }
         }
+    }
+}
+
+/// Fresh `match`/`nomatch` ids, unique across every `match` and `nomatch`
+/// value in the journal (see [`IdGenerator`]).
+#[derive(Debug)]
+pub struct MatchIds(IdGenerator);
+
+impl MatchIds {
+    /// A generator that avoids every id already in `journal`.
+    #[must_use]
+    pub fn new(journal: &Journal) -> Self {
+        Self(IdGenerator::avoiding(
+            real_postings(journal)
+                .flat_map(|(_, _, posting)| {
+                    tag_values(posting, MATCH_TAG).chain(tag_values(posting, NOMATCH_TAG))
+                })
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        ))
+    }
+
+    /// The next fresh id.
+    pub fn next_id(&mut self) -> String {
+        self.0.next_id()
     }
 }
 
@@ -1699,7 +1780,7 @@ fn check_id(id: &str) -> Result<(), MatchError> {
 /// passes D3 (the lookback aside).
 fn matchable<'j>(
     journal: &'j Journal,
-    clearing: &BTreeSet<String>,
+    linkable: &Linkable<'_>,
     at: PostingRef,
 ) -> Result<&'j Posting, MatchError> {
     let txn = journal
@@ -1721,8 +1802,10 @@ fn matchable<'j>(
     if posting.ptype != PostingType::Regular {
         return Err(not("it is a virtual posting"));
     }
-    if !clearing.contains(&posting.account.0) {
-        return Err(not("its account is not a clearing account"));
+    if !linkable.accepts(&posting.account.0) {
+        return Err(not(
+            "its account is not a clearing, receivable or payable account",
+        ));
     }
     match unmatchable(posting) {
         Some(reason) => Err(not(reason)),
@@ -1739,7 +1822,7 @@ pub const MAX_LINK_MEMBERS: usize = 16;
 /// the rejections).
 fn legal_group<'j>(
     journal: &'j Journal,
-    clearing: &BTreeSet<String>,
+    linkable: &Linkable<'_>,
     members: &[PostingRef],
 ) -> Result<Vec<(PostingRef, &'j Posting)>, MatchError> {
     if !(2..=MAX_LINK_MEMBERS).contains(&members.len()) {
@@ -1750,15 +1833,18 @@ fn legal_group<'j>(
     }
     let resolved = members
         .iter()
-        .map(|&at| matchable(journal, clearing, at).map(|posting| (at, posting)))
+        .map(|&at| matchable(journal, linkable, at).map(|posting| (at, posting)))
         .collect::<Result<Vec<_>, _>>()?;
-    match broken_reason(clearing, &resolved) {
+    match broken_reason(linkable, &resolved) {
         None => Ok(resolved),
         Some(BrokenReason::SameTransaction) => Err(MatchError::NotAPair(
             "two of the postings are in one transaction".to_string(),
         )),
         Some(BrokenReason::DifferentAccounts) => Err(MatchError::NotAPair(
-            "the postings are on different clearing accounts".to_string(),
+            "the postings are on different accounts".to_string(),
+        )),
+        Some(BrokenReason::NotClearing) => Err(MatchError::NotAPair(
+            "the postings mix clearing and receivable or payable accounts".to_string(),
         )),
         Some(_) => Err(MatchError::NotAPair(
             "the amounts do not cancel exactly".to_string(),
@@ -1802,11 +1888,19 @@ pub fn link_group_ops(
 /// [`link_ops`] for many pairs over one journal: the clearing accounts and
 /// the rejections are read once rather than once per pair, which is what
 /// keeps a bulk link of thousands of pairs linear.
-#[derive(Debug)]
 pub struct Linker<'j> {
     journal: &'j Journal,
-    clearing: BTreeSet<String>,
+    linkable: Linkable<'j>,
     rejections: Rejections,
+}
+
+impl std::fmt::Debug for Linker<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Linker")
+            .field("clearing", &self.linkable.clearing)
+            .field("rejections", &self.rejections)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'j> Linker<'j> {
@@ -1815,7 +1909,7 @@ impl<'j> Linker<'j> {
     pub fn new(journal: &'j Journal) -> Self {
         Self {
             journal,
-            clearing: clearing_accounts(journal),
+            linkable: Linkable::of(journal),
             rejections: rejections(journal),
         }
     }
@@ -1834,7 +1928,7 @@ impl<'j> Linker<'j> {
     /// As [`link_group_ops`].
     pub fn link_group_ops(&self, members: &[PostingRef], id: &str) -> Result<TxnOps, MatchError> {
         check_id(id)?;
-        let resolved = legal_group(self.journal, &self.clearing, members)?;
+        let resolved = legal_group(self.journal, &self.linkable, members)?;
         let mut ops = OpsBuilder::default();
         for &at in members {
             ops.set(at, MATCH_TAG, Some(id));
@@ -1855,7 +1949,7 @@ pub fn reject_ops(
     id: &str,
 ) -> Result<TxnOps, MatchError> {
     check_id(id)?;
-    legal_group(journal, &clearing_accounts(journal), &[a, b])?;
+    legal_group(journal, &Linkable::of(journal), &[a, b])?;
     let mut ops = OpsBuilder::default();
     ops.add(a, NOMATCH_TAG, id);
     ops.add(b, NOMATCH_TAG, id);
@@ -1905,7 +1999,7 @@ fn remove_everywhere(
 /// # Errors
 /// As [`link_ops`], for the one posting.
 pub fn ignore_ops(journal: &Journal, at: PostingRef) -> Result<TxnOps, MatchError> {
-    let posting = matchable(journal, &clearing_accounts(journal), at)?;
+    let posting = matchable(journal, &Linkable::of(journal), at)?;
     let mut ops = OpsBuilder::default();
     ops.set(at, MATCH_TAG, Some(IGNORE_VALUE));
     ops.forget_rejections_of(&rejections(journal), &[(at, posting)]);
@@ -1940,7 +2034,7 @@ mod tests {
         )
         .expect("parses");
         let ids = MatchIds::new(&journal);
-        assert!(ids.used.contains("abc123") && ids.used.contains("def456"));
+        assert!(ids.0.used.contains("abc123") && ids.0.used.contains("def456"));
     }
 
     #[test]

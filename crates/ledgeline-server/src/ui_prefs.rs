@@ -85,7 +85,7 @@ use std::io::Read;
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 
-use ledgeline_core::vault::{Revision, VaultError, VaultPath};
+use ledgeline_core::vault::{VaultError, VaultPath};
 use serde::Serialize;
 use serde_json::{Map, Value as Json};
 use toml_edit::{DocumentMut, InlineTable, Item, Table, TableLike};
@@ -99,7 +99,7 @@ pub const UI_PREFS_IN_BROWSER_ENV: &str = "LEDGELINE_UI_PREFS_IN_BROWSER";
 
 /// The per-ledger override file, beside the main journal. Hand-made, or
 /// created by an explicit [`pin`].
-pub(crate) const LEDGER_FILE: &str = "ledgeline.toml";
+pub(crate) const LEDGER_FILE: &str = ledger_file::LEDGER_FILE;
 
 /// The global file, in the config directory: where saves normally go.
 pub(crate) const GLOBAL_FILE: &str = "ui-prefs.toml";
@@ -122,7 +122,7 @@ const KEPT_NO_CONFIG_DIR: &str =
 const UI_TABLE: &str = "ui";
 
 /// The largest settings file read. Real ones are a few hundred bytes.
-pub(crate) const MAX_FILE_BYTES: u64 = 64 * 1024;
+pub(crate) const MAX_FILE_BYTES: u64 = ledger_file::MAX_FILE_BYTES;
 
 /// The most benchmark lines kept. The catalog is a handful of symbols.
 const MAX_BENCHMARKS: usize = 32;
@@ -700,16 +700,8 @@ fn read_global(path: &Path) -> Result<Option<String>, &'static str> {
     Ok(Some(text))
 }
 
-/// The ledger file as read.
-enum LedgerFile {
-    Missing,
-    Present {
-        document: Box<DocumentMut>,
-        revision: Revision,
-    },
-    /// Present but not something to read or overwrite; the phrase says why.
-    Unusable(&'static str),
-}
+/// The ledger file as read: core's reader, shared with plan 45's `[books]`.
+use ledgeline_core::ledger_file::{self, LedgerEditError, LedgerFile};
 
 /// [`LEDGER_FILE`]'s place in the journal's vault.
 fn ledger_path(location: &JournalLocation) -> Result<VaultPath, AppError> {
@@ -720,28 +712,9 @@ fn ledger_path(location: &JournalLocation) -> Result<VaultPath, AppError> {
 }
 
 /// Read [`LEDGER_FILE`] the way an untrusted file is read: capped, and never
-/// through a symlink.
+/// through a symlink ([`ledger_file::read`]).
 fn read_ledger(location: &JournalLocation, path: &VaultPath) -> LedgerFile {
-    match location.vault().read_pinned(path, Some(MAX_FILE_BYTES)) {
-        Ok((bytes, revision)) => String::from_utf8(bytes)
-            .ok()
-            .and_then(|text| text.parse::<DocumentMut>().ok())
-            .map_or(LedgerFile::Unusable("is not valid TOML"), |document| {
-                LedgerFile::Present {
-                    document: Box::new(document),
-                    revision,
-                }
-            }),
-        Err(error) if error.is_not_found() => LedgerFile::Missing,
-        Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
-            LedgerFile::Unusable("is larger than 64 KiB")
-        }
-        Err(error) if error.is_not_regular_file() => {
-            LedgerFile::Unusable("is not a regular file (a symbolic link is never followed)")
-        }
-        Err(VaultError::NotDownloaded { .. }) => LedgerFile::Unusable("is not downloaded yet"),
-        Err(_) => LedgerFile::Unusable("could not be read"),
-    }
+    ledger_file::read(&**location.vault(), path)
 }
 
 /// The `[ui]` values of a parsed ledger file.
@@ -1372,34 +1345,18 @@ pub(crate) fn edit_ledger_text(
     let session = state.ui_prefs();
     // Held across the write, so a view-settings save never interleaves.
     let _kept = session.kept();
-    let vault = location.vault();
-    with_retries(LEDGER_FILE, || match read_ledger(&location, &path) {
-        LedgerFile::Missing => {
-            // The header goes first: `toml_edit` keeps a comment-only
-            // document as trailing text, after any table the edit adds.
-            let text = format!("{LEDGER_SYNC_HEADER}{}", edit("")?);
-            match vault.create_new_shared(&path, text.as_bytes()) {
-                Ok(_) => Ok(Attempt::Done(())),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    Ok(Attempt::Retry)
-                }
-                Err(error) => Err(write_failed(LEDGER_FILE, error.kind())),
-            }
-        }
-        LedgerFile::Unusable(reason) => Err(refuse_ledger(reason)),
-        LedgerFile::Present { document, revision } => {
-            let before = document.to_string();
-            let after = edit(&before)?;
-            if after == before {
-                return Ok(Attempt::Done(()));
-            }
-            match vault.replace(&path, after.as_bytes(), &revision) {
-                Ok(_) => Ok(Attempt::Done(())),
-                Err(VaultError::Changed { .. }) => Ok(Attempt::Retry),
-                Err(error) => Err(write_failed(LEDGER_FILE, error.kind())),
-            }
-        }
-    })
+    // The header goes first: `toml_edit` keeps a comment-only document as
+    // trailing text, after any table the edit adds.
+    ledger_file::edit(&**location.vault(), &path, LEDGER_SYNC_HEADER, edit)
+        .map(|_| ())
+        .map_err(|error| match error {
+            LedgerEditError::Edit(error) => error,
+            LedgerEditError::Unusable(reason) => refuse_ledger(reason),
+            LedgerEditError::KeptChanging => AppError::Conflict(format!(
+                "{LEDGER_FILE} kept changing while Ledgeline saved to it; nothing was written"
+            )),
+            LedgerEditError::Write(kind) => write_failed(LEDGER_FILE, kind),
+        })
 }
 
 /// The top of a [`LEDGER_FILE`] that linking a bank account creates.

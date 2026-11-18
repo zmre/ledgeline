@@ -30,7 +30,7 @@ use crate::model::{
 };
 use crate::wire::{account_tag_map, posting_tags};
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// A cost annotation: `@` per unit when `per`, `@@` total otherwise; `qty`
 /// always the unsigned magnitude.
@@ -321,7 +321,9 @@ impl Transfer {
     }
 }
 
-/// Every valid link in a journal, as the journal rows see them (D11).
+/// Every valid transfer link in a journal, as the journal rows see them (D11).
+/// Settlement links (plan 45) are left out: an invoice and its payment stay
+/// two ordinary rows.
 ///
 /// - A pair **collapses** into one transfer row when neither of its
 ///   transactions is in another valid link. A group of three or more
@@ -356,10 +358,20 @@ impl Transfers {
         // A group of three or more (A3) never collapses: its rows carry ⇄,
         // and a pair sharing a transaction with it stays expanded too
         // (`link_count`).
-        transfers
-            .linked
-            .extend(index.groups().values().flatten().map(|at| position(*at)));
+        // A settlement link (an invoice and its payment, plan 45 D-settle) is
+        // not a transfer: its rows stay two rows, without the ⇄ mark.
+        transfers.linked.extend(
+            index
+                .groups()
+                .iter()
+                .filter(|(id, _)| !index.is_settlement(id))
+                .flat_map(|(_, members)| members)
+                .map(|at| position(*at)),
+        );
         for (id, (a, b)) in index.pairs() {
+            if index.is_settlement(id) {
+                continue;
+            }
             transfers.linked.extend([position(*a), position(*b)]);
             if index.link_count(a.position) != 1 || index.link_count(b.position) != 1 {
                 continue;
@@ -454,5 +466,257 @@ impl Transfers {
             haystacks[a] = joined_a;
             haystacks[b] = joined_b;
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Recognition rows (plan 45 D8)
+// ---------------------------------------------------------------------------
+
+/// How the journal shows posted recognition entries (`?recognition=`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum RecognitionMode {
+    /// A month's entries collapse into one group row (the default).
+    #[default]
+    Group,
+    /// The entries are left out of the rows. They still count in every total.
+    Hide,
+    /// Every entry is its own row.
+    Show,
+}
+
+/// One month's posted recognition entries as a single row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecognitionGroup {
+    /// `YYYY-MM`.
+    pub month: String,
+    /// The position the row sits at: its latest-dated member.
+    pub anchor: u32,
+    /// Every member the filter kept, in display order.
+    pub members: Vec<u32>,
+    /// What the members recognize, per commodity: the sum of their debit
+    /// sides.
+    pub totals: BTreeMap<String, Dec>,
+    /// Whether the members are listed under it.
+    pub expanded: bool,
+}
+
+/// One row of the journal list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowSlot {
+    /// A transaction, by position.
+    Txn(u32),
+    /// A month of recognition entries.
+    Group(RecognitionGroup),
+}
+
+/// The rows of a filter result under a [`RecognitionMode`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupedRows {
+    /// The rows, in display order.
+    pub slots: Vec<RowSlot>,
+    /// How many entries [`RecognitionMode::Hide`] left out (the footer's
+    /// "incl. N hidden recognition entries").
+    pub hidden: usize,
+}
+
+/// Which transactions are posted recognition entries, and their months —
+/// built once per snapshot, like [`Transfers`].
+#[derive(Debug, Clone, Default)]
+pub struct RecognitionRows {
+    /// Position → (month, date, tindex).
+    members: HashMap<u32, (String, String, u32)>,
+}
+
+impl RecognitionRows {
+    /// The posted entries of `journal` (any transaction carrying both
+    /// `recognition:` and `recognized:`).
+    #[must_use]
+    pub fn of(journal: &Journal) -> Self {
+        Self {
+            members: journal
+                .transactions
+                .iter()
+                .enumerate()
+                .filter(|(_, txn)| crate::accrual::is_posted_entry(txn))
+                .filter_map(|(position, txn)| {
+                    let position = u32::try_from(position).ok()?;
+                    let month = txn.date.get(..7)?.to_string();
+                    Some((position, (month, txn.date.clone(), txn.index.0)))
+                })
+                .collect(),
+        }
+    }
+
+    /// Whether the journal has no posted entries.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.members.is_empty()
+    }
+
+    /// Whether the transaction at `position` is a posted entry.
+    #[must_use]
+    pub fn is_member(&self, position: u32) -> bool {
+        self.members.contains_key(&position)
+    }
+
+    /// The rows of `rows` (positions in display order) under `mode`. A month
+    /// with at least two kept entries becomes one group row at its latest
+    /// member; `expanded` months list their members right under it.
+    #[must_use]
+    pub fn group(
+        &self,
+        journal: &Journal,
+        rows: &[u32],
+        mode: RecognitionMode,
+        expanded: &HashSet<String>,
+    ) -> GroupedRows {
+        let plain = |rows: &mut dyn Iterator<Item = u32>| rows.map(RowSlot::Txn).collect();
+        match mode {
+            _ if self.is_empty() => GroupedRows {
+                slots: plain(&mut rows.iter().copied()),
+                hidden: 0,
+            },
+            RecognitionMode::Show => GroupedRows {
+                slots: plain(&mut rows.iter().copied()),
+                hidden: 0,
+            },
+            RecognitionMode::Hide => {
+                let kept: Vec<RowSlot> =
+                    plain(&mut rows.iter().copied().filter(|p| !self.is_member(*p)));
+                GroupedRows {
+                    hidden: rows.len() - kept.len(),
+                    slots: kept,
+                }
+            }
+            RecognitionMode::Group => self.grouped(journal, rows, expanded),
+        }
+    }
+
+    fn grouped(&self, journal: &Journal, rows: &[u32], expanded: &HashSet<String>) -> GroupedRows {
+        let mut months: HashMap<&str, Vec<u32>> = HashMap::new();
+        for &position in rows {
+            if let Some((month, _, _)) = self.members.get(&position) {
+                months.entry(month.as_str()).or_default().push(position);
+            }
+        }
+        months.retain(|_, members| members.len() >= 2);
+        let anchor_of = |members: &[u32]| {
+            members.iter().copied().max_by_key(|p| {
+                self.members
+                    .get(p)
+                    .map(|(_, date, index)| (date.clone(), *index))
+            })
+        };
+        let anchors: HashMap<u32, &str> = months
+            .iter()
+            .filter_map(|(month, members)| anchor_of(members).map(|anchor| (anchor, *month)))
+            .collect();
+        let mut slots = Vec::with_capacity(rows.len());
+        for &position in rows {
+            let Some((month, _, _)) = self.members.get(&position) else {
+                slots.push(RowSlot::Txn(position));
+                continue;
+            };
+            let Some(members) = months.get(month.as_str()) else {
+                slots.push(RowSlot::Txn(position));
+                continue;
+            };
+            if anchors.get(&position) != Some(&month.as_str()) {
+                continue;
+            }
+            let open = expanded.contains(month);
+            slots.push(RowSlot::Group(RecognitionGroup {
+                month: month.clone(),
+                anchor: position,
+                members: members.clone(),
+                totals: debit_totals(journal, members),
+                expanded: open,
+            }));
+            if open {
+                slots.extend(members.iter().copied().map(RowSlot::Txn));
+            }
+        }
+        GroupedRows { slots, hidden: 0 }
+    }
+}
+
+/// Per commodity, the sum of the positive amounts of `positions`' postings:
+/// what a month of recognition entries recognized.
+fn debit_totals(journal: &Journal, positions: &[u32]) -> BTreeMap<String, Dec> {
+    positions
+        .iter()
+        .filter_map(|&p| journal.transactions.get(p as usize))
+        .flat_map(|txn| &txn.postings)
+        .flat_map(|posting| &posting.amounts)
+        .filter(|amount| amount.quantity.mantissa > 0)
+        .fold(BTreeMap::new(), |mut totals, amount| {
+            let sum = totals
+                .entry(amount.commodity.0.clone())
+                .or_insert(Dec::zero());
+            *sum = sum.add(amount.quantity).unwrap_or(*sum);
+            totals
+        })
+}
+
+#[cfg(test)]
+mod recognition_tests {
+    use super::*;
+    use crate::parse::parse_journal;
+
+    const TEXT: &str = "\
+2026-11-01 Rent
+    expenses:rent  $10
+    assets:bank
+
+2026-11-17 X Recognized  ; recognition: aaa111, recognized: 2026-11-17
+    liabilities:deferred  $100
+    revenue:sales  $-100
+
+2026-11-20 Y Recognized  ; recognition: bbb222, recognized: 2026-11-20
+    liabilities:deferred  $50
+    revenue:sales  $-50
+
+2026-12-17 X Recognized  ; recognition: aaa111, recognized: 2026-12-17
+    liabilities:deferred  $100
+    revenue:sales  $-100
+";
+
+    fn setup() -> (Journal, RecognitionRows, Vec<u32>) {
+        let journal = parse_journal(TEXT, "inline.journal").expect("parses");
+        let rows = RecognitionRows::of(&journal);
+        // Newest first, as the journal displays.
+        (journal, rows, vec![3, 2, 1, 0])
+    }
+
+    #[test]
+    fn a_month_with_two_entries_collapses_at_its_latest_member() {
+        let (journal, rows, order) = setup();
+        let grouped = rows.group(&journal, &order, RecognitionMode::Group, &HashSet::new());
+        assert_eq!(grouped.slots.len(), 3);
+        assert_eq!(grouped.slots[0], RowSlot::Txn(3));
+        let RowSlot::Group(group) = &grouped.slots[1] else {
+            panic!("a group row: {grouped:?}");
+        };
+        assert_eq!(
+            (group.month.as_str(), group.anchor, group.members.clone()),
+            ("2026-11", 2, vec![2, 1])
+        );
+        assert_eq!(group.totals["$"], Dec::new(150, 0));
+        assert_eq!(grouped.slots[2], RowSlot::Txn(0));
+    }
+
+    #[test]
+    fn expanded_months_list_members_and_hide_counts_them() {
+        let (journal, rows, order) = setup();
+        let open: HashSet<String> = ["2026-11".to_string()].into();
+        let grouped = rows.group(&journal, &order, RecognitionMode::Group, &open);
+        assert_eq!(grouped.slots.len(), 5);
+        assert_eq!(grouped.slots[2..4], [RowSlot::Txn(2), RowSlot::Txn(1)]);
+        let hidden = rows.group(&journal, &order, RecognitionMode::Hide, &HashSet::new());
+        assert_eq!(hidden.slots, vec![RowSlot::Txn(0)]);
+        assert_eq!(hidden.hidden, 3);
+        let shown = rows.group(&journal, &order, RecognitionMode::Show, &HashSet::new());
+        assert_eq!(shown.slots.len(), 4);
     }
 }
