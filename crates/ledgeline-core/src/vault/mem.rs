@@ -79,6 +79,9 @@ pub struct MemVault {
     /// How many file reads (`read`, `read_prefix`, `read_pinned`) have been
     /// served, for tests that prove a file is read once.
     reads: AtomicU64,
+    /// How many file writes (`replace`, `write_atomic`, `create_new`) have
+    /// landed, for tests that prove a change is written once.
+    writes: AtomicU64,
 }
 
 impl Default for MemVault {
@@ -123,6 +126,7 @@ impl MemVault {
             state: RwLock::new(state),
             next_ino: AtomicU64::new(1),
             reads: AtomicU64::new(0),
+            writes: AtomicU64::new(0),
         }
     }
 
@@ -270,6 +274,12 @@ impl MemVault {
     #[must_use]
     pub fn read_count(&self) -> u64 {
         self.reads.load(Ordering::Relaxed)
+    }
+
+    /// How many file writes have landed so far (refused ones don't count).
+    #[must_use]
+    pub fn write_count(&self) -> u64 {
+        self.writes.load(Ordering::Relaxed)
     }
 
     /// Every path passed to [`Vault::request_download`] so far, in order.
@@ -490,6 +500,7 @@ impl Vault for MemVault {
         let file = self.fresh_file(bytes, Availability::Local);
         let revision = Self::revision(&file);
         state.files.insert(path.clone(), file);
+        self.writes.fetch_add(1, Ordering::Relaxed);
         Ok(revision)
     }
 
@@ -506,6 +517,7 @@ impl Vault for MemVault {
         let file = self.fresh_file(bytes, Availability::Local);
         let revision = Self::revision(&file);
         state.files.insert(path.clone(), file);
+        self.writes.fetch_add(1, Ordering::Relaxed);
         Ok(revision)
     }
 
@@ -522,6 +534,7 @@ impl Vault for MemVault {
         let file = self.fresh_file(bytes, Availability::Local);
         let revision = Self::revision(&file);
         state.files.insert(path.clone(), file);
+        self.writes.fetch_add(1, Ordering::Relaxed);
         Ok(revision)
     }
 

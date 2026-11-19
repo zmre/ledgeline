@@ -56,10 +56,11 @@ These need a cursor row. <kbd>j</kbd> or <kbd>k</kbd> puts one on the table, and
 | <kbd>r</kbd>                                         | Review Recents                               |
 | <kbd>m</kbd>                                         | Find Matches                                 |
 | <kbd>Shift</kbd>+<kbd>M</kbd>                        | Find match for the cursor's transaction      |
-| <kbd>l</kbd>                                         | Expand or collapse a transfer row            |
+| <kbd>a</kbd>                                         | Recognition, on accrual books                |
+| <kbd>l</kbd>                                         | Expand or collapse a transfer or recognition row |
 | <kbd>v</kbd>                                         | Switch between the list and the calendar     |
 
-The editing keys (<kbd>Enter</kbd>, <kbd>e</kbd>, <kbd>c</kbd>, <kbd>s</kbd>, <kbd>x</kbd>, <kbd>n</kbd>, <kbd>u</kbd>, <kbd>r</kbd>, <kbd>m</kbd>) only work when the journal can be edited. See [The journal](index.md#editing-transactions). <kbd>u</kbd>, <kbd>r</kbd> and <kbd>m</kbd> don't need a cursor row, and each is off when its button is disabled.
+The editing keys (<kbd>Enter</kbd>, <kbd>e</kbd>, <kbd>c</kbd>, <kbd>s</kbd>, <kbd>x</kbd>, <kbd>n</kbd>, <kbd>u</kbd>, <kbd>r</kbd>, <kbd>m</kbd>, <kbd>a</kbd>) only work when the journal can be edited. See [The journal](index.md#editing-transactions). <kbd>u</kbd>, <kbd>r</kbd>, <kbd>m</kbd> and <kbd>a</kbd> don't need a cursor row, and each is off when its button is disabled. On a recognition group row, <kbd>Enter</kbd> expands it rather than opening the editor.
 
 <kbd>Shift</kbd>+<kbd>M</kbd> works on a row with a transfer half that isn't linked or ignored yet. See [Find match for one transaction](transfer-matching.md#find-match-for-one-transaction).
 
@@ -132,6 +133,20 @@ Find match for one transaction has its own keys:
 | <kbd>i</kbd> | Ignore this side. It asks first. |
 | <kbd>Esc</kbd> | Leave the field, cancel a confirm, or close |
 | <kbd>?</kbd> | Show the keyboard shortcuts |
+
+## Recognition
+
+These work in the Recognition overlay ([Revenue and expense recognition](accrual-recognition.md#posting-due-entries)).
+
+| Keys | Action |
+| --- | --- |
+| <kbd>1</kbd>, <kbd>2</kbd>, <kbd>3</kbd> | Due, Needs a schedule, Invoices |
+| <kbd>Cmd</kbd>+<kbd>Enter</kbd> | Post the checked entries (Due tab) |
+| <kbd>d</kbd> | On an invoice card with focus: show or hide both transactions in full |
+| <kbd>Esc</kbd> | Close |
+| <kbd>?</kbd> | Show the keyboard shortcuts |
+
+<kbd>d</kbd> works the same way on the [Invoices](invoice-matching.md#details) page.
 
 ## Transaction editor
 

@@ -14,6 +14,7 @@
         period,
         total,
         noun = "transaction",
+        hiddenRecognition = 0,
         actions,
     }: {
         count: number;
@@ -21,6 +22,8 @@
         total: Amount[];
         /** What `count` counts: "row" once a transfer pair is collapsed into one (plan 35 D11). */
         noun?: "transaction" | "row";
+        /** Posted recognition entries the chip hides from the rows but every figure still counts (plan 45 Q11). */
+        hiddenRecognition?: number;
         /** Footer controls beside the count (the journal's xlsx export). */
         actions?: Snippet;
     } = $props();
@@ -30,6 +33,11 @@
     <div class="flex flex-wrap items-center gap-3 text-sm text-base-content/70">
         <span class="whitespace-nowrap"><span class="font-medium text-base-content">{count}</span> {count === 1 ? noun : `${noun}s`}</span>
         <span class="whitespace-nowrap">{period}</span>
+        {#if hiddenRecognition > 0}
+            <span class="whitespace-nowrap" data-testid="footer-recognition-hidden"
+                >incl. {hiddenRecognition} hidden recognition {hiddenRecognition === 1 ? "entry" : "entries"}</span
+            >
+        {/if}
         {@render actions?.()}
     </div>
     <div class="ml-auto flex flex-wrap items-baseline justify-end gap-x-2 text-sm">

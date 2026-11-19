@@ -1655,6 +1655,9 @@ pub fn seed_scenario(
     rules: &[PeriodicTransaction],
     opts: &SeedOpts,
 ) -> Result<Scenario, ReportError> {
+    // A `recognition:` rule is a schedule, never a goal (plan 45 D-guards),
+    // even in a recognition file included by mistake.
+    let rules = &*crate::accrual::without_recognition_rules(rules);
     // --- What the journal already says. ---
     let types = AccountTypes::from_declared(opts.declared.clone());
     let mut lines: Vec<ScenarioLine> = rules

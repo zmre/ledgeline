@@ -196,4 +196,62 @@ describe("UNIT journalView", () => {
             expect(pages.every((url) => url.searchParams.get("balance") === "assets:checking")).toBe(true);
         });
     });
+
+    // Plan 45 D8: the recognition mode is a different list; the expanded
+    // months are a re-read of the same one.
+    describe("recognition rows", () => {
+        const GROUPED = {mode: "group" as const, expand: [] as string[]};
+
+        it("sends the mode and the expanded months on rows, summary and position", async () => {
+            const {calls} = serve(10);
+            journalView.sync(FAKE_ENGINE, "g1", ALL, null, {mode: "hide", expand: ["2026-11", "2026-10"]});
+            await vi.waitFor(() => expect(journalView.rowAt(0)).not.toBeNull());
+            const rows = calls.find((url) => url.pathname.endsWith("/rows"));
+            const summary = calls.find((url) => url.pathname.endsWith("/summary"));
+            for (const url of [rows, summary]) {
+                expect(url?.searchParams.get("recognition")).toBe("hide");
+                expect(url?.searchParams.get("expand")).toBe("2026-10,2026-11");
+            }
+        });
+
+        it("sends nothing for the default (grouped, nothing expanded), and treats it as the helpers-off query", async () => {
+            const {calls} = serve(10);
+            journalView.sync(FAKE_ENGINE, "g1", ALL, null, null);
+            await vi.waitFor(() => expect(journalView.rowAt(0)).not.toBeNull());
+            const before = calls.length;
+            // Learning that the helpers are on (null → grouped) is the same list.
+            journalView.sync(FAKE_ENGINE, "g1", ALL, null, GROUPED);
+            expect(calls).toHaveLength(before);
+            const rows = calls.find((url) => url.pathname.endsWith("/rows"));
+            expect(rows?.searchParams.has("recognition")).toBe(false);
+            expect(rows?.searchParams.has("expand")).toBe(false);
+        });
+
+        it("drops the held rows when the mode changes: a different list", async () => {
+            serve(10);
+            journalView.sync(FAKE_ENGINE, "g1", ALL, null, GROUPED);
+            await vi.waitFor(() => expect(journalView.rowAt(0)).not.toBeNull());
+            journalView.sync(FAKE_ENGINE, "g1", ALL, null, {mode: "show", expand: []});
+            expect(journalView.rowAt(0)).toBeNull();
+            expect(journalView.total).toBeNull();
+        });
+
+        it("keeps the held rows on screen while an expanded month re-reads them", async () => {
+            const {calls} = serve(10);
+            journalView.sync(FAKE_ENGINE, "g1", ALL, null, GROUPED);
+            await vi.waitFor(() => expect(journalView.rowAt(0)).not.toBeNull());
+            journalView.sync(FAKE_ENGINE, "g1", ALL, null, {mode: "group", expand: ["2026-11"]});
+            // Still there (stale) — no flash of skeletons.
+            expect(journalView.rowAt(0)).not.toBeNull();
+            journalView.ensure(0, 10);
+            await vi.waitFor(() =>
+                expect(calls.filter((url) => url.searchParams.get("expand") === "2026-11" && url.pathname.endsWith("/rows"))).toHaveLength(1)
+            );
+            // A block read with the month expanded is current: asking again fetches nothing.
+            const settled = calls.length;
+            await vi.waitFor(() => expect(journalView.rowAt(0)).not.toBeNull());
+            journalView.ensure(0, 10);
+            expect(calls).toHaveLength(settled);
+        });
+    });
 });

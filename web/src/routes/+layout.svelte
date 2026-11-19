@@ -3,6 +3,7 @@
     import {afterNavigate, goto} from "$app/navigation";
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
+    import {accrual} from "#lib/accrual/store.svelte.js";
     import ProblemsBadge from "#lib/checks/ProblemsBadge.svelte";
     import ProblemsDrawer from "#lib/checks/ProblemsDrawer.svelte";
     import {syncStore} from "#lib/sync/syncStore.svelte.js";
@@ -102,8 +103,10 @@
             {id: "projections", href: resolve("projections"), label: "Projections", active: path.startsWith("/projections")},
             {id: "reports", href: resolve("reports"), label: "Reports", active: path.startsWith("/reports")},
             {id: "imports", href: resolve("imports"), label: "Imports", active: path.startsWith("/imports")},
+            // Invoice matching (plan 45 Q9): only when the ledger has accrual accounts (D-gate).
+            {id: "invoices", href: resolve("settlements"), label: "Invoices", active: path.startsWith("/settlements")},
         ] as const;
-        return rulesStore.available && !native ? all : all.filter((s) => s.id !== "imports");
+        return all.filter((s) => (s.id !== "imports" || (rulesStore.available && !native)) && (s.id !== "invoices" || accrual.enabled));
     });
     const onSettings = $derived(page.url.pathname.startsWith("/settings"));
     const currentSection = $derived(sections.find((s) => s.active)?.label ?? (onSettings ? "Settings" : "Menu"));
@@ -160,6 +163,17 @@
         const generation = journal.generation;
         if (serverUrl === null || generation === null) return;
         void problems.load(serverUrl, generation, localToday());
+    });
+
+    // The accrual helpers' gate and badge counts (plan 45), once per journal
+    // generation, on every page: the nav's Invoices item, the journal's
+    // Recognition button and the editor's Accrual section all ask
+    // `accrual.enabled`. `accrual.sync` dedupes on (server, generation, day).
+    $effect(() => {
+        const serverUrl = settings.serverUrl;
+        const generation = journal.generation;
+        if (serverUrl === null || generation === null) return;
+        void accrual.sync(serverUrl, generation);
     });
 
     // ---- The iOS app's native chrome (plan 42) — all of it inert elsewhere. ----
@@ -234,7 +248,7 @@
         publishPage({
             title: currentSection === "Menu" ? "Ledgeline" : currentSection,
             sections: [
-                ...sections.flatMap(({id, label, active}) => (id === "imports" ? [] : [{id, label, active}])),
+                ...sections.flatMap(({id, label, active}) => (id === "imports" || id === "invoices" ? [] : [{id, label, active}])),
                 {id: "settings" as const, label: "Settings", active: onSettings},
             ],
         });

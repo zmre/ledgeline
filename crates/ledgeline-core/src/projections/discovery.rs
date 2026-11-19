@@ -431,6 +431,24 @@ impl Discovery {
         scan_tree(vault, main, Headers::Skip)
     }
 
+    /// This scan without the files whose keys ([`ProjectionPath::key`]) are in
+    /// `excluded`: plan 45's recognition file, which is never offered as a
+    /// scenario source (D-guards). An excluded file can't be resolved either.
+    #[must_use]
+    pub fn excluding(self, excluded: &[PathBuf]) -> Self {
+        if excluded.is_empty() {
+            return self;
+        }
+        Self {
+            files: self
+                .files
+                .into_iter()
+                .filter(|file| !excluded.contains(&file.path.key()))
+                .collect(),
+            ..self
+        }
+    }
+
     /// The **one** id → path resolution for projections.
     ///
     /// Exact string equality against this scan's set, never `root.join(id)`:

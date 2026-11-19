@@ -226,6 +226,20 @@ pub struct TopTxn {
     pub description: String,
     /// The base-commodity magnitude of money moved (one side's sum).
     pub amount: Dec,
+    /// `Some` when this line stands for a month of posted recognition
+    /// entries (plan 45 Q7): one line per month rather than one per
+    /// customer, so they don't crowd the box. `index` and `date` are then the
+    /// month's latest entry, and `amount` the month's total.
+    pub recognition: Option<RecognitionMonth>,
+}
+
+/// A month of posted recognition entries, as one Top Transactions line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecognitionMonth {
+    /// `YYYY-MM`.
+    pub month: String,
+    /// How many entries it stands for.
+    pub count: usize,
 }
 
 /// The Insights dashboard's period-over-period core metrics (Boxes 1–6) plus the
@@ -919,6 +933,11 @@ fn pnl_impact(
 /// Closing entries and bookkeeping artifacts ([`is_bookkeeping_only`]) are
 /// skipped; anything that scores zero (payments, transfers, pure moves to
 /// deferred revenue) drops out.
+///
+/// Posted recognition entries (plan 45 Q7) are ranked as one line per
+/// calendar month — "Recognition, Nov 2026", scoring the sum of the month's
+/// entries — rather than one line each. Display grouping only: no total
+/// anywhere else in the report reads this list.
 fn top_transactions(
     txns: &[Transaction],
     from: &str,
@@ -929,6 +948,8 @@ fn top_transactions(
     db: &PriceDb,
 ) -> Result<Vec<TopTxn>, ReportError> {
     let mut scored: Vec<TopTxn> = Vec::new();
+    // Month → (total, entries, the latest entry's (date, index)).
+    let mut months: BTreeMap<&str, (Dec, usize, (&str, u32))> = BTreeMap::new();
     for txn in txns {
         if txn.date.as_str() < from || txn.date.as_str() > to {
             continue;
@@ -943,13 +964,40 @@ fn top_transactions(
         if amount.is_zero() {
             continue;
         }
+        if crate::accrual::is_posted_entry(txn)
+            && let Some(month) = txn.date.get(..7)
+        {
+            let (total, count, latest) =
+                months
+                    .entry(month)
+                    .or_insert((Dec::zero(), 0, (txn.date.as_str(), txn.index.0)));
+            *total = total.add(amount)?;
+            *count += 1;
+            *latest = (*latest).max((txn.date.as_str(), txn.index.0));
+            continue;
+        }
         scored.push(TopTxn {
             index: txn.index.0,
             date: txn.date.clone(),
             description: txn.description.clone(),
             amount,
+            recognition: None,
         });
     }
+    scored.extend(
+        months
+            .into_iter()
+            .map(|(month, (amount, count, (date, index)))| TopTxn {
+                index,
+                date: date.to_string(),
+                description: format!("Recognition, {}", super::periods::bucket_label(month)),
+                amount,
+                recognition: Some(RecognitionMonth {
+                    month: month.to_string(),
+                    count,
+                }),
+            }),
+    );
     scored.sort_by(|a, b| b.amount.cmp(&a.amount).then_with(|| a.index.cmp(&b.index)));
     scored.truncate(TOP_N);
     Ok(scored)
@@ -1595,6 +1643,76 @@ mod tests {
             ],
         )]));
         assert!(ranked(&report).is_empty());
+    }
+
+    /// Plan 45 Q7: a month's posted recognition entries are one line —
+    /// "Recognition, Jan 2025" — scoring their sum, at the latest entry; a
+    /// restatement adjustment stays a line of its own; and no total moves.
+    #[test]
+    fn top_txns_collapse_a_month_of_recognition_entries() {
+        let text = "\
+account liabilities:deferred-revenue  ; type: L, kpi: deferred-revenue
+account revenue:subscriptions  ; type: R
+account expenses:rent  ; type: X
+account assets:bank  ; type: C
+
+2025-01-08 A Recognized  ; recognition: aaa111, recognized: 2025-01-08
+    liabilities:deferred-revenue  $100.00
+    revenue:subscriptions  $-100.00
+
+2025-01-09 Rent
+    expenses:rent  $250.00
+    assets:bank
+
+2025-01-09 B Recognized  ; recognition: bbb222, recognized: 2025-01-09
+    liabilities:deferred-revenue  $100.00
+    revenue:subscriptions  $-100.00
+
+2025-01-10 C Recognized  ; recognition: ccc333, recognized: 2025-01-10
+    liabilities:deferred-revenue  $100.00
+    revenue:subscriptions  $-100.00
+
+2025-01-10 A restated  ; recognition: aaa111, restated: 2025-01-10
+    liabilities:deferred-revenue  $50.00
+    revenue:subscriptions  $-50.00
+";
+        let grouped = run(&crate::parse_journal(text, "q7.journal").expect("parses"));
+        let rows: Vec<(u32, &str, Dec, Option<usize>)> = grouped
+            .top_txns
+            .iter()
+            .map(|row| {
+                (
+                    row.index,
+                    row.description.as_str(),
+                    row.amount,
+                    row.recognition.as_ref().map(|r| r.count),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (4, "Recognition, Jan 2025", Dec::new(30000, 2), Some(3)),
+                (2, "Rent", Dec::new(25000, 2), None),
+                (5, "A restated", Dec::new(5000, 2), None),
+            ]
+        );
+        assert_eq!(
+            grouped.top_txns[0]
+                .recognition
+                .as_ref()
+                .map(|r| r.month.as_str()),
+            Some("2025-01")
+        );
+        // The same journal without the recognition tags: every total is the
+        // same, only the box's lines differ.
+        let plain = run(
+            &crate::parse_journal(&text.replace("recognized:", "was:"), "q7.journal")
+                .expect("parses"),
+        );
+        assert_eq!(grouped.revenue, plain.revenue);
+        assert_eq!(grouped.expenses, plain.expenses);
+        assert_eq!(plain.top_txns.len(), 5);
     }
 
     // ---- diagnostics: how movers behave with and without price history ----

@@ -34,6 +34,14 @@ import {
     isRelDir,
     MANUAL_REMIND_DAYS_DEFAULT,
     MANUAL_REMIND_DAYS_RANGE,
+    RECOGNITION_ROWS,
+    SETTLEMENT_LOOKBACK_DEFAULT,
+    SETTLEMENT_LOOKBACK_RANGE,
+    SETTLEMENT_LEAD_DEFAULT,
+    SETTLEMENT_LEAD_RANGE,
+    SETTLEMENT_TOLERANCE_DEFAULT,
+    SETTLEMENT_TOLERANCE_RANGE,
+    type RecognitionRows,
     SYNC_KEEP_DAYS_DEFAULT,
     SYNC_KEEP_DAYS_RANGE,
     COLUMN_KEYS,
@@ -681,6 +689,50 @@ export const settings = {
     set manualRemindDays(days: number) {
         state.manualRemindDays = wholeIn(days, MANUAL_REMIND_DAYS_RANGE, MANUAL_REMIND_DAYS_DEFAULT);
         save({manualRemindDays: state.manualRemindDays});
+    },
+    /**
+     * Post due recognition entries in the background (plan 45). Saved at
+     * once, like `autoSync`: the engine wakes its recognizer on the save.
+     */
+    get autoRecognize(): boolean {
+        return state.autoRecognize;
+    },
+    set autoRecognize(on: boolean) {
+        state.autoRecognize = on;
+        save({autoRecognize: on}, true);
+    },
+    /** How the journal shows posted recognition entries (plan 45 D8): the chip. */
+    get recognitionRows(): RecognitionRows {
+        return state.recognitionRows;
+    },
+    set recognitionRows(mode: RecognitionRows) {
+        if (!RECOGNITION_ROWS.includes(mode)) return;
+        state.recognitionRows = mode;
+        save({recognitionRows: mode});
+    },
+    /** How far back the invoice ↔ payment matcher looks, clamped to 0 (no limit)–3650 days. */
+    get settlementLookbackDays(): number {
+        return state.settlementLookbackDays;
+    },
+    set settlementLookbackDays(days: number) {
+        state.settlementLookbackDays = wholeIn(days, SETTLEMENT_LOOKBACK_RANGE, SETTLEMENT_LOOKBACK_DEFAULT);
+        save({settlementLookbackDays: state.settlementLookbackDays});
+    },
+    /** How far a payment may fall short of its invoice, in basis points, clamped to 0–10000. */
+    get settlementToleranceBps(): number {
+        return state.settlementToleranceBps;
+    },
+    set settlementToleranceBps(bps: number) {
+        state.settlementToleranceBps = wholeIn(bps, SETTLEMENT_TOLERANCE_RANGE, SETTLEMENT_TOLERANCE_DEFAULT);
+        save({settlementToleranceBps: state.settlementToleranceBps});
+    },
+    /** How many days a payment may come before its invoice and still be matched, clamped to 0–60. */
+    get settlementLeadDays(): number {
+        return state.settlementLeadDays;
+    },
+    set settlementLeadDays(days: number) {
+        state.settlementLeadDays = wholeIn(days, SETTLEMENT_LEAD_RANGE, SETTLEMENT_LEAD_DEFAULT);
+        save({settlementLeadDays: state.settlementLeadDays});
     },
     /** The cross-origin engine token, if one was entered. Null in embedded mode. */
     get serverToken(): string | null {

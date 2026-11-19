@@ -3164,12 +3164,14 @@ pub(crate) async fn index(State(state): State<AppState>) -> Result<Response, App
         return Ok(no_store(WireProjectionIndex::without_journal(editable)));
     };
     let sources = snapshot.journal.source_files.clone();
+    // Plan 45 D-guards: the recognition file is never a scenario source.
+    let excluded = crate::accrual_api::excluded_from_projections(&state, &snapshot);
     // Through `compute`: a directory walk on a cold or network-mounted journal
     // directory is exactly the blocking work its semaphore and `spawn_blocking`
     // exist for, and running it on a tokio worker would stall the runtime the
     // desktop GUI is hosted in.
     let Json(body) = compute(move || {
-        let discovery = discover_in(Arc::clone(main.vault()), main.main());
+        let discovery = discover_in(Arc::clone(main.vault()), main.main()).excluding(&excluded);
         Ok(WireProjectionIndex {
             root_label: discovery.root_label(),
             editable,
@@ -3209,6 +3211,8 @@ pub(crate) async fn document(
         return Err(unresolved(&id));
     };
     let sources = snapshot.journal.source_files.clone();
+    // Plan 45 D-guards: the recognition file is never a scenario source.
+    let excluded = crate::accrual_api::excluded_from_projections(&state, &snapshot);
     let Json(body) = compute(move || {
         // The MAIN journal's account types, because a projection file usually
         // declares few of its own and the asset/flow discriminator needs them
@@ -3223,7 +3227,8 @@ pub(crate) async fn document(
         // `without_headers`: this route resolves exactly one id and never looks
         // at a listing's display name, so opening the other 199 files to read
         // four comment lines out of each is work thrown away.
-        let discovery = Discovery::without_headers_in(Arc::clone(main.vault()), main.main());
+        let discovery = Discovery::without_headers_in(Arc::clone(main.vault()), main.main())
+            .excluding(&excluded);
         let found = discovery.resolve(&id).ok_or_else(|| unresolved(&id))?;
         let writable = writable_path(&sources, found.path().as_path());
         open_file(
@@ -3259,6 +3264,8 @@ pub(crate) async fn save(
         return Err(unresolved(&id));
     };
     let sources = snapshot.journal.source_files.clone();
+    // Plan 45 D-guards: the recognition file is never a scenario source.
+    let excluded = crate::accrual_api::excluded_from_projections(&state, &snapshot);
     // Decoded (and bounded) BEFORE the lock is taken and before a `compute`
     // slot is claimed: a scenario we are going to refuse must not first wait
     // for a core, and must not hold the write lock while it is refused.
@@ -3305,7 +3312,8 @@ pub(crate) async fn save(
         // each *other* file in the tree, which this route never reads. The walk
         // and every guard on it are exactly as fresh — and this one ran up to
         // 200 pointless opens while holding that lock.
-        let discovery = Discovery::without_headers_in(Arc::clone(main.vault()), main.main());
+        let discovery = Discovery::without_headers_in(Arc::clone(main.vault()), main.main())
+            .excluding(&excluded);
         if revision == NEW_FILE_REVISION {
             create_scenario(
                 &discovery,
@@ -3360,6 +3368,8 @@ pub(crate) async fn set_default(
         };
     };
     let sources = snapshot.journal.source_files.clone();
+    // Plan 45 D-guards: the recognition file is never a scenario source.
+    let excluded = crate::accrual_api::excluded_from_projections(&state, &snapshot);
     // `import_writes`, as a save: several files may be written, and a save of
     // one of them must not interleave.
     let _guard = state.import_writes().lock().await;
@@ -3367,7 +3377,7 @@ pub(crate) async fn set_default(
         // WITH headers (`discover_in`), unlike a save: every marked file has
         // to be found, and that costs the same 4 KiB per projection file the
         // listing already reads.
-        let discovery = discover_in(Arc::clone(main.vault()), main.main());
+        let discovery = discover_in(Arc::clone(main.vault()), main.main()).excluding(&excluded);
         set_default_in(&sources, &discovery, id.as_deref())
     })
     .await?;

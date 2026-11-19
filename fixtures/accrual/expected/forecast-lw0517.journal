@@ -1,0 +1,52 @@
+2026-05-17 Litware Recognized  ; recognition: lw0517
+    liabilities:deferred-revenue         $483.87  ; customer: Litware
+    revenue:subscriptions               $-483.87  ; customer: Litware
+
+2026-06-01 Litware Recognized  ; recognition: lw0517, renewal-date: 2027-05-17
+    liabilities:deferred-revenue       $1,000.00  ; customer: Litware
+    revenue:subscriptions             $-1,000.00  ; customer: Litware
+
+2026-07-01 Litware Recognized  ; recognition: lw0517, renewal-date: 2027-05-17
+    liabilities:deferred-revenue       $1,000.00  ; customer: Litware
+    revenue:subscriptions             $-1,000.00  ; customer: Litware
+
+2026-08-01 Litware Recognized  ; recognition: lw0517, renewal-date: 2027-05-17
+    liabilities:deferred-revenue       $1,000.00  ; customer: Litware
+    revenue:subscriptions             $-1,000.00  ; customer: Litware
+
+2026-09-01 Litware Recognized  ; recognition: lw0517, renewal-date: 2027-05-17
+    liabilities:deferred-revenue       $1,000.00  ; customer: Litware
+    revenue:subscriptions             $-1,000.00  ; customer: Litware
+
+2026-10-01 Litware Recognized  ; recognition: lw0517, renewal-date: 2027-05-17
+    liabilities:deferred-revenue       $1,000.00  ; customer: Litware
+    revenue:subscriptions             $-1,000.00  ; customer: Litware
+
+2026-11-01 Litware Recognized  ; recognition: lw0517, renewal-date: 2027-05-17
+    liabilities:deferred-revenue       $1,000.00  ; customer: Litware
+    revenue:subscriptions             $-1,000.00  ; customer: Litware
+
+2026-12-01 Litware Recognized  ; recognition: lw0517, renewal-date: 2027-05-17
+    liabilities:deferred-revenue       $1,000.00  ; customer: Litware
+    revenue:subscriptions             $-1,000.00  ; customer: Litware
+
+2027-01-01 Litware Recognized  ; recognition: lw0517, renewal-date: 2027-05-17
+    liabilities:deferred-revenue       $1,000.00  ; customer: Litware
+    revenue:subscriptions             $-1,000.00  ; customer: Litware
+
+2027-02-01 Litware Recognized  ; recognition: lw0517, renewal-date: 2027-05-17
+    liabilities:deferred-revenue       $1,000.00  ; customer: Litware
+    revenue:subscriptions             $-1,000.00  ; customer: Litware
+
+2027-03-01 Litware Recognized  ; recognition: lw0517, renewal-date: 2027-05-17
+    liabilities:deferred-revenue       $1,000.00  ; customer: Litware
+    revenue:subscriptions             $-1,000.00  ; customer: Litware
+
+2027-04-01 Litware Recognized  ; recognition: lw0517, renewal-date: 2027-05-17
+    liabilities:deferred-revenue       $1,000.00  ; customer: Litware
+    revenue:subscriptions             $-1,000.00  ; customer: Litware
+
+2027-05-01 Litware Recognized  ; recognition: lw0517
+    liabilities:deferred-revenue         $516.13  ; customer: Litware
+    revenue:subscriptions               $-516.13  ; customer: Litware
+

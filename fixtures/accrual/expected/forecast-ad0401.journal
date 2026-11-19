@@ -1,0 +1,48 @@
+2026-04-01 Adatum Recognized  ; recognition: ad0401, renewal-date: 2027-04-01
+    liabilities:deferred-revenue         $200.00  ; customer: Adatum
+    revenue:subscriptions               $-200.00  ; customer: Adatum
+
+2026-05-01 Adatum Recognized  ; recognition: ad0401, renewal-date: 2027-04-01
+    liabilities:deferred-revenue         $200.00  ; customer: Adatum
+    revenue:subscriptions               $-200.00  ; customer: Adatum
+
+2026-06-01 Adatum Recognized  ; recognition: ad0401, renewal-date: 2027-04-01
+    liabilities:deferred-revenue         $200.00  ; customer: Adatum
+    revenue:subscriptions               $-200.00  ; customer: Adatum
+
+2026-07-01 Adatum Recognized  ; recognition: ad0401, renewal-date: 2027-04-01
+    liabilities:deferred-revenue         $200.00  ; customer: Adatum
+    revenue:subscriptions               $-200.00  ; customer: Adatum
+
+2026-08-01 Adatum Recognized  ; recognition: ad0401, renewal-date: 2027-04-01
+    liabilities:deferred-revenue         $200.00  ; customer: Adatum
+    revenue:subscriptions               $-200.00  ; customer: Adatum
+
+2026-09-01 Adatum Recognized  ; recognition: ad0401, renewal-date: 2027-04-01
+    liabilities:deferred-revenue         $200.00  ; customer: Adatum
+    revenue:subscriptions               $-200.00  ; customer: Adatum
+
+2026-10-01 Adatum Recognized  ; recognition: ad0401, renewal-date: 2027-04-01
+    liabilities:deferred-revenue         $200.00  ; customer: Adatum
+    revenue:subscriptions               $-200.00  ; customer: Adatum
+
+2026-11-01 Adatum Recognized  ; recognition: ad0401, renewal-date: 2027-04-01
+    liabilities:deferred-revenue         $200.00  ; customer: Adatum
+    revenue:subscriptions               $-200.00  ; customer: Adatum
+
+2026-12-01 Adatum Recognized  ; recognition: ad0401, renewal-date: 2027-04-01
+    liabilities:deferred-revenue         $200.00  ; customer: Adatum
+    revenue:subscriptions               $-200.00  ; customer: Adatum
+
+2027-01-01 Adatum Recognized  ; recognition: ad0401, renewal-date: 2027-04-01
+    liabilities:deferred-revenue         $200.00  ; customer: Adatum
+    revenue:subscriptions               $-200.00  ; customer: Adatum
+
+2027-02-01 Adatum Recognized  ; recognition: ad0401, renewal-date: 2027-04-01
+    liabilities:deferred-revenue         $200.00  ; customer: Adatum
+    revenue:subscriptions               $-200.00  ; customer: Adatum
+
+2027-03-01 Adatum Recognized  ; recognition: ad0401, renewal-date: 2027-04-01
+    liabilities:deferred-revenue         $200.00  ; customer: Adatum
+    revenue:subscriptions               $-200.00  ; customer: Adatum
+

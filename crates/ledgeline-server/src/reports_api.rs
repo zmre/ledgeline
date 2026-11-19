@@ -1438,6 +1438,17 @@ struct WireTopTxn {
     date: String,
     description: String,
     amount: WireDec,
+    /// Plan 45 Q7: set when the line stands for a month of posted
+    /// recognition entries (`index` is then the month's latest entry).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recognition: Option<WireRecognitionMonth>,
+}
+
+/// `{month: "YYYY-MM", count}`.
+#[derive(Serialize)]
+struct WireRecognitionMonth {
+    month: String,
+    count: usize,
 }
 
 impl From<&TopTxn> for WireTopTxn {
@@ -1447,6 +1458,10 @@ impl From<&TopTxn> for WireTopTxn {
             date: txn.date.clone(),
             description: txn.description.clone(),
             amount: txn.amount.into(),
+            recognition: txn.recognition.as_ref().map(|month| WireRecognitionMonth {
+                month: month.month.clone(),
+                count: month.count,
+            }),
         }
     }
 }

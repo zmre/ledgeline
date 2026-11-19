@@ -12,7 +12,7 @@ Ledgeline keeps its own settings in TOML files. You can edit any of them by hand
 | --- | --- | --- | --- |
 | `prefs.toml` | Ledgeline's config folder | The hledger path field on the Imports screen | `hledgerPath`, the hledger program Ledgeline runs |
 | `ui-prefs.toml` | Ledgeline's config folder | Ledgeline, as you use it, and you | Your view settings, for every ledger |
-| `ledgeline.toml` | The folder of your main journal | You, or Ledgeline when you ask it to [keep a setting for one ledger](#keeping-a-setting-for-one-ledger) or [link a bank account](../imports/bank-sync.md) | One ledger's own view settings, overriding `ui-prefs.toml`, and its bank sync links |
+| `ledgeline.toml` | The folder of your main journal | You, or Ledgeline when you ask it to [keep a setting for one ledger](#keeping-a-setting-for-one-ledger), [link a bank account](../imports/bank-sync.md) or [close the books through a date](#books) | One ledger's own view settings, overriding `ui-prefs.toml`, its bank sync links, and its `[books]` settings |
 
 View settings are the choices Ledgeline remembers as you work: the theme and interface scale, which journal columns show, which panels are open, the Review and Find Matches numbers, the benchmark lines on the Stocks chart, and the like.
 
@@ -58,7 +58,7 @@ The theme, the interface scale and the automatic price updates can be kept for o
 - From then on, changing that setting while this ledger is open saves it in `ledgeline.toml`. Other ledgers keep using `ui-prefs.toml`.
 - Untick the box to go back to the shared value. Ledgeline removes the key from `[ui]`, along with any comment lines directly above it. The rest of the file stays, and Ledgeline never deletes the file, even if nothing is left in it.
 
-Only `theme`, `uiScale`, `autoPrices`, `autoPricesWeeks` and the five sync keys can be kept this way from the app. The Prices tab keeps its two keys together, and the Sync tab keeps `autoSync`, `autoSyncEveryHours`, `syncSourceDir`, `syncKeepSourceDays` and `manualRemindDays` together. For any other key, add it to `ledgeline.toml` by hand.
+Only `theme`, `uiScale`, `autoPrices`, `autoPricesWeeks`, the five sync keys and `autoRecognize` can be kept this way from the app. The Prices tab keeps its two keys together, and the Sync tab keeps `autoSync`, `autoSyncEveryHours`, `syncSourceDir`, `syncKeepSourceDays` and `manualRemindDays` together. The Books tab keeps `autoRecognize`. For any other key, add it to `ledgeline.toml` by hand.
 
 Ledgeline won't write to a `ledgeline.toml` that is a symbolic link, is larger than 64 KiB, or isn't valid TOML. In that case the box can't be ticked, and a notice says why. The checkbox isn't offered when [view settings are kept in the browser](#keeping-view-settings-in-the-browser).
 
@@ -101,9 +101,38 @@ benchmarks = ["SPY", "QQQ"]
 status = false   # nobody here uses ! and *
 ```
 
-Every key you list there overrides `ui-prefs.toml` in this ledger, and changes you make to those keys in the app are saved back to this file. Ledgeline edits values in place and keeps your comments, the order of the keys, and keys it doesn't know. Besides `[ui]`, the only part it reads or writes is `[sync]`, which holds [bank sync](../imports/bank-sync.md#where-things-are-kept) connections and account links. Linking an account writes there, and creates the file if the ledger has none. The rest of the file is left for later per-ledger settings.
+Every key you list there overrides `ui-prefs.toml` in this ledger, and changes you make to those keys in the app are saved back to this file. Ledgeline edits values in place and keeps your comments, the order of the keys, and keys it doesn't know. Besides `[ui]`, it reads and writes two more tables:
+
+- `[sync]` holds [bank sync](../imports/bank-sync.md#where-things-are-kept) connections and account links. Linking an account writes there, and creates the file if the ledger has none.
+- `[books]` holds the [revenue and expense recognition](../journal/accrual-recognition.md) settings described below.
+
+The rest of the file is left for later per-ledger settings.
 
 To stop overriding a key, delete its line. The ledger then follows `ui-prefs.toml` for it again.
+
+### `[books]`
+
+These settings describe the books themselves, so they only ever live in the ledger's `ledgeline.toml`:
+
+```toml
+[books]
+# Turn the recognition helpers off (or on before any account is declared).
+basis = "accrual"
+# Where the schedules live, inside the journal's folder. Default: recognition.journal.
+recognition-file = "books/recognition.journal"
+# Entries on or before this date are never rewritten.
+closed-through = "2026-09-30"
+```
+
+| Key | Allowed values | Written by |
+| --- | --- | --- |
+| `basis` | `"cash"` turns the [recognition helpers](../journal/accrual-recognition.md#when-the-helpers-appear) off; `"accrual"` turns them on. Absent, they follow the accounts. | You, by hand |
+| `recognition-file` | A path inside the journal's folder. It can't be the main journal, the budget file or a file the journal includes. | You, by hand |
+| `closed-through` | A date, `YYYY-MM-DD` | **Close books through…** in Settings → Books, which creates the file if needed. Or you, by hand. |
+
+Ledgeline checks each value the way it checks `[ui]`: a date that isn't one, a `basis` that isn't `cash` or `accrual`, or a path outside the folder is ignored, and a notice says why. None of these keys runs anything.
+
+Settings → Books shows the closed-through date, **Close books through…** and **Reopen…**, and the recognition and invoice matching preferences listed under [The keys](#the-keys).
 
 ### It travels with the ledger
 
@@ -160,6 +189,11 @@ A path you type into the file by hand isn't checked until Ledgeline runs it. If 
 | `syncSourceDir` | `"imports/sync"` | Where bank sync saves the files it downloads: a folder inside the journal's folder, written relative to it. An absolute path or one with `..` is ignored |
 | `syncKeepSourceDays` | `0` | 0 to 3650: how many days downloaded files are kept. 0, the default, means forever |
 | `manualRemindDays` | `35` | 1 to 3650: days with no new transaction before a manually imported account turns amber on Imports → Accounts |
+| `autoRecognize` | `false` | Post due [recognition](../journal/accrual-recognition.md#posting-automatically) entries in the background |
+| `recognitionRows` | `"group"` | How the journal shows posted recognition entries: `"group"`, `"hide"` or `"show"` |
+| `settlementLookbackDays` | `180` | 0 to 3650: how far back [invoice matching](../journal/invoice-matching.md) looks. 0 means no limit |
+| `settlementToleranceBps` | `300` | 0 to 10000: how far a payment may fall short of its invoice and still be proposed, in hundredths of a percent (300 is 3%) |
+| `settlementLeadDays` | `4` | 0 to 60: how many days a payment may come before its invoice and still be proposed |
 
 ## Keeping view settings in the browser
 

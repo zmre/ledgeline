@@ -57,6 +57,13 @@
         "in-transit": "In transit",
         "broken-match": "Broken match",
         "unusual-clearing": "Unusual clearing posting",
+        // Plan 45: revenue and expense recognition (docs/journal/problems.md).
+        "recognition-file-included": "Recognition file included",
+        "recognition-duplicate": "Duplicate recognition entry",
+        "recognition-sum": "Schedule total mismatch",
+        "recognition-orphan": "Schedule without a rule or source",
+        "recognition-closed-due": "Due in a closed period",
+        "recognition-rule-account": "Undeclared account in a schedule",
     };
 
     /** The findings a click can fix, and how (plan 35 A2). */

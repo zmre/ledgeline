@@ -1545,13 +1545,7 @@ impl ProjectionDoc {
             .filter(|(commodity, _)| {
                 used.contains(commodity.0.as_str()) && !self.own_commodities.contains(&commodity.0)
             })
-            .map(|(commodity, style)| {
-                let thousand = Dec::new(1000 * 10_i128.pow(style.precision), style.precision);
-                format!(
-                    "commodity {}",
-                    crate::display::format_amount(&commodity.0, thousand, style, style.precision)
-                )
-            })
+            .map(|(commodity, style)| crate::display::commodity_directive(&commodity.0, style))
             .collect()
     }
 

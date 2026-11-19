@@ -60,6 +60,11 @@ import {
     COLUMN_KEYS,
     INSIGHTS_TABS,
     MANUAL_REMIND_DAYS_DEFAULT,
+    RECOGNITION_ROWS,
+    RECOGNITION_ROWS_DEFAULT,
+    SETTLEMENT_LOOKBACK_DEFAULT,
+    SETTLEMENT_LEAD_DEFAULT,
+    SETTLEMENT_TOLERANCE_DEFAULT,
     SYNC_KEEP_DAYS_DEFAULT,
     SYNC_SOURCE_DIR_DEFAULT,
     THEME_IDS,
@@ -901,6 +906,7 @@ interface RawTopTxn {
     date?: string;
     description?: string;
     amount?: RawDec;
+    recognition?: {month?: unknown; count?: unknown};
 }
 
 interface RawInsightsReport {
@@ -3501,7 +3507,18 @@ function decodeTopTxn(raw: RawTopTxn | undefined, context: string): TopTxn {
         date: raw.date as ISODate,
         description: raw.description,
         amount: decodeDec(raw.amount, `${context} amount`),
+        recognition: decodeTopRecognition(raw.recognition, `${context} recognition`),
     });
+}
+
+/** Plan 45 Q7, additive: `{month: "YYYY-MM", count}` on a line standing for a month of recognition entries. */
+function decodeTopRecognition(raw: RawTopTxn["recognition"], context: string): {month: string; count: number} | null {
+    if (raw === undefined) return null;
+    if (typeof raw !== "object" || raw === null) throw new ApiShapeError(`${context}: expected an object`);
+    const {month, count} = raw;
+    if (typeof month !== "string" || !/^\d{4}-\d{2}$/.test(month)) throw new ApiShapeError(`${context}: month must be YYYY-MM`);
+    if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 1) throw new ApiShapeError(`${context}: invalid count`);
+    return Object.freeze({month, count});
 }
 
 // ---------------------------------------------------------------------------
@@ -4973,6 +4990,17 @@ export function decodeUiPrefsState(raw: unknown): UiPrefsState {
         syncSourceDir: prefs.syncSourceDir === undefined ? SYNC_SOURCE_DIR_DEFAULT : str(prefs.syncSourceDir, "ui-prefs syncSourceDir"),
         syncKeepSourceDays: prefs.syncKeepSourceDays === undefined ? SYNC_KEEP_DAYS_DEFAULT : whole(prefs.syncKeepSourceDays, "ui-prefs syncKeepSourceDays"),
         manualRemindDays: prefs.manualRemindDays === undefined ? MANUAL_REMIND_DAYS_DEFAULT : whole(prefs.manualRemindDays, "ui-prefs manualRemindDays"),
+        // Accrual recognition (plan 45), defaulted when absent like the sync keys.
+        autoRecognize: prefs.autoRecognize === undefined ? false : bool("autoRecognize"),
+        recognitionRows:
+            prefs.recognitionRows === undefined
+                ? RECOGNITION_ROWS_DEFAULT
+                : decodeEnum(RECOGNITION_ROWS, prefs.recognitionRows as string | undefined, "ui-prefs recognitionRows"),
+        settlementLookbackDays:
+            prefs.settlementLookbackDays === undefined ? SETTLEMENT_LOOKBACK_DEFAULT : whole(prefs.settlementLookbackDays, "ui-prefs settlementLookbackDays"),
+        settlementToleranceBps:
+            prefs.settlementToleranceBps === undefined ? SETTLEMENT_TOLERANCE_DEFAULT : whole(prefs.settlementToleranceBps, "ui-prefs settlementToleranceBps"),
+        settlementLeadDays: prefs.settlementLeadDays === undefined ? SETTLEMENT_LEAD_DEFAULT : whole(prefs.settlementLeadDays, "ui-prefs settlementLeadDays"),
     };
     if (!Array.isArray(body.issues)) throw new ApiShapeError("ui-prefs issues: expected an array");
     const issues = body.issues.map((rawIssue, i): UiPrefsIssue => {

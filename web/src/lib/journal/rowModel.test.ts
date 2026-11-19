@@ -3,6 +3,7 @@ import {dec, type MixedAmount} from "#lib/domain/money.js";
 import type {Amount, AmountStyle, ISODate, Posting, Transaction, TxnStatus} from "#lib/domain/types.js";
 import {
     accountFlow,
+    footerNoun,
     cardDate,
     centerOffset,
     computeWindow,
@@ -392,5 +393,21 @@ describe("UNIT cardDate (plan 42)", () => {
 
     it("keeps a short year otherwise", () => {
         expect(cardDate("2025-12-31", "2026-11-13")).toBe("Dec 31 '25");
+    });
+});
+
+describe("footerNoun", () => {
+    it("counts transactions unless the view folds something into one row", () => {
+        expect(footerNoun(null, false)).toBe("transaction");
+        // An accrual ledger whose filter holds no recognition group row (the
+        // startup-metrics books): still transactions.
+        expect(footerNoun({transfers: 0, recognitionGrouped: 0}, false)).toBe("transaction");
+        expect(footerNoun({transfers: 2, recognitionGrouped: 0}, false)).toBe("row");
+        expect(footerNoun({transfers: 0, recognitionGrouped: 10}, false)).toBe("row");
+    });
+
+    it("ignores recognition groups while a running balance is pinned (nothing is grouped then)", () => {
+        expect(footerNoun({transfers: 0, recognitionGrouped: 10}, true)).toBe("transaction");
+        expect(footerNoun({transfers: 1, recognitionGrouped: 10}, true)).toBe("row");
     });
 });

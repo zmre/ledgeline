@@ -1,0 +1,48 @@
+2026-10-15 Adatum Recognized  ; recognition: ad1015, renewal-date: 2027-10-15
+    liabilities:deferred-revenue         $500.00  ; customer: Adatum
+    revenue:subscriptions               $-500.00  ; customer: Adatum
+
+2026-11-15 Adatum Recognized  ; recognition: ad1015, renewal-date: 2027-10-15
+    liabilities:deferred-revenue         $500.00  ; customer: Adatum
+    revenue:subscriptions               $-500.00  ; customer: Adatum
+
+2026-12-15 Adatum Recognized  ; recognition: ad1015, renewal-date: 2027-10-15
+    liabilities:deferred-revenue         $500.00  ; customer: Adatum
+    revenue:subscriptions               $-500.00  ; customer: Adatum
+
+2027-01-15 Adatum Recognized  ; recognition: ad1015, renewal-date: 2027-10-15
+    liabilities:deferred-revenue         $500.00  ; customer: Adatum
+    revenue:subscriptions               $-500.00  ; customer: Adatum
+
+2027-02-15 Adatum Recognized  ; recognition: ad1015, renewal-date: 2027-10-15
+    liabilities:deferred-revenue         $500.00  ; customer: Adatum
+    revenue:subscriptions               $-500.00  ; customer: Adatum
+
+2027-03-15 Adatum Recognized  ; recognition: ad1015, renewal-date: 2027-10-15
+    liabilities:deferred-revenue         $500.00  ; customer: Adatum
+    revenue:subscriptions               $-500.00  ; customer: Adatum
+
+2027-04-15 Adatum Recognized  ; recognition: ad1015, renewal-date: 2027-10-15
+    liabilities:deferred-revenue         $500.00  ; customer: Adatum
+    revenue:subscriptions               $-500.00  ; customer: Adatum
+
+2027-05-15 Adatum Recognized  ; recognition: ad1015, renewal-date: 2027-10-15
+    liabilities:deferred-revenue         $500.00  ; customer: Adatum
+    revenue:subscriptions               $-500.00  ; customer: Adatum
+
+2027-06-15 Adatum Recognized  ; recognition: ad1015, renewal-date: 2027-10-15
+    liabilities:deferred-revenue         $500.00  ; customer: Adatum
+    revenue:subscriptions               $-500.00  ; customer: Adatum
+
+2027-07-15 Adatum Recognized  ; recognition: ad1015, renewal-date: 2027-10-15
+    liabilities:deferred-revenue         $500.00  ; customer: Adatum
+    revenue:subscriptions               $-500.00  ; customer: Adatum
+
+2027-08-15 Adatum Recognized  ; recognition: ad1015, renewal-date: 2027-10-15
+    liabilities:deferred-revenue         $500.00  ; customer: Adatum
+    revenue:subscriptions               $-500.00  ; customer: Adatum
+
+2027-09-15 Adatum Recognized  ; recognition: ad1015, renewal-date: 2027-10-15
+    liabilities:deferred-revenue         $500.00  ; customer: Adatum
+    revenue:subscriptions               $-500.00  ; customer: Adatum
+

@@ -119,6 +119,19 @@ export default defineConfig({
             url: "http://127.0.0.1:5093/",
             reuseExistingServer: false,
         },
+        {
+            // The accrual engine (plan 45, e2e/accrual.e2e.ts): fixtures/accrual/
+            // in a SCRATCH COPY (target/e2e-accrual/, gitignored) staged fresh on
+            // every run, because the spec posts recognition entries, writes
+            // schedules into recognition.journal, links an invoice and closes the
+            // books in ledgeline.toml. The fixture's clock is 2026-11-17; the
+            // spec pins the browser there, and the client's `today` lowers the
+            // engine's.
+            command: `rm -rf ../target/e2e-accrual && mkdir -p ../target && cp -R ../fixtures/accrual ../target/e2e-accrual && rm -rf ../target/e2e-accrual/expected && exec ${process.env.LEDGELINE_BIN ?? "../target/debug/ledgeline"} --server ../target/e2e-accrual/books.journal --port 5092 --allow-origin http://localhost:4173`,
+            env: ENGINE_ENV,
+            url: "http://127.0.0.1:5092/",
+            reuseExistingServer: false,
+        },
         {command: "bun run build && bun run preview", port: 4173},
     ],
     // With multiple webServers playwright does not infer baseURL from `port`.

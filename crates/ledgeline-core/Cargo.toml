@@ -84,5 +84,12 @@ name = "matching"
 path = "benches/matching.rs"
 harness = false
 
+# Plan 45's accrual recognition (index, due, ties, schedules, grouped rows,
+# posting) on the corpus with 5,000 schedules added.
+[[bench]]
+name = "accrual"
+path = "benches/accrual.rs"
+harness = false
+
 [lib]
 bench = false

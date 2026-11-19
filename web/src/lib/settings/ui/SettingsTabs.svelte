@@ -5,6 +5,7 @@
     import HScroll from "#lib/components/HScroll.svelte";
     import {registerKeys} from "#lib/keys/keymap.svelte.js";
     import {PRIORITY} from "#lib/keys/types.js";
+    import {accrual} from "#lib/accrual/store.svelte.js";
     import {isNative} from "#lib/native/detect.js";
     import {TAB_LABELS, TAB_ORDER, type SettingsTab} from "#lib/settings/params.js";
 
@@ -13,15 +14,19 @@
     // The iOS app (plan 42) runs no background price updater or bank sync
     // (both live in the desktop server's main loop), so the tabs that only
     // configure them go.
-    const tabs = isNative() ? TAB_ORDER.filter((t) => t !== "prices" && t !== "sync") : TAB_ORDER;
+    const hosted = isNative() ? TAB_ORDER.filter((t) => t !== "prices" && t !== "sync") : TAB_ORDER;
+    // Books (plan 45) exists only with the accrual helpers on (D-gate): no tab, no number key.
+    const tabs = $derived(accrual.enabled ? hosted : hosted.filter((t) => t !== "books"));
 
     registerKeys({
         id: "settings-tabs",
         priority: PRIORITY.page,
-        bindings: tabs.map((t, at) => ({
+        // Over every hosted tab, Books last: its digit is simply disabled while the helpers are off.
+        bindings: hosted.map((t, at) => ({
             keys: String(at + 1),
             label: TAB_LABELS[t],
             group: "Settings" as const,
+            enabled: () => t !== "books" || accrual.enabled,
             run: () => (tab = t),
         })),
     });

@@ -188,6 +188,12 @@ async fn assert_matches_golden(name: &str) {
 // One test per endpoint, so a failure names the endpoint that broke.
 // ---------------------------------------------------------------------------
 
+/// Plan 45: the accrual gate is off on the household sample.
+#[tokio::test]
+async fn accrual_matches_the_native_golden() {
+    assert_matches_golden("accrual").await;
+}
+
 #[tokio::test]
 async fn balancesheet_matches_the_native_golden() {
     assert_matches_golden("balancesheet").await;
@@ -324,7 +330,7 @@ fn every_manifest_entry_is_covered_by_a_committed_body() {
     let entries = requests();
     assert_eq!(
         entries.len(),
-        23,
+        24,
         "the manifest gained or lost an endpoint; add/remove the matching \
          #[tokio::test] above and update this count"
     );
@@ -367,7 +373,11 @@ fn every_pinned_request_fixes_its_own_dates() {
     ///   `today_utc()` anywhere in `projections_api::document`.
     /// - `ui-prefs` is the SPA's view state, read from two settings files and
     ///   the built-in defaults; nothing in `ui_prefs::current` reads a clock.
-    const NO_DATE_TO_PIN: [&str; 2] = ["projections-asset", "ui-prefs"];
+    /// - `accrual` (plan 45) is pinned on `sample.journal`, a household
+    ///   ledger whose accrual gate is off: the route answers `{"enabled":
+    ///   false}` before it reads a date. (On an accrual ledger its counts do
+    ///   depend on `today`, and its tests pass one.)
+    const NO_DATE_TO_PIN: [&str; 3] = ["projections-asset", "ui-prefs", "accrual"];
 
     for (name, uri) in requests() {
         if NO_DATE_TO_PIN.contains(&name.as_str()) {

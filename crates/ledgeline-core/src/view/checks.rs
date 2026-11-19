@@ -16,6 +16,10 @@
 //! | `broken-match`        | warning  | transaction |
 //! | `unusual-clearing`    | info     | transaction |
 //!
+//! Plan 45's six recognition rules are [`recognition_findings`], a separate
+//! pass because they read the recognition file and `closed-through` as well
+//! as the journal; the caller chains them after these.
+//!
 //! Two of them read the calendar (`negative-cash` takes balances as of today,
 //! `future-date` compares against it). "Today" is the CLIENT's local date,
 //! passed in, so the server's time zone never changes an answer.
@@ -520,4 +524,177 @@ pub fn diagnostics_body<'a>(
         max_severity: diagnostics.max_severity(),
         diagnostics: entries,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Recognition (plan 45)
+// ---------------------------------------------------------------------------
+
+/// Plan 45's six recognition findings, in this order:
+///
+/// | rule                        | severity | anchor |
+/// |-----------------------------|----------|--------|
+/// | `recognition-file-included` | warning  | the first schedule's source transaction, else its account |
+/// | `recognition-duplicate`     | warning  | each transaction carrying the `(recognition, recognized)` |
+/// | `recognition-sum`           | warning  | the source transaction, or the posted entry |
+/// | `recognition-orphan`        | info     | the entry or source transaction, or the rule's account |
+/// | `recognition-closed-due`    | warning  | the schedule's source transaction, else its account |
+/// | `recognition-rule-account`  | warning  | the undeclared account |
+///
+/// `included` says whether the journal includes the recognition file;
+/// `closed_due` is [`crate::accrual::due::DueSet::closed`] for the client's
+/// `today` and `closed-through`.
+#[must_use]
+pub fn recognition_findings(
+    index: &crate::accrual::index::RecognitionIndex,
+    journal: &Journal,
+    book: &crate::accrual::book::RecognitionBook,
+    closed_due: &[crate::accrual::due::DueEntry],
+    included: bool,
+) -> Vec<Finding> {
+    use crate::accrual::index::Issue;
+    let anchor = |id: &str| -> (Option<usize>, Option<String>) {
+        let schedule = index.schedule(id);
+        let position = schedule
+            .and_then(|s| s.sources.first())
+            .map(|source| source.at.position);
+        let account = schedule
+            .and_then(|s| s.rules.first())
+            .and_then(|&rule| book.rules.get(rule))
+            .and_then(|rule| rule.postings.first())
+            .map(|posting| posting.account.0.clone());
+        match position {
+            Some(position) => (Some(position), None),
+            None => (None, account),
+        }
+    };
+    let finding = |(position, account): (Option<usize>, Option<String>),
+                   rule: &'static str,
+                   severity: Severity,
+                   message: String| {
+        (position.is_some() || account.is_some()).then_some(Finding {
+            position,
+            account,
+            rule,
+            severity,
+            message,
+        })
+    };
+    let mut out: Vec<Finding> = Vec::new();
+    if included {
+        let first = index
+            .schedules()
+            .iter()
+            .map(|s| anchor(&s.id))
+            .find(|(p, a)| p.is_some() || a.is_some());
+        if let Some(at) = first {
+            out.extend(finding(
+                at,
+                "recognition-file-included",
+                Severity::Warning,
+                "the journal includes the recognition file, so hledger and the Budget tab will \
+                 treat every schedule as a budget goal; read it with -f beside the journal instead"
+                    .to_string(),
+            ));
+        }
+    }
+    let issues = index.issues(journal, book);
+    for issue in &issues {
+        if let Issue::Duplicate {
+            id,
+            recognized,
+            positions,
+        } = issue
+        {
+            out.extend(positions.iter().map(|&position| {
+                Finding::txn(
+                    position,
+                    "recognition-duplicate",
+                    Severity::Warning,
+                    format!(
+                        "{} transactions are the recognition entry of schedule {id} for \
+                         {recognized}; delete all but one",
+                        positions.len()
+                    ),
+                )
+            }));
+        }
+    }
+    for issue in &issues {
+        match issue {
+            Issue::SumMismatch {
+                id,
+                position,
+                detail,
+            } => out.extend(finding(
+                position.map_or_else(|| anchor(id), |p| (Some(p), None)),
+                "recognition-sum",
+                Severity::Warning,
+                format!("schedule {id}: {detail}; review the restatement"),
+            )),
+            Issue::EntryMismatch {
+                id,
+                position,
+                detail,
+            } => out.push(Finding::txn(
+                *position,
+                "recognition-sum",
+                Severity::Warning,
+                format!("this recognition entry of schedule {id} doesn't match it: {detail}"),
+            )),
+            _ => {}
+        }
+    }
+    for issue in &issues {
+        match issue {
+            Issue::OrphanEntry { id, position } => out.push(Finding::txn(
+                *position,
+                "recognition-orphan",
+                Severity::Info,
+                format!("schedule {id} has no rule in the recognition file"),
+            )),
+            Issue::OrphanSource { id, at } => out.push(Finding::txn(
+                at.position,
+                "recognition-orphan",
+                Severity::Info,
+                format!(
+                    "this posting names schedule {id}, which has no rule in the recognition file"
+                ),
+            )),
+            Issue::OrphanRule { id } => out.extend(finding(
+                anchor(id),
+                "recognition-orphan",
+                Severity::Info,
+                format!("schedule {id} has rules but no source posting carries recognition:{id}"),
+            )),
+            _ => {}
+        }
+    }
+    out.extend(closed_due.iter().filter_map(|entry| {
+        finding(
+            anchor(&entry.id),
+            "recognition-closed-due",
+            Severity::Warning,
+            format!(
+                "schedule {} is due on {} in a closed period and hasn't been posted; post it as \
+                 an adjustment",
+                entry.id, entry.recognized
+            ),
+        )
+    }));
+    for issue in &issues {
+        if let Issue::RuleAccount { id, account } = issue {
+            out.push(Finding {
+                position: None,
+                account: Some(account.clone()),
+                rule: "recognition-rule-account",
+                severity: Severity::Warning,
+                message: format!(
+                    "schedule {id} posts to {account}, which isn't declared; strict hledger would \
+                     refuse its entries"
+                ),
+            });
+        }
+    }
+    out
 }

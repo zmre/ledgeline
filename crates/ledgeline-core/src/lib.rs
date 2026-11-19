@@ -58,6 +58,7 @@
 //!   of `ledgeline.toml` (see `plans/43-bank-sync.md`)
 
 pub mod accounts;
+pub mod accrual;
 pub mod aliases;
 pub mod assertions;
 pub mod auto;
@@ -82,6 +83,7 @@ pub mod hledger_conf;
 pub mod holdings;
 pub mod journal_meta;
 pub mod journals;
+pub mod ledger_file;
 pub mod matching;
 pub mod model;
 pub mod new_ledger;

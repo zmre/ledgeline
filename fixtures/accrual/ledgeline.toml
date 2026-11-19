@@ -1,0 +1,4 @@
+# Ledgeline settings for the accrual fixture (synthetic).
+
+[books]
+closed-through = "2026-09-30"

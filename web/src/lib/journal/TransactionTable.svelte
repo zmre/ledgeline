@@ -45,6 +45,8 @@
     import {journalView} from "#lib/stores/journalView.svelte.js";
     import {findableClearing, olderLabel} from "#lib/matching/model.js";
     import {matches} from "#lib/stores/matches.svelte.js";
+    import {accrual} from "#lib/accrual/store.svelte.js";
+    import RecognitionButton from "#lib/accrual/ui/RecognitionButton.svelte";
     import {problems} from "#lib/stores/problems.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
     import {rootPx} from "#lib/theme/scale.js";
@@ -56,12 +58,26 @@
     import {belowMd} from "#lib/ui/appWidth.svelte.js";
     import type {SwipeAction} from "./swipe";
     import {swipeOpen} from "./swipeOpen.svelte";
+    import RecognitionGroupRow from "./RecognitionGroupRow.svelte";
+    import {recognitionExpand} from "./recognitionExpand.svelte";
     import TransactionRow from "./TransactionRow.svelte";
     import TxnDetailSheet, {type DetailAction} from "./TxnDetailSheet.svelte";
     import {measureAccountColumn} from "./accountColumn.svelte";
     import {txnModal} from "./edit/modalState.svelte";
     import {rowActions} from "./rowAction.svelte";
-    import {centerOffset, computeWindow, displayTotal, expandedWithin, halfPageRows, listGeometry, nearestOffset, nextStatus, slotAt, slotOf} from "./rowModel";
+    import {
+        centerOffset,
+        computeWindow,
+        displayTotal,
+        expandedWithin,
+        halfPageRows,
+        listGeometry,
+        nearestOffset,
+        nextStatus,
+        recognitionMonth,
+        slotAt,
+        slotOf,
+    } from "./rowModel";
 
     /** Where the Find Matches docs live (plan 35 Phase 4), for the disabled button's "how". */
     const MATCHING_DOCS = "https://zmre.github.io/ledgeline/journal/transfer-matching/";
@@ -150,8 +166,17 @@
         return slots;
     });
     /** Svelte `{#each}` key: the transaction once loaded (a half by its row's), else its slot (a skeleton never collides with a tindex). */
+    // A recognition group row (plan 45 D8) carries its month's latest entry as
+    // its `txn`, and that entry follows it as a row of its own when the month
+    // is expanded: the group keys on its month.
     const slotKey = (slot: Slot): string =>
-        slot.row === null || slot.shows === null ? `p${slot.at}` : slot.half === null ? `t${slot.row.txn.index}` : `h${slot.row.txn.index}-${slot.half}`;
+        slot.row === null || slot.shows === null
+            ? `p${slot.at}`
+            : slot.half !== null
+              ? `h${slot.row.txn.index}-${slot.half}`
+              : slot.row.recognitionGroup !== undefined
+                ? `g${slot.row.recognitionGroup.month}`
+                : `t${slot.row.txn.index}`;
 
     // Ask for the rows the window covers. Keyed on the window and on the view's
     // QUERY (a generation change re-reads the same window), deliberately NOT on
@@ -398,11 +423,52 @@
         else if (before.position > position) cursor.move(open ? -2 : 2);
     }
 
-    /** `l` on a transfer row (or one of its halves): expand or collapse it. */
+    /** `l` on a transfer row (or one of its halves): expand or collapse it. On a recognition group row (or one of its shown entries), the month. */
     function toggleCursorTransfer(): void {
         if (cursor.index === -1) return;
-        toggleTransfer(slotFor(cursor.index).position);
+        const slot = slotFor(cursor.index);
+        if (slot.half === null && slot.row !== null && cursorMonth(slot.row) !== null) toggleGroupAt(slot.position, slot.row);
+        else toggleTransfer(slot.position);
         reveal(cursor.index, "nearest");
+    }
+
+    // Recognition groups (plan 45 D8): a month of posted recognition entries
+    // is one row, served by the engine; expanding it asks for the month again
+    // (`expand=`) and the engine serves its entries right under it. The
+    // expanded months are page state (`recognitionExpand`), cleared by a new
+    // filter. Never with a pinned running balance: the engine groups nothing
+    // then, and every entry is a row of its own.
+
+    /** The month of an expanded group that `row` is an entry of, or null. */
+    function memberMonth(row: JournalRow): string | null {
+        if (pinned !== null || row.recognitionGroup !== undefined) return null;
+        const month = recognitionMonth(row.txn);
+        return month !== null && recognitionExpand.has(month) ? month : null;
+    }
+
+    /** The month `l` and Enter act on at `row`: its group's, or an expanded group's entry's. */
+    function cursorMonth(row: JournalRow): string | null {
+        return row.recognitionGroup?.month ?? memberMonth(row);
+    }
+
+    /**
+     * Toggle the month of the group row (or shown entry) at engine `position`.
+     * Collapsing from an entry hands the cursor to its group row (the nearest
+     * loaded one above it); the group row itself never moves.
+     */
+    function toggleGroupAt(position: number, row: JournalRow): void {
+        const month = cursorMonth(row);
+        if (month === null) return;
+        if (row.recognitionGroup === undefined && cursor.index !== -1) {
+            for (let at = position - 1; at >= 0 && at >= position - 10_000; at -= 1) {
+                const above = journalView.rowAt(at);
+                if (above === null || above.recognitionGroup?.month === month) {
+                    if (above !== null) cursor.to(slotOf(at, openPositions));
+                    break;
+                }
+            }
+        }
+        recognitionExpand.toggle(month);
     }
 
     // Find Matches (plan 35 D9): the badge counts the proposals, read in step
@@ -429,6 +495,13 @@
         if (serverUrl === null || generation === null || !editing.canEdit) return;
         untrack(() => void matches.sync(serverUrl, generation));
     });
+    /** The Recognition overlay (plan 45 D6, Q8): Due, Needs a schedule, Invoices. */
+    function launchRecognition(): void {
+        if (!editing.canEdit || !accrual.enabled) return;
+        reviewMenuOpen = false;
+        matchMenuOpen = false;
+        accrual.openOverlay();
+    }
     function launchMatches(): void {
         if (!editing.canEdit || !canOpenMatches) return;
         reviewMenuOpen = false;
@@ -452,6 +525,14 @@
             actions.push({id: "review-recents", label: `Review recents (${recentCount})`, icon: "checkmark.circle", run: () => launchReview("recents")});
         if (canOpenMatches)
             actions.push({id: "find-matches", label: matchCount > 0 ? `Find matches (${matchCount})` : "Find matches", icon: "link", run: launchMatches});
+        // Plan 45: the Recognition overlay, only with the accrual helpers on (D-gate).
+        if (accrual.enabled)
+            actions.push({
+                id: "recognition",
+                label: accrual.badgeCount > 0 ? `Recognition (${accrual.badgeCount})` : "Recognition",
+                icon: "calendar",
+                run: launchRecognition,
+            });
         return actions;
     });
 
@@ -493,7 +574,7 @@
     /** The list's own keys stand down while the calendar shows: they would move a cursor nobody can see. */
     const inList = (): boolean => !calendar;
     /** Keys that act on the whole journal, not a row, work in both views. */
-    const BOTH_VIEWS: ReadonlySet<string> = new Set(["n", "u", "r", "m"]);
+    const BOTH_VIEWS: ReadonlySet<string> = new Set(["n", "u", "r", "m", "a"]);
 
     registerKeys({
         id: "journal-table",
@@ -532,7 +613,13 @@
                     label: "Edit transaction",
                     group: "Journal",
                     enabled: canEdit,
-                    run: () => cursor.item !== null && txnModal.openEdit(cursor.item.index),
+                    run: () => {
+                        if (cursor.item === null) return;
+                        // A recognition group row stands for a month, not one transaction: Enter opens it.
+                        const slot = slotFor(cursor.index);
+                        if (slot.half === null && slot.row?.recognitionGroup !== undefined) toggleGroupAt(slot.position, slot.row);
+                        else txnModal.openEdit(cursor.item.index);
+                    },
                 },
                 {keys: "e", label: "Edit description", group: "Journal", enabled: canEdit, run: () => requestRowAction("description")},
                 {keys: "c", label: "Edit category", group: "Journal", enabled: canEdit, run: () => requestRowAction("category")},
@@ -542,12 +629,18 @@
                 {keys: "u", label: "Review unknowns", group: "Journal", enabled: () => canEdit() && unknownCount > 0, run: () => launchReview("unknowns")},
                 {keys: "r", label: "Review recents", group: "Journal", enabled: () => canEdit() && recentCount > 0, run: () => launchReview("recents")},
                 {keys: "m", label: "Find matches", group: "Journal", enabled: () => canEdit() && canOpenMatches, run: launchMatches},
+                // Plan 45 Q8: `a` for accruals — only with the helpers on.
+                {keys: "a", label: "Recognition", group: "Journal", enabled: () => canEdit() && accrual.enabled, run: launchRecognition},
                 {keys: "M", label: "Find a match for this transaction", group: "Journal", enabled: () => canEdit() && cursorFindable(), run: findMatchAtCursor},
                 {
                     keys: "l",
-                    label: "Expand or collapse a transfer",
+                    label: "Expand or collapse a transfer or a month of recognition entries",
                     group: "Journal",
-                    enabled: () => cursor.index !== -1 && slotFor(cursor.index).row?.transfer !== undefined,
+                    enabled: () => {
+                        if (cursor.index === -1) return false;
+                        const slot = slotFor(cursor.index);
+                        return slot.row?.transfer !== undefined || (slot.half === null && slot.row !== null && cursorMonth(slot.row) !== null);
+                    },
                     run: toggleCursorTransfer,
                 },
             ] satisfies Binding[]
@@ -709,6 +802,26 @@
 {/snippet}
 
 {#snippet row(slot: Slot, shows: JournalRow, mode: "row" | "card")}
+    {#if slot.half === null && shows.recognitionGroup !== undefined && pinned === null}
+        <RecognitionGroupRow
+            group={shows.recognitionGroup}
+            txn={shows.txn}
+            {columns}
+            {mode}
+            cursor={cursor.index === slot.at}
+            {pinned}
+            at={slot.at}
+            onToggle={() => {
+                cursor.to(slot.at);
+                toggleGroupAt(slot.position, shows);
+            }}
+        />
+    {:else}
+        {@render txnRow(slot, shows, mode)}
+    {/if}
+{/snippet}
+
+{#snippet txnRow(slot: Slot, shows: JournalRow, mode: "row" | "card")}
     <TransactionRow
         txn={shows.txn}
         {columns}
@@ -722,7 +835,7 @@
         at={slot.at}
         transfer={slot.half === null ? shows.transfer : undefined}
         expanded={openPositions.includes(slot.position)}
-        nested={slot.half !== null}
+        nested={slot.half !== null || memberMonth(shows) !== null}
         linked={slot.half !== null || shows.linked === true}
         onToggle={() => toggleTransfer(slot.position)}
         onUnlink={() => ((armedDelete = null), (armedMatch = {kind: "unlink", row: shows}))}
@@ -819,6 +932,18 @@
                                             >
                                         </button>
                                     </li>
+                                    {#if accrual.enabled}
+                                        <li>
+                                            <button type="button" class="justify-between" onclick={launchRecognition} data-testid="recognition-menu-button">
+                                                Recognition
+                                                <span
+                                                    class={["badge badge-sm tabular-nums", accrual.badgeCount > 0 ? "badge-info" : "badge-ghost"]}
+                                                    title={accrual.badgeBreakdown}
+                                                    data-testid="recognition-menu-count">{accrual.badgeCount}</span
+                                                >
+                                            </button>
+                                        </li>
+                                    {/if}
                                 </ul>
                                 <div class="mt-2 border-t border-base-content/10 px-1 pt-2">
                                     <ReviewSettings />
@@ -960,6 +1085,8 @@
                             data-testid="find-matches-docs">How?</a
                         >
                     {/if}
+                    <!-- Plan 45 D6: Recognition, beside Find Matches. Renders nothing with the helpers off. -->
+                    <RecognitionButton onOpen={launchRecognition} />
                 </div>
             {:else}
                 <span></span>

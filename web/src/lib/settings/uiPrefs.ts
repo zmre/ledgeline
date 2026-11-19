@@ -84,6 +84,19 @@ export const SYNC_KEEP_DAYS_DEFAULT = 0;
 /** Days without a new transaction before a manually imported account turns amber, 1–3650. Default 35. */
 export const MANUAL_REMIND_DAYS_RANGE = [1, 3650] as const;
 export const MANUAL_REMIND_DAYS_DEFAULT = 35;
+/** How the journal shows posted recognition entries (plan 45 D8). */
+export const RECOGNITION_ROWS = ["group", "hide", "show"] as const;
+export type RecognitionRows = (typeof RECOGNITION_ROWS)[number];
+export const RECOGNITION_ROWS_DEFAULT: RecognitionRows = "group";
+/** How far back the invoice ↔ payment matcher looks, 0 (no limit)–3650 days. Default 180. */
+export const SETTLEMENT_LOOKBACK_RANGE = [0, 3650] as const;
+export const SETTLEMENT_LOOKBACK_DEFAULT = 180;
+/** How far a payment may fall short of its invoice, in basis points of the invoice, 0–10000. Default 300 (3%). */
+export const SETTLEMENT_TOLERANCE_RANGE = [0, 10_000] as const;
+export const SETTLEMENT_TOLERANCE_DEFAULT = 300;
+/** How many days a payment may come BEFORE its invoice and still be matched (a payroll draw, then its bill), 0–60. Default 4. */
+export const SETTLEMENT_LEAD_RANGE = [0, 60] as const;
+export const SETTLEMENT_LEAD_DEFAULT = 4;
 
 /**
  * A folder inside the journal's folder (`RelDir` in ui_prefs.rs): relative,
@@ -107,6 +120,7 @@ export const PINNABLE_UI_PREF_KEYS = [
     "syncSourceDir",
     "syncKeepSourceDays",
     "manualRemindDays",
+    "autoRecognize",
 ] as const;
 
 export type PinnableUiPrefKey = (typeof PINNABLE_UI_PREF_KEYS)[number];
@@ -186,6 +200,19 @@ export interface UiPrefs {
     syncKeepSourceDays: number;
     /** Days without a new transaction before a manually imported account turns amber, 1–3650. Default 35. */
     manualRemindDays: number;
+    /**
+     * Post due recognition entries in the background (plan 45). Off by
+     * default: it writes to the journal on the user's behalf.
+     */
+    autoRecognize: boolean;
+    /** How the journal shows posted recognition entries. Default `group`. */
+    recognitionRows: RecognitionRows;
+    /** The invoice ↔ payment matcher's lookback, 0 (no limit)–3650 days. Default 180. */
+    settlementLookbackDays: number;
+    /** The matcher's shortfall tolerance in basis points, 0–10000. Default 300. */
+    settlementToleranceBps: number;
+    /** Days a payment may precede its invoice, 0–60. Default 4. */
+    settlementLeadDays: number;
 }
 
 export type UiPrefKey = keyof UiPrefs;
@@ -219,6 +246,11 @@ export const UI_PREF_KEYS: readonly UiPrefKey[] = [
     "syncSourceDir",
     "syncKeepSourceDays",
     "manualRemindDays",
+    "autoRecognize",
+    "recognitionRows",
+    "settlementLookbackDays",
+    "settlementToleranceBps",
+    "settlementLeadDays",
 ];
 
 /** A partial update, as `PATCH /api/ui-prefs` takes it: `columns` may name only some members. */
@@ -320,6 +352,11 @@ export const defaultUiPrefs = (): UiPrefs => ({
     syncSourceDir: SYNC_SOURCE_DIR_DEFAULT,
     syncKeepSourceDays: SYNC_KEEP_DAYS_DEFAULT,
     manualRemindDays: MANUAL_REMIND_DAYS_DEFAULT,
+    autoRecognize: false,
+    recognitionRows: RECOGNITION_ROWS_DEFAULT,
+    settlementLookbackDays: SETTLEMENT_LOOKBACK_DEFAULT,
+    settlementToleranceBps: SETTLEMENT_TOLERANCE_DEFAULT,
+    settlementLeadDays: SETTLEMENT_LEAD_DEFAULT,
 });
 
 const flag = (value: unknown, fallback: boolean): boolean => (typeof value === "boolean" ? value : fallback);
@@ -372,6 +409,13 @@ export function cleanUiPrefs(parsed: Record<string, unknown>): UiPrefs {
         syncSourceDir: isRelDir(parsed.syncSourceDir) ? parsed.syncSourceDir : base.syncSourceDir,
         syncKeepSourceDays: wholeIn(parsed.syncKeepSourceDays, SYNC_KEEP_DAYS_RANGE, SYNC_KEEP_DAYS_DEFAULT),
         manualRemindDays: wholeIn(parsed.manualRemindDays, MANUAL_REMIND_DAYS_RANGE, MANUAL_REMIND_DAYS_DEFAULT),
+        autoRecognize: flag(parsed.autoRecognize, base.autoRecognize),
+        recognitionRows: RECOGNITION_ROWS.includes(parsed.recognitionRows as RecognitionRows)
+            ? (parsed.recognitionRows as RecognitionRows)
+            : base.recognitionRows,
+        settlementLookbackDays: wholeIn(parsed.settlementLookbackDays, SETTLEMENT_LOOKBACK_RANGE, SETTLEMENT_LOOKBACK_DEFAULT),
+        settlementToleranceBps: wholeIn(parsed.settlementToleranceBps, SETTLEMENT_TOLERANCE_RANGE, SETTLEMENT_TOLERANCE_DEFAULT),
+        settlementLeadDays: wholeIn(parsed.settlementLeadDays, SETTLEMENT_LEAD_RANGE, SETTLEMENT_LEAD_DEFAULT),
     };
 }
 

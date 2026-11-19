@@ -534,9 +534,18 @@ pub(crate) fn plan_security(cli: &Cli) -> Result<(ProcessToken, SecurityPlan), A
 /// snapshot rebuild, ~1.7 s at 200k transactions — so [`watch_loop`] is careful
 /// to call it once per settled change and never for a file that did not actually
 /// change (PERF-4).
+///
+/// It goes through [`AppState::refresh`], not straight to `reload`: the watcher
+/// also wakes for Ledgeline's OWN writes, which the bound editor already holds
+/// (its source fingerprints are the bytes it wrote), and reloading those threw
+/// away a consistent editor and snapshot for a second ~1.7 s reparse and a new
+/// generation — racing whatever the client re-read right after the write (plan
+/// 45: a settlements list re-read in that window lost every fingerprint). An
+/// outside edit is still a changed source and still reloads; the recognition
+/// file and `[books]`, which are watched but are not sources, republish.
 #[cfg(feature = "watcher")]
 pub(crate) fn reload_journal(path: &Path, state: &AppState) {
-    match state.reload() {
+    match state.refresh() {
         Ok(ledgeline::Refreshed::Reloaded) => eprintln!("ledgeline: reloaded {}", path.display()),
         Ok(ledgeline::Refreshed::Unchanged | ledgeline::Refreshed::NoStorage) => {}
         Err(error) => eprintln!("ledgeline: reload skipped: {error}"),
@@ -833,6 +842,9 @@ fn run_server_blocking(cli: &Cli, app_dirs: AppDirs) -> Result<(), AppError> {
         // `autoPrices` on; the e2e harnesses keep prefs in the browser, where
         // it is always off.
         tokio::spawn(ledgeline::run_auto_prices(state.clone()));
+        // Plan 45: post due recognition entries, idle unless `autoRecognize`
+        // is on (always off for the browser-prefs harnesses).
+        tokio::spawn(ledgeline::run_auto_recognize(state.clone()));
         // Plan 43: background bank sync, idle unless `autoSync` is on. Not
         // started at all for the browser-prefs harnesses (e2e, live
         // contract), so they never touch a bank feed unasked.

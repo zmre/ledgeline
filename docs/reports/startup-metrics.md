@@ -45,6 +45,7 @@ Every box, every **More metrics** row, each MRR bridge category and the segment 
 | `ga` | expense | General and administrative. | G&A % of revenue |
 | `receivable` | asset | Trade receivables. | DSO, and the payee fallback for customers |
 | `payable` | liability | Trade payables. | DPO |
+| `prepaid` | asset | Prepaid expenses, spread into expense over a term. | [Revenue and expense recognition](../journal/accrual-recognition.md) only; no metric |
 
 Revenue with no `kpi:` is non-recurring. It still counts in total revenue and gross margin, but never in MRR.
 
@@ -429,7 +430,8 @@ To get customer figures from books like these:
 1. **Tag the recognition lines.** Split each month's recognition entry by customer, with `customer:` on each revenue posting. That is where recurring revenue really is, and it is what the [example](#a-journal-that-turns-everything-on) does.
 2. **Invoice straight to deferred revenue.** Post the invoice to `liabilities:deferred-revenue` and leave out the move, so revenue only ever holds recognised amounts.
 3. **Use a leaf account per segment.** If revenue sits on the parent's own postings (`revenue:sales`) as well as on subaccounts, tag the leaves with `segment:` and stop posting to the parent.
-4. **From QuickBooks, export with names.** The import writes each line's Name as `customer:` on revenue, deferred revenue and receivable lines. See [Importing from QuickBooks](../imports/quickbooks.md#customer-names-on-each-line).
+4. **Let Ledgeline post the recognition entries.** [Revenue and expense recognition](../journal/accrual-recognition.md) writes one entry per customer per month, with `customer:` on both lines, from a schedule on the deferred line. Books that recognise this way stop looking like billing-clearing books, and per-customer MRR comes back.
+5. **From QuickBooks, export with names.** The import writes each line's Name as `customer:` on revenue, deferred revenue and receivable lines. See [Importing from QuickBooks](../imports/quickbooks.md#customer-names-on-each-line).
 
 ## Check it with hledger
 

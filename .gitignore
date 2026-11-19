@@ -54,6 +54,9 @@ coverage/
 # hand beside a fixture journal (to try an override) would change what the
 # native wire golden sees. Tests that need one create it in a temp dir.
 /fixtures/**/ledgeline.toml
+# The accrual fixture's is deliberate: it closes the books through 2026-09-30,
+# which the accrual endpoint tests and the accrual e2e engine rely on.
+!/fixtures/accrual/ledgeline.toml
 
 # Editor / OS
 .DS_Store

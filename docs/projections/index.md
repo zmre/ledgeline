@@ -293,6 +293,12 @@ notice:
   incomplete rather than showing a subset that looks complete.
 - **No path outside the journal directory is ever reachable**, and no absolute
   path ever appears in the app or in an error message.
+- **The recognition file is never listed.** Its `~` rules are schedules for
+  [revenue and expense recognition](../journal/accrual-recognition.md), not a
+  scenario: their past occurrences are already posted, so projecting from it
+  would count them again. To see recognition ahead in a projection, copy the
+  file to a `projection-<name>.journal` and remove the rules' `to` dates (or
+  keep them, to stop at each contract's end).
 
 ### Saving
 

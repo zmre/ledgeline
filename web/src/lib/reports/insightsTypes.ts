@@ -129,6 +129,11 @@ export interface TopTxn {
     description: string;
     /** Base-commodity magnitude of money moved. */
     amount: Dec;
+    /**
+     * Plan 45 Q7: this line stands for a month of posted recognition entries
+     * (`index` is the month's latest); `amount` is their sum. Null otherwise.
+     */
+    recognition: {month: string; count: number} | null;
 }
 
 /** The Insights dashboard: period-over-period core metrics (Boxes 1–6) + list boxes (7–10). */

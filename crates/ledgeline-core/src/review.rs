@@ -499,7 +499,10 @@ impl ReviewIndex {
             ) else {
                 continue;
             };
+            // Posted recognition entries are Ledgeline's own bookkeeping, never
+            // reviewed (plan 45 Q6).
             let wanted = real
+                && !crate::accrual::is_recognition_entry(txn)
                 && match opts.kind {
                     QueueKind::Unknowns => unknown && *state != ReviewState::Ignored,
                     QueueKind::Recents => !state.is_tagged(),

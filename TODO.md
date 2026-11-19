@@ -40,12 +40,23 @@
 - **Counting commodities (tier D):** headcount (`(kpi:headcount) 1 FTE`), seats, units; revenue per FTE. Find them by a commodity tag, not by name.
 - **Inventory metrics:** `kpi: inventory`, inventory turns, DIO, GMROI, sell-through, built on Holdings' lot/cost logic.
 - **Churn grace period:** treat a customer as churned only after N consecutive zero months (today N = 1, so a credit month shows as churn + reactivation).
-- **Spread-invoices fallback:** for books that can't tag recognition lines, spread each `customer:`-tagged invoice over 12 months (or a `term:` tag) and reconcile against recognised MRR, showing coverage.
+- **Spread-invoices fallback:** for books that can't tag recognition lines, spread each `customer:`-tagged invoice over 12 months (or a `term:` tag) and reconcile against recognised MRR, showing coverage. Plan 45's recognition schedules now post per-customer entries (docs/journal/accrual-recognition.md), which covers books Ledgeline recognises; this stays for books recognised elsewhere.
 - **Magic number** and a **cohort retention chart**.
 - **Default projection:** extrapolate `kpi: recurring` revenue as run-rate and stop repeating non-recurring revenue.
-- **AR aging** (0–30/31–60/61–90/90+), on top of invoice ↔ payment matching.
+- **AR aging** (0–30/31–60/61–90/90+), on top of invoice ↔ payment matching (plan 45, docs/journal/invoice-matching.md). Listed under Accrual below.
 - **Docs screenshot** of the startup section, if the docs-screenshot harness can serve `fixtures/saas/startup.journal`.
 
+
+## Accrual (follow-ups to plan 45, its "Phase 5 — Later")
+
+- Insights: renewals by month (count and $, from `renewal-date`), new vs renewal ARR from `contract:`, billed / paid / outstanding per customer from settlement links, and adjusted burn counting prepaid (Δprepaid).
+- Invoice matching: N:M settlement, partial payments, AR/AP aging, and customer credit balances from overpayments.
+- FX schedules (a schedule in a commodity other than the books').
+- Due table: per-row edits of date, amount and accounts before posting, with the "absorb the difference in the final period" prompt (the server has no `edit?`/`absorb?` yet).
+- Offer **Match invoices** on an import's or a sync's result screen when it added payments to AR or AP.
+- Problems fix buttons for the recognition checks (Delete one, Review restatement, Post as adjustment, Open the rule).
+- The Accounts editor's "declare a deferred-revenue / prepaid account" action from the Accrual section.
+- Reuse the full transaction body (Phase 3b's Details) in the plan 35 transfer-match overlay.
 
 ## Security
 

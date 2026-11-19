@@ -50,6 +50,12 @@ The checks run on the whole journal, whatever the filter bar says.
 | [In transit](#in-transit) | info | transaction |
 | [Broken match](#broken-match) | warning | transaction |
 | [Unusual clearing posting](#unusual-clearing-posting) | info | transaction |
+| [Recognition file included](#recognition-file-included) | warning | transaction |
+| [Duplicate recognition entry](#duplicate-recognition-entry) | warning | transaction |
+| [Schedule total mismatch](#schedule-total-mismatch) | warning | transaction |
+| [Schedule without a rule or source](#schedule-without-a-rule-or-source) | info | transaction |
+| [Due in a closed period](#due-in-a-closed-period) | warning | transaction |
+| [Undeclared account in a schedule](#undeclared-account-in-a-schedule) | warning | account |
 
 The first nine come from Ledgeline's engine. If you point the app at a plain `hledger-web` server instead, those engine checks are missing, and Ledgeline runs a simpler balance check of its own.
 
@@ -87,7 +93,7 @@ An `account` directive uses one of Ledgeline's account tags with a value it does
 | `bsterm:` | `current`, `noncurrent` | The account gets the default balance sheet grouping. |
 | `holdings:` | `stocks`, `other`, `none` | The account lands on a Holdings tab by whether it holds a non-currency commodity. |
 | `valuation:` | `cost`, `unrealized`, `depreciation`, `adjustment` | The account counts as cost basis, so any unrealized gain on that holding reads as zero. |
-| `kpi:` | `recurring`, `usage`, `deferred-revenue`, `sales-marketing`, `rnd`, `ga`, `receivable`, `payable` | The account has no role in the [startup metrics](../reports/startup-metrics.md), so the figures that need it leave it out or hide. |
+| `kpi:` | `recurring`, `usage`, `deferred-revenue`, `sales-marketing`, `rnd`, `ga`, `receivable`, `payable`, `prepaid` | The account has no role in the [startup metrics](../reports/startup-metrics.md) or in [revenue and expense recognition](accrual-recognition.md), so the figures that need it leave it out or hide. |
 
 The `valuation:` case matters most, because a zero gain looks like a holding that hasn't moved. Fix the spelling in the `account` directive. An empty value (`; bsterm:`) counts as no tag and is not reported.
 
@@ -134,7 +140,7 @@ An account's `kpi:` tag doesn't fit its type. Each role expects one kind of acco
 | `recurring`, `usage` | Revenue |
 | `deferred-revenue`, `payable` | Liability |
 | `sales-marketing`, `rnd`, `ga` | Expense |
-| `receivable` | Asset |
+| `receivable`, `prepaid` | Asset |
 
 For example, `kpi: recurring` on `expenses:software` counts a cost as subscription revenue. The startup metrics still read the account in the role you gave it, so the figures are wrong until you fix it. The type that decides this is the account's effective type, declared or guessed from its name, and Cash counts as Asset. Usually the tag is on the wrong account, or the account's `type:` is wrong. Move the tag, or fix the type in [Settings → Accounts](../settings/accounts.md).
 
@@ -207,8 +213,35 @@ Click **Unlink** under the finding, then **Unlink** again to confirm. That remov
 
 A posting on a clearing account has a cost (`@`) or a balance assertion, so Find Matches can never pair it. Move the cost or assertion to the real account's posting.
 
+The next six checks run only when the [revenue and expense recognition](accrual-recognition.md) helpers are on. They compare the journal with the schedules in the recognition file.
+
+### Recognition file included
+
+The journal `include`s the recognition file. hledger and the Budget tab then read every schedule as a budget goal. Ledgeline doesn't load the file a second time and keeps every recognition rule out of the budget, but hledger itself will still count them. Remove the `include` line, and read the file with `-f` next to the journal instead. See [The recognition file](accrual-recognition.md#the-recognition-file).
+
+### Duplicate recognition entry
+
+Two or more transactions are the entry for the same schedule and period: they carry the same `recognition:` and `recognized:` values. The period's revenue (or expense) is counted twice. Each copy is flagged. Delete all but one.
+
+### Schedule total mismatch
+
+A schedule no longer adds up. Either its rules, posted entries and adjustments don't sum to the deferred line they spread, or a posted entry's amount differs from its rule's. This usually means the source transaction or an entry was edited outside Ledgeline. Open the source transaction in the editor and save the schedule again: the [restatement preview](accrual-recognition.md#changing-a-schedule-restatement) shows what it will rewrite.
+
+### Schedule without a rule or source
+
+A schedule id is only half there: a posted entry or a source posting names an id with no rule in the recognition file, or a rule's id has no source posting carrying `recognition:` with that id. Usually the recognition file was edited, replaced or not committed alongside the journal. Restore the rules, or open the source in the editor and set up the schedule again. This is information, not an error: the entries already posted are real transactions and count as they are.
+
+### Due in a closed period
+
+An entry fell due on or before the ledger's `closed-through` date and was never posted. Ledgeline won't post into a closed month. Post it from the Recognition overlay's closed-period row, which writes one adjustment dated today. See [Closed periods](accrual-recognition.md#closed-periods).
+
+### Undeclared account in a schedule
+
+A recognition rule posts to an account that no `account` directive declares. `hledger check` with strict account checking would refuse the entries it generates. Declare the account, or correct the rule's account in the editor.
+
 ## Related pages
 
 - [The journal](index.md)
 - [Accounts](../settings/accounts.md)
+- [Revenue and expense recognition](accrual-recognition.md)
 - [Keyboard shortcuts](keyboard.md)

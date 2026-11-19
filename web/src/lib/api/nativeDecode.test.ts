@@ -1250,6 +1250,16 @@ describe("UNIT nativeDecode — InsightsReport over the insights golden", () => 
         expect(top.amount).toEqual({m: 566000n, p: 2});
     });
 
+    // Plan 45 Q7, additive: a line standing for a month of recognition entries.
+    it("decodes a top transaction's recognition month, null when absent, and refuses a bad one", () => {
+        const base = raw as {topTxns: Record<string, unknown>[]};
+        expect(decodeInsightsReport(raw).topTxns[0].recognition).toBeNull();
+        const line = {...base.topTxns[0], recognition: {month: "2026-11", count: 37}};
+        expect(decodeInsightsReport({...(raw as object), topTxns: [line]}).topTxns[0].recognition).toEqual({month: "2026-11", count: 37});
+        expect(() => decodeInsightsReport({...(raw as object), topTxns: [{...line, recognition: {month: "Nov", count: 37}}]})).toThrow(ApiShapeError);
+        expect(() => decodeInsightsReport({...(raw as object), topTxns: [{...line, recognition: {month: "2026-11", count: 0}}]})).toThrow(ApiShapeError);
+    });
+
     // Literal: sample.journal produces only `changed` rows.
     it("decodes the `ended` change kind and rejects anything else", () => {
         const base = raw as {expenseChanges: unknown[]};

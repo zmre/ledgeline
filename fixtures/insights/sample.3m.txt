@@ -428,6 +428,7 @@ InsightsReport {
                 mantissa: 566000,
                 places: 2,
             },
+            recognition: None,
         },
         TopTxn {
             index: 184,
@@ -437,6 +438,7 @@ InsightsReport {
                 mantissa: 566000,
                 places: 2,
             },
+            recognition: None,
         },
         TopTxn {
             index: 186,
@@ -446,6 +448,7 @@ InsightsReport {
                 mantissa: 350000,
                 places: 2,
             },
+            recognition: None,
         },
         TopTxn {
             index: 175,
@@ -455,6 +458,7 @@ InsightsReport {
                 mantissa: 187500,
                 places: 2,
             },
+            recognition: None,
         },
         TopTxn {
             index: 187,
@@ -464,6 +468,7 @@ InsightsReport {
                 mantissa: 187500,
                 places: 2,
             },
+            recognition: None,
         },
     ],
     has_holdings: true,
