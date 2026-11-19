@@ -8,6 +8,10 @@ import {journal} from "#lib/stores/journal.svelte.js";
 import {FAKE_ENGINE} from "#lib/testing/fakeEngine.js";
 import {proposalWire, serveAccrual, settlementsWire, sideWire} from "#lib/testing/accrualFixture.js";
 import {accrual, resetAccrual} from "../store.svelte";
+import {resetTxnDetails} from "../details.svelte";
+import {keymap} from "#lib/keys/keymap.svelte.js";
+import {txnFixture} from "#lib/testing/reviewFixture.js";
+import {wireRow} from "#lib/testing/journalViewFixture.js";
 import {bpsToPercent, percentToBps} from "./format";
 import SettlementsPanel from "./SettlementsPanel.svelte";
 
@@ -30,10 +34,14 @@ async function show(proposals: Record<string, unknown>[], open: {invoices?: unkn
 const links = (seen: {method: string; url: URL; body?: unknown}[], route: string) =>
     seen.filter((r) => r.method === "POST" && r.url.pathname.endsWith(route)).map((r) => r.body as Record<string, unknown>);
 
-beforeEach(() => resetAccrual());
+beforeEach(() => {
+    resetAccrual();
+    resetTxnDetails();
+});
 afterEach(() => {
     vi.unstubAllGlobals();
     resetAccrual();
+    resetTxnDetails();
 });
 
 describe("COMPONENT SettlementsPanel", () => {
@@ -152,5 +160,117 @@ describe("COMPONENT SettlementsPanel", () => {
         expect(percentToBps("2.5%")).toBe(250);
         expect(percentToBps("abc")).toBeNull();
         expect(percentToBps(" ")).toBeNull();
+    });
+
+    // -- Phase 3b: full transaction details ----------------------------------
+
+    /**
+     * Serve `GET /api/transactions/{index}` on top of the accrual engine,
+     * counting the reads; `failing` answers those indices with a 500.
+     */
+    function serveTransactions(failing: Set<number> = new Set()): Map<number, number> {
+        const reads = new Map<number, number>();
+        const inner = globalThis.fetch;
+        vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = new URL(String(input));
+            const match = /\/api\/transactions\/(\d+)$/.exec(url.pathname);
+            if (match !== null && (init?.method ?? "GET") === "GET") {
+                const index = Number(match[1]);
+                reads.set(index, (reads.get(index) ?? 0) + 1);
+                if (failing.has(index)) return Promise.resolve(new Response("the engine fell over", {status: 500}));
+                return Promise.resolve(new Response(JSON.stringify(wireRow(txnFixture(index, `Whole transaction ${index}`, "assets:receivable")))));
+            }
+            return inner(input, init);
+        });
+        return reads;
+    }
+
+    it("expands one side lazily: one fetch, its posting highlighted, and none again on a second expand", async () => {
+        await show([EXACT]);
+        const reads = serveTransactions();
+        const card = screen.getByTestId("settlement-card");
+        const invoice = within(card).getByTestId("settlement-invoice");
+        expect(within(card).queryByTestId("txn-details")).toBeNull();
+        expect(reads.size).toBe(0);
+        await fireEvent.click(within(invoice).getByTestId("details-toggle"));
+        await vi.waitFor(() => expect(within(invoice).getByTestId("detail-description").textContent).toBe("Whole transaction 1"));
+        expect(reads.get(1)).toBe(1);
+        // The side's posting (1) is the one marked.
+        const rows = within(within(invoice).getByTestId("detail-postings")).getAllByRole("listitem");
+        expect(rows.map((row) => row.hasAttribute("data-highlighted"))).toEqual([false, true]);
+        // The payment side stays closed.
+        expect(within(within(card).getByTestId("settlement-payment")).queryByTestId("txn-details")).toBeNull();
+        await fireEvent.click(within(invoice).getByTestId("details-toggle"));
+        expect(within(invoice).queryByTestId("txn-details")).toBeNull();
+        await fireEvent.click(within(invoice).getByTestId("details-toggle"));
+        await vi.waitFor(() => expect(within(invoice).getByTestId("detail-description")).toBeDefined());
+        expect(reads.get(1)).toBe(1);
+    });
+
+    it("opens both sides with Both, and with d on the focused card", async () => {
+        await show([EXACT, proposalWire(sideWire(7), sideWire(8))]);
+        const reads = serveTransactions();
+        const [first, second] = screen.getAllByTestId("settlement-card") as HTMLElement[];
+        await fireEvent.click(within(first as HTMLElement).getByTestId("details-both"));
+        await vi.waitFor(() => expect(within(first as HTMLElement).getAllByTestId("detail-description")).toHaveLength(2));
+        expect([reads.get(1), reads.get(2)]).toEqual([1, 1]);
+        expect(within(second as HTMLElement).queryByTestId("txn-details")).toBeNull();
+
+        // `d` acts on the card holding focus.
+        (within(second as HTMLElement).getByTestId("details-both") as HTMLElement).focus();
+        await fireEvent.focusIn(within(second as HTMLElement).getByTestId("details-both"));
+        keymap.handle(new KeyboardEvent("keydown", {key: "d", cancelable: true}));
+        await vi.waitFor(() => expect(within(second as HTMLElement).getAllByTestId("txn-details")).toHaveLength(2));
+        expect(within(first as HTMLElement).getAllByTestId("txn-details")).toHaveLength(2);
+        keymap.handle(new KeyboardEvent("keydown", {key: "d", cancelable: true}));
+        await vi.waitFor(() => expect(within(second as HTMLElement).queryByTestId("txn-details")).toBeNull());
+    });
+
+    it("Show details expands every card and every open-list row", async () => {
+        await show([EXACT, proposalWire(sideWire(7), sideWire(8))], {invoices: [sideWire(9)], payments: [sideWire(10)]});
+        serveTransactions();
+        await fireEvent.click(screen.getByTestId("settlements-show-details"));
+        await vi.waitFor(() => expect(screen.getAllByTestId("txn-details")).toHaveLength(6));
+        for (const row of screen.getAllByTestId("settlements-open-row")) expect(within(row).getByTestId("txn-details")).toBeDefined();
+        await fireEvent.click(screen.getByTestId("settlements-show-details"));
+        expect(screen.queryAllByTestId("txn-details")).toHaveLength(0);
+    });
+
+    it("reads a side again after the journal moves on", async () => {
+        const {state} = await show([EXACT]);
+        const reads = serveTransactions();
+        const invoice = screen.getByTestId("settlement-invoice");
+        await fireEvent.click(within(invoice).getByTestId("details-toggle"));
+        await vi.waitFor(() => expect(reads.get(1)).toBe(1));
+        state.generation += 1;
+        await journal.refresh({force: true});
+        await vi.waitFor(() => expect(reads.get(1)).toBe(2));
+        await vi.waitFor(() => expect(within(invoice).getByTestId("detail-description")).toBeDefined());
+    });
+
+    it("says so inline when a fetch fails, and Retry reads it again", async () => {
+        await show([EXACT]);
+        const failing = new Set([1]);
+        const reads = serveTransactions(failing);
+        const invoice = screen.getByTestId("settlement-invoice");
+        await fireEvent.click(within(invoice).getByTestId("details-toggle"));
+        await vi.waitFor(() => expect(within(invoice).getByTestId("txn-details-failed").textContent).toContain("Couldn't load transaction #1"));
+        failing.clear();
+        await fireEvent.click(within(invoice).getByTestId("txn-details-retry"));
+        await vi.waitFor(() => expect(within(invoice).getByTestId("detail-description").textContent).toBe("Whole transaction 1"));
+        expect(reads.get(1)).toBe(2);
+    });
+
+    it("offers Open in editor only when the host can open one", async () => {
+        const onEdit = vi.fn();
+        await serveAccrual({settlements: settlementsWire([EXACT])});
+        await accrual.sync(FAKE_ENGINE, journal.generation ?? "");
+        accrual.setPageOpen(true);
+        render(SettlementsPanel, {onEdit});
+        serveTransactions();
+        const invoice = await vi.waitFor(() => screen.getByTestId("settlement-invoice"));
+        await fireEvent.click(within(invoice).getByTestId("details-toggle"));
+        await fireEvent.click(await vi.waitFor(() => within(invoice).getByTestId("txn-details-edit")));
+        expect(onEdit).toHaveBeenCalledWith(1);
     });
 });

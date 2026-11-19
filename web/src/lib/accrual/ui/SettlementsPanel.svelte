@@ -6,14 +6,29 @@
     //
     // Writes are not optimistic: each waits for `accrual.link`, which re-reads
     // the journal and then this list, so a linked card simply goes away.
+    //
+    // Phase 3b: each side (and each open-list row) expands in place to its
+    // whole transaction — "Details", per side; "Both", or `d` on the focused
+    // card; "Show details" for every card — fetched lazily per generation.
+    import {registerKeys} from "#lib/keys/keymap.svelte.js";
+    import {PRIORITY} from "#lib/keys/types.js";
     import {fmt} from "#lib/format/amounts.js";
     import {shortDate} from "#lib/review/card.js";
     import ReviewIcon from "#lib/review/ui/ReviewIcon.svelte";
     import {journal} from "#lib/stores/journal.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
     import {accrual} from "../store.svelte";
+    import {txnDetails} from "../details.svelte";
+    import TxnDetails from "./TxnDetails.svelte";
     import type {Money, SettleProposal, SettleSide} from "../types";
     import {bpsToPercent, percentToBps, proposalKey} from "./format";
+
+    let {
+        onEdit,
+    }: {
+        /** Open a transaction in the review editor (each expanded body's link); absent, no link. */
+        onEdit?: (index: number) => void;
+    } = $props();
 
     const view = $derived(accrual.settlements);
     const styles = $derived(journal.reportStyles);
@@ -87,11 +102,75 @@
     }
 
     const LOOKBACKS = [30, 90, 180, 365, 730, 0] as const;
+
+    // -- Details (Phase 3b) --------------------------------------------------
+
+    /**
+     * Each disclosure's own choice, by key (`card:invoice`, `card:payment`,
+     * `open:INDEX:POSTING`). Absent: follow "Show details".
+     */
+    let opened = $state<Record<string, boolean>>({});
+    const isOpen = (key: string): boolean => opened[key] ?? txnDetails.showAll;
+    function toggle(key: string): void {
+        opened = {...opened, [key]: !isOpen(key)};
+    }
+    const sideKeys = (proposal: SettleProposal): [string, string] => [`${proposalKey(proposal)}:invoice`, `${proposalKey(proposal)}:payment`];
+    const bothOpen = (proposal: SettleProposal): boolean => sideKeys(proposal).every(isOpen);
+    /** "Both": open both sides, or close both when both are open. */
+    function toggleBoth(proposal: SettleProposal): void {
+        const [invoice, payment] = sideKeys(proposal);
+        const next = !bothOpen(proposal);
+        opened = {...opened, [invoice]: next, [payment]: next};
+    }
+    /** "Show details": every disclosure follows it again. */
+    function setShowAll(on: boolean): void {
+        txnDetails.showAll = on;
+        opened = {};
+    }
+
+    /** The card holding focus, by `proposalKey`: what `d` acts on. */
+    let focused = $state<string | null>(null);
+    function leave(event: FocusEvent, key: string): void {
+        const next = event.relatedTarget as Node | null;
+        if ((next === null || !(event.currentTarget as HTMLElement).contains(next)) && focused === key) focused = null;
+    }
+    registerKeys({
+        id: "settlements-details",
+        // Inside the Recognition overlay (a modal layer) a lower layer would
+        // never be reached; on the Invoices page this outranks the page.
+        priority: PRIORITY.overlay,
+        bindings: [
+            {
+                keys: "d",
+                label: "Show or hide both sides' details",
+                group: "Matches",
+                enabled: () => focused !== null && (view?.proposals ?? []).some((proposal) => proposalKey(proposal) === focused),
+                run: () => {
+                    const proposal = (view?.proposals ?? []).find((candidate) => proposalKey(candidate) === focused);
+                    if (proposal !== undefined) toggleBoth(proposal);
+                },
+            },
+        ],
+    });
 </script>
 
-{#snippet side(label: string, item: SettleSide, testid: string)}
+{#snippet disclosure(key: string, what: string)}
+    <button
+        type="button"
+        class="btn btn-ghost btn-xs"
+        aria-expanded={isOpen(key)}
+        aria-label="{isOpen(key) ? 'Hide' : 'Show'} details of {what}"
+        onclick={() => toggle(key)}
+        data-testid="details-toggle">Details {isOpen(key) ? "▾" : "▸"}</button
+    >
+{/snippet}
+
+{#snippet side(label: string, item: SettleSide, testid: string, key: string)}
     <div class="flex min-w-0 flex-col gap-0.5 rounded-box border border-base-content/10 p-3" data-testid={testid}>
-        <span class="text-xs tracking-wide text-base-content/50 uppercase">{label}</span>
+        <span class="flex items-center justify-between gap-2">
+            <span class="text-xs tracking-wide text-base-content/50 uppercase">{label}</span>
+            {@render disclosure(key, item.description || label)}
+        </span>
         <span class="truncate font-medium" title={item.description}>{item.description || "(no description)"}</span>
         <span class="text-sm text-base-content/70"><span class="font-mono">{shortDate(item.date)}</span> · <span class="truncate">{item.account}</span></span>
         <span class="font-mono text-sm tabular-nums">{money(item.amount)}</span>
@@ -100,6 +179,9 @@
                 {#if item.invoice !== null}<span class="badge badge-ghost badge-sm">INV {item.invoice}</span>{/if}
                 {#if item.party !== null}<span class="badge badge-ghost badge-sm">{item.party.name}</span>{/if}
             </span>
+        {/if}
+        {#if isOpen(key)}
+            <TxnDetails index={item.index} highlight={item.posting} {onEdit} />
         {/if}
     </div>
 {/snippet}
@@ -112,11 +194,18 @@
         {:else}
             <ul class="divide-y divide-base-content/10 text-sm">
                 {#each items as item (`${item.index}:${item.posting}`)}
-                    <li class="flex items-center gap-3 py-1">
-                        <span class="w-16 shrink-0 font-mono text-base-content/60">{shortDate(item.date)}</span>
-                        <span class="min-w-0 grow truncate">{item.description || "(no description)"}</span>
-                        {#if item.invoice !== null}<span class="badge badge-ghost badge-sm">INV {item.invoice}</span>{/if}
-                        <span class="shrink-0 font-mono tabular-nums">{money(item.amount)}</span>
+                    {@const key = `open:${item.index}:${item.posting}`}
+                    <li class="py-1" data-testid="settlements-open-row">
+                        <div class="flex items-center gap-3">
+                            <span class="w-16 shrink-0 font-mono text-base-content/60">{shortDate(item.date)}</span>
+                            <span class="min-w-0 grow truncate">{item.description || "(no description)"}</span>
+                            {#if item.invoice !== null}<span class="badge badge-ghost badge-sm">INV {item.invoice}</span>{/if}
+                            <span class="shrink-0 font-mono tabular-nums">{money(item.amount)}</span>
+                            {@render disclosure(key, item.description || "this transaction")}
+                        </div>
+                        {#if isOpen(key)}
+                            <TxnDetails index={item.index} highlight={item.posting} {onEdit} />
+                        {/if}
                     </li>
                 {/each}
             </ul>
@@ -151,6 +240,16 @@
                 onchange={commitTolerance}
                 data-testid="settlements-tolerance"
             />%
+        </label>
+        <label class="flex cursor-pointer items-center gap-1.5 text-sm" title="Expand every card to its whole transactions (for this session)">
+            <input
+                type="checkbox"
+                class="toggle toggle-sm"
+                checked={txnDetails.showAll}
+                onchange={(event) => setShowAll(event.currentTarget.checked)}
+                data-testid="settlements-show-details"
+            />
+            Show details
         </label>
         <div class="ml-auto flex items-center gap-2">
             {#if confirmAll}
@@ -202,6 +301,9 @@
             <article
                 class={["flex flex-col gap-3 rounded-box border border-base-content/10 bg-base-100 p-4 shadow-sm", busy && linking !== key && "opacity-60"]}
                 aria-busy={linking === key}
+                onfocusin={() => (focused = key)}
+                onfocusout={(event) => leave(event, key)}
+                data-focused={focused === key ? "" : undefined}
                 data-testid="settlement-card"
             >
                 <header class="flex flex-wrap items-center gap-2 text-sm">
@@ -216,10 +318,18 @@
                     {#if proposal.byNumber}<span class="badge badge-ghost badge-sm">invoice number</span>{/if}
                     {#if proposal.byParty}<span class="badge badge-ghost badge-sm">same {proposal.invoice.party?.kind ?? "party"}</span>{/if}
                     <span class="text-base-content/60">{proposal.gapDays === 0 ? "same day" : `${proposal.gapDays} days later`}</span>
+                    <button
+                        type="button"
+                        class="btn ml-auto btn-ghost btn-xs"
+                        aria-pressed={bothOpen(proposal)}
+                        title="Show or hide both transactions in full (d)"
+                        onclick={() => toggleBoth(proposal)}
+                        data-testid="details-both">Both {bothOpen(proposal) ? "▾" : "▸"}</button
+                    >
                 </header>
                 <div class="grid gap-3 sm:grid-cols-2">
-                    {@render side("Invoice", proposal.invoice, "settlement-invoice")}
-                    {@render side("Payment", proposal.payment, "settlement-payment")}
+                    {@render side("Invoice", proposal.invoice, "settlement-invoice", `${key}:invoice`)}
+                    {@render side("Payment", proposal.payment, "settlement-payment", `${key}:payment`)}
                 </div>
                 <div class="flex flex-wrap items-center gap-3">
                     <span class={["text-sm", proposal.fit.kind === "over" && "text-warning"]} data-testid="settlement-fit">{differenceText(proposal)}</span>

@@ -33,6 +33,8 @@
     import type {DueEntry, DueMonth, Money, SettleSide} from "../types";
     import {lookbackLabel} from "./format";
     import SettlementsPanel from "./SettlementsPanel.svelte";
+    import TxnDetails from "./TxnDetails.svelte";
+    import {txnDetails} from "../details.svelte";
 
     interface Props {
         /** Open transaction `index` in the editor (Needs a schedule). The overlay closes first. */
@@ -137,6 +139,10 @@
         close();
         onEdit?.(index);
     }
+
+    /** Needs a schedule rows expanded to their whole transaction (Phase 3b), by `index:posting`; absent: "Show details". */
+    let needsOpen = $state<Record<string, boolean>>({});
+    const needsIsOpen = (key: string): boolean => needsOpen[key] ?? txnDetails.showAll;
 
     function setLookback(event: Event): void {
         void accrual.setNeedsLookback(Number((event.currentTarget as HTMLSelectElement).value));
@@ -413,6 +419,7 @@
                     {:else}
                         <ul class="divide-y divide-base-content/10">
                             {#each needs.items as item (`${item.index}:${item.posting}`)}
+                                {@const detailKey = `${item.index}:${item.posting}`}
                                 <li class="flex flex-wrap items-center gap-3 py-2 text-sm" data-testid="needs-item">
                                     <span class="w-16 shrink-0 font-mono text-base-content/60">{dayShort(item.date)}</span>
                                     <span class="min-w-0 grow truncate font-medium">{item.description || "(no description)"}</span>
@@ -420,9 +427,21 @@
                                     {#if item.invoice !== null}<span class="badge badge-ghost badge-sm">INV {item.invoice}</span>{/if}
                                     <span class="truncate text-base-content/60">{item.account}</span>
                                     <span class="font-mono tabular-nums">{sideAmount(item)}</span>
+                                    <button
+                                        type="button"
+                                        class="btn btn-ghost btn-sm"
+                                        aria-expanded={needsIsOpen(detailKey)}
+                                        onclick={() => (needsOpen = {...needsOpen, [detailKey]: !needsIsOpen(detailKey)})}
+                                        data-testid="details-toggle">Details {needsIsOpen(detailKey) ? "▾" : "▸"}</button
+                                    >
                                     <button type="button" class="btn btn-sm" onclick={() => edit(item.index)} data-testid="needs-edit">
                                         <ReviewIcon name="pencil" class="h-3.5 w-3.5" /> Open in editor
                                     </button>
+                                    {#if needsIsOpen(detailKey)}
+                                        <div class="basis-full">
+                                            <TxnDetails index={item.index} highlight={item.posting} />
+                                        </div>
+                                    {/if}
                                 </li>
                             {/each}
                         </ul>
@@ -430,7 +449,7 @@
                 </div>
             {:else}
                 <div class="min-h-0 overflow-y-auto overscroll-contain p-4">
-                    <SettlementsPanel />
+                    <SettlementsPanel onEdit={edit} />
                     <p class="mt-4 text-right text-sm">
                         <a class="link link-hover" href={resolve("/settlements")} onclick={close} data-testid="recognition-invoices-page"
                             >Open the Invoices page</a

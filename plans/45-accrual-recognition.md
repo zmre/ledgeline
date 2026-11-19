@@ -1055,6 +1055,62 @@ Every route is a thin wrapper over a public `accrual` function in core (D-lib). 
   - the chip's three states;
   - the group row keyboard.
 
+### Phase 3b — Full transaction details on match cards (Patrick, 2026-11-18)
+
+**Ask.** A settlement card shows one posting per side (e.g.
+`accounts-receivable +$x` / `accounts-receivable −$x`). That is enough for
+the headline, but sometimes the rest of each transaction is needed: every
+account and amount, and every comment.
+
+**Design.**
+- **Shared body.** Extract the read-only body of `journal/TxnDetailSheet.svelte`
+  into `journal/TxnDetailBody.svelte`. The body shows:
+  - date, status and description;
+  - every posting with its full account and amount, plus the posting's comment;
+  - the transaction comment;
+  - the `Tags:` line.
+
+  The sheet keeps its modal and actions and renders the body, so its output
+  does not change. The body takes `highlight?: number` (a posting index) and
+  marks the matched posting so it stands out among the others.
+- **Per side, inline.** Each side box on a settlement card gets a "Details ▸/▾"
+  disclosure. Expanding it renders `TxnDetailBody` in place under that side,
+  with the matched posting highlighted. Each side opens on its own. On wide
+  layouts the two sides stay side by side, so the halves line up.
+- **Both at once.** A card-level "Both" toggle opens both sides together. The
+  `d` key does the same for the focused card.
+- **Panel-wide toggle.** A "Show details" toggle in the panel header expands
+  every card. It is session state, not a pref, and resets on reload.
+- **Open lists.** The same disclosure goes on rows in the "Open invoices" and
+  "Open payments" lists, and on the "Needs a schedule" list.
+- **Open in editor.** Each expanded body has a link that opens the transaction
+  in the review editor, as "Needs a schedule" already does.
+- **Data.** Fetch lazily with the existing `GET /api/transactions/{index}` on
+  first expand.
+  - Cache by `(index, generation)`; a new generation drops the cache.
+  - The list payload does not grow, so the 200k list stays at ~89 ms.
+  - While the fetch is in flight, show a one-line skeleton.
+  - If the fetch fails, say so inline with a Retry.
+- **Scope.** Settlement cards, on both the Invoices tab and the `/settlements`
+  page, plus the open lists. The plan 35 transfer-match overlay has the same
+  one-line halves; reusing the body there is a follow-up, not part of this
+  change.
+
+**Tests (vitest, `fakeEngine`).**
+- `TxnDetailBody`:
+  - every posting, its comment and its amount;
+  - the transaction comment and the tags line;
+  - the highlighted posting.
+- `TxnDetailSheet` still renders the same content (the existing tests pass
+  unchanged).
+- Settlements panel:
+  - expanding one side fetches once and expanding it again does not;
+  - "Both" opens two;
+  - `d` acts on the focused card;
+  - "Show details" expands all;
+  - a new generation refetches;
+  - a failed fetch shows Retry.
+
 ## Phase 4 — Fixture, e2e and docs (PR 4)
 
 **Fixture `fixtures/accrual/`.** Synthetic, invented names, and no real data.

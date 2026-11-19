@@ -4,6 +4,9 @@
     // Shown in the nav only when the ledger has accrual accounts (D-gate);
     // reached directly without them, it says when it would appear.
     import {onMount} from "svelte";
+    import {goto} from "$app/navigation";
+    import {resolve} from "$app/paths";
+    import {txnModal} from "#lib/journal/edit/modalState.svelte.js";
     import {accrual} from "#lib/accrual/store.svelte.js";
     import SettlementsPanel from "#lib/accrual/ui/SettlementsPanel.svelte";
     import {journal} from "#lib/stores/journal.svelte.js";
@@ -30,6 +33,12 @@
     $effect(() => {
         if (accrual.enabled && accrual.settlements === null) void accrual.reload();
     });
+
+    /** A details body's Open in editor (Phase 3b): the editor lives on the journal page, so go there with it open. */
+    function openInEditor(index: number): void {
+        txnModal.openEdit(index);
+        void goto(resolve("/"));
+    }
 </script>
 
 <svelte:head><title>Ledgeline — Invoices</title></svelte:head>
@@ -37,7 +46,7 @@
 <div class="mx-auto flex w-full max-w-5xl flex-col gap-4" data-testid="settlements-page">
     <h1 class="text-lg font-semibold">Invoices</h1>
     {#if accrual.enabled}
-        <SettlementsPanel />
+        <SettlementsPanel onEdit={openInEditor} />
     {:else}
         <p class="text-sm text-base-content/70" data-testid="settlements-off">
             Invoice matching appears when the ledger has a receivable or payable account.
