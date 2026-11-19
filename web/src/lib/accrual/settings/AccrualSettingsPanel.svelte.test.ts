@@ -64,6 +64,7 @@ afterEach(() => {
     settings.autoRecognize = false;
     settings.settlementToleranceBps = 300;
     settings.settlementLookbackDays = 180;
+    settings.settlementLeadDays = 4;
 });
 
 describe("COMPONENT AccrualSettingsPanel", () => {
@@ -92,6 +93,13 @@ describe("COMPONENT AccrualSettingsPanel", () => {
         const lookback = screen.getByTestId("books-lookback") as HTMLInputElement;
         await fireEvent.change(lookback, {target: {value: "99999"}});
         expect(settings.settlementLookbackDays).toBe(3650);
+
+        const lead = screen.getByTestId("books-lead") as HTMLInputElement;
+        expect(lead.value).toBe("4");
+        await fireEvent.change(lead, {target: {value: "7"}});
+        expect(settings.settlementLeadDays).toBe(7);
+        await fireEvent.change(lead, {target: {value: "999"}});
+        expect(settings.settlementLeadDays).toBe(60);
     });
 
     it("closes the books only after saying what it writes, then offers Reopen", async () => {

@@ -7,15 +7,17 @@
     // Writes are not optimistic: each waits for `accrual.link`, which re-reads
     // the journal and then this list, so a linked card simply goes away.
     //
-    // Phase 3b: each side (and each open-list row) expands in place to its
-    // whole transaction — "Details", per side; "Both", or `d` on the focused
-    // card; "Show details" for every card — fetched lazily per generation.
+    // Phase 3b: a card's two sides expand together to their whole
+    // transactions — "Details" on either side, or `d` on the focused card —
+    // and each open-list row on its own; "Show details" expands everything.
+    // Fetched lazily per generation.
     import {registerKeys} from "#lib/keys/keymap.svelte.js";
     import {PRIORITY} from "#lib/keys/types.js";
     import {fmt} from "#lib/format/amounts.js";
     import {shortDate} from "#lib/review/card.js";
     import ReviewIcon from "#lib/review/ui/ReviewIcon.svelte";
     import {journal} from "#lib/stores/journal.svelte.js";
+    import {SETTLEMENT_LEAD_RANGE} from "#lib/settings/uiPrefs.js";
     import {settings} from "#lib/stores/settings.svelte.js";
     import {accrual} from "../store.svelte";
     import {txnDetails} from "../details.svelte";
@@ -49,6 +51,13 @@
 
     const money = (amount: Money): string => fmt(amount.commodity, amount.quantity, styles);
     const feeOf = (proposal: SettleProposal): string => fees[proposalKey(proposal)] ?? proposal.feeAccount ?? "";
+
+    /** "same day", "12 days later", or — a payment ahead of its bill (payroll) — "Paid 3 days before the invoice". */
+    function gapText(proposal: SettleProposal): string {
+        const days = proposal.gapDays === 1 ? "1 day" : `${proposal.gapDays} days`;
+        if (proposal.gapDays === 0) return "same day";
+        return proposal.early ? `Paid ${days} before the invoice` : `${days} later`;
+    }
 
     function differenceText(proposal: SettleProposal): string {
         const {fit} = proposal;
@@ -106,22 +115,17 @@
     // -- Details (Phase 3b) --------------------------------------------------
 
     /**
-     * Each disclosure's own choice, by key (`card:invoice`, `card:payment`,
-     * `open:INDEX:POSTING`). Absent: follow "Show details".
+     * Each disclosure's own choice, by key: `card:KEY` for a card (both its
+     * sides open and close together), `open:INDEX:POSTING` for an open-list
+     * row. Absent: follow "Show details".
      */
     let opened = $state<Record<string, boolean>>({});
     const isOpen = (key: string): boolean => opened[key] ?? txnDetails.showAll;
     function toggle(key: string): void {
         opened = {...opened, [key]: !isOpen(key)};
     }
-    const sideKeys = (proposal: SettleProposal): [string, string] => [`${proposalKey(proposal)}:invoice`, `${proposalKey(proposal)}:payment`];
-    const bothOpen = (proposal: SettleProposal): boolean => sideKeys(proposal).every(isOpen);
-    /** "Both": open both sides, or close both when both are open. */
-    function toggleBoth(proposal: SettleProposal): void {
-        const [invoice, payment] = sideKeys(proposal);
-        const next = !bothOpen(proposal);
-        opened = {...opened, [invoice]: next, [payment]: next};
-    }
+    /** A card's one disclosure key: its two sides are one pair, shown or hidden together. */
+    const cardKey = (proposal: SettleProposal): string => `card:${proposalKey(proposal)}`;
     /** "Show details": every disclosure follows it again. */
     function setShowAll(on: boolean): void {
         txnDetails.showAll = on;
@@ -142,12 +146,12 @@
         bindings: [
             {
                 keys: "d",
-                label: "Show or hide both sides' details",
+                label: "Show or hide this pair's details",
                 group: "Matches",
                 enabled: () => focused !== null && (view?.proposals ?? []).some((proposal) => proposalKey(proposal) === focused),
                 run: () => {
                     const proposal = (view?.proposals ?? []).find((candidate) => proposalKey(candidate) === focused);
-                    if (proposal !== undefined) toggleBoth(proposal);
+                    if (proposal !== undefined) toggle(cardKey(proposal));
                 },
             },
         ],
@@ -227,6 +231,24 @@
                     <option value={String(days)}>{days === 0 ? "All time" : `${days} days`}</option>
                 {/each}
             </select>
+        </label>
+        <label class="flex items-center gap-1.5 text-sm" title="A payment may come this many days before its invoice (a payroll draw, then its bill)">
+            Paid up to
+            <input
+                type="number"
+                class="input w-16 text-right tabular-nums input-sm"
+                min={SETTLEMENT_LEAD_RANGE[0]}
+                max={SETTLEMENT_LEAD_RANGE[1]}
+                step="1"
+                value={settings.settlementLeadDays}
+                onchange={(event) => {
+                    settings.settlementLeadDays = event.currentTarget.valueAsNumber;
+                    event.currentTarget.value = String(settings.settlementLeadDays);
+                    void accrual.reload();
+                }}
+                data-testid="settlements-lead"
+            />
+            days before the invoice
         </label>
         <label
             class="flex items-center gap-1.5 text-sm"
@@ -317,19 +339,11 @@
                     {#if proposal.ambiguous}<span class="badge badge-sm badge-warning">ambiguous</span>{/if}
                     {#if proposal.byNumber}<span class="badge badge-ghost badge-sm">invoice number</span>{/if}
                     {#if proposal.byParty}<span class="badge badge-ghost badge-sm">same {proposal.invoice.party?.kind ?? "party"}</span>{/if}
-                    <span class="text-base-content/60">{proposal.gapDays === 0 ? "same day" : `${proposal.gapDays} days later`}</span>
-                    <button
-                        type="button"
-                        class="btn ml-auto btn-ghost btn-xs"
-                        aria-pressed={bothOpen(proposal)}
-                        title="Show or hide both transactions in full (d)"
-                        onclick={() => toggleBoth(proposal)}
-                        data-testid="details-both">Both {bothOpen(proposal) ? "▾" : "▸"}</button
-                    >
+                    <span class="text-base-content/60" data-testid="settlement-gap">{gapText(proposal)}</span>
                 </header>
                 <div class="grid gap-3 sm:grid-cols-2">
-                    {@render side("Invoice", proposal.invoice, "settlement-invoice", `${key}:invoice`)}
-                    {@render side("Payment", proposal.payment, "settlement-payment", `${key}:payment`)}
+                    {@render side("Invoice", proposal.invoice, "settlement-invoice", cardKey(proposal))}
+                    {@render side("Payment", proposal.payment, "settlement-payment", cardKey(proposal))}
                 </div>
                 <div class="flex flex-wrap items-center gap-3">
                     <span class={["text-sm", proposal.fit.kind === "over" && "text-warning"]} data-testid="settlement-fit">{differenceText(proposal)}</span>

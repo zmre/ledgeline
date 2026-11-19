@@ -147,7 +147,10 @@ export interface SettleProposal {
     fit: {kind: FitKind; difference: Dec | null};
     byNumber: boolean;
     byParty: boolean;
+    /** Days between the invoice and the payment, either way round. */
     gapDays: number;
+    /** The payment came before the invoice (within the lead days). */
+    early: boolean;
     ambiguous: boolean;
     /** Exact, unambiguous, and with an invoice-number or party signal: Link all takes it. */
     clear: boolean;

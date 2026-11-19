@@ -5,7 +5,7 @@
      helpers on (D-gate); the tab itself is hidden otherwise. -->
 <script lang="ts">
     import DateInput from "#lib/components/DateInput.svelte";
-    import {SETTLEMENT_LOOKBACK_RANGE, SETTLEMENT_TOLERANCE_RANGE} from "#lib/settings/uiPrefs.js";
+    import {SETTLEMENT_LEAD_RANGE, SETTLEMENT_LOOKBACK_RANGE, SETTLEMENT_TOLERANCE_RANGE} from "#lib/settings/uiPrefs.js";
     import {localToday} from "#lib/stores/filters.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
     import {accrual} from "../store.svelte";
@@ -168,6 +168,25 @@
                     />
                     <span>days after the invoice</span>
                     <span class="text-xs text-base-content/60">{settings.settlementLookbackDays === 0 ? "0 looks back forever" : ""}</span>
+                </span>
+            </label>
+            <label class="flex flex-wrap items-center gap-3">
+                <span>Paid up to</span>
+                <span class="flex items-center gap-3">
+                    <input
+                        type="number"
+                        class="input w-20 input-sm"
+                        min={SETTLEMENT_LEAD_RANGE[0]}
+                        max={SETTLEMENT_LEAD_RANGE[1]}
+                        step="1"
+                        value={settings.settlementLeadDays}
+                        onchange={(e) => {
+                            settings.settlementLeadDays = e.currentTarget.valueAsNumber;
+                            e.currentTarget.value = String(settings.settlementLeadDays);
+                        }}
+                        data-testid="books-lead"
+                    />
+                    <span>days before the invoice still counts (a payroll draw, then its bill)</span>
                 </span>
             </label>
             <label class="flex flex-wrap items-center gap-3">

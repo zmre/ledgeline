@@ -89,7 +89,7 @@ function message(cause: unknown): string {
 }
 
 function keyOf(serverUrl: string, generation: string): string {
-    return `${serverUrl}|${generation}|${localToday()}|${needsLookback}|${settings.settlementLookbackDays}|${settings.settlementToleranceBps}`;
+    return `${serverUrl}|${generation}|${localToday()}|${needsLookback}|${settings.settlementLookbackDays}|${settings.settlementToleranceBps}|${settings.settlementLeadDays}`;
 }
 
 /** The generation the showing lists were read at, or null. */
@@ -105,6 +105,7 @@ async function loadStatus(serverUrl: string, key: string): Promise<void> {
                 lookback: needsLookback,
                 settlementLookback: settings.settlementLookbackDays,
                 settlementTolerance: settings.settlementToleranceBps,
+                settlementLead: settings.settlementLeadDays,
             })
         );
         if (inflight?.key !== key) return;
@@ -126,8 +127,8 @@ async function loadStatus(serverUrl: string, key: string): Promise<void> {
     }
 }
 
-function settleQuery(): {today: string; lookback: number; tolerance: number} {
-    return {today: localToday(), lookback: settings.settlementLookbackDays, tolerance: settings.settlementToleranceBps};
+function settleQuery(): {today: string; lookback: number; tolerance: number; lead: number} {
+    return {today: localToday(), lookback: settings.settlementLookbackDays, tolerance: settings.settlementToleranceBps, lead: settings.settlementLeadDays};
 }
 
 /** Read the overlay's (or page's) lists that are showing. */
@@ -389,6 +390,7 @@ export const accrual = {
                     generation: listed.generation,
                     lookback: settings.settlementLookbackDays,
                     tolerance: settings.settlementToleranceBps,
+                    lead: settings.settlementLeadDays,
                     today: localToday(),
                 })
             );

@@ -331,6 +331,17 @@ pub struct Posted {
     pub adjustments: Vec<String>,
 }
 
+/// One invoice ↔ payment link of a [`Loaded::link_settlements`] batch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettleLink {
+    /// The invoice (or bill) posting on the receivable (payable) account.
+    pub invoice: PostingRef,
+    /// The payment's posting on the same account.
+    pub payment: PostingRef,
+    /// Where a short payment's difference goes (required for one).
+    pub fee_account: Option<String>,
+}
+
 /// A ledger's books as read by [`Books::load`].
 pub struct Loaded {
     vault: Arc<dyn Vault>,
@@ -657,12 +668,17 @@ impl Loaded {
 
         // 3. The restatements' journal half, in memory: rewrites in place,
         // deletes from the bottom up, adjustments placed by date.
-        let rewrites: Vec<(Tindex, Fingerprint, Vec<EditOp>)> = restatements
+        // Every fingerprint in one pass (a restatement can rewrite dozens).
+        let pending: Vec<(Tindex, Vec<EditOp>)> = restatements
             .iter()
             .flat_map(|r| r.rewrites.iter().cloned())
-            .map(|(tindex, ops)| {
-                self.editor
-                    .transaction_fingerprint(tindex)
+            .collect();
+        let tindices: Vec<Tindex> = pending.iter().map(|(tindex, _)| *tindex).collect();
+        let rewrites: Vec<(Tindex, Fingerprint, Vec<EditOp>)> = pending
+            .into_iter()
+            .zip(self.editor.transaction_fingerprints(&tindices))
+            .map(|((tindex, ops), fingerprint)| {
+                fingerprint
                     .map(|fingerprint| (tindex, fingerprint, ops))
                     .ok_or(OpsError::Stale)
             })
@@ -849,11 +865,11 @@ impl Loaded {
 
     /// Link an invoice (or bill) to its payment (D-settle): with the fee edit
     /// for a short payment (`fee_account` required), `match:ID` on both
-    /// settlement postings. Returns the id.
+    /// settlement postings. Returns the id. One [`link_settlements`]
+    /// (Self::link_settlements) of one.
     ///
     /// # Errors
-    /// [`OpsError::Settle`] when the two aren't a legal pair, the payment is
-    /// over, or a fee account is missing; [`OpsError::ExternalChange`].
+    /// As [`link_settlements`](Self::link_settlements).
     pub fn link_settlement(
         &mut self,
         invoice: PostingRef,
@@ -861,25 +877,110 @@ impl Loaded {
         fee_account: Option<&str>,
         tolerance_bps: u32,
     ) -> Result<String, OpsError> {
+        let link = SettleLink {
+            invoice,
+            payment,
+            fee_account: fee_account.map(str::to_string),
+        };
+        let mut ids = self.link_settlements(std::slice::from_ref(&link), tolerance_bps)?;
+        ids.pop()
+            .ok_or_else(|| OpsError::Storage("no link was made".into()))
+    }
+
+    /// Link several invoices to their payments in ONE write: every pair is
+    /// checked first, then all their edits go through one batch — one
+    /// reparse, one save — so either every link lands or none does. Returns
+    /// the match ids in `links` order.
+    ///
+    /// Nothing is re-proposed: exactly these pairs are linked, as given.
+    ///
+    /// # Errors
+    /// - [`OpsError::Settle`] when a pair isn't a legal settlement pair, the
+    ///   payment is over, a fee account is missing, a posting appears in two
+    ///   links, or a fee edit (which rewrites its payment's postings) would
+    ///   share a transaction with another link in the batch;
+    /// - [`OpsError::Stale`] / [`OpsError::ExternalChange`] — nothing written.
+    pub fn link_settlements(
+        &mut self,
+        links: &[SettleLink],
+        tolerance_bps: u32,
+    ) -> Result<Vec<String>, OpsError> {
+        if links.is_empty() {
+            return Ok(Vec::new());
+        }
         let journal = Arc::clone(self.editor.journal());
         let roles = AccrualRoles::of(&journal);
-        let proposal =
-            settle::pair(&journal, &roles, invoice, payment, tolerance_bps).ok_or_else(|| {
-                SettleError::NotAPair("these postings are not an invoice and its payment".into())
+        // Once for the batch: a scan of the journal per pair is what made a
+        // 25-pair Link all cost 25 scans.
+        let candidates = settle::pair_candidates(&journal, &roles);
+        let mut ids = MatchIds::new(&journal);
+        let mut used = std::collections::HashSet::new();
+        // Per transaction (keyed by tindex, file order kept by the editor):
+        // its ops, and whether one of them rewrites its postings (a fee).
+        let mut by_txn: std::collections::BTreeMap<u32, (Tindex, Vec<EditOp>, bool)> =
+            std::collections::BTreeMap::new();
+        let mut out = Vec::with_capacity(links.len());
+        for (n, link) in links.iter().enumerate() {
+            for side in [link.invoice, link.payment] {
+                if !used.insert((side.txn.0, side.posting)) {
+                    return Err(SettleError::NotAPair(format!(
+                        "link {}: posting {} of transaction #{} is in another link too",
+                        n + 1,
+                        side.posting,
+                        side.txn.0
+                    ))
+                    .into());
+                }
+            }
+            let proposal = settle::pair_among(
+                &journal,
+                &candidates,
+                link.invoice,
+                link.payment,
+                tolerance_bps,
+            )
+            .ok_or_else(|| {
+                SettleError::NotAPair(format!(
+                    "link {}: these postings are not an invoice and its payment",
+                    n + 1
+                ))
             })?;
-        let id = MatchIds::new(&journal).next_id();
-        let ops = settle::link_ops(&journal, &proposal, fee_account, &id)?;
-        let edits: Vec<(Tindex, Fingerprint, Vec<EditOp>)> = ops
-            .into_iter()
-            .map(|(tindex, ops)| {
-                self.editor
-                    .transaction_fingerprint(tindex)
+            let rewrites = matches!(proposal.fit, settle::Fit::Short { .. });
+            let id = ids.next_id();
+            for (tindex, ops) in
+                settle::link_ops(&journal, &proposal, link.fee_account.as_deref(), &id)?
+            {
+                let entry = by_txn
+                    .entry(tindex.0)
+                    .or_insert((tindex, Vec::new(), false));
+                if !entry.1.is_empty() && (entry.2 || rewrites) {
+                    return Err(SettleError::NotAPair(format!(
+                        "link {}: transaction #{} is in another link, and a fee edit rewrites it; link these one at a time",
+                        n + 1,
+                        tindex.0
+                    ))
+                    .into());
+                }
+                entry.1.extend(ops);
+                entry.2 |= rewrites;
+            }
+            out.push(id);
+        }
+        // Every fingerprint in ONE pass: one at a time was ~20 ms each at 200k
+        // transactions, most of a 60-pair Link all.
+        let tindices: Vec<Tindex> = by_txn.values().map(|(tindex, _, _)| *tindex).collect();
+        let fingerprints = self.editor.transaction_fingerprints(&tindices);
+        let edits: Vec<(Tindex, Fingerprint, Vec<EditOp>)> = by_txn
+            .into_values()
+            .zip(fingerprints)
+            .map(|((tindex, ops, _), fingerprint)| {
+                fingerprint
                     .map(|fingerprint| (tindex, fingerprint, ops))
                     .ok_or(OpsError::Stale)
             })
             .collect::<Result<_, _>>()?;
         self.editor.apply_batch(&edits)?;
         self.editor.save()?;
-        Ok(id)
+        Ok(out)
     }
 }

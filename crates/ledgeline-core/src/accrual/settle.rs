@@ -33,6 +33,10 @@ use thiserror::Error;
 pub const DEFAULT_LOOKBACK_DAYS: u32 = 180;
 /// Default fee tolerance: 3% of the invoice, no cap (Q3), in basis points.
 pub const DEFAULT_TOLERANCE_BPS: u32 = 300;
+/// Default lead: a payment may come up to this many days BEFORE its invoice
+/// (Patrick, 2026-11-18: a payroll provider debits the bank, then sends the
+/// bill a few days later).
+pub const DEFAULT_LEAD_DAYS: u32 = 4;
 
 /// What settlement matching is asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +46,9 @@ pub struct SettleSettings {
     pub lookback_days: u32,
     /// The largest short payment, in basis points of the invoice.
     pub tolerance_bps: u32,
+    /// How many days a payment may precede its invoice and still be
+    /// proposed for it.
+    pub lead_days: u32,
 }
 
 impl Default for SettleSettings {
@@ -49,6 +56,7 @@ impl Default for SettleSettings {
         Self {
             lookback_days: DEFAULT_LOOKBACK_DAYS,
             tolerance_bps: DEFAULT_TOLERANCE_BPS,
+            lead_days: DEFAULT_LEAD_DAYS,
         }
     }
 }
@@ -113,8 +121,10 @@ pub struct SettleProposal {
     pub by_number: bool,
     /// Matched on the customer or vendor.
     pub by_party: bool,
-    /// Days from the invoice to the payment.
+    /// Days between the invoice and the payment, either way round.
     pub gap_days: u32,
+    /// The payment came before the invoice (within the lead days).
+    pub early: bool,
     /// Another pair shared a side with the same rank.
     pub ambiguous: bool,
     /// Eligible for "Link all clear".
@@ -319,9 +329,12 @@ pub fn propose(
     let mut pairs: Vec<(usize, usize, SettleProposal)> = Vec::new();
     for (i, invoice) in invoices.iter().enumerate() {
         for (j, payment) in payments.iter().enumerate() {
+            // A payment may come up to `lead_days` before its invoice (a
+            // payroll draw, then its bill), never earlier than that.
             if invoice.account != payment.account
                 || invoice.amount.commodity != payment.amount.commodity
-                || payment.date < invoice.date
+                || day_of(payment.date)
+                    < day_of(invoice.date) - i32::try_from(settings.lead_days).unwrap_or(i32::MAX)
                 || invoice.at.position == payment.at.position
             {
                 continue;
@@ -337,8 +350,7 @@ pub fn propose(
                 .party
                 .as_ref()
                 .is_some_and(|party| payment_party(payment).as_ref() == Some(party));
-            let gap =
-                u32::try_from(day_of(payment.date) - day_of(invoice.date)).unwrap_or(u32::MAX);
+            let (gap, early) = gap_between(invoice.date, payment.date);
             pairs.push((
                 i,
                 j,
@@ -349,6 +361,7 @@ pub fn propose(
                     by_number,
                     by_party,
                     gap_days: gap,
+                    early,
                     ambiguous: false,
                     clear: false,
                 },
@@ -400,8 +413,11 @@ pub fn propose(
 /// The proposal for one chosen pair, scored as [`propose`] scores it — for
 /// linking a pair by hand, or re-checking a proposal against a fresh journal.
 /// `None` when the two aren't a legal pair (not an invoice and a payment
-/// candidate on one account and commodity, the payment first, or beyond the
-/// tolerance).
+/// candidate on one account and commodity, or beyond the tolerance).
+///
+/// The payment may come before the invoice by any number of days here: a pair
+/// handed to this was chosen (proposed within the lead days, or picked by
+/// hand), and the order alone doesn't make it illegal.
 #[must_use]
 pub fn pair(
     journal: &Journal,
@@ -410,16 +426,41 @@ pub fn pair(
     payment: PostingRef,
     tolerance_bps: u32,
 ) -> Option<SettleProposal> {
+    pair_among(
+        journal,
+        &pair_candidates(journal, roles),
+        invoice,
+        payment,
+        tolerance_bps,
+    )
+}
+
+/// Every candidate [`pair`] could pair, worked out once: no lookback, no lead.
+/// Build it once to check many pairs (a batch link) without re-scanning the
+/// journal for each.
+#[must_use]
+pub fn pair_candidates<'j>(journal: &'j Journal, roles: &AccrualRoles) -> Vec<SettleCandidate<'j>> {
     let settings = SettleSettings {
         lookback_days: 0,
-        tolerance_bps,
+        tolerance_bps: DEFAULT_TOLERANCE_BPS,
+        lead_days: u32::MAX,
     };
-    let all = candidates(journal, roles, &settings, "9999-12-31");
+    candidates(journal, roles, &settings, "9999-12-31")
+}
+
+/// [`pair`], among candidates already worked out by [`pair_candidates`].
+#[must_use]
+pub fn pair_among(
+    journal: &Journal,
+    all: &[SettleCandidate<'_>],
+    invoice: PostingRef,
+    payment: PostingRef,
+    tolerance_bps: u32,
+) -> Option<SettleProposal> {
     let find = |at: PostingRef, side| all.iter().find(|c| c.at == at && c.side == side);
     let (inv, pay) = (find(invoice, Side::Invoice)?, find(payment, Side::Payment)?);
     if inv.account != pay.account
         || inv.amount.commodity != pay.amount.commodity
-        || pay.date < inv.date
         || inv.at.position == pay.at.position
     {
         return None;
@@ -436,10 +477,21 @@ pub fn pair(
         fit,
         by_number,
         by_party,
-        gap_days: u32::try_from(day_of(pay.date) - day_of(inv.date)).unwrap_or(u32::MAX),
+        gap_days: gap_between(inv.date, pay.date).0,
+        early: gap_between(inv.date, pay.date).1,
         ambiguous: false,
         clear: by_number || by_party,
     })
+}
+
+/// The day distance between an invoice and its payment, and whether the
+/// payment came first.
+fn gap_between(invoice: &str, payment: &str) -> (u32, bool) {
+    let days = i64::from(day_of(payment)) - i64::from(day_of(invoice));
+    (
+        u32::try_from(days.unsigned_abs()).unwrap_or(u32::MAX),
+        days < 0,
+    )
 }
 
 /// The account most recently used for fees in payments already linked on
@@ -651,6 +703,100 @@ account expenses:fees  ; type: X
         let journal = parse_journal(text, "inline.journal").expect("parses");
         let roles = AccrualRoles::of(&journal);
         (journal, roles)
+    }
+
+    /// Payroll (Patrick, 2026-11-18): the provider debits the bank, and its
+    /// bill arrives three days later. Semi-monthly draws of varying amounts.
+    const PAYROLL: &str = "\
+account liabilities:accounts payable  ; type: L, kpi: payable
+account assets:bank  ; type: C
+account expenses:payroll  ; type: X
+
+2026-10-01 Gusto debit
+    assets:bank  $-4812.33
+    liabilities:accounts payable  $4812.33  ; vendor: Gusto
+
+2026-10-04 Gusto payroll bill
+    expenses:payroll  $4812.33
+    liabilities:accounts payable  $-4812.33  ; vendor: Gusto
+
+2026-10-15 Gusto debit
+    assets:bank  $-5107.91
+    liabilities:accounts payable  $5107.91  ; vendor: Gusto
+
+2026-10-18 Gusto payroll bill
+    expenses:payroll  $5107.91
+    liabilities:accounts payable  $-5107.91  ; vendor: Gusto
+
+2026-11-01 Gusto debit
+    assets:bank  $-4955.02
+    liabilities:accounts payable  $4955.02  ; vendor: Gusto
+
+2026-11-04 Gusto payroll bill
+    expenses:payroll  $4955.02
+    liabilities:accounts payable  $-4955.02  ; vendor: Gusto
+
+2026-11-15 Gusto debit
+    assets:bank  $-5020.00
+    liabilities:accounts payable  $5020.00  ; vendor: Gusto
+";
+
+    #[test]
+    fn a_payroll_bill_pairs_with_the_draw_that_came_three_days_before_it() {
+        let (journal, roles) = setup(PAYROLL);
+        let proposals = propose(&journal, &roles, &SettleSettings::default(), "2026-11-17");
+        let dates = |p: &SettleProposal| {
+            (
+                journal.transactions[p.invoice.position].date.as_str(),
+                journal.transactions[p.payment.position].date.as_str(),
+            )
+        };
+        assert_eq!(
+            proposals.iter().map(dates).collect::<Vec<_>>(),
+            [
+                ("2026-10-04", "2026-10-01"),
+                ("2026-10-18", "2026-10-15"),
+                ("2026-11-04", "2026-11-01"),
+            ],
+            "each bill with its own, earlier draw: {proposals:#?}"
+        );
+        for p in &proposals {
+            assert_eq!(p.fit, Fit::Exact);
+            assert!(p.early && p.gap_days == 3 && p.by_party && p.clear, "{p:?}");
+        }
+        // The early draw is linkable as listed.
+        let first = &proposals[0];
+        assert!(
+            pair(
+                &journal,
+                &roles,
+                first.invoice,
+                first.payment,
+                DEFAULT_TOLERANCE_BPS
+            )
+            .is_some()
+        );
+
+        // With no lead, a bill can only reach the NEXT draw, never exactly.
+        let strict = SettleSettings {
+            lead_days: 0,
+            ..SettleSettings::default()
+        };
+        let late = propose(&journal, &roles, &strict, "2026-11-17");
+        assert!(
+            late.iter().all(|p| !p.early && p.fit != Fit::Exact),
+            "{late:#?}"
+        );
+        // A lead shorter than the gap is no lead at all.
+        let short = SettleSettings {
+            lead_days: 2,
+            ..SettleSettings::default()
+        };
+        assert!(
+            propose(&journal, &roles, &short, "2026-11-17")
+                .iter()
+                .all(|p| !p.early)
+        );
     }
 
     #[test]

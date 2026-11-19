@@ -342,6 +342,9 @@ const SPECS: &[Spec] = &[
     // invoice (300 = 3%, Q3).
     whole("settlementLookbackDays", 0, 3650, 180),
     whole("settlementToleranceBps", 0, 10_000, 300),
+    // How many days a payment may come BEFORE its invoice (a payroll draw,
+    // then its bill): 0–60, default 4.
+    whole("settlementLeadDays", 0, 60, 4),
 ];
 
 const fn flag(key: &'static str, default: bool) -> Spec {
@@ -1814,6 +1817,7 @@ mod tests {
                 "recognitionRows": "group",
                 "settlementLookbackDays": 180,
                 "settlementToleranceBps": 300,
+                "settlementLeadDays": 4,
             })
         );
     }

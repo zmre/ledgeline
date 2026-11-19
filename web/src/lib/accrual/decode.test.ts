@@ -133,6 +133,11 @@ describe("UNIT accrual decode: settlements and needs", () => {
         expect(proposal?.fit).toEqual({kind: "short", difference: {m: 3000n, p: 2}});
         expect(proposal?.payment.invoice).toBeNull();
         expect(proposal?.feeAccount).toBe("expenses:fees");
+        // `early` is additive: absent reads as false, present must be a boolean.
+        expect(proposal?.early).toBe(false);
+        const early = decodeSettlements(settlementsWire([proposalWire(sideWire(1), sideWire(2), {early: true, gapDays: 3})]));
+        expect(early?.proposals[0]?.early).toBe(true);
+        expect(() => decodeSettlements(settlementsWire([proposalWire(sideWire(1), sideWire(2), {early: "yes"})]))).toThrow(ApiShapeError);
         expect(view?.counts).toEqual({clear: 0, check: 1});
         expect(view?.open.invoices[0]).toMatchObject({index: 5, fingerprint: null, party: null});
     });

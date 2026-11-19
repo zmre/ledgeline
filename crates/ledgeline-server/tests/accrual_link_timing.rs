@@ -167,3 +167,96 @@ async fn one_link_round_trip_on_the_200k_corpus() {
         }
     }
 }
+
+/// The 200k corpus plus `pairs` clear invoice ↔ payment pairs, served.
+fn corpus_state(pairs: usize) -> (AppState, tempfile::TempDir, tempfile::TempDir) {
+    let main = corpus("synthetic-v1-200000-accrual.journal");
+    let rules = corpus("synthetic-v1-200000-accrual-recognition.journal");
+    assert!(
+        main.exists(),
+        "generate the corpus first: {}",
+        main.display()
+    );
+    let dir = tempfile::TempDir::new().expect("temp");
+    let mut text = std::fs::read_to_string(&main).expect("corpus");
+    text.push_str("\naccount assets:accounts receivable  ; type: A, kpi: receivable\naccount assets:bank:settle  ; type: C\n");
+    for n in 0..pairs {
+        let invoice = 9000 + n;
+        let amount = 100 + n;
+        text.push_str(&format!(
+            "\n2026-10-{day:02} Synthetic Invoice {invoice}  ; invoice: {invoice}\n    assets:accounts receivable  ${amount}.00  ; customer: Synthetic {n}\n    revenue:subscriptions\n\n2026-11-{day:02} Synthetic Payment {invoice}\n    assets:bank:settle  ${amount}.00\n    assets:accounts receivable  $-{amount}.00  ; customer: Synthetic {n}\n",
+            day = 1 + n % 28,
+        ));
+    }
+    std::fs::write(dir.path().join("books.journal"), text).expect("write main");
+    std::fs::copy(&rules, dir.path().join("recognition.journal")).expect("copy rules");
+    let scratch = tempfile::TempDir::new().expect("app dirs");
+    let state = AppState::from_journal_path(dir.path().join("books.journal"))
+        .expect("opens")
+        .with_app_dirs(AppDirs::under(scratch.path()));
+    (state, dir, scratch)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs the 200k bench corpus and a release build"]
+async fn link_all_on_the_200k_corpus() {
+    let settlements_uri = format!("/api/settlements?today={TODAY}&lookback=180&tolerance=300");
+    let accrual_uri =
+        format!("/api/accrual?today={TODAY}&settlementLookback=180&settlementTolerance=300");
+
+    // Before: what the old loop amounted to — one full write per pair.
+    {
+        let (state, _dir, _scratch) = corpus_state(25);
+        let started = Instant::now();
+        for _ in 0..25 {
+            let (_, list) = timed(&state, "GET", &settlements_uri, None).await;
+            let proposal = list["proposals"]
+                .as_array()
+                .expect("proposals")
+                .iter()
+                .find(|p| p["clear"] == true)
+                .expect("a clear proposal")
+                .clone();
+            let side = |which: &str| json!({"index": proposal[which]["index"], "posting": proposal[which]["posting"], "fingerprint": proposal[which]["fingerprint"]});
+            timed(
+                &state,
+                "POST",
+                "/api/settlements/link",
+                Some(json!({"invoice": side("invoice"), "payment": side("payment")})),
+            )
+            .await;
+        }
+        eprintln!("before: 25 one-at-a-time links {}", ms(started.elapsed()));
+    }
+
+    for pairs in [25, 60] {
+        let (state, _dir, _scratch) = corpus_state(pairs);
+        let (_, list) = timed(&state, "GET", &settlements_uri, None).await;
+        assert_eq!(
+            list["counts"]["clear"].as_u64(),
+            Some(pairs as u64),
+            "{}",
+            list["counts"]
+        );
+        let started = Instant::now();
+        let (write, linked) = timed(
+            &state,
+            "POST",
+            "/api/settlements/link-all",
+            Some(json!({"generation": list["generation"], "today": TODAY, "lookback": 180, "tolerance": 300})),
+        )
+        .await;
+        assert_eq!(linked["linked"].as_u64(), Some(pairs as u64));
+        let (meta, _) = timed(&state, "GET", "/api/journal", None).await;
+        let (status, _) = timed(&state, "GET", &accrual_uri, None).await;
+        let (relist, _) = timed(&state, "GET", &settlements_uri, None).await;
+        eprintln!(
+            "after: link-all of {pairs}: write {} · /api/journal {} · /api/accrual {} · /api/settlements {} · total {}",
+            ms(write),
+            ms(meta),
+            ms(status),
+            ms(relist),
+            ms(started.elapsed())
+        );
+    }
+}

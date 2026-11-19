@@ -23,7 +23,7 @@ import {
 describe("UNIT uiPrefs", () => {
     it("names every view setting, and never the connection", () => {
         expect([...UI_PREF_KEYS].sort()).toEqual(Object.keys(defaultUiPrefs()).sort());
-        expect(UI_PREF_KEYS).toHaveLength(32);
+        expect(UI_PREF_KEYS).toHaveLength(33);
         expect(UI_PREF_KEYS).not.toContain("serverUrl");
         expect(UI_PREF_KEYS).not.toContain("serverToken");
     });
@@ -85,6 +85,7 @@ describe("UNIT uiPrefs", () => {
             recognitionRows: "group",
             settlementLookbackDays: 180,
             settlementToleranceBps: 300,
+            settlementLeadDays: 4,
         });
         expect(cleanUiPrefs({autoRecognize: true, recognitionRows: "hide", settlementLookbackDays: 99999, settlementToleranceBps: -5})).toMatchObject({
             autoRecognize: true,
@@ -93,6 +94,8 @@ describe("UNIT uiPrefs", () => {
             settlementToleranceBps: 0,
         });
         expect(cleanUiPrefs({autoRecognize: "yes", recognitionRows: "collapse"})).toMatchObject({autoRecognize: false, recognitionRows: "group"});
+        expect(cleanUiPrefs({settlementLeadDays: 99}).settlementLeadDays).toBe(60);
+        expect(cleanUiPrefs({settlementLeadDays: "x"}).settlementLeadDays).toBe(4);
     });
 
     it("defaults bank sync off, every 6 hours, into imports/sync, kept forever, reminding after 35 days, and cleans hand edits", () => {

@@ -13,7 +13,9 @@ mod common;
 use ledgeline_core::Dec;
 use ledgeline_core::accrual::index::RecognitionIndex;
 use ledgeline_core::accrual::invoice::{Deferral, Direction, DocumentLine, DocumentSpec, money};
-use ledgeline_core::accrual::ops::{Books, OpsError, PostDue, SaveRequest, SourceChange};
+use ledgeline_core::accrual::ops::{
+    Books, OpsError, PostDue, SaveRequest, SettleLink, SourceChange,
+};
 use ledgeline_core::accrual::schedule::{Party, PartyKind, Proration, Term};
 use ledgeline_core::accrual::settle::DEFAULT_TOLERANCE_BPS;
 use ledgeline_core::accrual::{AccrualRole, AccrualRoles, Contract, RECOGNITION_TAG, tag_value};
@@ -379,4 +381,119 @@ fn an_external_write_between_load_and_save_writes_nothing() {
     );
     assert_eq!(std::fs::read_to_string(&main).expect("reads"), external);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `pairs` exact invoice ↔ payment pairs (each its own amount, so none is
+/// ambiguous), plus one invoice paid $30 short: a synthetic receivables book.
+fn receivables_book(pairs: usize) -> String {
+    let mut text = String::from(
+        "account assets:accounts receivable  ; type: A, kpi: receivable\naccount assets:bank  ; type: C\naccount revenue:services  ; type: R\naccount expenses:fees  ; type: X\n",
+    );
+    for n in 0..pairs {
+        let (number, amount) = (1001 + n, 100 + n);
+        text.push_str(&format!(
+            "\n2026-10-01 Invoice {number}  ; invoice: {number}\n    assets:accounts receivable  ${amount}.00  ; customer: Client {n}\n    revenue:services\n\n2026-10-15 Payment {number}\n    assets:bank  ${amount}.00\n    assets:accounts receivable  $-{amount}.00  ; customer: Client {n}\n"
+        ));
+    }
+    text.push_str("\n2026-10-02 Invoice 2001  ; invoice: 2001\n    assets:accounts receivable  $1000.00  ; customer: Short\n    revenue:services\n\n2026-10-16 Payment 2001\n    assets:bank  $970.00\n    assets:accounts receivable  $-970.00  ; customer: Short\n");
+    text
+}
+
+#[test]
+fn link_settlements_links_a_batch_in_one_write_or_not_at_all() {
+    use ledgeline_core::accrual::settle::{self, SettleSettings};
+    use ledgeline_core::vault::{MemVault, Vault, VaultPath};
+    use std::sync::Arc;
+
+    let pairs = 8;
+    let vault = Arc::new(MemVault::new().with_file("books.journal", receivables_book(pairs)));
+    let main = VaultPath::new("books.journal").expect("path");
+    let books = Books::open_in(Arc::clone(&vault) as Arc<dyn Vault>, main);
+    let clear_links = |journal: &Journal| -> Vec<SettleLink> {
+        let roles = AccrualRoles::of(journal);
+        settle::propose(journal, &roles, &SettleSettings::default(), "2026-11-17")
+            .into_iter()
+            .filter(|p| p.clear)
+            .map(|p| SettleLink {
+                invoice: p.invoice,
+                payment: p.payment,
+                fee_account: None,
+            })
+            .collect()
+    };
+
+    // All or nothing: one pair that isn't a pair (an invoice with the wrong
+    // payment) refuses the whole batch, and nothing is written.
+    let mut loaded = books.load().expect("loads");
+    let mut links = clear_links(loaded.journal());
+    assert_eq!(links.len(), pairs, "every exact pair is clear");
+    let before = vault.write_count();
+    let text = vault.text("books.journal");
+    let mut crossed = links.clone();
+    let wrong_payment = crossed[1].payment;
+    crossed[0].payment = wrong_payment;
+    crossed.remove(1);
+    assert!(matches!(
+        loaded.link_settlements(&crossed, DEFAULT_TOLERANCE_BPS),
+        Err(OpsError::Settle(_))
+    ));
+    // A posting in two links is refused too.
+    let mut doubled = links.clone();
+    doubled.push(links[0].clone());
+    assert!(matches!(
+        loaded.link_settlements(&doubled, DEFAULT_TOLERANCE_BPS),
+        Err(OpsError::Settle(_))
+    ));
+    assert_eq!(
+        vault.write_count(),
+        before,
+        "a refused batch writes nothing"
+    );
+    assert_eq!(vault.text("books.journal"), text);
+
+    // The batch: every link, one write, the ids in order.
+    let mut loaded = books.load().expect("loads");
+    links = clear_links(loaded.journal());
+    let ids = loaded
+        .link_settlements(&links, DEFAULT_TOLERANCE_BPS)
+        .expect("links");
+    assert_eq!(ids.len(), pairs);
+    assert_eq!(vault.write_count(), before + 1, "N links are ONE write");
+    let written = vault.text("books.journal").expect("journal");
+    for id in &ids {
+        assert_eq!(
+            written.matches(&format!("match:{id}")).count(),
+            2,
+            "{id}: {written}"
+        );
+    }
+    let unique: std::collections::HashSet<_> = ids.iter().collect();
+    assert_eq!(unique.len(), ids.len(), "every link has its own id");
+
+    // The short pair still links on its own, with its fee (one more write).
+    let mut loaded = books.load().expect("loads");
+    let short = settle::propose(
+        loaded.journal(),
+        &AccrualRoles::of(loaded.journal()),
+        &SettleSettings::default(),
+        "2026-11-17",
+    )
+    .into_iter()
+    .next()
+    .expect("the short pair is left");
+    let id = loaded
+        .link_settlement(
+            short.invoice,
+            short.payment,
+            Some("expenses:fees"),
+            DEFAULT_TOLERANCE_BPS,
+        )
+        .expect("links with a fee");
+    assert_eq!(vault.write_count(), before + 2);
+    assert!(
+        vault
+            .text("books.journal")
+            .expect("journal")
+            .contains(&format!("match:{id}"))
+    );
 }

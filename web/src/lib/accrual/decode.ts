@@ -276,6 +276,8 @@ function decodeProposal(raw: unknown, context: string): SettleProposal {
         byNumber: bool(value.byNumber, `${context}.byNumber`),
         byParty: bool(value.byParty, `${context}.byParty`),
         gapDays: whole(value.gapDays, `${context}.gapDays`),
+        // Additive: absent from an engine that never paired a payment before its invoice.
+        early: value.early === undefined ? false : bool(value.early, `${context}.early`),
         ambiguous: bool(value.ambiguous, `${context}.ambiguous`),
         clear: bool(value.clear, `${context}.clear`),
         feeAccount: optStr(value.feeAccount, `${context}.feeAccount`),

@@ -211,6 +211,8 @@ export interface SettlementsQuery {
     today: string;
     lookback?: number;
     tolerance?: number;
+    /** Days a payment may precede its invoice. */
+    lead?: number;
 }
 
 /** One side of a link, as listed (its fingerprint is checked). */
@@ -234,6 +236,7 @@ export interface SettlementLinkAllBody {
     generation: string;
     lookback?: number;
     tolerance?: number;
+    lead?: number;
     today?: string;
 }
 
@@ -2026,7 +2029,13 @@ export class LedgelineApi {
     // -----------------------------------------------------------------------
 
     /** `GET /api/accrual`: the gate, the roles, the recognition file and the badge counts. */
-    accrualStatus(query: {today: string; lookback?: number; settlementLookback?: number; settlementTolerance?: number}): Promise<unknown> {
+    accrualStatus(query: {
+        today: string;
+        lookback?: number;
+        settlementLookback?: number;
+        settlementTolerance?: number;
+        settlementLead?: number;
+    }): Promise<unknown> {
         return this.getJson(`/api/accrual${queryString(query)}`);
     }
 

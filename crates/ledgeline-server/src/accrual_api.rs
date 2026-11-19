@@ -48,7 +48,7 @@ use ledgeline_core::accrual::due::{DueEntry, DueSet, due, ties};
 use ledgeline_core::accrual::index::RecognitionIndex;
 use ledgeline_core::accrual::invoice::money;
 use ledgeline_core::accrual::ops::{
-    Books, Generation, Loaded, OpsError, PostDue, SavePlan, SaveRequest, SourceChange,
+    Books, Generation, Loaded, OpsError, PostDue, SavePlan, SaveRequest, SettleLink, SourceChange,
 };
 use ledgeline_core::accrual::restate::{Restatement, RowAction};
 use ledgeline_core::accrual::schedule::{
@@ -924,6 +924,9 @@ pub(crate) struct AccrualQuery {
     /// The matcher's tolerance in basis points (`settlementToleranceBps`);
     /// default 300.
     settlement_tolerance: Option<u32>,
+    /// How many days a payment may precede its invoice
+    /// (`settlementLeadDays`); default 4.
+    settlement_lead: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -1012,6 +1015,7 @@ pub(crate) async fn accrual(
         today: None,
         lookback: query.settlement_lookback,
         tolerance: query.settlement_tolerance,
+        lead: query.settlement_lead,
     }
     .settings();
     let day = today.clone();
@@ -1820,6 +1824,8 @@ pub(crate) struct SettleQuery {
     lookback: Option<u32>,
     /// Basis points of the invoice; default 300 (3%, Q3).
     tolerance: Option<u32>,
+    /// Days a payment may precede its invoice; default 4.
+    lead: Option<u32>,
 }
 
 impl SettleQuery {
@@ -1828,6 +1834,7 @@ impl SettleQuery {
         SettleSettings {
             lookback_days: self.lookback.unwrap_or(defaults.lookback_days),
             tolerance_bps: self.tolerance.unwrap_or(defaults.tolerance_bps),
+            lead_days: self.lead.unwrap_or(defaults.lead_days),
         }
     }
 }
@@ -1866,6 +1873,8 @@ struct WireProposal {
     by_number: bool,
     by_party: bool,
     gap_days: u32,
+    /// The payment came before the invoice (within the lead days).
+    early: bool,
     ambiguous: bool,
     clear: bool,
     /// For a short payment: the account last used for fees on this
@@ -2043,6 +2052,7 @@ fn settlements_body(
             by_number: p.by_number,
             by_party: p.by_party,
             gap_days: p.gap_days,
+            early: p.early,
             ambiguous: p.ambiguous,
             clear: p.clear,
             fee_account: matches!(p.fit, Fit::Short { .. })
@@ -2210,6 +2220,9 @@ pub(crate) struct LinkAllIn {
     lookback: Option<u32>,
     #[serde(default)]
     tolerance: Option<u32>,
+    /// Days a payment may precede its invoice, as the list was read with.
+    #[serde(default)]
+    lead: Option<u32>,
     #[serde(default)]
     today: Option<String>,
 }
@@ -2223,8 +2236,13 @@ pub(crate) struct LinkAllBody {
 }
 
 /// `POST /api/settlements/link-all` — link every **clear** proposal (exact,
-/// unambiguous, with an invoice-number or party signal). One `ops` link per
-/// pair, each against the books as the last one left them.
+/// unambiguous, with an invoice-number or party signal) EXACTLY as listed at
+/// `generation`: `409` when the journal has moved on since, so what is linked
+/// is what the user saw and confirmed. The proposals are worked out once,
+/// under the write lock, and linked in one batch — one reparse, one save, all
+/// or nothing ([`Loaded::link_settlements`]). Nothing is re-proposed, so a
+/// pair that only turns clear once its rival is linked waits for the next
+/// listing.
 pub(crate) async fn link_all(
     State(state): State<AppState>,
     payload: Result<Json<LinkAllIn>, JsonRejection>,
@@ -2238,38 +2256,26 @@ pub(crate) async fn link_all(
             today: None,
             lookback: request.lookback,
             tolerance: request.tolerance,
+            lead: request.lead,
         }
         .settings();
-        let mut ids = Vec::new();
-        let mut generation = Some(request.generation.clone());
-        loop {
-            let next = redacted(
-                &state,
-                write(&state, generation.as_deref(), |loaded| {
-                    let roles = AccrualRoles::of(loaded.journal());
-                    let Some(proposal) =
-                        settle::propose(loaded.journal(), &roles, &settings, &today)
-                            .into_iter()
-                            .find(|p| p.clear)
-                    else {
-                        return Ok(None);
-                    };
-                    loaded
-                        .link_settlement(
-                            proposal.invoice,
-                            proposal.payment,
-                            None,
-                            settings.tolerance_bps,
-                        )
-                        .map(Some)
-                }),
-            )?;
-            generation = None;
-            match next {
-                Some(id) if ids.len() < 10_000 => ids.push(id),
-                _ => break,
-            }
-        }
+        let ids = redacted(
+            &state,
+            write(&state, Some(&request.generation), |loaded| {
+                let roles = AccrualRoles::of(loaded.journal());
+                let links: Vec<SettleLink> =
+                    settle::propose(loaded.journal(), &roles, &settings, &today)
+                        .into_iter()
+                        .filter(|proposal| proposal.clear)
+                        .map(|proposal| SettleLink {
+                            invoice: proposal.invoice,
+                            payment: proposal.payment,
+                            fee_account: None,
+                        })
+                        .collect();
+                loaded.link_settlements(&links, settings.tolerance_bps)
+            }),
+        )?;
         Ok(LinkAllBody {
             generation: generation_of(&state.snapshot().etag).to_string(),
             linked: ids.len(),

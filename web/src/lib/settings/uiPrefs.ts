@@ -94,6 +94,9 @@ export const SETTLEMENT_LOOKBACK_DEFAULT = 180;
 /** How far a payment may fall short of its invoice, in basis points of the invoice, 0–10000. Default 300 (3%). */
 export const SETTLEMENT_TOLERANCE_RANGE = [0, 10_000] as const;
 export const SETTLEMENT_TOLERANCE_DEFAULT = 300;
+/** How many days a payment may come BEFORE its invoice and still be matched (a payroll draw, then its bill), 0–60. Default 4. */
+export const SETTLEMENT_LEAD_RANGE = [0, 60] as const;
+export const SETTLEMENT_LEAD_DEFAULT = 4;
 
 /**
  * A folder inside the journal's folder (`RelDir` in ui_prefs.rs): relative,
@@ -208,6 +211,8 @@ export interface UiPrefs {
     settlementLookbackDays: number;
     /** The matcher's shortfall tolerance in basis points, 0–10000. Default 300. */
     settlementToleranceBps: number;
+    /** Days a payment may precede its invoice, 0–60. Default 4. */
+    settlementLeadDays: number;
 }
 
 export type UiPrefKey = keyof UiPrefs;
@@ -245,6 +250,7 @@ export const UI_PREF_KEYS: readonly UiPrefKey[] = [
     "recognitionRows",
     "settlementLookbackDays",
     "settlementToleranceBps",
+    "settlementLeadDays",
 ];
 
 /** A partial update, as `PATCH /api/ui-prefs` takes it: `columns` may name only some members. */
@@ -350,6 +356,7 @@ export const defaultUiPrefs = (): UiPrefs => ({
     recognitionRows: RECOGNITION_ROWS_DEFAULT,
     settlementLookbackDays: SETTLEMENT_LOOKBACK_DEFAULT,
     settlementToleranceBps: SETTLEMENT_TOLERANCE_DEFAULT,
+    settlementLeadDays: SETTLEMENT_LEAD_DEFAULT,
 });
 
 const flag = (value: unknown, fallback: boolean): boolean => (typeof value === "boolean" ? value : fallback);
@@ -408,6 +415,7 @@ export function cleanUiPrefs(parsed: Record<string, unknown>): UiPrefs {
             : base.recognitionRows,
         settlementLookbackDays: wholeIn(parsed.settlementLookbackDays, SETTLEMENT_LOOKBACK_RANGE, SETTLEMENT_LOOKBACK_DEFAULT),
         settlementToleranceBps: wholeIn(parsed.settlementToleranceBps, SETTLEMENT_TOLERANCE_RANGE, SETTLEMENT_TOLERANCE_DEFAULT),
+        settlementLeadDays: wholeIn(parsed.settlementLeadDays, SETTLEMENT_LEAD_RANGE, SETTLEMENT_LEAD_DEFAULT),
     };
 }
 

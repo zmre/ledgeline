@@ -849,3 +849,44 @@ async fn a_reload_racing_a_listing_never_strips_the_fingerprints() {
     stop.store(true, Ordering::Relaxed);
     reloader.join().expect("reloader");
 }
+
+#[tokio::test]
+async fn a_payment_before_its_bill_pairs_within_the_lead_days() {
+    // Payroll: the draw, then its bill three days later (synthetic).
+    let dir = tempfile::TempDir::new().expect("dir");
+    std::fs::write(
+        dir.path().join("books.journal"),
+        "account liabilities:accounts payable  ; type: L, kpi: payable\naccount assets:bank  ; type: C\naccount expenses:payroll  ; type: X\n\
+         \n2026-10-15 Gusto debit\n    assets:bank  $-5107.91\n    liabilities:accounts payable  $5107.91  ; vendor: Gusto\n\
+         \n2026-10-18 Gusto payroll bill\n    expenses:payroll  $5107.91\n    liabilities:accounts payable  $-5107.91  ; vendor: Gusto\n",
+    )
+    .expect("write");
+    let (state, _scratch) = state_in(dir.path());
+    let body = get(&state, &format!("/api/settlements?today={TODAY}")).await;
+    let proposal = &body["proposals"][0];
+    assert_eq!(proposal["early"], true, "{body}");
+    assert_eq!(proposal["gapDays"], 3);
+    assert_eq!(proposal["clear"], true);
+    assert_eq!(proposal["fit"]["kind"], "exact");
+    let strict = get(&state, &format!("/api/settlements?today={TODAY}&lead=0")).await;
+    assert_eq!(strict["proposals"], json!([]), "{strict}");
+    let counts = get(&state, &format!("/api/accrual?today={TODAY}")).await["counts"].clone();
+    assert_eq!(counts["invoices"], 1, "{counts}");
+    let counts = get(
+        &state,
+        &format!("/api/accrual?today={TODAY}&settlementLead=2"),
+    )
+    .await["counts"]
+        .clone();
+    assert_eq!(counts["invoices"], 0, "{counts}");
+    // It links as listed.
+    let (status, linked) = send(
+        &state,
+        "POST",
+        "/api/settlements/link-all",
+        Some(json!({"generation": body["generation"], "today": TODAY})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{linked}");
+    assert_eq!(linked["linked"], 1);
+}

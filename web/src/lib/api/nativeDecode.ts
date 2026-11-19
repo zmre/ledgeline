@@ -63,6 +63,7 @@ import {
     RECOGNITION_ROWS,
     RECOGNITION_ROWS_DEFAULT,
     SETTLEMENT_LOOKBACK_DEFAULT,
+    SETTLEMENT_LEAD_DEFAULT,
     SETTLEMENT_TOLERANCE_DEFAULT,
     SYNC_KEEP_DAYS_DEFAULT,
     SYNC_SOURCE_DIR_DEFAULT,
@@ -4999,6 +5000,7 @@ export function decodeUiPrefsState(raw: unknown): UiPrefsState {
             prefs.settlementLookbackDays === undefined ? SETTLEMENT_LOOKBACK_DEFAULT : whole(prefs.settlementLookbackDays, "ui-prefs settlementLookbackDays"),
         settlementToleranceBps:
             prefs.settlementToleranceBps === undefined ? SETTLEMENT_TOLERANCE_DEFAULT : whole(prefs.settlementToleranceBps, "ui-prefs settlementToleranceBps"),
+        settlementLeadDays: prefs.settlementLeadDays === undefined ? SETTLEMENT_LEAD_DEFAULT : whole(prefs.settlementLeadDays, "ui-prefs settlementLeadDays"),
     };
     if (!Array.isArray(body.issues)) throw new ApiShapeError("ui-prefs issues: expected an array");
     const issues = body.issues.map((rawIssue, i): UiPrefsIssue => {

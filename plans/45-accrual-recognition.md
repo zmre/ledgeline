@@ -1073,16 +1073,17 @@ account and amount, and every comment.
   The sheet keeps its modal and actions and renders the body, so its output
   does not change. The body takes `highlight?: number` (a posting index) and
   marks the matched posting so it stands out among the others.
-- **Per side, inline.** Each side box on a settlement card gets a "Details ▸/▾"
-  disclosure. Expanding it renders `TxnDetailBody` in place under that side,
-  with the matched posting highlighted. Each side opens on its own. On wide
-  layouts the two sides stay side by side, so the halves line up.
-- **Both at once.** A card-level "Both" toggle opens both sides together. The
-  `d` key does the same for the focused card.
+- **Per card, inline.** Each side box on a settlement card has a "Details ▸/▾"
+  disclosure, and either one opens (or closes) BOTH sides of the pair
+  (Patrick, 2026-11-18: there are no per-side toggles, and no separate "Both").
+  Each side renders `TxnDetailBody` in place under itself, with its matched
+  posting highlighted. On wide layouts the two sides stay side by side, so the
+  halves line up. The `d` key toggles the focused card's pair.
 - **Panel-wide toggle.** A "Show details" toggle in the panel header expands
   every card. It is session state, not a pref, and resets on reload.
-- **Open lists.** The same disclosure goes on rows in the "Open invoices" and
-  "Open payments" lists, and on the "Needs a schedule" list.
+- **Open lists.** Rows in the "Open invoices" and "Open payments" lists, and
+  in "Needs a schedule", have no partner, so each keeps its own single
+  disclosure.
 - **Open in editor.** Each expanded body has a link that opens the transaction
   in the review editor, as "Needs a schedule" already does.
 - **Data.** Fetch lazily with the existing `GET /api/transactions/{index}` on
@@ -1104,9 +1105,9 @@ account and amount, and every comment.
 - `TxnDetailSheet` still renders the same content (the existing tests pass
   unchanged).
 - Settlements panel:
-  - expanding one side fetches once and expanding it again does not;
-  - "Both" opens two;
-  - `d` acts on the focused card;
+  - Details on either side opens the pair, each side fetched once, and
+    expanding it again fetches nothing;
+  - `d` toggles the focused card's pair;
   - "Show details" expands all;
   - a new generation refetches;
   - a failed fetch shows Retry.

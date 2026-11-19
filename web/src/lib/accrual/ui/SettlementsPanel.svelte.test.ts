@@ -5,6 +5,7 @@
 import {fireEvent, render, screen, within} from "@testing-library/svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {journal} from "#lib/stores/journal.svelte.js";
+import {settings} from "#lib/stores/settings.svelte.js";
 import {FAKE_ENGINE} from "#lib/testing/fakeEngine.js";
 import {proposalWire, serveAccrual, settlementsWire, sideWire} from "#lib/testing/accrualFixture.js";
 import {accrual, resetAccrual} from "../store.svelte";
@@ -155,6 +156,24 @@ describe("COMPONENT SettlementsPanel", () => {
         expect(screen.queryByTestId("settlement-linking")).toBeNull();
     });
 
+    it("says when a payment came before its invoice, and the lead setting reads the list again", async () => {
+        const {seen} = await show([proposalWire(sideWire(1), sideWire(2), {early: true, gapDays: 3})]);
+        expect(screen.getByTestId("settlement-gap").textContent).toBe("Paid 3 days before the invoice");
+        const lead = screen.getByTestId("settlements-lead") as HTMLInputElement;
+        expect(lead.value).toBe(String(settings.settlementLeadDays));
+        await fireEvent.change(lead, {target: {value: "6"}});
+        expect(settings.settlementLeadDays).toBe(6);
+        await vi.waitFor(() =>
+            expect(
+                seen
+                    .filter((r) => r.url.pathname.endsWith("/api/settlements"))
+                    .at(-1)
+                    ?.url.searchParams.get("lead")
+            ).toBe("6")
+        );
+        settings.settlementLeadDays = 4;
+    });
+
     it("converts percents and basis points", () => {
         expect(bpsToPercent(300)).toBe("3.0");
         expect(percentToBps("2.5%")).toBe(250);
@@ -185,43 +204,48 @@ describe("COMPONENT SettlementsPanel", () => {
         return reads;
     }
 
-    it("expands one side lazily: one fetch, its posting highlighted, and none again on a second expand", async () => {
-        await show([EXACT]);
-        const reads = serveTransactions();
-        const card = screen.getByTestId("settlement-card");
-        const invoice = within(card).getByTestId("settlement-invoice");
-        expect(within(card).queryByTestId("txn-details")).toBeNull();
-        expect(reads.size).toBe(0);
-        await fireEvent.click(within(invoice).getByTestId("details-toggle"));
-        await vi.waitFor(() => expect(within(invoice).getByTestId("detail-description").textContent).toBe("Whole transaction 1"));
-        expect(reads.get(1)).toBe(1);
-        // The side's posting (1) is the one marked.
-        const rows = within(within(invoice).getByTestId("detail-postings")).getAllByRole("listitem");
-        expect(rows.map((row) => row.hasAttribute("data-highlighted"))).toEqual([false, true]);
-        // The payment side stays closed.
-        expect(within(within(card).getByTestId("settlement-payment")).queryByTestId("txn-details")).toBeNull();
-        await fireEvent.click(within(invoice).getByTestId("details-toggle"));
-        expect(within(invoice).queryByTestId("txn-details")).toBeNull();
-        await fireEvent.click(within(invoice).getByTestId("details-toggle"));
-        await vi.waitFor(() => expect(within(invoice).getByTestId("detail-description")).toBeDefined());
-        expect(reads.get(1)).toBe(1);
-    });
-
-    it("opens both sides with Both, and with d on the focused card", async () => {
+    it("Details on either side opens the pair, each read once, its posting highlighted; again closes both", async () => {
         await show([EXACT, proposalWire(sideWire(7), sideWire(8))]);
         const reads = serveTransactions();
-        const [first, second] = screen.getAllByTestId("settlement-card") as HTMLElement[];
-        await fireEvent.click(within(first as HTMLElement).getByTestId("details-both"));
-        await vi.waitFor(() => expect(within(first as HTMLElement).getAllByTestId("detail-description")).toHaveLength(2));
+        const [card, other] = screen.getAllByTestId("settlement-card") as HTMLElement[];
+        const invoice = within(card as HTMLElement).getByTestId("settlement-invoice");
+        const payment = within(card as HTMLElement).getByTestId("settlement-payment");
+        expect(within(card as HTMLElement).queryByTestId("txn-details")).toBeNull();
+        expect(reads.size).toBe(0);
+        // The payment side's Details opens the invoice side too.
+        await fireEvent.click(within(payment).getByTestId("details-toggle"));
+        await vi.waitFor(() => expect(within(invoice).getByTestId("detail-description").textContent).toBe("Whole transaction 1"));
+        await vi.waitFor(() => expect(within(payment).getByTestId("detail-description").textContent).toBe("Whole transaction 2"));
         expect([reads.get(1), reads.get(2)]).toEqual([1, 1]);
-        expect(within(second as HTMLElement).queryByTestId("txn-details")).toBeNull();
+        // Each side marks its own matched posting (1).
+        const rows = within(within(invoice).getByTestId("detail-postings")).getAllByRole("listitem");
+        expect(rows.map((row) => row.hasAttribute("data-highlighted"))).toEqual([false, true]);
+        // Both toggles say so; the other card is untouched; there is no separate Both.
+        expect(
+            within(card as HTMLElement)
+                .getAllByTestId("details-toggle")
+                .map((b) => b.getAttribute("aria-expanded"))
+        ).toEqual(["true", "true"]);
+        expect(within(other as HTMLElement).queryByTestId("txn-details")).toBeNull();
+        expect(screen.queryByTestId("details-both")).toBeNull();
+        // Again, from the invoice side: both close. Reopening reads nothing new.
+        await fireEvent.click(within(invoice).getByTestId("details-toggle"));
+        expect(within(card as HTMLElement).queryByTestId("txn-details")).toBeNull();
+        await fireEvent.click(within(invoice).getByTestId("details-toggle"));
+        await vi.waitFor(() => expect(within(card as HTMLElement).getAllByTestId("detail-description")).toHaveLength(2));
+        expect([reads.get(1), reads.get(2)]).toEqual([1, 1]);
+    });
 
-        // `d` acts on the card holding focus.
-        (within(second as HTMLElement).getByTestId("details-both") as HTMLElement).focus();
-        await fireEvent.focusIn(within(second as HTMLElement).getByTestId("details-both"));
+    it("toggles the focused card's pair with d", async () => {
+        await show([EXACT, proposalWire(sideWire(7), sideWire(8))]);
+        serveTransactions();
+        const [first, second] = screen.getAllByTestId("settlement-card") as HTMLElement[];
+        const button = within(second as HTMLElement).getAllByTestId("details-toggle")[0] as HTMLElement;
+        button.focus();
+        await fireEvent.focusIn(button);
         keymap.handle(new KeyboardEvent("keydown", {key: "d", cancelable: true}));
         await vi.waitFor(() => expect(within(second as HTMLElement).getAllByTestId("txn-details")).toHaveLength(2));
-        expect(within(first as HTMLElement).getAllByTestId("txn-details")).toHaveLength(2);
+        expect(within(first as HTMLElement).queryByTestId("txn-details")).toBeNull();
         keymap.handle(new KeyboardEvent("keydown", {key: "d", cancelable: true}));
         await vi.waitFor(() => expect(within(second as HTMLElement).queryByTestId("txn-details")).toBeNull());
     });

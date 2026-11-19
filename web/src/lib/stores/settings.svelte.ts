@@ -37,6 +37,8 @@ import {
     RECOGNITION_ROWS,
     SETTLEMENT_LOOKBACK_DEFAULT,
     SETTLEMENT_LOOKBACK_RANGE,
+    SETTLEMENT_LEAD_DEFAULT,
+    SETTLEMENT_LEAD_RANGE,
     SETTLEMENT_TOLERANCE_DEFAULT,
     SETTLEMENT_TOLERANCE_RANGE,
     type RecognitionRows,
@@ -723,6 +725,14 @@ export const settings = {
     set settlementToleranceBps(bps: number) {
         state.settlementToleranceBps = wholeIn(bps, SETTLEMENT_TOLERANCE_RANGE, SETTLEMENT_TOLERANCE_DEFAULT);
         save({settlementToleranceBps: state.settlementToleranceBps});
+    },
+    /** How many days a payment may come before its invoice and still be matched, clamped to 0–60. */
+    get settlementLeadDays(): number {
+        return state.settlementLeadDays;
+    },
+    set settlementLeadDays(days: number) {
+        state.settlementLeadDays = wholeIn(days, SETTLEMENT_LEAD_RANGE, SETTLEMENT_LEAD_DEFAULT);
+        save({settlementLeadDays: state.settlementLeadDays});
     },
     /** The cross-origin engine token, if one was entered. Null in embedded mode. */
     get serverToken(): string | null {
