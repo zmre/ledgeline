@@ -55,10 +55,10 @@ jobs:
         uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: zmre
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           extraPullNames: nix-community
-          # Don't burn cache quota on source trees (see docs/development/building.md).
-          pushFilter: '-(source|vendor)$'
+          # Pull-only: nothing a dev shell pulls in is worth cache quota (see
+          # ci.yml's format-check and docs/development/building.md).
+          skipPush: true
 
       - name: cargo audit
         run: scripts/audit.sh rust
@@ -100,10 +100,10 @@ jobs:
         uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: zmre
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           extraPullNames: nix-community
-          # Don't burn cache quota on source trees (see docs/development/building.md).
-          pushFilter: '-(source|vendor)$'
+          # Pull-only: nothing a dev shell pulls in is worth cache quota (see
+          # ci.yml's format-check and docs/development/building.md).
+          skipPush: true
 
       - name: bun audit
         run: scripts/audit.sh spa
