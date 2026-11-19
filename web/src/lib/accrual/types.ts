@@ -46,7 +46,11 @@ export interface AccrualStatus {
     /** The recognition file, relative to the journal's folder; null without a backing file. */
     file: {path: string; exists: boolean; included: boolean} | null;
     closedThrough: ISODate | null;
-    counts: {due: number; dueClosed: number; needsSchedule: number; invoices: number};
+    /**
+     * `invoices` is the CLEAR proposals only (what Link all takes), under the
+     * user's settlement lookback and tolerance; `invoicesCheck` the ones to check.
+     */
+    counts: {due: number; dueClosed: number; needsSchedule: number; invoices: number; invoicesCheck: number};
     /** Why the recognition file could not be read, or null. */
     problem: string | null;
     /** `[books]` values that were ignored, and why. */

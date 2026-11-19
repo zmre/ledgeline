@@ -61,7 +61,7 @@ use ledgeline_core::accrual::settle::{
 use ledgeline_core::accrual::{
     AccrualGate, AccrualRoles, Basis, Contract, GateReason, RoleSource, accrual_gate,
 };
-use ledgeline_core::edit::Fingerprint;
+use ledgeline_core::edit::{Fingerprint, JournalEditor};
 use ledgeline_core::matching::PostingRef;
 use ledgeline_core::model::{Amount, Journal, Posting, Tindex, Transaction};
 use ledgeline_core::parse::JournalStyles;
@@ -811,17 +811,27 @@ fn ops_error(error: OpsError) -> AppError {
     }
 }
 
-/// Run one `ops` write under the editor lock: load the books afresh from the
-/// served vault, `write`, then re-sync the bound editor from disk and
-/// republish (whatever was written is then served). `generation`, when
-/// given, must still be the served snapshot's.
+/// Run one `ops` write under the editor lock, on a copy of the bound editor
+/// ([`Books::load_from`]), and publish what landed. `generation`, when given,
+/// must still be the served snapshot's.
+///
+/// - Success: the copy's save landed, so the copy IS the files — adopt it as
+///   the bound editor and publish its journal. No second read of the journal
+///   (this used to `load` a fresh editor and then re-open the bound one from
+///   disk: two full parses, ~1.7 s of a Link at 200k transactions).
+/// - Failure: the copy is dropped and the bound editor never saw the attempt.
+///   If part of it still reached the disk (`RulesNotWritten` after the journal
+///   saved), the bound editor re-syncs from disk.
+///
+/// Either way the bound editor and the served snapshot stay one journal, which
+/// is what every fingerprint the routes hand out relies on.
 fn write<T>(
     state: &AppState,
     generation: Option<&str>,
-    write: impl FnOnce(Loaded) -> Result<T, OpsError>,
+    write: impl FnOnce(&mut Loaded) -> Result<T, OpsError>,
 ) -> Result<T, AppError> {
     let mut guard = lock_editor(state)?;
-    bound(&mut guard)?;
+    let editor: &JournalEditor = bound(&mut guard)?;
     let snapshot = state.snapshot();
     if let Some(expected) = generation
         && expected != generation_of(&snapshot.etag)
@@ -837,20 +847,41 @@ fn write<T>(
         .storage()
         .ok_or_else(|| AppError::Conflict("this journal has no backing file".to_string()))?;
     let books = Books::open_in(Arc::clone(location.vault()), location.main().clone());
-    let outcome = books.load().and_then(write);
-    // Publish whatever reached the disk, on success and on failure alike —
-    // and nothing when nothing did, so a refused or empty write leaves the
-    // generation (and every client's view) as it was.
-    let journal_written = guard
-        .as_ref()
-        .is_some_and(|editor| !editor.changed_sources().is_empty());
-    if journal_written {
-        resync_from_disk(state, &mut guard)?;
-    } else if changed_on_disk(state) {
-        drop(guard);
-        state.republish();
+    let outcome = books.load_from(editor).and_then(|mut loaded| {
+        let value = write(&mut loaded)?;
+        Ok((value, loaded.into_editor()))
+    });
+    // Publish whatever reached the disk — and nothing when nothing did, so a
+    // refused or empty write leaves the generation (and every client's view)
+    // as it was.
+    match outcome {
+        Ok((value, edited)) => {
+            if Arc::ptr_eq(edited.journal(), editor.journal()) {
+                // The journal is untouched; the recognition file or `[books]`
+                // may not be.
+                if changed_on_disk(state) {
+                    drop(guard);
+                    state.republish();
+                }
+            } else {
+                state.replace_journal(edited.journal());
+                *guard = Some(edited);
+            }
+            Ok(value)
+        }
+        Err(error) => {
+            let journal_written = guard
+                .as_ref()
+                .is_some_and(|editor| !editor.changed_sources().is_empty());
+            if journal_written {
+                resync_from_disk(state, &mut guard)?;
+            } else if changed_on_disk(state) {
+                drop(guard);
+                state.republish();
+            }
+            Err(ops_error(error))
+        }
     }
-    outcome.map_err(ops_error)
 }
 
 /// Answer a GET from the blocking pool, `304` when the client holds this
@@ -887,6 +918,12 @@ pub(crate) struct AccrualQuery {
     today: Option<String>,
     /// Days "Needs a schedule" looks back; default 90, `0` = everything.
     lookback: Option<u32>,
+    /// The invoice matcher's lookback (the user's `settlementLookbackDays`);
+    /// default 180, `0` = everything.
+    settlement_lookback: Option<u32>,
+    /// The matcher's tolerance in basis points (`settlementToleranceBps`);
+    /// default 300.
+    settlement_tolerance: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -945,7 +982,11 @@ struct WireCounts {
     due: usize,
     due_closed: usize,
     needs_schedule: usize,
+    /// The CLEAR proposals (exact, unambiguous, with a number or party
+    /// signal): what Link all takes, and what the badge counts.
     invoices: usize,
+    /// The proposals to check by hand.
+    invoices_check: usize,
 }
 
 fn relative(location_root: &VaultPath, path: &VaultPath) -> String {
@@ -967,14 +1008,20 @@ pub(crate) async fn accrual(
 ) -> Result<Response, AppError> {
     let today = effective_today(query.today)?;
     let lookback = query.lookback.unwrap_or(NEEDS_SCHEDULE_LOOKBACK_DAYS);
+    let settings = SettleQuery {
+        today: None,
+        lookback: query.settlement_lookback,
+        tolerance: query.settlement_tolerance,
+    }
+    .settings();
     let day = today.clone();
     answer(state, &headers, &today, move |_, snapshot, accrual| {
         let journal = &snapshot.journal;
         let index = accrual.index(journal);
         let set = accrual.due(journal, &day);
         let needs = needs_schedule(journal, &index, &day, lookback).len();
-        let invoices =
-            settle::propose(journal, &accrual.roles, &SettleSettings::default(), &day).len();
+        let proposals = settle::propose(journal, &accrual.roles, &settings, &day);
+        let clear = proposals.iter().filter(|p| p.clear).count();
         let root = snapshot
             .storage()
             .map(|location| location.root_dir())
@@ -1036,7 +1083,8 @@ pub(crate) async fn accrual(
                 due: set.open.len(),
                 due_closed: set.closed.len(),
                 needs_schedule: needs,
-                invoices,
+                invoices: clear,
+                invoices_check: proposals.len() - clear,
             },
             problem: accrual.problem.as_deref(),
             warnings: &accrual.config.warnings,
@@ -1643,7 +1691,13 @@ pub(crate) async fn preview(
             .storage()
             .ok_or_else(|| AppError::Conflict("this journal has no backing file".to_string()))?;
         let books = Books::open_in(Arc::clone(location.vault()), location.main().clone());
-        let loaded = books.load().map_err(ops_error)?;
+        // A copy of the bound editor, not a fresh parse: the editor form asks
+        // for a preview on every pause in typing.
+        let loaded = {
+            let mut guard = lock_editor(&state)?;
+            books.load_from(bound(&mut guard)?)
+        }
+        .map_err(ops_error)?;
         let core = save_request(&loaded, &request, &today)?;
         let plan = redacted(&state, loaded.preview(&core).map_err(ops_error))?;
         to_bytes(&WirePlan::of(&plan, None))
@@ -1672,7 +1726,7 @@ pub(crate) async fn save(
         let plan = redacted(
             &state,
             write(&state, None, |loaded| {
-                let core = save_request(&loaded, &request, &today)
+                let core = save_request(loaded, &request, &today)
                     .map_err(|error| OpsError::Storage(error.to_string()))?;
                 loaded.save(&core)
             }),
@@ -1859,13 +1913,15 @@ fn fit_wire(fit: Fit) -> WireFit {
     }
 }
 
-/// The current fingerprints of `indices`, from the bound editor when it holds
-/// exactly this snapshot's journal.
-fn fingerprints(state: &AppState, snapshot: &Snapshot, indices: &[Tindex]) -> Vec<Option<String>> {
-    let Ok(guard) = lock_editor(state) else {
-        return vec![None; indices.len()];
-    };
-    match guard.as_ref() {
+/// The fingerprints of `indices` from `editor`, when it holds exactly
+/// `snapshot`'s journal; `None`s otherwise (no token is better than a wrong
+/// one).
+fn fingerprints(
+    editor: Option<&JournalEditor>,
+    snapshot: &Snapshot,
+    indices: &[Tindex],
+) -> Vec<Option<String>> {
+    match editor {
         Some(editor)
             if Arc::ptr_eq(editor.journal(), &snapshot.raw)
                 || Arc::ptr_eq(editor.journal(), &snapshot.journal) =>
@@ -1878,6 +1934,46 @@ fn fingerprints(state: &AppState, snapshot: &Snapshot, indices: &[Tindex]) -> Ve
         }
         _ => vec![None; indices.len()],
     }
+}
+
+/// Fingerprints for the snapshot a job read.
+type Tokens<'a> = &'a dyn Fn(&[Tindex]) -> Vec<Option<String>>;
+
+/// Answer a GET whose body carries fingerprints: like [`answer`], but the
+/// snapshot is read UNDER the editor lock and fingerprinted before it is
+/// released — the pattern `review_api::fingerprinted` follows — so the rows
+/// and their tokens always describe the same journal.
+///
+/// Reading the snapshot first and locking only for the fingerprints (as this
+/// route once did) lost every token whenever a publish landed in between: the
+/// file watcher reloads after each of our own writes, and the list the client
+/// re-read right after a Link came back with no fingerprints at all, so every
+/// other Link stayed disabled.
+async fn answer_fingerprinted(
+    state: AppState,
+    headers: &HeaderMap,
+    today: &str,
+    job: impl FnOnce(&Snapshot, &AccrualView, Tokens<'_>) -> Result<Bytes, AppError> + Send + 'static,
+) -> Result<Response, AppError> {
+    if if_none_match_hits(headers, &dated_etag(&state.snapshot(), today)) {
+        return Ok(not_modified(dated_etag(&state.snapshot(), today)));
+    }
+    let today = today.to_string();
+    let Json((etag, body)) = compute(move || {
+        let guard = lock_editor(&state)?;
+        let snapshot = state.snapshot();
+        let etag = dated_etag(&snapshot, &today);
+        let accrual = view(&state, &snapshot);
+        if !accrual.gate.enabled {
+            return Ok((etag, disabled_body()?));
+        }
+        let tokens = |indices: &[Tindex]| fingerprints(guard.as_ref(), &snapshot, indices);
+        let body = job(&snapshot, &accrual, &tokens)?;
+        drop(guard);
+        Ok((etag, body))
+    })
+    .await?;
+    Ok(ok_json(etag, body))
 }
 
 fn wire_side(journal: &Journal, at: PostingRef, fingerprint: Option<String>) -> WireSide {
@@ -1905,7 +2001,7 @@ fn wire_side(journal: &Journal, at: PostingRef, fingerprint: Option<String>) -> 
 /// The proposals and the open candidates, wired, for `scope` (all, or one
 /// transaction's).
 fn settlements_body(
-    state: &AppState,
+    tokens_of: Tokens<'_>,
     snapshot: &Snapshot,
     accrual: &AccrualView,
     settings: &SettleSettings,
@@ -1932,11 +2028,7 @@ fn settlements_body(
         .flat_map(|p| [p.invoice, p.payment])
         .chain(candidates.iter().map(|c| c.at))
         .collect();
-    let tokens = fingerprints(
-        state,
-        snapshot,
-        &refs.iter().map(|at| at.txn).collect::<Vec<_>>(),
-    );
+    let tokens = tokens_of(&refs.iter().map(|at| at.txn).collect::<Vec<_>>());
     let token_of = |at: PostingRef| {
         refs.iter()
             .position(|r| *r == at)
@@ -1996,8 +2088,8 @@ pub(crate) async fn settlements(
     let today = effective_today(query.today.clone())?;
     let settings = query.settings();
     let day = today.clone();
-    answer(state, &headers, &today, move |state, snapshot, accrual| {
-        settlements_body(state, snapshot, accrual, &settings, &day, None)
+    answer_fingerprinted(state, &headers, &today, move |snapshot, accrual, tokens| {
+        settlements_body(tokens, snapshot, accrual, &settings, &day, None)
     })
     .await
 }
@@ -2016,14 +2108,14 @@ pub(crate) async fn settlements_for(
         ..query.settings()
     };
     let day = today.clone();
-    answer(state, &headers, &today, move |state, snapshot, accrual| {
+    answer_fingerprinted(state, &headers, &today, move |snapshot, accrual, tokens| {
         let position = snapshot
             .journal
             .transactions
             .iter()
             .position(|t| t.index.0 == tindex)
             .ok_or_else(|| AppError::NotFound(format!("no transaction with index {tindex}")))?;
-        settlements_body(state, snapshot, accrual, &settings, &day, Some(position))
+        settlements_body(tokens, snapshot, accrual, &settings, &day, Some(position))
     })
     .await
 }
@@ -2092,8 +2184,8 @@ pub(crate) async fn link(
         let id = redacted(
             &state,
             write(&state, None, |loaded| {
-                let invoice = side_ref(&loaded, &request.invoice)?;
-                let payment = side_ref(&loaded, &request.payment)?;
+                let invoice = side_ref(loaded, &request.invoice)?;
+                let payment = side_ref(loaded, &request.payment)?;
                 loaded.link_settlement(
                     invoice,
                     payment,

@@ -70,7 +70,7 @@ describe("UNIT accrual decode: the gate", () => {
         expect(status?.roles.get("assets:prepaid")).toEqual({role: "prepaid", declared: true});
         expect(status?.file).toEqual({path: "recognition.journal", exists: true, included: false});
         expect(status?.closedThrough).toBe("2026-09-30");
-        expect(status?.counts).toEqual({due: 3, dueClosed: 1, needsSchedule: 1, invoices: 2});
+        expect(status?.counts).toEqual({due: 3, dueClosed: 1, needsSchedule: 1, invoices: 2, invoicesCheck: 1});
         expect(status?.reason).toEqual({kind: "declared", account: "liabilities:deferred-revenue", role: "deferred-revenue"});
         expect(status?.problem).toBeNull();
     });

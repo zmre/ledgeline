@@ -87,7 +87,7 @@ fn an_invoicing_app_walks_the_whole_flow() {
     ));
 
     // 2. An invoice with a deferred line, and its schedule, in one save.
-    let loaded = books.load().expect("loads");
+    let mut loaded = books.load().expect("loads");
     let usd = |cents: i128| money(loaded.journal(), "$", Dec::new(cents, 2));
     let invoice = DocumentSpec {
         direction: Direction::Revenue,
@@ -205,7 +205,7 @@ fn an_invoicing_app_walks_the_whole_flow() {
     ));
 
     // 5. A payment $30 short, linked with a fee.
-    let loaded = books.load().expect("loads");
+    let mut loaded = books.load().expect("loads");
     let payment = {
         let journal = loaded.journal();
         let mut txn = find(journal, "Opening balance").1;
@@ -226,7 +226,7 @@ fn an_invoicing_app_walks_the_whole_flow() {
             expected: None,
         })
         .expect("adds the payment");
-    let loaded = books.load().expect("loads");
+    let mut loaded = books.load().expect("loads");
     let journal = loaded.journal().clone();
     let link = loaded
         .link_settlement(
@@ -332,7 +332,7 @@ fn an_external_write_between_load_and_save_writes_nothing() {
         .expect("loads")
         .create_recognition_file()
         .expect("creates");
-    let loaded = books.load().expect("loads");
+    let mut loaded = books.load().expect("loads");
     let usd = money(loaded.journal(), "$", Dec::new(120_000, 2));
     loaded
         .write_document(
@@ -363,7 +363,7 @@ fn an_external_write_between_load_and_save_writes_nothing() {
         )
         .expect("writes");
 
-    let loaded = books.load().expect("loads");
+    let mut loaded = books.load().expect("loads");
     let external = format!(
         "{}\n; edited elsewhere\n",
         std::fs::read_to_string(&main).expect("reads")

@@ -32,7 +32,7 @@ export function accrualStatusWire(overrides: Record<string, unknown> = {}): Reco
         },
         file: {path: "recognition.journal", exists: true, included: false},
         closedThrough: "2026-09-30",
-        counts: {due: 3, dueClosed: 1, needsSchedule: 1, invoices: 2},
+        counts: {due: 3, dueClosed: 1, needsSchedule: 1, invoices: 2, invoicesCheck: 1},
         warnings: [],
         ...overrides,
     };

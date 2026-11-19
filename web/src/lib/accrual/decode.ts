@@ -141,6 +141,8 @@ export function decodeAccrualStatus(raw: unknown): AccrualStatus | null {
             dueClosed: whole(counts.dueClosed, "accrual.counts.dueClosed"),
             needsSchedule: whole(counts.needsSchedule, "accrual.counts.needsSchedule"),
             invoices: whole(counts.invoices, "accrual.counts.invoices"),
+            // Additive: 0 from an engine that counted every proposal as `invoices`.
+            invoicesCheck: counts.invoicesCheck === undefined ? 0 : whole(counts.invoicesCheck, "accrual.counts.invoicesCheck"),
         }),
         problem: optStr(body.problem, "accrual.problem"),
         warnings: strings(body.warnings, "accrual.warnings"),

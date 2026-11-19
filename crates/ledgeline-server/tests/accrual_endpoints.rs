@@ -124,7 +124,24 @@ async fn accrual_answers_the_gate_counts_and_file() {
     assert_eq!(body["counts"]["due"], 10, "{body}");
     assert_eq!(body["counts"]["dueClosed"], 1);
     assert_eq!(body["counts"]["needsSchedule"], 1);
-    assert_eq!(body["counts"]["invoices"], 2);
+    // Clear only (Wingtip, exact by number); Tailspin's $30 short is to check.
+    assert_eq!(body["counts"]["invoices"], 1, "{body}");
+    assert_eq!(body["counts"]["invoicesCheck"], 1);
+    // Under the user's own settings: no tolerance, no fee proposal.
+    let strict = get(
+        &state,
+        &format!("/api/accrual?today={TODAY}&settlementTolerance=0"),
+    )
+    .await;
+    assert_eq!(strict["counts"]["invoices"], 1);
+    assert_eq!(strict["counts"]["invoicesCheck"], 0, "{strict}");
+    // A lookback that ends before Wingtip's payment leaves it out.
+    let short = get(
+        &state,
+        &format!("/api/accrual?today={TODAY}&settlementLookback=30"),
+    )
+    .await;
+    assert_eq!(short["counts"]["invoices"], 0, "{short}");
     assert_eq!(
         body["roles"]["assets:prepaid"],
         json!({"role": "prepaid", "declared": true})
@@ -569,4 +586,266 @@ async fn for_a_source_transaction_lists_period_status_and_renewal() {
     assert_eq!(periods.len(), 12);
     assert_eq!(periods[0]["status"], "posted");
     assert_eq!(periods[11]["status"], "due");
+}
+
+// ---------------------------------------------------------------------------
+// The editor and the served snapshot agree after every accrual write
+// (Patrick, 2026-11-18: after one Link, every other Link stayed disabled —
+// the listed sides came back with no fingerprints).
+// ---------------------------------------------------------------------------
+
+/// Every settlement side `/api/settlements` lists carries a fingerprint: the
+/// bound editor and the served snapshot are the same journal.
+async fn assert_linkable(state: &AppState, after: &str) {
+    let body = get(state, &format!("/api/settlements?today={TODAY}")).await;
+    let sides = body["proposals"]
+        .as_array()
+        .expect("proposals")
+        .iter()
+        .flat_map(|p| [&p["invoice"], &p["payment"]])
+        .chain(body["open"]["invoices"].as_array().expect("open invoices"))
+        .chain(body["open"]["payments"].as_array().expect("open payments"))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(!sides.is_empty(), "after {after}: nothing listed: {body}");
+    for side in &sides {
+        assert!(
+            side["fingerprint"].as_str().is_some_and(|f| !f.is_empty()),
+            "after {after}: a side has no fingerprint: {side}"
+        );
+    }
+}
+
+/// A plain journal edit still lands: the bound editor isn't stale.
+async fn assert_editable(state: &AppState, after: &str) {
+    let body = get(state, "/api/journal/rows?limit=1").await;
+    let index = body["rows"][0]["index"].as_u64().expect("a row");
+    let (status, answer) = send(
+        state,
+        "PATCH",
+        &format!("/api/transactions/{index}"),
+        Some(json!({"description": format!("Edited after {after}")})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "after {after}: PATCH refused: {answer}"
+    );
+}
+
+fn side_of(proposal: &Value, which: &str) -> Value {
+    json!({
+        "index": proposal[which]["index"],
+        "posting": proposal[which]["posting"],
+        "fingerprint": proposal[which]["fingerprint"],
+    })
+}
+
+#[tokio::test]
+async fn every_link_stays_linkable_after_the_first() {
+    let dir = fixture_copy(false, false);
+    let (state, _scratch) = state_in(&dir);
+    assert_linkable(&state, "load").await;
+    let body = get(&state, &format!("/api/settlements?today={TODAY}")).await;
+    let clear = body["proposals"]
+        .as_array()
+        .expect("proposals")
+        .iter()
+        .find(|p| p["clear"] == true)
+        .expect("Wingtip is clear")
+        .clone();
+    let (status, linked) = send(
+        &state,
+        "POST",
+        "/api/settlements/link",
+        Some(json!({"invoice": side_of(&clear, "invoice"), "payment": side_of(&clear, "payment")})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{linked}");
+    assert_linkable(&state, "link").await;
+
+    // The second link, with the fingerprints the re-read served.
+    let body = get(&state, &format!("/api/settlements?today={TODAY}")).await;
+    let short = body["proposals"][0].clone();
+    let (status, second) = send(
+        &state,
+        "POST",
+        "/api/settlements/link",
+        Some(json!({
+            "invoice": side_of(&short, "invoice"),
+            "payment": side_of(&short, "payment"),
+            "feeAccount": "expenses:payment fees"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "the second link: {second}");
+    assert_editable(&state, "two links").await;
+}
+
+#[tokio::test]
+async fn every_accrual_write_leaves_the_editor_and_the_snapshot_in_step() {
+    // Post.
+    let dir = fixture_copy(false, false);
+    let (state, _scratch) = state_in(&dir);
+    let generation =
+        get(&state, &format!("/api/accrual?today={TODAY}")).await["generation"].clone();
+    let (status, posted) = send(
+        &state,
+        "POST",
+        "/api/recognition/post",
+        Some(json!({"generation": generation, "today": TODAY})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{posted}");
+    assert_linkable(&state, "post").await;
+    assert_editable(&state, "post").await;
+
+    // Closed-through.
+    let (status, closed) = send(
+        &state,
+        "POST",
+        "/api/books/closed-through",
+        Some(json!({"date": "2026-10-31"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{closed}");
+    assert_linkable(&state, "closed-through").await;
+    assert_editable(&state, "closed-through").await;
+
+    // Link all.
+    let generation =
+        get(&state, &format!("/api/accrual?today={TODAY}")).await["generation"].clone();
+    let (status, all) = send(
+        &state,
+        "POST",
+        "/api/settlements/link-all",
+        Some(json!({"generation": generation, "today": TODAY})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{all}");
+    assert_linkable(&state, "link-all").await;
+    assert_editable(&state, "link-all").await;
+
+    // Save (rules only: a new schedule over the external invoice's deferral).
+    let needs = get(&state, &format!("/api/recognition/needs?today={TODAY}")).await;
+    let item = needs["items"][0].clone();
+    let quantity = item["amount"]["quantity"].clone();
+    let text = {
+        let m: i128 = quantity["m"].as_str().expect("m").parse().expect("int");
+        let p = quantity["p"].as_u64().expect("p") as u32;
+        let scale = 10_i128.pow(p);
+        format!(
+            "{}{}.{:0width$}",
+            if m < 0 { "-" } else { "" },
+            m.abs() / scale,
+            m.abs() % scale,
+            width = p as usize
+        )
+    };
+    let (status, saved) = send(
+        &state,
+        "POST",
+        "/api/recognition/save",
+        Some(json!({
+            "schedules": [{
+                "id": "fc1102",
+                "lines": [{
+                    "sourceAccount": item["account"],
+                    "targetAccount": "revenue:subscriptions",
+                    "commodity": item["amount"]["commodity"],
+                    "quantity": text
+                }],
+                "start": "2026-11-02",
+                "term": {"months": 12},
+                "description": "Fourth Coffee Recognized"
+            }],
+            "today": TODAY
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_linkable(&state, "save").await;
+    assert_editable(&state, "save").await;
+}
+
+#[tokio::test]
+async fn creating_the_recognition_file_leaves_the_editor_in_step() {
+    let dir = fixture_copy(true, false);
+    let (state, _scratch) = state_in(&dir);
+    let (status, created) = send(&state, "POST", "/api/recognition/file", Some(json!({}))).await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_linkable(&state, "file").await;
+    assert_editable(&state, "file").await;
+}
+
+#[tokio::test]
+async fn a_refresh_after_our_own_write_keeps_the_editor_in_step() {
+    // The file watcher fires after every write, ours included, and the
+    // recognition file and `ledgeline.toml` are watched but are not sources.
+    let dir = fixture_copy(false, false);
+    let (state, _scratch) = state_in(&dir);
+    let generation =
+        get(&state, &format!("/api/accrual?today={TODAY}")).await["generation"].clone();
+    let (status, _) = send(
+        &state,
+        "POST",
+        "/api/recognition/post",
+        Some(json!({"generation": generation, "today": TODAY})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    // What the watcher now calls: our own write is already in the editor, so
+    // nothing is reparsed and the generation the client just read stands.
+    let before = get(&state, &format!("/api/accrual?today={TODAY}")).await["generation"].clone();
+    assert!(matches!(
+        state.refresh().expect("refresh"),
+        ledgeline::Refreshed::Unchanged
+    ));
+    let after = get(&state, &format!("/api/accrual?today={TODAY}")).await["generation"].clone();
+    assert_eq!(
+        before, after,
+        "a refresh after our own write must not republish"
+    );
+    // An outside edit still reloads.
+    let books = dir.join("books.journal");
+    let mut text = read(&dir, "books.journal");
+    text.push_str(
+        "\n2026-11-16 Outside edit\n    assets:bank:checking  $1.00\n    equity:opening\n",
+    );
+    std::fs::write(&books, text).expect("outside edit");
+    assert!(matches!(
+        state.refresh().expect("refresh"),
+        ledgeline::Refreshed::Reloaded
+    ));
+    state.reload().expect("reload");
+    assert_linkable(&state, "post + watcher").await;
+    assert_editable(&state, "post + watcher").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reload_racing_a_listing_never_strips_the_fingerprints() {
+    // What the desktop app does after every write: the file watcher sees the
+    // bytes change and reloads (a fresh editor and snapshot) while the client
+    // is already re-reading the list. The listing must read its snapshot and
+    // its fingerprints from one journal, whichever one that is.
+    let dir = fixture_copy(false, false);
+    let (state, _scratch) = state_in(&dir);
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reloader = {
+        let (state, stop) = (state.clone(), std::sync::Arc::clone(&stop));
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                state.reload().expect("reload");
+                // Let a listing take the lock between reloads, as the
+                // watcher's debounce does.
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        })
+    };
+    for round in 0..12 {
+        assert_linkable(&state, &format!("reload race, round {round}")).await;
+    }
+    stop.store(true, Ordering::Relaxed);
+    reloader.join().expect("reloader");
 }

@@ -191,6 +191,23 @@ impl Books {
     /// budget file, or (when configured) a file the journal includes.
     pub fn load(&self) -> Result<Loaded, OpsError> {
         let editor = JournalEditor::open_in(Arc::clone(&self.vault), self.main.clone())?;
+        self.load_with(editor)
+    }
+
+    /// [`load`](Self::load), over a copy of an editor the caller already has
+    /// open on this journal — a server's bound editor — instead of reading and
+    /// parsing the journal again. The copy is cheap and `editor` itself is
+    /// never changed: take the edited one back with [`Loaded::into_editor`]
+    /// once a write has landed. If `editor` is behind the files, the write is
+    /// refused with [`OpsError::ExternalChange`] and nothing is written.
+    ///
+    /// # Errors
+    /// As [`load`](Self::load), less reading the journal.
+    pub fn load_from(&self, editor: &JournalEditor) -> Result<Loaded, OpsError> {
+        self.load_with(editor.clone())
+    }
+
+    fn load_with(&self, editor: JournalEditor) -> Result<Loaded, OpsError> {
         let config = books_config::read(&*self.vault, &self.main)?;
         let path = recognition_path(&self.main, config.recognition_file.as_deref())?;
         let key = self.vault.key(&path);
@@ -336,6 +353,15 @@ impl std::fmt::Debug for Loaded {
 }
 
 impl Loaded {
+    /// The editor, with whatever this `Loaded` wrote: after a write it is in
+    /// step with the files, so a caller holding a long-lived editor can adopt
+    /// it rather than re-read the journal. A `Loaded` is spent after one write;
+    /// [`Books::load`] again for the next.
+    #[must_use]
+    pub fn into_editor(self) -> JournalEditor {
+        self.editor
+    }
+
     /// The journal.
     #[must_use]
     pub fn journal(&self) -> &Journal {
@@ -447,7 +473,7 @@ impl Loaded {
     /// # Errors
     /// [`OpsError::FileExists`]; [`OpsError::ExternalChange`] when something
     /// appeared at the path since the load.
-    pub fn create_recognition_file(self) -> Result<VaultPath, OpsError> {
+    pub fn create_recognition_file(&mut self) -> Result<VaultPath, OpsError> {
         if self.recognition_exists() {
             return Err(OpsError::FileExists(self.path.to_string()));
         }
@@ -455,7 +481,7 @@ impl Loaded {
         self.vault
             .create_new_shared(&self.path, text.as_bytes())
             .map_err(storage)?;
-        Ok(self.path)
+        Ok(self.path.clone())
     }
 
     fn new_file_text(&self) -> String {
@@ -696,7 +722,7 @@ impl Loaded {
     /// [`OpsError::Restate`], [`OpsError::Book`], [`OpsError::Edit`] —
     /// nothing written; [`OpsError::ExternalChange`] — nothing written;
     /// [`OpsError::RulesNotWritten`] — the journal was written.
-    pub fn save(mut self, request: &SaveRequest) -> Result<SavePlan, OpsError> {
+    pub fn save(&mut self, request: &SaveRequest) -> Result<SavePlan, OpsError> {
         let plan = self.plan_save(request)?;
         self.editor.save()?;
         let unchanged = !plan.creates_file && plan.recognition_text == self.book.text;
@@ -729,7 +755,7 @@ impl Loaded {
     /// [`OpsError::Document`] for a spec that won't build; otherwise as
     /// [`Loaded::save`].
     pub fn write_document(
-        self,
+        &mut self,
         document: &DocumentSpec,
         today: &str,
         create_file: bool,
@@ -753,7 +779,7 @@ impl Loaded {
     /// # Errors
     /// [`OpsError::FutureDate`] for a `through` after today;
     /// [`OpsError::Stale`]; [`OpsError::ExternalChange`] — nothing written.
-    pub fn post_due(mut self, request: &PostDue) -> Result<Posted, OpsError> {
+    pub fn post_due(&mut self, request: &PostDue) -> Result<Posted, OpsError> {
         self.check_expected(request.expected.as_ref())?;
         let today = request.today.as_str();
         if !is_iso_date(today) {
@@ -829,7 +855,7 @@ impl Loaded {
     /// [`OpsError::Settle`] when the two aren't a legal pair, the payment is
     /// over, or a fee account is missing; [`OpsError::ExternalChange`].
     pub fn link_settlement(
-        mut self,
+        &mut self,
         invoice: PostingRef,
         payment: PostingRef,
         fee_account: Option<&str>,

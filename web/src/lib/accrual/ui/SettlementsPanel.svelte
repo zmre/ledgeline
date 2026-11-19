@@ -26,6 +26,11 @@
     let confirmAll = $state(false);
     let linkedAll = $state<number | null>(null);
     let tolerance = $state(bpsToPercent(settings.settlementToleranceBps));
+    /** The card whose Link is in flight (write + re-read), by `proposalKey`. */
+    let linking = $state<string | null>(null);
+
+    /** Whether the engine served both sides' fingerprints; without them a link would be refused. */
+    const linkable = (proposal: SettleProposal): boolean => proposal.invoice.fingerprint !== null && proposal.payment.fingerprint !== null;
 
     const money = (amount: Money): string => fmt(amount.commodity, amount.quantity, styles);
     const feeOf = (proposal: SettleProposal): string => fees[proposalKey(proposal)] ?? proposal.feeAccount ?? "";
@@ -44,8 +49,13 @@
             failure = "Name the account the fee goes to.";
             return;
         }
-        const outcome = await accrual.link(proposal, fee);
-        if (!outcome.ok) failure = outcome.failure.message;
+        linking = proposalKey(proposal);
+        try {
+            const outcome = await accrual.link(proposal, fee);
+            if (!outcome.ok) failure = outcome.failure.message;
+        } finally {
+            linking = null;
+        }
     }
 
     async function linkAll(): Promise<void> {
@@ -189,7 +199,11 @@
         </datalist>
         {#each view.proposals as proposal (proposalKey(proposal))}
             {@const key = proposalKey(proposal)}
-            <article class="flex flex-col gap-3 rounded-box border border-base-content/10 bg-base-100 p-4 shadow-sm" data-testid="settlement-card">
+            <article
+                class={["flex flex-col gap-3 rounded-box border border-base-content/10 bg-base-100 p-4 shadow-sm", busy && linking !== key && "opacity-60"]}
+                aria-busy={linking === key}
+                data-testid="settlement-card"
+            >
                 <header class="flex flex-wrap items-center gap-2 text-sm">
                     <span class="font-semibold">{proposal.invoice.party?.name ?? proposal.payment.party?.name ?? proposal.invoice.account}</span>
                     {#if proposal.invoice.invoice !== null}<span class="badge badge-ghost badge-sm">INV {proposal.invoice.invoice}</span>{/if}
@@ -222,15 +236,32 @@
                             />
                         </label>
                     {/if}
-                    <button
-                        type="button"
-                        class="btn ml-auto btn-primary btn-sm"
-                        disabled={busy || proposal.fit.kind === "over" || proposal.invoice.fingerprint === null || proposal.payment.fingerprint === null}
-                        onclick={() => void link(proposal)}
-                        data-testid="settlement-link"
-                    >
-                        <ReviewIcon name="link" class="h-3.5 w-3.5" /> Link
-                    </button>
+                    <!-- Never a silently grey button: whatever holds Link back is said beside it. -->
+                    {#if linking === key}
+                        <span class="ml-auto flex items-center gap-2 text-sm" role="status" data-testid="settlement-linking">
+                            <span class="loading loading-sm loading-spinner"></span> Linking…
+                        </span>
+                    {:else}
+                        {#if busy}
+                            <span class="ml-auto text-xs text-base-content/60" data-testid="settlement-wait">One moment: updating the list…</span>
+                        {:else if !linkable(proposal) && proposal.fit.kind !== "over"}
+                            <span class="ml-auto flex items-center gap-2 text-xs text-warning" role="status" data-testid="settlement-stale">
+                                Can't link right now: the journal needs a refresh.
+                                <button type="button" class="btn btn-ghost btn-xs" onclick={() => void accrual.reload()} data-testid="settlement-refresh"
+                                    >Refresh</button
+                                >
+                            </span>
+                        {/if}
+                        <button
+                            type="button"
+                            class={["btn btn-primary btn-sm", !busy && (linkable(proposal) || proposal.fit.kind === "over") && "ml-auto"]}
+                            disabled={busy || proposal.fit.kind === "over" || !linkable(proposal)}
+                            onclick={() => void link(proposal)}
+                            data-testid="settlement-link"
+                        >
+                            <ReviewIcon name="link" class="h-3.5 w-3.5" /> Link
+                        </button>
+                    {/if}
                 </div>
             </article>
         {/each}

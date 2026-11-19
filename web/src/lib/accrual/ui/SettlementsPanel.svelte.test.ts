@@ -106,6 +106,47 @@ describe("COMPONENT SettlementsPanel", () => {
         await fireEvent.change(input);
     });
 
+    it("says why Link is held back when the engine served no fingerprints, and refreshes on asking", async () => {
+        // Patrick, 2026-11-18: after one Link every other Link stayed grey with no
+        // word why. A side with no fingerprint can't be linked; the card says so.
+        const stale = proposalWire(sideWire(1, {fingerprint: undefined}), sideWire(2));
+        const {seen, state} = await show([stale]);
+        const card = screen.getByTestId("settlement-card");
+        expect((within(card).getByTestId("settlement-link") as HTMLButtonElement).disabled).toBe(true);
+        expect(within(card).getByTestId("settlement-stale").textContent).toContain("Can't link right now: the journal needs a refresh.");
+        const reads = seen.filter((r) => r.url.pathname.endsWith("/api/settlements")).length;
+        state.settlements = settlementsWire([proposalWire(sideWire(1), sideWire(2))]);
+        await fireEvent.click(within(card).getByTestId("settlement-refresh"));
+        await vi.waitFor(() => expect(seen.filter((r) => r.url.pathname.endsWith("/api/settlements")).length).toBe(reads + 1));
+        await vi.waitFor(() => expect(screen.queryByTestId("settlement-stale")).toBeNull());
+        expect((screen.getByTestId("settlement-link") as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it("shows Linking… on the clicked card and asks the others to wait, then frees them all", async () => {
+        const other = proposalWire(sideWire(7), sideWire(8));
+        const {state} = await show([EXACT, other]);
+        // Hold the write open so the in-between state can be seen.
+        let release: (() => void) | undefined;
+        const held = new Promise<void>((resolve) => (release = resolve));
+        const realFetch = globalThis.fetch;
+        vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+            if (String(input).includes("/api/settlements/link")) await held;
+            return realFetch(input, init);
+        });
+        const [first, second] = screen.getAllByTestId("settlement-card") as HTMLElement[];
+        await fireEvent.click(within(first as HTMLElement).getByTestId("settlement-link"));
+        await vi.waitFor(() => expect(within(first as HTMLElement).getByTestId("settlement-linking").textContent).toContain("Linking…"));
+        expect(within(second as HTMLElement).getByTestId("settlement-wait").textContent).toContain("One moment");
+        expect((within(second as HTMLElement).getByTestId("settlement-link") as HTMLButtonElement).disabled).toBe(true);
+        // The engine links it; the re-read lists only the other pair, still linkable.
+        state.settlements = settlementsWire([other]);
+        release?.();
+        await vi.waitFor(() => expect(screen.getAllByTestId("settlement-card")).toHaveLength(1));
+        await vi.waitFor(() => expect((screen.getByTestId("settlement-link") as HTMLButtonElement).disabled).toBe(false));
+        expect(screen.queryByTestId("settlement-wait")).toBeNull();
+        expect(screen.queryByTestId("settlement-linking")).toBeNull();
+    });
+
     it("converts percents and basis points", () => {
         expect(bpsToPercent(300)).toBe("3.0");
         expect(percentToBps("2.5%")).toBe(250);

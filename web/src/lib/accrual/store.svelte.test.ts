@@ -160,3 +160,52 @@ describe("COMPONENT accrual store: settlements and books", () => {
         expect(await accrual.createFile()).toMatchObject({ok: true, value: {path: "recognition.journal"}});
     });
 });
+
+describe("COMPONENT accrual store: the badge, the first tab, and stale lists", () => {
+    it("badges due + needs a schedule + clear matches, and breaks the total down", async () => {
+        const {seen} = await serveAccrual();
+        await accrual.sync(FAKE_ENGINE, journal.generation ?? "");
+        // accrualStatusWire: 3 due, 1 needs a schedule, 2 clear (1 to check).
+        expect(accrual.badgeCount).toBe(6);
+        expect(accrual.badgeBreakdown).toBe("3 due · 1 needs a schedule · 2 ready to link");
+        // The counts are the user's: the matcher's lookback and tolerance ride along.
+        const read = seen.filter((r) => r.url.pathname.endsWith("/api/accrual")).at(-1);
+        expect(read?.url.searchParams.get("settlementLookback")).toBe(String(settings.settlementLookbackDays));
+        expect(read?.url.searchParams.get("settlementTolerance")).toBe(String(settings.settlementToleranceBps));
+    });
+
+    it("opens on the first tab with something in it: Due, then Needs a schedule, then Invoices", async () => {
+        const {state} = await serveAccrual();
+        const counts = (due: number, needsSchedule: number, invoices: number) => ({due, dueClosed: 0, needsSchedule, invoices, invoicesCheck: 0});
+        const cases: [ReturnType<typeof counts>, string][] = [
+            [counts(2, 5, 5), "due"],
+            [counts(0, 11, 6), "needs"],
+            [counts(0, 0, 6), "invoices"],
+            [counts(0, 0, 0), "due"],
+        ];
+        for (const [wire, tab] of cases) {
+            resetAccrual();
+            state.status = {...state.status, counts: wire};
+            state.generation += 1;
+            await accrual.sync(FAKE_ENGINE, `g${state.generation}`);
+            accrual.openOverlay();
+            expect(accrual.tab).toBe(tab);
+            accrual.close();
+        }
+    });
+
+    it("re-reads the showing list when the journal moves on, so its fingerprints are the editor's again", async () => {
+        const {seen, state} = await serveAccrual({settlements: settlementsWire([proposalWire(sideWire(1, {fingerprint: undefined}), sideWire(2))])});
+        await accrual.sync(FAKE_ENGINE, journal.generation ?? "");
+        accrual.setPageOpen(true);
+        await vi.waitFor(() => expect(accrual.settlements?.proposals[0]?.invoice.fingerprint).toBeNull());
+        const reads = seen.filter((r) => r.url.pathname.endsWith("/api/settlements")).length;
+        // The watcher (or anyone) published a new generation.
+        state.generation += 1;
+        state.settlements = settlementsWire([proposalWire(sideWire(1), sideWire(2))]);
+        await accrual.sync(FAKE_ENGINE, `g${state.generation}`);
+        await vi.waitFor(() => expect(seen.filter((r) => r.url.pathname.endsWith("/api/settlements")).length).toBe(reads + 1));
+        await vi.waitFor(() => expect(accrual.settlements?.proposals[0]?.invoice.fingerprint).toBe("fp-1"));
+        accrual.setPageOpen(false);
+    });
+});

@@ -150,11 +150,15 @@ describe("COMPONENT RecognitionOverlay tabs", () => {
 });
 
 describe("COMPONENT RecognitionButton", () => {
-    it("shows the due count and opens the overlay, and renders nothing with the helpers off", async () => {
+    it("badges everything waiting, breaks it down in the tooltip, opens the overlay, and renders nothing with the helpers off", async () => {
         await serveAccrual();
         await accrual.sync(FAKE_ENGINE, journal.generation ?? "");
         const {unmount} = render(RecognitionButton);
-        expect(screen.getByTestId("recognition-count").textContent).toBe("3");
+        // 3 due + 1 needs a schedule + 2 ready to link.
+        expect(screen.getByTestId("recognition-count").textContent).toBe("6");
+        expect(screen.getByTestId("recognition-toolbar").querySelector("[data-tip]")?.getAttribute("data-tip")).toContain(
+            "3 due · 1 needs a schedule · 2 ready to link"
+        );
         expect(screen.getByTestId("recognition-reason").textContent).toContain("liabilities:deferred-revenue is declared a deferred revenue");
         await fireEvent.click(screen.getByTestId("recognition-button"));
         expect(accrual.open).toBe(true);

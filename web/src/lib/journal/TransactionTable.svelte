@@ -529,7 +529,7 @@
         if (accrual.enabled)
             actions.push({
                 id: "recognition",
-                label: accrual.dueCount > 0 ? `Recognition (${accrual.dueCount})` : "Recognition",
+                label: accrual.badgeCount > 0 ? `Recognition (${accrual.badgeCount})` : "Recognition",
                 icon: "calendar",
                 run: launchRecognition,
             });
@@ -937,8 +937,9 @@
                                             <button type="button" class="justify-between" onclick={launchRecognition} data-testid="recognition-menu-button">
                                                 Recognition
                                                 <span
-                                                    class={["badge badge-sm tabular-nums", accrual.dueCount > 0 ? "badge-info" : "badge-ghost"]}
-                                                    data-testid="recognition-menu-count">{accrual.dueCount}</span
+                                                    class={["badge badge-sm tabular-nums", accrual.badgeCount > 0 ? "badge-info" : "badge-ghost"]}
+                                                    title={accrual.badgeBreakdown}
+                                                    data-testid="recognition-menu-count">{accrual.badgeCount}</span
                                                 >
                                             </button>
                                         </li>

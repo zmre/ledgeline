@@ -395,6 +395,7 @@ fn storage_error(error: VaultError) -> EditError {
 /// One source file's editable buffer: its rope, the load-time [`Revision`] used
 /// to detect external changes, and whether the rope has been edited since load
 /// (so [`JournalEditor::save`] writes only the files that actually changed).
+#[derive(Clone)]
 struct FileBuf {
     /// Where to read and write it in the editor's vault. Resolved ONCE, at
     /// load: a symlinked journal is edited through its real path, and nothing
@@ -429,6 +430,12 @@ impl FileBuf {
 /// All storage goes through the editor's [`Vault`]: on the desktop a
 /// [`LocalVault`] rooted at the journal's real directory, in tests (and future
 /// hosts) anything else.
+///
+/// `Clone` is cheap — the ropes and the parsed journal are shared until one
+/// side edits — so a caller can run a multi-step operation on a copy and keep
+/// the original untouched unless the copy's save lands (plan 45's `ops` on a
+/// server's bound editor).
+#[derive(Clone)]
 pub struct JournalEditor {
     /// Where every file is read from and written to.
     vault: Arc<dyn Vault>,

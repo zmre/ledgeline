@@ -89,16 +89,33 @@ function message(cause: unknown): string {
 }
 
 function keyOf(serverUrl: string, generation: string): string {
-    return `${serverUrl}|${generation}|${localToday()}|${needsLookback}`;
+    return `${serverUrl}|${generation}|${localToday()}|${needsLookback}|${settings.settlementLookbackDays}|${settings.settlementToleranceBps}`;
+}
+
+/** The generation the showing lists were read at, or null. */
+function viewsGeneration(): string | null {
+    return settlements?.generation ?? due?.generation ?? needs?.generation ?? null;
 }
 
 async function loadStatus(serverUrl: string, key: string): Promise<void> {
     try {
-        const next = decodeAccrualStatus(await api(serverUrl).accrualStatus({today: localToday(), lookback: needsLookback}));
+        const next = decodeAccrualStatus(
+            await api(serverUrl).accrualStatus({
+                today: localToday(),
+                lookback: needsLookback,
+                settlementLookback: settings.settlementLookbackDays,
+                settlementTolerance: settings.settlementToleranceBps,
+            })
+        );
         if (inflight?.key !== key) return;
         status = next;
         statusKey = key;
         statusError = null;
+        // The journal moved on (an outside edit, the watcher's reload after a
+        // write, auto-recognize): whatever list is showing was read at an older
+        // generation, and its fingerprints may no longer be the editor's. Read
+        // it again rather than leave every Link waiting on a stale list.
+        if ((open || pageOpen) && next !== null && viewsGeneration() !== null && viewsGeneration() !== next.generation) void loadViews();
     } catch (cause) {
         if (inflight?.key !== key) return;
         // Keep what we had: the badge is an aid, and a blip must not hide the helpers.
@@ -182,9 +199,32 @@ export const accrual = {
     roleOf(account: string): AccrualRole | null {
         return status?.roles.get(account)?.role ?? null;
     },
-    /** The toolbar badge: due entries (the closed ones are listed apart and never auto-posted). */
+    /** Due entries (the closed ones are listed apart and never auto-posted). */
     get dueCount(): number {
         return status?.counts.due ?? 0;
+    },
+    /** The toolbar badge: due + needs a schedule + clear invoice matches. */
+    get badgeCount(): number {
+        const counts = status?.counts;
+        return counts === undefined ? 0 : counts.due + counts.needsSchedule + counts.invoices;
+    },
+    /** The badge's breakdown: "0 due · 11 need a schedule · 6 ready to link". */
+    get badgeBreakdown(): string {
+        const counts = status?.counts;
+        if (counts === undefined) return "";
+        return [
+            `${counts.due} due`,
+            `${counts.needsSchedule} ${counts.needsSchedule === 1 ? "needs" : "need"} a schedule`,
+            `${counts.invoices} ready to link`,
+        ].join(" · ");
+    },
+    /** The first tab with something in it — Due, then Needs a schedule, then Invoices — else Due. */
+    get firstTab(): RecognitionTab {
+        const counts = status?.counts;
+        if (counts === undefined || counts.due > 0 || counts.dueClosed > 0) return "due";
+        if (counts.needsSchedule > 0) return "needs";
+        if (counts.invoices > 0) return "invoices";
+        return "due";
     },
 
     /** Read the status unless it is already for this (server, generation, day, lookback). */
@@ -219,9 +259,9 @@ export const accrual = {
         tab = next;
     },
     /** Open the overlay on `which` tab and read its lists. */
-    openOverlay(which: RecognitionTab = "due"): void {
+    openOverlay(which: RecognitionTab | null = null): void {
         if (status === null) return;
-        tab = which;
+        tab = which ?? accrual.firstTab;
         open = true;
         notice = null;
         void loadViews();

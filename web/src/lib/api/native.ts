@@ -2026,7 +2026,7 @@ export class LedgelineApi {
     // -----------------------------------------------------------------------
 
     /** `GET /api/accrual`: the gate, the roles, the recognition file and the badge counts. */
-    accrualStatus(query: {today: string; lookback?: number}): Promise<unknown> {
+    accrualStatus(query: {today: string; lookback?: number; settlementLookback?: number; settlementTolerance?: number}): Promise<unknown> {
         return this.getJson(`/api/accrual${queryString(query)}`);
     }
 

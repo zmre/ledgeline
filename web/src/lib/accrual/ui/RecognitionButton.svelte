@@ -1,6 +1,7 @@
 <script lang="ts">
     // The Journal toolbar's Recognition button (plan 45 D6, Q8): beside Find
-    // Matches, a badge with the due count, and a ▾ holding the lookback for
+    // Matches, a badge with everything waiting (due + needs a schedule + clear
+    // invoice matches, broken down in the tooltip), and a ▾ holding the lookback for
     // "Needs a schedule" and why the helpers are on. Nothing renders while the
     // helpers are off for the ledger (`{enabled: false}`, D-gate).
     import {hint} from "#lib/keys/hint.svelte.js";
@@ -12,7 +13,7 @@
     import {accrual} from "../store.svelte";
 
     interface Props {
-        /** What the button does; by default it opens the overlay on Due. */
+        /** What the button does; by default it opens the overlay on its first non-empty tab. */
         onOpen?: () => void;
         /** Disabled (a read-only engine). */
         disabled?: boolean;
@@ -22,15 +23,9 @@
 
     let menuOpen = $state(false);
     const status = $derived(accrual.status);
-    const count = $derived(accrual.dueCount);
+    const count = $derived(accrual.badgeCount);
     const closedCount = $derived(status?.counts.dueClosed ?? 0);
-    const tip = $derived(
-        count > 0
-            ? hint(`Recognition: ${count} due`, "a")
-            : closedCount > 0
-              ? hint(`Recognition: ${closedCount} due in closed periods`, "a")
-              : hint("Recognition", "a")
-    );
+    const tip = $derived(hint(`Recognition: ${accrual.badgeBreakdown}${closedCount > 0 ? ` · ${closedCount} due in closed periods` : ""}`, "a"));
 
     function open(): void {
         if (disabled) return;
