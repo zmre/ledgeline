@@ -930,6 +930,12 @@
       packages =
         {
           inherit ledgeline clippy fmt tests;
+          # The crane dependency layer, exposed so CI can push exactly this
+          # path to Cachix (`nix build .#cargoArtifacts`) instead of letting
+          # the cachix daemon upload everything a job builds. It is the
+          # expensive, rarely-changing part of every cold build — see
+          # docs/development/building.md → "What CI pushes".
+          inherit cargoArtifacts;
           default = ledgeline;
         }
         # Linux-only: the wrapped desktop install, plus the SPA-in-Nix pieces it

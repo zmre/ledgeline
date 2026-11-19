@@ -42,6 +42,71 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
 
+      # PULL-ONLY, here and in every other `cachix-action` block in this repo.
+      # Without `skipPush` the action installs a post-build hook that uploads
+      # EVERY path the job builds — test runs, clippy output, per-commit
+      # binaries, source trees — and on the 5 GB free plan (LRU, shared with
+      # mbr) that churn is what kept evicting the one thing worth caching: the
+      # crane dependency layer. What IS pushed is now explicit and named:
+      #   * `.#cargoArtifacts` (the deps layer), once per platform, by `tests`
+      #     (Linux) and `macos`, on pushes AND PRs;
+      #   * the user-facing release artifacts, by `build` (Linux) and `macos`,
+      #     on pushes to main only, and pinned.
+      # See docs/development/building.md → "What CI pushes".
+      - name: Setup Cachix
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: zmre
+          extraPullNames: nix-community
+          skipPush: true
+
+      - name: cargo fmt --check
+        run: nix build -L .#fmt
+
+  # Clippy with -D warnings (reuses the cached dep layer). Linux here; the
+  # macOS leg runs inside the single `macos` job below.
+  clippy:
+    name: Clippy (ubuntu-latest)
+    needs: format-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
+
+      # Pull-only (see format-check).
+      - name: Setup Cachix
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: zmre
+          extraPullNames: nix-community
+          skipPush: true
+
+      - name: Clippy
+        run: nix build -L .#clippy
+
+  # Full workspace test suite (cargo test). Linux here; the macOS leg runs
+  # inside the single `macos` job below.
+  #
+  # Also the job that pushes the LINUX deps layer to Cachix (`clippy`, `build`
+  # and `e2e` all reuse the same `cargoArtifacts`, so one of them is enough).
+  tests:
+    name: Tests (ubuntu-latest)
+    needs: format-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
+
+      # Pull-only daemon (see format-check); the deps-layer push below is
+      # explicit.
       - name: Setup Cachix
         uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
@@ -50,83 +115,48 @@ jobs:
           # skipped, but pulls still work. Never fails the job when empty.
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           extraPullNames: nix-community
-          # Don't burn cache quota on source trees (see docs/development/building.md).
-          pushFilter: '-(source|vendor)$'
-
-      - name: cargo fmt --check
-        run: nix build -L .#fmt
-
-  # Clippy with -D warnings, on both platforms (reuses the cached dep layer).
-  clippy:
-    name: Clippy (${{ matrix.os }})
-    needs: format-check
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
-
-      - name: Setup Cachix
-        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
-        with:
-          name: zmre
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          extraPullNames: nix-community
-          # Don't burn cache quota on source trees (see docs/development/building.md).
-          pushFilter: '-(source|vendor)$'
-
-      - name: Clippy
-        run: nix build -L .#clippy
-
-  # Full workspace test suite (cargo test) on both platforms.
-  tests:
-    name: Tests (${{ matrix.os }})
-    needs: format-check
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
-
-      - name: Setup Cachix
-        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
-        with:
-          name: zmre
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          extraPullNames: nix-community
-          # Don't burn cache quota on source trees (see docs/development/building.md).
-          pushFilter: '-(source|vendor)$'
+          skipPush: true
 
       - name: Tests
         run: nix build -L .#tests
 
-  # Build the single binary — proves the GUI deps resolve (webkitgtk on Linux,
-  # system WebKit on macOS). `.#ledgeline` embeds a placeholder SPA (see
-  # docs/development/building.md); the distributable steps below embed the real one.
-  # On macOS this ALSO builds the real distributable (`.#macDist`), because that
-  # — not `.#ledgeline` — is what a Mac user's `nix build` resolves to.
+      # The crane dependency layer is the multi-GB, 45+ minute part of every
+      # cold build, and the ONLY thing whose cache hit changes how long CI
+      # takes. Pushed on PRs too, deliberately: a Cargo.lock bump lands on a PR
+      # first, and that PR's runs are exactly the cold ones.
+      #
+      # `!cancelled()`, not the default `success()`: the layer is built before
+      # a single test runs, so a red test run still produced it and the next
+      # push should not have to rebuild it. `nix path-info` checks the LOCAL
+      # store only, so if the layer itself failed to build this skips rather
+      # than kicking off a second attempt at the very build that just failed.
+      #
+      # Not pinned (see the pin step in `build`): LRU evicting a stale deps
+      # layer is the cache doing its job.
+      - name: Push deps layer to Cachix
+        if: ${{ !cancelled() }}
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          if [ -z "${CACHIX_AUTH_TOKEN:-}" ]; then
+            echo "No CACHIX_AUTH_TOKEN (fork or unset) — skipping cache push."
+            exit 0
+          fi
+          deps=$(nix eval --raw .#cargoArtifacts.outPath)
+          if ! nix path-info "$deps" >/dev/null 2>&1; then
+            echo "Deps layer $deps was not built in this job — nothing to push."
+            exit 0
+          fi
+          cachix push zmre "$deps"
+
+  # Build the single binary — proves the GUI deps resolve (webkitgtk on Linux).
+  # `.#ledgeline` embeds a placeholder SPA (see docs/development/building.md);
+  # the distributable step below embeds the real one. Linux only: the macOS
+  # equivalent (system WebKit, `.#macDist`) is part of the `macos` job.
   build:
-    name: Build (${{ matrix.os }})
+    name: Build (ubuntu-latest)
     needs: format-check
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -135,38 +165,27 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
 
+      # Pull-only daemon (see format-check); the release-artifact push below is
+      # explicit.
       - name: Setup Cachix
         uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: zmre
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           extraPullNames: nix-community
-          # Don't burn cache quota on source trees (see docs/development/building.md).
-          pushFilter: '-(source|vendor)$'
+          skipPush: true
 
       - name: Build ledgeline
         run: nix build -L .#ledgeline
 
-      # `.#ledgeline` is NOT what a Mac user ends up with. On darwin
-      # `packages.default` is `macDist` (Ledgeline.app + a `bin/ledgeline`
-      # symlink into it, with the REAL SvelteKit SPA embedded), reached via
-      # spaNodeModules → spaBuild → ledgelineWithSpa → macApp → macDist. None of
-      # that chain is reachable from `.#ledgeline`, so without this step
-      # `nix build github:zmre/ledgeline` / `nix profile install` on a Mac
-      # recompiles all of it even with our cache configured. `--no-link` leaves
-      # `result` pointing at `.#ledgeline`.
-      - name: Build Ledgeline.app (macOS distributable)
-        if: runner.os == 'macOS'
-        run: nix build -L --no-link .#macDist
-
-      # The Linux mirror of the step above, and for the same reason: `.#ledgeline`
-      # is NOT what a Linux user ends up with either. On Linux `packages.default`
-      # AND `apps.default` are both `linuxDist` — the real-SPA binary wrapped
-      # with the Mesa/EGL vendor paths, plus the .desktop entry, the MIME type
-      # and the hicolor icons. So `nix build github:zmre/ledgeline`,
-      # `nix profile install` and `nix run` all resolve here, and NONE of it was
-      # built by CI until now: naming `.#ledgeline` explicitly routes around
-      # `default`.
+      # `.#ledgeline` is NOT what a Linux user ends up with. On Linux
+      # `packages.default` AND `apps.default` are both `linuxDist` — the
+      # real-SPA binary wrapped with the Mesa/EGL vendor paths, plus the
+      # .desktop entry, the MIME type and the hicolor icons. So
+      # `nix build github:zmre/ledgeline`, `nix profile install` and `nix run`
+      # all resolve here, and NONE of it was built by CI until this step
+      # existed: naming `.#ledgeline` explicitly routes around `default`. (The
+      # macOS mirror is `.#macDist` in the `macos` job.)
       #
       # That gap is not theoretical. `spaNodeModules`' outputHash is per-system
       # and can only be generated ON the system it describes, so the x86_64-linux
@@ -183,7 +202,6 @@ jobs:
       # build, and pkgs.mesa's ~1 GiB closure. All cached after the first green
       # run — see the Cachix pin below, which is what keeps it that way.
       - name: Build linuxDist (Linux distributable)
-        if: runner.os == 'Linux'
         run: nix build -L --no-link .#linuxDist
 
       # The shell's CSP against the REAL SvelteKit shell. `.#tests` embeds the
@@ -197,9 +215,14 @@ jobs:
       - name: CSP vs. the real SPA shell
         run: nix build -L --no-link .#spaShellCsp
 
-      # Push the freshly built store paths to our Cachix cache. Only on pushes
+      # Push the user-facing store paths to our Cachix cache. Only on pushes
       # (not PRs); the in-script guard skips cleanly when the token is absent
       # (forks / before the user sets the secret), so the job never fails.
+      #
+      # This is deliberate and separate from the deps-layer push in `tests`:
+      # it is what lets `nix build github:zmre/ledgeline` substitute instead of
+      # compiling. With the action's daemon now pull-only, THIS step is the
+      # only thing that uploads these paths, so do not drop it.
       - name: Push to Cachix
         if: github.event_name == 'push'
         env:
@@ -209,27 +232,12 @@ jobs:
             echo "No CACHIX_AUTH_TOKEN (fork or unset) — skipping cache push."
             exit 0
           fi
-          # The darwin-only attrs are guarded by `lib.optionalAttrs
-          # stdenv.isDarwin` in flake.nix, so only ask for them there.
-          # `ledgelineWithSpa` and `bundledHledger` are listed SEPARATELY from
-          # `macDist` for the SAME reason: macApp `cp`s both binaries into the
-          # bundle rather than symlinking them, so neither store path is in
-          # macDist's closure and neither would ride along. `ledgelineWithSpa`
-          # is additionally what `nix run` resolves to on darwin;
-          # `bundledHledger` is a 53 MiB download from github.com that we would
-          # otherwise re-fetch on every build that cannot substitute macApp.
-          #
-          # On Linux `linuxDist` is `packages.default`, so it is the path a user
+          # `linuxDist` is `packages.default`, so it is the path a user
           # actually substitutes; `ledgelineWithSpa` is listed alongside it
           # because linuxDist WRAPS that binary (makeBinaryWrapper references it
           # by store path, so it IS in the closure — but naming it explicitly
           # keeps the pin below honest and costs nothing).
-          attrs=(.#ledgeline)
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            attrs+=(.#macDist .#ledgelineWithSpa .#bundledHledger)
-          else
-            attrs+=(.#linuxDist .#ledgelineWithSpa)
-          fi
+          attrs=(.#ledgeline .#linuxDist .#ledgelineWithSpa)
           nix build --json "${attrs[@]}" | jq -r '.[].outputs | to_entries[].value' | cachix push zmre
 
       # PIN the consumer-facing outputs. The `zmre` cache is on the 5 GB free
@@ -246,6 +254,7 @@ jobs:
       #
       # --keep-revisions 2 keeps the previous commit's paths alive alongside the
       # current ones, so someone who evaluated a moment ago still gets a hit.
+      # The darwin twin of this step is in the `macos` job.
       - name: Pin release artifacts (exempt from Cachix GC)
         if: github.event_name == 'push'
         env:
@@ -262,22 +271,198 @@ jobs:
           # for this system"; Cachix keeps --keep-revisions of each. They are
           # prefixed with the project name because this cache is shared with
           # mbr-markdown-browser.
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            cachix pin zmre "ledgeline-macdist-$sys" \
-              "$(nix build --no-link --print-out-paths .#macDist)" --keep-revisions 2
-            cachix pin zmre "ledgeline-cli-$sys" \
-              "$(nix build --no-link --print-out-paths .#ledgelineWithSpa)" --keep-revisions 2
-          else
-            # `linuxDist`, not `.#ledgeline`: pin what `packages.default`
-            # resolves to, which is what an unpinned `nix profile install`
-            # fetches. Pinning the placeholder-SPA build instead would keep the
-            # one artifact no user ever asks for alive while the real one is
-            # evicted.
-            cachix pin zmre "ledgeline-linuxdist-$sys" \
-              "$(nix build --no-link --print-out-paths .#linuxDist)" --keep-revisions 2
-            cachix pin zmre "ledgeline-cli-$sys" \
-              "$(nix build --no-link --print-out-paths .#ledgelineWithSpa)" --keep-revisions 2
+          #
+          # `linuxDist`, not `.#ledgeline`: pin what `packages.default`
+          # resolves to, which is what an unpinned `nix profile install`
+          # fetches. Pinning the placeholder-SPA build instead would keep the
+          # one artifact no user ever asks for alive while the real one is
+          # evicted.
+          cachix pin zmre "ledgeline-linuxdist-$sys" \
+            "$(nix build --no-link --print-out-paths .#linuxDist)" --keep-revisions 2
+          cachix pin zmre "ledgeline-cli-$sys" \
+            "$(nix build --no-link --print-out-paths .#ledgelineWithSpa)" --keep-revisions 2
+
+  # EVERYTHING macOS, in ONE job: what used to be the macOS legs of `clippy`,
+  # `tests` and `build`.
+  #
+  # Why one job: GitHub's free macOS runners are slow (arm64 = an M1 with 3
+  # CPUs and 7 GB), and three separate macOS VMs each had to fetch — or, when
+  # Cachix had evicted it, REBUILD — the same crane dependency layer, which
+  # cost 45–107 minutes apiece. In one `nix build` invocation the deps layer
+  # is built or substituted exactly once and Nix schedules the five
+  # downstream derivations in parallel on top of it. It also means one runner
+  # to acquire instead of three; macOS runs were sometimes cancelled before
+  # any step ran because GitHub could not find one (ci-rerun.yml retries
+  # those).
+  #
+  # `macos-15`, not `macos-latest`: pinned so a GitHub image bump (new Xcode
+  # SDK, new default arch) is a deliberate edit here rather than a surprise
+  # red run — and so the cache-nix-action key below, which includes the
+  # runner's OS/arch, is not silently invalidated by a relabel.
+  macos:
+    name: macOS (tests + clippy + build)
+    needs: format-check
+    runs-on: macos-15
+    # `actions: write` is for cache-nix-action's PURGE of superseded store
+    # caches (the GitHub API's cache-delete endpoint requires it). Job-level so
+    # every other job keeps the workflow's read-only token.
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
+
+      # SECOND-TIER cache: a whole /nix/store snapshot in the GitHub Actions
+      # cache, restored before anything is built. Cachix stays the first tier
+      # (shared, path-granular, what users substitute from), but its 5 GB free
+      # plan is LRU and shared with mbr, so the multi-GB darwin deps layer is
+      # routinely gone by the next run — and a cold deps build on this runner
+      # is most of an hour. This snapshot lives in the repo's own 10 GB Actions
+      # cache, which nothing else competes for.
+      #
+      # Must come AFTER Nix is installed (it merges the restored store DB into
+      # the daemon's). The key changes only when the dependency graph can:
+      # flake.lock (toolchain, nixpkgs, crane) or Cargo.lock. On a miss,
+      # `restore-prefixes-first-match` falls back to the newest snapshot for
+      # this OS/arch, which still holds most of what is needed.
+      #
+      # Only pushes to main SAVE. Actions caches are ref-scoped, but a PR can
+      # restore its base branch's entries, so every PR gets main's snapshot
+      # without writing ~GBs of its own (which would blow the 10 GB budget and
+      # LRU-evict main's). PURGE is gated the same way: after main saves a new
+      # key, every older `nix-<os>-<arch>-` entry on main is deleted
+      # (`purge-created: 0` = anything created before this job's post step;
+      # `purge-primary-key: never` spares the one just saved). PR refs never
+      # save, so there is nothing for them to purge — and a fork PR's token
+      # could not delete anyway.
+      #
+      # `gc-max-store-size-macos`: before saving, GC the store down to ~8 GiB
+      # so the snapshot fits the Actions budget. GC only removes UNROOTED
+      # paths, and the build below uses `--no-link`, so the deps layer is
+      # given an explicit GC root right after it (see "Root the deps layer").
+      - name: Restore Nix store (GitHub Actions cache)
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'Cargo.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-${{ runner.arch }}-
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          gc-max-store-size-macos: 8G
+          purge: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          purge-prefixes: nix-${{ runner.os }}-${{ runner.arch }}-
+          purge-created: 0
+          purge-primary-key: never
+
+      # Pull-only daemon (see format-check); the deps-layer and
+      # release-artifact pushes below are explicit.
+      - name: Setup Cachix
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: zmre
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          extraPullNames: nix-community
+          skipPush: true
+
+      # ONE invocation, so the deps layer is realised once and the rest build
+      # in parallel on top of it:
+      #   * `.#tests`, `.#clippy` — the old macOS `tests` / `clippy` legs.
+      #   * `.#ledgeline` — proves the GUI deps resolve against system WebKit.
+      #     It embeds a placeholder SPA (see docs/development/building.md).
+      #   * `.#macDist` — because `.#ledgeline` is NOT what a Mac user ends up
+      #     with. On darwin `packages.default` is `macDist` (Ledgeline.app + a
+      #     `bin/ledgeline` symlink into it, with the REAL SvelteKit SPA
+      #     embedded), reached via spaNodeModules → spaBuild →
+      #     ledgelineWithSpa → macApp → macDist. None of that chain is
+      #     reachable from `.#ledgeline`, so without it
+      #     `nix build github:zmre/ledgeline` / `nix profile install` on a Mac
+      #     recompiles all of it even with our cache configured.
+      #   * `.#spaShellCsp` — the shell's CSP against the REAL SvelteKit shell
+      #     (see the same step in `build` for why); `spaBuild` is already in
+      #     the store from `macDist`.
+      #
+      # `--keep-going` so one red check does not hide another: as three jobs, a
+      # failing test still let clippy report; without it Nix stops scheduling
+      # new builds at the first failure.
+      - name: Tests, clippy, build (one nix build)
+        run: nix build -L --no-link --keep-going .#tests .#clippy .#ledgeline .#macDist .#spaShellCsp
+
+      # GC root for the deps layer, so cache-nix-action's pre-save GC (above)
+      # keeps the one path that makes the next run fast. An indirect root: the
+      # out-link lives in the workspace, which survives until the post steps.
+      # Same `!cancelled()` + local-store guard as the push below.
+      - name: Root the deps layer (for the store cache)
+        if: ${{ !cancelled() }}
+        run: |
+          deps=$(nix eval --raw .#cargoArtifacts.outPath)
+          if ! nix path-info "$deps" >/dev/null 2>&1; then
+            echo "Deps layer $deps was not built in this job — nothing to root."
+            exit 0
           fi
+          nix build --out-link "$GITHUB_WORKSPACE/.ci-gcroots/cargo-deps" .#cargoArtifacts
+
+      # The darwin deps layer — see the same step in `tests` for why it is
+      # pushed on PRs too, why `!cancelled()`, and why it is not pinned.
+      - name: Push deps layer to Cachix
+        if: ${{ !cancelled() }}
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          if [ -z "${CACHIX_AUTH_TOKEN:-}" ]; then
+            echo "No CACHIX_AUTH_TOKEN (fork or unset) — skipping cache push."
+            exit 0
+          fi
+          deps=$(nix eval --raw .#cargoArtifacts.outPath)
+          if ! nix path-info "$deps" >/dev/null 2>&1; then
+            echo "Deps layer $deps was not built in this job — nothing to push."
+            exit 0
+          fi
+          cachix push zmre "$deps"
+
+      # The darwin twin of `build`'s "Push to Cachix": the user-facing paths,
+      # on pushes only, guarded the same way.
+      - name: Push to Cachix
+        if: github.event_name == 'push'
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          if [ -z "${CACHIX_AUTH_TOKEN:-}" ]; then
+            echo "No CACHIX_AUTH_TOKEN (fork or unset) — skipping cache push."
+            exit 0
+          fi
+          # The darwin-only attrs are guarded by `lib.optionalAttrs
+          # stdenv.isDarwin` in flake.nix, which is why they live in this job.
+          # `ledgelineWithSpa` and `bundledHledger` are listed SEPARATELY from
+          # `macDist` for the SAME reason: macApp `cp`s both binaries into the
+          # bundle rather than symlinking them, so neither store path is in
+          # macDist's closure and neither would ride along. `ledgelineWithSpa`
+          # is additionally what `nix run` resolves to on darwin;
+          # `bundledHledger` is a 53 MiB download from github.com that we would
+          # otherwise re-fetch on every build that cannot substitute macApp.
+          attrs=(.#ledgeline .#macDist .#ledgelineWithSpa .#bundledHledger)
+          nix build --json "${attrs[@]}" | jq -r '.[].outputs | to_entries[].value' | cachix push zmre
+
+      # The darwin twin of `build`'s pin step — see there for why pins exist
+      # at all (LRU vs. release artifacts) and why the deps layer is not one.
+      - name: Pin release artifacts (exempt from Cachix GC)
+        if: github.event_name == 'push'
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          if [ -z "${CACHIX_AUTH_TOKEN:-}" ]; then
+            echo "No CACHIX_AUTH_TOKEN (fork or unset) — skipping pins."
+            exit 0
+          fi
+          # Derived, not hardcoded, as in `build`; prefixed with the project
+          # name because this cache is shared with mbr-markdown-browser.
+          sys=$(nix eval --raw --impure --expr builtins.currentSystem)
+          cachix pin zmre "ledgeline-macdist-$sys" \
+            "$(nix build --no-link --print-out-paths .#macDist)" --keep-revisions 2
+          cachix pin zmre "ledgeline-cli-$sys" \
+            "$(nix build --no-link --print-out-paths .#ledgelineWithSpa)" --keep-revisions 2
 
   # TypeScript / SvelteKit side: build the SPA and run its unit + type checks.
   # This job deliberately runs vitest with NO live engine, which is what proves
@@ -337,14 +522,13 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
 
+      # Pull-only (see format-check).
       - name: Setup Cachix
         uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: zmre
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           extraPullNames: nix-community
-          # Don't burn cache quota on source trees (see docs/development/building.md).
-          pushFilter: '-(source|vendor)$'
+          skipPush: true
 
       # Nix, not `cargo build`, so this reuses the same store paths (and Cachix
       # hits) as the `build` job instead of maintaining a second toolchain and

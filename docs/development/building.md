@@ -421,16 +421,40 @@ nix build --json .#ledgeline | jq -r '.[].outputs | to_entries[].value' | cachix
 | `nix build` / `nix profile install` | `macDist` (→ `macApp` → `ledgelineWithSpa`) | `ledgeline` |
 | `nix run` | `ledgelineWithSpa` | `ledgeline` |
 
-So the `build` job pushes `.#macDist` **and** `.#ledgelineWithSpa` on macOS. They are listed
-separately on purpose: `macApp` `cp`s the binary into `Contents/MacOS/` instead of symlinking
-it, so `ledgelineWithSpa`'s own store path is not a reference of `macDist` and would not ride
-along in its closure.
+So the `macos` job pushes `.#macDist` **and** `.#ledgelineWithSpa` (plus `.#bundledHledger`).
+They are listed separately on purpose: `macApp` `cp`s the binaries into the bundle instead of
+symlinking them, so neither store path is a reference of `macDist` and neither would ride
+along in its closure. On Linux the `build` job pushes `.#linuxDist` and `.#ledgelineWithSpa`.
 
 `spaNodeModules` / `spaBuild` are build-time inputs only — a consumer who substitutes
-`macDist` never needs them (they get pushed anyway by the cachix-action daemon, which uploads
-everything a job built).
+`macDist` never needs them, and CI no longer pushes them (see below).
 
-### Pins and `pushFilter` (why the cache kept going empty)
+### What CI pushes
+
+Every `cachix/cachix-action` block sets `skipPush: true`, so the action's daemon pushes
+nothing. Without it the daemon uploads *every* path a job builds — test and clippy outputs,
+per-commit binaries, source trees — and on the free plan (5 GB, LRU, shared with mbr) that
+churn kept evicting the one path that actually saves CI time. Pushes are now explicit:
+
+| What | Pushed by | When | Why |
+| --- | --- | --- | --- |
+| `.#cargoArtifacts` (the crane deps layer) | `tests` (Linux), `macos` | pushes **and** PRs | The 45+ minute part of a cold build; a `Cargo.lock` bump lands on a PR first, and that PR's runs are the cold ones. Not pinned. |
+| `.#ledgeline`, `.#linuxDist`, `.#ledgelineWithSpa` | `build` (Linux) | pushes to `main` | What a Linux user substitutes. Pinned. |
+| `.#ledgeline`, `.#macDist`, `.#ledgelineWithSpa`, `.#bundledHledger` | `macos` | pushes to `main` | What a Mac user substitutes. Pinned. |
+
+`cargoArtifacts` is exposed under `packages` for exactly this purpose. Push it by hand with:
+
+```sh
+cachix push zmre "$(nix build --no-link --print-out-paths .#cargoArtifacts)"
+```
+
+The `macos` job also keeps a second-tier cache: `nix-community/cache-nix-action` saves a whole
+`/nix/store` snapshot (GC'd to ~8 GiB, with the deps layer GC-rooted) to the repo's own GitHub
+Actions cache, keyed on `flake.lock` + `Cargo.lock`. Only pushes to `main` save it (and purge
+the older `nix-macOS-*` entries); PRs restore `main`'s copy. It covers the case where Cachix has
+already evicted the darwin deps layer.
+
+### Pins (why the cache kept going empty)
 
 The `zmre` cache is on the free 5 GB plan, which garbage-collects
 **least-recently-used**. That is backwards for us: the crane dependency layer is
@@ -438,15 +462,15 @@ touched by every CI run so it stays warm, while the release artifact nobody has
 downloaded since the last push is evicted first. Two mitigations, both in
 `ci.yml`:
 
-- **Pins.** The `build` job runs `cachix pin` on the consumer-facing outputs
-  (`.#ledgeline` on Linux; `.#macDist` + `.#ledgelineWithSpa` on macOS) with
-  `--keep-revisions 2`. Pinned paths are exempt from GC. The dependency layer is
-  deliberately *not* pinned — it is multi-GB, it churns with every `Cargo.lock`
-  bump, and it is exactly what LRU should be reclaiming.
-- **`pushFilter: '-(source|vendor)$'`** on every `cachix-action` block, so
-  `ledgeline-source` and friends never take up quota. Note the documented
-  caveat: a filtered path can still be uploaded if it is part of another path's
-  closure.
+- **Pins.** The `build` and `macos` jobs run `cachix pin` on the consumer-facing
+  outputs (`.#linuxDist` + `.#ledgelineWithSpa` on Linux; `.#macDist` +
+  `.#ledgelineWithSpa` on macOS) with `--keep-revisions 2`. Pinned paths are
+  exempt from GC. The dependency layer is deliberately *not* pinned — it is
+  multi-GB, it churns with every `Cargo.lock` bump, and it is exactly what LRU
+  should be reclaiming.
+- **Explicit pushes only** (`skipPush: true`, see above). This replaced
+  `pushFilter: '-(source|vendor)$'`, which kept source trees out but still let
+  every other built path in.
 
 Not a concern: paths already on `cache.nixos.org` (webkitgtk, gtk3, the whole
 GNOME stack) are **filtered out by Cachix automatically** and never counted
@@ -481,16 +505,28 @@ too). Jobs:
 | Job | Runner(s) | Command |
 | --- | --- | --- |
 | `format-check` | ubuntu | `nix build -L .#fmt` (runs first) |
-| `clippy` | ubuntu + macos | `nix build -L .#clippy` |
-| `tests` | ubuntu + macos | `nix build -L .#tests` |
-| `build` | ubuntu + macos | `nix build -L .#ledgeline`; macOS also builds `.#macDist` (+ pushes to Cachix on `main`) |
+| `clippy` | ubuntu | `nix build -L .#clippy` |
+| `tests` | ubuntu | `nix build -L .#tests` (+ pushes the Linux deps layer) |
+| `build` | ubuntu | `nix build -L .#ledgeline`, `.#linuxDist`, `.#spaShellCsp` (+ pushes and pins release artifacts on `main`) |
+| `macos` | macos-15 | one `nix build -L --no-link --keep-going .#tests .#clippy .#ledgeline .#macDist .#spaShellCsp` (+ pushes the darwin deps layer; pushes and pins release artifacts on `main`) |
 | `spa` | ubuntu | `bun install --frozen-lockfile && bun run build && bun run test:unit && bun run check` |
 
-`clippy`, `tests`, and `build` depend on `format-check` and share the crane
+macOS is a single job because GitHub's free macOS runners are slow (an M1 with 3 CPUs and
+7 GB) and three separate macOS jobs each fetched, or rebuilt, the same deps layer. One
+`nix build` realises it once and builds the rest in parallel on top.
+
+`clippy`, `tests`, `build`, and `macos` depend on `format-check` and share the crane
 dependency layer (populated once, then pulled from Cachix on later runs). The
 `e2e` job builds `.#ledgeline`, runs the vitest contract suites against it, then
 runs the Playwright specs; `versions`, plus `audit` and `spa-audit` (called from `audit.yml`), round out
-the nine jobs. All of them run on `pull_request`, none is conditional, so all of them gate.
+the ten jobs. All of them run on `pull_request`, none is conditional, so all of them gate.
+
+`.github/workflows/ci-rerun.yml` runs every 30 minutes and re-runs CI runs that failed only
+because GitHub never assigned a runner: every cancelled or failed job has no step that
+started, the run is still the newest CI run for its branch, and it is on attempt 1 or 2. Real
+failures and runs superseded by a newer push are left alone. Scheduled workflows run only
+from the default branch, so it does nothing on an unmerged branch; trigger it by hand with
+`dry_run` to see what it would do.
 
 `bun run test:unit` runs BOTH of the SPA's vitest projects — `unit` (node, pure
 functions) and `components` (jsdom, mounted `*.svelte.test.ts`). Neither needs an
