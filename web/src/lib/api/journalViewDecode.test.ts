@@ -330,4 +330,11 @@ describe("UNIT recognition rows", () => {
         expect(decodeJournalSummary(summary).recognitionHidden).toBe(0);
         expect(decodeJournalSummary({...summary, recognitionHidden: 3}).recognitionHidden).toBe(3);
     });
+
+    it("reads recognitionGrouped on the summary, absent as 0", () => {
+        const summary = {generation: "g", total: 1, visibleNet: [], commodities: [], perCommodity: [], maxDepth: 1, primary: null};
+        expect(decodeJournalSummary(summary).recognitionGrouped).toBe(0);
+        expect(decodeJournalSummary({...summary, recognitionGrouped: 10}).recognitionGrouped).toBe(10);
+        expect(() => decodeJournalSummary({...summary, recognitionGrouped: "10"})).toThrow(ApiShapeError);
+    });
 });

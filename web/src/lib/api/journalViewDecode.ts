@@ -576,6 +576,7 @@ export function decodeJournalSummary(raw: unknown): JournalSummary {
         primary,
         review,
         recognitionHidden: hiddenCount(body.recognitionHidden, "journal summary recognitionHidden"),
+        recognitionGrouped: hiddenCount(body.recognitionGrouped, "journal summary recognitionGrouped"),
     });
 }
 

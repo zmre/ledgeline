@@ -45,6 +45,17 @@ Everything in the tab is a reading of these lines. There is no separate budget
 database, no sidecar file of Ledgeline's own, and nothing here that hledger
 cannot read.
 
+### Recognition schedules are never goals
+
+[Revenue and expense recognition](journal/accrual-recognition.md) schedules are
+`~` rules too, but they live in their own file, which the journal does not
+include, so neither hledger nor this tab reads them as goals. Even if a journal
+does include that file by mistake, any rule carrying a `recognition:` tag is
+left out of the budget, the "Not budgeted" section and projections, and
+[Problems](journal/problems.md#recognition-file-included) asks you to remove the
+`include`. `hledger bal --budget` has no such filter, so it would still count
+them.
+
 ![The budget goals list: monthly goals, each with Edit and Remove buttons](images/budget-goals.png)
 
 ## Picking a category

@@ -149,6 +149,18 @@ export function cardDate(date: ISODate, today: ISODate): string {
     return year === today.slice(0, 4) ? short : `${short} '${year.slice(2)}`;
 }
 
+/**
+ * The totals footer's noun: "row" when the view folds something into one row
+ * — a linked transfer pair (plan 35 D11) or a month of recognition entries
+ * (plan 45 D8) — so `total` counts rows; "transaction" otherwise. Recognition
+ * is never grouped while a running balance is pinned, so the pin turns that
+ * half off.
+ */
+export function footerNoun(summary: {transfers: number; recognitionGrouped: number} | null, pinned: boolean): "row" | "transaction" {
+    if (summary === null) return "transaction";
+    return summary.transfers > 0 || (!pinned && summary.recognitionGrouped > 0) ? "row" : "transaction";
+}
+
 export function periodLabel(from: ISODate | null, to: ISODate | null): string {
     if (from === null && to === null) return "all dates";
     if (from === null) return `through ${to}`;

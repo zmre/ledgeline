@@ -110,6 +110,10 @@ Ledgeline refuses a transaction that doesn't balance and shows the reason on the
 
 **Find Matches**, next to the review buttons, pairs the two halves of each transfer between your own accounts, one imported from each bank feed, and links them with a `match:` tag. The journal then shows each linked pair as one row, such as *checking → amex*. See [Transfer matching](transfer-matching.md).
 
+### Revenue and expense recognition
+
+On accrual books, a **Recognition** button joins the toolbar. It posts each month's share of prepaid revenue and prepaid expenses from schedules you set up in the editor, and matches invoices to their payments. See [Revenue and expense recognition](accrual-recognition.md) and [Invoice matching](invoice-matching.md). Household and cash-basis ledgers don't show it.
+
 ### Deleting a transaction
 
 There are two ways to delete:
@@ -151,6 +155,8 @@ A dash means the filtered postings net to exactly zero, or there are none.
 - [Running balances](running-balances.md)
 - [Reviewing transactions](review.md)
 - [Transfer matching](transfer-matching.md)
+- [Revenue and expense recognition](accrual-recognition.md)
+- [Invoice matching](invoice-matching.md)
 - [Problems](problems.md)
 - [Keyboard shortcuts](keyboard.md)
 - [Exporting the journal](export.md)

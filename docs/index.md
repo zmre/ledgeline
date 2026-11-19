@@ -55,7 +55,7 @@ The top bar has a tab for each part of the app. Most things can be done from the
 ## Map of the manual
 
 - [Starting a new ledger](new-ledger.md): File → New, from a personal, business or empty chart of accounts, or from another app's export.
-- [Journal](journal/index.md): the transaction list, [filtering](journal/filtering.md), editing, [transfer matching](journal/transfer-matching.md), [problems](journal/problems.md) the background checks find, [keyboard shortcuts](journal/keyboard.md), and [exporting the journal to XLSX](journal/export.md).
+- [Journal](journal/index.md): the transaction list, [filtering](journal/filtering.md), editing, [transfer matching](journal/transfer-matching.md), [revenue and expense recognition](journal/accrual-recognition.md), [invoice matching](journal/invoice-matching.md), [problems](journal/problems.md) the background checks find, [keyboard shortcuts](journal/keyboard.md), and [exporting the journal to XLSX](journal/export.md).
 - [Imports](imports/index.md): [bringing in bank and card statements](imports/new-transactions.md), [creating](imports/create-rules.md) and [editing](imports/rules-editor.md) CSV rules files, and [importing from QuickBooks](imports/quickbooks.md).
 - [Exports](exports/index.md): [QIF](exports/qif.md) for Banktivity, Quicken and other personal-finance apps, and [posting-row CSV](exports/csv.md) in hledger's `print -O csv` format.
 - [Reports](reports/index.md): [Insights](reports/insights.md), the [balance sheet](reports/balance-sheet.md), the [income statement](reports/income-statement.md), [cash flow](reports/cash-flow.md), [net worth](reports/net-worth.md), and [subscriptions](reports/subscriptions.md).

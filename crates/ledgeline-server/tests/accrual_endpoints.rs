@@ -124,8 +124,9 @@ async fn accrual_answers_the_gate_counts_and_file() {
     assert_eq!(body["counts"]["due"], 10, "{body}");
     assert_eq!(body["counts"]["dueClosed"], 1);
     assert_eq!(body["counts"]["needsSchedule"], 1);
-    // Clear only (Wingtip, exact by number); Tailspin's $30 short is to check.
-    assert_eq!(body["counts"]["invoices"], 1, "{body}");
+    // Clear only (Wingtip, exact by number, and the Gusto payroll bill, paid
+    // three days early); Tailspin's $30 short is to check.
+    assert_eq!(body["counts"]["invoices"], 2, "{body}");
     assert_eq!(body["counts"]["invoicesCheck"], 1);
     // Under the user's own settings: no tolerance, no fee proposal.
     let strict = get(
@@ -133,15 +134,16 @@ async fn accrual_answers_the_gate_counts_and_file() {
         &format!("/api/accrual?today={TODAY}&settlementTolerance=0"),
     )
     .await;
-    assert_eq!(strict["counts"]["invoices"], 1);
+    assert_eq!(strict["counts"]["invoices"], 2);
     assert_eq!(strict["counts"]["invoicesCheck"], 0, "{strict}");
-    // A lookback that ends before Wingtip's payment leaves it out.
+    // A lookback that ends before Wingtip's payment leaves it out; the Gusto
+    // pair (Oct 29 / Nov 1) stays.
     let short = get(
         &state,
         &format!("/api/accrual?today={TODAY}&settlementLookback=30"),
     )
     .await;
-    assert_eq!(short["counts"]["invoices"], 0, "{short}");
+    assert_eq!(short["counts"]["invoices"], 1, "{short}");
     assert_eq!(
         body["roles"]["assets:prepaid"],
         json!({"role": "prepaid", "declared": true})
@@ -485,7 +487,7 @@ async fn a_short_payment_links_with_a_fee() {
     let books = read(&dir, "books.journal");
     assert_eq!(books.matches(&format!("match:{id}")).count(), 2, "{books}");
     let after = get(&state, &format!("/api/settlements?today={TODAY}")).await;
-    assert_eq!(after["proposals"].as_array().map(Vec::len), Some(1));
+    assert_eq!(after["proposals"].as_array().map(Vec::len), Some(2));
 }
 
 #[tokio::test]
@@ -889,4 +891,46 @@ async fn a_payment_before_its_bill_pairs_within_the_lead_days() {
     .await;
     assert_eq!(status, StatusCode::OK, "{linked}");
     assert_eq!(linked["linked"], 1);
+}
+
+#[tokio::test]
+async fn the_summary_counts_the_entries_folded_into_group_rows() {
+    // The footer says "rows" only when the view really folds something
+    // (startup-metrics e2e: an accrual-gated ledger with no group row must
+    // still say "transactions").
+    let dir = fixture_copy(false, false);
+    let (state, _scratch) = state_in(&dir);
+    // January 2026: one recognition entry, and a month needs two to group.
+    let january = get(
+        &state,
+        &format!("/api/journal/summary?from=2026-01-01&to=2026-01-31&today={TODAY}"),
+    )
+    .await;
+    assert!(january.get("recognitionGrouped").is_none(), "{january}");
+    // Post November's ten, then its summary folds them.
+    let generation =
+        get(&state, &format!("/api/accrual?today={TODAY}")).await["generation"].clone();
+    let (status, posted) = send(
+        &state,
+        "POST",
+        "/api/recognition/post",
+        Some(json!({"generation": generation, "today": TODAY})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{posted}");
+    let november = get(
+        &state,
+        &format!("/api/journal/summary?from=2026-11-01&to=2026-11-30&today={TODAY}"),
+    )
+    .await;
+    assert_eq!(november["recognitionGrouped"], 10, "{november}");
+    // Shown or hidden, nothing is folded.
+    for mode in ["show", "hide"] {
+        let body = get(
+            &state,
+            &format!("/api/journal/summary?from=2026-11-01&to=2026-11-30&today={TODAY}&recognition={mode}"),
+        )
+        .await;
+        assert!(body.get("recognitionGrouped").is_none(), "{mode}: {body}");
+    }
 }

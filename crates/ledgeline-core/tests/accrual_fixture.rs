@@ -155,7 +155,7 @@ fn settlements_pair_by_number_with_a_fee_and_exactly() {
     let roles = AccrualRoles::of(journal);
     // The D&O bill (March) is outside the default 180-day lookback.
     let recent = propose(journal, &roles, &SettleSettings::default(), TODAY);
-    assert_eq!(recent.len(), 2);
+    assert_eq!(recent.len(), 3);
     let all = SettleSettings {
         lookback_days: 0,
         ..SettleSettings::default()
@@ -197,7 +197,14 @@ fn settlements_pair_by_number_with_a_fee_and_exactly() {
                 true,
                 true
             ),
+            // Paid three days before the bill: early, exact, same vendor.
+            ("Gusto payroll bill", "Gusto debit", false, true),
         ]
+    );
+    let payroll = &proposals[3];
+    assert!(
+        payroll.early && payroll.gap_days == 3 && payroll.by_party,
+        "{payroll:?}"
     );
     assert_eq!(
         proposals[1].fit,

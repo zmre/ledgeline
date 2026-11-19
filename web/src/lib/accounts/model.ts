@@ -154,7 +154,7 @@ export const SPECIAL_TAGS: readonly SpecialTagSpec[] = [
     {
         key: "kpi",
         label: "Startup metric role",
-        help: "Marks the account's role in startup metrics on Insights. Doesn't change any statement.",
+        help: "Marks the account's role in startup metrics on Insights and in revenue and expense recognition. Doesn't change any statement.",
         kind: "closed",
         options: [
             {value: "recurring", label: "Recurring revenue"},
@@ -165,6 +165,8 @@ export const SPECIAL_TAGS: readonly SpecialTagSpec[] = [
             {value: "ga", label: "General & administrative"},
             {value: "receivable", label: "Receivable"},
             {value: "payable", label: "Payable"},
+            // Plan 45: an asset recognized into expense over a term (annual insurance).
+            {value: "prepaid", label: "Prepaid expense"},
         ],
     },
 ];

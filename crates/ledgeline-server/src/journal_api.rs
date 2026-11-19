@@ -1149,6 +1149,11 @@ struct SummaryBody<'a, T: Serialize> {
     /// the rows. They are still in every figure (Q11: "incl. N hidden").
     #[serde(rename = "recognitionHidden", skip_serializing_if = "is_zero")]
     recognition_hidden: usize,
+    /// Plan 45: posted recognition entries folded into month group rows.
+    /// Nonzero means `total` counts rows, not transactions (as `transfers`
+    /// does); omitted when nothing is folded.
+    #[serde(rename = "recognitionGrouped", skip_serializing_if = "is_zero")]
+    recognition_grouped: usize,
 }
 
 /// `GET /api/journal/summary` — for the filtered view: the count, the
@@ -1214,6 +1219,15 @@ pub(crate) async fn summary_route(
                 .count(),
             review: review.counts(&snapshot.journal, &cache.review(&snapshot.journal)),
             recognition_hidden: grouped.as_ref().map_or(0, |g| g.hidden),
+            recognition_grouped: grouped.as_ref().map_or(0, |g| {
+                g.slots
+                    .iter()
+                    .map(|slot| match slot {
+                        RowSlot::Group(group) => group.members.len(),
+                        RowSlot::Txn(_) => 0,
+                    })
+                    .sum()
+            }),
         })
     })
     .await

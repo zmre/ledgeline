@@ -16,6 +16,7 @@ account revenue:services                ; type: R
 account expenses:insurance:d-and-o      ; type: X
 account expenses:insurance:e-and-o      ; type: X
 account expenses:payment fees           ; type: X
+account expenses:payroll                ; type: X
 account equity:opening                  ; type: E
 
 include books-2025.journal
@@ -345,3 +346,14 @@ include books-2025.journal
 2026-03-17 Customer X Recognized (copy)  ; recognition: cx1217, recognized: 2026-03-17
     liabilities:deferred-revenue   $1000.00  ; customer: Customer X
     revenue:subscriptions         $-1000.00  ; customer: Customer X
+
+; Paid before the bill: the payroll provider debits the bank, and its bill
+; arrives three days later, for exactly the same amount (an early payment
+; within the default 4 lead days: a clear pair).
+2026-10-29 Gusto debit
+    assets:bank:checking           $-4812.33
+    liabilities:accounts payable    $4812.33  ; vendor: Gusto
+
+2026-11-01 Gusto payroll bill
+    expenses:payroll                $4812.33  ; vendor: Gusto
+    liabilities:accounts payable   $-4812.33  ; vendor: Gusto

@@ -102,6 +102,16 @@ const SETS: Readonly<Record<string, FixtureSet>> = {
         ],
         append: {"ledgeline.toml": SYNC_BROKEN_TOML},
     },
+    // Revenue and expense recognition (plan 45), read as of 2026-11-17: the
+    // books, their per-year include, the recognition file and `[books]`.
+    accrual: {
+        files: [
+            ["accrual/books.journal", "books.journal"],
+            ["accrual/books-2025.journal", "books-2025.journal"],
+            ["accrual/recognition.journal", "recognition.journal"],
+            ["accrual/ledgeline.toml", "ledgeline.toml"],
+        ],
+    },
     matching: {
         files: [
             ["matching.journal", "matching.journal"],

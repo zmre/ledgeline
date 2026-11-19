@@ -110,7 +110,8 @@ test.describe("the card", () => {
 test("review settings popover", async ({page}) => {
     const toggle = page.locator("summary[aria-label='Review settings']");
     await toggle.click();
-    const popover = page.getByTestId("review-settings");
+    // The narrow toolbar menu holds a second copy: take the one this toggle opened.
+    const popover = toggle.locator("xpath=..").getByTestId("review-settings");
     await expect(popover).toBeVisible();
     await page.mouse.move(2, 2);
     await shot(page, SECTION, "review-settings", {clip: [page.getByTestId("review-recents-button"), toggle, popover], padding: 14});

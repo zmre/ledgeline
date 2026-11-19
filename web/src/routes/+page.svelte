@@ -18,7 +18,7 @@
     import RecognitionOverlay from "#lib/accrual/ui/RecognitionOverlay.svelte";
     import ReviewOverlay from "#lib/review/ui/ReviewOverlay.svelte";
     import {reviewLaunch} from "#lib/review/ui/launch.svelte.js";
-    import {periodLabel} from "#lib/journal/rowModel.js";
+    import {footerNoun, periodLabel} from "#lib/journal/rowModel.js";
     import {editing} from "#lib/stores/editing.svelte.js";
     import {filters} from "#lib/stores/filters.svelte.js";
     import {journal} from "#lib/stores/journal.svelte.js";
@@ -78,15 +78,8 @@
     });
     const count = $derived(journalView.total ?? 0);
     /** A collapsed transfer pair is one row (plan 35 D11): with any, the footer counts rows, not transactions. */
-    /**
-     * Plan 45 D8: a month of recognition entries is one row too. Whether any
-     * is grouped is not counted by the engine, so with the helpers on and the
-     * chip on Grouped the footer says "rows" — every filter result may hold a
-     * group, and "rows" is never wrong where "transactions" can be.
-     */
-    const countsRows = $derived(
-        (journalView.summary?.transfers ?? 0) > 0 || (accrual.enabled && settings.recognitionRows === "group" && journalView.query?.pin == null)
-    );
+    /** Plan 45 D8: a month of recognition entries is one row too — "rows" only when the engine says the view folds some. */
+    const noun = $derived(footerNoun(journalView.summary, journalView.query?.pin != null));
     const hiddenRecognition = $derived(journalView.summary?.recognitionHidden ?? 0);
     const total = $derived(journalView.summary?.visibleNet ?? []);
 
@@ -202,7 +195,7 @@
     {/if}
 
     {#if !loadFailed}
-        <TotalsFooter {count} {period} {total} noun={countsRows ? "row" : "transaction"} {hiddenRecognition}>
+        <TotalsFooter {count} {period} {total} {noun} {hiddenRecognition}>
             {#snippet actions()}
                 {#if count > 0}
                     <ExportButton run={exportJournal} label="Export journal as xlsx" />

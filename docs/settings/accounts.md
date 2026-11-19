@@ -42,7 +42,7 @@ The first part is a field for each tag a Ledgeline report reads. Most take a fix
 | Cash flow line | `cfgroup:` | Free text | [Cash flow](../reports/cash-flow.md) |
 | Holdings tab | `holdings:` | `stock`, `other`, `none` | [Holdings](../holdings/index.md) |
 | Valuation role | `valuation:` | `cost`, `unrealized`, `depreciation`, `adjustment`, `mark` | [Holdings](../holdings/index.md), [Cash flow](../reports/cash-flow.md) |
-| Startup metric role | `kpi:` | `recurring`, `usage`, `deferred-revenue`, `sales-marketing`, `rnd`, `ga`, `receivable`, `payable` | [Startup metrics](../reports/startup-metrics.md) on Insights. It doesn't change any statement |
+| Startup metric role | `kpi:` | `recurring`, `usage`, `deferred-revenue`, `sales-marketing`, `rnd`, `ga`, `receivable`, `payable`, `prepaid` | [Startup metrics](../reports/startup-metrics.md) on Insights, and [revenue and expense recognition](../journal/accrual-recognition.md#when-the-helpers-appear): `deferred-revenue`, `prepaid`, `receivable` and `payable` turn the recognition helpers on. It doesn't change any statement |
 
 Each field has a help icon with a one-line explanation. Pick "(none)" or clear the text to remove the tag.
 

@@ -802,3 +802,46 @@ on first request only, so an SPA session never pays it):
 | `chart`, whole journal (pie / monthly line) | 113 / 133 |
 | filter with a query | ~2 (cached search text) |
 | `/transactions`, first request | ~950 (334 MB body) |
+
+## 9. Revenue and expense recognition at 200k (plan 45)
+
+Measured 2026-11-18 on the same machine (Apple M5 Max, 18 cores, macOS 27.2.1), rustc 1.99.1, release profile, under a background load of about 2.5–3. The corpus is the v1 200k journal plus what `benches/accrual.rs` adds to it: 5,000 deferred-revenue contracts, their rules in a recognition file, and about half of each schedule's periods posted. That makes 241,741 transactions, 5,000 schedules, 36,741 posted entries and 38,707 entries due on 2026-11-17.
+
+```sh
+LEDGELINE_BENCH_SIZES=200000 nix develop -c cargo bench -p ledgeline-core --bench accrual
+```
+
+| Bench | 200k | Target | What it is |
+| --- | --- | --- | --- |
+| `accrual/index_with_roles` | 12.8 ms | < 15 ms | The recognition index from a snapshot's cached account roles: what a request pays |
+| `accrual/index` | 35.5 ms | — | The same, also working out the roles (once per snapshot) |
+| `accrual/book_parse` | 13.7 ms | < 15 ms | Parsing the 5,000-schedule recognition file, cached by revision |
+| `accrual/due` | 3.53 ms | < 5 ms | Every due occurrence as of today |
+| `accrual/ties` | 2.73 ms | < 5 ms | Month-end deferred balances against the schedules |
+| `accrual/schedule_build_5k` | 30.7 ms | — | Building 5,000 schedules and their rules |
+| `accrual/group_rows` | 840 µs | < 2 ms | Collapsing a filter result's posted entries into month rows |
+| `accrual/post_5k` | 548 ms | < 600 ms | 5,000 entries through one `add_transactions`: format, place by date, one reparse |
+
+The index target was 10 ms and was moved to 15 ms (plan 45, Performance). Reading every posting of a 200k journal costs about 8 ms, so the scan (across up to 8 threads) and its merge land at 12–13 ms.
+
+### 9.1 Invoice matching: Link and Link all
+
+`crates/ledgeline-server/tests/accrual_link_timing.rs` times what the client waits for after a click: the write, then the reads that follow it (`/api/journal`, the status for the badge, and the settlements list). It appends synthetic receivable pairs to the 200k accrual corpus, all clear, because the corpus has none:
+
+```sh
+cargo test --release -p ledgeline --test accrual_link_timing -- --ignored --nocapture --test-threads=1
+```
+
+| Action | Write | Total, with the reads after it |
+| --- | --- | --- |
+| One Link | 0.99–1.00 s | 1.16–1.18 s |
+| 25 Links, one at a time (how Link all worked before) | — | 29.1 s |
+| Link all of 25 | 1.15 s | 1.30 s |
+| Link all of 60 | 1.35 s | 1.50 s |
+
+A single link's write is almost all the cost every journal edit pays at this size: the editor's reparse after the edit (~390 ms), the 36 MB save (~125 ms) and the new snapshot (~360 ms). Two changes brought it here:
+
+- an accrual write runs on a copy of the bound editor instead of parsing the journal again before it and re-opening it from disk after it (1.75 s → 1.0 s);
+- Link all is one batch: every pair checked first, then one reparse and one save. The candidates and fingerprints are read once per batch rather than once per pair.
+
+Each re-read after a write costs about 90 ms (`/api/accrual`) and 70–90 ms (`/api/settlements`).

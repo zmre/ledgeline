@@ -278,6 +278,12 @@ export interface JournalSummary {
     review: ReviewCounts | null;
     /** Posted recognition entries hidden from the rows but still in every figure (plan 45 Q11); 0 otherwise. */
     recognitionHidden: number;
+    /**
+     * Posted recognition entries folded into month group rows (plan 45 D8);
+     * nonzero means `total` counts rows, as `transfers` does. 0 otherwise, and
+     * from an engine that predates it.
+     */
+    recognitionGrouped: number;
 }
 
 /** One pie slice: a display-boundary number and the exact amount, formatted. */

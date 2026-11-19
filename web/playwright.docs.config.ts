@@ -25,7 +25,16 @@ import {defineConfig} from "@playwright/test";
 export const DOCS_TOKEN = "ledgeline-docs-token";
 
 /** Fixture set → engine port. The keys are stage.ts set names. */
-export const DOCS_ENGINES = {sample: 5211, budget: 5212, subscriptions: 5213, review: 5214, matching: 5215, sync: 5216, syncBroken: 5217} as const;
+export const DOCS_ENGINES = {
+    sample: 5211,
+    budget: 5212,
+    subscriptions: 5213,
+    review: 5214,
+    matching: 5215,
+    sync: 5216,
+    syncBroken: 5217,
+    accrual: 5218,
+} as const;
 export type DocsJournal = keyof typeof DOCS_ENGINES;
 
 /** The journal file each staged set's engine opens. */
@@ -37,6 +46,7 @@ const JOURNAL_FILE: Readonly<Record<DocsJournal, string>> = {
     matching: "matching.journal",
     sync: "sample.journal",
     syncBroken: "sample.journal",
+    accrual: "books.journal",
 };
 
 /**

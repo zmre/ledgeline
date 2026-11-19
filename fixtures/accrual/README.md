@@ -31,6 +31,33 @@ on 2026-11-17 (and none after it).
 | External invoice | 2026-11-02 Fourth Coffee Invoice 2004 | Receivable vs deferred revenue with `invoice:` only: **Needs a schedule**. |
 | Closed period | Alpine Ski House (`as0710`) | The 2026-09-10 occurrence was never posted and is on or before `closed-through`: due in a closed period. |
 | Duplicate | 2026-03-17 Customer X Recognized (copy) | A hand copy of a posted entry: the `recognition-duplicate` finding. |
+| Paid before the bill | 2026-10-29 Gusto debit, 2026-11-01 Gusto payroll bill | Payroll: the provider debits the bank, then bills three days later, for exactly the same amount. With the default 4 lead days it is an early, exact, clear payables pair ("Paid 3 days before the invoice"). |
+
+## The Due table's ties (2026-11-17)
+
+`assets:prepaid` ties. `liabilities:deferred-revenue` does **not**, on purpose:
+its November line reads `$-23,616.16 → $-18,882.83`, **off by $100.00** against
+the schedules. Four cases add up to it (after posting minus scheduled):
+
+| Case | Effect |
+|---|---|
+| External invoice (Fourth Coffee), deferred with no schedule | −$1,800.00 |
+| Credit-back (Adatum's $1,000 credit, a deferred debit with no `recognition:`) | +$1,000.00 |
+| Closed period (Alpine Ski House's September entry, never posted) | −$100.00 |
+| Duplicate (the second Customer X March entry) | +$1,000.00 |
+| **Net** | **+$100.00** |
+
+`crates/ledgeline-core/tests/accrual_fixture.rs`
+(`prepaid_ties_and_deferred_revenue_is_off_by_the_unscheduled_lines`) pins it,
+and `web/e2e/accrual.e2e.ts` expects exactly that line.
+
+## Counts at 2026-11-17
+
+- Due: 10 open, 1 in a closed period.
+- Needs a schedule: 1 (Fourth Coffee).
+- Invoice proposals in the default 180-day lookback: 3. Clear: 2 (Wingtip,
+  Gusto). To check: 1 (Tailspin, $30 short).
+- The Recognition badge: 10 + 1 + 2 = 13.
 
 ## Check it with hledger
 
