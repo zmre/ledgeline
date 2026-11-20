@@ -260,7 +260,12 @@ pub fn is_valid_id(id: &str) -> bool {
 
 /// Reject a tag value that would not read back as itself: a comma or a
 /// newline ends a tag value, and surrounding space is trimmed by hledger.
-pub(crate) fn check_tag_value(what: &str, value: &str) -> Result<(), ScheduleError> {
+/// `what` names the value in the error.
+///
+/// # Errors
+/// [`ScheduleError::Invalid`] for an empty value, one over 256 bytes, or one
+/// with a comma, a control character or surrounding space.
+pub fn check_tag_value(what: &str, value: &str) -> Result<(), ScheduleError> {
     if value.is_empty()
         || value.len() > MAX_TAG_VALUE_BYTES
         || value.trim() != value
@@ -275,8 +280,12 @@ pub(crate) fn check_tag_value(what: &str, value: &str) -> Result<(), ScheduleErr
     Ok(())
 }
 
-/// Reject a tag name hledger would not read as one.
-pub(crate) fn check_tag_name(name: &str) -> Result<(), ScheduleError> {
+/// Reject a tag name hledger would not read as one: 1–64 letters, digits,
+/// `-` or `_`.
+///
+/// # Errors
+/// [`ScheduleError::Invalid`] for any other name.
+pub fn check_tag_name(name: &str) -> Result<(), ScheduleError> {
     let ok = !name.is_empty()
         && name.len() <= 64
         && name

@@ -111,7 +111,9 @@ fn an_invoicing_app_walks_the_whole_flow() {
                 proration: Proration::Anniversary,
                 contract: Some(Contract::New),
             }),
+            tags: vec![],
         }],
+        tags: vec![],
     };
     let (_, plan) = loaded
         .write_document(&invoice, "2026-01-15", false)
@@ -358,7 +360,9 @@ fn an_external_write_between_load_and_save_writes_nothing() {
                         proration: Proration::Anniversary,
                         contract: None,
                     }),
+                    tags: vec![],
                 }],
+                tags: vec![],
             },
             "2026-01-01",
             false,
