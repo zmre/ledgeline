@@ -36,6 +36,7 @@ use super::documents::{DocumentIndex, FoundDocument};
 use super::due::{DueSet, closed_adjustments, comment_with, due, entries_to_post, new_transaction};
 use super::index::RecognitionIndex;
 use super::invoice::{DocumentError, DocumentSpec, build_document_with, posting};
+use super::receivables::{Receivables, ReceivablesOptions};
 use super::restate::{RestateError, Restatement, restatement};
 use super::schedule::{
     Period, PeriodPart, RuleRole, RuleText, Schedule, ScheduleError, ScheduleSpec, build,
@@ -1132,6 +1133,146 @@ impl Loaded {
             transaction: reversal,
             link,
         })
+    }
+
+    /// Every document's settlement, open and unapplied amounts, aging and
+    /// DSO ([`super::receivables`]).
+    #[must_use]
+    pub fn receivables(&self, options: &ReceivablesOptions) -> Receivables {
+        let journal = self.journal();
+        Receivables::build(journal, &AccrualRoles::of(journal), options)
+    }
+
+    /// Join `payments` to the settlement link of the document whose
+    /// settlement posting is `document` (invoicer L4: N:1, one invoice paid
+    /// in parts), starting the link if it has none. Returns the link id.
+    ///
+    /// Each payment must be a payment-side posting on the document's account
+    /// and commodity (a receivable credit for an invoice), in another
+    /// transaction, with no `match:` yet. Together with what is already
+    /// linked they may cover the document exactly (the link is then
+    /// complete) or not yet (it stays open, a partial payment); they may not
+    /// exceed it. One write.
+    ///
+    /// # Errors
+    /// [`OpsError::Settle`] for a posting that isn't a document or a
+    /// payment, a mismatched account or commodity, a posting already linked,
+    /// a document already settled, or an overpayment;
+    /// [`OpsError::Stale`] / [`OpsError::ExternalChange`] — nothing written.
+    pub fn link_payments(
+        &mut self,
+        document: PostingRef,
+        payments: &[PostingRef],
+        expected: Option<&Generation>,
+    ) -> Result<String, OpsError> {
+        self.check_expected(expected)?;
+        let journal = Arc::clone(self.editor.journal());
+        let roles = AccrualRoles::of(&journal);
+        let not_a_pair = |why: String| OpsError::Settle(SettleError::NotAPair(why));
+        let resolve = |at: PostingRef| {
+            journal
+                .transactions
+                .get(at.position)
+                .filter(|txn| txn.index == at.txn)
+                .and_then(|txn| txn.postings.get(at.posting).map(|p| (txn, p)))
+                .ok_or_else(|| not_a_pair("a posting is no longer where it was".into()))
+        };
+        let (doc_txn, doc_posting) = resolve(document)?;
+        let Some((_, role)) = super::documents::document_posting(doc_txn, &roles)
+            .filter(|(at, _)| *at == document.posting)
+        else {
+            return Err(not_a_pair(
+                "that posting is not an invoice's (or bill's) settlement posting".into(),
+            ));
+        };
+        let [doc_amount] = doc_posting.amounts.as_slice() else {
+            return Err(not_a_pair("the document has no single amount".into()));
+        };
+        let links = crate::matching::links(&journal);
+        let existing = super::tag_value(&doc_posting.tags, MATCH_TAG).map(str::to_string);
+        let mut sum = doc_amount.quantity;
+        if let Some(id) = &existing {
+            if !links.is_open(id) {
+                return Err(not_a_pair(format!(
+                    "the document's link {id} is already settled (or broken); unlink it first"
+                )));
+            }
+            for member in links.members(id).unwrap_or_default() {
+                if member != document {
+                    let (_, p) = resolve(member)?;
+                    sum = sum
+                        .add(p.amounts[0].quantity)
+                        .map_err(|_| OpsError::Document(DocumentError::Overflow))?;
+                }
+            }
+        }
+        if payments.is_empty() {
+            return Err(not_a_pair("no payment was given".into()));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for &payment in payments {
+            let (txn, posting) = resolve(payment)?;
+            let [amount] = posting.amounts.as_slice() else {
+                return Err(not_a_pair("a payment has no single amount".into()));
+            };
+            let payment_side = (amount.quantity.mantissa > 0) != (role == AccrualRole::Receivable);
+            if posting.account != doc_posting.account
+                || amount.commodity != doc_amount.commodity
+                || amount.cost.is_some()
+                || amount.quantity.is_zero()
+                || !payment_side
+                || posting.generated.is_some()
+                || payment.position == document.position
+                || !seen.insert(payment.position)
+                || super::tag_value(&txn.tags, VOID_TAG).is_some()
+            {
+                return Err(not_a_pair(format!(
+                    "{} on {} is not a payment of this document (same account and commodity, \
+                     the other side, its own transaction)",
+                    txn.description, txn.date
+                )));
+            }
+            if super::tag_value(&posting.tags, MATCH_TAG).is_some() {
+                return Err(not_a_pair(format!(
+                    "{} on {} is already linked",
+                    txn.description, txn.date
+                )));
+            }
+            sum = sum
+                .add(amount.quantity)
+                .map_err(|_| OpsError::Document(DocumentError::Overflow))?;
+        }
+        if !sum.is_zero() && (sum.mantissa > 0) != (role == AccrualRole::Receivable) {
+            return Err(OpsError::Settle(SettleError::Overpayment));
+        }
+        let id = existing
+            .clone()
+            .unwrap_or_else(|| MatchIds::new(&journal).next_id());
+        let tag = |posting: usize| EditOp::SetPostingTag {
+            posting,
+            name: MATCH_TAG.to_string(),
+            value: Some(id.clone()),
+        };
+        let mut targets: Vec<(PostingRef, EditOp)> =
+            payments.iter().map(|&p| (p, tag(p.posting))).collect();
+        if existing.is_none() {
+            targets.push((document, tag(document.posting)));
+        }
+        targets.sort_by_key(|(at, _)| at.position);
+        let tindices: Vec<Tindex> = targets.iter().map(|(at, _)| at.txn).collect();
+        let edits = targets
+            .into_iter()
+            .zip(self.editor.transaction_fingerprints(&tindices))
+            .map(|((at, op), fingerprint)| {
+                fingerprint
+                    .map(|fingerprint| (at.txn, fingerprint, vec![op]))
+                    .ok_or(OpsError::Stale)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.documents.take();
+        self.editor.apply_batch(&edits)?;
+        self.editor.save()?;
+        Ok(id)
     }
 
     /// **Post through ‹date›** (D6): every open due entry dated on or before

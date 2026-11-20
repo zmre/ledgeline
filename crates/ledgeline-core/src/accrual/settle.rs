@@ -164,7 +164,8 @@ fn party_tag(tags: &[(String, String)]) -> Option<Party> {
     })
 }
 
-fn party_of(txn: &Transaction, posting: &Posting) -> Option<Party> {
+/// The posting's `customer:`/`vendor:`, else the transaction's.
+pub(crate) fn party_of(txn: &Transaction, posting: &Posting) -> Option<Party> {
     party_tag(&posting.tags).or_else(|| party_tag(&txn.tags))
 }
 

@@ -73,6 +73,7 @@ pub mod due;
 pub mod index;
 pub mod invoice;
 pub mod ops;
+pub mod receivables;
 pub mod restate;
 pub mod schedule;
 pub mod settle;
