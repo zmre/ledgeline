@@ -97,7 +97,8 @@ export default defineConfig({
                     // was handed. That is what both bugs were.
                     environment: "jsdom",
                     include: ["src/**/*.svelte.{test,spec}.{js,ts}"],
-                    setupFiles: ["./src/lib/testing/componentSetup.ts"],
+                    // Shared with packages/ui's own component suite.
+                    setupFiles: ["../packages/ui/src/testing/componentSetup.ts"],
                 },
             },
         ],

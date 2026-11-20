@@ -20,7 +20,7 @@
     import type {Transaction} from "#lib/domain/types.js";
     import {editing} from "#lib/stores/editing.svelte.js";
     import {journal} from "#lib/stores/journal.svelte.js";
-    import {rootPx} from "#lib/theme/scale.js";
+    import {rootPx} from "#ui/theme/scale.js";
     import {accountColumn} from "./accountColumn.svelte";
     import {flowChipRooms, splitChipRooms} from "./chipGeometry";
     import AccountInput from "./edit/AccountInput.svelte";

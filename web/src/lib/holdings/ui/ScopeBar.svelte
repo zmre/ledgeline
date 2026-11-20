@@ -3,7 +3,7 @@
      selection), and the as-of date. All state lives in the holdings scope
      store; every change recomputes the derived report, no refetch. -->
 <script lang="ts">
-    import FoldedControls from "#lib/components/FoldedControls.svelte";
+    import FoldedControls from "#ui/components/FoldedControls.svelte";
     import AccountTreeSelect from "#lib/filters/AccountTreeSelect.svelte";
     import type {GainPeriod} from "#lib/holdings/types.js";
     import {GAIN_PERIODS} from "#lib/holdings/ui/gainPeriod.js";

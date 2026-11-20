@@ -7,7 +7,7 @@
      action, so every screen with an export offers it in the native menu with
      no code of its own; the file goes to the share sheet (lib/export/xlsx.ts). -->
 <script lang="ts">
-    import {registerNativeActions} from "#lib/native/bridge.svelte.js";
+    import {registerNativeActions} from "#ui/native/bridge.svelte.js";
 
     let {run, label = "Export report as xlsx"}: {run: () => Promise<void>; label?: string} = $props();
 

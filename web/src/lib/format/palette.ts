@@ -6,7 +6,7 @@
 //
 // The source of truth is CSS: `--chart-1` … `--chart-N`, `--chart-other`,
 // `--chart-in`, `--chart-out` and `--chart-net`, declared per theme variant
-// beside its daisyUI theme in `src/themes/<family>.css` (rules in `src/app.css`).
+// beside its daisyUI theme in `packages/ui/src/themes/<family>.css` (rules in `packages/ui/src/theme.css`).
 // A theme defines as many categorical `--chart-N` slots as it likes, contiguous
 // from 1: `resolvePalette` reads `--chart-1`, `--chart-2`, …
 // up to the first empty one, and every chart sizes itself to that count
@@ -22,8 +22,8 @@
 //
 // ── ADDING A THEME ───────────────────────────────────────────────────────────
 //
-//   1. Add a `@plugin "daisyui/theme"` block to a family file in `src/themes/`
-//      (imported from `app.css`) and the variant to `#lib/theme/catalog.ts`.
+//   1. Add a `@plugin "daisyui/theme"` block to a family file in `packages/ui/src/themes/`
+//      (imported from `theme.css`) and the variant to `#ui/theme/catalog.ts`.
 //   2. Add a `[data-theme="<name>"] { --chart-*: … }` block beside it:
 //      any number of `--chart-N` slots (no gaps — reading stops at the first
 //      missing one) plus the four named tokens. A missing named token silently
@@ -131,7 +131,7 @@ export const THEME_TOKENS = {
     accent: "--color-accent",
 } as const satisfies Record<keyof ThemeColors, string>;
 
-/** default-dark's chart tokens — the fallback when CSS is absent. Must match `src/themes/default.css` (tested). */
+/** default-dark's chart tokens — the fallback when CSS is absent. Must match `packages/ui/src/themes/default.css` (tested). */
 export const DEFAULT_PALETTE: ChartPalette = Object.freeze({
     categorical: Object.freeze([
         "#615dff", //  1 indigo   = daisy primary

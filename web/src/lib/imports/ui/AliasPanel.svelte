@@ -24,7 +24,7 @@
     //   a semantic change wearing a cosmetic's clothes.
     //
     // Every decision here is a call into `aliasModel.ts`. This file is markup.
-    import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import AsyncSection from "#ui/components/AsyncSection.svelte";
     import {dataView} from "#lib/stores/loadState.js";
     import {holdUnsavedEdits} from "#lib/stores/refreshAll.js";
     import {onServerReady} from "#lib/stores/serverWatch.svelte.js";
@@ -33,7 +33,7 @@
     import type {AliasDraft, AliasForm} from "../aliasModel";
     import {aliasListing, aliasStore} from "../aliasStore.svelte";
     import type {AliasFile} from "../importTypes";
-    import {createRevealArm, reveal} from "#lib/ui/reveal.js";
+    import {createRevealArm, reveal} from "#ui/ui/reveal.js";
 
     let selectedId = $state<string | null>(null);
     let baseFile = $state<AliasFile | null>(null);

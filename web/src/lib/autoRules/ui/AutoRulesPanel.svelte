@@ -24,7 +24,7 @@
      write to whichever rule now sits at the old place. -->
 <script lang="ts">
     import {resolve} from "$app/paths";
-    import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import AsyncSection from "#ui/components/AsyncSection.svelte";
     import {journal} from "#lib/stores/journal.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
     import AutoRuleEditor from "../AutoRuleEditor.svelte";

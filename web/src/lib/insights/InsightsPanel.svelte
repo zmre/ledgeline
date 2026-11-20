@@ -14,7 +14,7 @@
      headline figure even when collapsed. -->
 <script lang="ts">
     import {formatAmount, toNumber} from "#lib/domain/money.js";
-    import {registerNativeActions} from "#lib/native/bridge.svelte.js";
+    import {registerNativeActions} from "#ui/native/bridge.svelte.js";
     import {DEFAULT_AMOUNT_STYLE, ZERO} from "#lib/format/amounts.js";
     import {signClass} from "#lib/format/sign.js";
     import {today} from "#lib/reports/periods.js";

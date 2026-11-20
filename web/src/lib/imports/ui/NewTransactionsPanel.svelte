@@ -24,7 +24,7 @@
     // hledger every affordance below it is an invitation to press a button that
     // cannot work. That is the state a new user hits.
     import {onDestroy} from "svelte";
-    import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import AsyncSection from "#ui/components/AsyncSection.svelte";
     import MatchOverlay from "#lib/matching/ui/MatchOverlay.svelte";
     import {reviewLaunch} from "#lib/review/ui/launch.svelte.js";
     import ReviewOverlay from "#lib/review/ui/ReviewOverlay.svelte";
@@ -42,7 +42,7 @@
     import {journal} from "#lib/stores/journal.svelte.js";
     import {matches} from "#lib/stores/matches.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
-    import {provideRevealArm, reveal} from "#lib/ui/reveal.js";
+    import {provideRevealArm, reveal} from "#ui/ui/reveal.js";
 
     const sections = $derived(
         visibleSections({

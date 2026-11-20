@@ -31,7 +31,7 @@
      chart rather than silently dropped. The statements need no such rule: they
      are valued into one base commodity by the engine, as on the Reports tab. -->
 <script lang="ts">
-    import HScroll from "#lib/components/HScroll.svelte";
+    import HScroll from "#ui/components/HScroll.svelte";
     import PeriodLineChart from "#lib/components/PeriodLineChart.svelte";
     import ExportButton from "#lib/reports/ui/ExportButton.svelte";
     import {projectionExport} from "../export";

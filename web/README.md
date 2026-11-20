@@ -4,6 +4,28 @@ The SvelteKit SPA for Ledgeline. See `../plans/00-overview.md` for architecture 
 
 All commands run through the Nix dev shell (`nix develop path:..` from this directory, or direnv at the repo root). Bun is the package manager — never npm.
 
+## The shared UI package
+
+The look and the plumbing a second SPA (the invoicer) shares live in
+`../packages/ui` (`@ledgeline/ui`): the theme CSS and catalog, the UI scale and
+the breakpoints that follow it, the generic components (`DateInput`, `InfoTip`,
+`AsyncSection`, `FoldedControls`, `HScroll`, `ErrorToast`, `ChartLegend`), the
+API token/fetch base and the native bridge. Import it as `#ui/…`, the way
+`#lib/…` reaches this app's own code:
+
+```ts
+import DateInput from "#ui/components/DateInput.svelte";
+import {rootPx} from "#ui/theme/scale.js";
+```
+
+`src/app.css` imports its stylesheet first (`@import "@ledgeline/ui/theme.css"`),
+which also tells Tailwind to scan the package's classes. The package is source
+only: this app's vite build compiles it. Its own tests, svelte-check and lint run
+from its directory (`just test`, `just check` and `just lint` do both).
+
+`bun install` works from here or from the repo root: the root `package.json`
+makes `web/` and `packages/*` one bun workspace with one `bun.lock`.
+
 ## Developing
 
 ```sh
@@ -55,9 +77,10 @@ in practice means one of two things:
    to call that reproduces it.
 
 Name the file `Thing.svelte.test.ts` beside its component and the include globs
-route it to the right project automatically. `#lib/testing/` holds the shared
-setup, the fake-engine `fetch` stub and the wire fixtures; component tests drive
-the REAL stores through that stub rather than mocking them, because a mocked
+route it to the right project automatically. `#lib/testing/` holds the
+fake-engine `fetch` stub and the wire fixtures, and
+`../packages/ui/src/testing/componentSetup.ts` the jsdom stubs both suites share.
+Component tests drive the REAL stores through that stub rather than mocking them, because a mocked
 store proves the component renders what it is given, and what it is given is the
 thing that has broken twice.
 

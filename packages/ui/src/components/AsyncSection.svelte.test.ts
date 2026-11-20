@@ -20,10 +20,12 @@
 import {render, screen} from "@testing-library/svelte";
 import {createRawSnippet} from "svelte";
 import {describe, expect, it, vi} from "vitest";
-import {ApiUnreachableError} from "#lib/api/client.js";
-import {NativeApiUnavailableError, NATIVE_UNAVAILABLE_MESSAGE} from "#lib/api/native.js";
-import type {DataView} from "#lib/stores/loadState.js";
+import {ApiUnreachableError, NativeApiUnavailableError} from "#ui/api/client.js";
+import type {DataView} from "#ui/ui/dataView.js";
 import AsyncSection from "./AsyncSection.svelte";
+
+/** A missing-engine sentence, as an app supplies it (Ledgeline's is `NATIVE_UNAVAILABLE_MESSAGE` in web/src/lib/api/native.ts). */
+const NATIVE_UNAVAILABLE_MESSAGE = "This server doesn't provide Ledgeline's report API — start the Ledgeline engine.";
 
 /** The exact sentence the engine sends for an unpriceable `valueIn` (reports_api.rs). */
 const BAD_REQUEST = "cannot value these holdings in 'XYZZY': no price directive or cost annotation connects any holding in scope to it";

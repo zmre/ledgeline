@@ -16,7 +16,7 @@
     import {PRIORITY} from "#lib/keys/types.js";
     import {REVIEW_BUTTON} from "#lib/review/ui/buttons.js";
     import type {StagedRunKind} from "../stagedReview";
-    import {reveal, revealArm} from "#lib/ui/reveal.js";
+    import {reveal, revealArm} from "#ui/ui/reveal.js";
 
     let {
         unknowns,

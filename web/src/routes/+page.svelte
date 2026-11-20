@@ -5,7 +5,7 @@
     import {onMount, untrack} from "svelte";
     import {accrual} from "#lib/accrual/store.svelte.js";
     import {expandKeyOf, recognitionExpand} from "#lib/journal/recognitionExpand.svelte.js";
-    import ErrorToast from "#lib/components/ErrorToast.svelte";
+    import ErrorToast from "#ui/components/ErrorToast.svelte";
     import {styleOf} from "#lib/format/amounts.js";
     import ExportButton from "#lib/reports/ui/ExportButton.svelte";
     import FilterBar from "#lib/filters/FilterBar.svelte";

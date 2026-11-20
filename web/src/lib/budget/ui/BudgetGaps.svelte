@@ -19,7 +19,7 @@
      that says nothing is a row you have to open to learn whether it was worth
      opening. Each row links into the journal for the same span a bar does. -->
 <script lang="ts">
-    import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import AsyncSection from "#ui/components/AsyncSection.svelte";
     import type {MixedAmount} from "#lib/domain/money.js";
     import type {AmountStyle, ISODate} from "#lib/domain/types.js";
     import {openJournal} from "#lib/journal/openJournal.js";

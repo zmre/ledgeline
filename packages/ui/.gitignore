@@ -1,0 +1,4 @@
+node_modules
+# Vitest 5 artifacts (attachments, reports)
+.vitest
+vite.config.ts.timestamp-*

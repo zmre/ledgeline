@@ -4,7 +4,7 @@
      that month in the journal with its group row expanded. -->
 <script lang="ts">
     import {openRecognitionMonth} from "#lib/journal/openJournal.js";
-    import InfoTip from "#lib/components/InfoTip.svelte";
+    import InfoTip from "#ui/components/InfoTip.svelte";
     import type {AmountStyle} from "#lib/domain/types.js";
     import type {TopTxn} from "#lib/reports/insightsTypes.js";
     import {fmt} from "./format";

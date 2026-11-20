@@ -1,5 +1,5 @@
 // The New Transactions screen brings what a press made appear into view
-// (`#lib/ui/reveal`): the dry run after Test Import, the result after Write
+// (`#ui/ui/reveal`): the dry run after Test Import, the result after Write
 // changes — and leaves a dry run that was already there when the screen
 // mounted exactly where it is.
 //

@@ -16,8 +16,8 @@
     // pattern, through ONE writer — see holdings/ui/urlCodec.ts. Display styles
     // for the base commodity come from the engine's journal metadata (reportStyles).
     import {onMount} from "svelte";
-    import AsyncSection from "#lib/components/AsyncSection.svelte";
-    import ErrorToast from "#lib/components/ErrorToast.svelte";
+    import AsyncSection from "#ui/components/AsyncSection.svelte";
+    import ErrorToast from "#ui/components/ErrorToast.svelte";
     import {formatAmount, type Dec} from "#lib/domain/money.js";
     import {exportHoldingsXlsx} from "#lib/export/xlsx.js";
     import {styleOf} from "#lib/format/amounts.js";

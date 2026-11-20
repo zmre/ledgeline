@@ -11,8 +11,8 @@ import {goto} from "$app/navigation";
 import {resolve} from "$app/paths";
 import {page} from "$app/state";
 import {rulesStore} from "#lib/imports/rulesStore.svelte.js";
-import {isNative} from "#lib/native/detect.js";
-import {zoomIn, zoomOut, zoomReset} from "#lib/theme/zoom.svelte.js";
+import {isNative} from "#ui/native/detect.js";
+import {zoomIn, zoomOut, zoomReset} from "#ui/theme/zoom.svelte.js";
 import {keymap} from "./keymap.svelte";
 import {PRIORITY, type Layer} from "./types";
 

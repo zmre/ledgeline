@@ -25,7 +25,7 @@
      Filtering to chosen accounts happens before the report gets here
      (`filterAccountReport`), so the export narrows with it. -->
 <script lang="ts">
-    import HScroll from "#lib/components/HScroll.svelte";
+    import HScroll from "#ui/components/HScroll.svelte";
     import type {MixedAmount} from "#lib/domain/money.js";
     import type {AmountStyle} from "#lib/domain/types.js";
     import {formatTotals} from "#lib/journal/rowModel.js";

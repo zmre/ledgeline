@@ -25,7 +25,7 @@
     // "that name is taken" note is a courtesy that saves a round trip; the
     // `conflict` failure is the real answer and is shown when it comes back.
     import {untrack} from "svelte";
-    import {registerNativeOverlay} from "#lib/native/bridge.svelte.js";
+    import {registerNativeOverlay} from "#ui/native/bridge.svelte.js";
     import {projectionId} from "../scenarioModel";
     import type {ProjectionFile} from "../types";
 

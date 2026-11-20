@@ -1,0 +1,28 @@
+{
+    "//": "The compiler options web/ gets from SvelteKit's generated $app/tsconfig, minus the kit-only rootDirs/types, plus web's own strictness. This package has no SvelteKit, so it states them itself.",
+    "compilerOptions": {
+        "lib": ["ESNext", "DOM", "DOM.Iterable"],
+        "types": ["node", "svelte"],
+        "verbatimModuleSyntax": true,
+        "isolatedModules": true,
+        "allowJs": true,
+        "checkJs": true,
+        "forceConsistentCasingInFileNames": true,
+        "resolveJsonModule": true,
+        "moduleDetection": "force",
+        "moduleResolution": "bundler",
+        "allowImportingTsExtensions": true,
+        "module": "esnext",
+        "target": "esnext",
+        "skipLibCheck": true,
+        "esModuleInterop": true,
+        "noEmit": true,
+        "rewriteRelativeImportExtensions": true,
+        "sourceMap": true,
+        "strict": true,
+        "noImplicitReturns": true,
+        "noUnusedLocals": true,
+        "noUnusedParameters": true
+    },
+    "include": ["src", "vite.config.ts", "eslint.config.js"]
+}

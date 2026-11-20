@@ -1,7 +1,9 @@
 // The catalog against the theme stylesheets: every variant it lists is a
 // daisyUI theme in src/themes/, with the scheme it claims, and every swatch
 // colour is the value that theme file declares — the CSS is the source of
-// truth and the swatches are a tested copy.
+// truth and the swatches are a tested copy. (That the prefs wire and the
+// engine accept the same ids is Ledgeline's check, in
+// web/src/lib/settings/themeIds.test.ts.)
 
 import {readdirSync, readFileSync} from "node:fs";
 import {fileURLToPath} from "node:url";
@@ -22,7 +24,7 @@ import {
 } from "./catalog";
 import {daisyThemes, tokensFor} from "./themeCss";
 
-const THEMES_DIR = fileURLToPath(new URL("../../themes/", import.meta.url));
+const THEMES_DIR = fileURLToPath(new URL("../themes/", import.meta.url));
 const THEME_CSS = readdirSync(THEMES_DIR)
     .filter((name) => name.endsWith(".css"))
     .map((name) => readFileSync(THEMES_DIR + name, "utf8"))
@@ -130,34 +132,5 @@ describe("UNIT theme catalog against the CSS", () => {
         });
         const chart = tokensFor(THEME_CSS, `[data-theme="${id}"]`);
         expect(variant.swatch.chart).toEqual([1, 2, 3, 4].map((n) => chart.get(`--chart-${n}`)));
-    });
-});
-
-// Three copies of the theme id list must agree: this catalog (what the SPA can
-// render), the prefs wire (`THEME_IDS`, what the store accepts) and the engine's
-// `THEMES` (what `ui-prefs.toml` / `ledgeline.toml` validate against).
-describe("theme ids across the wire", () => {
-    it("THEME_PREF_IDS is the prefs THEME_IDS set", async () => {
-        const {THEME_IDS} = await import("#lib/settings/uiPrefs.js");
-        expect([...THEME_PREF_IDS].sort()).toEqual([...THEME_IDS].sort());
-    });
-
-    it("THEME_PREF_IDS is the engine's THEMES set", () => {
-        const rust = readFileSync(fileURLToPath(new URL("../../../../crates/ledgeline-server/src/ui_prefs.rs", import.meta.url)), "utf8");
-        const block = /const THEMES: &\[&str\] = &\[([^\]]*)\];/.exec(rust)?.[1] ?? "";
-        const ids = [...block.matchAll(/"([a-z-]+)"/g)].map((m) => m[1]);
-        expect(ids.sort()).toEqual([...THEME_PREF_IDS].sort());
-    });
-
-    it("the engine's family table resolves every family as the catalog does", () => {
-        const rust = readFileSync(fileURLToPath(new URL("../../../../crates/ledgeline-server/src/ui_prefs.rs", import.meta.url)), "utf8");
-        const block = /const THEME_FAMILY_VARIANTS: &\[\(&str, &str, &str\)\] = &\[([\s\S]*?)\];/.exec(rust)?.[1] ?? "";
-        const rows = [...block.matchAll(/\("([a-z-]+)", "([a-z-]+)", "([a-z-]+)"\)/g)].map((m) => [m[1], m[2], m[3]]);
-        const expected = THEME_FAMILIES.filter((f) => f.variants.light !== undefined && f.variants.dark !== undefined).map((f) => [
-            f.id,
-            f.variants.light,
-            f.variants.dark,
-        ]);
-        expect(rows).toEqual(expected);
     });
 });

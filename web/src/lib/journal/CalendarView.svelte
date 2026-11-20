@@ -27,7 +27,7 @@
     import {filters, localToday} from "#lib/stores/filters.svelte.js";
     import {journal} from "#lib/stores/journal.svelte.js";
     import {journalView} from "#lib/stores/journalView.svelte.js";
-    import {rootPx} from "#lib/theme/scale.js";
+    import {rootPx} from "#ui/theme/scale.js";
     import {calendarItem, fitDay, groupByDay, monthGrid, monthLabel, monthOf, shiftMonth, WEEKDAYS, type CalendarItem} from "./calendarModel";
     import {txnModal} from "./edit/modalState.svelte";
 

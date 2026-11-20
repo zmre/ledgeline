@@ -5,7 +5,7 @@
      after the title. -->
 <script lang="ts">
     import type {Snippet} from "svelte";
-    import InfoTip from "#lib/components/InfoTip.svelte";
+    import InfoTip from "#ui/components/InfoTip.svelte";
     import type {MetricHelp} from "./metricHelp";
 
     let {

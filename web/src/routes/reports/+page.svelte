@@ -10,8 +10,8 @@
     import {onMount} from "svelte";
     import {goto} from "$app/navigation";
     import {resolve} from "$app/paths";
-    import AsyncSection from "#lib/components/AsyncSection.svelte";
-    import ErrorToast from "#lib/components/ErrorToast.svelte";
+    import AsyncSection from "#ui/components/AsyncSection.svelte";
+    import ErrorToast from "#ui/components/ErrorToast.svelte";
     import {
         exportAccountReportXlsx,
         exportBalanceSheetXlsx,

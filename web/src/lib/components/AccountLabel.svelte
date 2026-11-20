@@ -60,7 +60,7 @@
     // RenameList makes). `title` is the full name too unless the caller passes
     // its own — the journal chips prefix theirs with "Edit category ·".
     import {abbreviateAccount, fitAccount} from "#lib/domain/accounts.js";
-    import {rootPx} from "#lib/theme/scale.js";
+    import {rootPx} from "#ui/theme/scale.js";
     import {CHIP_FONT_SIZE_REM, textMeasurer} from "./textWidth";
 
     let {

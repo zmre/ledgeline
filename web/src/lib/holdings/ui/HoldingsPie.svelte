@@ -21,7 +21,7 @@
        named-slice cap is the palette's slot count. -->
 <script lang="ts">
     import {PieChart, Tooltip} from "layerchart";
-    import ChartLegend from "#lib/components/ChartLegend.svelte";
+    import ChartLegend from "#ui/components/ChartLegend.svelte";
     import type {Dec} from "#lib/domain/money.js";
     import {chartColors} from "#lib/format/chartColors.svelte.js";
     import {unknownColor} from "#lib/format/palette.js";

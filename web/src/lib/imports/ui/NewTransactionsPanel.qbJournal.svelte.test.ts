@@ -103,7 +103,7 @@ describe("COMPONENT NewTransactionsPanel — the QuickBooks Journal format branc
         expect(screen.queryByTestId("qb-journal-panel")).toBeNull();
     });
     it("reveals the QuickBooks import's result after Import is pressed", async () => {
-        // `#lib/ui/reveal`, armed by QbJournalPanel's own handler: the stage
+        // `#ui/ui/reveal`, armed by QbJournalPanel's own handler: the stage
         // here is offered straight to the store, so no drop armed anything.
         await setup(
             {...CAPABILITIES, formats: [...CAPABILITIES.formats, "xlsx"]},

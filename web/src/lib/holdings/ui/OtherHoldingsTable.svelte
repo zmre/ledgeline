@@ -28,7 +28,7 @@
     import {openJournal} from "#lib/journal/openJournal.js";
     import {registerKeys} from "#lib/keys/keymap.svelte.js";
     import {PRIORITY} from "#lib/keys/types.js";
-    import {listCursor} from "#lib/ui/listCursor.svelte.js";
+    import {listCursor} from "#ui/ui/listCursor.svelte.js";
     import {gainWindowSuffix} from "./gainPeriod";
     import {EM_DASH, formatGainPct, formatHeldCommodities, sortOtherHoldings, type OtherSortKey} from "./view";
 

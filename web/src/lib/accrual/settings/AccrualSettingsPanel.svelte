@@ -4,7 +4,7 @@
      matcher's lookback and fee tolerance (Q3). Shown only with the accrual
      helpers on (D-gate); the tab itself is hidden otherwise. -->
 <script lang="ts">
-    import DateInput from "#lib/components/DateInput.svelte";
+    import DateInput from "#ui/components/DateInput.svelte";
     import {SETTLEMENT_LEAD_RANGE, SETTLEMENT_LOOKBACK_RANGE, SETTLEMENT_TOLERANCE_RANGE} from "#lib/settings/uiPrefs.js";
     import {localToday} from "#lib/stores/filters.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";

@@ -12,15 +12,13 @@ import type {SaveHledgerConfBody} from "#lib/settings/hledgerConfTypes.js";
 import type {PinnableUiPrefKey, UiPrefsPatch} from "#lib/settings/uiPrefs.js";
 import {decodeProblem} from "#lib/sync/decode.js";
 import type {WireAccountPatch, WireLinkRequest, WireManualUpdate, WireProblem} from "#lib/sync/types.js";
+import {NativeApiUnavailableError} from "#ui/api/client.js";
 import {ApiUnreachableError, authHeaders, REQUEST_TIMEOUT_MS, withDeadline} from "./client";
 
-/** The configured server answered, but has no /api/* routes (it is not the Ledgeline engine, or predates the route). */
-export class NativeApiUnavailableError extends Error {
-    constructor(message: string, options?: ErrorOptions) {
-        super(message, options);
-        this.name = "NativeApiUnavailableError";
-    }
-}
+/** The configured server answered, but has no /api/* routes (it is not the
+ * Ledgeline engine, or predates the route). The class is the shared one in
+ * `#ui/api/client`, so `AsyncSection` (packages/ui) recognises it. */
+export {NativeApiUnavailableError};
 
 /** User-facing copy for the missing-engine case (a 404 or non-JSON on /api/*). */
 export const NATIVE_UNAVAILABLE_MESSAGE = "This server doesn't provide Ledgeline's report API — start the Ledgeline engine.";

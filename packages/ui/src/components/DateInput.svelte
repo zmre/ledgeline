@@ -1,5 +1,5 @@
 <script lang="ts" module>
-    import {datePattern} from "#lib/format/datePattern.js";
+    import {datePattern} from "#ui/format/datePattern.js";
 
     /** The runtime's locale, once: it does not change under a running page. */
     const HINT = datePattern();

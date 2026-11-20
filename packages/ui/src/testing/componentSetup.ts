@@ -1,9 +1,10 @@
-// Setup for the `components` vitest project (see `vite.config.ts`).
+// Setup for the `components` vitest project, here and in web/ (both
+// vite.config.ts files point at this one file, so the two suites mount
+// components into the same stubbed jsdom).
 //
-// Nothing in the app imports anything from `#lib/testing`, so none of it reaches
-// a bundle — it lives under `src/lib` rather than beside the config so that
-// `tsc --noEmit` and `svelte-check` type-check it like every other module, and
-// so a test can say `#lib/testing/…` instead of counting `../`s.
+// Nothing in either app imports it, so none of it reaches a bundle — it lives
+// under `src` rather than beside a config so that `tsc --noEmit` and
+// `svelte-check` type-check it like every other module.
 
 import {cleanup} from "@testing-library/svelte";
 import {afterEach} from "vitest";
@@ -26,7 +27,7 @@ if (typeof Element !== "undefined" && Element.prototype.scrollIntoView === undef
 // import, so any test importing a LayerChart component dies before its first
 // assertion. Reporting "no preference" is the honest stub, and it is what the
 // app assumes on a surface that has never asked. The one exception is a fine
-// pointer (`#lib/keys/hint.svelte.ts`, plan 42): the app's default surface is a
+// pointer (Ledgeline's `#lib/keys/hint.svelte.ts`, plan 42): the app's default surface is a
 // desktop with a mouse, so the keyboard hints it assumes stay in the tooltips.
 if (typeof window !== "undefined" && window.matchMedia === undefined) {
     window.matchMedia = (query: string): MediaQueryList =>
