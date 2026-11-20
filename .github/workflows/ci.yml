@@ -503,6 +503,18 @@ jobs:
       - name: Type check (svelte-check + tsc)
         run: bun run check
 
+      # The shared UI package (themes, scale, generic components, API token
+      # base, native bridge). web/'s build and suite compile it, but its own
+      # tests and its svelte-check run here: svelte-check only reports on the
+      # directory it is pointed at.
+      - name: UI package unit tests (vitest)
+        working-directory: packages/ui
+        run: bun run test:unit
+
+      - name: UI package type check (svelte-check + tsc)
+        working-directory: packages/ui
+        run: bun run check
+
   # The two suites that need a REAL engine behind the SPA, sharing one build of
   # the binary:
   #   * the round-trip contract tests (vitest, `describe.runIf(LEDGELINE_API_URL)`)
@@ -613,7 +625,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # Advisory scans of Cargo.lock and web/bun.lock. Defined in audit.yml so the
+  # Advisory scans of Cargo.lock and bun.lock. Defined in audit.yml so the
   # same two jobs also run on a daily schedule — see there for why. The ignore
   # lists live in scripts/audit.sh.
   audit:
