@@ -41,9 +41,8 @@ mod common;
 // `allow(dead_code)` because this file uses a different subset of them than
 // `tests/prefs.rs` does — the modules themselves carry no blanket allow any
 // more, now that `import_api.rs` consumes them.
-#[path = "../src/app_dirs.rs"]
-#[allow(dead_code)]
-mod app_dirs;
+// `app_dirs` is the shared shell's; see `tests/prefs.rs`.
+use ledgeline_shell::app_dirs;
 
 #[path = "../src/prefs.rs"]
 #[allow(dead_code)]

@@ -1,7 +1,9 @@
-//! Ledgeline ▸ "Make Ledgeline the Default for Journal Files" (macOS).
+//! <App> ▸ "Make <App> the Default for <Documents>" (macOS): an app-menu
+//! command, described by a [`DefaultHandler`] (Ledgeline's: "Make Ledgeline
+//! the Default for Journal Files").
 //!
-//! `assets/Info.plist.in` already claims journals at `Owner` rank, which makes
-//! Ledgeline the default on a Mac where nothing else claims them. Rank is only
+//! An app's `Info.plist` can claim its document types at `Owner` rank, which
+//! makes it the default on a Mac where nothing else claims them. Rank is only
 //! a tie-breaker between apps, though: another app claiming the same type at
 //! `Owner` (an editor that imports `org.ledger-cli.journal`, say) leaves the
 //! choice to Launch Services, and it can flip each time either app is
@@ -31,88 +33,99 @@ use objc2_core_services::{
     LSSetDefaultRoleHandlerForContentType,
 };
 
-const MENU_ID: &str = "make-default-for-journals";
+use crate::AppIdentity;
 
-/// `CFBundleIdentifier` in `assets/Info.plist.in`.
-const BUNDLE_ID: &str = "com.zmre.ledgeline";
-
-/// The content types the command makes Ledgeline the default for: every type
-/// in the plist's `Owner`-ranked document type (a unit test holds the two
-/// lists together). The `Alternate` ones (`.ledger`, `.j`) are left alone on
-/// purpose; see the plist's comment.
-const DEFAULT_CONTENT_TYPES: [&str; 2] = ["com.zmre.ledgeline.journal", "org.ledger-cli.journal"];
+/// One app's "make me the default" command: its menu item, the content types
+/// it claims, and what the dialogs say. The bundle id is the app's
+/// [`AppIdentity::bundle_id`].
+#[derive(Debug)]
+pub struct DefaultHandler {
+    pub app: &'static AppIdentity,
+    /// The menu item's id.
+    pub menu_id: &'static str,
+    /// The menu item's label.
+    pub menu_label: &'static str,
+    /// The content types the command makes the app the default for: every
+    /// type in its plist's `Owner`-ranked document type (an app keeps a unit
+    /// test holding the two lists together).
+    pub content_types: &'static [&'static str],
+    /// The success dialog's title and text.
+    pub done_title: &'static str,
+    pub done_text: &'static str,
+    /// The failure dialog's title.
+    pub failed_title: &'static str,
+}
 
 #[derive(Debug, thiserror::Error)]
 enum FileAssocError {
     #[error(
-        "Ledgeline is not running from an app bundle ({exe}), so there is no app to make the default."
+        "{app} is not running from an app bundle ({exe}), so there is no app to make the default."
     )]
-    NotInBundle { exe: String },
+    NotInBundle { app: &'static str, exe: String },
     #[error("Launch Services could not register {bundle} (OSStatus {status}).")]
     Register { bundle: String, status: i32 },
     #[error(
         "Launch Services refused to set the default app for {content_type} (OSStatus {status})."
     )]
     SetDefault { content_type: String, status: i32 },
-    #[error("The default app for {content_type} is still {actual} after setting it to Ledgeline.")]
+    #[error("The default app for {content_type} is still {actual} after setting it to {app}.")]
     NotApplied {
+        app: &'static str,
         content_type: String,
         actual: String,
     },
 }
 
-/// The app-menu item.
-pub(super) fn menu_item() -> MenuItem {
-    MenuItem::with_id(
-        MENU_ID,
-        "Make Ledgeline the Default for Journal Files",
-        true,
-        None,
-    )
-}
-
-/// Run the command if `id` is ours. Returns whether it was.
-pub(super) fn handle(id: &MenuId) -> bool {
-    if *id != MENU_ID {
-        return false;
+impl DefaultHandler {
+    /// The app-menu item.
+    #[must_use]
+    pub fn menu_item(&self) -> MenuItem {
+        MenuItem::with_id(self.menu_id, self.menu_label, true, None)
     }
-    std::thread::spawn(|| match make_default() {
-        Ok(()) => show(
-            rfd::MessageLevel::Info,
-            "Ledgeline is now the default",
-            "Double-clicking a .journal or .hledger file in Finder now opens it in Ledgeline.",
-        ),
-        Err(error) => {
-            eprintln!("ledgeline: make default failed: {error}");
-            show(
-                rfd::MessageLevel::Error,
-                "Could not make Ledgeline the default",
-                &error.to_string(),
-            );
-        }
-    });
-    true
-}
 
-fn make_default() -> Result<(), FileAssocError> {
-    // Canonical, because `bin/ledgeline` in a Nix profile is a symlink INTO the
-    // bundle and the bundle is what we need.
-    let exe = std::env::current_exe()
-        .and_then(|exe| exe.canonicalize())
-        .map_err(|error| FileAssocError::NotInBundle {
-            exe: error.to_string(),
+    /// Run the command if `id` is ours. Returns whether it was.
+    pub fn handle(&'static self, id: &MenuId) -> bool {
+        if *id != self.menu_id {
+            return false;
+        }
+        std::thread::spawn(move || match self.make_default() {
+            Ok(()) => show(rfd::MessageLevel::Info, self.done_title, self.done_text),
+            Err(error) => {
+                eprintln!("{}: make default failed: {error}", self.app.log_prefix);
+                show(
+                    rfd::MessageLevel::Error,
+                    self.failed_title,
+                    &error.to_string(),
+                );
+            }
+        });
+        true
+    }
+
+    fn make_default(&self) -> Result<(), FileAssocError> {
+        let app = self.app.name;
+        // Canonical, because `bin/ledgeline` in a Nix profile is a symlink INTO the
+        // bundle and the bundle is what we need.
+        let exe = std::env::current_exe()
+            .and_then(|exe| exe.canonicalize())
+            .map_err(|error| FileAssocError::NotInBundle {
+                app,
+                exe: error.to_string(),
+            })?;
+        let bundle = enclosing_app_bundle(&exe).ok_or_else(|| FileAssocError::NotInBundle {
+            app,
+            exe: exe.display().to_string(),
         })?;
-    let bundle = enclosing_app_bundle(&exe).ok_or_else(|| FileAssocError::NotInBundle {
-        exe: exe.display().to_string(),
-    })?;
-    register(bundle)?;
-    DEFAULT_CONTENT_TYPES
-        .iter()
-        .try_for_each(|content_type| set_default(content_type))
+        register(bundle)?;
+        self.content_types
+            .iter()
+            .try_for_each(|content_type| set_default(self.app, content_type))
+    }
 }
 
 /// The `.app` bundle an executable at `…/X.app/Contents/MacOS/<exe>` lives in.
-fn enclosing_app_bundle(exe: &Path) -> Option<&Path> {
+#[must_use]
+pub fn enclosing_app_bundle(exe: &Path) -> Option<&Path> {
     let macos = exe
         .parent()
         .filter(|dir| dir.file_name() == Some("MacOS".as_ref()))?;
@@ -141,9 +154,9 @@ fn register(bundle: &Path) -> Result<(), FileAssocError> {
 }
 
 #[allow(deprecated)] // see the module docs
-fn set_default(content_type: &str) -> Result<(), FileAssocError> {
+fn set_default(app: &AppIdentity, content_type: &str) -> Result<(), FileAssocError> {
     let uti = CFString::from_str(content_type);
-    let handler = CFString::from_str(BUNDLE_ID);
+    let handler = CFString::from_str(app.bundle_id);
     // SAFETY: both arguments are valid, retained CFStrings that outlive the
     // call, which only reads them.
     let status = unsafe { LSSetDefaultRoleHandlerForContentType(&uti, LSRolesMask::All, &handler) };
@@ -159,8 +172,9 @@ fn set_default(content_type: &str) -> Result<(), FileAssocError> {
     let actual = unsafe { LSCopyDefaultRoleHandlerForContentType(&uti, LSRolesMask::All) }
         .map(|id| id.to_string());
     match actual {
-        Some(id) if id.eq_ignore_ascii_case(BUNDLE_ID) => Ok(()),
+        Some(id) if id.eq_ignore_ascii_case(app.bundle_id) => Ok(()),
         other => Err(FileAssocError::NotApplied {
+            app: app.name,
             content_type: content_type.to_string(),
             actual: other.unwrap_or_else(|| "unset".to_string()),
         }),
@@ -180,7 +194,7 @@ fn show(level: rfd::MessageLevel, title: &str, text: &str) {
 mod tests {
     use std::path::Path;
 
-    use super::{BUNDLE_ID, DEFAULT_CONTENT_TYPES, enclosing_app_bundle};
+    use super::enclosing_app_bundle;
 
     #[test]
     fn finds_the_bundle_around_its_executable() {
@@ -206,52 +220,5 @@ mod tests {
             enclosing_app_bundle(Path::new("/tmp/Ledgeline/Contents/MacOS/ledgeline")),
             None
         );
-    }
-
-    /// The plist template, read at run time: `include_str!` would reach outside
-    /// the published crate. The Nix source filter keeps this one file.
-    fn info_plist() -> String {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/Info.plist.in");
-        std::fs::read_to_string(&path)
-            .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()))
-    }
-
-    /// Text between `<key>{key}</key>` and the next top-level key.
-    fn section<'a>(plist: &'a str, key: &str, next_key: &str) -> &'a str {
-        let start = plist
-            .find(&format!("<key>{key}</key>"))
-            .unwrap_or_else(|| panic!("{key} missing from Info.plist.in"));
-        let end = plist[start..]
-            .find(&format!("<key>{next_key}</key>"))
-            .map_or(plist.len(), |offset| start + offset);
-        &plist[start..end]
-    }
-
-    #[test]
-    fn the_plist_claims_every_type_the_command_sets_at_owner_rank() {
-        let plist = info_plist();
-        let document_types = section(
-            &plist,
-            "CFBundleDocumentTypes",
-            "UTExportedTypeDeclarations",
-        );
-        let owner = document_types
-            .split("</dict>")
-            .find(|dict| dict.contains("<string>Owner</string>"))
-            .expect("an Owner-ranked document type");
-        let claimed: Vec<&str> = owner
-            .split("<string>")
-            .skip(1)
-            .filter_map(|rest| rest.split("</string>").next())
-            .filter(|value| value.contains('.'))
-            .collect();
-        assert_eq!(claimed, DEFAULT_CONTENT_TYPES);
-    }
-
-    #[test]
-    fn the_plist_bundle_id_is_the_one_the_command_names() {
-        assert!(info_plist().contains(&format!(
-            "<key>CFBundleIdentifier</key>\n  <string>{BUNDLE_ID}</string>"
-        )));
     }
 }
