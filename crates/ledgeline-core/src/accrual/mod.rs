@@ -66,6 +66,7 @@
 //! assert!(schedule.rules[0].text.starts_with("~ monthly from 2026-11-17 to 2027-10-18"));
 //! ```
 
+pub mod apply;
 pub mod book;
 pub mod books_config;
 pub mod documents;

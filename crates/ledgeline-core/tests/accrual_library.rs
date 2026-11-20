@@ -718,3 +718,222 @@ fn documents_are_found_by_number_rebooked_and_voided() {
         Err(OpsError::DocumentNotFound(_))
     ));
 }
+
+/// Cash books: deposits as a bank import writes them, hand-aligned, one
+/// with a processor fee and a note under the bank leg.
+const CASH_BOOKS: &str = "\
+account assets:bank  ; type: C
+account income:unknown  ; type: R
+account revenue:consulting  ; type: R
+account revenue:consulting:delivery  ; type: R
+account expenses:payment fees  ; type: X
+
+2026-03-02 * STRIPE PAYOUT ACME  ; id: tx-77
+    assets:bank                          $1,940.00
+    ; imported 2026-03-03
+    expenses:payment fees                   $60.00
+    income:unknown
+
+2026-03-10 * WIRE CUSTOMER X INV 106
+    assets:bank        $500.00  ; bank-ref: 9921
+    income:unknown    $-500.00
+";
+
+#[test]
+fn cash_books_apply_payment_keeps_the_bank_leg_and_undoes_exactly() {
+    use ledgeline_core::accrual::apply::{self, ApplyPayment, CashInvoice};
+    use ledgeline_core::accrual::settle::{Fit, SettleSettings};
+    use ledgeline_core::edit::EditOp;
+    let (vault, books) = mem_books(CASH_BOOKS);
+    let text = || vault.text("books.journal").expect("journal");
+    let original = text();
+    let split = |pairs: &[(&str, i128)]| -> Vec<(String, Dec)> {
+        pairs
+            .iter()
+            .map(|(a, c)| ((*a).to_string(), Dec::new(*c, 2)))
+            .collect()
+    };
+    let customer_x = customer("Customer X");
+
+    // The candidates for invoice 105 ($2,000): the Stripe payout is exact.
+    let loaded = books.load().expect("loads");
+    let invoice = CashInvoice {
+        number: "105".into(),
+        party: customer_x.clone(),
+        date: "2026-03-01".into(),
+        due: money(loaded.journal(), "$", Dec::new(200_000, 2)),
+    };
+    let found = apply::candidates(
+        loaded.journal(),
+        &invoice,
+        &SettleSettings::default(),
+        "2026-03-31",
+    );
+    assert_eq!(found[0].fit, Fit::Exact, "{found:?}");
+    let (_, stripe) = find(loaded.journal(), "STRIPE PAYOUT ACME");
+    assert_eq!(found[0].tindex, stripe.index);
+
+    // Apply: the income side becomes the invoice's rows; nothing else moves.
+    let mut loaded = books.load().expect("loads");
+    let fingerprint = loaded
+        .editor()
+        .transaction_fingerprint(stripe.index)
+        .expect("fingerprint");
+    let request = ApplyPayment {
+        tindex: stripe.index,
+        fingerprint: fingerprint.clone(),
+        number: "105".into(),
+        party: customer_x.clone(),
+        split: split(&[
+            ("revenue:consulting", 120_000),
+            ("revenue:consulting:delivery", 80_000),
+        ]),
+    };
+    let applied = loaded.apply_payment(&request, None).expect("applies");
+    assert!(!applied.partial);
+    let after = text();
+    for kept in [
+        "2026-03-02 * STRIPE PAYOUT ACME  ; id: tx-77, invoice:105\n",
+        "    revenue:consulting           $-1200.00  ; customer: Customer X\n",
+        "    assets:bank                          $1,940.00\n    ; imported 2026-03-03\n    expenses:payment fees                   $60.00\n",
+    ] {
+        assert!(after.contains(kept), "{kept:?} in\n{after}");
+    }
+    assert!(!after.contains("income:unknown\n\n"), "{after}");
+    let loaded = books.load().expect("loads");
+    let (_, paid) = find(loaded.journal(), "STRIPE PAYOUT ACME");
+    let lines: Vec<(&str, Dec, Option<&str>)> = paid
+        .postings
+        .iter()
+        .map(|p| {
+            (
+                p.account.0.as_str(),
+                p.amounts[0].quantity,
+                tag_value(&p.tags, "customer"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        lines,
+        vec![
+            ("assets:bank", Dec::new(194_000, 2), None),
+            ("expenses:payment fees", Dec::new(6_000, 2), None),
+            (
+                "revenue:consulting",
+                Dec::new(-120_000, 2),
+                Some("Customer X")
+            ),
+            (
+                "revenue:consulting:delivery",
+                Dec::new(-80_000, 2),
+                Some("Customer X")
+            ),
+        ]
+    );
+    // It is never a booked document.
+    assert!(loaded.find_document("105").is_none());
+    // Applied twice: refused.
+    assert!(matches!(
+        books.load().expect("loads").apply_payment(
+            &ApplyPayment {
+                fingerprint: loaded
+                    .editor()
+                    .transaction_fingerprint(paid.index)
+                    .expect("fp"),
+                ..request.clone()
+            },
+            None
+        ),
+        Err(OpsError::Refused(_))
+    ));
+
+    // Undo restores the deposit's text exactly.
+    books
+        .load()
+        .expect("loads")
+        .undo_apply_payment(&applied.undo, None)
+        .expect("undoes");
+    assert_eq!(text(), original);
+    // A second undo finds nothing with that fingerprint.
+    assert!(matches!(
+        books
+            .load()
+            .expect("loads")
+            .undo_apply_payment(&applied.undo, None),
+        Err(OpsError::Stale)
+    ));
+
+    // A partial payment ($500 of $2,000) splits 300 / 200, pro rata.
+    let mut loaded = books.load().expect("loads");
+    let (_, wire) = find(loaded.journal(), "WIRE CUSTOMER X INV 106");
+    let partial = loaded
+        .apply_payment(
+            &ApplyPayment {
+                tindex: wire.index,
+                fingerprint: loaded
+                    .editor()
+                    .transaction_fingerprint(wire.index)
+                    .expect("fp"),
+                number: "106".into(),
+                party: customer_x.clone(),
+                split: split(&[
+                    ("revenue:consulting", 120_000),
+                    ("revenue:consulting:delivery", 80_000),
+                ]),
+            },
+            None,
+        )
+        .expect("applies");
+    assert!(partial.partial);
+    assert_eq!(
+        partial.applied,
+        split(&[
+            ("revenue:consulting", 30_000),
+            ("revenue:consulting:delivery", 20_000)
+        ])
+    );
+    assert!(text().contains("    assets:bank        $500.00  ; bank-ref: 9921\n"));
+
+    // The deposit edited elsewhere after its fingerprint was taken: refused,
+    // nothing written.
+    let mut loaded = books.load().expect("loads");
+    let stale = loaded
+        .editor()
+        .transaction_fingerprint(stripe.index)
+        .expect("fp");
+    let edited = text().replace("STRIPE PAYOUT ACME", "STRIPE PAYOUT ACME CORP");
+    vault.modify_externally("books.journal", &edited);
+    let mut loaded_fresh = books.load().expect("loads");
+    assert!(matches!(
+        loaded_fresh.apply_payment(
+            &ApplyPayment {
+                fingerprint: stale.clone(),
+                ..request.clone()
+            },
+            None
+        ),
+        Err(OpsError::ExternalChange)
+    ));
+    assert!(matches!(
+        loaded.apply_payment(
+            &ApplyPayment {
+                fingerprint: stale,
+                ..request
+            },
+            None
+        ),
+        Err(OpsError::ExternalChange)
+    ));
+    assert_eq!(text(), edited);
+
+    // A restore text that smuggles a directive in is refused.
+    let mut editor = books.load().expect("loads").into_editor();
+    let (_, txn) = find(editor.journal(), "STRIPE PAYOUT ACME CORP");
+    let fp = editor.transaction_fingerprint(txn.index).expect("fp");
+    let smuggled = "2026-03-02 x\n    assets:bank  $1.00\n    income:unknown\naccount evil\n";
+    assert!(
+        editor
+            .apply_batch(&[(txn.index, fp, vec![EditOp::SetText(smuggled.into())])])
+            .is_err()
+    );
+}

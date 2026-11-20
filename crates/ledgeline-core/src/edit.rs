@@ -295,6 +295,26 @@ pub enum EditOp {
     /// given: one with no amount is written blank (elided), one with an
     /// amount carries it, whatever the file said before (plan 32 D35).
     Replace(Box<Transaction>),
+    /// Replace the WRITTEN postings `postings` (strictly ascending, at least
+    /// one) — each one's line and the `;` lines under it — with `with` (at
+    /// least one), rendered as [`format_transaction`] renders postings and
+    /// placed where the first of them was. Every other line of the
+    /// transaction stays byte for byte, so re-splitting a deposit's income
+    /// side never touches its bank leg (invoicer I17). Postings after the
+    /// replaced ones shift, so it may not follow a posting op in its entry,
+    /// and at most one may appear in an entry.
+    ReplacePostings {
+        /// 0-based posting positions, counting the postings the file writes.
+        postings: Vec<usize>,
+        /// The postings written in their place.
+        with: Vec<Posting>,
+    },
+    /// The transaction's whole source text, exactly as given — the undo of
+    /// an edit that kept the text it replaced. It must be one transaction: a
+    /// date line, then only indented lines, no blank line among them; and
+    /// the entry's only op. Re-parsed, its written postings must read back
+    /// as the text says on its own.
+    SetText(String),
 }
 
 /// Where [`JournalEditor::add_transaction`] places the new transaction.
@@ -3355,11 +3375,35 @@ struct Expected {
     /// multiset (a tag appended to the same-line comment reads back ahead of
     /// any on the `;` lines under it), rather than to the exact text.
     tagged_postings: HashMap<usize, Vec<String>>,
+    /// The postings an [`EditOp::ReplacePostings`] rendered: held to their
+    /// account, type, status, amount by value and tags, not their text.
+    rendered: Vec<usize>,
+    /// An [`EditOp::SetText`] wrote the whole text: the model is that text
+    /// parsed on its own, and only the written postings are compared.
+    restored: bool,
 }
 
 impl Expected {
     /// Hold `parsed` (the reparse of the rewrite of `original`) to the ops.
     fn check(&self, original: &Transaction, parsed: &Transaction) -> Result<(), EditError> {
+        if self.restored {
+            let written = Transaction {
+                postings: parsed
+                    .postings
+                    .iter()
+                    .filter(|p| p.generated.is_none())
+                    .cloned()
+                    .collect(),
+                ..parsed.clone()
+            };
+            if !is_balanced(&parsed.postings)? {
+                return Err(EditError::Unbalanced);
+            }
+            if !transactions_equivalent(&self.model, &written) || self.model.tags != parsed.tags {
+                return Err(EditError::RoundTripMismatch);
+            }
+            return Ok(());
+        }
         if self.replaced {
             if !is_balanced(&parsed.postings)? {
                 return Err(EditError::Unbalanced);
@@ -3380,6 +3424,19 @@ impl Expected {
             let postings_kept = parsed.postings.len() == model.postings.len()
                 && model.postings.iter().zip(&parsed.postings).enumerate().all(
                     |(at, (want, got))| {
+                        if self.rendered.contains(&at) {
+                            return want.account == got.account
+                                && want.ptype == got.ptype
+                                && want.status == got.status
+                                && want.elided == got.elided
+                                && (want.amounts.is_empty()
+                                    || amounts_equivalent(&want.amounts, &got.amounts))
+                                && sorted_tags(&want.tags) == sorted_tags(&got.tags)
+                                && assertions_equivalent(
+                                    want.balance_assertion.as_ref(),
+                                    got.balance_assertion.as_ref(),
+                                );
+                        }
                         let comment_kept = match self.tagged_postings.get(&at) {
                             Some(names) => {
                                 comment_without_tags(&want.comment, names)
@@ -3564,6 +3621,8 @@ fn rewrite_transaction(
         added_tags: Vec::new(),
         comment: None,
         tagged_postings: HashMap::new(),
+        rendered: Vec::new(),
+        restored: false,
     };
     for (at, op) in ops.iter().enumerate() {
         match op {
@@ -3589,6 +3648,64 @@ fn rewrite_transaction(
                     posting.elided = posting.amounts.is_empty();
                 }
                 expected.replaced = true;
+            }
+            EditOp::ReplacePostings { postings, with } => {
+                if postings.is_empty()
+                    || with.is_empty()
+                    || postings.windows(2).any(|pair| pair[0] >= pair[1])
+                {
+                    return Err(EditError::Unsupported(
+                        "a posting replacement names its postings in ascending order, once \
+                         each, and writes at least one in their place"
+                            .to_string(),
+                    ));
+                }
+                if !expected.tagged_postings.is_empty() || !expected.rendered.is_empty() {
+                    return Err(EditError::Unsupported(
+                        "a posting replacement must come before any other posting edit of its \
+                         transaction"
+                            .to_string(),
+                    ));
+                }
+                for posting in with {
+                    refuse_line_breaks("an account", &posting.account.0)?;
+                    if posting.amounts.len() > 1 || posting.generated.is_some() {
+                        return Err(EditError::Unsupported(
+                            "a replacement posting carries one amount and is written".to_string(),
+                        ));
+                    }
+                }
+                for &posting in postings {
+                    written_posting(&mut expected.model, txn.index, posting)?;
+                }
+                text = rewrite_postings(&text, postings, with, terminator)?;
+                let first = postings[0];
+                for &posting in postings.iter().rev() {
+                    expected.model.postings.remove(posting);
+                }
+                for (k, posting) in with.iter().enumerate() {
+                    let mut posting = posting.clone();
+                    posting.elided = posting.amounts.is_empty();
+                    posting.tags = comment_lines(&posting.comment)
+                        .flat_map(parse_tags)
+                        .collect();
+                    expected.model.postings.insert(first + k, posting);
+                    expected.rendered.push(first + k);
+                }
+            }
+            EditOp::SetText(body) => {
+                if at != 0 || ops.len() != 1 {
+                    return Err(EditError::Unsupported(
+                        "a text restore must be its transaction's only edit".to_string(),
+                    ));
+                }
+                expected.model = restorable(body)?;
+                expected.restored = true;
+                text = if body.ends_with('\n') || !old.ends_with('\n') {
+                    body.clone()
+                } else {
+                    format!("{body}{terminator}")
+                };
             }
             EditOp::SetDescription(description) => {
                 refuse_line_breaks("a description", description)?;
@@ -3701,6 +3818,95 @@ fn rewrite_transaction(
         }
     }
     Ok(Rewrite { text, expected })
+}
+
+/// `text` with the written postings `postings` (ascending) — each one's line
+/// and the `;` lines under it — replaced by `with`, rendered as
+/// [`format_transaction`] renders postings (aligned among themselves), in
+/// the place of the first. Every other line is kept byte for byte.
+fn rewrite_postings(
+    text: &str,
+    postings: &[usize],
+    with: &[Posting],
+    terminator: &str,
+) -> Result<String, EditError> {
+    let mut lines = span_lines(text);
+    let mut ranges = Vec::with_capacity(postings.len());
+    for &posting in postings {
+        let at = posting_line_at(&lines, posting)?;
+        let end = (at + 1..lines.len())
+            .take_while(|&line| is_comment_content(&lines[line].content))
+            .last()
+            .unwrap_or(at);
+        ranges.push(at..=end);
+    }
+    let (Some(first), Some(last)) = (ranges.first(), ranges.last()) else {
+        return Err(EditError::Internal("no posting to replace".to_string()));
+    };
+    let first = *first.start();
+    let last_end = lines[*last.end()].end.clone();
+    for range in ranges.iter().rev() {
+        lines.drain(range.clone());
+    }
+    let amount_col = with
+        .iter()
+        .filter(|p| !p.amounts.is_empty())
+        .map(|p| account_field(p).chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut rendered: Vec<String> = Vec::new();
+    for posting in with {
+        rendered.extend(format_posting_lines(posting, amount_col));
+        for line in comment_lines(&posting.comment).skip(1) {
+            rendered.push(if line.is_empty() {
+                "    ;".to_string()
+            } else {
+                format!("    ; {line}")
+            });
+        }
+    }
+    let at_end = first == lines.len();
+    let count = rendered.len();
+    let new_lines = rendered
+        .into_iter()
+        .enumerate()
+        .map(|(k, content)| SpanLine {
+            content,
+            end: if at_end && k + 1 == count {
+                last_end.clone()
+            } else {
+                terminator.to_string()
+            },
+        });
+    lines.splice(first..first, new_lines);
+    Ok(join_span(&lines))
+}
+
+/// `body` parsed on its own as the one transaction an [`EditOp::SetText`]
+/// restores: a date line, then only indented lines with no blank line among
+/// them (so nothing in it can be a directive or a second transaction).
+fn restorable(body: &str) -> Result<Transaction, EditError> {
+    let refuse = |why: &str| Err(EditError::Unsupported(format!("a restored text {why}")));
+    let mut lines = body.trim_end_matches(['\n', '\r']).split('\n');
+    if !lines
+        .next()
+        .is_some_and(|header| header.starts_with(|c: char| c.is_ascii_digit()))
+    {
+        return refuse("must start with its date line");
+    }
+    if lines.any(|line| {
+        let line = line.trim_end_matches('\r');
+        line.trim().is_empty() || !line.starts_with([' ', '\t'])
+    }) {
+        return refuse("may hold only its own indented lines after the date line");
+    }
+    let parsed = crate::parse::parse_journal(body, "restore.journal").map_err(|error| {
+        EditError::Unsupported(format!("a restored text does not parse: {error}"))
+    })?;
+    match parsed.transactions.as_slice() {
+        [txn] => Ok(txn.clone()),
+        _ => refuse("must be exactly one transaction"),
+    }
 }
 
 /// The `posting`-th written posting of `model`, which an op may address: a

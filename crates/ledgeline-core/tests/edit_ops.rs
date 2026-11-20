@@ -708,3 +708,152 @@ fn txn_comment_reads_commas_as_hledger_does() {
         "2026-10-12 Payee  ; a, b, c\n    expenses:a  $1.00\n    assets:b\n"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ReplacePostings and SetText (invoicer I17: Apply payment and its undo)
+// ---------------------------------------------------------------------------
+
+fn new_posting(account: &str, amount: &str, comment: &str) -> ledgeline_core::model::Posting {
+    let text = format!("2026-01-01 x\n    {account}  {amount}\n    y\n");
+    let parsed = ledgeline_core::parse_journal(&text, "p.journal").expect("parses");
+    let mut posting = parsed.transactions[0].postings[0].clone();
+    posting.comment = comment.to_string();
+    posting.tags = Vec::new();
+    posting
+}
+
+const DEPOSIT: &str = "\
+2026-03-02 * Payout  ; id: tx-77
+    assets:bank            $1,940.00
+    ; imported
+    income:unknown         $-1,000.00  ; first
+    ; under first
+    expenses:fees             $60.00
+    income:other          $-1,000.00
+2026-03-03 Other
+    a  $1
+    b
+";
+
+#[test]
+fn replace_postings_rewrites_only_the_named_postings() {
+    let with = vec![
+        new_posting("revenue:a", "$-1500.00", "customer: X\n"),
+        new_posting("revenue:b", "$-500.00", "customer: X\na note\n"),
+    ];
+    let out = applied(
+        DEPOSIT,
+        vec![EditOp::ReplacePostings {
+            postings: vec![1, 3],
+            with,
+        }],
+    );
+    assert_eq!(
+        out,
+        "\
+2026-03-02 * Payout  ; id: tx-77
+    assets:bank            $1,940.00
+    ; imported
+    revenue:a  $-1500.00  ; customer: X
+    revenue:b  $-500.00  ; customer: X
+    ; a note
+    expenses:fees             $60.00
+2026-03-03 Other
+    a  $1
+    b
+"
+    );
+    // CRLF files keep CRLF, and an unterminated last line stays so.
+    let crlf = "2026-03-02 x\r\n    assets:bank  $5\r\n    income:unknown";
+    let out = applied(
+        crlf,
+        vec![EditOp::ReplacePostings {
+            postings: vec![1],
+            with: vec![
+                new_posting("revenue:a", "$-3", ""),
+                new_posting("revenue:b", "$-2", ""),
+            ],
+        }],
+    );
+    assert_eq!(
+        out,
+        "2026-03-02 x\r\n    assets:bank  $5\r\n    revenue:a  $-3\r\n    revenue:b  $-2"
+    );
+}
+
+#[test]
+fn replace_postings_refuses_what_would_not_balance_or_is_misaddressed() {
+    let unbalanced = refused(
+        DEPOSIT,
+        vec![EditOp::ReplacePostings {
+            postings: vec![1, 3],
+            with: vec![new_posting("revenue:a", "$-1.00", "")],
+        }],
+    );
+    assert!(
+        matches!(
+            unbalanced,
+            EditError::Unbalanced | EditError::RoundTripMismatch
+        ),
+        "{unbalanced:?}"
+    );
+    for postings in [vec![], vec![3, 1], vec![1, 1], vec![9]] {
+        let error = refused(
+            DEPOSIT,
+            vec![EditOp::ReplacePostings {
+                postings,
+                with: vec![new_posting("revenue:a", "$-1000.00", "")],
+            }],
+        );
+        assert!(
+            matches!(
+                error,
+                EditError::Unsupported(_) | EditError::PostingNotFound { .. }
+            ),
+            "{error:?}"
+        );
+    }
+}
+
+#[test]
+fn set_text_restores_exactly_and_refuses_anything_but_one_transaction() {
+    let edited = applied(
+        DEPOSIT,
+        vec![EditOp::ReplacePostings {
+            postings: vec![1, 3],
+            with: vec![new_posting("revenue:a", "$-2000.00", "")],
+        }],
+    );
+    let original = DEPOSIT
+        .split("2026-03-03")
+        .next()
+        .expect("first")
+        .to_string();
+    let mut editor = editor(&edited);
+    let fingerprint = editor.transaction_fingerprint(Tindex(1)).expect("fp");
+    editor
+        .apply_batch(&[(Tindex(1), fingerprint, vec![EditOp::SetText(original)])])
+        .expect("restores");
+    assert_eq!(editor.text(), DEPOSIT);
+    for bad in [
+        "    assets:bank  $1\n",
+        "2026-03-02 x\n    a  $1\n    b\naccount evil\n",
+        "2026-03-02 x\n    a  $1\n\n    b\n",
+        "2026-03-02 x\n    a  $1\n    b  $1\n",
+    ] {
+        let error = refused(DEPOSIT, vec![EditOp::SetText(bad.into())]);
+        assert!(
+            !matches!(error, EditError::ExternalChange),
+            "{bad:?}: {error:?}"
+        );
+    }
+    // With another op in its entry, refused.
+    let error = refused(
+        DEPOSIT,
+        vec![
+            EditOp::SetText("2026-03-02 x\n    a  $1\n    b\n".into()),
+            EditOp::SetStatus(Status::Cleared),
+        ],
+    );
+    assert!(matches!(error, EditError::Unsupported(_)), "{error:?}");
+}

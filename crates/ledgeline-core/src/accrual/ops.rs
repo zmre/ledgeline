@@ -27,6 +27,7 @@
 //! about UI preferences (auto-posting is the caller's decision to call
 //! [`Loaded::post_due`]).
 
+use super::apply::{self, AppliedPayment, ApplyPayment, ApplyUndo};
 use super::book::{
     self, BookError, GroupEdit, RecognitionBook, RecognitionDoc, directives_for, group_text,
     heading, recognition_path,
@@ -138,6 +139,12 @@ impl From<EditError> for OpsError {
     fn from(error: EditError) -> Self {
         match error {
             EditError::ExternalChange => Self::ExternalChange,
+            // A batch entry's stale fingerprint is the same race.
+            EditError::BulkTransaction { source, .. }
+                if matches!(*source, EditError::ExternalChange) =>
+            {
+                Self::ExternalChange
+            }
             other => Self::Edit(other),
         }
     }
@@ -1273,6 +1280,101 @@ impl Loaded {
         self.editor.apply_batch(&edits)?;
         self.editor.save()?;
         Ok(id)
+    }
+
+    /// **Apply payment** (cash books, invoicer I17): re-split the deposit
+    /// `request.tindex`'s income side into the invoice's row accounts (pro
+    /// rata for a partial payment), tag it `invoice:` and `customer:`, and
+    /// keep every other line — the bank leg above all — byte for byte. One
+    /// write, behind the transaction's fingerprint and the books'
+    /// generation. Returns what was written and how to undo it.
+    ///
+    /// # Errors
+    /// [`OpsError::Refused`] for a transaction that isn't a cash-books
+    /// deposit, one already applied, or a deposit larger than the invoice
+    /// (see [`apply::plan`]); [`OpsError::Stale`] for a generation mismatch;
+    /// [`OpsError::ExternalChange`] when the deposit changed since its
+    /// fingerprint was taken — nothing written.
+    pub fn apply_payment(
+        &mut self,
+        request: &ApplyPayment,
+        expected: Option<&Generation>,
+    ) -> Result<AppliedPayment, OpsError> {
+        self.check_expected(expected)?;
+        let journal = Arc::clone(self.editor.journal());
+        let txn = journal
+            .transactions
+            .iter()
+            .find(|txn| txn.index == request.tindex)
+            .ok_or(OpsError::Stale)?;
+        let original_text = self
+            .editor
+            .transaction_source(request.tindex)
+            .ok_or(OpsError::Stale)?;
+        let planned = apply::plan(&journal, txn, request)?;
+        self.documents.take();
+        self.editor
+            .apply_batch(&[(request.tindex, request.fingerprint.clone(), planned.ops)])?;
+        let fingerprint = self
+            .editor
+            .transaction_fingerprint(request.tindex)
+            .ok_or(OpsError::Stale)?;
+        let transaction = self
+            .journal()
+            .transactions
+            .iter()
+            .find(|txn| txn.index == request.tindex)
+            .cloned()
+            .ok_or(OpsError::Stale)?;
+        self.editor.save()?;
+        Ok(AppliedPayment {
+            transaction,
+            received: planned.received,
+            applied: planned.applied,
+            partial: planned.partial,
+            undo: ApplyUndo {
+                number: request.number.clone(),
+                fingerprint,
+                original_text,
+            },
+        })
+    }
+
+    /// Undo an [`apply_payment`](Self::apply_payment): write the deposit's
+    /// original text back, exactly. The deposit is found by its `invoice:`
+    /// tag and the fingerprint the apply left, wherever it has moved since.
+    ///
+    /// # Errors
+    /// [`OpsError::Stale`] when no deposit tagged with the number still has
+    /// that fingerprint (it was edited since: nothing is written), or for a
+    /// generation mismatch; [`OpsError::ExternalChange`].
+    pub fn undo_apply_payment(
+        &mut self,
+        undo: &ApplyUndo,
+        expected: Option<&Generation>,
+    ) -> Result<(), OpsError> {
+        self.check_expected(expected)?;
+        let tagged: Vec<Tindex> = self
+            .journal()
+            .transactions
+            .iter()
+            .filter(|txn| super::tag_value(&txn.tags, INVOICE_TAG) == Some(undo.number.as_str()))
+            .map(|txn| txn.index)
+            .collect();
+        let tindex = tagged
+            .iter()
+            .zip(self.editor.transaction_fingerprints(&tagged))
+            .find(|(_, fingerprint)| fingerprint.as_ref() == Some(&undo.fingerprint))
+            .map(|(tindex, _)| *tindex)
+            .ok_or(OpsError::Stale)?;
+        self.documents.take();
+        self.editor.apply_batch(&[(
+            tindex,
+            undo.fingerprint.clone(),
+            vec![EditOp::SetText(undo.original_text.clone())],
+        )])?;
+        self.editor.save()?;
+        Ok(())
     }
 
     /// **Post through ‹date›** (D6): every open due entry dated on or before
